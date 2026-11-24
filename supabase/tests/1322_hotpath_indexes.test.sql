@@ -22,26 +22,13 @@ create function pg_temp.assert_plan_uses_index(p_sql text, p_index text, p_filte
 declare
 	v_index regclass := ('public.' || quote_ident(p_index))::regclass;
 	v_plan jsonb;
-	v_hidden oid[];
 	v_scan jsonb;
 	v_first_column text;
 begin
-	-- WHY: Another index of the table can serve some of these queries too, and which one the planner then picks follows the
-	-- bloat and pg_class numbers earlier tests and autovacuum left. So the index is planned alone, the others hidden, and
-	-- must do the query's work itself: every condition (but p_filter) in the index from its first column on, and the order.
-	with hidden as (
-		update pg_index other set indisvalid = false
-		from pg_index wanted
-		where wanted.indexrelid = v_index
-			and other.indrelid = wanted.indrelid
-			and other.indexrelid <> v_index
-			and other.indisvalid
-		returning other.indexrelid
-	)
-	select array_agg(indexrelid) into v_hidden from hidden;
-	execute 'explain (format json) ' || p_sql into v_plan;
-	update pg_index set indisvalid = true where indexrelid = any (v_hidden);
-	v_scan := jsonb_path_query_first(v_plan, '$.** ? (@."Index Name" == $index)', jsonb_build_object('index', p_index));
+	-- WHY: Planned alone, the index is taken even for its order only, so its name in the plan says little. It must do
+	-- the query's work itself: every condition (but p_filter) in the index from its first column on, and the order.
+	v_plan := qorpera_test_support.plan_with_index_alone(v_index, p_sql);
+	v_scan := nullif(v_plan -> 'scan', 'null');
 	select a.attname into v_first_column
 	from pg_index i
 	join pg_attribute a on a.attrelid = i.indrelid and a.attnum = i.indkey[0]
