@@ -1,4 +1,4 @@
-import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
+import { companyPathKey } from "@qorpera/cloud-client/company-state-shared";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
 import { isGmailDraft, questionInput } from "../../cloud/interactions.ts";

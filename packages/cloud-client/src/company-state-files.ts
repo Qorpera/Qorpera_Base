@@ -24,6 +24,7 @@ import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import {
 	AGENT_COLOURS,
 	type AgentColour,
+	COMPANY_STATE_FILE_MAX_BYTES,
 	companyPathKey,
 	osPath,
 	osRelative,
@@ -110,7 +111,7 @@ export type CompanyStateProblemCode =
 	| InterfaceProblemCode;
 
 /** The largest structured file, the storage core's bound (RUNTIME-COMPANY-FOLDER-CORE.md §5). */
-export const COMPANY_STATE_FILE_MAX_BYTES = 64 * 1024;
+export { COMPANY_STATE_FILE_MAX_BYTES };
 export const COMPANY_STATE_NAME_MAX_CHARS = 64;
 /** Recorded with every parse the platform stores, so the rebuild's drift check knows which
  * rules a parse was made under. */

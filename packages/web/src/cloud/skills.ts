@@ -1,6 +1,6 @@
 import { CloudMemberFolderAccessDenied, type CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import { isCloudSkillName, parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
-import { COMPANY_STATE_FILE_MAX_BYTES, osPath } from "@qorpera/cloud-client/company-state-files";
+import { COMPANY_STATE_FILE_MAX_BYTES, osPath } from "@qorpera/cloud-client/company-state-shared";
 import { parentPath } from "./company-folder-writes.ts";
 
 /** A skill the composer can offer after "/" (contract 15.2): the company library

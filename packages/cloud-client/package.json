@@ -3,6 +3,7 @@
 	"version": "0.83.0",
 	"private": true,
 	"type": "module",
+	"sideEffects": false,
 	"description": "Qorpera cloud client APIs and wire contracts.",
 	"exports": {
 		".": {
