@@ -413,6 +413,7 @@ export class SurfaceStudioView {
 		compiledTokensCss: string,
 		className: string,
 		listen?: (data: unknown) => void,
+		owned?: (dispose: () => void) => void,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
@@ -426,7 +427,8 @@ export class SurfaceStudioView {
 			() => undefined,
 			{ again: true },
 		);
-		this.#htmlFrames.push(frame);
+		if (owned) owned(() => frame.dispose());
+		else this.#htmlFrames.push(frame);
 		if (listen) {
 			window.addEventListener(
 				"message",
@@ -1283,6 +1285,7 @@ export class SurfaceStudioView {
 						page.previewTokensCss,
 						frame.className,
 						frame.listen,
+						frame.owned,
 					),
 				linksChanged: (html, path) =>
 					studioHtmlDependencyChanged(

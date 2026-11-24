@@ -109,17 +109,34 @@ export class StudioFullscreen {
 		dialog.open();
 	}
 
-	openContent(title: string, build: () => HTMLElement, variant: StudioFullscreenContentVariant): void {
+	openContent(
+		title: string,
+		build: (onClose: (cleanup: () => void) => void) => HTMLElement,
+		variant: StudioFullscreenContentVariant,
+	): void {
 		this.close(false);
+		const cleanups: (() => void)[] = [];
+		let closed = false;
 		const dialog = new SurfaceDialog(title, `studio-fullscreen-dialog is-${variant}`, () => {
+			closed = true;
+			for (const cleanup of cleanups.splice(0)) cleanup();
 			if (this.#dialog === dialog) this.#dialog = undefined;
 		});
 		this.#dialog = dialog;
-		dialog.content.append(
-			h("div", { class: "studio-fullscreen-head" }, h("h2", null, title)),
-			h("div", { class: "studio-fullscreen-body" }, build()),
-		);
-		dialog.open();
+		try {
+			const body = build((cleanup) => {
+				if (closed) cleanup();
+				else cleanups.push(cleanup);
+			});
+			dialog.content.append(
+				h("div", { class: "studio-fullscreen-head" }, h("h2", null, title)),
+				h("div", { class: "studio-fullscreen-body" }, body),
+			);
+			dialog.open();
+		} catch (error) {
+			dialog.close(false);
+			throw error;
+		}
 	}
 
 	openHosted(title: string, node: HTMLElement, returnTo: HTMLElement, variant: StudioFullscreenHostedVariant): void {

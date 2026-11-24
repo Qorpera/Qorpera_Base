@@ -93,13 +93,14 @@ export function prepareModule(
 						? expandButton(title, () =>
 								fullscreen.openContent(
 									title,
-									() =>
+									(onClose) =>
 										pages.frame({
 											html,
 											path: indexPath,
 											title,
 											files,
 											className: "studio-module-frame is-fullscreen",
+											owned: onClose,
 										}),
 									"frame",
 								),

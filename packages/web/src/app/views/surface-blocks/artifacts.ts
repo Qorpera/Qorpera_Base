@@ -50,6 +50,7 @@ export interface StudioHtmlFrame {
 	readonly files: Readonly<Record<string, string>>;
 	readonly className: string;
 	readonly listen?: (data: unknown) => void;
+	readonly owned?: (dispose: () => void) => void;
 }
 
 export interface StudioHtmlPages {
@@ -371,13 +372,14 @@ export function prepareArtifacts(
 						expandButton(page.title, () =>
 							fullscreen.openContent(
 								page.title,
-								() =>
+								(onClose) =>
 									htmlPages.frame({
 										html: page.html,
 										path: page.path,
 										title: page.title,
 										files: ctx.files,
 										className: "studio-html-frame is-fullscreen",
+										owned: onClose,
 									}),
 								"frame",
 							),

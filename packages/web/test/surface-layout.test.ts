@@ -1065,7 +1065,19 @@ function handedHtml(frame: HTMLIFrameElement): string {
 	window.dispatchEvent(ready);
 	const [message] = post.mock.calls.at(-1) as unknown as [{ type: string; html: string }];
 	expect(message.type).toBe(PAGE_CONTENT);
+	post.mockRestore();
 	return message.html;
+}
+
+function expectFrameDisposed(frame: HTMLIFrameElement): void {
+	document.body.append(frame);
+	const post = vi.spyOn(frame.contentWindow as Window, "postMessage").mockImplementation(() => {});
+	const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+	Object.defineProperty(ready, "source", { value: frame.contentWindow });
+	window.dispatchEvent(ready);
+	expect(post).not.toHaveBeenCalled();
+	post.mockRestore();
+	frame.remove();
 }
 
 function sayHeight(frame: HTMLIFrameElement, height: unknown, source: Window | null = frame.contentWindow): void {
@@ -1547,8 +1559,17 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 			.click();
 		const htmlDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-frame")!;
 		expect(htmlDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("Demo");
-		expect(htmlDialog.querySelector("iframe.studio-html-frame.is-fullscreen")).not.toBeNull();
+		const fullscreenHtmlFrame = htmlDialog.querySelector<HTMLIFrameElement>(
+			"iframe.studio-html-frame.is-fullscreen",
+		)!;
+		expect(fullscreenHtmlFrame).not.toBeNull();
+		store.setMode("live");
+		view.update();
+		expect(handedHtml(fullscreenHtmlFrame)).toContain("Hi");
+		store.setMode("preview");
+		view.update();
 		htmlDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expectFrameDisposed(fullscreenHtmlFrame);
 
 		view.dispose();
 		store.dispose();
@@ -1612,8 +1633,17 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 
 		view.el.querySelector<HTMLButtonElement>('[data-block="module"] [data-act="studio-expand"]')!.click();
 		const moduleDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-frame")!;
-		expect(moduleDialog.querySelector("iframe.studio-module-frame.is-fullscreen")).not.toBeNull();
+		const fullscreenModuleFrame = moduleDialog.querySelector<HTMLIFrameElement>(
+			"iframe.studio-module-frame.is-fullscreen",
+		)!;
+		expect(fullscreenModuleFrame).not.toBeNull();
+		store.setMode("live");
+		view.update();
+		expect(handedHtml(fullscreenModuleFrame)).toContain("42");
+		store.setMode("preview");
+		view.update();
 		moduleDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expectFrameDisposed(fullscreenModuleFrame);
 
 		tab("breakdowns");
 		const explainerFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
