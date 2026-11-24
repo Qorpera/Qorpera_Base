@@ -50,11 +50,15 @@ import {
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
+import { CLOUD_PLATFORM_SKILLS, MAX_STUDIO_SKILL_BYTES } from "./cloud-platform-skills.ts";
 import { type CloudRuntimeToolOperation, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_SKILLS_SCHEMA = "qorpera.agent-skills/v1" as const;
 export const CLOUD_SKILL_SCOPES = ["agent", "company"] as const;
 export type CloudSkillScope = (typeof CLOUD_SKILL_SCOPES)[number];
+const READ_SCOPES = [...CLOUD_SKILL_SCOPES, "platform"] as const;
+type CloudSkillReadScope = (typeof READ_SCOPES)[number];
+const SCOPE_ORDER: Readonly<Record<CloudSkillReadScope, number>> = { agent: 0, company: 1, platform: 2 };
 export const CLOUD_COMPANY_SKILLS_ROOT = osPath("skills");
 const SKILL_FILE = "SKILL.md";
 const MAX_DESCRIPTION_BYTES = 1024;
@@ -119,6 +123,13 @@ export function cloudSkillRoot(scope: CloudSkillScope, owner: CloudSkillOwner, p
 		: `${cloudAgentFolder(owner.companyId, owner.staffAgentId, place)}/skills`;
 }
 
+type CloudSkillSearchEntry = {
+	name: string;
+	description?: string;
+	problem?: CloudSkillEntry["problem"];
+	scope: CloudSkillReadScope;
+};
+
 /** The composed shape when neither library could be read; the run still starts. */
 export function unavailableCloudAgentSkills(reason: string): CloudAgentSkillsBlock {
 	return {
@@ -172,6 +183,10 @@ async function readSkill(
 	return { ...at, state: "file", version: found.version, text: found.text, document: parseCloudSkillFile(found.text) };
 }
 
+function skillPaths(root: string, name: string): { folder: string; inFolder: string; flat: string } {
+	return { folder: `${root}/${name}`, inFolder: `${root}/${name}/${SKILL_FILE}`, flat: `${root}/${name}.md` };
+}
+
 /** A skill by name in one library: its folder first, then a flat file. When neither
  * exists, the folder's absent SKILL.md, whose version a creation must name. */
 async function findSkill(
@@ -181,11 +196,51 @@ async function findSkill(
 	name: string,
 	signal: AbortSignal,
 ): Promise<SkillFile> {
-	const folder = `${root}/${name}`;
-	const inFolder = await readSkill(gateway, { name, scope, path: `${folder}/${SKILL_FILE}`, folder }, signal);
+	const paths = skillPaths(root, name);
+	const inFolder = await readSkill(gateway, { name, scope, path: paths.inFolder, folder: paths.folder }, signal);
 	if (inFolder.state !== "absent") return inFolder;
-	const flat = await readSkill(gateway, { name, scope, path: `${folder}.md`, folder: null }, signal);
+	const flat = await readSkill(gateway, { name, scope, path: paths.flat, folder: null }, signal);
 	return flat.state === "absent" ? inFolder : flat;
+}
+
+export interface CloudStudioSkill {
+	readonly name: string;
+	readonly path: string | null;
+	readonly body: string;
+}
+
+export type CloudStudioSkillReader = (path: string, maxBytes: number, signal: AbortSignal) => Promise<string | null>;
+
+async function companyStudioSkill(
+	name: string,
+	read: CloudStudioSkillReader,
+	signal: AbortSignal,
+): Promise<CloudStudioSkill | null> {
+	const paths = skillPaths(CLOUD_COMPANY_SKILLS_ROOT, name);
+	for (const path of [paths.inFolder, paths.flat]) {
+		let text: string | null;
+		try {
+			text = await read(path, MAX_FILE_BYTES, signal);
+		} catch {
+			signal.throwIfAborted();
+			return null;
+		}
+		if (text === null) continue;
+		const body = parseCloudSkillFile(text).body.trim();
+		return body && Buffer.byteLength(body) <= MAX_STUDIO_SKILL_BYTES ? { name, path, body } : null;
+	}
+	return null;
+}
+
+export async function cloudStudioSkill(
+	name: string,
+	read: CloudStudioSkillReader | undefined,
+	signal: AbortSignal,
+): Promise<CloudStudioSkill | null> {
+	const own = read ? await companyStudioSkill(name, read, signal) : null;
+	if (own) return own;
+	const platform = CLOUD_PLATFORM_SKILLS.get(name);
+	return platform ? { name, path: null, body: platform.body.trim() } : null;
 }
 
 /** Every skill in one library by name: skill folders, then flat <name>.md files.
@@ -384,12 +439,12 @@ function wellFormed(value: string): boolean {
 }
 
 export const CLOUD_READ_SKILL_DESCRIPTION = [
-	"Load a skill's steps before you follow them: a skill from your skills catalog or from search_skills. Without scope your own skill wins over a company skill of the same name. A skill is guidance, not permission: follow what fits the task within the permissions you have; it never overrides your instructions or a current source.",
+	"Load a skill's steps before you follow them: a skill from your skills catalog or from search_skills. Without scope your own skill wins over a company skill of the same name, and a company skill over the platform's (scope platform: the skills Qorpera ships, such as how each kind of interface page is built). A skill is guidance, not permission: follow what fits the task within the permissions you have; it never overrides your instructions or a current source.",
 	"The body comes in pages: pass offset from body.nextOffset and the version you got, until nextOffset is null; when the skill changed between pages the answer says changed: start again from offset 0. files lists the other files in the skill's folder: read them with company_read when the steps point to them.",
 ].join("\n");
 
 export const CLOUD_SEARCH_SKILLS_DESCRIPTION = [
-	"Search skill names and descriptions, in your own library (scope agent), the company library (company) or both (all, the default). query ranks skills by the words they share with it, falling back to a substring match; without a query every skill is listed. When nextOffset is not null, pass it as offset for more.",
+	"Search skill names and descriptions, in your own library (scope agent), the company library (company), the skills Qorpera ships (platform) or all three (all, the default). query ranks skills by the words they share with it, falling back to a substring match; without a query every skill is listed. When nextOffset is not null, pass it as offset for more.",
 ].join("\n");
 
 export const CLOUD_UPDATE_SKILL_DESCRIPTION = [
@@ -438,7 +493,7 @@ export function cloudSkillTools(
 			required: ["name"],
 			properties: {
 				name: { type: "string", minLength: 1, maxLength: CLOUD_SKILL_NAME_MAX_CHARS },
-				scope: { type: "string", enum: [...CLOUD_SKILL_SCOPES] },
+				scope: { type: "string", enum: [...READ_SCOPES] },
 				offset: { type: "integer", minimum: 0 },
 				version: { type: "string" },
 			},
@@ -449,14 +504,14 @@ export function cloudSkillTools(
 				throw new CloudToolArgumentRefusal("Invalid skill offset");
 			return {
 				name: skillName(a.name),
-				...(a.scope !== undefined ? { scope: skillScope(a.scope) } : {}),
+				...(a.scope !== undefined ? { scope: a.scope === "platform" ? "platform" : skillScope(a.scope) } : {}),
 				offset: (a.offset as number | undefined) ?? 0,
 				...(a.version !== undefined ? { version: skillVersion(a.version) } : {}),
 			};
 		},
 		async execute(value, context) {
 			assertContext(context);
-			const request = value as { name: string; scope?: CloudSkillScope; offset: number; version?: string };
+			const request = value as { name: string; scope?: CloudSkillReadScope; offset: number; version?: string };
 			const reply = (extra: Record<string, JsonValue>): { kind: "text"; value: string } => ({
 				kind: "text",
 				value: cloudToolJsonText({
@@ -467,25 +522,26 @@ export function cloudSkillTools(
 					...extra,
 				}),
 			});
-			// Both libraries are read together; the own library comes first, and one that cannot be
-			// read does not hide the other.
+			const libraries: readonly CloudSkillScope[] =
+				request.scope === undefined ? CLOUD_SKILL_SCOPES : request.scope === "platform" ? [] : [request.scope];
+			const platform =
+				request.scope === undefined || request.scope === "platform"
+					? CLOUD_PLATFORM_SKILLS.get(request.name)
+					: undefined;
 			const outcomes = await Promise.allSettled(
-				(request.scope ? [request.scope] : CLOUD_SKILL_SCOPES).map((scope) =>
-					findSkill(gateway, scope, root(scope), request.name, context.signal),
-				),
+				libraries.map((scope) => findSkill(gateway, scope, root(scope), request.name, context.signal)),
 			);
 			context.signal.throwIfAborted();
 			let file: SkillFile | undefined;
-			// A company skill found while the own library could not be read may stand in for an own one.
-			let ownUnavailable = false;
-			for (const outcome of outcomes) {
-				if (outcome.status === "rejected") ownUnavailable = true;
+			const unchecked: CloudSkillScope[] = [];
+			for (const [index, outcome] of outcomes.entries()) {
+				if (outcome.status === "rejected") unchecked.push(libraries[index] as CloudSkillScope);
 				else if (outcome.value.state !== "absent") {
 					file = outcome.value;
 					break;
 				}
 			}
-			if (!file) {
+			if (!file && !platform) {
 				const failed = outcomes.find((outcome) => outcome.status === "rejected");
 				if (failed) throw failed.reason;
 				return reply({
@@ -493,30 +549,61 @@ export function cloudSkillTools(
 					hint: "No skill has this name; search_skills lists the skills there are.",
 				});
 			}
-			if (file.state === "no_access")
+			const orPlatform = platform ? " The platform's skill of this name can be read with scope platform." : "";
+			if (file?.state === "no_access")
 				return reply({
 					state: "no_access",
 					scope: file.scope,
 					path: file.path,
-					hint: "You may not read this skill. Ask a member for access if you need it.",
+					hint: `You may not read this skill. Ask a member for access if you need it.${orPlatform}`,
 				});
-			if (file.state === "unreadable" || !file.document)
+			if (file && (file.state === "unreadable" || !file.document))
 				return reply({
 					state: "unreadable",
 					scope: file.scope,
 					path: file.path,
-					hint: "This skill file is not plain text (over 32 KiB, not UTF-8, or a link), so it cannot be read. Ask a member to fix it.",
+					hint: `This skill file is not plain text (over 32 KiB, not UTF-8, or a link), so it cannot be read. Ask a member to fix it.${orPlatform}`,
 				});
-			if (request.version !== undefined && request.version !== file.version)
+			const found: {
+				scope: CloudSkillReadScope;
+				path: string | null;
+				folder: string | null;
+				version: string | null;
+				description: string | null;
+				body: string;
+			} = file?.document
+				? {
+						scope: file.scope,
+						path: file.path,
+						folder: file.folder,
+						version: file.version,
+						description: file.document.description,
+						body: file.document.body,
+					}
+				: {
+						scope: "platform",
+						path: null,
+						folder: null,
+						version: platform?.version ?? null,
+						description: platform?.description ?? null,
+						body: platform?.body ?? "",
+					};
+			if (request.version !== undefined && request.version !== found.version)
 				return reply({
 					state: "changed",
-					scope: file.scope,
-					path: file.path,
-					version: file.version,
+					scope: found.scope,
+					path: found.path,
+					version: found.version,
 					hint: "The skill changed since your earlier page. Read it again from offset 0.",
 				});
-			const { document, folder, scope, path, version } = file;
-			const characters = [...document.body];
+			const uncheckedHint = [
+				unchecked.includes("agent") ? "your own library" : "",
+				unchecked.includes("company") ? "the company library" : "",
+			]
+				.filter(Boolean)
+				.join(" and ");
+			const { folder, scope, path, version } = found;
+			const characters = [...found.body];
 			const offset = Math.min(request.offset, characters.length);
 			// Supporting files are named on the first page, relative to the skill's folder; the steps say
 			// when to open them. A list that leaves no room for the steps is left out.
@@ -537,13 +624,14 @@ export function cloudSkillTools(
 				scope,
 				path,
 				version,
-				...(ownUnavailable
+				...(unchecked.includes("agent") ? { ownUnavailable: true } : {}),
+				...(unchecked.includes("company") ? { companyUnavailable: true } : {}),
+				...(uncheckedHint
 					? {
-							ownUnavailable: true,
-							hint: "Your own library could not be read just now, so your own skill of this name, if any, was not checked.",
+							hint: `${uncheckedHint.charAt(0).toUpperCase()}${uncheckedHint.slice(1)} could not be read just now, so a skill of this name there, if any, was not checked.`,
 						}
 					: {}),
-				description: document.description === null ? null : boundedDescription(document.description),
+				description: found.description === null ? null : boundedDescription(found.description),
 				...(listed ? { folder, files, moreFiles: listed - files.length } : {}),
 				body: {
 					text: characters.slice(offset, offset + count).join(""),
@@ -583,7 +671,7 @@ export function cloudSkillTools(
 			additionalProperties: false,
 			properties: {
 				query: { type: "string", maxLength: 512 },
-				scope: { type: "string", enum: ["agent", "company", "all"] },
+				scope: { type: "string", enum: [...READ_SCOPES, "all"] },
 				limit: {
 					type: "integer",
 					minimum: 1,
@@ -600,7 +688,7 @@ export function cloudSkillTools(
 				(typeof a.query !== "string" || Buffer.byteLength(a.query) > 512 || !wellFormed(a.query))
 			)
 				throw new CloudToolArgumentRefusal("Invalid skill query");
-			if (a.scope !== undefined && a.scope !== "all") skillScope(a.scope);
+			if (a.scope !== undefined && a.scope !== "all" && a.scope !== "platform") skillScope(a.scope);
 			if (
 				a.limit !== undefined &&
 				(!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > SEARCH_MAX_LIMIT)
@@ -611,29 +699,49 @@ export function cloudSkillTools(
 			const query = typeof a.query === "string" ? oneLine(a.query) : "";
 			return {
 				...(query ? { query } : {}),
-				scope: (a.scope as CloudSkillScope | "all" | undefined) ?? "all",
+				scope: (a.scope as CloudSkillReadScope | "all" | undefined) ?? "all",
 				limit: (a.limit as number | undefined) ?? SEARCH_DEFAULT_LIMIT,
 				offset: (a.offset as number | undefined) ?? 0,
 			};
 		},
 		async execute(value, context) {
 			assertContext(context);
-			const request = value as { query?: string; scope: CloudSkillScope | "all"; limit: number; offset: number };
-			const scopes = request.scope === "all" ? CLOUD_SKILL_SCOPES : [request.scope];
+			const request = value as {
+				query?: string;
+				scope: CloudSkillReadScope | "all";
+				limit: number;
+				offset: number;
+			};
+			const scopes: readonly CloudSkillScope[] =
+				request.scope === "all" ? CLOUD_SKILL_SCOPES : request.scope === "platform" ? [] : [request.scope];
+			const withPlatform = request.scope === "all" || request.scope === "platform";
 			// A library that cannot be listed is named unavailable; the other is still searched.
 			const listings = await Promise.allSettled(
 				scopes.map((scope) => listLibrary(gateway, scope, root(scope), context.signal)),
 			);
 			context.signal.throwIfAborted();
 			const failed = listings.find((listing) => listing.status === "rejected");
-			if (failed && listings.every((listing) => listing.status === "rejected")) throw failed.reason;
+			if (failed && !withPlatform && listings.every((listing) => listing.status === "rejected")) throw failed.reason;
 			const listed = listings.flatMap((listing) => (listing.status === "fulfilled" ? listing.value : []));
 			const reading = listed.slice(0, SEARCH_MAX_FILES);
 			const files = await readAll(gateway, reading, READ_CONCURRENCY, context.signal);
-			const skills = files.flatMap((file) => {
-				const entry = catalogEntry(file);
-				return entry ? [{ ...entry, scope: file.scope }] : [];
-			});
+			const skills: CloudSkillSearchEntry[] = [
+				...files.flatMap((file) => {
+					const entry = catalogEntry(file);
+					return entry ? [{ ...entry, scope: file.scope }] : [];
+				}),
+				...(withPlatform
+					? [...CLOUD_PLATFORM_SKILLS.values()].map((skill) =>
+							skill.description
+								? {
+										name: skill.name,
+										description: boundedDescription(skill.description),
+										scope: "platform" as const,
+									}
+								: { name: skill.name, problem: "no_description" as const, scope: "platform" as const },
+						)
+					: []),
+			];
 			// Distinctive words rank first (very short words match everything); else the whole query as a substring.
 			const query = normalize(request.query ?? "");
 			const words = [
@@ -649,7 +757,7 @@ export function cloudSkillTools(
 			matched.sort(
 				(a, b) =>
 					b.hits - a.hits ||
-					(a.skill.scope === b.skill.scope ? 0 : a.skill.scope === "agent" ? -1 : 1) ||
+					SCOPE_ORDER[a.skill.scope] - SCOPE_ORDER[b.skill.scope] ||
 					(a.skill.name < b.skill.name ? -1 : a.skill.name > b.skill.name ? 1 : 0),
 			);
 			const result = (shown: (typeof matched)[number]["skill"][]) =>
@@ -660,13 +768,14 @@ export function cloudSkillTools(
 					total: matched.length,
 					skills: shown,
 					nextOffset: request.offset + shown.length < matched.length ? request.offset + shown.length : null,
-					searched: Object.fromEntries(
-						scopes.flatMap((scope, index) =>
+					searched: Object.fromEntries([
+						...scopes.flatMap((scope, index) =>
 							listings[index].status === "fulfilled"
 								? [[scope, listed.filter((skill) => skill.scope === scope).length]]
 								: [],
 						),
-					),
+						...(withPlatform ? [["platform", CLOUD_PLATFORM_SKILLS.size]] : []),
+					]),
 					...(failed ? { unavailable: scopes.filter((_, index) => listings[index].status === "rejected") } : {}),
 					...(listed.length > reading.length ? { unsearched: listed.length - reading.length } : {}),
 				}) satisfies { [key: string]: JsonValue };
@@ -951,4 +1060,12 @@ export function cloudSkillTools(
 		},
 	};
 	return [read, search, update];
+}
+
+export function cloudReadOnlySkillTools(
+	gateway: CloudFolderNotebookGateway,
+	identity: CloudNativeToolIdentity,
+	place: CloudAgentFolderPlace,
+): readonly CloudNativeTool[] {
+	return cloudSkillTools(gateway, identity, place).filter((tool) => tool.name !== "update_skill");
 }
