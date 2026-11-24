@@ -3,7 +3,6 @@ import * as localSandbox from "../src/app/surface-local-sandbox.ts";
 import { registerLocalSandbox } from "../src/app/surfaces-store.ts";
 import { DANISH } from "../src/ui/danish/index.ts";
 import { registerDanishDictionary, untranslated } from "../src/ui/preferences.ts";
-import "./register-lazy.ts";
 
 registerDanishDictionary(DANISH);
 registerLocalSandbox(localSandbox);

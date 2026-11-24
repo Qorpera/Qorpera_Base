@@ -38,6 +38,7 @@ import {
 	userA,
 } from "./fixtures.ts";
 import { stubDialogs } from "./search-window-helpers.ts";
+import "./register-lazy.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,

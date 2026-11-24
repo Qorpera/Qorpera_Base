@@ -37,6 +37,7 @@ import {
 	userA,
 } from "./fixtures.ts";
 import { searchFromRail } from "./search-window-helpers.ts";
+import "./register-lazy.ts";
 
 /* A member's contacts in their own rail (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
  * undraggable and un-hideable"): where each stands (app/rail-contacts.ts), how a place is kept (app/member-chats.ts,

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import type { CompanyBrandOptions } from "../src/app/views/settings-brand.ts";
 import { fixture, profileA, session, settle } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 const brands = vi.hoisted(() => [] as CompanyBrandOptions[]);
 
