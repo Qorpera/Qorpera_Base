@@ -331,10 +331,13 @@ $new$	if v_surface.id is null then
 					)
 				order by trim(both '/' from coalesce(x.op_obj ->> 'path', '')), c.seq desc, x.op_idx desc
 			) as latest
-			where latest.op_kind = 'delete' or latest.content_bytes <= 262144
+			where latest.op_kind = 'delete' or latest.content_bytes <= 65536
 			order by latest.seq desc, latest.op_idx desc
 			limit 64
 		) as item;
+		if octet_length(v_open_scenes_ops::text) > 98304 then
+			v_open_scenes_ops := null;
+		end if;
 	end if;$new$,
 $old$		'briefSummary', v_surface.brief_summary,$old$,
 $new$		'briefSummary', v_surface.brief_summary,

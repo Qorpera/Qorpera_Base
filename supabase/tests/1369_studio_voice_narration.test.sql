@@ -132,6 +132,34 @@ begin
 		'1: turn payload carries default voice and latest openScenesOps per path: ' || v_turn::text
 	);
 
+	insert into public.qorpera_surface_changes(
+		profile_id, surface_id, session_id, seq, title, summary, kind, affected_paths, patch_manifest, status
+	) values (
+		v_profile, v_surface, v_session, 3, 'Large breakdown A', 'Staged 55 KiB scenes.js', 'folder_patch',
+		array['breakdowns/a/scenes.js'],
+		jsonb_build_array(
+			jsonb_build_object('op', 'write_text', 'path', 'breakdowns/a/scenes.js', 'content', repeat('a', 55000))
+		),
+		'staged'
+	), (
+		v_profile, v_surface, v_session, 4, 'Large breakdown B', 'Staged 55 KiB scenes.js', 'folder_patch',
+		array['breakdowns/b/scenes.js'],
+		jsonb_build_array(
+			jsonb_build_object('op', 'write_text', 'path', 'breakdowns/b/scenes.js', 'content', repeat('b', 55000))
+		),
+		'staged'
+	);
+
+	set local role service_role;
+	v_turn := public.qorpera_native_surface_read_session_turn(v_profile, v_session, v_lease);
+	reset role;
+	perform pg_temp.base_assert(
+		v_turn ? 'openScenesOps' and jsonb_typeof(v_turn -> 'openScenesOps') = 'null',
+		'1b: openScenesOps returns null when combined size exceeds 96 KiB budget: ' || left(v_turn::text, 300)
+	);
+
+	delete from public.qorpera_surface_changes where session_id = v_session and seq in (3, 4);
+
 	v_key_id := pg_temp.svn_save_key('AQ...svn1', 10000);
 	set local role service_role;
 	v_enqueued := public.qorpera_surface_enqueue_session_run(v_session, v_lease);
