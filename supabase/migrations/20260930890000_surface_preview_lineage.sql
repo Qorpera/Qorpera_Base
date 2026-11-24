@@ -114,6 +114,7 @@ create function public.qorpera_surface_preview_turn_context(
 returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
 declare
+	v_manifest_budget constant integer := 73728;
 	v_max_bytes constant integer := 98304;
 	v_used_bytes integer := 0;
 	v_open_ids uuid[] := '{}'::uuid[];
@@ -123,6 +124,9 @@ declare
 	v_rec record;
 	v_full_item jsonb;
 	v_meta_item jsonb;
+	v_stub_item jsonb;
+	v_stub_paths text[];
+	v_paths_truncated boolean := false;
 	v_rec_item jsonb;
 	v_item_bytes integer;
 	v_meta_bytes integer;
@@ -172,25 +176,49 @@ begin
 				'baseFiles', v_ch.base_files
 			);
 			v_item_bytes := octet_length(v_full_item::text);
-			if v_used_bytes + v_item_bytes <= v_max_bytes then
+			if v_used_bytes + v_item_bytes <= v_manifest_budget then
 				v_changes := v_changes || jsonb_build_array(v_full_item);
 				v_used_bytes := v_used_bytes + v_item_bytes;
 				continue;
 			end if;
 			v_full_item := v_meta_item || jsonb_build_object('patchManifest', v_ch.patch_manifest);
 			v_item_bytes := octet_length(v_full_item::text);
-			if v_used_bytes + v_item_bytes <= v_max_bytes then
+			if v_used_bytes + v_item_bytes <= v_manifest_budget then
 				v_changes := v_changes || jsonb_build_array(v_full_item);
 				v_used_bytes := v_used_bytes + v_item_bytes;
 				continue;
 			end if;
-			v_meta_item := v_meta_item || jsonb_build_object('truncated', true);
+			v_meta_item := v_meta_item || jsonb_build_object(
+				'truncated', true,
+				'pathsTruncated', coalesce(cardinality(v_ch.affected_paths), 0) > 200
+			);
 		end if;
 
 		v_meta_bytes := octet_length(v_meta_item::text);
 		if v_used_bytes + v_meta_bytes <= v_max_bytes then
 			v_changes := v_changes || jsonb_build_array(v_meta_item);
 			v_used_bytes := v_used_bytes + v_meta_bytes;
+		else
+			select
+				coalesce(array_agg(left(p, 128) order by ord), '{}'::text[]),
+				coalesce(bool_or(char_length(p) > 128), false) or coalesce(cardinality(v_ch.affected_paths), 0) > 32
+			into v_stub_paths, v_paths_truncated
+			from unnest(coalesce(v_ch.affected_paths[1:32], '{}'::text[])) with ordinality as u(p, ord);
+
+			v_stub_item := jsonb_build_object(
+				'changeId', v_ch.id,
+				'title', left(coalesce(v_ch.title, ''), 80),
+				'summary', '',
+				'kind', v_ch.kind,
+				'parentSha', v_ch.parent_sha,
+				'headSha', v_ch.head_sha,
+				'affectedPaths', to_jsonb(coalesce(v_stub_paths, '{}'::text[])),
+				'previewBaseChangeIds', '[]'::jsonb,
+				'truncated', true,
+				'pathsTruncated', coalesce(v_paths_truncated, false)
+			);
+			v_changes := v_changes || jsonb_build_array(v_stub_item);
+			v_used_bytes := v_used_bytes + octet_length(v_stub_item::text);
 		end if;
 	end loop;
 

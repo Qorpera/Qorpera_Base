@@ -580,4 +580,104 @@ describe("surface preview overlay and lineage turn context", () => {
 			"tokens.json": '{"accent":"#222222"}\n',
 		});
 	});
+
+	it("skips paths touched by truncated stubs and drops overlay completely when pathsTruncated is set", async () => {
+		const c1 = randomUUID();
+		const c2 = randomUUID();
+		const liveReader = {
+			async readText(path: string) {
+				if (path === "identity/tokens.json") return { text: '{"accent":"#222222"}\n' };
+				if (path === "identity/keep.md") return { text: "Live keep\n" };
+				return null;
+			},
+		};
+		const signal = new AbortController().signal;
+
+		const parsedWithStub = parseSurfacePreviewContext({
+			previewBaseChanges: [
+				{
+					changeId: c1,
+					title: "Full change",
+					summary: "Updates tokens and keep",
+					kind: "folder_patch",
+					affectedPaths: ["tokens.json", "keep.md"],
+					previewBaseChangeIds: [],
+					patchManifest: [
+						{ op: "write_text", path: "tokens.json", content: '{"accent":"#0070f3"}\n' },
+						{ op: "write_text", path: "keep.md", content: "Preview keep\n" },
+					],
+				},
+				{
+					changeId: c2,
+					title: "Truncated stub",
+					summary: "",
+					kind: "folder_patch",
+					affectedPaths: ["tokens.json"],
+					previewBaseChangeIds: [],
+					truncated: true,
+					pathsTruncated: false,
+				},
+			],
+			previewReconciliations: [],
+		});
+
+		const partialOverlay = createSurfaceFolderPreviewOverlay({
+			folderRoot: "identity",
+			previewBaseChanges: parsedWithStub.previewBaseChanges,
+			liveReader,
+		});
+		const partialStatus = await partialOverlay!.prepare(signal);
+		expect(partialStatus).toEqual({ status: "ready", skippedPaths: ["identity/tokens.json"] });
+		expect(await partialOverlay!.lookup("identity/tokens.json", signal)).toBeNull();
+		const keep = await partialOverlay!.lookup("identity/keep.md", signal);
+		expect(keep?.kind).toBe("file");
+		if (keep?.kind === "file") expect(keep.content).toBe("Preview keep\n");
+
+		const parsedWithTruncatedPaths = parseSurfacePreviewContext({
+			previewBaseChanges: [
+				{
+					changeId: c1,
+					title: "Full change",
+					summary: "Updates keep",
+					kind: "folder_patch",
+					affectedPaths: ["keep.md"],
+					previewBaseChangeIds: [],
+					patchManifest: [{ op: "write_text", path: "keep.md", content: "Preview keep\n" }],
+				},
+				{
+					changeId: c2,
+					title: "Truncated many paths",
+					summary: "",
+					kind: "folder_patch",
+					affectedPaths: ["tokens.json"],
+					previewBaseChangeIds: [],
+					truncated: true,
+					pathsTruncated: true,
+				},
+			],
+			previewReconciliations: [],
+		});
+		const droppedOverlay = createSurfaceFolderPreviewOverlay({
+			folderRoot: "identity",
+			previewBaseChanges: parsedWithTruncatedPaths.previewBaseChanges,
+			liveReader,
+		});
+		const droppedStatus = await droppedOverlay!.prepare(signal);
+		expect(droppedStatus).toEqual({ status: "truncated", skippedPaths: [] });
+		expect(await droppedOverlay!.lookup("identity/keep.md", signal)).toBeNull();
+
+		const brief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "identity",
+			surfaceTitle: "Identity",
+			sourceKind: "folder",
+			briefMarkdown: null,
+			folderRoot: "identity",
+			previewBaseChanges: parsedWithTruncatedPaths.previewBaseChanges,
+			previewOverlayStatus: droppedStatus.status,
+			previewSkippedPaths: droppedStatus.skippedPaths,
+		});
+		expect(brief).toContain("exceeded the turn context budget");
+		expect(brief).toContain("reading the current published live files instead");
+	});
 });

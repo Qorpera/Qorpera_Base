@@ -131,7 +131,7 @@ export interface SurfaceTurnBriefInput {
 	readonly conflictPaths?: readonly string[] | null;
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
-	readonly previewOverlayStatus?: "ready" | "conflicted" | null;
+	readonly previewOverlayStatus?: "ready" | "conflicted" | "truncated" | null;
 	readonly previewSkippedPaths?: readonly string[] | null;
 	readonly chainMode?: boolean;
 	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
@@ -290,7 +290,8 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		const folderIntro =
 			binding.previewOverlayStatus === "conflicted"
 				? `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. Those preview changes currently overlap and are reconciling, so \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` are reading the current published live files instead of a partial preview. Keep your edits atomic and touch only the files needed for this request.`
-				: binding.previewOverlayStatus == null && truncatedCount > 0
+				: binding.previewOverlayStatus === "truncated" ||
+						(binding.previewOverlayStatus == null && truncatedCount > 0)
 					? `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. Their patch manifests exceeded the turn context budget, so \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` are reading the current published live files instead. Keep your edits atomic and touch only the files needed for this request.`
 					: `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` already reflect this preview state. Build cleanly on top of what is visible in Preview, and touch only the files needed for this request.${
 							skippedPaths.length > 0

@@ -28,6 +28,7 @@ export interface SurfacePreviewBaseChange {
 	readonly patchManifest: readonly StudioPatchOp[] | null;
 	readonly baseFiles: Readonly<Record<string, string | null>> | null;
 	readonly truncated?: boolean;
+	readonly pathsTruncated?: boolean;
 }
 
 export interface SurfaceOmittedBaseChange {
@@ -71,7 +72,7 @@ export interface CloudFolderPreviewOverlayList {
 }
 
 export interface CloudFolderPreviewOverlayStatus {
-	readonly status: "ready" | "conflicted";
+	readonly status: "ready" | "conflicted" | "truncated";
 	readonly skippedPaths: readonly string[];
 }
 
@@ -146,6 +147,7 @@ export function parseSurfacePreviewContext(raw: unknown): SurfacePreviewContext 
 				patchManifest: parseOptionalManifest(item.patchManifest, "previewBaseChange.patchManifest"),
 				baseFiles: parseOptionalBaseFileMap(item.baseFiles),
 				...(item.truncated === true ? { truncated: true } : {}),
+				...(item.pathsTruncated === true ? { pathsTruncated: true } : {}),
 			});
 		}
 	}
@@ -185,7 +187,7 @@ export function parseSurfaceOmittedBaseChanges(raw: unknown): SurfaceOmittedBase
 }
 
 interface OverlaySnapshot {
-	readonly status: "ready" | "conflicted";
+	readonly status: "ready" | "conflicted" | "truncated";
 	readonly entries: ReadonlyMap<string, CloudFolderPreviewOverlayLookup>;
 	readonly virtualFolders: ReadonlyMap<string, string>;
 	readonly skippedPaths: readonly string[];
@@ -232,8 +234,12 @@ export function createSurfaceFolderPreviewOverlay(options: {
 	}
 	const patchChanges: StudioPatchChange[] = [];
 	const truncatedByKey = new Map<string, string>();
+	let hasTruncatedPaths = false;
 	for (const change of options.previewBaseChanges) {
 		if (change.kind !== "folder_patch") continue;
+		if (change.pathsTruncated) {
+			hasTruncatedPaths = true;
+		}
 		if (!change.patchManifest || change.patchManifest.length === 0) {
 			if (change.truncated) {
 				for (const rawPath of change.affectedPaths) {
@@ -270,6 +276,14 @@ export function createSurfaceFolderPreviewOverlay(options: {
 	const loadSnapshot = (signal: AbortSignal): Promise<OverlaySnapshot> => {
 		if (snapshotPromise) return snapshotPromise;
 		const promise = (async (): Promise<OverlaySnapshot> => {
+			if (hasTruncatedPaths) {
+				return {
+					status: "truncated",
+					entries: new Map(),
+					virtualFolders: new Map(),
+					skippedPaths: [],
+				};
+			}
 			const liveBaseFiles: Record<string, string> = {};
 			const unreadableByKey = new Map<string, string>(truncatedByKey);
 			let totalChars = 0;

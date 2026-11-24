@@ -51,6 +51,11 @@ declare
 	v_priv_leaks integer;
 	v_big_text text;
 	v_turn_bytes integer;
+	v_s_fill uuid;
+	v_c_fill uuid;
+	v_s_tail uuid;
+	v_c_tail uuid;
+	v_s_over uuid;
 	v_f2_surface uuid;
 	v_f2_s1 uuid;
 	v_f2_s2 uuid;
@@ -310,6 +315,48 @@ begin
 			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 0 ->> 'truncated') = 'true'
 			and not ((v_turn -> 'previewContext' -> 'previewBaseChanges' -> 0) ? 'patchManifest'),
 		'Oversized preview patch must truncate manifest while keeping metadata under 96 KiB budget'
+	);
+
+	perform pg_temp.spl_as(v_owner);
+	v_s_fill := (public.qorpera_start_surface_session(v_surface, 'Fill budget') ->> 'id')::uuid;
+	perform pg_temp.as_service();
+	v_c_fill := (public.qorpera_record_surface_change(
+		v_s_fill, 'Fill budget', 'Fills manifest budget', 'folder_patch', null, null, '{}'::uuid[],
+		array['fill.md'], null,
+		jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'fill.md', 'content', repeat('f', 68000)))),
+		true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_as(v_owner);
+	v_s_tail := (public.qorpera_start_surface_session(v_surface, 'Tail change') ->> 'id')::uuid;
+	perform pg_temp.as_service();
+	v_c_tail := (public.qorpera_record_surface_change(
+		v_s_tail, 'Tail change', 'Many long paths', 'folder_patch', null, null, '{}'::uuid[],
+		(select array_agg('dir/' || repeat('p', 900) || '-' || g::text || '.md' order by g) from generate_series(1, 35) as g),
+		null,
+		jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'tail.json', 'content', '{"accent":"#123456"}' || E'\n'))),
+		true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_as(v_owner);
+	v_s_over := (public.qorpera_start_surface_session(
+		v_surface, 'Over budget read', null, 'member', null,
+		jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_c_fill, v_c_tail))
+	) ->> 'id')::uuid;
+	perform pg_temp.as_service();
+	v_lease := extensions.gen_random_uuid();
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease, lease_expires_at = clock_timestamp() + interval '10 minutes'
+	where id = v_s_over;
+	v_turn := public.qorpera_native_surface_read_session_turn(v_profile, v_s_over, v_lease);
+	perform pg_temp.spl_assert(
+		jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges') = 2
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'changeId')::uuid = v_c_tail
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'truncated') = 'true'
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'pathsTruncated') = 'true'
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'summary') = ''
+			and jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 -> 'affectedPaths') = 32,
+		'Exhausted 96 KiB budget must still emit compact truncated stub with pathsTruncated=true instead of dropping base change'
 	);
 
 	perform pg_temp.spl_as(v_owner);
