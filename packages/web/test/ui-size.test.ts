@@ -132,14 +132,14 @@ describe("interface size", () => {
 		rail = new RailLayout(frame, aside);
 		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(527.8);
 		setUiSizePreference("small");
-		expect(aside.style.getPropertyValue("--rail-width")).toBe("502px");
+		expect(aside.style.getPropertyValue("--rail-width")).toBe("452px");
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("518");
+		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBe("518");
 		setUiSizePreference("big");
 		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(673.4);
 		setUiSizePreference("small");
 		rail.el.dispatchEvent(new MouseEvent("dblclick"));
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBeNull();
+		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBeNull();
 		setUiSizePreference("big");
 		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(527.8);
 		vi.stubGlobal("innerWidth", 900);

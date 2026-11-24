@@ -63,7 +63,7 @@ describe("the app's scale in scripts", () => {
 			rail.el.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1 }));
 			expect(rail.el.getAttribute("aria-valuenow")).toBe("400");
 			expect(aside.style.getPropertyValue("--rail-width")).toBe("500px");
-			expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("400");
+			expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBe("400");
 		} finally {
 			rail.dispose();
 		}

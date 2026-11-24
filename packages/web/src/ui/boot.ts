@@ -10,7 +10,7 @@ import { parseRoute } from "../app/router.ts";
 export const STORED_SESSION_KEY = "qorpera-web-auth/v1";
 /** RailLayout's stored width and the two widths it takes besides its default (ui/rail-layout.ts STORAGE_KEY, COMPACT,
  * MIN); the defaults and the 44% cap are in styles/boot.css. */
-export const RAIL_WIDTH_KEY = "qorpera.web.rail-width.v5";
+export const RAIL_WIDTH_KEY = "qorpera.web.rail-width.v6";
 export const RAIL_COMPACT = 80;
 export const RAIL_MIN = 240;
 /** What a sign-in callback carries (app/auth.ts SIGN_IN_CALLBACK_FIELDS); Auth finishes it before the app knows which

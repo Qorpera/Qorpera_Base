@@ -8,15 +8,15 @@ import { uiScale } from "./scale.ts";
  * app's scale. Exported for index.html's static rail (ui/boot.ts, styles/boot.css), which a test ties to these. */
 export const COMPACT = 80;
 export const MIN = 240;
-/** The earlier 369px made a tenth wider (Jonas, 9 Nov 2026; a fifth was too much). 369 was 456 made a tenth narrower twice. */
-export const DEFAULT = 406;
-/** The Small size's default, a tenth wider with DEFAULT (was 456). Explicit resized widths span both sizes. */
-export const SMALL_DEFAULT = 502;
+/** 406px made a tenth thinner (Jonas, 24 Nov 2026); 406 was 369 made a tenth wider (9 Nov). */
+export const DEFAULT = 365;
+/** The Small size's default, a tenth thinner with DEFAULT (was 502). Explicit resized widths span both sizes. */
+export const SMALL_DEFAULT = 452;
 /** The rail may take at most 44% of the window: the earlier two fifths made a tenth wider with the default. */
 export const MAX_SHARE = 0.44;
-/** Version 5 came with the wider default (443px, then 406px before it shipped): widths stored before it are not carried over,
+/** Version 6 came with the thinner default (365px): widths stored before it are not carried over,
  * so every member starts once from the new default. */
-export const STORAGE_KEY = "qorpera.web.rail-width.v5";
+export const STORAGE_KEY = "qorpera.web.rail-width.v6";
 export const HIDDEN_STORAGE_KEY = "qorpera.web.rail-hidden.v1";
 
 /** Two fifths of the window, but never below the narrowest expanded rail. */
