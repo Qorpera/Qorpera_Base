@@ -145,6 +145,8 @@ const companyCalls = mode === "company-office"
 		]
 	: mode === "company-surface-session"
 	? [
+			{ tool: "read_skill", arguments: { name: "identity-studio" } },
+			{ tool: "read_skill", arguments: { name: "identity-studio", scope: "member" } },
 			{
 				tool: "stage_surface_patch",
 				arguments: {

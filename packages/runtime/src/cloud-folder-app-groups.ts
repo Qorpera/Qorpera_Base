@@ -91,7 +91,6 @@ const TITLES: Record<string, string> = {
 	"page:members": "Members",
 	"page:bank": "Bank",
 	concepts: "Concepts",
-	sites: "Sites",
 	"whats-new": "What's new",
 };
 
@@ -133,9 +132,9 @@ interface Company {
 }
 
 export const ORGANIZE_APPS_DESCRIPTION = [
-	"Sort the company's apps into groups in the apps drawer, where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, the file apps/groups.md: no member approval is needed, and every member sees a change at once.",
+	"Sort the company's apps into groups in the apps drawer, where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, the file apps/groups.md: no member approval is needed, and every member sees a change at once.",
 	"Actions:",
-	"- list: the layout as the drawer shows it, one line each in the file's own form: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) with its title, in its group; the groups by id and name, with how many apps they hold and their colour; the loose entries last. A long layout comes in pages: call again with the cursor it answers. An app that is not posted shows only once it is posted.",
+	"- list: the layout as the drawer shows it, one line each in the file's own form: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new) with its title, in its group; the groups by id and name, with how many apps they hold and their colour; the loose entries last. A long layout comes in pages: call again with the cursor it answers. An app that is not posted shows only once it is posted.",
 	"- create_group: a group called name, answering its id (a group of that name already there is that group); parent puts it inside another group, items moves those keys (or group:<id>) into it, in order, and colour gives it a colour.",
 	"- rename_group: group gets name; its id stays. colour_group: group gets colour, or none with null. ungroup: group goes, and what was in it stands where it stood.",
 	"- move: item (a key, or group:<id>) goes into group, or loose with group null, before the entry named by before, else last.",
@@ -158,7 +157,7 @@ const entryRef = (value: unknown, label: string): string => {
 		return `${APP_GROUP_KEY_PREFIX}${groupRef(value, label)}`;
 	if (typeof value !== "string" || !isAppDrawerKey(value))
 		throw new CloudToolArgumentRefusal(
-			`${label} must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) or group:<id>`,
+			`${label} must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new) or group:<id>`,
 		);
 	return value;
 };
@@ -491,11 +490,8 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 	};
 }
 
-/** Whether the company has a drawer key. Sites is the company's while it has a published site, and What's new (own
- * code storage, step 4) while a repository kept in Qorpera has a site; this tool reads neither, so both are taken, and
- * the drawer leaves them out while there is none. */
 function has(company: Company, key: string): boolean {
-	return key === "sites" || key === "whats-new" || company.have.includes(key);
+	return key === "whats-new" || company.have.includes(key);
 }
 
 function refuseKey(company: Company, key: string): never {
@@ -802,8 +798,6 @@ function listPage(items: readonly Node[], company: Company, cursor: number): str
 /** A title as one line of a list. */
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
-/** A loose entry the Co-Founder's tidy pass counts: a posted app no member retired (pages, Concepts, Sites and What's
- * new are the drawer's own; a retired app is in no member's drawer). */
 const looseCounts = (key: string, company: Company) =>
 	key.startsWith("app:") && !company.unposted.has(key) && !company.retired.has(key);
 

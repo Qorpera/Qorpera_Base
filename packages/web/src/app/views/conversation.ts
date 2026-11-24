@@ -93,6 +93,7 @@ import {
 	answersInteraction,
 	type CompanyController,
 	type ConversationState,
+	sitePublicAnswer,
 } from "../company.ts";
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
@@ -2197,8 +2198,12 @@ export class ConversationView {
 		this.#ready?.update();
 		const sites = this.#actions.companySites;
 		if (!this.#siteCards && sites && (company.siteCount ?? 0) > 0)
-			this.#siteCards = new ThreadSites(sites.client, sites.canManage, this.#company.profile.profileId, signal, () =>
-				this.#redrawItems(),
+			this.#siteCards = new ThreadSites(
+				sites.client,
+				sites.canManage,
+				signal,
+				() => this.#redrawItems(),
+				(siteId) => sitePublicAnswer(this.#company.store.get(), siteId),
 			);
 		this.#siteCards?.update();
 	}

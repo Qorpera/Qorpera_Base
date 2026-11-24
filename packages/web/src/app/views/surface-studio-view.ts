@@ -12,6 +12,9 @@ import {
 	type SurfaceSummary,
 	sharedAssetsConsumedBy,
 	sharedAssetsProducedBy,
+	surfaceFilesHaveModel,
+	surfaceLegacyModelKey,
+	surfaceStarterKind,
 } from "@qorpera/contracts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
@@ -32,7 +35,6 @@ import {
 	type SurfaceUpdatePhase,
 } from "../surfaces-store.ts";
 import {
-	isPlainRecord,
 	parseJsonObject,
 	readableName,
 	type StudioSectionTask,
@@ -50,11 +52,10 @@ import {
 	SVG_FILE_RE,
 	svgDataUrl,
 } from "./surface-blocks/files.ts";
-import { collectSpecs, MODEL_GROUPS, type SpecEntry } from "./surface-blocks/specs.ts";
+import { collectSpecs, type SpecEntry } from "./surface-blocks/specs.ts";
 import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
-import { pickStudioModel } from "./surface-studio-model.ts";
 
 export interface SurfaceStudioOptions {
 	readonly store: SurfacesStore;
@@ -218,15 +219,6 @@ export function prepareStudioHtmlPreview(
 	return frameParsedPage(doc);
 }
 
-function surfaceStarter(
-	isIdentity: boolean,
-	lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"],
-	hasModel: boolean,
-): SurfaceStarterKind {
-	if (isIdentity) return "identity";
-	return lookKind === "product" || hasModel ? "product" : "custom";
-}
-
 function updatingLabel(phase: SurfaceUpdatePhase): string {
 	if (phase === "publishing") return t("Publishing…");
 	if (phase === "merging") return t("Applying…");
@@ -282,7 +274,7 @@ function parseSingleStudioFile(
 		if (!parsed) return;
 		const baseParsed = parseJsonObject(baseContent);
 		if (!out.legacyModel) {
-			const key = Object.keys(parsed).find((name) => MODEL_GROUPS.has(name.toLowerCase()));
+			const key = surfaceLegacyModelKey(parsed);
 			if (key) out.legacyModel = { value: parsed[key], base: baseParsed?.[key] };
 		}
 		if (!compare) return;
@@ -512,10 +504,13 @@ export class SurfaceStudioView {
 		const look = store.lookOf(surface);
 		const lookKind = look.kind;
 		const isIdentitySurface =
-			surface.isGlobal === true ||
-			lookKind === "identity" ||
-			surface.slug === "identity" ||
-			Object.keys(baseFiles).some((path) => path.startsWith("identity/"));
+			surfaceStarterKind({
+				lookKind,
+				slug: surface.slug,
+				isGlobal: surface.isGlobal === true,
+				paths: Object.keys(baseFiles),
+				hasModel: false,
+			}) === "identity";
 		const identityTokens = store.companyIdentityTokens();
 		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
@@ -606,7 +601,6 @@ export class SurfaceStudioView {
 			surface,
 			look,
 			lookKind,
-			isIdentitySurface,
 			identityTokens,
 			workspace,
 			baseFiles,
@@ -642,7 +636,6 @@ export class SurfaceStudioView {
 		readonly surface: SurfaceSummary;
 		readonly look: ReturnType<SurfacesStore["lookOf"]>;
 		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-		readonly isIdentitySurface: boolean;
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
@@ -754,7 +747,6 @@ export class SurfaceStudioView {
 		readonly surface: SurfaceSummary;
 		readonly look: ReturnType<SurfacesStore["lookOf"]>;
 		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-		readonly isIdentitySurface: boolean;
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
@@ -829,7 +821,6 @@ export class SurfaceStudioView {
 			readonly surface: SurfaceSummary;
 			readonly look: ReturnType<SurfacesStore["lookOf"]>;
 			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-			readonly isIdentitySurface: boolean;
 			readonly identityTokens: CompiledIdentityTokens | null;
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
@@ -856,7 +847,6 @@ export class SurfaceStudioView {
 			surface,
 			look,
 			lookKind,
-			isIdentitySurface,
 			identityTokens,
 			workspace,
 			baseFiles,
@@ -930,13 +920,14 @@ export class SurfaceStudioView {
 		const allChangedPaths = [...new Set([...Object.keys(baseFiles), ...filePaths])]
 			.sort()
 			.filter((path) => baseFiles[path] !== files[path]);
-		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
-		const modelFile = isIdentity ? undefined : pickStudioModel(files, composition.binaries, surface.folderRoot);
-		const starter = surfaceStarter(
-			isIdentity,
+		const starter = surfaceStarterKind({
 			lookKind,
-			isPlainRecord(legacyModel?.value) || modelFile !== undefined,
-		);
+			slug: surface.slug,
+			isGlobal: surface.isGlobal === true,
+			paths: [...Object.keys(baseFiles), ...filePaths],
+			hasModel: surfaceFilesHaveModel(files, Object.keys(composition.binaries)),
+		});
+		const isIdentity = starter === "identity";
 
 		if (filePaths.length === 0 && (mode !== "compare" || allChangedPaths.length === 0)) {
 			if (initialLoading) {

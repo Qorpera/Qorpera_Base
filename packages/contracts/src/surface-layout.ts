@@ -1385,3 +1385,33 @@ export const SURFACE_STARTER_LAYOUTS: Readonly<Record<SurfaceStarterKind, Surfac
 export function starterSurfaceLayout(kind: SurfaceStarterKind): SurfaceLayout {
 	return structuredClone(SURFACE_STARTER_LAYOUTS[kind]);
 }
+
+export const SURFACE_REPORT_FORMAT =
+	'A report file (*.report.json) is {"category","headline","subtitle","author","date","readingTime","keyMetrics":[{"label","value","delta"}],"sections":[{"id","kicker","heading","paragraphs":["..."],"blocks":[...]}]}. Section blocks: bar_chart {heading, subtitle, max, items:[{label, value, display, note, highlight}]}; line_chart {heading, subtitle, xLabels, series:[{name, color, values}]}; table {heading, caption, columns, rows, highlightRow}; callout {tone:"thesis"|"decision"|"tradeoff", heading, body, bullets}; quote {text, attribution}; figure {heading, caption, panels:[{label, heading, body, accent}]}.';
+
+const SURFACE_OBJECT_FORMAT = `A stage_3d model file (default ${SURFACE_STAGE_DEFAULT_MODEL}) is {"model":"<name>.glb","view":{"yaw","pitch"},"parts":[{"id","node","pull":[x,y,z]}],"tint":["<material>"]}, the .glb beside it. With no .glb in the folder, a top-level "model" object in a JSON file, {"kind":"headband"|"device","dimensions","layers":["..."]}, draws a stand-in tinted by the tab's swatch_row.`;
+
+const SURFACE_TOKENS_FORMAT =
+	'The company look is /identity/tokens.json: {"colors":{"<name>":"#rrggbb"},"typography":{"<role>":"<family>"},"radii":{"<name>":"<length>"},"spacing":{"<name>":"<length>"}}. /identity/tokens.css is compiled from it (--q-color-*, --q-font-*, --q-radius-*, --q-space-*); never write it by hand.';
+
+const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>> = {
+	stage_3d: SURFACE_OBJECT_FORMAT,
+	palette: SURFACE_TOKENS_FORMAT,
+	type_specimen: SURFACE_TOKENS_FORMAT,
+	report: SURFACE_REPORT_FORMAT,
+	module: SURFACE_TOKENS_FORMAT,
+};
+
+export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
+	const used = new Set(
+		layout.tabs
+			.flatMap((tab) => tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])))
+			.map((block) => block.type),
+	);
+	const notes: string[] = [];
+	for (const type of SURFACE_BLOCK_TYPES) {
+		const note = SURFACE_BLOCK_FORMATS[type];
+		if (note && used.has(type) && !notes.includes(note)) notes.push(note);
+	}
+	return notes;
+}

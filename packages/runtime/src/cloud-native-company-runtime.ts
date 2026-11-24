@@ -205,7 +205,12 @@ import { type ClaudeLoginRunClient, type GeminiKeyRunClient, openGeminiKeyForRun
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
-import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
+import {
+	cloudReadOnlySkillTools,
+	cloudSkillTools,
+	composeCloudAgentSkills,
+	unavailableCloudAgentSkills,
+} from "./cloud-skill-tools.ts";
 import {
 	parseNativeSurfaceSessionImages,
 	readSurfaceMemberImage,
@@ -213,14 +218,17 @@ import {
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
 import {
+	cloudStudioFileReader,
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
 	extractPointToChangeTarget,
 	loadSurfaceIdentityContext,
 	loadSurfaceSharedAssets,
+	openSurfaceLayoutOps,
 	runSurfaceSessionTurn,
 	type SurfaceSessionTurnExecutionOutcome,
 	type SurfaceSessionTurnInput,
+	surfaceArchetypeOf,
 } from "./cloud-surface-session-runner.ts";
 import {
 	type CloudSurfaceToolsPort,
@@ -2203,6 +2211,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const surfaceArchetype = surfaceArchetypeOf(sessionTurnRaw.surfaceArchetype);
+		const openLayoutOps = openSurfaceLayoutOps(sessionTurnRaw.openLayoutOps);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const voiceModel =
 			typeof sessionTurnRaw.voiceModel === "string" && sessionTurnRaw.voiceModel.trim()
@@ -2235,6 +2245,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			surfaceSlug,
 			surfaceTitle,
 			...(typeof sessionTurnRaw.surfaceKind === "string" ? { surfaceKind: sessionTurnRaw.surfaceKind } : {}),
+			...(typeof sessionTurnRaw.surfaceIcon === "string" ? { surfaceIcon: sessionTurnRaw.surfaceIcon } : {}),
+			...(typeof sessionTurnRaw.surfaceIsGlobal === "boolean"
+				? { surfaceIsGlobal: sessionTurnRaw.surfaceIsGlobal }
+				: {}),
+			...(surfaceArchetype ? { surfaceArchetype } : {}),
+			...(openLayoutOps ? { openLayoutOps } : {}),
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
@@ -2274,6 +2290,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const completionPort = createControlPlaneSessionCompletionPort(this.#paths, identity.companyId);
 		const leaseRenewalPort = createControlPlaneSessionLeaseRenewalPort(this.#paths, identity.companyId);
 		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		const agentFolders = cloudAgentFolderPlace(context);
+		const notebooks = new CloudFolderNotebooks({
+			folder: folderClient,
+			runId: binding.runId,
+			agentFolder: cloudAgentFolder(identity.companyId, identity.staffAgentId, agentFolders),
+		});
 		const isGeminiRun = context.gemini !== undefined;
 		let geminiSession:
 			| {
@@ -2681,6 +2703,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 
 		const turnResult = await runSurfaceSessionTurn(turnInput, {
 			folder: folderClient,
+			readStudioFiles: cloudStudioFileReader(folderClient),
 			surfaceTools,
 			narrateExplainer: {
 				stageBytes: async (bytes, mediaType, reqSignal) => {
@@ -2747,16 +2770,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					buildTools: (runIdentity, operations) => {
 						const folderTools =
 							turnReq.mode === "folder"
-								? cloudFolderFileTools({
-										folder: folderClient,
-										operations,
-										identity: runIdentity,
-										surfaceFilePolicy: {
-											mode: "surface_worker",
-											writableRoots: turnReq.writableRoots,
-											stagedRoots: turnReq.stagedRoots,
-										},
-									})
+								? [
+										...cloudFolderFileTools({
+											folder: folderClient,
+											operations,
+											identity: runIdentity,
+											surfaceFilePolicy: {
+												mode: "surface_worker",
+												writableRoots: turnReq.writableRoots,
+												stagedRoots: turnReq.stagedRoots,
+											},
+										}),
+										...notebooks.tools(
+											(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
+											operations,
+										),
+									]
 								: cloudFolderFileTools({
 										folder: folderClient,
 										operations,

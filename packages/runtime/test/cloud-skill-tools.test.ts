@@ -11,7 +11,13 @@ import {
 import type { CloudFolderNotebookGateway } from "@qorpera/runtime/cloud-folder-notebooks";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary, MAX_CLOUD_TOOL_RESULT_BYTES } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { cloudSkillRoot, cloudSkillTools, composeCloudAgentSkills } from "@qorpera/runtime/cloud-skill-tools";
+import { CLOUD_PLATFORM_SKILLS } from "@qorpera/runtime/cloud-platform-skills";
+import {
+	cloudReadOnlySkillTools,
+	cloudSkillRoot,
+	cloudSkillTools,
+	composeCloudAgentSkills,
+} from "@qorpera/runtime/cloud-skill-tools";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -127,7 +133,7 @@ function companyFile(initial: Record<string, string> = {}) {
 /** Every agent's folder is its folder name (legacy sweep step C, AF). */
 const PLACE = { core: "folder-v2", handle: "nora" } as const;
 
-async function fixture(initial: Record<string, string> = {}) {
+async function fixture(initial: Record<string, string> = {}, readOnly = false) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		binding,
@@ -151,7 +157,7 @@ async function fixture(initial: Record<string, string> = {}) {
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudSkillTools(store.gateway, run.identity, PLACE),
+		tools: (readOnly ? cloudReadOnlySkillTools : cloudSkillTools)(store.gateway, run.identity, PLACE),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
@@ -600,7 +606,11 @@ describe("skill catalog composition", () => {
 			expect(block.company).toMatchObject({ skills: [], unavailable: "unknown" });
 			// A search still covers the library it can read, and says which one it could not.
 			const found = await f.call("search_skills", {});
-			expect(found).toMatchObject({ total: 1, searched: { agent: 1 }, unavailable: ["company"] });
+			expect(found).toMatchObject({
+				total: 1 + CLOUD_PLATFORM_SKILLS.size,
+				searched: { agent: 1, platform: CLOUD_PLATFORM_SKILLS.size },
+				unavailable: ["company"],
+			});
 			f.store.unlistable.add(f.own);
 			await expect(f.compose()).rejects.toThrow("Company File listing unavailable");
 		} finally {
@@ -725,7 +735,7 @@ describe("refusals and protected libraries", () => {
 				seen.push(...page.skills.map((skill: { name: string }) => skill.name));
 				offset = page.nextOffset;
 			}
-			expect(seen).toHaveLength(6);
+			expect(seen).toHaveLength(6 + CLOUD_PLATFORM_SKILLS.size);
 			let text = "";
 			offset = 0;
 			while (offset !== null) {
@@ -778,5 +788,166 @@ describe("refusals and protected libraries", () => {
 		// One stray CRLF does not turn a whole LF file into CRLF, and a byte order mark never lands in a body.
 		expect(parseCloudSkillFile("---\nname: a\r\ndescription: b\n---\nx\n").newline).toBe("\n");
 		expect(parseCloudSkillFile("\uFEFF# Steps\n").body).toBe("# Steps\n");
+	});
+});
+
+describe("the platform's skills through the skill tools", () => {
+	const product = CLOUD_PLATFORM_SKILLS.get("product-studio")!;
+
+	it("reads a platform skill by name and scope platform, behind an own or company skill of the same name", async () => {
+		const f = await fixture();
+		try {
+			const read = await f.call("read_skill", { name: "product-studio" });
+			expect(read).toMatchObject({
+				state: "found",
+				scope: "platform",
+				path: null,
+				version: product.version,
+				trust: "guidance_not_authority",
+				description: product.description,
+				body: { text: product.body, offset: 0, nextOffset: null },
+			});
+			expect(read).not.toHaveProperty("files");
+			expect(await f.call("read_skill", { name: "product-studio", scope: "platform" })).toMatchObject({
+				scope: "platform",
+				body: { text: product.body },
+			});
+			expect(
+				await f.call("read_skill", { name: "product-studio", offset: 10, version: product.version }),
+			).toMatchObject({ state: "found", body: { offset: 10, text: product.body.slice(10) } });
+			expect(
+				await f.call("read_skill", {
+					name: "product-studio",
+					offset: 10,
+					version: "10000000-0000-4000-8000-000000000001",
+				}),
+			).toMatchObject({ state: "changed", scope: "platform", version: product.version });
+			expect(await f.call("read_skill", { name: "product-studio", scope: "company" })).toMatchObject({
+				state: "not_found",
+			});
+			expect(await f.call("read_skill", { name: "no-such-skill", scope: "platform" })).toMatchObject({
+				state: "not_found",
+			});
+			const reads = f.store.gateway.readTrusted.mock.calls.length;
+			await f.call("read_skill", { name: "product-studio", scope: "platform" });
+			expect(f.store.gateway.readTrusted.mock.calls.length).toBe(reads);
+		} finally {
+			f.run.close();
+		}
+		const shadowed = await fixture({
+			"QorperaOS/skills/product-studio/SKILL.md":
+				"---\nname: product-studio\ndescription: Our way.\n---\n\nLead with the price.\n",
+		});
+		try {
+			expect(await shadowed.call("read_skill", { name: "product-studio" })).toMatchObject({
+				scope: "company",
+				path: "QorperaOS/skills/product-studio/SKILL.md",
+				body: { text: "Lead with the price.\n" },
+			});
+			expect(await shadowed.call("read_skill", { name: "product-studio", scope: "platform" })).toMatchObject({
+				scope: "platform",
+				body: { text: product.body },
+			});
+			shadowed.store.deniedReads.add("QorperaOS/skills/product-studio/SKILL.md");
+			const denied = await shadowed.call("read_skill", { name: "product-studio" });
+			expect(denied).toMatchObject({ state: "no_access", scope: "company" });
+			expect(denied.hint).toContain("can be read with scope platform");
+		} finally {
+			shadowed.run.close();
+		}
+	});
+
+	it("still reads the platform's skill when a library cannot be read, and says which one was not checked", async () => {
+		const f = await fixture();
+		try {
+			f.store.gateway.readTrusted.mockImplementation(async () => {
+				throw new Error("Company File read unavailable");
+			});
+			const read = await f.call("read_skill", { name: "identity-studio" });
+			expect(read).toMatchObject({
+				state: "found",
+				scope: "platform",
+				ownUnavailable: true,
+				companyUnavailable: true,
+				hint: "Your own library and the company library could not be read just now, so a skill of this name there, if any, was not checked.",
+			});
+			const result = await f.boundary.invoke(randomUUID(), "qorpera", "read_skill", {
+				name: "no-such-skill",
+			} as never);
+			expect(result.success).toBe(false);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("lists the platform's skills in a search, after own and company skills on a tie", async () => {
+		const f = await fixture({
+			"QorperaOS/skills/product-studio/SKILL.md":
+				"---\nname: product-studio\ndescription: Our product page.\n---\n\nx\n",
+		});
+		try {
+			const platform = await f.call("search_skills", { scope: "platform" });
+			expect(platform).toMatchObject({ total: CLOUD_PLATFORM_SKILLS.size, searched: { platform: 3 } });
+			expect(platform.skills).toEqual(
+				[...CLOUD_PLATFORM_SKILLS.values()].map((skill) => ({
+					name: skill.name,
+					description: skill.description,
+					scope: "platform",
+				})),
+			);
+			expect(f.store.listTrusted).not.toHaveBeenCalled();
+			const found = await f.call("search_skills", { query: "product-studio" });
+			expect(
+				found.skills.slice(0, 2).map((skill: { name: string; scope: string }) => `${skill.scope}:${skill.name}`),
+			).toEqual(["company:product-studio", "platform:product-studio"]);
+			const company = await f.call("search_skills", { scope: "company" });
+			expect(company.skills.map((skill: { scope: string }) => skill.scope)).toEqual(["company"]);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("gives a read-only run read_skill and search_skills, and never a way to change a skill", async () => {
+		const f = await fixture({}, true);
+		try {
+			expect(cloudReadOnlySkillTools(f.store.gateway, f.run.identity, PLACE).map((tool) => tool.name)).toEqual([
+				"read_skill",
+				"search_skills",
+			]);
+			expect(await f.call("read_skill", { name: "custom-surface" })).toMatchObject({ scope: "platform" });
+			const change = await f.boundary.invoke(randomUUID(), "qorpera", "update_skill", {
+				action: "create",
+				scope: "company",
+				name: "custom-surface",
+				description: "Ours.",
+				body: "Steps.",
+			} as never);
+			expect(change.success).toBe(false);
+			for (const args of [
+				{ name: "custom-surface", scope: "member" },
+				{ name: "Custom Surface" },
+				{ name: "custom-surface", version: "v1" },
+			]) {
+				const refused = await f.boundary.invoke(randomUUID(), "qorpera", "read_skill", args as never);
+				expect(refused.success, JSON.stringify(args)).toBe(false);
+			}
+			expect(f.store.mutate).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+		const full = await fixture();
+		try {
+			const platform = await full.boundary.invoke(randomUUID(), "qorpera", "update_skill", {
+				action: "create",
+				scope: "platform",
+				name: "custom-surface",
+				description: "Ours.",
+				body: "Steps.",
+			} as never);
+			expect(platform.success).toBe(false);
+			expect(full.store.mutate).not.toHaveBeenCalled();
+		} finally {
+			full.run.close();
+		}
 	});
 });

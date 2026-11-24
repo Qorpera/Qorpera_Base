@@ -346,7 +346,8 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   the web never writes; an empty layout leaves no row). The layout is
   `qorpera.member-app-layout/v1` `{places, groups, colours?}` (packages/web/src/cloud/app-groups.ts).
   A place's key is `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`,
-  `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`.
+  `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`. The Sites page is gone (24 Nov 2026):
+  `sites` is still a valid key, and the web draws no tile for it.
   `colours` (since `20260930731000`) maps such a key to one of the agents' palette
   colours (`charcoal`, `brown`, `coral`, `orange`, `gold`, `green`, `teal`, `blue`,
   `purple`, `pink`, `gray`), at most 300; a layout with colours alone is kept.
@@ -1987,7 +1988,9 @@ ends a sign-in; a member's own end when they leave, as their other secrets do. R
 
 Websites the company's agents publish from the company folder (`publish_site`), each at a private link
 `https://sites.qorpera.com/<slug>/` that visitors open with the site's password (`supabase/functions/site-serve`).
-Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until the sites host is routed.
+No page in the app lists them (the Sites page is gone, 24 Nov 2026): a website is managed on its own interface, and an
+app link shows as its card under a message that links it, where owners and admins copy its password. Built switched
+off (`qorpera_site_settings.enabled`) until the sites host is routed.
 
 - `qorpera_list_company_sites(profile)`: `[{schema: "qorpera.company-site/v1", id, slug, title, url, state, source,
   files, bytes, publishedAt, publishedBy, createdAt, passwordChangedAt}]`, newest published first, for any member of
@@ -2040,15 +2043,15 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
 - `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId, slug,
   title, kind, source, takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites"
   otherwise). `hosts` says whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's
-  operators took down (Sites says why: "Qorpera took this site down: <reason>"), else null. Every site of the company,
-  by slug, also a project's site that never went live, which `qorpera_list_company_sites` leaves out: Sites draws the
-  row of such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read leniently: later steps add
-  keys (public sites, own addresses).
+  operators took down, else null (the site's card under a message says "Taken down", with the reason as its line).
+  Every site of the company, by slug, also a project's site that never went live, which `qorpera_list_company_sites`
+  leaves out: the web draws such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read
+  leniently: later steps add keys (public sites, own addresses).
 - A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
   new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted, and a takedown
   sticks until the operator restores it: `qorpera_unpublish_company_site` refuses such a site (55000 "Qorpera took this
   site down, so it stays as it is until Qorpera restores it. If you think this is wrong, tell us with Feedback in your
-  menu.", nothing written; Sites offers no menu for its row), `qorpera_delete_hosted_profile` refuses while any site
+  menu.", nothing written; the web no longer calls it), `qorpera_delete_hosted_profile` refuses while any site
   of the company is down (55000 "Qorpera took one of this company's sites down, so the company can't be deleted until
   Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu."), a deletion asked before
   waits, and its name is never free to another company. Only the operator takes a site down or restores it.
@@ -2153,7 +2156,8 @@ makes the interface's website not public in the same transaction, when the websi
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
 website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, or at
-`https://<slug>.qorpera.com/` once hosts are on, behind its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+`https://<slug>.qorpera.com/` once hosts are on; since `20260930881000` a website has no password, and until an owner or
+admin makes it public with Go live, everyone outside the company sees "Not live yet"), and only an owner or admin puts a version live, or goes back to the one before, on
 the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,

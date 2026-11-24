@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { SitesView } from "../src/app/views/settings-sites.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import { parseSitePreviewAnswer } from "../src/cloud/releases.ts";
 import {
@@ -10,16 +9,8 @@ import {
 	parseAddedSiteDomain,
 	parseCompanySiteHostingState,
 	validateCustomDomainInput,
-	type WebSiteHosting,
 } from "../src/cloud/site-hosting.ts";
-import {
-	type CompanySite,
-	createWebSites,
-	parseCompanySite,
-	parseSiteMemberPass,
-	siteOfLink,
-} from "../src/cloud/sites.ts";
-import { settle } from "./fixtures.ts";
+import { createWebSites, parseCompanySite, parseSiteMemberPass, siteOfLink } from "../src/cloud/sites.ts";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const SITE_ID = "22222222-2222-4222-8222-222222222222";
@@ -193,155 +184,6 @@ describe("site-hosting", () => {
 		expect(() => parseAddedSiteDomain({ schema: "wrong" })).toThrow();
 	});
 
-	it("renders public badge, custom domains, visibility toggle, and apex DNS guide in SitesView", async () => {
-		const site: CompanySite = {
-			id: SITE_ID,
-			slug: "nordic-shop",
-			title: "Nordic Shop",
-			kind: "files",
-			url: "https://nordic-shop.qorpera.com/",
-			state: "live",
-			source: "code/company/nordic-shop",
-			files: 12,
-			bytes: 4096,
-			publishedAt: "2026-11-21T19:00:00Z",
-			publishedBy: null,
-			createdAt: "2026-11-21T18:00:00Z",
-			passwordChangedAt: "2026-11-21T18:00:00Z",
-			machine: null,
-			port: null,
-		};
-		const setPublic = vi.fn(async () => false);
-		const addDomain = vi.fn(async () => ({
-			id: DOMAIN_ID,
-			siteId: SITE_ID,
-			hostname: "nybutik.dk",
-			isApex: true,
-			isPrimary: false,
-			status: "pending_dns" as const,
-			verificationToken: "c".repeat(32),
-			dns: {
-				recordType: "A" as const,
-				ipv4: "93.164.62.162",
-				ipv6: null,
-				cnameTarget: "sites.qorpera.site",
-				txtHost: "_qorpera.nybutik.dk",
-				txtValue: `qorpera-verify=${"c".repeat(32)}`,
-			},
-		}));
-		const setPrimaryDomain = vi.fn(async () => "www.minbutik.dk");
-		const removeDomain = vi.fn(async () => true);
-		const recheckDomain = vi.fn(async () => "pending_dns" as const);
-		const PENDING_DOMAIN_ID = "55555555-5555-4555-8555-555555555555";
-		const hosting: WebSiteHosting = {
-			read: vi.fn(async () => ({
-				hostsDomain: "qorpera.site",
-				hostsEnabled: true,
-				publicEnabled: true,
-				domainsEnabled: true,
-				edgeIpv4: "93.164.62.162",
-				edgeIpv6: null,
-				edgeCnameTarget: "sites.qorpera.site",
-				sites: new Map([
-					[
-						SITE_ID,
-						{
-							siteId: SITE_ID,
-							slug: "nordic-shop",
-							isPublic: true,
-							deploymentKind: "hybrid" as const,
-							storageMode: "blob" as const,
-							liveDeploymentId: DEPLOYMENT_ID,
-							domains: [
-								{
-									id: DOMAIN_ID,
-									hostname: "www.minbutik.dk",
-									isApex: false,
-									isPrimary: false,
-									status: "dns_verified" as const,
-									verificationToken: "a".repeat(32),
-									lastCheckedAt: null,
-									verifiedAt: "2026-11-21T19:00:00Z",
-									tlsActiveAt: null,
-									lastError: null,
-								},
-								{
-									id: PENDING_DOMAIN_ID,
-									hostname: "ny.minbutik.dk",
-									isApex: false,
-									isPrimary: false,
-									status: "pending_dns" as const,
-									verificationToken: "d".repeat(32),
-									lastCheckedAt: null,
-									verifiedAt: null,
-									tlsActiveAt: null,
-									lastError: null,
-								},
-							],
-						},
-					],
-				]),
-			})),
-			setPublic,
-			addDomain,
-			removeDomain,
-			setPrimaryDomain,
-			recheckDomain,
-		};
-
-		const ac = new AbortController();
-		const view = new SitesView(
-			{
-				list: async () => [site],
-				password: async () => ({ siteId: SITE_ID, password: "pw", changedAt: site.passwordChangedAt }),
-				setPassword: async () => ({ siteId: SITE_ID, password: "pw", changedAt: site.passwordChangedAt }),
-				unpublish: async () => true,
-			},
-			ac.signal,
-			{ hosting },
-		);
-		document.body.append(view.el);
-		await settle();
-
-		expect(view.el.querySelector(`[data-site-public="${SITE_ID}"]`)?.textContent).toBe("Public");
-		expect(view.el.querySelector('[data-site-kind="hybrid"]')?.textContent).toBe("Hybrid");
-		const chip = view.el.querySelector('[data-domain="www.minbutik.dk"]');
-		expect(chip?.textContent).toContain("DNS verified");
-		expect(chip?.querySelector<HTMLAnchorElement>("a.site-domain-link")?.href).toBe("https://www.minbutik.dk/");
-
-		const pendingChip = view.el.querySelector('[data-domain="ny.minbutik.dk"]');
-		const pendingButtons = [...(pendingChip?.querySelectorAll("button") ?? [])];
-		pendingButtons.find((b) => b.textContent === "Check DNS")?.click();
-		await settle();
-		expect(recheckDomain).toHaveBeenCalledWith(PENDING_DOMAIN_ID, expect.any(AbortSignal));
-
-		const buttons = [...(view.el.querySelector('[data-domain="www.minbutik.dk"]')?.querySelectorAll("button") ?? [])];
-		buttons.find((b) => b.textContent === "Set as primary")?.click();
-		await settle();
-		expect(setPrimaryDomain).toHaveBeenCalledWith(DOMAIN_ID, expect.any(AbortSignal));
-
-		const more = view.el.querySelector<HTMLButtonElement>(`[data-focus-key="site-more:${SITE_ID}"]`);
-		more?.click();
-		await settle();
-		const menuItems = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-		menuItems.find((b) => b.textContent?.includes("Custom domain"))?.click();
-		await settle();
-
-		const input = document.querySelector<HTMLInputElement>(".sites-question-input");
-		expect(input).not.toBeNull();
-		if (input) input.value = "nybutik.dk";
-		const form = document.querySelector<HTMLFormElement>("form.sites-question");
-		form?.dispatchEvent(new Event("submit", { cancelable: true }));
-		await settle();
-
-		expect(addDomain).toHaveBeenCalledWith(SITE_ID, "nybutik.dk", true, expect.any(AbortSignal));
-		expect(document.querySelector(".site-dns-guide")?.textContent).toContain("93.164.62.162");
-		expect(document.querySelector(".site-dns-guide")?.textContent).toContain("_qorpera.nybutik.dk");
-
-		ac.abort();
-		document.body.innerHTML = "";
-	});
-
 	it("forwards AbortSignal to site hosting and company site RPCs", async () => {
 		const seenSignals: (AbortSignal | undefined)[] = [];
 		const rpc = vi.fn(async (name: string, _args?: Record<string, unknown>, signal?: AbortSignal) => {
@@ -412,16 +254,13 @@ describe("site-hosting", () => {
 					action: "https://nordic-shop.qorpera.site/__qorpera/member",
 				};
 			}
-			if (name === "qorpera_company_site_password" || name === "qorpera_set_company_site_password") {
+			if (name === "qorpera_company_site_password") {
 				return {
 					schema: "qorpera.company-site-password/v1",
 					siteId: SITE_ID,
 					password: "secret",
 					changedAt: "2026-11-21T20:00:00Z",
 				};
-			}
-			if (name === "qorpera_unpublish_company_site") {
-				return { schema: "qorpera.company-site-unpublish/v1", siteId: SITE_ID, removed: true };
 			}
 			return {
 				schema: "qorpera.company-site-access/v1",
@@ -440,11 +279,9 @@ describe("site-hosting", () => {
 		await sites.list(ac.signal);
 		await sites.memberPass({ id: SITE_ID, slug: "nordic-shop" }, ac.signal);
 		await sites.password(SITE_ID, ac.signal);
-		await sites.setPassword(SITE_ID, "secret", ac.signal);
-		await sites.unpublish(SITE_ID, ac.signal);
 		await sites.access(ac.signal);
 
-		expect(seenSignals).toHaveLength(12);
+		expect(seenSignals).toHaveLength(10);
 		expect(seenSignals.every((sig) => sig instanceof AbortSignal && !sig.aborted)).toBe(true);
 
 		const inFlightAc = new AbortController();

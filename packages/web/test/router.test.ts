@@ -12,6 +12,15 @@ describe("company routes", () => {
 			});
 	});
 
+	it("opens the company home for the old Sites page's address, as for any section it does not know", () => {
+		for (const section of ["sites", "sites/wristband-shop", "Sites"])
+			expect(parseRoute(`#/c/${profileA.profileId}/${section}`)).toEqual({
+				name: "company",
+				profileId: profileA.profileId,
+				section: "home",
+			});
+	});
+
 	it("opens an agent's app as a page of its own, by its folder's name", () => {
 		const route = parseRoute(`#/c/${profileA.profileId}/a/sales-board`);
 		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "app", id: "sales-board" });
