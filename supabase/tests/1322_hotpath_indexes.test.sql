@@ -21,8 +21,22 @@ end $$;
 create function pg_temp.assert_plan_uses_index(p_sql text, p_index text) returns void language plpgsql as $$
 declare
 	v_plan jsonb;
+	v_hidden oid[];
 begin
+	-- WHY: Another index of the table can serve some of these queries too, and which one the planner then picks follows the
+	-- bloat and pg_class numbers earlier tests and autovacuum left. So the index is planned alone, the others hidden.
+	with hidden as (
+		update pg_index other set indisvalid = false
+		from pg_index wanted
+		where wanted.indexrelid = ('public.' || quote_ident(p_index))::regclass
+			and other.indrelid = wanted.indrelid
+			and other.indexrelid <> wanted.indexrelid
+			and other.indisvalid
+		returning other.indexrelid
+	)
+	select array_agg(indexrelid) into v_hidden from hidden;
 	execute 'explain (format json) ' || p_sql into v_plan;
+	update pg_index set indisvalid = true where indexrelid = any (v_hidden);
 	if position(p_index in v_plan::text) = 0 then
 		raise exception 'Expected plan for [%] to reference index %, got %', p_sql, p_index, v_plan::text;
 	end if;
