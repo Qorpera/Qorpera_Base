@@ -2121,6 +2121,12 @@ export class SurfacesStore {
 					memberPass: prevState.primary.memberPass,
 				});
 			}
+			if (prevState?.primary.kept?.memberPass) {
+				prevPasses.set(prevState.primary.kept.previewId, {
+					doorActionUrl: prevState.primary.kept.doorActionUrl,
+					memberPass: prevState.primary.kept.memberPass,
+				});
+			}
 			for (const entry of prevState?.compareFrames ?? []) {
 				if (entry.frame.previewId && entry.frame.memberPass) {
 					prevPasses.set(entry.frame.previewId, {
@@ -2129,18 +2135,35 @@ export class SurfacesStore {
 					});
 				}
 			}
-			const keepPass = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
-				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
-				const prev = prevPasses.get(frame.previewId);
-				if (!prev) return frame;
-				const meta = this.#previewPassMeta.get(frame.previewId);
-				if (
-					meta &&
+			const usablePrevPass = (
+				previewId: string,
+			): { readonly doorActionUrl: string | null; readonly memberPass: string } | null => {
+				const prev = prevPasses.get(previewId);
+				if (!prev) return null;
+				const meta = this.#previewPassMeta.get(previewId);
+				return meta &&
 					meta.pass === prev.memberPass &&
 					(meta.consumed || now - meta.mintedAt >= PREVIEW_PASS_TTL_MS)
-				) {
-					return frame;
+					? null
+					: prev;
+			};
+			const keepPass = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+				if (frame.kept && !frame.kept.memberPass) {
+					const prev = usablePrevPass(frame.kept.previewId);
+					return prev
+						? {
+								...frame,
+								kept: {
+									...frame.kept,
+									doorActionUrl: frame.kept.doorActionUrl ?? prev.doorActionUrl,
+									memberPass: prev.memberPass,
+								},
+							}
+						: frame;
 				}
+				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
+				const prev = usablePrevPass(frame.previewId);
+				if (!prev) return frame;
 				return {
 					...frame,
 					doorActionUrl: frame.doorActionUrl ?? prev.doorActionUrl,
@@ -2303,6 +2326,13 @@ export class SurfacesStore {
 					if (!workspace) return {};
 					let changed = false;
 					const patchFrame = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+						if (frame.kept?.previewId === grant.previewId) {
+							changed = true;
+							return {
+								...frame,
+								kept: { ...frame.kept, doorActionUrl: grant.doorActionUrl, memberPass: grant.memberPass },
+							};
+						}
 						if (frame.previewId !== grant.previewId) return frame;
 						changed = true;
 						return {
