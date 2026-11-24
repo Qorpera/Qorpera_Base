@@ -859,7 +859,7 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
-	it("hides the composer on unavailable surfaces and hides an empty rail", async () => {
+	it("hides the composer on unavailable surfaces and seeds no section titles", async () => {
 		const store = storeWith(undefined, {
 			synthesize: () => ({ companyId: COMPANY, sites: [], pages: [] }),
 		});
@@ -868,7 +868,7 @@ describe("the surface page", () => {
 		document.body.append(rail.el);
 		rail.update("missing");
 		expect(rail.el.querySelector(".rail-surface-create")).toBeNull();
-		expect(rail.el.hidden).toBe(true);
+		expect(rail.el.querySelectorAll(".rail-surface-title")).toHaveLength(0);
 
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "missing");
 		document.body.append(view.el);

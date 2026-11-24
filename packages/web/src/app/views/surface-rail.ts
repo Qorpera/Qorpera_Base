@@ -159,7 +159,6 @@ interface SurfaceRowEntry {
 	noticeText: string | null;
 }
 
-
 function noteMark(tile: HTMLElement, notes: number): HTMLElement {
 	if (notes > 0) tile.append(h("span", { class: "rail-mention", "aria-hidden": "true" }, "@"));
 	return tile;

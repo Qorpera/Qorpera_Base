@@ -1,10 +1,9 @@
-import { parseRecord } from "@qorpera/contracts";
+import { POSTGRES_UUID_PATTERN, parseRecord } from "@qorpera/contracts";
 
 export const SURFACE_RAIL_SCHEMA = "qorpera.member-surface-rail/v1";
 export const SURFACE_SECTION_NAME_LIMIT = 40;
 const MAX_SECTIONS = 50;
 const MAX_IDS = 500;
-const SURFACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SECTION_ID = /^[a-z0-9-]{1,40}$/;
 
 export const LOOSE_ZONE = "surfaces";
@@ -44,7 +43,8 @@ export function parseSurfaceRailLayout(value: unknown): SurfaceRailLayout {
 	const seen = new Set<string>();
 	const ids = (list: unknown): string[] =>
 		(Array.isArray(list) ? list : []).filter((id): id is string => {
-			if (typeof id !== "string" || !SURFACE_ID.test(id) || seen.has(id) || seen.size >= MAX_IDS) return false;
+			if (typeof id !== "string" || !POSTGRES_UUID_PATTERN.test(id) || seen.has(id) || seen.size >= MAX_IDS)
+				return false;
 			seen.add(id);
 			return true;
 		});
