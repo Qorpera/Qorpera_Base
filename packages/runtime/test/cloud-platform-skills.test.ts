@@ -2,8 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
 import { SURFACE_BLOCK_TYPES, SURFACE_STARTER_KINDS } from "@qorpera/contracts";
 import { describe, expect, it } from "vitest";
-import { PLATFORM_SKILL_FILES } from "../src/cloud-platform-skills.generated.ts";
-import { CLOUD_PLATFORM_SKILLS, SURFACE_STARTER_SKILLS } from "../src/cloud-platform-skills.ts";
+import { CLOUD_PLATFORM_SKILLS, PLATFORM_SKILL_FILES, SURFACE_STARTER_SKILLS } from "../src/cloud-platform-skills.ts";
 import { cloudStudioSkill } from "../src/cloud-skill-tools.ts";
 
 const SKILLS = new URL("../skills/", import.meta.url);

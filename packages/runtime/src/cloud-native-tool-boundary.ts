@@ -27,6 +27,9 @@ import {
 	cloudRuntimeOperationHash,
 	cloudRuntimeToolOperation,
 } from "./cloud-runtime-observability.ts";
+import { cloudToolJsonText, DEFAULT_TOOL_JSON_MAX_BYTES } from "./cloud-tool-json.ts";
+
+export { cloudToolJsonText };
 
 export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
 /** One tool result's envelope, as the patched Codex's result fence bounds it (`MAX_RESULT_BYTES`, 32 KiB since perf
@@ -78,7 +81,7 @@ const COMPANY_FILE_PARENT_MISSING =
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
-const MAX_ARGUMENT_BYTES = 64 * 1024;
+const MAX_ARGUMENT_BYTES = DEFAULT_TOOL_JSON_MAX_BYTES;
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
@@ -481,57 +484,6 @@ export class CloudControlRefusalRelay {
 			throw error;
 		}
 	}
-}
-
-/** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
-export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): string {
-	let nodes = 0;
-	let remainingBytes = limit;
-	const account = (text: string): string => {
-		remainingBytes -= Buffer.byteLength(text);
-		if (remainingBytes < 0) throw new Error("Tool JSON exceeds its byte limit");
-		return text;
-	};
-	const ancestors = new Set<object>();
-	const encode = (item: unknown, depth: number): string => {
-		if (++nodes > 10_000 || depth > 32) throw new Error("Invalid tool JSON");
-		if (typeof item === "string" && Buffer.byteLength(item) > limit)
-			throw new Error("Tool JSON exceeds its byte limit");
-		if (item === null || typeof item === "boolean" || typeof item === "string") return account(JSON.stringify(item));
-		if (typeof item === "number" && Number.isFinite(item)) return account(JSON.stringify(item));
-		if (!item || typeof item !== "object" || ancestors.has(item)) throw new Error("Invalid tool JSON");
-		ancestors.add(item);
-		try {
-			if (Array.isArray(item)) {
-				if (item.length > 10_000 || Object.keys(item).length !== item.length) throw new Error("Invalid tool JSON");
-				account(`[]${",".repeat(Math.max(0, item.length - 1))}`);
-				const entries: string[] = [];
-				for (let index = 0; index < item.length; index++) {
-					const descriptor = Object.getOwnPropertyDescriptor(item, index);
-					if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new Error("Invalid tool JSON");
-					entries.push(encode(descriptor.value, depth + 1));
-				}
-				return `[${entries.join(",")}]`;
-			}
-			if (Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) {
-				throw new Error("Invalid tool JSON");
-			}
-			const keys = Object.keys(item);
-			if (keys.length > 10_000) throw new Error("Invalid tool JSON");
-			account(`{}${",".repeat(Math.max(0, keys.length - 1))}`);
-			return `{${keys
-				.sort()
-				.map((key) => {
-					const descriptor = Object.getOwnPropertyDescriptor(item, key);
-					if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new Error("Invalid tool JSON");
-					return `${account(`${JSON.stringify(key)}:`)}${encode(descriptor.value, depth + 1)}`;
-				})
-				.join(",")}}`;
-		} finally {
-			ancestors.delete(item);
-		}
-	};
-	return encode(value, 0);
 }
 
 /** A call's arguments as the work log keeps them when the boundary refused them as unreadable or too large. */

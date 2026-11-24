@@ -4,13 +4,12 @@ import { APP_KITS, parseAppManifest } from "@qorpera/cloud-client/interface-apps
 import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { JsonValue } from "@qorpera/contracts";
 import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
-import { KIT_FIGURES } from "@qorpera/runtime/cloud-app-kit-figures.generated";
-import { OBJECT_THREE_JS, OBJECT_THREE_LICENSE } from "@qorpera/runtime/cloud-app-kit-three.generated";
 import {
 	DATA_KITS,
 	KIT_DATA_MAX_BYTES,
 	KIT_ENGINE_JS,
 	KIT_FALLBACK_STYLE,
+	KIT_FIGURES,
 	KIT_GUIDE,
 	KIT_LIVE_QUESTIONS,
 	KIT_THREE,
@@ -24,6 +23,8 @@ import {
 	kitModels,
 	kitNotes,
 	kitPage,
+	OBJECT_THREE_JS,
+	OBJECT_THREE_LICENSE,
 	parseKitData,
 } from "@qorpera/runtime/cloud-app-kits";
 import { cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";

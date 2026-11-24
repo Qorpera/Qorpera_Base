@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
 import type { SurfaceStarterKind } from "@qorpera/contracts";
-import { PLATFORM_SKILL_FILES } from "./cloud-platform-skills.generated.ts";
+import { PLATFORM_SKILL_FILES } from "./cloud-embedded-assets.ts";
+
+export { PLATFORM_SKILL_FILES };
 
 export interface CloudPlatformSkill {
 	readonly name: string;

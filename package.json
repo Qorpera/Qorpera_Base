@@ -19,7 +19,6 @@
 		"check:runtime-bundle:release-train": "node scripts/runtime-bundle-release-train.mjs",
 		"check:connector-catalog": "node scripts/generate-cloud-connector-catalog.mjs --check",
 		"generate:connector-catalog": "node scripts/generate-cloud-connector-catalog.mjs",
-		"generate:app-kits": "node scripts/generate-app-kits.mjs",
 		"generate:runtime-bundle": "node scripts/generate-cloud-runtime-bundle.mjs",
 		"check:cloud-boundaries": "node scripts/check-headless-packages.mjs",
 		"check:wire-helpers": "node scripts/check-wire-helpers.mjs",

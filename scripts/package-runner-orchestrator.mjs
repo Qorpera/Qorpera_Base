@@ -1,51 +1,27 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { build } from "esbuild";
 import { jitlessServiceBundleOptions } from "./jitless-service-bundle.mjs";
+import {
+	bundleNodeEntries,
+	hashPackageFiles,
+	parseOutArg,
+	prepareOutputDir,
+	writeManifest,
+} from "./package-service.mjs";
 
-function outputDirectory(args) {
-	if (args.length === 0) return resolve(".artifacts/runner-orchestrator");
-	if (args.length !== 2 || args[0] !== "--out" || !args[1]) {
-		throw new Error("Usage: node scripts/package-runner-orchestrator.mjs [--out <directory>]");
-	}
-	return resolve(args[1]);
-}
-
-const outputRoot = outputDirectory(process.argv.slice(2));
-await rm(outputRoot, { recursive: true, force: true });
-await mkdir(outputRoot, { recursive: true });
-
-const artifact = "qorpera-runner-orchestrator.mjs";
-await build({
-	entryPoints: ["packages/runner-orchestrator/src/cli.ts"],
-	outfile: resolve(outputRoot, artifact),
-	bundle: true,
-	platform: "node",
-	...jitlessServiceBundleOptions,
-	target: "node22.19",
-	legalComments: "none",
-	logLevel: "silent",
+const outputRoot = parseOutArg(process.argv.slice(2), {
+	usage: "Usage: node scripts/package-runner-orchestrator.mjs [--out <directory>]",
+	defaultDir: ".artifacts/runner-orchestrator",
 });
-
-const content = await readFile(resolve(outputRoot, artifact));
-await writeFile(
-	resolve(outputRoot, "manifest.json"),
-	`${JSON.stringify(
-		{
-			schema: "qorpera.runner-orchestrator-package/v1",
-			runtime: { node: ">=22.19.0" },
-			artifacts: [
-				{
-					file: artifact,
-					bytes: content.byteLength,
-					sha256: createHash("sha256").update(content).digest("hex"),
-				},
-			],
-		},
-		null,
-		2,
-	)}\n`,
-	"utf-8",
-);
+await prepareOutputDir(outputRoot, { clean: true });
+const artifact = "qorpera-runner-orchestrator.mjs";
+await bundleNodeEntries({
+	entries: [["packages/runner-orchestrator/src/cli.ts", artifact]],
+	outputRoot,
+	extraOptions: jitlessServiceBundleOptions,
+});
+const artifacts = await hashPackageFiles([artifact], outputRoot);
+await writeManifest(outputRoot, {
+	schema: "qorpera.runner-orchestrator-package/v1",
+	runtime: { node: ">=22.19.0" },
+	artifacts,
+});
 console.log(outputRoot);

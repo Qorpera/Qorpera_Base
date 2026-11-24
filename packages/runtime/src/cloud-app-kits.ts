@@ -37,12 +37,15 @@ import {
 	CURVE_KIT_GUIDE,
 	FLOW_ENGINE_JS,
 	FLOW_KIT_GUIDE,
+	KIT_FIGURES,
 	MAP_ENGINE_JS,
 	MAP_KIT_GUIDE,
 	MODEL_ENGINE_JS,
 	MODEL_KIT_GUIDE,
 	OBJECT_ENGINE_JS,
 	OBJECT_KIT_GUIDE,
+	OBJECT_THREE_JS,
+	OBJECT_THREE_LICENSE,
 	PATH_ENGINE_JS,
 	PATH_KIT_GUIDE,
 	RING_ENGINE_JS,
@@ -51,9 +54,9 @@ import {
 	SHELF_KIT_GUIDE,
 	STACK_ENGINE_JS,
 	STACK_KIT_GUIDE,
-} from "./cloud-app-kit-engines.generated.ts";
-import { KIT_FIGURES } from "./cloud-app-kit-figures.generated.ts";
-import { OBJECT_THREE_JS, OBJECT_THREE_LICENSE } from "./cloud-app-kit-three.generated.ts";
+} from "./cloud-embedded-assets.ts";
+
+export { KIT_FIGURES, OBJECT_THREE_JS, OBJECT_THREE_LICENSE };
 
 /** The kits whose agent writes one data file. */
 export const DATA_KITS = Object.freeze([
