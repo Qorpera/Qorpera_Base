@@ -11,7 +11,7 @@ import {
 	readyAgent,
 	titleOf,
 } from "./release-desk.ts";
-import { shownLink } from "./settings-sites.ts";
+import { shownLink } from "./site-shared.ts";
 
 /**
  * "A change is ready", in the thread of the agent behind it (Jonas, 15 Nov 2026: "chat widgets if there are UX
@@ -248,19 +248,11 @@ export class ThreadReady {
 		);
 	}
 
-	/** A project whose site Qorpera took down: no card, as nothing on one could be done (the kernel refuses Look first
-	 * and Put it live), but one quiet line in What's new's words, with the way to Sites, where the reason is. */
 	#takenDown(site: CodeReleaseSite): HTMLElement {
-		const sentence = t("Qorpera took this site down, so it can't be opened. See why in Sites.");
-		const word = t("Sites");
-		const at = sentence.lastIndexOf(word);
-		const href = `#/c/${this.#company.profile.profileId}/sites`;
 		return h(
 			"p",
 			{ class: "conversation-note thread-ready-down", role: "note", dataset: { readySite: keyOf(site) } },
-			...(at < 0
-				? [h("a", { href }, sentence)]
-				: [sentence.slice(0, at), h("a", { href }, word), sentence.slice(at + word.length)]),
+			t("Qorpera took this site down, so it can't be opened."),
 		);
 	}
 

@@ -400,28 +400,28 @@ describe("changing the time zone with a conversation open", () => {
 		}
 	});
 
-	it("builds the Sites page again in the new language", async () => {
+	it("opens the company home for the old Sites page's address, as for the company's own", async () => {
 		vi.useFakeTimers();
-		history.replaceState(null, "", `/#/c/${profileA.profileId}/sites`);
-		const f = fixture();
-		const root = document.createElement("div");
-		document.body.append(root);
-		const dispose = mountApplication(root, f.cloud, f.api);
-		try {
-			const draw = async () => {
+		const shown = async (hash: string) => {
+			localStorage.clear();
+			sessionStorage.clear();
+			history.replaceState(null, "", `/${hash}`);
+			const f = fixture();
+			const root = document.createElement("div");
+			document.body.append(root);
+			const dispose = mountApplication(root, f.cloud, f.api);
+			try {
 				await settle();
 				await vi.advanceTimersByTimeAsync(60);
-			};
-			await draw();
-			const page = root.querySelector(".sites-page");
-			expect(page?.querySelector("h1")?.textContent).toBe("Sites");
-			expect(setLanguagePreference("da")).toBe(true);
-			await draw();
-			expect(root.querySelector(".sites-page")).not.toBe(page);
-			expect(root.querySelector(".sites-page h1")?.textContent).toBe("Hjemmesider");
-		} finally {
-			setLanguagePreference("system");
-			dispose();
-		}
+				expect(root.querySelector(".sites-page, .sites")).toBeNull();
+				return root.querySelector("main.main")?.textContent;
+			} finally {
+				dispose();
+				root.remove();
+			}
+		};
+		const home = await shown(`#/c/${profileA.profileId}`);
+		expect(home).toBeTruthy();
+		expect(await shown(`#/c/${profileA.profileId}/sites`)).toBe(home);
 	});
 });

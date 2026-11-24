@@ -360,10 +360,6 @@ export interface WebSites {
 	memberPass(site: Pick<CompanySite, "id" | "slug">, signal?: AbortSignal): Promise<SiteMemberPass>;
 	/** An owner's or admin's read of a site's password. */
 	password(siteId: string, signal?: AbortSignal): Promise<CompanySitePassword>;
-	/** Sets a site's password (null: a new random one). Every visitor then enters the new one. */
-	setPassword(siteId: string, password: string | null, signal?: AbortSignal): Promise<CompanySitePassword>;
-	/** Takes a site offline: its link, files, password and visitors' sessions go. False when it was already gone. */
-	unpublish(siteId: string, signal?: AbortSignal): Promise<boolean>;
 	/** Which of the company's sites Qorpera took down, and why (step 5.1; any member). A kernel before step 5.1 has no
 	 * such read (PGRST202). */
 	access(signal?: AbortSignal): Promise<CompanySiteAccess>;
@@ -405,37 +401,6 @@ export function createWebSites(cloud: Cloud, company: { profileId: string }): We
 					: cloud.rpc("qorpera_company_site_password", args)),
 				id,
 			);
-		},
-		async setPassword(siteId, password, signal) {
-			signal?.throwIfAborted();
-			const id = site(siteId);
-			if (password !== null && typeof password !== "string") throw new Error("Invalid site password.");
-			const args = { p_site_id: id, p_password: password };
-			return parseCompanySitePassword(
-				await (signal
-					? cloud.rpc("qorpera_set_company_site_password", args, signal)
-					: cloud.rpc("qorpera_set_company_site_password", args)),
-				id,
-			);
-		},
-		async unpublish(siteId, signal) {
-			signal?.throwIfAborted();
-			const id = site(siteId);
-			const args = { p_site_id: id };
-			const input = closedRecord(
-				await (signal
-					? cloud.rpc("qorpera_unpublish_company_site", args, signal)
-					: cloud.rpc("qorpera_unpublish_company_site", args)),
-				["schema", "siteId", "removed"],
-			);
-			if (
-				!input ||
-				input.schema !== "qorpera.company-site-unpublish/v1" ||
-				input.siteId !== id ||
-				typeof input.removed !== "boolean"
-			)
-				throw new Error("Invalid site.");
-			return input.removed as boolean;
 		},
 		async access(signal) {
 			signal?.throwIfAborted();

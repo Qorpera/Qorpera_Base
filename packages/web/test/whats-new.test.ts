@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController, type CompanyState } from "../src/app/company.ts";
 import { attachSurfaces } from "../src/app/surfaces-store.ts";
-import { liveVersions, WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
+import { WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { CloudShapeError } from "../src/cloud/parse.ts";
 import {
@@ -516,23 +518,6 @@ describe("What's new: the page", () => {
 		expect(view.el.textContent).toBe("");
 	});
 
-	it("tells the Sites page the version each site made from code has live", () => {
-		expect(
-			liveVersions(
-				releasesOf([
-					shop(),
-					shop({ name: "gift", site: { slug: "gift", url: "https://sites.qorpera.com/gift/", title: null } }),
-					shop({ name: "new", site: null, live: null }),
-					shop({
-						name: "waiting",
-						site: { slug: "waiting", url: "https://sites.qorpera.com/waiting/", title: null },
-						live: null,
-					}),
-				]),
-			),
-		).toEqual({ "wristband-shop": 3, gift: 3 });
-	});
-
 	it("says nothing new is ready, and still offers Go back", async () => {
 		const { view } = await page([releasesOf([shop({ ready: null, waiting: 1 })])]);
 		const site = block(view);
@@ -1003,7 +988,7 @@ describe("What's new: the page", () => {
 	});
 
 	it.each([
-		["SITE_LIMIT", "This project can't get a site: the company has 10. Take one offline in Sites."],
+		["SITE_LIMIT", "This project can't get a site: the company has 10."],
 		["SITE_UPLOAD_FAILED", "The newest version could not be prepared. Qorpera is trying again."],
 	])("says in one plain line why the newest version is not there (%s)", async (problem, line) => {
 		const { view } = await page([releasesOf([shop({ problem, ready: null })])]);
@@ -1016,11 +1001,19 @@ describe("What's new: the page", () => {
 		// Five failures of one change: no upload tries it again until a newer change is saved.
 		["SITE_UPLOAD_FAILED", "The newest version could not be prepared. The next change that is saved gets a new try."],
 		// The company's ten sites stay the reason, given up or not.
-		["SITE_LIMIT", "This project can't get a site: the company has 10. Take one offline in Sites."],
+		["SITE_LIMIT", "This project can't get a site: the company has 10."],
 	])("never says Qorpera is trying again once it stopped trying (%s)", async (problem, line) => {
 		const { view } = await page([releasesOf([shop({ problem, givenUp: true, ready: null })])]);
 		expect(block(view).querySelector(".notice-warn")?.textContent).toBe(line);
 		expect(text(block(view))).not.toContain("trying again");
+	});
+
+	it("says the company has ten sites in Danish, and names no place to go", async () => {
+		setLanguagePreference("da");
+		const { view } = await page([releasesOf([shop({ problem: "SITE_LIMIT", ready: null })])]);
+		const notice = block(view).querySelector(".notice-warn");
+		expect(notice?.textContent).toBe("Projektet kan ikke få en hjemmeside: virksomheden har allerede 10.");
+		expect(notice?.querySelector("a")).toBeNull();
 	});
 
 	it("leaves the name out when the member who said go left the company", async () => {
@@ -1443,7 +1436,7 @@ describe("What's new: Look first (own code storage step 5.1)", () => {
 		[
 			"Qorpera took the site down",
 			async (): Promise<SitePreviewAnswer> => ({ state: "gone" }),
-			"Qorpera took this site down, so it can't be opened. See why in Sites.",
+			"Qorpera took this site down, so it can't be opened.",
 			1,
 		],
 		["no answer came", lost, "The next version could not be opened: Qorpera could not be reached. Try again.", 1],
@@ -1530,7 +1523,7 @@ describe("What's new: Look first (own code storage step 5.1)", () => {
 		const { view, client } = await page([offered()], { openPreview: async () => ({ state: "gone" }) });
 		press(block(view), "Look first");
 		await settle();
-		const line = "Qorpera took this site down, so it can't be opened. See why in Sites.";
+		const line = "Qorpera took this site down, so it can't be opened.";
 		expect(lookLine(view)).toBe(line);
 		window.dispatchEvent(new Event("focus"));
 		await settle();
@@ -1576,9 +1569,7 @@ describe("What's new: Look first (own code storage step 5.1)", () => {
 		expect(labels(actions(view))).toEqual(["Se den først", "Sæt live", "Ikke endnu"]);
 		press(block(view), "Se den først");
 		await settle();
-		expect(lookLine(view)).toBe(
-			"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
-		);
+		expect(lookLine(view)).toBe("Qorpera har taget hjemmesiden ned, så den kan ikke åbnes.");
 		const words: [() => Promise<SitePreviewAnswer>, string][] = [
 			[lost, "Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen."],
 			[
@@ -1738,7 +1729,7 @@ describe("What's new: Look first's link and a refused write (step 5.1)", () => {
 });
 
 describe("What's new: a site Qorpera took down (step 5.1)", () => {
-	const DOWN = "Qorpera took this site down, so it can't be opened. See why in Sites.";
+	const DOWN = "Qorpera took this site down, so it can't be opened.";
 	const openLink = (view: WhatsNewView) =>
 		[...block(view).querySelectorAll<HTMLAnchorElement>("a.site-button")].find((link) =>
 			link.textContent?.includes("Open the site"),
@@ -1786,9 +1777,7 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 		try {
 			const { view: da } = await page([read()], { takenDown: async () => new Set(["wristband-shop"]) });
 			expect(labels(block(da))).toEqual(["Ikke endnu"]);
-			expect(text(block(da))).toContain(
-				"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
-			);
+			expect(text(block(da))).toContain("Qorpera har taget hjemmesiden ned, så den kan ikke åbnes.");
 			da.dispose();
 		} finally {
 			setLanguagePreference("system");
@@ -1851,9 +1840,7 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 	it("says it in Danish", async () => {
 		setLanguagePreference("da");
 		const { view } = await page([releasesOf([shop()])], { takenDown: async () => new Set(["wristband-shop"]) });
-		expect(text(block(view))).toContain(
-			"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
-		);
+		expect(text(block(view))).toContain("Qorpera har taget hjemmesiden ned, så den kan ikke åbnes.");
 		expect(openLink(view)).toBeUndefined();
 	});
 
@@ -1922,5 +1909,57 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+});
+
+describe("What's new's live row at every width", () => {
+	const css = readFileSync(resolve("src/styles/sites.css"), "utf8");
+	const app = readFileSync(resolve("src/styles/app.css"), "utf8");
+
+	it("lays its rows out by its own width, not the window's", () => {
+		expect(css).toMatch(/\.whats-new \{[^}]*container: site-rows \/ inline-size;/);
+		expect(app).toContain('@import "./sites.css";');
+	});
+
+	it("puts its buttons under its line on a narrow page", () => {
+		const narrow = css.match(/@container site-rows not \(min-width: 36em\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		expect(narrow).toContain('.site-row { grid-template-areas: "emblem head end" "body body body"; }');
+		const live = css.match(/@container site-rows not \(min-width: 56em\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		expect(live).toContain('.site-row.is-whats-new { grid-template-areas: "emblem head head" ". end end"; }');
+	});
+
+	it("never writes px in a container condition (the design-px build step refuses it)", () => {
+		expect(
+			[...css.matchAll(/@container[^{]*/g)].map(([query]) => query).filter((query) => /\dpx/.test(query)),
+		).toEqual([]);
+	});
+
+	it("keeps still under reduced motion", () => {
+		const still = css.match(/@media \(prefers-reduced-motion: reduce\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		expect(still).toContain(".site-state.is-publishing .site-dot { animation: none; }");
+		expect(still).toContain(".site-row:hover .site-emblem { transform: none; }");
+	});
+
+	it("keeps the rules the site cards and the code import's question use, and none of the Sites page's own", () => {
+		for (const kept of [".site-pill-icon {", ".site-state {", ".site-dot {", ".sites-question-input {", ".site-button {"])
+			expect(css).toContain(kept);
+		for (const gone of [
+			".sites {",
+			".sites-page",
+			".sites-scroll",
+			".sites-toast",
+			".sites-empty",
+			".site-share",
+			".site-pill {",
+			".site-secret",
+			".site-more",
+			".site-public-badge",
+			".site-domain",
+			".site-dns-guide",
+			".site-down",
+			".sites-question-random",
+			"@keyframes site-out",
+		])
+			expect(css).not.toContain(gone);
 	});
 });

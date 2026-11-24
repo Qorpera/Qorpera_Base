@@ -103,7 +103,7 @@ async function cards(
 ) {
 	const changed = vi.fn();
 	const lifetime = new AbortController();
-	const sites = new ThreadSites(calls, () => manage, profileA.profileId, lifetime.signal, changed, answer);
+	const sites = new ThreadSites(calls, () => manage, lifetime.signal, changed, answer);
 	cleanup.push(() => lifetime.abort());
 	await settle();
 	return { sites, changed, calls };
@@ -231,7 +231,7 @@ describe("A site a message links: the card under the words", () => {
 		).toBe(false);
 	});
 
-	it("shows an app link's row, and a site Qorpera took down grey with its reason, leading to Sites", async () => {
+	it("shows an app link's row, and a site Qorpera took down grey with its reason, leading nowhere", async () => {
 		const { sites } = await cards();
 		const root = message(
 			sites,
@@ -248,16 +248,14 @@ describe("A site a message links: the card under the words", () => {
 		expect(keyOf(api!)?.getAttribute("aria-label")).toBe("Copy the password");
 		expect(sale?.className).toBe("app-card site-card is-down");
 		expect(sale?.querySelector(".site-state")?.textContent).toBe("Taken down");
-		// The reason alone, whole on a hover; the sentence and the Feedback hint are on the Sites page.
 		expect(note(sale!)).toBe(REASON);
 		expect(sale?.querySelector<HTMLElement>(".app-card-note")?.title).toBe(REASON);
-		const open = sale!.querySelector<HTMLAnchorElement>("a.site-card-open")!;
-		expect(open.getAttribute("data-href") ?? open.getAttribute("href")).toBe(`#/c/${profileA.profileId}/sites`);
-		expect(open.target).toBe("");
+		expect(sale?.querySelector("div.site-card-open .app-card-title")?.textContent).toBe("Spring sale");
+		expect(sale?.querySelector("a, [href], [data-href]")).toBeNull();
 		expect(sale?.querySelector(".site-card-key, .app-card-go")).toBeNull();
 	});
 
-	it("copies the password with the key through the Sites page's call, never showing it, and says so for a moment", async () => {
+	it("copies the password with the key, never showing it, and says so for a moment", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		const writeText = vi.fn(async () => {});
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -284,7 +282,7 @@ describe("A site a message links: the card under the words", () => {
 		const root = message(sites, "https://orders-api-preview.qorpera.com/");
 		keyOf(root)!.click();
 		await settle();
-		expect(note(root)).toBe("The password is in Sites.");
+		expect(note(root)).toBe("The browser would not copy the password.");
 		calls.password.mockRejectedValueOnce(new CloudRpcError("x", { message: "denied", code: "42501" }, 403));
 		keyOf(root)!.click();
 		await settle();
@@ -298,13 +296,7 @@ describe("A site a message links: the card under the words", () => {
 		const calls = client();
 		const lifetime = new AbortController();
 		cleanup.push(() => lifetime.abort());
-		const sites = new ThreadSites(
-			calls,
-			() => manage,
-			profileA.profileId,
-			lifetime.signal,
-			() => {},
-		);
+		const sites = new ThreadSites(calls, () => manage, lifetime.signal, () => {});
 		await settle();
 		const root = message(sites, "https://orders-api-preview.qorpera.com/");
 		expect(keyOf(root)).toBeNull();
@@ -322,13 +314,7 @@ describe("A site a message links: the card under the words", () => {
 		let manage = true;
 		const lifetime = new AbortController();
 		cleanup.push(() => lifetime.abort());
-		const sites = new ThreadSites(
-			client(),
-			() => manage,
-			profileA.profileId,
-			lifetime.signal,
-			() => {},
-		);
+		const sites = new ThreadSites(client(), () => manage, lifetime.signal, () => {});
 		await settle();
 		// The message's body drawn three times (its words changed, or the language), each time before any redraw: the
 		// first two bodies leave the thread.
@@ -357,6 +343,13 @@ describe("A site a message links: the card under the words", () => {
 		expect(keyOf(live!)).toBeNull();
 		expect(keyOf(api!)?.getAttribute("aria-label")).toBe("Kopiér adgangskoden");
 		expect(down?.querySelector(".site-state")?.textContent).toBe("Taget ned");
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
+		});
+		keyOf(api!)!.click();
+		await settle();
+		expect(note(api!)).toBe("Browseren ville ikke kopiere adgangskoden.");
 	});
 
 	it("calls a website Live only when everyone can open it, Not live yet when not, and nothing while unknown", async () => {
