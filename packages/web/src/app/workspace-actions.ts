@@ -11,7 +11,7 @@ import type { SkillSuggestion } from "../cloud/skills.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import type { InteractionCardApp } from "../ui/interaction-card.ts";
-import type { ComputerPanels } from "./views/computer.ts";
+import type { ComputerPanelsLike } from "./views/computer-lazy.ts";
 import type { QuestionDockHost } from "./views/question-dock.ts";
 import type { ReleaseClient, ReleaseDeskOptions } from "./views/release-desk.ts";
 import type { ThreadSitesClient } from "./views/thread-sites.ts";
@@ -44,7 +44,7 @@ export interface WorkspaceActions {
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	/** The company's open computers, kept across the threads a member moves between. */
-	computerPanels?: ComputerPanels;
+	computerPanels?: ComputerPanelsLike;
 	runControl?: WebSessionRunControl;
 	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;

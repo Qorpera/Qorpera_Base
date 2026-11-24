@@ -50,6 +50,14 @@ test("the first screen never downloads the figures' motion data or Danish dictio
 	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path)), []);
 	assert.deepEqual(inputsOf(layout, first).filter((path) => /src\/ui\/danish\//.test(path)), []);
 	assert.deepEqual(inputsOf(layout, first).filter((path) => /surface-local-sandbox\.ts$/.test(path)), []);
+	assert.deepEqual(
+		inputsOf(layout, first).filter((path) =>
+			/\/(?:founding|company-folder|program-add|program-page|surface-migration-sheet|settings|agent-routines|computer|search-window)\.ts$|lexer\.asm\.mjs$/.test(
+				path,
+			),
+		),
+		[],
+	);
 	const lazy = inputsOf(layout, layout.lazy);
 	assert.equal(lazy.filter((path) => MOTION_DATA.test(path)).length, 2);
 	assert.ok(lazy.some((path) => /src\/ui\/danish\/index\.ts$/.test(path)));
@@ -174,7 +182,7 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	assert.ok(html.includes(`<script type="module" src="./${layout.script}"></script>`));
 	// The avatar globals still come before the module that uses them, each
 	// fetched by its content hash: /assets/ is cached for a day.
-	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script src="./${file}?v=${versions[file]}"></script>`), file);
+	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script defer src="./${file}?v=${versions[file]}"></script>`), file);
 	assert.ok(html.indexOf("avatar-appearance.js") < html.indexOf(layout.script));
 	// avatar-appearance.js reads the light field's global as it loads.
 	assert.ok(html.indexOf("light-field.js") < html.indexOf("avatar-appearance.js"));

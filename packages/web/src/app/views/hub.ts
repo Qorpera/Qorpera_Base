@@ -23,7 +23,7 @@ import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
-import { lobbyError, setFoundingIntent } from "../founding.ts";
+import { lobbyError, setFoundingIntent } from "../founding-intent.ts";
 import { Reconnect } from "../reconnect.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";

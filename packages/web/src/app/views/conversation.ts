@@ -89,7 +89,7 @@ import {
 } from "../company.ts";
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
-import { AgentDetails } from "./agent-details.ts";
+import type { AgentDetails } from "./agent-details.ts";
 import { ComposerLogins } from "./composer-logins.ts";
 import { ComposerModels } from "./composer-models.ts";
 import {
@@ -103,9 +103,10 @@ import {
 	watchEdits,
 	watchHistory,
 } from "./composer-quotes.ts";
-import { type ComputerPanel, ComputerPanels } from "./computer.ts";
+import type { ComputerPanel } from "./computer.ts";
+import { type ComputerPanelsLike, LazyComputerPanels } from "./computer-lazy.ts";
 import { DecisionDock } from "./decision-dock.ts";
-import { GroupDetails } from "./group-details.ts";
+import type { GroupDetails } from "./group-details.ts";
 import { pageNoteApp, pageNoteCard } from "./page-note.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
@@ -114,6 +115,17 @@ import { SharedDrafts } from "./shared-drafts.ts";
 import { type AppLook, appLook } from "./shell.ts";
 import { ThreadReady } from "./thread-ready.ts";
 import { ThreadSites } from "./thread-sites.ts";
+
+let preloadedAgentDetails: typeof import("./agent-details.ts").AgentDetails | undefined;
+let preloadedGroupDetails: typeof import("./group-details.ts").GroupDetails | undefined;
+
+export function registerLazyConversationModules(modules: {
+	readonly AgentDetails?: typeof import("./agent-details.ts").AgentDetails;
+	readonly GroupDetails?: typeof import("./group-details.ts").GroupDetails;
+}): void {
+	if (modules.AgentDetails) preloadedAgentDetails = modules.AgentDetails;
+	if (modules.GroupDetails) preloadedGroupDetails = modules.GroupDetails;
+}
 
 const transcriptItemJsonCache = new WeakMap<TranscriptItem, string>();
 function cachedTranscriptItemJson(item: TranscriptItem): string {
@@ -415,7 +427,7 @@ export class ConversationView {
 	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | GroupDetails | undefined;
 	/** The company's open computers; this thread shows its agent's while the member is here. */
-	readonly #panels: ComputerPanels;
+	readonly #panels: ComputerPanelsLike;
 	readonly #ownPanels: boolean;
 	#panel: ComputerPanel | undefined;
 	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
@@ -567,7 +579,7 @@ export class ConversationView {
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
-		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
+		this.#panels = actions.computerPanels ?? new LazyComputerPanels(actions.computer, company.signal);
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -1226,20 +1238,47 @@ export class ConversationView {
 			this.#details = undefined;
 			this.#identity.setAttribute("aria-expanded", "false");
 		};
-		this.#details = agent
-			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
-					computer: () => this.show(agent.id, "computer", true),
-					conversationId: this.#sessionId,
-				})
-			: new GroupDetails(
-					this.#company,
-					this.#sessionId,
-					closed,
-					this.#identity,
-					this.#lifetime.signal,
-					this.#actions,
-					{ conversationId: this.#sessionId },
-				);
+		const openDetails = (
+			LoadedAgent?: typeof import("./agent-details.ts").AgentDetails,
+			LoadedGroup?: typeof import("./group-details.ts").GroupDetails,
+		) => {
+			if (this.#disposed || this.#lifetime.signal.aborted || this.#details) return;
+			this.#details =
+				agent && LoadedAgent
+					? new LoadedAgent(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
+							computer: () => this.show(agent.id, "computer", true),
+							conversationId: this.#sessionId,
+						})
+					: LoadedGroup
+						? new LoadedGroup(
+								this.#company,
+								this.#sessionId,
+								closed,
+								this.#identity,
+								this.#lifetime.signal,
+								this.#actions,
+								{ conversationId: this.#sessionId },
+							)
+						: undefined;
+			if (!this.#details) this.#identity.setAttribute("aria-expanded", "false");
+		};
+		if (agent) {
+			const cached = preloadedAgentDetails;
+			if (cached) openDetails(cached, undefined);
+			else
+				void import("./agent-details.ts").then(({ AgentDetails: Loaded }) => {
+					preloadedAgentDetails = Loaded;
+					openDetails(Loaded, undefined);
+				});
+		} else {
+			const cached = preloadedGroupDetails;
+			if (cached) openDetails(undefined, cached);
+			else
+				void import("./group-details.ts").then(({ GroupDetails: Loaded }) => {
+					preloadedGroupDetails = Loaded;
+					openDetails(undefined, Loaded);
+				});
+		}
 	}
 
 	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does not know
@@ -1256,9 +1295,14 @@ export class ConversationView {
 		this.#closeCodingSession();
 		if (page === "computer") {
 			const shown = this.#panel;
-			// Already here: the click still asks for the computer (a sleeping one wakes).
 			if (shown && asked) this.#panels.open(agent, { asked });
-			(shown ?? this.#showPanel(agent, asked))?.focus();
+			const opened =
+				shown ??
+				this.#showPanel(agent, asked, (panel) => {
+					panel.focus();
+					this.#revealComputer();
+				});
+			opened?.focus();
 			this.#revealComputer();
 		}
 		return true;
@@ -1685,7 +1729,13 @@ export class ConversationView {
 	 * large view once a picture shows, where the member uses it as it is shared. */
 	#openComputer(agent: HostedStaffAgent): void {
 		if (this.#panel) this.#panels.open(agent, { asked: true });
-		const panel = this.#panel ?? this.#showPanel(agent, true);
+		const panel =
+			this.#panel ??
+			this.#showPanel(agent, true, (opened) => {
+				opened.focus();
+				this.#revealComputer();
+				opened.enterWhenShown();
+			});
 		panel?.focus();
 		this.#revealComputer();
 		panel?.enterWhenShown();
@@ -1732,16 +1782,26 @@ export class ConversationView {
 		const rules = this.#panels.byItself;
 		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
 		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
-		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
-		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
-		const panel = this.#showPanel(agent, false);
+		const panel = this.#showPanel(agent, false, () => rules.opened(agent.id, since));
 		if (panel) rules.opened(agent.id, since);
 	}
 
-	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
-	#showPanel(agent: HostedStaffAgent, asked = false): ComputerPanel | undefined {
+	#showPanel(
+		agent: HostedStaffAgent,
+		asked = false,
+		onReady?: (panel: ComputerPanel) => void,
+	): ComputerPanel | undefined {
 		const panel = this.#panels.open(agent, { asked });
-		if (!panel) return undefined;
+		if (!panel) {
+			if (this.#panels.isLoaded?.() === false && this.#panels.ensureLoaded) {
+				void this.#panels.ensureLoaded().then(() => {
+					if (this.#disposed || this.#company.signal.aborted || this.#panel) return;
+					const loaded = this.#showPanel(agent, asked);
+					if (loaded) onReady?.(loaded);
+				});
+			}
+			return undefined;
+		}
 		// A window that comes into the thread stands at its end; one already here stays where it is.
 		if (!this.#computerSlot.contains(panel.el)) this.#computerAfter = undefined;
 		this.#panel = panel;
