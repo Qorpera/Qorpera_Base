@@ -5,6 +5,8 @@
 
 import { folderKey } from "@qorpera/contracts";
 
+export const COMPANY_STATE_FILE_MAX_BYTES = 64 * 1024;
+
 export const AGENT_COLOURS = Object.freeze([
 	"charcoal",
 	"brown",

@@ -1,5 +1,5 @@
 import type { CloudMemberFolderOp } from "@qorpera/cloud-client/cloud-member-folder";
-import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-files";
+import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-shared";
 import { array, boundedInteger, CloudShapeError, oneOf, record, uuid } from "./parse.ts";
 
 /*

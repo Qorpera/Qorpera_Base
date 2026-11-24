@@ -3,7 +3,7 @@ import {
 	type CloudMemberFolderClient,
 	type CloudMemberFolderFeedPosition,
 } from "@qorpera/cloud-client/cloud-member-folder";
-import { companyPathKey, osPath } from "@qorpera/cloud-client/company-state-files";
+import { companyPathKey, osPath } from "@qorpera/cloud-client/company-state-shared";
 import {
 	decodeInterfaceFile,
 	type InterfaceFile,

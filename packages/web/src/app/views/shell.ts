@@ -341,11 +341,26 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	return accountMenu;
 }
 
+const topbarState = new WeakMap<HTMLElement, { key: string; toggle?: () => void; menu?: HTMLElement }>();
+
 export function renderTopbar(
 	container: HTMLElement,
 	context: ShellContext,
 	company: CompanyController | undefined,
 ): void {
+	const menu = company ? undefined : accountMenuElement(context);
+	const key = `${Boolean(company)}:${context.route.name === "hub"}:${Boolean(context.navigation)}:${Boolean(context.navigation?.open)}:${presentationLocale()}`;
+	const prev = topbarState.get(container);
+	const unchanged =
+		prev !== undefined &&
+		prev.key === key &&
+		prev.toggle === context.navigation?.toggle &&
+		(company
+			? context.navigation
+				? container.childElementCount > 0
+				: container.childElementCount === 0
+			: menu !== undefined && prev.menu === menu && container.contains(menu));
+	if (unchanged) return;
 	const restoreFocus = preserveAccountFocus();
 	// Company pages put the account in the rail. Only the mobile navigation
 	// button needs a toolbar; pages without a rail keep the account here.
@@ -371,8 +386,9 @@ export function renderTopbar(
 			: null,
 		lead,
 		company ? null : h("span", { class: "spacer" }),
-		company ? null : accountMenuElement(context),
+		menu ?? null,
 	);
+	topbarState.set(container, { key, toggle: context.navigation?.toggle, menu });
 	if (!company) restoreFocus();
 }
 
