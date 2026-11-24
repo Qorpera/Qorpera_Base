@@ -8,13 +8,20 @@ import {
 	starterSurfaceLayout,
 } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
+import type { CloudCompanyFolderClient } from "../src/cloud-company-folder-client.ts";
 import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
 import {
+	cloudStudioFileReader,
 	runSurfaceSessionTurn,
+	type SurfaceSessionRunnerPorts,
 	type SurfaceSessionTurnInput,
 	surfaceStudioPageView,
 } from "../src/cloud-surface-session-runner.ts";
-import { checkStagedSurfaceLayout, createStageSurfacePatchTool } from "../src/cloud-surface-tools.ts";
+import {
+	checkStagedSurfaceLayout,
+	createStageSurfacePatchTool,
+	LAYOUT_UNCHECKED_NOTE,
+} from "../src/cloud-surface-tools.ts";
 
 function toolContext(): CloudToolContext {
 	return {
@@ -74,7 +81,11 @@ const OLD_SCHEMA_WORDS = [
 	"do not create standalone HTML/CSS code pages",
 ];
 
-async function instructionsFor(surface: Interface, files: Record<string, string> = {}): Promise<string> {
+async function instructionsFor(
+	surface: Interface,
+	files: Record<string, string> = {},
+	readStudioFiles?: SurfaceSessionRunnerPorts["readStudioFiles"],
+): Promise<string> {
 	let seen = "";
 	await runSurfaceSessionTurn(
 		{
@@ -86,7 +97,7 @@ async function instructionsFor(surface: Interface, files: Record<string, string>
 			...surface,
 		},
 		{
-			readStudioFiles: async (): Promise<SurfaceFolderContents> => ({ files, binaries: {} }),
+			readStudioFiles: readStudioFiles ?? (async (): Promise<SurfaceFolderContents> => ({ files, binaries: {} })),
 			surfaceTools: { stageSurfacePatch: vi.fn() },
 			completeSessionTurn: vi.fn().mockResolvedValue(undefined),
 			async executeTurn(req) {
@@ -98,7 +109,7 @@ async function instructionsFor(surface: Interface, files: Record<string, string>
 	return seen;
 }
 
-const OWN_LAYOUT = {
+const OWN_LAYOUT: { readonly schema: string; readonly tabs: JsonValue } = {
 	schema: "qorpera.surface-layout/v1",
 	tabs: [
 		{
@@ -205,10 +216,73 @@ describe("the page contract a Studio session is told", () => {
 	});
 });
 
+type FakeFolder = Pick<CloudCompanyFolderClient, "list" | "readRange">;
+
+function folderOf(files: Record<string, string>, fail: { list?: string; read?: string } = {}): FakeFolder {
+	const entry = (path: string) => ({
+		path,
+		kind: "file" as const,
+		version: randomUUID(),
+		seq: 1,
+		updatedAt: "2026-11-24T00:00:00Z",
+		authority: { resourceId: randomUUID(), resourceRevision: 1, grantId: null, grantRevision: null },
+		file: {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: Buffer.byteLength(files[path] ?? ""),
+			mediaType: "application/json",
+			executable: false,
+		},
+	});
+	return {
+		async list(parent) {
+			if (parent === fail.list) throw new Error("folder list unavailable");
+			const entries = Object.keys(files)
+				.filter((path) => path.startsWith(`${parent}/`) && !path.slice(parent.length + 1).includes("/"))
+				.map(entry);
+			return { asOfSeq: 1, entries, next: null };
+		},
+		async readRange(found) {
+			if (found.path === fail.read) throw new Error("file read unavailable");
+			return new TextEncoder().encode(files[found.path] ?? "");
+		},
+	};
+}
+
+describe("reading the folder for the page", () => {
+	const files = { "surfaces/field-notes/layout.json": JSON.stringify(OWN_LAYOUT) };
+
+	it("shows the folder's own layout when the read succeeds", async () => {
+		const text = await instructionsFor(CUSTOM, {}, cloudStudioFileReader(folderOf(files)));
+		expect(text).toContain("Drawn from surfaces/field-notes/layout.json:");
+	});
+
+	it("says the layout is unknown when listing the folder fails, never a guessed starter", async () => {
+		const text = await instructionsFor(
+			CUSTOM,
+			{},
+			cloudStudioFileReader(folderOf(files, { list: "surfaces/field-notes" })),
+		);
+		expect(text).toContain("Its layout is not known for this turn");
+		expect(text).not.toContain("starter:");
+	});
+
+	it("says the layout is unknown when reading layout.json fails", async () => {
+		const text = await instructionsFor(
+			CUSTOM,
+			{},
+			cloudStudioFileReader(folderOf(files, { read: "surfaces/field-notes/layout.json" })),
+		);
+		expect(text).toContain("Its layout is not known for this turn");
+		expect(text).not.toContain("starter:");
+	});
+});
+
 describe("stage_surface_patch and the layout", () => {
 	const valid = JSON.stringify(starterSurfaceLayout("custom"));
-	const staging = (current: string | null) => ({
+	const staging = (current: string | null, waitingOps: readonly StudioPatchOp[] | null = []) => ({
 		folderRoot: "surfaces/kit",
+		waitingOps,
 		readLayout: vi.fn(async () => current),
 	});
 	const check = (ops: StudioPatchOp[], layout: ReturnType<typeof staging>) =>
@@ -249,7 +323,7 @@ describe("stage_surface_patch and the layout", () => {
 			],
 		});
 		await expect(tool.prepare!(parsed, toolContext())).resolves.toEqual(parsed as JsonValue);
-		await expect(check([{ op: "delete", path: "layout.json" }], layout)).resolves.toBeUndefined();
+		await expect(check([{ op: "delete", path: "layout.json" }], layout)).resolves.toBe("checked");
 		expect(layout.readLayout).not.toHaveBeenCalled();
 	});
 
@@ -268,10 +342,10 @@ describe("stage_surface_patch and the layout", () => {
 		).rejects.toThrow("layout.json would not draw: layout.schema is missing");
 		await expect(
 			check([{ op: "merge_json", path: "layout.json", patch: { tabs: OWN_LAYOUT.tabs } }], staging(valid)),
-		).resolves.toBeUndefined();
-		await expect(
-			check([{ op: "merge_json", path: "layout.json", patch: OWN_LAYOUT }], staging(null)),
-		).resolves.toBeUndefined();
+		).resolves.toBe("checked");
+		await expect(check([{ op: "merge_json", path: "layout.json", patch: OWN_LAYOUT }], staging(null))).resolves.toBe(
+			"checked",
+		);
 		await expect(
 			check([{ op: "merge_json", path: "layout.json", patch: { tabs: [] } }], staging("{ broken")),
 		).rejects.toThrow("the file it merges into is not JSON; write it whole with write_text");
@@ -285,7 +359,73 @@ describe("stage_surface_patch and the layout", () => {
 				],
 				written,
 			),
-		).resolves.toBeUndefined();
+		).resolves.toBe("checked");
 		expect(written.readLayout).not.toHaveBeenCalled();
+	});
+
+	it("checks a merge_json on top of this session's own waiting changes to the layout, in their order", async () => {
+		const renameTab = { op: "merge_json", path: "layout.json", patch: { tabs: OWN_LAYOUT.tabs } } as const;
+		await expect(check([renameTab], staging(null))).rejects.toThrow("layout.schema is missing");
+		const waitingWrite = staging(null, [{ op: "write_text", path: "surfaces/kit/layout.json", content: valid }]);
+		await expect(check([renameTab], waitingWrite)).resolves.toBe("checked");
+		expect(waitingWrite.readLayout).not.toHaveBeenCalled();
+
+		const addSchema = {
+			op: "merge_json",
+			path: "layout.json",
+			patch: { schema: "qorpera.surface-layout/v1" },
+		} as const;
+		await expect(check([addSchema], staging(valid))).resolves.toBe("checked");
+		await expect(check([addSchema], staging(valid, [{ op: "delete", path: "layout.json" }]))).rejects.toThrow(
+			"layout.json would not draw: layout.tabs is missing",
+		);
+		await expect(
+			check([addSchema], staging(valid, [{ op: "write_text", path: "modules/price/layout.json", content: "{}" }])),
+		).resolves.toBe("checked");
+	});
+
+	it("composes on the patches it staged earlier in the turn", async () => {
+		const stageSurfacePatch = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+		const tool = createStageSurfacePatchTool(randomUUID(), { stageSurfacePatch }, staging(null));
+		const first = tool.parseArguments({
+			title: "Page",
+			summary: "Starter page.",
+			ops: [{ op: "write_text", path: "layout.json", content: valid }],
+		});
+		await tool.execute(await tool.prepare!(first, toolContext()), toolContext());
+		const second = tool.parseArguments({
+			title: "Board",
+			summary: "One tab.",
+			ops: [{ op: "merge_json", path: "layout.json", patch: { tabs: OWN_LAYOUT.tabs } }],
+		});
+		await expect(tool.prepare!(second, toolContext())).resolves.toEqual(second as JsonValue);
+	});
+
+	it("stages an unchecked merge with a note when the session's waiting changes are not known, and still checks a whole file", async () => {
+		const stageSurfacePatch = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 2, openChangeCount: 2 });
+		const layout = staging(null, null);
+		const tool = createStageSurfacePatchTool(randomUUID(), { stageSurfacePatch }, layout);
+		const merge = tool.parseArguments({
+			title: "Board",
+			summary: "One tab.",
+			ops: [{ op: "merge_json", path: "layout.json", patch: { tabs: OWN_LAYOUT.tabs } }],
+		});
+		const prepared = await tool.prepare!(merge, toolContext());
+		expect(prepared).toMatchObject({ layoutUnchecked: true });
+		const answer = await tool.execute(prepared, toolContext());
+		expect(JSON.parse(answer.value as string)).toMatchObject({ staged: true, note: LAYOUT_UNCHECKED_NOTE });
+		expect(stageSurfacePatch).toHaveBeenCalledTimes(1);
+		expect(layout.readLayout).not.toHaveBeenCalled();
+
+		await expect(
+			check([{ op: "write_text", path: "layout.json", content: "nope" }], staging(null, null)),
+		).rejects.toThrow("layout.json would not draw: layout is not valid JSON.");
+		const written = tool.parseArguments({
+			title: "Page",
+			summary: "Starter page.",
+			ops: [{ op: "write_text", path: "layout.json", content: valid }],
+		});
+		const plain = await tool.execute(await tool.prepare!(written, toolContext()), toolContext());
+		expect(JSON.parse(plain.value as string)).not.toHaveProperty("note");
 	});
 });

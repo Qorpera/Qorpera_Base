@@ -82,6 +82,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	folder: SurfaceFolderReader<TFile>,
 	roots: readonly string[],
 	signal: AbortSignal,
+	unread?: (path: string) => void,
 ): Promise<SurfaceFolderContents> {
 	const uniqueRoots = [...new Set(roots.map((root) => root.replace(/^\/+|\/+$/g, "")).filter(Boolean))];
 	if (!uniqueRoots.length || signal.aborted) return EMPTY_FOLDER;
@@ -89,6 +90,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 		try {
 			return (await folder.list(parent, null, 100, signal)).entries;
 		} catch {
+			unread?.(parent);
 			return [];
 		}
 	};
@@ -179,6 +181,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 				if (!signal.aborted) files[item.path] = decoder.decode(bytes);
 			} catch {
 				if (signal.aborted) return;
+				unread?.(item.path);
 			}
 		}
 	};

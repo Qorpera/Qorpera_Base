@@ -1009,8 +1009,14 @@ export function createStartSurfaceSessionTool(
 
 export interface SurfaceLayoutStaging {
 	readonly folderRoot: string;
+	readonly waitingOps: readonly StudioPatchOp[] | null;
 	readLayout(signal: AbortSignal): Promise<string | null>;
 }
+
+export type StagedLayoutCheck = "checked" | "unchecked";
+
+export const LAYOUT_UNCHECKED_NOTE =
+	"The layout was not checked: an earlier change of this session to it may still be waiting, and this turn cannot see it.";
 
 function mergeLayoutJson(base: unknown, patch: Readonly<Record<string, unknown>>): Record<string, unknown> {
 	const target: Record<string, unknown> =
@@ -1047,44 +1053,61 @@ export async function checkStagedSurfaceLayout(
 	ops: readonly StudioPatchOp[],
 	layout: SurfaceLayoutStaging,
 	signal: AbortSignal,
-): Promise<void> {
+): Promise<StagedLayoutCheck> {
 	let layoutPath: string;
 	try {
 		layoutPath = resolveStudioFolderPath(layout.folderRoot, SURFACE_LAYOUT_PATH);
 	} catch {
-		return;
+		return "checked";
 	}
-	let text: string | null | undefined;
-	for (const op of ops) {
-		let path: string;
+	const onLayout = (op: StudioPatchOp): boolean => {
 		try {
-			path = resolveStudioFolderPath(layout.folderRoot, op.path);
+			return resolveStudioFolderPath(layout.folderRoot, op.path) === layoutPath;
 		} catch {
-			continue;
+			return false;
 		}
-		if (path !== layoutPath) continue;
-		if (op.op === "write_text") text = op.content;
-		else if (op.op === "delete") text = null;
-		else if (op.op === "write_file") throw layoutRefusal("it must be written as text with write_text");
-		else {
-			const prior = text === undefined ? await layout.readLayout(signal) : text;
+	};
+	const staged = ops.filter(onLayout);
+	if (staged.length === 0) return "checked";
+	const state: { text: string | null | undefined; known: boolean } = {
+		text: undefined,
+		known: layout.waitingOps !== null,
+	};
+	const apply = async (op: StudioPatchOp, waiting: boolean): Promise<void> => {
+		if (op.op === "write_text") {
+			state.text = op.content;
+			state.known = true;
+		} else if (op.op === "delete") {
+			state.text = null;
+			state.known = true;
+		} else if (op.op === "write_file") {
+			if (!waiting) throw layoutRefusal("it must be written as text with write_text");
+			state.known = false;
+		} else if (state.known) {
+			const prior = state.text === undefined ? await layout.readLayout(signal) : state.text;
 			let parsed: unknown = {};
 			if (prior !== null && prior.trim().length > 0) {
 				try {
 					parsed = JSON.parse(prior);
 				} catch {
-					throw layoutRefusal("the file it merges into is not JSON; write it whole with write_text");
+					if (!waiting) throw layoutRefusal("the file it merges into is not JSON; write it whole with write_text");
+					state.known = false;
+					return;
 				}
 			}
-			text = `${JSON.stringify(mergeLayoutJson(parsed, op.patch), null, 2)}\n`;
+			state.text = `${JSON.stringify(mergeLayoutJson(parsed, op.patch), null, 2)}\n`;
 		}
-	}
-	if (text === undefined || text === null) return;
+	};
+	for (const op of (layout.waitingOps ?? []).filter(onLayout)) await apply(op, true);
+	for (const op of staged) await apply(op, false);
+	if (!state.known) return "unchecked";
+	if (state.text === undefined || state.text === null) return "checked";
 	try {
-		parseSurfaceLayoutText(text);
+		parseSurfaceLayoutText(state.text);
 	} catch (error) {
 		throw layoutRefusal(error instanceof Error ? error.message : "it does not parse");
 	}
+	return "checked";
 }
 
 export function createStageSurfacePatchTool(
@@ -1092,6 +1115,7 @@ export function createStageSurfacePatchTool(
 	port: SurfacePatchToolPort,
 	layout?: SurfaceLayoutStaging,
 ): CloudNativeTool {
+	const stagedThisTurn: StudioPatchOp[] = [];
 	return {
 		name: "stage_surface_patch",
 		source: "worker",
@@ -1202,18 +1226,24 @@ export function createStageSurfacePatchTool(
 		...(layout
 			? {
 					async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
-						await checkStagedSurfaceLayout(
+						const check = await checkStagedSurfaceLayout(
 							(parsed as unknown as StageSurfacePatchRequest).ops,
-							layout,
+							{
+								...layout,
+								waitingOps: layout.waitingOps === null ? null : [...layout.waitingOps, ...stagedThisTurn],
+							},
 							context.signal,
 						);
-						return parsed;
+						return check === "unchecked"
+							? { ...(parsed as Record<string, JsonValue>), layoutUnchecked: true }
+							: parsed;
 					},
 				}
 			: {}),
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
-			const parsed = argumentsValue as unknown as StageSurfacePatchRequest;
+			const parsed = argumentsValue as unknown as StageSurfacePatchRequest & { readonly layoutUnchecked?: boolean };
 			const result = await port.stageSurfacePatch(sessionId, parsed, context);
+			stagedThisTurn.push(...parsed.ops);
 			return {
 				kind: "text",
 				value: cloudToolJsonText({
@@ -1226,6 +1256,7 @@ export function createStageSurfacePatchTool(
 					notePaths: [...parsed.notePaths],
 					finishSession: parsed.finishSession,
 					staged: true,
+					...(parsed.layoutUnchecked === true ? { note: LAYOUT_UNCHECKED_NOTE } : {}),
 				}),
 			};
 		},
