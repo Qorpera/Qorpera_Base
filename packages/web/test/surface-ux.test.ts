@@ -1107,7 +1107,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(hosting.client.read).toHaveBeenCalledTimes(1);
 		expect(address()?.className).toBe("surface-pill-address is-private");
 		expect(address()?.title).toBe("Not live yet");
-		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
+		expect(address()?.querySelector(".surface-address-dot > svg.icon")).not.toBeNull();
 		expect(address()?.textContent).toBe("thetaband.dk");
 
 		address()!.click();
@@ -1124,6 +1124,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(address()?.className).toBe("surface-pill-address is-live");
 		expect(address()?.title).toBe("Live");
 		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
+		expect(address()?.querySelector(".surface-address-dot > svg")).toBeNull();
 		await flush();
 
 		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk")];
@@ -1224,6 +1225,36 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		pill.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
 		view.el.querySelector<HTMLTextAreaElement>(".surface-input")!.focus();
 		expect(notch.classList.contains("is-open")).toBe(false);
+
+		const surfaceId = view.surface!.id;
+		const canvas = view.el.querySelector<HTMLElement>(".surface-canvas")!;
+		const shown = store.visiblePreviewChangeIds(surfaceId);
+		expect(shown.length).toBeGreaterThan(0);
+		expect(pill.querySelector(".surface-notch-count")?.textContent).toBe(String(shown.length));
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
+
+		await store.toggleChange(surfaceId, shown[0]!);
+		view.update();
+		const left = shown.length - 1;
+		expect(pill.querySelector(".surface-notch-count")?.textContent ?? "0").toBe(String(left));
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(left > 0);
+		for (const id of shown.slice(1)) await store.toggleChange(surfaceId, id);
+		view.update();
+		expect(pill.querySelector(".surface-notch-count")).toBeNull();
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
+
+		await store.toggleChange(surfaceId, shown[0]!);
+		store.setMode("live");
+		view.update();
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
+		store.setMode("preview");
+		view.update();
+		expect(pill.querySelector(".surface-notch-count")?.textContent).toBe("1");
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
+		store.setMode("report");
+		view.update();
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
+		store.setMode("preview");
 
 		view.dispose();
 		store.dispose();

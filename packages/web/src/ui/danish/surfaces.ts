@@ -128,8 +128,6 @@ export const SURFACES: Record<string, string> = {
 	"Target surface": "Mål-surface",
 	Base: "Base",
 	"Saved studio files without open changes": "Gemte studiefiler uden åbne ændringer",
-	"1 live change applied": "1 aktiv ændring vist",
-	"{count} live changes applied": "{count} aktive ændringer vist",
 	"Opening studio…": "Åbner studie…",
 	"No studio files yet. Describe a change below to create tokens, specs, or guidelines.":
 		"Ingen studiefiler endnu. Beskriv en ændring nedenfor for at oprette tokens, specifikationer eller retningslinjer.",

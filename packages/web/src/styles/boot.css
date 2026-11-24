@@ -11,8 +11,8 @@
 
 /* RailLayout's width: the member's stored one or the size's default, at most 44% of the window and never
  * under 240 (design pixels; --px is the scale). */
-.boot .rail { --rail-width: min(calc(var(--boot-rail, 406) * var(--px)), max(240px, 44vw)); }
-:root[data-ui-size="small"] .boot .rail { --rail-width: min(calc(var(--boot-rail, 502) * var(--px)), max(240px, 44vw)); }
+.boot .rail { --rail-width: min(calc(var(--boot-rail, 365) * var(--px)), max(240px, 44vw)); }
+:root[data-ui-size="small"] .boot .rail { --rail-width: min(calc(var(--boot-rail, 452) * var(--px)), max(240px, 44vw)); }
 
 /* A grey line where a line of text will stand; its line box keeps the text's own height (line heights here are
  * multiples of the font size, whatever the face). The sign-in page's lines are set in the system face: a line box in

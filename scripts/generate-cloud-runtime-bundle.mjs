@@ -7,15 +7,20 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929028099_runtime_bundle_activation_v280.sql";
-const activationVersion = 280;
-const previousActivationVersion = 279;
-const previousActivationSha256 = "243b75c47eb22c7241d603303ef3348aa9196c02e996de8c3d73c2e07a14a9ee";
+const activation = "supabase/migrations/20260929028199_runtime_bundle_activation_v281.sql";
+const activationVersion = 281;
+const previousActivationVersion = 280;
+const previousActivationSha256 = "f79958c4966dab58d7895a727c6dc1e080aa7b5795db847da288e110fddaf346";
 const activationRequires = Object.freeze([
 	[
-		"20260930889000_surface_preview_build_failure_to_session",
-		"#2319 (failed build handback): bundle 280 pairs with surface build handback table and RPCs",
-		"to_regclass('public.qorpera_surface_build_handbacks') is not null and to_regprocedure('public.qorpera_surface_build_hand_back(uuid)') is not null",
+		"20260930888000_surface_silent_reconciliation",
+		"#2317 (silent reconciliation): bundle 281 pairs with qorpera_surface_reconciliations and qorpera_ensure_surface_reconciliation",
+		"to_regclass('public.qorpera_surface_reconciliations') is not null and to_regprocedure('public.qorpera_ensure_surface_reconciliation(uuid,uuid[],text[],boolean)') is not null",
+	],
+	[
+		"20260930890000_surface_preview_lineage",
+		"#2321 (preview lineage): bundle 281 reads previewContext and pairs with preview_base_change_ids and standalone dependent helpers",
+		"exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_surface_changes' and column_name = 'preview_base_change_ids') and to_regprocedure('public.qorpera_surface_enqueue_standalone_dependents(uuid,uuid[])') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

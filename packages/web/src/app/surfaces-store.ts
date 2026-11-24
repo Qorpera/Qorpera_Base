@@ -4589,6 +4589,21 @@ export class SurfacesStore {
 		return ids;
 	}
 
+	shownPreviewChangeCount(surfaceId: string): number {
+		const surface = this.workspace(surfaceId)?.surface;
+		const builtByCloud =
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(surfaceId) &&
+			surface?.archetype === "live_build" &&
+			surface.sourceKind === "code_repo";
+		if (!builtByCloud) return this.visiblePreviewChangeIds(surfaceId).length;
+		const { toggledChangeIds, explorationSessionId } = this.previewSelection(surfaceId);
+		const variant = explorationSessionId
+			? this.workspace(surfaceId)?.activeSessions.find((session) => session.id === explorationSessionId)
+			: undefined;
+		return toggledChangeIds.length + (variant?.changes.filter(isOpenChange).length ?? 0);
+	}
+
 	#reconciliationRequestKey(surfaceId: string, changeIds: readonly string[]): string | null {
 		const ids = [...new Set(changeIds.filter(Boolean))];
 		if (!ids.length) return null;
