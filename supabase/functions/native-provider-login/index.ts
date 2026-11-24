@@ -1,5 +1,5 @@
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
-import { preferredServiceKey, readBoundedJson } from "../_shared/http-guards.ts";
+import { preferredServiceKey, readBoundedJson, serviceHeaders } from "../_shared/http-guards.ts";
 import { forwardNativeProviderLogin } from "./native-provider-login.ts";
 
 const RPC_TIMEOUT_MS = 5_000;
@@ -19,7 +19,7 @@ async function chooseLoginGateway(
 		async (signal) => {
 			const response = await fetch(new URL(`/rest/v1/rpc/qorpera_runtime_${purpose ?? "login"}_gateway_choose`, base), {
 				method: "POST",
-				headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
+				headers: serviceHeaders(key, { "content-type": "application/json", accept: "application/json" }),
 				body: JSON.stringify({ p_capability_sha256: capabilitySha256 }),
 				redirect: "error",
 				signal,

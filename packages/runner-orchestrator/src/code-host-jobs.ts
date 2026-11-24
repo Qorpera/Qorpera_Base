@@ -4364,6 +4364,7 @@ export async function pruneCodeArea(
 		if (deleteMergedBranches && workerIds.length > 0) {
 			const branchRefs = workerIds.map((id) => `refs/heads/qorpera/coding/${id}`);
 			const named = await run.refsNamed(branchRefs);
+			const existing: { workerId: string; ref: string; branchSha: string }[] = [];
 			for (let idx = 0; idx < workerIds.length; idx += 1) {
 				const workerId = workerIds[idx] as string;
 				const ref = branchRefs[idx] as string;
@@ -4373,16 +4374,44 @@ export async function pruneCodeArea(
 				} catch {
 					continue;
 				}
-				if (!branchSha) continue;
-				const [treeType, adminType] = await run.types([
-					`${run.code}/worktrees/${workerId}`,
-					`${run.repo}/worktrees/${workerId}`,
-				]);
-				if (treeType !== "none" || adminType !== "none") continue;
-				const merged = await run.git(run.repo, ["merge-base", "--is-ancestor", branchSha, mainSha]);
-				if (merged.status !== 0) continue;
-				const deleted = await run.git(run.repo, ["update-ref", "-d", ref, branchSha]);
-				if (deleted.status === 0) deletedBranches.push(`qorpera/coding/${workerId}`);
+				if (branchSha) existing.push({ workerId, ref, branchSha });
+			}
+			if (existing.length > 0) {
+				const clean: { workerId: string; ref: string; branchSha: string }[] = [];
+				for (let start = 0; start < existing.length; start += 30) {
+					const batch = existing.slice(start, start + 30);
+					const paths = batch.flatMap(({ workerId }) => [
+						`${run.code}/worktrees/${workerId}`,
+						`${run.repo}/worktrees/${workerId}`,
+					]);
+					const types = await run.types(paths);
+					for (let i = 0; i < batch.length; i += 1) {
+						if (types[i * 2] === "none" && types[i * 2 + 1] === "none") clean.push(batch[i]!);
+					}
+				}
+				if (clean.length > 0) {
+					const mergedResult = await run.git(run.repo, [
+						"for-each-ref",
+						"--merged",
+						mainSha,
+						"--format=%(refname)",
+						"refs/heads/qorpera/coding",
+					]);
+					const mergedRefs =
+						mergedResult.status === 0
+							? new Set(mergedResult.stdout.toString("utf8").split("\n").filter(Boolean))
+							: undefined;
+					for (const { workerId, ref, branchSha } of clean) {
+						if (mergedRefs) {
+							if (!mergedRefs.has(ref)) continue;
+						} else {
+							const merged = await run.git(run.repo, ["merge-base", "--is-ancestor", branchSha, mainSha]);
+							if (merged.status !== 0) continue;
+						}
+						const deleted = await run.git(run.repo, ["update-ref", "-d", ref, branchSha]);
+						if (deleted.status === 0) deletedBranches.push(`qorpera/coding/${workerId}`);
+					}
+				}
 			}
 		}
 		return { retiredWorktrees, deletedBranches, skippedWorktrees };

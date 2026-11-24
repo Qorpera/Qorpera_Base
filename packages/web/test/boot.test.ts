@@ -63,7 +63,6 @@ describe("which first screen stands while main.js loads", () => {
 			[`#/c/${COMPANY}/i/sales-board`, undefined],
 			[`#/c/${COMPANY}/file`, undefined],
 			[`#/c/${COMPANY}/team`, undefined],
-			[`#/c/${COMPANY}/meet`, undefined],
 		];
 		for (const [hash, view] of expected) expect(bootView(`https://app.example/${hash}`, true), hash).toBe(view);
 	});
@@ -105,7 +104,7 @@ describe("which first screen stands while main.js loads", () => {
 			[SMALL_DEFAULT, MIN, MAX_SHARE * 100],
 		]);
 		expect(css).toMatch(
-			/:root\[data-ui-size="small"\] \.boot \.rail \{ --rail-width: min\(calc\(var\(--boot-rail, 502\)/,
+			/:root\[data-ui-size="small"\] \.boot \.rail \{ --rail-width: min\(calc\(var\(--boot-rail, 452\)/,
 		);
 	});
 });
@@ -128,7 +127,7 @@ describe("the head script", () => {
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBe("sign-in");
 		localStorage.setItem(AUTH_STORAGE_KEY, "{}");
-		localStorage.setItem("qorpera.web.rail-width.v5", "412");
+		localStorage.setItem("qorpera.web.rail-width.v6", "412");
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBe("thread");
 		expect(document.documentElement.style.getPropertyValue("--boot-rail")).toBe("412");
@@ -184,10 +183,10 @@ describe("the head script", () => {
 	it("leaves a compact rail's thread and a width RailLayout would not take alone", () => {
 		localStorage.setItem(AUTH_STORAGE_KEY, "{}");
 		history.replaceState(null, "", `/#/c/${COMPANY}`);
-		localStorage.setItem("qorpera.web.rail-width.v5", "80");
+		localStorage.setItem("qorpera.web.rail-width.v6", "80");
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBeUndefined();
-		localStorage.setItem("qorpera.web.rail-width.v5", "120");
+		localStorage.setItem("qorpera.web.rail-width.v6", "120");
 		applyBoot();
 		expect(document.documentElement.dataset.boot).toBe("thread");
 		expect(document.documentElement.style.getPropertyValue("--boot-rail")).toBe("");

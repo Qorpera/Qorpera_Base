@@ -208,7 +208,6 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"cloud-company-path-control.ts",
 		"cloud-coding-control.ts",
 		"cloud-native-coding-runtime.ts",
-		"cloud-company-computer-registry-http.ts",
 	];
 	// In the clients' closed lists but never called by the native host: the office VM's own registry calls (G2-6c: with
 	// the lease proof its receiver asks), and the wake checks only SQL completion makes. The dispatch refuses them.
@@ -280,7 +279,6 @@ it("gives the dispatch to every database client the host builds, and to its serv
 		[...main.matchAll(/new (\w+)\(\s*(?:\{\s*supabaseUrl:\s*)?baseUrl\b/g)].map((match) => match[1]).sort(),
 	).toEqual([
 		"HttpCloudCodingControl",
-		"HttpCloudCompanyComputerRegistry",
 		"HttpCloudCompanyPathControl",
 		"NativeHostDispatch",
 		"SupabaseNativeCredentialCapsuleStore",
@@ -289,7 +287,6 @@ it("gives the dispatch to every database client the host builds, and to its serv
 	expect(main).toMatch(/new SupabaseNativeProviderControlPlane\(\s*baseUrl,\s*publishableKey,\s*dispatch\.fetch,/);
 	expect(main).toMatch(/new HttpCloudCompanyPathControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCodingControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
-	expect(main).toMatch(/new HttpCloudCompanyComputerRegistry\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	// G2-4: the capsule store signs through the dispatch, and the presence client has the publishable key and the
 	// holder's transport, never the service key.
 	expect(main).toMatch(/new SupabaseNativeCredentialCapsuleStore\(baseUrl, dispatch\.fetch\)/);

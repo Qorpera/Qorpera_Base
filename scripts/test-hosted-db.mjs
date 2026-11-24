@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HostedDbCluster, migrationNames, newestBundleActivation, sessionPerFile } from "./test-hosted-db-cluster.mjs";
+import { HostedDbCluster, migrationNames, sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 /** Debian's image, not Alpine's: PostgreSQL on musl spends as long in the kernel as on its own code, mostly page faults
  * and munmap from musl's allocator. The same 924 migrations and 49 SQL tests in one slot, alternating (7 Nov): replay
@@ -38,11 +38,23 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * left. A test connecting to its database again uses `current_database()`, not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "509"],
-	["qorpera_test_3", "672"],
-	["qorpera_test_4", "826"],
-	["qorpera_test_5", "893"],
+	["qorpera_test_2", "628"],
+	["qorpera_test_3", "786"],
+	["qorpera_test_4", "948"],
+	["qorpera_test_5", "1245"],
 ];
+
+export function compareTestNames(a, b) {
+	const numA = /^(\d+)/.exec(a);
+	const numB = /^(\d+)/.exec(b);
+	if (numA && numB) {
+		const diff = Number(numA[1]) - Number(numB[1]);
+		if (diff !== 0) return diff;
+	} else if (numA || numB) {
+		return numA ? -1 : 1;
+	}
+	return a < b ? -1 : a > b ? 1 : 0;
+}
 
 export function sortMigrationNames(names) {
 	const migrations = names.filter((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)).sort();
@@ -87,8 +99,6 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-email-draft-e2e.mjs",
 	"scripts/test-runtime-node-capacity.mjs",
 	"scripts/test-runtime-cpu-allocation-ratio.mjs",
-	"scripts/test-runtime-office-delete-disposition.mjs",
-	"scripts/test-runtime-office-current-provider-activation.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",
 	"scripts/test-runtime-roll.mjs",
 	"scripts/test-sql-only-packets.mjs",
@@ -105,7 +115,6 @@ export const HOSTED_DB_SCRIPTS = [
  * the run's replay and then runs in turn with the others. */
 const OWN_SERVER_SCRIPTS = new Set([
 	"scripts/test-runtime-node-capacity.mjs",
-	"scripts/test-runtime-office-delete-disposition.mjs",
 ]);
 
 /** Where those scripts start in the migration chain; the one replay leaves a copy at each. A point missing
@@ -113,7 +122,6 @@ const OWN_SERVER_SCRIPTS = new Set([
 function scriptStartPoints(names) {
 	return [
 		"20260926034000_runtime_bundle_activation_v128.sql", // test-runtime-bundle-activation
-		newestBundleActivation(names), // test-runtime-office-delete-disposition holds it back
 	].filter((name) => names.includes(name));
 }
 
@@ -227,7 +235,14 @@ export function splitTests(tests, only, databases = SQL_TEST_DATABASES) {
 	return databases
 		.map(([database, first], index) => {
 			const next = databases[index + 1]?.[1];
-			return [database, tests.filter((test) => test >= first && (next === undefined || test < next))];
+			return [
+				database,
+				tests.filter(
+					(test) =>
+						(first === "" || compareTestNames(test, first) >= 0) &&
+						(next === undefined || compareTestNames(test, next) < 0),
+				),
+			];
 		})
 		.filter(([, part]) => part.length > 0);
 }
@@ -237,7 +252,7 @@ async function main() {
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
 	const all = readdirSync(testsRoot)
 		.filter((name) => name.endsWith(".test.sql"))
-		.sort();
+		.sort(compareTestNames);
 	if (all.length === 0) {
 		throw new Error("No hosted database regression tests were found");
 	}

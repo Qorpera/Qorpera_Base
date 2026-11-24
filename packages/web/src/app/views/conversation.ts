@@ -2,11 +2,7 @@ import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
 import { isGmailDraft, questionInput } from "../../cloud/interactions.ts";
-import {
-	type InterfaceChange,
-	type InterfaceChangeSubject,
-	interfaceChangeUndoable,
-} from "../../cloud/interface-changes.ts";
+import type { InterfaceChangeSubject } from "../../cloud/interface-changes.ts";
 import { type MessageErase, MessageEraseError } from "../../cloud/message-erases.ts";
 import { planLogin } from "../../cloud/native-subscription.ts";
 import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
@@ -59,11 +55,7 @@ import { Dictation } from "../../ui/dictation.ts";
 import { confirmDialog, fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
-import {
-	type InterfaceUndoState,
-	interfaceChangeText,
-	renderInterfaceChangeLine,
-} from "../../ui/interface-change-line.ts";
+import { interfaceChangeText, renderInterfaceChangeLine } from "../../ui/interface-change-line.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { appCard, type LinkedSite, markdown, markdownBubbles } from "../../ui/markdown.ts";
@@ -409,8 +401,6 @@ export class ConversationView {
 	readonly #conversationPane: HTMLElement;
 	readonly #notificationSignal: AbortSignal;
 	readonly #actions: WorkspaceActions;
-	/** Undo of an agent's interface change, by its commit, while the member is in this thread. */
-	readonly #undos = new Map<string, InterfaceUndoState>();
 	/** Each message drawn in the thread: what it is and who wrote it, for its right-click menu. */
 	readonly #messageItems = new WeakMap<Element, { item: TranscriptMessage; author: string; mine: boolean }>();
 	/** What opens the next message menu: "key" after Shift+F10 or the menu key in the thread, else the type of the
@@ -1404,25 +1394,6 @@ export class ConversationView {
 		} catch {
 			// The controller keeps the reason in the conversation state.
 		}
-	}
-
-	/** Undo an agent's interface change as the member; its line says how it went. One at a time per change. */
-	async #undoInterfaceChange(change: InterfaceChange): Promise<void> {
-		const undo = this.#actions.undoInterfaceChange;
-		if (!undo || this.#undos.get(change.commitId)?.state === "sending") return;
-		this.#undos.set(change.commitId, { state: "sending" });
-		this.#messagesSnap = undefined;
-		this.update();
-		let state: InterfaceUndoState;
-		try {
-			state = { state: "answered", answer: await undo(change, this.#lifetime.signal) };
-		} catch {
-			state = { state: "failed" };
-		}
-		if (this.#lifetime.signal.aborted) return;
-		this.#undos.set(change.commitId, state);
-		this.#messagesSnap = undefined;
-		this.update();
 	}
 
 	/** A message's menu, for an owner or admin, the roles the erase route takes (M3c): Erase, or for a message already
@@ -2785,7 +2756,6 @@ export class ConversationView {
 				item.kind === "interface_change" ? [[item.id, interfaceChangeText(item.change, titleOf)] as const] : [],
 			),
 		);
-		const undoes = Boolean(this.#actions.undoInterfaceChange) && companyState.team?.capabilities.write;
 		const acknowledgements = runAcknowledgements(items, !conversation.hasEarlier, room);
 		const heldWords = this.#holdFirstWords(items, acknowledgements, runAtWork, room || conversation.loading === true);
 		// Approval cards of agents' actions (auto-review, v130) show their own outcome.
@@ -2820,8 +2790,7 @@ export class ConversationView {
 		const foldOf = new Map<string, string>();
 		for (const [first, group] of folds) for (const id of group.items) foldOf.set(id, first);
 		for (const first of this.#openFolds) if (!folds.has(first)) this.#openFolds.delete(first);
-		const key = JSON.stringify([
-			items.map(cachedTranscriptItemJson),
+		const key = `${items.map(cachedTranscriptItemJson).join("\0")}\x01${JSON.stringify([
 			mentionTargets,
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
@@ -2859,13 +2828,11 @@ export class ConversationView {
 			skillNames,
 			items.flatMap((item) => (item.kind === "peer_link" ? [coworker(item.counterpartStaffId)] : [])),
 			[...changeLines.values()],
-			undoes,
-			[...this.#undos],
 			// A sent message learns its input id: the element passes on by it (see `handedOver`).
 			conversation.optimistic.map((item) => item.inputId ?? null),
 			this.#ready?.shown,
 			this.#siteCards?.key,
-		]);
+		])}`;
 		this.#messagesSnap = {
 			projection: conversation.projection,
 			optimistic: conversation.optimistic,
@@ -3271,17 +3238,10 @@ export class ConversationView {
 					),
 				);
 			} else if (item.kind === "interface_change") {
-				// An agent's change to the interfaces or tables, saved without review: one line, with Undo when the
-				// member can write and Undo can take it back.
 				const text = changeLines.get(item.id) ?? "";
-				const state = this.#undos.get(item.change.commitId);
-				const offered = undoes && interfaceChangeUndoable(item.change);
 				nodes.push(
-					keep(item.id, JSON.stringify([item.change, text, state, offered]), "", () =>
-						renderInterfaceChangeLine(item.change, text, {
-							...(state ? { state } : {}),
-							...(offered ? { undo: () => void this.#undoInterfaceChange(item.change) } : {}),
-						}),
+					keep(item.id, JSON.stringify([item.change, text]), "", () =>
+						renderInterfaceChangeLine(item.change, text),
 					),
 				);
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {

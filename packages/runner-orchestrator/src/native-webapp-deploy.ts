@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { isUuid } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { CodeChangeRecordsOptions } from "./code-change-records.ts";
 import { CODE_SITE_MAX_BYTES, CODE_SITE_MAX_FILES } from "./code-site.ts";
 import type { CodeSiteTarget, CodeSiteUploadFile } from "./code-site-uploads.ts";
@@ -266,15 +267,17 @@ export async function buildAppImageWithScript(
 		.slice(0, 60);
 	const imageTag = `${input.registryPrefix.replace(/\/+$/, "")}/${safeRepo}:c${input.change}-${input.tree.slice(0, 12)}`;
 	const args = [input.sourceDir, imageTag];
-	const { stdout } = await execFileAsync(scriptPath, args, {
-		signal,
-		maxBuffer: 4 * 1024 * 1024,
-		env: {
-			PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			...(input.dockerfile ? { QORPERA_DOCKERFILE: input.dockerfile } : {}),
-			QORPERA_APP_PORT: String(input.port),
-		},
-	});
+	const { stdout } = await withTimeoutScope(signal, 10 * 60_000, (bounded) =>
+		execFileAsync(scriptPath, args, {
+			signal: bounded,
+			maxBuffer: 4 * 1024 * 1024,
+			env: {
+				PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+				...(input.dockerfile ? { QORPERA_DOCKERFILE: input.dockerfile } : {}),
+				QORPERA_APP_PORT: String(input.port),
+			},
+		}),
+	);
 	const lines = stdout
 		.split(/\r?\n/)
 		.map((line) => line.trim())
@@ -287,15 +290,16 @@ export async function buildAppImageWithScript(
 	};
 }
 
-const defaultAppHostFetch: AppHostFetch = async (url, init) => {
-	const res = await fetch(url, {
-		method: init.method,
-		headers: init.headers,
-		body: init.body,
-		signal: init.signal,
+const defaultAppHostFetch: AppHostFetch = async (url, init) =>
+	withTimeoutScope(init.signal, 30_000, async (bounded) => {
+		const res = await fetch(url, {
+			method: init.method,
+			headers: init.headers,
+			body: init.body,
+			signal: bounded,
+		});
+		return { status: res.status, body: await res.text() };
 	});
-	return { status: res.status, body: await res.text() };
-};
 
 export async function emitHostedAppUnhealthy(
 	control: CodeChangeRecordsOptions["control"],

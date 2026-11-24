@@ -510,8 +510,7 @@ function pngRaster(bytes: Uint8Array): Raster {
 	};
 	let image: PngImage | undefined;
 	let idatBytes = 0;
-	let idatChunks = 0;
-	let firstIdat: Uint8Array | undefined;
+	const idatParts: Uint8Array[] = [];
 	chunks((type, data) => {
 		if (image === undefined) {
 			if (type !== IHDR || data.byteLength !== 13) unreadable("the PNG does not start with its header");
@@ -539,9 +538,8 @@ function pngRaster(bytes: Uint8Array): Raster {
 		if (type === IHDR) unreadable("the PNG has two headers");
 		if (type === IDAT) {
 			idatBytes += data.byteLength;
-			idatChunks++;
-			firstIdat ??= data;
-		} else if (idatChunks > 0) {
+			idatParts.push(data);
+		} else if (idatParts.length > 0) {
 			if ((type & ANCILLARY) === 0) unreadable("the PNG has a critical chunk after its image data");
 		} else if (type === PLTE) {
 			if (image.palette || data.byteLength === 0 || data.byteLength % 3 !== 0 || data.byteLength > 768)
@@ -551,17 +549,16 @@ function pngRaster(bytes: Uint8Array): Raster {
 		else if ((type & ANCILLARY) === 0) unreadable("the PNG has a critical chunk this reader does not know");
 	});
 	const png = image;
-	if (png === undefined || firstIdat === undefined) unreadable("the PNG has no image data");
+	if (png === undefined || idatParts.length === 0) unreadable("the PNG has no image data");
 	if (png.colour === 3 && png.palette === undefined) unreadable("the PNG has no palette");
-	let compressed = firstIdat;
-	if (idatChunks > 1) {
+	let compressed = idatParts[0]!;
+	if (idatParts.length > 1) {
 		const whole = Buffer.allocUnsafe(idatBytes);
 		let at = 0;
-		chunks((type, data) => {
-			if (type !== IDAT) return;
-			whole.set(data, at);
-			at += data.byteLength;
-		});
+		for (const part of idatParts) {
+			whole.set(part, at);
+			at += part.byteLength;
+		}
 		compressed = whole;
 	}
 	const bitsPerPixel = png.channels * png.depth;

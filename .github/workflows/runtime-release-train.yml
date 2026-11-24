@@ -23,8 +23,6 @@ on:
       - 'packages/web/src/cloud/**'
       - 'packages/web/tsconfig.json'
       - 'packages/web/public/assets/avatars/**'
-      - '!packages/member-web/**'
-      - 'packages/member-web/ui/**'
 
 # Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
 # branches declare the runtime bundle, so only they must carry derived files

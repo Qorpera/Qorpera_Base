@@ -40,16 +40,31 @@ import {
 import { phrase, t } from "../ui/preferences.ts";
 import { type SurfaceFigureId, surfaceFigureIcon } from "../ui/surface-figure.ts";
 import { Store } from "./state.ts";
-import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import {
+	isOpsKind,
 	isThetabandCompany,
-	localStudioBinaryBytes,
+	type SurfaceKind,
+	type SurfaceLook,
 	slugifySurfaceTitle,
-	starterOrchestrationPlan,
-	starterStudioBinaries,
-	starterStudioFiles,
-	synthesizeLocalChanges,
-} from "./surface-local-sandbox.ts";
+	surfaceLookOf,
+} from "./surface-kinds.ts";
+
+type LocalSandboxModule = typeof import("./surface-local-sandbox.ts");
+let localSandbox: LocalSandboxModule | undefined;
+let localSandboxLoading: Promise<LocalSandboxModule> | undefined;
+
+export function registerLocalSandbox(mod: LocalSandboxModule): void {
+	localSandbox = mod;
+}
+
+function loadLocalSandbox(): Promise<LocalSandboxModule> {
+	if (localSandbox) return Promise.resolve(localSandbox);
+	localSandboxLoading ??= import("./surface-local-sandbox.ts").then((mod) => {
+		localSandbox = mod;
+		return mod;
+	});
+	return localSandboxLoading;
+}
 
 export type SurfacesClient = Pick<
 	CloudSurfacesClient,
@@ -1534,7 +1549,7 @@ export class SurfacesStore {
 
 	readStudioBinary(file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> {
 		signal.throwIfAborted();
-		const read = localStudioBinaryBytes(file) ?? this.#binaryRead(file);
+		const read = localSandbox?.localStudioBinaryBytes(file) ?? this.#binaryRead(file);
 		if (!read) return Promise.reject(new Error("No folder to read from"));
 		return new Promise<Uint8Array>((resolve, reject) => {
 			const stop = () => reject(signal.reason);
@@ -1789,13 +1804,26 @@ export class SurfacesStore {
 			this.#options.sandboxMode !== false &&
 			isThetabandCompany(this.companyName)
 		) {
-			this.orchestrateStarterSurfaces();
+			if (localSandbox) {
+				this.orchestrateStarterSurfaces();
+			} else {
+				void loadLocalSandbox().then(() => {
+					if (!this.#options.signal.aborted) this.orchestrateStarterSurfaces();
+				});
+			}
 		}
 	}
 
 	orchestrateStarterSurfaces(): readonly SurfaceSummary[] {
 		if (!this.isLocalInteractive) return [];
-		const plan = starterOrchestrationPlan(this.companyName);
+		const sandbox = localSandbox;
+		if (!sandbox) {
+			void loadLocalSandbox().then(() => {
+				if (!this.#options.signal.aborted) this.orchestrateStarterSurfaces();
+			});
+			return [];
+		}
+		const plan = sandbox.starterOrchestrationPlan(this.companyName);
 		const now = new Date().toISOString();
 		const createdSurfaces: SurfaceSummary[] = [];
 		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
@@ -1824,10 +1852,10 @@ export class SurfacesStore {
 			nextLooks[surface.id] = look;
 			if (spec.archetype === "studio") {
 				nextStudioBase[surface.id] = {
-					...starterStudioFiles(surface, this.companyName, spec.kind, spec.brief),
+					...sandbox.starterStudioFiles(surface, this.companyName, spec.kind, spec.brief),
 					...(spec.attachedReports ?? {}),
 				};
-				const binaries = starterStudioBinaries(surface, this.companyName, spec.kind);
+				const binaries = sandbox.starterStudioBinaries(surface, this.companyName, spec.kind);
 				if (Object.keys(binaries).length > 0) nextStudioBinaries[surface.id] = binaries;
 			} else if (spec.attachedReports && Object.keys(spec.attachedReports).length > 0) {
 				nextStudioBase[surface.id] = { ...spec.attachedReports };
@@ -3047,12 +3075,15 @@ export class SurfacesStore {
 		});
 		this.#localCreatedIds.add(created.id);
 		const look: SurfaceLook = { kind: input.kind ?? surfaceLookOf(created).kind };
+		const sandbox = input.archetype === "studio" ? (localSandbox ?? (await loadLocalSandbox())) : undefined;
 		const starterFiles =
-			input.archetype === "studio"
-				? starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
+			sandbox && input.archetype === "studio"
+				? sandbox.starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
 				: undefined;
 		const starterBinaries =
-			input.archetype === "studio" ? starterStudioBinaries(created, this.companyName, look.kind) : {};
+			sandbox && input.archetype === "studio"
+				? sandbox.starterStudioBinaries(created, this.companyName, look.kind)
+				: {};
 		this.store.set((state) => ({
 			surfaces: sortSurfaces([...state.surfaces, created]),
 			workspaces: { ...state.workspaces, [created.id]: { ...localWorkspace(created), briefSummary: description } },
@@ -3303,46 +3334,51 @@ export class SurfacesStore {
 
 	#stageLocalSession(surface: SurfaceSummary, sessionId: string, prompt: string): void {
 		this.#scheduleLocal(650, () => {
-			const workspace = this.workspace(surface.id);
-			const current = workspace?.activeSessions.find((item) => item.id === sessionId);
-			if (!workspace || !current) return;
-			const plan = synthesizeLocalChanges(
-				workspace.surface,
-				sessionId,
-				prompt,
-				() => `local-change-${++this.#localSeq}`,
-				this.companyName,
-				this.lookOf(workspace.surface).kind,
-			);
-			const now = new Date().toISOString();
-			const ready: SurfaceSession = {
-				...current,
-				state: "ready",
-				changes: [...plan.changes],
-				openChangeCount: plan.changes.length,
-				messages: [
-					...current.messages,
-					{
-						id: `local-message-${++this.#localSeq}`,
-						sessionId,
-						authorKind: "session",
-						text: plan.replyText,
-						changeId: null,
-						createdAt: now,
-					},
-				],
-				updatedAt: now,
+			const finish = (sandbox: LocalSandboxModule): void => {
+				if (this.#options.signal.aborted) return;
+				const workspace = this.workspace(surface.id);
+				const current = workspace?.activeSessions.find((item) => item.id === sessionId);
+				if (!workspace || !current) return;
+				const plan = sandbox.synthesizeLocalChanges(
+					workspace.surface,
+					sessionId,
+					prompt,
+					() => `local-change-${++this.#localSeq}`,
+					this.companyName,
+					this.lookOf(workspace.surface).kind,
+				);
+				const now = new Date().toISOString();
+				const ready: SurfaceSession = {
+					...current,
+					state: "ready",
+					changes: [...plan.changes],
+					openChangeCount: plan.changes.length,
+					messages: [
+						...current.messages,
+						{
+							id: `local-message-${++this.#localSeq}`,
+							sessionId,
+							authorKind: "session",
+							text: plan.replyText,
+							changeId: null,
+							createdAt: now,
+						},
+					],
+					updatedAt: now,
+				};
+				if (Object.keys(plan.studioPatches).length > 0) {
+					this.store.set((state) => ({
+						studioPatches: { ...state.studioPatches, ...plan.studioPatches },
+					}));
+				}
+				const nextWorkspace = replaceSession(workspace, ready, "open");
+				this.#putWorkspace({
+					...nextWorkspace,
+					surface: this.#syncLocalSurfaceCounts(nextWorkspace),
+				});
 			};
-			if (Object.keys(plan.studioPatches).length > 0) {
-				this.store.set((state) => ({
-					studioPatches: { ...state.studioPatches, ...plan.studioPatches },
-				}));
-			}
-			const nextWorkspace = replaceSession(workspace, ready, "open");
-			this.#putWorkspace({
-				...nextWorkspace,
-				surface: this.#syncLocalSurfaceCounts(nextWorkspace),
-			});
+			if (localSandbox) finish(localSandbox);
+			else void loadLocalSandbox().then(finish);
 		});
 	}
 
@@ -3361,8 +3397,9 @@ export class SurfacesStore {
 		const upload = this.#options.uploadImage;
 		if (!upload || !client.surfaceSessionImages) throw new Error(t("Images can't be sent here yet."));
 		const clientInputId = crypto.randomUUID();
-		const images: SurfaceImageRef[] = [];
-		for (const file of files) images.push(await upload(surfaceId, clientInputId, file, this.#options.signal));
+		const images = await Promise.all(
+			files.map((file) => upload(surfaceId, clientInputId, file, this.#options.signal)),
+		);
 		return { clientInputId, images };
 	}
 
@@ -4550,6 +4587,21 @@ export class SurfacesStore {
 			}
 		}
 		return ids;
+	}
+
+	shownPreviewChangeCount(surfaceId: string): number {
+		const surface = this.workspace(surfaceId)?.surface;
+		const builtByCloud =
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(surfaceId) &&
+			surface?.archetype === "live_build" &&
+			surface.sourceKind === "code_repo";
+		if (!builtByCloud) return this.visiblePreviewChangeIds(surfaceId).length;
+		const { toggledChangeIds, explorationSessionId } = this.previewSelection(surfaceId);
+		const variant = explorationSessionId
+			? this.workspace(surfaceId)?.activeSessions.find((session) => session.id === explorationSessionId)
+			: undefined;
+		return toggledChangeIds.length + (variant?.changes.filter(isOpenChange).length ?? 0);
 	}
 
 	#reconciliationRequestKey(surfaceId: string, changeIds: readonly string[]): string | null {

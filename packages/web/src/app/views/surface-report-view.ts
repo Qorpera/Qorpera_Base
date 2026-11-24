@@ -1180,12 +1180,6 @@ export class SurfaceReportView {
 			}
 		}
 
-		const badgeText =
-			composition.appliedChangeIds.length === 1
-				? t("1 live change applied")
-				: composition.appliedChangeIds.length > 1
-					? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-					: null;
 		const effectiveUpdatingPhase = updatingPhase ?? (reconcilingPreview ? "updating" : null);
 		const updatingText =
 			updatingPhase !== null ? updatingLabel(updatingPhase) : reconcilingPreview ? t("Updating preview…") : null;
@@ -1233,7 +1227,6 @@ export class SurfaceReportView {
 											h("span", null, updatingText),
 										)
 									: null,
-								badgeText ? h("span", { class: "studio-badge is-live" }, badgeText) : null,
 							)
 						: null,
 				)

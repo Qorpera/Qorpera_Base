@@ -1,4 +1,4 @@
-use crate::routes::{EdgeSnapshot, SharedRoutes};
+use crate::routes::{EdgeSnapshot, RouteTable, SharedRoutes};
 use sha2::{Digest, Sha256};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -360,10 +360,10 @@ async fn refresh_snapshot(
     } else {
         parse_snapshot_if_changed(&raw_json, previous_hash)?
     };
-    let Some((digest, snapshot)) = parsed else {
+    let Some((digest, prebuilt)) = parsed else {
         return Ok(());
     };
-    routes.update(|table| table.apply_snapshot(snapshot));
+    routes.update(|table| table.apply_prebuilt(prebuilt));
     *last_hash = Some(digest);
     Ok(())
 }
@@ -371,14 +371,14 @@ async fn refresh_snapshot(
 fn parse_snapshot_if_changed(
     raw_json: &str,
     previous_hash: Option<[u8; 32]>,
-) -> Result<Option<([u8; 32], EdgeSnapshot)>, String> {
+) -> Result<Option<([u8; 32], RouteTable)>, String> {
     let digest: [u8; 32] = Sha256::digest(raw_json.as_bytes()).into();
     if previous_hash.as_ref() == Some(&digest) {
         return Ok(None);
     }
     let snapshot: EdgeSnapshot =
         serde_json::from_str(raw_json).map_err(|e| format!("snapshot parse failed: {e}"))?;
-    Ok(Some((digest, snapshot)))
+    Ok(Some((digest, RouteTable::from_snapshot(snapshot))))
 }
 
 struct ConnectionMessages<'a, S, T> {

@@ -694,10 +694,11 @@ describe("the edge function's route for the one call", () => {
 				handler = served;
 			},
 		});
-		const client = "data:text/javascript,export const createClient = (...values) => globalThis.qorperaEdgeTestClient(...values);";
+		const client =
+			"data:text/javascript,export const createPostgrestClient = (...values) => globalThis.qorperaEdgeTestClient(...values);";
 		const hooks = registerHooks({
 			resolve: (specifier, context, nextResolve) =>
-				specifier.startsWith("npm:@supabase/supabase-js@") ? { url: client, shortCircuit: true } : nextResolve(specifier, context),
+				specifier.endsWith("/postgrest-rpc.ts") ? { url: client, shortCircuit: true } : nextResolve(specifier, context),
 		});
 		await import("./index.ts");
 		hooks.deregister();

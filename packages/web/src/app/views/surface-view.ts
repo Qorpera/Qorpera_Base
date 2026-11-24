@@ -794,6 +794,8 @@ export class SurfaceView {
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
 		const hasAgents = explorations.length + plainSessions.length > 0;
+		const shownCount =
+			state.mode === "preview" || state.mode === "compare" ? store.shownPreviewChangeCount(surface.id) : 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
 		const served = this.#host.isSiteLive?.(surface);
@@ -831,6 +833,7 @@ export class SurfaceView {
 			studioHasChanges,
 			panelOpen,
 			openWorkCount,
+			shownCount,
 			hasAgents,
 			Boolean(state.busy[`publish:${surface.id}`]),
 			surface.publishStatus ?? "idle",
@@ -1057,7 +1060,8 @@ export class SurfaceView {
 				: effectiveMode === "report"
 					? t("Notes")
 					: t("Preview");
-		const notchCount = site === "live" && count > 0 ? count : openWorkCount;
+		const notchCount =
+			effectiveMode === "preview" ? shownCount : site === "live" && count > 0 ? count : openWorkCount;
 		this.#notchPill.replaceChildren(
 			h("span", { class: "surface-notch-label" }, notchLabel),
 			...(notchCount > 0 ? [h("span", { class: "surface-notch-count" }, String(notchCount))] : []),

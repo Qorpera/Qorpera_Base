@@ -180,25 +180,8 @@ export interface CloudRoutineOccurrence {
 	finishedAt: string | null;
 }
 
-export interface CloudRoutineSaveInput {
-	environmentId: string;
-	/** Stable identity: the same id edits the routine. */
-	clientRoutineId: string;
-	/** One per distinct save; a retry of the same save reuses it. */
-	clientVersionId: string;
-	staffAgentId: string;
-	title: string;
-	prompt: string;
-	triggers: CloudRoutineTrigger[];
-	/** Every save states it: an edit passes the routine's own, so no save resets it. */
-	effort: CloudRoutineEffort;
-	sponsorBindingId: string;
-	sponsorVersion: number;
-	enabled: boolean;
-}
-
 export type CloudRoutineRpc = (
-	name: "qorpera_list_cloud_routines" | "qorpera_list_wake_occurrences" | "qorpera_upsert_cloud_routine",
+	name: "qorpera_list_cloud_routines" | "qorpera_list_wake_occurrences",
 	args: Record<string, unknown>,
 	signal: AbortSignal,
 ) => Promise<unknown>;
@@ -754,52 +737,5 @@ export class CloudRoutineClient {
 		);
 		if (!Array.isArray(value) || value.length > limit) invalid("occurrence list");
 		return (value as unknown[]).map(parseCloudRoutineOccurrence);
-	}
-	/** Create and edit are one call: the client routine id is the identity and
-	 * each distinct save carries its own version id. Pausing is `enabled: false`;
-	 * the cloud has no member delete. */
-	async save(
-		input: CloudRoutineSaveInput,
-		signal: AbortSignal,
-	): Promise<{ routineId: string; version: number; status: "active" | "paused" }> {
-		const title = text(input.title, "routine title", 640).trim();
-		if (title.length > 160) invalid("routine title");
-		if (input.triggers.length < 1 || input.triggers.length > 12) invalid("routine triggers");
-		const triggers = input.triggers.map(parseCloudRoutineTrigger);
-		if (new Set(triggers.map((trigger) => trigger.id)).size !== triggers.length) invalid("routine triggers");
-		if (!["low", "medium", "high", "xhigh", "max"].includes(input.effort)) invalid("routine effort");
-		const value = record(
-			await this.#rpc(
-				"qorpera_upsert_cloud_routine",
-				{
-					p_environment_id: uuid(input.environmentId, "environment"),
-					p_client_routine_id: uuid(input.clientRoutineId, "routine client id"),
-					p_client_version_id: uuid(input.clientVersionId, "routine version id"),
-					p_staff_agent_id: uuid(input.staffAgentId, "routine agent"),
-					p_title: title,
-					p_prompt: text(input.prompt, "routine prompt", 32 * 1024).trim(),
-					p_triggers: triggers,
-					p_effort: input.effort,
-					p_sponsor_binding_id: uuid(input.sponsorBindingId, "routine sponsor"),
-					p_sponsor_version: count(input.sponsorVersion, "routine sponsor version"),
-					p_logical_computer_id: null,
-					p_required_capability: "agent_turn",
-					p_job_type: "agent_turn",
-					p_enabled: input.enabled === true,
-					p_publication_mode: "automatic",
-					p_review_policy_key: null,
-					p_reviewer_staff_ids: [],
-				},
-				signal,
-			),
-			"routine save",
-		);
-		if (value.client_routine_id !== input.clientRoutineId || (value.status !== "active" && value.status !== "paused"))
-			invalid("routine save");
-		return {
-			routineId: uuid(value.routine_id, "routine id"),
-			version: count(value.version, "routine version"),
-			status: value.status,
-		};
 	}
 }

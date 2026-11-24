@@ -145,7 +145,9 @@ function main(): void {
 	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGPIPE"] as const)
 		process.on(signal, () => process.exit(128 + constants.signals[signal]));
 	const socket = connect(SOCKET);
-	let rest = "";
+	const maxLineChars = 16 * 1024 * 1024;
+	let parts: string[] = [];
+	let partLen = 0;
 	let code = 255;
 	socket.on("error", () => {
 		write(2, Buffer.from("HOME_UNAVAILABLE: this agent's machine could not be reached.\n"));
@@ -164,12 +166,19 @@ function main(): void {
 	);
 	socket.setEncoding("utf8");
 	socket.on("data", (chunk: string) => {
-		rest += chunk;
-		let end = rest.indexOf("\n");
+		let start = 0;
+		let end = chunk.indexOf("\n", start);
 		while (end >= 0) {
-			const line = rest.slice(0, end);
-			rest = rest.slice(end + 1);
-			end = rest.indexOf("\n");
+			const tail = chunk.slice(start, end);
+			if (partLen + tail.length > maxLineChars) {
+				socket.destroy();
+				process.exit(255);
+			}
+			const line = parts.length === 0 ? tail : `${parts.join("")}${tail}`;
+			parts = [];
+			partLen = 0;
+			start = end + 1;
+			end = chunk.indexOf("\n", start);
 			let message: { o?: string; e?: string; x?: number };
 			try {
 				message = JSON.parse(line) as typeof message;
@@ -182,6 +191,15 @@ function main(): void {
 				code = Number.isInteger(message.x) && message.x >= 0 && message.x < 256 ? message.x : 255;
 				process.exit(code);
 			}
+		}
+		if (start < chunk.length) {
+			const tail = start === 0 ? chunk : chunk.slice(start);
+			partLen += tail.length;
+			if (partLen > maxLineChars) {
+				socket.destroy();
+				process.exit(255);
+			}
+			parts.push(tail);
 		}
 	});
 	socket.on("close", () => process.exit(code));

@@ -229,10 +229,6 @@ export function growToText(field: HTMLTextAreaElement): void {
 	for (const [at, top] of scrolled) at.scrollTop = top;
 }
 
-export function shortId(id: string): string {
-	return id.slice(0, 8);
-}
-
 export type Tone = "neutral" | "ok" | "warn" | "danger" | "accent";
 
 export function badge(label: string, tone: Tone = "neutral", title?: string): HTMLElement {

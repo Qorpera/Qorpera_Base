@@ -5,22 +5,10 @@
 		"uuidHelpers": 9,
 		"sha256Helpers": 1
 	},
-	"company": {
-		"uuidPatterns": 0,
-		"recordHelpers": 0,
-		"uuidHelpers": 0,
-		"sha256Helpers": 0
-	},
 	"contracts": {
 		"uuidPatterns": 25,
 		"recordHelpers": 23,
 		"uuidHelpers": 5,
-		"sha256Helpers": 0
-	},
-	"member-web": {
-		"uuidPatterns": 1,
-		"recordHelpers": 0,
-		"uuidHelpers": 0,
 		"sha256Helpers": 0
 	},
 	"object-gateway": {

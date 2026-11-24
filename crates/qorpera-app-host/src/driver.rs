@@ -409,16 +409,16 @@ impl LxdUnixClient {
         body: Option<serde_json::Value>,
         timeout: Duration,
     ) -> Result<(StatusCode, LxdEnvelope), String> {
-        if !self.socket_path.exists() {
-            return Err(format!(
-                "lxd unix socket not found at {}",
-                self.socket_path.display()
-            ));
-        }
         let stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(&self.socket_path))
             .await
             .map_err(|_| "lxd_connect_timeout".to_string())?
-            .map_err(|e| format!("lxd_connect_failed: {e}"))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    format!("lxd unix socket not found at {}", self.socket_path.display())
+                } else {
+                    format!("lxd_connect_failed: {e}")
+                }
+            })?;
         let io = TokioIo::new(stream);
         let (mut sender, conn) = tokio::time::timeout(timeout, hyper::client::conn::http1::handshake(io))
             .await

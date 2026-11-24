@@ -32,13 +32,6 @@ import { companyPathKey, osRelative } from "./company-state-shared.ts";
 
 export const WALL_FILE = "wall.md";
 export const WALL_MAX_BYTES = 16 * 1024;
-/** An item's headline, in characters, as `update_wall` wrote it until 14 November 2026 (no tool writes walls now; the
- * web reads what is there). A headline written before details existed may be as long as {@link WALL_ITEM_MAX_CHARS}:
- * it still reads. */
-export const WALL_HEADLINE_MAX_CHARS = 80;
-/** The Now line, in characters, as `update_wall` wrote it until 14 November 2026: it had to fit under a name in the
- * sidebar. */
-export const WALL_NOW_MAX_CHARS = 60;
 /** An item's detail, in characters. */
 export const WALL_DETAIL_MAX_CHARS = 240;
 /** The most a headline in the file may hold. */
@@ -102,8 +95,6 @@ export interface WallParse {
 	/** The file's own text before its first part (its title and any note under it), as written; the writer keeps it. */
 	readonly head: string;
 }
-
-export const EMPTY_WALL: Wall = Object.freeze({ waiting: [], working: [], done: [] });
 
 /** The agent folder name a wall path is in (as written), or null when the path is no agent's wall. */
 export function wallHandle(path: string): string | null {

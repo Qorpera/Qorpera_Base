@@ -15,7 +15,6 @@ import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
  * non-secret fields only. Agents never author HTML or free forms. */
 
 export const CLOUD_INTERACTION_SCHEMA = "qorpera.interaction/v1";
-export const CLOUD_INTERACTION_ANSWER_SCHEMA = "qorpera.interaction-answer/v1";
 
 export const CLOUD_INTERACTION_SURFACES = ["question", "secret", "form", "takeover", "draft", "credential"] as const;
 export type CloudInteractionSurface = (typeof CLOUD_INTERACTION_SURFACES)[number];

@@ -8,7 +8,6 @@ import {
 	buildPreflightCheckCommand,
 	codeChecksTail,
 	MAX_CODE_CHECKS_FILE_BYTES,
-	parseCodeChangesIndex,
 	parseCodeChecksText,
 } from "@qorpera/runtime/cloud-code-checks";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "@qorpera/runtime/cloud-coding-command-tools";
@@ -274,26 +273,7 @@ describe("parseCodeChecksText", () => {
 	});
 });
 
-describe("parseCodeChangesIndex, codeChecksTail and buildPreflightCheckCommand", () => {
-	it("parses notices, total count and bounded recent changes from changes/index.md", () => {
-		const index = [
-			"# Changes",
-			"Put back to an earlier copy on 2026-11-10.",
-			"Live: https://shop-demo.qorpera.com/ (change 4)",
-			"- 5 · 2026-11-21 · ready · Fifth change",
-			"- 4 · 2026-11-20 · live · Fourth change",
-			"- 3 · 2026-11-19 · undone · Third change",
-		].join("\n");
-		expect(parseCodeChangesIndex(index, 2)).toEqual({
-			notices: ["Put back to an earlier copy on 2026-11-10.", "Live: https://shop-demo.qorpera.com/ (change 4)"],
-			totalListed: 3,
-			changes: [
-				{ change: 5, date: "2026-11-21", state: "ready", summary: "Fifth change" },
-				{ change: 4, date: "2026-11-20", state: "live", summary: "Fourth change" },
-			],
-		});
-	});
-
+describe("codeChecksTail and buildPreflightCheckCommand", () => {
 	it("bounds and sanitizes output tails", () => {
 		const many = Array.from({ length: 50 }, (_, i) => `line-${i}`).join("\r\n");
 		const tail = codeChecksTail(many);

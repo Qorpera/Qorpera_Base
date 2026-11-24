@@ -1,0 +1,34 @@
+.screen-viewer-overlay {
+	position: fixed; inset: 0; z-index: 240; display: grid;
+	background: rgba(12, 13, 15, 0.94); animation: screen-viewer-in 140ms ease;
+}
+@keyframes screen-viewer-in { from { opacity: 0; } to { opacity: 1; } }
+.screen-viewer-frame {
+	position: relative; display: grid; grid-template-rows: 58px minmax(0, 1fr); height: 100%;
+	min-width: 0; min-height: 0; padding: 0 12px 12px; box-sizing: border-box;
+}
+.screen-viewer-titlebar {
+	display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; padding: 0 6px;
+	color: rgba(255, 255, 255, 0.82); font-size: 12.5px; font-weight: 600;
+	-webkit-app-region: no-drag;
+}
+.screen-viewer-heading {
+	display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap;
+}
+.screen-viewer-heading > span { overflow: hidden; text-overflow: ellipsis; }
+.screen-viewer-titlebar small { flex: none; color: rgba(255, 255, 255, 0.45); font-weight: 500; }
+html[data-platform="darwin"] .screen-viewer-titlebar { padding-left: 78px; }
+.screen-viewer-controls { display: flex; align-items: center; gap: 8px; }
+.screen-viewer-controls > button {
+	min-height: 30px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 8px; background: rgba(255, 255, 255, 0.1); color: #fff; cursor: pointer;
+}
+.screen-viewer-controls > button[hidden] { display: none; }
+.screen-viewer-controls > button:disabled { opacity: 0.5; cursor: default; }
+.screen-viewer-controls > button:focus-visible { outline: 2px solid #a8b6ff; outline-offset: 2px; }
+.screen-viewer-stage {
+	position: relative; place-self: center; width: min(100%, calc(160vh - 112px));
+	min-width: 0; min-height: 0; aspect-ratio: 8 / 5; overflow: hidden;
+	border: 0; border-radius: 8px; background: #17181a; box-shadow: none;
+}
+.screen-viewer-stage > div { position: absolute; inset: 0; }

@@ -308,7 +308,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 				try {
 					const id = `usage-${randomUUID()}`;
 					const answered = new Promise<unknown>((resolveAnswer, reject) => {
-						let buffered = "";
+						let parts: string[] = [];
 						let total = 0;
 						run.child.stdout.setEncoding("utf8");
 						run.child.stdout.on("data", (chunk: string) => {
@@ -317,18 +317,21 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 								reject(new Error("Claude Code said too much"));
 								return;
 							}
-							buffered += chunk;
-							let end = buffered.indexOf("\n");
+							let start = 0;
+							let end = chunk.indexOf("\n", start);
 							while (end >= 0) {
-								const line = buffered.slice(0, end);
-								buffered = buffered.slice(end + 1);
-								end = buffered.indexOf("\n");
+								const tail = chunk.slice(start, end);
+								const line = parts.length === 0 ? tail : `${parts.join("")}${tail}`;
+								parts = [];
+								start = end + 1;
+								end = chunk.indexOf("\n", start);
 								try {
 									const event = JSON.parse(line) as { type?: unknown; response?: Record<string, unknown> };
 									if (event.type === "control_response" && event.response?.request_id === id)
 										resolveAnswer(event.response);
 								} catch {}
 							}
+							if (start < chunk.length) parts.push(start === 0 ? chunk : chunk.slice(start));
 						});
 						run.child.stdout.once("end", () => reject(new Error("Claude Code ended without its usage")));
 						onAbort = () => reject(deadline.reason);

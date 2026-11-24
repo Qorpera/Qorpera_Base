@@ -7,7 +7,7 @@ use crate::proto::{
 	LinkRequest, ListRequest, Listing, OpenRequest, Opened, PathRequest, PublishRequest, ReadRequest, ReadsAnswer,
 	RemoveRequest, RenameRequest, Report, Role, Saved, SymlinkRequest, MAX_READ, PART, PROTOCOL,
 };
-use crate::reads::{Locked, ReadLog};
+use crate::reads::ReadLog;
 use crate::transport::{connect, Stream};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
@@ -111,6 +111,7 @@ pub struct Link {
 	/// REQUEST_TIMEOUT, shorter in tests.
 	timeout: Duration,
 	reads: Option<Arc<ReadLog>>,
+	handover_lock: Mutex<()>,
 }
 
 struct Current {
@@ -206,6 +207,7 @@ impl Link {
 			on_closed: Mutex::new(None),
 			timeout: REQUEST_TIMEOUT,
 			reads: None,
+			handover_lock: Mutex::new(()),
 		}
 	}
 
@@ -476,38 +478,49 @@ impl Link {
 	}
 
 	fn send_change_parts(&self, s: &mut Connection, request: u8, parts: &[&[u8]]) -> Result<u64, Fail> {
-		let mut held = self.reads.as_ref().map(|log| log.locked()).transpose().map_err(Fail::Link)?;
-		if let Some(log) = &mut held {
-			self.hand_over(s, log)?;
-			if log.lost() && request != kind::PUBLISH {
+		let _handover = self.reads.as_ref().map(|_| self.handover_lock.lock().unwrap());
+		let through = if let Some(reads) = &self.reads {
+			let (through, lost) = self.hand_over(s, reads)?;
+			if lost && request != kind::PUBLISH {
 				return Err(Fail::Remote(ErrorReply { code: code::DENIED.into(), message: "the read journal is unproven".into() }));
 			}
-		}
-		let through = held.as_ref().map_or(0, |log| log.last());
+			through
+		} else {
+			0
+		};
 		s.ensure_timeouts(None, Some(self.timeout)).map_err(Fail::Link)?;
 		write_frame_parts(&mut s.stream, request, parts).map_err(Fail::Link)?;
 		Ok(through)
 	}
 
-	fn hand_over(&self, s: &mut Connection, log: &mut Locked<'_>) -> Result<(), Fail> {
-		log.sync().map_err(Fail::Link)?;
-		let mut after = log.released().max(s.taken);
-		if after >= log.last() && s.intake_lost == Some(log.lost()) {
-			return Ok(());
-		}
-		s.ensure_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
+	fn hand_over(&self, s: &mut Connection, reads: &ReadLog) -> Result<(u64, bool), Fail> {
 		loop {
-			let request = log.request(after);
+			let request = {
+				let mut log = reads.locked().map_err(Fail::Link)?;
+				log.sync().map_err(Fail::Link)?;
+				let after = log.released().max(s.taken);
+				if after >= log.last() && s.intake_lost == Some(log.lost()) {
+					return Ok((log.last(), log.lost()));
+				}
+				log.request(after)
+			};
 			let sent = request.reads.last().map(|read| read.seq);
+			s.ensure_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
 			let answer: ReadsAnswer = exchange(s, kind::READS, &json(&request), kind::READS_OK).and_then(|b| parse(&b))?;
-			log.acknowledge(&answer).map_err(Fail::Link)?;
-			if sent.is_some_and(|seq| answer.taken < seq) {
-				return Err(Fail::Link(io::Error::other("the service did not take the complete read prefix")));
+			let done = {
+				let mut log = reads.locked().map_err(Fail::Link)?;
+				log.acknowledge(&answer).map_err(Fail::Link)?;
+				if sent.is_some_and(|seq| answer.taken < seq) {
+					return Err(Fail::Link(io::Error::other("the service did not take the complete read prefix")));
+				}
+				s.taken = s.taken.max(answer.taken);
+				s.intake_lost = Some(request.lost);
+				let after = s.taken.max(log.released());
+				(request.lost || after >= log.last()).then(|| (log.last(), log.lost()))
+			};
+			if let Some(result) = done {
+				return Ok(result);
 			}
-			s.taken = s.taken.max(answer.taken);
-			s.intake_lost = Some(request.lost);
-			after = s.taken.max(log.released());
-			if request.lost || after >= log.last() { return Ok(()); }
 		}
 	}
 
@@ -650,12 +663,15 @@ impl Link {
 			let report = received.as_ref().unwrap();
 			if report.refused.is_none() && !report.closed {
 				if let Some(reads) = &self.reads {
-					let mut log = reads.locked().map_err(Fail::Link)?;
-					// Poll only: reads begun after the boundary are for the next one. An empty paths report also
-					// represents an unanswered no-write release, so it is not by itself proof of completion.
-					let request = log.request(log.last());
+					let request = {
+						let log = reads.locked().map_err(Fail::Link)?;
+						// Poll only: reads begun after the boundary are for the next one. An empty paths report also
+						// represents an unanswered no-write release, so it is not by itself proof of completion.
+						log.request(log.last())
+					};
 					s.ensure_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
 					let acknowledged: ReadsAnswer = exchange(&mut s, kind::READS, &json(&request), kind::READS_OK).and_then(|b| parse(&b))?;
+					let mut log = reads.locked().map_err(Fail::Link)?;
 					log.acknowledge(&acknowledged).map_err(Fail::Link)?;
 					if log.lost() || log.released() < through {
 						return Err(Fail::Link(io::Error::other("the boundary's read release did not complete; ask again")));

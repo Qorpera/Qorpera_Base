@@ -338,6 +338,7 @@ impl Kernel {
 		};
 		if gone {
 			self.stamps.lock().unwrap().remove(&ino);
+			self.opened.lock().unwrap().remove(&ino);
 		}
 	}
 

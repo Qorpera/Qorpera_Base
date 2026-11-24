@@ -535,17 +535,32 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		};
 	}
 
+	async #forEachBounded<T>(items: readonly T[], run: (item: T) => Promise<void>, limit = 4): Promise<void> {
+		if (items.length === 0 || this.#closed) return;
+		let index = 0;
+		const workers = Math.min(limit, items.length);
+		await Promise.all(
+			Array.from({ length: workers }, async () => {
+				while (!this.#closed && index < items.length) {
+					const item = items[index++]!;
+					await run(item);
+				}
+			}),
+		);
+	}
+
 	/** Finished sign-ins: every pass for a company whose member is signing in, every sweep for all. */
 	async collect(): Promise<void> {
 		const now = this.#now();
 		const sweep = now - this.#lastSweep >= this.#sweepEveryMs;
 		if (sweep) this.#lastSweep = now;
 		for (const [companyId, until] of this.#signingIn) if (until <= now) this.#signingIn.delete(companyId);
-		for (const served of this.#served.values()) {
-			if (this.#closed) return;
-			const signIns = served.scope.modelLoginSignIns;
-			if (signIns && (sweep || this.#signingIn.has(served.scope.companyId))) await signIns.collect();
-		}
+		const due = [...this.#served.values()].filter(
+			(served) => served.scope.modelLoginSignIns && (sweep || this.#signingIn.has(served.scope.companyId)),
+		);
+		await this.#forEachBounded(due, async (served) => {
+			if (this.#served.get(served.scope.companyId) === served) await served.scope.modelLoginSignIns?.collect();
+		});
 	}
 
 	/** The account pass, then each company's upkeep pass in turn (accounts, switch-off, idle renewals). */
@@ -557,11 +572,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 					`Claude login upkeep: the idle pass stopped on an error (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
 				);
 			});
-		for (const served of [...this.#served.values()]) {
-			if (this.#closed) return;
+		await this.#forEachBounded([...this.#served.values()], async (served) => {
 			// A company dropped since the pass began is not worked on.
 			if (this.#served.get(served.scope.companyId) === served) await served.upkeep.pass();
-		}
+		});
 	}
 
 	/** Each company's queued connector tokens in turn. */
@@ -595,11 +609,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				answer.companyIds.length > 1000
 			)
 				throw new Error("Shared vault event verifications are invalid");
-			for (const companyId of new Set(answer.companyIds.map(company))) {
-				if (this.#closed) return;
+			await this.#forEachBounded([...new Set(answer.companyIds.map(company))], async (companyId) => {
 				const served = this.#served.get(companyId);
 				if (served) await logEventVerificationPass(served.verifications, signal);
-			}
+			});
 		});
 	}
 
@@ -618,11 +631,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				answer.companyIds.length > 1000
 			)
 				throw new Error("Shared vault bank syncs are invalid");
-			for (const companyId of new Set(answer.companyIds.map(company))) {
-				if (this.#closed) return;
+			await this.#forEachBounded([...new Set(answer.companyIds.map(company))], async (companyId) => {
 				const syncs = this.#served.get(companyId)?.bankSyncs;
 				if (syncs) await logBankSyncPass(syncs, signal);
-			}
+			});
 		});
 	}
 
@@ -641,11 +653,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				answer.companyIds.length > 1000
 			)
 				throw new Error("Shared vault Digital Post syncs are invalid");
-			for (const companyId of new Set(answer.companyIds.map(company))) {
-				if (this.#closed) return;
+			await this.#forEachBounded([...new Set(answer.companyIds.map(company))], async (companyId) => {
 				const syncs = this.#served.get(companyId)?.digitalPostSyncs;
 				if (syncs) await logDigitalPostSyncPass(syncs, signal);
-			}
+			});
 		});
 	}
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import { forwardMemberCompanyGateway } from "./member-company-gateway.ts";
 
@@ -18,6 +19,31 @@ function allowedOrigins(): readonly string[] | undefined {
 
 let cachedAuthBase: string | undefined;
 let cachedAuthUserUrl: URL | undefined;
+const AUTH_CACHE_TTL_MS = 5_000;
+const AUTH_CACHE_MAX = 2_048;
+const verifiedMemberTokens = new Map<string, number>();
+const inFlightMemberChecks = new Map<string, Promise<boolean>>();
+
+function tokenExpiryMs(authorization: string): number | undefined {
+	const raw = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+	const parts = raw.split(".");
+	if (parts.length !== 3) return undefined;
+	try {
+		const padded = parts[1].replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (parts[1].length % 4)) % 4);
+		const payload = JSON.parse(atob(padded)) as { exp?: unknown };
+		return typeof payload.exp === "number" && Number.isFinite(payload.exp) ? payload.exp * 1000 : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function rememberVerifiedMember(key: string, until: number): void {
+	if (verifiedMemberTokens.size >= AUTH_CACHE_MAX) {
+		const oldest = verifiedMemberTokens.keys().next().value;
+		if (oldest !== undefined) verifiedMemberTokens.delete(oldest);
+	}
+	verifiedMemberTokens.set(key, until);
+}
 
 /** The auth service's own check of the member's token (GoTrue `/auth/v1/user`): yes, no (401/403), or a throw. */
 async function memberSignedIn(authorization: string, signal: AbortSignal): Promise<boolean> {
@@ -28,22 +54,54 @@ async function memberSignedIn(authorization: string, signal: AbortSignal): Promi
 		cachedAuthUserUrl = new URL("/auth/v1/user", base);
 		cachedAuthBase = base;
 	}
-	const authUrl = cachedAuthUserUrl;
-	return withTimeoutScope(
-		5_000,
-		async (scopedSignal) => {
+	const tokenHash = createHash("sha256").update(`${base}\0${authorization}`, "utf8").digest("hex");
+	const now = Date.now();
+	const cachedUntil = verifiedMemberTokens.get(tokenHash);
+	if (cachedUntil !== undefined) {
+		if (cachedUntil > now) return true;
+		verifiedMemberTokens.delete(tokenHash);
+	}
+	let pending = inFlightMemberChecks.get(tokenHash);
+	if (!pending) {
+		const authUrl = cachedAuthUserUrl;
+		pending = withTimeoutScope(5_000, async (scopedSignal) => {
 			const response = await fetch(authUrl, {
 				headers: { apikey: key, authorization },
 				redirect: "error",
 				signal: scopedSignal,
 			});
 			void response.body?.cancel().catch(() => undefined);
-			if (response.ok) return true;
+			if (response.ok) {
+				const expMs = tokenExpiryMs(authorization);
+				const until = expMs !== undefined ? Math.min(Date.now() + AUTH_CACHE_TTL_MS, expMs) : Date.now() + AUTH_CACHE_TTL_MS;
+				if (until > Date.now()) rememberVerifiedMember(tokenHash, until);
+				return true;
+			}
 			if (response.status === 401 || response.status === 403) return false;
 			throw new Error(`Auth answered ${response.status}`);
-		},
-		signal,
-	);
+		}).finally(() => {
+			if (inFlightMemberChecks.get(tokenHash) === pending) inFlightMemberChecks.delete(tokenHash);
+		});
+		inFlightMemberChecks.set(tokenHash, pending);
+	}
+	return new Promise<boolean>((resolve, reject) => {
+		if (signal.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		pending.then(
+			(ok) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(ok);
+			},
+			(err: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(err);
+			},
+		);
+	});
 }
 
 /**

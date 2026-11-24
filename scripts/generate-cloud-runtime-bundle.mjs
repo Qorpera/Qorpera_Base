@@ -7,15 +7,20 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929028099_runtime_bundle_activation_v280.sql";
-const activationVersion = 280;
-const previousActivationVersion = 279;
-const previousActivationSha256 = "243b75c47eb22c7241d603303ef3348aa9196c02e996de8c3d73c2e07a14a9ee";
+const activation = "supabase/migrations/20260929028199_runtime_bundle_activation_v281.sql";
+const activationVersion = 281;
+const previousActivationVersion = 280;
+const previousActivationSha256 = "f79958c4966dab58d7895a727c6dc1e080aa7b5795db847da288e110fddaf346";
 const activationRequires = Object.freeze([
 	[
-		"20260930889000_surface_preview_build_failure_to_session",
-		"#2319 (failed build handback): bundle 280 pairs with surface build handback table and RPCs",
-		"to_regclass('public.qorpera_surface_build_handbacks') is not null and to_regprocedure('public.qorpera_surface_build_hand_back(uuid)') is not null",
+		"20260930888000_surface_silent_reconciliation",
+		"#2317 (silent reconciliation): bundle 281 pairs with qorpera_surface_reconciliations and qorpera_ensure_surface_reconciliation",
+		"to_regclass('public.qorpera_surface_reconciliations') is not null and to_regprocedure('public.qorpera_ensure_surface_reconciliation(uuid,uuid[],text[],boolean)') is not null",
+	],
+	[
+		"20260930890000_surface_preview_lineage",
+		"#2321 (preview lineage): bundle 281 reads previewContext and pairs with preview_base_change_ids and standalone dependent helpers",
+		"exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_surface_changes' and column_name = 'preview_base_change_ids') and to_regprocedure('public.qorpera_surface_enqueue_standalone_dependents(uuid,uuid[])') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires
@@ -98,24 +103,6 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const name of (await readdir(join(root, "packages/runner-orchestrator/src"))).filter((name) => /^coding-.*\.ts$/.test(name)).sort()) await include(`packages/runner-orchestrator/src/${name}`);
 	for (const name of (await readdir(join(root, "deploy/coding-worker"))).filter((name) => /\.(service|timer|slice|json|ts)$/.test(name)).sort()) await include(`deploy/coding-worker/${name}`);
 	for (const name of (await readdir(join(root, "scripts"))).filter((name) => /^package-coding-.*\.mjs$/.test(name)).sort()) await include(`scripts/${name}`);
-	// Office adapters are injected at composition boundaries. Pin their sources
-	// even before a deployed service entrypoint selects the concrete guest.
-	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^cloud-company-computer-.*\.ts$/.test(name)).sort()) {
-		await include(`packages/runtime/src/${name}`);
-	}
-	for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-office-browser-bwrap.apparmor", "qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in"]) await include(`deploy/lxd-company-computer-guest/${name}`);
-	await include("packages/runner-orchestrator/src/lxd-office-image-installation-cli.ts");
-	await include("packages/runner-orchestrator/src/lxd-office-fleet-cli.ts");
-	await include("packages/runner-orchestrator/src/lxd-office-fleet-installation-cli.ts");
-	await include("packages/runner-orchestrator/src/lxd-office-node-base-cli.ts");
-	await include("scripts/package-lxd-office-fleet.mjs");
-	for (const name of ["office-code-package-control.ts", "office-code-package-measure.ts"]) await include(`deploy/lxd-company-computer-guest/${name}`);
-	await include("packages/runner-orchestrator/src/lxd-office-code-package-loader.ts");
-	await include("deploy/lxd-company-computer-guest/qorpera-screen-browser");
-	for (const name of (await readdir(join(root, "deploy/lxd-company-computer-guest/backdrops"))).sort()) {
-		if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
-		await include(`deploy/lxd-company-computer-guest/backdrops/${name}`);
-	}
 	for (const name of (await readdir(join(root, "supabase/migrations"))).filter((name) => name.endsWith(".sql")).sort()) {
 		await include(`supabase/migrations/${name}`);
 	}
@@ -129,8 +116,7 @@ export async function cloudRuntimeBundle(root = repository) {
 		"deploy/claude-box/qorpera-claude-box-ns.apparmor",
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
 		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
-		"scripts/package-lxd-runner-guest.mjs", "scripts/package-company-computer.mjs",
-		"scripts/package-office-code-package-control.mjs",
+		"scripts/package-lxd-runner-guest.mjs",
 		"package-lock.json", "packages/runtime/package.json", "packages/cloud-client/package.json",
 	]) await include(path);
 	// The accepted native input is independent of the later compiled guest

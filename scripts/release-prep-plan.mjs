@@ -43,7 +43,7 @@ const RUNTIME_JS_PATTERNS = [
 	/^packages\/company\/src\//,
 ];
 
-const WEB_DEPLOY_PATH = /^packages\/(?:web|member-web)\//;
+const WEB_DEPLOY_PATH = /^packages\/web\//;
 
 const TEST_ONLY_PATTERN = (file) =>
 	/^packages\/[^/]+\/test\//.test(file) ||

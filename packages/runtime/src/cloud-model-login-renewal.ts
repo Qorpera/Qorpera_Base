@@ -58,7 +58,7 @@ function harnessEnvironment(root: string): NodeJS.ProcessEnv {
 function answers(stdout: NodeJS.ReadableStream, overflow: () => void): (id: number) => Promise<unknown> {
 	const waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 	const settled = new Map<number, { result?: unknown; error?: unknown }>();
-	let buffered = "";
+	let parts: string[] = [];
 	let total = 0;
 	stdout.setEncoding?.("utf8");
 	stdout.on("data", (chunk: string) => {
@@ -67,12 +67,14 @@ function answers(stdout: NodeJS.ReadableStream, overflow: () => void): (id: numb
 			overflow();
 			return;
 		}
-		buffered += chunk;
-		let end = buffered.indexOf("\n");
+		let start = 0;
+		let end = chunk.indexOf("\n", start);
 		while (end >= 0) {
-			const line = buffered.slice(0, end).trim();
-			buffered = buffered.slice(end + 1);
-			end = buffered.indexOf("\n");
+			const tail = chunk.slice(start, end);
+			const line = (parts.length === 0 ? tail : `${parts.join("")}${tail}`).trim();
+			parts = [];
+			start = end + 1;
+			end = chunk.indexOf("\n", start);
 			if (!line.startsWith("{")) continue;
 			let message: { id?: unknown; result?: unknown; error?: unknown };
 			try {
@@ -88,6 +90,7 @@ function answers(stdout: NodeJS.ReadableStream, overflow: () => void): (id: numb
 				else pending.resolve(message.result);
 			} else settled.set(message.id, message);
 		}
+		if (start < chunk.length) parts.push(start === 0 ? chunk : chunk.slice(start));
 	});
 	return (id) =>
 		new Promise((resolveAnswer, reject) => {

@@ -14,12 +14,6 @@
 			"@qorpera/contracts/*": [
 				"./packages/contracts/src/*"
 			],
-			"@qorpera/company": [
-				"./packages/company/src/index.ts"
-			],
-			"@qorpera/company/*": [
-				"./packages/company/src/*.ts"
-			],
 			"@qorpera/runner-orchestrator": [
 				"./packages/runner-orchestrator/src/index.ts"
 			],
@@ -44,8 +38,6 @@
 	"exclude": [
 		"packages/web/src/**",
 		"packages/web/test/**",
-		"packages/member-web/src/**",
-		"packages/member-web/test/**",
 		"**/dist/**"
 	]
 }

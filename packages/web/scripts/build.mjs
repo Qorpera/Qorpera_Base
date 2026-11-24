@@ -23,24 +23,15 @@ const deployment = prepareDeployment({
 });
 const provenance = webSourceProvenance(resolve(root, "../.."), process.argv.includes("--release"));
 const port = Number(process.env.QORPERA_WEB_PORT ?? 5180);
-const viewerRoot = resolve(root, "../member-web/ui");
-const viewerSource = JSON.parse(readFileSync(join(viewerRoot, "SOURCE.json"), "utf8"));
-for (const source of viewerSource.sources) {
-	const bytes = readFileSync(join(viewerRoot, source.file));
-	if (createHash("sha256").update(bytes).digest("hex") !== source.sha256) throw new Error("Viewer source differs from its accepted checksum");
-}
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(join(dist, "assets"), { recursive: true });
 cpSync(join(root, "public"), dist, { recursive: true });
 writeFileSync(join(dist, "_headers"), deployment.headers);
-// A missing file under a long-cached directory must be a no-store 404, never
-// the app page kept as that file (scripts/deployment.mjs).
 for (const page of deployment.notFoundPages) {
 	mkdirSync(dirname(join(dist, page)), { recursive: true });
 	writeFileSync(join(dist, page), '<!doctype html>\n<meta charset="utf-8">\n<title>Not found</title>\n<p>Not found.</p>\n');
 }
-cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
 const three = threeAsset({ root, serve });
 mkdirSync(dirname(join(dist, three.file)), { recursive: true });
 writeFileSync(join(dist, three.file), three.bytes);
