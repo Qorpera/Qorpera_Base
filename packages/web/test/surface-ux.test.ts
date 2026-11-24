@@ -1493,6 +1493,13 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();
 		expect(view.el.querySelector(".surface-source-pill")).toBeNull();
 
+		store.openDrawer(site.id, SESSION);
+		view.update();
+		const drawerChange = view.el.querySelector<HTMLElement>(".surface-drawer-change");
+		expect(drawerChange?.querySelector(".surface-drawer-change-title")?.textContent).toBe("Refine hero & tokens");
+		expect(drawerChange?.textContent).not.toContain("src/Hero.tsx");
+		expect(drawerChange?.querySelector("a")).toBeNull();
+
 		view.dispose();
 
 		store.openPreviewPanel();
