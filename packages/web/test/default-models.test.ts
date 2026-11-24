@@ -24,13 +24,11 @@ function sampleDefaults(patch: Partial<MemberDefaultModels> = {}): MemberDefault
 		codingEffort: "high",
 		storedConversationModel: null,
 		storedCodingModel: null,
-		conversationModels: ["gpt-6.2-sol", "gpt-6-astra", "claude-opus-5-5", "claude-fable-5-2", "gemini-4-neon"],
+		conversationModels: ["gpt-6.2-sol", "gpt-6-astra", "gemini-4-neon"],
 		codingModels: ["claude-opus-5-5", "claude-fable-5-2", "gpt-6.2-sol", "gpt-6-astra"],
 		conversationEfforts: {
 			"gpt-6.2-sol": ["low", "medium", "high", "xhigh"],
 			"gpt-6-astra": ["low", "medium", "high", "xhigh"],
-			"claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
-			"claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
 			"gemini-4-neon": ["low", "medium", "high", "xhigh"],
 		},
 		codingEfforts: {
@@ -128,11 +126,12 @@ describe("default models transport", () => {
 });
 
 describe("DefaultModelsView", () => {
-	it("sends only changed fields, clamps max effort off Claude, and preserves unavailable stored defaults", async () => {
+	it("excludes Claude from conversational options, clamps max coding effort off Claude, and sends only changed fields", async () => {
 		let state = sampleDefaults({
-			conversationModel: "claude-opus-5-5",
-			storedConversationModel: "claude-opus-5-5",
-			conversationEffort: "max",
+			conversationModel: "gpt-6.2-sol",
+			storedConversationModel: null,
+			conversationEffort: "high",
+			conversationModels: ["gpt-6.2-sol", "gpt-6-astra", "claude-opus-5-5", "claude-fable-5-2", "gemini-4-neon"],
 			codingModel: "claude-opus-5-5",
 			storedCodingModel: "claude-opus-5-5",
 			codingEffort: "max",
@@ -165,7 +164,14 @@ describe("DefaultModelsView", () => {
 
 		const convModel = view.el.querySelector<HTMLSelectElement>('[data-role="conversation-model"]')!;
 		const codingModel = view.el.querySelector<HTMLSelectElement>('[data-role="coding-model"]')!;
-		expect(convModel.value).toBe("claude-opus-5-5");
+		expect([...convModel.options].map((opt) => opt.value)).toEqual(["gpt-6.2-sol", "gpt-6-astra", "gemini-4-neon"]);
+		expect([...codingModel.options].map((opt) => opt.value)).toEqual([
+			"claude-opus-5-5",
+			"claude-fable-5-2",
+			"gpt-6.2-sol",
+			"gpt-6-astra",
+		]);
+		expect(convModel.value).toBe("gpt-6.2-sol");
 		expect(codingModel.value).toBe("claude-opus-5-5");
 
 		convModel.value = "gemini-4-neon";
@@ -174,7 +180,6 @@ describe("DefaultModelsView", () => {
 		expect(client.set).toHaveBeenLastCalledWith(
 			{
 				conversationModel: "gemini-4-neon",
-				conversationEffort: "xhigh",
 				expectedVersion: 1,
 			},
 			expect.any(AbortSignal),
@@ -207,6 +212,50 @@ describe("DefaultModelsView", () => {
 			expect.any(AbortSignal),
 		);
 
+		controller.abort();
+	});
+
+	it("marks a legacy stored Claude conversational model unavailable and clamps max effort when switching off it", async () => {
+		const state = sampleDefaults({
+			conversationModel: "claude-opus-5-5",
+			storedConversationModel: "claude-opus-5-5",
+			conversationEffort: "max",
+			conversationModels: ["gpt-6.2-sol", "gpt-6-astra", "claude-opus-5-5", "gemini-4-neon"],
+		});
+		const client: WebDefaultModels = {
+			read: vi.fn(async () => state),
+			set: vi.fn(async () =>
+				sampleDefaults({
+					conversationModel: "gemini-4-neon",
+					storedConversationModel: "gemini-4-neon",
+					conversationEffort: "xhigh",
+					version: 2,
+				}),
+			),
+		};
+		const controller = new AbortController();
+		const view = new DefaultModelsView(client, controller.signal);
+		document.body.append(view.el);
+		await settle();
+
+		const convModel = view.el.querySelector<HTMLSelectElement>('[data-role="conversation-model"]')!;
+		expect(convModel.value).toBe("claude-opus-5-5");
+		expect(convModel.selectedOptions[0]?.disabled).toBe(true);
+		expect(convModel.selectedOptions[0]?.textContent).toBe("Opus 5.5 (unavailable here)");
+		const convEffort = view.el.querySelector<HTMLSelectElement>('[data-role="conversation-effort"]')!;
+		expect([...convEffort.options].map((opt) => opt.value)).toEqual(["low", "medium", "high", "xhigh"]);
+
+		convModel.value = "gemini-4-neon";
+		convModel.dispatchEvent(new Event("change"));
+		await settle();
+		expect(client.set).toHaveBeenLastCalledWith(
+			{
+				conversationModel: "gemini-4-neon",
+				conversationEffort: "xhigh",
+				expectedVersion: 1,
+			},
+			expect.any(AbortSignal),
+		);
 		controller.abort();
 	});
 

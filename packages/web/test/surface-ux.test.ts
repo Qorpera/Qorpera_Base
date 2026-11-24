@@ -2,7 +2,17 @@
 import type { SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
-import { CompanyController, type CompanyState, siteServed } from "../src/app/company.ts";
+import {
+	CompanyController,
+	type CompanyState,
+	hostingNotingPublic,
+	readSitesOncePublished,
+	siteAnswer,
+	siteServed,
+	sitesAwaited,
+	startPublicRead,
+} from "../src/app/company.ts";
+import { Store } from "../src/app/state.ts";
 import { inferSurfaceKind, opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
 import { recipientOf, renderLocalSitePreviewHtml } from "../src/app/surface-local-sandbox.ts";
 import {
@@ -23,6 +33,7 @@ import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { GO_LIVE_PUBLISH_WAIT_MS, SurfaceView } from "../src/app/views/surface-view.ts";
 import type { CompanySite } from "../src/cloud/sites.ts";
 import { linkHref } from "../src/ui/dom.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
 import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
@@ -631,7 +642,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-drawer-head h2")?.textContent).toBe("Forsidens udtryk");
-		expect(drawer.querySelector(".surface-drawer-body > .surface-agent-note")).not.toBeNull();
+		expect(drawer.querySelector(".surface-drawer-pinned > .surface-agent-note")).not.toBeNull();
 		expect(drawer.querySelectorAll(".surface-drawer-option-row")).toHaveLength(3);
 
 		const useVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;
@@ -653,9 +664,14 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)").length).toBe(waiting.length);
+		expect(drawer.querySelectorAll(".surface-drawer-pinned .surface-drawer-change:not(.is-option)").length).toBe(
+			waiting.length,
+		);
+		expect(drawer.querySelector(".surface-drawer-body .surface-drawer-change")).toBeNull();
 		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector<HTMLElement>(".surface-drawer-pinned")?.hidden).toBe(true);
 		expect(drawer.querySelector(".surface-overview-card.is-exploration")).toBeNull();
 		const keptCard = drawer
 			.querySelector(`.surface-overview-card.is-agent [data-session="${pickedId}"]`)!
@@ -2250,5 +2266,216 @@ describe("a website that is not live", () => {
 		await raise({ title: "Thetaband" });
 		expect(order).toEqual([]);
 		done();
+	});
+});
+
+describe("a new website's first publish", () => {
+	const ADDRESS = "https://thetaband-go-live-test.qorpera.site";
+	const listedLive = { id: HOSTED_SITE, slug: "thetaband", kind: "files", state: "live" } as CompanySite;
+
+	it("shows the site, its address and Go live once the first approved change is published, without a reload", async () => {
+		let current = summary({
+			siteSlug: null,
+			liveUrl: null,
+			autoPublish: false,
+			unpublishedChangeCount: 0,
+			activeSessionCount: 1,
+			runningSessionCount: 1,
+			pendingChangeCount: 0,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [current]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: current })),
+			setSurfaceAutoPublish: vi.fn(async (_id: string, enabled: boolean) => {
+				current = { ...current, autoPublish: enabled };
+				return current;
+			}),
+			publishSurface: vi.fn(async () => current),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const company: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic"> = {
+			siteList: [],
+			siteListUnread: false,
+		};
+		let served: readonly CompanySite[] = [];
+		const readSites = vi.fn(() => {
+			void Promise.resolve().then(() => {
+				company.siteList = served;
+			});
+		});
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		const view = new SurfaceView(
+			{
+				store,
+				mount: (surface) => {
+					if (!company.siteList?.some((site) => site.slug === surface.siteSlug && site.state === "live"))
+						return undefined;
+					const el = document.createElement("div");
+					el.className = "surface-site";
+					return { el, update: () => undefined, dispose: () => undefined };
+				},
+				openMigration: () => undefined,
+				isSiteLive: (surface) => siteServed(company, surface),
+				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+				managesSites: () => true,
+				canWrite: () => true,
+			},
+			"website",
+		);
+		const oncePublished = readSitesOncePublished(readSites);
+		const stop = store.store.subscribe(() => oncePublished(company, store.state.surfaces));
+		oncePublished(company, store.state.surfaces);
+		document.body.append(view.el);
+		const settle = async () => {
+			for (let turn = 0; turn < 4; turn++) {
+				await flush();
+				view.update();
+			}
+		};
+		const raise = async (next: Partial<SurfaceSummary>) => {
+			current = { ...current, ...next };
+			store.store.set((state) => ({
+				surfaces: state.surfaces.map((item) => (item.id === SURFACE ? { ...item, ...next } : item)),
+			}));
+			await settle();
+		};
+		await settle();
+		const empty = () => view.el.querySelector(".surface-empty")?.textContent ?? "";
+		expect(empty()).toContain("Nothing is live yet. Describe what to build below.");
+
+		await raise({
+			siteSlug: "thetaband",
+			liveUrl: ADDRESS,
+			publishStatus: "publishing",
+			activeSessionCount: 0,
+			runningSessionCount: 0,
+		});
+		expect(empty()).toContain("Nothing is live yet.");
+		expect(readSites).not.toHaveBeenCalled();
+
+		served = [listedLive];
+		await raise({ publishStatus: "idle", liveHeadSha: "a1b2c3" });
+		expect(readSites).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".surface-empty")).toBeNull();
+		expect(view.el.querySelector(".surface-mount .surface-site")).not.toBeNull();
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-private");
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		await settle();
+		expect(view.el.querySelector(".surface-address-sheet .surface-address-go")?.textContent).toContain("Go live");
+
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await raise({ title: "Go live test" });
+		expect(readSites).toHaveBeenCalledTimes(1);
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		stop();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("reads the site list once per published state whose site it does not list, never while it is unread or a publish runs", () => {
+		const read = vi.fn();
+		const once = readSitesOncePublished(read);
+		const site = summary({ publishStatus: "idle", liveHeadSha: "a1" });
+		once({}, [site]);
+		expect(sitesAwaited({}, [site])).toBe("");
+		once({ siteList: [] }, [{ ...site, publishStatus: "publishing" }]);
+		once({ siteList: [] }, [{ ...site, publishStatus: "failed" }]);
+		once({ siteList: [] }, [{ ...site, siteSlug: null }]);
+		once({ siteList: [] }, [{ ...site, archetype: "studio" }]);
+		expect(read).not.toHaveBeenCalled();
+		once({ siteList: [] }, [site]);
+		once({ siteList: [] }, [site]);
+		once({ siteList: [{ ...listedLive, state: "publishing" }] }, [site]);
+		expect(read).toHaveBeenCalledTimes(1);
+		once({ siteList: [] }, [{ ...site, liveHeadSha: "a2" }]);
+		expect(read).toHaveBeenCalledTimes(2);
+		once({ siteList: [listedLive] }, [{ ...site, liveHeadSha: "a2" }]);
+		once({ siteList: [listedLive] }, [{ ...site, liveHeadSha: "a3" }]);
+		expect(read).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps the company's answer of which sites are public in step with every hosting read and Go live", async () => {
+		const company = new Store<CompanyState>({ loading: false } as CompanyState);
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		hosting.client.setPublic.mockImplementation(async (_siteId: string, isPublic: boolean) => isPublic);
+		const noted = hostingNotingPublic(company, hosting.client);
+		await noted.read();
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(false);
+		await noted.setPublic(HOSTED_SITE, true);
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		startPublicRead(company)(undefined);
+		expect(company.get().sitesPublic).toBeUndefined();
+	});
+
+	it("drops a hosting read that started before a Go live finished, or that lands while one runs", async () => {
+		const company = new Store<CompanyState>({ loading: false } as CompanyState);
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		let answerPublic: () => void = () => undefined;
+		hosting.client.setPublic.mockImplementation(
+			(_siteId: string, isPublic: boolean) =>
+				new Promise<boolean>((resolve) => {
+					answerPublic = () => resolve(isPublic);
+				}),
+		);
+		const noted = hostingNotingPublic(company, hosting.client);
+		const older = startPublicRead(company);
+		const going = noted.setPublic(HOSTED_SITE, true);
+		await noted.read();
+		expect(company.get().sitesPublic).toBeUndefined();
+		answerPublic();
+		await going;
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		older(await hosting.client.read());
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		await noted.read();
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(false);
+	});
+});
+
+describe("a website's rail row", () => {
+	afterEach(() => {
+		setLanguagePreference("system");
+	});
+
+	it("says Live only for a site everyone can open, Not live yet for one that is not or was taken down, and the host alone while unknown", async () => {
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [
+					summary({ activeSessionCount: 0, liveUrl: "https://thetaband-go-live-test.qorpera.site" }),
+				]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([])),
+			}),
+		);
+		await store.load();
+		let company: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic" | "sitesTakenDown"> = {};
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, undefined, (surface) =>
+			siteAnswer(company, surface),
+		);
+		document.body.append(rail.el);
+		const line = (state: typeof company) => {
+			company = state;
+			rail.update(undefined);
+			return rail.el.querySelector('.rail-surface[data-surface-slug="website"] .rail-surface-sub')?.textContent;
+		};
+		const listed = [{ id: HOSTED_SITE, slug: "thetaband", kind: "files", state: "live" } as CompanySite];
+		const host = "thetaband-go-live-test.qorpera.site";
+		const everyone = { siteList: listed, sitesPublic: new Map([[HOSTED_SITE, true]]) };
+		const nobody = { siteList: listed, sitesPublic: new Map([[HOSTED_SITE, false]]) };
+
+		expect(line(everyone)).toBe(`Live · ${host}`);
+		expect(line(nobody)).toBe("Not live yet");
+		expect(line({ siteList: [] })).toBe("Not live yet");
+		expect(line({ siteList: [{ ...listed[0]!, state: "publishing" }] })).toBe("Not live yet");
+		expect(line({ ...everyone, sitesTakenDown: new Set([HOSTED_SITE]) })).toBe("Not live yet");
+		expect(line({})).toBe(host);
+		expect(line({ siteList: listed, siteListUnread: true, sitesPublic: everyone.sitesPublic })).toBe(host);
+		expect(line({ siteList: listed })).toBe(host);
+
+		expect(setLanguagePreference("da")).toBe(true);
+		expect(line(everyone)).toBe(`Live · ${host}`);
+		expect(line(nobody)).toBe("Ikke live endnu");
+		expect(line({})).toBe(host);
+		store.dispose();
 	});
 });

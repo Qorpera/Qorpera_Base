@@ -7,17 +7,6 @@ begin
 	end if;
 end $$;
 
-create function pg_temp.t1327_plan(p_sql text) returns text language plpgsql as $$
-declare
-	v_line text;
-	v_out text := '';
-begin
-	for v_line in execute 'explain (costs off) ' || p_sql loop
-		v_out := v_out || v_line || E'\n';
-	end loop;
-	return v_out;
-end $$;
-
 -- WHY: Verify execute privileges, lock_timeout proconfig settings, and preserved patch invariants.
 do $$
 declare
@@ -102,7 +91,7 @@ end $$;
 begin;
 do $$
 declare
-	v_plan text;
+	v_plan jsonb;
 	v_key bytea := extensions.digest(public.qorpera_folder_key('plan-probe-1'), 'sha256');
 begin
 	set local session_replication_role = replica;
@@ -113,23 +102,23 @@ begin
 	set local enable_seqscan = off;
 	set local enable_bitmapscan = off;
 
-	v_plan := pg_temp.t1327_plan(format($q$
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_folder_entries_pkey', format($q$
 		select 1 from public.qorpera_folder_entries entry
 		where entry.environment_id = '13270000-0000-4000-8000-000000000020'
 			and entry.key_sha256 = %L::bytea
 			and entry.version = '13270000-0000-4000-8000-000000000099'
 	$q$, v_key));
-	perform pg_temp.t1327_ok(position('qorpera_folder_entries_pkey' in v_plan) > 0,
-		'C6 entries lookup did not use PK: ' || v_plan);
+	perform pg_temp.t1327_ok(v_plan #>> '{scan,Index Cond}' ~ 'environment_id = .* AND \(key_sha256 = ',
+		'C6 entries lookup did not use PK: ' || v_plan::text);
 
-	v_plan := pg_temp.t1327_plan($q$
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_coding_sessions_open', $q$
 		select 1 from public.qorpera_coding_sessions session
 		where session.environment_id = '13270000-0000-4000-8000-000000000020'
 			and session.archived_at is null
 			and session.updated_at < clock_timestamp() - interval '1 hour'
 	$q$);
-	perform pg_temp.t1327_ok(position('qorpera_coding_sessions_open' in v_plan) > 0,
-		'H3a quiet coding scan did not use qorpera_coding_sessions_open: ' || v_plan);
+	perform pg_temp.t1327_ok(v_plan #>> '{scan,Index Cond}' ~ '\(environment_id = ',
+		'H3a quiet coding scan did not use qorpera_coding_sessions_open: ' || v_plan::text);
 
 	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, routine_id, routine_version,
 		wake_kind, source_kind, trigger_id, occurrence_key, scheduled_for, not_before, payload)
@@ -141,17 +130,17 @@ begin
 	analyze public.qorpera_wake_occurrences;
 
 	set local enable_bitmapscan = on;
-	v_plan := pg_temp.t1327_plan($q$
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_wake_occurrences_folded_file_commits', $q$
 		select 1 from public.qorpera_wake_occurrences w
 		where w.routine_id = '13270000-0000-4000-8000-000000000077'
 			and w.source_kind = 'company-file' and w.payload ? 'folded'
 			and w.routine_version = 1
 			and w.payload -> 'folded' @> jsonb_build_array(jsonb_build_object('seq', 1::bigint))
 	$q$);
-	perform pg_temp.t1327_ok(position('qorpera_wake_occurrences_folded_file_commits' in v_plan) > 0,
-		'H5b folded wake check did not use partial GIN index: ' || v_plan);
+	perform pg_temp.t1327_ok(v_plan #>> '{scan,Index Cond}' ~ '\(payload -> ''folded''::text\) @> ',
+		'H5b folded wake check did not use partial GIN index: ' || v_plan::text);
 
-	v_plan := pg_temp.t1327_plan($q$
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_folder_upload_intent_objects_hash', $q$
 		with pruned_hashes as (
 			select '13270000-0000-4000-8000-000000000010'::uuid as profile_id, repeat('a', 64) as sha256
 		)
@@ -159,8 +148,8 @@ begin
 		join public.qorpera_folder_upload_intent_objects o
 			on o.profile_id = ph.profile_id and o.sha256 = ph.sha256
 	$q$);
-	perform pg_temp.t1327_ok(position('qorpera_folder_upload_intent_objects_hash' in v_plan) > 0,
-		'H6 pruned_hashes join did not use intent objects hash index: ' || v_plan);
+	perform pg_temp.t1327_ok(v_plan #>> '{scan,Index Cond}' ~ '\(profile_id = .* AND \(sha256 = ',
+		'H6 pruned_hashes join did not use intent objects hash index: ' || v_plan::text);
 end $$;
 rollback;
 
