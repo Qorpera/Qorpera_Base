@@ -40,6 +40,7 @@ const DRAWER_DEFAULT = 296;
 const DRAWER_MIN = 260;
 const DRAWER_MAX = 560;
 const DRAWER_MAX_SHARE = 0.56;
+const STAGED_NOTE = "Staged change: ";
 export const APPROVE_ARM_MS = 4_500;
 
 interface QuotedChangeRef {
@@ -1871,12 +1872,8 @@ export class SurfaceSessionDrawer {
 		const keep = new Set<string>();
 		const parts: HTMLElement[] = [];
 		if (session.messages.length > 0) {
-			const recorded = new Set<string>();
 			for (const message of session.messages) {
-				if (message.authorKind === "system" && message.changeId && !recorded.has(message.changeId)) {
-					recorded.add(message.changeId);
-					continue;
-				}
+				if (message.authorKind === "system" && message.changeId && message.text.startsWith(STAGED_NOTE)) continue;
 				const attached =
 					message.authorKind === "member" ? sent.find((item) => item.messageId === message.id) : undefined;
 				let images: HTMLElement | undefined;
@@ -2037,10 +2034,20 @@ export class SurfaceSessionDrawer {
 			case "fold-changes":
 				this.#unfolded = this.#unfolded === sessionId ? undefined : sessionId;
 				this.#redraw();
+				this.#pinned
+					.querySelector<HTMLElement>(
+						target.classList.contains("surface-changes-fold")
+							? ".surface-changes-fold"
+							: ".surface-changes-toggle",
+					)
+					?.focus({ preventScroll: true });
 				return;
 			case "open-change":
 				this.#openChange = this.#openChange === change ? undefined : change;
 				this.#redraw();
+				[...this.#pinned.querySelectorAll<HTMLElement>('[data-act="open-change"]')]
+					.find((row) => row.dataset.change === change)
+					?.focus({ preventScroll: true });
 				return;
 			case "approve-shown":
 				if (surfaceId && this.#confirmOrArm(`approve-shown:${surfaceId}`))

@@ -4,6 +4,7 @@ import {
 	SURFACE_INSPECTOR_PICK_MESSAGE,
 	type SurfaceAutomationSummary,
 	type SurfaceExplorationSet,
+	type SurfaceSession,
 	type SurfaceSummary,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -783,13 +784,71 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("folds an agent's changes into one box, keeps focus on its controls, and approves them all from it", async () => {
+		const approveSessionAll = vi.fn(async () => session(["merged", "merged"], { state: "completed" }));
+		let state: SurfaceSession["state"] = "running";
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"], { state })])),
+			approveSessionAll,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+		const drawer = view.el.querySelector(".surface-drawer")!;
+		const toggle = () => drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!;
+		expect(toggle().textContent).toBe("2 changes ready");
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		toggle().focus();
+		toggle().click();
+		expect(toggle().getAttribute("aria-expanded")).toBe("true");
+		expect(document.activeElement).toBe(toggle());
+		expect(drawer.querySelectorAll(".surface-drawer-change")).toHaveLength(2);
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+
+		state = "ready";
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		const row = drawer.querySelector<HTMLButtonElement>(`[data-act="open-change"][data-change="${CHANGES[1]}"]`)!;
+		row.click();
+		expect(document.activeElement).toBe(
+			drawer.querySelector(`[data-act="open-change"][data-change="${CHANGES[1]}"]`),
+		);
+		expect(drawer.querySelector(".surface-drawer-change.is-expanded")?.getAttribute("data-change")).toBe(CHANGES[1]);
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-fold")!.click();
+		expect(document.activeElement).toBe(drawer.querySelector(".surface-changes-fold"));
+		expect(drawer.querySelectorAll(".surface-drawer-change")).toHaveLength(0);
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-fold")!.click();
+
+		const approveAll = drawer.querySelector<HTMLButtonElement>('[data-act="approve-all"]')!;
+		expect(approveAll.textContent).toBe("Approve all");
+		approveAll.click();
+		const confirm = drawer.querySelector<HTMLButtonElement>('[data-act="approve-all"]')!;
+		expect(confirm.classList.contains("is-confirming")).toBe(true);
+		expect(confirm.textContent).toBe("Confirm");
+		expect(approveSessionAll).not.toHaveBeenCalled();
+		confirm.click();
+		await flush();
+		expect(approveSessionAll).toHaveBeenCalledWith(SESSION);
+		view.dispose();
+		store.dispose();
+	});
+
 	it("renders durable session.messages and reconciles optimistic replies in the drawer", async () => {
 		const durable = [
 			sessionMessage(MESSAGE_IDS[0], "member", "Gør heroen roligere"),
 			sessionMessage(MESSAGE_IDS[1], "session", "Jeg strammer typografien og fjerner støj i hero-sektionen."),
-			sessionMessage(MESSAGE_IDS[2], "system", "Change recorded: Skarpere hero-tekst", { changeId: CHANGES[0] }),
+			sessionMessage(MESSAGE_IDS[2], "system", "Staged change: Skarpere hero-tekst — Kortere og roligere.", {
+				changeId: CHANGES[0],
+			}),
 			sessionMessage("77777777-7777-4777-8777-777777777779", "system", "Merge conflicted. Reconcile to resolve.", {
 				changeId: CHANGES[0],
+			}),
+			sessionMessage("77777777-7777-4777-8777-77777777777a", "system", "Merged “Ny pris” into Base", {
+				changeId: CHANGES[1],
 			}),
 		];
 		const replyDeferred = deferred<ReturnType<typeof session>>();
@@ -811,6 +870,7 @@ describe("the surface page", () => {
 			["surface-message is-member", "Gør heroen roligere"],
 			["surface-message is-session", "Jeg strammer typografien og fjerner støj i hero-sektionen."],
 			["surface-message is-system", expect.stringContaining("Merge conflicted. Reconcile to resolve.")],
+			["surface-message is-system", expect.stringContaining("Merged “Ny pris” into Base")],
 		]);
 		expect(drawer.querySelector(".surface-message.is-system")?.getAttribute("data-change-id")).toBe(CHANGES[0]);
 
