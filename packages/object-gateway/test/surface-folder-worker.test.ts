@@ -2111,4 +2111,230 @@ describe("SurfaceFolderWorker", () => {
 		expect(hOverlap.completedMerges[1]).toMatchObject({ p_job_id: jobB, p_status: "landed" });
 		expect(hOverlap.readText("site/blog/post.md")).toBe("v2");
 	});
+
+	it("3-way merges drifted text on land using baseFiles, reports conflicts on same-line collisions, and lands reconciledPatchManifest directly", async () => {
+		const originalBase = "line 1\nline 2\nline 3\nline 4\nline 5\n";
+		const liveAfterFirstLand = "line 1 edited by C1\nline 2\nline 3\nline 4\nline 5\n";
+
+		const hMerge = createHarness({ "identity/guide.md": liveAfterFirstLand });
+		const mergeJobId = randomUUID();
+		const c2 = randomUUID();
+		hMerge.setPendingClaim({
+			merges: [
+				{
+					jobId: mergeJobId,
+					kind: "land_change",
+					surfaceId: hMerge.surfaceId,
+					profileId: hMerge.profileId,
+					environmentId: hMerge.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [c2] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: c2,
+							kind: "folder_patch",
+							title: "Edit bottom",
+							summary: "Updates line 5",
+							affectedPaths: ["identity/guide.md"],
+							baseFiles: { "identity/guide.md": originalBase },
+							patchManifest: [
+								{
+									op: "write_text",
+									path: "identity/guide.md",
+									content: "line 1\nline 2\nline 3\nline 4\nline 5 edited by C2\n",
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(await hMerge.worker.processDue(8)).toBe(1);
+		expect(hMerge.completedMerges[0]).toMatchObject({ p_job_id: mergeJobId, p_status: "landed" });
+		expect(hMerge.readText("identity/guide.md")).toBe(
+			"line 1 edited by C1\nline 2\nline 3\nline 4\nline 5 edited by C2\n",
+		);
+
+		const hConflict = createHarness({ "identity/guide.md": liveAfterFirstLand });
+		const conflictJobId = randomUUID();
+		const c3 = randomUUID();
+		hConflict.setPendingClaim({
+			merges: [
+				{
+					jobId: conflictJobId,
+					kind: "land_change",
+					surfaceId: hConflict.surfaceId,
+					profileId: hConflict.profileId,
+					environmentId: hConflict.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [c3] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: c3,
+							kind: "folder_patch",
+							title: "Edit line 1 differently",
+							summary: "Collides with C1",
+							affectedPaths: ["identity/guide.md"],
+							baseFiles: { "identity/guide.md": originalBase },
+							patchManifest: [
+								{
+									op: "write_text",
+									path: "identity/guide.md",
+									content: "line 1 edited by C3\nline 2\nline 3\nline 4\nline 5\n",
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(await hConflict.worker.processDue(8)).toBe(1);
+		expect(hConflict.completedMerges[0]).toMatchObject({
+			p_job_id: conflictJobId,
+			p_status: "conflicted",
+			p_conflict_paths: ["identity/guide.md"],
+		});
+		expect(hConflict.readText("identity/guide.md")).toBe(liveAfterFirstLand);
+
+		const hReconciled = createHarness({ "identity/guide.md": liveAfterFirstLand });
+		const reconciledJobId = randomUUID();
+		hReconciled.setPendingClaim({
+			merges: [
+				{
+					jobId: reconciledJobId,
+					kind: "land_change",
+					surfaceId: hReconciled.surfaceId,
+					profileId: hReconciled.profileId,
+					environmentId: hReconciled.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [c3] },
+					preMergeSnapshot: null,
+					reconciledPatchManifest: [
+						{
+							op: "write_text",
+							path: "identity/guide.md",
+							content: "line 1 reconciled\nline 2\nline 3\nline 4\nline 5\n",
+						},
+					],
+					approvedChanges: [
+						{
+							changeId: c3,
+							kind: "folder_patch",
+							title: "Edit line 1 differently",
+							summary: "Collides with C1",
+							affectedPaths: ["identity/guide.md"],
+							baseFiles: { "identity/guide.md": originalBase },
+							patchManifest: [
+								{
+									op: "write_text",
+									path: "identity/guide.md",
+									content: "line 1 edited by C3\nline 2\nline 3\nline 4\nline 5\n",
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(await hReconciled.worker.processDue(8)).toBe(1);
+		expect(hReconciled.completedMerges[0]).toMatchObject({ p_job_id: reconciledJobId, p_status: "landed" });
+		expect(hReconciled.readText("identity/guide.md")).toBe("line 1 reconciled\nline 2\nline 3\nline 4\nline 5\n");
+
+		const hPreserved = createHarness({ "identity/report.md": "base\n" });
+		const preservedJobId = randomUUID();
+		const cA = randomUUID();
+		const cB = randomUUID();
+		hPreserved.setPendingClaim({
+			merges: [
+				{
+					jobId: preservedJobId,
+					kind: "land_change",
+					surfaceId: hPreserved.surfaceId,
+					profileId: hPreserved.profileId,
+					environmentId: hPreserved.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [cA, cB] },
+					preMergeSnapshot: null,
+					reconciledConflictPaths: ["identity/report.md"],
+					reconciledPatchManifest: [{ op: "write_text", path: "identity/report.md", content: "combined\n" }],
+					approvedChanges: [
+						{
+							changeId: cA,
+							kind: "folder_patch",
+							title: "A",
+							summary: "",
+							affectedPaths: ["identity/report.md", "identity/journey.svg"],
+							patchManifest: [
+								{ op: "write_text", path: "identity/report.md", content: "A\n" },
+								{ op: "write_text", path: "identity/journey.svg", content: "<svg>A</svg>" },
+							],
+						},
+						{
+							changeId: cB,
+							kind: "folder_patch",
+							title: "B",
+							summary: "",
+							affectedPaths: ["identity/report.md"],
+							patchManifest: [{ op: "write_text", path: "identity/report.md", content: "B\n" }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hPreserved.worker.processDue(8)).toBe(1);
+		expect(hPreserved.completedMerges[0]).toMatchObject({ p_job_id: preservedJobId, p_status: "landed" });
+		expect(hPreserved.readText("identity/report.md")).toBe("combined\n");
+		expect(hPreserved.readText("identity/journey.svg")).toBe("<svg>A</svg>");
+
+		const hIncomplete = createHarness({ "identity/report.md": "base\n" });
+		const incompleteJobId = randomUUID();
+		hIncomplete.setPendingClaim({
+			merges: [
+				{
+					jobId: incompleteJobId,
+					kind: "land_change",
+					surfaceId: hIncomplete.surfaceId,
+					profileId: hIncomplete.profileId,
+					environmentId: hIncomplete.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [cA, cB] },
+					preMergeSnapshot: null,
+					reconciledConflictPaths: ["identity/report.md"],
+					reconciledPatchManifest: [{ op: "write_text", path: "identity/unrelated.md", content: "wrong\n" }],
+					approvedChanges: [
+						{
+							changeId: cA,
+							kind: "folder_patch",
+							title: "A",
+							summary: "",
+							affectedPaths: ["identity/report.md"],
+							patchManifest: [{ op: "write_text", path: "identity/report.md", content: "A\n" }],
+						},
+						{
+							changeId: cB,
+							kind: "folder_patch",
+							title: "B",
+							summary: "",
+							affectedPaths: ["identity/report.md"],
+							patchManifest: [{ op: "write_text", path: "identity/report.md", content: "B\n" }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hIncomplete.worker.processDue(8)).toBe(1);
+		expect(hIncomplete.completedMerges[0]).toMatchObject({
+			p_job_id: incompleteJobId,
+			p_status: "failed",
+		});
+		expect(hIncomplete.completedMerges[0]?.p_error_detail).toContain("SURFACE_RECONCILIATION_INCOMPLETE");
+		expect(hIncomplete.getCommitCount()).toBe(0);
+	});
 });

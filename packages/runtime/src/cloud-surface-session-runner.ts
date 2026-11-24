@@ -73,6 +73,8 @@ const MAX_IDENTITY_VOICE_BYTES = 8_192;
 const MAX_IDENTITY_TOKENS_BYTES = 16_384;
 const MAX_SHARED_ASSET_BYTES = 32_768;
 const MAX_SURFACE_BRIEF_BYTES = 32_768;
+const MAX_PATCH_BASE_FILE_BYTES = 128 * 1024;
+const MAX_PATCH_BASE_FILES_TOTAL_CHARS = 512_000;
 const MAX_STUDIO_TEXT_READ_BYTES = 262_144;
 const MAX_STAGED_LAYOUT_READ_BYTES = 1024 * 1024;
 const MAX_FAILURE_REPLY_CHARS = 500;
@@ -117,6 +119,7 @@ export interface SurfaceSessionTurnInput {
 	readonly sourceKind: SurfaceSourceKind;
 	readonly prompt: string;
 	readonly state?: "queued" | "reconciling";
+	readonly isInternal?: boolean;
 	readonly repositoryKey?: string | null;
 	readonly folderRoot?: string | null;
 	readonly productFolderRoots?: readonly string[];
@@ -261,6 +264,7 @@ export interface SurfaceSessionDeliveryJob {
 	readonly surfaceId: string;
 	readonly profileId: string;
 	readonly state?: "queued" | "reconciling";
+	readonly isInternal?: boolean;
 	readonly prompt: string;
 	readonly originKind?: string;
 	readonly originRef?: unknown;
@@ -335,6 +339,62 @@ async function readOptionalFolderText(
 		if (signal.aborted) throw error;
 		return null;
 	}
+}
+
+type ExactFolderTextRead =
+	| { readonly status: "ok"; readonly content: string | null }
+	| { readonly status: "unreadable" };
+
+async function readExactOptionalFolderText(
+	folder: SurfaceFolderTextReader,
+	path: string,
+	maxBytes: number,
+	signal: AbortSignal,
+): Promise<ExactFolderTextRead> {
+	try {
+		const result = await folder.readText(path, maxBytes, signal);
+		if (result === null || result === undefined) return { status: "ok", content: null };
+		return { status: "ok", content: typeof result === "string" ? result : result.text };
+	} catch (error) {
+		if (signal.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+		return { status: "unreadable" };
+	}
+}
+
+function resolveFolderPatchReadPath(folderRoot: string, opPath: string): string {
+	const cleaned = opPath.trim().replace(/^\/+|\/+$/g, "");
+	if (!folderRoot || cleaned === folderRoot || cleaned.startsWith(`${folderRoot}/`)) {
+		return cleaned;
+	}
+	return `${folderRoot}/${cleaned}`;
+}
+
+async function collectFolderPatchBaseFiles(
+	folder: SurfaceFolderTextReader,
+	folderRoot: string,
+	ops: readonly StudioPatchOp[],
+	signal: AbortSignal,
+): Promise<Readonly<Record<string, string | null>> | undefined> {
+	const paths = [...new Set(ops.filter((op) => op.op === "write_text" || op.op === "delete").map((op) => op.path))];
+	if (paths.length === 0) return undefined;
+	const entries = await Promise.all(
+		paths.map(async (rawPath) => {
+			const fullPath = resolveFolderPatchReadPath(folderRoot, rawPath);
+			const read = await readExactOptionalFolderText(folder, fullPath, MAX_PATCH_BASE_FILE_BYTES, signal);
+			return [rawPath, read] as const;
+		}),
+	);
+	const out: Record<string, string | null> = {};
+	let totalChars = 0;
+	for (const [rawPath, read] of entries) {
+		if (read.status !== "ok") continue;
+		if (read.content !== null) {
+			if (totalChars + read.content.length > MAX_PATCH_BASE_FILES_TOTAL_CHARS) continue;
+			totalChars += read.content.length;
+		}
+		out[rawPath] = read.content;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 async function folderText(
@@ -617,6 +677,15 @@ function buildFolderSurfaceInstructions(
 	view: SurfaceStudioPageView,
 	skill: CloudStudioSkill | null,
 ): string {
+	if (input.isInternal && input.state === "reconciling") {
+		return (
+			`This is an automatic silent reconciliation turn for the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), projecting ${folderRoot}/ from Company Files. ` +
+			"Your job is to combine the overlapping staged changes listed in the Conflict Reconciliation section into a single clean set of StudioPatchOp operations via stage_surface_patch covering every overlapping file listed. " +
+			"Non-conflicting files from the staged changes are preserved automatically; preserve every compatible edit, markdown section, SVG markup, and JSON token in the overlapping files. " +
+			"If two changes directly contradict on the exact same choice, value, or sentence, prefer the newer change (higher Change number). " +
+			"Inspect current published files read-only via company_read as needed, call stage_surface_patch once with complete, untruncated ops covering every overlapping path, and finish with surface_reply. Never ask the founder questions."
+		);
+	}
 	return (
 		`This session works on the interface "${input.surfaceTitle}" (${input.surfaceSlug}); its page shows ${folderRoot}/ from Company Files. ` +
 		"Members preview staged patches, any of them on or off together, before they approve one. " +
@@ -926,10 +995,13 @@ export async function runSurfaceSessionTurn(
 					? normalizeFolderRoot(input.folderRoot)
 					: null;
 
+		const isInternalReconciliation = Boolean(input.isInternal && input.state === "reconciling");
 		const turnBrief = buildSurfaceTurnBrief({
 			sessionId: input.sessionId,
 			surfaceSlug: input.surfaceSlug,
 			surfaceTitle: input.surfaceTitle,
+			sourceKind: input.sourceKind,
+			isInternalReconciliation,
 			briefMarkdown,
 			repositoryKey: input.repositoryKey ?? null,
 			folderRoot: normalizedFolderRoot,
@@ -953,7 +1025,7 @@ export async function runSurfaceSessionTurn(
 			}
 			const folderRoot = normalizedFolderRoot || input.surfaceSlug;
 			const notesRoot = `QorperaOS/surfaces/${input.surfaceSlug}/notes`;
-			const writableRoots = [notesRoot];
+			const writableRoots = isInternalReconciliation ? [] : [notesRoot];
 			const stagedRoots = [folderRoot];
 			const stagedText = new Map<string, string | null>();
 			if (input.openScenesOps && input.openScenesOps.length > 0) {
@@ -962,7 +1034,19 @@ export async function runSurfaceSessionTurn(
 			const boundStageSurfacePatch = stageSurfacePatch.bind(ports.surfaceTools);
 			const trackedSurfacePatch: SurfacePatchToolPort = {
 				async stageSurfacePatch(sessionIdArg, request, context) {
-					const result = await boundStageSurfacePatch(sessionIdArg, request, context);
+					let effectiveRequest = request;
+					if (!input.isInternal && request.baseFiles === undefined && folderReader) {
+						const baseFiles = await collectFolderPatchBaseFiles(
+							folderReader,
+							folderRoot,
+							request.ops,
+							context.signal,
+						);
+						if (baseFiles) {
+							effectiveRequest = { ...request, baseFiles };
+						}
+					}
+					const result = await boundStageSurfacePatch(sessionIdArg, effectiveRequest, context);
 					applyStudioTextOps(stagedText, request.ops, folderRoot);
 					return result;
 				},
@@ -1000,26 +1084,28 @@ export async function runSurfaceSessionTurn(
 							),
 					}
 				: undefined;
-			const narrateTool = ports.narrateExplainer
-				? [
-						createNarrateExplainerTool({
-							sessionId: input.sessionId,
-							folderRoot,
-							voiceModel: input.voiceModel?.trim() || "chatgpt-voice",
-							voiceName: input.voiceName?.trim() || "cove",
-							readStudioText,
-							stageBytes: ports.narrateExplainer.stageBytes,
-							surfacePatch: trackedSurfacePatch,
-							...(ports.narrateExplainer.synthesizeGemini
-								? { synthesizeGemini: ports.narrateExplainer.synthesizeGemini }
-								: {}),
-							onStagedOps: (ops) => applyStudioTextOps(stagedText, ops, folderRoot),
-						}),
-					]
-				: [];
+			const narrateTool =
+				!isInternalReconciliation && ports.narrateExplainer
+					? [
+							createNarrateExplainerTool({
+								sessionId: input.sessionId,
+								folderRoot,
+								voiceModel: input.voiceModel?.trim() || "chatgpt-voice",
+								voiceName: input.voiceName?.trim() || "cove",
+								readStudioText,
+								stageBytes: ports.narrateExplainer.stageBytes,
+								surfacePatch: trackedSurfacePatch,
+								...(ports.narrateExplainer.synthesizeGemini
+									? { synthesizeGemini: ports.narrateExplainer.synthesizeGemini }
+									: {}),
+								onStagedOps: (ops) => applyStudioTextOps(stagedText, ops, folderRoot),
+							}),
+						]
+					: [];
 			const tools: CloudNativeTool[] = [
 				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
 					deferSessionCompletion: true,
+					allowMultipleDeliverables: isInternalReconciliation,
 				}),
 				...narrateTool,
 				...folderTools,
@@ -1095,6 +1181,8 @@ export async function runSurfaceSessionTurn(
 				sessionId: input.sessionId,
 				surfaceSlug: input.surfaceSlug,
 				surfaceTitle: input.surfaceTitle,
+				sourceKind: input.sourceKind,
+				isInternalReconciliation,
 				briefMarkdown,
 				repositoryKey: input.repositoryKey ?? null,
 				folderRoot: normalizedFolderRoot,
@@ -1259,6 +1347,7 @@ function deliveryJobToTurnInput(job: SurfaceSessionDeliveryJob): SurfaceSessionT
 		sourceKind: inferDeliverySourceKind(job),
 		prompt: job.prompt,
 		state: job.state,
+		...(job.isInternal ? { isInternal: true } : {}),
 		repositoryKey: job.repositoryKey ?? null,
 		folderRoot: job.folderRoot ?? null,
 		...(job.productFolderRoots ? { productFolderRoots: job.productFolderRoots } : {}),

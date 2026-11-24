@@ -758,7 +758,7 @@ begin
 		'second claim skips surface with an already running land_change job'
 	);
 
-	-- WHY: Verify complete_merge writes system messages on conflict/failure and releases surface for job_2.
+	-- WHY: Verify complete_merge silently reconciles conflicts (keeping changes staged with auto_approve_after), posts failure messages, and releases surface for job_2.
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
 	perform public.qorpera_surface_complete_merge(
@@ -767,11 +767,15 @@ begin
 	reset role;
 
 	perform pg_temp.sprmh_assert(
-		exists (
-			select 1 from public.qorpera_surface_session_messages m
-			where m.session_id = v_sess_dep and m.author_kind = 'system' and m.body like 'Merge conflicted%src/d2.ts%'
+		(select status = 'staged' and conflict_paths is null from public.qorpera_surface_changes where id = v_d2)
+		and exists (
+			select 1 from public.qorpera_surface_reconciliations r
+			where r.surface_id = v_surface_id
+				and r.status = 'queued'
+				and r.auto_approve_after = true
+				and v_d2 = any(r.selected_change_ids)
 		),
-		'complete_merge posts concise system message on merge conflict'
+		'complete_merge keeps conflicted changes staged and enqueues silent reconciliation with auto_approve_after'
 	);
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);

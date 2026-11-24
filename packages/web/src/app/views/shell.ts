@@ -86,14 +86,7 @@ import { type PersonWhere, personWhere } from "../person-place.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
 import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
-import {
-	activeTaskSessions,
-	hasConflictedChange,
-	isOpenChange,
-	isRunningSession,
-	openExplorations,
-	surfacesOf,
-} from "../surfaces-store.ts";
+import { activeTaskSessions, isOpenChange, isRunningSession, openExplorations, surfacesOf } from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
@@ -2183,7 +2176,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			session.state,
 			running,
 			session.openChangeCount,
-			hasConflictedChange(session),
 			store.turnHolder(session)?.userId ?? "",
 		]),
 	]);
@@ -2247,17 +2239,15 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 					? crewWave()
 					: session.state === "needs_input"
 						? t("Needs you")
-						: hasConflictedChange(session)
-							? t("Conflict")
-							: actions
-								? open > 1
-									? t("{count} actions ready", { count: open })
-									: t("Action ready")
-								: open === 1
-									? t("1 change ready")
-									: open > 1
-										? t("{count} changes ready", { count: open })
-										: t("Ready");
+						: actions
+							? open > 1
+								? t("{count} actions ready", { count: open })
+								: t("Action ready")
+							: open === 1
+								? t("1 change ready")
+								: open > 1
+									? t("{count} changes ready", { count: open })
+									: t("Ready");
 				return h(
 					"button",
 					{

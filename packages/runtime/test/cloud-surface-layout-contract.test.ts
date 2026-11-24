@@ -735,6 +735,32 @@ describe("stage_surface_patch and the layout", () => {
 		);
 		expect(JSON.parse(deferredResult.value as string)).not.toHaveProperty("finishSession");
 
+		const multiDeliverableOps = [
+			{ op: "write_text" as const, path: "reports/q3.report.json", content: validReport },
+			{ op: "write_text" as const, path: "reports/launch.report.json", content: validSecondReport },
+		];
+		expect(() =>
+			checkStagedSurfaceDeliverables(multiDeliverableOps, { allowMultipleDeliverables: true }),
+		).not.toThrow();
+		expect(() =>
+			checkStagedSurfaceDeliverables(
+				[
+					{ op: "write_text", path: "post-1.html", content: "<html><title>One</title></html>" },
+					{ op: "write_text", path: "post-2.html", content: "<html><title>Two</title></html>" },
+				],
+				{ allowMultipleDeliverables: true },
+			),
+		).not.toThrow();
+		expect(() =>
+			checkStagedSurfaceDeliverables(
+				[
+					{ op: "write_text", path: "reports/q3.report.json", content: validReport },
+					{ op: "write_text", path: "reports/bad.report.json", content: "{ not json" },
+				],
+				{ allowMultipleDeliverables: true },
+			),
+		).toThrow("reports/bad.report.json would not render as a report: content is not valid JSON.");
+
 		const folderBrief = buildSurfaceTurnBrief({
 			sessionId: randomUUID(),
 			surfaceSlug: "editorial",
@@ -746,5 +772,19 @@ describe("stage_surface_patch and the layout", () => {
 		expect(folderBrief).toContain("stage one `stage_surface_patch` call per independent deliverable");
 		expect(folderBrief).not.toContain(".qorpera/checks.json");
 		expect(folderBrief).not.toContain("coding_finish");
+
+		const reconcileBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "editorial",
+			surfaceTitle: "Editorial",
+			briefMarkdown: null,
+			folderRoot: "surfaces/editorial",
+			repositoryKey: null,
+			isInternalReconciliation: true,
+		});
+		expect(reconcileBrief).not.toContain("stage one `stage_surface_patch` call per independent deliverable");
+		expect(reconcileBrief).toContain(
+			"submit one `stage_surface_patch` call covering every overlapping file listed below",
+		);
 	});
 });

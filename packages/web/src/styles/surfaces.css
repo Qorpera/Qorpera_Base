@@ -1629,6 +1629,12 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: color-mix(in srgb, var(--danger) 6%, var(--bg)); font-size: 13px;
 }
 .studio-conflict > span:not(.surface-state) { flex: 1; min-width: 0; }
+.studio-reconcile-retry {
+	display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px;
+	border: 1px solid var(--border); border-radius: 14px;
+	background: var(--surface); font-size: 13px; color: var(--muted);
+}
+.studio-reconcile-retry > span { flex: 1; min-width: 0; }
 .studio-grid { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 28px; }
 .studio-section { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 12px; }
 .studio-section:not(.studio-3d) { content-visibility: auto; contain-intrinsic-size: auto 240px; }

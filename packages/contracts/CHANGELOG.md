@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Silent background reconciliation for overlapping interface changes (migration `20260930888000_surface_silent_reconciliation.sql`): added deterministic 3-way line and JSON object merge helpers (`mergeTextThreeWay`, `mergeJsonThreeWay`, `mergeStudioTextContent` in `surface-merge.ts`), `"reconciling"` to `SURFACE_PREVIEW_STATUSES`, `SurfaceReconciliation` / `SURFACE_RECONCILIATION_STATUSES` / `parseSurfaceReconciliation`, optional `baseFiles` on `StudioPatchChange` and `SurfaceChangeUnit`, optional `folderRevision` on `SurfaceSummary`, and optional `reconciliations` on `SurfaceWorkspace`.
 - `surfaces` and `surface-layout`: admitted `application/pdf` in `STUDIO_BINARY_MEDIA_TYPES` and documented PDFs in the `artifacts` block summary for PDF deliverables.
 - `SurfacePreviewFrameState` takes optional `kept` (`SurfacePreviewKeptFrame`: the member's last preview that built, `previewId`, `doorActionUrl`, `memberPass`) and `fixing`, and `SurfaceSummary` takes optional `publishBeingFixed`; all three are left out when the server does not send them (step B3, migration `20260930889000`).
 - `surface-layout`: renamed the `files` layout block to `artifacts` (`SurfaceArtifactsBlock`), removed the catch-all `Files` tab from the Product and Identity starter layouts so agents place `artifacts` sections directly on whichever tab needs them, and updated the Custom starter's Overview block heading to `"Artifacts"`.

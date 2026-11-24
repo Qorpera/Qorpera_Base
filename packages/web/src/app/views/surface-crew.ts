@@ -5,7 +5,7 @@ import { FIGURE_IDS, type FigureId, figureElement } from "../../ui/avatar.ts";
 import { h, icon, personAvatar } from "../../ui/dom.ts";
 import type { Activity, Ask } from "../../ui/figure-motion.ts";
 import { t } from "../../ui/preferences.ts";
-import { hasConflictedChange, isRunningSession, type SurfaceTeammate, sessionHeld } from "../surfaces-store.ts";
+import { isRunningSession, type SurfaceTeammate, sessionHeld } from "../surfaces-store.ts";
 
 // WHY: The Crown is the Co-Founder's alone, so sessions draw only from the staff crew.
 const CREW: readonly FigureId[] = FIGURE_IDS.filter((figure) => figure !== "crown");
@@ -42,8 +42,6 @@ export function crewLook(session: SurfaceSession): CrewLook {
 	if (isRunningSession(session)) return { tone: "working", activity: "Working", alive: true, label: t("Working") };
 	if (session.state === "failed")
 		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Failed") };
-	if (hasConflictedChange(session))
-		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Conflict") };
 	if (sessionHeld(session) || session.state === "completed")
 		return { tone: "merged", activity: "Idle", alive: false, label: t("Merged") };
 	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
@@ -56,8 +54,6 @@ export function explorationCrewLook(variants: readonly SurfaceSession[]): CrewLo
 		return { tone: "working", activity: "Working", alive: true, label: t("Working") };
 	if (variants.some((variant) => variant.state === "failed"))
 		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Failed") };
-	if (variants.some(hasConflictedChange))
-		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Conflict") };
 	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
 }
 

@@ -4,7 +4,6 @@ import {
 	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
-	type SurfacePreviewConflict,
 	type SurfaceStarterKind,
 	type SurfaceSummary,
 	sharedAssetsConsumedBy,
@@ -23,7 +22,6 @@ import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/t
 import {
 	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
-	formatConflictPaths,
 	isLocalSurfaceId,
 	isOpenChange,
 	normalizeStudioPatchOps,
@@ -104,7 +102,12 @@ function sameOrderedChanges(
 ): boolean {
 	if (!prev || prev.length !== next.length) return false;
 	for (let i = 0; i < next.length; i++) {
-		if (prev[i]!.changeId !== next[i]!.changeId || prev[i]!.ops !== next[i]!.ops) return false;
+		if (
+			prev[i]!.changeId !== next[i]!.changeId ||
+			prev[i]!.ops !== next[i]!.ops ||
+			prev[i]!.baseFiles !== next[i]!.baseFiles
+		)
+			return false;
 	}
 	return true;
 }
@@ -211,7 +214,7 @@ export class SurfaceStudioView {
 	#loading = false;
 	#showingSkeleton = false;
 	#renderSeq = 0;
-	#lastConflict: SurfacePreviewConflict | null = null;
+	#pendingRetryTarget: { readonly changeIds: readonly string[]; readonly paths: readonly string[] } | null = null;
 	#layout: SurfaceLayoutView | undefined;
 	readonly #htmlFrames: AppFrame[] = [];
 	#tab = "overview";
@@ -334,7 +337,12 @@ export class SurfaceStudioView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
+				if (ops?.length)
+					ordered.push({
+						changeId: change.id,
+						ops: normalizeStudioPatchOps(ops, folderRoot),
+						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+					});
 			}
 		}
 		return ordered;
@@ -382,7 +390,6 @@ export class SurfaceStudioView {
 		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges(surface.folderRoot);
-		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const updatingPhase = store.surfaceUpdatePhase(surface.id);
 		const updating = updatingPhase !== null;
 		const initialLoading =
@@ -444,8 +451,8 @@ export class SurfaceStudioView {
 			identityTokens?.css ?? "",
 			companyFiles,
 			workspace?.briefSummary ?? "",
+			workspace?.reconciliations,
 			linkedSurfacesKey,
-			busyReconcile,
 		];
 		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
 		this.#shownDeps = deps;
@@ -475,7 +482,6 @@ export class SurfaceStudioView {
 			ordered,
 			initialLoading,
 			updatingPhase,
-			busyReconcile,
 			activeOtherSurfaces,
 			companyFiles,
 			mode: state.mode,
@@ -510,7 +516,6 @@ export class SurfaceStudioView {
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
-		readonly busyReconcile: boolean;
 		readonly activeOtherSurfaces: readonly SurfaceSummary[];
 		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
@@ -525,8 +530,8 @@ export class SurfaceStudioView {
 			params.ordered,
 			params.surface.folderRoot,
 			params.baseBinaries,
+			{ reconciliations: params.workspace?.reconciliations },
 		);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
 		const previewTokensCss = compiledTokensCssFrom(
@@ -621,7 +626,6 @@ export class SurfaceStudioView {
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
-		readonly busyReconcile: boolean;
 		readonly activeOtherSurfaces: readonly SurfaceSummary[];
 		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
@@ -631,8 +635,8 @@ export class SurfaceStudioView {
 			params.ordered,
 			params.surface.folderRoot,
 			params.baseBinaries,
+			{ reconciliations: params.workspace?.reconciliations },
 		);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
 		const previewTokensCss = compiledTokensCssFrom(
@@ -694,7 +698,6 @@ export class SurfaceStudioView {
 			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 			readonly initialLoading: boolean;
 			readonly updatingPhase: SurfaceUpdatePhase | null;
-			readonly busyReconcile: boolean;
 			readonly activeOtherSurfaces: readonly SurfaceSummary[];
 			readonly companyFiles: SurfaceFileLayer | undefined;
 			readonly mode: SurfacesStore["state"]["mode"];
@@ -710,75 +713,78 @@ export class SurfaceStudioView {
 		readonly gridTasks?: readonly StudioSectionTask[];
 		readonly leavingSkeleton: boolean;
 	} {
-		const {
-			surface,
-			look,
-			lookKind,
-			identityTokens,
-			workspace,
-			baseFiles,
-			initialLoading,
-			updatingPhase,
-			busyReconcile,
-			mode,
-		} = params;
+		const { surface, look, lookKind, identityTokens, workspace, baseFiles, initialLoading, updatingPhase, mode } =
+			params;
 		const { specs, docs, htmlPages, svgs, legacyModel } = parsed;
 
+		let reconciliationFailed = false;
+		let reconcilingPreview = false;
+		if (composition.status === "conflicted") {
+			const conflictIds = composition.conflictReport.changeIds;
+			const conflictPaths = composition.conflictReport.paths;
+			const existingRec = this.#options.store.reconciliationFor(surface.id, conflictIds);
+			if (!existingRec) {
+				void this.#options.store.ensureReconciliation(surface.id, conflictIds, conflictPaths);
+			}
+			if (existingRec?.status === "failed" || existingRec?.status === "ready") {
+				reconciliationFailed = true;
+				this.#pendingRetryTarget = { changeIds: conflictIds, paths: conflictPaths };
+			} else {
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			}
+		} else {
+			this.#pendingRetryTarget = null;
+		}
+
 		const badgeText =
-			composition.status === "conflicted"
-				? t("Conflict")
-				: composition.appliedChangeIds.length === 1
-					? t("1 live change applied")
-					: composition.appliedChangeIds.length > 1
-						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: null;
-		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
+			composition.appliedChangeIds.length === 1
+				? t("1 live change applied")
+				: composition.appliedChangeIds.length > 1
+					? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
+					: null;
+		const effectiveUpdatingPhase = updatingPhase ?? (reconcilingPreview ? "updating" : null);
+		const updatingText =
+			updatingPhase !== null ? updatingLabel(updatingPhase) : reconcilingPreview ? t("Updating preview…") : null;
 
 		const children: HTMLElement[] = [];
-		if (badgeText || updatingPhase) {
+		if (badgeText || effectiveUpdatingPhase) {
 			children.push(
 				h(
 					"div",
 					{ class: "studio-head" },
-					badgeText ? h("span", { class: badgeClass }, badgeText) : h("span"),
-					updatingPhase
+					badgeText ? h("span", { class: "studio-badge is-live" }, badgeText) : h("span"),
+					effectiveUpdatingPhase && updatingText
 						? h(
 								"span",
 								{
 									class: "studio-updating-pill",
 									role: "status",
 									"aria-live": "polite",
-									"data-updating-phase": updatingPhase,
+									"data-updating-phase": effectiveUpdatingPhase,
 								},
 								h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-								h("span", null, updatingLabel(updatingPhase)),
+								h("span", null, updatingText),
 							)
 						: null,
 				),
 			);
 		}
 
-		if (composition.status === "conflicted") {
-			const paths = formatConflictPaths(composition.conflictReport.paths);
+		if (reconciliationFailed && this.#pendingRetryTarget) {
 			children.push(
 				h(
 					"div",
-					{ class: "studio-conflict", role: "alert" },
-					h("span", { class: "surface-state is-conflicted", "aria-hidden": "true" }),
-					h(
-						"span",
-						{ title: composition.conflictReport.paths.join(", ") },
-						t("Studio changes conflict in {paths}", { paths }),
-					),
+					{ class: "studio-reconcile-retry", role: "status" },
+					h("span", null, t("Couldn't update preview")),
 					h(
 						"button",
 						{
 							type: "button",
-							class: "btn btn-primary btn-small",
-							"data-act": "studio-reconcile",
-							disabled: busyReconcile || composition.conflictReport.changeIds.length === 0,
+							class: "btn btn-small",
+							"data-act": "studio-retry-preview",
 						},
-						t("Reconcile"),
+						t("Retry"),
 					),
 				),
 			);
@@ -1193,9 +1199,16 @@ export class SurfaceStudioView {
 			this.#options.store.navigateSurface(target.dataset.slug);
 			return;
 		}
-		if (act === "studio-reconcile") {
-			const ids = this.#lastConflict?.changeIds ?? [];
-			if (ids.length) void this.#options.store.reconcileChanges(this.#options.surface.id, ids);
+		if (act === "studio-retry-preview") {
+			const target = this.#pendingRetryTarget;
+			if (target && target.changeIds.length > 0) {
+				void this.#options.store.ensureReconciliation(
+					this.#options.surface.id,
+					target.changeIds,
+					target.paths,
+					true,
+				);
+			}
 			return;
 		}
 	}

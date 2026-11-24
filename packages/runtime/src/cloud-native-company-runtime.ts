@@ -2133,6 +2133,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			sessionId,
 			surfaceSlug,
 			surfaceTitle,
+			sourceKind: "code_repo",
+			isInternalReconciliation: sessionTurnRaw.isInternal === true && sessionTurnRaw.state === "reconciling",
 			briefMarkdown:
 				briefMarkdown ?? (typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null),
 			fullPrompt: sessionTurnRaw.prompt,
@@ -2254,6 +2256,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
+			...(sessionTurnRaw.isInternal === true ? { isInternal: true } : {}),
 			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
 			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
 			...(productFolderRoots.length > 0 ? { productFolderRoots } : {}),
@@ -2387,6 +2390,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			instructions: string;
 			turnBrief: string;
 			prompt: string;
+			isInternal?: boolean;
 			buildTools: (runIdentity: CloudNativeToolIdentity, operations: CloudNativeToolOperations) => CloudNativeTool[];
 			turnSignal: AbortSignal;
 		}): Promise<SurfaceSessionTurnExecutionOutcome> => {
@@ -2532,8 +2536,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 			};
 
-			const runtimeInstructions = `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
-			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\nFounder request:\n${spec.prompt}`;
+			const isInternalTurn = spec.isInternal === true;
+			const runtimeInstructions = isInternalTurn
+				? `${spec.instructions}\n\nWhen finished staging the combined resolution via stage_surface_patch, call surface_reply with a concise summary. Do not ask questions.`
+				: `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
+			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\n${isInternalTurn ? "Task" : "Founder request"}:\n${spec.prompt}`;
 			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
 			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
 			const contextBytes = Buffer.byteLength(contextText);
@@ -2604,9 +2611,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				turnCorrection: async () =>
 					captured
 						? undefined
-						: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask if founder input is needed.",
+						: isInternalTurn
+							? "Your turn ended without calling surface_reply. Make sure you called stage_surface_patch with the combined resolution, then call surface_reply now."
+							: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask if founder input is needed.",
 				tools: (runIdentity, operations) => ({
-					tools: [...spec.buildTools(runIdentity, operations), surfaceReplyTool, surfaceAskTool],
+					tools: isInternalTurn
+						? [...spec.buildTools(runIdentity, operations), surfaceReplyTool]
+						: [...spec.buildTools(runIdentity, operations), surfaceReplyTool, surfaceAskTool],
 					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
 					checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
 					recordContextView: (frame, outputs, requestSignal) =>
@@ -2766,6 +2777,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					instructions: turnReq.instructions,
 					turnBrief: turnReq.turnBrief,
 					prompt: turnReq.input.prompt,
+					isInternal: turnReq.input.isInternal === true,
 					turnSignal: turnReq.signal,
 					buildTools: (runIdentity, operations) => {
 						const folderTools =
