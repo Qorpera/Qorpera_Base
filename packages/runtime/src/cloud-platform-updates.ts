@@ -398,6 +398,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "No Sites page: each site is managed where it shows",
 		text: "The Sites page is gone, so never send anyone to a Sites page. A website is managed on its own page in the app, and Go live is there. An app link shared with share_app shows as its card under the message that links it, and owners and admins copy its password from that card. You still never see a password: put the link in your message.",
 	},
+	{
+		id: "failed-interface-builds-go-back-to-their-session",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "A failed interface build goes back to its session",
+		text: "When Qorpera cannot build a code interface's preview or publish because of the code, the session whose change broke it gets a turn of its own with the end of the build log, and fixes and stages the fix, at most three times in a row. Members keep seeing the last preview that built, marked as being fixed. You need not start a session to fix such a build. If three fixes did not help, start one with the member's request and the build's words, or ask the member what the page should do.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
