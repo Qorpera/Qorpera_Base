@@ -7,45 +7,45 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027899_runtime_bundle_activation_v278.sql";
-const activationVersion = 278;
-const previousActivationVersion = 277;
-const previousActivationSha256 = "3ae879e9b5715593cf3822cfb47b1ff94fcd8fd9cb0a79f85896709da7c8a470";
+const activation = "supabase/migrations/20260929027999_runtime_bundle_activation_v279.sql";
+const activationVersion = 279;
+const previousActivationVersion = 278;
+const previousActivationSha256 = "c3e235662f73dd3367eac97d82fe0edf4b7c226d44e4cf0dbc8053ed666db0ec";
 const activationRequires = Object.freeze([
 	[
-		"20260930835000_code_checks_skipped_paths",
-		"#2106 (Checks v2): bundle 278 emits paths_unmatched skipped steps in qorpera.code-checks/v1 results",
-		"position('paths_unmatched' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_code_checks_passed_valid(jsonb,text,text)')), '')) > 0",
+		"20260930876000_surface_preview_builds",
+		"#2277 (platform preview builds): bundle 279 pairs with platform preview build tables and RPCs",
+		"to_regclass('public.qorpera_surface_preview_builds') is not null",
 	],
 	[
-		"20260930839000_app_relay_auth_health_and_site_rollbacks",
-		"#2133 (app-relay & site rollbacks): bundle 278 uses static site version listing/rollback and app supervision RPCs",
-		"to_regprocedure('public.qorpera_site_agent_list_versions(jsonb,text)') is not null",
+		"20260930877000_gemini_wake_mediation",
+		"#2283 (Gemini wake mediation): bundle 279 expects wake runs to resolve pinned Gemini choices",
+		"position('''wake''' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.qorpera_execution_runs'::regclass and conname = 'qorpera_execution_runs_gemini_choice'), '')) > 0",
 	],
 	[
-		"20260930849000_code_ops_status_claims_and_lifecycle",
-		"#2146 (agent code ops): bundle 278 uses SQL code status, claimedPaths overlap checks, and repo lifecycle RPCs",
-		"to_regprocedure('public.qorpera_folder_code_status(jsonb,text,text)') is not null",
+		"20260930879000_surface_preview_build_no_sponsor",
+		"#2289 (preview builds without sponsor): bundle 279 pairs with sponsorless surface-preview-build workers",
+		"position('surface-preview-build' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.qorpera_runtime_workers'::regclass and conname = 'qorpera_runtime_workers_owner_check'), '')) > 0",
 	],
 	[
-		"20260930854000_coding_snapshots_5h_and_standby",
-		"#2177 (F3 slice 5h snapshots & standby): bundle 278 binds pre-warmed coding snapshots and environment hooks",
-		"to_regprocedure('public.qorpera_coding_machine_policy_matches(public.qorpera_coding_machines,jsonb)') is not null",
+		"20260930880000_surface_session_turn_starter_fields",
+		"#2311 (Studio layout contract & skills): bundle 279 reads surfaceIcon, surfaceIsGlobal, surfaceArchetype, and openLayoutOps from session turns",
+		"position('''openLayoutOps''' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)')), '')) > 0",
 	],
 	[
-		"20260930861000_surface_studio_kind_and_product_roots",
-		"#2196 (Studio isolation & product roots): bundle 278 passes surfaceKind and shared product folder roots",
-		"to_regprocedure('public.qorpera_surface_shared_product_folder_roots(uuid)') is not null",
+		"20260930882000_conversational_default_no_claude",
+		"#2312 (conversational defaults): bundle 279 requires member default models without legacy conv_effort constraint",
+		"not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_member_default_models'::regclass and conname = 'qorpera_member_default_models_conv_effort')",
 	],
 	[
-		"20260930870000_fast_coding_command_auth_and_session_lifecycle",
-		"#2179 (fast coding VM lifecycle): bundle 278 uses consolidated coding command auth v2 and worktree_created_at",
-		"to_regprocedure('public.qorpera_record_coding_worktree_created(uuid,uuid)') is not null",
+		"20260930886000_member_default_voice",
+		"#2305 (member Voice preference): bundle 279 resolves voice_model and voice_name via qorpera_resolve_member_voice_preference",
+		"to_regprocedure('public.qorpera_resolve_member_voice_preference(uuid,uuid)') is not null",
 	],
 	[
-		"20260930872000_surface_reply_reaches_turn",
-		"#2247 (surface reply reaches turn): bundle 278 expects folder session turns to include subsequent member replies",
-		"position('## The conversation since this request' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)')), '')) > 0",
+		"20260930887000_studio_voice_narration",
+		"#2305 (Studio explainer narration): bundle 279 calls qorpera_record_gemini_voice_usage and reads voiceModel, voiceName, and openScenesOps",
+		"to_regprocedure('public.qorpera_record_gemini_voice_usage(jsonb,text,jsonb)') is not null and position('''openScenesOps''' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)')), '')) > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
