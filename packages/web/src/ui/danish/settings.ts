@@ -354,6 +354,10 @@ export const SETTINGS: Record<string, string> = {
 	"Coding and working effort": "Indsats til kodning og arbejde",
 	"Default for background workers and coding sessions. Routines keep using your ChatGPT login.":
 		"Standard til baggrundsmedarbejdere og kodesessioner. Rutiner bruger fortsat dit ChatGPT-login.",
+	"Voice model": "Stemmemodel",
+	"Voice profile": "Stemmeprofil",
+	"Default model and voice profile for narrated breakdowns and spoken audio.":
+		"Standardmodel og stemmeprofil til indtalte gennemgange og lyd.",
 	"Connect Claude or add a Gemini API key below to choose their models here.":
 		"Forbind Claude eller tilføj en Gemini-API-nøgle nedenfor for at vælge deres modeller her.",
 	"{model} (unavailable here)": "{model} (ikke tilgængelig her)",

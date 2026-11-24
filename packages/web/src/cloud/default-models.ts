@@ -2,7 +2,13 @@ import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { boundedInteger, CloudShapeError, nonEmptyString, record, UUID_PATTERN } from "./parse.ts";
-import { EFFORTS_BEFORE_LIST, modelProvider, PROVIDER_EFFORTS, type SessionEffort } from "./session-model.ts";
+import {
+	EFFORTS_BEFORE_LIST,
+	modelProvider,
+	PROVIDER_EFFORTS,
+	type SessionEffort,
+	type SessionProvider,
+} from "./session-model.ts";
 
 export class DefaultModelsStaleError extends Error {
 	constructor(message = "Default model settings changed elsewhere.") {
@@ -18,17 +24,124 @@ export class DefaultModelsUnavailableError extends Error {
 	}
 }
 
+export const VOICE_MODELS = [
+	{ id: "gemini-3.8-flash-tts", name: "Gemini 3.8 Flash TTS", provider: "google" },
+	{ id: "gemini-3.8-flash-lite-tts", name: "Gemini 3.8 Flash-Lite TTS", provider: "google" },
+	{ id: "chatgpt-voice", name: "ChatGPT Voice", provider: "openai" },
+] as const satisfies ReadonlyArray<{ id: string; name: string; provider: SessionProvider }>;
+
+export const GEMINI_VOICE_PROFILES = [
+	"Charon",
+	"Kore",
+	"Puck",
+	"Zephyr",
+	"Aoede",
+	"Fenrir",
+	"Leda",
+	"Orus",
+	"Callirrhoe",
+	"Autonoe",
+	"Enceladus",
+	"Iapetus",
+	"Umbriel",
+	"Algieba",
+	"Despina",
+	"Erinome",
+	"Algenib",
+	"Rasalgethi",
+	"Laomedeia",
+	"Achernar",
+	"Alnilam",
+	"Schedar",
+	"Gacrux",
+	"Pulcherrima",
+	"Achird",
+	"Zubenelgenubi",
+	"Vindemiatrix",
+	"Sadachbia",
+	"Sadaltager",
+	"Sulafat",
+] as const;
+
+export const CHATGPT_VOICE_PROFILES = [
+	"cove",
+	"juniper",
+	"maple",
+	"spruce",
+	"ember",
+	"vale",
+	"breeze",
+	"arbor",
+	"sol",
+] as const;
+
+const VOICE_PROFILE_LABELS: Readonly<Record<string, string>> = {
+	Charon: "Charon — Informative",
+	Kore: "Kore — Firm",
+	Puck: "Puck — Upbeat",
+	Zephyr: "Zephyr — Bright",
+	Aoede: "Aoede — Breezy",
+	Fenrir: "Fenrir — Excitable",
+	Leda: "Leda — Youthful",
+	Orus: "Orus — Firm",
+	Callirrhoe: "Callirrhoe — Easy-going",
+	Autonoe: "Autonoe — Bright",
+	Enceladus: "Enceladus — Breathy",
+	Iapetus: "Iapetus — Clear",
+	Umbriel: "Umbriel — Easy-going",
+	Algieba: "Algieba — Smooth",
+	Despina: "Despina — Smooth",
+	Erinome: "Erinome — Clear",
+	Algenib: "Algenib — Gravelly",
+	Rasalgethi: "Rasalgethi — Informative",
+	Laomedeia: "Laomedeia — Upbeat",
+	Achernar: "Achernar — Soft",
+	Alnilam: "Alnilam — Firm",
+	Schedar: "Schedar — Even",
+	Gacrux: "Gacrux — Mature",
+	Pulcherrima: "Pulcherrima — Forward",
+	Achird: "Achird — Friendly",
+	Zubenelgenubi: "Zubenelgenubi — Casual",
+	Vindemiatrix: "Vindemiatrix — Gentle",
+	Sadachbia: "Sadachbia — Lively",
+	Sadaltager: "Sadaltager — Knowledgeable",
+	Sulafat: "Sulafat — Warm",
+	cove: "Cove",
+	juniper: "Juniper",
+	maple: "Maple",
+	spruce: "Spruce",
+	ember: "Ember",
+	vale: "Vale",
+	breeze: "Breeze",
+	arbor: "Arbor",
+	sol: "Sol",
+};
+
+export function voiceModelName(modelId: string): string {
+	return VOICE_MODELS.find((model) => model.id === modelId)?.name ?? modelId;
+}
+
+export function voiceProfileLabel(voiceName: string): string {
+	return VOICE_PROFILE_LABELS[voiceName] ?? voiceName;
+}
+
 export interface MemberDefaultModels {
 	conversationModel: string;
 	conversationEffort: SessionEffort;
 	codingModel: string;
 	codingEffort: SessionEffort;
+	voiceModel: string | null;
+	voiceName: string | null;
 	storedConversationModel: string | null;
 	storedCodingModel: string | null;
+	storedVoiceModel: string | null;
+	storedVoiceName: string | null;
 	conversationModels: readonly string[];
 	codingModels: readonly string[];
+	voiceModels: readonly string[];
 	conversationEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
 	codingEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
+	voiceProfiles: Readonly<Record<string, readonly string[]>>;
 	version: number;
 }
 
@@ -37,6 +150,8 @@ export interface MemberDefaultModelsUpdate {
 	conversationEffort?: SessionEffort;
 	codingModel?: string;
 	codingEffort?: SessionEffort;
+	voiceModel?: string;
+	voiceName?: string;
 	expectedVersion: number;
 }
 
@@ -102,6 +217,26 @@ function parseEffortMap(value: unknown, label: string): Readonly<Record<string, 
 	return out;
 }
 
+function parseVoiceProfileMap(value: unknown, label: string): Readonly<Record<string, readonly string[]>> {
+	const input = record(value, label);
+	const entries = Object.entries(input);
+	if (entries.length > 32) throw new CloudShapeError(label);
+	const out: Record<string, readonly string[]> = {};
+	for (const [modelId, list] of entries) {
+		nonEmptyString(modelId, label, 128);
+		if (!Array.isArray(list) || list.length === 0 || list.length > 64) {
+			throw new CloudShapeError(label);
+		}
+		const voices: string[] = [];
+		for (const item of list) {
+			const voice = nonEmptyString(item, label, 128);
+			if (!voices.includes(voice)) voices.push(voice);
+		}
+		out[modelId] = voices;
+	}
+	return out;
+}
+
 function parseOptionalModel(value: unknown, label: string): string | null {
 	if (value === null || value === undefined) return null;
 	return nonEmptyString(value, label, 128);
@@ -126,22 +261,37 @@ export function defaultModelEfforts(
 	return kind === "coding" ? CODING_EFFORTS_BEFORE_LIST[provider] : EFFORTS_BEFORE_LIST[provider];
 }
 
+export function defaultVoiceProfiles(state: MemberDefaultModels | undefined, modelId: string): readonly string[] {
+	const listed = state?.voiceProfiles[modelId];
+	if (listed && listed.length > 0) return listed;
+	if (modelId === "gemini-3.8-flash-tts" || modelId === "gemini-3.8-flash-lite-tts") return GEMINI_VOICE_PROFILES;
+	if (modelId === "chatgpt-voice") return CHATGPT_VOICE_PROFILES;
+	return [];
+}
+
 export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
 	const input = record(value, "default models");
 	if (input.schema !== "qorpera.member-default-models/v1") {
 		throw new CloudShapeError("default models");
 	}
+	const hasVoice = input.voiceModel !== undefined || input.voiceModels !== undefined;
 	return {
 		conversationModel: nonEmptyString(input.conversationModel, "conversation default model", 128),
 		conversationEffort: parseEffort(input.conversationEffort, "conversation default effort"),
 		codingModel: nonEmptyString(input.codingModel, "coding default model", 128),
 		codingEffort: parseEffort(input.codingEffort, "coding default effort"),
+		voiceModel: hasVoice ? nonEmptyString(input.voiceModel, "voice default model", 128) : null,
+		voiceName: hasVoice ? nonEmptyString(input.voiceName, "voice default profile", 128) : null,
 		storedConversationModel: parseOptionalModel(input.storedConversationModel, "stored conversation model"),
 		storedCodingModel: parseOptionalModel(input.storedCodingModel, "stored coding model"),
+		storedVoiceModel: hasVoice ? parseOptionalModel(input.storedVoiceModel, "stored voice model") : null,
+		storedVoiceName: hasVoice ? parseOptionalModel(input.storedVoiceName, "stored voice profile") : null,
 		conversationModels: parseModelList(input.conversationModels, "conversation models"),
 		codingModels: parseModelList(input.codingModels, "coding models"),
+		voiceModels: hasVoice ? parseModelList(input.voiceModels, "voice models") : [],
 		conversationEfforts: parseEffortMap(input.conversationEfforts, "conversation model efforts"),
 		codingEfforts: parseEffortMap(input.codingEfforts, "coding model efforts"),
+		voiceProfiles: hasVoice ? parseVoiceProfileMap(input.voiceProfiles, "voice model profiles") : {},
 		version: boundedInteger(input.version, "default models version", 0, Number.MAX_SAFE_INTEGER),
 	};
 }
@@ -249,6 +399,7 @@ export function createWebDefaultModels(
 			if (!Number.isSafeInteger(update.expectedVersion) || update.expectedVersion < 0) {
 				throw new Error("Invalid default models version.");
 			}
+			const hasVoicePatch = update.voiceModel !== undefined || update.voiceName !== undefined;
 			const raw = await rpc(
 				"qorpera_set_member_default_models",
 				{
@@ -258,6 +409,12 @@ export function createWebDefaultModels(
 					p_coding_model: update.codingModel ?? null,
 					p_coding_effort: update.codingEffort ?? null,
 					p_expected_version: update.expectedVersion,
+					...(hasVoicePatch
+						? {
+								p_voice_model: update.voiceModel ?? null,
+								p_voice_name: update.voiceName ?? null,
+							}
+						: {}),
 				},
 				signal,
 			);

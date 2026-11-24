@@ -2,7 +2,10 @@ import {
 	DefaultModelsStaleError,
 	DefaultModelsUnavailableError,
 	defaultModelEfforts,
+	defaultVoiceProfiles,
 	type MemberDefaultModels,
+	voiceModelName,
+	voiceProfileLabel,
 	type WebDefaultModels,
 } from "../../cloud/default-models.ts";
 import { modelName, type SessionEffort } from "../../cloud/session-model.ts";
@@ -28,6 +31,11 @@ function clampEffort(effort: SessionEffort, allowed: readonly SessionEffort[]): 
 	if (allowed.includes(effort)) return effort;
 	if (effort === "max" && allowed.includes("xhigh")) return "xhigh";
 	return allowed[allowed.length - 1] ?? "high";
+}
+
+function clampVoice(voice: string | null, allowed: readonly string[]): string {
+	if (voice && allowed.includes(voice)) return voice;
+	return allowed[0] ?? voice ?? "";
 }
 
 export class DefaultModelsView {
@@ -84,6 +92,8 @@ export class DefaultModelsView {
 		conversationEffort?: SessionEffort;
 		codingModel?: string;
 		codingEffort?: SessionEffort;
+		voiceModel?: string;
+		voiceName?: string;
 	}): Promise<void> {
 		const current = this.#state;
 		if (!current || this.#saving || this.#lifetime.signal.aborted) return;
@@ -135,7 +145,7 @@ export class DefaultModelsView {
 		const select = h(
 			"select",
 			{
-				class: role.endsWith("-effort") ? "default-effort-select" : "default-model-select",
+				class: role.endsWith("-effort") || role === "voice-name" ? "default-effort-select" : "default-model-select",
 				"aria-label": ariaLabel,
 				dataset: { role },
 				disabled: this.#saving,
@@ -277,6 +287,73 @@ export class DefaultModelsView {
 			},
 		);
 
+		let voiceRow: HTMLElement | null = null;
+		if (state.voiceModel !== null && state.voiceModels.length > 0) {
+			const voiceUnavailable =
+				state.storedVoiceModel !== null && !state.voiceModels.includes(state.storedVoiceModel);
+			const shownVoiceModel = voiceUnavailable ? state.storedVoiceModel! : state.voiceModel;
+			const voiceProfiles = defaultVoiceProfiles(state, shownVoiceModel);
+			const currentVoice =
+				voiceUnavailable && state.storedVoiceName !== null
+					? clampVoice(state.storedVoiceName, voiceProfiles)
+					: clampVoice(state.voiceName, voiceProfiles);
+			const voiceModelOptions: { value: string; label: string; disabled?: boolean }[] = [
+				...(voiceUnavailable
+					? [
+							{
+								value: state.storedVoiceModel!,
+								label: t("{model} (unavailable here)", { model: voiceModelName(state.storedVoiceModel!) }),
+								disabled: true,
+							},
+						]
+					: []),
+				...state.voiceModels.map((id) => ({ value: id, label: voiceModelName(id) })),
+			];
+			const voiceProfileOptions = voiceProfiles.map((profile) => ({
+				value: profile,
+				label: voiceProfileLabel(profile),
+			}));
+			const voiceModelSelect = this.#select(
+				"voice-model",
+				t("Voice model"),
+				voiceModelOptions,
+				shownVoiceModel,
+				(value) => {
+					const allowed = defaultVoiceProfiles(state, value);
+					const nextVoice = clampVoice(currentVoice, allowed);
+					void this.#save(
+						nextVoice && nextVoice !== currentVoice
+							? { voiceModel: value, voiceName: nextVoice }
+							: { voiceModel: value },
+					);
+				},
+			);
+			const voiceNameSelect = this.#select(
+				"voice-name",
+				t("Voice profile"),
+				voiceProfileOptions,
+				currentVoice,
+				(value) => {
+					void this.#save(
+						state.storedVoiceModel === null
+							? { voiceModel: state.voiceModel!, voiceName: value }
+							: { voiceName: value },
+					);
+				},
+			);
+			voiceRow = h(
+				"div",
+				{ class: "settings-preference-row default-model-row" },
+				h(
+					"div",
+					{ class: "settings-copy" },
+					h("strong", null, t("Voice")),
+					h("small", null, t("Default model and voice profile for narrated breakdowns and spoken audio.")),
+				),
+				h("div", { class: "default-model-controls" }, voiceModelSelect, voiceNameSelect),
+			);
+		}
+
 		const missingExtraProviders =
 			!state.conversationModels.includes("gemini-4-neon") || !state.codingModels.includes("claude-opus-5-5");
 
@@ -313,6 +390,7 @@ export class DefaultModelsView {
 					),
 					h("div", { class: "default-model-controls" }, codingModelSelect, codingEffortSelect),
 				),
+				voiceRow,
 			),
 			missingExtraProviders
 				? h(

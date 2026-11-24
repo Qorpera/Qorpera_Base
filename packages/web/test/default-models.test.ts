@@ -2,10 +2,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DefaultModelsView } from "../src/app/views/settings-default-models.ts";
 import {
+	CHATGPT_VOICE_PROFILES,
 	createWebDefaultModels,
 	DefaultModelsStaleError,
 	DefaultModelsUnavailableError,
+	GEMINI_VOICE_PROFILES,
 	type MemberDefaultModels,
+	parseMemberDefaultModels,
 	type WebDefaultModels,
 } from "../src/cloud/default-models.ts";
 import { fixture, profileA, settle, userA } from "./fixtures.ts";
@@ -22,10 +25,15 @@ function sampleDefaults(patch: Partial<MemberDefaultModels> = {}): MemberDefault
 		conversationEffort: "low",
 		codingModel: "claude-opus-5-5",
 		codingEffort: "high",
+		voiceModel: "gemini-3.8-flash-tts",
+		voiceName: "Charon",
 		storedConversationModel: null,
 		storedCodingModel: null,
+		storedVoiceModel: null,
+		storedVoiceName: null,
 		conversationModels: ["gpt-6.2-sol", "gpt-6-astra", "claude-opus-5-5", "claude-fable-5-2", "gemini-4-neon"],
 		codingModels: ["claude-opus-5-5", "claude-fable-5-2", "gpt-6.2-sol", "gpt-6-astra"],
+		voiceModels: ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "chatgpt-voice"],
 		conversationEfforts: {
 			"gpt-6.2-sol": ["low", "medium", "high", "xhigh"],
 			"gpt-6-astra": ["low", "medium", "high", "xhigh"],
@@ -39,13 +47,18 @@ function sampleDefaults(patch: Partial<MemberDefaultModels> = {}): MemberDefault
 			"claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
 			"claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
 		},
+		voiceProfiles: {
+			"gemini-3.8-flash-tts": GEMINI_VOICE_PROFILES,
+			"gemini-3.8-flash-lite-tts": GEMINI_VOICE_PROFILES,
+			"chatgpt-voice": CHATGPT_VOICE_PROFILES,
+		},
 		version: 1,
 		...patch,
 	};
 }
 
 describe("default models transport", () => {
-	it("reads, sends partial updates, and maps QRC01 stale and QRC02 unavailable errors", async () => {
+	it("reads, sends partial updates including voice, and maps QRC01 stale and QRC02 unavailable errors", async () => {
 		const f = fixture();
 		let step = 0;
 		const sentBodies: Record<string, unknown>[] = [];
@@ -74,6 +87,18 @@ describe("default models transport", () => {
 					});
 				}
 				if (step === 2) {
+					return Response.json({
+						schema: "qorpera.member-default-models/v1",
+						...sampleDefaults({
+							voiceModel: "gemini-3.8-flash-lite-tts",
+							voiceName: "Kore",
+							storedVoiceModel: "gemini-3.8-flash-lite-tts",
+							storedVoiceName: "Kore",
+							version: 3,
+						}),
+					});
+				}
+				if (step === 3) {
 					return Response.json({ code: "QRC01", message: "stale" }, { status: 409 });
 				}
 				return Response.json({ code: "QRC02", message: "missing provider" }, { status: 403 });
@@ -92,6 +117,8 @@ describe("default models transport", () => {
 		const initial = await client.read();
 		expect(initial.conversationModel).toBe("gpt-6.2-sol");
 		expect(initial.codingModel).toBe("claude-opus-5-5");
+		expect(initial.voiceModel).toBe("gemini-3.8-flash-tts");
+		expect(initial.voiceName).toBe("Charon");
 		expect(initial.codingEfforts["gpt-6-astra"]).toEqual(["low", "medium", "high"]);
 
 		const updated = await client.set({
@@ -111,6 +138,25 @@ describe("default models transport", () => {
 		expect(updated.storedConversationModel).toBe("gemini-4-neon");
 		expect(updated.version).toBe(2);
 
+		const voiceUpdated = await client.set({
+			voiceModel: "gemini-3.8-flash-lite-tts",
+			voiceName: "Kore",
+			expectedVersion: 2,
+		});
+		expect(sentBodies[1]).toEqual({
+			p_profile_id: profileA.profileId.toLowerCase(),
+			p_conversation_model: null,
+			p_conversation_effort: null,
+			p_coding_model: null,
+			p_coding_effort: null,
+			p_expected_version: 2,
+			p_voice_model: "gemini-3.8-flash-lite-tts",
+			p_voice_name: "Kore",
+		});
+		expect(voiceUpdated.voiceModel).toBe("gemini-3.8-flash-lite-tts");
+		expect(voiceUpdated.voiceName).toBe("Kore");
+		expect(voiceUpdated.version).toBe(3);
+
 		await expect(
 			client.set({
 				conversationModel: "gpt-6.2-sol",
@@ -121,14 +167,34 @@ describe("default models transport", () => {
 		await expect(
 			client.set({
 				conversationModel: "gemini-4-neon",
-				expectedVersion: 2,
+				expectedVersion: 3,
 			}),
 		).rejects.toBeInstanceOf(DefaultModelsUnavailableError);
+	});
+
+	it("parses pre-voice payloads without failing", () => {
+		const legacy = parseMemberDefaultModels({
+			schema: "qorpera.member-default-models/v1",
+			conversationModel: "gpt-6.2-sol",
+			conversationEffort: "low",
+			codingModel: "gpt-6.2-sol",
+			codingEffort: "high",
+			storedConversationModel: null,
+			storedCodingModel: null,
+			conversationModels: ["gpt-6.2-sol"],
+			codingModels: ["gpt-6.2-sol"],
+			conversationEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+			codingEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+			version: 0,
+		});
+		expect(legacy.voiceModel).toBeNull();
+		expect(legacy.voiceName).toBeNull();
+		expect(legacy.voiceModels).toEqual([]);
 	});
 });
 
 describe("DefaultModelsView", () => {
-	it("sends only changed fields, clamps max effort off Claude, and preserves unavailable stored defaults", async () => {
+	it("sends only changed fields, clamps max effort off Claude, and switches voice model and profile", async () => {
 		let state = sampleDefaults({
 			conversationModel: "claude-opus-5-5",
 			storedConversationModel: "claude-opus-5-5",
@@ -136,12 +202,16 @@ describe("DefaultModelsView", () => {
 			codingModel: "claude-opus-5-5",
 			storedCodingModel: "claude-opus-5-5",
 			codingEffort: "max",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Charon",
 		});
 		const client: WebDefaultModels = {
 			read: vi.fn(async () => state),
 			set: vi.fn(async (update) => {
 				const conversationModel = update.conversationModel ?? state.conversationModel;
 				const codingModel = update.codingModel ?? state.codingModel;
+				const voiceModel = update.voiceModel ?? state.voiceModel;
+				const voiceName = update.voiceName ?? state.voiceName;
 				state = sampleDefaults({
 					conversationModel,
 					storedConversationModel: update.conversationModel ?? state.storedConversationModel,
@@ -149,6 +219,10 @@ describe("DefaultModelsView", () => {
 					codingModel,
 					storedCodingModel: update.codingModel ?? state.storedCodingModel,
 					codingEffort: update.codingEffort ?? state.codingEffort,
+					voiceModel,
+					voiceName,
+					storedVoiceModel: update.voiceModel ?? state.storedVoiceModel,
+					storedVoiceName: update.voiceName ?? state.storedVoiceName,
 					version: update.expectedVersion + 1,
 				});
 				return state;
@@ -162,11 +236,20 @@ describe("DefaultModelsView", () => {
 		expect(view.el.textContent).toContain("Default models");
 		expect(view.el.textContent).toContain("Conversational");
 		expect(view.el.textContent).toContain("Coding & working");
+		expect(view.el.textContent).toContain("Voice");
+
+		const rows = [...view.el.querySelectorAll(".default-model-row strong")].map((node) => node.textContent);
+		expect(rows).toEqual(["Conversational", "Coding & working", "Voice"]);
 
 		const convModel = view.el.querySelector<HTMLSelectElement>('[data-role="conversation-model"]')!;
 		const codingModel = view.el.querySelector<HTMLSelectElement>('[data-role="coding-model"]')!;
+		const voiceModel = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
+		const voiceName = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
 		expect(convModel.value).toBe("claude-opus-5-5");
 		expect(codingModel.value).toBe("claude-opus-5-5");
+		expect(voiceModel.value).toBe("gemini-3.8-flash-tts");
+		expect(voiceName.value).toBe("Charon");
+		expect(voiceName.options.length).toBe(30);
 
 		convModel.value = "gemini-4-neon";
 		convModel.dispatchEvent(new Event("change"));
@@ -207,10 +290,39 @@ describe("DefaultModelsView", () => {
 			expect.any(AbortSignal),
 		);
 
+		const voiceNameAfter = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		voiceNameAfter.value = "Kore";
+		voiceNameAfter.dispatchEvent(new Event("change"));
+		await settle();
+		expect(client.set).toHaveBeenLastCalledWith(
+			{
+				voiceModel: "gemini-3.8-flash-tts",
+				voiceName: "Kore",
+				expectedVersion: 4,
+			},
+			expect.any(AbortSignal),
+		);
+
+		const voiceModelAfter = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
+		voiceModelAfter.value = "chatgpt-voice";
+		voiceModelAfter.dispatchEvent(new Event("change"));
+		await settle();
+		expect(client.set).toHaveBeenLastCalledWith(
+			{
+				voiceModel: "chatgpt-voice",
+				voiceName: "cove",
+				expectedVersion: 5,
+			},
+			expect.any(AbortSignal),
+		);
+
+		const chatgptVoices = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		expect([...chatgptVoices.options].map((opt) => opt.value)).toEqual([...CHATGPT_VOICE_PROFILES]);
+
 		controller.abort();
 	});
 
-	it("shows unavailable stored models without overwriting them when editing the other control", async () => {
+	it("shows unavailable stored models without overwriting them when editing another control", async () => {
 		const state = sampleDefaults({
 			conversationModel: "gpt-6.2-sol",
 			storedConversationModel: "gemini-4-neon",
@@ -220,6 +332,11 @@ describe("DefaultModelsView", () => {
 			storedCodingModel: null,
 			codingEffort: "high",
 			codingModels: ["gpt-6.2-sol", "gpt-6-astra"],
+			voiceModel: "chatgpt-voice",
+			voiceName: "cove",
+			storedVoiceModel: "gemini-3.8-flash-tts",
+			storedVoiceName: "Kore",
+			voiceModels: ["chatgpt-voice"],
 			version: 4,
 		});
 		const client: WebDefaultModels = {
@@ -235,6 +352,14 @@ describe("DefaultModelsView", () => {
 		expect(convModel.value).toBe("gemini-4-neon");
 		expect(convModel.selectedOptions[0]?.disabled).toBe(true);
 		expect(convModel.selectedOptions[0]?.textContent).toBe("Gemini 4 Neon (unavailable here)");
+
+		const voiceModel = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
+		expect(voiceModel.value).toBe("gemini-3.8-flash-tts");
+		expect(voiceModel.selectedOptions[0]?.disabled).toBe(true);
+		expect(voiceModel.selectedOptions[0]?.textContent).toBe("Gemini 3.8 Flash TTS (unavailable here)");
+
+		const voiceName = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		expect(voiceName.value).toBe("Kore");
 
 		const codingEffort = view.el.querySelector<HTMLSelectElement>('[data-role="coding-effort"]')!;
 		codingEffort.value = "medium";
