@@ -2043,10 +2043,10 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
 - `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId, slug,
   title, kind, source, takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites"
   otherwise). `hosts` says whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's
-  operators took down, else null (the web says only that Qorpera took it down, not the reason). Every site of the
-  company, by slug, also a project's site that never went live, which `qorpera_list_company_sites` leaves out: the web
-  draws such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read leniently: later steps add
-  keys (public sites, own addresses).
+  operators took down, else null (the site's card under a message says "Taken down", with the reason as its line).
+  Every site of the company, by slug, also a project's site that never went live, which `qorpera_list_company_sites`
+  leaves out: the web draws such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read
+  leniently: later steps add keys (public sites, own addresses).
 - A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
   new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted, and a takedown
   sticks until the operator restores it: `qorpera_unpublish_company_site` refuses such a site (55000 "Qorpera took this

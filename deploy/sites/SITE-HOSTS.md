@@ -248,12 +248,12 @@ them). Errors: 22023 for a reason that is not one line of 1 to 300 characters, P
 - An app link: the password page, and the right password no longer opens it, within 30 seconds (the relay keeps an
   open session that long). Its link program is refused at its next check (within 5 minutes) and stops.
 
-**What members see:** a site card under a message says "Taken down": Qorpera took the site down, so it can't be
-opened. What's new offers no link to it and says it was taken down, for a site never live too, and offers none of what
-would be refused: no Look first, no Put it live, no Go back (Not yet stays). The site does not go live again: Put it
-live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain words. Since the Sites page
-went (24 Nov 2026) no view in the app shows your reason, though `qorpera_company_site_access` still gives it to every
-member: tell the company's owner why, in plain words.
+**What members see:** the site's card under a message that links it says "Taken down", with your reason as its line,
+so write the reason for the company's members to read. What's new offers no link to it and says it was taken down, for
+a site never live too, and offers none of what would be refused: no Look first, no Put it live, no Go back (Not yet
+stays). The site does not go live again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers
+`gone`, each said in plain words. The reason comes from `qorpera_company_site_access` (every member). Tell the company's
+owner too, in plain words.
 
 **What an agent sees:** a refusal in plain words it can pass on, with your reason and no address: "SITE_TAKEN_DOWN: This
 site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the

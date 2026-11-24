@@ -91,7 +91,6 @@ const TITLES: Record<string, string> = {
 	"page:members": "Members",
 	"page:bank": "Bank",
 	concepts: "Concepts",
-	sites: "Sites",
 	"whats-new": "What's new",
 };
 
@@ -491,11 +490,8 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 	};
 }
 
-/** Whether the company has a drawer key. Sites is the company's while it has a published site, and What's new (own
- * code storage, step 4) while a repository kept in Qorpera has a site; this tool reads neither, so both are taken, and
- * the drawer leaves them out while there is none. */
 function has(company: Company, key: string): boolean {
-	return key === "sites" || key === "whats-new" || company.have.includes(key);
+	return key === "whats-new" || company.have.includes(key);
 }
 
 function refuseKey(company: Company, key: string): never {
@@ -802,8 +798,6 @@ function listPage(items: readonly Node[], company: Company, cursor: number): str
 /** A title as one line of a list. */
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
-/** A loose entry the Co-Founder's tidy pass counts: a posted app no member retired (pages, Concepts, Sites and What's
- * new are the drawer's own; a retired app is in no member's drawer). */
 const looseCounts = (key: string, company: Company) =>
 	key.startsWith("app:") && !company.unposted.has(key) && !company.retired.has(key);
 
