@@ -1252,4 +1252,103 @@ describe("cloud surface session runner", () => {
 		expect(isolatedLoaded?.productSpecsJson).toBe('{"weightGrams":44}');
 		expect(isolatedLoaded?.productCatalogJson).toBe('{"skus":["TB-1"]}');
 	});
+
+	it("captures exact pre-edit baseFiles on folder patch staging and emits non-interactive instructions for internal reconciliation", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const stagedRequests: unknown[] = [];
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Update guide heading",
+			},
+			{
+				folder: {
+					async readText(path) {
+						if (path === "identity/guide.md") return { text: "# Brand\n\nOriginal copy\n" };
+						return null;
+					},
+				},
+				surfaceTools: {
+					stageSurfacePatch: async (_sid, req) => {
+						stagedRequests.push(req);
+						return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+					},
+				},
+				executeTurn: async (req) => {
+					const patchTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const parsed = patchTool.parseArguments({
+						title: "Guide update",
+						summary: "Updates heading",
+						ops: [
+							{ op: "write_text", path: "guide.md", content: "# Brand v2\n\nOriginal copy\n" },
+							{ op: "write_text", path: "new.md", content: "Brand new\n" },
+						],
+					});
+					await patchTool.execute(parsed, {
+						companyId,
+						runId: randomUUID(),
+						signal: req.signal,
+					} as never);
+					return { state: "ready", replyText: "Staged" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+
+		expect(stagedRequests).toHaveLength(1);
+		expect(stagedRequests[0]).toMatchObject({
+			baseFiles: {
+				"guide.md": "# Brand\n\nOriginal copy\n",
+				"new.md": null,
+			},
+		});
+
+		let seenInstructions = "";
+		let seenWritableRoots: readonly string[] = ["unset"];
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				state: "reconciling",
+				isInternal: true,
+				prompt: "Silently combine overlapping staged changes",
+				conflictPaths: ["identity/guide.md"],
+				conflictDetails: [
+					{
+						changeId: randomUUID(),
+						title: "Change 1",
+						kind: "folder_patch",
+						patchManifest: [{ op: "write_text", path: "identity/guide.md", content: "A" }],
+					},
+				],
+			},
+			{
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				executeTurn: async (req) => {
+					seenInstructions = req.instructions;
+					seenWritableRoots = req.writableRoots;
+					return { state: "ready", replyText: "Combined" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+
+		expect(seenInstructions).toContain("automatic silent reconciliation");
+		expect(seenInstructions).toContain("Never ask the founder questions.");
+		expect(seenWritableRoots).toEqual([]);
+	});
 });

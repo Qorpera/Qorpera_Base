@@ -172,6 +172,7 @@ export interface StageSurfacePatchRequest {
 	readonly title: string;
 	readonly summary: string;
 	readonly ops: readonly StudioPatchOp[];
+	readonly baseFiles?: Readonly<Record<string, string | null>>;
 	readonly notePaths: readonly string[];
 	readonly finishSession: boolean;
 }
@@ -585,6 +586,10 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async stageSurfacePatch(sessionId, request, context) {
 			const affectedPaths = [...new Set(request.ops.map((op) => op.path))];
+			const hasBaseFiles = request.baseFiles !== undefined && Object.keys(request.baseFiles).length > 0;
+			const patchManifest = hasBaseFiles
+				? { ops: [...request.ops], baseFiles: request.baseFiles }
+				: [...request.ops];
 			const response = await rpc(
 				"qorpera_native_surface_record_change",
 				{
@@ -598,7 +603,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_depends_on_change_ids: [],
 					p_affected_paths: affectedPaths,
 					p_diff_stats: null,
-					p_patch_manifest: [...request.ops],
+					p_patch_manifest: patchManifest,
 					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 				},

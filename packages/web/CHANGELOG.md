@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Silent background reconciliation for overlapping interface changes (migration `20260930888000_surface_silent_reconciliation.sql`): removed founder-facing `Conflict` badges, banners, status labels, `Reconcile` / `Reconcile all` buttons, and visible `Reconcile:` sessions; Studio and Report views apply 3-way merges and cached ready overlays transparently, auto-trigger background reconciliation when needed, show a quiet `Updating preview…` indicator while reconciling, and fall back to `Couldn't update preview` + `Retry` only after reconciliation fails.
 - Removed Claude models (`Opus 5.5`, `Fable 5.2`) from the Conversational default model selector in Settings → AI subscriptions (`views/settings-default-models.ts`, migration `20260930882000_conversational_default_no_claude.sql`); Claude models remain available under Coding & working.
 - Changes no longer list the files they touch (Jonas, 24 Nov 2026: "let's get rid of these file links in the agents boxes"). Under an agent's card and in the Changes drawer a change is its title, its switch and Approve; the file chips that linked to Files are gone, with their styles (`views/surface-session-drawer.ts`, `styles/surfaces.css`).
 - The website address card greys the platform's domain of an address on `qorpera.site` as it does on `qorpera.com` (`views/surface-address-sheet.ts`, by the shared `NATIVE_SITE_HOST` rule): `shop.qorpera.site` shows `shop` with a grey `.qorpera.site`, no longer `shop.qorpera` with a grey `.site`.

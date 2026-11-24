@@ -16,7 +16,6 @@ import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.
 import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
 	askedToPublish,
-	formatConflictPaths,
 	isLocalSurfaceId,
 	isOpenChange,
 	isOpenVariant,
@@ -1436,9 +1435,6 @@ export class SurfaceView {
 		const state = store.state;
 		const workspace = state.workspaces[surface.id];
 		const preview = workspace?.previewState;
-		const conflict = preview?.primary.conflictReport ?? null;
-		const hasConflict = Boolean(conflict && (conflict.changeIds.length > 0 || conflict.paths.length > 0));
-		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const canStart = store.canStartSessions(surface);
 		const pointVisible = surface.archetype === "live_build";
 		const hasPreviewDoor = Boolean(
@@ -1464,8 +1460,6 @@ export class SurfaceView {
 			running,
 			pending,
 			state.error,
-			hasConflict ? conflict : null,
-			busyReconcile,
 			state.migration?.specialistAgents.length,
 			state.migration?.legacyBoards.length,
 			instead?.id,
@@ -1549,31 +1543,6 @@ export class SurfaceView {
 					h("button", { type: "button", class: "btn btn-small", "data-act": "dismiss-error" }, t("Dismiss")),
 				),
 			);
-		if (hasConflict && conflict) {
-			const paths = formatConflictPaths(conflict.paths);
-			banners.push(
-				h(
-					"div",
-					{ class: "surface-banner is-conflict", role: "alert" },
-					h("span", { class: "surface-state is-conflicted", "aria-hidden": "true" }),
-					h(
-						"span",
-						{ title: conflict.paths.join(", ") || undefined },
-						paths ? t("Preview conflict in {paths}", { paths }) : t("Preview changes conflict."),
-					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "btn btn-primary btn-small",
-							"data-act": "reconcile",
-							disabled: busyReconcile || conflict.changeIds.length === 0,
-						},
-						t("Reconcile"),
-					),
-				),
-			);
-		}
 		if (pending && state.migration) {
 			const agents = state.migration.specialistAgents.length;
 			const boards = state.migration.legacyBoards.length;
@@ -1783,11 +1752,6 @@ export class SurfaceView {
 				this.#target = undefined;
 				this.#drawChrome(surface);
 				return;
-			case "reconcile": {
-				const ids = store.workspace(surface.id)?.previewState.primary.conflictReport?.changeIds ?? [];
-				if (ids.length) void store.reconcileChanges(surface.id, ids);
-				return;
-			}
 			case "ask-yes":
 				void store.publish(surface.id);
 				return;

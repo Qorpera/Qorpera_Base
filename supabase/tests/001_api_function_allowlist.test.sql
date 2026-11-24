@@ -451,6 +451,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_delete_surface_automation(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); deletes a surface automation (20260930843000)'),
 	('public.qorpera_discard_exploration(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); discards an open surface exploration (20260930843000)'),
 	('public.qorpera_discard_surface_change(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); discards an open surface change unit (20260930840000)'),
+	('public.qorpera_ensure_surface_reconciliation(uuid,uuid[],text[],boolean)', false, true, 'member: qorpera_assert_surface_member(profile, false/true); reads or queues silent background reconciliation for overlapping staged changes (20260930888000)'),
 	('public.qorpera_get_surface_workspace(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, false); reads sessions, changes, explorations, and previews of one surface (20260930843000)'),
 	('public.qorpera_list_automations(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); lists company surface automations (20260930843000)'),
 	('public.qorpera_list_surfaces(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); lists company surfaces (20260930840000)'),

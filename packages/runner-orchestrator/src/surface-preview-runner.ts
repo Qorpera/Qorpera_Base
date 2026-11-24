@@ -208,6 +208,7 @@ export interface SurfacePreviewBuildRequest {
 	readonly shortHostId: string;
 	readonly repository: CloudCodingRepository;
 	readonly baseSha?: string;
+	readonly reconciledCommitSha?: string;
 	readonly exploration?: {
 		readonly sessionId: string;
 		readonly baseSha: string;
@@ -245,6 +246,7 @@ export async function buildCompositeSurfacePreview(
 		const composed = await composePreviewTree(job, {
 			repository: request.repository,
 			...(request.baseSha ? { baseSha: request.baseSha } : {}),
+			...(request.reconciledCommitSha ? { reconciledCommitSha: request.reconciledCommitSha } : {}),
 			...(request.exploration ? { exploration: request.exploration } : {}),
 			changes: request.changes,
 		});

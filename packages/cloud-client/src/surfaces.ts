@@ -6,6 +6,7 @@ import {
 	parseSurfaceAutomationSummary,
 	parseSurfaceMigrationChecklist,
 	parseSurfacePreviewCompositionState,
+	parseSurfaceReconciliation,
 	parseSurfaceSession,
 	parseSurfaceSessionImages,
 	parseSurfaceSummary,
@@ -29,6 +30,7 @@ import {
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfacePreviewMode,
+	type SurfaceReconciliation,
 	type SurfaceSession,
 	type SurfaceSessionImages,
 	type SurfaceSessionMessage,
@@ -737,6 +739,21 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
+	async ensureSurfaceReconciliation(
+		surfaceId: string,
+		changeIds: readonly string[],
+		conflictPaths: readonly string[] = [],
+		retry = false,
+	): Promise<SurfaceReconciliation> {
+		const data = await this.#rpc("qorpera_ensure_surface_reconciliation", {
+			p_surface_id: surfaceId,
+			p_change_ids: [...changeIds],
+			p_conflict_paths: [...conflictPaths],
+			p_retry: retry,
+		});
+		return parseSurfaceReconciliation(data, "reconciliation");
+	}
+
 	async spawnCrossSurfaceSession(request: CrossSurfaceHandoffRequest): Promise<SurfaceSession> {
 		const data = await this.#rpc("qorpera_spawn_cross_surface_session", {
 			p_source_surface_id: request.sourceSurfaceId,
@@ -863,6 +880,7 @@ export type {
 	SurfaceChangeUnit,
 	SurfaceMigrationChecklist,
 	SurfacePreviewCompositionState,
+	SurfaceReconciliation,
 	SurfaceSession,
 	SurfaceSessionMessage,
 	SurfaceSummary,

@@ -3,6 +3,7 @@ import {
 	compileIdentityTokensCss,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
+	mergeStudioTextContent,
 	normalizeStudioFolderRoot,
 	parseStudioPatchOps,
 	resolveStudioFolderPath,
@@ -38,6 +39,7 @@ interface ClaimedFolderApprovedChange {
 	readonly title: string;
 	readonly summary: string;
 	readonly patchManifest: unknown;
+	readonly baseFiles: Readonly<Record<string, string | null>> | null;
 	readonly affectedPaths: readonly string[];
 }
 
@@ -51,6 +53,7 @@ interface ClaimedFolderMergeJob {
 	readonly folderRoot: string | null;
 	readonly payload: Readonly<Record<string, unknown>>;
 	readonly preMergeSnapshot: Readonly<Record<string, unknown>> | null;
+	readonly reconciledPatchManifest: unknown;
 	readonly approvedChanges: readonly ClaimedFolderApprovedChange[];
 }
 
@@ -354,6 +357,41 @@ function extractStudioOps(manifest: unknown): StudioPatchOp[] {
 	throw new Error("Folder change patch manifest is missing valid ops");
 }
 
+function tryExtractStudioOps(manifest: unknown): StudioPatchOp[] | null {
+	if (manifest === null || manifest === undefined) return null;
+	try {
+		const ops = extractStudioOps(manifest);
+		return ops.length > 0 ? ops : null;
+	} catch {
+		return null;
+	}
+}
+
+function parseOptionalBaseFiles(raw: unknown): Readonly<Record<string, string | null>> | null {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const out: Record<string, string | null> = {};
+	let count = 0;
+	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+		if (!key.trim()) continue;
+		if (value === null || typeof value === "string") {
+			out[key] = value;
+			count += 1;
+		}
+	}
+	return count > 0 ? out : null;
+}
+
+function lookupBaseFileEntry(
+	baseFiles: Readonly<Record<string, string | null>> | null,
+	rawPath: string,
+	fullPath: string,
+): { readonly hasBase: boolean; readonly content: string | null } {
+	if (!baseFiles) return { hasBase: false, content: null };
+	if (Object.hasOwn(baseFiles, rawPath)) return { hasBase: true, content: baseFiles[rawPath] ?? null };
+	if (Object.hasOwn(baseFiles, fullPath)) return { hasBase: true, content: baseFiles[fullPath] ?? null };
+	return { hasBase: false, content: null };
+}
+
 function parseClaimedFolderMerge(value: unknown): ClaimedFolderMergeJob | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const rec = value as Record<string, unknown>;
@@ -378,6 +416,7 @@ function parseClaimedFolderMerge(value: unknown): ClaimedFolderMergeJob | null {
 					title: typeof item.title === "string" ? item.title : "",
 					summary: typeof item.summary === "string" ? item.summary : "",
 					patchManifest: item.patchManifest ?? null,
+					baseFiles: parseOptionalBaseFiles(item.baseFiles),
 					affectedPaths: Array.isArray(item.affectedPaths)
 						? item.affectedPaths.filter((p): p is string => typeof p === "string")
 						: [],
@@ -399,6 +438,7 @@ function parseClaimedFolderMerge(value: unknown): ClaimedFolderMergeJob | null {
 			rec.preMergeSnapshot && typeof rec.preMergeSnapshot === "object" && !Array.isArray(rec.preMergeSnapshot)
 				? (rec.preMergeSnapshot as Record<string, unknown>)
 				: null,
+		reconciledPatchManifest: rec.reconciledPatchManifest ?? null,
 		approvedChanges,
 	};
 }
@@ -829,14 +869,28 @@ export class SurfaceFolderWorker {
 			throw new Error("Folder merge job has no approved changes");
 		}
 
-		const resolvedOps: { readonly path: string; readonly op: StudioPatchOp }[] = [];
+		const resolvedOps: {
+			readonly path: string;
+			readonly rawPath: string;
+			readonly op: StudioPatchOp;
+			readonly baseFiles: Readonly<Record<string, string | null>> | null;
+		}[] = [];
 		const touchedPaths = new Set<string>();
-		for (const change of job.approvedChanges) {
-			const ops = extractStudioOps(change.patchManifest);
-			for (const op of ops) {
+		const reconciledOps = tryExtractStudioOps(job.reconciledPatchManifest);
+		if (reconciledOps) {
+			for (const op of reconciledOps) {
 				const fullPath = resolveStudioFolderPath(folderRoot, op.path);
-				resolvedOps.push({ path: fullPath, op });
+				resolvedOps.push({ path: fullPath, rawPath: op.path, op, baseFiles: null });
 				touchedPaths.add(fullPath);
+			}
+		} else {
+			for (const change of job.approvedChanges) {
+				const ops = extractStudioOps(change.patchManifest);
+				for (const op of ops) {
+					const fullPath = resolveStudioFolderPath(folderRoot, op.path);
+					resolvedOps.push({ path: fullPath, rawPath: op.path, op, baseFiles: change.baseFiles });
+					touchedPaths.add(fullPath);
+				}
 			}
 		}
 		if (touchedPaths.has(IDENTITY_TOKENS_JSON_PATH)) {
@@ -964,11 +1018,39 @@ export class SurfaceFolderWorker {
 		}
 
 		const storedMergePaths: string[] = [];
-		for (const { path, op } of resolvedOps) {
+		const textConflictPaths: string[] = [];
+		for (const { path, rawPath, op, baseFiles } of resolvedOps) {
 			if (op.op === "write_text") {
-				working.set(path, op.content);
+				const baseEntry = lookupBaseFileEntry(baseFiles, rawPath, path);
+				const currentVal = working.get(path) ?? null;
+				if (baseEntry.hasBase && (currentVal === null || typeof currentVal === "string")) {
+					if (currentVal === baseEntry.content) {
+						working.set(path, op.content);
+					} else if (baseEntry.content === null) {
+						if (currentVal !== op.content) {
+							textConflictPaths.push(path);
+						}
+					} else if (currentVal === null) {
+						textConflictPaths.push(path);
+					} else {
+						const merged = mergeStudioTextContent(path, baseEntry.content, currentVal, op.content);
+						if (merged.ok) {
+							working.set(path, merged.content);
+						} else {
+							textConflictPaths.push(path);
+						}
+					}
+				} else {
+					working.set(path, op.content);
+				}
 			} else if (op.op === "delete") {
-				working.set(path, null);
+				const baseEntry = lookupBaseFileEntry(baseFiles, rawPath, path);
+				const currentVal = working.get(path) ?? null;
+				if (baseEntry.hasBase && currentVal !== null && currentVal !== baseEntry.content) {
+					textConflictPaths.push(path);
+				} else {
+					working.set(path, null);
+				}
 			} else if (op.op === "write_file") {
 				working.set(path, { file: { ...op.file, executable: false } });
 			} else if (op.op === "merge_json") {
@@ -989,14 +1071,17 @@ export class SurfaceFolderWorker {
 				working.set(path, `${JSON.stringify(merged, null, 2)}\n`);
 			}
 		}
-		if (storedMergePaths.length > 0) {
-			const conflictPaths = [...new Set(storedMergePaths)];
+		if (storedMergePaths.length > 0 || textConflictPaths.length > 0) {
+			const conflictPaths = [...new Set([...storedMergePaths, ...textConflictPaths])];
 			await this.#completeMerge(
 				job,
 				{
 					status: "conflicted",
 					conflictPaths,
-					errorDetail: `merge_json cannot change a stored file: ${conflictPaths.join(", ")}`,
+					errorDetail:
+						storedMergePaths.length > 0
+							? `merge_json cannot change a stored file: ${conflictPaths.join(", ")}`
+							: `Overlapping edits require reconciliation on: ${conflictPaths.join(", ")}`,
 				},
 				signal,
 			);

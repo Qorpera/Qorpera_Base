@@ -356,6 +356,77 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("deduplicates silent ensureReconciliation calls and retries failed reconciliations via retryPreview", async () => {
+		const recId = "66666666-6666-4666-8666-666666666666";
+		const ensureSurfaceReconciliation = vi.fn(async (_surfaceId, ids, _paths, retry) => ({
+			id: recId,
+			surfaceId: SURFACE,
+			compositionKey: "k-code",
+			baseFingerprint: "1".repeat(40),
+			selectedChangeIds: [...ids],
+			status: retry ? ("queued" as const) : ("queued" as const),
+			patchManifest: null,
+			commitSha: null,
+			treeSha: null,
+			errorDetail: null,
+			updatedAt: "2026-11-24T00:00:00Z",
+		}));
+		const ws = workspace([session(["staged", "staged"])], {
+			previewState: {
+				surfaceId: SURFACE,
+				mode: "single",
+				primary: {
+					...previewFrame({ status: "failed", doorActionUrl: null, memberPass: null }),
+					toggledChangeIds: [CHANGES[0], CHANGES[1]],
+					errorDetail: "Couldn't update preview",
+				},
+				compareFrames: [],
+			},
+			reconciliations: [],
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => ws),
+				ensureSurfaceReconciliation,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+		await store.ensureReconciliation(SURFACE, [CHANGES[0], CHANGES[1]], ["src/hero.tsx"]);
+		await store.ensureReconciliation(SURFACE, [CHANGES[1], CHANGES[0]], ["src/hero.tsx"]);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(1);
+
+		const current = store.workspace(SURFACE)!;
+		store.store.set({
+			workspaces: {
+				...store.state.workspaces,
+				[SURFACE]: {
+					...current,
+					reconciliations: [
+						{
+							id: recId,
+							surfaceId: SURFACE,
+							compositionKey: "k-code",
+							baseFingerprint: "1".repeat(40),
+							selectedChangeIds: [CHANGES[0], CHANGES[1]],
+							status: "failed",
+							patchManifest: null,
+							commitSha: null,
+							treeSha: null,
+							errorDetail: "Couldn't update preview",
+							updatedAt: "2026-11-24T00:00:02Z",
+						},
+					],
+				},
+			},
+		});
+		await store.retryPreview(SURFACE);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(2);
+		expect(ensureSurfaceReconciliation).toHaveBeenLastCalledWith(SURFACE, [CHANGES[0], CHANGES[1]], [], true);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("reconciling");
+		store.dispose();
+	});
+
 	it("falls back cleanly when reconciling a local surface conflict without a cloud client", async () => {
 		const store = storeWith(undefined);
 		await store.load();

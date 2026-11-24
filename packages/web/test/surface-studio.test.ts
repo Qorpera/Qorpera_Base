@@ -353,19 +353,30 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
-	it("surfaces overlapping folder_patch conflicts inline with 1-click Reconcile while preserving the last clean snapshot", async () => {
+	it("silently reconciles overlapping folder_patch edits, slots in cached overlays, and shows a plain retry bar only on failure", async () => {
 		const brand = brandSummary();
 		const c1 = change(CHANGES[0], 1, "staged", { surfaceId: BRAND_ID, kind: "folder_patch" });
 		const c2 = change(CHANGES[1], 2, "staged", { surfaceId: BRAND_ID, kind: "folder_patch" });
-		const reconcileChanges = vi.fn(async () =>
-			session(["staged", "staged"], { id: SESSION, surfaceId: BRAND_ID, state: "reconciling" }),
-		);
+		const recId = "55555555-5555-4555-8555-555555555555";
+		const ensureSurfaceReconciliation = vi.fn(async () => ({
+			id: recId,
+			surfaceId: BRAND_ID,
+			compositionKey: "k1",
+			baseFingerprint: "folder-rev:0",
+			selectedChangeIds: [CHANGES[0], CHANGES[1]],
+			status: "queued" as const,
+			patchManifest: null,
+			commitSha: null,
+			treeSha: null,
+			errorDetail: null,
+			updatedAt: "2026-11-24T00:00:00Z",
+		}));
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [summary(), brand]),
 			getSurfaceWorkspace: vi.fn(async () =>
 				workspace([session(["staged", "staged"], { surfaceId: BRAND_ID, changes: [c1, c2] })], { surface: brand }),
 			),
-			reconcileChanges,
+			ensureSurfaceReconciliation,
 		});
 		const store = storeWith(client);
 		await store.load();
@@ -384,13 +395,84 @@ describe("SurfaceStudioView", () => {
 			baseFiles: { "brand/tokens.json": JSON.stringify({ colors: { accent: "#d76f45" } }) },
 		});
 		document.body.append(view.el);
-
-		const conflict = view.el.querySelector(".studio-conflict")!;
-		expect(conflict.textContent).toContain("brand/tokens.json");
-		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
-		conflict.querySelector<HTMLButtonElement>('[data-act="studio-reconcile"]')!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(reconcileChanges).toHaveBeenCalledWith(BRAND_ID, [CHANGES[0], CHANGES[1]]);
+
+		expect(view.el.querySelector(".studio-conflict")).toBeNull();
+		expect(view.el.querySelector('[data-act="studio-reconcile"]')).toBeNull();
+		expect(view.el.querySelector(".studio-updating-pill")).not.toBeNull();
+		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(1);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledWith(
+			BRAND_ID,
+			[CHANGES[0], CHANGES[1]],
+			["brand/tokens.json"],
+			false,
+		);
+
+		const currentWs = store.workspace(BRAND_ID)!;
+		store.store.set({
+			workspaces: {
+				...store.state.workspaces,
+				[BRAND_ID]: {
+					...currentWs,
+					reconciliations: [
+						{
+							id: recId,
+							surfaceId: BRAND_ID,
+							compositionKey: "k1",
+							baseFingerprint: "folder-rev:0",
+							selectedChangeIds: [CHANGES[0], CHANGES[1]],
+							status: "ready",
+							patchManifest: [
+								{ op: "merge_json", path: "brand/tokens.json", patch: { colors: { accent: "#1f5e5b" } } },
+							],
+							commitSha: null,
+							treeSha: null,
+							errorDetail: null,
+							updatedAt: "2026-11-24T00:00:05Z",
+						},
+					],
+				},
+			},
+		});
+		view.update();
+		expect(view.el.querySelector(".studio-reconcile-retry")).toBeNull();
+		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#1f5e5b");
+
+		store.store.set({
+			workspaces: {
+				...store.state.workspaces,
+				[BRAND_ID]: {
+					...currentWs,
+					reconciliations: [
+						{
+							id: recId,
+							surfaceId: BRAND_ID,
+							compositionKey: "k1",
+							baseFingerprint: "folder-rev:0",
+							selectedChangeIds: [CHANGES[0], CHANGES[1]],
+							status: "failed",
+							patchManifest: null,
+							commitSha: null,
+							treeSha: null,
+							errorDetail: "Couldn't update preview",
+							updatedAt: "2026-11-24T00:00:10Z",
+						},
+					],
+				},
+			},
+		});
+		view.update();
+		const retryBar = view.el.querySelector(".studio-reconcile-retry")!;
+		expect(retryBar.textContent).toContain("Couldn't update preview");
+		retryBar.querySelector<HTMLButtonElement>('[data-act="studio-retry-preview"]')!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ensureSurfaceReconciliation).toHaveBeenLastCalledWith(
+			BRAND_ID,
+			[CHANGES[0], CHANGES[1]],
+			["brand/tokens.json"],
+			true,
+		);
 
 		view.dispose();
 		store.dispose();

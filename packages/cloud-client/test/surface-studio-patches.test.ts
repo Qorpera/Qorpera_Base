@@ -268,4 +268,159 @@ describe("studio surface folder_patch overlay engine", () => {
 			expect(toText.files).toEqual({ "product/hero.webp": "text" });
 		});
 	});
+
+	describe("three-way merge and cached reconciliation overlays", () => {
+		it("merges non-overlapping write_text edits on the same file across multiple changes", () => {
+			const c1 = randomUUID();
+			const c2 = randomUUID();
+			const c3 = randomUUID();
+			const base = {
+				"identity/guide.md": "# Brand\n\nBlue: #0055ff\n\n## Voice\nDirect.\n\n## Footer\nEnd.\n",
+			};
+			const composed = composeStudioPreview(base, [
+				{
+					changeId: c1,
+					ops: [
+						{
+							op: "write_text",
+							path: "identity/guide.md",
+							content: "# Brand\n\nBlue: #3388ff\n\n## Voice\nDirect.\n\n## Footer\nEnd.\n",
+						},
+					],
+				},
+				{
+					changeId: c2,
+					ops: [
+						{
+							op: "write_text",
+							path: "identity/guide.md",
+							content: "# Brand\n\nBlue: #0055ff\n\n## Voice\nDirect and warm.\n\n## Footer\nEnd.\n",
+						},
+					],
+				},
+				{
+					changeId: c3,
+					ops: [
+						{
+							op: "write_text",
+							path: "identity/guide.md",
+							content:
+								"# Brand\n\nBlue: #0055ff\n\n## Voice\nDirect.\n\n## Footer\nEnd.\n\n## Journey\nBuyer flow.\n",
+						},
+					],
+				},
+			]);
+
+			expect(composed.status).toBe("ready");
+			expect(composed.appliedChangeIds).toEqual([c1, c2, c3]);
+			expect(composed.files["identity/guide.md"]).toBe(
+				"# Brand\n\nBlue: #3388ff\n\n## Voice\nDirect and warm.\n\n## Footer\nEnd.\n\n## Journey\nBuyer flow.\n",
+			);
+		});
+
+		it("merges write_text and merge_json on disjoint keys of the same JSON file", () => {
+			const c1 = randomUUID();
+			const c2 = randomUUID();
+			const base = {
+				"identity/tokens.json": `${JSON.stringify({ colors: { blue: "#0055ff", ink: "#111" } }, null, 2)}\n`,
+			};
+			const composed = composeStudioPreview(base, [
+				{
+					changeId: c1,
+					ops: [
+						{
+							op: "write_text",
+							path: "identity/tokens.json",
+							content: `${JSON.stringify({ colors: { blue: "#3388ff", ink: "#111" } }, null, 2)}\n`,
+						},
+					],
+				},
+				{
+					changeId: c2,
+					ops: [{ op: "merge_json", path: "identity/tokens.json", patch: { colors: { surface: "#080808" } } }],
+				},
+			]);
+
+			expect(composed.status).toBe("ready");
+			expect(JSON.parse(composed.files["identity/tokens.json"]!)).toEqual({
+				colors: { blue: "#3388ff", ink: "#111", surface: "#080808" },
+			});
+		});
+
+		it("slots in a cached reconciliation overlay for the conflicting cluster while composing unrelated changes", () => {
+			const c1 = randomUUID();
+			const c2 = randomUUID();
+			const c3 = randomUUID();
+			const recId = randomUUID();
+			const base = {
+				"identity/guide.md": "Accent: #0055ff\n",
+				"identity/voice.md": "Plain.\n",
+			};
+			const change1 = {
+				changeId: c1,
+				ops: [{ op: "write_text" as const, path: "identity/guide.md", content: "Accent: #3388ff\n" }],
+			};
+			const change2 = {
+				changeId: c2,
+				ops: [
+					{ op: "write_text" as const, path: "identity/guide.md", content: "Accent: #4499ff\nJourney: added\n" },
+				],
+			};
+			const change3 = {
+				changeId: c3,
+				ops: [{ op: "write_text" as const, path: "identity/voice.md", content: "Sharp and calm.\n" }],
+			};
+
+			const withoutCache = composeStudioPreview(base, [change1, change3, change2]);
+			expect(withoutCache.status).toBe("conflicted");
+			if (withoutCache.status !== "conflicted") throw new Error("expected conflict");
+			expect(withoutCache.conflictReport.changeIds).toEqual([c1, c2]);
+
+			const reconciliations = [
+				{
+					id: recId,
+					status: "ready" as const,
+					selectedChangeIds: [c1, c2],
+					patchManifest: [
+						{
+							op: "write_text" as const,
+							path: "identity/guide.md",
+							content: "Accent: #4499ff\nJourney: added\n",
+						},
+					],
+					errorDetail: null,
+				},
+			];
+
+			const withCache = composeStudioPreview(base, [change1, change3, change2], null, {}, { reconciliations });
+			expect(withCache.status).toBe("ready");
+			expect(withCache.appliedChangeIds).toEqual([c3, c1, c2]);
+			expect(withCache.files["identity/guide.md"]).toBe("Accent: #4499ff\nJourney: added\n");
+			expect(withCache.files["identity/voice.md"]).toBe("Sharp and calm.\n");
+
+			const onlyChange2 = composeStudioPreview(base, [change2], null, {}, { reconciliations });
+			expect(onlyChange2.status).toBe("ready");
+			expect(onlyChange2.files["identity/guide.md"]).toBe("Accent: #4499ff\nJourney: added\n");
+		});
+
+		it("three-way merges a staged change using its recorded baseFiles after another change already landed", () => {
+			const c2 = randomUUID();
+			const baseAtStage = "# Brand\n\nBlue: #0055ff\n\n## Journey\nNone.\n";
+			const liveAfterC1 = "# Brand\n\nBlue: #0055ff\n\n## Journey\nBuyer and seller flow.\n";
+			const c2Content = "# Brand\n\nBlue: #3388ff\n\n## Journey\nNone.\n";
+
+			const composed = composeStudioPreview({ "identity/guide.md": liveAfterC1 }, [
+				{
+					changeId: c2,
+					baseFiles: { "identity/guide.md": baseAtStage },
+					ops: [{ op: "write_text", path: "identity/guide.md", content: c2Content }],
+				},
+			]);
+
+			expect(composed.status).toBe("ready");
+			expect(composed.files["identity/guide.md"]).toBe(
+				"# Brand\n\nBlue: #3388ff\n\n## Journey\nBuyer and seller flow.\n",
+			);
+		});
+	});
 });

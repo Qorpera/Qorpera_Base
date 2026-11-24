@@ -867,9 +867,11 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			turnCorrection: async () =>
 				submitted
 					? undefined
-					: surfaceSession
-						? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (if not already recorded) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
-						: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. For a read-only or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — nothing will be landed or pushed. When you have a commit beyond baseSha to hand in (including an unlanded commit from an earlier turn), call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without one of them, the turn fails.",
+					: surfaceSession?.isInternalReconciliation
+						? "Your automatic reconciliation turn ended without coding_finish. Commit the clean combined resolution on this branch, call coding_record_change with the resolved range, and call coding_finish with the final headSha and a brief summary. This is the last turn of this run."
+						: surfaceSession
+							? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (if not already recorded) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
+							: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. For a read-only or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — nothing will be landed or pushed. When you have a commit beyond baseSha to hand in (including an unlanded commit from an earlier turn), call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution: async (specification, checked) => {
 				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 				const started = await this.#control.call(
@@ -930,7 +932,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						...recordChangeTool,
 						...viewAttachmentTool,
 						finish,
-						ask,
+						...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
 					],
 					assertContext,
 					recordContextView: async (frame, outputs, checked) => {

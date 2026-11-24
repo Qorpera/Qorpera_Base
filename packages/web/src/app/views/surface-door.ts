@@ -121,10 +121,11 @@ export function previewStatusText(frame: SurfacePreviewFrameState): string {
 	switch (frame.status) {
 		case "composing":
 			return t("Composing preview…");
+		case "reconciling":
+		case "conflicted":
+			return t("Updating preview…");
 		case "building":
 			return t("Building preview…");
-		case "conflicted":
-			return t("These changes conflict. Turn one off to preview the rest.");
 		case "failed":
 			return previewFailureText(frame.errorDetail);
 		default:
@@ -280,7 +281,12 @@ export class SurfaceDoorStage {
 		this.#retriedPreviewId = undefined;
 		this.#requestedPassKey = undefined;
 		this.#dropStaging();
-		if (frame.status === "composing" || frame.status === "building") {
+		if (
+			frame.status === "composing" ||
+			frame.status === "reconciling" ||
+			frame.status === "building" ||
+			frame.status === "conflicted"
+		) {
 			const words = previewStatusText(frame);
 			if (this.#active) {
 				this.#waiting.hidden = true;
@@ -293,14 +299,6 @@ export class SurfaceDoorStage {
 			return;
 		}
 		this.#pill.hidden = true;
-		if (frame.status === "conflicted") {
-			if (this.#active) {
-				this.#waiting.hidden = true;
-				return;
-			}
-			this.#showWaiting("conflicted", previewStatusText(frame));
-			return;
-		}
 		this.#dropActive();
 		this.#showWaiting(
 			frame.status === "failed" ? "failed" : "running",

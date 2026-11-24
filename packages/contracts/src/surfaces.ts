@@ -129,12 +129,16 @@ export type SurfaceExplorationStatus = (typeof SURFACE_EXPLORATION_STATUSES)[num
 export const SURFACE_PREVIEW_STATUSES = [
 	"live_baseline",
 	"composing",
+	"reconciling",
 	"building",
 	"ready",
 	"conflicted",
 	"failed",
 ] as const;
 export type SurfacePreviewStatus = (typeof SURFACE_PREVIEW_STATUSES)[number];
+
+export const SURFACE_RECONCILIATION_STATUSES = ["queued", "running", "ready", "failed"] as const;
+export type SurfaceReconciliationStatus = (typeof SURFACE_RECONCILIATION_STATUSES)[number];
 
 export const SURFACE_AUTOMATION_OUTPUT_MODES = ["surface_session", "decision_card", "silent_note"] as const;
 export type SurfaceAutomationOutputMode = (typeof SURFACE_AUTOMATION_OUTPUT_MODES)[number];
@@ -218,6 +222,21 @@ export type StudioPatchOp = StudioTextPatchOp | StudioWriteFileOp;
 export interface StudioPatchChange {
 	readonly changeId: string;
 	readonly ops: readonly StudioPatchOp[];
+	readonly baseFiles?: Readonly<Record<string, string | null>> | null;
+}
+
+export interface SurfaceReconciliation {
+	readonly id: string;
+	readonly surfaceId: string;
+	readonly compositionKey: string;
+	readonly baseFingerprint: string;
+	readonly selectedChangeIds: readonly string[];
+	readonly status: SurfaceReconciliationStatus;
+	readonly patchManifest: readonly StudioPatchOp[] | null;
+	readonly commitSha: string | null;
+	readonly treeSha: string | null;
+	readonly errorDetail: string | null;
+	readonly updatedAt: string;
 }
 
 export interface CrossSurfaceHandoffRequest {
@@ -257,6 +276,7 @@ export interface SurfaceSummary {
 	readonly publishStatus?: SurfacePublishStatus;
 	readonly lastPublishError?: string | null;
 	readonly liveHeadSha?: string | null;
+	readonly folderRevision?: number;
 	readonly liveUrl: string | null;
 	readonly hasUnpublishedChanges: boolean;
 	readonly unpublishedChangeCount: number;
@@ -288,6 +308,7 @@ export interface SurfaceChangeUnit {
 	readonly dependsOnChangeIds: readonly string[];
 	readonly affectedPaths: readonly string[];
 	readonly patchManifest?: readonly StudioPatchOp[] | null;
+	readonly baseFiles?: Readonly<Record<string, string | null>> | null;
 	readonly diffStats: SurfaceChangeDiffStats | null;
 	readonly conflictPaths: readonly string[] | null;
 	readonly landedChangeNumber: number | null;
@@ -421,6 +442,7 @@ export interface SurfaceWorkspace {
 	readonly recentHistory: readonly SurfaceSession[];
 	readonly explorations: readonly SurfaceExplorationSet[];
 	readonly previewState: SurfacePreviewCompositionState;
+	readonly reconciliations?: readonly SurfaceReconciliation[];
 }
 
 export interface SurfaceMigrationAgentItem {
@@ -606,6 +628,10 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 			: parseOptionalText(raw.lastPublishError, `${label}.lastPublishError`, 1000);
 	const liveHeadSha =
 		raw.liveHeadSha === undefined ? undefined : parseOptionalText(raw.liveHeadSha, `${label}.liveHeadSha`, 64);
+	const folderRevision =
+		raw.folderRevision === undefined || raw.folderRevision === null
+			? undefined
+			: parseInteger(raw.folderRevision, `${label}.folderRevision`, 0, 1_000_000_000);
 	const publishAsk =
 		raw.publishAsk === undefined || raw.publishAsk === null
 			? raw.publishAsk
@@ -630,6 +656,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		...(publishStatus !== undefined ? { publishStatus } : {}),
 		...(lastPublishError !== undefined ? { lastPublishError } : {}),
 		...(liveHeadSha !== undefined ? { liveHeadSha } : {}),
+		...(folderRevision !== undefined ? { folderRevision } : {}),
 		liveUrl: parseOptionalText(raw.liveUrl, `${label}.liveUrl`, 512),
 		hasUnpublishedChanges: raw.hasUnpublishedChanges,
 		unpublishedChangeCount: parseInteger(
@@ -645,6 +672,30 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		sortOrder: parseInteger(raw.sortOrder ?? 0, `${label}.sortOrder`, -10_000, 100_000),
 		...(publishAsk !== undefined ? { publishAsk } : {}),
 	};
+}
+
+function parseOptionalBaseFiles(
+	value: unknown,
+	label: string,
+): Readonly<Record<string, string | null>> | null | undefined {
+	if (value === undefined) return undefined;
+	if (value === null) return null;
+	const raw = parseRecord(value, label);
+	const keys = Object.keys(raw);
+	if (keys.length > 256) throw new WireValueError(label);
+	const out: Record<string, string | null> = {};
+	for (const key of keys) {
+		if (key.length === 0 || key.length > 512) throw new WireValueError(`${label}.${key}`);
+		const entry = raw[key];
+		if (entry === null) {
+			out[key] = null;
+		} else if (typeof entry === "string" && entry.length <= 512_000) {
+			out[key] = entry;
+		} else {
+			throw new WireValueError(`${label}.${key}`);
+		}
+	}
+	return out;
 }
 
 export function parseSurfaceChangeUnit(value: unknown, label = "change"): SurfaceChangeUnit {
@@ -667,6 +718,7 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 				: Array.isArray(raw.patchManifest)
 					? parseStudioPatchOps(raw.patchManifest, `${label}.patchManifest`)
 					: null;
+	const baseFiles = parseOptionalBaseFiles(raw.baseFiles, `${label}.baseFiles`);
 	const publishedAt =
 		raw.publishedAt === undefined ? undefined : parseOptionalTimestamp(raw.publishedAt, `${label}.publishedAt`);
 	const approvedByUserId =
@@ -687,6 +739,7 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		dependsOnChangeIds: parseUuidArray(raw.dependsOnChangeIds ?? [], `${label}.dependsOnChangeIds`, 64),
 		affectedPaths: parseStringArray(raw.affectedPaths ?? [], `${label}.affectedPaths`, 500, 512),
 		...(patchManifest !== undefined ? { patchManifest } : {}),
+		...(baseFiles !== undefined ? { baseFiles } : {}),
 		diffStats,
 		conflictPaths:
 			raw.conflictPaths === null || raw.conflictPaths === undefined
@@ -900,11 +953,41 @@ export function parseSurfacePreviewCompositionState(
 	};
 }
 
+export function parseSurfaceReconciliation(value: unknown, label = "reconciliation"): SurfaceReconciliation {
+	const raw = parseRecord(value, label);
+	const patchManifest =
+		raw.patchManifest === null || raw.patchManifest === undefined
+			? null
+			: Array.isArray(raw.patchManifest)
+				? parseStudioPatchOps(raw.patchManifest, `${label}.patchManifest`)
+				: null;
+	return {
+		id: parseUuid(raw.id, `${label}.id`),
+		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
+		compositionKey: parseBoundedText(raw.compositionKey, `${label}.compositionKey`, 128),
+		baseFingerprint: parseBoundedText(raw.baseFingerprint, `${label}.baseFingerprint`, 128),
+		selectedChangeIds: parseUuidArray(raw.selectedChangeIds ?? [], `${label}.selectedChangeIds`, 128),
+		status: parseEnum(raw.status, SURFACE_RECONCILIATION_STATUSES, `${label}.status`),
+		patchManifest,
+		commitSha: parseOptionalText(raw.commitSha, `${label}.commitSha`, 64),
+		treeSha: parseOptionalText(raw.treeSha, `${label}.treeSha`, 64),
+		errorDetail: parseOptionalText(raw.errorDetail, `${label}.errorDetail`, 1000),
+		updatedAt: parseTimestamp(raw.updatedAt, `${label}.updatedAt`).text,
+	};
+}
+
 export function parseSurfaceWorkspace(value: unknown, label = "workspace"): SurfaceWorkspace {
 	const raw = parseRecord(value, label);
 	if (!Array.isArray(raw.activeSessions)) throw new WireValueError(`${label}.activeSessions`);
 	if (!Array.isArray(raw.recentHistory)) throw new WireValueError(`${label}.recentHistory`);
 	if (!Array.isArray(raw.explorations)) throw new WireValueError(`${label}.explorations`);
+	let reconciliations: SurfaceReconciliation[] | undefined;
+	if (raw.reconciliations !== undefined && raw.reconciliations !== null) {
+		if (!Array.isArray(raw.reconciliations)) throw new WireValueError(`${label}.reconciliations`);
+		reconciliations = raw.reconciliations.map((item, index) =>
+			parseSurfaceReconciliation(item, `${label}.reconciliations[${index}]`),
+		);
+	}
 	return {
 		surface: parseSurfaceSummary(raw.surface, `${label}.surface`),
 		briefSummary: parseOptionalText(raw.briefSummary, `${label}.briefSummary`, 4000),
@@ -918,6 +1001,7 @@ export function parseSurfaceWorkspace(value: unknown, label = "workspace"): Surf
 			parseSurfaceExplorationSet(item, `${label}.explorations[${index}]`),
 		),
 		previewState: parseSurfacePreviewCompositionState(raw.previewState, `${label}.previewState`),
+		...(reconciliations !== undefined ? { reconciliations } : {}),
 	};
 }
 
