@@ -15,9 +15,15 @@
  * Good will (good-will.ts) shares the function: POST /good-will-card for a founder's card page, POST
  * /good-will-invoices for the database's clock, and its events on /webhook. */
 
-import { createHash, timingSafeEqual } from "node:crypto";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
-import { BodyTooLargeError, DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedBytes } from "../_shared/http-guards.ts";
+import {
+	BodyTooLargeError,
+	constantTimeEqual,
+	DEFAULT_BODY_READ_TIMEOUT_MS,
+	readBoundedBytes,
+	sha256Hex,
+} from "../_shared/http-guards.ts";
+export { sha256Hex };
 import {
 	applyGoodWillCard,
 	applyGoodWillInvoice,
@@ -127,17 +133,6 @@ export class BillingStoreError extends Error {
 
 function hex(buffer: ArrayBuffer): string {
 	return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export async function sha256Hex(text: string): Promise<string> {
-	return hex(await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(text)));
-}
-
-function constantTimeEqual(left: string, right: string): boolean {
-	// WHY: Compare SHA-256 digests with timingSafeEqual so unequal-length keys cannot leak length timing.
-	const digestLeft = createHash("sha256").update(left, "utf8").digest();
-	const digestRight = createHash("sha256").update(right, "utf8").digest();
-	return timingSafeEqual(digestLeft, digestRight) && left.length === right.length;
 }
 
 let cachedStripeHmacKey: { readonly secret: string; readonly key: Promise<CryptoKey> } | undefined;

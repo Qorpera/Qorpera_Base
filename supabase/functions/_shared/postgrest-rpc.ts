@@ -27,10 +27,30 @@ export interface PostgrestAuthUserResult {
 	readonly error: { readonly message: string } | null;
 }
 
+export interface PostgrestStorageListItem {
+	readonly id: string | null;
+	readonly name: string;
+}
+
+export interface PostgrestStorageBucket {
+	list(
+		prefix?: string,
+		options?: { readonly limit?: number; readonly offset?: number },
+		signal?: AbortSignal,
+	): Promise<{ readonly data: PostgrestStorageListItem[] | null; readonly error: PostgrestError | null }>;
+	remove(
+		paths: readonly string[],
+		signal?: AbortSignal,
+	): Promise<{ readonly data: unknown; readonly error: PostgrestError | null }>;
+}
+
 export interface PostgrestClient {
 	rpc<T = unknown>(name: string, args?: Record<string, unknown>): PostgrestRpcPromise<T>;
 	readonly auth: {
 		getUser(token: string, signal?: AbortSignal): Promise<PostgrestAuthUserResult>;
+	};
+	readonly storage: {
+		from(bucket: string): PostgrestStorageBucket;
 	};
 }
 
@@ -180,6 +200,92 @@ export function createPostgrestClient(
 					},
 					parentSignal,
 				);
+			},
+		},
+		storage: {
+			from(bucket: string): PostgrestStorageBucket {
+				const encodedBucket = encodeURIComponent(bucket);
+				return {
+					async list(prefix = "", listOptions, parentSignal) {
+						return withTimeoutScope(
+							timeoutMs,
+							async (signal) => {
+								let response: Response;
+								try {
+									response = await fetcher(`${base}/storage/v1/object/list/${encodedBucket}`, {
+										method: "POST",
+										headers: rpcHeaders,
+										body: JSON.stringify({
+											prefix,
+											limit: listOptions?.limit ?? 100,
+											offset: listOptions?.offset ?? 0,
+										}),
+										redirect: "error",
+										signal,
+									});
+								} catch (error) {
+									return {
+										data: null,
+										error: { message: error instanceof Error ? error.message : "Storage list transport error" },
+									};
+								}
+								try {
+									const text = await readBoundedText(response, maxResponseBytes, {
+										signal,
+										ignoreContentLength: response.headers.has("content-encoding"),
+									});
+									if (!response.ok) return { data: null, error: { message: `HTTP ${response.status}` } };
+									const parsed: unknown = text ? JSON.parse(text) : [];
+									return Array.isArray(parsed)
+										? { data: parsed as PostgrestStorageListItem[], error: null }
+										: { data: null, error: { message: "Invalid storage list response" } };
+								} catch (error) {
+									return {
+										data: null,
+										error: { message: error instanceof Error ? error.message : "Storage list response error" },
+									};
+								}
+							},
+							parentSignal,
+						);
+					},
+					async remove(paths, parentSignal) {
+						return withTimeoutScope(
+							timeoutMs,
+							async (signal) => {
+								let response: Response;
+								try {
+									response = await fetcher(`${base}/storage/v1/object/${encodedBucket}`, {
+										method: "DELETE",
+										headers: rpcHeaders,
+										body: JSON.stringify({ prefixes: [...paths] }),
+										redirect: "error",
+										signal,
+									});
+								} catch (error) {
+									return {
+										data: null,
+										error: { message: error instanceof Error ? error.message : "Storage remove transport error" },
+									};
+								}
+								try {
+									const text = await readBoundedText(response, maxResponseBytes, {
+										signal,
+										ignoreContentLength: response.headers.has("content-encoding"),
+									});
+									if (!response.ok) return { data: null, error: { message: `HTTP ${response.status}` } };
+									return { data: text ? (JSON.parse(text) as unknown) : null, error: null };
+								} catch (error) {
+									return {
+										data: null,
+										error: { message: error instanceof Error ? error.message : "Storage remove response error" },
+									};
+								}
+							},
+							parentSignal,
+						);
+					},
+				};
 			},
 		},
 	};

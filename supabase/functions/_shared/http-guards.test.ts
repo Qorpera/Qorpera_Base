@@ -7,12 +7,15 @@ import {
 	constantTimeEqual,
 	constantTimeIncludes,
 	createTimedFetch,
+	jsonResponse,
 	preferredServiceKey,
 	readBoundedBytes,
 	readBoundedJson,
 	readBoundedText,
+	sha256Hex,
 	withAbortSignal,
 } from "./http-guards.ts";
+import { createPostgrestClient } from "./postgrest-rpc.ts";
 
 function stalledStream() {
 	let cancelled = false;
@@ -207,5 +210,54 @@ describe("constantTimeEqual, constantTimeIncludes, and configuredSecretKeys", ()
 			),
 			["legacy-jwt-key-1234567890123456", "sb_secret_123456789012345678901234"],
 		);
+	});
+
+	it("builds no-store jsonResponse, sha256Hex, and zero-dep postgrest storage list/remove", async () => {
+		const res = jsonResponse({ ok: true }, 201);
+		assert.equal(res.status, 201);
+		assert.equal(res.headers.get("cache-control"), "no-store");
+		assert.deepEqual(await res.json(), { ok: true });
+		assert.equal(
+			await sha256Hex("hello"),
+			"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+		);
+
+		const requests: Array<{ url: string; method: string; body: unknown }> = [];
+		const client = createPostgrestClient("https://example.supabase.co", "sb_secret_123456789012345678901234", {
+			fetchImplementation: async (input, init) => {
+				requests.push({
+					url: String(input),
+					method: init?.method ?? "GET",
+					body: init?.body ? JSON.parse(String(init.body)) : null,
+				});
+				if (String(input).includes("/object/list/")) {
+					return Response.json([
+						{ id: "obj-1", name: "file.bin" },
+						{ id: null, name: "nested" },
+					]);
+				}
+				return Response.json([{ name: "a/b" }]);
+			},
+		});
+		const listed = await client.storage.from("qorpera-profile-objects").list("p1", { limit: 100 });
+		assert.equal(listed.error, null);
+		assert.deepEqual(listed.data, [
+			{ id: "obj-1", name: "file.bin" },
+			{ id: null, name: "nested" },
+		]);
+		const removed = await client.storage.from("qorpera-profile-objects").remove(["a/b"]);
+		assert.equal(removed.error, null);
+		assert.deepEqual(requests, [
+			{
+				url: "https://example.supabase.co/storage/v1/object/list/qorpera-profile-objects",
+				method: "POST",
+				body: { prefix: "p1", limit: 100, offset: 0 },
+			},
+			{
+				url: "https://example.supabase.co/storage/v1/object/qorpera-profile-objects",
+				method: "DELETE",
+				body: { prefixes: ["a/b"] },
+			},
+		]);
 	});
 });

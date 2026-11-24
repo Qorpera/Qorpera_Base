@@ -1,10 +1,9 @@
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
-import { BodyTooLargeError, readBoundedBytes } from "../_shared/http-guards.ts";
+import { BodyTooLargeError, jsonResponse, readBoundedBytes, sha256Hex } from "../_shared/http-guards.ts";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
-const UTF8_ENCODER = new TextEncoder();
 /** How long a ChatGPT plan confirmation may take end to end at this hop (see forwardLogin). */
 export const CHATGPT_PLAN_CONFIRM_TIMEOUT_MS = 40_000;
 
@@ -21,10 +20,6 @@ export interface NativeProviderLoginProxyOptions {
 	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
 	timeoutMs?: number;
-}
-
-function jsonResponse(value: unknown, status: number): Response {
-	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
 function upstreamLoginUrl(value: string): string {
@@ -48,11 +43,6 @@ function loginCapability(request: Request): string {
 	const capability = authorization.slice("Bearer ".length);
 	if (!TOKEN_PATTERN.test(capability)) throw new Error("Native login capability is invalid");
 	return capability;
-}
-
-async function sha256Hex(value: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(value));
-	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** The resolver's answer is used only when it is a valid gateway base; anything else keeps the configured upstream. */

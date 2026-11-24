@@ -330,6 +330,7 @@ const STORED_DDL_QUERY =
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const TOML_KEY = `(?:[A-Za-z0-9_-]+|"[^"\\\\\\n]*"|'[^'\\n]*')`;
+const TOML_KEY_GLOBAL = new RegExp(TOML_KEY, "g");
 const TOML_KEYS = `${TOML_KEY}(?:\\s*\\.\\s*${TOML_KEY})*`;
 const TOML_STRING = /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/g;
 const TOML_HEADER = new RegExp(`^\\s*\\[\\s*(${TOML_KEYS})\\s*\\]\\s*(?:#.*)?$`);
@@ -338,9 +339,10 @@ const TOML_HEAD = /^(?:[^"'#]|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')*/;
 const TOML_SCALAR = /^(?:"(?:[^"\\]|\\.)*"|'[^']*'|[-+0-9A-Za-z_.:]+)$/;
 const LIST_VALUE = /^(?:"(readers|writers)"|'(readers|writers)')$/;
 const LIST_INLINE = /^\{\s*(?:members|"members"|'members')\s*=\s*("[^"\\]*"|'[^']*')\s*\}$/;
+const VIEWER_PARAM = new RegExp(`(?<![:A-Za-z0-9_]):${VIEWER}(?![A-Za-z0-9_])`);
 
 function tomlParts(text) {
-	return [...text.matchAll(new RegExp(TOML_KEY, "g"))].map((part) => (/^["']/.test(part[0]) ? part[0].slice(1, -1) : part[0]));
+	return [...text.matchAll(TOML_KEY_GLOBAL)].map((part) => (/^["']/.test(part[0]) ? part[0].slice(1, -1) : part[0]));
 }
 
 function tomlValue(text) {
@@ -386,7 +388,7 @@ function listLine(toml) {
 function namesViewer(text) {
 	if (text === null) return true;
 	const statement = readStatement(text);
-	return statement.ok ? statement.parameters.includes(VIEWER) : new RegExp(`(?<![:A-Za-z0-9_]):${VIEWER}(?![A-Za-z0-9_])`).test(text);
+	return statement.ok ? statement.parameters.includes(VIEWER) : VIEWER_PARAM.test(text);
 }
 
 export function listMembers(toml, questions, cut = false) {

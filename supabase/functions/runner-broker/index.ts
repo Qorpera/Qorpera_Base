@@ -1,4 +1,4 @@
-import { DEFAULT_RPC_TIMEOUT_MS, preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
+import { DEFAULT_RPC_TIMEOUT_MS, jsonResponse, preferredServiceKey, sha256Hex as sha256, withAbortSignal } from "../_shared/http-guards.ts";
 import { createPostgrestClient, type PostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	acquireNativeAuthorityWithRollback,
@@ -8,7 +8,6 @@ import {
 	type RunnerBrokerRequest,
 } from "./runner-broker.ts";
 
-const UTF8_ENCODER = new TextEncoder();
 let cachedClient: { readonly key: string; readonly client: PostgrestClient } | undefined;
 
 function getClient(supabaseUrl: string, serviceKey: string): PostgrestClient {
@@ -17,15 +16,6 @@ function getClient(supabaseUrl: string, serviceKey: string): PostgrestClient {
 	const client = createPostgrestClient(supabaseUrl, serviceKey, { timeoutMs: DEFAULT_RPC_TIMEOUT_MS });
 	cachedClient = { key, client };
 	return client;
-}
-
-function jsonResponse(value: unknown, status = 200): Response {
-	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(value));
-	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 Deno.serve(async (request) => {
