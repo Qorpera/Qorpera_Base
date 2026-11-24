@@ -2628,7 +2628,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		let cachedVoiceKey: Promise<string> | null = null;
 		let voiceCapReached: { readonly monthlyCapCents: number | null; readonly monthSpendMicrodollars: number } | null =
 			null;
-		const openVoiceApiKey = async (reqSignal: AbortSignal): Promise<string> => {
+		const openVoiceApiKey = async (): Promise<string> => {
 			if (voiceCapReached) {
 				throw new GeminiCapReachedError(
 					voiceCapReached.monthlyCapCents ?? 0,
@@ -2650,7 +2650,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						credentialCapsuleId: binding.credentialCapsuleId,
 						computeIdentityId: binding.computeIdentityId,
 					},
-					reqSignal,
+					signal,
 				).then(
 					(opened) => {
 						if (opened.state === "refused") {
@@ -2668,7 +2668,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					},
 					(error) => {
 						cachedVoiceKey = null;
-						if (reqSignal.aborted) throw error;
+						if (signal.aborted) throw error;
 						if (error instanceof Error && /refused the Gemini key/i.test(error.message)) {
 							throw new GeminiKeyRevokedError();
 						}
@@ -2699,7 +2699,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							voiceCapReached.monthSpendMicrodollars,
 						);
 					}
-					const apiKey = await openVoiceApiKey(reqSignal);
+					const apiKey = await openVoiceApiKey();
+					reqSignal.throwIfAborted();
 					let speech: Awaited<ReturnType<typeof synthesizeGeminiSpeech>>;
 					try {
 						speech = await synthesizeGeminiSpeech({
@@ -2721,7 +2722,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const recorded = (await this.#paths.call(
 						"qorpera_record_gemini_voice_usage",
 						{ p_binding: binding, p_model: model, p_usage: speech.usage },
-						reqSignal,
+						signal,
 					)) as {
 						monthSpendMicrodollars?: unknown;
 						monthlyCapCents?: unknown;

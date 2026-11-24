@@ -297,7 +297,7 @@ $new$	if v_surface.id is null then
 		from (
 			select latest.seq, latest.op_idx, latest.op_obj
 			from (
-				select distinct on (lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))))
+				select distinct on (trim(both '/' from coalesce(x.op_obj ->> 'path', '')))
 					c.seq,
 					x.op_idx,
 					x.op_obj ->> 'op' as op_kind,
@@ -329,7 +329,7 @@ $new$	if v_surface.id is null then
 						lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))) ~ '(^|/)scenes\.js$'
 						or lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))) ~ '(^|/)voice/clips\.json$'
 					)
-				order by lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))), c.seq desc, x.op_idx desc
+				order by trim(both '/' from coalesce(x.op_obj ->> 'path', '')), c.seq desc, x.op_idx desc
 			) as latest
 			where latest.op_kind = 'delete' or latest.content_bytes <= 262144
 			order by latest.seq desc, latest.op_idx desc

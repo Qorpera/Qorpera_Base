@@ -4526,6 +4526,7 @@ describe("Gemini 4 Neon conversation runs", () => {
 		readonly vaultAnswer: Record<string, unknown>;
 		readonly ttsFetch: typeof fetch;
 		readonly usageCapOnCall?: number;
+		readonly onRecordVoiceUsage?: (signal: AbortSignal, callNumber: number) => Promise<void>;
 	}) {
 		const vaultFetch = vi.fn(async () => Response.json(options.vaultAnswer));
 		const f = await fixture(
@@ -4661,6 +4662,7 @@ describe("Gemini 4 Neon conversation runs", () => {
 			}
 			if (method === "qorpera_record_gemini_voice_usage") {
 				usageCalls += 1;
+				await options.onRecordVoiceUsage?.(signal, usageCalls);
 				const capReached = options.usageCapOnCall !== undefined && usageCalls >= options.usageCapOnCall;
 				return {
 					schema: "qorpera.gemini-voice-usage/v1",
@@ -4782,5 +4784,86 @@ describe("Gemini 4 Neon conversation runs", () => {
 		expect(rejectedFetch).toHaveBeenCalled();
 		expect(rpcCalls(rejected.f, "qorpera_record_gemini_voice_usage")).toHaveLength(0);
 		expect(rejected.outputs[1]).toMatchObject({ ok: false, state: "revoked" });
+	});
+
+	it("wires Studio narrate_explainer usage metering onto the outer turn signal so sibling batch aborts still record spend and stage billed clips", async () => {
+		const pcm = new Uint8Array(24_000 * 2);
+		const pcmBase64 = Buffer.from(pcm).toString("base64");
+		let markUsagePending!: () => void;
+		const usagePending = new Promise<void>((resolve) => {
+			markUsagePending = resolve;
+		});
+		let siblingErrored!: () => void;
+		const siblingDone = new Promise<void>((resolve) => {
+			siblingErrored = resolve;
+		});
+		let usageAbortedDuringSiblingAbort = false;
+		let usageCompleted = false;
+		let firstBatchErrored = false;
+
+		const mixedFetch = vi.fn<typeof fetch>(async (_input, init) => {
+			const payload = JSON.parse(String(init?.body ?? "{}")) as {
+				contents?: Array<{ parts?: Array<{ text?: string }> }>;
+			};
+			const text = payload.contents?.[0]?.parts?.[0]?.text ?? "";
+			if (text !== "Second caption." || firstBatchErrored) {
+				return Response.json({
+					candidates: [
+						{
+							content: {
+								parts: [{ inlineData: { mimeType: "audio/L16;codec=pcm;rate=24000", data: pcmBase64 } }],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 90 },
+				});
+			}
+			firstBatchErrored = true;
+			await usagePending;
+			queueMicrotask(siblingErrored);
+			return new Response(
+				JSON.stringify({
+					error: {
+						code: 429,
+						status: "RESOURCE_EXHAUSTED",
+						message: "Daily quota exhausted",
+						details: [
+							{
+								"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+								violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel" }],
+							},
+						],
+					},
+				}),
+				{ status: 429, headers: { "content-type": "application/json" } },
+			);
+		});
+
+		const result = await runNarrationCase({
+			vaultAnswer: {
+				schema: "qorpera.gemini-key-for-run/v1",
+				state: "open",
+				geminiKeyId: GEMINI_KEY_ID,
+				apiKey: GEMINI_API_KEY,
+				spendMonth: "2026-11",
+				monthSpendMicrodollars: 0,
+				monthlyCapCents: 100,
+			},
+			ttsFetch: mixedFetch,
+			onRecordVoiceUsage: async (usageSignal, callNumber) => {
+				if (callNumber !== 1) return;
+				markUsagePending();
+				await siblingDone;
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				usageAbortedDuringSiblingAbort = usageSignal.aborted;
+				usageCompleted = true;
+			},
+		});
+
+		expect(usageAbortedDuringSiblingAbort).toBe(false);
+		expect(usageCompleted).toBe(true);
+		expect(rpcCalls(result.f, "qorpera_record_gemini_voice_usage").length).toBeGreaterThanOrEqual(1);
+		expect(result.outputs[1]).toMatchObject({ ok: true, state: "partly_spoken", spokenNow: 1, left: 1 });
+		expect(result.outputs[3]).toMatchObject({ ok: true, state: "spoken", spokenNow: 2, reused: 1, left: 0 });
 	});
 });
