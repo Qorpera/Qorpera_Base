@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
+
+import type { SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyController } from "../src/app/company.ts";
+import { CompanyController, type CompanyState } from "../src/app/company.ts";
+import { attachSurfaces } from "../src/app/surfaces-store.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { CloudShapeError } from "../src/cloud/parse.ts";
@@ -14,6 +17,7 @@ import {
 	parseSitePreviewAnswer,
 	type SitePreviewAnswer,
 } from "../src/cloud/releases.ts";
+import type { CompanySite } from "../src/cloud/sites.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
@@ -30,11 +34,32 @@ import {
 	timestamp,
 	userA,
 } from "./fixtures.ts";
+import { fakeClient, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
 /* What's new (own code storage step 4): every state of the plan's 9.3, Put it live, Go back and Not yet, and the read's
  * strict parse. Founders never read a change number, a commit, a check, a branch or a repository path. */
 
 const TOKEN = "a".repeat(64);
+const LISTED = {
+	id: id(81),
+	slug: "wristband-shop",
+	title: "Wristband shop",
+	kind: "files",
+	url: "https://sites.qorpera.com/wristband-shop/",
+	state: "live",
+} as CompanySite;
+const PUBLIC = { siteList: [LISTED], sitesPublic: new Map([[LISTED.id, true]]) };
+const NOT_PUBLIC = { siteList: [LISTED], sitesPublic: new Map([[LISTED.id, false]]) };
+const SHOP_PAGE = summary({ slug: "shop-page", title: "Shop", siteSlug: "wristband-shop", status: "active" });
+
+async function interfaces(controller: CompanyController, list: SurfaceSummary[]): Promise<void> {
+	const store = storeWith(
+		fakeClient({ listSurfaces: vi.fn(async () => list), getSurfaceWorkspace: vi.fn(async () => workspace([])) }),
+	);
+	await store.load();
+	attachSurfaces(controller, store);
+	cleanup.push(() => store.dispose());
+}
 const OTHER_TOKEN = "b".repeat(64);
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Kaya", templateId: "co-founder" };
 const vera: HostedStaffAgent = { ...staff, id: id(41), displayName: "Vera", role: "Developer" };
@@ -150,6 +175,8 @@ interface Setup {
 	openPreview?: (shown: unknown) => Promise<SitePreviewAnswer>;
 	image?: (path: string) => Promise<Blob | null>;
 	takenDown?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
+	sites?: Pick<CompanyState, "siteList" | "sitesPublic">;
+	interfaces?: SurfaceSummary[];
 }
 
 /** Look first's one-time ticket, as the kernel makes one (43 characters), and its link on the shop's next host. */
@@ -158,6 +185,8 @@ const NEXT = `https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET
 
 async function page(reads: CodeReleases[], options: Setup = {}) {
 	const controller = company(options.role, options.agents);
+	controller.store.set(options.sites ?? PUBLIC);
+	if (options.interfaces) await interfaces(controller, options.interfaces);
 	const queue = [...reads];
 	const client = {
 		list: vi.fn(async () => structuredClone(queue.length > 1 ? queue.shift()! : queue[0]!)),
@@ -324,10 +353,7 @@ describe("What's new: the page", () => {
 		)!;
 		expect(open.getAttribute("href")).toBe("https://sites.qorpera.com/wristband-shop/");
 		expect(open.target).toBe("_blank");
-		const password = [...live.querySelectorAll<HTMLAnchorElement>("a")].find(
-			(link) => link.textContent === "The password is in Sites.",
-		)!;
-		expect(password.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(text(live)).not.toMatch(/password/i);
 		expect(labels(live)).toEqual(["Go back to version 2"]);
 		expect(site.querySelector("h3")?.textContent).toBe("6 changes are ready");
 		expect(lines(site)).toEqual([
@@ -363,7 +389,6 @@ describe("What's new: the page", () => {
 		expect(row.querySelector(".site-name")?.textContent).toBe("Live now");
 		expect([...row.querySelectorAll(".site-meta")].map((line) => line.textContent)).toEqual([
 			expect.stringMatching(/^Version 3 · since .+ · Ann said go$/),
-			"The password is in Sites.",
 		]);
 		// Open the site and Go back, as the Sites page's quiet pills; no grey card around them.
 		const actions = row.querySelector(".site-actions")!;
@@ -375,6 +400,120 @@ describe("What's new: the page", () => {
 		// Before the first version, the globe is grey.
 		const first = await page([releasesOf([shop({ site: null, live: null, back: null })])]);
 		expect(block(first.view).querySelector(".site-row.is-whats-new.is-waiting .site-emblem")).not.toBeNull();
+	});
+
+	it("calls a version Live now only when everyone can open the site, Not live yet when not, Current version while unknown", async () => {
+		const heading = (view: WhatsNewView) => block(view).querySelector(".whats-new-live .site-name")?.textContent;
+		const meta = (view: WhatsNewView) =>
+			[...block(view).querySelectorAll(".whats-new-live .site-meta")].map((line) => line.textContent);
+		const version = expect.stringMatching(/^Version 3 · since .+ · Ann said go$/);
+		const { view: open } = await page([releasesOf([shop()])], { sites: PUBLIC, interfaces: [SHOP_PAGE] });
+		expect([heading(open), meta(open)]).toEqual(["Live now", [version]]);
+		open.dispose();
+		const { view: closed } = await page([releasesOf([shop()])], { sites: NOT_PUBLIC });
+		expect([heading(closed), meta(closed)]).toEqual(["Not live yet", [version, "Only the company can open it."]]);
+		expect(text(block(closed))).not.toMatch(/password|Sites\b/);
+		closed.dispose();
+		for (const sites of [{}, { siteList: [LISTED] }, { siteList: [] }]) {
+			const { view: unknown } = await page([releasesOf([shop()])], { sites });
+			expect([heading(unknown), meta(unknown)], JSON.stringify(sites)).toEqual(["Current version", [version]]);
+			unknown.dispose();
+		}
+		const { view: app } = await page([releasesOf([shop()])], {
+			sites: { siteList: [{ ...LISTED, kind: "app" } as CompanySite], sitesPublic: new Map([[LISTED.id, false]]) },
+		});
+		expect([heading(app), meta(app)]).toEqual(["Live now", [version]]);
+		app.dispose();
+		const { view: never } = await page([releasesOf([shop({ live: null, back: null })])], { sites: NOT_PUBLIC });
+		expect([heading(never), meta(never)]).toEqual(["Not live yet", []]);
+		never.dispose();
+	});
+
+	it("sends an owner to the site's own interface to go live, and names no other place when it has none", async () => {
+		const meta = (view: WhatsNewView) => block(view).querySelectorAll(".whats-new-live .site-meta")[1];
+		const { view } = await page([releasesOf([shop()])], { sites: NOT_PUBLIC, interfaces: [SHOP_PAGE] });
+		const link = meta(view)!.querySelector<HTMLAnchorElement>("a")!;
+		expect(link.textContent).toBe("Only the company can open it. Go live on its page.");
+		expect(link.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/s/shop-page`);
+		expect(link.hasAttribute("href")).toBe(false);
+		expect(block(view).querySelector(`[data-href$="/sites"]`)).toBeNull();
+		view.dispose();
+		for (const list of [
+			[],
+			[{ ...SHOP_PAGE, status: "archived" as const }],
+			[{ ...SHOP_PAGE, siteSlug: "another-shop" }],
+		]) {
+			const { view: none } = await page([releasesOf([shop()])], { sites: NOT_PUBLIC, interfaces: list });
+			expect(meta(none)?.textContent, JSON.stringify(list)).toBe("Only the company can open it.");
+			expect(meta(none)?.querySelector("a")).toBeNull();
+			none.dispose();
+		}
+	});
+
+	it("shows a member who is not an owner or admin the heading, but not the way to go live", async () => {
+		const { view } = await page([releasesOf([shop()], false)], {
+			role: "contributor",
+			sites: NOT_PUBLIC,
+			interfaces: [SHOP_PAGE],
+		});
+		expect(block(view).querySelector(".whats-new-live .site-name")?.textContent).toBe("Not live yet");
+		expect(block(view).querySelector(".whats-new-live .site-meta a")).toBeNull();
+		expect(text(block(view))).not.toContain("Only the company can open it");
+	});
+
+	it("says the headings and the way to go live in Danish", async () => {
+		setLanguagePreference("da");
+		try {
+			const heading = (view: WhatsNewView) => block(view).querySelector(".whats-new-live .site-name")?.textContent;
+			const line = (view: WhatsNewView) =>
+				block(view).querySelectorAll(".whats-new-live .site-meta")[1]?.textContent;
+			const { view: linked } = await page([releasesOf([shop()])], { sites: NOT_PUBLIC, interfaces: [SHOP_PAGE] });
+			expect(heading(linked)).toBe("Ikke live endnu");
+			expect(line(linked)).toBe("Kun virksomheden kan åbne den. Gå live på dens side.");
+			linked.dispose();
+			const { view: plain } = await page([releasesOf([shop()])], { sites: NOT_PUBLIC });
+			expect(line(plain)).toBe("Kun virksomheden kan åbne den.");
+			plain.dispose();
+			const { view: unknown } = await page([releasesOf([shop()])], { sites: {} });
+			expect(heading(unknown)).toBe("Nuværende version");
+			unknown.dispose();
+			const { view: open } = await page([releasesOf([shop()])], { sites: PUBLIC });
+			expect(heading(open)).toBe("Live nu");
+		} finally {
+			setLanguagePreference("system");
+		}
+	});
+
+	it("draws the heading and the way to go live again as the answer and the interface come, after the page was drawn", async () => {
+		const { view, controller, client } = await page([releasesOf([shop()])], { sites: {} });
+		const heading = () => block(view).querySelector(".whats-new-live .site-name")?.textContent;
+		const line = () => block(view).querySelectorAll(".whats-new-live .site-meta")[1]?.textContent ?? null;
+		const link = () => block(view).querySelector(".whats-new-live .site-meta a")?.getAttribute("data-href") ?? null;
+		expect([heading(), line()]).toEqual(["Current version", null]);
+		controller.store.set({ siteList: [LISTED] });
+		await settle();
+		expect([heading(), line()]).toEqual(["Current version", null]);
+		controller.store.set({ sitesPublic: new Map([[LISTED.id, false]]) });
+		await settle();
+		expect([heading(), line(), link()]).toEqual(["Not live yet", "Only the company can open it.", null]);
+		await interfaces(controller, [SHOP_PAGE]);
+		view.update();
+		expect([line(), link()]).toEqual([
+			"Only the company can open it. Go live on its page.",
+			`#/c/${profileA.profileId}/s/shop-page`,
+		]);
+		controller.store.set({ sitesPublic: new Map([[LISTED.id, true]]) });
+		await settle();
+		expect([heading(), line()]).toEqual(["Live now", null]);
+		controller.store.set({ sitesTakenDown: new Set([LISTED.id]) });
+		await settle();
+		expect(heading()).toBe("Not live yet");
+		expect(client.list).toHaveBeenCalledTimes(1);
+		view.dispose();
+		controller.store.set({ sitesTakenDown: new Set() });
+		await settle();
+		view.update();
+		expect(view.el.textContent).toBe("");
 	});
 
 	it("tells the Sites page the version each site made from code has live", () => {
@@ -1035,7 +1174,7 @@ describe("What's new: the page", () => {
 		expect(site.querySelector(".whats-new-behind")?.textContent).toBe("og 2 ændringer bag kulisserne");
 		expect(labels(site)).toEqual(["Gå tilbage til version 2", "Sæt live", "Ikke endnu"]);
 		expect(text(site)).toContain("Åbn hjemmesiden");
-		expect(text(site)).toContain("Adgangskoden står under Hjemmesider.");
+		expect(text(site)).not.toContain("Adgangskode");
 		expect(text(site)).toContain("2 ændringer mere er ikke klar endnu.");
 	});
 });
@@ -1668,7 +1807,7 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 			const { view } = await page([releasesOf([shop()])], takenDown ? { takenDown } : {});
 			expect(openLink(view)?.href).toBe("https://sites.qorpera.com/wristband-shop/");
 			expect(text(block(view))).not.toContain(DOWN);
-			expect(text(block(view))).toContain("The password is in Sites.");
+			expect(text(block(view))).not.toMatch(/password/i);
 			view.dispose();
 		}
 	});

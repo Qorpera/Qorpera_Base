@@ -3255,6 +3255,7 @@ export function mountApplication(
 						),
 					};
 				}
+				whatsNewPage.view.update();
 				if (whatsNewPage.el.parentElement !== main) replace(main, whatsNewPage.el);
 				return;
 			}

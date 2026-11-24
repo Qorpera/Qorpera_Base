@@ -303,7 +303,7 @@ describe("site-hosting", () => {
 		document.body.append(view.el);
 		await settle();
 
-		expect(view.el.querySelector(`[data-site-public="${SITE_ID}"]`)?.textContent).toBe("Public");
+		expect(view.el.querySelector(`[data-site-public="${SITE_ID}"]`)?.textContent).toBe("Live");
 		expect(view.el.querySelector('[data-site-kind="hybrid"]')?.textContent).toBe("Hybrid");
 		const chip = view.el.querySelector('[data-domain="www.minbutik.dk"]');
 		expect(chip?.textContent).toContain("DNS verified");

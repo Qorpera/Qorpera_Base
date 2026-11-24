@@ -3367,21 +3367,23 @@ describe("company sites (20260930550000)", () => {
 
 	it("names the link, the files and their size, and what a first publish or an update does", () => {
 		expect(describeCloudAction(tool("publish_site"), prepared("new"))).toEqual({
-			title: "Publish a new password-protected website",
+			title: "Publish a new website, not live yet",
 			target: "https://sites.qorpera.com/wristband-shop/",
 			details: {
 				title: "Wristbands",
 				from: "Webshop",
 				files: "3 files, 2.5 MB",
 				pages: "about.html, index.html",
-				effect: "Anyone with the link and its password can open it; owners and admins see the password in Settings",
+				effect:
+					"Not live until the founder or an admin presses Go live on the website's page in the app. Until then only the company's members can open it, from the app",
 			},
 		});
 		expect(describeCloudAction(tool("publish_site"), { ...prepared("update"), files: 1, bytes: 300 })).toMatchObject({
 			title: "Update a published website",
 			details: {
 				files: "1 file, 1 KB",
-				effect: "Replaces the whole site; people with its password see the new version",
+				effect:
+					"Replaces the whole site; if it is live, everyone sees the new version, and if not, only the company's members do",
 			},
 		});
 		expect(
@@ -3476,7 +3478,7 @@ describe("company sites (20260930550000)", () => {
 			target: "wristband-shop",
 			details: {
 				effect:
-					"Its link stops working. A website's published copy and password are deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
+					"Its link stops working. A website's published copy is deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
 			},
 		});
 		expect(
@@ -3506,7 +3508,8 @@ describe("company sites (20260930550000)", () => {
 			ruleIds: [],
 			builtIn: "access_change",
 			reason: "Requested.",
-			proposedRule: "publish a password-protected website for the company",
+			proposedRule:
+				"publish a website for the company that is not live until the founder or an admin presses Go live",
 		});
 		expect(siteAccessCheck(call("new"), verdict("ask")).builtIn).toBe("access_change");
 		// A denial stays one; a check the reviewer named stays its own; an update and a connector of the same name
@@ -3583,7 +3586,7 @@ describe("company sites (20260930550000)", () => {
 				effect: "external",
 				builtIn: mode === "new" ? "access_change" : "none",
 				action: {
-					title: mode === "new" ? "Publish a new password-protected website" : "Update a published website",
+					title: mode === "new" ? "Publish a new website, not live yet" : "Update a published website",
 					arguments: '{"slug":"wristband-shop","source":"product/webshop"}',
 				},
 			});

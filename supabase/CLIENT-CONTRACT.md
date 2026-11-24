@@ -2153,7 +2153,8 @@ makes the interface's website not public in the same transaction, when the websi
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
 website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, or at
-`https://<slug>.qorpera.com/` once hosts are on, behind its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+`https://<slug>.qorpera.com/` once hosts are on; since `20260930881000` a website has no password, and until an owner or
+admin makes it public with Go live, everyone outside the company sees "Not live yet"), and only an owner or admin puts a version live, or goes back to the one before, on
 the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
