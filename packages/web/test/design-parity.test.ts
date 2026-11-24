@@ -182,7 +182,7 @@ describe("shell presentation lifecycle", () => {
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("365");
 		press("ArrowRight");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("422");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("381");
 		press("End");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
@@ -218,10 +218,10 @@ describe("shell presentation lifecycle", () => {
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
 		// Going back to the default forgets the stored width, even where the window caps it.
-		vi.stubGlobal("innerWidth", 900);
+		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
 		rail.el.dispatchEvent(new MouseEvent("dblclick"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("396");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("352");
 		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBeNull();
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
@@ -245,6 +245,7 @@ describe("shell presentation lifecycle", () => {
 		localStorage.setItem("qorpera.web.rail-width.v2", "456");
 		localStorage.setItem("qorpera.web.rail-width.v3", "410");
 		localStorage.setItem("qorpera.web.rail-width.v4", "304");
+		localStorage.setItem("qorpera.web.rail-width.v5", "304");
 		expect(shown()).toBe("365");
 		localStorage.setItem("qorpera.web.rail-width.v6", "304");
 		expect(shown()).toBe("304");

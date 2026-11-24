@@ -377,12 +377,12 @@ label > input, label > select { font-weight: 400; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
- * is the trailer's card at 1x, its top lowered 10px: a 74px figure (82px made a tenth smaller, 24 Nov 2026) standing
+ * is the trailer's card at 1x, its top lowered 10px: a 74px figure standing
  * 33px proud of a low card, a 13px name with no line under it, a soft shadow
  * under the figure. The figure and the name keep their place in the rail. Half the space above
  * the card (Jonas, 5 Nov 2026): the figure stands into the list's band under the top row. */
 .rail-cofounder { padding: calc(var(--lift) / 2 + 8px) 9px 18.5px; }
-.rail.has-surface-rail .rail-cofounder { padding-bottom: 1.25px; }
+.frame:not(.rail-compact) .rail.has-surface-rail .rail-cofounder { padding-bottom: 1.25px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
 	width: 100%; padding: calc(var(--figure) - var(--lift) + 8px) 12px 5px; border-radius: 12px;
