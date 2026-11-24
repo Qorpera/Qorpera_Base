@@ -1,3 +1,4 @@
+export * from "./abort-scope.ts";
 export * from "./company-computer-native-endpoint.ts";
 /** JSON-compatible durable data accepted by Qorpera cloud contracts. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };

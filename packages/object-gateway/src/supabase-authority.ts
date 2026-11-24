@@ -1,5 +1,6 @@
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
+import { SHA256_HEX_PATTERN as SHA256_PATTERN, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	companyStateFailure,
 	ObjectDependency,
@@ -24,8 +25,6 @@ export interface LegacyObjectMigrationItem {
 const OBJECT_BUCKET = "qorpera-profile-objects";
 /** `qorpera_folder_object_collecting()`'s message (migration 20260928349860). */
 const FOLDER_OBJECT_COLLECTING = "Company folder object is being collected; retry";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 export type ObjectBackend = "nas-object-gateway" | "supabase-storage";
 

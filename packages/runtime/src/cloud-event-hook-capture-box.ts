@@ -1,14 +1,6 @@
-import {
-	createCipheriv,
-	createDecipheriv,
-	createPublicKey,
-	diffieHellman,
-	generateKeyPairSync,
-	hkdfSync,
-	type KeyObject,
-	randomBytes,
-} from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import { isUuid } from "@qorpera/contracts";
+import { BOX_CLOCK_SKEW_MS, isValidBoxHost, openX25519Box, sealX25519Box } from "./cloud-x25519-box.ts";
 
 /* A Stripe hook's signing secret on its way from one Company Computer into the vault (E3c,
  * deploy/first-node/RUNTIME-COMPANY-FOLDER-EVENTS.md §5.8 point 3). The office reads the value off Stripe's
@@ -41,15 +33,10 @@ const HOOK_KIND: CaptureBoxKind = {
 	info: "qorpera.event-hook-capture/v1",
 	label: "Hook capture",
 };
-const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
-/** The X25519 SubjectPublicKeyInfo prefix (RFC 8410), for a raw 32-byte key. */
-const SPKI_X25519 = Buffer.from("302a300506032b656e032100", "hex");
 /** A Stripe signing secret, as the office reads it; the length is checked until a live run confirms Stripe's. */
 export const EVENT_HOOK_CAPTURE_SECRET = /^whsec_[A-Za-z0-9+/=]{16,200}$/;
 /** A captured value is stored within this long after it was read, or never (a hook's and a coding value's). */
 export const EVENT_HOOK_CAPTURE_LIFETIME_MS = 90_000;
-/** How far apart the computer's and the vault's clocks may be. */
-const CLOCK_SKEW_MS = 60_000;
 
 /** Who sealed the box: one computer's boot, for one tool call, with one hook's secret. */
 export interface EventHookCaptureIdentity {
@@ -70,23 +57,9 @@ export interface EventHookCapture {
 	readonly capturedAtMs: number;
 }
 
-function base64(value: Uint8Array): string {
-	return Buffer.from(value).toString("base64url");
-}
-
-function decoded(value: unknown, length: number | readonly [number, number], label: string): Buffer {
-	if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error(`${label} is malformed`);
-	const out = Buffer.from(value, "base64url");
-	const fits = Array.isArray(length)
-		? out.byteLength >= length[0] && out.byteLength <= length[1]
-		: out.byteLength === length;
-	if (!fits || base64(out) !== value) throw new Error(`${label} is malformed`);
-	return out;
-}
-
 /** Whether `site` is a host a value may be read on: lower case, no scheme, no port. */
 export function captureSiteValid(site: unknown): site is string {
-	return typeof site === "string" && site.length <= 253 && HOST.test(site);
+	return isValidBoxHost(site);
 }
 
 function identity(value: EventHookCaptureIdentity): EventHookCaptureIdentity {
@@ -110,20 +83,6 @@ function identity(value: EventHookCaptureIdentity): EventHookCaptureIdentity {
 	};
 }
 
-function publicKey(raw: Buffer): KeyObject {
-	return createPublicKey({ key: Buffer.concat([SPKI_X25519, raw]), format: "der", type: "spki" });
-}
-
-function boxKey(privateKey: KeyObject, peer: KeyObject, ephemeral: Buffer, recipient: Buffer, info: string): Buffer {
-	// X25519 refuses a low-order peer key (an all-zero secret) with an error.
-	const shared = diffieHellman({ privateKey, publicKey: peer });
-	try {
-		return Buffer.from(hkdfSync("sha256", shared, Buffer.concat([ephemeral, recipient]), info, 32));
-	} finally {
-		shared.fill(0);
-	}
-}
-
 /**
  * The office's side of any capture box: `payload` (its schema added first) sealed to `recipientPublicKey` under
  * `associatedData`, which names the call. The caller checked the payload and the identity.
@@ -134,29 +93,14 @@ export function sealCaptureBox(
 	recipientPublicKey: string,
 	associatedData: Buffer,
 ): Record<string, string> {
-	const recipient = decoded(recipientPublicKey, 32, `${kind.label} key`);
-	const pair = generateKeyPairSync("x25519");
-	const ephemeral = Buffer.from(
-		pair.publicKey.export({ format: "der", type: "spki" }).subarray(SPKI_X25519.byteLength),
-	);
-	const key = boxKey(pair.privateKey, publicKey(recipient), ephemeral, recipient, kind.info);
-	const iv = randomBytes(12);
-	const plaintext = Buffer.from(JSON.stringify({ schema: kind.payload, ...payload }), "utf8");
-	try {
-		const cipher = createCipheriv("aes-256-gcm", key, iv);
-		cipher.setAAD(associatedData);
-		const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-		return {
-			schema: kind.box,
-			ephemeralPublicKey: base64(ephemeral),
-			iv: base64(iv),
-			tag: base64(cipher.getAuthTag()),
-			ciphertext: base64(ciphertext),
-		};
-	} finally {
-		key.fill(0);
-		plaintext.fill(0);
-	}
+	return sealX25519Box({
+		boxSchema: kind.box,
+		info: kind.info,
+		keyLabel: `${kind.label} key`,
+		recipientPublicKey,
+		associatedData,
+		plaintext: Buffer.from(JSON.stringify({ schema: kind.payload, ...payload }), "utf8"),
+	});
 }
 
 /**
@@ -176,37 +120,16 @@ export function openCaptureBox<T>(
 	parse: (payload: Record<string, unknown>) => T,
 	nowMs: number,
 ): { readonly value: Buffer; readonly site: string | undefined; readonly capturedAtMs: number; readonly parsed: T } {
-	if (
-		!box ||
-		typeof box !== "object" ||
-		Array.isArray(box) ||
-		Object.keys(box).sort().join() !== "ciphertext,ephemeralPublicKey,iv,schema,tag"
-	)
-		throw new Error(`${kind.label} box is malformed`);
-	const input = box as Record<string, unknown>;
-	if (input.schema !== kind.box) throw new Error(`${kind.label} box is malformed`);
-	const ephemeral = decoded(input.ephemeralPublicKey, 32, `${kind.label} box`);
-	const iv = decoded(input.iv, 12, `${kind.label} box`);
-	const tag = decoded(input.tag, 16, `${kind.label} box`);
-	const ciphertext = decoded(input.ciphertext, [1, 4096], `${kind.label} box`);
-	const recipient = decoded(recipientPublicKey, 32, `${kind.label} key`);
-	let key: Buffer;
-	try {
-		key = boxKey(privateKey, publicKey(ephemeral), ephemeral, recipient, kind.info);
-	} catch {
-		throw new Error(`${kind.label} box does not open here`);
-	}
-	let plaintext: Buffer;
-	try {
-		const decipher = createDecipheriv("aes-256-gcm", key, iv);
-		decipher.setAAD(associatedData);
-		decipher.setAuthTag(tag);
-		plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-	} catch {
-		throw new Error(`${kind.label} box does not open here`);
-	} finally {
-		key.fill(0);
-	}
+	const plaintext = openX25519Box({
+		boxSchema: kind.box,
+		info: kind.info,
+		boxLabel: `${kind.label} box`,
+		keyLabel: `${kind.label} key`,
+		privateKey,
+		recipientPublicKey,
+		box,
+		associatedData,
+	});
 	let value: Buffer | undefined;
 	try {
 		const payload = JSON.parse(plaintext.toString("utf8")) as Record<string, unknown>;
@@ -223,7 +146,7 @@ export function openCaptureBox<T>(
 		const parsed = parse(payload);
 		// Read too long ago, or dated further ahead than the clocks drift: never stored.
 		const capturedAtMs = payload.capturedAtMs as number;
-		if (capturedAtMs < nowMs - EVENT_HOOK_CAPTURE_LIFETIME_MS || capturedAtMs > nowMs + CLOCK_SKEW_MS)
+		if (capturedAtMs < nowMs - EVENT_HOOK_CAPTURE_LIFETIME_MS || capturedAtMs > nowMs + BOX_CLOCK_SKEW_MS)
 			throw new Error(`${kind.label} expired`);
 		value = Buffer.from(payload.value, "utf8");
 		return { value, site: kind.siteless ? undefined : (payload.site as string), capturedAtMs, parsed };

@@ -664,7 +664,7 @@ export function createWebNativeSubscription(
 						request.displayName.length > 120 ||
 						/[\0\r\n]/.test(request.displayName) ||
 						![request.clientIdentityId, request.clientLoginId, request.clientConnectionId].every((value) =>
-							/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value),
+							UUID_PATTERN.test(value),
 						)
 					)
 						throw new Error("Native provider login input is invalid.");

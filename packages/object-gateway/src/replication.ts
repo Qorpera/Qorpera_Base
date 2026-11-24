@@ -1,3 +1,4 @@
+import { SHA256_HEX_PATTERN as HASH, UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { ObjectGatewayJournal } from "./journal.ts";
 import { createSerialGate, type MaintenanceGate } from "./maintenance.ts";
@@ -39,8 +40,6 @@ export interface BlockedObject extends LegacyObjectMigrationItem {
 	missingSince?: string;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const HASH = /^[0-9a-f]{64}$/;
 /** Stored objects' audit lines kept for one later sync. At this many an upload writes them itself. */
 const MAX_STORED_LINES = 1000;
 const RECONCILE_CONCURRENCY = 4;

@@ -1,3 +1,5 @@
+import { SHA256_HEX_PATTERN as SHA, UUID_PATTERN as UUID } from "./wire-values.ts";
+
 /** Deployment-bound NAS identity. These descriptors carry no storage credential
  * and parsing them does not grant attachment or writer authority. */
 export interface CloudCodingNasPolicy {
@@ -26,9 +28,6 @@ export interface CloudCodingStorageBinding {
 	readonly dataTarget: "/workspace";
 	readonly custodyTarget: "/var/lib/qorpera-coding";
 }
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
 
 function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
 	if (
