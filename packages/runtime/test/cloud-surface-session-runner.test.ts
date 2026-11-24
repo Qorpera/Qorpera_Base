@@ -1351,4 +1351,110 @@ describe("cloud surface session runner", () => {
 		expect(seenInstructions).toContain("Never ask the founder questions.");
 		expect(seenWritableRoots).toEqual([]);
 	});
+
+	it("omits unreadable paths from baseFiles instead of storing null and renders full untruncated overlapping ops in folder reconciliation briefs", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const stagedRequests: unknown[] = [];
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Rewrite large report and create note",
+			},
+			{
+				folder: {
+					async readText(path) {
+						if (path === "identity/huge.md") throw new Error("CloudCompanyPathNotText: exceeds 128 KB");
+						if (path === "identity/existing.md") return { text: "Existing\n" };
+						return null;
+					},
+				},
+				surfaceTools: {
+					stageSurfacePatch: async (_sid, req) => {
+						stagedRequests.push(req);
+						return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+					},
+				},
+				executeTurn: async (req) => {
+					const patchTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const parsed = patchTool.parseArguments({
+						title: "Large update",
+						summary: "Updates huge and existing",
+						ops: [
+							{ op: "write_text", path: "huge.md", content: "Updated huge\n" },
+							{ op: "write_text", path: "existing.md", content: "Updated existing\n" },
+							{ op: "write_text", path: "missing.md", content: "Created\n" },
+						],
+					});
+					await patchTool.execute(parsed, {
+						companyId,
+						runId: randomUUID(),
+						signal: req.signal,
+					} as never);
+					return { state: "ready", replyText: "Staged" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+
+		expect(stagedRequests).toHaveLength(1);
+		const captured = (stagedRequests[0] as { baseFiles?: Record<string, string | null> }).baseFiles;
+		expect(captured).toEqual({
+			"existing.md": "Existing\n",
+			"missing.md": null,
+		});
+		expect(Object.hasOwn(captured ?? {}, "huge.md")).toBe(false);
+
+		const largeMarker = "TAIL_MARKER_24KB_END";
+		const largeReport = `${"x".repeat(22_000)}\n${largeMarker}`;
+		let seenBrief = "";
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				state: "reconciling",
+				isInternal: true,
+				prompt: "Silently combine",
+				conflictPaths: ["identity/report.md"],
+				conflictDetails: [
+					{
+						changeId: randomUUID(),
+						title: "Change 1",
+						kind: "folder_patch",
+						affectedPaths: ["identity/report.md", "identity/journey.svg"],
+						patchManifest: [
+							{ op: "write_text", path: "identity/report.md", content: largeReport },
+							{ op: "write_text", path: "identity/journey.svg", content: "<svg>journey</svg>" },
+						],
+					},
+				],
+			},
+			{
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				executeTurn: async (req) => {
+					seenBrief = req.turnBrief;
+					return { state: "ready", replyText: "Combined" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+
+		expect(seenBrief).toContain(largeMarker);
+		expect(seenBrief).not.toContain("/* ...truncated... */");
+		expect(seenBrief).toContain("Non-conflicting paths (preserved automatically");
+		expect(seenBrief).toContain("identity/journey.svg");
+	});
 });

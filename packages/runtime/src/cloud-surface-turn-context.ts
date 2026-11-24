@@ -279,13 +279,19 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		const lines: string[] = ["## Conflict Reconciliation"];
 		if (isFolderReconcile) {
 			const rootLabel = folderRoot || binding.surfaceSlug;
+			const normalizeRelativePath = (rawPath: string): string => {
+				const cleaned = rawPath.trim().replace(/^\/+|\/+$/g, "");
+				if (rootLabel && cleaned.startsWith(`${rootLabel}/`)) {
+					return cleaned.slice(rootLabel.length + 1);
+				}
+				return cleaned;
+			};
+			const conflictPathSet = new Set(conflictPaths.map(normalizeRelativePath).filter((p) => p.length > 0));
 			lines.push(
 				`Target Studio folder: \`${rootLabel}/\``,
 				"Staged changes to combine in chronological order (oldest first; higher number is newer):",
 			);
 			const maxDetails = 25;
-			const maxPerPatchChars = 16_000;
-			let remainingPatchBudget = 48_000;
 			for (let i = 0; i < Math.min(conflictDetails.length, maxDetails); i += 1) {
 				const detail = conflictDetails[i];
 				if (!detail) continue;
@@ -300,15 +306,42 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 					detail.conflictPaths?.filter((p) => p.trim().length > 0) ??
 					[];
 				if (detailPaths.length > 0) {
-					lines.push(`- Paths: ${detailPaths.slice(0, 20).join(", ")}`);
+					lines.push(`- Paths: ${detailPaths.slice(0, 40).join(", ")}`);
 				}
-				if (detail.patchManifest && detail.patchManifest.length > 0 && remainingPatchBudget > 256) {
-					const serialized = JSON.stringify(detail.patchManifest, null, 2);
-					const limit = Math.min(maxPerPatchChars, remainingPatchBudget);
-					const excerpt =
-						serialized.length > limit ? `${serialized.slice(0, limit)}\n/* ...truncated... */` : serialized;
-					remainingPatchBudget -= excerpt.length;
-					lines.push("Staged patch operations:", "```json", excerpt, "```");
+				if (detail.patchManifest && detail.patchManifest.length > 0) {
+					const relevantOps: unknown[] = [];
+					const preservedPaths: string[] = [];
+					for (const rawOp of detail.patchManifest) {
+						const opRecord =
+							rawOp && typeof rawOp === "object" && !Array.isArray(rawOp)
+								? (rawOp as Record<string, unknown>)
+								: null;
+						const opPath = typeof opRecord?.path === "string" ? opRecord.path : "";
+						const opKind = typeof opRecord?.op === "string" ? opRecord.op : "";
+						const relPath = normalizeRelativePath(opPath);
+						if (conflictPathSet.size > 0 && relPath && !conflictPathSet.has(relPath)) {
+							preservedPaths.push(opPath);
+							continue;
+						}
+						if (conflictPathSet.size === 0 && opKind === "write_file") {
+							preservedPaths.push(opPath);
+							continue;
+						}
+						relevantOps.push(rawOp);
+					}
+					if (preservedPaths.length > 0) {
+						lines.push(
+							`- Non-conflicting paths (preserved automatically from this change; no need to re-emit): ${[...new Set(preservedPaths)].join(", ")}`,
+						);
+					}
+					if (relevantOps.length > 0) {
+						lines.push(
+							"Staged patch operations for overlapping files (complete, untruncated):",
+							"```json",
+							JSON.stringify(relevantOps, null, 2),
+							"```",
+						);
+					}
 				}
 			}
 			if (conflictDetails.length > maxDetails) {
@@ -316,7 +349,7 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			}
 			if (conflictPaths.length > 0) {
 				const maxConflictPaths = 100;
-				lines.push("Overlapping files:");
+				lines.push("Overlapping files that must be covered in your staged patch:");
 				const shown = conflictPaths.slice(0, maxConflictPaths).map((path) => `- ${path.slice(0, 256)}`);
 				const overflow = conflictPaths.length - shown.length;
 				if (overflow > 0) {
@@ -327,9 +360,9 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			lines.push(
 				"Reconciliation procedure:",
 				`1. Read the current published files under \`${rootLabel}/\` via \`company_read\` as needed for full context.`,
-				"2. Combine every listed staged change into one cohesive set of `StudioPatchOp` operations (`write_text`, `merge_json`, `delete`) preserving all compatible edits, newly created files, SVG assets, markdown sections, and JSON tokens.",
+				"2. Combine the overlapping staged changes into one cohesive set of `StudioPatchOp` operations (`write_text`, `merge_json`, `delete`) covering every overlapping file listed above and preserving all compatible edits, markdown sections, SVG markup, and JSON tokens. Non-conflicting files from the staged changes are preserved automatically.",
 				"3. If two changes directly contradict on the exact same value, sentence, or visual choice, prefer the newer change (higher Change number) unless the later request clearly intended to preserve both.",
-				"4. Call `stage_surface_patch` once with the complete combined operations covering every affected file across all listed changes, then call `surface_reply` with a brief summary. Never ask the founder questions.",
+				"4. Call `stage_surface_patch` once with complete, untruncated operations covering every overlapping file listed above, then call `surface_reply` with a brief summary. Never ask the founder questions.",
 			);
 		} else {
 			const mainSha = binding.mainSha?.trim();

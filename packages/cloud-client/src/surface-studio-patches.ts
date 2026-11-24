@@ -1,4 +1,5 @@
 import {
+	composeReconciledFolderChanges,
 	mergeJsonThreeWay,
 	mergeStudioTextContent,
 	normalizeStudioFolderRoot,
@@ -15,7 +16,9 @@ export type { StudioBinaryRef, StudioPatchChange, StudioPatchOp };
 export type StudioPreviewReconciliation = Pick<
 	SurfaceReconciliation,
 	"id" | "status" | "selectedChangeIds" | "patchManifest" | "errorDetail"
->;
+> & {
+	readonly conflictPaths?: readonly string[];
+};
 
 export interface ComposeStudioPreviewOptions {
 	readonly reconciliations?: readonly StudioPreviewReconciliation[];
@@ -123,6 +126,7 @@ function resolveChangeBaseFile(
 function applyReconciledSubset(
 	orderedChanges: readonly StudioPatchChange[],
 	reconciliations: readonly StudioPreviewReconciliation[] | undefined,
+	normalizedRoot: string | null,
 ): {
 	readonly changes: readonly { readonly change: StudioPatchChange; readonly memberIds: readonly string[] }[];
 	readonly usedReconciliation: boolean;
@@ -139,43 +143,57 @@ function applyReconciledSubset(
 			(rec) =>
 				rec.status === "ready" &&
 				Array.isArray(rec.patchManifest) &&
+				rec.patchManifest.length > 0 &&
 				rec.selectedChangeIds.length > 0 &&
 				rec.selectedChangeIds.every((id) => activeSet.has(id)),
 		)
 		.sort((a, b) => b.selectedChangeIds.length - a.selectedChangeIds.length);
 
-	const chosen = readyMatches[0];
-	if (!chosen || !chosen.patchManifest) {
-		return {
-			changes: orderedChanges.map((change) => ({ change, memberIds: [change.changeId] })),
-			usedReconciliation: false,
-		};
-	}
-	const covered = new Set(chosen.selectedChangeIds);
-	let lastCoveredIndex = -1;
-	const coveredOrderedIds: string[] = [];
-	for (let index = 0; index < orderedChanges.length; index += 1) {
-		const id = orderedChanges[index]!.changeId;
-		if (covered.has(id)) {
-			lastCoveredIndex = index;
-			coveredOrderedIds.push(id);
-		}
-	}
-	const out: { readonly change: StudioPatchChange; readonly memberIds: readonly string[] }[] = [];
-	for (let index = 0; index < orderedChanges.length; index += 1) {
-		const item = orderedChanges[index]!;
-		if (covered.has(item.changeId)) {
-			if (index === lastCoveredIndex) {
-				out.push({
-					change: { changeId: `reconciled:${chosen.id}`, ops: chosen.patchManifest },
-					memberIds: coveredOrderedIds,
-				});
+	for (const chosen of readyMatches) {
+		if (!chosen.patchManifest) continue;
+		const covered = new Set(chosen.selectedChangeIds);
+		let lastCoveredIndex = -1;
+		const coveredOrderedChanges: StudioPatchChange[] = [];
+		for (let index = 0; index < orderedChanges.length; index += 1) {
+			const item = orderedChanges[index]!;
+			if (covered.has(item.changeId)) {
+				lastCoveredIndex = index;
+				coveredOrderedChanges.push(item);
 			}
-			continue;
 		}
-		out.push({ change: item, memberIds: [item.changeId] });
+		const composed = composeReconciledFolderChanges(coveredOrderedChanges, chosen.patchManifest, {
+			folderRoot: normalizedRoot,
+			conflictPaths: chosen.conflictPaths,
+		});
+		if (!composed.ok) continue;
+
+		const preservedById = new Map(composed.preservedChanges.map((entry) => [entry.changeId, entry]));
+		const coveredOrderedIds = coveredOrderedChanges.map((entry) => entry.changeId);
+		const out: { readonly change: StudioPatchChange; readonly memberIds: readonly string[] }[] = [];
+		for (let index = 0; index < orderedChanges.length; index += 1) {
+			const item = orderedChanges[index]!;
+			if (covered.has(item.changeId)) {
+				const preserved = preservedById.get(item.changeId);
+				if (preserved) {
+					out.push({ change: preserved, memberIds: [item.changeId] });
+				}
+				if (index === lastCoveredIndex) {
+					out.push({
+						change: { changeId: `reconciled:${chosen.id}`, ops: composed.reconciledOps },
+						memberIds: coveredOrderedIds,
+					});
+				}
+				continue;
+			}
+			out.push({ change: item, memberIds: [item.changeId] });
+		}
+		return { changes: out, usedReconciliation: true };
 	}
-	return { changes: out, usedReconciliation: true };
+
+	return {
+		changes: orderedChanges.map((change) => ({ change, memberIds: [change.changeId] })),
+		usedReconciliation: false,
+	};
 }
 
 // WHY: Composes non-code Studio folder_patch ChangeUnits deterministically in memory for sub-10ms live toggling without git builds.
@@ -199,6 +217,7 @@ export function composeStudioPreview(
 	const { changes: effectiveChanges, usedReconciliation } = applyReconciledSubset(
 		orderedChanges,
 		options?.reconciliations,
+		normalizedRoot,
 	);
 
 	const working: Record<string, string> = { ...baseFiles };
@@ -382,7 +401,9 @@ export function composeStudioPreview(
 				},
 			};
 		}
-		for (const id of memberIds) appliedChangeIds.push(id);
+		for (const id of memberIds) {
+			if (!appliedChangeIds.includes(id)) appliedChangeIds.push(id);
+		}
 	}
 
 	return {

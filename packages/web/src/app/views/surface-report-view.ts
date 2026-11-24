@@ -879,7 +879,7 @@ export class SurfaceReportView {
 			if (!existingRec) {
 				void this.#options.store.ensureReconciliation(surface.id, conflictIds, conflictPaths);
 			}
-			if (existingRec?.status === "failed") {
+			if (existingRec?.status === "failed" || existingRec?.status === "ready") {
 				reconciliationFailed = true;
 				this.#pendingRetryTarget = { changeIds: conflictIds, paths: conflictPaths };
 			} else {

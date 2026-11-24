@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mergeJsonThreeWay, mergeStudioTextContent, mergeTextThreeWay } from "../src/surface-merge.ts";
+import {
+	composeReconciledFolderChanges,
+	mergeJsonThreeWay,
+	mergeStudioTextContent,
+	mergeTextThreeWay,
+} from "../src/surface-merge.ts";
 
 describe("surface-merge", () => {
 	it("merges non-overlapping text edits cleanly", () => {
@@ -80,5 +85,59 @@ describe("surface-merge", () => {
 			ok: true,
 			content: "same\n",
 		});
+	});
+
+	it("preserves untouched JSON formatting and number spellings via line merge and refuses unsafe >2^53 integers on structural fallback", () => {
+		const baseFormatted = '{\n  "version": 1.10,\n  "bigId": 9007199254740993,\n  "a": 1,\n  "b": 2\n}\n';
+		const oursFormatted = '{\n  "version": 1.10,\n  "bigId": 9007199254740993,\n  "a": 10,\n  "b": 2\n}\n';
+		const theirsFormatted = '{\n  "version": 1.10,\n  "bigId": 9007199254740993,\n  "a": 1,\n  "b": 20\n}\n';
+		const mergedFormatted = mergeJsonThreeWay(baseFormatted, oursFormatted, theirsFormatted);
+		expect(mergedFormatted).toEqual({
+			ok: true,
+			content: '{\n  "version": 1.10,\n  "bigId": 9007199254740993,\n  "a": 10,\n  "b": 20\n}\n',
+		});
+
+		const baseInline = '{"bigId":9007199254740993,"a":1,"b":2}';
+		const oursInline = '{"bigId":9007199254740993,"a":10,"b":2}';
+		const theirsInline = '{"bigId":9007199254740993,"a":1,"b":20}';
+		expect(mergeJsonThreeWay(baseInline, oursInline, theirsInline)).toEqual({ ok: false });
+		expect(mergeStudioTextContent("tokens.json", baseInline, oursInline, theirsInline)).toEqual({ ok: false });
+	});
+
+	it("preserves non-conflicting ops and rejects reconciled manifests missing required conflict paths", () => {
+		const changeA = {
+			changeId: "a",
+			ops: [
+				{ op: "write_text" as const, path: "identity/report.md", content: "A report" },
+				{ op: "write_text" as const, path: "identity/diagram.svg", content: "<svg/>" },
+			],
+		};
+		const changeB = {
+			changeId: "b",
+			ops: [{ op: "write_text" as const, path: "identity/report.md", content: "B report" }],
+		};
+
+		const incomplete = composeReconciledFolderChanges(
+			[changeA, changeB],
+			[{ op: "write_text", path: "identity/notes.md", content: "wrong file" }],
+			{ folderRoot: "identity", conflictPaths: ["identity/report.md"] },
+		);
+		expect(incomplete).toEqual({ ok: false, missingPaths: ["identity/report.md"] });
+
+		const complete = composeReconciledFolderChanges(
+			[changeA, changeB],
+			[{ op: "write_text", path: "report.md", content: "Combined report" }],
+			{ folderRoot: "identity", conflictPaths: ["identity/report.md"] },
+		);
+		expect(complete.ok).toBe(true);
+		if (complete.ok) {
+			expect(complete.preservedChanges).toEqual([
+				{
+					changeId: "a",
+					ops: [{ op: "write_text", path: "identity/diagram.svg", content: "<svg/>" }],
+				},
+			]);
+			expect(complete.reconciledOps).toEqual([{ op: "write_text", path: "report.md", content: "Combined report" }]);
+		}
 	});
 });

@@ -125,6 +125,7 @@ language sql immutable set search_path = '' as $$
 		'selectedChangeIds', to_jsonb(p_rec.selected_change_ids),
 		'status', p_rec.status,
 		'patchManifest', p_rec.reconciled_patch_manifest,
+		'conflictPaths', to_jsonb(coalesce(p_rec.conflict_paths, '{}'::text[])),
 		'commitSha', p_rec.reconciled_commit_sha,
 		'treeSha', p_rec.reconciled_tree_sha,
 		'errorDetail', p_rec.error_detail,
@@ -172,7 +173,8 @@ end $$;
 
 create function public.qorpera_surface_fail_reconciliation(
 	p_reconciliation_id uuid,
-	p_error_detail text default null
+	p_error_detail text default null,
+	p_expected_session_id uuid default null
 )
 returns void
 language plpgsql security definer set search_path = '' as $$
@@ -187,6 +189,7 @@ begin
 	from public.qorpera_surface_reconciliations r
 	where r.id = p_reconciliation_id
 		and r.status in ('queued', 'running')
+		and (p_expected_session_id is null or r.session_id = p_expected_session_id)
 	for update;
 
 	if not found then
@@ -201,6 +204,7 @@ begin
 		updated_at = v_now
 	where id = p_reconciliation_id
 		and status in ('queued', 'running')
+		and (p_expected_session_id is null or session_id = p_expected_session_id)
 	returning * into v_rec;
 
 	if v_rec.id is null then
@@ -255,6 +259,7 @@ declare
 	v_existing public.qorpera_surface_reconciliations%rowtype;
 	v_rec public.qorpera_surface_reconciliations%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
+	v_explicit_member boolean := false;
 	v_requester uuid;
 	v_titles text;
 	v_changes jsonb;
@@ -292,7 +297,7 @@ begin
 	for update;
 
 	if v_existing.id is not null and v_existing.expires_at > v_now then
-		if v_existing.status = 'ready' then
+		if v_existing.status = 'ready' and not coalesce(p_retry_failed, false) then
 			update public.qorpera_surface_reconciliations
 			set expires_at = v_now + interval '24 hours'
 			where id = v_existing.id
@@ -316,6 +321,7 @@ begin
 		select 1 from public.qorpera_profile_members m
 		where m.profile_id = v_surface.profile_id and m.user_id = p_requester_user_id
 	) then
+		v_explicit_member := true;
 		v_requester := p_requester_user_id;
 	else
 		select coalesce(
@@ -376,18 +382,42 @@ begin
 	left join public.qorpera_coding_sessions cs on cs.worker_id = s.worker_id
 	where ch.surface_id = p_surface_id and ch.id = any(v_ordered_ids);
 
-	select coalesce(array_agg(distinct p order by p), '{}'::text[])
+	select coalesce(array_agg(distinct btrim(p) order by btrim(p)), '{}'::text[])
 	into v_paths
-	from (
-		select p from unnest(coalesce(p_conflict_paths, '{}'::text[])) as p
-		where nullif(btrim(p), '') is not null
-		union
-		select p
+	from unnest(coalesce(p_conflict_paths, '{}'::text[])) as p
+	where nullif(btrim(p), '') is not null;
+
+	if coalesce(cardinality(v_paths), 0) = 0 then
+		select coalesce(array_agg(distinct btrim(p) order by btrim(p)), '{}'::text[])
+		into v_paths
 		from public.qorpera_surface_changes ch
-		cross join lateral unnest(coalesce(nullif(ch.conflict_paths, '{}'::text[]), ch.affected_paths, '{}'::text[])) as p
+		cross join lateral unnest(coalesce(ch.conflict_paths, '{}'::text[])) as p
 		where ch.surface_id = p_surface_id and ch.id = any(v_ordered_ids)
-			and nullif(btrim(p), '') is not null
-	) combined;
+			and nullif(btrim(p), '') is not null;
+	end if;
+
+	if coalesce(cardinality(v_paths), 0) = 0 then
+		select coalesce(array_agg(overlap.p order by overlap.p), '{}'::text[])
+		into v_paths
+		from (
+			select btrim(p) as p
+			from public.qorpera_surface_changes ch
+			cross join lateral unnest(coalesce(ch.affected_paths, '{}'::text[])) as p
+			where ch.surface_id = p_surface_id and ch.id = any(v_ordered_ids)
+				and nullif(btrim(p), '') is not null
+			group by btrim(p)
+			having count(distinct ch.id) >= 2
+		) overlap;
+	end if;
+
+	if coalesce(cardinality(v_paths), 0) = 0 then
+		select coalesce(array_agg(distinct btrim(p) order by btrim(p)), '{}'::text[])
+		into v_paths
+		from public.qorpera_surface_changes ch
+		cross join lateral unnest(coalesce(ch.affected_paths, '{}'::text[])) as p
+		where ch.surface_id = p_surface_id and ch.id = any(v_ordered_ids)
+			and nullif(btrim(p), '') is not null;
+	end if;
 
 	delete from public.qorpera_surface_reconciliations
 	where surface_id = p_surface_id
@@ -407,7 +437,7 @@ begin
 			conflict_paths = v_paths,
 			error_detail = null,
 			attempts = 0,
-			auto_approve_after = auto_approve_after or coalesce(p_auto_approve_after, false),
+			auto_approve_after = coalesce(p_auto_approve_after, false),
 			created_by_user_id = coalesce(v_requester, created_by_user_id),
 			updated_at = v_now,
 			expires_at = v_now + interval '24 hours'
@@ -437,7 +467,7 @@ begin
 		v_surface.profile_id, p_surface_id,
 		left('Silent reconcile: ' || coalesce(v_titles, 'changes'), 160),
 		v_prompt,
-		case when v_requester is not null then 'member' else 'cofounder' end,
+		case when v_explicit_member then 'member' else 'cofounder' end,
 		'Silent reconciliation',
 		jsonb_build_object(
 			'reconciliationId', v_rec.id,
@@ -629,6 +659,8 @@ $new$	v_superseded_ids uuid[];
 	v_rec public.qorpera_surface_reconciliations%rowtype;
 	v_surface public.qorpera_surfaces%rowtype;
 	v_target_session_id uuid;
+	v_folder_prefix text;
+	v_missing_paths text[];
 	v_now timestamptz := clock_timestamp();$new$,
 $old$	select coalesce(max(seq), 0)::smallint + 1 into v_next_seq
 	from public.qorpera_surface_changes
@@ -661,6 +693,61 @@ $new$	if coalesce(p_kind, 'git_range') = 'folder_patch'
 	if v_session.is_internal and v_session.origin_ref ? 'reconciliationId' then
 		v_rec_id := (v_session.origin_ref ->> 'reconciliationId')::uuid;
 		select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id for update;
+		select * into v_rec
+		from public.qorpera_surface_reconciliations
+		where id = v_rec_id
+			and surface_id = v_session.surface_id
+			and session_id = p_session_id
+			and status in ('queued', 'running')
+		for update;
+
+		if v_rec.id is null then
+			return jsonb_build_object(
+				'changeId', v_rec_id,
+				'seq', 1,
+				'reconciled', false,
+				'stale', true,
+				'session', public.qorpera_surface_session_json(v_session)
+			);
+		end if;
+
+		if coalesce(p_kind, 'git_range') = 'folder_patch' then
+			if jsonb_typeof(v_patch_manifest) <> 'array' or jsonb_array_length(v_patch_manifest) = 0 then
+				raise exception 'Reconciled patch manifest must contain at least one operation' using errcode = '22023';
+			end if;
+			v_folder_prefix := trim(both '/' from coalesce(v_surface.folder_root, ''));
+			select coalesce(array_agg(req.raw_path order by req.raw_path), '{}'::text[])
+			into v_missing_paths
+			from (
+				select
+					rp as raw_path,
+					case
+						when v_folder_prefix <> '' and trim(both '/' from rp) like (v_folder_prefix || '/%')
+							then substr(trim(both '/' from rp), length(v_folder_prefix) + 2)
+						else trim(both '/' from rp)
+					end as norm_path
+				from unnest(coalesce(v_rec.conflict_paths, '{}'::text[])) as rp
+				where nullif(btrim(rp), '') is not null
+			) req
+			where req.norm_path <> ''
+				and not exists (
+					select 1
+					from jsonb_array_elements(v_patch_manifest) as elem
+					where (
+						case
+							when v_folder_prefix <> '' and trim(both '/' from coalesce(elem ->> 'path', '')) like (v_folder_prefix || '/%')
+								then substr(trim(both '/' from coalesce(elem ->> 'path', '')), length(v_folder_prefix) + 2)
+							else trim(both '/' from coalesce(elem ->> 'path', ''))
+						end
+					) = req.norm_path
+				);
+			if coalesce(cardinality(v_missing_paths), 0) > 0 then
+				raise exception 'Reconciled patch manifest must cover all conflicting paths: %',
+					array_to_string(v_missing_paths, ', ')
+					using errcode = '22023';
+			end if;
+		end if;
+
 		update public.qorpera_surface_reconciliations
 		set
 			status = 'ready',
@@ -669,22 +756,26 @@ $new$	if coalesce(p_kind, 'git_range') = 'folder_patch'
 			error_detail = null,
 			updated_at = v_now,
 			expires_at = v_now + interval '24 hours'
-		where id = v_rec_id
+		where id = v_rec.id
 			and surface_id = v_session.surface_id
+			and session_id = p_session_id
+			and status in ('queued', 'running')
 		returning * into v_rec;
 
 		if v_rec.id is null then
-			raise exception 'Surface reconciliation not found' using errcode = 'P0002';
+			return jsonb_build_object(
+				'changeId', v_rec_id,
+				'seq', 1,
+				'reconciled', false,
+				'stale', true,
+				'session', public.qorpera_surface_session_json(v_session)
+			);
 		end if;
 
+		-- WHY: Keep state, lease_token, and wake_id intact so later tool calls and qorpera_complete_runner_job_v6 remain authorized until complete_session_turn closes the session.
 		update public.qorpera_surface_sessions
 		set
 			branch_head_sha = coalesce(p_head_sha, branch_head_sha),
-			state = 'completed',
-			wake_id = null,
-			closed_at = coalesce(closed_at, v_now),
-			lease_expires_at = null,
-			lease_token = null,
 			updated_at = v_now
 		where id = p_session_id
 		returning * into v_session;
@@ -789,16 +880,23 @@ $old$	v_next_state text := p_state;
 $new$	v_next_state text := p_state;
 	v_retry_increment integer := 0;
 	v_rec_id uuid;
-	v_rec_ready boolean := false;$new$,
+	v_rec_ready boolean := false;
+	v_rec_owned boolean := false;$new$,
 $old$	if v_session.state not in ('running', 'reconciling_running') then
 		raise exception 'Surface session is not running' using errcode = '55000';
 	end if;$old$,
 $new$	if v_session.is_internal and v_session.origin_ref ? 'reconciliationId' then
 		v_rec_id := (v_session.origin_ref ->> 'reconciliationId')::uuid;
-		select exists (
-			select 1 from public.qorpera_surface_reconciliations r
-			where r.id = v_rec_id and r.status = 'ready'
-		) into v_rec_ready;
+		select
+			exists (
+				select 1 from public.qorpera_surface_reconciliations r
+				where r.id = v_rec_id and r.session_id = p_session_id and r.status = 'ready'
+			),
+			exists (
+				select 1 from public.qorpera_surface_reconciliations r
+				where r.id = v_rec_id and r.session_id = p_session_id
+			)
+		into v_rec_ready, v_rec_owned;
 		if v_rec_ready and v_session.state = 'completed' then
 			return public.qorpera_surface_session_json(v_session);
 		end if;
@@ -808,14 +906,19 @@ $new$	if v_session.is_internal and v_session.origin_ref ? 'reconciliationId' the
 	end if;$new$,
 $old$	if p_state = 'failed' and v_session.retry_count < 1 then$old$,
 $new$	if v_rec_id is not null then
-		if v_rec_ready then
+		if v_rec_ready or not v_rec_owned then
 			v_next_state := 'completed';
 		elsif v_session.retry_count < 1 then
 			v_next_state := 'reconciling';
 			v_retry_increment := 1;
+			update public.qorpera_surface_reconciliations
+			set status = 'queued', updated_at = clock_timestamp()
+			where id = v_rec_id
+				and session_id = p_session_id
+				and status = 'running';
 		else
 			v_next_state := 'failed';
-			perform public.qorpera_surface_fail_reconciliation(v_rec_id, p_reply_text);
+			perform public.qorpera_surface_fail_reconciliation(v_rec_id, p_reply_text, p_session_id);
 		end if;
 	elsif p_state = 'failed' and v_session.retry_count < 1 then$new$
 	]
@@ -920,7 +1023,8 @@ $new$				insert into public.qorpera_surface_session_messages(profile_id, session
 				if v_expired_session.is_internal and v_expired_session.origin_ref ? 'reconciliationId' then
 					perform public.qorpera_surface_fail_reconciliation(
 						(v_expired_session.origin_ref ->> 'reconciliationId')::uuid,
-						'Couldn''t update preview'
+						'Couldn''t update preview',
+						v_expired_session.id
 					);
 				end if;
 			end if;$new$,
@@ -975,6 +1079,25 @@ $new$								'patchManifest', ch.patch_manifest,
 $old$				'approvedChanges', coalesce($old$,
 $new$				'reconciledPatchManifest', (
 					select r.reconciled_patch_manifest
+					from public.qorpera_surface_reconciliations r
+					where j.kind = 'land_change'
+						and surf.source_kind = 'folder'
+						and r.surface_id = j.surface_id
+						and r.status = 'ready'
+						and r.reconciled_patch_manifest is not null
+						and r.base_fingerprint = public.qorpera_surface_base_fingerprint(surf)
+						and r.expires_at > v_now
+						and (
+							select array_agg(x order by x) from unnest(r.selected_change_ids) as x
+						) = (
+							select array_agg(y::uuid order by y::uuid)
+							from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as y
+						)
+					order by r.updated_at desc
+					limit 1
+				),
+				'reconciledConflictPaths', (
+					select to_jsonb(r.conflict_paths)
 					from public.qorpera_surface_reconciliations r
 					where j.kind = 'land_change'
 						and surf.source_kind = 'folder'
@@ -1081,6 +1204,15 @@ $new$		elsif p_status = 'conflicted' then
 						v_job.surface_id, v_change_ids, coalesce(p_conflict_paths, '{}'::text[]),
 						v_job.requested_by_user_id, true, false
 					);
+					if v_rec.id is not null and (
+						v_rec.status = 'failed'
+						or (v_rec.status = 'ready' and v_rec.updated_at <= v_job.created_at)
+					) then
+						v_rec := public.qorpera_surface_enqueue_silent_reconciliation(
+							v_job.surface_id, v_change_ids, coalesce(p_conflict_paths, '{}'::text[]),
+							v_job.requested_by_user_id, true, true
+						);
+					end if;
 				exception when others then
 					v_rec := null;
 				end;
@@ -1259,7 +1391,7 @@ revoke all on function
 	public.qorpera_surface_base_fingerprint(public.qorpera_surfaces),
 	public.qorpera_surface_reconciliation_json(public.qorpera_surface_reconciliations),
 	public.qorpera_surface_reconciliation_key(public.qorpera_surfaces, uuid[]),
-	public.qorpera_surface_fail_reconciliation(uuid, text),
+	public.qorpera_surface_fail_reconciliation(uuid, text, uuid),
 	public.qorpera_surface_enqueue_silent_reconciliation(uuid, uuid[], text[], uuid, boolean, boolean),
 	public.qorpera_ensure_surface_reconciliation(uuid, uuid[], text[], boolean)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
@@ -1296,7 +1428,7 @@ begin
 			raise exception 'Silent reconciliation function has an API owner: %', v_owner;
 		end if;
 		execute format(
-			'grant execute on function public.qorpera_surface_base_fingerprint(public.qorpera_surfaces), public.qorpera_surface_reconciliation_json(public.qorpera_surface_reconciliations), public.qorpera_surface_reconciliation_key(public.qorpera_surfaces, uuid[]), public.qorpera_surface_fail_reconciliation(uuid, text), public.qorpera_surface_enqueue_silent_reconciliation(uuid, uuid[], text[], uuid, boolean, boolean) to %I',
+			'grant execute on function public.qorpera_surface_base_fingerprint(public.qorpera_surfaces), public.qorpera_surface_reconciliation_json(public.qorpera_surface_reconciliations), public.qorpera_surface_reconciliation_key(public.qorpera_surfaces, uuid[]), public.qorpera_surface_fail_reconciliation(uuid, text, uuid), public.qorpera_surface_enqueue_silent_reconciliation(uuid, uuid[], text[], uuid, boolean, boolean) to %I',
 			v_owner
 		);
 	end loop;

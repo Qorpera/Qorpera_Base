@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	type CloudCodingRepository,
 	compileIdentityTokensCss,
+	composeReconciledFolderChanges,
 	IDENTITY_SHARED_ASSET_PATHS,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
@@ -1039,37 +1040,76 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			throw new Error("No approved folder patches were provided to land");
 		}
 
+		const originalChanges: {
+			readonly changeId: string;
+			readonly ops: readonly StudioPatchOp[];
+			readonly baseFiles?: Readonly<Record<string, string | null>> | null;
+		}[] = [];
+		for (const change of approvedRaw) {
+			if (change.patchManifest === null || change.patchManifest === undefined) {
+				throw new Error(`Approved folder change ${change.changeId} has no patchManifest`);
+			}
+			const ops = parseStudioPatchOps(change.patchManifest, `change[${change.changeId}].patchManifest`);
+			if (ops.length === 0) {
+				throw new Error(`Approved folder change ${change.changeId} has an empty patchManifest`);
+			}
+			originalChanges.push({ changeId: change.changeId, ops, baseFiles: change.baseFiles ?? null });
+		}
+
 		const parsedChanges: {
 			readonly changeId: string;
 			readonly ops: readonly StudioPatchOp[];
 			readonly baseFiles?: Readonly<Record<string, string | null>> | null;
 		}[] = [];
 		const targetPaths = new Set<string>();
-		let reconciledOps: StudioPatchOp[] | null = null;
 		if (job.reconciledPatchManifest !== undefined && job.reconciledPatchManifest !== null) {
+			let reconciledOps: StudioPatchOp[] | null = null;
 			try {
 				const parsed = parseStudioPatchOps(job.reconciledPatchManifest, "reconciledPatchManifest");
 				if (parsed.length > 0) reconciledOps = parsed;
 			} catch {}
-		}
-		if (reconciledOps) {
-			for (const op of reconciledOps) {
-				targetPaths.add(assertSurfaceFolderPatchPath(op.path, normalizedRoot));
+			if (!reconciledOps) {
+				await completeMerge(
+					{
+						jobId: job.jobId,
+						status: "failed",
+						errorDetail: "SURFACE_RECONCILIATION_INCOMPLETE: reconciled patch manifest is empty or invalid",
+					},
+					signal,
+				);
+				return;
 			}
-			parsedChanges.push({ changeId: approvedRaw[0]!.changeId, ops: reconciledOps });
-		} else {
-			for (const change of approvedRaw) {
-				if (change.patchManifest === null || change.patchManifest === undefined) {
-					throw new Error(`Approved folder change ${change.changeId} has no patchManifest`);
-				}
-				const ops = parseStudioPatchOps(change.patchManifest, `change[${change.changeId}].patchManifest`);
-				if (ops.length === 0) {
-					throw new Error(`Approved folder change ${change.changeId} has an empty patchManifest`);
-				}
-				for (const op of ops) {
+			const composed = composeReconciledFolderChanges(originalChanges, reconciledOps, {
+				folderRoot: normalizedRoot,
+				conflictPaths: job.reconciledConflictPaths,
+			});
+			if (!composed.ok) {
+				await completeMerge(
+					{
+						jobId: job.jobId,
+						status: "failed",
+						errorDetail: `SURFACE_RECONCILIATION_INCOMPLETE: missing required paths: ${composed.missingPaths.join(", ")}`,
+					},
+					signal,
+				);
+				return;
+			}
+			for (const preserved of composed.preservedChanges) {
+				for (const op of preserved.ops) {
 					targetPaths.add(assertSurfaceFolderPatchPath(op.path, normalizedRoot));
 				}
-				parsedChanges.push({ changeId: change.changeId, ops, baseFiles: change.baseFiles ?? null });
+				parsedChanges.push(preserved);
+			}
+			for (const op of composed.reconciledOps) {
+				targetPaths.add(assertSurfaceFolderPatchPath(op.path, normalizedRoot));
+			}
+			parsedChanges.push({ changeId: approvedRaw[0]!.changeId, ops: composed.reconciledOps });
+		} else {
+			for (const change of originalChanges) {
+				for (const op of change.ops) {
+					targetPaths.add(assertSurfaceFolderPatchPath(op.path, normalizedRoot));
+				}
+				parsedChanges.push(change);
 			}
 		}
 
@@ -1097,7 +1137,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				{
 					profileId: job.profileId,
 					surfaceId: job.surfaceId,
-					changeId: parsedChanges[0]!.changeId,
+					changeId: approvedRaw[0]!.changeId,
 				},
 				signal,
 			);

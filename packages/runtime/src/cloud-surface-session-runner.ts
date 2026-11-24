@@ -290,19 +290,23 @@ async function readOptionalFolderText(
 	}
 }
 
+type ExactFolderTextRead =
+	| { readonly status: "ok"; readonly content: string | null }
+	| { readonly status: "unreadable" };
+
 async function readExactOptionalFolderText(
 	folder: SurfaceFolderTextReader,
 	path: string,
 	maxBytes: number,
 	signal: AbortSignal,
-): Promise<string | null> {
+): Promise<ExactFolderTextRead> {
 	try {
 		const result = await folder.readText(path, maxBytes, signal);
-		if (result === null || result === undefined) return null;
-		return typeof result === "string" ? result : result.text;
+		if (result === null || result === undefined) return { status: "ok", content: null };
+		return { status: "ok", content: typeof result === "string" ? result : result.text };
 	} catch (error) {
-		if (signal.aborted) throw error;
-		return null;
+		if (signal.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+		return { status: "unreadable" };
 	}
 }
 
@@ -325,18 +329,19 @@ async function collectFolderPatchBaseFiles(
 	const entries = await Promise.all(
 		paths.map(async (rawPath) => {
 			const fullPath = resolveFolderPatchReadPath(folderRoot, rawPath);
-			const text = await readExactOptionalFolderText(folder, fullPath, MAX_PATCH_BASE_FILE_BYTES, signal);
-			return [rawPath, text] as const;
+			const read = await readExactOptionalFolderText(folder, fullPath, MAX_PATCH_BASE_FILE_BYTES, signal);
+			return [rawPath, read] as const;
 		}),
 	);
 	const out: Record<string, string | null> = {};
 	let totalChars = 0;
-	for (const [rawPath, text] of entries) {
-		if (text !== null) {
-			if (totalChars + text.length > MAX_PATCH_BASE_FILES_TOTAL_CHARS) continue;
-			totalChars += text.length;
+	for (const [rawPath, read] of entries) {
+		if (read.status !== "ok") continue;
+		if (read.content !== null) {
+			if (totalChars + read.content.length > MAX_PATCH_BASE_FILES_TOTAL_CHARS) continue;
+			totalChars += read.content.length;
 		}
-		out[rawPath] = text;
+		out[rawPath] = read.content;
 	}
 	return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -452,10 +457,10 @@ function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRo
 	if (input.isInternal && input.state === "reconciling") {
 		return (
 			`This is an automatic silent reconciliation turn for the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), projecting ${folderRoot}/ from Company Files. ` +
-			"Your job is to combine all overlapping staged changes listed in the Conflict Reconciliation section into a single clean set of StudioPatchOp operations via stage_surface_patch. " +
-			"Preserve every compatible edit, newly added file, diagram, SVG, markdown section, and JSON token across all listed changes. " +
+			"Your job is to combine the overlapping staged changes listed in the Conflict Reconciliation section into a single clean set of StudioPatchOp operations via stage_surface_patch covering every overlapping file listed. " +
+			"Non-conflicting files from the staged changes are preserved automatically; preserve every compatible edit, markdown section, SVG markup, and JSON token in the overlapping files. " +
 			"If two changes directly contradict on the exact same choice, value, or sentence, prefer the newer change (higher Change number). " +
-			"Inspect current published files read-only via company_read as needed, call stage_surface_patch once with the full combined ops covering every affected path, and finish with surface_reply. Never ask the founder questions."
+			"Inspect current published files read-only via company_read as needed, call stage_surface_patch once with complete, untruncated ops covering every overlapping path, and finish with surface_reply. Never ask the founder questions."
 		);
 	}
 	const isIdentity = input.surfaceKind === "identity" || input.surfaceSlug === "identity" || folderRoot === "identity";

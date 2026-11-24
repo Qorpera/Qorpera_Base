@@ -1828,6 +1828,14 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 			: optionalResponseString(input.reconciledCommitSha, "surface merge reconciled commit sha");
 	const reconciledPatchManifest =
 		input.reconciledPatchManifest === undefined ? undefined : structuredClone(input.reconciledPatchManifest);
+	const reconciledConflictPaths =
+		input.reconciledConflictPaths === undefined
+			? undefined
+			: input.reconciledConflictPaths === null
+				? null
+				: Array.isArray(input.reconciledConflictPaths)
+					? input.reconciledConflictPaths.filter((p): p is string => typeof p === "string")
+					: undefined;
 	return {
 		jobId: responseUuid(input.jobId, "surface merge job id"),
 		kind: input.kind,
@@ -1847,6 +1855,7 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		payload,
 		...(preMergeSnapshot !== undefined ? { preMergeSnapshot } : {}),
 		...(reconciledPatchManifest !== undefined ? { reconciledPatchManifest } : {}),
+		...(reconciledConflictPaths !== undefined ? { reconciledConflictPaths } : {}),
 		...(reconciledCommitSha !== undefined ? { reconciledCommitSha } : {}),
 		...(allSessionChangeStatuses !== undefined ? { allSessionChangeStatuses } : {}),
 		...(approvedChanges !== undefined ? { approvedChanges } : {}),

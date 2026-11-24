@@ -422,5 +422,74 @@ describe("studio surface folder_patch overlay engine", () => {
 				"# Brand\n\nBlue: #3388ff\n\n## Journey\nBuyer and seller flow.\n",
 			);
 		});
+
+		it("preserves non-conflicting files and binary write_file ops when applying a reconciled overlay and rejects incomplete overlays", () => {
+			const c1 = randomUUID();
+			const c2 = randomUUID();
+			const recId = randomUUID();
+			const modelRef = {
+				manifestSha256: "a".repeat(64),
+				fileSha256: "b".repeat(64),
+				bytes: 128,
+				mediaType: "model/gltf-binary" as const,
+			};
+			const base = { "identity/report.md": "Initial\n" };
+			const change1 = {
+				changeId: c1,
+				ops: [
+					{ op: "write_text" as const, path: "identity/report.md", content: "Version 1\n" },
+					{ op: "write_text" as const, path: "identity/journey.svg", content: "<svg>journey</svg>" },
+					{ op: "write_file" as const, path: "identity/model.glb", file: modelRef },
+				],
+			};
+			const change2 = {
+				changeId: c2,
+				ops: [{ op: "write_text" as const, path: "identity/report.md", content: "Version 2\n" }],
+			};
+
+			const withScopedOverlay = composeStudioPreview(
+				base,
+				[change1, change2],
+				"identity",
+				{},
+				{
+					reconciliations: [
+						{
+							id: recId,
+							status: "ready",
+							selectedChangeIds: [c1, c2],
+							conflictPaths: ["identity/report.md"],
+							patchManifest: [{ op: "write_text", path: "identity/report.md", content: "Combined\n" }],
+							errorDetail: null,
+						},
+					],
+				},
+			);
+			expect(withScopedOverlay.status).toBe("ready");
+			expect(withScopedOverlay.files["identity/report.md"]).toBe("Combined\n");
+			expect(withScopedOverlay.files["identity/journey.svg"]).toBe("<svg>journey</svg>");
+			expect(withScopedOverlay.binaries["identity/model.glb"]).toEqual(modelRef);
+			expect(withScopedOverlay.appliedChangeIds).toEqual([c1, c2]);
+
+			const withIncompleteOverlay = composeStudioPreview(
+				base,
+				[change1, change2],
+				"identity",
+				{},
+				{
+					reconciliations: [
+						{
+							id: recId,
+							status: "ready",
+							selectedChangeIds: [c1, c2],
+							conflictPaths: ["identity/report.md"],
+							patchManifest: [{ op: "write_text", path: "identity/other.md", content: "Wrong\n" }],
+							errorDetail: null,
+						},
+					],
+				},
+			);
+			expect(withIncompleteOverlay.status).toBe("conflicted");
+		});
 	});
 });

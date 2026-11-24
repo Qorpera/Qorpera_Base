@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
 	compileIdentityTokensCss,
+	composeReconciledFolderChanges,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	mergeStudioTextContent,
@@ -54,6 +55,7 @@ interface ClaimedFolderMergeJob {
 	readonly payload: Readonly<Record<string, unknown>>;
 	readonly preMergeSnapshot: Readonly<Record<string, unknown>> | null;
 	readonly reconciledPatchManifest: unknown;
+	readonly reconciledConflictPaths: readonly string[];
 	readonly approvedChanges: readonly ClaimedFolderApprovedChange[];
 }
 
@@ -439,6 +441,9 @@ function parseClaimedFolderMerge(value: unknown): ClaimedFolderMergeJob | null {
 				? (rec.preMergeSnapshot as Record<string, unknown>)
 				: null,
 		reconciledPatchManifest: rec.reconciledPatchManifest ?? null,
+		reconciledConflictPaths: Array.isArray(rec.reconciledConflictPaths)
+			? rec.reconciledConflictPaths.filter((p): p is string => typeof p === "string")
+			: [],
 		approvedChanges,
 	};
 }
@@ -876,17 +881,54 @@ export class SurfaceFolderWorker {
 			readonly baseFiles: Readonly<Record<string, string | null>> | null;
 		}[] = [];
 		const touchedPaths = new Set<string>();
-		const reconciledOps = tryExtractStudioOps(job.reconciledPatchManifest);
-		if (reconciledOps) {
-			for (const op of reconciledOps) {
+		const originalChanges = job.approvedChanges.map((change) => ({
+			changeId: change.changeId,
+			ops: extractStudioOps(change.patchManifest),
+			baseFiles: change.baseFiles,
+		}));
+		if (job.reconciledPatchManifest !== null && job.reconciledPatchManifest !== undefined) {
+			const reconciledOps = tryExtractStudioOps(job.reconciledPatchManifest);
+			if (!reconciledOps) {
+				await this.#completeMerge(
+					job,
+					{
+						status: "failed",
+						errorDetail: "SURFACE_RECONCILIATION_INCOMPLETE: reconciled patch manifest is empty or invalid",
+					},
+					signal,
+				);
+				return;
+			}
+			const composed = composeReconciledFolderChanges(originalChanges, reconciledOps, {
+				folderRoot,
+				conflictPaths: job.reconciledConflictPaths,
+			});
+			if (!composed.ok) {
+				await this.#completeMerge(
+					job,
+					{
+						status: "failed",
+						errorDetail: `SURFACE_RECONCILIATION_INCOMPLETE: missing required paths: ${composed.missingPaths.join(", ")}`,
+					},
+					signal,
+				);
+				return;
+			}
+			for (const preserved of composed.preservedChanges) {
+				for (const op of preserved.ops) {
+					const fullPath = resolveStudioFolderPath(folderRoot, op.path);
+					resolvedOps.push({ path: fullPath, rawPath: op.path, op, baseFiles: preserved.baseFiles ?? null });
+					touchedPaths.add(fullPath);
+				}
+			}
+			for (const op of composed.reconciledOps) {
 				const fullPath = resolveStudioFolderPath(folderRoot, op.path);
 				resolvedOps.push({ path: fullPath, rawPath: op.path, op, baseFiles: null });
 				touchedPaths.add(fullPath);
 			}
 		} else {
-			for (const change of job.approvedChanges) {
-				const ops = extractStudioOps(change.patchManifest);
-				for (const op of ops) {
+			for (const change of originalChanges) {
+				for (const op of change.ops) {
 					const fullPath = resolveStudioFolderPath(folderRoot, op.path);
 					resolvedOps.push({ path: fullPath, rawPath: op.path, op, baseFiles: change.baseFiles });
 					touchedPaths.add(fullPath);

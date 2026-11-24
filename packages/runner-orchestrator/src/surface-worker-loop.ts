@@ -111,6 +111,7 @@ export interface ClaimedSurfaceMergeJob {
 	readonly payload: Readonly<Record<string, unknown>>;
 	readonly preMergeSnapshot?: Readonly<Record<string, unknown>> | null;
 	readonly reconciledPatchManifest?: unknown;
+	readonly reconciledConflictPaths?: readonly string[] | null;
 	readonly reconciledCommitSha?: string | null;
 	readonly allSessionChangeStatuses?: readonly {
 		readonly changeId: string;

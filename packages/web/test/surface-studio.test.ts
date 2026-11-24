@@ -474,6 +474,43 @@ describe("SurfaceStudioView", () => {
 			true,
 		);
 
+		store.store.set({
+			workspaces: {
+				...store.state.workspaces,
+				[BRAND_ID]: {
+					...currentWs,
+					reconciliations: [
+						{
+							id: recId,
+							surfaceId: BRAND_ID,
+							compositionKey: "k1",
+							baseFingerprint: "folder-rev:0",
+							selectedChangeIds: [CHANGES[0], CHANGES[1]],
+							status: "ready",
+							patchManifest: [{ op: "write_text", path: "brand/other.md", content: "missing tokens\n" }],
+							commitSha: null,
+							treeSha: null,
+							conflictPaths: ["brand/tokens.json"],
+							errorDetail: null,
+							updatedAt: "2026-11-24T00:00:20Z",
+						},
+					],
+				},
+			},
+		});
+		view.update();
+		expect(view.el.querySelector(".studio-updating-pill")).toBeNull();
+		const staleReadyRetry = view.el.querySelector(".studio-reconcile-retry")!;
+		expect(staleReadyRetry.textContent).toContain("Couldn't update preview");
+		staleReadyRetry.querySelector<HTMLButtonElement>('[data-act="studio-retry-preview"]')!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ensureSurfaceReconciliation).toHaveBeenLastCalledWith(
+			BRAND_ID,
+			[CHANGES[0], CHANGES[1]],
+			["brand/tokens.json"],
+			true,
+		);
+
 		view.dispose();
 		store.dispose();
 	});

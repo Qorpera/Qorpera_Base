@@ -242,6 +242,7 @@ export interface SurfaceReconciliation {
 	readonly selectedChangeIds: readonly string[];
 	readonly status: SurfaceReconciliationStatus;
 	readonly patchManifest: readonly StudioPatchOp[] | null;
+	readonly conflictPaths?: readonly string[];
 	readonly commitSha: string | null;
 	readonly treeSha: string | null;
 	readonly errorDetail: string | null;
@@ -970,6 +971,10 @@ export function parseSurfaceReconciliation(value: unknown, label = "reconciliati
 			: Array.isArray(raw.patchManifest)
 				? parseStudioPatchOps(raw.patchManifest, `${label}.patchManifest`)
 				: null;
+	const conflictPaths =
+		raw.conflictPaths === undefined || raw.conflictPaths === null
+			? undefined
+			: parseStringArray(raw.conflictPaths, `${label}.conflictPaths`, 128, 256);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
@@ -978,6 +983,7 @@ export function parseSurfaceReconciliation(value: unknown, label = "reconciliati
 		selectedChangeIds: parseUuidArray(raw.selectedChangeIds ?? [], `${label}.selectedChangeIds`, 128),
 		status: parseEnum(raw.status, SURFACE_RECONCILIATION_STATUSES, `${label}.status`),
 		patchManifest,
+		...(conflictPaths !== undefined ? { conflictPaths } : {}),
 		commitSha: parseOptionalText(raw.commitSha, `${label}.commitSha`, 64),
 		treeSha: parseOptionalText(raw.treeSha, `${label}.treeSha`, 64),
 		errorDetail: parseOptionalText(raw.errorDetail, `${label}.errorDetail`, 1000),

@@ -1,9 +1,30 @@
+import { normalizeStudioFolderRoot, resolveStudioFolderPath, type StudioPatchOp } from "./surfaces.ts";
+
 const MAX_MYERS_EDIT_DISTANCE = 1024;
 const DISALLOWED_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 export type TextMergeResult = { readonly ok: true; readonly content: string } | { readonly ok: false };
 
 export type StudioTextMergeResult = { readonly ok: true; readonly content: string | null } | { readonly ok: false };
+
+export interface ReconciledFolderChangeInput {
+	readonly changeId: string;
+	readonly ops: readonly StudioPatchOp[];
+	readonly baseFiles?: Readonly<Record<string, string | null>> | null;
+}
+
+export type ComposeReconciledFolderChangesResult =
+	| {
+			readonly ok: true;
+			readonly preservedChanges: readonly ReconciledFolderChangeInput[];
+			readonly reconciledOps: readonly StudioPatchOp[];
+	  }
+	| {
+			readonly ok: false;
+			readonly missingPaths: readonly string[];
+	  };
 
 interface LineHunk {
 	readonly start: number;
@@ -267,7 +288,73 @@ function mergeJsonRecordThreeWay(
 	return { ok: true, value: merged };
 }
 
+function hasUnsafeOrNonCanonicalJsonNumber(text: string): boolean {
+	let i = 0;
+	const len = text.length;
+	while (i < len) {
+		const ch = text[i]!;
+		if (ch === '"') {
+			i += 1;
+			while (i < len) {
+				const c = text[i]!;
+				if (c === "\\") {
+					i += 2;
+					continue;
+				}
+				i += 1;
+				if (c === '"') break;
+			}
+			continue;
+		}
+		if (ch === "-" || (ch >= "0" && ch <= "9")) {
+			const start = i;
+			if (ch === "-") i += 1;
+			while (i < len && text[i]! >= "0" && text[i]! <= "9") i += 1;
+			let isFloat = false;
+			if (i < len && text[i] === ".") {
+				isFloat = true;
+				i += 1;
+				while (i < len && text[i]! >= "0" && text[i]! <= "9") i += 1;
+			}
+			if (i < len && (text[i] === "e" || text[i] === "E")) {
+				isFloat = true;
+				i += 1;
+				if (i < len && (text[i] === "+" || text[i] === "-")) i += 1;
+				while (i < len && text[i]! >= "0" && text[i]! <= "9") i += 1;
+			}
+			const raw = text.slice(start, i);
+			if (!isFloat) {
+				try {
+					const bi = BigInt(raw);
+					if (bi < MIN_SAFE_BIGINT || bi > MAX_SAFE_BIGINT) return true;
+				} catch {
+					return true;
+				}
+			}
+			const num = Number(raw);
+			if (!Number.isFinite(num) || JSON.stringify(num) !== raw) return true;
+			continue;
+		}
+		i += 1;
+	}
+	return false;
+}
+
 export function mergeJsonThreeWay(base: string, ours: string, theirs: string): TextMergeResult {
+	const lineMerged = mergeTextThreeWay(base, ours, theirs);
+	if (lineMerged.ok) {
+		try {
+			const parsed: unknown = JSON.parse(lineMerged.content);
+			if (isPlainRecord(parsed)) return lineMerged;
+		} catch {}
+	}
+	if (
+		hasUnsafeOrNonCanonicalJsonNumber(base) ||
+		hasUnsafeOrNonCanonicalJsonNumber(ours) ||
+		hasUnsafeOrNonCanonicalJsonNumber(theirs)
+	) {
+		return { ok: false };
+	}
 	let baseParsed: unknown;
 	let oursParsed: unknown;
 	let theirsParsed: unknown;
@@ -297,8 +384,105 @@ export function mergeStudioTextContent(
 	if (theirs === base) return { ok: true, content: ours };
 	if (base === null || ours === null || theirs === null) return { ok: false };
 	if (path.toLowerCase().endsWith(".json")) {
+		const lineMerged = mergeTextThreeWay(base, ours, theirs);
+		if (lineMerged.ok) {
+			try {
+				JSON.parse(lineMerged.content);
+				return lineMerged;
+			} catch {}
+		}
 		const jsonMerged = mergeJsonThreeWay(base, ours, theirs);
 		if (jsonMerged.ok) return jsonMerged;
+		return { ok: false };
 	}
 	return mergeTextThreeWay(base, ours, theirs);
+}
+
+function normalizeReconcilePath(rawPath: string, normalizedRoot: string | null): string {
+	const cleaned = rawPath.trim().replace(/^\/+|\/+$/g, "");
+	if (!cleaned) return "";
+	if (normalizedRoot) {
+		try {
+			return resolveStudioFolderPath(normalizedRoot, cleaned);
+		} catch {
+			return cleaned;
+		}
+	}
+	return cleaned;
+}
+
+export function composeReconciledFolderChanges(
+	coveredChanges: readonly ReconciledFolderChangeInput[],
+	reconciledOps: readonly StudioPatchOp[],
+	options?: {
+		readonly folderRoot?: string | null;
+		readonly conflictPaths?: readonly string[] | null;
+	},
+): ComposeReconciledFolderChangesResult {
+	let normalizedRoot: string | null = null;
+	if (options?.folderRoot && options.folderRoot.trim().length > 0) {
+		try {
+			normalizedRoot = normalizeStudioFolderRoot(options.folderRoot);
+		} catch {
+			normalizedRoot = null;
+		}
+	}
+
+	const reconciledPaths = new Set<string>();
+	for (const op of reconciledOps) {
+		const path = normalizeReconcilePath(op.path, normalizedRoot);
+		if (path) reconciledPaths.add(path);
+	}
+
+	const explicitConflictPaths = [
+		...new Set(
+			(options?.conflictPaths ?? [])
+				.map((path) => normalizeReconcilePath(path, normalizedRoot))
+				.filter((path) => path.length > 0),
+		),
+	];
+
+	let requiredPaths: string[];
+	if (explicitConflictPaths.length > 0) {
+		requiredPaths = explicitConflictPaths;
+	} else {
+		const pathTouchCount = new Map<string, number>();
+		for (const change of coveredChanges) {
+			const seenInChange = new Set<string>();
+			for (const op of change.ops) {
+				const path = normalizeReconcilePath(op.path, normalizedRoot);
+				if (!path || seenInChange.has(path)) continue;
+				seenInChange.add(path);
+				pathTouchCount.set(path, (pathTouchCount.get(path) ?? 0) + 1);
+			}
+		}
+		const overlapping = [...pathTouchCount.entries()].filter(([, count]) => count >= 2).map(([path]) => path);
+		requiredPaths = overlapping.length > 0 ? overlapping : [...pathTouchCount.keys()];
+	}
+
+	if (reconciledOps.length === 0) {
+		return { ok: false, missingPaths: requiredPaths };
+	}
+
+	const missingPaths = requiredPaths.filter((path) => !reconciledPaths.has(path));
+	if (missingPaths.length > 0) {
+		return { ok: false, missingPaths };
+	}
+
+	const preservedChanges: ReconciledFolderChangeInput[] = [];
+	for (const change of coveredChanges) {
+		const keptOps = change.ops.filter((op) => !reconciledPaths.has(normalizeReconcilePath(op.path, normalizedRoot)));
+		if (keptOps.length === 0) continue;
+		preservedChanges.push({
+			changeId: change.changeId,
+			ops: keptOps,
+			...(change.baseFiles !== undefined ? { baseFiles: change.baseFiles } : {}),
+		});
+	}
+
+	return {
+		ok: true,
+		preservedChanges,
+		reconciledOps,
+	};
 }
