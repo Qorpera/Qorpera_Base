@@ -189,6 +189,8 @@ declare
 	v_job uuid;
 	v_job_lease uuid;
 	v_fix integer;
+	v_b3 uuid;
+	v_lease uuid;
 begin
 	foreach v_function in array array[
 		'public.qorpera_surface_build_hand_back(uuid)',
@@ -431,6 +433,76 @@ begin
 		(select state from public.qorpera_surface_build_handbacks where build_id = v_b) = 'stale'
 		and (select state from public.qorpera_surface_sessions where id = v_s2) = 'ready',
 		'a hand-back whose session staged something new since is dropped, not delivered'
+	);
+
+	v_b := pg_temp.sbf_fail(v_surface, repeat('ab', 20), array[v_c1, v_c2], v_anna, v_detail);
+	perform pg_temp.sbf_lane();
+	v_claimed := pg_temp.sbf_lane('sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_s2;
+	v_b3 := pg_temp.sbf_fail(v_surface, repeat('ac', 20), array[v_c1, v_c2], v_anna,
+		E'PREVIEW_BUILD_TOO_LARGE\nThe build''s output in "dist" has more than 500 web files.');
+	perform pg_temp.sbf_assert(
+		(select state from public.qorpera_surface_sessions where id = v_s2) = 'running'
+		and (select state from public.qorpera_surface_build_handbacks where build_id = v_b) = 'superseded'
+		and (select state from public.qorpera_surface_build_handbacks where build_id = v_b3) = 'queued'
+		and (select count(*) from public.qorpera_surface_build_handbacks
+			where session_id = v_s2 and state in ('pending', 'queued')) = 1,
+		'a second failure while the session is claimed for the first replaces it in the queue, not behind it'
+	);
+	v_result := pg_temp.sbf_service(format('select public.qorpera_surface_enqueue_session_run(%L, %L)', v_s2, v_lease));
+	perform pg_temp.sbf_assert(
+		v_result ->> 'status' = 'enqueued'
+		and exists (
+			select 1 from public.qorpera_coding_session_turns t
+			where t.worker_id = v_w2 and t.sequence = 6 and t.input_from = 'agent'
+				and t.input_text = (select followup from public.qorpera_surface_build_handbacks where build_id = v_b3)
+				and t.input_text like E'%PREVIEW_BUILD_TOO_LARGE\n%'
+		)
+		and (select state = 'delivered' and worker_sequence = 6 from public.qorpera_surface_build_handbacks where build_id = v_b3),
+		'the claimed session''s turn is the newer failure''s fix: ' || v_result::text
+	);
+	perform pg_temp.sbf_finish(v_w2, repeat('8', 40));
+
+	v_b := pg_temp.sbf_fail(v_surface, repeat('ad', 20), array[v_c1, v_c2], v_anna, v_detail);
+	v_b3 := pg_temp.sbf_fail(v_surface, repeat('ae', 20), array[v_c1, v_c2], v_anna, v_detail);
+	perform pg_temp.sbf_assert(
+		(select state from public.qorpera_surface_build_handbacks where build_id = v_b) = 'superseded'
+		and (select state = 'pending' and fix_number = 2 from public.qorpera_surface_build_handbacks where build_id = v_b3)
+		and (select count(*) from public.qorpera_surface_build_handbacks
+			where session_id = v_s2 and state in ('pending', 'queued')) = 1,
+		'two failures for one session leave one open hand-back'
+	);
+	perform pg_temp.sbf_lane();
+	update public.qorpera_surface_build_handbacks set queued_at = clock_timestamp() - interval '2 days' where build_id = v_b3;
+	update public.qorpera_surface_session_messages set created_at = created_at - interval '3 days' where session_id = v_s2;
+	v_claimed := pg_temp.sbf_lane('sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_s2;
+	v_result := pg_temp.sbf_service(format('select public.qorpera_surface_enqueue_session_run(%L, %L)', v_s2, v_lease));
+	perform pg_temp.sbf_assert(
+		v_result = '{"status": "unavailable", "reason": "lease_lost"}'::jsonb
+		and (select state = 'ready' and lease_token is null from public.qorpera_surface_sessions where id = v_s2)
+		and (select sequence from public.qorpera_runtime_workers where id = v_w2) = 6
+		and not exists (select 1 from public.qorpera_coding_session_turns where worker_id = v_w2 and sequence = 7)
+		and (select state from public.qorpera_surface_build_handbacks where build_id = v_b3) = 'stale',
+		'a hand-back that aged in the queue opens no turn and replays nothing: ' || v_result::text
+	);
+
+	v_b := pg_temp.sbf_fail(v_surface, repeat('af', 20), array[v_c1, v_c2], v_anna, v_detail);
+	perform pg_temp.sbf_lane();
+	perform public.qorpera_record_surface_change(v_s2, 'Tax', 'Tax', 'git_range',
+		repeat('8', 40), repeat('9', 40), '{}'::uuid[], array['src/tax.ts'], null, null, false);
+	v_claimed := pg_temp.sbf_lane('sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_s2;
+	v_result := pg_temp.sbf_service(format('select public.qorpera_surface_enqueue_session_run(%L, %L)', v_s2, v_lease));
+	perform pg_temp.sbf_assert(
+		v_result ->> 'reason' = 'lease_lost'
+		and (select state from public.qorpera_surface_sessions where id = v_s2) = 'ready'
+		and (select sequence from public.qorpera_runtime_workers where id = v_w2) = 6
+		and (select state from public.qorpera_surface_build_handbacks where build_id = v_b) = 'stale',
+		'a queued hand-back whose session staged something since opens no turn: ' || v_result::text
 	);
 
 	update public.qorpera_surface_changes

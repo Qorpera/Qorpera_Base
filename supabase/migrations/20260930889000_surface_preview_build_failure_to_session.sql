@@ -129,7 +129,7 @@ begin
 	if v_change.id is null then
 		return;
 	end if;
-	select * into v_session from public.qorpera_surface_sessions where id = v_change.session_id;
+	select * into v_session from public.qorpera_surface_sessions where id = v_change.session_id for update;
 	if v_session.worker_id is null or v_session.state = 'discarded' then
 		return;
 	end if;
@@ -152,11 +152,15 @@ begin
 		v_state := 'capped';
 	else
 		v_state := case
-			when v_session.state = 'queued' and exists (
+			when v_session.state in ('queued', 'running') and exists (
 				select 1 from public.qorpera_surface_build_handbacks h where h.session_id = v_session.id and h.state = 'queued'
 			) then 'queued'
 			else 'pending'
 		end;
+		perform 1 from public.qorpera_surface_build_handbacks h
+		where h.session_id = v_session.id and h.state in ('pending', 'queued')
+		order by h.id
+		for update;
 		update public.qorpera_surface_build_handbacks
 		set state = 'superseded', updated_at = v_now
 		where session_id = v_session.id and state in ('pending', 'queued');
@@ -250,28 +254,31 @@ begin
 	end loop;
 end $$;
 
--- WHY: The surface session turn takes the newest queued hand-back as its follow-up, unless a member wrote since it
--- was queued (their words win) or it waited past the wake bound; the turn's sequence marks it as a fix turn.
+-- WHY: The session's turn takes the newest queued hand-back as its follow-up ({followup}); a member who wrote since or
+-- a reconciliation goes first (null: the turn runs as before). A hand-back gone stale while queued gives {dropped}
+-- when no member message waits, so the session was queued for the fix alone and no turn may open.
 create function public.qorpera_surface_build_fix_take(
 	p_session public.qorpera_surface_sessions,
 	p_worker_id uuid,
 	p_sequence integer
 )
-returns text language plpgsql security definer set search_path = '' as $$
+returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_handback public.qorpera_surface_build_handbacks%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
+	perform 1 from public.qorpera_surface_build_handbacks h
+	where h.session_id = p_session.id and h.state = 'queued'
+	order by h.id
+	for update;
 	select * into v_handback from public.qorpera_surface_build_handbacks h
 	where h.session_id = p_session.id and h.state = 'queued'
 	order by h.queued_at desc, h.id desc
-	limit 1
-	for update;
+	limit 1;
 	if v_handback.id is null then
 		return null;
 	end if;
 	if p_session.state = 'reconciling_running'
-		or v_handback.queued_at <= v_now - interval '30 minutes'
 		or exists (
 			select 1 from public.qorpera_surface_session_messages m
 			where m.session_id = p_session.id and m.author_kind = 'member' and m.created_at > v_handback.queued_at
@@ -284,10 +291,34 @@ begin
 	update public.qorpera_surface_build_handbacks
 	set state = 'superseded', updated_at = v_now
 	where session_id = p_session.id and state = 'queued' and id <> v_handback.id;
+	if v_handback.queued_at <= v_now - interval '1 day'
+		or exists (
+			select 1 from public.qorpera_surface_changes c
+			where c.session_id = p_session.id and c.created_at > v_handback.queued_at
+		)
+		or (v_handback.kind = 'preview' and not exists (
+			select 1 from public.qorpera_surface_changes c
+			where c.id = v_handback.change_id and c.status in ('staged', 'conflicted')
+		))
+		or (v_handback.kind = 'publish' and not exists (
+			select 1 from public.qorpera_surfaces s where s.id = v_handback.surface_id and s.publish_status = 'failed'
+		)) then
+		update public.qorpera_surface_build_handbacks set state = 'stale', updated_at = v_now where id = v_handback.id;
+		if exists (
+			select 1 from public.qorpera_surface_session_messages m
+			where m.session_id = p_session.id and m.author_kind = 'member'
+				and m.created_at > coalesce((
+					select max(t.created_at) from public.qorpera_coding_session_turns t where t.worker_id = p_worker_id
+				), '-infinity'::timestamptz)
+		) then
+			return null;
+		end if;
+		return jsonb_build_object('dropped', true);
+	end if;
 	update public.qorpera_surface_build_handbacks
 	set state = 'delivered', worker_id = p_worker_id, worker_sequence = p_sequence, delivered_at = v_now, updated_at = v_now
 	where id = v_handback.id;
-	return v_handback.followup;
+	return jsonb_build_object('followup', v_handback.followup);
 end $$;
 
 create function public.qorpera_surface_build_handback_open(p_handback public.qorpera_surface_build_handbacks)
@@ -362,15 +393,22 @@ select pg_temp.sbfs_patch('public.qorpera_surface_enqueue_session_run(uuid,uuid)
 $old$	v_followup text;
 $old$,
 $new$	v_followup text;
-	v_build_fix text;
+	v_build_fix jsonb;
 $new$,
 $old$			v_followup := public.qorpera_surface_utf8_left(v_followup, 2000);
 
 			update public.qorpera_runtime_workers$old$,
 $new$			v_followup := public.qorpera_surface_utf8_left(v_followup, 2000);
 			v_build_fix := public.qorpera_surface_build_fix_take(v_session, v_worker.id, v_worker.sequence + 1);
-			if v_build_fix is not null then
-				v_followup := v_build_fix;
+			if v_build_fix ? 'dropped' then
+				-- WHY: The session was queued for a fix that went stale; it opens no turn, and lease_lost ends the job quietly.
+				update public.qorpera_surface_sessions
+				set state = 'ready', lease_token = null, lease_expires_at = null, wake_id = null, updated_at = v_now
+				where id = v_session.id;
+				return jsonb_build_object('status', 'unavailable', 'reason', 'lease_lost');
+			end if;
+			if v_build_fix ? 'followup' then
+				v_followup := v_build_fix ->> 'followup';
 				v_member_initiated := false;
 			end if;
 
