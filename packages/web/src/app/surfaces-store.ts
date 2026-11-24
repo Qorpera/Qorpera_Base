@@ -58,6 +58,7 @@ export type SurfacesClient = Pick<
 	| "approveSurfaceChange"
 	| "approveSessionAll"
 	| "discardSurfaceChange"
+	| "discardSurfaceSession"
 	| "undoSurfaceChange"
 	| "chooseExploration"
 	| "reconcileChanges"
@@ -4020,23 +4021,12 @@ export class SurfacesStore {
 			this.#applySession(updated, "history");
 			return true;
 		}
-		let latest: SurfaceSession | undefined;
-		for (const change of session.changes.filter(isOpenChange)) {
-			const next = await this.#run(`change:${change.id}`, (client) => client.discardSurfaceChange(change.id));
-			if (!next) {
-				if (latest) {
-					this.#applySession(latest, approvalOutcome(latest, this.drawerOpenOn(sessionId)));
-					void this.refreshSurfaces();
-				}
-				return false;
-			}
-			latest = next;
-		}
-		if (this.drawerOpenOn(sessionId)) {
-			this.store.set({ drawer: undefined });
-			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
-		}
-		this.#applySession(latest ?? session, "history");
+		const closed = await this.#run(`discard-session:${sessionId}`, (client) =>
+			client.discardSurfaceSession(sessionId),
+		);
+		if (!closed) return false;
+		if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
+		this.#applySession(closed, "history");
 		void this.refreshSurfaces();
 		return true;
 	}
