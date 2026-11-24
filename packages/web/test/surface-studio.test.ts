@@ -1122,8 +1122,7 @@ describe("SurfaceStudioView", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			return view;
 		};
-		const onTab = (view: SurfaceStudioView) =>
-			view.el.querySelector<HTMLElement>(".studio-tab.is-on")?.dataset.tab;
+		const onTab = (view: SurfaceStudioView) => view.el.querySelector<HTMLElement>(".studio-tab.is-on")?.dataset.tab;
 		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 		const first = await mount();
@@ -1137,7 +1136,7 @@ describe("SurfaceStudioView", () => {
 
 		const second = await mount();
 		expect(onTab(second)).toBe("overview");
-		expect(store.state.activeReportSlug).toBe("sourcing");
+		expect(store.state.activeReportSlug).toBeUndefined();
 		await store.openChangeDeliverable(headband.id, "change-1", "sourcing", sourcingPath);
 		await flush();
 		expect(onTab(second)).toBe("reports");

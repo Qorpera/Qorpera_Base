@@ -232,6 +232,12 @@ export class SurfaceStudioView {
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		const dropHost = options.store.hostDeliverables(options.surface.id, (path) => this.#revealDeliverable(path));
 		this.#lifetime.signal.addEventListener("abort", dropHost, { once: true });
+		queueMicrotask(() => {
+			const { mode, activeReportSlug } = options.store.state;
+			if (!this.#lifetime.signal.aborted && mode === "preview" && activeReportSlug) {
+				options.store.selectReport(undefined);
+			}
+		});
 		if (!options.baseFiles) {
 			const cloudManaged =
 				options.store.canLoadCloudFiles &&
