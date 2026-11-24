@@ -1157,7 +1157,10 @@ function validateReportMetrics(metrics: unknown, path: string): void {
 	}
 }
 
-export function checkStagedSurfaceDeliverables(ops: readonly StudioPatchOp[]): void {
+export function checkStagedSurfaceDeliverables(
+	ops: readonly StudioPatchOp[],
+	options?: { readonly allowMultipleDeliverables?: boolean },
+): void {
 	const deliverablePaths = new Set<string>();
 	for (const op of ops) {
 		if (op.op === "delete") continue;
@@ -1192,7 +1195,7 @@ export function checkStagedSurfaceDeliverables(ops: readonly StudioPatchOp[]): v
 			deliverablePaths.add(normalized);
 		}
 	}
-	if (deliverablePaths.size > 1) {
+	if (!options?.allowMultipleDeliverables && deliverablePaths.size > 1) {
 		throw new CloudToolRefusal(
 			"Stage each report (*.report.json) or standalone HTML document in its own stage_surface_patch call so members can preview, toggle, and approve each deliverable independently. Nothing was staged.",
 		);
@@ -1262,6 +1265,7 @@ export async function checkStagedSurfaceLayout(
 
 export interface StageSurfacePatchToolOptions {
 	readonly deferSessionCompletion?: boolean;
+	readonly allowMultipleDeliverables?: boolean;
 }
 
 export function createStageSurfacePatchTool(
@@ -1287,8 +1291,9 @@ export function createStageSurfacePatchTool(
 			type: "array",
 			minItems: 1,
 			maxItems: 256,
-			description:
-				"Ordered StudioPatchOp entries (write_text, delete, or merge_json) relative to the surface folder root. Keep each call scoped to one deliverable: stage each *.report.json article or standalone .html document in its own call.",
+			description: options.allowMultipleDeliverables
+				? "Ordered StudioPatchOp entries (write_text, delete, or merge_json) relative to the surface folder root."
+				: "Ordered StudioPatchOp entries (write_text, delete, or merge_json) relative to the surface folder root. Keep each call scoped to one deliverable: stage each *.report.json article or standalone .html document in its own call.",
 			items: {
 				type: "object",
 				additionalProperties: true,
@@ -1317,8 +1322,9 @@ export function createStageSurfacePatchTool(
 	return {
 		name: "stage_surface_patch",
 		source: "worker",
-		description:
-			"Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session. Call this tool once per independent deliverable (for example, one call per report, article, blog post, or page section) so members can toggle, preview, and approve each piece individually; never bundle multiple reports or standalone HTML documents into one call. Write reports and blog posts as *.report.json articles (or self-contained .html when bespoke layout is needed) rather than raw .md files.",
+		description: options.allowMultipleDeliverables
+			? "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session covering all requested paths in a single call. Write reports as valid *.report.json articles when updating report deliverables."
+			: "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session. Call this tool once per independent deliverable (for example, one call per report, article, blog post, or page section) so members can toggle, preview, and approve each piece individually; never bundle multiple reports or standalone HTML documents into one call. Write reports and blog posts as *.report.json articles (or self-contained .html when bespoke layout is needed) rather than raw .md files.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1384,7 +1390,7 @@ export function createStageSurfacePatchTool(
 		},
 		async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
 			const ops = (parsed as unknown as StageSurfacePatchRequest).ops;
-			checkStagedSurfaceDeliverables(ops);
+			checkStagedSurfaceDeliverables(ops, { allowMultipleDeliverables: options.allowMultipleDeliverables });
 			if (!layout) return parsed;
 			const check = await checkStagedSurfaceLayout(
 				ops,

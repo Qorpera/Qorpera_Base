@@ -1576,4 +1576,113 @@ describe("cloud surface session runner", () => {
 			},
 		]);
 	});
+
+	it("allows multiple deliverables in one stage_surface_patch call only for internal reconciliation while still validating report JSON", async () => {
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const q3Report = JSON.stringify({
+			headline: "Q3 Retention",
+			sections: [{ id: "summary", heading: "Summary", paragraphs: ["Retention rose to 91%."] }],
+		});
+		const q4Report = JSON.stringify({
+			headline: "Q4 Outlook",
+			sections: [{ id: "summary", heading: "Summary", paragraphs: ["Pipeline covers 2.4x target."] }],
+		});
+		const stagedRequests: unknown[] = [];
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId,
+				companyId,
+				surfaceSlug: "reports",
+				surfaceTitle: "Reports",
+				sourceKind: "folder",
+				folderRoot: "surfaces/reports",
+				state: "reconciling",
+				isInternal: true,
+				prompt: "Silently combine overlapping staged reports",
+				conflictPaths: ["surfaces/reports/q3.report.json", "surfaces/reports/q4.report.json"],
+				conflictDetails: [
+					{
+						changeId: randomUUID(),
+						title: "Change 1",
+						kind: "folder_patch",
+						patchManifest: [
+							{ op: "write_text", path: "surfaces/reports/q3.report.json", content: q3Report },
+							{ op: "write_text", path: "surfaces/reports/q4.report.json", content: q4Report },
+						],
+					},
+				],
+			},
+			{
+				surfaceTools: {
+					stageSurfacePatch: async (_sid, req) => {
+						stagedRequests.push(req);
+						return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+					},
+				},
+				executeTurn: async (req) => {
+					const patchTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const ctx = toolContext(companyId);
+					const badParsed = patchTool.parseArguments({
+						title: "Broken report",
+						summary: "Invalid JSON",
+						ops: [
+							{ op: "write_text", path: "q3.report.json", content: q3Report },
+							{ op: "write_text", path: "q4.report.json", content: "{ invalid json" },
+						],
+					});
+					await expect(patchTool.prepare!(badParsed, ctx)).rejects.toBeInstanceOf(CloudToolRefusal);
+
+					const parsed = patchTool.parseArguments({
+						title: "Reconciled reports",
+						summary: "Combines Q3 and Q4 report edits.",
+						ops: [
+							{ op: "write_text", path: "q3.report.json", content: q3Report },
+							{ op: "write_text", path: "q4.report.json", content: q4Report },
+						],
+					});
+					const prepared = await patchTool.prepare!(parsed, ctx);
+					await patchTool.execute(prepared, ctx);
+					return { state: "ready", replyText: "Reconciled" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+
+		expect(stagedRequests).toHaveLength(1);
+
+		const normalStage = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId,
+				companyId,
+				surfaceSlug: "reports",
+				surfaceTitle: "Reports",
+				sourceKind: "folder",
+				folderRoot: "surfaces/reports",
+				prompt: "Draft Q3 and Q4 reports",
+			},
+			{
+				surfaceTools: { stageSurfacePatch: normalStage },
+				executeTurn: async (req) => {
+					const patchTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const parsed = patchTool.parseArguments({
+						title: "Bundled reports",
+						summary: "Attempts to bundle two reports.",
+						ops: [
+							{ op: "write_text", path: "q3.report.json", content: q3Report },
+							{ op: "write_text", path: "q4.report.json", content: q4Report },
+						],
+					});
+					await expect(patchTool.prepare!(parsed, toolContext(companyId))).rejects.toBeInstanceOf(CloudToolRefusal);
+					return { state: "ready", replyText: "Done" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+		expect(normalStage).not.toHaveBeenCalled();
+	});
 });

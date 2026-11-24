@@ -1105,6 +1105,7 @@ export async function runSurfaceSessionTurn(
 			const tools: CloudNativeTool[] = [
 				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
 					deferSessionCompletion: true,
+					allowMultipleDeliverables: isInternalReconciliation,
 				}),
 				...narrateTool,
 				...folderTools,
