@@ -471,14 +471,9 @@ describe("publish_site", () => {
 		expect(f.calls("qorpera_site_publish_finish")).toHaveLength(1);
 		expect(result.answer).toMatchObject({ state: "live", url: URL_OF("wristband-shop"), mode: "new" });
 		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.bak"]);
-		// One answer names one set of people: owners and admins (review r1 of #1851).
-		expect(result.answer.password).toBe(
-			"The site has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer.",
-		);
-		// Sites left Settings for the apps drawer (9 November 2026). Since site hosts (v247) a message that links the site
-		// shows its row, with the password's copy key for owners and admins (web #1848): the agent links the address.
+		expect(result.answer).not.toHaveProperty("password");
 		expect(result.answer.next).toBe(
-			"Put url in your message to the member as a link: the site's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password. Visitors open the address and enter the password.",
+			"Published, but not live yet: nobody outside the company can open the website, and it has no password. The company's members open it from the app. Only the founder or an admin can make it live, with Go live on the website's address card in the app; you cannot. Put url in your message to the member as a link, and never tell anyone to use a password.",
 		);
 		expect(result.text).not.toMatch(/password":\s*"[a-z0-9]{4}-/);
 	});
@@ -508,7 +503,10 @@ describe("publish_site", () => {
 		expect(result.answer).toMatchObject({ state: "live", unchanged: true, mode: "update" });
 		expect(f.calls("qorpera_site_publish_put")).toEqual([]);
 		expect(f.calls("qorpera_site_publish_finish")).toEqual([]);
-		expect(result.answer.password).toContain("unchanged");
+		expect(result.answer).not.toHaveProperty("password");
+		expect(result.answer.next).toBe(
+			"Published: the website shows this version now. If the founder or an admin made it live with Go live in the app, everyone can open it; if not, it is still not live: nobody outside the company can open it, and the company's members open it from the app. You cannot make it live. The website has no password. Put url in your message to the member as a link, and never tell anyone to use a password.",
+		);
 	});
 
 	it("uploads in batches of at most 4 MiB, a larger file alone", async () => {
@@ -1230,13 +1228,21 @@ describe("share_app", () => {
 		expect(share.description).toContain("manage_site");
 		expect(share.description).not.toContain("auth mode on the Sites page");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
-		// Sites left Settings for the apps drawer (9 November 2026); since site hosts (v247) the row under a message that
-		// links a site copies its password too (web #1848).
 		const publish = tools.find((tool) => tool.name === "publish_site")!;
 		const password =
 			"You never see the password, so never write one: put the address in your message as a link, and members see the site's row under it, where owners and admins copy the password. They also see, copy and change it on the Sites page in the apps drawer.";
-		expect(publish.description).toContain(password);
 		expect(share.description).toContain(password);
+		expect(publish.description).not.toContain(password);
+		expect(publish.description).toContain(
+			"A website has no password, so never tell anyone to use one. Until the founder or an admin presses Go live on the website's address card in the app, nobody outside the company can open it, and the company's members open it from the app. You cannot make it live: put the address in your message as a link, and ask the founder to press Go live when it should open to everyone.",
+		);
+		expect(publish.description).not.toContain("open with a password");
+		expect(publish.description).not.toContain("keeps its password");
+		const unpublish = tools.find((tool) => tool.name === "unpublish_site")!;
+		expect(unpublish.description).toContain(
+			"A website's published copy is deleted (the files stay in the company folder)",
+		);
+		expect(unpublish.description).toContain("an app link keeps its name and password for its next share_app");
 	});
 
 	it("says what a site host serves since v247: its own address, links from / and its own origin (SITE-HOSTS.md)", async () => {
@@ -1244,7 +1250,7 @@ describe("share_app", () => {
 		const publish = tools.find((tool) => tool.name === "publish_site")!;
 		// site-serve serves a site at the top of https://<slug>.qorpera.com/ (the old link answers 308 to it).
 		expect(publish.description).toContain(
-			"Publish a static website from the company folder to a private address of its own, https://<slug>.qorpera.com/,",
+			"Publish a static website from the company folder to an address of its own, https://<slug>.qorpera.com/. It is not live at first: nobody outside the company can open it.",
 		);
 		expect(publish.description).toContain(
 			"Its files link each other from / (/img/logo.png) or relatively (img/logo.png): both work.",
