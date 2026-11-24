@@ -216,7 +216,11 @@ function messageRow(
 			),
 		);
 	if (message.authorKind === "session")
-		return h("div", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, markdown(message.text));
+		return h(
+			"div",
+			{ class: "surface-message is-session", title: fmtTime(message.createdAt) },
+			markdown(message.text),
+		);
 	return memberBubble(message.text, "", fmtTime(message.createdAt), author, images, to);
 }
 
