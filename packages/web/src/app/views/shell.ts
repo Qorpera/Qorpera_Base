@@ -77,6 +77,7 @@ import {
 	isAgentPairSession,
 	isAgentThreadSession,
 	isPrimaryStaffSession,
+	siteAnswer,
 } from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
@@ -2531,6 +2532,7 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 			company.signal,
 			() => openCreateSurfaceSheet(store),
 			(text) => company.reportRailError(text),
+			(surface) => siteAnswer(company.store.get(), surface),
 		);
 		surfaceRails.set(company, rail);
 	}

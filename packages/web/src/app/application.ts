@@ -22,7 +22,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
-import { createWebSiteHosting } from "../cloud/site-hosting.ts";
+import { type CompanySiteHostingState, createWebSiteHosting } from "../cloud/site-hosting.ts";
 import { type CompanySite, createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
@@ -44,7 +44,14 @@ import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
 import { offersWaitingOn } from "./automation-owner.ts";
-import { agentWorks, CompanyController, siteServed } from "./company.ts";
+import {
+	agentWorks,
+	CompanyController,
+	hostingNotingPublic,
+	readSitesOncePublished,
+	siteServed,
+	startPublicRead,
+} from "./company.ts";
 import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
@@ -598,6 +605,7 @@ export function mountApplication(
 		| undefined;
 	/** The company whose sites were read for the apps drawer. */
 	let sitesRead: CompanyController | undefined;
+	let sitesOncePublished: ReturnType<typeof readSitesOncePublished> | undefined;
 	/** One of the company's websites, live with its numbers (`#/c/{id}/site/{slug}`), kept while that route shows. */
 	let siteView:
 		| {
@@ -900,6 +908,7 @@ export function mountApplication(
 		pendingCompany = undefined;
 		company = undefined;
 		sitesRead = undefined;
+		sitesOncePublished = undefined;
 		releasesRead = undefined;
 		showWaitingInTitle(0);
 		agentPage = undefined;
@@ -2256,6 +2265,14 @@ export function mountApplication(
 									)
 										controller.store.set({ sitesTakenDown: nextTaken });
 								} catch {}
+								const notePublic = startPublicRead(controller.store);
+								let hosting: CompanySiteHostingState | undefined;
+								try {
+									hosting = await createWebSiteHosting(cloud, controller.profile).read(controller.signal);
+								} catch {
+									hosting = undefined;
+								}
+								if (!controller.signal.aborted) notePublic(hosting);
 							}
 						},
 						() => {
@@ -2276,9 +2293,12 @@ export function mountApplication(
 			};
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
+			sitesOncePublished = readSitesOncePublished(readSites);
 		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)
 			// A member the company's sites are never read for: a site's own page says it can't be shown, not waits.
 			controller.store.set({ siteList: [], siteListUnread: true });
+		if (sitesRead === controller)
+			sitesOncePublished?.(controller.store.get(), surfacesOf(controller)?.state.surfaces ?? []);
 		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
@@ -3055,7 +3075,7 @@ export function mountApplication(
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
 						access: { canManage: managesSites },
-						hosting: createWebSiteHosting(cloud, controller.profile),
+						hosting: hostingNotingPublic(controller.store, createWebSiteHosting(cloud, controller.profile)),
 						listed: (list) => controller.store.set(sitesListed(list)),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {
@@ -3157,7 +3177,10 @@ export function mountApplication(
 						).folder();
 						return (await readSurfaceFolderFiles(folder, roots, readSignal)).files;
 					};
-					const siteHosting = createWebSiteHosting(cloud, controller.profile);
+					const siteHosting = hostingNotingPublic(
+						controller.store,
+						createWebSiteHosting(cloud, controller.profile),
+					);
 					const view = new SurfaceView(
 						{
 							store: surfaces,
