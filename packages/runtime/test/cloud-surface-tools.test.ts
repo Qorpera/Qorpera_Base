@@ -3517,6 +3517,7 @@ describe("cloud surface runtime tools", () => {
 			openChanges: [],
 		});
 		expect(emptyOpenBrief).toContain("## Session Branch Sync");
+		expect(emptyOpenBrief).toContain(`git log ${mainSha}..HEAD`);
 		expect(emptyOpenBrief).toContain(`git reset --hard ${mainSha}`);
 		expect(emptyOpenBrief).not.toContain(`git read-tree --reset -u ${mainSha}`);
 		expect(emptyOpenBrief).toContain(`parentSha: "${mainSha}"`);

@@ -243,7 +243,7 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			sections.push(lines.join("\n"));
 		} else if (branchHeadSha && mainSha && branchHeadSha !== mainSha) {
 			sections.push(
-				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. Before making new edits, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
+				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. First check \`git log ${mainSha}..HEAD\` (and \`git status\`) for any unrecorded commits you still need — record them or save their SHAs to cherry-pick after resetting. Once clear, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
 			);
 		}
 	}
