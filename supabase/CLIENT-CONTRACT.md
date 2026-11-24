@@ -1886,6 +1886,23 @@ site. Preview frames (`doorActionUrl` of `qorpera_get_surface_workspace`, `qorpe
 `hosts_domain` is, and site-serve redeems and serves them there; who gets a pass, its 60 seconds, one use and the
 12-hour preview session are unchanged.
 
+### A failed build goes back to its session (20260930889000_surface_preview_build_failure_to_session)
+
+The main preview frame (`previewState.primary` of `qorpera_get_surface_workspace` and `qorpera_set_preview_selection`;
+not compare frames) carries two more fields:
+
+- `kept`: null, or `{previewId, doorActionUrl, memberPass}`, the caller's newest unexpired `ready` preview of the same
+  surface, given only while the frame's `status` is `failed`. It is null when the caller has no earlier ready preview
+  or the surface has no site. `memberPass` is always null: the client mints one for `kept.previewId` with
+  `qorpera_mint_surface_preview_pass`, as for a ready frame without a pass.
+- `fixing`: true while the frame is `failed` and a session whose change is in this composition has a fix turn waiting
+  or running for a failed build; false otherwise.
+
+A surface's summary carries `publishBeingFixed`: true while `publishStatus` is `failed` and the session whose change
+landed last has a fix turn waiting or running for the failed publish build; false otherwise. A server without this
+migration sends none of the three fields; a client treats a missing field as null or false. The rows behind
+them change with the `surfaces` hint.
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
