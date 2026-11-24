@@ -4927,6 +4927,22 @@ describe("a coding session on the folder model", () => {
 			expect(recorded.at(-1)).toBeInstanceOf(Error);
 		}
 	});
+	it("returns noChange for a Qorpera repository when headSha equals baseSha without landing or pushing", async () => {
+		const f = await folderFixture();
+		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
+		const start = vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha }));
+		const land = vi.fn<NonNullable<CodingFolderRepositories["land"]>>();
+		Object.assign(f.repositories, { start, land });
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(await f.host.publish(f.claim, { ...f.submission, headSha: f.baseSha }, f.signal)).toEqual({
+			pullRequest: null,
+			noChange: true,
+		});
+		expect(f.boundary).toHaveBeenCalledTimes(1);
+		expect(land).not.toHaveBeenCalled();
+		expect(f.repositories.export).not.toHaveBeenCalled();
+		expect(mocked.push).not.toHaveBeenCalled();
+	});
 	it("reports a session busy by the one idle rule, a waiting command quiet, its commands as the host kept them, and renews no guest lease", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);

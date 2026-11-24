@@ -58,6 +58,11 @@ export function gitObjectPath(path: string): boolean {
 	return place.kind === "git" && gitObject(place.rest);
 }
 
+export function gitObjectFolder(path: string): boolean {
+	const place = gitPlace(path);
+	return place.kind === "git" && /^objects(\/[0-9a-f]{2}|\/pack)?$/.test(place.rest);
+}
+
 /** A git object a lock's publish carries (5b's `qorpera_folder_git_object`): a loose object (SHA-1 or SHA-256) or a
  * pack's own file. Anything else under `objects/` (`info/packs`, a commit-graph, a multi-pack index: `gitObjectIndex`)
  * is not one. */

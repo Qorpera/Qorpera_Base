@@ -106,6 +106,7 @@ const HOURS_STEP = "Waiting for computer hours";
  * storage, step 3: CODING_LANDING_STEP in runner-orchestrator coding-executor.ts). An executor from before says
  * "Landing the change". */
 const CHECKS_STEP = "Checking and saving the change";
+const NO_CHANGE_STEP = "Finishing without changes";
 
 /** When the session's current turn started: its first claim, as `startedAt` is for the first turn (a deferred
  * turn claimed again keeps its first). A later turn's start is only in the event stream, as its first `preparing`,
@@ -185,11 +186,13 @@ export function codingSessionStatus(
 			// checks off, it goes in at once, so the words never claim a test ran.
 			return {
 				text: [
-					session.repository.host !== "qorpera"
-						? t("Opening the pull request")
-						: session.lastStep === CHECKS_STEP
-							? t("Checking the change before saving it")
-							: t("Saving the change"),
+					session.lastStep === NO_CHANGE_STEP
+						? t("Finishing")
+						: session.repository.host !== "qorpera"
+							? t("Opening the pull request")
+							: session.lastStep === CHECKS_STEP
+								? t("Checking the change before saving it")
+								: t("Saving the change"),
 					files,
 				]
 					.filter(Boolean)

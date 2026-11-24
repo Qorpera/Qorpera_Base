@@ -50,6 +50,12 @@ fn mounted(path: &Path) -> bool {
 	std::fs::read_to_string("/proc/self/mountinfo").unwrap().lines().any(|l| l.split(' ').nth(4) == Some(path.to_str().unwrap()))
 }
 
+fn open_for_writing(path: &Path) -> bool {
+	let file = std::fs::File::open(path).unwrap();
+	// SAFETY: a descriptor this function owns, and a lock that goes with it.
+	unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 }
+}
+
 /// Takes down a mount a stopped program left behind. The program tries its unmount once; under load the kernel can
 /// still count a descriptor on the mount for a moment (EBUSY, #1021's merge test), and the mount stays. Unmounts it
 /// here, again while it is busy, so the next program mounts at an empty mountpoint and not over this one.
@@ -1308,13 +1314,14 @@ fn a_read_of_the_index_overtaken_by_one_found_stale_is_made_again() {
 	assert!(git.join("HEAD").is_file());
 	// A new c.log reads the index first, which the node has none of yet, and the list waits for the node. Meanwhile git
 	// puts an index that tracks c.log in place while the worktree has no caches: found stale, not read.
-	node.slow_lists("code/o/n/repo.git/worktrees/w", &[3]);
+	node.hold_list("code/o/n/repo.git/worktrees/w");
 	let made = w.join("c.log");
 	let making = std::thread::spawn(move || std::fs::write(made, "c.log").unwrap());
-	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	assert!(eventually(Duration::from_secs(10), || node.lists_held() == 1));
 	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log"])).unwrap();
 	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
 	assert!(!making.is_finished(), "the read of the index was not overtaken");
+	node.answer_held_lists();
 	making.join().unwrap();
 	// What the older read gave is not taken: the index is read again, and c.log, which it tracks, is published.
 	assert_eq!(node.content(&format!("{at}/c.log")).as_deref(), Some(b"c.log".as_slice()));
@@ -1341,6 +1348,8 @@ fn a_read_of_the_index_overtaken_by_a_newer_one_leaves_the_move_of_what_that_one
 		std::fs::write(w.join(path), path).unwrap();
 	}
 	assert!(!node.exists(&format!("{at}/a.log")) && !node.exists(&format!("{at}/b.log")));
+	let cached = node.dir.join("state/local/caches/d/code/d/o/d/n/d/worktrees/d/w/t/b.log");
+	assert!(eventually(Duration::from_secs(10), || !open_for_writing(&cached)), "the program still has b.log open");
 	// The program starts again, with the same state: the index is read again before the next new cache.
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
@@ -1350,15 +1359,16 @@ fn a_read_of_the_index_overtaken_by_a_newer_one_leaves_the_move_of_what_that_one
 	assert!(git.join("HEAD").is_file());
 	// A new c.log reads the index, which the node has none of, and the list waits for the node. Meanwhile `git add -f
 	// b.log` while a boundary settles: that index is taken in, and the move of b.log waits for the node.
-	node.slow_lists("code/o/n/repo.git/worktrees/w", &[3]);
+	node.hold_list("code/o/n/repo.git/worktrees/w");
 	let made = w.join("c.log");
 	let making = std::thread::spawn(move || std::fs::write(made, "c.log").unwrap());
-	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	assert!(eventually(Duration::from_secs(10), || node.lists_held() == 1));
 	std::fs::write(git.join("index.lock"), git_index(&["README", "b.log"])).unwrap();
 	node.busy(1_000_000, 0);
 	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
 	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1));
 	assert!(!making.is_finished(), "the read of the index was not overtaken");
+	node.answer_held_lists();
 	making.join().unwrap();
 	// The older read, done after it, is not taken: the move of b.log is still on, and it lands.
 	let marker = node.dir.join("state/caches.moving");
