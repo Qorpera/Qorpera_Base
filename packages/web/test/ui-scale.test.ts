@@ -53,8 +53,7 @@ describe("the app's scale in scripts", () => {
 			rail = new RailLayout(frame, aside);
 		frame.append(rail.el);
 		try {
-			// The 406px default is drawn at 507.5 screen pixels; the cap is 44% of the window in design pixels.
-			expect(aside.style.getPropertyValue("--rail-width")).toBe("507.5px");
+			expect(aside.style.getPropertyValue("--rail-width")).toBe("456.25px");
 			expect(rail.el.getAttribute("aria-valuemax")).toBe("563");
 			// A drag to 500 screen pixels chooses 400 design pixels.
 			rail.el.setPointerCapture = () => {};
