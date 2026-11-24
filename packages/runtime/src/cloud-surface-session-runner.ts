@@ -19,6 +19,7 @@ import {
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
 	readSurfaceLayout,
+	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_FACT_FIGURE_CHARS,
@@ -40,6 +41,7 @@ import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderFileEntry } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
+import type { GeminiTtsModel, GeminiTtsSpeechResult, GeminiTtsVoice } from "./cloud-gemini-tts.ts";
 import type { CloudNativeCodingDriver, CloudNativeCodingTurnContext } from "./cloud-native-coding-runtime.ts";
 import type { NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -47,6 +49,7 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkill, type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
+import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import {
 	type CloudSurfaceToolsPort,
 	createStageSurfaceOpsActionTool,
@@ -70,6 +73,7 @@ const MAX_IDENTITY_VOICE_BYTES = 8_192;
 const MAX_IDENTITY_TOKENS_BYTES = 16_384;
 const MAX_SHARED_ASSET_BYTES = 32_768;
 const MAX_SURFACE_BRIEF_BYTES = 32_768;
+const MAX_STUDIO_TEXT_READ_BYTES = 262_144;
 const MAX_STAGED_LAYOUT_READ_BYTES = 1024 * 1024;
 const MAX_FAILURE_REPLY_CHARS = 500;
 const READ_ONLY_FOLDER_TOOLS = new Set(["company_read", "company_list"]);
@@ -125,6 +129,9 @@ export interface SurfaceSessionTurnInput {
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly mainSha?: string | null;
 	readonly leaseToken?: string | null;
+	readonly voiceModel?: string | null;
+	readonly voiceName?: string | null;
+	readonly openScenesOps?: readonly StudioPatchOp[];
 }
 
 export interface SurfaceSessionTurnCompletion {
@@ -205,6 +212,16 @@ export interface SurfaceCodingDriverBinding {
 	prepareRequest(request: SurfaceCodeRepoTurnRequest): Promise<SurfaceCodingDriverPreparedTurn>;
 }
 
+export interface SurfaceSessionNarratePort {
+	readonly stageBytes: (bytes: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<StudioBinaryRef>;
+	readonly synthesizeGemini?: (input: {
+		readonly model: GeminiTtsModel;
+		readonly voiceName: GeminiTtsVoice;
+		readonly text: string;
+		readonly signal: AbortSignal;
+	}) => Promise<GeminiTtsSpeechResult>;
+}
+
 export interface SurfaceSessionRunnerPorts {
 	readonly folder?: SurfaceFolderTextReader;
 	readonly readStudioFiles?: (roots: readonly string[], signal: AbortSignal) => Promise<SurfaceFolderContents>;
@@ -212,6 +229,7 @@ export interface SurfaceSessionRunnerPorts {
 	readonly surfaceTools: Partial<
 		Pick<CloudSurfaceToolsPort, "recordChange"> & SurfacePatchToolPort & SurfaceOpsActionToolPort
 	>;
+	readonly narrateExplainer?: SurfaceSessionNarratePort;
 	readonly extraTools?: readonly CloudNativeTool[];
 	readonly executeTurn?: (request: SurfaceFolderOrOpsTurnRequest) => Promise<SurfaceSessionTurnExecutionOutcome>;
 	readonly executeCodeRepoTurn?: (request: SurfaceCodeRepoTurnRequest) => Promise<SurfaceSessionTurnExecutionOutcome>;
@@ -329,6 +347,48 @@ async function folderText(
 	return found === null || found === undefined ? null : typeof found === "string" ? found : found.text;
 }
 
+async function readRawOptionalFolderText(
+	folder: SurfaceFolderTextReader,
+	path: string,
+	maxBytes: number,
+	signal: AbortSignal,
+): Promise<string | null> {
+	try {
+		return await folderText(folder, path, maxBytes, signal);
+	} catch (error) {
+		if (signal.aborted) throw error;
+		return null;
+	}
+}
+
+function normalizeStudioRelativePath(raw: string, folderRoot: string): string | null {
+	let trimmed = raw.trim().replace(/^\/+/, "");
+	const prefix = `${folderRoot.replace(/^\/+|\/+$/g, "")}/`;
+	if (prefix.length > 1 && trimmed.startsWith(prefix)) {
+		trimmed = trimmed.slice(prefix.length);
+	}
+	if (!trimmed || trimmed.includes("\\") || trimmed.includes("\0")) return null;
+	const parts = trimmed.split("/");
+	if (parts.some((part) => !part || part === "." || part === "..")) return null;
+	return trimmed;
+}
+
+function applyStudioTextOps(
+	overlay: Map<string, string | null>,
+	ops: readonly StudioPatchOp[],
+	folderRoot: string,
+): void {
+	for (const op of ops) {
+		const rel = normalizeStudioRelativePath(op.path, folderRoot);
+		if (!rel) continue;
+		if (op.op === "write_text") {
+			overlay.set(rel, op.content);
+		} else if (op.op === "delete") {
+			overlay.set(rel, null);
+		}
+	}
+}
+
 export async function loadSurfaceIdentityContext(
 	folder: SurfaceFolderTextReader,
 	signal: AbortSignal,
@@ -432,6 +492,15 @@ const STUDIO_PAGE_RULES = [
 	"A company file is bound with a leading slash (/identity/tokens.json).",
 ];
 
+const STUDIO_EXPLAINER_SCHEMA =
+	'`breakdowns/<slug>/scenes.js` (plus optional `breakdowns/<slug>/explainer.json` with `{ "title": "..." }` for 3Blue1Brown-style animated explainer videos rendered natively in the Breakdowns tab, or on any tab via an `explainer` block in `layout.json`): ' +
+	"When a founder asks for a video, walkthrough, or animated breakdown of UX, product mechanics, flows, or strategy, NEVER stage an animated SVG or dump a script into `voice.md` or `brief.md`. " +
+	'Stage `breakdowns/<slug>/scenes.js` with `stage_surface_patch`, then call `narrate_explainer` with `scenesPath: "breakdowns/<slug>/scenes.js"` to record spoken clips in the member\'s configured Voice model and profile. ' +
+	'The Studio player creates `V` (1600×900 dark stage) and calls `V.start()` automatically — `scenes.js` only adds chapters and scenes (`V.part("Chapter")`, `V.scene((s) => { ... })`), never `new Video(...)` or `V.start()`. ' +
+	"Primitives: `s.box({x,y,w,h,label,sub,color,dash})`, `s.text({x,y,str,size,color,font})`, `s.number({x,y,from,size,fmt})`, `s.bar({x,y,w,h,dir,scale})`, `s.icon({name,x,y,label,color})` (`person`, `bot`, `house`, `bus`, `card`, `coin`, `server`, `db`, `cloud`, `lock`, `doc`, `clock`, `shield`, `globe`, `mail`, `bolt`), `s.arrow(from,to,{color,bend,label})`, `s.line({d,head:false})`. " +
+	"Animations inside `s.say(caption, ...anims)`: `s.create(m)`, `s.write(t)`, `s.fadeIn(m)`, `s.fadeOut(m)`, `s.dim(m,0.3)`, `s.move(m,x,y)`, `s.scale(m,k)`, `s.indicate(m)`, `s.value(m,to)`, `s.flow(arrow,sec,{count})`, `s.camera(x,y,zoom)`, `s.all(fn,items,sec)`, `{w:true}` to overlap. " +
+	'Colors come from `C` (`blue`, `teal`, `yellow`, `green`, `red`, `purple`, `grey`). Keep captions short (~15 words, written for the ear, 15–35 captions total; bilingual `{en:"...",da:"..."}` supported wherever text goes), first scene title frame with `show: true` leaving `y ~ 560` free for Play, 60-unit edge margin, and never put sentences inside boxes.';
+
 export type SurfaceStudioPageView =
 	| {
 			readonly page: "layout";
@@ -495,23 +564,36 @@ export function surfaceStudioPageView(
 	};
 }
 
-function describeStudioPage(view: SurfaceStudioPageView, folderRoot: string): string {
+function describeStudioPage(
+	view: SurfaceStudioPageView,
+	folderRoot: string,
+	voiceModel?: string | null,
+	voiceName?: string | null,
+): string {
 	const layoutFile = `${folderRoot}/${SURFACE_LAYOUT_PATH}`;
 	const rules = `How the page works:\n${STUDIO_PAGE_RULES.map((rule) => `- ${rule}`).join("\n")}`;
 	const blocks = `## Blocks\n${describeSurfaceBlocks()}`;
+	const voiceGuidance =
+		voiceModel && voiceName
+			? `The member's configured Voice preference is ${voiceModel} (${voiceName}); narrate_explainer uses it automatically.`
+			: "";
 	if (view.page === "none") return "This interface's page is not drawn from a layout.";
 	if (view.page === "report") {
 		return `## This page\nThis interface is a reading page, not drawn from a layout: it shows every *.report.json and Markdown file in ${folderRoot}/ as an article.\n\n## File formats\n${SURFACE_REPORT_FORMAT}`;
 	}
 	if (view.page === "unknown") {
-		return `${rules}\n\n${blocks}\n\n## This page\nIts layout is not known for this turn; read ${layoutFile} if it exists before you change the page's shape.`;
+		const explainerBlock = voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA;
+		return `${rules}\n\n${blocks}\n\n## This page\nIts layout is not known for this turn; read ${layoutFile} if it exists before you change the page's shape.\n\n## File formats\n${explainerBlock}`;
 	}
 	const source = view.own
 		? `Drawn from ${layoutFile}:`
 		: view.problem
 			? `${layoutFile} does not read (${view.problem}), so the page shows the ${view.starter} starter:`
 			: `No ${layoutFile} yet, so the page shows the ${view.starter} starter:`;
-	const formats = describeSurfaceFormats(view.layout);
+	const formats = [
+		...describeSurfaceFormats(view.layout),
+		voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA,
+	];
 	return (
 		`${rules}\n\n${blocks}\n\n## This page\n${source}\n${JSON.stringify(view.layout)}` +
 		(formats.length > 0 ? `\n\n## File formats\n${formats.join("\n")}` : "")
@@ -540,7 +622,7 @@ function buildFolderSurfaceInstructions(
 		"Members preview staged patches, any of them on or off together, before they approve one. " +
 		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), one cohesive, conflict-minimizing patch per change. ` +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.\n\n` +
-		describeStudioPage(view, folderRoot) +
+		describeStudioPage(view, folderRoot, input.voiceModel, input.voiceName) +
 		describeStudioSkill(view, skill)
 	);
 }
@@ -872,6 +954,30 @@ export async function runSurfaceSessionTurn(
 			const notesRoot = `QorperaOS/surfaces/${input.surfaceSlug}/notes`;
 			const writableRoots = [notesRoot];
 			const stagedRoots = [folderRoot];
+			const stagedText = new Map<string, string | null>();
+			if (input.openScenesOps && input.openScenesOps.length > 0) {
+				applyStudioTextOps(stagedText, input.openScenesOps, folderRoot);
+			}
+			const boundStageSurfacePatch = stageSurfacePatch.bind(ports.surfaceTools);
+			const trackedSurfacePatch: SurfacePatchToolPort = {
+				async stageSurfacePatch(sessionIdArg, request, context) {
+					const result = await boundStageSurfacePatch(sessionIdArg, request, context);
+					applyStudioTextOps(stagedText, request.ops, folderRoot);
+					return result;
+				},
+			};
+			const readStudioText = async (relativePath: string, reqSignal: AbortSignal): Promise<string | null> => {
+				const rel = normalizeStudioRelativePath(relativePath, folderRoot);
+				if (!rel) return null;
+				if (stagedText.has(rel)) return stagedText.get(rel) ?? null;
+				if (!folderReader) return null;
+				return readRawOptionalFolderText(
+					folderReader,
+					`${folderRoot}/${rel}`,
+					MAX_STUDIO_TEXT_READ_BYTES,
+					reqSignal,
+				);
+			};
 			const folderTools = ports.folderToolsContext
 				? cloudFolderFileTools({
 						folder: ports.folderToolsContext.folder,
@@ -893,12 +999,26 @@ export async function runSurfaceSessionTurn(
 							),
 					}
 				: undefined;
+			const narrateTool = ports.narrateExplainer
+				? [
+						createNarrateExplainerTool({
+							sessionId: input.sessionId,
+							folderRoot,
+							voiceModel: input.voiceModel?.trim() || "chatgpt-voice",
+							voiceName: input.voiceName?.trim() || "cove",
+							readStudioText,
+							stageBytes: ports.narrateExplainer.stageBytes,
+							surfacePatch: trackedSurfacePatch,
+							...(ports.narrateExplainer.synthesizeGemini
+								? { synthesizeGemini: ports.narrateExplainer.synthesizeGemini }
+								: {}),
+							onStagedOps: (ops) => applyStudioTextOps(stagedText, ops, folderRoot),
+						}),
+					]
+				: [];
 			const tools: CloudNativeTool[] = [
-				createStageSurfacePatchTool(
-					input.sessionId,
-					{ stageSurfacePatch: stageSurfacePatch.bind(ports.surfaceTools) },
-					layoutStaging,
-				),
+				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging),
+				...narrateTool,
 				...folderTools,
 				...(ports.extraTools ?? []),
 			];

@@ -444,6 +444,7 @@ export function cloudActionEffect(
 		case "manage_code":
 			return args.action === "status" ? "read" : "internal";
 		case "narrate_app":
+		case "narrate_explainer":
 			return "internal";
 		case "propose_surface":
 		case "start_surface_session":
@@ -1084,6 +1085,10 @@ export function describeCloudAction(
 		target = text(args.name) || null;
 		add("machine", args.machine);
 		add("voice", args.voice);
+	} else if (tool.name === "narrate_explainer") {
+		title = "Narrate a Studio breakdown";
+		target = text(args.scenesPath) || null;
+		add("voice", args.voiceName);
 	} else if (tool.name === "post_app") {
 		title = args.posted === false ? "Take an app away from the members' apps" : "Post an app for every member";
 		target = text(args.name) || null;
