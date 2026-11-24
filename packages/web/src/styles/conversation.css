@@ -1394,6 +1394,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 :root[data-theme="dark"] .site-card { --site-ink: #7193f2; }
 .site-card.is-down { --app-colour: var(--text-soft); }
 .site-card.is-down:hover { border-color: var(--border); background: var(--bg); }
+:root[data-theme="dark"] .site-card.is-down:hover { background: var(--bg); }
 .site-card.is-down:hover .app-card-emblem .interface-emblem { transform: none; }
 .site-card-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; color: inherit; text-decoration: none; }
 .site-card-open:hover { color: inherit; text-decoration: none; }

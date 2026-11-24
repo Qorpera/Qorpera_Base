@@ -420,6 +420,7 @@ describe("A site a message links: the card under the words", () => {
 		expect(conversationCss).toContain(
 			".site-card.is-down:hover { border-color: var(--border); background: var(--bg); }",
 		);
+		expect(conversationCss).toContain(':root[data-theme="dark"] .site-card.is-down:hover { background: var(--bg); }');
 		expect(conversationCss).toContain(
 			".site-card.is-down:hover .app-card-emblem .interface-emblem { transform: none; }",
 		);
