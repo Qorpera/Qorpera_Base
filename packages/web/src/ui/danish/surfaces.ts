@@ -58,7 +58,6 @@ export const SURFACES: Record<string, string> = {
 	"Discarded “{title}”": "Kasserede “{title}”",
 	"Got it — updated “{title}” with “{note}”.": "Forstået — opdaterede “{title}” med “{note}”.",
 	"Needs your attention": "Kræver din opmærksomhed",
-	Running: "Drift",
 	Money: "Økonomi",
 	Reverted: "Rullet tilbage",
 	Merging: "Fletter",

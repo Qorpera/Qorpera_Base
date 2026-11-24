@@ -1922,7 +1922,17 @@ describe("agent execution state", () => {
 			placements: {},
 			pinned: [],
 			hidden: [],
-			own: { changes: 1, moved: [], sections: [], pinned: 0, hidden: 0, contacts: 0, pages: 0, apps: 0 },
+			own: {
+				changes: 1,
+				moved: [],
+				sections: [],
+				pinned: 0,
+				hidden: 0,
+				contacts: 0,
+				pages: 0,
+				apps: 0,
+				surfaces: 0,
+			},
 			groupChats: true,
 		};
 		controller.store.set({

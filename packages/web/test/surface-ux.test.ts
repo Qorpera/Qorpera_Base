@@ -497,6 +497,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		rail.update(undefined);
 		expect(rail.el.querySelector('[data-surface-slug="members"]')).toBeNull();
+		expect(rail.el.querySelectorAll(".rail-surface-title")).toHaveLength(0);
 		store.dispose();
 	});
 

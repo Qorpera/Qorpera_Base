@@ -61,6 +61,7 @@ import {
 } from "../cloud/sidebar-sections-file.ts";
 import type { CompanySiteHostingState, WebSiteHosting } from "../cloud/site-hosting.ts";
 import type { CompanySite } from "../cloud/sites.ts";
+import type { SurfaceRailLayout, SurfaceRailLayoutRead } from "../cloud/surface-rail-layout.ts";
 import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -294,6 +295,8 @@ export interface CompanyState {
 	appLayout?: MemberAppLayoutRead;
 	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
 	appLayoutUnavailable?: boolean;
+	surfaceRail?: SurfaceRailLayoutRead;
+	surfaceRailUnavailable?: boolean;
 	/** Each app's own icons (`apps/<name>/icons/`, app/interface-apps.ts), by the app's name, for the apps whose icons
 	 * were asked for: the member opened its Icon and colour panel, or picked one of them. Newest first. */
 	appIcons?: Readonly<Record<string, readonly CompanyAppIcon[]>>;
@@ -771,6 +774,10 @@ export class CompanyController {
 	#resetting = 0;
 	#appLayoutStale = false;
 	#appLayoutWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
+	#surfaceRailReads = 0;
+	#surfaceRailPending = 0;
+	#surfaceRailStale = false;
+	#surfaceRailWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
 	#poll: ReturnType<typeof setInterval> | undefined;
 	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
 	#skippedWhileHidden = false;
@@ -1481,7 +1488,10 @@ export class CompanyController {
 			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
 			if (!sameJson(this.store.get().sidebar, sidebar)) this.store.set({ sidebar });
 			// The member's apps layout is part of their own sidebar: a hint for one is a hint for the other.
-			if (sidebar.own) void this.refreshAppLayout();
+			if (sidebar.own) {
+				void this.refreshAppLayout();
+				void this.refreshSurfaceRail();
+			}
 			// Hints from now on: on the company's topic, or by postgres_changes on a channel of their own, so a cloud without
 			// the sidebar tables must not degrade the company's hints.
 			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
@@ -1585,9 +1595,13 @@ export class CompanyController {
 		// One after the other with the apps layout's writes: a move on its way lands first. Until the reset and the apps
 		// layout's read after it are done, the drawer makes no move, so none is built on what the reset took away.
 		this.#resetting++;
-		const reset = this.#appLayoutWrites
+		const reset = Promise.all([this.#appLayoutWrites, this.#surfaceRailWrites])
 			.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }))
 			.then(async (done) => {
+				if (done && !this.store.get().surfaceRailUnavailable) {
+					this.#surfaceRailStale = true;
+					void this.refreshSurfaceRail(true);
+				}
 				// A cloud without each member's apps layout (before 20260930728000) has none to read again.
 				if (!done || this.store.get().appLayoutUnavailable) return done;
 				// The layout as the reset left it, read here and taken whatever other read is on its way; until one is
@@ -1616,6 +1630,7 @@ export class CompanyController {
 			() => undefined,
 			() => undefined,
 		);
+		this.#surfaceRailWrites = this.#appLayoutWrites;
 		const done = await reset;
 		if (done) void this.memberChats.refresh();
 		return done;
@@ -1791,6 +1806,67 @@ export class CompanyController {
 		} catch (error) {
 			if (this.#stopped) return;
 			if (error instanceof CloudRpcError && error.missing) this.store.set({ appLayoutUnavailable: true });
+		}
+	}
+
+	async refreshSurfaceRail(force = false): Promise<void> {
+		if (this.#stopped || this.store.get().surfaceRailUnavailable) return;
+		const version = ++this.#surfaceRailReads;
+		try {
+			const read = await this.#api.readMemberSurfaceRail(this.profile.profileId, this.signal);
+			if (this.#stopped || version !== this.#surfaceRailReads || (this.#surfaceRailPending && !force)) return;
+			this.#surfaceRailStale = false;
+			if (!sameJson(this.store.get().surfaceRail, read)) this.store.set({ surfaceRail: read });
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) {
+				this.#surfaceRailStale = false;
+				this.store.set({ surfaceRailUnavailable: true });
+			}
+		}
+	}
+
+	canArrangeSurfaces(): boolean {
+		const state = this.store.get();
+		return Boolean(state.surfaceRail && !state.surfaceRailUnavailable && !this.#resetting && !this.#surfaceRailStale);
+	}
+
+	async changeSurfaceRail(next: SurfaceRailLayout): Promise<boolean> {
+		const current = this.store.get().surfaceRail;
+		if (this.#stopped || !current || !this.canArrangeSurfaces()) return false;
+		this.store.set({ surfaceRail: { ...current, layout: next }, railError: undefined, sidebarReset: undefined });
+		const behind = this.#surfaceRailPending > 0;
+		this.#surfaceRailPending++;
+		const write = this.#surfaceRailWrites.then((last) =>
+			this.#api.setMemberSurfaceRail(
+				this.profile.profileId,
+				next,
+				behind && last !== undefined ? last : current.updatedAt,
+			),
+		);
+		this.#surfaceRailWrites = write.then(
+			(read) => read.updatedAt,
+			() => undefined,
+		);
+		try {
+			const read = await write;
+			this.#surfaceRailPending--;
+			if (this.#stopped) return false;
+			++this.#surfaceRailReads;
+			if (!this.#surfaceRailPending) this.store.set({ surfaceRail: read });
+			void this.refreshSidebar();
+			return true;
+		} catch (error) {
+			this.#surfaceRailPending--;
+			if (this.#stopped) return false;
+			this.store.set({
+				railError:
+					error instanceof CloudRpcError && error.code === "QSR01"
+						? t("Your interfaces changed in another tab. Try again.")
+						: t("The interfaces could not be arranged. Try again."),
+			});
+			if (!this.#surfaceRailPending) await this.refreshSurfaceRail();
+			return false;
 		}
 	}
 
