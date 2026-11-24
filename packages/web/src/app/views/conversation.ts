@@ -1098,7 +1098,8 @@ export class ConversationView {
 		this.#composerShell.classList.toggle("is-expanded", taller);
 		this.#composer.style.height = "auto";
 		const field = getComputedStyle(this.#composer);
-		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
+		const minHeight = Number.parseFloat(field.minHeight) || 0;
+		const oneLine = Math.ceil(minHeight);
 		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
 		let contentHeight = this.#composer.scrollHeight;
 		const expanded = contentHeight > oneLine || taller;
@@ -1107,16 +1108,16 @@ export class ConversationView {
 			contentHeight = this.#composer.scrollHeight;
 		}
 		const targetHeight = Math.min(contentHeight, tallest);
-		this.#composer.style.height = `${targetHeight}px`;
-		this.#composer.style.overflowY = contentHeight > tallest ? "auto" : "hidden";
 		const shell = getComputedStyle(this.#composerShell);
 		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
 			(sum, value) => sum + (Number.parseFloat(value) || 0),
 			0,
 		);
-		const composerHeight = this.#composer.getBoundingClientRect().height;
+		const composerHeight = Math.max(minHeight, targetHeight);
 		const attachmentsHeight = this.#attachments.count > 0 ? this.#attachments.el.getBoundingClientRect().height : 0;
 		const answerHeight = this.#answerShown !== undefined ? this.#answerStrip.getBoundingClientRect().height : 0;
+		this.#composer.style.height = `${targetHeight}px`;
+		this.#composer.style.overflowY = contentHeight > tallest ? "auto" : "hidden";
 		this.#composerShell.style.height = `${composerHeight + frame + attachmentsHeight + answerHeight}px`;
 		this.#skills.sync();
 	}
