@@ -366,7 +366,10 @@ export class SurfaceSessionDrawer {
 			},
 			{ once: true },
 		);
-		this.el.append(this.#resizer, h("div", { class: "surface-drawer-inner" }, this.#head, this.#pinned, this.#body, this.#form));
+		this.el.append(
+			this.#resizer,
+			h("div", { class: "surface-drawer-inner" }, this.#head, this.#pinned, this.#body, this.#form),
+		);
 		this.#wireResizer(signal);
 		this.#applyWidth();
 		signal.addEventListener("abort", () => this.#disarm(false), { once: true });
