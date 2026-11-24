@@ -192,7 +192,6 @@
 	--tile-size: 48px;
 	position: relative; display: grid; place-items: center; width: var(--tile-size); height: var(--tile-size); flex: none;
 }
-.surface-tile.is-tiny { --tile-size: 20px; }
 .surface-tile.is-small { --tile-size: 28px; }
 .surface-tile.is-bar { --tile-size: 26px; }
 .surface-tile.is-sheet { --tile-size: 34px; }
@@ -1781,22 +1780,6 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .studio-tab.is-on { background: var(--primary); border-color: transparent; color: var(--on-primary); }
 .studio-tab.is-empty:not(.is-on) { color: var(--text-soft); }
 
-.studio-reach { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12.5px; }
-.studio-reach-label { color: var(--text-soft); }
-.studio-reach-group { display: contents; }
-.studio-reach-group + .studio-reach-group > .studio-reach-label { margin-left: 10px; }
-.studio-reach .studio-reach-chip { height: 26px; padding: 0 2px; border: 0; background: none; gap: 7px; }
-.studio-reach .studio-reach-chip:hover { background: none; transform: none; text-decoration: underline; text-underline-offset: 3px; }
-.studio-reach-chip {
-	display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0; height: 34px; padding: 0 12px 0 6px;
-	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
-	background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: default;
-	transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, transform var(--motion-fast) ease;
-}
-.studio-reach-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.studio-reach-chip:hover {
-	background: var(--rail-hover); border-color: color-mix(in srgb, var(--text) 22%, transparent); transform: translateY(-1px);
-}
 .surface-studio.has-identity-tokens {
 	--studio-brand-accent: var(--q-color-accent, var(--brand-accent, var(--accent)));
 }

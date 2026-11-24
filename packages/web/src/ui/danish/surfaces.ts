@@ -203,8 +203,6 @@ export const SURFACES: Record<string, string> = {
 	Identity: "Identitet",
 	"Brand, voice, design & philosophy": "Brand, stemme, design og filosofi",
 	Philosophy: "Filosofi",
-	"Used by": "Bruges af",
-	"Builds on": "Bygger på",
 	"Product Studio": "Produktstudie",
 	"Custom Surface": "Egen surface",
 	"Anything else: an inventory tracker, investor room, support desk…":
