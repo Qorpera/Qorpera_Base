@@ -2106,6 +2106,17 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
     frame may navigate to a site's host; only the door frames one. Not taken: adding `frame-src https://*.qorpera.com`
     to the app's own CSP, or moving the whole app to `strict-origin-when-cross-origin` with `https://*.qorpera.com` in
     its `form-action`.
+  - `/pdf-preview/` (`packages/web/public/pdf-preview/`) follows the same door pattern for inline PDF previews in
+    Studio Files tabs and Report view (`packages/web/src/app/views/surface-blocks/pdf.ts`), so the app's own `/*` CSP
+    stays free of `frame-src` and `blob:` framing. Its `_headers` entry removes the inherited `Content-Security-Policy`,
+    `X-Frame-Options` and `Permissions-Policy`, then sets `Permissions-Policy: camera=(), microphone=(), geolocation=(),
+    payment=(), usb=()`, `X-Frame-Options: SAMEORIGIN`, and `Content-Security-Policy: default-src 'none'; script-src
+    'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`. The
+    parent viewer and `preview.js` check `event.source` and `event.origin === location.origin` both ways; `preview.js`
+    accepts one `Uint8Array`/`ArrayBuffer` payload, pins the Blob MIME type to `application/pdf`, frames the resulting
+    `blob:` URL, and revokes it on `pagehide`. `scripts/test-web-pdf-preview-browser.mjs` proves in Chromium under
+    `public/_headers` that valid PDFs render in Chromium's PDF viewer with `object-src 'none'`, `Open PDF` opens in a
+    new tab, and HTML bytes disguised as a PDF never execute script.
 - The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
   `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
 
