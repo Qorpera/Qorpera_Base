@@ -1,5 +1,5 @@
 -- WHY: Deleting an interface (20260930875000) left its website as it was: a public site stayed public on its address
--- and its domains, with nothing left in the app to close it. The delete now closes it, as "Make it not live" does.
+-- and its domains after its interface was gone. The delete now closes it, as "Make it not live" does.
 -- One statement, so a refusal changes nothing also where psql rolls back statement by statement (SQL test 1367).
 set local lock_timeout = '3s';
 
