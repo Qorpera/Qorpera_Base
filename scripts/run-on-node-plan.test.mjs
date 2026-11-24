@@ -820,21 +820,24 @@ test("beside runs two commands at once, prints the second's output after the fir
 	}
 });
 
-test("deploy-node runs every Node test file under deploy/ once, then Python's tests; side by side, two files at once in under a core", () => {
+test("deploy-node and deploy-agent-exit-proof run every Node test file under deploy/ once, then Python's tests", () => {
 	const [node, python, ...rest] = STEPS.find((candidate) => candidate.name === "deploy-node").commands;
+	const [proof, ...proofRest] = STEPS.find((candidate) => candidate.name === "deploy-agent-exit-proof").commands;
 	assert.deepEqual(rest, []);
+	assert.deepEqual(proofRest, []);
 	assert.match(node, /^node --test [^;&|]+$/);
-	const named = node.slice("node --test ".length).split(" ");
-	// node --test skips a named file that is not there, without failing, as long as another name is a file.
+	assert.match(proof, /^node --test [^;&|]+$/);
+	const named = [...node.slice("node --test ".length).split(" "), ...proof.slice("node --test ".length).split(" ")];
 	const files = filesUnder(repositoryRoot, join(repositoryRoot, "deploy")).filter((file) => file.endsWith(".test.mjs"));
 	assert.ok(files.includes("deploy/agent-exit/qorpera-agent-exit-proof.test.mjs"));
 	assert.equal(new Set(named).size, named.length, named.join(" "));
 	assert.deepEqual(set(named), set(files));
 	assert.equal(python, "python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'");
-	// Side by side it is packed by the little CPU it uses, but still runs two files at once: the proof beside the rest.
 	const step = planChanged(["deploy/node-agent/qorpera-node-launch.py"]).steps.find((candidate) => candidate.name === "deploy-node");
 	assert.ok(step.cores < 1, String(step.cores));
-	assert.match(planScript([step], { cores: 6 }), /\nrest_0\(\) \( export GOMAXPROCS=2; node\(\) .* command node --test --test-concurrency=2 "\$@"/);
+	assert.match(planScript([step], { cores: 6 }), /\nrest_0\(\) \( export GOMAXPROCS=4; node\(\) .* command node --test --test-concurrency=4 "\$@"/);
+	assert.ok(names(["deploy/agent-exit/qorpera-agent-exit.mjs"]).includes("deploy-agent-exit-proof"));
+	assert.ok(!names(["deploy/node-agent/qorpera-node-launch.py"]).includes("deploy-agent-exit-proof"));
 });
 
 test("planReleaseCheck runs the fast enforced release subset when only derived files differ from master and falls back otherwise", () => {

@@ -46,7 +46,7 @@ const WARM_UNFINISHED_SECONDS = 3600;
 /** Changes when what a copy holds or how it is made changes, so older copies are not used. */
 const WARM_FORMAT = "1";
 /** Where a warm start finds the copy, and where a build that is kept is written, inside the container. */
-const WARM_IN = "/qorpera-warm";
+export const WARM_IN = "/qorpera-warm";
 const WARM_OUT = "/qorpera-warm-out";
 /** A warm start copies the data directory in and starts PostgreSQL on it. A copy that cannot be read leaves an empty
  * data directory, so the image initializes a fresh cluster, and `startBuilt` finds no build there. A container restarted
@@ -149,7 +149,7 @@ export function warmDatabasesToDrop(present, snapshots, applied) {
 	return extra.every((database) => /^qorpera_snapshot_\d{4}$/.test(database)) ? extra : null;
 }
 
-function warmVolumes() {
+export function warmVolumes() {
 	return run("docker", ["volume", "ls", "--quiet", "--filter", "name=qorpera-hosted-db-warm-"]).split("\n").filter(Boolean);
 }
 

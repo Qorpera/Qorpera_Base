@@ -75,6 +75,7 @@ const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
 /** Runner-orchestrator test files that spend nearly all their time waiting on real deadlines and timeouts, not on
  * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNNER_ORCHESTRATOR_WAITING = [
+	"test/company-machine-stream-process.test.ts",
 	"test/company-machine-host.test.ts",
 	"test/lxd-login-gateway.test.ts",
 	"test/orchestrator-wake.test.ts",
@@ -208,7 +209,7 @@ export const STEPS = [
 		// Mostly waits on the programs its tests start. One file at a time (cores 1) it took 128 s for 56 CPU seconds;
 		// four at a time, 36-42 s for 53-63 CPU seconds, about 1.5 cores (node02, 16 Oct, 5 of 5 slots busy).
 		cores: 1.5,
-		width: 4,
+		width: 6,
 		commands: ["node --test scripts/*.test.mjs"],
 	},
 	{
@@ -280,17 +281,23 @@ export const STEPS = [
 	{
 		name: "deploy-node",
 		why: "node agent, parity and tidy-up (step2-lxd.yml), and the P3 proof driver's own check",
-		seconds: 121,
+		seconds: 96,
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
-		// node --test runs its files side by side, the agent exit's root proof in a file of its own. The step mostly waits:
-		// two files at once, 55-56 CPU seconds over 136-147 s, 42-43 of them the proof's container (node01 and node02, 16 Oct).
-		// So it is packed as 0.4 cores and still runs two files at once, the proof beside the rest.
 		cores: 0.4,
-		width: 2,
+		width: 4,
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs deploy/sites/sites-route.test.mjs deploy/sites/envoy-front-sites.test.mjs deploy/sites/app-relay/relay.test.mjs deploy/company-data/gateway/sql-text.test.mjs deploy/company-data/gateway/gateway.test.mjs deploy/company-data/gateway/snapshot.test.mjs deploy/company-data/gateway/external-doors.test.mjs deploy/company-data/kit/kit.test.mjs deploy/screens-door/qorpera-screens-door.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs deploy/sites/sites-route.test.mjs deploy/sites/envoy-front-sites.test.mjs deploy/sites/app-relay/relay.test.mjs deploy/company-data/gateway/sql-text.test.mjs deploy/company-data/gateway/gateway.test.mjs deploy/company-data/gateway/snapshot.test.mjs deploy/company-data/gateway/external-doors.test.mjs deploy/company-data/kit/kit.test.mjs deploy/screens-door/qorpera-screens-door.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
+	},
+	{
+		name: "deploy-agent-exit-proof",
+		why: "privileged root container proof for deploy/agent-exit",
+		seconds: 143,
+		paths: [/^deploy\/agent-exit\//],
+		cores: 0.4,
+		width: 1,
+		commands: ["node --test deploy/agent-exit/qorpera-agent-exit-proof.test.mjs"],
 	},
 	{
 		name: "deploy-shell",

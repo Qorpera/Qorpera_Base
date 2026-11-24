@@ -38,10 +38,11 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * left. A test connecting to its database again uses `current_database()`, not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "628"],
-	["qorpera_test_3", "786"],
-	["qorpera_test_4", "948"],
-	["qorpera_test_5", "1245"],
+	["qorpera_test_2", "530"],
+	["qorpera_test_3", "685"],
+	["qorpera_test_4", "825"],
+	["qorpera_test_5", "965"],
+	["qorpera_test_6", "1245"],
 ];
 
 export function compareTestNames(a, b) {
@@ -121,7 +122,9 @@ const OWN_SERVER_SCRIPTS = new Set([
  * here costs time only: the script copies the nearest earlier snapshot and replays the gap. */
 function scriptStartPoints(names) {
 	return [
-		"20260926034000_runtime_bundle_activation_v128.sql", // test-runtime-bundle-activation
+		"20260926034000_runtime_bundle_activation_v128.sql",
+		"20260928489995_runtime_node_agent_exit_placement.sql",
+		"20260930506000_company_machine_repository_retired.sql",
 	].filter((name) => names.includes(name));
 }
 
@@ -156,6 +159,9 @@ function startInBackground(script, environment = {}) {
  * one after it (28 s), together about as long as all the others in the first (79 s). */
 const SECOND_LANE = new Set([
 	"scripts/test-folder-core-acceptance.mjs",
+]);
+const THIRD_LANE = new Set([
+	"scripts/test-runtime-roll.mjs",
 	"scripts/test-object-gateway-company-creation.mjs",
 ]);
 
@@ -284,7 +290,7 @@ async function main() {
 			shared = startInTurn(
 				HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name)),
 				cluster.environment(),
-				(name) => (SECOND_LANE.has(name) ? 1 : 0),
+				(name) => (SECOND_LANE.has(name) ? 1 : THIRD_LANE.has(name) ? 2 : 0),
 			);
 		// A database stops at its first failure; the others run to their end.
 		const results = await Promise.allSettled(
