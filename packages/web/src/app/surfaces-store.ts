@@ -750,7 +750,7 @@ export interface SurfaceReportSummary {
 	readonly ownerTitle?: string;
 }
 
-export type SurfaceDeliverableKind = "report" | "html" | "pdf";
+export type SurfaceDeliverableKind = "report" | "html";
 
 export interface SurfaceChangeDeliverable {
 	readonly kind: SurfaceDeliverableKind;
@@ -767,7 +767,6 @@ export function surfaceDocSlug(path: string): string {
 
 const REPORT_FILE_RE = /\.report\.json$/i;
 const HTML_DELIVERABLE_RE = /\.html?$/i;
-const PDF_DELIVERABLE_RE = /\.pdf$/i;
 const MODULE_DELIVERABLE_RE = /(?:^|\/)modules\/[^/]+\//i;
 const HTML_TITLE_ENTITIES: Readonly<Record<string, string>> = {
 	amp: "&",
@@ -941,16 +940,6 @@ export function changeDeliverables(
 				path,
 				slug: surfaceDocSlug(path),
 				title: content ? extractHtmlDeliverableTitle(content, path) : readableDeliverableTitle(path),
-			});
-			continue;
-		}
-		if (PDF_DELIVERABLE_RE.test(path)) {
-			seen.add(path);
-			results.push({
-				kind: "pdf",
-				path,
-				slug: surfaceDocSlug(path),
-				title: readableDeliverableTitle(path),
 			});
 		}
 	}

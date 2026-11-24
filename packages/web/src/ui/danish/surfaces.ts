@@ -379,7 +379,6 @@ export const SURFACES: Record<string, string> = {
 	"yourdomain.com": "ditdomæne.dk",
 	Article: "Artikel",
 	HTML: "HTML",
-	PDF: "PDF",
 	Added: "Tilføjet",
 	"Open {title}": "Åbn {title}",
 };

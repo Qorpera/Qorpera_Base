@@ -273,9 +273,7 @@ function drawerCap(): number {
 }
 
 function deliverableKindLabel(kind: SurfaceDeliverableKind): string {
-	if (kind === "html") return t("HTML");
-	if (kind === "pdf") return t("PDF");
-	return t("Article");
+	return kind === "html" ? t("HTML") : t("Article");
 }
 
 function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {

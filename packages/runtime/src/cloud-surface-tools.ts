@@ -1054,7 +1054,9 @@ function layoutRefusal(problem: string): CloudToolRefusal {
 }
 
 function reportRefusal(path: string, problem: string): CloudToolRefusal {
-	const prefix = `${path} would not render as a report:`;
+	const rawPath = path.replace(/[^\u0020-\u007e]/g, "?");
+	const safePath = rawPath.length > 160 ? `${rawPath.slice(0, 157)}...` : rawPath;
+	const prefix = `${safePath} would not render as a report:`;
 	const fix = "Fix it to match the *.report.json format and stage again; nothing was staged.";
 	const plain = problem.replace(/[^\u0020-\u007e]/g, "?");
 	const room = Math.max(80, 1000 - prefix.length - fix.length - 4);
@@ -1365,7 +1367,8 @@ export function createStageSurfacePatchTool(
 				throw new CloudToolArgumentRefusal(`ops exceeds ${MAX_STAGE_SURFACE_PATCH_BYTES} bytes`);
 			}
 			const notePaths = parseOptionalNotePathsArg(raw.notePaths);
-			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			const parsedFinishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			const finishSession = options.deferSessionCompletion ? false : parsedFinishSession;
 			return {
 				title,
 				summary,
@@ -1402,7 +1405,7 @@ export function createStageSurfacePatchTool(
 					openChangeCount: result.openChangeCount,
 					opCount: parsed.ops.length,
 					notePaths: [...parsed.notePaths],
-					finishSession: parsed.finishSession,
+					...(options.deferSessionCompletion ? {} : { finishSession: parsed.finishSession }),
 					staged: true,
 					...(parsed.layoutUnchecked === true ? { note: LAYOUT_UNCHECKED_NOTE } : {}),
 				}),

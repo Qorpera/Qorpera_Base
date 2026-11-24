@@ -693,7 +693,17 @@ describe("stage_surface_patch and the layout", () => {
 			]),
 		).toThrow("sections[0].blocks[0].kind must be one of quote, bar_chart, line_chart, table, callout, figure");
 
-		const stageSurfacePatch = vi.fn();
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{
+					op: "write_text",
+					path: "q3\u2013retention.report.json",
+					content: "{ not json",
+				},
+			]),
+		).toThrow("q3?retention.report.json would not render as a report: content is not valid JSON.");
+
+		const stageSurfacePatch = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
 		const deferredTool = createStageSurfacePatchTool(randomUUID(), { stageSurfacePatch }, undefined, {
 			deferSessionCompletion: true,
 		});
@@ -709,6 +719,21 @@ describe("stage_surface_patch and the layout", () => {
 		});
 		await expect(deferredTool.prepare!(parsedBad, toolContext())).rejects.toBeInstanceOf(CloudToolRefusal);
 		expect(stageSurfacePatch).not.toHaveBeenCalled();
+
+		const parsedDeferred = deferredTool.parseArguments({
+			title: "Q3 retention",
+			summary: "Single report.",
+			ops: [{ op: "write_text", path: "q3.report.json", content: validReport }],
+			finishSession: true,
+		});
+		const preparedDeferred = await deferredTool.prepare!(parsedDeferred, toolContext());
+		const deferredResult = await deferredTool.execute(preparedDeferred, toolContext());
+		expect(stageSurfacePatch).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ finishSession: false }),
+			expect.anything(),
+		);
+		expect(JSON.parse(deferredResult.value as string)).not.toHaveProperty("finishSession");
 
 		const folderBrief = buildSurfaceTurnBrief({
 			sessionId: randomUUID(),
