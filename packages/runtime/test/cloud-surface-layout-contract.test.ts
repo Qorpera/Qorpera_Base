@@ -445,6 +445,19 @@ describe("stage_surface_patch and the layout", () => {
 		});
 		await expect(tool.prepare!(parsed, toolContext())).resolves.toEqual(parsed as JsonValue);
 		await expect(check([{ op: "delete", path: "layout.json" }], layout)).resolves.toBe("checked");
+		const breakdowns = JSON.stringify({
+			schema: "qorpera.surface-layout/v1",
+			tabs: [
+				{
+					id: "breakdowns",
+					title: "Breakdowns",
+					blocks: [{ type: "explainer", match: "breakdowns/**/scenes.js" }],
+				},
+			],
+		});
+		await expect(check([{ op: "write_text", path: "layout.json", content: breakdowns }], layout)).resolves.toBe(
+			"checked",
+		);
 		expect(layout.readLayout).not.toHaveBeenCalled();
 	});
 

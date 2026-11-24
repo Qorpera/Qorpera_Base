@@ -130,6 +130,7 @@ const mocked = vi.hoisted(() => ({
 	folderTransports: [] as Record<string, unknown>[],
 	/** The folder model's transports the host builds are the real ones, over the guest agent's client faked here. */
 	realTransports: false,
+	realReconcile: false,
 	leaseTransports: [] as { scope: { workerId: string; turn: number; requestId: string }; open: boolean }[],
 	commandTransports: [] as {
 		authorize: (
@@ -195,17 +196,22 @@ vi.mock("../src/coding-guest-client.ts", () => ({
 		}
 	},
 }));
-vi.mock("../src/coding-machine.ts", async (original) => ({
-	...(await original<typeof import("../src/coding-machine.ts")>()),
-	reconcileCodingMachine: mocked.reconcile,
-	codingMachineStartOperation: mocked.startOperation,
-	codingMachineLastStart: mocked.lastStart,
-	dropCodingMachineStart: mocked.dropStart,
-	undropCodingMachineStart: mocked.undropStart,
-	codingMachineStartDropped: mocked.startDropped,
-	recordCodingMachineDisk: mocked.recordDisk,
-	codingMachineDisk: mocked.disk,
-}));
+vi.mock("../src/coding-machine.ts", async (original) => {
+	const real = await original<typeof import("../src/coding-machine.ts")>();
+	return {
+		...real,
+		reconcileCodingMachine: (input: CodingMachineReconcileOptions) =>
+			mocked.realReconcile ? real.reconcileCodingMachine(input) : mocked.reconcile(input),
+		codingMachineStartOperation: (root: string, plan: Parameters<typeof real.codingMachineStartOperation>[1]) =>
+			mocked.realReconcile ? real.codingMachineStartOperation(root, plan) : mocked.startOperation(root, plan),
+		codingMachineLastStart: mocked.lastStart,
+		dropCodingMachineStart: mocked.dropStart,
+		undropCodingMachineStart: mocked.undropStart,
+		codingMachineStartDropped: mocked.startDropped,
+		recordCodingMachineDisk: mocked.recordDisk,
+		codingMachineDisk: mocked.disk,
+	};
+});
 vi.mock("../src/coding-git-seed.ts", () => ({
 	resolveCloudCodingBase: mocked.resolveBase,
 	fetchCloudCodingSeed: mocked.seedFetch,
@@ -250,6 +256,7 @@ beforeEach(() => {
 	mocked.commandTransports.length = 0;
 	mocked.folderTransports.length = 0;
 	mocked.realTransports = false;
+	mocked.realReconcile = false;
 	mocked.leaseTransports.length = 0;
 });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -10848,5 +10855,143 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(await transportOpts.withheld?.(f.signal)).toBe(false);
 		expect(f.calls("qorpera_authorize_coding_machine_run")).toEqual([]);
 		expect(f.calls("qorpera_list_coding_machines")).toEqual([]);
+	});
+
+	it("does not abort an in-flight start dispatch when overlapped repo prepare hits NODE_OBSERVATION_UNAVAILABLE and settles accepted ops before deferring", async () => {
+		const f = await folderFixture();
+		mocked.realReconcile = true;
+		let startEntered!: () => void;
+		const inStart = new Promise<void>((resolve) => {
+			startEntered = resolve;
+		});
+		let releaseStart!: () => void;
+		const startGate = new Promise<void>((resolve) => {
+			releaseStart = resolve;
+		});
+		const ops = new Map<string, "create" | "start">();
+		let startSignalAborted = true;
+		vi.mocked(f.client.submitInstanceOperation).mockImplementation(async (project, action, signal) => {
+			const operationId = randomUUID();
+			if (action.action === "create") {
+				f.lxd.exists = true;
+				f.lxd.running = false;
+				f.lxd.devices = structuredClone(action.request.devices) as Devices;
+				ops.set(operationId, "create");
+				return { project, instanceName: action.request.name, operationId };
+			}
+			if (action.action === "start") {
+				startEntered();
+				await startGate;
+				startSignalAborted = signal.aborted;
+				signal.throwIfAborted();
+				f.lxd.running = true;
+				ops.set(operationId, "start");
+				return { project, instanceName: action.name, operationId };
+			}
+			throw new Error(`unexpected action ${action.action}`);
+		});
+		vi.mocked(f.client.inspectInstanceOperation).mockImplementation(async ({ operationId }) => {
+			if (!ops.has(operationId)) throw new Error("LXD_OPERATION_UNKNOWN");
+			return "succeeded";
+		});
+
+		const origPrepare = f.repositories.prepare.getMockImplementation()!;
+		f.repositories.prepare.mockImplementationOnce(async (session, signal) => {
+			await inStart;
+			f.state.runRefusal = "NODE_OBSERVATION_UNAVAILABLE";
+			try {
+				await session.assertAuthorized(signal);
+			} finally {
+				globalThis.setTimeout(releaseStart, 10);
+			}
+			return origPrepare(session, signal);
+		});
+
+		const firstError = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal).catch((error: unknown) => error);
+		expect(firstError).toBeInstanceOf(CodingMachineUnavailable);
+		expect((firstError as CodingMachineUnavailable).reason).toBe("NODE_OBSERVATION_UNAVAILABLE");
+		expect(startSignalAborted).toBe(false);
+		expect(vi.mocked(f.client.execInstance).mock.calls.filter((call) => call[2][0] === "/usr/bin/true")).toHaveLength(
+			0,
+		);
+
+		const settled = JSON.parse(
+			await readFile(
+				join(f.options.storagePolicy.rootPath, "control", "machines", f.machine.machineId, "000005.json"),
+				"utf8",
+			),
+		);
+		expect(settled).toMatchObject({ action: "start", kind: "settled", state: "succeeded" });
+
+		f.state.runRefusal = null;
+		vi.mocked(f.client.inspectInstanceOperation).mockRejectedValue(new Error("LXD_OPERATION_UNKNOWN"));
+		const prepared = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(prepared).toEqual({ vmId: f.machine.machineId, baseSha: f.baseSha });
+		expect(vi.mocked(f.client.submitInstanceOperation).mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+		]);
+	});
+
+	it("aborts #folderReady promptly on overlapped repo failure while real turn aborts still abort in-flight LXD dispatch", async () => {
+		const f = await folderFixture();
+		const host = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, guestReadyTimeoutMs: 10_000 });
+		let inReady!: () => void;
+		const readyEntered = new Promise<void>((resolve) => {
+			inReady = resolve;
+		});
+		let readyAborted = false;
+		const origExec = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[0] === "/usr/bin/true") {
+				inReady();
+				return new Promise<void>((_resolve, reject) => {
+					if (!signal) return reject(new Error("missing signal"));
+					signal.addEventListener(
+						"abort",
+						() => {
+							readyAborted = true;
+							reject(signal.reason);
+						},
+						{ once: true },
+					);
+				});
+			}
+			return origExec(project, name, command, signal);
+		});
+		f.repositories.prepare.mockImplementationOnce(async () => {
+			await readyEntered;
+			throw new CodingWorkspaceFailed("CODE_HOST_RESTORE_IN_PROGRESS", CODE_RESTORING);
+		});
+		await expect(host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toMatchObject({
+			message: "CODE_HOST_RESTORE_IN_PROGRESS",
+		});
+		expect(readyAborted).toBe(true);
+
+		const g = await folderFixture();
+		mocked.realReconcile = true;
+		const turnAbort = new AbortController();
+		let leaseAbortedDispatch = false;
+		vi.mocked(g.client.submitInstanceOperation).mockImplementationOnce(async (_project, _action, signal) => {
+			turnAbort.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
+			leaseAbortedDispatch = signal.aborted;
+			throw new Error("LXD_OPERATION_SUBMISSION_UNCONFIRMED");
+		});
+		await expect(g.host.prepareWorkspace(g.claim, g.turn(), turnAbort.signal)).rejects.toThrow(
+			"CODING_EXECUTOR_LEASE_LOST",
+		);
+		expect(leaseAbortedDispatch).toBe(true);
+		await vi.waitFor(async () => {
+			await readFile(
+				join(
+					g.options.storagePolicy.rootPath,
+					"control",
+					"machines",
+					g.machine.machineId,
+					"dispatch-error-000000-000000.json",
+				),
+				"utf8",
+			);
+		});
 	});
 });

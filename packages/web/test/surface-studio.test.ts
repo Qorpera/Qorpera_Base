@@ -517,7 +517,7 @@ describe("SurfaceStudioView", () => {
 		document.body.append(view.el);
 
 		const tabs = () => [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
 		const palette = view.el.querySelector('[data-block="palette"]')!;
 		expect(palette.querySelector("h2")?.textContent).toBe("Palette");
 		expect(palette.querySelector(".studio-changed-pill")).not.toBeNull();
@@ -1019,11 +1019,19 @@ describe("SurfaceStudioView", () => {
 		document.body.append(view.el);
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
-		expect(tabs.map((tab) => tab.textContent)).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
+		expect(tabs.map((tab) => tab.textContent)).toEqual([
+			"Overview",
+			"Specs",
+			"Vendors",
+			"Reports",
+			"Breakdowns",
+			"Files",
+		]);
 		expect(tabs.filter((tab) => tab.classList.contains("is-empty")).map((tab) => tab.dataset.tab)).toEqual([
 			"specs",
 			"vendors",
 			"reports",
+			"breakdowns",
 		]);
 		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Thetabands");
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).toBeNull();
@@ -1071,6 +1079,7 @@ describe("SurfaceStudioView", () => {
 			"Specs",
 			"Vendors",
 			"Reports",
+			"Breakdowns",
 			"Files",
 		]);
 		expect(view.el.querySelector(".studio-stage .studio-stage-floor")).not.toBeNull();
