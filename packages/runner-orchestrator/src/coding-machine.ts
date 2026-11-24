@@ -455,7 +455,7 @@ export interface CodingMachineReconcileResult {
 }
 
 export async function waitPendingLxdOperation(
-	client: Pick<LxdTrackedClient, "waitForInstanceOperation">,
+	client: Pick<LxdTrackedClient, "inspectInstanceOperation" | "waitForInstanceOperation">,
 	reference: { readonly project: string; readonly instanceName: string; readonly operationId?: string },
 	signal: AbortSignal,
 	waitSeconds = 15,

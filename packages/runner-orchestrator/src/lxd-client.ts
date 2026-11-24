@@ -1,5 +1,5 @@
 import { X509Certificate } from "node:crypto";
-import { Agent as HttpAgent, type IncomingHttpHeaders, request as httpRequest } from "node:http";
+import { Agent as HttpAgent, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { CODING_GUEST_HELPER_MAX_BYTES } from "@qorpera/contracts";
@@ -2605,7 +2605,16 @@ export class LxdUnixClient
 		if (!signal) {
 			const defaultTimeoutMs = defaultLxdRequestTimeoutMs(path, this.#operationTimeoutSeconds);
 			return withTimeoutScope(undefined, defaultTimeoutMs, (checked) =>
-				this.#requestPayload(method, path, payload, headers, checked, maximumResponseBytes, format, allowReusedRetry),
+				this.#requestPayload(
+					method,
+					path,
+					payload,
+					headers,
+					checked,
+					maximumResponseBytes,
+					format,
+					allowReusedRetry,
+				),
 			);
 		}
 		return new Promise<HttpResult>((resolve, reject) => {
