@@ -1074,7 +1074,7 @@ describe("What's new: the page", () => {
 		expect(site.querySelector(".whats-new-behind")?.textContent).toBe("og 2 ændringer bag kulisserne");
 		expect(labels(site)).toEqual(["Gå tilbage til version 2", "Sæt live", "Ikke endnu"]);
 		expect(text(site)).toContain("Åbn hjemmesiden");
-		expect(text(site)).toContain("Adgangskoden står under Hjemmesider.");
+		expect(text(site)).not.toContain("Adgangskode");
 		expect(text(site)).toContain("2 ændringer mere er ikke klar endnu.");
 	});
 });
