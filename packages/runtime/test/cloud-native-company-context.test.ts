@@ -2950,7 +2950,7 @@ it("explains read-only coding_finish handoffs and archiving unneeded blocked cod
 	const f = nativeCompanyContextFixture();
 	const staff = compileCloudNativeCompanyInstructions(parseCloudNativeCompanyContext(f.context, f.binding));
 	expect(staff).toContain(
-		"On a read-only or inspection turn with zero new commits, coding_finish completes cleanly as a report-only handoff without running checks, landing on main, or opening a pull request.",
+		"On a read-only or inspection session where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), coding_finish completes cleanly as a report-only handoff without running checks, landing on main, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual.",
 	);
 	const completion = cloudCompanyRuntimeInstructions(
 		{

@@ -2029,23 +2029,27 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 					"never mention internal Qorpera tools, harnesses, or landing workflows in a coding_ask question",
 				);
 				expect(options.runtimeInstructions).toContain(
-					"For a read-only, inspection, or audit task — or whenever you verified no repository changes are needed and made zero new commits — still call coding_finish with the unchanged headSha",
+					"when HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), the platform completes the turn cleanly as a report-only handoff without adding a checks file, running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual.",
 				);
 				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
 				const ask = adapters.tools.find((tool) => tool.name === "coding_ask")!;
+				expect(finish.description).toContain("where HEAD still equals the session's baseSha");
 				expect(finish.description).toContain("report-only handoff");
 				expect(finish.description).toContain(
-					"without running checks, landing on the default branch, or opening a pull request",
+					"without running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual.",
 				);
 				expect(
 					(finish.inputSchema as { properties: { headSha: { description?: string } } }).properties.headSha
 						.description,
-				).toContain("Pass baseSha unchanged when no commits were made.");
+				).toContain("Equals the session's baseSha when no commits exist beyond the session base.");
 				expect(ask.description).toContain("never to hand off a read-only or no-change report");
 				expect(ask.description).toContain("never mention internal Qorpera tools, harnesses, or landing mechanics");
 				const correction = await options.turnCorrection?.(options.signal);
-				expect(correction).toContain("For a read-only or no-change task with zero new commits, call coding_finish");
+				expect(correction).toContain(
+					"For a read-only or no-change task where HEAD still equals the session's baseSha",
+				);
 				expect(correction).toContain("nothing will be landed or pushed");
+				expect(correction).toContain("including an unlanded commit from an earlier turn");
 				expect(correction).toContain("without internal harness jargon");
 				await finish.execute(
 					finish.parseArguments({
@@ -2090,12 +2094,16 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 					"Never use coding_ask to hand off a read-only or no-change report",
 				);
 				expect(options.runtimeInstructions).toContain(
-					"For a read-only, inspection, or no-change turn with zero new commits, call coding_finish with the unchanged headSha",
+					"For a read-only, inspection, or no-change turn where HEAD still equals the session's baseSha (no commits beyond the session base), call coding_finish with that headSha",
 				);
 				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
-				expect(finish.description).toContain("For a read-only or no-change turn with zero new commits");
+				expect(finish.description).toContain(
+					"For a read-only or no-change turn where HEAD still equals the session's baseSha",
+				);
 				const correction = await options.turnCorrection?.(options.signal);
-				expect(correction).toContain("For a read-only or no-change task with zero new commits, call coding_finish");
+				expect(correction).toContain(
+					"For a read-only or no-change task where HEAD still equals the session's baseSha",
+				);
 				expect(correction).toContain("without internal harness jargon");
 				await finish.execute(
 					finish.parseArguments({
