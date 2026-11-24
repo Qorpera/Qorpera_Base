@@ -180,14 +180,13 @@ describe("shell presentation lifecycle", () => {
 		const cap = String(Math.floor(window.innerWidth * 0.44));
 		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
-		// The default is the earlier 369px rail made a tenth wider; the 1280px fixture window shows all of it.
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("365");
 		press("ArrowRight");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("422");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("381");
 		press("End");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe(cap);
+		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBe(cap);
 		// Only the rail and its edge carry the width, so a change restyles nothing else.
 		expect(aside.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
 		expect(rail.el.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
@@ -196,7 +195,7 @@ describe("shell presentation lifecycle", () => {
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("352");
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe(cap);
+		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBe(cap);
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
@@ -204,7 +203,7 @@ describe("shell presentation lifecycle", () => {
 		window.dispatchEvent(new Event("resize"));
 		press("ArrowLeft");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("336");
+		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBe("336");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
@@ -214,26 +213,26 @@ describe("shell presentation lifecycle", () => {
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("336");
+		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBe("336");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
 		// Going back to the default forgets the stored width, even where the window caps it.
-		vi.stubGlobal("innerWidth", 900);
+		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
 		rail.el.dispatchEvent(new MouseEvent("dblclick"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("396");
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBeNull();
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("352");
+		expect(localStorage.getItem("qorpera.web.rail-width.v6")).toBeNull();
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("365");
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
 		expect(frame.classList.contains("rail-compact")).toBe(true);
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("365");
 	});
 	it("starts every member once from the new default and keeps any width chosen since", () => {
 		const shown = () => {
@@ -246,8 +245,9 @@ describe("shell presentation lifecycle", () => {
 		localStorage.setItem("qorpera.web.rail-width.v2", "456");
 		localStorage.setItem("qorpera.web.rail-width.v3", "410");
 		localStorage.setItem("qorpera.web.rail-width.v4", "304");
-		expect(shown()).toBe("406");
 		localStorage.setItem("qorpera.web.rail-width.v5", "304");
+		expect(shown()).toBe("365");
+		localStorage.setItem("qorpera.web.rail-width.v6", "304");
 		expect(shown()).toBe("304");
 	});
 	it("changes marked labels without translating company names or message text", () => {
