@@ -1,5 +1,5 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
-import type { StudioPatchChange, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
+import type { StudioBinaryRef, StudioPatchChange, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
@@ -8,6 +8,7 @@ import { t } from "../../ui/preferences.ts";
 import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
 import {
+	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
 	isLocalSurfaceId,
 	isOpenChange,
@@ -17,8 +18,9 @@ import {
 	type SurfaceUpdatePhase,
 	surfaceDocSlug,
 } from "../surfaces-store.ts";
-import { htmlDocumentTitle } from "./surface-blocks/artifacts.ts";
+import { htmlDocumentTitle, PDF_FILE_RE } from "./surface-blocks/artifacts.ts";
 import { readableName } from "./surface-blocks/context.ts";
+import { formatPdfBytes, SurfacePdfViewer } from "./surface-blocks/pdf.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { compiledTokensCssFrom, prepareStudioHtmlPreview } from "./surface-studio-html.ts";
 
@@ -27,6 +29,7 @@ export interface SurfaceReportOptions {
 	readonly surface: SurfaceSummary;
 	readonly signal: AbortSignal;
 	readonly baseFiles?: Readonly<Record<string, string>>;
+	readonly baseBinaries?: Readonly<Record<string, StudioBinaryRef>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
 	readonly embedded?: boolean;
@@ -568,6 +571,15 @@ interface ReportHtmlDoc {
 	readonly changed: boolean;
 }
 
+interface ReportPdfDoc {
+	readonly path: string;
+	readonly slug: string;
+	readonly title: string;
+	readonly ref: StudioBinaryRef;
+	readonly baseRef?: StudioBinaryRef;
+	readonly changed: boolean;
+}
+
 type ReportSwitcherItem =
 	| {
 			readonly kind: "report";
@@ -584,6 +596,13 @@ type ReportSwitcherItem =
 			readonly doc: ReportHtmlDoc;
 	  }
 	| {
+			readonly kind: "pdf";
+			readonly slug: string;
+			readonly title: string;
+			readonly changed: boolean;
+			readonly doc: ReportPdfDoc;
+	  }
+	| {
 			readonly kind: "markdown";
 			readonly slug: string;
 			readonly title: string;
@@ -596,11 +615,36 @@ interface ReportRenderParams {
 	readonly surface: SurfaceSummary;
 	readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 	readonly baseFiles: Readonly<Record<string, string>>;
+	readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 	readonly ordered: readonly StudioPatchChange[];
 	readonly initialLoading: boolean;
 	readonly updatingPhase: SurfaceUpdatePhase | null;
 	readonly mode: SurfacesStore["state"]["mode"];
 	readonly activeReportSlug: string | undefined;
+}
+
+function collectPdfDocs(
+	binaries: Readonly<Record<string, StudioBinaryRef>>,
+	baseBinaries: Readonly<Record<string, StudioBinaryRef>>,
+	include: ((path: string) => boolean) | undefined,
+): ReportPdfDoc[] {
+	const results: ReportPdfDoc[] = [];
+	for (const path of Object.keys(binaries).sort()) {
+		if (include && !include(path)) continue;
+		if (!PDF_FILE_RE.test(path)) continue;
+		const ref = binaries[path];
+		if (!ref) continue;
+		const baseRef = baseBinaries[path];
+		results.push({
+			path,
+			slug: surfaceDocSlug(path),
+			title: readableName(path),
+			ref,
+			...(baseRef ? { baseRef } : {}),
+			changed: ref.fileSha256 !== baseRef?.fileSha256,
+		});
+	}
+	return results;
 }
 
 function markdownDocTitle(content: string, path: string): string {
@@ -672,11 +716,16 @@ export class SurfaceReportView {
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 	#renderSeq = 0;
 	readonly #htmlFrames: AppFrame[] = [];
+	readonly #pdfs: SurfacePdfViewer;
 
 	constructor(options: SurfaceReportOptions) {
 		this.#options = options;
 		if (options.embedded) this.el.classList.add("is-embedded");
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
+		this.#pdfs = new SurfacePdfViewer(
+			(file, signal) => options.store.readStudioBinary(file, signal),
+			this.#lifetime.signal,
+		);
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		if (!options.baseFiles) {
@@ -739,6 +788,7 @@ export class SurfaceReportView {
 	dispose(): void {
 		this.#renderSeq++;
 		this.#disposeHtmlFrames();
+		this.#pdfs.dispose();
 		if (this.#settleTimer) {
 			clearTimeout(this.#settleTimer);
 			this.#settleTimer = undefined;
@@ -792,12 +842,18 @@ export class SurfaceReportView {
 		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
+	#effectiveBaseBinaries(surfaceId: string): Readonly<Record<string, StudioBinaryRef>> {
+		const storeBase = effectiveStudioBaseBinaries(this.#options.store.state, surfaceId);
+		return this.#options.baseBinaries ? { ...this.#options.baseBinaries, ...storeBase } : storeBase;
+	}
+
 	update(): void {
 		if (this.#lifetime.signal.aborted) return;
 		const store = this.#options.store;
 		const state = store.state;
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
+		const baseBinaries = this.#effectiveBaseBinaries(surface.id);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges(surface.folderRoot);
 		const updatingPhase = this.#options.embedded ? null : store.surfaceUpdatePhase(surface.id);
@@ -828,9 +884,12 @@ export class SurfaceReportView {
 			state.activeReportSlug,
 			this.#activeSlug,
 			this.#baseFiles,
+			this.#options.baseBinaries,
 			state.cloudSurfaceFiles[surface.id],
+			state.cloudSurfaceBinaries[surface.id],
 			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
+			state.localStudioBinaries[surface.id],
 			surface.title,
 			surface.folderRoot,
 			workspace?.briefSummary ?? "",
@@ -855,7 +914,13 @@ export class SurfaceReportView {
 		const seq = ++this.#renderSeq;
 
 		const sliced = this.#options.timeSlice ?? hasBrowserCompositor();
-		if (initialLoading && Object.keys(baseFiles).length === 0 && ordered.length === 0 && state.mode !== "compare") {
+		if (
+			initialLoading &&
+			Object.keys(baseFiles).length === 0 &&
+			Object.keys(baseBinaries).length === 0 &&
+			ordered.length === 0 &&
+			state.mode !== "compare"
+		) {
 			this.#showingSkeleton = true;
 			this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "report"));
 			return;
@@ -866,6 +931,7 @@ export class SurfaceReportView {
 			surface,
 			workspace,
 			baseFiles,
+			baseBinaries,
 			ordered,
 			initialLoading,
 			updatingPhase,
@@ -895,9 +961,15 @@ export class SurfaceReportView {
 		if (!(await yieldToMain(signal).then(() => this.#isRenderActive(params.seq)))) return;
 		budget.reset();
 
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot, undefined, {
-			reconciliations: params.workspace?.reconciliations,
-		});
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+			{
+				reconciliations: params.workspace?.reconciliations,
+			},
+		);
 		const files = composition.files;
 		const include = this.#options.include;
 		const filePaths = Object.keys(files)
@@ -919,8 +991,9 @@ export class SurfaceReportView {
 			);
 			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
 		}
+		const pdfDocs = collectPdfDocs(composition.binaries, params.baseBinaries, include);
 
-		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, markdownDocs);
+		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, pdfDocs, markdownDocs);
 		if (!this.#isRenderActive(params.seq)) return;
 		if (!plan.article || !plan.sectionTasks) {
 			this.el.replaceChildren(...plan.children);
@@ -939,9 +1012,15 @@ export class SurfaceReportView {
 	}
 
 	#renderSync(params: ReportRenderParams): void {
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot, undefined, {
-			reconciliations: params.workspace?.reconciliations,
-		});
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+			{
+				reconciliations: params.workspace?.reconciliations,
+			},
+		);
 		const files = composition.files;
 		const include = this.#options.include;
 		const filePaths = Object.keys(files)
@@ -962,7 +1041,8 @@ export class SurfaceReportView {
 				markdownDocs,
 			);
 		}
-		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, markdownDocs);
+		const pdfDocs = collectPdfDocs(composition.binaries, params.baseBinaries, include);
+		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, pdfDocs, markdownDocs);
 		if (plan.article && plan.sectionTasks) {
 			for (const task of plan.sectionTasks) plan.article.append(task());
 		}
@@ -975,6 +1055,7 @@ export class SurfaceReportView {
 		composition: ReturnType<typeof composeStudioPreview>,
 		reports: readonly ReportDocument[],
 		htmlDocs: readonly ReportHtmlDoc[],
+		pdfDocs: readonly ReportPdfDoc[],
 		markdownDocs: readonly ReportMarkdownDoc[],
 	): {
 		readonly children: HTMLElement[];
@@ -984,7 +1065,7 @@ export class SurfaceReportView {
 	} {
 		this.#disposeHtmlFrames();
 		const { surface, workspace, initialLoading, updatingPhase, mode, activeReportSlug } = params;
-		const primaryItems: ReportSwitcherItem[] = [
+		const structuredItems: ReportSwitcherItem[] = [
 			...reports.map((doc) => ({
 				kind: "report" as const,
 				slug: doc.slug,
@@ -1000,6 +1081,13 @@ export class SurfaceReportView {
 				doc,
 			})),
 		];
+		const pdfItems: ReportSwitcherItem[] = pdfDocs.map((doc) => ({
+			kind: "pdf" as const,
+			slug: doc.slug,
+			title: doc.title,
+			changed: doc.changed,
+			doc,
+		}));
 		const fallbackMarkdownItems: ReportSwitcherItem[] = markdownDocs.map((doc) => ({
 			kind: "markdown" as const,
 			slug: doc.slug,
@@ -1007,7 +1095,8 @@ export class SurfaceReportView {
 			changed: doc.changed,
 			doc,
 		}));
-		const items = primaryItems.length > 0 ? primaryItems : fallbackMarkdownItems;
+		const items =
+			structuredItems.length > 0 ? [...structuredItems, ...pdfItems] : [...fallbackMarkdownItems, ...pdfItems];
 
 		if (activeReportSlug !== this.#lastStoreSlug) {
 			this.#lastStoreSlug = activeReportSlug;
@@ -1126,7 +1215,7 @@ export class SurfaceReportView {
 		if (mode === "compare") {
 			const leavingSkeleton = this.#showingSkeleton;
 			this.#showingSkeleton = false;
-			children.push(this.#renderCompare(reports, htmlDocs, markdownDocs));
+			children.push(this.#renderCompare(reports, htmlDocs, pdfDocs, markdownDocs));
 			return { children, leavingSkeleton };
 		}
 
@@ -1273,6 +1362,19 @@ export class SurfaceReportView {
 			return { children, leavingSkeleton };
 		}
 
+		if (activeItem.kind === "pdf") {
+			const pdfDoc = activeItem.doc;
+			const card = this.#pdfs.renderCard({
+				path: pdfDoc.path,
+				title: pdfDoc.title,
+				ref: pdfDoc.ref,
+				changed: pdfDoc.changed,
+				slug: pdfDoc.slug,
+			});
+			children.push(h("div", { class: "report-layout is-pdf" }, card));
+			return { children, leavingSkeleton };
+		}
+
 		const activeDoc = activeItem.doc;
 		const article = h("article", { class: "report-article", "data-report-slug": activeDoc.slug });
 		const sectionTasks = [
@@ -1290,13 +1392,15 @@ export class SurfaceReportView {
 	#renderCompare(
 		reports: readonly ReportDocument[],
 		htmlDocs: readonly ReportHtmlDoc[],
+		pdfDocs: readonly ReportPdfDoc[],
 		markdownDocs: readonly ReportMarkdownDoc[],
 	): HTMLElement {
 		const changedReports = reports.filter((report) => report.changed);
 		const changedHtml = htmlDocs.filter((doc) => doc.changed);
+		const changedPdf = pdfDocs.filter((doc) => doc.changed);
 		const changedMarkdown =
 			changedReports.length === 0 && changedHtml.length === 0 ? markdownDocs.filter((doc) => doc.changed) : [];
-		if (!changedReports.length && !changedHtml.length && !changedMarkdown.length) {
+		if (!changedReports.length && !changedHtml.length && !changedPdf.length && !changedMarkdown.length) {
 			return h(
 				"div",
 				{ class: "report-compare-wrap" },
@@ -1477,6 +1581,38 @@ export class SurfaceReportView {
 							{ class: "studio-compare-cell is-preview" },
 							h("small", null, t("HTML")),
 							h("strong", null, doc.title),
+						),
+					),
+				),
+			);
+		}
+		for (const doc of changedPdf) {
+			cards.push(
+				h(
+					"section",
+					{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
+					h(
+						"div",
+						{ class: "studio-section-head" },
+						h("h2", null, doc.title),
+						!doc.baseRef ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
+					),
+					h(
+						"div",
+						{ class: "studio-compare-grid" },
+						h("div", { class: "studio-compare-col-head" }, t("Base")),
+						h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, t("PDF")),
+							h("span", null, doc.baseRef ? formatPdfBytes(doc.baseRef.bytes) : t("Not in Base")),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, t("PDF")),
+							h("strong", null, `${doc.title} (${formatPdfBytes(doc.ref.bytes)})`),
 						),
 					),
 				),

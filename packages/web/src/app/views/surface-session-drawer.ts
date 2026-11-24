@@ -7,7 +7,8 @@ import type {
 	SurfaceSummary,
 	SurfaceWorkspace,
 } from "@qorpera/contracts";
-import { fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
+import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
+import { confirmDialog, fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { leadingMentions, type MentionTarget, matchTargets, mentionQuery } from "../../ui/mentions.ts";
 import { t } from "../../ui/preferences.ts";
@@ -283,7 +284,9 @@ function drawerCap(): number {
 }
 
 function deliverableKindLabel(kind: SurfaceDeliverableKind): string {
-	return kind === "html" ? t("HTML") : t("Article");
+	if (kind === "html") return t("HTML");
+	if (kind === "pdf") return t("PDF");
+	return t("Article");
 }
 
 function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
@@ -356,9 +359,11 @@ export class SurfaceSessionDrawer {
 	#armedApprove: string | undefined;
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
+	readonly #signal: AbortSignal;
 
 	constructor(store: SurfacesStore, signal: AbortSignal) {
 		this.#store = store;
+		this.#signal = signal;
 		try {
 			const stored = Number(localStorage.getItem(DRAWER_WIDTH_KEY));
 			if (Number.isFinite(stored) && stored >= DRAWER_MIN) this.#preferredWidth = stored;
@@ -470,6 +475,41 @@ export class SurfaceSessionDrawer {
 			{ signal },
 		);
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
+		this.el.addEventListener("contextmenu", (event) => this.#cardMenu(event), { signal });
+		pressToOpenMenu(this.el, signal, (event) => this.#cardMenu(event));
+	}
+
+	#cardMenu(event: MouseEvent): void {
+		if (event.shiftKey && (event.clientX || event.clientY)) return;
+		const card = (event.target as Element | null)?.closest<HTMLElement>(".surface-overview-card.is-agent");
+		const sessionId = card?.dataset.session;
+		const session = sessionId ? this.#store.session(sessionId) : undefined;
+		if (!card || !session) return;
+		event.preventDefault();
+		openContextMenu({
+			label: session.title,
+			...menuPoint(event, card),
+			opener: card,
+			findOpener: () =>
+				[...this.el.querySelectorAll<HTMLElement>(".surface-overview-card.is-agent")].find(
+					(item) => item.dataset.session === session.id,
+				) ?? null,
+			items: [{ label: t("Remove"), icon: "trash", danger: true, select: () => void this.#remove(session.id) }],
+		});
+	}
+
+	async #remove(sessionId: string): Promise<void> {
+		const session = this.#store.session(sessionId);
+		if (!session) return;
+		const running = isRunningSession(session);
+		const open = session.changes.some(isOpenChange);
+		if (running || open) {
+			const question = running
+				? t("Remove {title}? The agent stops and its unapproved changes are dropped.", { title: session.title })
+				: t("Remove {title}? Its unapproved changes are dropped.", { title: session.title });
+			if (!(await confirmDialog(question, t("Remove"), true, undefined, this.#signal))) return;
+		}
+		await this.#store.discardSession(sessionId);
 	}
 
 	#teammates(): MentionTarget[] {
@@ -881,6 +921,8 @@ export class SurfaceSessionDrawer {
 			this.#armedApprove,
 			state.localStudioBase[surface.id],
 			state.cloudSurfaceFiles[surface.id],
+			state.localStudioBinaries[surface.id],
+			state.cloudSurfaceBinaries[surface.id],
 			state.studioPatches,
 			workspace,
 		];
@@ -1404,6 +1446,8 @@ export class SurfaceSessionDrawer {
 			state.studioPatches,
 			resolvedSurface ? state.localStudioBase[resolvedSurface.id] : undefined,
 			resolvedSurface ? state.cloudSurfaceFiles[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.localStudioBinaries[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.cloudSurfaceBinaries[resolvedSurface.id] : undefined,
 			look?.kind,
 			look?.accent,
 			this.#armedApprove,

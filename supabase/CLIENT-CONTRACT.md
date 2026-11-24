@@ -1886,6 +1886,23 @@ site. Preview frames (`doorActionUrl` of `qorpera_get_surface_workspace`, `qorpe
 `hosts_domain` is, and site-serve redeems and serves them there; who gets a pass, its 60 seconds, one use and the
 12-hour preview session are unchanged.
 
+### A failed build goes back to its session (20260930889000_surface_preview_build_failure_to_session)
+
+The main preview frame (`previewState.primary` of `qorpera_get_surface_workspace` and `qorpera_set_preview_selection`;
+not compare frames) carries two more fields:
+
+- `kept`: null, or `{previewId, doorActionUrl, memberPass}`, the caller's newest unexpired `ready` preview of the same
+  surface, given only while the frame's `status` is `failed`. It is null when the caller has no earlier ready preview
+  or the surface has no site. `memberPass` is always null: the client mints one for `kept.previewId` with
+  `qorpera_mint_surface_preview_pass`, as for a ready frame without a pass.
+- `fixing`: true while the frame is `failed` and a session whose change is in this composition has a fix turn waiting
+  or running for a failed build; false otherwise.
+
+A surface's summary carries `publishBeingFixed`: true while `publishStatus` is `failed` and the session whose change
+landed last has a fix turn waiting or running for the failed publish build; false otherwise. A server without this
+migration sends none of the three fields; a client treats a missing field as null or false. The rows behind
+them change with the `surfaces` hint.
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
@@ -2106,6 +2123,17 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
     frame may navigate to a site's host; only the door frames one. Not taken: adding `frame-src https://*.qorpera.com`
     to the app's own CSP, or moving the whole app to `strict-origin-when-cross-origin` with `https://*.qorpera.com` in
     its `form-action`.
+  - `/pdf-preview/` (`packages/web/public/pdf-preview/`) follows the same door pattern for inline PDF previews in
+    Studio `artifacts` blocks and Report view (`packages/web/src/app/views/surface-blocks/pdf.ts`), so the app's own `/*` CSP
+    stays free of `frame-src` and `blob:` framing. Its `_headers` entry removes the inherited `Content-Security-Policy`,
+    `X-Frame-Options` and `Permissions-Policy`, then sets `Permissions-Policy: camera=(), microphone=(), geolocation=(),
+    payment=(), usb=()`, `X-Frame-Options: SAMEORIGIN`, and `Content-Security-Policy: default-src 'none'; script-src
+    'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`. The
+    parent viewer and `preview.js` check `event.source` and `event.origin === location.origin` both ways; `preview.js`
+    accepts one `Uint8Array`/`ArrayBuffer` payload, pins the Blob MIME type to `application/pdf`, frames the resulting
+    `blob:` URL, and revokes it on `pagehide`. `scripts/test-web-pdf-preview-browser.mjs` proves in Chromium under
+    `public/_headers` that valid PDFs render in Chromium's PDF viewer with `object-src 'none'`, `Open PDF` opens in a
+    new tab, and HTML bytes disguised as a PDF never execute script.
 - The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
   `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
 

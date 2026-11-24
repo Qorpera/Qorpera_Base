@@ -406,6 +406,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in its layout. When a member asks for a video, walkthrough or visual breakdown, start a Studio session on that interface so it stages an animated breakdown and records spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
 	},
 	{
+		id: "failed-interface-builds-go-back-to-their-session",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "A failed interface build goes back to its session",
+		text: "When Qorpera cannot build a code interface's preview or publish because of the code, the session whose change broke it gets a turn of its own with the end of the build log, and fixes and stages the fix, at most three times in a row. Members keep seeing the last preview that built, marked as being fixed. You need not start a session to fix such a build. If three fixes did not help, start one with the member's request and the build's words, or ask the member what the page should do.",
+	},
+	{
 		id: "split-surface-report-deliverables",
 		kind: "behaviour",
 		date: "2026-11-24",

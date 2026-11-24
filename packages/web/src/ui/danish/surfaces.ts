@@ -52,6 +52,9 @@ export const SURFACES: Record<string, string> = {
 	Changes: "Ændringer",
 	"Remove change reference": "Fjern ændringsreference",
 	"Discard all": "Kassér alle",
+	"Remove {title}? The agent stops and its unapproved changes are dropped.":
+		"Fjern {title}? Agenten stopper, og dens ikke-godkendte ændringer kasseres.",
+	"Remove {title}? Its unapproved changes are dropped.": "Fjern {title}? Dens ikke-godkendte ændringer kasseres.",
 	"Discarded “{title}”": "Kasserede “{title}”",
 	"Got it — updated “{title}” with “{note}”.": "Forstået — opdaterede “{title}” med “{note}”.",
 	"Needs your attention": "Kræver din opmærksomhed",
@@ -70,6 +73,7 @@ export const SURFACES: Record<string, string> = {
 	"Couldn't update preview": "Kunne ikke opdatere forhåndsvisningen",
 	"Building preview…": "Bygger forhåndsvisning…",
 	"The preview could not be built.": "Forhåndsvisningen kunne ikke bygges.",
+	"Being fixed": "Bliver rettet",
 	"The company is out of computer hours, so the preview could not be built.":
 		"Virksomheden har ikke flere computertimer, så forhåndsvisningen kunne ikke bygges.",
 	"No machine was free to build the preview. Try again in a moment.":
@@ -374,6 +378,10 @@ export const SURFACES: Record<string, string> = {
 	"yourdomain.com": "ditdomæne.dk",
 	Article: "Artikel",
 	HTML: "HTML",
+	PDF: "PDF",
 	Added: "Tilføjet",
 	"Open {title}": "Åbn {title}",
+	"Open PDF": "Åbn PDF",
+	"Loading PDF…": "Indlæser PDF…",
+	"This PDF can't be loaded.": "Denne PDF kan ikke indlæses.",
 };

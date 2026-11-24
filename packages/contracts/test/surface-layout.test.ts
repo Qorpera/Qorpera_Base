@@ -899,7 +899,7 @@ describe("the block registry", () => {
 		);
 		expect(text).toContain("- facts: short key figures (with from, only values of <=18 chars); ? where missing.");
 		expect(text).toContain(
-			"- artifacts: rendered artifacts (vector art, pictures, docs, pages, .json) no other block shows, expandable fullscreen; add to any tab.",
+			"- artifacts: rendered artifacts (vector art, pictures, docs, pages, PDFs, .json) no other block shows, expandable fullscreen; add to any tab.",
 		);
 		expect(text).toContain("items? [{title, from}] 1-6");
 		expect(text).toContain("facts and cards take items or from, not both; cards with from needs title");
