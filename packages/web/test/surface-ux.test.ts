@@ -653,9 +653,14 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)").length).toBe(waiting.length);
+		expect(drawer.querySelectorAll(".surface-drawer-pinned .surface-drawer-change:not(.is-option)").length).toBe(
+			waiting.length,
+		);
+		expect(drawer.querySelector(".surface-drawer-body .surface-drawer-change")).toBeNull();
 		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector<HTMLElement>(".surface-drawer-pinned")?.hidden).toBe(true);
 		expect(drawer.querySelector(".surface-overview-card.is-exploration")).toBeNull();
 		const keptCard = drawer
 			.querySelector(`.surface-overview-card.is-agent [data-session="${pickedId}"]`)!

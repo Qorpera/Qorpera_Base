@@ -1021,7 +1021,7 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: default;
 	transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
-.surface-drawer-body > .surface-agent-note, .surface-drawer-pinned > .surface-agent-note { margin: 4px 0 8px; }
+.surface-drawer-pinned > .surface-agent-note { margin: 4px 0 8px; }
 .surface-agent-note:hover {
 	border-color: color-mix(in srgb, var(--text) 20%, transparent);
 	box-shadow: 0 1px 3px rgb(18 18 17 / 6%);

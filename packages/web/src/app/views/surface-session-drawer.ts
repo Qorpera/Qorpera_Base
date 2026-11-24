@@ -1189,76 +1189,77 @@ export class SurfaceSessionDrawer {
 		const pinned: HTMLElement[] = [];
 		const parts: HTMLElement[] = [];
 		if (resolvedSurface) pinned.push(...this.#noteButtons(ownedNotes));
-		pinned.push(
-			h(
-				"div",
-				{ class: "surface-drawer-changes is-options", role: "radiogroup", "aria-label": exploration.title },
-				...variants.map((variant) => {
-					const label = variant.explorationVariantLabel ?? variant.title;
-					const checked = variant.id === picked?.id;
-					const primaryChange = variant.changes[0];
-					return h(
-						"div",
-						{ class: `surface-drawer-change is-option${checked ? " is-picked" : ""}` },
-						h(
-							"button",
-							{
-								type: "button",
-								class: "surface-drawer-option-row",
-								role: "radio",
-								"aria-checked": String(checked),
-								"data-act": "pick-variant",
-								"data-exploration": exploration.id,
-								"data-session": variant.id,
-							},
-							h("span", { class: "surface-radio", "aria-hidden": "true" }),
-							h("span", { class: "surface-drawer-change-title" }, label),
-						),
-						checked
-							? h(
-									"div",
-									{ class: "surface-drawer-change-acts" },
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn is-approve surface-approve-btn",
-											disabled: busy,
-											"data-act": "choose-variant",
-											"data-exploration": exploration.id,
-											"data-session": variant.id,
-										},
-										t("Use this one"),
-									),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn",
-											"data-act": "quote-change",
-											"data-session": variant.id,
-											"data-change": primaryChange?.id ?? variant.id,
-											"data-change-title": label,
-										},
-										t("Change"),
-									),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn is-muted",
-											disabled: busy,
-											"data-act": "discard-exploration",
-											"data-exploration": exploration.id,
-										},
-										t("Discard"),
-									),
-								)
-							: null,
-					);
-				}),
-			),
-		);
+		if (variants.length > 0)
+			pinned.push(
+				h(
+					"div",
+					{ class: "surface-drawer-changes is-options", role: "radiogroup", "aria-label": exploration.title },
+					...variants.map((variant) => {
+						const label = variant.explorationVariantLabel ?? variant.title;
+						const checked = variant.id === picked?.id;
+						const primaryChange = variant.changes[0];
+						return h(
+							"div",
+							{ class: `surface-drawer-change is-option${checked ? " is-picked" : ""}` },
+							h(
+								"button",
+								{
+									type: "button",
+									class: "surface-drawer-option-row",
+									role: "radio",
+									"aria-checked": String(checked),
+									"data-act": "pick-variant",
+									"data-exploration": exploration.id,
+									"data-session": variant.id,
+								},
+								h("span", { class: "surface-radio", "aria-hidden": "true" }),
+								h("span", { class: "surface-drawer-change-title" }, label),
+							),
+							checked
+								? h(
+										"div",
+										{ class: "surface-drawer-change-acts" },
+										h(
+											"button",
+											{
+												type: "button",
+												class: "surface-change-btn is-approve surface-approve-btn",
+												disabled: busy,
+												"data-act": "choose-variant",
+												"data-exploration": exploration.id,
+												"data-session": variant.id,
+											},
+											t("Use this one"),
+										),
+										h(
+											"button",
+											{
+												type: "button",
+												class: "surface-change-btn",
+												"data-act": "quote-change",
+												"data-session": variant.id,
+												"data-change": primaryChange?.id ?? variant.id,
+												"data-change-title": label,
+											},
+											t("Change"),
+										),
+										h(
+											"button",
+											{
+												type: "button",
+												class: "surface-change-btn is-muted",
+												disabled: busy,
+												"data-act": "discard-exploration",
+												"data-exploration": exploration.id,
+											},
+											t("Discard"),
+										),
+									)
+								: null,
+						);
+					}),
+				),
+			);
 		if (picked) parts.push(...this.#thread(picked, notes));
 		this.#setPinned(pinned);
 		this.#body.replaceChildren(...parts);
