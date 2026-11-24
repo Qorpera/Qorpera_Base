@@ -410,12 +410,14 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"000_schema_smoke.test.sql",
 		"040_account_separation.test.sql",
 		"200_deleted_profile_object_gc.test.sql",
-		"627_last.test.sql",
-		"628_first.test.sql",
-		"785_last.test.sql",
-		"786_first.test.sql",
-		"947_last.test.sql",
-		"948_first.test.sql",
+		"529_last.test.sql",
+		"530_first.test.sql",
+		"684_last.test.sql",
+		"685_first.test.sql",
+		"824_last.test.sql",
+		"825_first.test.sql",
+		"964_last.test.sql",
+		"965_first.test.sql",
 		"1100_four_digit.test.sql",
 		"1244_last.test.sql",
 		"1245_first.test.sql",
@@ -426,8 +428,9 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		["qorpera_test", tests.slice(0, 4)],
 		["qorpera_test_2", tests.slice(4, 6)],
 		["qorpera_test_3", tests.slice(6, 8)],
-		["qorpera_test_4", tests.slice(8, 11)],
-		["qorpera_test_5", tests.slice(11)],
+		["qorpera_test_4", tests.slice(8, 10)],
+		["qorpera_test_5", tests.slice(10, 13)],
+		["qorpera_test_6", tests.slice(13)],
 	]);
 	// Every test runs once, in its usual order.
 	assert.deepEqual(split.flatMap(([, part]) => part), tests);
@@ -441,8 +444,8 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 7)],
-			["c", tests.slice(7)],
+			["b", tests.slice(2, 9)],
+			["c", tests.slice(9)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");
