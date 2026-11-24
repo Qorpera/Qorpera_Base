@@ -488,6 +488,7 @@ export function cloudActionEffect(
 			return "internal";
 		case "propose_surface":
 		case "start_surface_session":
+		case "steer_surface_session":
 		case "manage_surface_automation":
 		case "coding_record_change":
 		case "stage_surface_patch":

@@ -14,6 +14,7 @@ import {
 	CLOUD_COWORKER_PRIORITY_REQUIRED,
 	CLOUD_COWORKER_STARTING,
 	CLOUD_COWORKER_STARTING_WAIT_MS,
+	CLOUD_SURFACE_ESCALATION_WAKE_SCHEMA,
 	CLOUD_WAKE_SCHEMA,
 	type CloudWakeControl,
 	type CloudWakeEnvelope,
@@ -2182,6 +2183,64 @@ describe("light ask wakes (deploy/first-node/RUNTIME-LIGHT-ASK.md)", () => {
 				{ ...wake, audience: { ...wake.audience, sessionId } },
 				{ ...authority.identity, runId: wake.runId, sessionId },
 			),
+		).toThrow();
+	});
+});
+
+describe("surface escalation wakes", () => {
+	function escalationWake() {
+		const { authority, envelope } = fixture();
+		const escalationId = randomUUID();
+		const surfaceSessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const policy = policies.find((item) => item.scenario === "agent-continuation")!.policy;
+		const wake: CloudWakeEnvelope = {
+			...envelope,
+			kind: "agent",
+			actorStaffId: null,
+			actorUserId: null,
+			parentRunId: null,
+			routine: null,
+			audience: { kind: "company", userId: null, sessionId },
+			source: {
+				kind: "surface-escalation",
+				id: escalationId,
+				occurrenceKey: `surface-escalation:${escalationId}`,
+			},
+			policy,
+			payload: {
+				schema: CLOUD_SURFACE_ESCALATION_WAKE_SCHEMA,
+				escalationId,
+				surfaceSessionId,
+				surfaceId,
+				surfaceSlug: "hjemmeside",
+				surfaceTitle: "Hjemmeside",
+				sessionTitle: "Pre-order hero",
+				reason: "needs_input",
+				summary: "Need product pricing confirmation before publishing.",
+				question: { text: "Keep 1,995 DKK?", options: ["Yes", "No"] },
+				memberInitiated: true,
+			},
+		};
+		return { wake, identity: { ...authority.identity, runId: wake.runId, sessionId } };
+	}
+
+	it("accepts a valid surface-escalation continuation wake on the Co-Founder thread", () => {
+		const { wake, identity } = escalationWake();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source.kind).toBe("surface-escalation");
+		expect(parsed.policy.initial).toBe("optional");
+		expect(parsed.policy.final).toBe("optional");
+	});
+
+	it("rejects a surface-escalation wake with an invalid reason or mismatched escalation id", () => {
+		const { wake, identity } = escalationWake();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, reason: "working" } }, identity),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, escalationId: randomUUID() } }, identity),
 		).toThrow();
 	});
 });

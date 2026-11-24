@@ -252,7 +252,7 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 }
 
 function agentStatusLine(session: SurfaceSession): string | null {
-	if (session.state === "needs_input") return t("Needs you");
+	if (session.state === "needs_input") return t("Paused");
 	if (session.state === "failed") return t("Failed");
 	if (isRunningSession(session)) return t("Working");
 	if (hasConflictedChange(session)) return t("Conflict");
@@ -939,15 +939,12 @@ export class SurfaceSessionDrawer {
 		const picked = variants.find((item) => item.id === pickedId) ?? variants[0];
 		const busy = Boolean(state.busy[`exploration:${exploration.id}`]);
 		const running = variants.some(isRunningSession);
-		const attention = variants.some((v) => v.state === "needs_input" || hasConflictedChange(v));
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "exploration", id: exploration.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", "is-exploration", attention && "is-attention"]
-					.filter(Boolean)
-					.join(" "),
+				class: "surface-overview-card is-agent is-exploration",
 				"data-act": "focus-exploration",
 				"data-exploration": exploration.id,
 			},
@@ -1042,7 +1039,6 @@ export class SurfaceSessionDrawer {
 			(listed.length > 0 && listed.every((change) => isActionChange(change, surface)));
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const failed = session.state === "failed";
-		const attention = session.state === "needs_input" || hasConflictedChange(session) || failed;
 		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
 		const claimedPaths = new Set<string>();
 		for (const change of openChanges) {
@@ -1252,9 +1248,7 @@ export class SurfaceSessionDrawer {
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", attention && "is-attention", failed && "is-failed"]
-					.filter(Boolean)
-					.join(" "),
+				class: ["surface-overview-card", "is-agent", failed && "is-failed"].filter(Boolean).join(" "),
 				"data-act": "focus-session",
 				"data-session": session.id,
 			},

@@ -553,7 +553,7 @@ export class SurfaceRail {
 			const groupChildren: HTMLElement[] = [groupEntry.head];
 			for (const listed of activeSurfaces) {
 				const asksMe = askedToPublish(listed, this.#store.userId);
-				const surface = asksMe ? { ...listed, needsAttentionCount: listed.needsAttentionCount + 1 } : listed;
+				const surface = { ...listed, needsAttentionCount: asksMe ? 1 : 0 };
 				seenActive.add(surface.id);
 				const look = surfaceLookOf(surface, state.surfaceLooks);
 				const active = surface.slug === activeSlug;

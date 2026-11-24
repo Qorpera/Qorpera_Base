@@ -237,6 +237,7 @@ import {
 	createManageSurfaceAutomationTool,
 	createProposeSurfaceTool,
 	createStartSurfaceSessionTool,
+	createSteerSurfaceSessionTool,
 	type SurfaceCompanySenses,
 	type SurfaceToolsRpcClient,
 } from "./cloud-surface-tools.ts";
@@ -317,7 +318,7 @@ async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
 export { type ControlPlaneSurfaceToolsPortOptions, createControlPlaneSurfaceToolsPort, type SurfaceToolsRpcClient };
 
 type CloudRuntimeSurfaceToolsPort = Pick<CloudSurfaceToolsPort, "proposeSurface" | "startSurfaceSession"> &
-	Partial<Pick<CloudSurfaceToolsPort, "listSurfaceSenses" | "manageAutomation">>;
+	Partial<Pick<CloudSurfaceToolsPort, "listSurfaceSenses" | "manageAutomation" | "steerSurfaceSession">>;
 
 const EXPLICIT_MEMBER_DOC_PATTERN =
 	/\b(?:write|create|draft|save|export|generate|make|put|prepare)\s+(?:a|an|me|us|the)?\s*(?:markdown|md|doc|document|memo|report|plan|brief|pdf|csv|spreadsheet|file)\b|\b(?:as\s+a\s+(?:markdown|md|doc|document|file|pdf|csv|memo|report))\b|\.(?:md|pdf|csv|docx|xlsx)\b/i;
@@ -1815,6 +1816,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 																toolContext,
 															),
 													}),
+													...(this.#surfaceTools.steerSurfaceSession
+														? [
+																createSteerSurfaceSessionTool({
+																	steerSurfaceSession: (steerRequest, toolContext) =>
+																		this.#surfaceTools!.steerSurfaceSession!(
+																			{
+																				...steerRequest,
+																				ownerLabel:
+																					context.agentKind === "cofounder"
+																						? "Co-Founder"
+																						: context.agent.name,
+																			},
+																			toolContext,
+																		),
+																}),
+															]
+														: []),
 													...(this.#surfaceTools.manageAutomation
 														? [
 																createManageSurfaceAutomationTool(identity.companyId, {
@@ -2459,7 +2477,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				name: "surface_ask",
 				source: "runtime",
 				description:
-					"Pause this Surface session turn and ask the founder one concrete clarifying question before staging changes.",
+					"Pause this Surface session turn and escalate a genuine hard blocker to the Co-Founder. Never use surface_ask for taste, colour, or layout choices — stage concrete visual directions first.",
 				inputSchema: {
 					type: "object",
 					additionalProperties: false,
@@ -2532,7 +2550,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 			};
 
-			const runtimeInstructions = `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
+			const runtimeInstructions = `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise summary. Reserve surface_ask strictly for genuine hard blockers that cannot be staged first (it escalates to the Co-Founder).`;
 			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\nFounder request:\n${spec.prompt}`;
 			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
 			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
@@ -2604,7 +2622,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				turnCorrection: async () =>
 					captured
 						? undefined
-						: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask if founder input is needed.",
+						: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask only if a genuine hard blocker requires Co-Founder escalation.",
 				tools: (runIdentity, operations) => ({
 					tools: [...spec.buildTools(runIdentity, operations), surfaceReplyTool, surfaceAskTool],
 					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),

@@ -35,6 +35,7 @@ import {
 	createStageSurfaceOpsActionTool,
 	createStageSurfacePatchTool,
 	createStartSurfaceSessionTool,
+	createSteerSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
 import { buildSurfaceTurnBrief, SURFACE_STAGED_CODING_INSTRUCTIONS } from "../src/cloud-surface-turn-context.ts";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -239,6 +240,53 @@ describe("cloud surface runtime tools", () => {
 			tool.parseArguments({ surfaceId, prompt: "Go", explorationCount: 2, variantLabels: ["A", "B", "C"] }),
 		).toThrow();
 		expect(() => tool.parseArguments({ surfaceId, prompt: "Go", ownerLabel: "   " })).toThrow();
+	});
+
+	it("steers a paused or conflicted Surface session via steer_surface_session and control-plane RPC", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const steerSurfaceSession = vi.fn().mockResolvedValue({ sessionId, surfaceId, state: "queued" });
+		const tool = createSteerSurfaceSessionTool({ steerSurfaceSession });
+
+		expect(() => tool.parseArguments({ sessionId: "not-a-uuid", message: "Continue" })).toThrow();
+		expect(() => tool.parseArguments({ sessionId, message: "   " })).toThrow();
+
+		const parsed = tool.parseArguments({
+			sessionId,
+			message: "Use the dark linen hero background and keep the Danish pre-order CTA.",
+		});
+		const result = await tool.execute(parsed, toolContext());
+		expect(steerSurfaceSession).toHaveBeenCalledWith(
+			{
+				sessionId,
+				message: "Use the dark linen hero background and keep the Danish pre-order CTA.",
+			},
+			expect.any(Object),
+		);
+		expect(JSON.parse(result.value as string)).toEqual({
+			schema: "qorpera.surface-session-steered/v1",
+			sessionId,
+			state: "queued",
+		});
+
+		const call = vi.fn().mockResolvedValue({ id: sessionId, surfaceId, state: "queued" });
+		const port = createControlPlaneSurfaceToolsPort({ call });
+		const ctx = toolContext();
+		const steered = await port.steerSurfaceSession!(
+			{ sessionId, message: "Proceed with option B.", ownerLabel: "Co-Founder" },
+			ctx,
+		);
+		expect(call).toHaveBeenCalledWith(
+			"qorpera_native_surface_steer_session",
+			{
+				p_profile_id: ctx.companyId,
+				p_session_id: sessionId,
+				p_message: "Proceed with option B.",
+				p_origin_label: "Co-Founder",
+			},
+			ctx.signal,
+		);
+		expect(steered).toEqual({ sessionId, state: "queued" });
 	});
 
 	it("stages studio/identity patches via stage_surface_patch with parseStudioPatchOps validation", async () => {

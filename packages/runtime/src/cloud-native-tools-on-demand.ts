@@ -61,6 +61,7 @@ export const CLOUD_DIRECT_TOOLS: Readonly<Record<CloudToolKind, ReadonlySet<stri
 		"update_reading",
 		"propose_surface",
 		"start_surface_session",
+		"steer_surface_session",
 		"manage_surface_automation",
 	]),
 	employee: new Set(STAFF_DIRECT),
@@ -147,6 +148,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	record_reflection: "record what the company decided about a platform update",
 	propose_surface: "create or propose a primary Surface for the company sidebar",
 	start_surface_session: "launch a scoped session or 2-3 comparable directions on a Surface",
+	steer_surface_session: "reply to or unblock an existing Surface session with concrete direction",
 	manage_surface_automation: "create, update, pause, or delete a recurring Scheduled Agent targeting a Surface",
 };
 

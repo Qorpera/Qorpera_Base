@@ -2246,7 +2246,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				const status: HTMLElement | string = running
 					? crewWave()
 					: session.state === "needs_input"
-						? t("Needs you")
+						? t("Paused")
 						: hasConflictedChange(session)
 							? t("Conflict")
 							: actions

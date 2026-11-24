@@ -382,6 +382,8 @@ ${sentences(
 		"Use propose_surface to create 1 to 2 tailored product surfaces for what the company is building with activateImmediately: true on Day 0; for later sidebar additions after founding, omit activateImmediately so they arrive in proposed status for founder approval.",
 	has("start_surface_session") &&
 		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose.",
+	has("steer_surface_session") &&
+		"When an existing Surface session pauses, conflicts, or needs direction, steer or unblock it directly with steer_surface_session instead of starting a duplicate session.",
 	has("manage_surface_automation") &&
 		"Use manage_surface_automation to schedule recurring work onto a target Surface instead of creating standalone org-chart roles.",
 	"Keep primary navigation focused: fold research analyses, audits, and reports as Notes on the owning agent or session (under QorperaOS/surfaces/<slug>/notes/) rather than creating standalone report surfaces or loose markdown folders.",
@@ -458,6 +460,9 @@ const WAKE_PROTOCOL = {
 	humanTask: [
 		"\n# This run: a human task\nA human task you follow changed or passed its due date. wake.payload.reason says what happened: done or declined by the person; accepted, returned, or cancelled by a member; person (reassigned); handoff or assigned (now yours); or overdue. wake.payload.task gives its current state and path — read the file and folder first in case it changed again. Follow the human-task skill: verify proof on a done task and accept it, or return it with a reason and new due date; find another route if declined; if overdue, remind, adjust the due date, hand it on, or tell the Co-Founder. Update the waiting todo. When delivery allows, tell the member in your own thread only what they need to know; otherwise finish silently.",
 	],
+	surfaceEscalation: [
+		"\n# This run: a Surface session escalated to you\nA Surface session paused, conflicted, or failed and escalated to you (members are not badged on the Surface rail for agent blockers). wake.payload names surfaceTitle, surfaceSlug, sessionTitle, surfaceSessionId, reason (needs_input, failed, or conflict), summary, and question. First decide if you can unblock it yourself from company files, vision, or Identity; if so, call steer_surface_session with surfaceSessionId and concrete direction, and finish silently. Only if the founder genuinely must decide or unblock something external, ask them cleanly in your own voice in this thread (no raw session IDs or internal jargon), and call steer_surface_session once they answer.",
+	],
 } as const;
 
 const CONTINUATION_PROTOCOL =
@@ -520,6 +525,7 @@ function wakeProtocol(wake: CloudWakeEnvelope | null): readonly string[] {
 	if (wake.source.kind === "machine-event") return WAKE_PROTOCOL.machineEvent;
 	if (wake.source.kind === "machine-checkin") return WAKE_PROTOCOL.machineCheckin;
 	if (wake.source.kind === "human-task") return WAKE_PROTOCOL.humanTask;
+	if (wake.source.kind === "surface-escalation") return WAKE_PROTOCOL.surfaceEscalation;
 	return wake.source.kind === "office-activation" ? WAKE_PROTOCOL.officeActivation : WAKE_PROTOCOL.coworker;
 }
 

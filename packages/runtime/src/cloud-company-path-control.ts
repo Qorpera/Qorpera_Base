@@ -177,6 +177,7 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_native_surface_describe_senses",
 	"qorpera_native_surface_propose",
 	"qorpera_native_surface_start_session",
+	"qorpera_native_surface_steer_session",
 	"qorpera_native_surface_manage_automation",
 	"qorpera_native_surface_record_change",
 	"qorpera_native_surface_read_session_turn",

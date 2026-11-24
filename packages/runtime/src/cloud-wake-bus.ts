@@ -63,6 +63,7 @@ const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
 /** A light ask's wake payload (deploy/first-node/RUNTIME-LIGHT-ASK.md; migration 20260930761000). */
 export const CLOUD_LIGHT_ASK_WAKE_SCHEMA = "qorpera.light-ask-wake/v1";
 export const CLOUD_SURFACE_SESSION_WAKE_SCHEMA = "qorpera.surface-session-wake/v1";
+export const CLOUD_SURFACE_ESCALATION_WAKE_SCHEMA = "qorpera.surface-escalation-wake/v1";
 /** A todo's or a worker's key, as manage_worker takes it. */
 const WORK_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -244,7 +245,8 @@ export interface CloudWakeEnvelope {
 			| "data-change"
 			| "human-task"
 			| "light-ask"
-			| "surface-session";
+			| "surface-session"
+			| "surface-escalation";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -927,6 +929,41 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		)
 			throw new Error("Invalid surface session wake");
 		uuid(session.surfaceId);
+	} else if (wake.kind === "agent" && source.kind === "surface-escalation") {
+		const esc = closed(payloadBody, [
+			"schema",
+			"escalationId",
+			"surfaceSessionId",
+			"surfaceId",
+			"surfaceSlug",
+			"surfaceTitle",
+			"sessionTitle",
+			"reason",
+			"summary",
+			"question",
+			"memberInitiated",
+		]);
+		if (
+			esc.schema !== CLOUD_SURFACE_ESCALATION_WAKE_SCHEMA ||
+			uuidKey(esc.escalationId) !== uuidKey(source.id) ||
+			uuid(esc.surfaceSessionId) === null ||
+			uuid(esc.surfaceId) === null ||
+			source.occurrenceKey.toLowerCase() !== `surface-escalation:${uuidKey(source.id)}` ||
+			typeof esc.surfaceSlug !== "string" ||
+			!esc.surfaceSlug.trim() ||
+			typeof esc.surfaceTitle !== "string" ||
+			typeof esc.sessionTitle !== "string" ||
+			(esc.reason !== "needs_input" && esc.reason !== "failed" && esc.reason !== "conflict") ||
+			typeof esc.summary !== "string" ||
+			typeof esc.memberInitiated !== "boolean" ||
+			heldMessages !== undefined ||
+			parentRunId !== null ||
+			wake.routine !== null ||
+			actorStaffId !== null ||
+			(audience.sessionId === null) !== (policy.final === "forbidden") ||
+			(audience.sessionId !== null && policy.initial !== "optional")
+		)
+			throw new Error("Invalid surface escalation wake");
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:
 		// the task itself, when the run may read its file, says what to do next.

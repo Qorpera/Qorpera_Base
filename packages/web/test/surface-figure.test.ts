@@ -86,14 +86,28 @@ describe("a surface's figure in the rail", () => {
 		vi.useRealTimers();
 	});
 
-	it("rests or works without error or question animations even when attention is needed, keeping screen-reader words", async () => {
+	it("suppresses agent attention badges on the rail while keeping teammate publish asks", async () => {
 		const surfaces = [
 			summary(),
 			summary({ id: "s-busy", slug: "shop", title: "Shop", runningSessionCount: 2 }),
 			summary({ id: "s-asks", slug: "mail", title: "Mail", runningSessionCount: 1, needsAttentionCount: 1 }),
 			summary({ id: "s-idle-asks", slug: "inbox", title: "Inbox", runningSessionCount: 0, needsAttentionCount: 1 }),
+			summary({
+				id: "s-team-ask",
+				slug: "app",
+				title: "App",
+				runningSessionCount: 0,
+				publishAsk: {
+					askedByUserId: "u-teammate",
+					askedUserId: "u-me",
+					askedAt: "2026-11-24T08:00:00Z",
+					status: "open",
+					answeredAt: null,
+					changeCount: 1,
+				},
+			}),
 		];
-		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => surfaces) }));
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => surfaces) }), { userId: "u-me" });
 		await store.load();
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
@@ -109,11 +123,13 @@ describe("a surface's figure in the rail", () => {
 		expect(state("mail")).toContain("is-working");
 		expect(state("mail")).not.toContain("is-attention");
 		expect(row("mail").querySelector(".surface-figure-ask")).toBeNull();
-		expect(said("mail")).toBe("Needs your attention");
+		expect(said("mail")).toBe("Working");
 		expect(state("inbox")).toContain("is-rest");
 		expect(state("inbox")).not.toContain("is-attention");
 		expect(row("inbox").querySelector(".surface-figure-ask")).toBeNull();
-		expect(said("inbox")).toBe("Needs your attention");
+		expect(said("inbox")).toBeNull();
+		expect(state("app")).toContain("is-rest");
+		expect(said("app")).toBe("Needs your attention");
 		store.dispose();
 	});
 

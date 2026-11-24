@@ -2963,3 +2963,15 @@ it("explains read-only coding_finish handoffs and archiving unneeded blocked cod
 		"Members never see or answer coding sessions directly: when a coding session reports blocked, either resolve it yourself with manage_worker followup, archive it with manage_worker action archive if no longer needed, or ask the member cleanly in your own voice in this thread and follow up once they reply.",
 	);
 });
+
+it("explains Co-Founder mediation and steer_surface_session on surface-escalation wakes", () => {
+	const escalation = cloudCompanyRuntimeInstructions(
+		{
+			kind: "agent",
+			source: { kind: "surface-escalation", id: randomUUID(), occurrenceKey: "surface-escalation" },
+		} as never,
+		false,
+	);
+	expect(escalation).toContain("steer_surface_session");
+	expect(escalation).toContain("members are not badged on the Surface rail for agent blockers");
+});

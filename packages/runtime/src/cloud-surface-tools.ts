@@ -172,6 +172,12 @@ export interface StartSurfaceSessionToolRequest {
 	readonly variantLabels?: readonly string[] | null;
 }
 
+export interface SteerSurfaceSessionToolRequest {
+	readonly sessionId: string;
+	readonly message: string;
+	readonly ownerLabel?: string | null;
+}
+
 export interface StageSurfacePatchRequest {
 	readonly title: string;
 	readonly summary: string;
@@ -225,6 +231,10 @@ export interface CloudSurfaceToolsPort {
 		request: StartSurfaceSessionToolRequest,
 		context: CloudToolContext,
 	): Promise<{ readonly sessionId: string; readonly explorationId: string | null }>;
+	steerSurfaceSession?(
+		request: SteerSurfaceSessionToolRequest,
+		context: CloudToolContext,
+	): Promise<{ readonly sessionId: string; readonly state: SurfaceSessionState }>;
 	stageSurfacePatch?: SurfacePatchToolPort["stageSurfacePatch"];
 	stageSurfaceOpsAction?: SurfaceOpsActionToolPort["stageSurfaceOpsAction"];
 	listSurfaceSenses?(companyId: string, signal?: AbortSignal): Promise<SurfaceCompanySenses>;
@@ -234,6 +244,7 @@ export interface CloudSurfaceToolsPort {
 export type SurfaceControlPlaneRpc =
 	| "qorpera_native_surface_propose"
 	| "qorpera_native_surface_start_session"
+	| "qorpera_native_surface_steer_session"
 	| "qorpera_native_surface_record_change"
 	| "qorpera_native_surface_read_session_turn"
 	| "qorpera_native_surface_renew_lease"
@@ -584,6 +595,24 @@ export function createControlPlaneSurfaceToolsPort(
 					row.explorationId === null || row.explorationId === undefined
 						? null
 						: parseUuid(row.explorationId, "startSurfaceSession.explorationId"),
+			};
+		},
+
+		async steerSurfaceSession(request, context) {
+			const response = await rpc(
+				"qorpera_native_surface_steer_session",
+				{
+					p_profile_id: context.companyId,
+					p_session_id: request.sessionId,
+					p_message: request.message,
+					p_origin_label: request.ownerLabel ?? options.defaultOriginLabel ?? "Co-Founder",
+				},
+				context.signal,
+			);
+			const row = parseRecord(response, "steerSurfaceSession");
+			return {
+				sessionId: parseUuid(row.id ?? request.sessionId, "steerSurfaceSession.sessionId"),
+				state: parseWireEnum(row.state ?? "queued", SURFACE_SESSION_STATES, "steerSurfaceSession.state"),
 			};
 		},
 
@@ -1001,6 +1030,55 @@ export function createStartSurfaceSessionTool(
 					schema: "qorpera.surface-session-started/v1",
 					sessionId: result.sessionId,
 					explorationId: result.explorationId,
+				}),
+			};
+		},
+	};
+}
+
+export function createSteerSurfaceSessionTool(port: {
+	steerSurfaceSession: NonNullable<CloudSurfaceToolsPort["steerSurfaceSession"]>;
+}): CloudNativeTool {
+	return {
+		name: "steer_surface_session",
+		source: "runtime",
+		description:
+			"Reply to or unblock an existing Surface session with concrete direction so it queues its next turn immediately.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["sessionId", "message"],
+			properties: {
+				sessionId: { type: "string" },
+				message: { type: "string", minLength: 1, maxLength: SURFACE_MAX_PROMPT_CHARS },
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(value, "steer_surface_session", ["sessionId", "message"], []);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			if (!isUuid(raw.sessionId)) throw new CloudToolArgumentRefusal("sessionId must be a valid UUID");
+			let message: string;
+			try {
+				message = parseBoundedText(raw.message, "message", SURFACE_MAX_PROMPT_CHARS).trim();
+			} catch {
+				throw new CloudToolArgumentRefusal(`message must be 1..${SURFACE_MAX_PROMPT_CHARS} characters`);
+			}
+			if (!message) throw new CloudToolArgumentRefusal("message must not be empty");
+			return { sessionId: raw.sessionId, message };
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as SteerSurfaceSessionToolRequest;
+			const result = await port.steerSurfaceSession(parsed, context);
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-session-steered/v1",
+					sessionId: result.sessionId,
+					state: result.state,
 				}),
 			};
 		},
