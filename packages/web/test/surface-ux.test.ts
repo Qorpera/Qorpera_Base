@@ -1107,7 +1107,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(hosting.client.read).toHaveBeenCalledTimes(1);
 		expect(address()?.className).toBe("surface-pill-address is-private");
 		expect(address()?.title).toBe("Not live yet");
-		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
+		expect(address()?.querySelector(".surface-address-dot > svg.icon")).not.toBeNull();
 		expect(address()?.textContent).toBe("thetaband.dk");
 
 		address()!.click();
@@ -1124,6 +1124,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(address()?.className).toBe("surface-pill-address is-live");
 		expect(address()?.title).toBe("Live");
 		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
+		expect(address()?.querySelector(".surface-address-dot > svg")).toBeNull();
 		await flush();
 
 		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk")];
