@@ -3,12 +3,26 @@ import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import type { StudioBinaryReader } from "../surface-studio-stage.ts";
 
+export const PDF_PREVIEW_URL = "./pdf-preview/";
+export const PDF_PREVIEW_READY = "qorpera-pdf-preview-ready";
+export const PDF_PREVIEW_DATA = "qorpera-pdf-preview-data";
+
 export interface SurfacePdfCardOptions {
 	readonly path: string;
 	readonly title: string;
 	readonly ref: StudioBinaryRef;
 	readonly changed: boolean;
 	readonly slug?: string;
+}
+
+interface LoadedPdf {
+	readonly bytes: Uint8Array;
+	readonly url: string;
+}
+
+interface PendingPdfFrame {
+	readonly bytes: Uint8Array;
+	readonly title: string;
 }
 
 export function formatPdfBytes(bytes: number): string {
@@ -26,12 +40,40 @@ function pdfDownloadName(path: string): string {
 export class SurfacePdfViewer {
 	readonly #read: StudioBinaryReader;
 	readonly #signal: AbortSignal;
-	readonly #urls = new Map<string, Promise<string>>();
+	readonly #lifetime = new AbortController();
+	readonly #entries = new Map<string, Promise<LoadedPdf>>();
+	readonly #pendingFrames = new Map<HTMLIFrameElement, PendingPdfFrame>();
 
 	constructor(read: StudioBinaryReader, signal: AbortSignal) {
 		this.#read = read;
 		this.#signal = signal;
-		signal.addEventListener("abort", () => this.dispose(), { once: true });
+		if (signal.aborted) {
+			this.dispose();
+			return;
+		}
+		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
+		window.addEventListener(
+			"message",
+			(event) => {
+				const data = event.data as { type?: unknown } | null;
+				if (event.origin !== location.origin || data?.type !== PDF_PREVIEW_READY) return;
+				for (const [frame, pending] of this.#pendingFrames) {
+					if (!frame.isConnected) {
+						this.#pendingFrames.delete(frame);
+						continue;
+					}
+					const target = frame.contentWindow;
+					if (!target || event.source !== target) continue;
+					this.#pendingFrames.delete(frame);
+					target.postMessage(
+						{ type: PDF_PREVIEW_DATA, bytes: pending.bytes, title: pending.title },
+						location.origin,
+					);
+					return;
+				}
+			},
+			{ signal: this.#lifetime.signal },
+		);
 	}
 
 	renderCard(options: SurfacePdfCardOptions): HTMLElement {
@@ -75,44 +117,58 @@ export class SurfacePdfViewer {
 			),
 			stage,
 		);
-		this.#url(ref).then(
-			(url) => {
-				if (this.#signal.aborted) return;
+		this.#load(ref).then(
+			({ bytes, url }) => {
+				if (this.#signal.aborted || this.#lifetime.signal.aborted) return;
 				openLink.setAttribute("href", url);
 				openLink.removeAttribute("aria-disabled");
 				downloadLink.setAttribute("href", url);
 				downloadLink.removeAttribute("aria-disabled");
-				stage.replaceChildren(h("iframe", { class: "studio-pdf-frame", src: url, title }));
+				const frame = h("iframe", {
+					class: "studio-pdf-frame",
+					src: PDF_PREVIEW_URL,
+					referrerpolicy: "no-referrer",
+					title,
+				});
+				this.#pendingFrames.set(frame, { bytes, title });
+				stage.replaceChildren(frame);
 			},
 			() => {
-				if (this.#signal.aborted) return;
+				if (this.#signal.aborted || this.#lifetime.signal.aborted) return;
 				stage.replaceChildren(h("p", { class: "studio-pdf-state is-error" }, t("This PDF can't be loaded.")));
 			},
 		);
 		return card;
 	}
 
-	#url(ref: StudioBinaryRef): Promise<string> {
-		let url = this.#urls.get(ref.fileSha256);
-		if (!url) {
+	#load(ref: StudioBinaryRef): Promise<LoadedPdf> {
+		let entry = this.#entries.get(ref.fileSha256);
+		if (!entry) {
 			// WHY: Pin the Blob MIME type to application/pdf so an untrusted mediaType can never open as active HTML.
-			url = this.#read(ref, this.#signal).then((bytes) => {
-				if (this.#signal.aborted) throw this.#signal.reason ?? new Error("Aborted");
-				return URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "application/pdf" }));
+			entry = this.#read(ref, this.#signal).then((bytes) => {
+				if (this.#signal.aborted || this.#lifetime.signal.aborted) {
+					throw this.#signal.reason ?? new Error("Aborted");
+				}
+				const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/pdf" }));
+				return { bytes, url };
 			});
-			url.catch(() => this.#urls.delete(ref.fileSha256));
-			this.#urls.set(ref.fileSha256, url);
+			entry.catch(() => {
+				if (this.#entries.get(ref.fileSha256) === entry) this.#entries.delete(ref.fileSha256);
+			});
+			this.#entries.set(ref.fileSha256, entry);
 		}
-		return url;
+		return entry;
 	}
 
 	dispose(): void {
-		for (const url of this.#urls.values()) {
-			url.then(
-				(value) => URL.revokeObjectURL(value),
-				() => undefined,
+		this.#lifetime.abort();
+		this.#pendingFrames.clear();
+		for (const pending of this.#entries.values()) {
+			pending.then(
+				({ url }) => URL.revokeObjectURL(url),
+				() => {},
 			);
 		}
-		this.#urls.clear();
+		this.#entries.clear();
 	}
 }

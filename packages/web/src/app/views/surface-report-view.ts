@@ -1064,7 +1064,7 @@ export class SurfaceReportView {
 	} {
 		this.#disposeHtmlFrames();
 		const { surface, workspace, initialLoading, updatingPhase, busyReconcile, mode, activeReportSlug } = params;
-		const primaryItems: ReportSwitcherItem[] = [
+		const structuredItems: ReportSwitcherItem[] = [
 			...reports.map((doc) => ({
 				kind: "report" as const,
 				slug: doc.slug,
@@ -1079,14 +1079,14 @@ export class SurfaceReportView {
 				changed: doc.changed,
 				doc,
 			})),
-			...pdfDocs.map((doc) => ({
-				kind: "pdf" as const,
-				slug: doc.slug,
-				title: doc.title,
-				changed: doc.changed,
-				doc,
-			})),
 		];
+		const pdfItems: ReportSwitcherItem[] = pdfDocs.map((doc) => ({
+			kind: "pdf" as const,
+			slug: doc.slug,
+			title: doc.title,
+			changed: doc.changed,
+			doc,
+		}));
 		const fallbackMarkdownItems: ReportSwitcherItem[] = markdownDocs.map((doc) => ({
 			kind: "markdown" as const,
 			slug: doc.slug,
@@ -1094,7 +1094,8 @@ export class SurfaceReportView {
 			changed: doc.changed,
 			doc,
 		}));
-		const items = primaryItems.length > 0 ? primaryItems : fallbackMarkdownItems;
+		const items =
+			structuredItems.length > 0 ? [...structuredItems, ...pdfItems] : [...fallbackMarkdownItems, ...pdfItems];
 
 		if (activeReportSlug !== this.#lastStoreSlug) {
 			this.#lastStoreSlug = activeReportSlug;
@@ -1385,9 +1386,7 @@ export class SurfaceReportView {
 		const changedHtml = htmlDocs.filter((doc) => doc.changed);
 		const changedPdf = pdfDocs.filter((doc) => doc.changed);
 		const changedMarkdown =
-			changedReports.length === 0 && changedHtml.length === 0 && changedPdf.length === 0
-				? markdownDocs.filter((doc) => doc.changed)
-				: [];
+			changedReports.length === 0 && changedHtml.length === 0 ? markdownDocs.filter((doc) => doc.changed) : [];
 		if (!changedReports.length && !changedHtml.length && !changedPdf.length && !changedMarkdown.length) {
 			return h(
 				"div",

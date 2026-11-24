@@ -2,6 +2,7 @@
 import type { StudioBinaryRef, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setStudioExplainerEngineForTests } from "../src/app/views/studio-explainer-engine.ts";
+import { PDF_PREVIEW_DATA, PDF_PREVIEW_READY, PDF_PREVIEW_URL } from "../src/app/views/surface-blocks/pdf.ts";
 import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -1500,8 +1501,28 @@ describe("The explainer block and Breakdowns tab", () => {
 			expect(card).not.toBeNull();
 			expect(card.querySelector("h2")?.textContent).toBe("Spec sheet");
 			await vi.waitFor(() =>
-				expect(card.querySelector("iframe.studio-pdf-frame")?.getAttribute("src")).toBe("blob:spec-sheet"),
+				expect(card.querySelector("iframe.studio-pdf-frame")?.getAttribute("src")).toBe(PDF_PREVIEW_URL),
 			);
+			const frame = card.querySelector<HTMLIFrameElement>("iframe.studio-pdf-frame")!;
+			const posted: { message: unknown; origin: string }[] = [];
+			vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(((message: unknown, origin: string) => {
+				posted.push({ message, origin });
+			}) as never);
+			const ready = new MessageEvent("message", {
+				data: { type: PDF_PREVIEW_READY },
+				origin: location.origin,
+			});
+			Object.defineProperty(ready, "source", { value: frame.contentWindow });
+			window.dispatchEvent(ready);
+			expect(posted).toHaveLength(1);
+			expect(posted[0]).toEqual({
+				origin: location.origin,
+				message: {
+					type: PDF_PREVIEW_DATA,
+					bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+					title: "Spec sheet",
+				},
+			});
 			expect(createdBlobType).toBe("application/pdf");
 			expect(card.querySelector('a[download="spec-sheet.pdf"]')?.getAttribute("href")).toBe("blob:spec-sheet");
 			expect(readCloudBinary).toHaveBeenCalledWith(pdfRef, expect.anything());
