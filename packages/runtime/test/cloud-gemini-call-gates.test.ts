@@ -28,6 +28,15 @@ it("forwards Gemini run usage and cap notices through path control and native ho
 			if (body.p_name === "qorpera_record_gemini_key_error") {
 				return Response.json({ schema: "qorpera.gemini-key-error-notice/v1", recorded: true });
 			}
+			if (body.p_name === "qorpera_record_gemini_voice_usage") {
+				return Response.json({
+					schema: "qorpera.gemini-voice-usage/v1",
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: 4_521,
+					monthlyCapCents: 10_000,
+					capReached: false,
+				});
+			}
 			return Response.json({ schema: "qorpera.gemini-cap-notice/v1", recorded: true });
 		},
 	});
@@ -69,10 +78,24 @@ it("forwards Gemini run usage and cap notices through path control and native ho
 		schema: "qorpera.gemini-key-error-notice/v1",
 		recorded: true,
 	});
+	expect(
+		await paths.call(
+			"qorpera_record_gemini_voice_usage",
+			{ p_binding: binding, p_model: "gemini-3.8-flash-tts", p_usage: { inputTokens: 41, cachedTokens: 0, outputTokens: 500 } },
+			AbortSignal.timeout(5_000),
+		),
+	).toEqual({
+		schema: "qorpera.gemini-voice-usage/v1",
+		spendMonth: "2026-11",
+		monthSpendMicrodollars: 4_521,
+		monthlyCapCents: 10_000,
+		capReached: false,
+	});
 
 	expect(NATIVE_HOST_CALLS.get("qorpera_record_gemini_run_usage")).toBe("standard");
 	expect(NATIVE_HOST_CALLS.get("qorpera_record_gemini_cap_reached")).toBe("standard");
 	expect(NATIVE_HOST_CALLS.get("qorpera_record_gemini_key_error")).toBe("standard");
+	expect(NATIVE_HOST_CALLS.get("qorpera_record_gemini_voice_usage")).toBe("standard");
 	expect(sent).toEqual([
 		{
 			url: `${ORIGIN}/rest/v1/rpc/qorpera_native_host_call`,
@@ -99,6 +122,19 @@ it("forwards Gemini run usage and cap notices through path control and native ho
 				p_job_lease_token: LEASE_TOKEN,
 				p_name: "qorpera_record_gemini_key_error",
 				p_args: { p_binding: binding, p_error_code: "billing_required" },
+			},
+		},
+		{
+			url: `${ORIGIN}/rest/v1/rpc/qorpera_native_host_call`,
+			body: {
+				p_job_id: binding.jobId,
+				p_job_lease_token: LEASE_TOKEN,
+				p_name: "qorpera_record_gemini_voice_usage",
+				p_args: {
+					p_binding: binding,
+					p_model: "gemini-3.8-flash-tts",
+					p_usage: { inputTokens: 41, cachedTokens: 0, outputTokens: 500 },
+				},
 			},
 		},
 	]);
