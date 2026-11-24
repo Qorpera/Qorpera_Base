@@ -1324,77 +1324,117 @@ describe("The explainer block and Breakdowns tab", () => {
 		store.dispose();
 	});
 
-	it("reuses the mounted explainer frame across unrelated re-renders and disposes it when breakdowns disappear", async () => {
-		setStudioExplainerEngineForTests("window.Video = function(el, opts){ this.start = function(){}; };");
-		const audioBytes = new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0]);
-		const clipRef: StudioBinaryRef = {
-			manifestSha256: "a".repeat(64),
-			fileSha256: "e".repeat(64),
-			bytes: audioBytes.byteLength,
-			mediaType: "audio/wav",
-		};
-		const idSurface = identityStudio();
-		let currentFiles: Record<string, string> = {
-			"identity/voice.md": "Original voice notes",
-			"identity/breakdowns/buyer-ux/explainer.json": JSON.stringify({ title: "Buyer UX" }),
-			"identity/breakdowns/buyer-ux/scenes.js": 'V.part("Start"); V.scene((s) => { s.say("Hello."); });',
-			"identity/breakdowns/buyer-ux/voice/clips.json": JSON.stringify({
-				clips: [{ caption: "0123abcd", file: "0123abcd.wav", seconds: 2.5 }],
-			}),
-		};
-		const readCloudBinary = vi.fn(async () => audioBytes);
-		const store = storeWith(
-			fakeClient({
-				listSurfaces: vi.fn(async () => [idSurface]),
-				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: idSurface })),
-			}),
-			{
-				loadCloudFiles: vi.fn(async () =>
-					folderContents(currentFiles, { "identity/breakdowns/buyer-ux/voice/0123abcd.wav": clipRef }),
-				),
-				readCloudBinary,
-			},
-		);
-		await store.load();
-		await store.openSurface(idSurface.slug);
-		const view = new SurfaceStudioView({ store, surface: idSurface, signal: new AbortController().signal });
-		document.body.append(view.el);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		view.update();
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="breakdowns"]')!.click();
-		await new Promise((resolve) => setTimeout(resolve, 20));
+	it.each([false, true])(
+		"reuses the mounted explainer frame in place across unrelated re-renders (timeSlice=%s) and disposes it when breakdowns disappear",
+		async (timeSlice) => {
+			setStudioExplainerEngineForTests("window.Video = function(el, opts){ this.start = function(){}; };");
+			const audioBytes = new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0]);
+			const clipRef: StudioBinaryRef = {
+				manifestSha256: "a".repeat(64),
+				fileSha256: "e".repeat(64),
+				bytes: audioBytes.byteLength,
+				mediaType: "audio/wav",
+			};
+			const idSurface = identityStudio();
+			let currentFiles: Record<string, string> = {
+				"identity/voice.md": "Original voice notes",
+				"identity/breakdowns/buyer-ux/explainer.json": JSON.stringify({ title: "Buyer UX" }),
+				"identity/breakdowns/buyer-ux/scenes.js": 'V.part("Start"); V.scene((s) => { s.say("Hello."); });',
+				"identity/breakdowns/buyer-ux/voice/clips.json": JSON.stringify({
+					clips: [{ caption: "0123abcd", file: "0123abcd.wav", seconds: 2.5 }],
+				}),
+			};
+			const readCloudBinary = vi.fn(async () => audioBytes);
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [idSurface]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: idSurface })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(currentFiles, { "identity/breakdowns/buyer-ux/voice/0123abcd.wav": clipRef }),
+					),
+					readCloudBinary,
+				},
+			);
+			await store.load();
+			await store.openSurface(idSurface.slug);
+			const view = new SurfaceStudioView({
+				store,
+				surface: idSurface,
+				signal: new AbortController().signal,
+				timeSlice,
+			});
+			document.body.append(view.el);
+			const settle = async () => {
+				for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 15));
+			};
+			await settle();
+			view.update();
+			await settle();
+			view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="breakdowns"]')!.click();
+			await settle();
 
-		const sectionBefore = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
-		const frameBefore = sectionBefore.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
-		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+			const gridBefore = view.el.querySelector<HTMLElement>(".studio-grid")!;
+			const sectionBefore = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
+			const frameBefore = sectionBefore.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
+			expect(readCloudBinary).toHaveBeenCalledTimes(1);
 
-		currentFiles = { ...currentFiles, "identity/voice.md": "Updated unrelated notes" };
-		await store.refreshCloudFiles(idSurface);
-		view.update();
-		await new Promise((resolve) => setTimeout(resolve, 20));
+			const movedNodes: Node[] = [];
+			const origInsertBefore = Node.prototype.insertBefore;
+			const origAppendChild = Node.prototype.appendChild;
+			const insertSpy = vi.spyOn(Node.prototype, "insertBefore").mockImplementation(function (
+				this: Node,
+				node: Node,
+				child: Node | null,
+			) {
+				if (node === gridBefore || node === sectionBefore || node === frameBefore) movedNodes.push(node);
+				return origInsertBefore.call(this, node, child);
+			});
+			const appendSpy = vi.spyOn(Node.prototype, "appendChild").mockImplementation(function (
+				this: Node,
+				node: Node,
+			) {
+				if (node === gridBefore || node === sectionBefore || node === frameBefore) movedNodes.push(node);
+				return origAppendChild.call(this, node);
+			});
+			try {
+				currentFiles = { ...currentFiles, "identity/voice.md": "Updated unrelated notes" };
+				await store.refreshCloudFiles(idSurface);
+				view.update();
+				await settle();
+			} finally {
+				insertSpy.mockRestore();
+				appendSpy.mockRestore();
+			}
 
-		const sectionAfter = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
-		const frameAfter = sectionAfter.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
-		expect(sectionAfter).toBe(sectionBefore);
-		expect(frameAfter).toBe(frameBefore);
-		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+			const gridAfter = view.el.querySelector<HTMLElement>(".studio-grid")!;
+			const sectionAfter = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
+			const frameAfter = sectionAfter.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
+			expect(gridAfter).toBe(gridBefore);
+			expect(sectionAfter).toBe(sectionBefore);
+			expect(frameAfter).toBe(frameBefore);
+			expect(movedNodes).toEqual([]);
+			expect(readCloudBinary).toHaveBeenCalledTimes(1);
 
-		const oldWindow = frameBefore.contentWindow as Window;
-		const post = vi.spyOn(oldWindow, "postMessage").mockImplementation(() => {});
-		currentFiles = { "identity/voice.md": "Only notes remain" };
-		await store.refreshCloudFiles(idSurface);
-		view.update();
-		expect(view.el.querySelector('[data-block="explainer"]')?.textContent).toContain(
-			"Animated breakdowns live here.",
-		);
-		const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
-		Object.defineProperty(ready, "source", { value: oldWindow });
-		window.dispatchEvent(ready);
-		expect(post).not.toHaveBeenCalled();
+			const oldWindow = frameBefore.contentWindow as Window;
+			const post = vi.spyOn(oldWindow, "postMessage").mockImplementation(() => {});
+			currentFiles = { "identity/voice.md": "Only notes remain" };
+			await store.refreshCloudFiles(idSurface);
+			view.update();
+			await settle();
+			expect(view.el.querySelector('[data-block="explainer"]')?.textContent).toContain(
+				"Animated breakdowns live here.",
+			);
+			const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+			Object.defineProperty(ready, "source", { value: oldWindow });
+			window.dispatchEvent(ready);
+			expect(post).not.toHaveBeenCalled();
 
-		view.dispose();
-		store.dispose();
-	});
+			view.dispose();
+			store.dispose();
+		},
+	);
 
 	it("marks staged breakdown updates on the Product Breakdowns tab", async () => {
 		setStudioExplainerEngineForTests("window.Video = function(el, opts){ this.start = function(){}; };");
