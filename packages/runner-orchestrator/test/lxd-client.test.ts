@@ -1686,5 +1686,34 @@ describe("LXD exec stream", () => {
 				"LXD_PROJECT_INSTANCES_UNCONFIRMED",
 			);
 		}
+		client.close();
+	});
+
+	it("reuses pooled keep-alive Unix sockets across LXD requests", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-keepalive-"));
+		roots.push(root);
+		const socket = join(root, "lxd.socket");
+		let connections = 0;
+		const server = createServer((_req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: [] }));
+		});
+		server.on("connection", () => {
+			connections++;
+		});
+		servers.push(server);
+		await new Promise<void>((resolveListen, reject) => {
+			server.once("error", reject);
+			server.listen(socket, () => resolveListen());
+		});
+		const client = new LxdUnixClient(socket, 5);
+		try {
+			await client.listInstances("default", new AbortController().signal);
+			await client.listInstances("default", new AbortController().signal);
+			await client.listInstances("default", new AbortController().signal);
+			expect(connections).toBe(1);
+		} finally {
+			client.close();
+		}
 	});
 });

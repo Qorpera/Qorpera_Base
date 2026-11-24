@@ -127,6 +127,7 @@ import {
 	recordCodingMachineDisk,
 	settleAcceptedCodingMachine,
 	undropCodingMachineStart,
+	waitPendingLxdOperation,
 } from "./coding-machine.ts";
 import { EMPTY_CODING_SETUP_DIGEST, type ParsedCodingSetup } from "./coding-setup.ts";
 import {
@@ -1869,7 +1870,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			checked.throwIfAborted();
 			if (result.state === "pending") {
 				sawPending = true;
-				await setTimeout(pollBackoffMs(attempt), undefined, { signal: checked });
+				if (
+					!(await waitPendingLxdOperation(
+						this.#options.client,
+						{ project: journal.project, instanceName: journal.name, operationId: result.pendingOperationId },
+						checked,
+					))
+				) {
+					await setTimeout(pollBackoffMs(attempt), undefined, { signal: checked });
+				}
 				continue;
 			}
 			// An effect LXD refused at its submission names LXD's status, which the log shows (and a failed

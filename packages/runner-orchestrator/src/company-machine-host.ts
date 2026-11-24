@@ -25,7 +25,7 @@ import {
 import { withAbortScope, withTimeoutScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
 import { CodingControlBusy, CodingControlRefused } from "./coding-executor.ts";
-import { type CodingMachineIntent, reconcileCodingMachine } from "./coding-machine.ts";
+import { type CodingMachineIntent, reconcileCodingMachine, waitPendingLxdOperation } from "./coding-machine.ts";
 import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.ts";
 import {
 	type CompanyMachinePolicy,
@@ -1907,7 +1907,15 @@ export class LxdCompanyMachineHost {
 					throw error;
 				}
 				if (result.state === "pending") {
-					await setTimeout(500, undefined, { signal: checked });
+					if (
+						!(await waitPendingLxdOperation(
+							this.#options.client,
+							{ project: plan.project, instanceName: plan.name, operationId: result.pendingOperationId },
+							checked,
+						))
+					) {
+						await setTimeout(500, undefined, { signal: checked });
+					}
 					continue;
 				}
 				if (result.state === "recovery-required") throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
