@@ -511,7 +511,6 @@ begin
 		null;
 	end;
 end $$;
-revoke all on function public.qorpera_surface_enqueue_chain_reconciliation(uuid, uuid) from public, anon, authenticated;
 
 create function public.qorpera_surface_enqueue_standalone_dependents(
 	p_surface_id uuid,
@@ -562,7 +561,6 @@ begin
 		end;
 	end loop;
 end $$;
-revoke all on function public.qorpera_surface_enqueue_standalone_dependents(uuid, uuid[]) from public, anon, authenticated;
 
 select pg_temp.spl_patch(
 	'public.qorpera_start_surface_session(uuid,text,text,text,text,jsonb,integer,text,text[])'::regprocedure,
@@ -1433,7 +1431,8 @@ revoke all on function
 	public.qorpera_surface_preview_turn_context(public.qorpera_surfaces, uuid[]),
 	public.qorpera_surface_reconciliation_omitted_bases(uuid, uuid[]),
 	public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces, uuid[]),
-	public.qorpera_surface_enqueue_chain_reconciliation(uuid, uuid)
+	public.qorpera_surface_enqueue_chain_reconciliation(uuid, uuid),
+	public.qorpera_surface_enqueue_standalone_dependents(uuid, uuid[])
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 do $$

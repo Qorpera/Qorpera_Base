@@ -89,7 +89,8 @@ begin
 		'public.qorpera_surface_preview_turn_context(public.qorpera_surfaces,uuid[])',
 		'public.qorpera_surface_reconciliation_omitted_bases(uuid,uuid[])',
 		'public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces,uuid[])',
-		'public.qorpera_surface_enqueue_chain_reconciliation(uuid,uuid)'
+		'public.qorpera_surface_enqueue_chain_reconciliation(uuid,uuid)',
+		'public.qorpera_surface_enqueue_standalone_dependents(uuid,uuid[])'
 	]) as fn(sig)
 	cross join unnest(array['public', 'anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) as r(role_name)
 	where has_function_privilege(r.role_name, fn.sig, 'EXECUTE');
