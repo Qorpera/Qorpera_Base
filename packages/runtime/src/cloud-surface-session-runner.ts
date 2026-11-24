@@ -43,6 +43,8 @@ import type { NativeCompanyExecutionRequest } from "./cloud-native-provider-host
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
+import { type CloudStudioSkill, type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
 import {
 	type CloudSurfaceToolsPort,
 	createStageSurfaceOpsActionTool,
@@ -314,6 +316,16 @@ async function readOptionalFolderText(
 	}
 }
 
+async function folderText(
+	folder: SurfaceFolderTextReader,
+	path: string,
+	maxBytes: number,
+	signal: AbortSignal,
+): Promise<string | null> {
+	const found = await folder.readText(path, maxBytes, signal);
+	return found === null || found === undefined ? null : typeof found === "string" ? found : found.text;
+}
+
 export async function loadSurfaceIdentityContext(
 	folder: SurfaceFolderTextReader,
 	signal: AbortSignal,
@@ -494,18 +506,30 @@ function describeStudioPage(view: SurfaceStudioPageView, folderRoot: string): st
 	);
 }
 
+function describeStudioSkill(view: SurfaceStudioPageView, skill: CloudStudioSkill | null): string {
+	if (view.page === "unknown")
+		return `\n\n## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: ${SURFACE_STARTER_SKILLS.product} for a product, ${SURFACE_STARTER_SKILLS.identity} for the company's Identity, ${SURFACE_STARTER_SKILLS.custom} for any other page.`;
+	if (!skill) return "";
+	const source = skill.path
+		? `The company's own ${skill.name} skill (${skill.path}), used in place of the platform's`
+		: `The platform's ${skill.name} skill`;
+	return `\n\n## Skill: ${skill.name}\n${source}: how this page is worked on and what good looks like. The rules above still hold.\n\n${skill.body}`;
+}
+
 function buildFolderSurfaceInstructions(
 	input: SurfaceSessionTurnInput,
 	folderRoot: string,
 	notesRoot: string,
 	view: SurfaceStudioPageView,
+	skill: CloudStudioSkill | null,
 ): string {
 	return (
 		`This session works on the interface "${input.surfaceTitle}" (${input.surfaceSlug}); its page shows ${folderRoot}/ from Company Files. ` +
 		"Members preview staged patches, any of them on or off together, before they approve one. " +
 		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), one cohesive, conflict-minimizing patch per change. ` +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.\n\n` +
-		describeStudioPage(view, folderRoot)
+		describeStudioPage(view, folderRoot) +
+		describeStudioSkill(view, skill)
 	);
 }
 
@@ -842,18 +866,13 @@ export async function runSurfaceSessionTurn(
 			const layoutStaging: SurfaceLayoutStaging | undefined = folderReader
 				? {
 						folderRoot,
-						async readLayout(readSignal) {
-							const found = await folderReader.readText(
+						readLayout: (readSignal) =>
+							folderText(
+								folderReader,
 								`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
 								MAX_STAGED_LAYOUT_READ_BYTES,
 								readSignal,
-							);
-							return found === null || found === undefined
-								? null
-								: typeof found === "string"
-									? found
-									: found.text;
-						},
+							),
 					}
 				: undefined;
 			const tools: CloudNativeTool[] = [
@@ -873,10 +892,17 @@ export async function runSurfaceSessionTurn(
 				: null;
 			signal.throwIfAborted();
 			const view = surfaceStudioPageView(input, folderRoot, contents);
+			const readSkill: CloudStudioSkillReader | undefined = folderReader
+				? (path, maxBytes, readSignal) => folderText(folderReader, path, maxBytes, readSignal)
+				: undefined;
+			const skill =
+				view.page === "layout"
+					? await cloudStudioSkill(SURFACE_STARTER_SKILLS[view.starter], readSkill, signal)
+					: null;
 			outcome = await ports.executeTurn({
 				input,
 				mode: "folder",
-				instructions: buildFolderSurfaceInstructions(input, folderRoot, notesRoot, view),
+				instructions: buildFolderSurfaceInstructions(input, folderRoot, notesRoot, view, skill),
 				turnBrief,
 				tools,
 				identityContext,

@@ -9,6 +9,7 @@ import {
 } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
+import { CLOUD_PLATFORM_SKILLS, MAX_STUDIO_SKILL_BYTES } from "../src/cloud-platform-skills.ts";
 import {
 	runSurfaceSessionTurn,
 	type SurfaceSessionTurnInput,
@@ -74,7 +75,11 @@ const OLD_SCHEMA_WORDS = [
 	"do not create standalone HTML/CSS code pages",
 ];
 
-async function instructionsFor(surface: Interface, files: Record<string, string> = {}): Promise<string> {
+async function instructionsFor(
+	surface: Interface,
+	files: Record<string, string> = {},
+	company?: Record<string, string | Error>,
+): Promise<string> {
 	let seen = "";
 	await runSurfaceSessionTurn(
 		{
@@ -87,6 +92,18 @@ async function instructionsFor(surface: Interface, files: Record<string, string>
 		},
 		{
 			readStudioFiles: async (): Promise<SurfaceFolderContents> => ({ files, binaries: {} }),
+			...(company
+				? {
+						folder: {
+							async readText(path: string, maxBytes: number) {
+								const found = company[path];
+								if (found instanceof Error) throw found;
+								if (found !== undefined && Buffer.byteLength(found) > maxBytes) throw new Error("Too large");
+								return found ?? null;
+							},
+						},
+					}
+				: {}),
 			surfaceTools: { stageSurfacePatch: vi.fn() },
 			completeSessionTurn: vi.fn().mockResolvedValue(undefined),
 			async executeTurn(req) {
@@ -202,6 +219,93 @@ describe("the page contract a Studio session is told", () => {
 				binaries: {},
 			}),
 		).toEqual({ page: "none" });
+	});
+});
+
+const platformSkill = (name: string) =>
+	`## Skill: ${name}\nThe platform's ${name} skill: how this page is worked on and what good looks like. The rules above still hold.\n\n${CLOUD_PLATFORM_SKILLS.get(name)!.body.trim()}`;
+
+describe("the skill a Studio session works by", () => {
+	it("gives each kind of Studio page its own platform skill after the page contract, and a reading page none", async () => {
+		const cases = [
+			[PRODUCT, "product-studio"],
+			[IDENTITY, "identity-studio"],
+			[CUSTOM, "custom-surface"],
+		] as const;
+		for (const [surface, name] of cases) {
+			const text = await instructionsFor(surface);
+			expect(text.endsWith(platformSkill(name)), name).toBe(true);
+			for (const other of CLOUD_PLATFORM_SKILLS.keys())
+				if (other !== name) expect(text).not.toContain(`## Skill: ${other}`);
+		}
+		const model = await instructionsFor(CUSTOM, {
+			"surfaces/field-notes/specs.json": JSON.stringify({ model: { kind: "device", layers: ["shell"] } }),
+		});
+		expect(model.endsWith(platformSkill("product-studio"))).toBe(true);
+		const reading = await instructionsFor({ ...CUSTOM, surfaceIcon: "book" });
+		expect(reading).not.toContain("## Skill");
+		const unknown = await instructionsFor({
+			...PRODUCT,
+			surfaceIcon: undefined,
+			surfaceIsGlobal: undefined,
+			surfaceArchetype: undefined,
+			surfaceKind: "product",
+		});
+		expect(unknown).toContain(
+			"## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: product-studio for a product, identity-studio for the company's Identity, custom-surface for any other page.",
+		);
+		expect(unknown).not.toContain("## Skill: ");
+	});
+
+	it("uses a company skill of the same name in place of the platform's, as read_skill finds one", async () => {
+		const own = "---\nname: product-studio\ndescription: Our way.\n---\n\nLead with the price.\n";
+		const folder = await instructionsFor(PRODUCT, {}, { "QorperaOS/skills/product-studio/SKILL.md": own });
+		expect(
+			folder.endsWith(
+				"## Skill: product-studio\nThe company's own product-studio skill (QorperaOS/skills/product-studio/SKILL.md), used in place of the platform's: how this page is worked on and what good looks like. The rules above still hold.\n\nLead with the price.",
+			),
+		).toBe(true);
+		expect(folder).not.toContain(CLOUD_PLATFORM_SKILLS.get("product-studio")!.body.trim());
+
+		const flat = await instructionsFor(CUSTOM, {}, { "QorperaOS/skills/custom-surface.md": "Shape it as a board." });
+		expect(flat).toContain("The company's own custom-surface skill (QorperaOS/skills/custom-surface.md)");
+		expect(flat.endsWith("\n\nShape it as a board.")).toBe(true);
+
+		const both = await instructionsFor(
+			IDENTITY,
+			{},
+			{
+				"QorperaOS/skills/identity-studio/SKILL.md": "In the folder.",
+				"QorperaOS/skills/identity-studio.md": "Flat.",
+			},
+		);
+		expect(both.endsWith("\n\nIn the folder.")).toBe(true);
+		expect(await instructionsFor(PRODUCT, {}, { "QorperaOS/skills/identity-studio.md": "Elsewhere." })).toContain(
+			platformSkill("product-studio"),
+		);
+	});
+
+	it("falls back to the platform's skill when the company's is unreadable, empty or too long", async () => {
+		const path = "QorperaOS/skills/product-studio/SKILL.md";
+		const fallback = platformSkill("product-studio");
+		const broken: Record<string, string | Error>[] = [
+			{ [path]: new Error("Company folder file is not UTF-8 text") },
+			{ [path]: "---\nname: product-studio\ndescription: Nothing here.\n---\n\n   \n" },
+			{ [path]: "" },
+			{ [path]: `---\nname: product-studio\n---\n\n${"x".repeat(MAX_STUDIO_SKILL_BYTES + 1)}` },
+			{ [path]: "y".repeat(40 * 1024) },
+			{ [path]: new Error("Company folder file is not UTF-8 text"), "QorperaOS/skills/product-studio.md": "Flat." },
+		];
+		for (const company of broken) expect((await instructionsFor(PRODUCT, {}, company)).endsWith(fallback)).toBe(true);
+		expect(
+			(
+				await instructionsFor(
+					PRODUCT,
+					{},
+					{ [path]: `---\nname: product-studio\n---\n\n${"x".repeat(MAX_STUDIO_SKILL_BYTES)}` },
+				)
+			).endsWith(`\n\n${"x".repeat(MAX_STUDIO_SKILL_BYTES)}`),
+		).toBe(true);
 	});
 });
 

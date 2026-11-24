@@ -377,6 +377,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "An interface's page is shaped by a layout it can change",
 		text: "Every Studio interface's page, Identity and Product included, is now drawn from a layout: its tabs, and in each tab blocks such as a 3D model, a name and one line, colour dots, short figures, specs, tables, cards, reports and files, side by side when it helps, or a small app built for the page. A new interface starts from a starter layout. The session working on an interface sees that layout and can change it like any other file, as a staged change the member previews and approves. When you start a session, ask for the page the member wants, not only for files.",
 	},
+	{
+		id: "interface-template-skills",
+		kind: "capability",
+		date: "2026-11-24",
+		title: "Interface pages follow skills the company can change",
+		text: "A session on an interface now works from the skill for its kind of page: product-studio for a product, identity-studio for the Identity, custom-surface for any other page. Each says how the page is filled piece by piece and what a good one looks like; the session gets it at every turn and can read any other skill with read_skill. The company can change how its Product, Identity or custom pages are built by keeping a company skill of the same name: read the platform's with read_skill and scope platform, then save your own with update_skill and scope company. Yours is used in its place while it can be read and has steps of at most 8 KiB; otherwise the platform's is used.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

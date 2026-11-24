@@ -19,6 +19,7 @@ import type { NativeCompanyExecutionRequest, NativeProviderControlPlane } from "
 import { type CloudNativeTool, type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "../src/cloud-native-tool-operations.ts";
 import { cloudToolsOnDemand } from "../src/cloud-native-tools-on-demand.ts";
+import { CLOUD_PLATFORM_SKILLS } from "../src/cloud-platform-skills.ts";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
 import * as runtimeBundle from "../src/cloud-runtime-bundle.ts";
 import {
@@ -1930,7 +1931,12 @@ describe("cloud surface runtime tools", () => {
 				causal: { rootId: randomUUID(), agentIds: [f.context.identity.staffAgentId] },
 			};
 
-			const folderFiles = new Map<string, string>([["identity/tokens.json", '{"accent":"#1f2937"}']]);
+			const companySkill =
+				"---\nname: identity-studio\ndescription: How this company keeps its identity.\n---\n\nKeep every mark in ink on paper.\n";
+			const folderFiles = new Map<string, string>([
+				["identity/tokens.json", '{"accent":"#1f2937"}'],
+				["QorperaOS/skills/identity-studio/SKILL.md", companySkill],
+			]);
 			const folderSha = (text: string) => createHash("sha256").update(text).digest("hex");
 			const folderVersion = (path: string, text: string) => {
 				const hex = createHash("sha256").update(`${path}\n${text}`).digest("hex");
@@ -2171,10 +2177,24 @@ describe("cloud surface runtime tools", () => {
 
 			const evidence = JSON.parse(await readFile(evidencePath, "utf8")) as {
 				threadParameters: {
+					developerInstructions?: string;
 					dynamicTools: { tools: { name: string }[] }[];
 				};
+				outputs: { output: string }[];
 			};
 			const offeredNames = evidence.threadParameters.dynamicTools[0].tools.map((tool) => tool.name);
+			expect(offeredNames).toContain("read_skill");
+			expect(offeredNames).toContain("search_skills");
+			expect(offeredNames).not.toContain("update_skill");
+			const instructions = evidence.threadParameters.developerInstructions ?? "";
+			expect(instructions).toContain(
+				"## Skill: identity-studio\nThe company's own identity-studio skill (QorperaOS/skills/identity-studio/SKILL.md), used in place of the platform's: how this page is worked on and what good looks like. The rules above still hold.\n\nKeep every mark in ink on paper.",
+			);
+			expect(instructions).not.toContain(CLOUD_PLATFORM_SKILLS.get("identity-studio")!.body.trim());
+			const [read, refused] = evidence.outputs.map((output) => output.output);
+			expect(read).toContain("Keep every mark in ink on paper.");
+			expect(read).toContain("QorperaOS/skills/identity-studio/SKILL.md");
+			expect(refused).toContain("INVALID_ARGUMENTS: Invalid skill scope");
 			expect(JSON.stringify(evidence)).toContain(
 				"Images the member attached (open each with company_read on its path)",
 			);
@@ -2554,6 +2574,9 @@ describe("cloud surface runtime tools", () => {
 				`No surfaces/thetabands/layout.json yet, so the page shows the product starter:\n${JSON.stringify(starterSurfaceLayout("product"))}`,
 			);
 			expect(instructions).toContain('A report file (*.report.json) is {"category"');
+			expect(instructions).toContain(
+				`## Skill: product-studio\nThe platform's product-studio skill: how this page is worked on and what good looks like. The rules above still hold.\n\n${CLOUD_PLATFORM_SKILLS.get("product-studio")!.body.trim()}`,
+			);
 			expect(instructions).not.toContain("Product Studio file layout");
 			expect(instructions).not.toContain("When this surface represents a physical product");
 			expect(JSON.stringify(evidence.turnParameters)).toContain("Thetabands Gen 1");

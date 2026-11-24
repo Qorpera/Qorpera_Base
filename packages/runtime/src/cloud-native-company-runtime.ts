@@ -203,7 +203,12 @@ import { type ClaudeLoginRunClient, type GeminiKeyRunClient, openGeminiKeyForRun
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
-import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
+import {
+	cloudReadOnlySkillTools,
+	cloudSkillTools,
+	composeCloudAgentSkills,
+	unavailableCloudAgentSkills,
+} from "./cloud-skill-tools.ts";
 import {
 	parseNativeSurfaceSessionImages,
 	readSurfaceMemberImage,
@@ -2257,6 +2262,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const completionPort = createControlPlaneSessionCompletionPort(this.#paths, identity.companyId);
 		const leaseRenewalPort = createControlPlaneSessionLeaseRenewalPort(this.#paths, identity.companyId);
 		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		const agentFolders = cloudAgentFolderPlace(context);
+		const notebooks = new CloudFolderNotebooks({
+			folder: folderClient,
+			runId: binding.runId,
+			agentFolder: cloudAgentFolder(identity.companyId, identity.staffAgentId, agentFolders),
+		});
 		const isGeminiRun = context.gemini !== undefined;
 		let geminiSession:
 			| {
@@ -2622,16 +2633,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					buildTools: (runIdentity, operations) => {
 						const folderTools =
 							turnReq.mode === "folder"
-								? cloudFolderFileTools({
-										folder: folderClient,
-										operations,
-										identity: runIdentity,
-										surfaceFilePolicy: {
-											mode: "surface_worker",
-											writableRoots: turnReq.writableRoots,
-											stagedRoots: turnReq.stagedRoots,
-										},
-									})
+								? [
+										...cloudFolderFileTools({
+											folder: folderClient,
+											operations,
+											identity: runIdentity,
+											surfaceFilePolicy: {
+												mode: "surface_worker",
+												writableRoots: turnReq.writableRoots,
+												stagedRoots: turnReq.stagedRoots,
+											},
+										}),
+										...notebooks.tools(
+											(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
+											operations,
+										),
+									]
 								: cloudFolderFileTools({
 										folder: folderClient,
 										operations,
