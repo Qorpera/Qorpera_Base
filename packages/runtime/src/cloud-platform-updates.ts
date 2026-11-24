@@ -382,7 +382,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-24",
 		title: "Interface pages follow skills the company can change",
-		text: "A session on an interface now works from the skill for its kind of page: product-studio for a product, identity-studio for the Identity, custom-surface for any other page. Each says how the page is filled piece by piece and what a good one looks like; the session gets it at every turn and can read any other skill with read_skill. The company can change how its Product, Identity or custom pages are built by keeping a company skill of the same name: read the platform's with read_skill and scope platform, then save your own with update_skill and scope company. Yours is used in its place while it can be read and has steps of at most 8 KiB; otherwise the platform's is used.",
+		text: "A session on an interface now works from the skill for its kind of page: product-studio for a product, identity-studio for the Identity, custom-surface for any other page. Each says how the page is filled piece by piece and what a good one looks like; the session gets it at every turn and can read any other skill with read_skill. The company can change how its Product, Identity or custom pages are built by keeping a company skill of the same name: read the platform's with read_skill and scope platform, then save your own with update_skill and scope company. Yours is used in its place while it can be read and is at most 8 KiB; otherwise the platform's is used.",
 	},
 ]);
 
