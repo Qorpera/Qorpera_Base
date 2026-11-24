@@ -150,10 +150,7 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} is working": "{name} arbejder",
 	"{name} is writing": "{name} skriver",
 	"{name} is using its computer": "{name} bruger sin computer",
-	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
-	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
-	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
 	// A routine moved off the member's login by someone else (views/execution-notices.ts)
 	"{agent}'s routine no longer runs on your login. {member} moved it to their login.":
 		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til sit eget login.",
@@ -502,21 +499,10 @@ export const CONVERSATION: Record<string, string> = {
 	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":
 		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → AI-abonnementer.",
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
-	"Your login {account} reached its usage limit. Work will go on by itself when it resets (about {time}).":
-		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
-	"Your login reached its usage limit. Work will go on by itself when it resets (about {time}).":
-		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
-	"Your login {account} reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
-		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
 	"Your login {account} reached its usage limit, and the work it paid for stopped. It does not go on by itself.":
 		"Dit login {account} har nået sin forbrugsgrænse, og det arbejde, det betalte for, er stoppet. Det fortsætter ikke af sig selv.",
 	"Your login reached its usage limit, and the work it paid for stopped. It does not go on by itself.":
 		"Dit login har nået sin forbrugsgrænse, og det arbejde, det betalte for, er stoppet. Det fortsætter ikke af sig selv.",
-	"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
-		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
-	"{count} min": "{count} min.",
-	"{count} h": "{count} t.",
-	"{count} days": "{count} dage",
 	"Use {account}": "Brug {account}",
 	"Use {account} for all {count} chats waiting on this login":
 		"Brug {account} til alle {count} chats, der venter på dette login",
@@ -573,8 +559,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Not now": "Ikke nu",
 	"“Work while you're away” could not be turned on. Try again.":
 		"“Arbejd, mens du er væk” kunne ikke slås til. Prøv igen.",
-	"All {count} company computers are in use. Close one to open another.":
-		"Alle {count} virksomhedscomputere er i brug. Luk én for at åbne en ny.",
 	"Your monthly Gemini API spend cap of {cap} was reached ({spent} used in {month}). Raise the cap in Settings or switch models to continue.":
 		"Din månedlige forbrugsgrænse for Gemini-API'et på {cap} er nået ({spent} brugt i {month}). Hæv grænsen i Indstillinger, eller skift model for at fortsætte.",
 

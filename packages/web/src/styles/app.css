@@ -196,6 +196,7 @@ label > input, label > select { font-weight: 400; }
 :is(.person-avatar, .account-chip) { position: relative; overflow: hidden; }
 .person-picture { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; user-select: none; }
 .account-trigger-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-health-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--warning); }
 .account-chevron {
 	width: 7px; height: 7px; flex: none; opacity: 0.45;
 	border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor;
@@ -646,7 +647,8 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .rail-dragging .rail-pinned .rail-drop-slot { height: 44px; font-size: 0; }
 .rail-compact .rail-drop-gap.is-pin { width: 60px; height: 60px; }
 .rail-compact .rail-divided::before { content: ""; display: block; height: 1px; margin: 4px 8px; background: var(--border-strong); }
-.rail-compact .account-menu-rail .account-trigger { justify-content: center; }
+.rail-compact .account-menu-rail .account-trigger { position: relative; justify-content: center; }
+.rail-compact .account-menu-rail .account-health-dot { position: absolute; top: 8px; right: 8px; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; z-index: 50; }
 /* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the
  * search field, the Co-Founder's tier, 63.75px agent rows and the account foot. */

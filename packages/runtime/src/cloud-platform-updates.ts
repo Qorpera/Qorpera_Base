@@ -412,6 +412,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Reports and posts stage one deliverable per change",
 		text: "Studio and report sessions now stage each report, analysis, essay or blog post as its own staged change rather than bundling several pieces together, and malformed report payloads are refused at stage time. Write finished reports and posts as structured reports (or standalone HTML pages when bespoke presentation is requested) instead of raw Markdown, and members open each piece directly from its change row in Preview before approving it.",
 	},
+	{
+		id: "single-door-agent-ux",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "Quiet background sessions and Co-Founder mediation",
+		text: "Background coding sessions, workers and Surface sessions no longer ping members directly in chat or badge the sidebar for agent blockers. When a coding worker or Surface session pauses, conflicts or needs a decision, it reports back to its parent or escalates to the Co-Founder to resolve directly or ask the founder cleanly in one thread. Plain company file moves and deletes (company_move and company_delete), worker dispatches (manage_worker) and routine updates now run without approval cards, while external actions, spending and hiring stay reviewed.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

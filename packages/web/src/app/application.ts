@@ -351,9 +351,11 @@ export function mountApplication(
 			companyRemovedHandler(),
 			tab,
 			openFriends,
+			executionNotices,
 		);
 		frame.inert = true;
 		root.append(settings.el);
+		notices?.reveal();
 		settings.focus();
 	}
 	/** Shows a Company File page beside the open chat. Again on what is shown already, it reads it again. */
@@ -574,6 +576,7 @@ export function mountApplication(
 
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
+	let shownAccountAlerts = 0;
 	/** Which of the open company's two pages are on (Interfaces C6a), read with its folder. */
 	let interfacePages: CompanyInterfacePages | undefined;
 	let companyDatabases: CompanyDatabases | undefined;
@@ -753,6 +756,7 @@ export function mountApplication(
 			openFriends,
 			invites: api,
 			invitations: hub.store.get().invitations.length,
+			accountAlerts: notices?.count ?? 0,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? {
 						navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) },
@@ -804,6 +808,7 @@ export function mountApplication(
 			};
 		notices?.dispose();
 		notices = undefined;
+		shownAccountAlerts = 0;
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
@@ -833,6 +838,7 @@ export function mountApplication(
 		disposeInterface(main);
 		notices?.dispose();
 		notices = undefined;
+		shownAccountAlerts = 0;
 		interfacePages?.dispose();
 		interfacePages = undefined;
 		companyDatabases?.dispose();
@@ -2056,11 +2062,16 @@ export function mountApplication(
 			notices = new ExecutionNotices(
 				client,
 				controller.signal,
-				() => main.focus({ preventScroll: true }),
+				() => (settings ? settings.focus() : main.focus({ preventScroll: true })),
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
 				api,
 				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
+				(count) => {
+					if (disposed || count === shownAccountAlerts) return;
+					shownAccountAlerts = count;
+					render();
+				},
 			);
 			executionNotices.append(notices.el);
 		}
@@ -2845,7 +2856,6 @@ export function mountApplication(
 							...workspaceActions,
 							computer,
 							computerPanels,
-							notificationHost: executionNotices,
 						},
 						() => setNavigationOpen(!navigationOpen),
 					);
