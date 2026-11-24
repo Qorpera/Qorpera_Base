@@ -421,7 +421,7 @@ export function prepareArtifacts(
 		for (const pdf of pdfDocs) {
 			pieces.push({
 				heavy: true,
-				build: () => pdfs.renderCard(pdf),
+				build: () => pdfs.renderCard({ ...pdf, fullscreen }),
 			});
 		}
 	}

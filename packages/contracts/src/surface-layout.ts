@@ -433,7 +433,7 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		type: "artifacts",
 		family: "artifacts",
 		summary:
-			"rendered artifacts (vector art, pictures, docs, pages, .json) no other block shows, expandable fullscreen; add to any tab",
+			"rendered artifacts (vector art, pictures, docs, pages, PDFs, .json) no other block shows, expandable fullscreen; add to any tab",
 		fields: [
 			{ name: "match", kind: "globs", required: false, note: "default every file" },
 			{ name: "skip", kind: "globs", required: false, note: "files to leave out" },

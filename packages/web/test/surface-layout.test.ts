@@ -1727,6 +1727,15 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 			expect(createdBlobType).toBe("application/pdf");
 			expect(card.querySelector('a[download="spec-sheet.pdf"]')?.getAttribute("href")).toBe("blob:spec-sheet");
 			expect(readCloudBinary).toHaveBeenCalledWith(pdfRef, expect.anything());
+			card.querySelector<HTMLButtonElement>('[data-act="studio-expand"]')!.click();
+			const dialog = document.querySelector<HTMLElement>(".studio-fullscreen-dialog.is-frame")!;
+			expect(dialog).not.toBeNull();
+			await vi.waitFor(() =>
+				expect(dialog.querySelector("iframe.studio-pdf-frame.is-fullscreen")?.getAttribute("src")).toBe(
+					PDF_PREVIEW_URL,
+				),
+			);
+			expect(readCloudBinary).toHaveBeenCalledTimes(1);
 			lifetime.abort();
 			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:spec-sheet"));
 			view.dispose();

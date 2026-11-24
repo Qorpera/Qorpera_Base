@@ -2,6 +2,7 @@ import type { StudioBinaryRef } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import type { StudioBinaryReader } from "../surface-studio-stage.ts";
+import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
 
 export const PDF_PREVIEW_URL = "./pdf-preview/";
 export const PDF_PREVIEW_READY = "qorpera-pdf-preview-ready";
@@ -13,6 +14,7 @@ export interface SurfacePdfCardOptions {
 	readonly ref: StudioBinaryRef;
 	readonly changed: boolean;
 	readonly slug?: string;
+	readonly fullscreen?: StudioFullscreen;
 }
 
 interface LoadedPdf {
@@ -77,7 +79,7 @@ export class SurfacePdfViewer {
 	}
 
 	renderCard(options: SurfacePdfCardOptions): HTMLElement {
-		const { path, title, ref, changed, slug } = options;
+		const { path, title, ref, changed, slug, fullscreen } = options;
 		const sizeText = formatPdfBytes(ref.bytes);
 		const openLink = h(
 			"a",
@@ -98,8 +100,22 @@ export class SurfacePdfViewer {
 			},
 			t("Download"),
 		);
-		const stage = h("div", { class: "studio-pdf-stage" }, h("p", { class: "studio-pdf-state" }, t("Loading PDF…")));
-		const card = h(
+		const expand = fullscreen
+			? expandButton(title, () =>
+					fullscreen.openContent(
+						title,
+						(onClose) => this.#mountStage(ref, title, "studio-pdf-frame is-fullscreen", onClose),
+						"frame",
+					),
+				)
+			: null;
+		const stage = this.#mountStage(ref, title, "studio-pdf-frame", undefined, (url) => {
+			openLink.setAttribute("href", url);
+			openLink.removeAttribute("aria-disabled");
+			downloadLink.setAttribute("href", url);
+			downloadLink.removeAttribute("aria-disabled");
+		});
+		return h(
 			"section",
 			{
 				class: `studio-section studio-pdf-card${changed ? " is-changed" : ""}`,
@@ -112,32 +128,46 @@ export class SurfacePdfViewer {
 				h("h2", null, title),
 				sizeText ? h("span", { class: "studio-pdf-size" }, sizeText) : null,
 				changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-				h("div", { class: "studio-pdf-actions" }, openLink, downloadLink),
+				h("div", { class: "studio-pdf-actions" }, openLink, downloadLink, expand),
 			),
 			stage,
 		);
+	}
+
+	#mountStage(
+		ref: StudioBinaryRef,
+		title: string,
+		frameClass: string,
+		onClose?: (cleanup: () => void) => void,
+		onUrl?: (url: string) => void,
+	): HTMLElement {
+		const stage = h("div", { class: "studio-pdf-stage" }, h("p", { class: "studio-pdf-state" }, t("Loading PDF…")));
+		let closed = false;
+		let mountedFrame: HTMLIFrameElement | undefined;
+		onClose?.(() => {
+			closed = true;
+			if (mountedFrame) this.#pendingFrames.delete(mountedFrame);
+		});
 		this.#load(ref).then(
 			({ bytes, url }) => {
-				if (this.#signal.aborted || this.#lifetime.signal.aborted) return;
-				openLink.setAttribute("href", url);
-				openLink.removeAttribute("aria-disabled");
-				downloadLink.setAttribute("href", url);
-				downloadLink.removeAttribute("aria-disabled");
+				if (closed || this.#signal.aborted || this.#lifetime.signal.aborted) return;
+				onUrl?.(url);
 				const frame = h("iframe", {
-					class: "studio-pdf-frame",
+					class: frameClass,
 					src: PDF_PREVIEW_URL,
 					referrerpolicy: "no-referrer",
 					title,
 				});
+				mountedFrame = frame;
 				this.#pendingFrames.set(frame, { bytes, title });
 				stage.replaceChildren(frame);
 			},
 			() => {
-				if (this.#signal.aborted || this.#lifetime.signal.aborted) return;
+				if (closed || this.#signal.aborted || this.#lifetime.signal.aborted) return;
 				stage.replaceChildren(h("p", { class: "studio-pdf-state is-error" }, t("This PDF can't be loaded.")));
 			},
 		);
-		return card;
+		return stage;
 	}
 
 	#load(ref: StudioBinaryRef): Promise<LoadedPdf> {
