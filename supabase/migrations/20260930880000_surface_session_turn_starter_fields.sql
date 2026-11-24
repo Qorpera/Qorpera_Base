@@ -1,5 +1,5 @@
 -- WHY: the agent is shown the page its interface draws, and the page picks its starter layout from the row's icon,
--- is_global and archetype too; the session turn handed the runtime none of them, so it could pick another page.
+-- is_global and archetype too; staging checks a layout on top of the session's own waiting changes to it.
 set local lock_timeout = '3s';
 
 do $$
@@ -45,7 +45,18 @@ $old$		'surfaceKind', v_surface.surface_kind,$old$,
 $new$		'surfaceKind', v_surface.surface_kind,
 		'surfaceIcon', v_surface.icon,
 		'surfaceIsGlobal', v_surface.is_global,
-		'surfaceArchetype', v_surface.archetype,$new$
+		'surfaceArchetype', v_surface.archetype,
+		'openLayoutOps', coalesce((
+			select jsonb_agg(o.op order by c.seq, o.n)
+			from public.qorpera_surface_changes c
+			cross join lateral jsonb_array_elements(
+				case when jsonb_typeof(c.patch_manifest) = 'array' then c.patch_manifest else '[]'::jsonb end
+			) with ordinality as o(op, n)
+			where c.session_id = v_session.id
+				and c.kind = 'folder_patch'
+				and c.status in ('staged', 'merging', 'conflicted')
+				and right(coalesce(o.op ->> 'path', ''), 11) = 'layout.json'
+		), '[]'::jsonb),$new$
 ]);
 
 drop function pg_temp.sstsf_patch(regprocedure, text[]);
