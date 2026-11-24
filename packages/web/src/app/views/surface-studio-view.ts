@@ -6,8 +6,6 @@ import {
 	type StudioPatchOp,
 	type SurfaceStarterKind,
 	type SurfaceSummary,
-	sharedAssetsConsumedBy,
-	sharedAssetsProducedBy,
 	surfaceFilesHaveModel,
 	surfaceLegacyModelKey,
 	surfaceStarterKind,
@@ -413,24 +411,8 @@ export class SurfaceStudioView {
 			}, 600);
 		}
 		this.#wasUpdating = updating;
-		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const identityFiles = store.companyIdentityFiles();
 		const companyFiles = identityFiles && identityFiles.surfaceId !== surface.id ? identityFiles : undefined;
-		const linkedSurfacesKey = JSON.stringify(
-			activeOtherSurfaces.map((item) => {
-				const itemLook = store.lookOf(item);
-				return [
-					item.id,
-					item.slug,
-					item.title,
-					item.group,
-					item.isGlobal === true,
-					item.icon,
-					itemLook.kind,
-					itemLook.accent ?? "",
-				];
-			}),
-		);
 		const deps: readonly unknown[] = [
 			initialLoading,
 			updatingPhase,
@@ -455,7 +437,6 @@ export class SurfaceStudioView {
 			workspace?.briefSummary ?? "",
 			workspace?.reconciliations,
 			state.reconciliationRequests,
-			linkedSurfacesKey,
 		];
 		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
 		this.#shownDeps = deps;
@@ -485,7 +466,6 @@ export class SurfaceStudioView {
 			ordered,
 			initialLoading,
 			updatingPhase,
-			activeOtherSurfaces,
 			companyFiles,
 			mode: state.mode,
 		};
@@ -519,7 +499,6 @@ export class SurfaceStudioView {
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
-		readonly activeOtherSurfaces: readonly SurfaceSummary[];
 		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): Promise<void> {
@@ -629,7 +608,6 @@ export class SurfaceStudioView {
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
-		readonly activeOtherSurfaces: readonly SurfaceSummary[];
 		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): void {
@@ -702,7 +680,6 @@ export class SurfaceStudioView {
 			readonly ordered: readonly StudioPatchChange[];
 			readonly initialLoading: boolean;
 			readonly updatingPhase: SurfaceUpdatePhase | null;
-			readonly activeOtherSurfaces: readonly SurfaceSummary[];
 			readonly companyFiles: SurfaceFileLayer | undefined;
 			readonly mode: SurfacesStore["state"]["mode"];
 		},
@@ -1076,90 +1053,12 @@ export class SurfaceStudioView {
 		});
 	}
 
-	#sharedLinks(
-		surface: SurfaceSummary,
-		lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"],
-		activeOtherSurfaces: readonly SurfaceSummary[],
-	): HTMLElement | null {
-		const store = this.#options.store;
-		const consumed = sharedAssetsConsumedBy(lookKind);
-		const produced = sharedAssetsProducedBy(lookKind);
-		const builtOn = new Map<string, (typeof activeOtherSurfaces)[number]>();
-		const seenIncomingProducers = new Set<string>();
-		for (const link of consumed) {
-			if (link.liveSyncMode === "prompt_context" && link.producedBy.every((k) => seenIncomingProducers.has(k))) {
-				continue;
-			}
-			const producers = activeOtherSurfaces.filter((item) => {
-				const targetKind = store.lookOf(item).kind;
-				return (
-					link.producedBy.includes(targetKind) || (link.producedBy.includes("identity") && item.isGlobal === true)
-				);
-			});
-			if (!producers.length) continue;
-			for (const k of link.producedBy) seenIncomingProducers.add(k);
-			for (const target of producers) builtOn.set(target.slug, target);
-		}
-		const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
-		const primaryProductRoot = store.state.surfaces
-			.filter(
-				(item) =>
-					item.status === "active" &&
-					item.archetype === "studio" &&
-					store.lookOf(item).kind === "product" &&
-					Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
-			)
-			.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
-			.at(0)
-			?.folderRoot?.replace(/^\/+|\/+$/g, "");
-		const usedBy = new Map<string, (typeof activeOtherSurfaces)[number]>();
-		for (const link of produced) {
-			if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
-				continue;
-			}
-			const consumers = activeOtherSurfaces
-				.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
-				.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
-			for (const target of consumers) usedBy.set(target.slug, target);
-		}
-		if (builtOn.size === 0 && usedBy.size === 0) return null;
-		const group = (dir: "in" | "out", label: string, targets: Map<string, (typeof activeOtherSurfaces)[number]>) =>
-			targets.size === 0
-				? null
-				: h(
-						"span",
-						{ class: "studio-reach-group", "data-link-dir": dir },
-						h("span", { class: "studio-reach-label" }, label),
-						[...targets.values()].map((target) =>
-							h(
-								"button",
-								{
-									type: "button",
-									class: "studio-reach-chip",
-									"data-act": "studio-open-surface",
-									"data-slug": target.slug,
-								},
-								surfaceTile(target, store.lookOf(target), "is-tiny"),
-								h("span", null, target.title),
-							),
-						),
-					);
-		return h(
-			"section",
-			{ class: "studio-reach", "data-live-linked": "true" },
-			group("in", t("Builds on"), builtOn),
-			group("out", t("Used by"), usedBy),
-		);
-	}
-
 	#layoutPlan(
 		params: {
 			readonly surface: SurfaceSummary;
-			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
 			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
-			readonly activeOtherSurfaces: readonly SurfaceSummary[];
 			readonly companyFiles: SurfaceFileLayer | undefined;
 		},
 		children: HTMLElement[],
@@ -1220,15 +1119,9 @@ export class SurfaceStudioView {
 		});
 		this.#tab = plan.tab;
 		if (plan.tabBar) children.push(plan.tabBar);
-		const gridTasks: StudioSectionTask[] = [];
-		if (plan.firstTab) {
-			const links = this.#sharedLinks(params.surface, params.lookKind, params.activeOtherSurfaces);
-			if (links) gridTasks.push({ build: () => links });
-		}
-		gridTasks.push(...plan.tasks);
 		const leavingSkeleton = this.#showingSkeleton;
 		this.#showingSkeleton = false;
-		return { children, gridTasks, leavingSkeleton };
+		return { children, gridTasks: plan.tasks, leavingSkeleton };
 	}
 
 	#click(event: MouseEvent): void {
@@ -1242,10 +1135,6 @@ export class SurfaceStudioView {
 				this.#tab = next;
 				this.update();
 			}
-			return;
-		}
-		if (act === "studio-open-surface" && target.dataset.slug) {
-			this.#options.store.navigateSurface(target.dataset.slug);
 			return;
 		}
 		if (act === "studio-retry-preview") {
