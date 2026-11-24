@@ -148,9 +148,9 @@ export interface SurfaceFolderContents {
 }
 
 const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|m?js|svg|html?)$/i;
-const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g)$/i;
+const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g|wav|mp4|m4a|mp3)$/i;
 const STUDIO_BINARY_TYPES = new Set<string>([...STUDIO_BINARY_MEDIA_TYPES, "application/octet-stream"]);
-const STUDIO_MAX_BINARIES = 32;
+const STUDIO_MAX_BINARIES = 256;
 export const MAX_CACHED_BINARY_BYTES = 64 * 1024 * 1024;
 const EMPTY_FOLDER: SurfaceFolderContents = { files: {}, binaries: {} };
 const STUDIO_IGNORED_DIR = new Set([
@@ -172,8 +172,8 @@ const STUDIO_IGNORED_DIR = new Set([
 const STUDIO_MAX_FILE_BYTES = 256 * 1024;
 const STUDIO_MAX_TOTAL_BYTES = 1024 * 1024;
 const STUDIO_MAX_FILES = 32;
-const STUDIO_MAX_SUBFOLDERS = 12;
-const STUDIO_FOLDER_DEPTH = 2;
+const STUDIO_MAX_SUBFOLDERS = 32;
+const STUDIO_FOLDER_DEPTH = 3;
 const STUDIO_LIST_CONCURRENCY = 4;
 const STUDIO_READ_CONCURRENCY = 6;
 const MAX_CACHED_CLOUD_FILES = 6;

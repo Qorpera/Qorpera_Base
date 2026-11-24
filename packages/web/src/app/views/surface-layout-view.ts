@@ -27,6 +27,7 @@ import {
 	type SurfaceFileLayer,
 	sourceFile,
 } from "./surface-blocks/context.ts";
+import { explainerClaimedPaths, SurfaceExplainers } from "./surface-blocks/explainer.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
 import { prepareFiles, type StudioHtmlPages } from "./surface-blocks/files.ts";
 import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
@@ -112,6 +113,10 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 			for (const path of Object.keys(ctx.files)) if (include(path)) claimed.add(path);
 			continue;
 		}
+		if (block.type === "explainer") {
+			for (const path of explainerClaimedPaths(block, ctx)) claimed.add(path);
+			continue;
+		}
 		if (block.type === "module") {
 			const folder = moduleFolder(block, ctx);
 			if (folder) for (const path of Object.keys(ctx.files)) if (path.startsWith(`${folder}/`)) claimed.add(path);
@@ -174,6 +179,7 @@ export class SurfaceLayoutView {
 	readonly #options: SurfaceLayoutOptions;
 	readonly #stages: SurfaceStages;
 	readonly #reports: SurfaceReports;
+	readonly #explainers: SurfaceExplainers;
 	readonly #pictures: SurfacePictures;
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
@@ -183,6 +189,7 @@ export class SurfaceLayoutView {
 		const read = (file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal);
 		this.#stages = new SurfaceStages(read, options.signal);
 		this.#pictures = new SurfacePictures(read, options.signal);
+		this.#explainers = new SurfaceExplainers(read, options.signal);
 		this.#reports = new SurfaceReports({
 			store: options.store,
 			surface: options.surface,
@@ -216,6 +223,18 @@ export class SurfaceLayoutView {
 		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
 		this.#stages.keep(stageKeys);
 		const current = tabs.find((item) => item.tab.id === input.tab) ?? tabs[0]!;
+		const activeExplainers = new Set<string>();
+		current.tab.blocks.forEach((node, index) => {
+			if (node.type === "row") {
+				node.blocks.forEach((block, slot) => {
+					if (block.type === "explainer")
+						activeExplainers.add(nodeKey(block, `${current.tab.id}/${index}.${slot}`));
+				});
+			} else if (node.type === "explainer") {
+				activeExplainers.add(nodeKey(node, `${current.tab.id}/${index}`));
+			}
+		});
+		this.#explainers.keep(activeExplainers);
 		const tabBar =
 			tabs.length > 1
 				? h(
@@ -323,6 +342,8 @@ export class SurfaceLayoutView {
 				return prepareCards(block, ctx);
 			case "report":
 				return this.#reports.prepare(block, ctx);
+			case "explainer":
+				return this.#explainers.prepare(key, block, ctx);
 			case "files":
 				return prepareFiles(block, ctx, scope.input.htmlPages, { claimed: scope.claimed, alone });
 			case "module":
@@ -368,6 +389,12 @@ export class SurfaceLayoutView {
 	}
 
 	click(target: HTMLElement, root: HTMLElement): boolean {
+		if (target.dataset.act === "studio-explainer") {
+			const key = target.dataset.block;
+			const path = target.dataset.path;
+			if (!key || !path) return false;
+			return this.#explainers.select(key, path, root);
+		}
 		if (target.dataset.act !== "studio-colorway") return false;
 		const key = target.dataset.block;
 		const index = Number(target.dataset.index);
@@ -386,9 +413,11 @@ export class SurfaceLayoutView {
 
 	deactivate(): void {
 		this.#reports.deactivate();
+		this.#explainers.deactivate();
 	}
 
 	dispose(): void {
 		this.#reports.dispose();
+		this.#explainers.dispose();
 	}
 }

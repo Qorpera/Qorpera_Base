@@ -355,7 +355,15 @@ describe("surfaces contracts", () => {
 		};
 		const op = { op: "write_file", path: "product/model.glb", file };
 		expect(parseStudioPatchOps([op])).toEqual([op]);
-		expect(STUDIO_BINARY_MEDIA_TYPES).toEqual(["model/gltf-binary", "image/webp", "image/png", "image/jpeg"]);
+		expect(STUDIO_BINARY_MEDIA_TYPES).toEqual([
+			"model/gltf-binary",
+			"image/webp",
+			"image/png",
+			"image/jpeg",
+			"audio/wav",
+			"audio/mp4",
+			"audio/mpeg",
+		]);
 		for (const mediaType of STUDIO_BINARY_MEDIA_TYPES) {
 			expect(parseStudioPatchOps([{ ...op, file: { ...file, mediaType } }])[0]).toEqual({
 				...op,

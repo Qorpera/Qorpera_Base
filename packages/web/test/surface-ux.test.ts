@@ -855,7 +855,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		const tabLabels = () =>
 			[...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
+		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
@@ -1311,7 +1311,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Files"]);
+		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
 
 		const reachChips = [
 			...view.el.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),

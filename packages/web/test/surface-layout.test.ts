@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import type { StudioBinaryRef, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setStudioExplainerEngineForTests } from "../src/app/views/studio-explainer-engine.ts";
 import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -20,6 +21,7 @@ const IDENTITY_ID = "22222222-2222-4222-8222-222222222242";
 const ROOT = "surfaces/lamp";
 
 afterEach(() => {
+	setStudioExplainerEngineForTests(undefined);
 	setLanguagePreference("en");
 	document.body.replaceChildren();
 	vi.restoreAllMocks();
@@ -102,8 +104,10 @@ function productFiles(): Record<string, string> {
 describe("Product studio on the layout renderer", () => {
 	it("fills every block of the starter from the folder's files", async () => {
 		const { view, tab, tabs, store } = await open(productFiles());
-		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
-		expect(view.el.querySelectorAll(".studio-tab.is-empty")).toHaveLength(0);
+		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
+		expect(
+			[...view.el.querySelectorAll<HTMLElement>(".studio-tab.is-empty")].map((item) => item.dataset.tab),
+		).toEqual(["breakdowns"]);
 		const product = view.el.querySelector(".studio-product")!;
 		expect([...product.children].map((child) => child.className)).toEqual([
 			"studio-stage is-empty",
@@ -394,7 +398,7 @@ describe("Product studio on the layout renderer", () => {
 		expect(view.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
 		await vi.waitFor(() => expect(view.el.querySelector(".studio-product .studio-facts")).not.toBeNull());
 		expect(view.el.querySelector(".skeleton-surface-studio")).toBeNull();
-		expect(view.el.querySelectorAll(".studio-tab")).toHaveLength(5);
+		expect(view.el.querySelectorAll(".studio-tab")).toHaveLength(6);
 		view.dispose();
 		store.dispose();
 	});
@@ -423,7 +427,14 @@ describe("Product studio on the layout renderer", () => {
 	it("passes the starter's words through Danish and keeps a company's own words as written", async () => {
 		setLanguagePreference("da");
 		const starter = await open(productFiles());
-		expect(starter.tabs()).toEqual(["Overblik", "Specifikationer", "Leverandører", "Rapporter", "Filer"]);
+		expect(starter.tabs()).toEqual([
+			"Overblik",
+			"Specifikationer",
+			"Leverandører",
+			"Rapporter",
+			"Gennemgange",
+			"Filer",
+		]);
 		starter.tab("specs");
 		expect(starter.view.el.querySelector('[data-block="table"] h2')?.textContent).toBe("Dele");
 		starter.view.dispose();
@@ -538,7 +549,7 @@ describe("A folder's own layout.json", () => {
 		expect(tabs()).toHaveLength(6);
 		await store.toggleChange(surface.id, CHANGES[0]);
 		view.update();
-		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
 		view.dispose();
 		store.dispose();
 	});
@@ -546,7 +557,7 @@ describe("A folder's own layout.json", () => {
 	it("falls back to the starter when layout.json does not parse, and says nothing technical", async () => {
 		for (const broken of ["{not json", JSON.stringify({ schema: "something/else", tabs: [] })]) {
 			const { view, tabs, store } = await open({ ...productFiles(), [`${ROOT}/layout.json`]: broken });
-			expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
+			expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
 			expect(view.el.querySelector(".studio-home-quiet")).toBeNull();
 			expect(view.el.textContent).not.toMatch(/layout|JSON|schema/);
 			view.dispose();
@@ -658,12 +669,13 @@ function fullIdentity(): Record<string, string> {
 describe("Identity on the layout renderer", () => {
 	it("draws every home of the starter when the folder is empty, with no whole-page empty state", async () => {
 		const { view, tab, tabs, store } = await open({}, { surface: identityStudio() });
-		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
 		expect([...view.el.querySelectorAll(".studio-tab.is-empty")].map((item) => item.textContent)).toEqual([
 			"Strategy",
 			"Philosophy",
 			"Voice",
 			"Design system",
+			"Breakdowns",
 			"Files",
 		]);
 		expect(view.el.querySelector(".studio-empty")).toBeNull();
@@ -724,8 +736,10 @@ describe("Identity on the layout renderer", () => {
 
 	it("carries over the fuller folder: marks, cards, tokens, design system, other files and pages", async () => {
 		const { view, tab, tabs, store } = await open(fullIdentity(), { surface: identityStudio() });
-		expect(tabs()).toHaveLength(6);
-		expect(view.el.querySelectorAll(".studio-tab.is-empty")).toHaveLength(0);
+		expect(tabs()).toHaveLength(7);
+		expect(
+			[...view.el.querySelectorAll<HTMLElement>(".studio-tab.is-empty")].map((item) => item.dataset.tab),
+		).toEqual(["breakdowns"]);
 		expect(view.el.querySelectorAll('[data-block="brand_mark"] img.studio-mark-img')).toHaveLength(4);
 		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Lumen Lamps");
 		const cards = [...view.el.querySelectorAll(".studio-named-card")];
@@ -1203,6 +1217,109 @@ describe("The module block", () => {
 		tab("files");
 		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).not.toBeNull();
 		expect(view.el.querySelector('[data-file="surfaces/lamp/modules/configurator/index.html"]')).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+});
+
+describe("The explainer block and Breakdowns tab", () => {
+	it("draws an empty home, plays narrated scenes with audio blobs, switches videos, and claims breakdown files", async () => {
+		setStudioExplainerEngineForTests("window.Video = function(el, opts){ this.start = function(){}; };");
+		const audioBytes = new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0]);
+		const clipRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: audioBytes.byteLength,
+			mediaType: "audio/wav",
+		};
+		const idSurface = identityStudio();
+		const emptyOpen = await open({}, { surface: idSurface });
+		emptyOpen.tab("breakdowns");
+		expect(emptyOpen.view.el.querySelector('[data-block="explainer"]')?.textContent).toContain(
+			"Animated breakdowns live here.",
+		);
+		emptyOpen.view.dispose();
+		emptyOpen.store.dispose();
+
+		const baseFiles: Record<string, string> = {
+			"identity/breakdowns/buyer-ux/explainer.json": JSON.stringify({ title: "Buyer & Seller UX" }),
+			"identity/breakdowns/buyer-ux/scenes.js": 'V.part("Start"); V.scene((s) => { s.say("Hello."); });',
+			"identity/breakdowns/buyer-ux/voice/clips.json": JSON.stringify([
+				{ caption: "0123abcd", file: "0123abcd.wav", seconds: 2.5 },
+			]),
+			"identity/breakdowns/pricing/scenes.js": 'V.part("Price"); V.scene((s) => { s.say("Clear fees."); });',
+		};
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [idSurface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: idSurface })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () =>
+					folderContents(baseFiles, { "identity/breakdowns/buyer-ux/voice/0123abcd.wav": clipRef }),
+				),
+				readCloudBinary: vi.fn(async () => audioBytes),
+			},
+		);
+		await store.load();
+		await store.openSurface(idSurface.slug);
+		const view = new SurfaceStudioView({ store, surface: idSurface, signal: new AbortController().signal });
+		document.body.append(view.el);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="breakdowns"]')!.click();
+		const block = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
+		expect(block.dataset.file).toBe("identity/breakdowns/buyer-ux/scenes.js");
+		expect(block.querySelector(".studio-explainer-head h3")?.textContent).toBe("Buyer & Seller UX");
+		const switcherTabs = [...block.querySelectorAll<HTMLButtonElement>('[data-act="studio-explainer"]')];
+		expect(switcherTabs.map((item) => item.textContent)).toEqual(["Buyer & Seller UX", "Pricing"]);
+
+		const frame = block.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const post = vi.spyOn(frame.contentWindow as Window, "postMessage").mockImplementation(() => {});
+		const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+		Object.defineProperty(ready, "source", { value: frame.contentWindow });
+		window.dispatchEvent(ready);
+		const [message] = post.mock.calls.at(-1) as unknown as [
+			{ type: string; html: string; files?: readonly (readonly [string, Blob])[] },
+		];
+		expect(message.type).toBe(PAGE_CONTENT);
+		expect(message.html).toContain("Buyer &amp; Seller UX");
+		expect(message.html).toContain('V.part("Start")');
+		expect(message.html).toContain('data-caption="0123abcd" data-seconds="2.5"');
+		expect(message.files).toHaveLength(1);
+		expect(message.files?.[0]?.[0]).toBe(`qorpera-file-${"b".repeat(32)}-wav`);
+
+		switcherTabs[1]!.click();
+		expect(block.dataset.file).toBe("identity/breakdowns/pricing/scenes.js");
+		expect(block.querySelector(".studio-explainer-head h3")?.textContent).toBe("Pricing");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="system"]')!.click();
+		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/explainer.json"]')).toBeNull();
+		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/voice/clips.json"]')).toBeNull();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/scenes.js"]')).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("marks staged breakdown updates on the Product Breakdowns tab", async () => {
+		setStudioExplainerEngineForTests("window.Video = function(el, opts){ this.start = function(){}; };");
+		const { view, tab, store } = await open(productFiles(), {
+			ops: [
+				{
+					op: "write_text",
+					path: "breakdowns/how-it-works/scenes.js",
+					content: 'V.part("Core"); V.scene((s) => { s.say("Dims automatically."); });',
+				},
+			],
+		});
+		tab("breakdowns");
+		const block = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
+		expect(block.classList.contains("is-changed")).toBe(true);
+		expect(block.querySelector(".studio-changed-pill")?.textContent).toBe("Updated");
+		expect(block.dataset.file).toBe("surfaces/lamp/breakdowns/how-it-works/scenes.js");
 		view.dispose();
 		store.dispose();
 	});

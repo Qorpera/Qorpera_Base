@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { bundleLayout, bundleOptions, rewriteIndex, threeAsset, VENDORED_SCRIPTS } from "./bundle.mjs";
+import { bundleLayout, bundleOptions, explainerAsset, rewriteIndex, threeAsset, VENDORED_SCRIPTS } from "./bundle.mjs";
 import { prepareDeployment } from "./deployment.mjs";
 import { webSourceProvenance } from "./provenance.mjs";
 
@@ -45,6 +45,9 @@ const three = threeAsset({ root, serve });
 mkdirSync(dirname(join(dist, three.file)), { recursive: true });
 writeFileSync(join(dist, three.file), three.bytes);
 cpSync(three.license, join(dist, "assets/three.LICENSE.txt"));
+const explainer = explainerAsset({ root, serve });
+mkdirSync(dirname(join(dist, explainer.file)), { recursive: true });
+writeFileSync(join(dist, explainer.file), explainer.bytes);
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const { app: options, theme: themeOptions } = bundleOptions({ root, outdir: dist, serve, define: deployment.define });
@@ -68,7 +71,7 @@ if (serve) {
 	const versions = Object.fromEntries(VENDORED_SCRIPTS.map(file => [file, createHash("sha256").update(readFileSync(join(dist, file))).digest("hex").slice(0, 12)]));
 	writeFileSync(join(dist, "index.html"), rewriteIndex(readFileSync(join(dist, "index.html"), "utf8"), layout, versions, new URL(deployment.config.projectUrl).origin));
 	// Every script and stylesheet, chunks included: a deploy check can tell each file this build made.
-	const files = ["index.html", "_headers", ...deployment.notFoundPages, ...layout.files, three.file];
+	const files = ["index.html", "_headers", ...deployment.notFoundPages, ...layout.files, three.file, explainer.file];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
 		...deployment.manifest,
 		...provenance,

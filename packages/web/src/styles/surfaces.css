@@ -1767,6 +1767,23 @@ a.surface-address-row:hover { text-decoration: none; }
 .studio-grid:has(> .studio-module.is-alone) { display: flex; flex-direction: column; flex: 1; }
 .studio-module.is-alone { display: flex; flex-direction: column; flex: 1; }
 .studio-module.is-alone .studio-module-frame { flex: 1; height: auto; min-height: 360px; }
+.studio-explainer-block { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+.studio-explainer-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.studio-explainer-tab {
+	padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+	color: var(--text-soft); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.studio-explainer-tab:hover { color: var(--text); border-color: var(--border-strong); }
+.studio-explainer-tab.is-on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.studio-explainer-tab.is-changed:not(.is-on) { border-color: color-mix(in srgb, var(--accent) 48%, transparent); }
+.studio-explainer-head .studio-section-head { margin-bottom: 0; }
+.studio-explainer-head h3 { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--text); }
+.studio-explainer-stage { min-width: 0; }
+.studio-explainer-frame {
+	display: block; width: 100%; aspect-ratio: 16 / 10; min-height: 360px; max-height: 680px;
+	box-sizing: border-box; border: 1px solid var(--border); border-radius: 14px; background: #0f1014; color-scheme: dark;
+}
+.studio-explainer-block.is-changed .studio-explainer-frame { border-color: color-mix(in srgb, var(--accent) 42%, transparent); }
 .studio-swatches.is-empty .studio-swatch { background: none; border-style: dashed; }
 .studio-swatches.is-empty .studio-swatch-chip { background: var(--skeleton); box-shadow: none; }
 .studio-swatches.is-empty .studio-pale-bar { width: 54%; }
