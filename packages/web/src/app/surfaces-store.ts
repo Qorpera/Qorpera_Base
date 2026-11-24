@@ -148,7 +148,7 @@ export interface SurfaceFolderContents {
 }
 
 const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|m?js|svg|html?)$/i;
-const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g|wav|mp4|m4a|mp3)$/i;
+const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g|wav|mp4|m4a|mp3|webm)$/i;
 const STUDIO_BINARY_TYPES = new Set<string>([...STUDIO_BINARY_MEDIA_TYPES, "application/octet-stream"]);
 const STUDIO_MAX_BINARIES = 256;
 export const MAX_CACHED_BINARY_BYTES = 64 * 1024 * 1024;
@@ -245,11 +245,13 @@ function sameBinaryMap(
 
 function studioFilePriority(path: string): number {
 	const lower = path.toLowerCase();
-	if (lower.endsWith(".json")) return 0;
-	if (lower.endsWith(".css") || lower.endsWith(".svg")) return 1;
-	if (lower.endsWith(".md") || lower.endsWith(".markdown")) return 2;
-	if (/\.(?:html?|m?js)$/.test(lower)) return 3;
-	return 4;
+	if (/(?:^|\/)scenes\.js$/.test(lower)) return 0;
+	if (lower.endsWith(".json") && !lower.endsWith(".report.json")) return 0;
+	if (lower.endsWith(".report.json")) return 1;
+	if (lower.endsWith(".css") || lower.endsWith(".svg")) return 2;
+	if (lower.endsWith(".md") || lower.endsWith(".markdown")) return 3;
+	if (/\.(?:html?|m?js)$/.test(lower)) return 4;
+	return 5;
 }
 
 export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadableFile>(

@@ -363,6 +363,7 @@ describe("surfaces contracts", () => {
 			"audio/wav",
 			"audio/mp4",
 			"audio/mpeg",
+			"audio/webm",
 		]);
 		for (const mediaType of STUDIO_BINARY_MEDIA_TYPES) {
 			expect(parseStudioPatchOps([{ ...op, file: { ...file, mediaType } }])[0]).toEqual({

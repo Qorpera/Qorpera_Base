@@ -18,7 +18,8 @@ import {
 
 const SCENES_FILE_RE = /\.js$/i;
 const CAPTION_HASH_RE = /^[0-9a-f]{8}$/;
-const SAFE_CLIP_FILE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+const CLIP_AUDIO_EXTS = new Set(["wav", "mp4", "m4a", "mp3", "webm"]);
+const CLIP_MAX_SECONDS = 60;
 const MAX_CLIPS = 400;
 
 interface ExplainerClipMeta {
@@ -38,11 +39,28 @@ interface ExplainerItem {
 }
 
 interface MountedExplainer {
-	readonly frame?: AppFrame;
+	readonly frame: AppFrame;
 	readonly loadAbort: AbortController;
+	readonly section: HTMLElement;
 	readonly stage: HTMLElement;
 	readonly meta: HTMLElement;
 	readonly items: readonly ExplainerItem[];
+	readonly signature: string;
+}
+
+function explainerSignature(item: ExplainerItem): string {
+	const clips = item.clips.map((clip) => {
+		const ref = item.voiceBinaries[clip.file];
+		return [
+			clip.caption,
+			clip.file,
+			clip.seconds,
+			ref?.manifestSha256 ?? "",
+			ref?.fileSha256 ?? "",
+			ref?.mediaType ?? "",
+		];
+	});
+	return JSON.stringify([item.path, item.title, item.scenes, clips]);
 }
 
 function escapeHtml(value: string): string {
@@ -69,6 +87,7 @@ function audioMimeFor(file: string, mediaType: string): string {
 	const lower = file.toLowerCase();
 	if (lower.endsWith(".wav")) return "audio/wav";
 	if (lower.endsWith(".mp3")) return "audio/mpeg";
+	if (lower.endsWith(".webm")) return "audio/webm";
 	return "audio/mp4";
 }
 
@@ -76,6 +95,12 @@ function fileExtToken(file: string): string {
 	const dot = file.lastIndexOf(".");
 	const raw = dot >= 0 ? file.slice(dot + 1).toLowerCase() : "bin";
 	return raw.replace(/[^a-z0-9]/g, "").slice(0, 16) || "bin";
+}
+
+function isCaptionClipFile(caption: string, file: string): boolean {
+	const dot = file.lastIndexOf(".");
+	if (dot <= 0) return false;
+	return file.slice(0, dot) === caption && CLIP_AUDIO_EXTS.has(file.slice(dot + 1));
 }
 
 function parseClipsJson(text: string | undefined): ExplainerClipMeta[] {
@@ -86,26 +111,26 @@ function parseClipsJson(text: string | undefined): ExplainerClipMeta[] {
 	} catch {
 		return [];
 	}
-	const list = Array.isArray(raw) ? raw : isPlainRecord(raw) && Array.isArray(raw.clips) ? raw.clips : [];
+	const list = isPlainRecord(raw) && Array.isArray(raw.clips) ? raw.clips : [];
 	const out: ExplainerClipMeta[] = [];
 	const seen = new Set<string>();
 	for (const entry of list) {
 		if (out.length >= MAX_CLIPS || !isPlainRecord(entry)) continue;
-		const caption = typeof entry.caption === "string" ? entry.caption.trim().toLowerCase() : "";
-		const file = typeof entry.file === "string" ? entry.file.trim() : "";
+		const caption = typeof entry.caption === "string" ? entry.caption : "";
+		const file = typeof entry.file === "string" ? entry.file : "";
 		const seconds = typeof entry.seconds === "number" ? entry.seconds : Number.NaN;
 		if (
 			!CAPTION_HASH_RE.test(caption) ||
-			!SAFE_CLIP_FILE_RE.test(file) ||
+			!isCaptionClipFile(caption, file) ||
 			!Number.isFinite(seconds) ||
 			seconds <= 0 ||
-			seconds > 3600 ||
+			seconds > CLIP_MAX_SECONDS ||
 			seen.has(caption)
 		) {
 			continue;
 		}
 		seen.add(caption);
-		out.push({ caption, file, seconds });
+		out.push({ caption, file, seconds: Math.round(seconds * 100) / 100 });
 	}
 	return out;
 }
@@ -234,6 +259,7 @@ export class SurfaceExplainers {
 		const items = collectItems(block, ctx);
 		const heading = block.heading ? ctx.words(block.heading) : "";
 		if (items.length === 0) {
+			this.#unmount(key);
 			return {
 				filled: false,
 				pieces: [
@@ -280,10 +306,23 @@ export class SurfaceExplainers {
 										),
 									)
 								: null;
+						const signature = explainerSignature(active);
+						const prev = this.#mounted.get(key);
+						if (prev && prev.signature === signature && !prev.frame.signal.aborted) {
+							prev.section.className = `studio-section studio-explainer-block${active.changed ? " is-changed" : ""}`;
+							prev.section.dataset.file = active.path;
+							while (prev.section.firstChild && prev.section.firstChild !== prev.meta) {
+								prev.section.firstChild.remove();
+							}
+							if (heading) prev.section.insertBefore(sectionHead(heading, false), prev.meta);
+							if (switcher) prev.section.insertBefore(switcher, prev.meta);
+							this.#renderMeta(prev.meta, active);
+							this.#mounted.set(key, { ...prev, items });
+							return prev.section;
+						}
 						const meta = h("div", { class: "studio-explainer-head" });
 						const stage = h("div", { class: "studio-explainer-stage" });
-						this.#mount(key, items, active, meta, stage);
-						return h(
+						const section = h(
 							"section",
 							{
 								class: `studio-section studio-explainer-block${active.changed ? " is-changed" : ""}`,
@@ -295,6 +334,8 @@ export class SurfaceExplainers {
 							meta,
 							stage,
 						);
+						this.#mount(key, items, active, signature, section, meta, stage);
+						return section;
 					},
 				},
 			],
@@ -314,29 +355,22 @@ export class SurfaceExplainers {
 			button.classList.toggle("is-on", on);
 			button.setAttribute("aria-selected", String(on));
 		}
-		const section = mounted.stage.closest<HTMLElement>(".studio-explainer-block");
-		if (section) {
-			section.classList.toggle("is-changed", next.changed);
-			section.dataset.file = next.path;
-		}
-		this.#mount(key, mounted.items, next, mounted.meta, mounted.stage);
+		mounted.section.classList.toggle("is-changed", next.changed);
+		mounted.section.dataset.file = next.path;
+		this.#mount(key, mounted.items, next, explainerSignature(next), mounted.section, mounted.meta, mounted.stage);
 		return true;
 	}
 
 	keep(activeKeys: ReadonlySet<string>): void {
-		for (const [key, mounted] of this.#mounted) {
-			if (!activeKeys.has(key)) {
-				mounted.loadAbort.abort();
-				mounted.frame?.dispose();
-				this.#mounted.delete(key);
-			}
+		for (const key of [...this.#mounted.keys()]) {
+			if (!activeKeys.has(key)) this.#unmount(key);
 		}
 	}
 
 	deactivate(): void {
 		for (const mounted of this.#mounted.values()) {
 			mounted.loadAbort.abort();
-			mounted.frame?.dispose();
+			mounted.frame.dispose();
 		}
 		this.#mounted.clear();
 	}
@@ -346,18 +380,15 @@ export class SurfaceExplainers {
 		this.#selected.clear();
 	}
 
-	#mount(
-		key: string,
-		items: readonly ExplainerItem[],
-		item: ExplainerItem,
-		meta: HTMLElement,
-		stage: HTMLElement,
-	): void {
-		const prev = this.#mounted.get(key);
-		if (prev) {
-			prev.loadAbort.abort();
-			prev.frame?.dispose();
-		}
+	#unmount(key: string): void {
+		const mounted = this.#mounted.get(key);
+		if (!mounted) return;
+		mounted.loadAbort.abort();
+		mounted.frame.dispose();
+		this.#mounted.delete(key);
+	}
+
+	#renderMeta(meta: HTMLElement, item: ExplainerItem): void {
 		meta.replaceChildren(
 			h(
 				"div",
@@ -367,6 +398,19 @@ export class SurfaceExplainers {
 				item.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 			),
 		);
+	}
+
+	#mount(
+		key: string,
+		items: readonly ExplainerItem[],
+		item: ExplainerItem,
+		signature: string,
+		section: HTMLElement,
+		meta: HTMLElement,
+		stage: HTMLElement,
+	): void {
+		this.#unmount(key);
+		this.#renderMeta(meta, item);
 		const loadAbort = new AbortController();
 		const onGlobalAbort = () => loadAbort.abort();
 		if (this.#signal.aborted) {
@@ -391,7 +435,7 @@ export class SurfaceExplainers {
 			{ again: true },
 		);
 		stage.replaceChildren(frame.frame);
-		this.#mounted.set(key, { frame, loadAbort, stage, meta, items });
+		this.#mounted.set(key, { frame, loadAbort, section, stage, meta, items, signature });
 	}
 
 	async #buildPage(item: ExplainerItem, signal: AbortSignal): Promise<FramedPage> {

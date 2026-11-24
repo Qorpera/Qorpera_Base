@@ -200,6 +200,7 @@ export const STUDIO_BINARY_MEDIA_TYPES = [
 	"audio/wav",
 	"audio/mp4",
 	"audio/mpeg",
+	"audio/webm",
 ] as const;
 export const STUDIO_BINARY_MAX_BYTES = 64 * 1024 * 1024;
 

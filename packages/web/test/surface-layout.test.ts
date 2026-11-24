@@ -1241,14 +1241,26 @@ describe("The explainer block and Breakdowns tab", () => {
 		emptyOpen.view.dispose();
 		emptyOpen.store.dispose();
 
+		const webmClipRef: StudioBinaryRef = {
+			manifestSha256: "c".repeat(64),
+			fileSha256: "d".repeat(64),
+			bytes: audioBytes.byteLength,
+			mediaType: "audio/webm",
+		};
 		const baseFiles: Record<string, string> = {
 			"identity/breakdowns/buyer-ux/explainer.json": JSON.stringify({ title: "Buyer & Seller UX" }),
 			"identity/breakdowns/buyer-ux/scenes.js": 'V.part("Start"); V.scene((s) => { s.say("Hello."); });',
-			"identity/breakdowns/buyer-ux/voice/clips.json": JSON.stringify([
-				{ caption: "0123abcd", file: "0123abcd.wav", seconds: 2.5 },
-			]),
+			"identity/breakdowns/buyer-ux/voice/clips.json": JSON.stringify({
+				clips: [
+					{ caption: "0123abcd", file: "0123abcd.wav", seconds: 2.5 },
+					{ caption: "deadbeef", file: "deadbeef.webm", seconds: 1.254 },
+					{ caption: "cafebabe", file: "wrong.wav", seconds: 2.0 },
+					{ caption: "f00dbabe", file: "f00dbabe.wav", seconds: 61 },
+				],
+			}),
 			"identity/breakdowns/pricing/scenes.js": 'V.part("Price"); V.scene((s) => { s.say("Clear fees."); });',
 		};
+		const readCloudBinary = vi.fn(async () => audioBytes);
 		const store = storeWith(
 			fakeClient({
 				listSurfaces: vi.fn(async () => [idSurface]),
@@ -1256,9 +1268,12 @@ describe("The explainer block and Breakdowns tab", () => {
 			}),
 			{
 				loadCloudFiles: vi.fn(async () =>
-					folderContents(baseFiles, { "identity/breakdowns/buyer-ux/voice/0123abcd.wav": clipRef }),
+					folderContents(baseFiles, {
+						"identity/breakdowns/buyer-ux/voice/0123abcd.wav": clipRef,
+						"identity/breakdowns/buyer-ux/voice/deadbeef.webm": webmClipRef,
+					}),
 				),
-				readCloudBinary: vi.fn(async () => audioBytes),
+				readCloudBinary,
 			},
 		);
 		await store.load();
@@ -1287,8 +1302,13 @@ describe("The explainer block and Breakdowns tab", () => {
 		expect(message.html).toContain("Buyer &amp; Seller UX");
 		expect(message.html).toContain('V.part("Start")');
 		expect(message.html).toContain('data-caption="0123abcd" data-seconds="2.5"');
-		expect(message.files).toHaveLength(1);
+		expect(message.html).toContain('data-caption="deadbeef" data-seconds="1.25"');
+		expect(message.html).not.toContain('data-caption="cafebabe"');
+		expect(message.html).not.toContain('data-caption="f00dbabe"');
+		expect(message.files).toHaveLength(2);
 		expect(message.files?.[0]?.[0]).toBe(`qorpera-file-${"b".repeat(32)}-wav`);
+		expect(message.files?.[1]?.[0]).toBe(`qorpera-file-${"d".repeat(32)}-webm`);
+		expect(readCloudBinary).toHaveBeenCalledTimes(2);
 
 		switcherTabs[1]!.click();
 		expect(block.dataset.file).toBe("identity/breakdowns/pricing/scenes.js");
@@ -1299,6 +1319,78 @@ describe("The explainer block and Breakdowns tab", () => {
 		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/voice/clips.json"]')).toBeNull();
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/scenes.js"]')).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("reuses the mounted explainer frame across unrelated re-renders and disposes it when breakdowns disappear", async () => {
+		setStudioExplainerEngineForTests("window.Video = function(el, opts){ this.start = function(){}; };");
+		const audioBytes = new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0]);
+		const clipRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "e".repeat(64),
+			bytes: audioBytes.byteLength,
+			mediaType: "audio/wav",
+		};
+		const idSurface = identityStudio();
+		let currentFiles: Record<string, string> = {
+			"identity/voice.md": "Original voice notes",
+			"identity/breakdowns/buyer-ux/explainer.json": JSON.stringify({ title: "Buyer UX" }),
+			"identity/breakdowns/buyer-ux/scenes.js": 'V.part("Start"); V.scene((s) => { s.say("Hello."); });',
+			"identity/breakdowns/buyer-ux/voice/clips.json": JSON.stringify({
+				clips: [{ caption: "0123abcd", file: "0123abcd.wav", seconds: 2.5 }],
+			}),
+		};
+		const readCloudBinary = vi.fn(async () => audioBytes);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [idSurface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: idSurface })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () =>
+					folderContents(currentFiles, { "identity/breakdowns/buyer-ux/voice/0123abcd.wav": clipRef }),
+				),
+				readCloudBinary,
+			},
+		);
+		await store.load();
+		await store.openSurface(idSurface.slug);
+		const view = new SurfaceStudioView({ store, surface: idSurface, signal: new AbortController().signal });
+		document.body.append(view.el);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="breakdowns"]')!.click();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		const sectionBefore = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
+		const frameBefore = sectionBefore.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+
+		currentFiles = { ...currentFiles, "identity/voice.md": "Updated unrelated notes" };
+		await store.refreshCloudFiles(idSurface);
+		view.update();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		const sectionAfter = view.el.querySelector<HTMLElement>('[data-block="explainer"]')!;
+		const frameAfter = sectionAfter.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
+		expect(sectionAfter).toBe(sectionBefore);
+		expect(frameAfter).toBe(frameBefore);
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+
+		const oldWindow = frameBefore.contentWindow as Window;
+		const post = vi.spyOn(oldWindow, "postMessage").mockImplementation(() => {});
+		currentFiles = { "identity/voice.md": "Only notes remain" };
+		await store.refreshCloudFiles(idSurface);
+		view.update();
+		expect(view.el.querySelector('[data-block="explainer"]')?.textContent).toContain(
+			"Animated breakdowns live here.",
+		);
+		const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+		Object.defineProperty(ready, "source", { value: oldWindow });
+		window.dispatchEvent(ready);
+		expect(post).not.toHaveBeenCalled();
 
 		view.dispose();
 		store.dispose();
