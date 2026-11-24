@@ -1941,7 +1941,13 @@ describe("What's new's live row at every width", () => {
 	});
 
 	it("keeps the rules the site cards and the code import's question use, and none of the Sites page's own", () => {
-		for (const kept of [".site-pill-icon {", ".site-state {", ".site-dot {", ".sites-question-input {", ".site-button {"])
+		for (const kept of [
+			".site-pill-icon {",
+			".site-state {",
+			".site-dot {",
+			".sites-question-input {",
+			".site-button {",
+		])
 			expect(css).toContain(kept);
 		for (const gone of [
 			".sites {",

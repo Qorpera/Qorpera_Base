@@ -2544,9 +2544,7 @@ function placeOf(element: HTMLElement): string | undefined {
 	if (roomId) return `room:${roomId.toLowerCase()}`;
 	if (owedPlace) return owedPlace;
 	if (!appKey) return undefined;
-	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "whats-new"
-		? appKey
-		: `page:${appKey}`;
+	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "whats-new" ? appKey : `page:${appKey}`;
 }
 
 function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {

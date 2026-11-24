@@ -2308,7 +2308,8 @@ export function mountApplication(
 								error instanceof CloudRpcError &&
 								(error.missing || error.denied)
 							) {
-								if (controller.store.get().whatsNew !== undefined) controller.store.set({ whatsNew: undefined });
+								if (controller.store.get().whatsNew !== undefined)
+									controller.store.set({ whatsNew: undefined });
 							}
 						},
 					)

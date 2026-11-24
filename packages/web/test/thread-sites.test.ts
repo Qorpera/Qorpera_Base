@@ -296,7 +296,12 @@ describe("A site a message links: the card under the words", () => {
 		const calls = client();
 		const lifetime = new AbortController();
 		cleanup.push(() => lifetime.abort());
-		const sites = new ThreadSites(calls, () => manage, lifetime.signal, () => {});
+		const sites = new ThreadSites(
+			calls,
+			() => manage,
+			lifetime.signal,
+			() => {},
+		);
 		await settle();
 		const root = message(sites, "https://orders-api-preview.qorpera.com/");
 		expect(keyOf(root)).toBeNull();
@@ -314,7 +319,12 @@ describe("A site a message links: the card under the words", () => {
 		let manage = true;
 		const lifetime = new AbortController();
 		cleanup.push(() => lifetime.abort());
-		const sites = new ThreadSites(client(), () => manage, lifetime.signal, () => {});
+		const sites = new ThreadSites(
+			client(),
+			() => manage,
+			lifetime.signal,
+			() => {},
+		);
 		await settle();
 		// The message's body drawn three times (its words changed, or the language), each time before any redraw: the
 		// first two bodies leave the thread.
