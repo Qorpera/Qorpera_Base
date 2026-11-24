@@ -1770,18 +1770,16 @@ describe("SurfacesStore", () => {
 			});
 		});
 		const approveDeferred = deferred<ReturnType<typeof session>>();
-		let discardAttempts = 0;
+		const discardSurfaceSession = vi.fn(async (): Promise<ReturnType<typeof session>> => {
+			throw new Error("discard failed");
+		});
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [summary(), secondSurface]),
 			getSurfaceWorkspace,
 			mintPreviewPass,
 			approveSurfaceChange: vi.fn(() => approveDeferred.promise),
 			approveSessionAll: vi.fn(async () => session(["merged", "merged"])),
-			discardSurfaceChange: vi.fn(async () => {
-				discardAttempts += 1;
-				if (discardAttempts === 1) return session(["discarded", "staged"]);
-				throw new Error("second discard failed");
-			}),
+			discardSurfaceSession,
 		});
 		const store = storeWith(client);
 		await store.load();
@@ -1836,8 +1834,11 @@ describe("SurfacesStore", () => {
 		expect(store.state.undo).toBeUndefined();
 
 		await store.refreshWorkspace(SURFACE);
+		const before = store.session(SESSION);
 		expect(await store.discardSession(SESSION)).toBe(false);
-		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		expect(discardSurfaceSession).toHaveBeenCalledWith(SESSION);
+		expect(store.session(SESSION)).toBe(before);
+		expect(store.state.error).toBe("discard failed");
 		store.dispose();
 	});
 

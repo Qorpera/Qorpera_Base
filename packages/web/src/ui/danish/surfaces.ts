@@ -52,6 +52,9 @@ export const SURFACES: Record<string, string> = {
 	Changes: "Ændringer",
 	"Remove change reference": "Fjern ændringsreference",
 	"Discard all": "Kassér alle",
+	"Remove {title}? The agent stops and its unapproved changes are dropped.":
+		"Fjern {title}? Agenten stopper, og dens ikke-godkendte ændringer kasseres.",
+	"Remove {title}? Its unapproved changes are dropped.": "Fjern {title}? Dens ikke-godkendte ændringer kasseres.",
 	"Discarded “{title}”": "Kasserede “{title}”",
 	"Got it — updated “{title}” with “{note}”.": "Forstået — opdaterede “{title}” med “{note}”.",
 	"Needs your attention": "Kræver din opmærksomhed",

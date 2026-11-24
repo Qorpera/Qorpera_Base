@@ -1437,3 +1437,93 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 });
+
+describe("removing an agent from the Changes list", () => {
+	afterEach(async () => {
+		openMenu()?.close();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+
+	it("removes a finished routine at once and asks first for one that is working on a change", async () => {
+		const routine = session([], {
+			id: "33333333-3333-4333-8333-333333333351",
+			title: "Co-Founder Pulse",
+			state: "ready",
+		});
+		const working = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333352",
+			title: "Add the wordmark",
+			state: "running",
+		});
+		const kept = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333353",
+			title: "Kept proposal",
+			state: "ready",
+		});
+		let active = [routine, working, kept];
+		const discardSurfaceSession = vi.fn(async (sessionId: string) => {
+			const ended = active.find((item) => item.id === sessionId)!;
+			active = active.filter((item) => item.id !== sessionId);
+			return {
+				...ended,
+				state: "discarded" as const,
+				changes: ended.changes.map((item) => ({ ...item, status: "discarded" as const })),
+			};
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary()]),
+				getSurfaceWorkspace: vi.fn(async () => workspace(active)),
+				discardSurfaceSession,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const card = (id: string) =>
+			view.el.querySelector<HTMLElement>(`.surface-overview-card.is-agent[data-session="${id}"]`);
+		const chooseRemove = async (id: string) => {
+			card(id)!.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+			const row = [...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+				(item) => item.textContent?.trim() === "Remove",
+			)!;
+			expect(row.classList.contains("danger")).toBe(true);
+			row.click();
+			await flush();
+		};
+		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
+		const dialogButton = (label: string) =>
+			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
+
+		await chooseRemove(routine.id);
+		expect(dialog()).toBeNull();
+		expect(discardSurfaceSession).toHaveBeenCalledWith(routine.id);
+		view.update();
+		expect(card(routine.id)).toBeNull();
+
+		await chooseRemove(working.id);
+		expect(dialog()?.querySelector("p")?.textContent).toBe(
+			"Remove Add the wordmark? The agent stops and its unapproved changes are dropped.",
+		);
+		dialogButton("Cancel").click();
+		await flush();
+		expect(discardSurfaceSession).toHaveBeenCalledTimes(1);
+		expect(card(working.id)).not.toBeNull();
+
+		await chooseRemove(working.id);
+		expect(dialogButton("Remove").classList.contains("btn-danger")).toBe(true);
+		dialogButton("Remove").click();
+		await flush();
+		view.update();
+		expect(discardSurfaceSession).toHaveBeenLastCalledWith(working.id);
+		expect(card(working.id)).toBeNull();
+		expect(card(kept.id)).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+});
