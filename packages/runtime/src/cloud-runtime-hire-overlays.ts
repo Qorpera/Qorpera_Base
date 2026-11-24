@@ -234,7 +234,7 @@ Never build persona org charts or spin up generic researcher, market watcher, or
 			has("propose_surface") &&
 				"Use propose_surface to activate 1 to 2 core product surfaces tailored to what the company is building (such as Website, Mobile App, or Product Studio) with activateImmediately: true on Day 0 (greenfield live_build surfaces auto-provision code/surfaces/<slug>/); for later sidebar additions after founding, omit activateImmediately so they arrive in proposed state for founder approval.",
 			has("start_surface_session") &&
-				"Immediately launch focused staged sessions or 2-to-3-variant explorations with start_surface_session (setting clear variantLabels and ownerLabel) so founders see real, toggleable directions in Changes right away.",
+				"Immediately launch focused staged sessions or 2-to-3-variant explorations with start_surface_session (setting clear variantLabels and ownerLabel) so founders see real, toggleable directions in Changes right away. Never build a concept switcher or design-question UI inside a website itself — multiple directions belong either in a single session's optionGroup multiple-choice block or in a multi-variant exploration.",
 		),
 		sentences(
 			"# Ongoing orchestration\nRead senses.surfaces in your context to watch active sessions, open changes, merge conflicts, and unpublished work across every surface. Co-Founder Pulse (cofounder-pulse) is pre-seeded for Day-1/Day-2 and ongoing check-ins: speak up only when concrete previewable work or a real decision awaits founders, and stay silent when everything is quiet.",

@@ -16,6 +16,7 @@ import {
 export interface PeerOpenSessionInput {
 	readonly sessionId: string;
 	readonly workerId: string;
+	readonly branchHeadSha?: string | null;
 	readonly remainingChanges: readonly CodeHostChangeRange[];
 }
 
@@ -23,6 +24,7 @@ export interface SurfaceChangeApprovalRequest {
 	readonly surfaceId: string;
 	readonly sessionId: string;
 	readonly workerId: string;
+	readonly sessionBranchHeadSha?: string | null;
 	readonly repository: CloudCodingRepository;
 	readonly expectMainSha?: string;
 	readonly autoPublish: boolean;
@@ -90,6 +92,7 @@ export async function approveAndSyncSurfaceChanges(
 		const allowedBranchTips = [
 			request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha,
 			...request.approvedChanges.map((change) => change.headSha),
+			...(request.sessionBranchHeadSha ? [request.sessionBranchHeadSha] : []),
 		];
 		try {
 			siblingRebase = await rebaseSessionChanges(job, {
@@ -123,7 +126,10 @@ export async function approveAndSyncSurfaceChanges(
 				ontoSha: landed.mainAfter,
 				remainingChanges: peer.remainingChanges,
 				updateBranchRef: true,
-				allowedBranchTips: [peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha],
+				allowedBranchTips: [
+					peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha,
+					...(peer.branchHeadSha ? [peer.branchHeadSha] : []),
+				],
 			});
 		} catch (error) {
 			if (job.signal.aborted) throw error;

@@ -57,6 +57,7 @@ export interface ClaimedSurfaceChangeRange {
 	readonly parentSha: string;
 	readonly headSha: string;
 	readonly title: string;
+	readonly optionGroupKey?: string | null;
 }
 
 export interface ClaimedSurfacePreviewJob {
@@ -87,6 +88,7 @@ export interface ClaimedSurfaceApprovedChange {
 export interface ClaimedSurfacePeerSession {
 	readonly sessionId: string;
 	readonly workerId: string;
+	readonly branchHeadSha?: string | null;
 	readonly remainingChanges: readonly ClaimedSurfaceChangeRange[];
 }
 
@@ -104,6 +106,7 @@ export interface ClaimedSurfaceMergeJob {
 	readonly autoPublish?: boolean;
 	readonly expectMainSha?: string | null;
 	readonly sessionWorkerId?: string | null;
+	readonly sessionBranchHeadSha?: string | null;
 	readonly sessionState?: SurfaceSessionState | null;
 	readonly sessionHasActiveChat?: boolean;
 	readonly payload: Readonly<Record<string, unknown>>;

@@ -220,6 +220,8 @@ export function fakeClient(overrides: Partial<SurfacesClient> = {}): SurfacesCli
 		approveSurfaceChange: vi.fn(fail),
 		approveSessionAll: vi.fn(fail),
 		discardSurfaceChange: vi.fn(fail),
+		chooseSurfaceChangeOption: vi.fn(fail),
+		discardSurfaceOptionGroup: vi.fn(fail),
 		undoSurfaceChange: vi.fn(fail),
 		chooseExploration: vi.fn(fail),
 		reconcileChanges: vi.fn(fail),

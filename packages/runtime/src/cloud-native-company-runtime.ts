@@ -240,7 +240,11 @@ import {
 	type SurfaceCompanySenses,
 	type SurfaceToolsRpcClient,
 } from "./cloud-surface-tools.ts";
-import { parseSurfaceConflictDetails, type SurfaceCodingTurnBinding } from "./cloud-surface-turn-context.ts";
+import {
+	parseSurfaceConflictDetails,
+	parseSurfaceTurnOpenChanges,
+	type SurfaceCodingTurnBinding,
+} from "./cloud-surface-turn-context.ts";
 import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
@@ -2094,7 +2098,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
+		const branchHeadSha = typeof sessionTurnRaw.branchHeadSha === "string" ? sessionTurnRaw.branchHeadSha : null;
 		const folderClient = new CloudCompanyFolderClient({
 			binding,
 			identity,
@@ -2146,6 +2152,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			conflictPaths,
 			conflictDetails,
 			mainSha,
+			branchHeadSha,
+			openChanges,
 			recordChange: surfaceTools.recordChange,
 			memberImages,
 			viewAttachment: (image, readSignal) => readSurfaceMemberImage(folderClient, image, readSignal),
@@ -2211,9 +2219,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
 		const surfaceArchetype = surfaceArchetypeOf(sessionTurnRaw.surfaceArchetype);
 		const openLayoutOps = openSurfaceLayoutOps(sessionTurnRaw.openLayoutOps);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
+		const branchHeadSha = typeof sessionTurnRaw.branchHeadSha === "string" ? sessionTurnRaw.branchHeadSha : null;
 		const voiceModel =
 			typeof sessionTurnRaw.voiceModel === "string" && sessionTurnRaw.voiceModel.trim()
 				? sessionTurnRaw.voiceModel.trim()
@@ -2266,6 +2276,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(conflictPaths.length > 0 ? { conflictPaths } : {}),
 			...(conflictDetails.length > 0 ? { conflictDetails } : {}),
 			...(mainSha ? { mainSha } : {}),
+			...(branchHeadSha ? { branchHeadSha } : {}),
+			...(openChanges.length > 0 ? { openChanges } : {}),
 			...(voiceModel ? { voiceModel } : {}),
 			...(voiceName ? { voiceName } : {}),
 			...(openScenesOps.length > 0 ? { openScenesOps } : {}),

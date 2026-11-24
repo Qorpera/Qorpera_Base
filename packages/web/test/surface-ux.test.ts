@@ -2479,3 +2479,146 @@ describe("a website's rail row", () => {
 		store.dispose();
 	});
 });
+
+describe("single-session change option groups", () => {
+	it("renders a mutually exclusive option list in Changes, allows unselecting all, and graduates the chosen option to Tier 2", async () => {
+		const opt1 = change(CHANGES[0], 1, "staged", {
+			title: "Broker",
+			summary: "Editorial layout",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt2 = change(CHANGES[1], 2, "staged", {
+			title: "Showcase",
+			summary: "Product-led direction",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt3 = change(CHANGES[2], 3, "staged", {
+			title: "Trading desk",
+			summary: "Compact market table",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const initialSession = session([], {
+			title: "Homepage directions",
+			changes: [opt1, opt2, opt3],
+			openChangeCount: 3,
+		});
+		const graduatedSession = session([], {
+			title: "Homepage directions",
+			changes: [
+				{ ...opt1, status: "discarded" },
+				{ ...opt2, optionGroupKey: null, optionGroupTitle: null },
+				{ ...opt3, status: "discarded" },
+			],
+			openChangeCount: 1,
+		});
+		let currentSession = initialSession;
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chooseSurfaceChangeOption = vi.fn(async () => {
+			currentSession = graduatedSession;
+			return graduatedSession;
+		});
+		const discardSurfaceOptionGroup = vi.fn(async () => {
+			currentSession = session([], {
+				title: "Homepage directions",
+				state: "discarded",
+				changes: initialSession.changes.map((item) => ({ ...item, status: "discarded" as const })),
+				openChangeCount: 0,
+			});
+			return currentSession;
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([currentSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		const optionButtons = () => [...drawer.querySelectorAll<HTMLButtonElement>('[data-act="pick-option"]')];
+		expect(optionButtons()).toHaveLength(3);
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
+		expect(drawer.querySelector('[data-act="approve"]')).toBeNull();
+		expect(drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')?.disabled).toBe(false);
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [opt2.id],
+			explorationSessionId: null,
+		});
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["false", "false", "false"]);
+		expect(drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')?.disabled).toBe(true);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [],
+			explorationSessionId: null,
+		});
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')!.click();
+		await flush();
+		view.update();
+
+		expect(chooseSurfaceChangeOption).toHaveBeenCalledWith(opt2.id);
+		expect(drawer.querySelectorAll('[data-act="pick-option"]')).toHaveLength(0);
+		const toggleSwitch = drawer.querySelector<HTMLButtonElement>('[data-act="toggle"]');
+		expect(toggleSwitch?.getAttribute("aria-checked")).toBe("true");
+		expect(drawer.querySelector('[data-act="approve"]')?.textContent).toBe("Approve");
+
+		view.dispose();
+		store.dispose();
+
+		currentSession = initialSession;
+		const focusedStore = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([currentSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await focusedStore.load();
+		const focusedView = new SurfaceView(
+			{ store: focusedStore, mount: () => undefined, openMigration: () => undefined },
+			"website",
+		);
+		document.body.append(focusedView.el);
+		await flush();
+		focusedStore.openDrawer(SURFACE, SESSION);
+		focusedView.update();
+
+		const focusedDrawer = focusedView.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(focusedDrawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(focusedDrawer.querySelectorAll('[data-act="pick-option"]')).toHaveLength(3);
+		focusedDrawer.querySelector<HTMLButtonElement>('[data-act="discard-option-group"]')!.click();
+		await flush();
+		expect(discardSurfaceOptionGroup).toHaveBeenCalledWith(SESSION, "concept");
+		focusedView.dispose();
+		focusedStore.dispose();
+	});
+});

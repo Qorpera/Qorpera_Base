@@ -62,6 +62,34 @@ export function parseSurfaceConflictDetails(raw: unknown): SurfaceConflictDetail
 	return out;
 }
 
+export interface SurfaceTurnOpenChange {
+	readonly id: string;
+	readonly title: string;
+	readonly parentSha: string | null;
+	readonly headSha: string | null;
+	readonly optionGroupKey: string | null;
+	readonly optionGroupTitle: string | null;
+}
+
+export function parseSurfaceTurnOpenChanges(raw: unknown): SurfaceTurnOpenChange[] {
+	if (!Array.isArray(raw)) return [];
+	const out: SurfaceTurnOpenChange[] = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const item = entry as Record<string, unknown>;
+		if (typeof item.id !== "string" || typeof item.title !== "string") continue;
+		out.push({
+			id: item.id,
+			title: item.title,
+			parentSha: typeof item.parentSha === "string" ? item.parentSha : null,
+			headSha: typeof item.headSha === "string" ? item.headSha : null,
+			optionGroupKey: typeof item.optionGroupKey === "string" ? item.optionGroupKey : null,
+			optionGroupTitle: typeof item.optionGroupTitle === "string" ? item.optionGroupTitle : null,
+		});
+	}
+	return out;
+}
+
 export interface SurfaceTurnBriefInput {
 	readonly sessionId: string;
 	readonly surfaceSlug: string;
@@ -77,6 +105,8 @@ export interface SurfaceTurnBriefInput {
 	readonly conflictPaths?: readonly string[] | null;
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly mainSha?: string | null;
+	readonly branchHeadSha?: string | null;
+	readonly openChanges?: readonly SurfaceTurnOpenChange[] | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
 	readonly memberImages?: readonly SurfaceMemberImage[] | null;
 	readonly viewAttachment?: SurfaceAttachmentReader;
@@ -92,6 +122,8 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 	"Commits you make on this session branch stay STAGED for founder Preview and approval and do NOT land on main until the founder approves them. " +
 	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or publishing any of them. " +
 	"Preview renders static web assets from site.folder in .qorpera/checks.json, from index.html at the repository root, from dist/build/out/public, or from apps/<repo>*/index.html — make sure a clean servable index.html and its assets are committed on the session branch (commit the built output folder if you use a bundler, and set site.folder to it when needed). " +
+	"Every staged commit MUST be a real, publishable website or app — NEVER embed a concept switcher, A/B/C option bar, comparison view, or design-question UI into the page itself. " +
+	"When the founder asks for multiple design ideas, website directions, or a multiple choice to flick through, build each direction as its own real, standalone publishable version and stage each commit with coding_record_change using the same optionGroup slug (and optional optionGroupTitle) and the same shared parentSha (capture BASE=$(git rev-parse HEAD) before option 1). Between options, reset the working tree and index cleanly to $BASE with `git read-tree --reset -u $BASE` (and remove any untracked scratch files) without moving HEAD, then build and commit the next option so HEAD advances linearly on the session branch with zero file bleed between options; each option then appears in the Changes sidebar as a multiple-choice picker where the founder can flick through real previews, unselect all, and keep one before approving. " +
 	'A .qorpera/checks.json file is optional for simple static Surfaces; for multi-file codebases, run .qorpera/checks.json pre-flight via coding_run_command (runChecks: true) before coding_finish, and optionally set "surfaceGate": "stage" in .qorpera/checks.json to enforce checks automatically before staging (default "none" keeps Preview staging instant). ' +
 	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, parentSha, and commitSha before moving to the next change. " +
@@ -121,8 +153,27 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 
 	if (explorationVariantLabel) {
 		sections.push(
-			`## Exploration Direction: ${explorationVariantLabel}\nDeliver a distinct, cohesive take matching this direction so founders can compare side-by-side variants cleanly in Preview.`,
+			`## Exploration Direction: ${explorationVariantLabel}\nDeliver ONLY this single direction as a real, publishable page so founders can compare side-by-side variants cleanly in Preview. Never embed an in-page concept switcher, A/B/C bar, or option picker even if the prompt mentions comparing multiple ideas.`,
 		);
+	}
+
+	const openChanges = binding.openChanges ?? [];
+	const branchHeadSha = binding.branchHeadSha?.trim() || null;
+	if (openChanges.length > 0 && binding.repositoryKey) {
+		const latestOpen = openChanges[openChanges.length - 1];
+		const lines = [
+			"## Active Staged Changes on This Session",
+			...openChanges.map(
+				(ch) =>
+					`- ${ch.title}${ch.optionGroupKey ? ` (optionGroup: ${ch.optionGroupKey})` : ""}${ch.headSha ? ` · commit \`${ch.headSha}\`` : ""}`,
+			),
+		];
+		if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
+			lines.push(
+				`Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the chosen option, and pass \`parentSha: "${latestOpen.headSha}"\` to \`coding_record_change\`.`,
+			);
+		}
+		sections.push(lines.join("\n"));
 	}
 
 	const fullPrompt = binding.fullPrompt?.trim();

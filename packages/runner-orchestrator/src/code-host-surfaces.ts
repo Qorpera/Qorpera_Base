@@ -33,6 +33,7 @@ export interface CodeHostChangeRange {
 	readonly headSha: string;
 	readonly title: string;
 	readonly summary?: string;
+	readonly optionGroupKey?: string | null;
 }
 
 export class CodeHostChangeConflict extends CodeHostRefusal {
@@ -507,13 +508,26 @@ export async function rebaseSessionChanges(
 
 		let cursor = ontoSha;
 		let cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_REBASE_FAILED");
+		const groupBases = new Map<string, { readonly commitSha: string; readonly treeSha: string }>();
 		const rebased: { changeId: string; parentSha: string; headSha: string }[] = [];
 		for (const change of input.remainingChanges) {
+			const groupKey = change.optionGroupKey?.trim() || null;
+			let baseCommit = cursor;
+			let baseTree = cursorTree;
+			if (groupKey) {
+				const existingBase = groupBases.get(groupKey);
+				if (existingBase) {
+					baseCommit = existingBase.commitSha;
+					baseTree = existingBase.treeSha;
+				} else {
+					groupBases.set(groupKey, { commitSha: cursor, treeSha: cursorTree });
+				}
+			}
 			if (change.parentSha === change.headSha) {
-				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+				rebased.push({ changeId: change.changeId, parentSha: baseCommit, headSha: baseCommit });
 				continue;
 			}
-			const applied = await applyRange(run, cursor, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
+			const applied = await applyRange(run, baseCommit, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
 			if (!applied.ok) {
 				return {
 					status: "conflicted" as const,
@@ -524,8 +538,8 @@ export async function rebaseSessionChanges(
 					restored: run.restored,
 				};
 			}
-			if (applied.treeSha === cursorTree) {
-				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+			if (applied.treeSha === baseTree) {
+				rebased.push({ changeId: change.changeId, parentSha: baseCommit, headSha: baseCommit });
 				continue;
 			}
 			const body = change.summary?.trim()
@@ -539,7 +553,7 @@ export async function rebaseSessionChanges(
 				[`Qorpera-Change: ${change.changeId}`],
 				"CODE_HOST_REBASE_FAILED",
 			);
-			rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: nextSha });
+			rebased.push({ changeId: change.changeId, parentSha: baseCommit, headSha: nextSha });
 			cursor = nextSha;
 			cursorTree = applied.treeSha;
 		}

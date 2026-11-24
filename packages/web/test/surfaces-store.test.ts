@@ -15,6 +15,7 @@ import {
 	compiledCompanyIdentity,
 	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
+	groupSessionChanges,
 	isOpenVariant,
 	MAX_CACHED_BINARY_BYTES,
 	migrationPending,
@@ -2475,5 +2476,122 @@ describe("SurfacesStore", () => {
 		expect(cachedIds).toContain(extra[0]!.id);
 		expect(cachedIds).toContain(extra.at(-1)!.id);
 		store.dispose();
+	});
+
+	it("manages single-session option groups across preview picking, unselecting all, choosing Tier 2, and discarding", async () => {
+		const opt1 = change(CHANGES[0], 1, "staged", {
+			title: "Broker",
+			summary: "Calm editorial layout",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt2 = change(CHANGES[1], 2, "staged", {
+			title: "Showcase",
+			summary: "Product-led showcase",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt3 = change(CHANGES[2], 3, "staged", {
+			title: "Trading desk",
+			summary: "Structured live feed",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const groupedSession = session([], { changes: [opt1, opt2, opt3], openChangeCount: 3 });
+
+		const entries = groupSessionChanges(groupedSession.changes);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({
+			kind: "option_group",
+			group: { key: "concept", title: "Homepage concept", options: [opt1, opt2, opt3] },
+		});
+
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chosenSession = session([], {
+			changes: [
+				{ ...opt1, status: "discarded" },
+				{ ...opt2, optionGroupKey: null, optionGroupTitle: null },
+				{ ...opt3, status: "discarded" },
+			],
+			openChangeCount: 1,
+		});
+		const discardedSession = session([], {
+			state: "discarded",
+			changes: [
+				{ ...opt1, status: "discarded" },
+				{ ...opt2, status: "discarded" },
+				{ ...opt3, status: "discarded" },
+			],
+			openChangeCount: 0,
+		});
+		const chooseSurfaceChangeOption = vi.fn(async () => chosenSession);
+		const discardSurfaceOptionGroup = vi.fn(async () => discardedSession);
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([groupedSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+
+		expect(store.pickedOption(groupedSession, "concept")).toBe(opt1.id);
+		expect(store.isChangeShown(opt1.id)).toBe(true);
+		expect(store.isChangeShown(opt2.id)).toBe(false);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt1.id]);
+
+		setPreviewSelection.mockClear();
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(store.pickedOption(groupedSession, "concept")).toBe(opt2.id);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt2.id]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [opt2.id],
+			explorationSessionId: null,
+		});
+
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(store.pickedOption(groupedSession, "concept")).toBeNull();
+		expect(store.isChangeShown(opt1.id)).toBe(false);
+		expect(store.isChangeShown(opt2.id)).toBe(false);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [],
+			explorationSessionId: null,
+		});
+
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(await store.chooseOption(SESSION, opt2.id)).toBe(true);
+		expect(chooseSurfaceChangeOption).toHaveBeenCalledWith(opt2.id);
+		expect(store.isChangeShown(opt2.id)).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt2.id]);
+		expect(groupSessionChanges(store.session(SESSION)!.changes.filter((c) => c.status === "staged"))).toEqual([
+			{ kind: "change", change: expect.objectContaining({ id: opt2.id, optionGroupKey: null }) },
+		]);
+
+		store.dispose();
+
+		const discardStore = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([groupedSession])),
+				setPreviewSelection,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await discardStore.load();
+		await discardStore.openSurface("website");
+		expect(await discardStore.discardOptionGroup(SESSION, "concept")).toBe(true);
+		expect(discardSurfaceOptionGroup).toHaveBeenCalledWith(SESSION, "concept");
+		expect(discardStore.workspace(SURFACE)?.activeSessions).toHaveLength(0);
+		discardStore.dispose();
 	});
 });

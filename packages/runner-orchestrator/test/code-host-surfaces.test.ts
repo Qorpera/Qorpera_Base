@@ -362,4 +362,126 @@ describe("code-host surfaces multi-change engine", () => {
 		});
 		expect(preview.status).toBe("ready");
 	}, 20_000);
+
+	it("previews, rebases, and lands isolated single-session option groups without cross-option bleed or conflicts", async () => {
+		const f = await keptFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit({ "index.html": "<main>Base</main>\n" }, "Seed base");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed base" }],
+		});
+
+		const s = await f.startSession(base.mainAfter);
+		const opt1Id = randomUUID();
+		const opt2Id = randomUUID();
+		const opt3Id = randomUUID();
+
+		const opt1Head = await s.commit(
+			{ "index.html": "<main>Option 1: Broker</main>\n", "opt1.css": ".a { color: #111; }\n" },
+			"Option 1",
+		);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt2Head = await s.commit(
+			{ "index.html": "<main>Option 2: Showcase</main>\n", "opt2.css": ".b { color: #222; }\n" },
+			"Option 2",
+		);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt3Head = await s.commit(
+			{ "index.html": "<main>Option 3: Trading desk</main>\n", "opt3.css": ".c { color: #333; }\n" },
+			"Option 3",
+		);
+
+		const previewOpt2 = await composePreviewTree(f.job, {
+			repository: f.repository,
+			baseSha: base.mainAfter,
+			changes: [{ changeId: opt2Id, parentSha: base.mainAfter, headSha: opt2Head }],
+		});
+		expect(previewOpt2.status).toBe("ready");
+		if (previewOpt2.status !== "ready") throw new Error("expected ready preview for option 2");
+		const preview2Files = (await f.git(f.repo, "--git-dir=.", "ls-tree", "--name-only", previewOpt2.compositeTreeSha))
+			.split("\n")
+			.sort();
+		expect(preview2Files).toEqual(["index.html", "opt2.css"]);
+		expect(await f.git(f.repo, "--git-dir=.", "show", `${previewOpt2.compositeTreeSha}:index.html`)).toBe(
+			"<main>Option 2: Showcase</main>",
+		);
+
+		const peer = await f.startSession(base.mainAfter);
+		const peerHead = await peer.commit({ "footer.html": "<footer>Brooks ApS</footer>\n" }, "Add footer");
+		const main2 = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: base.mainAfter,
+			changes: [{ changeId: randomUUID(), parentSha: base.mainAfter, headSha: peerHead, title: "Add footer" }],
+		});
+
+		const rebased = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: s.workerId,
+			ontoSha: main2.mainAfter,
+			updateBranchRef: true,
+			remainingChanges: [
+				{
+					changeId: opt1Id,
+					parentSha: base.mainAfter,
+					headSha: opt1Head,
+					title: "Option 1",
+					optionGroupKey: "concept",
+				},
+				{
+					changeId: opt2Id,
+					parentSha: base.mainAfter,
+					headSha: opt2Head,
+					title: "Option 2",
+					optionGroupKey: "concept",
+				},
+				{
+					changeId: opt3Id,
+					parentSha: base.mainAfter,
+					headSha: opt3Head,
+					title: "Option 3",
+					optionGroupKey: "concept",
+				},
+			],
+		});
+		expect(rebased.status).toBe("clean");
+		if (rebased.status !== "clean") throw new Error("expected clean option-group rebase");
+		expect(rebased.rebasedChanges).toHaveLength(3);
+		for (const item of rebased.rebasedChanges) {
+			expect(item.parentSha).toBe(main2.mainAfter);
+		}
+		const rebasedOpt2 = rebased.rebasedChanges[1]!;
+		const rebasedOpt3 = rebased.rebasedChanges[2]!;
+
+		const previewOpt3 = await composePreviewTree(f.job, {
+			repository: f.repository,
+			baseSha: main2.mainAfter,
+			changes: [{ changeId: opt3Id, parentSha: rebasedOpt3.parentSha, headSha: rebasedOpt3.headSha }],
+		});
+		expect(previewOpt3.status).toBe("ready");
+		if (previewOpt3.status !== "ready") throw new Error("expected ready preview for rebased option 3");
+		const preview3Files = (await f.git(f.repo, "--git-dir=.", "ls-tree", "--name-only", previewOpt3.compositeTreeSha))
+			.split("\n")
+			.sort();
+		expect(preview3Files).toEqual(["footer.html", "index.html", "opt3.css"]);
+
+		const landed = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: main2.mainAfter,
+			changes: [
+				{
+					changeId: opt2Id,
+					parentSha: rebasedOpt2.parentSha,
+					headSha: rebasedOpt2.headSha,
+					title: "Option 2",
+				},
+			],
+		});
+		expect(landed.mainBefore).toBe(main2.mainAfter);
+		expect(await readFile(join(f.code, "main/index.html"), "utf8")).toBe("<main>Option 2: Showcase</main>\n");
+		expect(await exists(join(f.code, "main/opt2.css"))).toBe(true);
+		expect(await exists(join(f.code, "main/opt1.css"))).toBe(false);
+		expect(await exists(join(f.code, "main/opt3.css"))).toBe(false);
+		expect(await readFile(join(f.code, "main/footer.html"), "utf8")).toBe("<footer>Brooks ApS</footer>\n");
+	}, 20_000);
 });

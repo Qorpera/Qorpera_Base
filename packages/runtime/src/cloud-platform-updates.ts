@@ -405,6 +405,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Animated breakdowns and voice settings in Studio",
 		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in its layout. When a member asks for a video, walkthrough or visual breakdown, start a Studio session on that interface so it stages an animated breakdown and records spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
 	},
+	{
+		id: "surface-single-session-option-groups",
+		kind: "capability",
+		date: "2026-11-24",
+		title: "Multiple real options inside a single interface change",
+		text: "A single interface session can now stage 2 to 4 mutually exclusive real options inside one choice block in the Changes sidebar instead of embedding an in-page concept switcher into a website or spinning up separate sessions. Members flick through real standalone previews, can unselect all options to inspect Base, and click Use this one to discard the other options and keep the picked one as a normal toggleable change ready to approve. When a member asks for design ideas or a multiple choice to flick through, start a single session on that interface and ask for grouped options rather than an in-page concept picker.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

@@ -66,6 +66,7 @@ import {
 	type SurfaceConflictDetail,
 	type SurfaceIdentityContext,
 	type SurfaceSharedAssetsContext,
+	type SurfaceTurnOpenChange,
 } from "./cloud-surface-turn-context.ts";
 
 const MAX_IDENTITY_BRIEF_BYTES = 16_384;
@@ -128,6 +129,8 @@ export interface SurfaceSessionTurnInput {
 	readonly conflictPaths?: readonly string[] | null;
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly mainSha?: string | null;
+	readonly branchHeadSha?: string | null;
+	readonly openChanges?: readonly SurfaceTurnOpenChange[] | null;
 	readonly leaseToken?: string | null;
 	readonly voiceModel?: string | null;
 	readonly voiceName?: string | null;
@@ -621,6 +624,7 @@ function buildFolderSurfaceInstructions(
 		`This session works on the interface "${input.surfaceTitle}" (${input.surfaceSlug}); its page shows ${folderRoot}/ from Company Files. ` +
 		"Members preview staged patches, any of them on or off together, before they approve one. " +
 		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), one cohesive, conflict-minimizing patch per change. ` +
+		"When the founder asks for multiple design, layout, or copy directions to flick through inside this session, stage each complete standalone alternative with stage_surface_patch using the same optionGroup slug (and optional optionGroupTitle) so they appear as a single multiple-choice picker in Changes — never embed a concept switcher or design-question UI into the real page or module. " +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.\n\n` +
 		describeStudioPage(view, folderRoot, input.voiceModel, input.voiceName) +
 		describeStudioSkill(view, skill)
@@ -939,6 +943,8 @@ export async function runSurfaceSessionTurn(
 			conflictPaths: input.conflictPaths ?? null,
 			conflictDetails: input.conflictDetails ?? null,
 			mainSha: input.mainSha ?? null,
+			branchHeadSha: input.branchHeadSha ?? null,
+			openChanges: input.openChanges ?? null,
 		});
 
 		let outcome: SurfaceSessionTurnExecutionOutcome;
@@ -962,7 +968,7 @@ export async function runSurfaceSessionTurn(
 			const trackedSurfacePatch: SurfacePatchToolPort = {
 				async stageSurfacePatch(sessionIdArg, request, context) {
 					const result = await boundStageSurfacePatch(sessionIdArg, request, context);
-					applyStudioTextOps(stagedText, request.ops, folderRoot);
+					if (!request.optionGroup) applyStudioTextOps(stagedText, request.ops, folderRoot);
 					return result;
 				},
 			};
@@ -1102,6 +1108,8 @@ export async function runSurfaceSessionTurn(
 				conflictPaths: input.conflictPaths ?? null,
 				conflictDetails: input.conflictDetails ?? null,
 				mainSha: input.mainSha ?? null,
+				branchHeadSha: input.branchHeadSha ?? null,
+				openChanges: input.openChanges ?? null,
 				recordChange: recordChange.bind(ports.surfaceTools),
 			};
 			const codeRequest: SurfaceCodeRepoTurnRequest = {
