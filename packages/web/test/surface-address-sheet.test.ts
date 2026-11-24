@@ -26,6 +26,7 @@ function mount(
 	world: Partial<HostingWorld> = {},
 	manage = true,
 	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged"> = {},
+	liveUrl = LIVE_URL,
 ) {
 	const container = h("div", { class: "surface-canvas" });
 	document.body.append(container);
@@ -43,7 +44,7 @@ function mount(
 		...hooks,
 	});
 	const target = { siteId: HOSTED_SITE, client: hosting.client };
-	address.sync(true, target, LIVE_URL);
+	address.sync(true, target, liveUrl);
 	container.prepend(address.button()!);
 	return { address, container, controller, target, ...hosting };
 }
@@ -90,8 +91,9 @@ async function opened(
 	world: Partial<HostingWorld> = {},
 	manage = true,
 	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged"> = {},
+	liveUrl = LIVE_URL,
 ) {
-	const mounted = mount(world, manage, hooks);
+	const mounted = mount(world, manage, hooks, liveUrl);
 	await settle();
 	mounted.address.open();
 	await settle();
@@ -116,6 +118,12 @@ describe("the address card before the site is public", () => {
 		expect(quiet()).toEqual([]);
 		expect(sheet().querySelector("a")).toBeNull();
 		expect(sheet().textContent).not.toMatch(/password|Only you|Live\b/);
+	});
+
+	it("greys the platform's domain of an address on qorpera.site as it does on qorpera.com", async () => {
+		await opened({}, true, {}, "https://thetaband.qorpera.site/");
+		expect(name()).toBe("thetaband.qorpera.site");
+		expect(sheet().querySelector(".surface-address-name span")?.textContent).toBe(".qorpera.site");
 	});
 
 	it("goes live only on a second press, which turns the button green and says Confirm in the same box", async () => {

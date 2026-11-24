@@ -1876,6 +1876,15 @@ Yes is the asked member's own `qorpera_publish_surface`, with their own authorit
 starts (a job's publish when it starts), when nothing is left to publish, and when the asked member leaves the
 company or becomes a viewer (the asker leaving closes it too). Each change sends the `surfaces` hint.
 
+### A website interface's address and preview hosts (20260930878000_surface_site_address_and_preview_hosts)
+
+A surface's summary `liveUrl` is its site's link as the site list gives it (`qorpera_site_url`): while hosts are on
+`https://<slug>.<hosts_domain>/`, while they are off `https://sites.qorpera.com/<slug>/`; null for a surface with no
+site. Preview frames (`doorActionUrl` of `qorpera_get_surface_workspace`, `qorpera_set_preview_selection` and
+`qorpera_mint_surface_preview_pass`) stay on `https://<slug>--p<8chars>.qorpera.com/__qorpera/member` whatever
+`hosts_domain` is, and site-serve redeems and serves them there; who gets a pass, its 60 seconds, one use and the
+12-hour preview session are unchanged.
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
