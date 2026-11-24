@@ -6,7 +6,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
@@ -212,7 +213,7 @@ pub fn build_dns_query(tx_id: u16, qname: &str, qtype: u16) -> Result<Vec<u8>, S
     pkt.extend_from_slice(&1u16.to_be_bytes());
     pkt.extend_from_slice(&0u16.to_be_bytes());
     pkt.extend_from_slice(&0u16.to_be_bytes());
-    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.extend_from_slice(&1u16.to_be_bytes());
     for label in qname.trim_end_matches('.').split('.') {
         if label.is_empty() || label.len() > 63 {
             return Err("invalid_dns_label".to_string());
@@ -223,6 +224,12 @@ pub fn build_dns_query(tx_id: u16, qname: &str, qtype: u16) -> Result<Vec<u8>, S
     pkt.push(0);
     pkt.extend_from_slice(&qtype.to_be_bytes());
     pkt.extend_from_slice(&1u16.to_be_bytes());
+    // WHY: Advertise RFC 6891 EDNS0 (1232 B UDP payload) so multi-record TXT verification responses do not truncate at 512 B.
+    pkt.push(0);
+    pkt.extend_from_slice(&41u16.to_be_bytes());
+    pkt.extend_from_slice(&1232u16.to_be_bytes());
+    pkt.extend_from_slice(&0u32.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
     Ok(pkt)
 }
 
@@ -364,6 +371,42 @@ pub fn parse_dns_response(packet: &[u8], expected_tx_id: u16) -> Result<Vec<(u16
     Ok(out)
 }
 
+fn is_dns_truncated(packet: &[u8]) -> bool {
+    packet.len() >= 4 && (u16::from_be_bytes([packet[2], packet[3]]) & 0x0200) != 0
+}
+
+async fn query_dns_tcp(
+    server: SocketAddr,
+    query: &[u8],
+    tx_id: u16,
+    timeout: Duration,
+) -> Result<Vec<(u16, String)>, String> {
+    let len = u16::try_from(query.len()).map_err(|_| "dns_query_too_large".to_string())?;
+    let mut stream = tokio::time::timeout(timeout, TcpStream::connect(server))
+        .await
+        .map_err(|_| "dns_tcp_connect_timeout".to_string())?
+        .map_err(|e| format!("dns_tcp_connect: {e}"))?;
+    let mut framed = Vec::with_capacity(2 + query.len());
+    framed.extend_from_slice(&len.to_be_bytes());
+    framed.extend_from_slice(query);
+    tokio::time::timeout(timeout, stream.write_all(&framed))
+        .await
+        .map_err(|_| "dns_tcp_send_timeout".to_string())?
+        .map_err(|e| format!("dns_tcp_send: {e}"))?;
+    let mut len_buf = [0u8; 2];
+    tokio::time::timeout(timeout, stream.read_exact(&mut len_buf))
+        .await
+        .map_err(|_| "dns_tcp_recv_timeout".to_string())?
+        .map_err(|e| format!("dns_tcp_recv: {e}"))?;
+    let resp_len = u16::from_be_bytes(len_buf) as usize;
+    let mut resp = vec![0u8; resp_len];
+    tokio::time::timeout(timeout, stream.read_exact(&mut resp))
+        .await
+        .map_err(|_| "dns_tcp_recv_timeout".to_string())?
+        .map_err(|e| format!("dns_tcp_recv: {e}"))?;
+    parse_dns_response(&resp, tx_id)
+}
+
 pub async fn query_dns_udp(
     server: SocketAddr,
     qname: &str,
@@ -386,11 +429,16 @@ pub async fn query_dns_udp(
     sock.send(&query)
         .await
         .map_err(|e| format!("dns_send: {e}"))?;
-    let mut buf = [0u8; 2048];
+    let mut buf = [0u8; 4096];
     let n = tokio::time::timeout(timeout, sock.recv(&mut buf))
         .await
         .map_err(|_| "dns_timeout".to_string())?
         .map_err(|e| format!("dns_recv: {e}"))?;
+    if is_dns_truncated(&buf[..n]) {
+        if let Ok(records) = query_dns_tcp(server, &query, tx_id, timeout).await {
+            return Ok(records);
+        }
+    }
     parse_dns_response(&buf[..n], tx_id)
 }
 
@@ -897,5 +945,74 @@ mod tests {
 
         tracker.prune_missing(&HashSet::from(["dom-2".to_string()]));
         assert!(tracker.should_persist("dom-1", false, hb));
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_tcp_when_udp_response_sets_tc_bit() {
+        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let udp_server = UdpSocket::bind(addr).await.unwrap();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            let Ok((n, peer)) = udp_server.recv_from(&mut buf).await else {
+                return;
+            };
+            if n < 12 {
+                return;
+            }
+            let (_, after_name) = read_dns_name(&buf[..n], 12).unwrap();
+            let mut resp = Vec::new();
+            resp.extend_from_slice(&buf[0..2]);
+            resp.extend_from_slice(&0x8380u16.to_be_bytes());
+            resp.extend_from_slice(&1u16.to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&buf[12..after_name + 4]);
+            let _ = udp_server.send_to(&resp, peer).await;
+        });
+
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = tcp_listener.accept().await else {
+                return;
+            };
+            let mut len_buf = [0u8; 2];
+            if stream.read_exact(&mut len_buf).await.is_err() {
+                return;
+            }
+            let qlen = u16::from_be_bytes(len_buf) as usize;
+            let mut qbuf = vec![0u8; qlen];
+            if stream.read_exact(&mut qbuf).await.is_err() {
+                return;
+            }
+            let (_, after_name) = read_dns_name(&qbuf, 12).unwrap();
+            let txt = b"qorpera-verify=tcp-fallback-token";
+            let mut rdata = vec![txt.len() as u8];
+            rdata.extend_from_slice(txt);
+            let mut resp = Vec::new();
+            resp.extend_from_slice(&qbuf[0..2]);
+            resp.extend_from_slice(&0x8180u16.to_be_bytes());
+            resp.extend_from_slice(&1u16.to_be_bytes());
+            resp.extend_from_slice(&1u16.to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&qbuf[12..after_name + 4]);
+            resp.extend_from_slice(&[0xC0, 0x0C]);
+            resp.extend_from_slice(&DNS_TYPE_TXT.to_be_bytes());
+            resp.extend_from_slice(&1u16.to_be_bytes());
+            resp.extend_from_slice(&60u32.to_be_bytes());
+            resp.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+            resp.extend_from_slice(&rdata);
+            let mut framed = Vec::with_capacity(2 + resp.len());
+            framed.extend_from_slice(&(resp.len() as u16).to_be_bytes());
+            framed.extend_from_slice(&resp);
+            let _ = stream.write_all(&framed).await;
+        });
+
+        let records = query_dns_udp(addr, "_qorpera.big-txt.example", DNS_TYPE_TXT, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(records, vec![(DNS_TYPE_TXT, "qorpera-verify=tcp-fallback-token".to_string())]);
     }
 }

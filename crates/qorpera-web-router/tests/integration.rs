@@ -941,6 +941,32 @@ async fn preview_ticket_member_pass_and_live_dns_domain_verification() {
     assert!(html.contains("preview-v2"));
     assert!(html.contains("data-qorpera-preview=\"1\""));
 
+    let (st, _, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/__qorpera/member")
+            .header("host", "kaffe-shop.qorpera.site")
+            .header("origin", "https://evil.example")
+            .header("sec-fetch-site", "cross-site")
+            .body(Full::new(Bytes::from("pass=member-pass-123&path=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/__qorpera/member")
+            .header("host", "kaffe-shop.qorpera.site")
+            .body(Full::new(Bytes::from("pass=member-pass-123&path=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
     let (st, hdrs, _) = http_call(
         pub_addr,
         Request::builder()

@@ -435,6 +435,7 @@ pub struct RouterState {
     pub control_token: String,
     pub cookie_secret: Vec<u8>,
     pub trusted_proxies: Vec<IpAddr>,
+    pub web_origins: Vec<String>,
     pub dns_servers: Vec<SocketAddr>,
     pub database_url: Option<String>,
     pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
@@ -482,6 +483,7 @@ impl RouterState {
             control_token: cfg.control_token.clone(),
             cookie_secret: cfg.cookie_secret.clone(),
             trusted_proxies: cfg.trusted_proxies.clone(),
+            web_origins: vec!["https://app.qorpera.com".to_string()],
             dns_servers,
             database_url: cfg.database_url.clone(),
             auth_backend,
@@ -521,6 +523,13 @@ impl RouterState {
 
     pub fn with_ws_idle_timeout(mut self, timeout: Duration) -> Self {
         self.ws_idle_timeout = timeout;
+        self
+    }
+
+    pub fn with_web_origins(mut self, origins: Vec<String>) -> Self {
+        if !origins.is_empty() {
+            self.web_origins = origins;
+        }
         self
     }
 
@@ -1194,8 +1203,9 @@ async fn handle_public(
 
     if scope == HostScope::OwnHost && is_member_pass_post {
         let host_s = host.to_string();
+        let client_ip_s = client_ip.to_string();
         drop(route_table);
-        return handle_member_pass(state, &site, &host_s, req).await;
+        return handle_member_pass(state, &site, &host_s, &client_ip_s, req).await;
     }
 
     let is_public = global_public_enabled && site.is_public && scope != HostScope::NextHost;
@@ -1534,12 +1544,70 @@ async fn handle_preview_enter(
     safe_redirect_response(StatusCode::SEE_OTHER, "/", Some(&set_cookie))
 }
 
+pub fn parse_web_origins(raw: Option<&str>) -> Vec<String> {
+    let default = || vec!["https://app.qorpera.com".to_string()];
+    let Some(text) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return default();
+    };
+    let candidates: Vec<String> = if text.starts_with('[') {
+        match serde_json::from_str::<Vec<String>>(text) {
+            Ok(list) => list,
+            Err(_) => return default(),
+        }
+    } else {
+        text.split(',').map(|s| s.trim().to_string()).collect()
+    };
+    let mut out = Vec::new();
+    for item in candidates {
+        let trimmed = item.trim();
+        let valid = trimmed.starts_with("https://")
+            && trimmed.len() > 8
+            && !trimmed[8..].contains('/')
+            && !trimmed.contains(' ')
+            && !trimmed.contains('*');
+        if valid && !out.iter().any(|existing: &String| existing.eq_ignore_ascii_case(trimmed)) {
+            out.push(trimmed.to_string());
+            if out.len() >= 8 {
+                break;
+            }
+        }
+    }
+    if out.is_empty() { default() } else { out }
+}
+
 async fn handle_member_pass(
     state: Arc<RouterState>,
     site: &crate::routes::SiteRecord,
     host: &str,
+    client_ip: &str,
     req: Request<Incoming>,
 ) -> Response<BoxBody> {
+    let origin = req
+        .headers()
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim);
+    let origin_allowed = origin.is_some_and(|sent| {
+        state
+            .web_origins
+            .iter()
+            .any(|allowed| sent.eq_ignore_ascii_case(allowed))
+    });
+    if !origin_allowed {
+        return text_response(StatusCode::FORBIDDEN, "cross-origin member pass refused");
+    }
+
+    let limit_key = format!("member|{}|{client_ip}", site.id);
+    let decision = state.unlock_limiter.check(&limit_key);
+    if !decision.allowed {
+        return Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header("retry-after", decision.retry_after_secs.to_string())
+            .header("cache-control", "no-store, no-transform")
+            .body(full_body("Too many attempts"))
+            .unwrap();
+    }
+
     let language = accept_language(&req);
     let Some(backend) = state.auth_backend.as_ref() else {
         return refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), "/", true);

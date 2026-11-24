@@ -4,7 +4,7 @@ use crate::driver::{
 use crate::logs::LogRingBuffer;
 use bytes::Bytes;
 use http::Request;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1123,9 +1123,10 @@ async fn wait_for_thawed_health(
     let mut last_err = "not_ready".to_string();
     let mut step = THAW_HEALTH_INTERVAL;
     let mut last_running_check = Instant::now();
+    let mut sender: Option<hyper::client::conn::http1::SendRequest<Full<Bytes>>> = None;
     // WHY: Back off probes and throttle LXD state checks so a slow thaw cannot storm the LXD Unix socket at 100 req/s.
     while Instant::now() < deadline {
-        match probe_http(addr, &path).await {
+        match probe_http_reused(addr, &path, &mut sender).await {
             Ok(()) => return Ok(()),
             Err(err) => {
                 last_err = err;
@@ -1157,8 +1158,9 @@ async fn wait_for_health(
     };
     let mut last_err = "not_ready".to_string();
     let mut step = Duration::from_millis(10).min(interval);
+    let mut sender: Option<hyper::client::conn::http1::SendRequest<Full<Bytes>>> = None;
     while Instant::now() < deadline {
-        match probe_http(addr, &path).await {
+        match probe_http_reused(addr, &path, &mut sender).await {
             Ok(()) => return Ok(()),
             Err(err) => {
                 last_err = err;
@@ -1170,23 +1172,43 @@ async fn wait_for_health(
     Err(last_err)
 }
 
-async fn probe_http(addr: &str, path: &str) -> Result<(), String> {
-    let stream = tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr))
-        .await
-        .map_err(|_| "connect_timeout".to_string())?
-        .map_err(|e| format!("connect: {e}"))?;
-    let _ = stream.set_nodelay(true);
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = tokio::time::timeout(
-        Duration::from_millis(500),
-        hyper::client::conn::http1::handshake(io),
-    )
-    .await
-    .map_err(|_| "handshake_timeout".to_string())?
-    .map_err(|e| format!("handshake: {e}"))?;
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
+async fn probe_http_reused(
+    addr: &str,
+    path: &str,
+    cached: &mut Option<hyper::client::conn::http1::SendRequest<Full<Bytes>>>,
+) -> Result<(), String> {
+    let reusable = match cached.take() {
+        Some(mut existing) if !existing.is_closed() => {
+            if existing.ready().await.is_ok() {
+                Some(existing)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let mut sender = match reusable {
+        Some(existing) => existing,
+        None => {
+            let stream = tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr))
+                .await
+                .map_err(|_| "connect_timeout".to_string())?
+                .map_err(|e| format!("connect: {e}"))?;
+            let _ = stream.set_nodelay(true);
+            let io = TokioIo::new(stream);
+            let (s, conn) = tokio::time::timeout(
+                Duration::from_millis(500),
+                hyper::client::conn::http1::handshake(io),
+            )
+            .await
+            .map_err(|_| "handshake_timeout".to_string())?
+            .map_err(|e| format!("handshake: {e}"))?;
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            s
+        }
+    };
     let req = Request::builder()
         .method("GET")
         .uri(path)
@@ -1197,10 +1219,15 @@ async fn probe_http(addr: &str, path: &str) -> Result<(), String> {
         .await
         .map_err(|_| "response_timeout".to_string())?
         .map_err(|e| format!("request: {e}"))?;
-    if res.status().is_success() {
+    let status = res.status();
+    let _ = tokio::time::timeout(Duration::from_millis(200), res.into_body().collect()).await;
+    if !sender.is_closed() {
+        *cached = Some(sender);
+    }
+    if status.is_success() {
         Ok(())
     } else {
-        Err(format!("status_{}", res.status().as_u16()))
+        Err(format!("status_{}", status.as_u16()))
     }
 }
 
