@@ -1121,7 +1121,7 @@ export function describeCloudAction(
 			"effect",
 			args.mode === "update"
 				? "Replaces the whole site; if it is live, everyone sees the new version, and if not, only the company's members do"
-				: "Not live until the founder or an admin presses Go live in the app; until then only the company's members can open it, from the app",
+				: "Not live until the founder or an admin presses Go live on the website's page in the app. Until then only the company's members can open it, from the app",
 		);
 	} else if (tool.name === "share_app") {
 		// Its prepared arguments (cloud-site-tools.ts): the database's check, read before the review.

@@ -3375,7 +3375,7 @@ describe("company sites (20260930550000)", () => {
 				files: "3 files, 2.5 MB",
 				pages: "about.html, index.html",
 				effect:
-					"Not live until the founder or an admin presses Go live in the app; until then only the company's members can open it, from the app",
+					"Not live until the founder or an admin presses Go live on the website's page in the app. Until then only the company's members can open it, from the app",
 			},
 		});
 		expect(describeCloudAction(tool("publish_site"), { ...prepared("update"), files: 1, bytes: 300 })).toMatchObject({

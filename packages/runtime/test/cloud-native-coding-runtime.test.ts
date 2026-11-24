@@ -292,7 +292,7 @@ describe("the coding composition of a native turn", () => {
 					"once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session's secret values.",
 					// Step 4's live proof (11 November 2026): What's new showed the site's address; a site's title is its name there.
 					// Step 5.1 (v247): the name makes the site's own host, and follows the kernel's name rule in its own words.
-					'It may also give "name", the name in the site\'s address https://<name>.qorpera.com/, used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
+					'It may also give "name", the name in the site\'s address, used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
 					`no space at either end). ${SITE_NAME_RULE} The site is served`,
 					// The first live site (Wristband, 11 November 2026) loaded /src/style.css from the top of the sites' domain,
 					// which the old host never served. Since site hosts (v247) a site is served at the top of its own address,

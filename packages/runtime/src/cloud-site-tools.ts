@@ -126,12 +126,12 @@ const APP_LINK_PASSWORD =
 	"You never see the password, so never write one: put the address in your message as a link, and members see the site's row under it, where owners and admins copy the password. They also see, copy and change it on the Sites page in the apps drawer.";
 
 const WEBSITE_NOT_LIVE =
-	"A website has no password, so never tell anyone to use one. Until the founder or an admin presses Go live on the website's address card in the app, nobody outside the company can open it, and the company's members open it from the app. You cannot make it live: put the address in your message as a link, and ask the founder to press Go live when it should open to everyone.";
+	"A website has no password, so never tell anyone to use one. Until the founder or an admin presses Go live on the website's page in the app, nobody outside the company can open it. The company's members open it from the app. You cannot make it live: put the address in your message as a link, and ask the founder to press Go live when it should open to everyone.";
 
 export const CLOUD_PUBLISH_SITE_TOOL_DESCRIPTION = [
-	"Publish a static website from the company folder to an address of its own, https://<slug>.qorpera.com/. It is not live at first: nobody outside the company can open it. Only static files are served: no server code runs (a server app goes by share_app).",
+	"Publish a static website from the company folder to an address of its own; the result gives the address as url. It is not live at first: nobody outside the company can open it. Only static files are served: no server code runs (a server app goes by share_app).",
 	"source is a folder whose index.html is the home page (every web file under it goes out: HTML, CSS, JavaScript, JSON, text, Markdown, VTT, RSS/Atom, WebAssembly, glTF/GLB, images, fonts, audio, video, PDF), or one .html file, published as the home page. Its files link each other from / (/img/logo.png) or relatively (img/logo.png): both work. At most 500 files and 25 MiB, 10 MiB a file; hidden files, links and other types are left out and named in the answer.",
-	"Each site is its own origin: browser storage, cookies (never one with Domain=qorpera.com) and frames of its own pages work; other sites cannot frame it or load its files, and it gets no service worker.",
+	"Each site is its own origin: browser storage, cookies (never one with a Domain attribute) and frames of its own pages work; other sites cannot frame it or load its files, and it gets no service worker.",
 	`A site's first publish waits for an owner or admin to approve it on a card, and so does publishing it from another folder. Publishing the same slug again switches the site at once and keeps the last ten versions for rollback with manage_site. ${WEBSITE_NOT_LIVE}`,
 ].join("\n");
 
@@ -478,7 +478,7 @@ export function cloudSiteTools(options: {
 				slug: {
 					type: "string",
 					pattern: SLUG.source,
-					description: slugField("https://<slug>.qorpera.com/"),
+					description: slugField("which the result gives as url"),
 				},
 				source: { type: "string", minLength: 1, maxLength: 4096 },
 				title: { type: "string", minLength: 1, maxLength: 120 },
@@ -675,11 +675,11 @@ export function cloudSiteTools(options: {
 						kind: "text",
 						value: cloudToolJsonText({
 							schema: "qorpera.site-publish-result/v1",
-							state: "not_live",
+							state: "not_published",
 							url: receipt.url,
 							slug: prepared.slug,
 							reason: PLAIN.test(error.detail) ? error.detail : "the upload was refused",
-							next: "Nothing new is live: the site shows what it showed before (a new site shows nothing yet). Call publish_site again.",
+							next: "Nothing new was published: the site shows what it showed before (a new site shows nothing yet). Call publish_site again.",
 						}),
 					};
 				}
@@ -689,7 +689,7 @@ export function cloudSiteTools(options: {
 				kind: "text",
 				value: cloudToolJsonText({
 					schema: "qorpera.site-publish-result/v1",
-					state: "live",
+					state: "published",
 					url: receipt.url,
 					slug: prepared.slug,
 					title: prepared.title,
@@ -700,8 +700,8 @@ export function cloudSiteTools(options: {
 					...(prepared.skipped.length ? { leftOut: prepared.skipped, leftOutMore: prepared.skippedOmitted } : {}),
 					next:
 						receipt.mode === "new"
-							? "Published, but not live yet: nobody outside the company can open the website, and it has no password. The company's members open it from the app. Only the founder or an admin can make it live, with Go live on the website's address card in the app; you cannot. Put url in your message to the member as a link, and never tell anyone to use a password."
-							: "Published: the website shows this version now. If the founder or an admin made it live with Go live in the app, everyone can open it; if not, it is still not live: nobody outside the company can open it, and the company's members open it from the app. You cannot make it live. The website has no password. Put url in your message to the member as a link, and never tell anyone to use a password.",
+							? "Published, but not live yet: nobody outside the company can open the website, and it has no password. The company's members open it from the app. Only the founder or an admin can make it live, with Go live on the website's page in the app. You cannot. Put url in your message to the member as a link, and never tell anyone to use a password."
+							: "Published: the website shows this version now. If the founder or an admin made it live with Go live on the website's page in the app, everyone can open it. If not, it is still not live: nobody outside the company can open it, and the company's members open it from the app. You cannot make it live. The website has no password. Put url in your message to the member as a link, and never tell anyone to use a password.",
 				}),
 			};
 		},
