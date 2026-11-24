@@ -810,11 +810,11 @@ async function fixture(
 		folderBytes: () => ({
 			put: async (bytes: Uint8Array, mediaType: string) => {
 				if (!savedBytes) throw new Error("No folder bytes in this suite");
-				const text = new TextDecoder().decode(bytes);
-				savedBytes.set(folderSha(text), text);
+				const fileSha256 = createHash("sha256").update(bytes).digest("hex");
+				savedBytes.set(fileSha256, new TextDecoder().decode(bytes));
 				return {
-					manifestSha256: folderSha(`manifest:${text}`),
-					fileSha256: folderSha(text),
+					manifestSha256: folderSha(`manifest:${fileSha256}`),
+					fileSha256,
 					bytes: bytes.byteLength,
 					mediaType,
 				};
@@ -4520,5 +4520,267 @@ describe("Gemini 4 Neon conversation runs", () => {
 		expect(rpcCalls(f, "qorpera_record_gemini_run_usage")).toHaveLength(2);
 		expect(rpcCalls(f, "qorpera_record_provider_usage_signal")).toHaveLength(0);
 		await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	});
+
+	async function runNarrationCase(options: {
+		readonly vaultAnswer: Record<string, unknown>;
+		readonly ttsFetch: typeof fetch;
+		readonly usageCapOnCall?: number;
+	}) {
+		const vaultFetch = vi.fn(async () => Response.json(options.vaultAnswer));
+		const f = await fixture(
+			"company-surface-narrate",
+			false,
+			undefined,
+			false,
+			false,
+			15_000,
+			false,
+			{},
+			{
+				surfaceFirst: true,
+				geminiKeys: {
+					origin: "https://vault.example",
+					runtimeToken: VAULT_TOKEN,
+					companyId: "22222222-2222-4222-8222-222222222222",
+					holder: () => "H".repeat(43),
+					fetch: vaultFetch,
+				},
+				geminiFetch: options.ttsFetch,
+			},
+		);
+		f.stagedBytes();
+		f.context.agentKind = "cofounder";
+		f.context.identity = { ...f.context.identity, sessionId: null };
+		f.authority.identity = { ...f.authority.identity, sessionId: null };
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const leaseToken = randomUUID();
+		let changeSeq = 0;
+		let usageCalls = 0;
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_read_native_wake") {
+				return {
+					schema: "qorpera.wake-envelope/v1",
+					id: randomUUID(),
+					runId: f.context.identity.runId,
+					kind: "agent",
+					companyId: f.context.identity.companyId,
+					environmentId: f.context.identity.environmentId,
+					staffAgentId: f.context.identity.staffAgentId,
+					requesterUserId: f.context.identity.requesterUserId,
+					actorStaffId: null,
+					actorUserId: null,
+					audience: {
+						kind: f.context.identity.audienceKind,
+						userId: f.context.identity.audienceUserId,
+						sessionId: null,
+					},
+					source: {
+						kind: "surface-session",
+						id: sessionId,
+						occurrenceKey: `surface-session:${sessionId}:${leaseToken}`,
+					},
+					policy: {
+						schema: "qorpera.wake-policy/v1",
+						kind: "agent",
+						initial: "forbidden",
+						final: "forbidden",
+						silenceAllowed: true,
+						maxPublicSends: 0,
+					},
+					time: {
+						utc: "2026-09-02T08:00:00.000000Z",
+						local: "2026-09-02T10:00:00.000000",
+						timeZone: "Europe/Copenhagen",
+					},
+					pins: {
+						companySnapshotId: null,
+						companySeq: 1,
+						staffVersion: f.context.identity.staffVersion,
+						wakeSchema: "qorpera.wake-envelope/v1",
+						runtimeBundleVersion: null,
+					},
+					routine: null,
+					payload: {
+						schema: "qorpera.surface-session-wake/v1",
+						surfaceSessionId: sessionId,
+						surfaceId,
+						profileId: f.context.identity.companyId,
+						surfaceSlug: "identity",
+						sourceKind: "folder",
+						originKind: "member",
+						memberInitiated: true,
+						leaseToken,
+					},
+					parentRunId: null,
+					causal: { rootId: randomUUID(), agentIds: [f.context.identity.staffAgentId] },
+				};
+			}
+			if (method === "qorpera_native_surface_read_session_turn") {
+				return {
+					sessionId,
+					surfaceId,
+					surfaceSlug: "identity",
+					surfaceTitle: "Identity",
+					sourceKind: "folder",
+					prompt: "Create a narrated UX breakdown.",
+					state: "queued",
+					repositoryKey: null,
+					folderRoot: "identity",
+					briefSummary: "Global visual identity",
+					voiceModel: "gemini-3.8-flash-tts",
+					voiceName: "Kore",
+					openScenesOps: [],
+					explorationVariantLabel: null,
+					originKind: "member",
+					originRef: null,
+					baseSha: null,
+					branchHeadSha: null,
+					conflictPaths: [],
+				};
+			}
+			if (method === "qorpera_native_surface_session_images") {
+				return {
+					schema: "qorpera.native-surface-session-images/v1",
+					sessionId,
+					latestMemberMessageId: null,
+					messages: [],
+				};
+			}
+			if (method === "qorpera_native_surface_record_change") {
+				changeSeq += 1;
+				return { changeId: randomUUID(), seq: changeSeq, session: { openChangeCount: changeSeq } };
+			}
+			if (method === "qorpera_native_surface_complete_turn") {
+				return { id: sessionId, state: args.p_state };
+			}
+			if (method === "qorpera_native_surface_renew_lease") {
+				return { renewed: true };
+			}
+			if (method === "qorpera_record_gemini_voice_usage") {
+				usageCalls += 1;
+				const capReached = options.usageCapOnCall !== undefined && usageCalls >= options.usageCapOnCall;
+				return {
+					schema: "qorpera.gemini-voice-usage/v1",
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: usageCalls * 1000,
+					monthlyCapCents: 100,
+					capReached,
+				};
+			}
+			return original(method, args, signal);
+		});
+
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8")) as {
+			outputs: { callId: string; output: string }[];
+		};
+		return {
+			f,
+			vaultFetch,
+			outputs: evidence.outputs.map((item) => {
+				const envelope = JSON.parse(item.output) as {
+					readonly status: string;
+					readonly content: { readonly text: string };
+				};
+				expect(envelope.status).toBe("ok");
+				return JSON.parse(envelope.content.text) as Record<string, unknown>;
+			}),
+		};
+	}
+
+	it("wires Studio narrate_explainer through injected geminiFetch, caches vault opens, records voice usage, and latches capReached", async () => {
+		const pcm = new Uint8Array(24_000 * 2);
+		const pcmBase64 = Buffer.from(pcm).toString("base64");
+		const geminiCalls: { url: string; apiKey: string | null }[] = [];
+		const geminiFetch = vi.fn<typeof fetch>(async (input, init) => {
+			const headers = new Headers(init?.headers);
+			geminiCalls.push({ url: String(input), apiKey: headers.get("x-goog-api-key") });
+			return Response.json({
+				candidates: [
+					{
+						content: {
+							parts: [{ inlineData: { mimeType: "audio/L16;codec=pcm;rate=24000", data: pcmBase64 } }],
+						},
+					},
+				],
+				usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 90 },
+			});
+		});
+
+		const latched = await runNarrationCase({
+			vaultAnswer: {
+				schema: "qorpera.gemini-key-for-run/v1",
+				state: "open",
+				geminiKeyId: GEMINI_KEY_ID,
+				apiKey: GEMINI_API_KEY,
+				spendMonth: "2026-11",
+				monthSpendMicrodollars: 0,
+				monthlyCapCents: 100,
+			},
+			ttsFetch: geminiFetch,
+			usageCapOnCall: 2,
+		});
+		expect(latched.vaultFetch).toHaveBeenCalledTimes(1);
+		expect(geminiCalls).toHaveLength(2);
+		expect(geminiCalls[0]).toEqual({
+			url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent",
+			apiKey: GEMINI_API_KEY,
+		});
+		expect(rpcCalls(latched.f, "qorpera_record_gemini_voice_usage")).toHaveLength(2);
+		expect(latched.outputs[1]).toMatchObject({ ok: true, state: "spoken", spokenNow: 2, reused: 0, left: 0 });
+		expect(latched.outputs[3]).toMatchObject({ ok: false, state: "cap_reached", spokenNow: 0, reused: 2, left: 1 });
+	});
+
+	it("wires Studio narrate_explainer vault CAP_REACHED refusal into calm cap_reached without calling Gemini TTS", async () => {
+		const capRefusedFetch = vi.fn<typeof fetch>();
+		const capRefused = await runNarrationCase({
+			vaultAnswer: {
+				schema: "qorpera.gemini-key-for-run/v1",
+				state: "refused",
+				reason: "CAP_REACHED",
+				spendMonth: "2026-11",
+				monthSpendMicrodollars: 1_000_000,
+				monthlyCapCents: 100,
+			},
+			ttsFetch: capRefusedFetch,
+		});
+		expect(capRefusedFetch).not.toHaveBeenCalled();
+		expect(rpcCalls(capRefused.f, "qorpera_record_gemini_voice_usage")).toHaveLength(0);
+		expect(capRefused.outputs[1]).toMatchObject({ ok: false, state: "cap_reached" });
+	});
+
+	it("wires Studio narrate_explainer key_rejected HTTP errors into calm revoked without failing the turn", async () => {
+		const rejectedFetch = vi.fn<typeof fetch>(
+			async () =>
+				new Response(
+					JSON.stringify({
+						error: {
+							code: 400,
+							status: "INVALID_ARGUMENT",
+							message: "API key not valid.",
+							details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "API_KEY_INVALID" }],
+						},
+					}),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				),
+		);
+		const rejected = await runNarrationCase({
+			vaultAnswer: {
+				schema: "qorpera.gemini-key-for-run/v1",
+				state: "open",
+				geminiKeyId: GEMINI_KEY_ID,
+				apiKey: GEMINI_API_KEY,
+				spendMonth: "2026-11",
+				monthSpendMicrodollars: 0,
+				monthlyCapCents: 100,
+			},
+			ttsFetch: rejectedFetch,
+		});
+		expect(rejectedFetch).toHaveBeenCalled();
+		expect(rpcCalls(rejected.f, "qorpera_record_gemini_voice_usage")).toHaveLength(0);
+		expect(rejected.outputs[1]).toMatchObject({ ok: false, state: "revoked" });
 	});
 });

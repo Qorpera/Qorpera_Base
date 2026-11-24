@@ -2709,7 +2709,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							text,
 							...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
 							...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
-							...(this.#geminiFetch ? { fetch: this.#geminiFetch } : {}),
+							...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
 							signal: reqSignal,
 						});
 					} catch (error) {

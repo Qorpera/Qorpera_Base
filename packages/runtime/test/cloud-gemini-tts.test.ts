@@ -88,4 +88,66 @@ describe("cloud-gemini-tts", () => {
 			}),
 		).toBe(6050);
 	});
+
+	it("validates Gemini TTS apiBaseUrl and requires allowLoopback for loopback http", async () => {
+		await expect(
+			synthesizeGeminiSpeech({
+				apiKey: "AIzaSyTestKey12345678901234567890",
+				model: "gemini-3.8-flash-tts",
+				voiceName: "Kore",
+				text: "Test.",
+				apiBaseUrl: "http://127.0.0.1:8080",
+				fetcher: vi.fn() as unknown as typeof fetch,
+				signal: new AbortController().signal,
+			}),
+		).rejects.toThrow("Gemini API base URL is invalid");
+
+		await expect(
+			synthesizeGeminiSpeech({
+				apiKey: "AIzaSyTestKey12345678901234567890",
+				model: "gemini-3.8-flash-tts",
+				voiceName: "Kore",
+				text: "Test.",
+				apiBaseUrl: "https://evil.example.com",
+				allowLoopback: true,
+				fetcher: vi.fn() as unknown as typeof fetch,
+				signal: new AbortController().signal,
+			}),
+		).rejects.toThrow("Gemini API base URL is invalid");
+
+		const pcm = new Uint8Array(24_000 * 2);
+		const fetcher = vi.fn(async (url: string | URL | Request) => {
+			expect(String(url)).toBe("http://127.0.0.1:8080/v1beta/models/gemini-3.8-flash-tts:generateContent");
+			return Response.json({
+				candidates: [
+					{
+						content: {
+							parts: [
+								{
+									inlineData: {
+										mimeType: "audio/L16;codec=pcm;rate=24000",
+										data: Buffer.from(pcm).toString("base64"),
+									},
+								},
+							],
+						},
+					},
+				],
+				usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 40 },
+			});
+		}) as unknown as typeof fetch;
+
+		const ok = await synthesizeGeminiSpeech({
+			apiKey: "AIzaSyTestKey12345678901234567890",
+			model: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			text: "Test.",
+			apiBaseUrl: "http://127.0.0.1:8080",
+			allowLoopback: true,
+			fetcher,
+			signal: new AbortController().signal,
+		});
+		expect(ok.seconds).toBe(1);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
 });

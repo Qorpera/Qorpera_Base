@@ -162,4 +162,91 @@ describe("cloud-surface-narrate-tool", () => {
 		expect(body.ok).toBe(false);
 		expect(body.state).toBe("cap_reached");
 	});
+
+	it("aborts remaining workers on mid-batch error, preserves already-recorded clips, and rethrows when none were recorded", async () => {
+		const captions = ["Clip one.", "Clip two.", "Clip three.", "Clip four.", "Clip five."];
+		const scenes = `V.scene((s) => { ${captions.map((text) => `s.say("${text}");`).join(" ")} });`;
+		const attempted: string[] = [];
+		const stagedCalls: { ops: readonly StudioPatchOp[] }[] = [];
+		let abortedSiblings = 0;
+
+		const partialTool = createNarrateExplainerTool({
+			sessionId: "33333333-3333-4333-8333-333333333333",
+			folderRoot: "identity",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			readStudioText: async (path) => (path === "breakdowns/ux/scenes.js" ? scenes : null),
+			stageBytes: async (bytes, mediaType) => ({
+				manifestSha256: "a".repeat(64),
+				fileSha256: "b".repeat(64),
+				bytes: bytes.byteLength,
+				mediaType,
+			}),
+			surfacePatch: {
+				stageSurfacePatch: async (_sessionId, req) => {
+					stagedCalls.push({ ops: req.ops });
+					return { changeId: "44444444-4444-4444-8444-444444444444", seq: 2, openChangeCount: 2 };
+				},
+			},
+			synthesizeGemini: async ({ text, signal }) => {
+				attempted.push(text);
+				if (text === "Clip one.") {
+					return {
+						audio: new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0]),
+						mediaType: "audio/wav",
+						fileExtension: "wav",
+						seconds: 1.5,
+						usage: { inputTokens: 4, cachedTokens: 0, outputTokens: 60 },
+					};
+				}
+				if (text === "Clip two.") {
+					await new Promise((resolve) => setTimeout(resolve, 15));
+					throw new Error("quota_exhausted");
+				}
+				return await new Promise((_, reject) => {
+					signal.addEventListener(
+						"abort",
+						() => {
+							abortedSiblings += 1;
+							reject(new Error("aborted"));
+						},
+						{ once: true },
+					);
+				});
+			},
+		});
+
+		const partialResult = await partialTool.execute({ scenesPath: "breakdowns/ux/scenes.js" }, fakeContext());
+		const partialBody = parseToolText(partialResult);
+		expect(partialBody).toMatchObject({
+			ok: true,
+			state: "partly_spoken",
+			spokenNow: 1,
+			reused: 0,
+			left: 4,
+			total: 5,
+			error: "quota_exhausted",
+		});
+		expect(abortedSiblings).toBe(2);
+		expect(attempted).not.toContain("Clip five.");
+		expect(stagedCalls).toHaveLength(1);
+		expect(stagedCalls[0]?.ops).toHaveLength(2);
+
+		const failAllTool = createNarrateExplainerTool({
+			sessionId: "33333333-3333-4333-8333-333333333333",
+			folderRoot: "identity",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			readStudioText: async (path) =>
+				path === "breakdowns/ux/scenes.js" ? 'V.scene((s) => { s.say("Only."); });' : null,
+			stageBytes: vi.fn(),
+			surfacePatch: { stageSurfacePatch: vi.fn() },
+			synthesizeGemini: async () => {
+				throw new Error("daily quota exhausted");
+			},
+		});
+		await expect(failAllTool.execute({ scenesPath: "breakdowns/ux/scenes.js" }, fakeContext())).rejects.toThrow(
+			"daily quota exhausted",
+		);
+	});
 });

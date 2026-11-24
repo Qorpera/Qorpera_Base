@@ -4,6 +4,7 @@ do $$ begin
 	if to_regprocedure('public.qorpera_resolve_member_voice_preference(uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_turn_requester(public.qorpera_surface_sessions)') is null
+		or to_regprocedure('public.qorpera_surface_turn_member_initiated(public.qorpera_surface_sessions)') is null
 		or to_regprocedure('public.qorpera_open_gemini_key_for_run(uuid,text,jsonb)') is null
 		or to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') is null
 		or to_regprocedure('public.qorpera_member_gemini_key_open(uuid,uuid)') is null
@@ -77,6 +78,8 @@ begin
 			and wake.profile_id = p_run.profile_id
 			and wake.source_kind = 'surface-session'
 			and surf.source_kind = 'folder'
+			and public.qorpera_surface_turn_member_initiated(sess)
+			and public.qorpera_surface_turn_requester(sess) = v_user
 	) then
 		return null;
 	end if;
@@ -292,42 +295,45 @@ $new$	if v_surface.id is null then
 		select coalesce(jsonb_agg(item.op_obj order by item.seq, item.op_idx), '[]'::jsonb)
 		into v_open_scenes_ops
 		from (
-			select
-				c.seq,
-				x.op_idx,
-				case
-					when x.op_obj ->> 'op' = 'write_text' then jsonb_build_object(
-						'op', 'write_text',
-						'path', x.op_obj ->> 'path',
-						'content', x.op_obj ->> 'content'
+			select latest.seq, latest.op_idx, latest.op_obj
+			from (
+				select distinct on (lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))))
+					c.seq,
+					x.op_idx,
+					x.op_obj ->> 'op' as op_kind,
+					octet_length(coalesce(x.op_obj ->> 'content', '')) as content_bytes,
+					case
+						when x.op_obj ->> 'op' = 'write_text' then jsonb_build_object(
+							'op', 'write_text',
+							'path', x.op_obj ->> 'path',
+							'content', x.op_obj ->> 'content'
+						)
+						else jsonb_build_object(
+							'op', 'delete',
+							'path', x.op_obj ->> 'path'
+						)
+					end as op_obj
+				from public.qorpera_surface_changes as c
+				cross join lateral jsonb_array_elements(
+					case
+						when jsonb_typeof(c.patch_manifest) = 'array' then c.patch_manifest
+						when jsonb_typeof(c.patch_manifest -> 'ops') = 'array' then c.patch_manifest -> 'ops'
+						else '[]'::jsonb
+					end
+				) with ordinality as x(op_obj, op_idx)
+				where c.session_id = v_session.id
+					and c.kind = 'folder_patch'
+					and c.status in ('staged', 'conflicted')
+					and x.op_obj ->> 'op' in ('write_text', 'delete')
+					and (
+						lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))) ~ '(^|/)scenes\.js$'
+						or lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))) ~ '(^|/)voice/clips\.json$'
 					)
-					else jsonb_build_object(
-						'op', 'delete',
-						'path', x.op_obj ->> 'path'
-					)
-				end as op_obj
-			from public.qorpera_surface_changes as c
-			cross join lateral jsonb_array_elements(
-				case
-					when jsonb_typeof(c.patch_manifest) = 'array' then c.patch_manifest
-					when jsonb_typeof(c.patch_manifest -> 'ops') = 'array' then c.patch_manifest -> 'ops'
-					else '[]'::jsonb
-				end
-			) with ordinality as x(op_obj, op_idx)
-			where c.session_id = v_session.id
-				and c.kind = 'folder_patch'
-				and c.status in ('staged', 'conflicted')
-				and x.op_obj ->> 'op' in ('write_text', 'delete')
-				and (
-					lower(coalesce(x.op_obj ->> 'path', '')) ~ '(^|/)scenes\.js$'
-					or lower(coalesce(x.op_obj ->> 'path', '')) ~ '(^|/)voice/clips\.json$'
-				)
-				and (
-					x.op_obj ->> 'op' = 'delete'
-					or octet_length(coalesce(x.op_obj ->> 'content', '')) <= 262144
-				)
-			order by c.seq asc, x.op_idx asc
-			limit 200
+				order by lower(trim(both '/' from coalesce(x.op_obj ->> 'path', ''))), c.seq desc, x.op_idx desc
+			) as latest
+			where latest.op_kind = 'delete' or latest.content_bytes <= 262144
+			order by latest.seq desc, latest.op_idx desc
+			limit 64
 		) as item;
 	end if;$new$,
 $old$		'briefSummary', v_surface.brief_summary,$old$,

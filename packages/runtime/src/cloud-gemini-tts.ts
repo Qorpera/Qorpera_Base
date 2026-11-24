@@ -80,8 +80,20 @@ export interface SynthesizeGeminiSpeechInput {
 	readonly voiceName: GeminiTtsVoice;
 	readonly text: string;
 	readonly apiBaseUrl?: string;
+	readonly allowLoopback?: boolean;
 	readonly fetcher?: typeof fetch;
 	readonly signal: AbortSignal;
+}
+
+function validateGeminiTtsBaseUrl(value: string, allowLoopback: boolean): string {
+	const url = new URL(value);
+	const allowedProduction = url.protocol === "https:" && url.hostname === "generativelanguage.googleapis.com";
+	const allowedTest =
+		allowLoopback && url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+	if ((!allowedProduction && !allowedTest) || url.username || url.password || url.search || url.hash) {
+		throw new Error("Gemini API base URL is invalid");
+	}
+	return url.origin;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -180,7 +192,7 @@ function pauseWithAbort(ms: number, signal: AbortSignal): Promise<void> {
 export async function synthesizeGeminiSpeech(input: SynthesizeGeminiSpeechInput): Promise<GeminiTtsSpeechResult> {
 	const text = input.text.trim();
 	if (!text) throw new Error("Gemini TTS text is empty");
-	const baseUrl = (input.apiBaseUrl ?? GEMINI_DEFAULT_API_BASE).replace(/\/+$/, "");
+	const baseUrl = validateGeminiTtsBaseUrl(input.apiBaseUrl ?? GEMINI_DEFAULT_API_BASE, input.allowLoopback === true);
 	const url = `${baseUrl}/v1beta/models/${encodeURIComponent(input.model)}:generateContent`;
 	const fetcher = input.fetcher ?? fetch;
 	const body = JSON.stringify({

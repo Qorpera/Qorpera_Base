@@ -101,7 +101,6 @@ begin
 
 	update public.qorpera_surface_sessions set state = 'running', lease_token = v_lease where id = v_session;
 
-	-- 1. Before Gemini key: turn resolves default chatgpt-voice / cove and carries openScenesOps
 	insert into public.qorpera_surface_changes(
 		profile_id, surface_id, session_id, seq, title, summary, kind, affected_paths, patch_manifest, status
 	) values (
@@ -110,6 +109,13 @@ begin
 		jsonb_build_array(
 			jsonb_build_object('op', 'write_text', 'path', 'breakdowns/ux/scenes.js', 'content', 'V.scene((s) => { s.say("Hello."); });'),
 			jsonb_build_object('op', 'write_text', 'path', 'brief.md', 'content', '# Ignored non-scenes file')
+		),
+		'staged'
+	), (
+		v_profile, v_surface, v_session, 2, 'Refine breakdown', 'Updated scenes.js', 'folder_patch',
+		array['breakdowns/ux/scenes.js'],
+		jsonb_build_array(
+			jsonb_build_object('op', 'write_text', 'path', 'breakdowns/ux/scenes.js', 'content', 'V.scene((s) => { s.say("Updated."); });')
 		),
 		'staged'
 	);
@@ -121,11 +127,11 @@ begin
 		v_turn ->> 'voiceModel' = 'chatgpt-voice'
 		and v_turn ->> 'voiceName' = 'cove'
 		and jsonb_array_length(v_turn -> 'openScenesOps') = 1
-		and v_turn -> 'openScenesOps' -> 0 ->> 'path' = 'breakdowns/ux/scenes.js',
-		'1: turn payload carries default voice and filtered openScenesOps: ' || v_turn::text
+		and v_turn -> 'openScenesOps' -> 0 ->> 'path' = 'breakdowns/ux/scenes.js'
+		and v_turn -> 'openScenesOps' -> 0 ->> 'content' = 'V.scene((s) => { s.say("Updated."); });',
+		'1: turn payload carries default voice and latest openScenesOps per path: ' || v_turn::text
 	);
 
-	-- 2. Enqueue and materialize surface-session wake; Gemini key open refused while voiceModel is chatgpt-voice
 	v_key_id := pg_temp.svn_save_key('AQ...svn1', 10000);
 	set local role service_role;
 	v_enqueued := public.qorpera_surface_enqueue_session_run(v_session, v_lease);
@@ -156,7 +162,6 @@ begin
 	end;
 	perform pg_temp.base_assert(v_refused, '2: vault refuses Gemini key when member selected chatgpt-voice');
 
-	-- 3. Switch member Voice preference to gemini-3.8-flash-tts / Kore; read_session_turn, vault open, and voice usage succeed
 	v_defaults := pg_temp.svn_call(v_owner, format(
 		'select public.qorpera_get_member_default_models(%L)', v_profile
 	));
@@ -185,6 +190,21 @@ begin
 		'3: vault opens Gemini key for folder surface-session wake with Gemini TTS preference: ' || v_opened::text
 	);
 
+	v_refused := false;
+	update public.qorpera_surface_sessions
+	set origin_kind = 'cofounder', turn_requested_by_user_id = null
+	where id = v_session;
+	begin
+		set local session authorization qorpera_secret_broker;
+		perform public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding);
+		reset session authorization;
+	exception when insufficient_privilege then
+		reset session authorization;
+		v_refused := true;
+	end;
+	perform pg_temp.base_assert(v_refused, '3b: vault refuses Gemini key for agent-originated folder surface session');
+	update public.qorpera_surface_sessions set origin_kind = 'member' where id = v_session;
+
 	set local role service_role;
 	v_usage := public.qorpera_record_gemini_voice_usage(
 		v_binding,
@@ -192,7 +212,6 @@ begin
 		jsonb_build_object('inputTokens', 41, 'cachedTokens', 0, 'outputTokens', 500)
 	);
 	reset role;
-	-- ceil(41 / 2) + 500 * 9 = 21 + 4500 = 4521 microdollars
 	perform pg_temp.base_assert(
 		v_usage ->> 'schema' = 'qorpera.gemini-voice-usage/v1'
 		and (v_usage ->> 'monthSpendMicrodollars')::bigint = 4521
@@ -200,7 +219,6 @@ begin
 		'3: voice usage records exact TTS microdollars: ' || v_usage::text
 	);
 
-	-- 4. Flash-lite TTS uses 6 microdollars/output token and triggers CAP_REACHED notice when cap is crossed
 	update public.qorpera_gemini_keys set monthly_cap_cents = 100 where id = v_key_id;
 	set local role service_role;
 	v_usage := public.qorpera_record_gemini_voice_usage(
@@ -223,7 +241,6 @@ begin
 		'4: vault refuses with CAP_REACHED after TTS spend crosses monthly cap: ' || v_opened::text
 	);
 
-	-- 5. Runtime observation accepts narrate_explainer
 	perform pg_temp.base_assert(
 		strpos(
 			pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),

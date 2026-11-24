@@ -336,11 +336,19 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 
 			const batch = missing.slice(0, MAX_CLIPS_PER_CALL);
 			const recorded = new Map<string, { readonly clip: StudioExplainerClipRecord; readonly op: StudioPatchOp }>();
-			let stopReason: "cap_reached" | "revoked" | null = null;
+			let stopReason: "cap_reached" | "revoked" | "error" | null = null;
+			let firstError: unknown;
 			let nextIndex = 0;
+			const batchAbort = new AbortController();
+			const onOuterAbort = () => batchAbort.abort();
+			if (signal.aborted) {
+				batchAbort.abort();
+			} else {
+				signal.addEventListener("abort", onOuterAbort, { once: true });
+			}
 
 			const worker = async (): Promise<void> => {
-				while (!signal.aborted && stopReason === null) {
+				while (!batchAbort.signal.aborted && stopReason === null) {
 					const idx = nextIndex++;
 					if (idx >= batch.length) return;
 					const caption = batch[idx]!;
@@ -349,8 +357,9 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 							model: options.voiceModel as GeminiTtsModel,
 							voiceName: resolvedVoice,
 							text: caption.text,
-							signal,
+							signal: batchAbort.signal,
 						});
+						if (signal.aborted) return;
 						const ref = await options.stageBytes(speech.audio, speech.mediaType, signal);
 						const closedRef: StudioBinaryRef = {
 							manifestSha256: ref.manifestSha256,
@@ -371,20 +380,38 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					} catch (error) {
 						if (error instanceof GeminiCapReachedError) {
 							stopReason = "cap_reached";
+							batchAbort.abort();
 							return;
 						}
 						if (error instanceof GeminiKeyRevokedError) {
 							stopReason = "revoked";
+							batchAbort.abort();
 							return;
 						}
-						throw error;
+						if (stopReason === null) {
+							stopReason = "error";
+							firstError = error;
+							batchAbort.abort();
+						}
+						return;
 					}
 				}
 			};
 
-			await Promise.all(Array.from({ length: Math.min(SYNTHESIS_CONCURRENCY, batch.length) }, () => worker()));
+			try {
+				await Promise.all(Array.from({ length: Math.min(SYNTHESIS_CONCURRENCY, batch.length) }, () => worker()));
+			} finally {
+				signal.removeEventListener("abort", onOuterAbort);
+			}
+
+			if (signal.aborted) {
+				throw signal.reason ?? firstError ?? new Error("Narration aborted");
+			}
 
 			if (recorded.size === 0) {
+				if (stopReason === "error" && firstError !== undefined) {
+					throw firstError;
+				}
 				return {
 					kind: "text",
 					value: JSON.stringify({
@@ -436,11 +463,13 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 			options.onStagedOps?.(ops);
 
 			const left = captions.length - finalClips.length;
+			const state =
+				stopReason === "error" ? "partly_spoken" : (stopReason ?? (left === 0 ? "spoken" : "partly_spoken"));
 			return {
 				kind: "text",
 				value: JSON.stringify({
 					ok: true,
-					state: stopReason ?? (left === 0 ? "spoken" : "partly_spoken"),
+					state,
 					voiceModel: options.voiceModel,
 					voiceName: resolvedVoice,
 					spokenNow: recorded.size,
@@ -450,6 +479,9 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					changeId: staged.changeId,
 					scenesPath: args.scenesPath,
 					clipsPath,
+					...(stopReason === "error"
+						? { error: firstError instanceof Error ? firstError.message : "Speech synthesis stopped early" }
+						: {}),
 				}),
 			};
 		},
