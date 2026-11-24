@@ -2,6 +2,8 @@ import type { CodeReleaseLive, CodeReleaseSite, CodeReleases } from "../../cloud
 import { button, fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { type CompanyController, type SiteAnswer, sitePublicAnswer } from "../company.ts";
+import { surfaceHash } from "../router.ts";
+import { surfacesOf } from "../surfaces-store.ts";
 import {
 	keyOf,
 	quieted,
@@ -80,10 +82,12 @@ export class WhatsNewView {
 		this.#desk = new ReleaseDesk(company, client, this.#lifetime.signal, options, (focusKey) => this.#draw(focusKey));
 		this.#draw();
 		void this.#desk.refresh();
-		const unsubscribe = company.store.subscribe(() => {
-			if (this.#publicKey() !== this.#publicDrawn) this.#draw();
-		});
+		const unsubscribe = company.store.subscribe(() => this.update());
 		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
+	}
+
+	update(): void {
+		if (!this.#lifetime.signal.aborted && this.#publicKey() !== this.#publicDrawn) this.#draw();
 	}
 
 	dispose(): void {
@@ -130,8 +134,31 @@ export class WhatsNewView {
 		return listed.kind === "files" ? sitePublicAnswer(state, listed.id) : undefined;
 	}
 
+	#interfaceHref(slug: string): string | undefined {
+		const surface = surfacesOf(this.#company)?.state.surfaces.find(
+			(item) => item.status !== "archived" && item.siteSlug === slug,
+		);
+		return surface && surfaceHash(this.#company.profile.profileId, surface.slug);
+	}
+
 	#publicKey(): string {
-		return (this.#desk.releases?.sites ?? []).map((site) => this.#publicAnswer(site) ?? "").join(",");
+		return JSON.stringify(
+			(this.#desk.releases?.sites ?? []).map((site) => [
+				this.#publicAnswer(site) ?? "",
+				site.site ? (this.#interfaceHref(site.site.slug) ?? "") : "",
+			]),
+		);
+	}
+
+	#notLiveLine(slug: string): HTMLElement {
+		const href = this.#interfaceHref(slug);
+		return h(
+			"span",
+			{ class: "site-meta" },
+			href
+				? h("a", { href }, t("Only the company can open it. Go live on its page."))
+				: t("Only the company can open it."),
+		);
 	}
 
 	#live(site: CodeReleaseSite, can: boolean, busy: boolean, down: boolean): HTMLElement {
@@ -177,17 +204,7 @@ export class WhatsNewView {
 								t("Qorpera took this site down, so it can't be opened. See why in Sites."),
 							)
 						: null,
-					shown && can && answer === "private"
-						? h(
-								"span",
-								{ class: "site-meta" },
-								h(
-									"a",
-									{ href: `#/c/${this.#company.profile.profileId}/sites` },
-									t("Only the company can open it. Go live in Sites."),
-								),
-							)
-						: null,
+					shown && can && answer === "private" ? this.#notLiveLine(shown.slug) : null,
 				),
 				// Not live yet, there is nothing to open or go back to: no row for it (a phone would keep it empty).
 				shown || back
