@@ -1094,6 +1094,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const address = () => view.el.querySelector<HTMLButtonElement>(".surface-pill-address");
 
 		expect(address()?.className).toBe("surface-pill-address is-unknown");
+		expect(address()?.title).toBe(address()?.querySelector(".surface-address-host")?.textContent);
+		expect(address()?.title).not.toBe("");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
 		expect(address()?.dataset.act).toBe("address");
 		expect(hosting.client.read).not.toHaveBeenCalled();
 
