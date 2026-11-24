@@ -61,14 +61,13 @@ function unfit(page: Document): Element[] {
 
 export function frameParsedPage(page: Document, rawHtml?: string): string | null {
 	const found = unfit(page);
-	if (found.length === 0) {
-		if (rawHtml !== undefined) return rawHtml;
-		return `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
-	}
+	if (found.length === 0 && rawHtml !== undefined) return rawHtml;
 	for (const element of found)
 		if (element.localName === "template") for (const name of DECLARATIVE_SHADOW_ROOT) element.removeAttribute(name);
 		else element.remove();
 	const handed = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
+	// WHY: a changed page's text can read back as other markup than the page checked (a script's <!-- swallowing a
+	// later </script>); the frame reads the text, so the text is what is checked.
 	return unfit(new DOMParser().parseFromString(handed, "text/html")).length === 0 ? handed : null;
 }
 

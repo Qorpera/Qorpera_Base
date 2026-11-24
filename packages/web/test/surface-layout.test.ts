@@ -2,6 +2,7 @@
 import type { StudioBinaryRef, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
+import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	CHANGES,
@@ -553,7 +554,7 @@ describe("A folder's own layout.json", () => {
 		}
 	});
 
-	it("moves any interface with its own layout.json onto the renderer, and leaves the others as they were", async () => {
+	it("draws any interface with its own layout.json from it, and one without from its starter", async () => {
 		const notes = studio({
 			id: "22222222-2222-4222-8222-222222222241",
 			slug: "notes",
@@ -575,7 +576,8 @@ describe("A folder's own layout.json", () => {
 		withLayout.store.dispose();
 
 		const without = await open({ [`${ROOT}/brief.md`]: "# Notes\nWhat we learned.\n" }, { surface: notes });
-		expect(without.view.el.querySelector(".studio-product")).toBeNull();
+		expect(without.tabs()).toEqual(["Overview", "Reports"]);
+		expect(without.view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Notes");
 		expect(without.view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).not.toBeNull();
 		without.view.dispose();
 		without.store.dispose();
@@ -922,6 +924,285 @@ describe("Identity on the layout renderer", () => {
 		expect(swatch("colors.accent")?.querySelector("code")?.textContent).toBe("#c9643b");
 		expect(swatch("colors.accent")?.classList.contains("is-changed")).toBe(true);
 		expect(swatch("colors.primary")?.classList.contains("is-changed")).toBe(false);
+		view.dispose();
+		store.dispose();
+	});
+});
+
+function customStudio(): SurfaceSummary {
+	return studio({
+		id: "22222222-2222-4222-8222-222222222243",
+		slug: "notes",
+		title: "Notes",
+		kind: "custom",
+		icon: "star",
+	});
+}
+
+describe("Custom interfaces on the layout renderer", () => {
+	it("draws a fresh custom interface's homes: its title, the pale line, the files line and a pale Reports tab", async () => {
+		const { view, tab, tabs, store } = await open({}, { surface: customStudio() });
+		expect(tabs()).toEqual(["Overview", "Reports"]);
+		expect([...view.el.querySelectorAll(".studio-tab.is-empty")].map((item) => item.textContent)).toEqual([
+			"Reports",
+		]);
+		expect(view.el.querySelector(".studio-empty")).toBeNull();
+		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Notes");
+		expect(view.el.querySelector(".studio-product-line.is-empty")?.textContent).toBe("One line about what it is");
+		expect(view.el.querySelector(".studio-section-head h2")?.textContent).toBe("Files");
+		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe(
+			"Working files. Models, pictures and notes live here.",
+		);
+		tab("reports");
+		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Reports and posts live here.");
+		view.dispose();
+		store.dispose();
+
+		setLanguagePreference("da");
+		const danish = await open({}, { surface: customStudio() });
+		expect(danish.tabs()).toEqual(["Overblik", "Rapporter"]);
+		expect(danish.view.el.querySelector(".studio-section-head h2")?.textContent).toBe("Filer");
+		danish.view.dispose();
+		danish.store.dispose();
+	});
+
+	it("keeps what the old page drew: documents, an SVG, a page, a JSON file's values and its reports", async () => {
+		const { view, tab, store } = await open(
+			{
+				[`${ROOT}/brief.md`]: "# Notes\nWhat we learned.\n",
+				[`${ROOT}/log.txt`]: "Day one: calm.",
+				[`${ROOT}/mark.svg`]:
+					'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4"/></svg>',
+				[`${ROOT}/pages/sheet.html`]:
+					'<!doctype html><html><head><title>Sheet</title><link rel="stylesheet" href="sheet.css"></head><body>Hi</body></html>',
+				[`${ROOT}/pages/sheet.css`]: "body { margin: 0; }",
+				[`${ROOT}/data.json`]: JSON.stringify({
+					colors: { accent: "#c9643b" },
+					typography: { display: "Newsreader, Georgia, serif" },
+					font: "Inter, system-ui, sans-serif",
+					overview: { weight: "44 g" },
+					vendors: [{ vendor: "Nordic Knit", region: "DK" }],
+				}),
+				[`${ROOT}/why.report.json`]: REPORT,
+			},
+			{ surface: customStudio() },
+		);
+		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')?.textContent).toContain("What we learned.");
+		expect(view.el.querySelector('[data-file="surfaces/lamp/log.txt"]')?.textContent).toContain("Day one: calm.");
+		expect(view.el.querySelector('.studio-svg-card[data-file="surfaces/lamp/mark.svg"] img')).not.toBeNull();
+		const page = view.el.querySelector('.studio-html-card[data-file="surfaces/lamp/pages/sheet.html"]')!;
+		expect(page.querySelector("h2")?.textContent).toBe("Sheet");
+		expect(page.querySelector("iframe.studio-html-frame")?.getAttribute("sandbox")).toBe("allow-scripts");
+		const data = view.el.querySelector('[data-file="surfaces/lamp/data.json"]')!;
+		expect(data.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
+		expect(data.querySelector('[data-token="typography.display"] code')?.textContent).toBe("Newsreader");
+		expect(data.querySelector('[data-token="font"] .studio-type-meta')?.textContent).toBe("FontInter");
+		expect([...data.querySelectorAll(".studio-kv dt")].map((item) => item.textContent)).toEqual([
+			"Overview · Weight",
+		]);
+		expect(data.querySelector(".studio-subhead")?.textContent).toBe("Vendors");
+		expect(data.querySelector(".studio-table td")?.textContent).toBe("Nordic Knit");
+		expect(view.el.querySelector('[data-file="surfaces/lamp/why.report.json"]')).toBeNull();
+		expect(view.el.querySelector('[data-file="surfaces/lamp/pages/sheet.css"]')).toBeNull();
+		tab("reports");
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why wool");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("marks a JSON file's card when a waiting change touches it, and not once the change is hidden", async () => {
+		const { view, store, surface } = await open(
+			{ [`${ROOT}/data.json`]: JSON.stringify({ colors: { accent: "#c9643b", paper: "#ffffff" } }) },
+			{
+				surface: customStudio(),
+				ops: [{ op: "merge_json", path: "data.json", patch: { colors: { accent: "#1f5e5b" } } }],
+			},
+		);
+		const card = () => view.el.querySelector('[data-file="surfaces/lamp/data.json"]')!;
+		expect(card().classList.contains("is-changed")).toBe(true);
+		expect(card().querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(true);
+		expect(card().querySelector('[data-token="colors.paper"]')?.classList.contains("is-changed")).toBe(false);
+		await store.toggleChange(surface.id, CHANGES[0]);
+		view.update();
+		expect(card().classList.contains("is-changed")).toBe(false);
+		expect(card().querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
+		view.dispose();
+		store.dispose();
+	});
+});
+
+const COUNTDOWN_HTML =
+	'<!doctype html><html><head><title>Countdown</title><link rel="stylesheet" href="style.css"><script type="module" src="./app.js"></script></head><body><p id="left">12 days</p></body></html>';
+
+function moduleFiles(): Record<string, string> {
+	return {
+		[`${ROOT}/brief.md`]: "# Notes\nWhat we learned.\n",
+		[`${ROOT}/modules/countdown/index.html`]: COUNTDOWN_HTML,
+		[`${ROOT}/modules/countdown/style.css`]: "#left { font-size: 40px; } body { min-height: 100vh; }",
+		[`${ROOT}/modules/countdown/app.js`]: 'document.getElementById("left").dataset.ready = "yes";',
+		[`${ROOT}/modules/countdown/notes.md`]: "# Countdown notes\n",
+		[`${ROOT}/modules/price/index.html`]: "<!doctype html><title>Price</title><body>900 kr.</body>",
+		[`${ROOT}/layout.json`]: JSON.stringify({
+			schema: "qorpera.surface-layout/v1",
+			tabs: [
+				{
+					id: "overview",
+					title: "Overview",
+					blocks: [
+						{ type: "title" },
+						{ type: "module", id: "countdown", from: "modules/countdown", heading: "Countdown" },
+						{
+							type: "row",
+							blocks: [
+								{ type: "files", heading: "Notes" },
+								{ type: "module", from: "modules/price", height: 480 },
+							],
+						},
+					],
+				},
+				{ id: "app", title: "App", blocks: [{ type: "module", from: "modules/countdown" }] },
+				{ id: "later", title: "Later", blocks: [{ type: "module", from: "modules/later", heading: "Later" }] },
+			],
+		}),
+	};
+}
+
+function handedHtml(frame: HTMLIFrameElement): string {
+	const post = vi.spyOn(frame.contentWindow as Window, "postMessage").mockImplementation(() => {});
+	const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+	Object.defineProperty(ready, "source", { value: frame.contentWindow });
+	window.dispatchEvent(ready);
+	const [message] = post.mock.calls.at(-1) as unknown as [{ type: string; html: string }];
+	expect(message.type).toBe(PAGE_CONTENT);
+	return message.html;
+}
+
+function sayHeight(frame: HTMLIFrameElement, height: unknown, source: Window | null = frame.contentWindow): void {
+	const event = new MessageEvent("message", { data: { type: "qorpera-module-height", height } });
+	Object.defineProperty(event, "source", { value: source });
+	window.dispatchEvent(event);
+}
+
+describe("The module block", () => {
+	it("draws its folder's app in the page frame, as a section, inside a row and alone on a tab", async () => {
+		const { view, tab, tabs, store } = await open(moduleFiles(), { surface: customStudio() });
+		expect(tabs()).toEqual(["Overview", "App", "Later"]);
+		expect([...view.el.querySelectorAll(".studio-tab.is-empty")].map((item) => item.textContent)).toEqual(["Later"]);
+		const countdown = view.el.querySelector<HTMLElement>('[data-block="module"][data-module="modules/countdown"]')!;
+		expect(countdown.classList.contains("is-alone")).toBe(false);
+		expect(countdown.querySelector("h2")?.textContent).toBe("Countdown");
+		const frame = countdown.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
+		expect(frame.getAttribute("src")).toBe(PAGE_FRAME_URL);
+		expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+		const html = handedHtml(frame);
+		expect(html).toContain("12 days");
+		expect(html).toContain("#left { font-size: 40px; }");
+		expect(html).toContain('<script type="module">document.getElementById("left").dataset.ready = "yes";</script>');
+		expect(html).not.toContain('src="./app.js"');
+		expect(html).toContain("qorpera-module-height");
+		expect(html).toContain("body { min-height: 100vh; }");
+		expect(html).toContain('setProperty("height","auto","important")');
+		expect(html).toContain('setProperty("min-height","0","important")');
+		expect(html.indexOf('setProperty("min-height","0","important")')).toBeLessThan(
+			html.indexOf("getBoundingClientRect"),
+		);
+
+		sayHeight(frame, 2400);
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("1600px");
+		sayHeight(frame, 40.2);
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("120px");
+		sayHeight(frame, 512.3);
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("513px");
+		sayHeight(frame, "tall");
+		sayHeight(frame, 900, window);
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("513px");
+
+		const cell = view.el.querySelectorAll(".studio-row-cell")[1]!;
+		const price = cell.querySelector<HTMLIFrameElement>('[data-module="modules/price"] iframe.studio-module-frame')!;
+		expect(price.style.height).toBe("480px");
+		expect(handedHtml(price)).not.toContain("qorpera-module-height");
+		const notes = view.el.querySelector(".studio-row-cell")!;
+		expect(notes.querySelector('[data-file="surfaces/lamp/brief.md"]')).not.toBeNull();
+		expect(view.el.querySelector('[data-file^="surfaces/lamp/modules/"]')).toBeNull();
+
+		tab("app");
+		const alone = view.el.querySelector<HTMLElement>('[data-block="module"]')!;
+		expect(alone.classList.contains("is-alone")).toBe(true);
+		expect(alone.querySelector("h2")).toBeNull();
+		expect(handedHtml(alone.querySelector<HTMLIFrameElement>("iframe")!)).not.toContain("qorpera-module-height");
+
+		tab("later");
+		const empty = view.el.querySelector<HTMLElement>('[data-block="module"]')!;
+		expect(empty.querySelector("iframe")).toBeNull();
+		expect(empty.querySelector(".studio-module-frame.is-empty")).not.toBeNull();
+		expect(empty.textContent).toBe("Later");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("marks the module a waiting change touched, anywhere in its folder, and nothing once it is hidden", async () => {
+		const { view, store, surface } = await open(moduleFiles(), {
+			surface: customStudio(),
+			ops: [{ op: "write_text", path: "modules/countdown/app.js", content: "window.left = 11;" }],
+		});
+		const countdown = () => view.el.querySelector<HTMLElement>('[data-module="modules/countdown"]')!;
+		expect(countdown().classList.contains("is-changed")).toBe(true);
+		expect(countdown().querySelector(".studio-changed-pill")?.textContent).toBe("Updated");
+		expect(handedHtml(countdown().querySelector("iframe")!)).toContain("window.left = 11;");
+		expect(view.el.querySelector('[data-module="modules/price"]')?.classList.contains("is-changed")).toBe(false);
+		await store.toggleChange(surface.id, CHANGES[0]);
+		view.update();
+		expect(countdown().classList.contains("is-changed")).toBe(false);
+		expect(countdown().querySelector(".studio-changed-pill")).toBeNull();
+		expect(handedHtml(countdown().querySelector("iframe")!)).toContain('dataset.ready = "yes"');
+		view.dispose();
+		store.dispose();
+	});
+
+	it("fills its empty home once a waiting change writes its index.html", async () => {
+		const { view, tab, store } = await open(moduleFiles(), {
+			surface: customStudio(),
+			ops: [{ op: "write_text", path: "modules/later/index.html", content: "<!doctype html><body>Soon</body>" }],
+		});
+		tab("later");
+		const later = view.el.querySelector<HTMLElement>('[data-block="module"]')!;
+		expect(later.classList.contains("is-changed")).toBe(true);
+		expect(handedHtml(later.querySelector("iframe")!)).toContain("Soon");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("works on a Product page as its own tab", async () => {
+		const { view, tab, tabs, store } = await open({
+			...productFiles(),
+			[`${ROOT}/modules/configurator/index.html`]: "<!doctype html><title>Pick</title><body>Pick a colour</body>",
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				schema: "qorpera.surface-layout/v1",
+				tabs: [
+					{
+						id: "overview",
+						title: "Overview",
+						blocks: [{ type: "stage_3d", id: "stage" }, { type: "title" }],
+					},
+					{
+						id: "configure",
+						title: "Configure",
+						blocks: [{ type: "module", from: "modules/configurator", height: 600 }],
+					},
+					{ id: "files", title: "Files", blocks: [{ type: "files" }] },
+				],
+			}),
+		});
+		expect(tabs()).toEqual(["Overview", "Configure", "Files"]);
+		tab("configure");
+		const module = view.el.querySelector<HTMLElement>('[data-block="module"]')!;
+		expect(module.classList.contains("is-alone")).toBe(true);
+		const frame = module.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
+		expect(frame.style.minHeight).toBe("600px");
+		expect(handedHtml(frame)).toContain("Pick a colour");
+		tab("files");
+		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).not.toBeNull();
+		expect(view.el.querySelector('[data-file="surfaces/lamp/modules/configurator/index.html"]')).toBeNull();
 		view.dispose();
 		store.dispose();
 	});

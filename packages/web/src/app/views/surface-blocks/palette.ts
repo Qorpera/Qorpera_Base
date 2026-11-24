@@ -5,6 +5,23 @@ import { type SurfaceBlockContext, type SurfaceBlockPrepared, sectionHead, sourc
 
 const EMPTY_SWATCHES = [0, 1, 2, 3];
 
+export function renderSwatches(colours: readonly ColorToken[]): HTMLElement {
+	return h(
+		"div",
+		{ class: "studio-swatches" },
+		colours.map((colour) => {
+			const chip = h("span", { class: "studio-swatch-chip", "aria-hidden": "true" });
+			chip.style.backgroundColor = colour.value;
+			return h(
+				"div",
+				{ class: `studio-swatch${colour.changed ? " is-changed" : ""}`, "data-token": colour.key },
+				chip,
+				h("div", { class: "studio-swatch-meta" }, h("strong", null, colour.label), h("code", null, colour.value)),
+			);
+		}),
+	);
+}
+
 export function preparePalette(block: SurfacePaletteBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
 	const read = ctx.read(block.from);
 	const key = sourceKey(read.binding) ?? "colours";
@@ -23,28 +40,7 @@ export function preparePalette(block: SurfacePaletteBlock, ctx: SurfaceBlockCont
 						{ class: `studio-section${changed ? " is-changed" : ""}`, "data-block": "palette" },
 						heading ? sectionHead(heading, changed) : null,
 						filled
-							? h(
-									"div",
-									{ class: "studio-swatches" },
-									colours.map((colour) => {
-										const chip = h("span", { class: "studio-swatch-chip", "aria-hidden": "true" });
-										chip.style.backgroundColor = colour.value;
-										return h(
-											"div",
-											{
-												class: `studio-swatch${colour.changed ? " is-changed" : ""}`,
-												"data-token": colour.key,
-											},
-											chip,
-											h(
-												"div",
-												{ class: "studio-swatch-meta" },
-												h("strong", null, colour.label),
-												h("code", null, colour.value),
-											),
-										);
-									}),
-								)
+							? renderSwatches(colours)
 							: h(
 									"div",
 									{ class: "studio-swatches is-empty", "aria-hidden": "true" },

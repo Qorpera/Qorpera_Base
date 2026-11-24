@@ -29,6 +29,7 @@ import {
 } from "./surface-blocks/context.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
 import { prepareFiles, type StudioHtmlPages } from "./surface-blocks/files.ts";
+import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
 import { reportFiles, SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
@@ -87,7 +88,7 @@ interface TabScope {
 	readonly stageIds: ReadonlyMap<string, string>;
 }
 
-export function surfaceLayoutPath(folderRoot: string | null | undefined): string {
+function surfaceLayoutPath(folderRoot: string | null | undefined): string {
 	const root = cleanFolderRoot(folderRoot);
 	return root ? `${root}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
 }
@@ -109,6 +110,11 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 		if (block.type === "report") {
 			const { include } = reportFiles(block, ctx);
 			for (const path of Object.keys(ctx.files)) if (include(path)) claimed.add(path);
+			continue;
+		}
+		if (block.type === "module") {
+			const folder = moduleFolder(block, ctx);
+			if (folder) for (const path of Object.keys(ctx.files)) if (path.startsWith(`${folder}/`)) claimed.add(path);
 			continue;
 		}
 		const bindings = Object.entries(block).flatMap(([field, value]) =>
@@ -319,6 +325,8 @@ export class SurfaceLayoutView {
 				return this.#reports.prepare(block, ctx);
 			case "files":
 				return prepareFiles(block, ctx, scope.input.htmlPages, { claimed: scope.claimed, alone });
+			case "module":
+				return prepareModule(block, ctx, scope.input.htmlPages, { alone });
 			default:
 				return prepareUnknown();
 		}

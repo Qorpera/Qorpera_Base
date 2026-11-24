@@ -1020,9 +1020,10 @@ describe("starter layouts", () => {
 		});
 	});
 
-	it("starts Custom with a title and its files", () => {
+	it("starts Custom with a title, its files under a heading, and a home for reports", () => {
 		expect(SURFACE_STARTER_LAYOUTS.custom.tabs).toEqual([
-			{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files" }] },
+			{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files", heading: "Files" }] },
+			{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "**/*.report.json" }] },
 		]);
 	});
 });

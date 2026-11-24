@@ -32,7 +32,6 @@ export interface SpecEntry {
 export const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
 export const TYPE_GROUPS = new Set(["font", "fonts", "typography", "type", "typeface"]);
 export const MODEL_GROUPS = new Set(["model", "3d", "geometry"]);
-export const VENDOR_GROUPS = new Set(["vendors", "suppliers"]);
 const MAX_INITIAL_TABLE_ROWS = 100;
 const EMPTY_ROWS = [0, 1, 2];
 
@@ -46,10 +45,7 @@ export function collectSpecs(
 	for (const [key, value] of Object.entries(obj)) {
 		const segments = [...prefix, key];
 		const lower = key.toLowerCase();
-		if (
-			prefix.length === 0 &&
-			(COLOR_GROUPS.has(lower) || TYPE_GROUPS.has(lower) || MODEL_GROUPS.has(lower) || VENDOR_GROUPS.has(lower))
-		)
+		if (prefix.length === 0 && (COLOR_GROUPS.has(lower) || TYPE_GROUPS.has(lower) || MODEL_GROUPS.has(lower)))
 			continue;
 		if (typeof value === "string" && COLOR_VALUE.test(value.trim())) continue;
 		if (Array.isArray(value) && value.length > 0 && value.every(isPlainRecord)) {

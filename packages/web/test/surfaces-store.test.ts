@@ -1383,7 +1383,7 @@ describe("SurfacesStore", () => {
 		});
 	});
 
-	it("lists a studio's models and pictures beside its text files, by reference, without reading them", async () => {
+	it("lists a studio's models and pictures beside its text files and scripts, two folders deep, by reference, without reading them", async () => {
 		const file = (seed: string, bytes: number, mediaType: string) => ({
 			manifestSha256: seed.repeat(64).slice(0, 64),
 			fileSha256: `f${seed.repeat(63)}`,
@@ -1410,20 +1410,31 @@ describe("SurfacesStore", () => {
 				{ path: "product/renders/front.webp", kind: "file", file: file("7", 300, "image/webp") },
 				{ path: "product/renders/deep", kind: "folder", file: null },
 			],
+			"product/renders/deep": [
+				{ path: "product/renders/deep/app.js", kind: "file", file: file("8", 30, "text/javascript") },
+				{ path: "product/renders/deep/deeper", kind: "folder", file: null },
+			],
 		};
 		const folder = {
 			list: vi.fn(async (parent: string | null) => ({ entries: entries[parent ?? ""] ?? [] })),
 			readFile: vi.fn(async () => new TextEncoder().encode('{"overview":{"weight":"44 g"}}')),
 		};
 		const read = await readSurfaceFolderFiles(folder, ["product"], new AbortController().signal);
-		expect(read.files).toEqual({ "product/specs.json": '{"overview":{"weight":"44 g"}}' });
+		expect(read.files).toEqual({
+			"product/specs.json": '{"overview":{"weight":"44 g"}}',
+			"product/renders/deep/app.js": '{"overview":{"weight":"44 g"}}',
+		});
 		expect(read.binaries).toEqual({
 			"product/headband.glb": file("2", 4000, "model/gltf-binary"),
 			"product/scan.glb": file("3", 9000, "application/octet-stream"),
 			"product/renders/front.webp": file("7", 300, "image/webp"),
 		});
-		expect(folder.readFile).toHaveBeenCalledTimes(1);
-		expect(folder.list.mock.calls.map(([parent]) => parent)).toEqual(["product", "product/renders"]);
+		expect(folder.readFile).toHaveBeenCalledTimes(2);
+		expect(folder.list.mock.calls.map(([parent]) => parent)).toEqual([
+			"product",
+			"product/renders",
+			"product/renders/deep",
+		]);
 	});
 
 	it("keeps a studio's binaries beside its files and reads each one's bytes once", async () => {
@@ -2241,6 +2252,35 @@ describe("SurfacesStore", () => {
 		await store.refreshWorkspace(SURFACE);
 		expect(store.state.publishedChangeIds[CHANGES[0]]).toBe(true);
 		store.dispose();
+	});
+
+	it("reads a module's page and scripts together, ahead of loose text files, when a folder holds more than the cap", async () => {
+		const entry = (path: string) => ({ path, kind: "file" as const, file: { path, bytes: 20 } });
+		const folder = {
+			list: vi.fn(async (path: string) => ({
+				entries:
+					path === "notes"
+						? [
+								...Array.from({ length: 40 }, (_, index) => entry(`notes/log-${index}.txt`)),
+								{ path: "notes/modules", kind: "folder" as const, file: null },
+							]
+						: path === "notes/modules"
+							? [{ path: "notes/modules/countdown", kind: "folder" as const, file: null }]
+							: path === "notes/modules/countdown"
+								? [
+										entry("notes/modules/countdown/index.html"),
+										entry("notes/modules/countdown/app.js"),
+										entry("notes/modules/countdown/util.mjs"),
+									]
+								: [],
+			})),
+			readFile: vi.fn(async () => new TextEncoder().encode("x")),
+		};
+		const { files } = await readSurfaceFolderFiles(folder, ["notes"], new AbortController().signal);
+		expect(Object.keys(files)).toHaveLength(32);
+		expect(files["notes/modules/countdown/index.html"]).toBe("x");
+		expect(files["notes/modules/countdown/app.js"]).toBe("x");
+		expect(files["notes/modules/countdown/util.mjs"]).toBe("x");
 	});
 
 	it("skips generated directories, caps subfolder walks, and enforces a byte budget in readSurfaceFolderFiles", async () => {

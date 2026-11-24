@@ -3,7 +3,7 @@ import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
-import { PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
+import { frameParsedPage, PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
 import { deferred } from "./fixtures.ts";
 import {
 	CHANGES,
@@ -324,9 +324,10 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
 		expect(view.el.querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(true);
 		expect(view.el.querySelector('[data-token="colors.paper"]')?.classList.contains("is-changed")).toBe(false);
-		expect(view.el.querySelector('[data-token="typography.display"] code')?.textContent).toBe(
-			"Newsreader, Georgia, serif",
-		);
+		expect(view.el.querySelector('[data-token="typography.display"] code')?.textContent).toBe("Newsreader");
+		expect(
+			view.el.querySelector<HTMLElement>('[data-token="typography.display"] .studio-type-sample')?.style.fontFamily,
+		).toContain("Newsreader");
 		expect(view.el.querySelector('[data-file="brand/voice.md"]')?.textContent).toContain(
 			"Warm, quiet, Danish craft.",
 		);
@@ -443,7 +444,13 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: {},
 		});
-		expect(brand.el.querySelector(".studio-empty")?.textContent).toContain("No studio files yet.");
+		expect(brand.el.querySelector(".studio-empty")).toBeNull();
+		expect(brand.el.querySelector(".studio-product-head h2")?.textContent).toBe("Brand");
+		expect(brand.el.querySelector(".studio-product-line.is-empty")).not.toBeNull();
+		expect(brand.el.querySelector(".studio-section-head h2")?.textContent).toBe("Files");
+		expect(brand.el.querySelector(".studio-home-empty")?.textContent).toBe(
+			"Working files. Models, pictures and notes live here.",
+		);
 		brand.dispose();
 		store.dispose();
 	});
@@ -606,6 +613,118 @@ describe("SurfaceStudioView", () => {
 		expect(prepared).not.toContain("color: red");
 		expect(prepared).toContain("data:image/svg+xml;charset=utf-8,");
 		expect(prepared).not.toContain('href="./tokens.css"');
+
+		const scripted = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><script type="module" src="./app.js"></script><script src="https://cdn.example/x.js"></script><script src="../outside.js"></script><script src="./missing.js"></script></head><body></body></html>',
+			"identity/index.html",
+			{ "identity/app.js": 'console.log("</script>");', "outside.js": "alert(1)" },
+			"",
+		);
+		expect(scripted).toContain('<script type="module">console.log("<\\/script>");</script>');
+		expect(scripted).toContain('<script src="https://cdn.example/x.js"></script>');
+		expect(scripted).toContain('<script src="../outside.js"></script>');
+		expect(scripted).toContain('<script src="./missing.js"></script>');
+		expect(scripted).not.toContain("alert(1)");
+
+		const cased = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><link rel="stylesheet" href="a.css"><script src="a.js"></script></head><body></body></html>',
+			"identity/index.html",
+			{ "identity/a.css": 'p::after { content: "</STYLE>"; }', "identity/a.js": 'const tag = "</SCRIPT>";' },
+			"",
+		);
+		expect(cased).toContain('content: "<\\/STYLE>";');
+		expect(cased).toContain('const tag = "<\\/SCRIPT>";');
+	});
+
+	it("hands the page frame only text that reads back as the page it checked", () => {
+		const reparsed = (text: string | null) =>
+			text === null ? null : new DOMParser().parseFromString(text, "text/html");
+		const sneaked = (text: string | null) => {
+			const page = reparsed(text);
+			return page !== null && page.querySelector("template, iframe, noscript, link[rel~=preconnect]") !== null;
+		};
+		const trap =
+			'<style>x{}</script></script><template shadowrootmode="open"><iframe srcdoc="<p>out</p>"></iframe></template></style>';
+
+		const viaScript = prepareStudioHtmlPreview(
+			`<!doctype html><html><head><script src="app.js"></script>${trap}</head><body><p>Hi</p></body></html>`,
+			"surfaces/notes/index.html",
+			{ "surfaces/notes/app.js": 'var s="<!--<script>"; var r=/<!--/u; var t=`<!--`;' },
+			"",
+		);
+		expect(viaScript).toContain('var s="\\x3c!--<script>"; var r=/\\x3c!--/u; var t=`\\x3c!--`;');
+		expect(sneaked(viaScript)).toBe(false);
+		expect(reparsed(viaScript)?.querySelector("style")?.textContent).toContain("shadowrootmode");
+
+		const built = new DOMParser().parseFromString(
+			"<!doctype html><html><head><script></script><style></style></head><body></body></html>",
+			"text/html",
+		);
+		built.querySelector("script")!.textContent = 'var s="<!--<script>"';
+		built.querySelector("style")!.textContent =
+			'x{}</script></script><template shadowrootmode="open"><iframe></iframe></template>';
+		expect(frameParsedPage(built)).toBeNull();
+		const hinted = new DOMParser().parseFromString(
+			"<!doctype html><html><head><script></script><style></style></head><body></body></html>",
+			"text/html",
+		);
+		hinted.querySelector("script")!.textContent = 'var s="<!--<script>"';
+		hinted.querySelector("style")!.textContent =
+			'x{}</script></script><noscript></noscript><link rel="preconnect" href="https://out.example">';
+		expect(frameParsedPage(hinted)).toBeNull();
+
+		const viaStylesheet = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><link rel="stylesheet" href="a.css"></head><body><p>Hi</p></body></html>',
+			"surfaces/notes/index.html",
+			{
+				"surfaces/notes/a.css":
+					'x{}</style><template shadowrootmode="open"><iframe></iframe></template></script></script><noscript></noscript>',
+			},
+			"",
+		);
+		expect(viaStylesheet).not.toBeNull();
+		expect(sneaked(viaStylesheet)).toBe(false);
+
+		const viaPicture = prepareStudioHtmlPreview(
+			'<!doctype html><html><head></head><body><img src="mark.svg"></body></html>',
+			"surfaces/notes/index.html",
+			{
+				"surfaces/notes/mark.svg":
+					'<svg xmlns="http://www.w3.org/2000/svg">"></img><template shadowrootmode="open"><iframe></iframe></template></svg>',
+			},
+			"",
+		);
+		expect(viaPicture).toContain("data:image/svg+xml;charset=utf-8,");
+		expect(sneaked(viaPicture)).toBe(false);
+	});
+
+	it("runs an inlined deferred script after the page, in order, and drops what an inline script ignores", () => {
+		const prepared = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><script src="a.js" defer></script><script src="b.js" async></script><script type="module" src="m.js" async></script><script src="c.js" defer async></script></head><body><p id="x"></p><script>window.inline = 1;</script></body></html>',
+			"surfaces/notes/index.html",
+			{
+				"surfaces/notes/a.js": "window.a = 1;",
+				"surfaces/notes/b.js": "window.b = 1;",
+				"surfaces/notes/m.js": "window.m = 1;",
+				"surfaces/notes/c.js": "window.c = 1;",
+			},
+			"",
+		);
+		const page = new DOMParser().parseFromString(prepared!, "text/html");
+		expect(
+			[...page.head.querySelectorAll("script")].map((script) => [script.textContent, script.getAttributeNames()]),
+		).toEqual([
+			["window.b = 1;", []],
+			["window.m = 1;", ["type", "async"]],
+		]);
+		expect(
+			[...page.body.querySelectorAll("script")].map((script) => [script.textContent, script.getAttributeNames()]),
+		).toEqual([
+			["window.inline = 1;", []],
+			["window.a = 1;", []],
+			["window.c = 1;", []],
+		]);
+		expect(page.body.lastElementChild?.textContent).toBe("window.c = 1;");
 	});
 
 	it("marks HTML pages Updated when inlined CSS changes and lists unrendered changed paths in Compare without code", async () => {

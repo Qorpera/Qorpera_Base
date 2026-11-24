@@ -147,7 +147,7 @@ export interface SurfaceFolderContents {
 	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
 }
 
-const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
+const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|m?js|svg|html?)$/i;
 const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g)$/i;
 const STUDIO_BINARY_TYPES = new Set<string>([...STUDIO_BINARY_MEDIA_TYPES, "application/octet-stream"]);
 const STUDIO_MAX_BINARIES = 32;
@@ -173,6 +173,7 @@ const STUDIO_MAX_FILE_BYTES = 256 * 1024;
 const STUDIO_MAX_TOTAL_BYTES = 1024 * 1024;
 const STUDIO_MAX_FILES = 32;
 const STUDIO_MAX_SUBFOLDERS = 12;
+const STUDIO_FOLDER_DEPTH = 2;
 const STUDIO_LIST_CONCURRENCY = 4;
 const STUDIO_READ_CONCURRENCY = 6;
 const MAX_CACHED_CLOUD_FILES = 6;
@@ -247,7 +248,7 @@ function studioFilePriority(path: string): number {
 	if (lower.endsWith(".json")) return 0;
 	if (lower.endsWith(".css") || lower.endsWith(".svg")) return 1;
 	if (lower.endsWith(".md") || lower.endsWith(".markdown")) return 2;
-	if (lower.endsWith(".html") || lower.endsWith(".htm")) return 3;
+	if (/\.(?:html?|m?js)$/.test(lower)) return 3;
 	return 4;
 }
 
@@ -272,11 +273,11 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	const binaries: Record<string, StudioBinaryRef> = {};
 	let binaryCount = 0;
 	const seenPaths = new Set<string>();
-	const collectEntries = (entries: readonly SurfaceFolderEntry<TFile>[], allowSubfolders: boolean) => {
+	const collectEntries = (entries: readonly SurfaceFolderEntry<TFile>[], folders: string[] | null) => {
 		for (const entry of entries) {
-			if (allowSubfolders && entry.kind === "folder") {
+			if (folders && entry.kind === "folder") {
 				const base = entry.path.split("/").at(-1)?.toLowerCase() ?? "";
-				if (!STUDIO_IGNORED_DIR.has(base)) subfolders.push(entry.path);
+				if (!STUDIO_IGNORED_DIR.has(base)) folders.push(entry.path);
 				continue;
 			}
 			if (
@@ -307,23 +308,27 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 			candidates.push({ path: entry.path, file: entry.file });
 		}
 	};
-	for (const entries of rootPages) collectEntries(entries, true);
-	if (subfolders.length > 0 && candidates.length < STUDIO_MAX_FILES) {
-		const uniqueSubs = [...new Set(subfolders)].slice(0, STUDIO_MAX_SUBFOLDERS);
+	for (const entries of rootPages) collectEntries(entries, subfolders);
+	let level = [...new Set(subfolders)].slice(0, STUDIO_MAX_SUBFOLDERS);
+	let listed = 0;
+	for (let depth = 1; depth <= STUDIO_FOLDER_DEPTH; depth++) {
+		if (level.length === 0) break;
+		const folders = level;
+		listed += folders.length;
 		let subNext = 0;
 		const subPages: (readonly SurfaceFolderEntry<TFile>[])[] = [];
 		const listWorker = async (): Promise<void> => {
 			while (!signal.aborted) {
 				const index = subNext++;
-				if (index >= uniqueSubs.length) return;
-				subPages[index] = await listFolder(uniqueSubs[index]!);
+				if (index >= folders.length) return;
+				subPages[index] = await listFolder(folders[index]!);
 			}
 		};
-		await Promise.all(
-			Array.from({ length: Math.min(STUDIO_LIST_CONCURRENCY, uniqueSubs.length) }, () => listWorker()),
-		);
+		await Promise.all(Array.from({ length: Math.min(STUDIO_LIST_CONCURRENCY, folders.length) }, () => listWorker()));
 		if (signal.aborted) return EMPTY_FOLDER;
-		for (const entries of subPages) if (entries) collectEntries(entries, false);
+		const deeper: string[] = [];
+		for (const entries of subPages) if (entries) collectEntries(entries, depth < STUDIO_FOLDER_DEPTH ? deeper : null);
+		level = [...new Set(deeper)].slice(0, STUDIO_MAX_SUBFOLDERS - listed);
 	}
 	candidates.sort((a, b) => studioFilePriority(a.path) - studioFilePriority(b.path) || a.file.bytes - b.file.bytes);
 	const selected: { readonly path: string; readonly file: TFile }[] = [];
