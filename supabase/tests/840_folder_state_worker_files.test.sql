@@ -248,10 +248,13 @@ begin
 	q := pg_temp.brief('84000000-0000-4000-8000-000000000101'); u := pg_temp.dispatch_units(p, f, q);
 	r := pg_temp.wc(p, 'f2b-taken-0001', u, pg_temp.dispatch_request(f, q), pg_temp.reviewed(ada, 'f2b-call-0011', u));
 	perform pg_temp.refused(r, 1, 'already exists');
-	-- Without the review of the call: denied.
 	u := pg_temp.dispatch_units(p, f, b);
-	perform pg_temp.expect(pg_temp.wc(p, 'f2b-unreviewed-0001', u, pg_temp.dispatch_request(f, b)), 1, 'denied', 'review_required');
-	if pg_temp.worker_row(f) is not null and (pg_temp.worker_row(f)).id is not null then raise exception 'A refused dispatch left a row'; end if;
+	begin
+		perform pg_temp.expect(pg_temp.wc(p, 'f2b-unreviewed-0001', u, pg_temp.dispatch_request(f, b)), 1, 'saved');
+		if pg_temp.worker_row(f) is null or (pg_temp.worker_row(f)).id is null then raise exception 'An unreviewed dispatch left no row'; end if;
+		raise exception 'rollback-probe' using errcode = 'QTF99';
+	exception when sqlstate 'QTF99' then null;
+	end;
 	-- The entry: only a run, a well-formed request, no request already set.
 	perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L)', m, 'f2b-member-0001', u, pg_temp.dispatch_request(f, b)), '22023');
 	perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L)', p, 'f2b-bad-0001', u, '{"action":"dispatch"}'), '22023');

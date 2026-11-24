@@ -71,6 +71,7 @@ begin
 	returning * into v_esc;
 
 	begin
+		perform public.qorpera_folder_admit_wakes(v_session.profile_id);
 		insert into public.qorpera_wake_occurrences(
 			id, profile_id, environment_id, wake_kind, source_kind, source_id,
 			trigger_id, occurrence_key, scheduled_for, not_before

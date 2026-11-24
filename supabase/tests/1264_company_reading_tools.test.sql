@@ -9,24 +9,25 @@
 
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; p jsonb := x -> 'actor'; u jsonb; r jsonb; c jsonb;
+	v_seq bigint;
 begin
-	u := jsonb_build_array(pg_temp.deletes('rr1.txt'));
-	-- update_reading writes no reviewed change set: its approval is refused.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'end-role-setup',
+		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"},{"op":"mkdir","path":"QorperaOS/agents/rr1"}]'), 3, 'saved');
+	select last_seq into v_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020';
+	u := jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/rr1',
+		'expectedVersion', pg_temp.read('QorperaOS/agents/rr1') -> 'entry' ->> 'version', 'asOfSeq', v_seq));
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b,
 		pg_temp.action(b, 'reading-approved', 'allow', 'delegation', 'update_reading'), u),
 		'42501', 'This change has no approval in this run');
-	-- An end_role approval of an outside effect stands for no folder units.
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b,
 		pg_temp.action(b, 'end-role-external', 'allow', 'external', 'end_role'), u),
 		'42501', 'This change has no approval in this run');
-	-- Without a review the change waits.
 	perform pg_temp.expect(pg_temp.commit(p, 'end-role-none', u), 1, 'denied', 'review_required');
-	if not pg_temp.present('rr1.txt') then raise exception 'A change without a review was saved'; end if;
-	-- Approved as end_role's delegation: recorded, and the commit saves the change under the review.
+	if not pg_temp.present('QorperaOS/agents/rr1') then raise exception 'A change without a review was saved'; end if;
 	r := pg_temp.record(b, pg_temp.action(b, 'end-role-own', 'allow', 'delegation', 'end_role'), u);
 	c := pg_temp.commit(p, 'end-role-reviewed', u, (r ->> 'reviewId')::uuid);
 	perform pg_temp.expect(c, 1, 'saved');
-	if pg_temp.present('rr1.txt') then raise exception 'The reviewed change was not saved: %', c; end if;
+	if pg_temp.present('QorperaOS/agents/rr1') then raise exception 'The reviewed change was not saved: %', c; end if;
 end $$;
 
 -- The receipt lookup: none, then the run's own receipt under the key; another run sees none; another key none; only the

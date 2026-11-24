@@ -43,8 +43,16 @@ begin
 		update public.qorpera_wake_occurrences set session_id = %1$L where run_id = %3$L$q$, v_session, p_user, p_run ->> 'runId'));
 	return p_run;
 end $$;
--- A worker of the agent, dispatched by a run of the requester's in the agent's thread (or, p_private, in their private
--- conversation); its run has no conversation. Its binding.
+create function pg_temp.bg_run(p_staff uuid default '63400000-0000-4000-8000-0000000000a1',
+	p_requester uuid default '63400000-0000-4000-8000-000000000001', p_private boolean default false) returns jsonb
+language plpgsql as $$
+declare v_other uuid := case when p_staff = '63400000-0000-4000-8000-0000000000a1'
+	then '63400000-0000-4000-8000-0000000000a2'::uuid else '63400000-0000-4000-8000-0000000000a1'::uuid end;
+	p jsonb := pg_temp.run(v_other, 'human', p_requester);
+begin
+	if p_private then p := pg_temp.make_private(p, p_requester); end if;
+	return pg_temp.native(pg_temp.run(p_staff, 'agent', p_requester, 'coworker', p));
+end $$;
 create function pg_temp.worker_run(p_staff uuid default '63400000-0000-4000-8000-0000000000a1',
 	p_requester uuid default '63400000-0000-4000-8000-000000000001', p_private boolean default false) returns jsonb
 language plpgsql as $$
@@ -71,49 +79,50 @@ end $$;
 
 -- 1. A worker's ask waits on a card in its agent's thread; repeats hold on it; the member it waits for sees it -----------
 do $$
-declare w jsonb := pg_temp.worker_run(); r jsonb; r2 jsonb; v_review public.qorpera_action_reviews%rowtype;
+declare w jsonb := pg_temp.bg_run(); wd jsonb := pg_temp.worker_run(); r jsonb; r2 jsonb; v_review public.qorpera_action_reviews%rowtype;
 	v_event public.qorpera_session_events%rowtype; c_owner constant uuid := '63400000-0000-4000-8000-000000000001';
 begin
 	if pg_temp.thread() is null or (select session_id from public.qorpera_execution_runs where id = (w ->> 'runId')::uuid) is not null
-		or (public.qorpera_run_worker((w ->> 'runId')::uuid)).id is null then
-		raise exception 'Fixture: agent A has a thread, and its worker''s run no conversation'; end if;
+		or (public.qorpera_run_worker((wd ->> 'runId')::uuid)).id is null then
+		raise exception 'Fixture: agent A has a thread, and background runs have no conversation'; end if;
+	r := pg_temp.ask(wd, 'worker-dispatch-silent', p_sha => repeat('8', 64));
+	if r ->> 'decision' <> 'ask' or (r ->> 'card')::boolean is not false or (r ->> 'cardElsewhere')::boolean is not false
+		or (select card_session_id from public.qorpera_action_reviews where id = (r ->> 'reviewId')::uuid) is not null
+		or exists (select 1 from public.qorpera_session_events where event_id = (r ->> 'reviewId')::uuid)
+		or pg_temp.waiting(c_owner) <> '[]'::jsonb then
+		raise exception 'A worker-dispatch ask drops no card in the agent thread: %', r; end if;
 	r := pg_temp.ask(w, 'worker-call-1');
 	select * into strict v_review from public.qorpera_action_reviews where id = (r ->> 'reviewId')::uuid;
 	if r ->> 'decision' <> 'ask' or (r ->> 'card')::boolean is not true or (r ->> 'cardElsewhere')::boolean is not true
 		or v_review.session_id is not null or v_review.card_session_id is distinct from pg_temp.thread()
 		or v_review.approver_scope <> 'member' or v_review.approver_user_id is distinct from c_owner
 		or v_review.held_until is null then
-		raise exception 'A worker''s ask waits on a card in its agent''s thread: % %', r, to_jsonb(v_review); end if;
+		raise exception 'A background ask waits on a card in its agent''s thread: % %', r, to_jsonb(v_review); end if;
 	select * into strict v_event from public.qorpera_session_events where event_id = v_review.id;
 	if v_event.session_id <> pg_temp.thread() or v_event.event_type <> 'authorization_request'
 		or v_event.execution_id is distinct from (w ->> 'runId')::uuid
 		or v_event.body #>> '{entry,data,reviewId}' is distinct from v_review.id::text
 		or v_event.body #>> '{entry,data,operation}' is distinct from 'machine_run'
 		or v_event.body #>> '{entry,data,approverScope}' is distinct from 'member' then
-		raise exception 'The card is the thread''s transcript entry, under the worker''s run: %', to_jsonb(v_event); end if;
-	-- A replay answers the same receipt and writes nothing more.
+		raise exception 'The card is the thread''s transcript entry, under the background run: %', to_jsonb(v_event); end if;
 	r2 := pg_temp.ask(w, 'worker-call-1');
 	if r2 <> r or (select count(*) from public.qorpera_session_events where event_id = v_review.id) <> 1 then
 		raise exception 'A replay of the ask: %', r2; end if;
-	-- The worker's own repeat and another worker's hold on that card (it is elsewhere for them); the thread's own run holds
-	-- on it there. None raises a second card.
-	foreach r2 in array array[pg_temp.begin(w), pg_temp.begin(pg_temp.worker_run())] loop
+	foreach r2 in array array[pg_temp.begin(w), pg_temp.begin(pg_temp.bg_run())] loop
 		if r2 ->> 'state' is distinct from 'pending' or r2 ->> 'reviewId' is distinct from v_review.id::text
 			or (r2 ->> 'cardElsewhere')::boolean is not true then
-			raise exception 'A worker''s repeat holds on the card in the thread: %', r2; end if;
+			raise exception 'A repeat holds on the card in the thread: %', r2; end if;
 	end loop;
 	r2 := pg_temp.begin(pg_temp.native(pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', c_owner)));
 	if r2 ->> 'state' is distinct from 'pending' or r2 ->> 'reviewId' is distinct from v_review.id::text
 		or (r2 ->> 'cardElsewhere')::boolean is not false then
 		raise exception 'The thread''s own run holds on the card there: %', r2; end if;
-	-- A worker for another member makes the same call for them: the owner's card is not theirs to wait on.
-	r2 := pg_temp.begin(pg_temp.worker_run(p_requester => '63400000-0000-4000-8000-000000000002'));
+	r2 := pg_temp.begin(pg_temp.bg_run(p_requester => '63400000-0000-4000-8000-000000000002'));
 	if r2 ->> 'state' is distinct from 'review' then
 		raise exception 'Another member''s run does not hold on the owner''s card: %', r2; end if;
 	if (select count(*) from public.qorpera_action_reviews where profile_id = '63400000-0000-4000-8000-000000000010'
-			and tool_name = 'machine_run') <> 1 then
+			and tool_name = 'machine_run' and card_session_id is not null) <> 1 then
 		raise exception 'No second card is raised'; end if;
-	-- The rail: the owner (the member the worker works for) sees the card by agent and thread; another member does not.
 	if pg_temp.waiting(c_owner) is distinct from jsonb_build_array(jsonb_build_object('staffAgentId',
 			'63400000-0000-4000-8000-0000000000a1', 'sessionId', pg_temp.thread(), 'count', 1, 'latestAt', v_review.created_at))
 		or pg_temp.waiting('63400000-0000-4000-8000-000000000002') <> '[]'::jsonb then
@@ -123,14 +132,11 @@ begin
 	perform set_config('qorpera_test.card', v_review.id::text, true);
 end $$;
 
--- 2. No card where none may wait: decide_routine, an agent whose thread is closed, a run whose reads the thread may not
--- show, and a member's private conversation (a worker its run started, or an owners' and admins' card asked there) ----
 do $$
-declare w jsonb := pg_temp.worker_run(); b jsonb := pg_temp.worker_run('63400000-0000-4000-8000-0000000000a2'); r jsonb;
+declare w jsonb := pg_temp.bg_run(); b jsonb := pg_temp.bg_run('63400000-0000-4000-8000-0000000000a2'); r jsonb;
 	v_private uuid; x jsonb;
 begin
-	-- A worker that read a member's private folder: its card would show that in the company-wide thread.
-	x := pg_temp.worker_run();
+	x := pg_temp.bg_run();
 	v_private := (public.qorpera_folder_set_resource('63400000-0000-4000-8000-000000000020', pg_temp.member(2),
 		'members/63400000-0000-4000-8000-000000000002/private', 'subtree', 'member_private', 'normal') ->> 'resourceId')::uuid;
 	perform pg_temp.fx(format($q$insert into public.qorpera_folder_run_reads(run_id, environment_id, resource_id, resource_revision)
@@ -141,7 +147,7 @@ begin
 		or (select card_session_id from public.qorpera_action_reviews where id = (r ->> 'reviewId')::uuid) is not null then
 		raise exception 'A run whose reads the thread may not show raises no card there: %', r; end if;
 	-- A worker a member's private conversation started.
-	r := pg_temp.ask(pg_temp.worker_run(p_private => true), 'worker-private-parent');
+	r := pg_temp.ask(pg_temp.bg_run(p_private => true), 'worker-private-parent');
 	if (r ->> 'card')::boolean is not false
 		or (select card_session_id from public.qorpera_action_reviews where id = (r ->> 'reviewId')::uuid) is not null then
 		raise exception 'A private conversation''s worker raises no card in the thread: %', r; end if;
@@ -231,7 +237,7 @@ end $$;
 -- 5. A Deny stands where its card is: for the thread's run, the run it woke and a later worker, until a member writes
 -- there; then a new try asks again (record's retry check) ------------------------------------------------------------
 do $$
-declare w jsonb := pg_temp.worker_run(); later jsonb := pg_temp.worker_run(); c_owner constant uuid := '63400000-0000-4000-8000-000000000001';
+declare w jsonb := pg_temp.bg_run(); later jsonb := pg_temp.bg_run(); c_owner constant uuid := '63400000-0000-4000-8000-000000000001';
 	t jsonb := pg_temp.native(pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', c_owner)); r jsonb; v_card uuid;
 begin
 	r := pg_temp.ask(w, 'deny-call', p_sha => repeat('7', 64));
@@ -266,16 +272,16 @@ end $$;
 
 -- 6. A card in a thread that closed holds nothing: a repeat is reviewed again -----------------------------------------
 do $$
-declare w jsonb := pg_temp.worker_run('63400000-0000-4000-8000-0000000000a2'); r jsonb;
+declare w jsonb := pg_temp.bg_run('63400000-0000-4000-8000-0000000000a2'); r jsonb;
 begin
 	r := pg_temp.ask(w, 'closed-later', p_sha => repeat('6', 64));
 	if (r ->> 'cardElsewhere')::boolean is not true then raise exception 'Fixture: B''s card is in its thread: %', r; end if;
-	if pg_temp.begin(pg_temp.worker_run('63400000-0000-4000-8000-0000000000a2'), repeat('6', 64)) ->> 'state'
+	if pg_temp.begin(pg_temp.bg_run('63400000-0000-4000-8000-0000000000a2'), repeat('6', 64)) ->> 'state'
 			is distinct from 'pending' then
 		raise exception 'While B''s thread is open, a repeat holds on its card'; end if;
 	perform pg_temp.fx(format('update public.qorpera_shared_sessions set status = ''closed'' where id = %L',
 		pg_temp.thread('63400000-0000-4000-8000-0000000000a2')));
-	r := pg_temp.begin(pg_temp.worker_run('63400000-0000-4000-8000-0000000000a2'), repeat('6', 64));
+	r := pg_temp.begin(pg_temp.bg_run('63400000-0000-4000-8000-0000000000a2'), repeat('6', 64));
 	if r ->> 'state' is distinct from 'review' then raise exception 'A closed thread''s card holds nothing: %', r; end if;
 end $$;
 

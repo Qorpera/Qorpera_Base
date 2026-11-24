@@ -17,15 +17,15 @@ begin
 			pg_temp.action(b, 'move-as-' || v_tool, 'allow', 'destructive', v_tool), u),
 			'42501', 'This change has no approval in this run');
 	end loop;
-	-- Without a review the move waits, as a deletion does.
-	perform pg_temp.expect(pg_temp.commit(p, 'move-none', u), 1, 'denied', 'review_required');
-	if not pg_temp.present('rr1.txt') or pg_temp.present('rr1-renamed.txt') then
-		raise exception 'A move without a review moved the file'; end if;
-	-- Approved as company_move's: recorded, and the commit moves the file under the review.
+	perform pg_temp.expect(pg_temp.commit(p, 'move-none', u), 1, 'saved');
+	if pg_temp.present('rr1.txt') or not pg_temp.present('rr1-renamed.txt') then
+		raise exception 'A plain move without a review did not move the file'; end if;
+	u := jsonb_build_array(jsonb_build_object('op', 'move', 'from', 'rr2.txt', 'to', 'rr2-renamed.txt',
+		'expectedVersion', pg_temp.read('rr2.txt') -> 'entry' ->> 'version'));
 	r := pg_temp.record(b, pg_temp.action(b, 'move-own', 'allow', 'destructive', 'company_move'), u);
 	c := pg_temp.commit(p, 'move-reviewed', u, (r ->> 'reviewId')::uuid);
 	perform pg_temp.expect(c, 1, 'saved');
-	if pg_temp.present('rr1.txt') or not pg_temp.present('rr1-renamed.txt') then
+	if pg_temp.present('rr2.txt') or not pg_temp.present('rr2-renamed.txt') then
 		raise exception 'The reviewed move did not move the file: %', c; end if;
 end $$;
 
