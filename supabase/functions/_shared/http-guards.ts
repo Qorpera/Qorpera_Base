@@ -59,6 +59,14 @@ export interface TimedFetchOptions {
 	readonly fetchImplementation?: typeof fetch;
 }
 
+const SERVICE_JWT_PATTERN = /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+export function serviceHeaders(secretKey: string, extra?: Record<string, string>): Record<string, string> {
+	return SERVICE_JWT_PATTERN.test(secretKey)
+		? { apikey: secretKey, authorization: `Bearer ${secretKey}`, ...extra }
+		: { apikey: secretKey, ...extra };
+}
+
 export function preferredServiceKey(readEnv: (name: string) => string | undefined): string | undefined {
 	// WHY: Legacy service-role JWTs verify locally at the gateway, while sb_secret keys depend on KMS which has shed traffic during incidents.
 	const legacyServiceRoleKey = readEnv("SUPABASE_SERVICE_ROLE_KEY");

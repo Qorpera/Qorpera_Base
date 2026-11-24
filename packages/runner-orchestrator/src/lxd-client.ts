@@ -863,7 +863,7 @@ export class LxdUnixClient
 	}
 
 	async #officeMetadata(path: string, signal: AbortSignal, maximumBytes = 65536): Promise<Record<string, unknown>> {
-		return withTimeoutScope(signal, 5000, async (checked) => {
+		return withAbortScopes([signal, AbortSignal.timeout(5000)], async (checked) => {
 			checked.throwIfAborted();
 			const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
 			checked.throwIfAborted();
@@ -1584,7 +1584,7 @@ export class LxdUnixClient
 				!OPERATION_UUID.test(reference.operationId)
 			)
 				throw new Error("invalid operation reference");
-			return await withTimeoutScope(signal, 5000, async (checked) => {
+			return await withAbortScopes([signal, AbortSignal.timeout(5000)], async (checked) => {
 				checked.throwIfAborted();
 				const result = await this.#request(
 					"GET",
@@ -1841,7 +1841,7 @@ export class LxdUnixClient
 				maximumBytes > (CODING_GUEST_HELPER_PATH.test(path) ? CODING_GUEST_HELPER_MAX_BYTES : 65536)
 			)
 				throw new Error("invalid request");
-			return await withTimeoutScope(signal, 5000, async (checked) => {
+			return await withAbortScopes([signal, AbortSignal.timeout(5000)], async (checked) => {
 				checked.throwIfAborted();
 				return await new Promise<LxdInstanceFile>((resolveRead, reject) => {
 					const request = httpRequest(
