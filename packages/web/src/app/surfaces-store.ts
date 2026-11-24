@@ -3166,7 +3166,7 @@ export class SurfacesStore {
 		const dedicatedReport = Boolean(surface && this.lookOf(surface).kind === "report");
 		const wasHidden = Boolean(state.hiddenChanges[changeId]);
 		const inTab = Boolean(!dedicatedReport && path && this.#deliverableHosts.get(surfaceId)?.(path));
-		if (inTab && state.mode !== "preview") this.setMode("preview");
+		if (inTab && state.mode === "compare") this.setMode("preview");
 		if (!inTab && !dedicatedReport && !wasHidden && state.mode === "report" && state.activeReportSlug === slug) {
 			this.store.set({ mode: "preview", activeReportSlug: undefined });
 			return;

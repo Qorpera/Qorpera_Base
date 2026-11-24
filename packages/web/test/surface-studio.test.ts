@@ -1091,6 +1091,69 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
+	it("opens a change's article in the tab that holds it, even when the store already points at it", async () => {
+		const headband = summary({
+			id: HEADBAND_ID,
+			slug: "headband",
+			title: "Headband",
+			archetype: "studio",
+			folderRoot: "hardware/headband",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [headband]) }));
+		await store.load();
+		const report = (slug: string, headline: string) =>
+			JSON.stringify({ slug, headline, sections: [{ id: "s1", heading: "Body", paragraphs: [headline] }] });
+		const sourcingPath = "hardware/headband/sourcing.report.json";
+		const files = {
+			"hardware/headband/specs.json": JSON.stringify({ weight: "42g" }),
+			"hardware/headband/buyers.report.json": report("buyers", "What customers can already buy"),
+			[sourcingPath]: report("sourcing", "Two ways to source the EEG module"),
+		};
+		const mount = async () => {
+			const view = new SurfaceStudioView({
+				store,
+				surface: headband,
+				signal: new AbortController().signal,
+				loadFiles: async () => files,
+			});
+			document.body.append(view.el);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			return view;
+		};
+		const onTab = (view: SurfaceStudioView) =>
+			view.el.querySelector<HTMLElement>(".studio-tab.is-on")?.dataset.tab;
+		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+		const first = await mount();
+		expect(onTab(first)).toBe("overview");
+		await store.openChangeDeliverable(headband.id, "change-1", "sourcing", sourcingPath);
+		await flush();
+		expect(store.state.mode).toBe("preview");
+		expect(onTab(first)).toBe("reports");
+		expect(first.el.querySelector(".report-article")?.textContent).toContain("Two ways to source the EEG module");
+		first.dispose();
+
+		const second = await mount();
+		expect(onTab(second)).toBe("overview");
+		expect(store.state.activeReportSlug).toBe("sourcing");
+		await store.openChangeDeliverable(headband.id, "change-1", "sourcing", sourcingPath);
+		await flush();
+		expect(onTab(second)).toBe("reports");
+		expect(second.el.querySelector(".report-article")?.textContent).toContain("Two ways to source the EEG module");
+
+		second.el.querySelector<HTMLButtonElement>('[data-act="report-select"][data-slug="buyers"]')!.click();
+		expect(store.state.activeReportSlug).toBe("buyers");
+		second.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="overview"]')!.click();
+		expect(store.state.activeReportSlug).toBeUndefined();
+		second.dispose();
+
+		await store.openChangeDeliverable(headband.id, "change-1", "sourcing", sourcingPath);
+		expect(store.state.mode).toBe("report");
+		store.dispose();
+	});
+
 	it("keeps Product Studio tabbed on SVG and markdown drafts without a link indicator", async () => {
 		const thetabands = summary({
 			id: HEADBAND_ID,

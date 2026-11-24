@@ -273,6 +273,9 @@ export class SurfaceStudioView {
 		const tab = this.#layout?.tabFor(path);
 		if (!tab) return false;
 		this.#tab = tab;
+		queueMicrotask(() => {
+			if (!this.#lifetime.signal.aborted) this.update();
+		});
 		return true;
 	}
 
