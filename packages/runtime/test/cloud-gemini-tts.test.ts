@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-	geminiTtsSpendMicrodollars,
-	pcm16ToWav,
-	synthesizeGeminiSpeech,
-} from "../src/cloud-gemini-tts.ts";
+import { geminiTtsSpendMicrodollars, pcm16ToWav, synthesizeGeminiSpeech } from "../src/cloud-gemini-tts.ts";
 
 describe("cloud-gemini-tts", () => {
 	it("wraps 24kHz mono PCM16 into a valid WAV header with exact duration", () => {
@@ -85,7 +81,11 @@ describe("cloud-gemini-tts", () => {
 			geminiTtsSpendMicrodollars("gemini-3.8-flash-tts", { inputTokens: 100, cachedTokens: 0, outputTokens: 1000 }),
 		).toBe(9050);
 		expect(
-			geminiTtsSpendMicrodollars("gemini-3.8-flash-lite-tts", { inputTokens: 100, cachedTokens: 0, outputTokens: 1000 }),
+			geminiTtsSpendMicrodollars("gemini-3.8-flash-lite-tts", {
+				inputTokens: 100,
+				cachedTokens: 0,
+				outputTokens: 1000,
+			}),
 		).toBe(6050);
 	});
 });

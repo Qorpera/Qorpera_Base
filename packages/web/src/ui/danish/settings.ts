@@ -373,7 +373,7 @@ export const SETTINGS: Record<string, string> = {
 	Soft: "Blid",
 	Even: "Jævn",
 	Mature: "Moden",
-	Forward: "Direkte",
+	Direct: "Direkte",
 	Friendly: "Venlig",
 	Casual: "Uformel",
 	Gentle: "Nænsom",

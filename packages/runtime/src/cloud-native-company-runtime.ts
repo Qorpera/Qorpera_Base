@@ -117,11 +117,12 @@ import {
 	GEMINI_ACTION_REVIEW_MODEL,
 	GeminiCapReachedError,
 	GeminiKeyRevokedError,
+	GeminiProviderError,
 	type GeminiProviderErrorCode,
 	type GeminiUsageReceipt,
 	geminiProviderErrorCode,
 } from "./cloud-gemini-tool-session.ts";
-import { GeminiTtsError, synthesizeGeminiSpeech } from "./cloud-gemini-tts.ts";
+import { synthesizeGeminiSpeech } from "./cloud-gemini-tts.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import { composeCloudLightAsk } from "./cloud-light-ask.ts";
@@ -2629,7 +2630,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			null;
 		const openVoiceApiKey = async (reqSignal: AbortSignal): Promise<string> => {
 			if (voiceCapReached) {
-				throw new GeminiCapReachedError(voiceCapReached.monthlyCapCents, voiceCapReached.monthSpendMicrodollars);
+				throw new GeminiCapReachedError(
+					voiceCapReached.monthlyCapCents ?? 0,
+					voiceCapReached.monthSpendMicrodollars,
+				);
 			}
 			if (geminiSession) return geminiSession.apiKey;
 			if (!cachedVoiceKey) {
@@ -2679,10 +2683,21 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			folder: folderClient,
 			surfaceTools,
 			narrateExplainer: {
-				stageBytes: (bytes, mediaType, reqSignal) => folderClient.stageBytes(bytes, mediaType, reqSignal),
+				stageBytes: async (bytes, mediaType, reqSignal) => {
+					const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
+					return {
+						manifestSha256: ref.manifestSha256,
+						fileSha256: ref.fileSha256,
+						bytes: ref.bytes,
+						mediaType: ref.mediaType,
+					};
+				},
 				synthesizeGemini: async ({ model, voiceName: ttsVoice, text, signal: reqSignal }) => {
 					if (voiceCapReached) {
-						throw new GeminiCapReachedError(voiceCapReached.monthlyCapCents, voiceCapReached.monthSpendMicrodollars);
+						throw new GeminiCapReachedError(
+							voiceCapReached.monthlyCapCents ?? 0,
+							voiceCapReached.monthSpendMicrodollars,
+						);
 					}
 					const apiKey = await openVoiceApiKey(reqSignal);
 					let speech: Awaited<ReturnType<typeof synthesizeGeminiSpeech>>;
@@ -2698,7 +2713,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							signal: reqSignal,
 						});
 					} catch (error) {
-						if (error instanceof GeminiTtsError && error.kind === "invalid_key") {
+						if (error instanceof GeminiProviderError && error.code === "key_rejected") {
 							throw new GeminiKeyRevokedError();
 						}
 						throw error;

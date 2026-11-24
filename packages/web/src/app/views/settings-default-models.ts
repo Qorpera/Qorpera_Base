@@ -35,7 +35,7 @@ const GEMINI_VOICE_TONES: Readonly<Record<string, string>> = {
 	Alnilam: phrase("Firm"),
 	Schedar: phrase("Even"),
 	Gacrux: phrase("Mature"),
-	Pulcherrima: phrase("Forward"),
+	Pulcherrima: phrase("Direct"),
 	Achird: phrase("Friendly"),
 	Zubenelgenubi: phrase("Casual"),
 	Vindemiatrix: phrase("Gentle"),
@@ -337,8 +337,7 @@ export class DefaultModelsView {
 			},
 		);
 
-		const voiceUnavailable =
-			state.storedVoiceModel !== null && !state.voiceModels.includes(state.storedVoiceModel);
+		const voiceUnavailable = state.storedVoiceModel !== null && !state.voiceModels.includes(state.storedVoiceModel);
 		const shownVoiceModel = voiceUnavailable ? state.storedVoiceModel! : state.voiceModel;
 		const voiceProfiles = defaultVoiceProfiles(state, shownVoiceModel);
 		const currentVoice =

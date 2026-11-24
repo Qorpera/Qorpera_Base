@@ -1,8 +1,6 @@
 import type { StudioBinaryRef, StudioPatchOp } from "@qorpera/contracts";
-import {
-	captionHash,
-	explainerSaid,
-} from "./cloud-app-kit-explainer.ts";
+import { captionHash, explainerSaid } from "./cloud-app-kit-explainer.ts";
+import { GeminiCapReachedError, GeminiKeyRevokedError } from "./cloud-gemini-tool-session.ts";
 import {
 	DEFAULT_GEMINI_TTS_VOICE,
 	type GeminiTtsModel,
@@ -11,7 +9,6 @@ import {
 	isGeminiTtsModel,
 	isGeminiTtsVoice,
 } from "./cloud-gemini-tts.ts";
-import { GeminiCapReachedError, GeminiKeyRevokedError } from "./cloud-gemini-tool-session.ts";
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
@@ -72,7 +69,9 @@ function normalizeRelativeScenesPath(raw: unknown, folderRoot: string): string {
 		throw new CloudToolArgumentRefusal("scenesPath must be a clean relative path inside the interface folder");
 	}
 	if (!trimmed.toLowerCase().endsWith(".js")) {
-		throw new CloudToolArgumentRefusal("scenesPath must point to a .js scenes file (for example breakdowns/ux/scenes.js)");
+		throw new CloudToolArgumentRefusal(
+			"scenesPath must point to a .js scenes file (for example breakdowns/ux/scenes.js)",
+		);
 	}
 	return trimmed;
 }
@@ -97,7 +96,10 @@ function parseExistingClips(text: string | null): Map<string, StudioExplainerCli
 	}
 	const list = Array.isArray(parsed)
 		? parsed
-		: parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray((parsed as { clips?: unknown }).clips)
+		: parsed &&
+				typeof parsed === "object" &&
+				!Array.isArray(parsed) &&
+				Array.isArray((parsed as { clips?: unknown }).clips)
 			? (parsed as { clips: unknown[] }).clips
 			: [];
 	for (const entry of list) {
@@ -120,7 +122,9 @@ function parseExistingClips(text: string | null): Map<string, StudioExplainerCli
 	return out;
 }
 
-export function extractExplainerCaptionEntries(scenesJs: string): readonly { readonly hash: string; readonly text: string }[] {
+export function extractExplainerCaptionEntries(
+	scenesJs: string,
+): readonly { readonly hash: string; readonly text: string }[] {
 	const said = explainerSaid(scenesJs);
 	const out: { readonly hash: string; readonly text: string }[] = [];
 	const seen = new Set<string>();
@@ -143,6 +147,40 @@ export function extractExplainerCaptionEntries(scenesJs: string): readonly { rea
 }
 
 export function createNarrateExplainerTool(options: StudioNarrateToolOptions): CloudNativeTool {
+	const parseArgs = (value: unknown): NarrateExplainerArgs => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			throw new CloudToolArgumentRefusal("narrate_explainer arguments must be an object");
+		}
+		const rec = value as Record<string, unknown>;
+		const scenesPath = normalizeRelativeScenesPath(rec.scenesPath, options.folderRoot);
+		const title =
+			rec.title === undefined
+				? "Narrate breakdown"
+				: typeof rec.title === "string" && rec.title.trim().length > 0 && rec.title.trim().length <= 120
+					? rec.title.trim()
+					: null;
+		if (title === null) throw new CloudToolArgumentRefusal("title must be 1..120 characters");
+		const summary =
+			rec.summary === undefined
+				? "Recorded spoken narration clips for the animated breakdown."
+				: typeof rec.summary === "string" && rec.summary.trim().length > 0 && rec.summary.trim().length <= 500
+					? rec.summary.trim()
+					: null;
+		if (summary === null) throw new CloudToolArgumentRefusal("summary must be 1..500 characters");
+		const voiceName =
+			rec.voiceName === undefined
+				? undefined
+				: typeof rec.voiceName === "string" && rec.voiceName.trim().length > 0 && rec.voiceName.trim().length <= 64
+					? rec.voiceName.trim()
+					: null;
+		if (voiceName === null) throw new CloudToolArgumentRefusal("voiceName must be 1..64 characters");
+		return {
+			scenesPath,
+			title,
+			summary,
+			...(voiceName ? { voiceName } : {}),
+		};
+	};
 	return {
 		name: "narrate_explainer",
 		source: "runtime",
@@ -157,7 +195,8 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					type: "string",
 					minLength: 4,
 					maxLength: 256,
-					description: "Relative path to scenes.js inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js).",
+					description:
+						"Relative path to scenes.js inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js).",
 				},
 				title: {
 					type: "string",
@@ -175,46 +214,22 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					type: "string",
 					minLength: 1,
 					maxLength: 64,
-					description: "Optional voice profile override for the active voice model; omit to use the member's default voice.",
+					description:
+						"Optional voice profile override for the active voice model; omit to use the member's default voice.",
 				},
 			},
 		},
-		parseArguments(value): NarrateExplainerArgs {
-			if (!value || typeof value !== "object" || Array.isArray(value)) {
-				throw new CloudToolArgumentRefusal("narrate_explainer arguments must be an object");
-			}
-			const rec = value as Record<string, unknown>;
-			const scenesPath = normalizeRelativeScenesPath(rec.scenesPath, options.folderRoot);
-			const title =
-				rec.title === undefined
-					? "Narrate breakdown"
-					: typeof rec.title === "string" && rec.title.trim().length > 0 && rec.title.trim().length <= 120
-						? rec.title.trim()
-						: null;
-			if (title === null) throw new CloudToolArgumentRefusal("title must be 1..120 characters");
-			const summary =
-				rec.summary === undefined
-					? "Recorded spoken narration clips for the animated breakdown."
-					: typeof rec.summary === "string" && rec.summary.trim().length > 0 && rec.summary.trim().length <= 500
-						? rec.summary.trim()
-						: null;
-			if (summary === null) throw new CloudToolArgumentRefusal("summary must be 1..500 characters");
-			const voiceName =
-				rec.voiceName === undefined
-					? undefined
-					: typeof rec.voiceName === "string" && rec.voiceName.trim().length > 0 && rec.voiceName.trim().length <= 64
-						? rec.voiceName.trim()
-						: null;
-			if (voiceName === null) throw new CloudToolArgumentRefusal("voiceName must be 1..64 characters");
+		parseArguments(value) {
+			const args = parseArgs(value);
 			return {
-				scenesPath,
-				title,
-				summary,
-				...(voiceName ? { voiceName } : {}),
+				scenesPath: args.scenesPath,
+				title: args.title,
+				summary: args.summary,
+				...(args.voiceName ? { voiceName: args.voiceName } : {}),
 			};
 		},
 		async execute(rawArgs, context: CloudToolContext) {
-			const args = this.parseArguments(rawArgs) as NarrateExplainerArgs;
+			const args = parseArgs(rawArgs);
 			const signal = context.signal;
 			const scenesJs = await options.readStudioText(args.scenesPath, signal);
 			if (!scenesJs || !scenesJs.trim()) {
@@ -259,7 +274,9 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 			}
 
 			if (!isGeminiTtsModel(options.voiceModel)) {
-				const validChatgpt = args.voiceName ? (CLOUD_VOICE_NAMES as readonly string[]).includes(args.voiceName) : true;
+				const validChatgpt = args.voiceName
+					? (CLOUD_VOICE_NAMES as readonly string[]).includes(args.voiceName)
+					: true;
 				if (!validChatgpt) {
 					throw new CloudToolArgumentRefusal(
 						`voiceName must be one of ${CLOUD_VOICE_NAMES.join(", ")} for ${options.voiceModel}`,
@@ -329,11 +346,17 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 							signal,
 						});
 						const ref = await options.stageBytes(speech.audio, speech.mediaType, signal);
+						const closedRef: StudioBinaryRef = {
+							manifestSha256: ref.manifestSha256,
+							fileSha256: ref.fileSha256,
+							bytes: ref.bytes,
+							mediaType: ref.mediaType,
+						};
 						const file = `${caption.hash}.${speech.fileExtension}`;
 						const clipPath = joinRel(dir, `voice/${file}`);
 						recorded.set(caption.hash, {
 							clip: { caption: caption.hash, file, seconds: speech.seconds },
-							op: { op: "write_file", path: clipPath, file: ref },
+							op: { op: "write_file", path: clipPath, file: closedRef },
 						});
 					} catch (error) {
 						if (error instanceof GeminiCapReachedError) {

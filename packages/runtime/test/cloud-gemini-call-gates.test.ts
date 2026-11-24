@@ -81,7 +81,11 @@ it("forwards Gemini run usage and cap notices through path control and native ho
 	expect(
 		await paths.call(
 			"qorpera_record_gemini_voice_usage",
-			{ p_binding: binding, p_model: "gemini-3.8-flash-tts", p_usage: { inputTokens: 41, cachedTokens: 0, outputTokens: 500 } },
+			{
+				p_binding: binding,
+				p_model: "gemini-3.8-flash-tts",
+				p_usage: { inputTokens: 41, cachedTokens: 0, outputTokens: 500 },
+			},
 			AbortSignal.timeout(5_000),
 		),
 	).toEqual({

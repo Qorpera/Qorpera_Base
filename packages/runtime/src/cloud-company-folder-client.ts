@@ -3021,7 +3021,7 @@ export class CloudCompanyFolderClient {
 	async stageBytes(bytes: Uint8Array, mediaType: string, signal: AbortSignal): Promise<CloudFileReference> {
 		if (!bytes.byteLength) throw new Error("Cannot stage empty binary file");
 		const hash = sha256(bytes);
-		return this.#stageUnique({ bytes, mediaType, executable: false }, hash, signal);
+		return this.#stageUnique({ path: "staged-binary", bytes, mediaType, executable: false }, hash, signal);
 	}
 
 	async #stageUnique(file: PlannedFile, hash: string, signal: AbortSignal): Promise<CloudFileReference> {

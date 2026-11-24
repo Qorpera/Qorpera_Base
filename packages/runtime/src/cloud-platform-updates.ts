@@ -382,7 +382,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-24",
 		title: "Animated breakdowns and voice settings in Studio",
-		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in layout.json. When a member asks for a video, walkthrough, or visual breakdown, stage breakdowns/<slug>/scenes.js (and optional explainer.json) with stage_surface_patch instead of an animated SVG or text brief in Voice, then call narrate_explainer to record spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
+		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in its layout. When a member asks for a video, walkthrough or visual breakdown, start a Studio session on that interface so it stages an animated breakdown and records spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
 	},
 ]);
 

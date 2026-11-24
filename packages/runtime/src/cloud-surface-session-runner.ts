@@ -452,8 +452,8 @@ const STUDIO_EXPLAINER_SCHEMA =
 	"When a founder asks for a video, walkthrough, or animated breakdown of UX, product mechanics, flows, or strategy, NEVER stage an animated SVG or dump a script into `voice.md` or `brief.md`. " +
 	'Stage `breakdowns/<slug>/scenes.js` with `stage_surface_patch`, then call `narrate_explainer` with `scenesPath: "breakdowns/<slug>/scenes.js"` to record spoken clips in the member\'s configured Voice model and profile. ' +
 	'The Studio player creates `V` (1600×900 dark stage) and calls `V.start()` automatically — `scenes.js` only adds chapters and scenes (`V.part("Chapter")`, `V.scene((s) => { ... })`), never `new Video(...)` or `V.start()`. ' +
-	'Primitives: `s.box({x,y,w,h,label,sub,color,dash})`, `s.text({x,y,str,size,color,font})`, `s.number({x,y,from,size,fmt})`, `s.bar({x,y,w,h,dir,scale})`, `s.icon({name,x,y,label,color})` (`person`, `bot`, `house`, `bus`, `card`, `coin`, `server`, `db`, `cloud`, `lock`, `doc`, `clock`, `shield`, `globe`, `mail`, `bolt`), `s.arrow(from,to,{color,bend,label})`, `s.line({d,head:false})`. ' +
-	'Animations inside `s.say(caption, ...anims)`: `s.create(m)`, `s.write(t)`, `s.fadeIn(m)`, `s.fadeOut(m)`, `s.dim(m,0.3)`, `s.move(m,x,y)`, `s.scale(m,k)`, `s.indicate(m)`, `s.value(m,to)`, `s.flow(arrow,sec,{count})`, `s.camera(x,y,zoom)`, `s.all(fn,items,sec)`, `{w:true}` to overlap. ' +
+	"Primitives: `s.box({x,y,w,h,label,sub,color,dash})`, `s.text({x,y,str,size,color,font})`, `s.number({x,y,from,size,fmt})`, `s.bar({x,y,w,h,dir,scale})`, `s.icon({name,x,y,label,color})` (`person`, `bot`, `house`, `bus`, `card`, `coin`, `server`, `db`, `cloud`, `lock`, `doc`, `clock`, `shield`, `globe`, `mail`, `bolt`), `s.arrow(from,to,{color,bend,label})`, `s.line({d,head:false})`. " +
+	"Animations inside `s.say(caption, ...anims)`: `s.create(m)`, `s.write(t)`, `s.fadeIn(m)`, `s.fadeOut(m)`, `s.dim(m,0.3)`, `s.move(m,x,y)`, `s.scale(m,k)`, `s.indicate(m)`, `s.value(m,to)`, `s.flow(arrow,sec,{count})`, `s.camera(x,y,zoom)`, `s.all(fn,items,sec)`, `{w:true}` to overlap. " +
 	'Colors come from `C` (`blue`, `teal`, `yellow`, `green`, `red`, `purple`, `grey`). Keep captions short (~15 words, written for the ear, 15–35 captions total; bilingual `{en:"...",da:"..."}` supported wherever text goes), first scene title frame with `show: true` leaving `y ~ 560` free for Play, 60-unit edge margin, and never put sentences inside boxes.';
 
 const PRODUCT_STUDIO_SCHEMA =
@@ -795,7 +795,12 @@ export async function runSurfaceSessionTurn(
 				if (!rel) return null;
 				if (stagedText.has(rel)) return stagedText.get(rel) ?? null;
 				if (!folderReader) return null;
-				return readRawOptionalFolderText(folderReader, `${folderRoot}/${rel}`, MAX_STUDIO_TEXT_READ_BYTES, reqSignal);
+				return readRawOptionalFolderText(
+					folderReader,
+					`${folderRoot}/${rel}`,
+					MAX_STUDIO_TEXT_READ_BYTES,
+					reqSignal,
+				);
 			};
 			const folderTools = ports.folderToolsContext
 				? cloudFolderFileTools({

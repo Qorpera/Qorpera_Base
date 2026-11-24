@@ -3,29 +3,32 @@ import { describe, expect, it, vi } from "vitest";
 import { captionHash } from "../src/cloud-app-kit-explainer.ts";
 import { GeminiCapReachedError } from "../src/cloud-gemini-tool-session.ts";
 import type { CloudToolContext } from "../src/cloud-native-tool-boundary.ts";
-import {
-	createNarrateExplainerTool,
-	extractExplainerCaptionEntries,
-} from "../src/cloud-surface-narrate-tool.ts";
+import { createNarrateExplainerTool, extractExplainerCaptionEntries } from "../src/cloud-surface-narrate-tool.ts";
 
 function fakeContext(): CloudToolContext {
 	return {
 		callId: "call-1",
 		companyId: "11111111-1111-4111-8111-111111111111",
 		runId: "22222222-2222-4222-8222-222222222222",
+		argumentSha256: "0".repeat(64),
 		signal: new AbortController().signal,
 	};
+}
+
+function parseToolText(result: { readonly kind: string; readonly value: unknown }): Record<string, unknown> {
+	expect(result.kind).toBe("text");
+	return JSON.parse(String(result.value)) as Record<string, unknown>;
 }
 
 describe("cloud-surface-narrate-tool", () => {
 	it("extracts deduplicated single-language and bilingual captions", () => {
 		const scenes = [
 			'V.part({ en: "Start", da: "Start" });',
-			'V.scene((s) => {',
+			"V.scene((s) => {",
 			'  s.say({ en: "Buyer sets budget.", da: "Køber sætter budget." });',
 			'  s.say("Shared note.");',
 			'  s.say("Shared note.");',
-			'});',
+			"});",
 		].join("\n");
 		const entries = extractExplainerCaptionEntries(scenes);
 		expect(entries.map((entry) => entry.text)).toEqual([
@@ -56,12 +59,14 @@ describe("cloud-surface-narrate-tool", () => {
 				if (path === "breakdowns/ux/voice/clips.json") return existingClips;
 				return null;
 			},
-			stageBytes: async (bytes, mediaType): Promise<StudioBinaryRef> => ({
-				manifestSha256: "a".repeat(64),
-				fileSha256: "b".repeat(64),
-				bytes: bytes.byteLength,
-				mediaType,
-			}),
+			stageBytes: async (bytes, mediaType) =>
+				({
+					manifestSha256: "a".repeat(64),
+					fileSha256: "b".repeat(64),
+					bytes: bytes.byteLength,
+					mediaType,
+					executable: false,
+				}) as StudioBinaryRef,
 			surfacePatch: {
 				stageSurfacePatch: async (_sessionId, req) => {
 					stagedCalls.push({ title: req.title, ops: req.ops });
@@ -81,8 +86,7 @@ describe("cloud-surface-narrate-tool", () => {
 		});
 
 		const result = await tool.execute({ scenesPath: "identity/breakdowns/ux/scenes.js" }, fakeContext());
-		expect(result.kind).toBe("text");
-		const body = JSON.parse(result.value) as Record<string, unknown>;
+		const body = parseToolText(result);
 		expect(body).toMatchObject({
 			ok: true,
 			state: "spoken",
@@ -96,10 +100,15 @@ describe("cloud-surface-narrate-tool", () => {
 		expect(synthesized).toEqual([{ model: "gemini-3.8-flash-tts", voiceName: "Kore", text: c2 }]);
 		expect(stagedCalls).toHaveLength(1);
 		expect(stagedCalls[0]?.ops).toHaveLength(2);
-		expect(stagedCalls[0]?.ops[0]).toMatchObject({
+		expect(stagedCalls[0]?.ops[0]).toEqual({
 			op: "write_file",
 			path: `breakdowns/ux/voice/${h2}.wav`,
-			file: { mediaType: "audio/wav" },
+			file: {
+				manifestSha256: "a".repeat(64),
+				fileSha256: "b".repeat(64),
+				bytes: 8,
+				mediaType: "audio/wav",
+			},
 		});
 		const clipsOp = stagedCalls[0]?.ops[1];
 		expect(clipsOp?.op).toBe("write_text");
@@ -118,12 +127,13 @@ describe("cloud-surface-narrate-tool", () => {
 			folderRoot: "identity",
 			voiceModel: "chatgpt-voice",
 			voiceName: "juniper",
-			readStudioText: async (path) => (path === "breakdowns/ux/scenes.js" ? 'V.scene((s) => { s.say("Hi."); });' : null),
+			readStudioText: async (path) =>
+				path === "breakdowns/ux/scenes.js" ? 'V.scene((s) => { s.say("Hi."); });' : null,
 			stageBytes: vi.fn(),
 			surfacePatch: { stageSurfacePatch: vi.fn() },
 		});
 		const result = await tool.execute({ scenesPath: "breakdowns/ux/scenes.js" }, fakeContext());
-		const body = JSON.parse(result.value) as Record<string, unknown>;
+		const body = parseToolText(result);
 		expect(body.ok).toBe(false);
 		expect(body.state).toBe("unsupported_in_studio");
 		expect(body.voiceModel).toBe("chatgpt-voice");
@@ -136,7 +146,8 @@ describe("cloud-surface-narrate-tool", () => {
 			folderRoot: "identity",
 			voiceModel: "gemini-3.8-flash-lite-tts",
 			voiceName: "Puck",
-			readStudioText: async (path) => (path === "breakdowns/ux/scenes.js" ? 'V.scene((s) => { s.say("Hi."); });' : null),
+			readStudioText: async (path) =>
+				path === "breakdowns/ux/scenes.js" ? 'V.scene((s) => { s.say("Hi."); });' : null,
 			stageBytes: vi.fn(),
 			surfacePatch: { stageSurfacePatch: vi.fn() },
 			synthesizeGemini: async () => {
@@ -144,7 +155,7 @@ describe("cloud-surface-narrate-tool", () => {
 			},
 		});
 		const result = await tool.execute({ scenesPath: "breakdowns/ux/scenes.js" }, fakeContext());
-		const body = JSON.parse(result.value) as Record<string, unknown>;
+		const body = parseToolText(result);
 		expect(body.ok).toBe(false);
 		expect(body.state).toBe("cap_reached");
 	});

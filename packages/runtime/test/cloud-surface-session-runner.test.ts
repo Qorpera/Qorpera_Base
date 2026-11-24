@@ -1300,21 +1300,17 @@ describe("cloud surface session runner", () => {
 						return {
 							changeId: randomUUID(),
 							seq: stagedBatches.length,
-							sessionId,
-							surfaceId,
-							kind: "folder_patch",
-							status: "staged",
-							title: request.title,
-							summary: request.summary,
+							openChangeCount: stagedBatches.length,
 						};
 					},
 				},
 				narrateExplainer: {
 					async stageBytes(bytes, mediaType) {
 						return {
-							objectSha256: "a".repeat(64),
+							manifestSha256: "a".repeat(64),
+							fileSha256: "b".repeat(64),
 							bytes: bytes.byteLength,
-							mediaType: mediaType as "audio/wav",
+							mediaType,
 						};
 					},
 					async synthesizeGemini(input) {
@@ -1341,7 +1337,7 @@ describe("cloud surface session runner", () => {
 						signal: req.signal,
 					} as never;
 					await stageTool.execute(
-						{
+						stageTool.parseArguments({
 							title: "Add UX breakdown",
 							summary: "Staged scenes.js for the buyer and seller journey.",
 							ops: [
@@ -1351,15 +1347,15 @@ describe("cloud surface session runner", () => {
 									content: 'V.part("Start"); V.scene((s) => { s.say("Welcome to Brooks."); });',
 								},
 							],
-						},
+						}),
 						ctx,
 					);
 					const narrated = await narrateTool.execute(
-						{
+						narrateTool.parseArguments({
 							scenesPath: "breakdowns/ux/scenes.js",
 							title: "Narrate UX breakdown",
 							summary: "Added Kore voice narration.",
-						},
+						}),
 						ctx,
 					);
 					narrateResultText = narrated.kind === "text" ? narrated.value : "";
@@ -1371,9 +1367,7 @@ describe("cloud surface session runner", () => {
 
 		expect(capturedInstructions).toContain("breakdowns/<slug>/scenes.js");
 		expect(capturedInstructions).toContain("gemini-3.8-flash-tts (Kore)");
-		expect(synthesized).toEqual([
-			{ model: "gemini-3.8-flash-tts", voiceName: "Kore", text: "Welcome to Brooks." },
-		]);
+		expect(synthesized).toEqual([{ model: "gemini-3.8-flash-tts", voiceName: "Kore", text: "Welcome to Brooks." }]);
 		const parsed = JSON.parse(narrateResultText) as Record<string, unknown>;
 		expect(parsed).toMatchObject({
 			ok: true,
@@ -1388,7 +1382,7 @@ describe("cloud surface session runner", () => {
 			{
 				op: "write_file",
 				path: expect.stringMatching(/^breakdowns\/ux\/voice\/[0-9a-f]{8}\.wav$/),
-				file: { objectSha256: "a".repeat(64), bytes: 4, mediaType: "audio/wav" },
+				file: { manifestSha256: "a".repeat(64), fileSha256: "b".repeat(64), bytes: 4, mediaType: "audio/wav" },
 			},
 			{
 				op: "write_text",

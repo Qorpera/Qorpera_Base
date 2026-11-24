@@ -224,20 +224,38 @@ begin
 	);
 
 	-- 5. Runtime observation accepts narrate_explainer
+	perform pg_temp.base_assert(
+		strpos(
+			pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
+			$q$'surface_reply','surface_ask',/* 20260930883000 */'narrate_explainer',$q$
+		) > 0,
+		'5: runtime observation vocabulary includes narrate_explainer'
+	);
 	set local role service_role;
 	v_obs := public.qorpera_record_runtime_observation(
-		v_profile,
+		v_run.id,
 		jsonb_build_object(
 			'schema', 'qorpera.runtime-observation/v1',
-			'category', 'tool',
-			'operation', 'narrate_explainer',
+			'attemptId', '13650000-0000-4000-8000-000000000501',
+			'parentAttemptId', null,
+			'assignmentId', (v_binding ->> 'assignmentId')::uuid,
 			'phase', 'finish',
-			'status', 'ok',
-			'runId', v_run.id,
-			'jobId', (v_binding ->> 'jobId')::uuid,
-			'leaseId', (v_binding ->> 'leaseId')::uuid,
-			'attempt', 1,
-			'durationMs', 420
+			'operation', 'narrate_explainer',
+			'logicalOperationSha256', null,
+			'observedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+			'durationMs', 420,
+			'status', 'succeeded',
+			'errorCategory', null,
+			'receiptId', null,
+			'readId', null,
+			'inputBytes', 64,
+			'outputBytes', 128,
+			'inputTokens', null,
+			'outputTokens', null,
+			'cachedInputTokens', null,
+			'cacheWriteInputTokens', null,
+			'reasoningOutputTokens', null,
+			'totalTokens', null
 		)
 	);
 	reset role;

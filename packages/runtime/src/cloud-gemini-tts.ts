@@ -1,6 +1,6 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import { withAbortScopes } from "./abort-scope.ts";
-import { classifyGeminiHttpError, readGeminiErrorSnippet } from "./cloud-gemini-key-vault.ts";
+import { classifyGeminiHttpError } from "./cloud-gemini-key-vault.ts";
 import { GEMINI_DEFAULT_API_BASE, GeminiProviderError } from "./cloud-gemini-tool-session.ts";
 import { tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
 
@@ -88,7 +88,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function pcm16ToWav(pcm: Uint8Array, sampleRate = DEFAULT_PCM_SAMPLE_RATE, channels = DEFAULT_PCM_CHANNELS): Uint8Array {
+export function pcm16ToWav(
+	pcm: Uint8Array,
+	sampleRate = DEFAULT_PCM_SAMPLE_RATE,
+	channels = DEFAULT_PCM_CHANNELS,
+): Uint8Array {
 	const alignedBytes = pcm.byteLength - (pcm.byteLength % (channels * 2));
 	const wav = new Uint8Array(44 + alignedBytes);
 	const view = new DataView(wav.buffer);
@@ -235,8 +239,7 @@ export async function synthesizeGeminiSpeech(input: SynthesizeGeminiSpeechInput)
 				}
 
 				if (!response.ok) {
-					const rawText = new TextDecoder("utf-8").decode(bytes);
-					const classified = classifyGeminiHttpError(response.status, rawText, response.headers.get("retry-after"));
+					const classified = classifyGeminiHttpError(response.status, bytes, response.headers.get("retry-after"));
 					const transient =
 						(response.status === 429 && classified.detailCode !== "daily_quota_exhausted") ||
 						response.status === 500 ||
@@ -248,13 +251,19 @@ export async function synthesizeGeminiSpeech(input: SynthesizeGeminiSpeechInput)
 						retryWait = Math.min(MAX_RETRY_WAIT_MS, classified.retryAfterMs ?? fallbackWait);
 						return;
 					}
-					const snippet = readGeminiErrorSnippet(rawText);
+					const snippet = new TextDecoder("utf-8")
+						.decode(bytes.subarray(0, 512))
+						.replace(/\s+/g, " ")
+						.trim()
+						.slice(0, 240);
 					throw tagNativeRuntimeFailure(
 						new GeminiProviderError(
 							classified.code,
 							response.status,
 							classified.providerStatus,
-							snippet ? `Gemini TTS error (${response.status}): ${snippet}` : `Gemini TTS HTTP ${response.status}`,
+							snippet
+								? `Gemini TTS error (${response.status}): ${snippet}`
+								: `Gemini TTS HTTP ${response.status}`,
 							undefined,
 							classified.detailCode,
 						),
