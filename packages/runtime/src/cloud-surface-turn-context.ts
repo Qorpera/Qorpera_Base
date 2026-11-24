@@ -163,7 +163,9 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			? "## Surface Projection & Parallel Preview\n" +
 				"This Surface projects its Company Files folder directly into live Preview. " +
 				"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving them. " +
-				"Keep each staged change atomic, self-contained, and conflict-minimizing: stage one `stage_surface_patch` call per independent deliverable (for example, one change per report, article, blog post, or layout/section update) rather than bundling unrelated deliverables into a single change."
+				(binding.isInternalReconciliation
+					? "This is an internal reconciliation turn: submit one `stage_surface_patch` call covering every overlapping file listed below."
+					: "Keep each staged change atomic, self-contained, and conflict-minimizing: stage one `stage_surface_patch` call per independent deliverable (for example, one change per report, article, blog post, or layout/section update) rather than bundling unrelated deliverables into a single change.")
 			: "## Surface Projection & Parallel Preview\n" +
 				"This Surface projects its underlying codebase or Company Files folder directly into the live Preview (resolving `site.folder` from `.qorpera/checks.json`, root `index.html`, `dist`/`build`/`out`/`public`, or `apps/<repo>*/index.html`; commit the built output folder when using a bundler). " +
 				"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +

@@ -770,5 +770,19 @@ describe("stage_surface_patch and the layout", () => {
 		expect(folderBrief).toContain("stage one `stage_surface_patch` call per independent deliverable");
 		expect(folderBrief).not.toContain(".qorpera/checks.json");
 		expect(folderBrief).not.toContain("coding_finish");
+
+		const reconcileBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "editorial",
+			surfaceTitle: "Editorial",
+			briefMarkdown: null,
+			folderRoot: "surfaces/editorial",
+			repositoryKey: null,
+			isInternalReconciliation: true,
+		});
+		expect(reconcileBrief).not.toContain("stage one `stage_surface_patch` call per independent deliverable");
+		expect(reconcileBrief).toContain(
+			"submit one `stage_surface_patch` call covering every overlapping file listed below",
+		);
 	});
 });
