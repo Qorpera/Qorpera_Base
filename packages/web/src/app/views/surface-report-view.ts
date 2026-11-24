@@ -1157,12 +1157,7 @@ export class SurfaceReportView {
 				return h(
 					"section",
 					{ class: "studio-section studio-compare-card", "data-compare-file": report.path },
-					h(
-						"div",
-						{ class: "studio-section-head" },
-						h("h2", null, report.headline),
-						h("code", { class: "studio-file-tag" }, report.path),
-					),
+					h("div", { class: "studio-section-head" }, h("h2", null, report.headline)),
 					h(
 						"div",
 						{ class: "studio-compare-grid" },

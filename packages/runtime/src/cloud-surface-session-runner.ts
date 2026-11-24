@@ -428,7 +428,7 @@ const STUDIO_PAGE_RULES = [
 	`Change the page's shape by staging ${SURFACE_LAYOUT_PATH} with stage_surface_patch like any other file: it shows in Changes and is approved like content. A layout that does not parse is refused when it is staged (checked on top of this session's own waiting changes, not other sessions'); deleting ${SURFACE_LAYOUT_PATH} brings back the starter.`,
 	`Figures filled from an object show only values of at most ${SURFACE_FACT_FIGURE_CHARS} characters.`,
 	"A module is a folder (modules/<name>/) with index.html and its own css and js linked relatively: no network, nothing from outside its folder except tokens.css / qorpera-identity.css, and an auto module must not size itself by the viewport (100vh).",
-	"A files block shows only what no other block draws.",
+	"An artifacts block shows only what no other block draws; add one to any tab in layout.json when that tab should show vector art, pictures, notes, pages or extra files.",
 	"A company file is bound with a leading slash (/identity/tokens.json).",
 ];
 

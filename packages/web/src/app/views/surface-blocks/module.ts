@@ -1,5 +1,6 @@
 import { SURFACE_MODULE_MAX_HEIGHT, SURFACE_MODULE_MIN_HEIGHT, type SurfaceModuleBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
+import type { StudioHtmlPages } from "./artifacts.ts";
 import {
 	isPlainRecord,
 	readableName,
@@ -7,7 +8,7 @@ import {
 	type SurfaceBlockPrepared,
 	sectionHead,
 } from "./context.ts";
-import type { StudioHtmlPages } from "./files.ts";
+import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
 
 export const MODULE_HEIGHT_MESSAGE = "qorpera-module-height";
 const MODULE_INDEX = "index.html";
@@ -43,6 +44,7 @@ export function prepareModule(
 	block: SurfaceModuleBlock,
 	ctx: SurfaceBlockContext,
 	pages: StudioHtmlPages,
+	fullscreen: StudioFullscreen,
 	place: SurfaceModulePlace,
 ): SurfaceBlockPrepared {
 	const folder = moduleFolder(block, ctx);
@@ -56,6 +58,7 @@ export function prepareModule(
 		(textsChanged(files, under(ctx.baseFiles, prefix)) ||
 			binariesChanged(under(ctx.binaries, prefix), under(ctx.baseBinaries, prefix)));
 	const heading = block.heading ? ctx.words(block.heading) : "";
+	const title = heading || readableName(block.from);
 	const fits = !place.alone && block.height === "auto";
 	const fixed = typeof block.height === "number" ? block.height : undefined;
 	return {
@@ -69,7 +72,7 @@ export function prepareModule(
 						frame = pages.frame({
 							html: fits ? `${html}${FIT_SCRIPT}` : html,
 							path: indexPath,
-							title: heading || readableName(block.from),
+							title,
 							files,
 							className: fits ? "studio-module-frame is-fitted" : "studio-module-frame",
 							...(fits
@@ -86,6 +89,22 @@ export function prepareModule(
 						frame = h("div", { class: "studio-module-frame is-empty", "aria-hidden": "true" });
 					}
 					if (fixed !== undefined) frame.style.setProperty(place.alone ? "min-height" : "height", `${fixed}px`);
+					const expand = filled
+						? expandButton(title, () =>
+								fullscreen.openContent(
+									title,
+									() =>
+										pages.frame({
+											html,
+											path: indexPath,
+											title,
+											files,
+											className: "studio-module-frame is-fullscreen",
+										}),
+									"frame",
+								),
+							)
+						: null;
 					return h(
 						"section",
 						{
@@ -93,7 +112,11 @@ export function prepareModule(
 							"data-block": "module",
 							"data-module": block.from,
 						},
-						heading ? sectionHead(heading, changed) : null,
+						heading
+							? sectionHead(heading, changed, expand)
+							: expand
+								? h("div", { class: "studio-section-head is-actions-only" }, expand)
+								: null,
 						frame,
 					);
 				},

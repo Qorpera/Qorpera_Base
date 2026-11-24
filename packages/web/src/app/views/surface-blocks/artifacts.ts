@@ -1,7 +1,8 @@
-import type { SurfaceFilesBlock } from "@qorpera/contracts";
+import type { StudioBinaryRef, SurfaceArtifactsBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { markdown } from "../../../ui/markdown.ts";
 import { t } from "../../../ui/preferences.ts";
+import type { SurfacePictures } from "./brand-mark.ts";
 import { COLOR_VALUE, type ColorToken, collectColors } from "./colours.ts";
 import {
 	homeEmpty,
@@ -12,6 +13,7 @@ import {
 	type SurfaceBlockPrepared,
 	sectionHead,
 } from "./context.ts";
+import { expandButton, type StudioFullscreen, type StudioVisualItem } from "./fullscreen.ts";
 import { renderSwatches } from "./palette.ts";
 import {
 	COLOR_GROUPS,
@@ -26,6 +28,7 @@ import { type Face, facesOf, renderTypeRows } from "./type-specimen.ts";
 
 export const HTML_FILE_RE = /\.html?$/i;
 export const SVG_FILE_RE = /\.svg$/i;
+export const IMAGE_FILE_RE = /\.(?:png|webp|jpe?g)$/i;
 export const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
 export const PROSE_TEXT_FILE_RE = /\.txt$/i;
 const JSON_FILE_RE = /\.json$/i;
@@ -71,6 +74,22 @@ export interface StudioSvgAsset {
 	readonly changed: boolean;
 }
 
+type StudioVisualArtifact =
+	| {
+			readonly kind: "svg";
+			readonly path: string;
+			readonly title: string;
+			readonly svg: string;
+			readonly changed: boolean;
+	  }
+	| {
+			readonly kind: "binary";
+			readonly path: string;
+			readonly title: string;
+			readonly ref: StudioBinaryRef;
+			readonly changed: boolean;
+	  };
+
 export function docPriority(path: string): number {
 	const lower = path.toLowerCase();
 	if (lower.includes("voice") || lower.includes("brief") || lower.includes("readme")) return 0;
@@ -102,8 +121,8 @@ export function htmlDocumentTitle(html: string, fallbackPath: string): string {
 	return title && title.length <= 80 ? title : readableName(fallbackPath);
 }
 
-export function renderPlainDoc(content: string, bodyClass: string, signal: AbortSignal): HTMLElement[] {
-	if (content.length <= MAX_INITIAL_TEXT_CHARS) {
+export function renderPlainDoc(content: string, bodyClass: string, signal: AbortSignal, full = false): HTMLElement[] {
+	if (full || content.length <= MAX_INITIAL_TEXT_CHARS) {
 		return [h("div", { class: bodyClass }, content)];
 	}
 	const textEl = h("div", { class: bodyClass }, `${content.slice(0, MAX_INITIAL_TEXT_CHARS)}…`);
@@ -119,54 +138,86 @@ export function renderPlainDoc(content: string, bodyClass: string, signal: Abort
 	return [textEl, moreBtn];
 }
 
-function renderSvgAssets(svgs: readonly StudioSvgAsset[], heading: string): HTMLElement {
+function renderVisualImage(asset: StudioVisualArtifact, pictures: SurfacePictures, className: string): HTMLElement {
+	if (asset.kind === "svg") {
+		return h("img", {
+			class: className,
+			src: svgDataUrl(asset.svg),
+			alt: asset.title,
+		});
+	}
+	return pictures.binaryImage(asset.ref, asset.title, className);
+}
+
+function renderVisualAssets(
+	assets: readonly StudioVisualArtifact[],
+	heading: string | null,
+	pictures: SurfacePictures,
+	fullscreen: StudioFullscreen,
+): HTMLElement {
+	const items: StudioVisualItem[] = assets.map((asset) => ({
+		title: asset.title,
+		render: () => renderVisualImage(asset, pictures, "studio-fullscreen-img"),
+	}));
 	return h(
 		"section",
 		{ class: "studio-section" },
-		h("div", { class: "studio-section-head" }, h("h2", null, heading)),
+		heading ? h("div", { class: "studio-section-head" }, h("h2", null, heading)) : null,
 		h(
 			"div",
 			{ class: "studio-svg-grid" },
-			svgs.map((asset) =>
-				h(
+			assets.map((asset, index) => {
+				const open = () => fullscreen.openMedia(items, index);
+				const label = t("Show {name} large", { name: asset.title });
+				return h(
 					"figure",
 					{ class: `studio-svg-card${asset.changed ? " is-changed" : ""}`, "data-file": asset.path },
 					h(
-						"div",
-						{ class: "studio-svg-stage" },
-						h("img", {
-							class: "studio-svg-img",
-							src: svgDataUrl(asset.svg),
-							alt: asset.title,
-						}),
+						"button",
+						{
+							type: "button",
+							class: "studio-svg-stage",
+							"aria-label": label,
+							title: label,
+							onclick: open,
+						},
+						renderVisualImage(asset, pictures, "studio-svg-img"),
 					),
 					h(
 						"figcaption",
 						{ class: "studio-svg-meta" },
 						h("strong", null, asset.title),
-						h("code", { class: "studio-file-tag" }, asset.path),
 						asset.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+						expandButton(asset.title, open),
 					),
-				),
-			),
+				);
+			}),
 		),
 	);
 }
 
-function renderDoc(doc: StudioDoc, signal: AbortSignal): HTMLElement {
+function renderDocBody(doc: StudioDoc, signal: AbortSignal, full = false): HTMLElement[] {
+	return doc.isMarkdown
+		? [h("div", { class: "studio-doc-body" }, markdown(doc.content))]
+		: renderPlainDoc(doc.content, "studio-doc-body studio-plain-text", signal, full);
+}
+
+function renderDoc(doc: StudioDoc, signal: AbortSignal, fullscreen: StudioFullscreen): HTMLElement {
 	return h(
 		"section",
 		{ class: `studio-section studio-doc${doc.changed ? " is-changed" : ""}`, "data-file": doc.path },
-		h(
-			"div",
-			{ class: "studio-section-head" },
-			h("h2", null, doc.title),
-			h("code", { class: "studio-file-tag" }, doc.path),
-			doc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+		sectionHead(
+			doc.title,
+			doc.changed,
+			expandButton(doc.title, () =>
+				fullscreen.openContent(
+					doc.title,
+					() => h("div", { class: "studio-fullscreen-doc" }, ...renderDocBody(doc, signal, true)),
+					"doc",
+				),
+			),
 		),
-		...(doc.isMarkdown
-			? [h("div", { class: "studio-doc-body" }, markdown(doc.content))]
-			: renderPlainDoc(doc.content, "studio-doc-body studio-plain-text", signal)),
+		...renderDocBody(doc, signal),
 	);
 }
 
@@ -200,11 +251,27 @@ function jsonCard(path: string, content: string, baseContent: string | undefined
 	return { path, colours, faces, entries, tables, changed: baseContent !== content };
 }
 
-function renderJsonCard(card: JsonCard, signal: AbortSignal): HTMLElement {
+function renderJsonBody(card: JsonCard, signal: AbortSignal, full = false): HTMLElement {
+	return h(
+		"div",
+		{ class: "studio-json-body" },
+		card.colours.length ? renderSwatches(card.colours) : null,
+		card.faces.length ? renderTypeRows(card.faces) : null,
+		card.entries.length ? renderSpecEntries(card.entries) : null,
+		...renderSpecTables(card.tables, signal, full),
+	);
+}
+
+function renderJsonCard(card: JsonCard, signal: AbortSignal, fullscreen: StudioFullscreen): HTMLElement {
+	const title = readableName(card.path);
 	return h(
 		"section",
 		{ class: `studio-section${card.changed ? " is-changed" : ""}`, "data-file": card.path },
-		sectionHead(readableName(card.path), card.changed, h("code", { class: "studio-file-tag" }, card.path)),
+		sectionHead(
+			title,
+			card.changed,
+			expandButton(title, () => fullscreen.openContent(title, () => renderJsonBody(card, signal, true), "wide")),
+		),
 		card.colours.length ? renderSwatches(card.colours) : null,
 		card.faces.length ? renderTypeRows(card.faces) : null,
 		card.entries.length ? renderSpecEntries(card.entries) : null,
@@ -212,18 +279,20 @@ function renderJsonCard(card: JsonCard, signal: AbortSignal): HTMLElement {
 	);
 }
 
-export interface SurfaceFilesPlace {
+export interface SurfaceArtifactsPlace {
 	readonly claimed: ReadonlySet<string>;
 	readonly alone: boolean;
 }
 
-export function prepareFiles(
-	block: SurfaceFilesBlock,
+export function prepareArtifacts(
+	block: SurfaceArtifactsBlock,
 	ctx: SurfaceBlockContext,
 	htmlPages: StudioHtmlPages,
-	place: SurfaceFilesPlace,
+	pictures: SurfacePictures,
+	fullscreen: StudioFullscreen,
+	place: SurfaceArtifactsPlace,
 ): SurfaceBlockPrepared {
-	const svgs: StudioSvgAsset[] = [];
+	const visuals: StudioVisualArtifact[] = [];
 	const docs: StudioDoc[] = [];
 	const cards: JsonCard[] = [];
 	const pages: { readonly path: string; readonly title: string; readonly html: string; readonly changed: boolean }[] =
@@ -231,28 +300,43 @@ export function prepareFiles(
 	for (const { path } of ctx.matching(block.match, block.skip)) {
 		if (place.claimed.has(path)) continue;
 		const text = ctx.text(path);
-		const content = text.value ?? "";
-		const changed = text.base !== content;
-		if (JSON_FILE_RE.test(path)) {
-			const card = OWN_BLOCK_JSON_RE.test(path) ? undefined : jsonCard(path, content, text.base);
-			if (card) cards.push(card);
-		} else if (SVG_FILE_RE.test(path)) {
-			const trimmed = content.trim();
-			if (!/<svg[\s>]/i.test(trimmed)) continue;
-			svgs.push({ path, title: readableName(path), svg: trimmed, changed });
-		} else if (MARKDOWN_FILE_RE.test(path) || PROSE_TEXT_FILE_RE.test(path)) {
-			docs.push({ path, title: readableName(path), content, isMarkdown: MARKDOWN_FILE_RE.test(path), changed });
-		} else if (HTML_FILE_RE.test(path)) {
-			pages.push({
-				path,
-				title: htmlDocumentTitle(content, path),
-				html: content,
-				changed: changed || htmlPages.linksChanged(content, path),
-			});
+		if (text.value !== undefined) {
+			const content = text.value;
+			const changed = text.base !== content;
+			if (JSON_FILE_RE.test(path)) {
+				const card = OWN_BLOCK_JSON_RE.test(path) ? undefined : jsonCard(path, content, text.base);
+				if (card) cards.push(card);
+			} else if (SVG_FILE_RE.test(path)) {
+				const trimmed = content.trim();
+				if (!/<svg[\s>]/i.test(trimmed)) continue;
+				visuals.push({ kind: "svg", path, title: readableName(path), svg: trimmed, changed });
+			} else if (MARKDOWN_FILE_RE.test(path) || PROSE_TEXT_FILE_RE.test(path)) {
+				docs.push({ path, title: readableName(path), content, isMarkdown: MARKDOWN_FILE_RE.test(path), changed });
+			} else if (HTML_FILE_RE.test(path)) {
+				pages.push({
+					path,
+					title: htmlDocumentTitle(content, path),
+					html: content,
+					changed: changed || htmlPages.linksChanged(content, path),
+				});
+			}
+			continue;
+		}
+		if (IMAGE_FILE_RE.test(path)) {
+			const binary = ctx.binary(path);
+			if (binary.value?.mediaType.startsWith("image/")) {
+				visuals.push({
+					kind: "binary",
+					path,
+					title: readableName(path),
+					ref: binary.value,
+					changed: binary.value.fileSha256 !== binary.base?.fileSha256,
+				});
+			}
 		}
 	}
 	docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
-	const filled = svgs.length + docs.length + cards.length + pages.length > 0;
+	const filled = visuals.length + docs.length + cards.length + pages.length > 0;
 	if (!filled && !block.heading && !place.alone) return { filled, pieces: [] };
 	const pieces: StudioSectionTask[] = [];
 	if (block.heading) {
@@ -260,12 +344,17 @@ export function prepareFiles(
 		pieces.push({ build: () => sectionHead(heading, false) });
 	}
 	if (!filled) {
-		pieces.push({ build: () => homeEmpty(t("Working files. Models, pictures and notes live here.")) });
+		pieces.push({ build: () => homeEmpty(t("Artifacts. Models, pictures and notes live here.")) });
 		return { filled, pieces };
 	}
-	if (svgs.length) pieces.push({ build: () => renderSvgAssets(svgs, t("Vector assets")) });
-	for (const doc of docs) pieces.push({ build: () => renderDoc(doc, ctx.signal) });
-	for (const card of cards) pieces.push({ build: () => renderJsonCard(card, ctx.signal) });
+	if (visuals.length) {
+		const hasRaster = visuals.some((asset) => asset.kind === "binary");
+		const onlyVisuals = docs.length === 0 && cards.length === 0 && pages.length === 0;
+		const visualHeading = block.heading && onlyVisuals ? null : hasRaster ? t("Visuals") : t("Vector assets");
+		pieces.push({ build: () => renderVisualAssets(visuals, visualHeading, pictures, fullscreen) });
+	}
+	for (const doc of docs) pieces.push({ build: () => renderDoc(doc, ctx.signal, fullscreen) });
+	for (const card of cards) pieces.push({ build: () => renderJsonCard(card, ctx.signal, fullscreen) });
 	for (const page of pages) {
 		pieces.push({
 			heavy: true,
@@ -276,12 +365,23 @@ export function prepareFiles(
 						class: `studio-section studio-html-card${page.changed ? " is-changed" : ""}`,
 						"data-file": page.path,
 					},
-					h(
-						"div",
-						{ class: "studio-section-head" },
-						h("h2", null, page.title),
-						h("code", { class: "studio-file-tag" }, page.path),
-						page.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+					sectionHead(
+						page.title,
+						page.changed,
+						expandButton(page.title, () =>
+							fullscreen.openContent(
+								page.title,
+								() =>
+									htmlPages.frame({
+										html: page.html,
+										path: page.path,
+										title: page.title,
+										files: ctx.files,
+										className: "studio-html-frame is-fullscreen",
+									}),
+								"frame",
+							),
+						),
 					),
 					htmlPages.frame({
 						html: page.html,

@@ -375,7 +375,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-24",
 		title: "An interface's page is shaped by a layout it can change",
-		text: "Every Studio interface's page, Identity and Product included, is now drawn from a layout: its tabs, and in each tab blocks such as a 3D model, a name and one line, colour dots, short figures, specs, tables, cards, reports and files, side by side when it helps, or a small app built for the page. A new interface starts from a starter layout. The session working on an interface sees that layout and can change it like any other file, as a staged change the member previews and approves. When you start a session, ask for the page the member wants, not only for files.",
+		text: "Every Studio interface's page, Identity and Product included, is now drawn from a layout: its tabs, and in each tab blocks such as a 3D model, a name and one line, colour dots, short figures, specs, tables, cards, reports and artifacts, side by side when it helps, or a small app built for the page. A new interface starts from a starter layout. The session working on an interface sees that layout and can change it like any other file, as a staged change the member previews and approves. When you start a session, ask for the page the member wants, not only for files.",
 	},
 	{
 		id: "interface-template-skills",
@@ -397,6 +397,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-24",
 		title: "No Sites page: each site is managed where it shows",
 		text: "The Sites page is gone, so never send anyone to a Sites page. A website is managed on its own page in the app, and Go live is there. An app link shared with share_app shows as its card under the message that links it, and owners and admins copy its password from that card. You still never see a password: put the link in your message.",
+	},
+	{
+		id: "studio-artifacts-block",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "Studio tabs use an artifacts section instead of a Files tab",
+		text: "Product and Identity interfaces no longer have a catch-all Files tab. When a tab needs vector art, pictures, notes, briefs, pages or extra structured files, the session working on that interface adds an artifacts block to the tab in its layout. Members can expand every artifact fullscreen without seeing raw filepaths.",
 	},
 ]);
 
