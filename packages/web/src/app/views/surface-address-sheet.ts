@@ -227,7 +227,7 @@ export class SurfaceAddress {
 	button(): HTMLButtonElement | null {
 		if (!this.#liveUrl) return null;
 		const mark = this.mark();
-		const title = mark === "private" ? t("Not live yet") : mark === "live" ? t("Live") : undefined;
+		const title = mark === "private" ? t("Not live yet") : mark === "live" ? t("Live") : this.name();
 		return h(
 			"button",
 			{
@@ -236,7 +236,7 @@ export class SurfaceAddress {
 				"aria-haspopup": "dialog",
 				"aria-expanded": String(this.#open),
 				"data-act": "address",
-				...(title ? { title } : {}),
+				title,
 			},
 			h("span", { class: "surface-address-dot", "aria-hidden": "true" }),
 			h("span", { class: "surface-address-host" }, this.name()),
