@@ -6,10 +6,7 @@ import {
 	type CodeCheck,
 	type CodeCheckArtifactFormat,
 	type CodeChecksProblem,
-	type CodePreviewRecipe,
-	type CodeSiteKind,
 	type CodeSiteRecipe,
-	type CodeSurfaceGate,
 	expandCodeCheckNeeds,
 	type FailedTestCase,
 	type JsonValue,
@@ -37,10 +34,7 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
 export { CODE_CHECK_NAME_PATTERN, MAX_CODE_CHECKS_FILE_BYTES, parseCodeChecksText };
 export type { CodeChecksProblem, FailedTestCase, ParsedCodeChecks };
 export type CodePreflightCheck = CodeCheck;
-export type CodePreflightSiteKind = CodeSiteKind;
 export type CodePreflightSite = CodeSiteRecipe;
-export type CodePreflightPreview = CodePreviewRecipe;
-export type CodePreflightSurfaceGate = CodeSurfaceGate;
 
 export const MAX_PARALLEL_PREFLIGHT_CHECKS = MAX_PARALLEL_CHECKS;
 
@@ -94,23 +88,6 @@ const SITE_EXTENSIONS_JSON = JSON.stringify([
 const READ_CHECKS_COMMAND =
 	"if [ ! -e .qorpera/checks.json ] && [ ! -L .qorpera/checks.json ]; then exit 44; fi; if [ -L .qorpera ] || [ -L .qorpera/checks.json ] || [ ! -f .qorpera/checks.json ]; then exit 45; fi; if [ \"$(wc -c < .qorpera/checks.json)\" -gt 16384 ]; then exit 46; fi; if command -v iconv >/dev/null 2>&1; then iconv -f UTF-8 -t UTF-8 -- .qorpera/checks.json >/dev/null 2>&1 || exit 47; elif command -v node >/dev/null 2>&1; then node -e \"new TextDecoder('utf-8',{fatal:true}).decode(require('node:fs').readFileSync('.qorpera/checks.json'))\" >/dev/null 2>&1 || exit 47; fi; cat -- .qorpera/checks.json";
 
-const CHANGE_INDEX_LINE = /^- (\d+) · (\d{4}-\d{2}-\d{2}) · ([^·]+?)(?: · (.*))?$/;
-const CHANGE_INDEX_NOTICE =
-	/^(?:Put back to an earlier copy|Brought in on|Live:|Ready in What's new:|Preparing for What's new:|Site taken down)/;
-
-export interface CodeChangeSummary {
-	readonly change: number;
-	readonly date: string;
-	readonly state: string;
-	readonly summary: string;
-}
-
-export interface ParsedCodeChangesIndex {
-	readonly notices: readonly string[];
-	readonly totalListed: number;
-	readonly changes: readonly CodeChangeSummary[];
-}
-
 export interface CodingPreflightCheckRequest {
 	readonly operationKey: string;
 	readonly checkNames?: readonly string[];
@@ -155,31 +132,6 @@ function isUnseenPoint(point: number): boolean {
 		(point >= 0x2066 && point <= 0x2069) ||
 		point === 0xfeff
 	);
-}
-
-export function parseCodeChangesIndex(text: string, maxChanges = 15): ParsedCodeChangesIndex {
-	const notices: string[] = [];
-	const changes: CodeChangeSummary[] = [];
-	let totalListed = 0;
-	for (const raw of text.split(/\r?\n/)) {
-		const line = raw.trim();
-		if (!line || line.startsWith("#")) continue;
-		const match = CHANGE_INDEX_LINE.exec(line);
-		if (match) {
-			totalListed++;
-			if (changes.length < maxChanges) {
-				changes.push({
-					change: Number(match[1]),
-					date: match[2]!,
-					state: match[3]!.trim(),
-					summary: (match[4] ?? "").trim(),
-				});
-			}
-			continue;
-		}
-		if (CHANGE_INDEX_NOTICE.test(line) && notices.length < 6) notices.push(line);
-	}
-	return { notices, totalListed, changes };
 }
 
 function endOfLine(text: string, maxBytes: number): string {

@@ -43,7 +43,7 @@ describe("runner-orchestrator's shards by time", () => {
 				new Set(timedShare(files, index, 2).map((path) => join(root, path))),
 			);
 		const sorted = slowestSpecsFirst(specs, root).map((spec) => spec.moduleId.slice(root.length + 1));
-		expect(sorted[0]).toBe("test/lxd-office-boot-successor-worker.test.ts");
+		expect(sorted[0]).toBe("test/company-machine-host.test.ts");
 		expect(sorted.map(fileSeconds)).toEqual(sorted.map(fileSeconds).sort((a, b) => b - a));
 	});
 

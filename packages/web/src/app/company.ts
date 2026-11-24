@@ -547,6 +547,39 @@ const newestActivityByAgent = new WeakMap<
 	readonly HostedStaffExecutionActivity[],
 	Map<string, HostedStaffExecutionActivity>
 >();
+const sessionIndexByList = new WeakMap<readonly HostedSession[], Map<string, HostedSession>>();
+const staffIndexByList = new WeakMap<readonly HostedStaffAgent[], Map<string, HostedStaffAgent>>();
+const memberNameByTeam = new WeakMap<HostedProfileTeam["members"], Map<string, string>>();
+
+function sessionById(sessions: readonly HostedSession[], sessionId: string): HostedSession | undefined {
+	let index = sessionIndexByList.get(sessions);
+	if (!index) {
+		index = new Map<string, HostedSession>();
+		for (const item of sessions) index.set(item.sessionId, item);
+		sessionIndexByList.set(sessions, index);
+	}
+	return index.get(sessionId);
+}
+
+function staffIndex(staff: readonly HostedStaffAgent[]): Map<string, HostedStaffAgent> {
+	let index = staffIndexByList.get(staff);
+	if (!index) {
+		index = new Map<string, HostedStaffAgent>();
+		for (const item of staff) index.set(item.id, item);
+		staffIndexByList.set(staff, index);
+	}
+	return index;
+}
+
+function teamMemberNames(members: HostedProfileTeam["members"]): Map<string, string> {
+	let index = memberNameByTeam.get(members);
+	if (!index) {
+		index = new Map<string, string>();
+		for (const member of members) index.set(member.userId, member.displayName);
+		memberNameByTeam.set(members, index);
+	}
+	return index;
+}
 
 /** Drop optimistic card answers once the projection carries them, or once their
  * input failed: that answer never reached the agent, so the card is open again. */
@@ -1069,19 +1102,26 @@ export class CompanyController {
 	async refreshAll(): Promise<void> {
 		if (this.#stopped) return;
 		this.store.set({ loading: true, error: undefined });
+		const teamPromise = this.refreshTeam();
+		const sessionsPromise = this.refreshSessions();
+		const groupsPromise = Promise.all([teamPromise, sessionsPromise]).then(() => this.refreshGroups());
+		const afterTeam = teamPromise.then(() => {
+			if (this.#stopped) return;
+			void this.refreshMentions();
+			void this.refreshHoursWait();
+			void this.memberChats.refresh();
+		});
 		await Promise.all([
-			this.refreshTeam(),
+			teamPromise,
 			this.refreshStaff(),
-			this.refreshSessions(),
+			sessionsPromise,
 			this.refreshOrganization(),
 			this.refreshActivity(),
 			this.refreshSidebar(),
+			groupsPromise,
+			afterTeam,
 		]);
-		await this.refreshGroups();
 		this.store.set({ loading: false });
-		void this.refreshMentions();
-		void this.refreshHoursWait();
-		void this.memberChats.refresh();
 	}
 
 	/** Re-read whether the company waits for computer hours. */
@@ -1210,7 +1250,7 @@ export class CompanyController {
 	 * group chat, its agents (only those named then answer). None where the cloud reads no mentions. */
 	mentionTargets(sessionId: string): MentionTarget[] {
 		const state = this.store.get();
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		const roomId = session?.executionScope?.roomId;
 		if (this.#stopped || !state.mentionsReady || !session || typeof roomId !== "string" || !state.team) return [];
 		const name = (userId: string) => state.team?.members.find((member) => member.userId === userId)?.displayName;
@@ -2041,7 +2081,7 @@ export class CompanyController {
 			const current = () => {
 				signal.throwIfAborted();
 				const state = this.store.get();
-				const session = state.sessions.find((item) => item.sessionId === sessionId);
+				const session = sessionById(state.sessions, sessionId);
 				if (
 					state.accessLost ||
 					!state.team?.capabilities.read ||
@@ -2109,7 +2149,7 @@ export class CompanyController {
 			const current = this.store.get();
 			const groups: Record<string, GroupChatDetails> = {};
 			for (const room of rooms) {
-				const session = current.sessions.find((item) => item.sessionId === room.sessionId);
+				const session = sessionById(current.sessions, room.sessionId);
 				if (
 					!session ||
 					session.staffAgentId ||
@@ -2149,7 +2189,7 @@ export class CompanyController {
 			state.team.profileId !== this.profile.profileId
 		)
 			return [];
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		const roomId = session?.executionScope?.roomId;
 		if (
 			!session ||
@@ -2186,13 +2226,14 @@ export class CompanyController {
 	}
 
 	staffById(id: string | undefined): HostedStaffAgent | undefined {
-		return id ? this.store.get().staff.find((agent) => agent.id === id) : undefined;
+		return id ? staffIndex(this.store.get().staff).get(id) : undefined;
 	}
 
 	memberName(userId: string | undefined): string {
 		if (!userId) return t("Member");
 		if (userId === this.#userId) return t("You");
-		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? t("Member");
+		const members = this.store.get().team?.members;
+		return (members ? teamMemberNames(members).get(userId) : undefined) ?? t("Member");
 	}
 
 	/** The agent's newest run as the server reports it, settled or not. A failure from before the agent's newer work
@@ -2433,7 +2474,7 @@ export class CompanyController {
 	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
 	#dismissFailureFor(sessionId: string): void {
 		const state = this.store.get();
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		const current = this.#newestActivity(session?.staffAgentId);
 		// The last failure is the agent's earlier one once it has newer work (20260930542000).
 		const row = current && isFailedRun(current) ? current : this.#earlierFailure(session?.staffAgentId);
@@ -3127,7 +3168,7 @@ export class CompanyController {
 
 	assertCanSend(sessionId: string): void {
 		const state = this.store.get();
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		if (
 			this.#stopped ||
 			state.accessLost ||
@@ -3169,7 +3210,7 @@ export class CompanyController {
 	#sharedDraftRoom(sessionId: string): string | undefined {
 		const state = this.store.get();
 		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return undefined;
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		if (session?.status !== "open") return undefined;
 		let roomId: string | undefined;
 		try {

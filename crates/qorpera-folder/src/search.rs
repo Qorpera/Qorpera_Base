@@ -1612,6 +1612,7 @@ fn insert_sorted_posting(list: &mut Vec<u32>, doc_id: u32) -> bool {
 	fn compact(&mut self) {
 		let doc_len = (self.next_doc_id as usize).max(self.base.doc_info.len());
 		let mut new_base = InvertedBase::with_docs(doc_len, self.live_docs, self.budget.clone());
+		new_base.postings.reserve(self.base.postings.len() + self.added_postings.len());
 		for (idx, &info) in self.base.doc_info.iter().enumerate() {
 			let doc_id = idx as u32;
 			if !self.removed_docs.contains(&doc_id) {

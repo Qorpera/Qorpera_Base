@@ -685,13 +685,27 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		}
 		let providerMessageId: string;
 		try {
-			// Each file in base64 as soon as it is read, without a copy: its bytes are dropped before the next one.
-			const contents: string[][] = [];
+			let contents: string[][] = [];
 			if (job.attachments.length > 0) {
 				objects ??= outbox.objects?.(presented);
-				for (const file of job.attachments) {
-					if (!objects || !job.companyId) throw new MailSendError("Attachments cannot be read here", true);
-					contents.push(await attachmentBase64(job.companyId, file, objects));
+				const reader = objects;
+				const companyId = job.companyId;
+				if (!reader || !companyId) throw new MailSendError("Attachments cannot be read here", true);
+				if (job.attachments.length === 1) {
+					contents = [await attachmentBase64(companyId, job.attachments[0]!, reader)];
+				} else {
+					const results = new Array<string[]>(job.attachments.length);
+					let nextAttachment = 0;
+					const workers = Math.min(4, job.attachments.length);
+					await Promise.all(
+						Array.from({ length: workers }, async () => {
+							while (nextAttachment < job.attachments.length) {
+								const i = nextAttachment++;
+								results[i] = await attachmentBase64(companyId, job.attachments[i]!, reader);
+							}
+						}),
+					);
+					contents = results;
 				}
 			}
 			// WHY: Recheck budget after reading attachments so slow object fetches do not start an upload past the worker deadline.

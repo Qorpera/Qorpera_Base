@@ -71,9 +71,7 @@ test("a web-only change runs the always-on checks and the web client, including 
 });
 
 test("anything that is not web-only also runs runtime, cloud-client and every script test (the old release train)", () => {
-	// The web client's cloud code and member-web's viewer are read by runtime tests.
 	assert.deepEqual(names(["packages/web/src/cloud/email-drafts.ts"]), set([...BASELINE, "web", "hosted-db"]));
-	assert.deepEqual(names(["packages/member-web/ui/viewer.ts"]), set([...BASELINE, "web", "member-web"]));
 	// A migration reaches runtime tests that read the migrations directory, and the vocabulary script test.
 	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db", "folder-core-load"]));
 	// Installer pins: runner-orchestrator sources rebuild packages whose sha256 the deploy scripts pin.
@@ -89,7 +87,7 @@ test("anything that is not web-only also runs runtime, cloud-client and every sc
 });
 
 test("deploy, function and SQL-input paths reach the tests that read them", () => {
-	assert.deepEqual(names(["deploy/lxd-company-computer-guest/office-self-update-mask.ts"]), set([
+	assert.deepEqual(names(["deploy/machine/desktop-look"]), set([
 		...BASELINE,
 		...RUNNER_ORCHESTRATOR,
 		"deploy-node",
@@ -99,7 +97,7 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	for (const file of [
 		"deploy/coding-worker/qorpera-coding-executor.service",
 		"deploy/cloud-secret-broker/supabase-prod-ca-2021.crt",
-		"packages/runtime/test/fixtures/company-computer-guest.ts",
+		"packages/runtime/test/fixtures/native-tool-authority-fixture.ts",
 		"packages/runtime/src/cloud-identity-recovery-filesystems.ts",
 		"packages/cloud-client/src/node/native-account-refresh.ts",
 	])
@@ -114,19 +112,6 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.match(functions, /runner-control\/runner-control\.test\.ts/);
 	assert.match(functions, /site-serve\/site-serve\.test\.ts/);
 	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
-	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
-	// The office delete-disposition script's runtime bundle: its entry points and the files they import.
-	for (const file of [
-		"packages/runtime/src/cloud-company-computer-startup.ts",
-		"packages/runtime/src/cloud-company-computer-screen-lifecycle.ts",
-		"packages/runtime/src/cloud-company-computer-screen-outbox.ts",
-		"packages/runtime/src/cloud-company-computer-registry-http.ts",
-		"packages/runtime/src/cloud-native-tool-authority.ts",
-		"packages/runtime/src/cloud-control-errors.ts",
-		"packages/runtime/src/cloud-runtime-observability.ts",
-		"packages/runtime/src/cloud-runtime-policy.ts",
-	])
-		assert.ok(names([file]).includes("hosted-db"), file);
 	// The folder service's shapes script and the parsers it checks against SQL.
 	for (const file of [
 		"scripts/test-folder-service-core-shapes.mjs",
@@ -162,7 +147,7 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	// The folder key script and the key it checks against the core's (a contracts change runs every step).
 	for (const file of ["scripts/test-folder-key.mjs", "packages/contracts/src/folder-key.ts"])
 		assert.ok(names([file]).includes("hosted-db"), file);
-	assert.ok(!names(["packages/runtime/test/fixtures/company-computer-guest.ts"]).includes("hosted-db"));
+	assert.ok(!names(["packages/runtime/test/fixtures/native-tool-authority-fixture.ts"]).includes("hosted-db"));
 	assert.equal(STEPS.find((step) => step.name === "hosted-db").build, true);
 });
 

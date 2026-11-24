@@ -462,11 +462,6 @@ export function relayControlRefusal(error: unknown): never {
 	throw error;
 }
 
-/** A request's `operationKey`, when it has one. */
-export function cloudOperationKeyOf(request: Record<string, unknown>): string | undefined {
-	return typeof request.operationKey === "string" ? request.operationKey : undefined;
-}
-
 /**
  * `relayControlRefusal` for one tool of one run, keeping what an earlier attempt left unknown: a call whose operation
  * key once ended without an answer (its effect may have committed) is never answered as refused later, because a
@@ -597,7 +592,11 @@ export class CloudNativeToolBoundary {
 	/** The image issued with each exact envelope that showed one, by `callId:sha256(envelope)`: only its hash (never
 	 * pixels), kept as long as the issued results are. */
 	readonly #shownImages = new Map<string, string>();
-	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
+	readonly #shownImageCalls = new Map<string, number>();
+	readonly #nativeResults = new Map<
+		string,
+		{ digest: string; output: string; outputBytes: number; imageSha256?: string }
+	>();
 	readonly #webSearches = new Map<string, string>();
 	#pending: Promise<void> = Promise.resolve();
 	/** The calls (by tool and arguments) that made the run's final send, or a card's: once there is one, what the run
@@ -757,8 +756,8 @@ export class CloudNativeToolBoundary {
 		// No count of outputs: only their size is bounded, by the reply frame they
 		// must fit in (many tiny outputs grow into envelopes of up to one result's bound).
 		let released = 0;
-		const release = (result: CloudNativeFencedResult): CloudNativeFencedResult => {
-			released += Buffer.byteLength(result.output);
+		const release = (result: CloudNativeFencedResult, outputBytes?: number): CloudNativeFencedResult => {
+			released += outputBytes ?? Buffer.byteLength(result.output);
 			if (released > CLOUD_NATIVE_FENCE_FRAME_BYTES) throw new Error("Native result frame too large");
 			return result;
 		};
@@ -808,7 +807,10 @@ export class CloudNativeToolBoundary {
 				}
 			}
 			// An image a tool showed comes back with exactly the envelope it was issued with, and that envelope never without it.
-			const shown = text === undefined ? undefined : this.#shownImages.get(issuedKey(input.callId, text));
+			const shown =
+				text === undefined || this.#shownImages.size === 0 || !this.#shownImageCalls.has(input.callId)
+					? undefined
+					: this.#shownImages.get(issuedKey(input.callId, text));
 			if (shown !== undefined && imageSha256 !== shown) throw new Error("Native image not issued");
 			if (imageSha256 && shown === undefined && !this.#captures) throw new Error("Native captures unavailable");
 			const capture =
@@ -822,11 +824,17 @@ export class CloudNativeToolBoundary {
 				if (previous.imageSha256 !== imageSha256) throw new Error("Native result changed after release");
 				// WHY: Skip O(N) JSON serialization and SHA-256 hashing when a prior fenced string output is replayed unchanged.
 				if (text !== undefined && text === previous.output)
-					return release({ kind: input.kind, callId: input.callId, output: previous.output, ...image });
+					return release(
+						{ kind: input.kind, callId: input.callId, output: previous.output, ...image },
+						previous.outputBytes,
+					);
 				const wire = cloudToolJsonText(input.output, MAX_SOURCE_BYTES);
 				const digest = createHash("sha256").update(wire).digest("hex");
 				if (previous.digest !== digest) throw new Error("Native result changed after release");
-				return release({ kind: input.kind, callId: input.callId, output: previous.output, ...image });
+				return release(
+					{ kind: input.kind, callId: input.callId, output: previous.output, ...image },
+					previous.outputBytes,
+				);
 			}
 			const wire = cloudToolJsonText(input.output, MAX_SOURCE_BYTES);
 			const digest = createHash("sha256").update(wire).digest("hex");
@@ -853,7 +861,8 @@ export class CloudNativeToolBoundary {
 							kind: "text",
 							value: note ? `${note}\n\n${text ?? wire}` : (text ?? wire),
 						}).contentItems[0].text;
-			this.#nativeResults.set(key, { digest, output, ...(imageSha256 ? { imageSha256 } : {}) });
+			const outputBytes = Buffer.byteLength(output);
+			this.#nativeResults.set(key, { digest, output, outputBytes, ...(imageSha256 ? { imageSha256 } : {}) });
 			remember(this.#nativeResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 			// The first release of one of Codex's own calls: its step keeps the exact envelope the model is shown. A
 			// later request carrying the same output is a replay above, which finishes nothing twice.
@@ -873,7 +882,7 @@ export class CloudNativeToolBoundary {
 						[],
 					);
 			}
-			return release({ kind: input.kind, callId: input.callId, output, ...image });
+			return release({ kind: input.kind, callId: input.callId, output, ...image }, outputBytes);
 		});
 		await untilStopped(() => this.#captures?.assertReadable(this.#signal) ?? Promise.resolve(), this.#signal);
 		this.#signal.throwIfAborted();
@@ -1388,8 +1397,20 @@ export class CloudNativeToolBoundary {
 					createHash("sha256").update(png).digest("hex") !== sha256
 				)
 					throw new Error("Invalid shown image");
-				this.#shownImages.set(issuedKey(callId, response.contentItems[0].text), sha256);
-				remember(this.#shownImages, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
+				const shownKey = issuedKey(callId, response.contentItems[0].text);
+				if (!this.#shownImages.has(shownKey)) {
+					this.#shownImageCalls.set(callId, (this.#shownImageCalls.get(callId) ?? 0) + 1);
+				}
+				this.#shownImages.set(shownKey, sha256);
+				while (this.#shownImages.size > CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2) {
+					const oldest = this.#shownImages.keys().next().value as string;
+					this.#shownImages.delete(oldest);
+					const sep = oldest.lastIndexOf(":");
+					const oldestCall = sep > 0 ? oldest.slice(0, sep) : "";
+					const remaining = (this.#shownImageCalls.get(oldestCall) ?? 1) - 1;
+					if (remaining <= 0) this.#shownImageCalls.delete(oldestCall);
+					else this.#shownImageCalls.set(oldestCall, remaining);
+				}
 				response.contentItems.push({
 					type: "inputImage",
 					imageUrl: `data:image/png;base64,${png.toString("base64")}`,

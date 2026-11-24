@@ -1,6 +1,5 @@
 use crate::proxy::{BoxBody, BoxBodyError};
-use arc_swap::ArcSwap;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use flate2::{write::GzEncoder, Compression};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame};
@@ -10,10 +9,10 @@ use std::io::{SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::{broadcast, mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 pub const DEFAULT_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
@@ -207,13 +206,13 @@ pub fn stream_file_body(
 ) -> BoxBody {
     let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, BoxBodyError>>(4);
     tokio::spawn(async move {
-        let mut buf = vec![0u8; STREAM_CHUNK_BYTES];
         let mut hasher = expected_sha256.as_ref().map(|_| Sha256::new());
         // WHY: Hold back the trailing chunk until EOF when verifying SHA-256 so a corrupt blob aborts with an error frame before Content-Length completes.
         let mut pending: Option<Bytes> = None;
         while remaining > 0 {
-            let want = remaining.min(buf.len());
-            match file.read(&mut buf[..want]).await {
+            let want = remaining.min(STREAM_CHUNK_BYTES);
+            let mut buf = BytesMut::with_capacity(want);
+            match (&mut file).take(want as u64).read_buf(&mut buf).await {
                 Ok(0) => {
                     let _ = tx
                         .send(Err(Box::new(std::io::Error::new(
@@ -226,9 +225,9 @@ pub fn stream_file_body(
                 Ok(n) => {
                     remaining -= n;
                     if let Some(ref mut h) = hasher {
-                        h.update(&buf[..n]);
+                        h.update(&buf);
                     }
-                    let chunk = Bytes::copy_from_slice(&buf[..n]);
+                    let chunk = buf.freeze();
                     if expected_sha256.is_some() {
                         if let Some(prev) = pending.replace(chunk) {
                             if tx.send(Ok(Frame::data(prev))).await.is_err() {
@@ -365,7 +364,6 @@ struct SieveNode {
 
 struct SieveShard {
     index: HashMap<Arc<str>, usize>,
-    entries: HashMap<Arc<str>, Arc<SieveEntry>>,
     nodes: Vec<Option<SieveNode>>,
     free: Vec<usize>,
     head: Option<usize>,
@@ -376,27 +374,26 @@ struct SieveShard {
 }
 
 struct WaitFreeShard {
-    readable: ArcSwap<HashMap<Arc<str>, Arc<SieveEntry>>>,
-    writer: Mutex<SieveShard>,
+    inner: RwLock<SieveShard>,
 }
 
 impl WaitFreeShard {
     fn new(max_bytes: usize) -> Self {
         Self {
-            readable: ArcSwap::from_pointee(HashMap::new()),
-            writer: Mutex::new(SieveShard::new(max_bytes)),
+            inner: RwLock::new(SieveShard::new(max_bytes)),
         }
     }
 
     #[inline]
     fn contains(&self, key: &str) -> bool {
-        self.readable.load().contains_key(key)
+        self.inner.read().ok().is_some_and(|guard| guard.index.contains_key(key))
     }
 
     #[inline]
     fn get_wait_free(&self, key: &str, accepted: AcceptedEncodings) -> Option<BlobPayload> {
-        let map = self.readable.load();
-        let entry = map.get(key)?;
+        let guard = self.inner.read().ok()?;
+        let &idx = guard.index.get(key)?;
+        let entry = &guard.nodes[idx].as_ref()?.entry;
         if !entry.visited.load(Ordering::Relaxed) {
             entry.visited.store(true, Ordering::Relaxed);
         }
@@ -404,10 +401,8 @@ impl WaitFreeShard {
     }
 
     fn insert(&self, key: &str, blob: CachedBlob) {
-        if let Ok(mut guard) = self.writer.lock() {
-            if guard.insert(Arc::from(key), blob) {
-                self.readable.store(Arc::new(guard.entries.clone()));
-            }
+        if let Ok(mut guard) = self.inner.write() {
+            guard.insert(Arc::from(key), blob);
         }
     }
 }
@@ -416,7 +411,6 @@ impl SieveShard {
     fn new(max_bytes: usize) -> Self {
         Self {
             index: HashMap::new(),
-            entries: HashMap::new(),
             nodes: Vec::new(),
             free: Vec::new(),
             head: None,
@@ -495,7 +489,6 @@ impl SieveShard {
                 self.detach(idx);
                 if let Some(evicted) = self.nodes[idx].take() {
                     self.index.remove(&evicted.key);
-                    self.entries.remove(&evicted.key);
                     self.total_bytes = self
                         .total_bytes
                         .saturating_sub(evicted.entry.value.accounted_bytes);
@@ -509,7 +502,6 @@ impl SieveShard {
             self.detach(idx);
             if let Some(evicted) = self.nodes[idx].take() {
                 self.index.remove(&evicted.key);
-                self.entries.remove(&evicted.key);
                 self.total_bytes = self
                     .total_bytes
                     .saturating_sub(evicted.entry.value.accounted_bytes);
@@ -527,7 +519,6 @@ impl SieveShard {
         }
         if let Some(existing_idx) = self.index.remove(&key) {
             self.detach(existing_idx);
-            self.entries.remove(&key);
             if let Some(old) = self.nodes[existing_idx].take() {
                 self.total_bytes = self
                     .total_bytes
@@ -546,7 +537,7 @@ impl SieveShard {
         });
         let node = SieveNode {
             key: Arc::clone(&key),
-            entry: Arc::clone(&entry),
+            entry,
             prev: None,
             next: None,
         };
@@ -559,8 +550,7 @@ impl SieveShard {
             slot
         };
         self.total_bytes += accounted;
-        self.index.insert(Arc::clone(&key), idx);
-        self.entries.insert(key, entry);
+        self.index.insert(key, idx);
         self.push_front(idx);
         true
     }
@@ -869,7 +859,7 @@ impl BlobStore {
         // WHY: Stream uploads directly to a guarded temp file with incremental SHA-256 so large PUTs do not buffer up to 100 MiB in RAM.
         let tmp = unique_temp_path(&path);
         let mut guard = TempFileGuard::new(tmp.clone());
-        let mut file = tokio::fs::File::create(&tmp).await?;
+        let mut file = BufWriter::with_capacity(256 * 1024, tokio::fs::File::create(&tmp).await?);
         let mut hasher = Sha256::new();
         let mut total_bytes = 0usize;
         let mut small_buf: Option<Vec<u8>> = Some(Vec::new());
@@ -941,12 +931,18 @@ impl BlobStore {
             return Ok(PutOutcome::Exists);
         }
 
-        if let Err(err) = file.sync_data().await {
+        if let Err(err) = file.flush().await {
             drop(file);
             guard.remove_now().await;
             return Err(BlobError::Io(err));
         }
-        drop(file);
+        let inner_file = file.into_inner();
+        if let Err(err) = inner_file.sync_data().await {
+            drop(inner_file);
+            guard.remove_now().await;
+            return Err(BlobError::Io(err));
+        }
+        drop(inner_file);
         if let Err(err) = tokio::fs::rename(&tmp, &path).await {
             guard.remove_now().await;
             return Err(BlobError::Io(err));
@@ -1323,7 +1319,13 @@ impl TempFileGuard {
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
-            let _ = std::fs::remove_file(path);
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn_blocking(move || {
+                    let _ = std::fs::remove_file(path);
+                });
+            } else {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 }

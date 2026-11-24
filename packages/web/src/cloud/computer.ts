@@ -1,4 +1,3 @@
-import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
 	CloudMemberCompanyComputerClient,
 	type MemberAgentComputerStart,
@@ -20,7 +19,6 @@ export class WebCompanyComputer {
 	/** Looks at an agent's desktop through the member bridge (migration 20260930712000). */
 	readonly screens: WebMachineScreens;
 	readonly #cloud: Cloud;
-	readonly #memberId: string;
 	readonly #companyId: string;
 	readonly #current: () => void;
 	/** The member's token this page last used (in memory only): a hand-back as the page goes cannot wait for a fresh one. */
@@ -28,7 +26,6 @@ export class WebCompanyComputer {
 	constructor(cloud: Cloud, profile: HostedProfile, memberId: string, signal: AbortSignal, current: () => void) {
 		this.canRequestWake = ["owner", "admin", "contributor"].includes(profile.role);
 		this.#cloud = cloud;
-		this.#memberId = memberId;
 		this.#companyId = profile.profileId;
 		this.#current = () => {
 			signal.throwIfAborted();
@@ -153,11 +150,5 @@ export class WebCompanyComputer {
 		} catch {
 			// The page is going: nothing more to do.
 		}
-	}
-	views(scope: CompanyComputerScope) {
-		this.#current();
-		const origin = this.#cloud.config.officeViewerOrigin;
-		if (!origin) throw new Error("Screen viewing is not configured.");
-		return this.client.views(scope, this.#memberId, `${origin}/office/${scope.companyComputerId}/view`);
 	}
 }

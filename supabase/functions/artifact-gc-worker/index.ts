@@ -129,7 +129,7 @@ Deno.serve(async (request) => {
 						if (error) throw new Error("Company storage cleanup completion failed");
 					},
 				},
-				{ budgetMs: Math.min(35_000, remainingMs()) },
+				{ budgetMs: Math.min(35_000, remainingMs()), concurrency: 4 },
 			);
 	}
 	const gatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.replace(/\/$/, "");

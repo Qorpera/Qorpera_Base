@@ -8,6 +8,7 @@ import {
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { isIP } from "node:net";
 import { SURFACE_SOURCE_KINDS, type SurfaceSourceKind } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 import { NODE_OBSERVATIONS_PATH, type ProviderNodeObservability } from "./node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
@@ -698,7 +699,9 @@ export class HttpCloudRunnerProviderService {
 				// WHY: Acknowledge delivery immediately with 202 so a long surface turn never stalls orchestrator claim ticks.
 				const deliverySignal = this.#surfaceController.signal;
 				const delivery = Promise.resolve()
-					.then(() => deliver(parsed.session, parsed.machineId, deliverySignal))
+					.then(() =>
+						withAbortScope(deliverySignal, (scoped) => deliver(parsed.session, parsed.machineId, scoped)),
+					)
 					.catch((error) => {
 						if (deliverySignal.aborted) return;
 						console.error(

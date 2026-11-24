@@ -529,6 +529,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #identityWaits = new Map<string, number>();
 	/** Set after the first reconcile has swept untracked slots of this service process. */
 	#swept = false;
+	#rootsEnsured = false;
+	#owedPending: Set<string> | undefined;
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
 	readonly #claimingSlots = new Set<number>();
@@ -567,6 +569,20 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return this.#config.slotCount;
 	}
 
+	async #runBounded<T>(items: readonly T[], limit: number, run: (item: T) => Promise<void>): Promise<void> {
+		if (items.length === 0) return;
+		let index = 0;
+		const workers = Math.min(limit, items.length);
+		await Promise.all(
+			Array.from({ length: workers }, async () => {
+				while (index < items.length) {
+					const item = items[index++]!;
+					await run(item);
+				}
+			}),
+		);
+	}
+
 	// WHY: #serial is not held while stopping units so other slots stay responsive; per-slot #slotLocks serializes each slot's own stop/wipe.
 	async reconcile(signal?: AbortSignal): Promise<void> {
 		await this.#exclusive(() => this.#ensureRoots());
@@ -576,21 +592,22 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		for (const journal of journals.filter((journal) => terminal(journal.physicalState)))
 			await this.#exclusive(() => this.#archive(journal));
 		const live = journals.filter((journal) => !terminal(journal.physicalState));
-		const active = await this.#units.activeSet(
-			live.flatMap((journal) => [this.#unit("host", journal.slot), this.#unit("runner", journal.slot)]),
-			signal,
-		);
+		const allHosts = Array.from({ length: this.#config.slotCount }, (_, slot) => this.#unit("host", slot));
+		const liveRunners = live.map((journal) => this.#unit("runner", journal.slot));
+		const active = await this.#units.activeSet([...allHosts, ...liveRunners], signal);
 		const failures: unknown[] = [];
-		for (const journal of live) {
+		await this.#runBounded(live, 8, async (journal) => {
+			if (signal?.aborted) return;
 			try {
 				await this.#reconcileJournal(journal, active, signal);
 			} catch (error) {
 				if (signal?.aborted) throw error;
 				failures.push(error);
 			}
-		}
+		});
+		if (signal?.aborted) throw signal.reason;
 		try {
-			await this.#expireWarmSlots(signal);
+			await this.#expireWarmSlots(signal, active);
 		} catch (error) {
 			if (signal?.aborted) throw error;
 			failures.push(error);
@@ -1082,7 +1099,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				await this.#exclusive(async () => {
 					const archive = join(this.#config.stateRoot, "journals", "archive");
 					await mkdir(archive, { recursive: true, mode: 0o700 });
-					const target = join(archive, `${committed.acquisitionId}.${this.#now()}.lost.json`);
+					const fileName = `${committed.acquisitionId}.${this.#now()}.lost.json`;
+					const target = join(archive, fileName);
 					const temporary = `${target}.${process.pid}.tmp`;
 					try {
 						await writeFile(
@@ -1101,6 +1119,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 							{ encoding: "utf-8", mode: 0o600, flag: "w" },
 						);
 						await rename(temporary, target);
+						this.#owedPending?.add(fileName);
 					} catch (writeError) {
 						await rm(temporary, { force: true }).catch(() => undefined);
 						throw writeError;
@@ -1365,6 +1384,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	/** The slot accounts traverse the state root to reach their own scratch
 	 * (0711); journals and the tmpfs material stay root-only (0700). */
 	async #ensureRoots(): Promise<void> {
+		if (this.#rootsEnsured) return;
 		for (const [path, mode] of [
 			[this.#config.stateRoot, 0o711],
 			[join(this.#config.stateRoot, "journals"), 0o700],
@@ -1376,6 +1396,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			await mkdir(path, { recursive: true, mode });
 			await chmod(path, mode);
 		}
+		this.#rootsEnsured = true;
 	}
 
 	/** Slot credentials live on the tmpfs run root for the sandbox's lifetime.
@@ -1727,7 +1748,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	 * stops; once per service process, the scratch of every such slot is wiped, so a kept
 	 * capsule root never outlives a host restart.
 	 */
-	async #expireWarmSlots(signal?: AbortSignal): Promise<void> {
+	async #expireWarmSlots(signal?: AbortSignal, knownActive?: ReadonlySet<string>): Promise<void> {
 		const [warmSlots, live, claiming] = await this.#exclusive(async () => [
 			await this.#warmSlots(),
 			(await this.#journals()).filter((journal) => !terminal(journal.physicalState)),
@@ -1739,9 +1760,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			...claiming,
 		]);
 		const hosts = Array.from({ length: this.#config.slotCount }, (_, slot) => this.#unit("host", slot));
-		const active = await this.#units.activeSet(hosts, signal);
+		const active = knownActive ?? (await this.#units.activeSet(hosts, signal));
+		const orphanSlots: number[] = [];
 		for (let slot = 0; slot < this.#config.slotCount; slot++) {
 			if (tracked.has(slot) || (this.#swept && !active.has(this.#unit("host", slot)))) continue;
+			orphanSlots.push(slot);
+		}
+		await this.#runBounded(orphanSlots, 8, async (slot) => {
+			if (signal?.aborted) return;
 			const claimedOrphan = await this.#exclusive(async () => {
 				const held =
 					this.#claimingSlots.has(slot) ||
@@ -1758,12 +1784,15 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					this.#claimingSlots.delete(slot);
 				}
 			}
-		}
+		});
 		this.#swept = true;
-		for (const warm of warmSlots) {
-			if (claiming.has(warm.slot)) continue;
+		const expiredWarm = warmSlots.filter((warm) => {
+			if (claiming.has(warm.slot)) return false;
 			const taken = live.some((journal) => journal.slot === warm.slot);
-			if (!taken && Date.parse(warm.warmUntil) > this.#now() && active.has(this.#unit("host", warm.slot))) continue;
+			return taken || Date.parse(warm.warmUntil) <= this.#now() || !active.has(this.#unit("host", warm.slot));
+		});
+		await this.#runBounded(expiredWarm, 8, async (warm) => {
+			if (signal?.aborted) return;
 			const candidate = await this.#exclusive(async () => {
 				if (this.#claimingSlots.has(warm.slot)) return undefined;
 				const current = (await this.#warmSlots()).find((entry) => entry.slot === warm.slot);
@@ -1786,13 +1815,13 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						Date.parse(candidate.warmUntil) > this.#now() &&
 						(await this.#units.active(this.#unit("host", candidate.slot), signal))
 					)
-						continue;
+						return;
 					await this.#evict(candidate.slot, signal);
 				} finally {
 					this.#claimingSlots.delete(candidate.slot);
 				}
 			}
-		}
+		});
 	}
 
 	/** Live journals only: terminal ones move to `journals/archive/`. */
@@ -1850,41 +1879,57 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		await this.#writeJournal(journal);
 		const archive = join(this.#config.stateRoot, "journals", "archive");
 		await mkdir(archive, { recursive: true, mode: 0o700 });
-		await rename(
-			this.#journalPath(journal.acquisitionId),
-			join(archive, `${journal.acquisitionId}.${this.#now()}.${journal.physicalState}.json`),
-		);
+		const fileName = `${journal.acquisitionId}.${this.#now()}.${journal.physicalState}.json`;
+		await rename(this.#journalPath(journal.acquisitionId), join(archive, fileName));
+		if (journal.physicalState === "lost") this.#owedPending?.add(fileName);
 	}
 
 	/** A `lost` sandbox may still owe its company allocation: keep releasing it
 	 * from the archive until the control plane confirms, a few per pass. */
 	async #releaseOwed(signal?: AbortSignal): Promise<void> {
 		const archive = join(this.#config.stateRoot, "journals", "archive");
-		let names: string[];
-		try {
-			names = (await readdir(archive)).filter((name) => name.endsWith(".lost.json"));
-		} catch (error) {
-			if ((error as { code?: string }).code === "ENOENT") return;
-			throw error;
+		if (this.#owedPending === undefined) {
+			try {
+				this.#owedPending = new Set((await readdir(archive)).filter((name) => name.endsWith(".lost.json")));
+			} catch (error) {
+				if ((error as { code?: string }).code === "ENOENT") {
+					this.#owedPending = new Set();
+					return;
+				}
+				throw error;
+			}
 		}
+		if (this.#owedPending.size === 0) return;
 		let budget = 4;
-		for (const name of names) {
+		for (const name of [...this.#owedPending]) {
 			if (budget === 0) return;
 			const path = join(archive, name);
 			let owed: SharedExecutionJournal;
 			try {
 				owed = JSON.parse(await readFile(path, "utf8")) as SharedExecutionJournal;
-			} catch {
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") this.#owedPending.delete(name);
 				continue;
 			}
-			if (owed.capacityReleased || (!owed.capacityRequested && !owed.capacityRegistered)) continue;
+			const releasedPath = join(archive, `${name.slice(0, -".lost.json".length)}.lost.released.json`);
+			if (owed.capacityReleased || (!owed.capacityRequested && !owed.capacityRegistered)) {
+				await rename(path, releasedPath).catch(() => undefined);
+				this.#owedPending.delete(name);
+				continue;
+			}
 			budget -= 1;
 			try {
 				await this.#releaseMachine(owed, signal);
 			} catch {
 				continue;
 			}
-			await writeFile(path, `${JSON.stringify({ ...owed, capacityReleased: true }, null, 2)}\n`, { mode: 0o600 });
+			const temporary = `${releasedPath}.${process.pid}.tmp`;
+			await writeFile(temporary, `${JSON.stringify({ ...owed, capacityReleased: true }, null, 2)}\n`, {
+				mode: 0o600,
+			});
+			await rename(temporary, releasedPath);
+			await rm(path, { force: true });
+			this.#owedPending.delete(name);
 		}
 	}
 
@@ -1936,16 +1981,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		}
 		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
 			throw new Error("Ended runners answer is invalid");
+		const ended = waiting.filter((journal) => answer.includes(journal.runner.runnerId));
 		const failures: unknown[] = [];
-		for (const journal of waiting) {
-			if (!answer.includes(journal.runner.runnerId)) continue;
+		await this.#runBounded(ended, 8, async (journal) => {
+			if (signal?.aborted) return;
 			try {
 				await this.#retire(journal.acquisitionId, "revoked", signal);
 			} catch (error) {
 				if (signal?.aborted) throw error;
 				failures.push(error);
 			}
-		}
+		});
+		if (signal?.aborted) throw signal.reason;
 		if (failures.length === 1) throw failures[0];
 		if (failures.length > 1) throw new AggregateError(failures, "Retiring several ended runners failed");
 	}

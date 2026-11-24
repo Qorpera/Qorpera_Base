@@ -617,7 +617,6 @@ export function cloudSiteTools(options: {
 					let missing = receipt.missing;
 					for (let round = 0; missing.length && round < 2; round++) {
 						let batch: { path: string; content: string }[] = [];
-						let batchBytes = 0;
 						const send = async () => {
 							if (!batch.length) return;
 							const put = parseRecord(
@@ -633,22 +632,52 @@ export function cloudSiteTools(options: {
 								throw new Error("Site upload differs");
 							missing = put.missing as string[];
 							batch = [];
-							batchBytes = 0;
 						};
-						for (const path of [...missing]) {
+						type UploadEntry = NonNullable<ReturnType<typeof byPath.get>>["entry"];
+						const pending = [...missing];
+						const groups: { path: string; entry: UploadEntry }[][] = [];
+						let current: { path: string; entry: UploadEntry }[] = [];
+						let currentBytes = 0;
+						for (const path of pending) {
 							const file = byPath.get(path);
 							if (!file) throw new Error("Site upload names a file it was not given");
-							if (batchBytes + file.entry.file.bytes > PUT_BYTES) await send();
-							let bytes: Uint8Array;
+							if (current.length > 0 && currentBytes + file.entry.file.bytes > PUT_BYTES) {
+								groups.push(current);
+								current = [];
+								currentBytes = 0;
+							}
+							current.push({ path, entry: file.entry });
+							currentBytes += file.entry.file.bytes;
+						}
+						if (current.length > 0) groups.push(current);
+						for (const group of groups) {
+							const contents: Uint8Array[] = new Array(group.length);
+							let cursor = 0;
+							const workers = Math.min(6, group.length);
 							try {
-								bytes = await folder.readRange(file.entry, 0, file.entry.file.bytes, context.signal);
+								await Promise.all(
+									Array.from({ length: workers }, async () => {
+										while (cursor < group.length) {
+											const index = cursor++;
+											const item = group[index]!;
+											contents[index] = await folder.readRange(
+												item.entry,
+												0,
+												item.entry.file.bytes,
+												context.signal,
+											);
+										}
+									}),
+								);
 							} catch (error) {
 								return unavailable(error, "read");
 							}
-							batch.push({ path, content: Buffer.from(bytes).toString("base64") });
-							batchBytes += bytes.byteLength;
+							for (let i = 0; i < group.length; i++) {
+								const bytes = contents[i]!;
+								batch.push({ path: group[i]!.path, content: Buffer.from(bytes).toString("base64") });
+							}
+							await send();
 						}
-						await send();
 					}
 					if (missing.length) throw new Error("Site upload did not complete");
 					receipt = checkedReceipt(

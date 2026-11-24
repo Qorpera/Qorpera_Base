@@ -1,5 +1,5 @@
-import { createClient } from "npm:@supabase/supabase-js@2.112.3";
-import { createTimedFetch, preferredServiceKey } from "../_shared/http-guards.ts";
+import { preferredServiceKey } from "../_shared/http-guards.ts";
+import { createPostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	type BillingStore,
 	BillingStoreError,
@@ -31,10 +31,7 @@ const stripeKey = required("QORPERA_STRIPE_SECRET_KEY");
 const billingKey = required("QORPERA_COMPUTER_BILLING_KEY");
 const returnUrl = required("QORPERA_BILLING_RETURN_URL");
 if (!new URL(returnUrl).protocol.startsWith("https")) throw new Error("QORPERA_BILLING_RETURN_URL must use HTTPS");
-const supabase = createClient(required("SUPABASE_URL"), serviceKey(), {
-	auth: { persistSession: false, autoRefreshToken: false },
-	global: { fetch: createTimedFetch({ timeoutMs: 15_000 }) },
-});
+const supabase = createPostgrestClient(required("SUPABASE_URL"), serviceKey(), { timeoutMs: 15_000 });
 
 const store: BillingStore = {
 	async call(method, args) {

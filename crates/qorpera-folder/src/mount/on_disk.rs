@@ -22,7 +22,7 @@ use crate::local::{self, is_local, Area, Renaming, Up};
 use crate::peers::{Change, Parent};
 use crate::proto::{split, Entry, CHUNK, MAX_CHUNKS};
 use crate::records::Kind;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -1061,7 +1061,8 @@ impl FolderFs {
 			};
 			local.mirrors(dir).into_iter().filter(no_folder).collect::<Vec<_>>()
 		};
-		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entries.iter().any(|e| e.name == c.2));
+		let entry_names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
+		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entry_names.contains(&c.2));
 		if settled(local, dir) && (listed(dir) || !gone(dir).is_empty()) {
 			let mut moved = Vec::new();
 			{
@@ -1087,7 +1088,7 @@ impl FolderFs {
 		}
 		let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
 		for (c_ino, kind, name, attr) in local.entries_of_plus(&dir, Area::Cache) {
-			if !entries.iter().any(|e| e.name == name) {
+			if !entry_names.contains(&name) {
 				entries.push(DirItem { ino: c_ino, kind, name, plus: DirPlus::Local(attr) });
 			}
 		}

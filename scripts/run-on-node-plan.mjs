@@ -20,7 +20,6 @@ const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
 	"supabase/functions/computer-billing/computer-billing.test.ts",
-	"supabase/functions/_shared/computer-hour-notices.test.ts",
 	"supabase/functions/chatgpt-plan-callback/chatgpt-plan-callback.test.ts",
 	"supabase/functions/runner-orchestrator/runner-orchestrator.test.ts",
 	"supabase/functions/event-intake/event-intake.test.ts",
@@ -76,11 +75,8 @@ const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
 /** Runner-orchestrator test files that spend nearly all their time waiting on real deadlines and timeouts, not on
  * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNNER_ORCHESTRATOR_WAITING = [
-	"test/lxd-office-preparation-execution.test.ts",
-	"test/lxd-office-preparation-transport.test.ts",
 	"test/company-machine-host.test.ts",
 	"test/lxd-login-gateway.test.ts",
-	"test/lxd-office-inspection.test.ts",
 	"test/orchestrator-wake.test.ts",
 	"test/coding-executor-host.test.ts",
 	"test/lxd-provider-concurrency.test.ts",
@@ -91,13 +87,7 @@ export const RUNNER_ORCHESTRATOR_WAITING = [
  * of the step's 235 s of file time, 121 s of it asleep (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNTIME_WAITING = [
 	"test/cloud-codex-tool-session.test.ts",
-	"test/cloud-company-computer-control-output-linux.test.ts",
-	"test/cloud-company-computer-linux-guest.test.ts",
-	"test/cloud-company-computer-browser-egress.test.ts",
 	"test/shared-vault-secrets.test.ts",
-	"test/cloud-company-computer-shell.test.ts",
-	"test/cloud-company-computer-desktop.test.ts",
-	"test/cloud-company-computer-service.test.ts",
 	"test/cloud-native-transport.test.ts",
 ];
 /** The coding command supervisor's test, which runs on its own after the rest of the runtime package. */
@@ -113,13 +103,11 @@ const WHOLE = [
 	/^tsconfig[^/]*\.json$/,
 	/^biome\.json$/,
 	/^test\.sh$/,
-	/^packages\/(contracts|company)\//,
+	/^packages\/contracts\//,
 ];
-/** runtime-release-train.yml's exclusion: web client files that no runtime or cloud-client test reads. */
 const WEB_ONLY = (file) =>
-	(/^packages\/web\//.test(file) &&
-		!/^packages\/web\/(src\/cloud\/|tsconfig\.json$|public\/assets\/avatars\/)/.test(file)) ||
-	(/^packages\/member-web\//.test(file) && !/^packages\/member-web\/ui\//.test(file));
+	/^packages\/web\//.test(file) &&
+	!/^packages\/web\/(src\/cloud\/|tsconfig\.json$|public\/assets\/avatars\/)/.test(file);
 const ANY = [/./];
 /** Starts on any path that is not web-only. */
 const NOT_WEB_ONLY = Symbol("not web-only");
@@ -142,10 +130,10 @@ export const STEPS = [
 	},
 	{
 		name: "typecheck",
-		why: "root and member-web tsgo (root-typecheck.yml ran on every PR)",
+		why: "root tsgo (root-typecheck.yml ran on every PR)",
 		paths: ANY,
 		commands: [],
-		alone: ["npx tsgo --noEmit", "npx tsgo -p packages/member-web/tsconfig.json"],
+		alone: ["npx tsgo --noEmit"],
 	},
 	{
 		name: "checks",
@@ -171,7 +159,6 @@ export const STEPS = [
 		seconds: 61,
 		paths: [
 			/^packages\/web\//,
-			/^packages\/member-web\/ui\//,
 			/^packages\/cloud-client\//,
 			/^supabase\/functions\//,
 			/^scripts\/web-deployment/,
@@ -181,7 +168,7 @@ export const STEPS = [
 		commands: [
 			"npm run typecheck --workspace packages/web",
 			"npm test --workspace packages/web",
-			`node --test ${FUNCTION_TESTS.slice(0, 4).join(" ")} scripts/web-deployment.test.mjs`,
+			`node --test ${FUNCTION_TESTS.slice(0, 3).join(" ")} scripts/web-deployment.test.mjs`,
 		],
 		// The release build measures its source from git and refuses uncommitted changes. The run copy has
 		// no .git, so the step commits it into a throwaway repository for the build and removes it after.
@@ -192,18 +179,6 @@ export const STEPS = [
 			"git init -q && git add -A && git -c user.name=run-on-node -c user.email=run-on-node@invalid commit -qm snapshot",
 			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' npm run build:release --workspace packages/web; built=$?; rm -rf .git; exit $built`,
 		],
-	},
-	{
-		name: "member-web",
-		why: "packages/member-web",
-		paths: [/^packages\/member-web\//],
-		commands: ["npm test --workspace packages/member-web"],
-	},
-	{
-		name: "company",
-		why: "packages/company",
-		paths: [/^packages\/company\//],
-		commands: ["npm test --workspace packages/company"],
 	},
 	{
 		name: "contracts",
@@ -334,10 +309,6 @@ export const STEPS = [
 			/^scripts\/test-runtime-[a-z-]+-cases\.mjs$/,
 			/^scripts\/fixtures\/email-draft-e2e/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
-			// The office delete-disposition script bundles the Company Computer's startup and screen publishers, and the
-			// runtime files they import.
-			/^packages\/runtime\/src\/cloud-(company-computer-(startup|screen-lifecycle|screen-outbox|registry-http)|native-tool-authority|control-errors|runtime-observability|runtime-policy)\.ts$/,
-			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			// The folder service's parsers and tree, checked against the folder core's own answers. The folder core's
 			// acceptance script (F3-3c) also runs its writes, staging and mounts on the real commit. Not server.ts or cli.ts.

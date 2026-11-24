@@ -1,4 +1,5 @@
 import { isUuid } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { type AgentPlug, agentPlugCard, runAgentPlug, withAgentPlug } from "./agent-plug.ts";
 import { CodingControlRefused, CodingMachineUnavailable } from "./coding-executor.ts";
 import { CODING_MACHINE_BASE_CONFIG } from "./coding-machine.ts";
@@ -533,7 +534,15 @@ export class CodingSnapshotBuilder {
 		request: CodingSnapshotBuildRequest,
 		callerSignal?: AbortSignal,
 	): Promise<CodingSnapshotBuildOutcome> {
-		const outerSignal = callerSignal ? AbortSignal.any([this.#shutdown.signal, callerSignal]) : this.#shutdown.signal;
+		return withAbortScopes([this.#shutdown.signal, callerSignal], (outerSignal) =>
+			this.#executeBuildScoped(request, outerSignal),
+		);
+	}
+
+	async #executeBuildScoped(
+		request: CodingSnapshotBuildRequest,
+		outerSignal: AbortSignal,
+	): Promise<CodingSnapshotBuildOutcome> {
 		outerSignal.throwIfAborted();
 		const claim = await this.#claim(request, outerSignal);
 		if (claim.state !== "claimed") return claim;

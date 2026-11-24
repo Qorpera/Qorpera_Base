@@ -58,8 +58,6 @@ function transport() {
 				};
 			case "qorpera_list_member_native_execution_connections":
 				return { compute_identity: null, connections: [] };
-			case "qorpera_list_session_turn_requests":
-				return [];
 			case "qorpera_revoke_native_provider_connection":
 				return { connection_id: connectionId, status: "revoked" };
 		}

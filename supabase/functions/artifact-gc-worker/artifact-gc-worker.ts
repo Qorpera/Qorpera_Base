@@ -277,53 +277,61 @@ export function parseCompanyStorageDeletions(value: unknown): CompanyStorageDele
 export async function runCompanyStorageDeletions(
 	entries: readonly CompanyStorageDeletion[],
 	store: CompanyStorageDeletionStore,
-	options?: { readonly budgetMs?: number; readonly now?: () => number },
+	options?: { readonly budgetMs?: number; readonly now?: () => number; readonly concurrency?: number },
 ): Promise<{ claimed: number; completed: number; failed: number; deferred?: number }> {
 	const now = options?.now ?? Date.now;
 	const deadline = options?.budgetMs !== undefined ? now() + options.budgetMs : undefined;
+	const concurrency = Math.max(1, Math.min(options?.concurrency ?? 1, entries.length || 1));
 	const result: { claimed: number; completed: number; failed: number; deferred?: number } = {
 		claimed: entries.length,
 		completed: 0,
 		failed: 0,
 	};
-	for (const [index, entry] of entries.entries()) {
-		if (deadline !== undefined && now() >= deadline) {
-			result.deferred = entries.length - index;
-			break;
-		}
-		try {
-			if (entry.bucket === "qorpera-native-compute-capsules") await store.remove(entry.bucket, [entry.path]);
-			else {
-				for (let round = 0; ; round++) {
-					if (deadline !== undefined && now() >= deadline) {
-						result.deferred = entries.length - index;
-						return result;
+	let next = 0;
+	let deferred = 0;
+	const worker = async (): Promise<void> => {
+		for (;;) {
+			if (deadline !== undefined && now() >= deadline) return;
+			const index = next++;
+			if (index >= entries.length) return;
+			const entry = entries[index]!;
+			try {
+				if (entry.bucket === "qorpera-native-compute-capsules") await store.remove(entry.bucket, [entry.path]);
+				else {
+					for (let round = 0; ; round++) {
+						if (deadline !== undefined && now() >= deadline) {
+							deferred += 1;
+							return;
+						}
+						const names = await store.list(entry.bucket, entry.path);
+						if (!names.length) break;
+						if (names.some((name) => !RECOVERY_OBJECT.test(name)))
+							throw new Error("The recovery prefix holds an unexpected object");
+						if (round >= 10) throw new Error("Recovery objects remain");
+						await store.remove(
+							entry.bucket,
+							names.map((name) => `${entry.path}${name}`),
+						);
 					}
-					const names = await store.list(entry.bucket, entry.path);
-					if (!names.length) break;
-					if (names.some((name) => !RECOVERY_OBJECT.test(name)))
-						throw new Error("The recovery prefix holds an unexpected object");
-					if (round >= 10) throw new Error("Recovery objects remain");
-					await store.remove(
-						entry.bucket,
-						names.map((name) => `${entry.path}${name}`),
-					);
+				}
+				await store.complete(entry);
+				result.completed += 1;
+			} catch (error) {
+				result.failed += 1;
+				try {
+					// At most 500 characters (code points, as SQL counts them), never a NUL.
+					const raw = error instanceof Error ? error.message : String(error);
+					const message = Array.from(raw.replaceAll("\u0000", "")).slice(0, 500).join("").trim();
+					await store.complete(entry, message || "Storage cleanup failed");
+				} catch {
+					// The lease expires server-side; a later invocation offers the entry again.
 				}
 			}
-			await store.complete(entry);
-			result.completed += 1;
-		} catch (error) {
-			result.failed += 1;
-			try {
-				// At most 500 characters (code points, as SQL counts them), never a NUL.
-				const raw = error instanceof Error ? error.message : String(error);
-				const message = Array.from(raw.replaceAll("\u0000", "")).slice(0, 500).join("").trim();
-				await store.complete(entry, message || "Storage cleanup failed");
-			} catch {
-				// The lease expires server-side; a later invocation offers the entry again.
-			}
 		}
-	}
+	};
+	await Promise.all(Array.from({ length: concurrency }, () => worker()));
+	const unstarted = Math.max(0, entries.length - next);
+	if (deferred + unstarted > 0) result.deferred = deferred + unstarted;
 	return result;
 }
 

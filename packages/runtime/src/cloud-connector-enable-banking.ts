@@ -268,22 +268,6 @@ export class EnableBankingClient {
 		};
 	}
 
-	async sessionStatus(sessionId: string, signal: AbortSignal): Promise<EnableBankingSessionStatus | null> {
-		const body = await this.#call("GET", `/sessions/${encodeURIComponent(sessionId)}`, signal);
-		const status = jsonString(body.status, 40);
-		const known: readonly string[] = [
-			"PENDING_AUTHORIZATION",
-			"RETURNED_FROM_BANK",
-			"AUTHORIZED",
-			"CANCELLED",
-			"CLOSED",
-			"EXPIRED",
-			"INVALID",
-			"REVOKED",
-		];
-		return status && known.includes(status) ? (status as EnableBankingSessionStatus) : null;
-	}
-
 	/** Ends a session at Enable Banking: the member disconnected the bank. */
 	async closeSession(sessionId: string, signal: AbortSignal): Promise<void> {
 		try {

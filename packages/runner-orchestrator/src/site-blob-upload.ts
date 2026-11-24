@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { CodeSiteUploadFile } from "./code-site-uploads.ts";
 
 export const NATIVE_SITE_MAX_FILES = 10_000;
@@ -226,16 +228,20 @@ export function buildCanonicalSiteManifest(
 	};
 }
 
-const defaultFetch: BlobUploadFetch = async (url, init) => {
-	const res = await fetch(url, {
-		method: init.method,
-		headers: init.headers,
-		body: init.body === undefined ? undefined : Buffer.from(init.body),
-		signal: init.signal,
+const defaultFetch: BlobUploadFetch = async (url, init) =>
+	withTimeoutScope(init.signal, 30_000, async (bounded) => {
+		const res = await fetch(url, {
+			method: init.method,
+			headers: init.headers,
+			body:
+				init.body === undefined
+					? undefined
+					: Buffer.from(init.body.buffer, init.body.byteOffset, init.body.byteLength),
+			signal: bounded,
+		});
+		await res.body?.cancel().catch(() => undefined);
+		return { status: res.status };
 	});
-	await res.body?.cancel().catch(() => undefined);
-	return { status: res.status };
-};
 
 export function parseRedirectsFile(text: string): SiteRedirectEntry[] {
 	const rules: SiteRedirectEntry[] = [];
@@ -342,17 +348,7 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 				lastErr = err;
 			}
 			const delayMs = 100 * 2 ** attempt;
-			await new Promise<void>((resolve, reject) => {
-				const timer = setTimeout(resolve, delayMs);
-				options.signal?.addEventListener(
-					"abort",
-					() => {
-						clearTimeout(timer);
-						reject(options.signal?.reason);
-					},
-					{ once: true },
-				);
-			});
+			await delay(delayMs, undefined, options.signal ? { signal: options.signal } : undefined);
 		}
 		throw lastErr instanceof Error ? lastErr : new Error("Blob upload failed");
 	};

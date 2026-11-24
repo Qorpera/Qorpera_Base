@@ -3007,25 +3007,36 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	if (!before || !box) return;
 	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
 	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
-	let entering = 0;
+	const enteringTiles: HTMLElement[] = [];
+	const moves: { element: HTMLElement; dx: number; dy: number }[] = [];
 	for (const element of drawn) {
 		const was = before.get(element);
 		if (!was || element.classList.contains("is-leaving")) {
-			element.style.setProperty("--enter-i", String(entering++));
-			element.classList.remove("is-entering");
-			void element.offsetWidth;
-			element.classList.add("is-entering");
-			element.addEventListener("animationend", () => element.classList.remove("is-entering"), { once: true });
+			enteringTiles.push(element);
 			continue;
 		}
 		const now = element.getBoundingClientRect();
 		const dx = was.left - now.left;
 		const dy = was.top - now.top;
-		if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1)
-			element.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
-				duration: 400,
-				easing: easing("--ease-out"),
-			});
+		if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) moves.push({ element, dx, dy });
+	}
+	if (enteringTiles.length > 0) {
+		for (let i = 0; i < enteringTiles.length; i++) {
+			const element = enteringTiles[i]!;
+			element.style.setProperty("--enter-i", String(i));
+			element.classList.remove("is-entering");
+		}
+		void grid.offsetWidth;
+		for (const element of enteringTiles) {
+			element.classList.add("is-entering");
+			element.addEventListener("animationend", () => element.classList.remove("is-entering"), { once: true });
+		}
+	}
+	for (const { element, dx, dy } of moves) {
+		element.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
+			duration: 400,
+			easing: easing("--ease-out"),
+		});
 	}
 	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));

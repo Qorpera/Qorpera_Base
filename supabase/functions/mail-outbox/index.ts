@@ -1,5 +1,5 @@
-import { createClient } from "npm:@supabase/supabase-js@2.112.3";
-import { configuredSecretKeys, createTimedFetch, preferredServiceKey } from "../_shared/http-guards.ts";
+import { configuredSecretKeys, preferredServiceKey } from "../_shared/http-guards.ts";
+import { createPostgrestClient, type PostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	handleMailOutbox,
 	type MailOutboxStore,
@@ -15,21 +15,15 @@ function required(name: string): string {
 }
 
 const supabaseUrl = required("SUPABASE_URL");
-const RPC_FETCH = createTimedFetch({ timeoutMs: 15_000 });
-let cachedClient:
-	| { readonly key: string; readonly client: ReturnType<typeof createClient> }
-	| undefined;
+let cachedClient: { readonly key: string; readonly client: PostgrestClient } | undefined;
 
-function serviceClient(fallbackKey: string): ReturnType<typeof createClient> {
+function serviceClient(fallbackKey: string): PostgrestClient {
 	// WHY: Prefer locally verified SUPABASE_SERVICE_ROLE_KEY over KMS sb_secret keys and reuse the timed client across cron calls.
 	const key = preferredServiceKey((name) => Deno.env.get(name)) ?? fallbackKey;
 	if (!cachedClient || cachedClient.key !== key) {
 		cachedClient = {
 			key,
-			client: createClient(supabaseUrl, key, {
-				auth: { persistSession: false, autoRefreshToken: false },
-				global: { fetch: RPC_FETCH },
-			}),
+			client: createPostgrestClient(supabaseUrl, key, { timeoutMs: 15_000 }),
 		};
 	}
 	return cachedClient.client;

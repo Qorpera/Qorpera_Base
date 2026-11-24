@@ -65,31 +65,6 @@ export interface CloudRunnerJob {
 	cancelledAt?: string;
 }
 
-export const CLOUD_RUNNER_AUDIT_EVENTS = [
-	"runner_registered",
-	"runner_activated",
-	"runner_revoked",
-	"job_queued",
-	"job_leased",
-	"job_lease_renewed",
-	"job_requeued",
-	"job_completed",
-	"job_failed",
-	"job_cancelled",
-] as const;
-export type CloudRunnerAuditEvent = (typeof CLOUD_RUNNER_AUDIT_EVENTS)[number];
-
-export interface CloudRunnerAuditReceipt {
-	receiptId: number;
-	profileId: string;
-	runnerId?: string;
-	jobId?: string;
-	eventType: CloudRunnerAuditEvent;
-	payload: JsonValue;
-	actorUserId?: string;
-	createdAt: string;
-}
-
 export type CloudRunnerControlRequest =
 	| {
 			action: "activate";
@@ -363,29 +338,6 @@ export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
 		...(optionalTimestamp(input.cancelled_at, "runner job cancellation time")
 			? { cancelledAt: timestamp(input.cancelled_at, "runner job cancellation time") }
 			: {}),
-	};
-}
-
-export function parseCloudRunnerAuditReceipt(value: unknown): CloudRunnerAuditReceipt {
-	const input = record(value, "runner audit receipt");
-	if (!CLOUD_RUNNER_AUDIT_EVENTS.some((candidate) => candidate === input.event_type)) {
-		throw new Error("Runner control returned invalid audit event");
-	}
-	return {
-		receiptId: boundedInteger(input.receipt_id, "runner audit receipt id", 1, Number.MAX_SAFE_INTEGER),
-		profileId: uuid(input.profile_id, "runner audit profile id"),
-		...(optionalUuid(input.runner_id, "runner audit runner id")
-			? { runnerId: uuid(input.runner_id, "runner audit runner id") }
-			: {}),
-		...(optionalUuid(input.job_id, "runner audit job id")
-			? { jobId: uuid(input.job_id, "runner audit job id") }
-			: {}),
-		eventType: input.event_type as CloudRunnerAuditEvent,
-		payload: objectJson(input.payload, "runner audit payload"),
-		...(optionalUuid(input.actor_user_id, "runner audit actor id")
-			? { actorUserId: uuid(input.actor_user_id, "runner audit actor id") }
-			: {}),
-		createdAt: timestamp(input.created_at, "runner audit creation time"),
 	};
 }
 

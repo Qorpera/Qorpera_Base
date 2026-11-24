@@ -53,7 +53,3 @@ export function drawnStaffCharacter(value: unknown): StaffCharacterId | undefine
 		? RETIRED_STAFF_CHARACTERS[value as RetiredStaffCharacterId]
 		: undefined;
 }
-
-export function staffCharacterForTemplate(templateId: StaffTemplateId): StaffCharacterId {
-	return STAFF_CHARACTER_BY_TEMPLATE[templateId];
-}

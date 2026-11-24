@@ -156,7 +156,7 @@ export class WebCompanyFiles {
 				const file = entry?.kind === "file" ? entry.file : null;
 				if (!file || file.bytes > maximumBytes) return null;
 				try {
-					const bytes = await folder.readFile(file, signal, maximumBytes);
+					const bytes = await folder.readFile(file, signal, maximumBytes, { cached: true });
 					return {
 						text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
 						sha256: file.fileSha256,
