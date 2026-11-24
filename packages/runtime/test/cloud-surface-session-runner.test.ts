@@ -1206,6 +1206,8 @@ describe("cloud surface session runner", () => {
 
 		expect(seen.thetabands).toContain(describeSurfaceBlocks());
 		expect(seen.thetabands).toContain(JSON.stringify(starterSurfaceLayout("product")));
+		expect(seen.thetabands).toContain("breakdowns/<slug>/scenes.js");
+		expect(seen.thetabands).toContain("narrate_explainer");
 		expect(seen.thetabands).toContain("surfaces/thetabands/");
 		expect(seen["market-notes"]).toContain("This interface is a reading page, not drawn from a layout");
 		expect(seen["market-notes"]).toContain("bar_chart {heading");
@@ -1231,5 +1233,142 @@ describe("cloud surface session runner", () => {
 		);
 		expect(isolatedLoaded?.productSpecsJson).toBe('{"weightGrams":44}');
 		expect(isolatedLoaded?.productCatalogJson).toBe('{"skus":["TB-1"]}');
+	});
+
+	it("wires narrate_explainer with openScenesOps and in-turn stage_surface_patch overlay", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const stagedBatches: { title: string; ops: readonly Record<string, unknown>[] }[] = [];
+		const synthesized: { model: string; voiceName: string; text: string }[] = [];
+		let capturedInstructions = "";
+		let narrateResultText = "";
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				surfaceKind: "identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Create a narrated UX breakdown video.",
+				voiceModel: "gemini-3.8-flash-tts",
+				voiceName: "Kore",
+				openScenesOps: [
+					{
+						op: "write_text",
+						path: "breakdowns/ux/voice/clips.json",
+						content: JSON.stringify({ clips: [{ caption: "deadbeef", file: "deadbeef.wav", seconds: 1.5 }] }),
+					},
+				],
+			},
+			{
+				folder: {
+					async readText() {
+						return null;
+					},
+				},
+				surfaceTools: {
+					async stageSurfacePatch(_sid, request) {
+						stagedBatches.push({
+							title: request.title,
+							ops: request.ops as unknown as readonly Record<string, unknown>[],
+						});
+						return {
+							changeId: randomUUID(),
+							seq: stagedBatches.length,
+							openChangeCount: stagedBatches.length,
+						};
+					},
+				},
+				narrateExplainer: {
+					async stageBytes(bytes, mediaType) {
+						return {
+							manifestSha256: "a".repeat(64),
+							fileSha256: "b".repeat(64),
+							bytes: bytes.byteLength,
+							mediaType,
+						};
+					},
+					async synthesizeGemini(input) {
+						synthesized.push({ model: input.model, voiceName: input.voiceName, text: input.text });
+						return {
+							audio: new Uint8Array([0x52, 0x49, 0x46, 0x46]),
+							mediaType: "audio/wav",
+							fileExtension: "wav",
+							seconds: 2.25,
+							usage: { inputTokens: 12, cachedTokens: 0, outputTokens: 180 },
+							spendMicrodollars: 1626,
+						};
+					},
+				},
+				async executeTurn(req) {
+					capturedInstructions = req.instructions;
+					const stageTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const narrateTool = req.tools.find((t) => t.name === "narrate_explainer")!;
+					expect(narrateTool).toBeDefined();
+					const ctx = {
+						companyId,
+						runId: randomUUID(),
+						agentId: randomUUID(),
+						signal: req.signal,
+					} as never;
+					await stageTool.execute(
+						stageTool.parseArguments({
+							title: "Add UX breakdown",
+							summary: "Staged scenes.js for the buyer and seller journey.",
+							ops: [
+								{
+									op: "write_text",
+									path: "breakdowns/ux/scenes.js",
+									content: 'V.part("Start"); V.scene((s) => { s.say("Welcome to Brooks."); });',
+								},
+							],
+						}),
+						ctx,
+					);
+					const narrated = await narrateTool.execute(
+						narrateTool.parseArguments({
+							scenesPath: "breakdowns/ux/scenes.js",
+							title: "Narrate UX breakdown",
+							summary: "Added Kore voice narration.",
+						}),
+						ctx,
+					);
+					narrateResultText = narrated.kind === "text" ? narrated.value : "";
+					return { state: "ready", replyText: "Staged and narrated." };
+				},
+				async completeSessionTurn() {},
+			},
+		);
+
+		expect(capturedInstructions).toContain("breakdowns/<slug>/scenes.js");
+		expect(capturedInstructions).toContain("gemini-3.8-flash-tts (Kore)");
+		expect(synthesized).toEqual([{ model: "gemini-3.8-flash-tts", voiceName: "Kore", text: "Welcome to Brooks." }]);
+		const parsed = JSON.parse(narrateResultText) as Record<string, unknown>;
+		expect(parsed).toMatchObject({
+			ok: true,
+			state: "spoken",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			spokenNow: 1,
+			left: 0,
+		});
+		expect(stagedBatches).toHaveLength(2);
+		expect(stagedBatches[1]?.ops).toEqual([
+			{
+				op: "write_file",
+				path: expect.stringMatching(/^breakdowns\/ux\/voice\/[0-9a-f]{8}\.wav$/),
+				file: { manifestSha256: "a".repeat(64), fileSha256: "b".repeat(64), bytes: 4, mediaType: "audio/wav" },
+			},
+			{
+				op: "write_text",
+				path: "breakdowns/ux/voice/clips.json",
+				content: expect.stringContaining('"seconds": 2.25'),
+			},
+		]);
 	});
 });

@@ -402,10 +402,15 @@ describe("a sign-in ChatGPT no longer accepts", () => {
 						conversationEffort: "low" as const,
 						codingModel: "gpt-6.2-sol",
 						codingEffort: "high" as const,
+						voiceModel: "chatgpt-voice",
+						voiceName: "cove",
 						storedConversationModel: null,
 						storedCodingModel: null,
+						storedVoiceModel: null,
+						storedVoiceName: null,
 						conversationModels: ["gpt-6.2-sol", "gpt-6-astra"],
 						codingModels: ["gpt-6.2-sol", "gpt-6-astra"],
+						voiceModels: ["chatgpt-voice"],
 						conversationEfforts: {
 							"gpt-6.2-sol": ["low", "medium", "high", "xhigh"] as const,
 							"gpt-6-astra": ["low", "medium", "high", "xhigh"] as const,
@@ -413,6 +418,9 @@ describe("a sign-in ChatGPT no longer accepts", () => {
 						codingEfforts: {
 							"gpt-6.2-sol": ["low", "medium", "high"] as const,
 							"gpt-6-astra": ["low", "medium", "high"] as const,
+						},
+						voiceProfiles: {
+							"chatgpt-voice": ["cove", "juniper"] as const,
 						},
 						version: 0,
 					})),
