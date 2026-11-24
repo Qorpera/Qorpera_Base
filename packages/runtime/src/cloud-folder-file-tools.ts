@@ -856,7 +856,7 @@ export function cloudFolderFileTools(options: {
 						answer: { ...named, offset: 0 },
 						text: {
 							field: "text",
-							points: Array.from(text),
+							ends: codePointEndOffsets(text),
 							around,
 							secrets: cloudSecretSpans(around),
 							more: bytes.byteLength < total,
@@ -927,7 +927,7 @@ export function cloudFolderFileTools(options: {
 					answer: { ...named, offset: startOffset },
 					text: {
 						field: "text",
-						points: Array.from(sliceText),
+						ends: codePointEndOffsets(sliceText),
 						around,
 						secrets: cloudSecretSpans(around),
 						more: startOffset + Buffer.byteLength(around) < total,

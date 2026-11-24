@@ -18,7 +18,6 @@ import {
 	type SurfaceKind,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
-	type SurfacePreviewMode,
 	type SurfaceReconciliation,
 	type SurfaceSession,
 	type SurfaceSessionImages,
