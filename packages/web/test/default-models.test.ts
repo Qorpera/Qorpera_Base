@@ -11,9 +11,11 @@ import {
 	parseMemberDefaultModels,
 	type WebDefaultModels,
 } from "../src/cloud/default-models.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { fixture, profileA, settle, userA } from "./fixtures.ts";
 
 afterEach(() => {
+	setLanguagePreference("en");
 	document.body.replaceChildren();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -172,24 +174,23 @@ describe("default models transport", () => {
 		).rejects.toBeInstanceOf(DefaultModelsUnavailableError);
 	});
 
-	it("parses pre-voice payloads without failing", () => {
-		const legacy = parseMemberDefaultModels({
-			schema: "qorpera.member-default-models/v1",
-			conversationModel: "gpt-6.2-sol",
-			conversationEffort: "low",
-			codingModel: "gpt-6.2-sol",
-			codingEffort: "high",
-			storedConversationModel: null,
-			storedCodingModel: null,
-			conversationModels: ["gpt-6.2-sol"],
-			codingModels: ["gpt-6.2-sol"],
-			conversationEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
-			codingEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
-			version: 0,
-		});
-		expect(legacy.voiceModel).toBeNull();
-		expect(legacy.voiceName).toBeNull();
-		expect(legacy.voiceModels).toEqual([]);
+	it("rejects payloads missing voice fields", () => {
+		expect(() =>
+			parseMemberDefaultModels({
+				schema: "qorpera.member-default-models/v1",
+				conversationModel: "gpt-6.2-sol",
+				conversationEffort: "low",
+				codingModel: "gpt-6.2-sol",
+				codingEffort: "high",
+				storedConversationModel: null,
+				storedCodingModel: null,
+				conversationModels: ["gpt-6.2-sol"],
+				codingModels: ["gpt-6.2-sol"],
+				conversationEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+				codingEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+				version: 0,
+			}),
+		).toThrow();
 	});
 });
 
@@ -403,6 +404,26 @@ describe("DefaultModelsView", () => {
 		expect(view.el.textContent).toContain("Connect that subscription below before choosing it as a default.");
 		expect(client.read).toHaveBeenCalledTimes(3);
 
+		controller.abort();
+	});
+
+	it("translates Gemini voice profile tone descriptors in Danish", async () => {
+		setLanguagePreference("da");
+		const state = sampleDefaults();
+		const client: WebDefaultModels = {
+			read: vi.fn(async () => state),
+			set: vi.fn(async () => state),
+		};
+		const controller = new AbortController();
+		const view = new DefaultModelsView(client, controller.signal);
+		document.body.append(view.el);
+		await settle();
+
+		const voiceName = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		const labels = [...voiceName.options].map((option) => option.textContent);
+		expect(labels).toContain("Charon — Informativ");
+		expect(labels).toContain("Kore — Bestemt");
+		expect(labels).toContain("Sulafat — Varm");
 		controller.abort();
 	});
 });

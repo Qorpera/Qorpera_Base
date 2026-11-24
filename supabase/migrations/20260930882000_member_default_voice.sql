@@ -81,8 +81,6 @@ begin
 	v_gemini := public.qorpera_member_gemini_default_available(p_profile_id, p_user_id);
 	v_voice_model := case
 		when v_row.voice_model in ('gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts') and v_gemini then v_row.voice_model
-		when v_row.voice_model = 'chatgpt-voice' then 'chatgpt-voice'
-		when v_row.voice_model is null and v_gemini then 'gemini-3.8-flash-tts'
 		else 'chatgpt-voice'
 	end;
 	v_voice_name := case

@@ -89,16 +89,6 @@ begin
 	perform pg_temp.base_assert(pg_temp.mdv_refused(v_defaults) = '22023',
 		'2: Gemini voice profile refused when effective model is chatgpt-voice: ' || v_defaults::text);
 
-	v_defaults := pg_temp.mdv_call(pg_temp.mdv_owner(),
-		format('select public.qorpera_set_member_default_models(%L, null, null, null, null, 0, null, ''juniper'')', pg_temp.mdv_profile()));
-	perform pg_temp.base_assert(
-		v_defaults ->> 'voiceModel' = 'chatgpt-voice'
-		and v_defaults ->> 'voiceName' = 'juniper'
-		and v_defaults ->> 'storedVoiceModel' = 'chatgpt-voice'
-		and v_defaults ->> 'storedVoiceName' = 'juniper'
-		and (v_defaults ->> 'version')::bigint = 1,
-		'3: voice-only save pins coherent model and profile: ' || v_defaults::text);
-
 	select * into strict v_authority from public.qorpera_cloud_secret_broker_authorities
 	where profile_id = pg_temp.mdv_profile() and status = 'active' limit 1;
 
@@ -118,8 +108,19 @@ begin
 	perform pg_temp.base_assert(
 		v_defaults -> 'voiceModels' = '["gemini-3.8-flash-tts","gemini-3.8-flash-lite-tts","chatgpt-voice"]'::jsonb
 		and v_defaults ->> 'voiceModel' = 'chatgpt-voice'
-		and v_defaults ->> 'voiceName' = 'juniper',
-		'4: Gemini voice models offered once key is saved while preserving explicit ChatGPT choice: ' || v_defaults::text);
+		and v_defaults ->> 'voiceName' = 'cove'
+		and v_defaults -> 'storedVoiceModel' = 'null'::jsonb,
+		'3: saving a Gemini key offers Gemini TTS without switching unstored voice default off chatgpt-voice: ' || v_defaults::text);
+
+	v_defaults := pg_temp.mdv_call(pg_temp.mdv_owner(),
+		format('select public.qorpera_set_member_default_models(%L, null, null, null, null, 0, null, ''juniper'')', pg_temp.mdv_profile()));
+	perform pg_temp.base_assert(
+		v_defaults ->> 'voiceModel' = 'chatgpt-voice'
+		and v_defaults ->> 'voiceName' = 'juniper'
+		and v_defaults ->> 'storedVoiceModel' = 'chatgpt-voice'
+		and v_defaults ->> 'storedVoiceName' = 'juniper'
+		and (v_defaults ->> 'version')::bigint = 1,
+		'4: voice-only save pins coherent model and profile: ' || v_defaults::text);
 
 	v_defaults := pg_temp.mdv_call(pg_temp.mdv_owner(),
 		format('select public.qorpera_set_member_default_models(%L, null, null, null, null, 1, ''gemini-3.8-flash-tts'', null)', pg_temp.mdv_profile()));

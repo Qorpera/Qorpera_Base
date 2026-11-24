@@ -75,54 +75,8 @@ export const CHATGPT_VOICE_PROFILES = [
 	"sol",
 ] as const;
 
-const VOICE_PROFILE_LABELS: Readonly<Record<string, string>> = {
-	Charon: "Charon — Informative",
-	Kore: "Kore — Firm",
-	Puck: "Puck — Upbeat",
-	Zephyr: "Zephyr — Bright",
-	Aoede: "Aoede — Breezy",
-	Fenrir: "Fenrir — Excitable",
-	Leda: "Leda — Youthful",
-	Orus: "Orus — Firm",
-	Callirrhoe: "Callirrhoe — Easy-going",
-	Autonoe: "Autonoe — Bright",
-	Enceladus: "Enceladus — Breathy",
-	Iapetus: "Iapetus — Clear",
-	Umbriel: "Umbriel — Easy-going",
-	Algieba: "Algieba — Smooth",
-	Despina: "Despina — Smooth",
-	Erinome: "Erinome — Clear",
-	Algenib: "Algenib — Gravelly",
-	Rasalgethi: "Rasalgethi — Informative",
-	Laomedeia: "Laomedeia — Upbeat",
-	Achernar: "Achernar — Soft",
-	Alnilam: "Alnilam — Firm",
-	Schedar: "Schedar — Even",
-	Gacrux: "Gacrux — Mature",
-	Pulcherrima: "Pulcherrima — Forward",
-	Achird: "Achird — Friendly",
-	Zubenelgenubi: "Zubenelgenubi — Casual",
-	Vindemiatrix: "Vindemiatrix — Gentle",
-	Sadachbia: "Sadachbia — Lively",
-	Sadaltager: "Sadaltager — Knowledgeable",
-	Sulafat: "Sulafat — Warm",
-	cove: "Cove",
-	juniper: "Juniper",
-	maple: "Maple",
-	spruce: "Spruce",
-	ember: "Ember",
-	vale: "Vale",
-	breeze: "Breeze",
-	arbor: "Arbor",
-	sol: "Sol",
-};
-
 export function voiceModelName(modelId: string): string {
 	return VOICE_MODELS.find((model) => model.id === modelId)?.name ?? modelId;
-}
-
-export function voiceProfileLabel(voiceName: string): string {
-	return VOICE_PROFILE_LABELS[voiceName] ?? voiceName;
 }
 
 export interface MemberDefaultModels {
@@ -130,8 +84,8 @@ export interface MemberDefaultModels {
 	conversationEffort: SessionEffort;
 	codingModel: string;
 	codingEffort: SessionEffort;
-	voiceModel: string | null;
-	voiceName: string | null;
+	voiceModel: string;
+	voiceName: string;
 	storedConversationModel: string | null;
 	storedCodingModel: string | null;
 	storedVoiceModel: string | null;
@@ -274,24 +228,23 @@ export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
 	if (input.schema !== "qorpera.member-default-models/v1") {
 		throw new CloudShapeError("default models");
 	}
-	const hasVoice = input.voiceModel !== undefined || input.voiceModels !== undefined;
 	return {
 		conversationModel: nonEmptyString(input.conversationModel, "conversation default model", 128),
 		conversationEffort: parseEffort(input.conversationEffort, "conversation default effort"),
 		codingModel: nonEmptyString(input.codingModel, "coding default model", 128),
 		codingEffort: parseEffort(input.codingEffort, "coding default effort"),
-		voiceModel: hasVoice ? nonEmptyString(input.voiceModel, "voice default model", 128) : null,
-		voiceName: hasVoice ? nonEmptyString(input.voiceName, "voice default profile", 128) : null,
+		voiceModel: nonEmptyString(input.voiceModel, "voice default model", 128),
+		voiceName: nonEmptyString(input.voiceName, "voice default profile", 128),
 		storedConversationModel: parseOptionalModel(input.storedConversationModel, "stored conversation model"),
 		storedCodingModel: parseOptionalModel(input.storedCodingModel, "stored coding model"),
-		storedVoiceModel: hasVoice ? parseOptionalModel(input.storedVoiceModel, "stored voice model") : null,
-		storedVoiceName: hasVoice ? parseOptionalModel(input.storedVoiceName, "stored voice profile") : null,
+		storedVoiceModel: parseOptionalModel(input.storedVoiceModel, "stored voice model"),
+		storedVoiceName: parseOptionalModel(input.storedVoiceName, "stored voice profile"),
 		conversationModels: parseModelList(input.conversationModels, "conversation models"),
 		codingModels: parseModelList(input.codingModels, "coding models"),
-		voiceModels: hasVoice ? parseModelList(input.voiceModels, "voice models") : [],
+		voiceModels: parseModelList(input.voiceModels, "voice models"),
 		conversationEfforts: parseEffortMap(input.conversationEfforts, "conversation model efforts"),
 		codingEfforts: parseEffortMap(input.codingEfforts, "coding model efforts"),
-		voiceProfiles: hasVoice ? parseVoiceProfileMap(input.voiceProfiles, "voice model profiles") : {},
+		voiceProfiles: parseVoiceProfileMap(input.voiceProfiles, "voice model profiles"),
 		version: boundedInteger(input.version, "default models version", 0, Number.MAX_SAFE_INTEGER),
 	};
 }
