@@ -106,7 +106,6 @@ import { FriendsWindow } from "./views/friends-window.ts";
 import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { disposeInterface, renderInterface } from "./views/interface.ts";
-import { type MeetState, renderMeet } from "./views/meet.ts";
 import { MemberChatView } from "./views/member-chat.ts";
 import {
 	hasWebsiteIdea,
@@ -678,7 +677,6 @@ export function mountApplication(
 	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	let accountPayments: MyGoodWillView | undefined;
-	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
 	/** A Settings tab to open once the company home has resolved: home moves on to the Co-Founder's
@@ -724,7 +722,6 @@ export function mountApplication(
 			accountState = {};
 			accountPayments?.dispose();
 			accountPayments = undefined;
-			meetState = {};
 			resolvingRoute = undefined;
 			routeError = undefined;
 			navigationOpen = false;
@@ -753,7 +750,7 @@ export function mountApplication(
 			openFriends,
 			invites: api,
 			invitations: hub.store.get().invitations.length,
-			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
+			...(route.name === "company" && company && !company.store.get().accessLost
 				? {
 						navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) },
 						sidebar: {
@@ -892,7 +889,6 @@ export function mountApplication(
 		computer = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
-		meetState = {};
 	}
 
 	function companyRemovedHandler(): (profileId: string) => void {
@@ -1477,7 +1473,7 @@ export function mountApplication(
 			topbar.classList.remove("topbar-plain");
 			topbar.classList.add("topbar-company");
 			replace(topbar);
-			rail.hidden = route.section === "meet" || route.section === "concepts";
+			rail.hidden = route.section === "concepts";
 			syncRailReopen();
 			if (!rail.hidden) replace(rail, ...railSkeleton());
 			if (
@@ -1815,8 +1811,7 @@ export function mountApplication(
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
 		// The Concepts viewer is full screen: its own side panel leads back.
-		rail.hidden =
-			route.section === "meet" || route.section === "concepts" || controller.store.get().accessLost === true;
+		rail.hidden = route.section === "concepts" || controller.store.get().accessLost === true;
 		syncRailReopen();
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
@@ -2418,7 +2413,6 @@ export function mountApplication(
 			newConversation = undefined;
 		}
 		if (route.section !== "interface") disposeInterface(main);
-		if (route.section !== "meet") meetState = {};
 		const interfaceWrites = (): InterfaceWrites => ({
 			mailManage: () => {
 				const environment = {
@@ -3011,25 +3005,6 @@ export function mountApplication(
 				);
 				return;
 			}
-			case "meet":
-				renderMeet(
-					controller,
-					(agent, figure, color) =>
-						agents().update(
-							agent,
-							{ displayName: agent.displayName, role: agent.role, charter: agent.charter, figure, color },
-							controller.signal,
-						),
-					main,
-					meetState,
-					(next) => {
-						if (!current() || company !== controller) return;
-						meetState = next;
-						render();
-					},
-					current,
-				);
-				return;
 			case "interface":
 				renderInterface(main, controller, route.id ?? "", interfaceWrites());
 				return;

@@ -452,17 +452,7 @@ export const WORKSPACE: Record<string, string> = {
 
 	// app/views/approvals.ts
 
-	// app/views/meet.ts
-	"This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company; until then there is no agent to dress.":
-		"Denne virksomhed har ingen Co-Founder endnu. Skyen opretter en, når Order 0 starter virksomheden; indtil da er der ingen agent at give et udseende.",
-	"Open the company": "Åbn virksomheden",
-	"Your journey starts here": "Din rejse starter her",
-	"Choose a figure": "Vælg en figur",
 	"Saving…": "Gemmer…",
-	"Save appearance and continue": "Gem udseende og fortsæt",
-	"The appearance change could not be confirmed. Open the company to check it before saving again.":
-		"Ændringen af udseendet kunne ikke bekræftes. Åbn virksomheden og tjek det, før du gemmer igen.",
-	"Open the company without changing appearance": "Åbn virksomheden uden at ændre udseende",
 
 	// app/views/computer.ts, ui/machine-screen-view.ts: an agent's computer window (20260930712000)
 	"Connecting…": "Forbinder…",

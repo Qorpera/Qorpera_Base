@@ -87,14 +87,6 @@ export function surfaceLookOf(
 	};
 }
 
-export function surfaceKindEmblem(kind: SurfaceKind): Emblem {
-	return KIND_SPECS[kind].emblem;
-}
-
-export function surfaceKindTint(kind: SurfaceKind): string {
-	return KIND_SPECS[kind].tint;
-}
-
 export function surfaceTint(look: SurfaceLook): string {
 	return KIND_SPECS[look.kind].tint;
 }

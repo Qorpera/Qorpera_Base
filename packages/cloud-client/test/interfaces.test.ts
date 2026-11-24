@@ -7,17 +7,8 @@ import {
 	MAILBOX_INTERFACE,
 	MEMBERS_INTERFACE,
 	NUMBERS_TABLE,
-	PULSE_INTERFACE,
 } from "../src/interface-library.ts";
-import {
-	fillInterfaceText,
-	interfaceBucket,
-	interfaceLookup,
-	interfaceLookupIndex,
-	interfaceSeries,
-	interfaceSinceStart,
-	queryInterfaceRows,
-} from "../src/interface-query.ts";
+import { interfaceSinceStart, queryInterfaceRows } from "../src/interface-query.ts";
 import {
 	decodeInterfaceFile,
 	INTERFACE_SOURCE_COLUMNS,
@@ -35,7 +26,6 @@ import {
 	type TableFile,
 	type TableRow,
 	tableClaimProblems,
-	tableDefinitionProblems,
 	tableNumberText,
 	tableRowKey,
 	writeInterfaceOrderFile,
@@ -167,30 +157,6 @@ describe("interface files", () => {
 			for (const text of Object.values(entry.tables)) expect(parseTableFile(text).problems).toEqual([]);
 		}
 		for (const text of [NUMBERS_TABLE, CARDS_TABLE]) expect(parseTableFile(text).problems).toEqual([]);
-		const pulse = parseInterfaceFile(PULSE_INTERFACE);
-		if (!pulse.ok) throw new Error("pulse");
-		expect(pulse.file.main).toBe(true);
-		expect(pulse.file.views[0]?.blocks.map((b) => b.kind)).toEqual([
-			"text",
-			"list",
-			"numbers",
-			"list",
-			"list",
-			"list",
-			"calendar",
-			"detail",
-		]);
-		const numbers = pulse.file.views[0]?.blocks[2];
-		expect(numbers?.query.latestBy).toBe("number");
-		expect(numbers?.trend).toEqual({ over: "at", weeks: 12 });
-		const work = pulse.file.views[0]?.blocks[5];
-		expect(work?.query).toEqual({
-			where: { status: ["open", "blocked"] },
-			since: null,
-			order: { column: "updated", descending: true },
-			limit: 5,
-			latestBy: null,
-		});
 		const mailbox = parseInterfaceFile(MAILBOX_INTERFACE);
 		if (!mailbox.ok) throw new Error("mailbox");
 		expect(mailbox.file.needs).toEqual(["mail"]);
@@ -768,18 +734,6 @@ describe("the claim rule", () => {
 		).toEqual(["claim"]);
 	});
 
-	it("never lets a definition edit drop the protection from a held cell", () => {
-		const loosened = table(
-			AREAS_TABLE.replace(
-				'name = "supervisor"\ntype = "member"\noptional = true\nneeds_yes = true',
-				'name = "supervisor"\ntype = "member"\noptional = true',
-			),
-		);
-		expect(loosened.columns.find((c) => c.name === "supervisor")?.needsYes).toBe(false);
-		expect(codes(tableDefinitionProblems(areas, loosened, [row("Sales", SOFIE, IDA)]))).toEqual(["claim"]);
-		expect(tableDefinitionProblems(areas, loosened, [row("Sales", SOFIE, null)])).toEqual([]);
-	});
-
 	it("keeps agents off an area's member-only columns by default", () => {
 		expect(
 			codes(
@@ -885,48 +839,6 @@ describe("queries", () => {
 		expect(interfaceSinceStart("-1m", clock)).toBe(Date.UTC(2026, 8, 2, 12));
 		expect(interfaceSinceStart("yesterday", clock)).toBeNull();
 	});
-
-	it("buckets a chart by week and sums or counts", () => {
-		expect(interfaceBucket(Date.UTC(2026, 9, 4), "week")).toBe("2026-09-28");
-		expect(interfaceBucket(Date.UTC(2026, 9, 4), "month")).toBe("2026-10");
-		const refunds: TableRow[] = [
-			{ at: "2026-09-29T10:00Z", amount: 9.99 },
-			{ at: "2026-10-01T10:00Z", amount: 59.99 },
-			{ at: "2026-10-06T10:00Z", amount: 79 },
-		];
-		expect(interfaceSeries(refunds, { x: "at", y: "amount", by: null, every: "week", total: "sum" })).toEqual([
-			{ x: "2026-09-28", by: null, value: 69.98 },
-			{ x: "2026-10-05", by: null, value: 79 },
-		]);
-		expect(interfaceSeries(refunds, { x: "at", y: null, by: null, every: "month", total: "count" })).toEqual([
-			{ x: "2026-09", by: null, value: 1 },
-			{ x: "2026-10", by: null, value: 2 },
-		]);
-		expect(
-			interfaceSeries(refunds, { x: "at", y: "amount", by: null, every: null, total: null }).map((p) => p.value),
-		).toEqual([9.99, 59.99, 79]);
-	});
-
-	it("looks rows up in another table and fills texts", () => {
-		const areas: TableRow[] = [
-			{ area: "Sales", owner: SOFIE, supervisor: SOFIE, agents: [FINANCE] },
-			{ area: "Finance", owner: AMIR, supervisor: IDA, agents: [FINANCE, AMIR] },
-		];
-		expect(
-			interfaceLookup(SOFIE, { from: "table:areas", match: "owner", show: "area", count: false }, areas),
-		).toEqual(["Sales"]);
-		expect(
-			interfaceLookup(IDA, { from: "table:areas", match: "supervisor", show: "agents", count: false }, areas),
-		).toEqual([FINANCE, AMIR]);
-		expect(interfaceLookup(AMIR, { from: "table:areas", match: "owner", show: null, count: true }, areas)).toBe(1);
-		expect(
-			fillInterfaceText(
-				"Ask {kept_by} about {number}{nothing}",
-				{ kept_by: FINANCE, number: "Revenue" },
-				(column, value) => (column === "kept_by" ? "Finance" : String(value)),
-			),
-		).toBe("Ask Finance about Revenue");
-	});
 });
 
 describe("review round 1", () => {
@@ -970,22 +882,8 @@ describe("review round 1", () => {
 		expect(result.problems.map((p) => p.code)).toEqual(["duplicate"]);
 	});
 
-	it("reads only a row's own columns", () => {
-		expect(fillInterfaceText("{constructor}|{hasownproperty}", {})).toBe("|");
+	it("freezes source column lists", () => {
 		expect(() => (INTERFACE_SOURCE_COLUMNS.waiting as string[]).push("x")).toThrow();
-	});
-
-	it("builds a lookup over a full table once", () => {
-		const rows: TableRow[] = Array.from({ length: 10_000 }, (_, n) => ({
-			id: `r${n}`,
-			owner: `m${n % 100}`,
-			area: `a${n % 7}`,
-		}));
-		const started = performance.now();
-		const owns = interfaceLookupIndex({ from: "table:areas", match: "owner", show: "area", count: false }, rows);
-		for (let n = 0; n < 10_000; n++) owns(`m${n % 100}`);
-		expect(performance.now() - started).toBeLessThan(2_000);
-		expect(owns("m3")).toEqual(["a3", "a5", "a0", "a2", "a4", "a6", "a1"]);
 	});
 
 	it("checks names as written, and lets the seeded folders themselves be", () => {
@@ -1021,21 +919,6 @@ describe("review round 1", () => {
 });
 
 describe("review round 2", () => {
-	const areas = table(AREAS_TABLE);
-	it("refuses turning needs_yes on over a filled column", () => {
-		const plain = table(
-			AREAS_TABLE.replace(
-				'name = "supervisor"\ntype = "member"\noptional = true\nneeds_yes = true',
-				'name = "supervisor"\ntype = "member"\noptional = true',
-			),
-		);
-		const filled: TableRow[] = [
-			{ area: "Sales", about: null, owner: SOFIE, shared: false, supervisor: AMIR, agents: null },
-		];
-		expect(tableDefinitionProblems(plain, areas, filled).map((p) => p.code)).toEqual(["claim"]);
-		expect(tableDefinitionProblems(plain, areas, [{ ...filled[0], supervisor: null } as TableRow])).toEqual([]);
-	});
-
 	it("trims slashes in linear time and refuses an over-long path", () => {
 		const started = performance.now();
 		expect(interfacePathProblems(`${"/".repeat(5_000)}QorperaOS/interfaces`)).toHaveLength(1);

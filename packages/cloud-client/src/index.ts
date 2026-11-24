@@ -1,14 +1,10 @@
 /** Browser-safe member APIs. Node filesystem/view transports use explicit node/* subpaths. */
-export * from "./cloud-company-computer-access.ts";
-export * from "./cloud-company-computer-browser-profiles.ts";
 export * from "./cloud-company-computer-contract.ts";
 export * from "./cloud-company-computer-privacy.ts";
-export * from "./cloud-company-computer-sign-in.ts";
 export * from "./cloud-company-computer-start.ts";
 export * from "./cloud-company-computer-view-channel.ts";
 export * from "./cloud-company-computer-viewer.ts";
 export * from "./cloud-company-computer-views.ts";
-export * from "./cloud-member-browser-recovery.ts";
 export * from "./cloud-member-company-computer.ts";
 export * from "./cloud-member-data.ts";
 export * from "./cloud-member-folder.ts";
@@ -17,8 +13,6 @@ export * from "./cloud-presence.ts";
 export * from "./cloud-session-run-control.ts";
 export * from "./company-path-presence.ts";
 export * from "./company-path-schema.ts";
-export * from "./member-browser-recovery-session.ts";
-export * from "./member-company-browser-session.ts";
 export * from "./member-company-path-presence.ts";
 export * from "./native-provider-login.ts";
 export * from "./surface-studio-patches.ts";

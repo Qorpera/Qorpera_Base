@@ -10,11 +10,9 @@ export const notes = {
   Done: 'A fast flourish, followed by a slower eye reaction and a settled finish.',
 };
 export const accents = ['#97cf66', '#a584d2', '#63bea9', '#658fd0', '#d98fa4', '#cfb94d'];
-// The selected labels in the 60 fps recording determine these boundaries.
 export const timelines = {
   Idle: { start: 2/60, end: 224/60 },
   Working: { start: 224/60, end: 874/60, loopStart: 0 },
-  // The first contraction is visible one frame before the label changes.
   Waiting: { start: 874/60, end: 1153/60 },
   Blocked: { start: 1153/60, end: 1354/60, loopStart: .5 },
   Thinking: { start: 1354/60, end: 1653/60, loopStart: 1653/60-1354/60-4.2 },
@@ -37,14 +35,11 @@ function recordedFace(state, t) {
   const frames=eyeTracks[state], index=clamp(t*60,0,frames.length-1), lower=Math.floor(index);
   const a=frames[lower], b=frames[Math.min(lower+1,frames.length-1)], u=index-lower;
   return a.map((eye,j)=>Object.fromEntries(faceKeys.map((key,k)=> {
-    // Hidden eyes stay at the visible end of a segment instead of crossing
-    // the entire face when they reappear after a turn.
     const value=k<5&&eye[5]!==b[j][5]?(eye[5]?eye[k]:b[j][k]):eye[k]+(b[j][k]-eye[k])*u;
     return [key,value];
   })));
 }
 
-// A shared 100-unit artwork frame. Eye tracks retarget onto each original face.
 export function pose(state, seconds, { reduced = false } = {}) {
   if (!states.includes(state) || !Number.isFinite(seconds)) throw new RangeError('Unknown state or time');
   const t = Math.max(0, seconds), u=localTime(state,t);
@@ -53,8 +48,6 @@ export function pose(state, seconds, { reduced = false } = {}) {
     dots: [0,1,2].map(()=>({x:50,y:50,r:0,alpha:1})),
     stemTop: 50, stemBottom: 50, stemWidth: 0, alertDotY: 50, alertDotR: 0, strokes: [] };
   if (eyeTracks[state]) p.face=recordedFace(state,u);
-  // Idle, Working and Waiting use recorded eye contours in the preview.
-  // Fitted faces remain here for the transitions into the symbolic states.
   if (state === 'Blocked') {
     p.body = 1 - smooth(.01, .2, t); p.eyes = 1 - smooth(0, .08, t);
     p.stemTop = 50 - 21 * smooth(.08, .26, t);
@@ -66,7 +59,6 @@ export function pose(state, seconds, { reduced = false } = {}) {
     p.body = 1 - smooth(.01, .21, t); p.eyes = 1 - smooth(0, .09, t);
     const spread=smooth(.1,.34,t);
     for (let i = 0; i < 3; i++) {
-      // Peaks measured at 23.75, 24.20, 24.67 seconds in the recording.
       const phase=(t-(23.75-timelines.Thinking.start)-i*1.4/3)/1.4;
       const wave=((1+Math.cos(tau*phase))/2)**2;
       p.dots[i] = { x: 50 + (i - 1) * 21.5 * spread, y: 50,

@@ -12,45 +12,7 @@
 }
 .rail-surface-add:hover { background: var(--rail-hover); color: var(--text); text-decoration: none; }
 .rail-surface-add .icon { width: 14px; height: 14px; }
-.rail-surface-create {
-	display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; margin: 2px 0 4px; padding: 0 10px;
-	border: 1px dashed color-mix(in srgb, var(--text) 16%, transparent); border-radius: 8px;
-	background: color-mix(in srgb, var(--text) 2%, transparent); color: var(--rail-small); font: inherit;
-	font-size: 13px; font-weight: 550; text-align: left; cursor: default;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
-}
-.rail-surface-create:hover {
-	border-color: color-mix(in srgb, var(--text) 28%, transparent); background: var(--rail-hover); color: var(--text);
-}
-.rail-surface-create .icon { width: 14px; height: 14px; flex: none; }
-.rail-legacy-agents { margin-top: 8px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent); }
-.rail-legacy-head { display: flex; align-items: center; gap: 4px; }
-.rail-legacy-toggle {
-	display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 30px; padding: 0 8px 0 6px;
-	border: 0; border-radius: 7px; background: none; color: var(--rail-small); font: inherit;
-	font-size: 12px; font-weight: 600; text-align: left; cursor: default;
-}
-.rail-legacy-toggle:hover { background: var(--rail-hover); color: var(--text); }
-.rail-legacy-chevron { display: grid; place-items: center; width: 14px; height: 14px; transition: transform var(--motion-base) var(--ease-spring); }
-.rail-legacy-chevron .icon { width: 12px; height: 12px; }
-.rail-legacy-agents.is-open .rail-legacy-chevron { transform: rotate(90deg); }
-.rail-legacy-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-legacy-count {
-	min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
-	background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--rail-small);
-	font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
-}
-.rail-legacy-migrate {
-	flex: none; height: 22px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
-	border-radius: 999px; background: transparent; color: var(--rail-small); font: inherit;
-	font-size: 11px; font-weight: 600; cursor: default;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
-}
-.rail-legacy-migrate:hover { background: var(--rail-hover); color: var(--text); }
-.rail-legacy-migrate[hidden] { display: none; }
-.rail-legacy-body { padding-top: 4px; }
-.rail-legacy-body[hidden] { display: none; }
-.rail-compact .rail-legacy-agents, .rail-compact .rail-agents-hub, .rail-compact .rail-surface-create { display: none; }
+.rail-compact .rail-agents-hub { display: none; }
 .rail-compact .rail-surfaces { justify-items: center; gap: 4px; }
 .rail-compact .rail-surface-group { justify-items: center; width: 100%; }
 .rail-compact .rail-surface-title,
@@ -184,9 +146,6 @@
 	color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: default;
 }
 .rail-automation-take:disabled { opacity: 0.5; }
-.rail-agents-legacy { margin-top: 2px; }
-.rail-agents-legacy[hidden] { display: none; }
-.rail-agents-legacy.is-open .rail-legacy-chevron { transform: rotate(90deg); }
 
 .surface-tile {
 	--tile-size: 48px;
@@ -358,16 +317,6 @@
 	animation: surface-spin 0.9s linear infinite;
 }
 @keyframes surface-spin { to { transform: rotate(360deg); } }
-
-.rail-automations {
-	display: flex; align-items: center; gap: 9px; width: 100%; height: 34px; margin-bottom: 2px; padding: 0 8px 0 10px;
-	border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 13px; font-weight: 550;
-	text-align: left; cursor: default;
-}
-.rail-automations:hover { background: var(--rail-hover); }
-.rail-automations .icon { width: 16px; height: 16px; color: var(--rail-small); }
-.rail-automations-label { flex: 1; }
-.rail-automations-count { color: var(--rail-small); font-size: 11.5px; font-weight: 500; }
 
 /* ---- the Surface page ---------------------------------------------------------- */
 .page.surface-page {
@@ -1352,17 +1301,14 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-sheet h2 { margin: 0; font-size: 18px; }
 .surface-sheet h3 { margin: 10px 0 0; color: var(--text-soft); font-size: 12px; font-weight: 650; }
 .surface-sheet-lead { margin: 0; color: var(--text-muted); font-size: 13.5px; line-height: 1.5; }
-.surface-sheet-list, .surface-automations { display: grid; margin: 0; padding: 0; list-style: none; }
-.surface-sheet-list li, .surface-automations li {
+.surface-sheet-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.surface-sheet-list li {
 	display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 13px;
 }
-.surface-sheet-list li > div, .surface-automations li > div { display: grid; flex: 1; min-width: 0; }
+.surface-sheet-list li > div { display: grid; flex: 1; min-width: 0; }
 .surface-sheet-list label { display: flex; flex-direction: row; align-items: center; gap: 10px; flex: 1; }
-.surface-sheet-list small, .surface-automations small { color: var(--text-muted); font-size: 12px; }
+.surface-sheet-list small { color: var(--text-muted); font-size: 12px; }
 .surface-sheet-select { max-width: 220px; }
-.surface-automations li.is-paused strong { color: var(--text-muted); }
-.surface-automation-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: color-mix(in srgb, var(--text) 5%, transparent); }
-.surface-automations-empty { color: var(--text-muted); }
 .surface-sheet-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-top: 8px; }
 .surface-sheet-status { flex: 1; margin: 0; color: var(--text-muted); font-size: 12.5px; }
 .surface-local-note {
@@ -1554,8 +1500,6 @@ a.surface-address-row:hover { text-decoration: none; }
 	from { opacity: 0.82; transform: translateY(2px); }
 	to { opacity: 1; transform: translateY(0); }
 }
-.studio-sync-btn { display: inline-flex; align-items: center; gap: 6px; }
-.studio-sync-btn .icon { width: 13px; height: 13px; }
 .studio-conflict {
 	display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px;
 	border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border)); border-radius: 14px;

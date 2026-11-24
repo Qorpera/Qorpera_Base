@@ -36,14 +36,7 @@ export const SURFACES: Record<string, string> = {
 	"What happens to {name}": "Hvad der sker med {name}",
 	Boards: "Tavler",
 	"Archive to Files": "Arkivér i Filer",
-	"Last run {time}": "Sidst kørt {time}",
 	"Turn {name} on or off": "Slå {name} til eller fra",
-	"No automations yet. Background routines appear here once they move out of agents.":
-		"Ingen automatiseringer endnu. Baggrundsrutiner vises her, når de flyttes ud af agenterne.",
-	Automations: "Automatiseringer",
-	"Background routines work quietly and surface results as sessions or decisions.":
-		"Baggrundsrutiner arbejder stille og viser resultater som sessioner eller beslutninger.",
-	"Review the move to Surfaces": "Gennemgå flytningen til Surfaces",
 	Merged: "Flettet",
 	"Show {title} in the preview": "Vis {title} i forhåndsvisningen",
 	"Approve {title}": "Godkend {title}",

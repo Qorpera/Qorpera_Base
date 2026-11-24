@@ -10,13 +10,6 @@ export * from "./company-computer-preparation.ts";
 /** JSON-compatible durable data accepted by Qorpera cloud contracts. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
-/** Durable execution identity assigned by the cloud control plane. */
-export interface ExecutionIdentity {
-	kind: "turn" | "wake";
-	id: string;
-	claimantId: string;
-}
-
 export * from "./cloud-code-checks.ts";
 export * from "./cloud-coding.ts";
 export * from "./cloud-coding-command.ts";

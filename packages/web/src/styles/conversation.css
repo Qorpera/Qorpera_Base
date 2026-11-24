@@ -584,13 +584,6 @@
 .agent-details.is-choosing-figure, .agent-details.is-choosing-figure > .surface-dialog-content { overflow: visible; }
 .agent-page { animation: agent-page-in 180ms cubic-bezier(.2, .7, .2, 1) both; }
 @keyframes agent-page-in { from { opacity: 0; transform: translateY(5px); } }
-.agent-page-empty { display: grid; justify-items: center; gap: 10px; padding: 40px 16px 28px; text-align: center; color: var(--text-soft); }
-.agent-page-empty > .icon { width: 26px; height: 26px; }
-.agent-page-empty p { margin: 0; font-size: 13px; }
-.agent-page-empty .btn { margin-top: 6px; color: var(--text); }
-.agent-page-loading { margin: 0; padding: 48px 0 28px; text-align: center; color: var(--text-soft); font-size: 12px; }
-.agent-page-link { display: inline-flex; align-items: center; gap: 3px; margin-top: 18px; font-size: 12px; }
-.agent-page-link .icon { width: 12px; height: 12px; }
 
 .agent-details-identity { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 22px; min-height: 124px; padding-bottom: 20px; }
 .agent-details-names { display: grid; align-content: center; gap: 2px; min-width: 0; }
@@ -787,8 +780,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px auto minmax(0, 1fr); }
 .computer-panel.is-entered .screen-viewer-titlebar { padding: 0 2px; }
 /* Square icon buttons in the frame; the exit is the compress glyph, named "Back to thread" for the tooltip and screen readers. */
-.computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 30px; height: 30px; color: #fff; }
-.computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(255 255 255 / 18%); }
+.computer-panel.is-entered .screen-viewer-controls > button { width: 30px; height: 30px; color: #fff; }
+.computer-panel.is-entered .screen-viewer-controls > button:hover { background: rgb(255 255 255 / 18%); }
 /* The 8:5 screen fits whichever side is tighter: the frame's width, or its height minus the titlebar row and bottom padding. The vh line is the fallback where container units are unsupported. */
 .computer-panel.is-entered .screen-viewer-stage { width: min(100%, calc(160vh - 196px)); width: min(100%, calc((100cqh - 56px - var(--computer-bar-h, 0px)) * 1.6)); border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
@@ -818,34 +811,28 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* Hover shows the controls, and so does keyboard focus. A click or a drag focuses the panel as well (is-pointer-focus, set in computer.ts); that focus must not keep the controls up once the pointer has left. */
 .computer-panel:hover .screen-viewer-enter, .computer-panel:focus-within:not(.is-pointer-focus) .screen-viewer-enter { opacity: 1; pointer-events: auto; }
 .computer-panel:not(.is-entered) .screen-viewer-titlebar { position: absolute; top: 6px; left: 6px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
-.computer-panel:not(.is-entered) .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
+.computer-panel:not(.is-entered) .screen-viewer-heading { display: none; }
 .computer-panel:not(.is-entered) .screen-viewer-controls { gap: 2px; padding: 0; border: 0; background: transparent; box-shadow: none; }
-.computer-panel .screen-viewer-controls:not(:has(> button:not([hidden]):not(:disabled):not(.screen-viewer-close))) { display: none; }
-.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { display: grid; place-items: center; padding: 0; font-size: 0; }
-.computer-panel:not(.is-entered) .screen-viewer-controls > button:not(.screen-viewer-close) { width: 24px; height: 24px; min-height: 24px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); }
-.computer-panel:not(.is-entered) .screen-viewer-controls > button:not(.screen-viewer-close):hover { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
-.computer-panel .screen-viewer-controls > button.screen-viewer-takeover[aria-pressed=true] { color: #9fc4ff; border-color: rgb(98 159 255 / 45%); background: rgb(98 159 255 / 18%); }
-.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close)::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: var(--computer-control-icon) center / contain no-repeat; }
-.computer-panel .screen-viewer-takeover { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 3 15 10-7 1-3 7Z'/%3E%3C/svg%3E"); }
+.computer-panel .screen-viewer-controls:not(:has(> button:not([hidden]):not(:disabled))) { display: none; }
+.computer-panel .screen-viewer-controls > button { display: grid; place-items: center; padding: 0; font-size: 0; }
+.computer-panel:not(.is-entered) .screen-viewer-controls > button { width: 24px; height: 24px; min-height: 24px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); }
+.computer-panel:not(.is-entered) .screen-viewer-controls > button:hover { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
+.computer-panel .screen-viewer-controls > button::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: var(--computer-control-icon) center / contain no-repeat; }
 .computer-panel .screen-viewer-back { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 8h5V3m8 0v5h5M8 21v-5H3m18 0h-5v5'/%3E%3C/svg%3E"); }
-.computer-panel .screen-viewer-reconnect { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5'/%3E%3C/svg%3E"); }
 .computer-panel .screen-viewer-controls > button[hidden] { display: none; }
 .computer-panel .screen-viewer-controls > button:disabled { display: none; }
-.computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within:not(.is-pointer-focus) .screen-viewer-titlebar, .computer-panel:has(.screen-viewer-status.is-error) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
+.computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within:not(.is-pointer-focus) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
 .computer-panel:not(.is-entered) .screen-viewer-stage { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
-.computer-panel .screen-viewer-status { background: #24262a; color: #b9bbc1; font-size: 12px; }
-.computer-panel .screen-viewer-status-content, .computer-panel .screen-viewer-status.is-error .screen-viewer-status-content { display: flex; flex-direction: column-reverse; align-items: center; width: min(280px, calc(100% - 48px)); gap: 12px; }
-.computer-loading-spinner, .computer-panel .screen-viewer-progress { flex: none; width: 20px; height: 20px; border: 2px solid rgb(255 255 255 / 15%); border-top-color: #c9c9cc; border-radius: 50%; background: none; animation: computer-spin 800ms linear infinite; }
-.computer-panel .screen-viewer-progress span { display: none; }
+.computer-loading-spinner { flex: none; width: 20px; height: 20px; border: 2px solid rgb(255 255 255 / 15%); border-top-color: #c9c9cc; border-radius: 50%; background: none; animation: computer-spin 800ms linear infinite; }
 @keyframes computer-spin { to { transform: rotate(360deg); } }
 @media (hover: none) {
 	.computer-panel .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
 	.computer-panel .screen-viewer-enter { opacity: 1; pointer-events: auto; min-height: 40px; }
 	.computer-panel:not(.is-entered) .computer-close { opacity: 1; pointer-events: auto; }
-	.computer-panel .computer-close, .computer-panel .screen-viewer-controls > button:not(.screen-viewer-close), .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 36px; height: 36px; min-height: 36px; }
+	.computer-panel .computer-close, .computer-panel .screen-viewer-controls > button, .computer-panel.is-entered .screen-viewer-controls > button { width: 36px; height: 36px; min-height: 36px; }
 }
 @media (prefers-reduced-motion: reduce) {
-	.computer-loading-spinner, .computer-panel .screen-viewer-progress { animation: none; }
+	.computer-loading-spinner { animation: none; }
 	.computer-panel .screen-viewer-titlebar, .computer-panel .screen-viewer-enter, .computer-panel .computer-close, .computer-panel .screen-viewer-embedded::after { transition: none; }
 }
 /* The picture of an agent's desktop (20260930712000): the same frame, a canvas instead of the remote screen. The picture keeps its proportions inside the stage; its mark says Live, or Updating… while the last picture is held. */
@@ -1016,7 +1003,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .agent-card .group-details-participants li { gap: 10px; padding: 4px 0; font-size: 13px; }
 .agent-card .group-details-participants li > .figure, .agent-card .group-details-participants li > .person-avatar { width: 28px; height: 28px; font-size: 11px; }
 .agent-card .group-details-stage > .group-chat-avatar { width: 64px; }
-.group-details-loading { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
 .group-edit-fields, .group-member-options { min-width: 0; margin: 0; padding: 0; border: 0; }
 .group-edit-fields { display: grid; gap: 18px; }
 .group-edit-fields > label { display: grid; gap: 6px; font-weight: 600; }
@@ -1030,7 +1016,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .group-member-choice > span:not(.figure, .person-avatar) { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .group-member-choice small { color: var(--text-muted); }
 .group-edit-fields:disabled .group-member-choice { cursor: default; opacity: .6; }
-.group-save-status:empty { display: none; }
 /* A coding session (Order 9). In the thread it is one line like a message to a coworker (.peer-link, below),
  * "Started a coding session in (mark) Codex"; while it runs, the header carries it beside the agent. Opened, it is its
  * own thread over the conversation (.coding-thread), read like one: the transcript scrolls, the composer stays under it. */

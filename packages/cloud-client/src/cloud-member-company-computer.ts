@@ -1,23 +1,6 @@
-import { CloudCompanyComputerAccess } from "./cloud-company-computer-access.ts";
-import { CloudCompanyComputerBrowserProfiles } from "./cloud-company-computer-browser-profiles.ts";
-import {
-	assertCompanyComputerScope,
-	COMPANY_COMPUTER_UUID,
-	type CompanyComputerScope,
-} from "./cloud-company-computer-contract.ts";
-import { CloudCompanyComputerSignIn } from "./cloud-company-computer-sign-in.ts";
-import { CloudCompanyComputerStart } from "./cloud-company-computer-start.ts";
-import { CloudCompanyComputerViews } from "./cloud-company-computer-views.ts";
+import { COMPANY_COMPUTER_UUID } from "./cloud-company-computer-contract.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
-export interface MemberCompanyComputerCatalog {
-	companyId: string;
-	environmentId: string;
-	canManage: boolean;
-	scope: CompanyComputerScope | null;
-	staff: { staffAgentId: string; name: string }[];
-	nextAfter: string | null;
-}
 /** Where one of an agent's machines stands (qorpera_company_machine_state): on its way up while `starting` (placed)
  * or `waiting` (for room or computer hours), on, going to sleep, or asleep. */
 export type MemberAgentMachineState = "running" | "starting" | "waiting" | "stopping" | "stopped";
@@ -186,13 +169,6 @@ export class CloudMemberCompanyComputerClient {
 		this.#origin = url.origin;
 		this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 	}
-	#scope(value: CompanyComputerScope): CompanyComputerScope {
-		record(value, "companyComputerId,companyId,environmentId,logicalComputerId");
-		assertCompanyComputerScope(value, value);
-		if (value.companyId !== this.#options.companyId || value.environmentId !== this.#options.environmentId)
-			throw new Error("Company Computer belongs to a different company");
-		return { ...value };
-	}
 	async #rpc(
 		method: string,
 		args: Record<string, unknown>,
@@ -232,53 +208,6 @@ export class CloudMemberCompanyComputerClient {
 			this.#options.timeoutMs ?? 15000,
 			signal,
 		);
-	}
-	async catalog(signal: AbortSignal, after: string | null = null): Promise<MemberCompanyComputerCatalog> {
-		if (after !== null && !COMPANY_COMPUTER_UUID.test(after)) throw new Error("Invalid Company Computer page");
-		const value = record(
-			(
-				await this.#rpc(
-					"qorpera_member_office_catalog",
-					{ p_environment_id: this.#options.environmentId, p_after: after },
-					signal,
-				)
-			).data,
-			"canManage,companyId,environmentId,nextAfter,scope,staff",
-		);
-		if (
-			value.companyId !== this.#options.companyId ||
-			value.environmentId !== this.#options.environmentId ||
-			typeof value.canManage !== "boolean" ||
-			!Array.isArray(value.staff) ||
-			value.staff.length > 50
-		)
-			throw new Error("Invalid Company Computer catalog");
-		const scope = value.scope === null ? null : this.#scope(value.scope as CompanyComputerScope);
-		let previous = after;
-		const staff = value.staff.map((input) => {
-			const row = record(input, "name,staffAgentId");
-			if (
-				typeof row.staffAgentId !== "string" ||
-				!COMPANY_COMPUTER_UUID.test(row.staffAgentId) ||
-				(previous !== null && row.staffAgentId <= previous) ||
-				typeof row.name !== "string" ||
-				!row.name ||
-				[...row.name].length > 160
-			)
-				throw new Error("Invalid Company Computer roster");
-			previous = row.staffAgentId;
-			return { staffAgentId: row.staffAgentId, name: row.name };
-		});
-		if (value.nextAfter !== null && (staff.length !== 50 || value.nextAfter !== previous))
-			throw new Error("Invalid Company Computer cursor");
-		return {
-			companyId: this.#options.companyId,
-			environmentId: this.#options.environmentId,
-			canManage: value.canManage,
-			scope,
-			staff,
-			nextAfter: value.nextAfter as string | null,
-		};
 	}
 	/** An agent's machines for the computer window (qorpera_list_agent_machines, migration 20260930712000). Fields this
 	 * client does not know are ignored, so the database may add some first. */
@@ -535,43 +464,5 @@ export class CloudMemberCompanyComputerClient {
 		)
 			throw new Error("Invalid computer start");
 		return { kind: value.state, machineId: machine.machineId, name: machine.name, state: machine.state };
-	}
-	start(scope: CompanyComputerScope): CloudCompanyComputerStart {
-		return new CloudCompanyComputerStart(this.#scope(scope), (method, args, signal) =>
-			this.#rpc(method, args, signal),
-		);
-	}
-	access(scope: CompanyComputerScope, staffAgentId: string): CloudCompanyComputerAccess {
-		return new CloudCompanyComputerAccess(this.#scope(scope), staffAgentId, (method, args, signal) =>
-			this.#rpc(method, args, signal),
-		);
-	}
-	signIn(scope: CompanyComputerScope, memberId: string): CloudCompanyComputerSignIn {
-		return new CloudCompanyComputerSignIn({
-			scope: this.#scope(scope),
-			memberId,
-			rpc: (method, args, signal) => this.#rpc(method, args, signal),
-		});
-	}
-	browserProfiles(scope: CompanyComputerScope, memberId: string): CloudCompanyComputerBrowserProfiles {
-		return new CloudCompanyComputerBrowserProfiles({
-			scope: this.#scope(scope),
-			memberId,
-			rpc: (method, args, signal) => this.#rpc(method, args, signal),
-		});
-	}
-	views(
-		scope: CompanyComputerScope,
-		memberId: string,
-		url: string,
-		createWebSocket?: ConstructorParameters<typeof CloudCompanyComputerViews>[0]["createWebSocket"],
-	): CloudCompanyComputerViews {
-		return new CloudCompanyComputerViews({
-			scope: this.#scope(scope),
-			memberId,
-			url,
-			createWebSocket,
-			rpc: (method, args, signal) => this.#rpc(method, args, signal),
-		});
 	}
 }

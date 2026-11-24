@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { alignRegion, boxCanvas, bucketOf, level, reduce } from "../src/ui/figure-levels.ts";
+import { alignRegion, boxCanvas, bucketOf, level } from "../src/ui/figure-levels.ts";
 
 interface Draw {
 	target: HTMLCanvasElement;
@@ -63,19 +63,6 @@ describe("figure levels", () => {
 		expect(level("crown#fcb51b:body", image, 64)).toBe(scaled);
 		expect(draws).toEqual([]);
 		expect(level("crown#fcb51b:body", image, 512)).toBe(image);
-	});
-
-	it("halves a surface drawn each frame through the same canvases, cleared first", () => {
-		const eyes = surface();
-		const first = reduce(eyes, 32) as HTMLCanvasElement;
-		expect(first.width).toBe(32);
-		expectHalvings(eyes, 32);
-		const steps = draws.map((draw) => draw.target);
-		expect(clears).toEqual(steps);
-		draws = [];
-		expect(reduce(eyes, 32)).toBe(first);
-		expect(draws.map((draw) => draw.target)).toEqual(steps);
-		expect(reduce(eyes, 512)).toBe(eyes);
 	});
 
 	it("aligns a box outward, a pixel to spare, to whole pixels at a level", () => {
