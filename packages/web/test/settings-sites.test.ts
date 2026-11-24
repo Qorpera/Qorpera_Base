@@ -1864,11 +1864,8 @@ describe("sites client", () => {
 
 describe("Sites: a website made private here", () => {
 	it("turns the website's rail line into Not live yet", async () => {
-		const company = new Store<CompanyState>({
-			loading: false,
-			siteList: [shop],
-			siteListUnread: false,
-		} as CompanyState);
+		const company = new Store<CompanyState>({ loading: false } as CompanyState);
+		company.set({ siteList: [shop], siteListUnread: false });
 		let isPublic = true;
 		const hostingState = (): CompanySiteHostingState => ({
 			hostsDomain: "qorpera.com",
