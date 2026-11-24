@@ -90,7 +90,7 @@ export interface ClaimedSurfaceApprovedChange {
 export interface ClaimedSurfacePeerSession {
 	readonly sessionId: string;
 	readonly workerId: string;
-	readonly branchHeadSha?: string | null;
+	readonly recordedChangeHeadShas?: readonly string[];
 	readonly remainingChanges: readonly ClaimedSurfaceChangeRange[];
 }
 
@@ -109,6 +109,7 @@ export interface ClaimedSurfaceMergeJob {
 	readonly expectMainSha?: string | null;
 	readonly sessionWorkerId?: string | null;
 	readonly sessionBranchHeadSha?: string | null;
+	readonly sessionRecordedChangeHeadShas?: readonly string[];
 	readonly sessionState?: SurfaceSessionState | null;
 	readonly sessionHasActiveChat?: boolean;
 	readonly payload: Readonly<Record<string, unknown>>;

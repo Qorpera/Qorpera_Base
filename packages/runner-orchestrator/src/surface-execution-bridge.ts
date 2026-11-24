@@ -966,6 +966,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			sessionId: job.sessionId ?? job.jobId,
 			workerId: job.sessionWorkerId ?? job.sessionId ?? job.jobId,
 			...(job.sessionWorkerId && job.sessionBranchHeadSha ? { sessionBranchHeadSha: job.sessionBranchHeadSha } : {}),
+			...(job.sessionWorkerId && job.sessionRecordedChangeHeadShas
+				? { recordedChangeHeadShas: job.sessionRecordedChangeHeadShas }
+				: {}),
 			repository,
 			...(job.expectMainSha ? { expectMainSha: job.expectMainSha } : {}),
 			...(job.reconciledCommitSha ? { reconciledCommitSha: job.reconciledCommitSha } : {}),

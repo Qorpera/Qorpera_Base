@@ -243,7 +243,7 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			sections.push(lines.join("\n"));
 		} else if (branchHeadSha && mainSha && branchHeadSha !== mainSha) {
 			sections.push(
-				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. Before making new edits, run \`git read-tree --reset -u ${mainSha}\` (keeping HEAD on the branch tip) so your new commit starts cleanly from \`main\`, and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
+				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. Before making new edits, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
 			);
 		}
 	}

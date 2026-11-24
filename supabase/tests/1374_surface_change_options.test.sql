@@ -173,6 +173,29 @@ begin
 		'chosen option queues a land_change job in tier 2 for only the selected option'
 	);
 
+	declare
+		v_unrecorded_sha constant text := repeat('9', 40);
+		v_claimed jsonb;
+		v_merge_job jsonb;
+	begin
+		update public.qorpera_surface_sessions set branch_head_sha = v_unrecorded_sha where id = v_session;
+		v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'code_repo');
+		select elem into v_merge_job
+		from jsonb_array_elements(v_claimed -> 'merges') elem
+		where (elem ->> 'sessionId')::uuid = v_session
+		limit 1;
+		perform pg_temp.sco_assert(
+			v_merge_job is not null
+			and (v_merge_job ->> 'sessionBranchHeadSha') = v_unrecorded_sha
+			and (v_merge_job -> 'sessionRecordedChangeHeadShas') ? v_sha_1
+			and (v_merge_job -> 'sessionRecordedChangeHeadShas') ? v_sha_2
+			and (v_merge_job -> 'sessionRecordedChangeHeadShas') ? v_sha_3
+			and not ((v_merge_job -> 'sessionRecordedChangeHeadShas') ? v_unrecorded_sha),
+			'claim_pending_jobs_for_lane exposes recorded git_range heads without allowing unrecorded branch_head_sha'
+		);
+		update public.qorpera_surface_sessions set branch_head_sha = v_sha_3 where id = v_session;
+	end;
+
 	v_lease := extensions.gen_random_uuid();
 	update public.qorpera_surface_sessions
 	set state = 'running', lease_token = v_lease, lease_expires_at = clock_timestamp() + interval '5 minutes', closed_at = null

@@ -16,7 +16,7 @@ import {
 export interface PeerOpenSessionInput {
 	readonly sessionId: string;
 	readonly workerId: string;
-	readonly branchHeadSha?: string | null;
+	readonly recordedChangeHeadShas?: readonly string[];
 	readonly remainingChanges: readonly CodeHostChangeRange[];
 }
 
@@ -25,6 +25,7 @@ export interface SurfaceChangeApprovalRequest {
 	readonly sessionId: string;
 	readonly workerId: string;
 	readonly sessionBranchHeadSha?: string | null;
+	readonly recordedChangeHeadShas?: readonly string[];
 	readonly repository: CloudCodingRepository;
 	readonly expectMainSha?: string;
 	readonly reconciledCommitSha?: string;
@@ -90,17 +91,17 @@ export async function approveAndSyncSurfaceChanges(
 
 	// WHY: Once cherryPickChangeUnits advances refs/heads/main, isolate non-abort rebase errors so one peer session never fails an already-landed merge.
 	let siblingRebase: RebaseSessionChangesResult | null = null;
-	const needsBranchReset = Boolean(
-		request.sessionBranchHeadSha &&
-			!request.approvedChanges.some((change) => change.headSha === request.sessionBranchHeadSha),
-	);
+	const approvedHeads = new Set(request.approvedChanges.map((change) => change.headSha));
+	const needsBranchReset = Boolean(request.sessionBranchHeadSha && !approvedHeads.has(request.sessionBranchHeadSha));
 	if (request.siblingRemainingChanges.length > 0 || needsBranchReset) {
 		const allowedBranchTips = [
-			...(request.siblingRemainingChanges.length > 0
-				? [request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha]
-				: []),
-			...request.approvedChanges.map((change) => change.headSha),
-			...(request.sessionBranchHeadSha ? [request.sessionBranchHeadSha] : []),
+			...new Set([
+				...(request.siblingRemainingChanges.length > 0
+					? [request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha]
+					: []),
+				...request.approvedChanges.map((change) => change.headSha),
+				...(request.recordedChangeHeadShas ?? []),
+			]),
 		];
 		try {
 			siblingRebase = await rebaseSessionChanges(job, {
@@ -135,8 +136,10 @@ export async function approveAndSyncSurfaceChanges(
 				remainingChanges: peer.remainingChanges,
 				updateBranchRef: true,
 				allowedBranchTips: [
-					peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha,
-					...(peer.branchHeadSha ? [peer.branchHeadSha] : []),
+					...new Set([
+						peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha,
+						...(peer.recordedChangeHeadShas ?? []),
+					]),
 				],
 			});
 		} catch (error) {

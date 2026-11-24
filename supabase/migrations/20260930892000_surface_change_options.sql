@@ -134,7 +134,23 @@ $new$	perform 1 from public.qorpera_surface_changes where session_id = p_session
 select pg_temp.sco_patch('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure, array[
 $old$				'sessionWorkerId', sess.worker_id,$old$,
 $new$				'sessionWorkerId', sess.worker_id,
-				'sessionBranchHeadSha', sess.branch_head_sha,$new$,
+				'sessionBranchHeadSha', sess.branch_head_sha,
+				'sessionRecordedChangeHeadShas', coalesce(
+					(
+						select jsonb_agg(sub.head_sha)
+						from (
+							select ch.head_sha
+							from public.qorpera_surface_changes ch
+							where ch.session_id = j.session_id
+								and ch.kind = 'git_range'
+								and ch.head_sha is not null
+							group by ch.head_sha
+							order by max(ch.seq) desc
+							limit 64
+						) sub
+					),
+					'[]'::jsonb
+				),$new$,
 $old$				'siblingRemainingChanges', coalesce(
 					(
 						select jsonb_agg(
@@ -166,7 +182,22 @@ $old$							jsonb_build_object(
 $new$							jsonb_build_object(
 								'sessionId', peer.id,
 								'workerId', peer.worker_id,
-								'branchHeadSha', peer.branch_head_sha,
+								'recordedChangeHeadShas', coalesce(
+									(
+										select jsonb_agg(sub.head_sha)
+										from (
+											select dch.head_sha
+											from public.qorpera_surface_changes dch
+											where dch.session_id = peer.id
+												and dch.kind = 'git_range'
+												and dch.head_sha is not null
+											group by dch.head_sha
+											order by max(dch.seq) desc
+											limit 64
+										) sub
+									),
+									'[]'::jsonb
+								),
 								'remainingChanges', coalesce(peer_changes.items, '[]'::jsonb)
 							)$new$,
 $old$								jsonb_build_object(

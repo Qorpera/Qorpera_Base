@@ -1703,19 +1703,27 @@ function parseClaimedSurfaceApprovedChange(value: unknown): ClaimedSurfaceApprov
 	};
 }
 
+function parseOptionalShaList(value: unknown, label: string): readonly string[] | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!Array.isArray(value) || value.length > 64) {
+		throw new Error(`Runner orchestrator returned invalid ${label}`);
+	}
+	return value.map((item) => responseText(item, label, 64));
+}
+
 function parseClaimedSurfacePeerSession(value: unknown): ClaimedSurfacePeerSession {
 	const input = record(value, "surface peer session");
 	if (!Array.isArray(input.remainingChanges)) {
 		throw new Error("Runner orchestrator returned invalid surface peer session changes");
 	}
-	const branchHeadSha =
-		input.branchHeadSha === undefined
-			? undefined
-			: optionalResponseString(input.branchHeadSha, "surface peer branch head sha");
+	const recordedChangeHeadShas = parseOptionalShaList(
+		input.recordedChangeHeadShas,
+		"surface peer recorded change head shas",
+	);
 	return {
 		sessionId: responseUuid(input.sessionId, "surface peer session id"),
 		workerId: responseUuid(input.workerId, "surface peer worker id"),
-		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
+		...(recordedChangeHeadShas !== undefined ? { recordedChangeHeadShas } : {}),
 		remainingChanges: input.remainingChanges.map((item) => parseClaimedSurfaceChangeRange(item, "peer change")),
 	};
 }
@@ -1759,6 +1767,10 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		input.sessionBranchHeadSha === undefined
 			? undefined
 			: optionalResponseString(input.sessionBranchHeadSha, "surface session branch head sha");
+	const sessionRecordedChangeHeadShas = parseOptionalShaList(
+		input.sessionRecordedChangeHeadShas,
+		"surface session recorded change head shas",
+	);
 	let sessionState: SurfaceSessionState | null | undefined;
 	if (input.sessionState !== undefined) {
 		if (input.sessionState === null) {
@@ -1865,6 +1877,7 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		...(expectMainSha !== undefined ? { expectMainSha } : {}),
 		...(sessionWorkerId !== undefined ? { sessionWorkerId } : {}),
 		...(sessionBranchHeadSha !== undefined ? { sessionBranchHeadSha } : {}),
+		...(sessionRecordedChangeHeadShas !== undefined ? { sessionRecordedChangeHeadShas } : {}),
 		...(sessionState !== undefined ? { sessionState } : {}),
 		...(sessionHasActiveChat !== undefined ? { sessionHasActiveChat } : {}),
 		payload,
