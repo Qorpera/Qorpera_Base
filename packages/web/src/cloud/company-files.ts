@@ -52,6 +52,15 @@ export function forgetMemberFiles(): void {
 /** The product owns member lifetime; the shared SDK owns the company folder's calls. Every company is folder-v2
  * (founder decision, 3 October 2026): members read its folder (C4 P27) and write it through the member commit route
  * (P34a). */
+interface SharedHintChannel {
+	joined: Promise<void>;
+	stop: AbortController;
+	hints?: CloudMemberFolderHints;
+	closing?: Promise<void>;
+	closed: boolean;
+	onAbort: () => void;
+}
+
 export class WebCompanyFiles {
 	readonly company: { readonly role: HostedProfileRole; readonly canWrite: boolean };
 	readonly signal: AbortSignal;
@@ -62,16 +71,7 @@ export class WebCompanyFiles {
 	readonly #dataGateway: string | undefined;
 	readonly #hintListeners = new Set<{ onHint: (seq: number) => void; onState?: (connected: boolean) => void }>();
 	#hintConnected = false;
-	#hintChannel:
-		| {
-				joined: Promise<void>;
-				stop: AbortController;
-				hints?: CloudMemberFolderHints;
-				closing?: Promise<void>;
-				closed: boolean;
-				onAbort: () => void;
-		  }
-		| undefined;
+	#hintChannel: SharedHintChannel | undefined;
 	constructor(
 		cloud: Cloud,
 		profile: HostedProfile,
@@ -218,7 +218,7 @@ export class WebCompanyFiles {
 
 	#openHintChannel(): void {
 		const stop = new AbortController();
-		const state: NonNullable<typeof this.#hintChannel> = {
+		const state: SharedHintChannel = {
 			joined: Promise.resolve(),
 			stop,
 			closed: false,
