@@ -505,6 +505,28 @@ begin
 		'a queued hand-back whose session staged something since opens no turn: ' || v_result::text
 	);
 
+	update public.qorpera_surface_sessions set state = 'failed' where id = v_s2;
+	v_b := pg_temp.sbf_fail(v_surface, repeat('a0', 20), array[v_c1, v_c2], v_anna, v_detail);
+	perform pg_temp.sbf_lane();
+	perform pg_temp.sbf_assert(
+		(select state = 'queued' and prior_state = 'failed' and prior_closed_at is null
+			from public.qorpera_surface_build_handbacks where build_id = v_b)
+		and (select state from public.qorpera_surface_sessions where id = v_s2) = 'queued',
+		'a failed session is woken for the fix and the hand-back keeps the state it found'
+	);
+	update public.qorpera_surface_build_handbacks set queued_at = clock_timestamp() - interval '2 days' where build_id = v_b;
+	v_claimed := pg_temp.sbf_lane('sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_s2;
+	v_result := pg_temp.sbf_service(format('select public.qorpera_surface_enqueue_session_run(%L, %L)', v_s2, v_lease));
+	perform pg_temp.sbf_assert(
+		v_result ->> 'reason' = 'lease_lost'
+		and (select state = 'failed' and closed_at is null and lease_token is null
+			from public.qorpera_surface_sessions where id = v_s2)
+		and (select sequence from public.qorpera_runtime_workers where id = v_w2) = 6,
+		'a failed session whose fix went stale is failed again, not ready: ' || v_result::text
+	);
+
 	update public.qorpera_surface_changes
 	set status = 'merged', landed_change_number = 1, resolved_at = clock_timestamp(), published_at = null
 	where id = v_c1;
@@ -544,6 +566,39 @@ begin
 		and not (select (public.qorpera_surface_summary_json(s) ->> 'publishBeingFixed')::boolean
 			from public.qorpera_surfaces s where s.id = v_surface),
 		'a member who writes before the fix turn starts is answered instead, and nothing claims a fix'
+	);
+
+	perform pg_temp.sbf_finish(v_w1, repeat('7', 40));
+	update public.qorpera_surface_sessions
+	set state = 'completed', closed_at = '2026-11-20 10:00:00+00'
+	where id = v_s1;
+	perform pg_temp.sbf_member(v_anna, format('select public.qorpera_publish_surface(%L)', v_surface));
+	v_claimed := pg_temp.sbf_lane();
+	select (elem ->> 'jobId')::uuid, (elem ->> 'leaseToken')::uuid into strict v_job, v_job_lease
+	from jsonb_array_elements(v_claimed -> 'publishes') elem where (elem ->> 'surfaceId')::uuid = v_surface;
+	perform pg_temp.sbf_request('publish', v_job, v_job_lease, repeat('3', 39) || 'b', v_recipe);
+	v_b := pg_temp.sbf_build('failed', v_detail);
+	perform pg_temp.sbf_lane();
+	perform pg_temp.sbf_assert(
+		(select kind = 'publish' and session_id = v_s1 and state = 'queued' and prior_state = 'completed'
+			and prior_closed_at = '2026-11-20 10:00:00+00'::timestamptz
+			from public.qorpera_surface_build_handbacks where build_id = v_b)
+		and (select state = 'queued' and closed_at is null from public.qorpera_surface_sessions where id = v_s1),
+		'a completed session is reopened for a failed publish and the hand-back keeps its state and closing time'
+	);
+	update public.qorpera_surface_build_handbacks set queued_at = clock_timestamp() - interval '2 days' where build_id = v_b;
+	update public.qorpera_surface_session_messages set created_at = created_at - interval '3 days' where session_id = v_s1;
+	v_claimed := pg_temp.sbf_lane('sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_s1;
+	v_result := pg_temp.sbf_service(format('select public.qorpera_surface_enqueue_session_run(%L, %L)', v_s1, v_lease));
+	perform pg_temp.sbf_assert(
+		v_result ->> 'reason' = 'lease_lost'
+		and (select state = 'completed' and closed_at = '2026-11-20 10:00:00+00'::timestamptz
+			from public.qorpera_surface_sessions where id = v_s1)
+		and (select sequence from public.qorpera_runtime_workers where id = v_w1) = 2
+		and (select state from public.qorpera_surface_build_handbacks where build_id = v_b) = 'stale',
+		'a completed session whose publish fix went stale stays completed with its closing time: ' || v_result::text
 	);
 end $$;
 

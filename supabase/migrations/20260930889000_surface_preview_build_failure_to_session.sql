@@ -57,11 +57,14 @@ create table public.qorpera_surface_build_handbacks (
 	worker_sequence integer,
 	created_at timestamptz not null default clock_timestamp(),
 	queued_at timestamptz,
+	prior_state text check (prior_state is null or prior_state in ('ready', 'failed', 'completed')),
+	prior_closed_at timestamptz,
 	delivered_at timestamptz,
 	updated_at timestamptz not null default clock_timestamp(),
 	check ((state = 'capped') = (fix_number = 4)),
 	check ((state = 'delivered') = (worker_sequence is not null and worker_id is not null and delivered_at is not null)),
-	check (state not in ('queued', 'delivered') or queued_at is not null)
+	check (state not in ('queued', 'delivered') or queued_at is not null),
+	check ((queued_at is null) = (prior_state is null))
 );
 create index qorpera_surface_build_handbacks_session on public.qorpera_surface_build_handbacks(session_id, state);
 create index qorpera_surface_build_handbacks_open on public.qorpera_surface_build_handbacks(surface_id, kind)
@@ -84,6 +87,7 @@ declare
 	v_kind text;
 	v_fix integer;
 	v_state text;
+	v_queued public.qorpera_surface_build_handbacks%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
 	select * into v_build from public.qorpera_surface_preview_builds where id = p_build_id;
@@ -151,23 +155,23 @@ begin
 	if v_fix > 3 then
 		v_state := 'capped';
 	else
-		v_state := case
-			when v_session.state in ('queued', 'running') and exists (
-				select 1 from public.qorpera_surface_build_handbacks h where h.session_id = v_session.id and h.state = 'queued'
-			) then 'queued'
-			else 'pending'
-		end;
 		perform 1 from public.qorpera_surface_build_handbacks h
 		where h.session_id = v_session.id and h.state in ('pending', 'queued')
 		order by h.id
 		for update;
+		select * into v_queued from public.qorpera_surface_build_handbacks h
+		where h.session_id = v_session.id and h.state = 'queued'
+		order by h.queued_at desc, h.id desc
+		limit 1;
+		v_state := case when v_session.state in ('queued', 'running') and v_queued.id is not null then 'queued' else 'pending' end;
 		update public.qorpera_surface_build_handbacks
 		set state = 'superseded', updated_at = v_now
 		where session_id = v_session.id and state in ('pending', 'queued');
 	end if;
 
 	insert into public.qorpera_surface_build_handbacks(
-		profile_id, surface_id, build_id, session_id, change_id, kind, state, fix_number, followup, queued_at
+		profile_id, surface_id, build_id, session_id, change_id, kind, state, fix_number, followup, queued_at,
+		prior_state, prior_closed_at
 	)
 	values (
 		v_build.profile_id, v_build.surface_id, v_build.id, v_session.id, v_change.id, v_kind, v_state, v_fix,
@@ -185,7 +189,9 @@ begin
 			|| 'This is automatic fix ' || least(v_fix, 3) || ' of 3.',
 			3900
 		),
-		case when v_state = 'queued' then v_now end
+		case when v_state = 'queued' then v_now end,
+		case when v_state = 'queued' then v_queued.prior_state end,
+		case when v_state = 'queued' then v_queued.prior_closed_at end
 	);
 end $$;
 
@@ -246,7 +252,8 @@ begin
 				updated_at = p_now
 			where id = v_session.id;
 			update public.qorpera_surface_build_handbacks
-			set state = 'queued', queued_at = p_now, updated_at = p_now
+			set state = 'queued', queued_at = p_now, prior_state = v_session.state, prior_closed_at = v_session.closed_at,
+				updated_at = p_now
 			where id = v_handback.id;
 		exception when others then
 			null;
@@ -313,7 +320,9 @@ begin
 		) then
 			return null;
 		end if;
-		return jsonb_build_object('dropped', true);
+		return jsonb_build_object(
+			'dropped', true, 'priorState', v_handback.prior_state, 'priorClosedAt', v_handback.prior_closed_at
+		);
 	end if;
 	update public.qorpera_surface_build_handbacks
 	set state = 'delivered', worker_id = p_worker_id, worker_sequence = p_sequence, delivered_at = v_now, updated_at = v_now
@@ -401,9 +410,16 @@ $old$			v_followup := public.qorpera_surface_utf8_left(v_followup, 2000);
 $new$			v_followup := public.qorpera_surface_utf8_left(v_followup, 2000);
 			v_build_fix := public.qorpera_surface_build_fix_take(v_session, v_worker.id, v_worker.sequence + 1);
 			if v_build_fix ? 'dropped' then
-				-- WHY: The session was queued for a fix that went stale; it opens no turn, and lease_lost ends the job quietly.
+				-- WHY: The session was queued for a fix that went stale; it opens no turn, goes back to the state the fix
+				-- found it in, and lease_lost ends the job quietly.
 				update public.qorpera_surface_sessions
-				set state = 'ready', lease_token = null, lease_expires_at = null, wake_id = null, updated_at = v_now
+				set
+					state = v_build_fix ->> 'priorState',
+					closed_at = (v_build_fix ->> 'priorClosedAt')::timestamptz,
+					lease_token = null,
+					lease_expires_at = null,
+					wake_id = null,
+					updated_at = v_now
 				where id = v_session.id;
 				return jsonb_build_object('status', 'unavailable', 'reason', 'lease_lost');
 			end if;
