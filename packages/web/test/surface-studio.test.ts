@@ -320,7 +320,7 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 
-		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("2 live changes applied");
+		expect(view.el.querySelector(".studio-badge")).toBeNull();
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
 		expect(view.el.querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(true);
 		expect(view.el.querySelector('[data-token="colors.paper"]')?.classList.contains("is-changed")).toBe(false);
@@ -334,7 +334,6 @@ describe("SurfaceStudioView", () => {
 
 		await store.toggleChange(BRAND_ID, CHANGES[0]);
 		view.update();
-		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("1 live change applied");
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#d76f45");
 		expect(view.el.querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(false);
 		expect(view.el.querySelector('[data-file="brand/voice.md"]')?.textContent).toContain(
@@ -1723,11 +1722,10 @@ describe("SurfaceReportView", () => {
 			baseFiles: { "brand/q3.report.json": JSON.stringify({ headline: "Q3", sections: [] }) },
 		});
 		document.body.append(view.el);
-		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("1 live change applied");
+		expect(view.el.querySelector(".studio-badge")).toBeNull();
 
 		await store.toggleChange(BRAND_ID, CHANGES[0]);
 		view.update();
-		expect(view.el.querySelector(".studio-badge")).toBeNull();
 		expect(view.el.querySelector(".report-chrome")).not.toBeNull();
 		view.dispose();
 		store.dispose();

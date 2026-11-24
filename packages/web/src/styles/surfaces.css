@@ -709,6 +709,15 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: var(--bg);
 	box-shadow: 0 1px 3px rgb(18 18 17 / 4%);
 }
+.surface-canvas::after {
+	content: ""; position: absolute; inset: 0; z-index: 30; border-radius: inherit; pointer-events: none;
+	box-shadow: inset 0 0 0 1.5px transparent, inset 0 0 0 4px transparent;
+	transition: box-shadow var(--motion-slow) ease;
+}
+.surface-canvas.is-previewing-changes::after {
+	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--sidebar-selection) 62%, transparent),
+		inset 0 0 0 4px color-mix(in srgb, var(--sidebar-selection) 14%, transparent);
+}
 .surface-page.has-drawer .surface-canvas { margin-right: 2px; }
 .frame.rail-hidden-desktop .surface-canvas { margin-left: 8px; }
 @media (max-width: 1180px) {
@@ -1561,12 +1570,6 @@ a.surface-address-row:hover { text-decoration: none; }
 	position: absolute; top: 22px; left: 32px; right: 32px;
 	display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px;
 }
-.studio-badge {
-	display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px;
-	background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-muted); font-size: 11.5px; font-weight: 600;
-}
-.studio-badge.is-live { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
-.studio-badge.is-conflict { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 .studio-updating-pill {
 	display: inline-flex; align-items: center; gap: 6px; flex: none; height: 22px; padding: 0 9px; border-radius: 999px;
 	background: color-mix(in srgb, var(--studio-brand-accent, var(--sidebar-selection)) 11%, transparent);
@@ -1803,7 +1806,6 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .surface-studio.has-identity-tokens .studio-section-head h2 {
 	font-family: var(--q-font-heading, var(--font-heading, inherit));
 }
-.surface-studio.has-identity-tokens .studio-badge.is-live,
 .surface-studio.has-identity-tokens .studio-changed-pill {
 	background: color-mix(in srgb, var(--studio-brand-accent) 13%, transparent);
 	color: var(--studio-brand-accent);

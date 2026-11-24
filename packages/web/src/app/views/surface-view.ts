@@ -592,6 +592,7 @@ export class SurfaceView {
 			this.#chromeShown = "";
 			this.#toastShown = "";
 			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
+			this.#canvas.classList.remove("is-previewing-changes");
 			this.#drawer.update(undefined);
 			if (state.source === "loading") {
 				this.#showLoading("live", t("Opening surface…"));
@@ -794,6 +795,9 @@ export class SurfaceView {
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
 		const hasAgents = explorations.length + plainSessions.length > 0;
+		const previewing = state.mode === "preview" || state.mode === "compare";
+		const shownCount = previewing ? store.visiblePreviewChangeIds(surface.id).length : 0;
+		this.#canvas.classList.toggle("is-previewing-changes", shownCount > 0);
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
 		const served = this.#host.isSiteLive?.(surface);
@@ -831,6 +835,7 @@ export class SurfaceView {
 			studioHasChanges,
 			panelOpen,
 			openWorkCount,
+			shownCount,
 			hasAgents,
 			Boolean(state.busy[`publish:${surface.id}`]),
 			surface.publishStatus ?? "idle",
@@ -1057,7 +1062,8 @@ export class SurfaceView {
 				: effectiveMode === "report"
 					? t("Notes")
 					: t("Preview");
-		const notchCount = site === "live" && count > 0 ? count : openWorkCount;
+		const notchCount =
+			effectiveMode === "preview" ? shownCount : site === "live" && count > 0 ? count : openWorkCount;
 		this.#notchPill.replaceChildren(
 			h("span", { class: "surface-notch-label" }, notchLabel),
 			...(notchCount > 0 ? [h("span", { class: "surface-notch-count" }, String(notchCount))] : []),

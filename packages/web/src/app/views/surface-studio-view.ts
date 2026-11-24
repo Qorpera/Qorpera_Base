@@ -786,36 +786,28 @@ export class SurfaceStudioView {
 			}
 		}
 
-		const badgeText =
-			composition.appliedChangeIds.length === 1
-				? t("1 live change applied")
-				: composition.appliedChangeIds.length > 1
-					? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-					: null;
 		const effectiveUpdatingPhase = updatingPhase ?? (reconcilingPreview ? "updating" : null);
 		const updatingText =
 			updatingPhase !== null ? updatingLabel(updatingPhase) : reconcilingPreview ? t("Updating preview…") : null;
 
 		const children: HTMLElement[] = [];
-		if (badgeText || effectiveUpdatingPhase) {
+		if (effectiveUpdatingPhase && updatingText) {
 			children.push(
 				h(
 					"div",
 					{ class: "studio-head" },
-					badgeText ? h("span", { class: "studio-badge is-live" }, badgeText) : h("span"),
-					effectiveUpdatingPhase && updatingText
-						? h(
-								"span",
-								{
-									class: "studio-updating-pill",
-									role: "status",
-									"aria-live": "polite",
-									"data-updating-phase": effectiveUpdatingPhase,
-								},
-								h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-								h("span", null, updatingText),
-							)
-						: null,
+					h("span"),
+					h(
+						"span",
+						{
+							class: "studio-updating-pill",
+							role: "status",
+							"aria-live": "polite",
+							"data-updating-phase": effectiveUpdatingPhase,
+						},
+						h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+						h("span", null, updatingText),
+					),
 				),
 			);
 		}
