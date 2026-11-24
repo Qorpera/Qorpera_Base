@@ -3593,11 +3593,13 @@ export class SurfacesStore {
 			);
 			const openCount = countOpenSurfaceChanges(changes);
 			const hasMerged = changes.some((change) => change.status === "merged");
-			const allDiscarded = openCount === 0 && !hasMerged;
+			const stillRunning = isRunningSession(found.session);
+			const allDiscarded = !stillRunning && openCount === 0 && !hasMerged;
+			const closes = !stillRunning && openCount === 0 && !drawerOpen;
 			const updated: SurfaceSession = {
 				...found.session,
-				state: allDiscarded ? "discarded" : openCount === 0 && !drawerOpen ? "completed" : "ready",
-				hasActiveChat: !allDiscarded && drawerOpen,
+				state: stillRunning ? found.session.state : allDiscarded ? "discarded" : closes ? "completed" : "ready",
+				hasActiveChat: stillRunning ? found.session.hasActiveChat : !allDiscarded && drawerOpen,
 				changes,
 				openChangeCount: openCount,
 				messages: [
@@ -3612,7 +3614,7 @@ export class SurfacesStore {
 					},
 				],
 				updatedAt: now,
-				closedAt: allDiscarded || (openCount === 0 && !drawerOpen) ? now : null,
+				closedAt: allDiscarded || closes ? now : null,
 			};
 			this.store.set((state) => {
 				if (!state.hiddenChanges[changeId]) return {};
@@ -3620,7 +3622,11 @@ export class SurfacesStore {
 				delete hiddenChanges[changeId];
 				return { hiddenChanges };
 			});
-			const outcome: ApprovalOutcome = allDiscarded ? "history" : approvalOutcome(updated, drawerOpen);
+			const outcome: ApprovalOutcome = stillRunning
+				? "open"
+				: allDiscarded
+					? "history"
+					: approvalOutcome(updated, drawerOpen);
 			if (outcome === "history" && this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
 			this.#applySession(updated, outcome);
 			return true;
@@ -3629,8 +3635,11 @@ export class SurfacesStore {
 		if (!updated) return false;
 		const openCount = countOpenSurfaceChanges(updated.changes);
 		const hasMerged = updated.changes.some((change) => change.status === "merged");
-		const outcome: ApprovalOutcome =
-			openCount === 0 && !hasMerged ? "history" : approvalOutcome(updated, this.drawerOpenOn(sessionId));
+		const outcome: ApprovalOutcome = isRunningSession(updated)
+			? "open"
+			: openCount === 0 && !hasMerged
+				? "history"
+				: approvalOutcome(updated, this.drawerOpenOn(sessionId));
 		if (outcome === "history" && this.drawerOpenOn(sessionId)) {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
