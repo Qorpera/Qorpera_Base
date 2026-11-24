@@ -814,7 +814,19 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(false);
 
 		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		const dialog = document.createElement("dialog");
+		dialog.setAttribute("open", "");
+		document.body.append(dialog);
 		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		dialog.remove();
+		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
+
+		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		Object.defineProperty(view, "slug", { value: "no-such-surface" });
+		view.update();
 		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
 		view.dispose();
 		store.dispose();

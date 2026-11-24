@@ -629,6 +629,11 @@ export class SurfaceView {
 			this.#toastShown = "";
 			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
 			this.#canvas.classList.remove("is-previewing-changes");
+			if (this.#panelsHidden) {
+				this.#panelsHidden = false;
+				this.#paintNotch();
+				window.dispatchEvent(new Event("qorpera-rail-resize"));
+			}
 			this.#drawer.update(undefined);
 			if (state.source === "loading") {
 				this.#showLoading("live", t("Opening surface…"));
@@ -1695,7 +1700,7 @@ export class SurfaceView {
 			const inside = this.#bar.contains(document.activeElement);
 			if (this.#closeBar()) {
 				if (inside) this.#notchPill.focus();
-			} else if (this.#panelsHidden && !isEditableTarget(event.target)) {
+			} else if (this.#panelsHidden && !this.#barHeld() && !isEditableTarget(event.target)) {
 				event.preventDefault();
 				this.#setPanelsHidden(false);
 			}
