@@ -2037,20 +2037,22 @@ describe("Sites: a website has no password, an app link keeps its own", () => {
 
 	it("calls a website nothing while whether everyone can open it is unknown, then what the read says", async () => {
 		const hosting = hostingOf({ [shop.id]: true });
-		const ready = await hosting.read();
-		const held = deferred<CompanySiteHostingState>();
-		vi.mocked(hosting.read).mockImplementationOnce(() => held.promise);
+		vi.mocked(hosting.read).mockRejectedValueOnce(new Error("offline"));
 		setup([shop, summer, draft, app], admin, undefined, { hosting });
 		await settle();
+		expect(ids()).toEqual([shop.id, summer.id, draft.id, app.id]);
 		expect([word(shop.id), badge(shop.id)]).toEqual([null, null]);
 		expect([word(summer.id), badge(summer.id)]).toEqual([null, null]);
 		expect(word(draft.id)).toBe("Publishing…");
 		expect([word(app.id), badge(app.id)]).toEqual(["Live", null]);
-		held.resolve(ready);
+		expect(secretOf(app.id)).toBe(DOTS);
+		press(draft.id, "more");
+		choose("Take offline");
+		pressLabel(dialog(), "Take offline");
 		await settle();
+		expect(hosting.read).toHaveBeenCalledTimes(2);
 		expect([word(shop.id), badge(shop.id)]).toEqual([null, "Live"]);
 		expect([word(summer.id), badge(summer.id)]).toEqual([null, "Not live yet"]);
-		expect(word(draft.id)).toBe("Publishing…");
 		expect([word(app.id), badge(app.id)]).toEqual(["Live", null]);
 	});
 
