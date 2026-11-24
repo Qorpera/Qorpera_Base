@@ -8,6 +8,7 @@ import type {
 	SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
+import { markdown } from "../../ui/markdown.ts";
 import { leadingMentions, type MentionTarget, matchTargets, mentionQuery } from "../../ui/mentions.ts";
 import { t } from "../../ui/preferences.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
@@ -215,7 +216,7 @@ function messageRow(
 			),
 		);
 	if (message.authorKind === "session")
-		return h("p", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, message.text);
+		return h("div", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, markdown(message.text));
 	return memberBubble(message.text, "", fmtTime(message.createdAt), author, images, to);
 }
 
@@ -1036,7 +1037,7 @@ export class SurfaceSessionDrawer {
 				h(
 					"div",
 					{ class: "surface-question is-compact" },
-					h("p", null, session.question.text),
+					h("div", { class: "surface-question-text" }, markdown(session.question.text)),
 					h(
 						"div",
 						{ class: "surface-question-options" },
@@ -1447,7 +1448,7 @@ export class SurfaceSessionDrawer {
 				h(
 					"div",
 					{ class: "surface-question" },
-					h("p", null, session.question.text),
+					h("div", { class: "surface-question-text" }, markdown(session.question.text)),
 					h(
 						"div",
 						{ class: "surface-question-options" },
