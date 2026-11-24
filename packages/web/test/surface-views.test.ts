@@ -1140,17 +1140,23 @@ describe("the surface page", () => {
 			title: "Waiting",
 			state: "needs_input",
 			question: { text: "Which one?", options: [] },
+			changes: [change(CHANGES[2], 1, "staged")],
+			openChangeCount: 1,
 		});
 		const working = session(["staged"], {
 			id: "33333333-3333-4333-8333-333333333353",
 			title: "Working",
 			state: "running",
 		});
-		const discardSurfaceChange = vi.fn(async () => ({
-			...ready,
-			changes: [change(CHANGES[0], 1, "discarded"), change(CHANGES[1], 2, "staged")],
-			openChangeCount: 1,
-		}));
+		const discardSurfaceChange = vi.fn(async (changeId: string) =>
+			changeId === CHANGES[0]
+				? {
+						...ready,
+						changes: [change(CHANGES[0], 1, "discarded"), change(CHANGES[1], 2, "staged")],
+						openChangeCount: 1,
+					}
+				: { ...waiting, changes: [change(CHANGES[2], 1, "discarded")], openChangeCount: 0 },
+		);
 		const client = fakeClient({
 			getSurfaceWorkspace: vi.fn(async () => workspace([ready, waiting, working])),
 			discardSurfaceChange,
@@ -1167,7 +1173,7 @@ describe("the surface page", () => {
 		const discardOf = (id: string, changeId: string) =>
 			card(id).querySelector<HTMLElement>(`[data-act="discard-change-armed"][data-change="${changeId}"]`);
 		expect(discardOf(working.id, CHANGES[0])).toBeNull();
-		expect(discardOf(waiting.id, CHANGES[0])).not.toBeNull();
+		expect(discardOf(waiting.id, CHANGES[2])).not.toBeNull();
 
 		const first = discardOf(ready.id, CHANGES[0])!;
 		expect(first.textContent).toBe("Discard");
@@ -1188,6 +1194,16 @@ describe("the surface page", () => {
 		view.update();
 		expect(discardOf(ready.id, CHANGES[0])).toBeNull();
 		expect(discardOf(ready.id, CHANGES[1])?.classList.contains("is-confirming")).toBe(false);
+
+		discardOf(waiting.id, CHANGES[2])!.click();
+		discardOf(waiting.id, CHANGES[2])!.click();
+		await flush();
+		await flush();
+		view.update();
+		expect(store.workspace(SURFACE)?.activeSessions.map((item) => item.id)).toContain(waiting.id);
+		expect(card(waiting.id)?.querySelector(".surface-question")?.textContent).toContain("Which one?");
+		expect(discardSurfaceChange).toHaveBeenLastCalledWith(CHANGES[2]);
+		expect(discardOf(waiting.id, CHANGES[2])).toBeNull();
 		view.dispose();
 		store.dispose();
 	});
