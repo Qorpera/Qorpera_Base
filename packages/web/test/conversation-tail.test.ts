@@ -521,10 +521,9 @@ describe("the thread view with unread history", () => {
 		const { store, log } = view([item(3), decision], { codingSessions: [early] });
 		expect(log.querySelector(".coding-line")).toBeNull();
 		expect(log.querySelector(".auth-card")).toBeNull();
-		// With the whole history read, both show, as before.
 		store.set({ hasEarlier: false });
 		await settle();
-		expect(log.querySelector(".coding-line")).not.toBeNull();
+		expect(log.querySelector(".coding-line")).toBeNull();
 		expect(log.querySelector(".auth-card")).not.toBeNull();
 	});
 });

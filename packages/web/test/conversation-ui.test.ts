@@ -1431,27 +1431,23 @@ describe("conversation UI boundaries", () => {
 		expect(document.activeElement).toBe(f.view.el.querySelector(".computer-panel"));
 	});
 
-	it("places the company notices above the coding sessions' dock, which sits right above the composer", () => {
+	it("places the company notices and failed-run line right above the composer", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });
 		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
-		// The failed-run line shares the band: notices first, then the run, the coding dock, then the composer. No wall
-		// stands between them any more (Jonas, 14 Nov 2026).
 		const slot = host.nextElementSibling;
 		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
-		const dock = slot?.nextElementSibling as HTMLElement | null | undefined;
-		expect(dock?.classList.contains("coding-dock")).toBe(true);
-		expect(dock?.hidden).toBe(true);
-		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".coding-dock")).toBeNull();
+		expect(f.view.el.querySelector(".thread-run-failure + footer.composer")).not.toBeNull();
 	});
 
-	it("places the failed-run line above the coding dock without a notification host", () => {
+	it("places the failed-run line right above the composer without a notification host", () => {
 		const f = setup();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
 		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
-		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
-		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".coding-dock")).toBeNull();
+		expect(f.view.el.querySelector(".thread-run-failure + footer.composer")).not.toBeNull();
 	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
@@ -1524,8 +1520,8 @@ describe("conversation UI boundaries", () => {
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.contains(card())).toBe(true);
 		expect(slot?.previousElementSibling).toBe(host);
-		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
-		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + .composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".coding-dock")).toBeNull();
+		expect(f.view.el.querySelector(".thread-run-failure + .composer")).not.toBeNull();
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
 		const close = button(f.view.el, "Dismiss");
 		close.focus();
@@ -3086,9 +3082,8 @@ describe("messages between two agents (contract 14.6)", () => {
 			}
 		});
 
-		it("finds the coworker's chip again when a coding session splits the line", async () => {
+		it("does not split coworker chips when coding sessions exist between them", async () => {
 			const at = (minute: number) => `2026-09-05T10:0${minute}:00Z`;
-			// Started between the two messages: it stands between them once the thread learns of it.
 			const coding: CodingSession = {
 				workerId: id(500),
 				workerKey: "fix-send",
@@ -3123,20 +3118,10 @@ describe("messages between two agents (contract 14.6)", () => {
 			const novaChip = () =>
 				f.view.el.querySelector<HTMLButtonElement>(`.peer-chip[data-pair-session-id="${pairs.get(nova.id)}"]`)!;
 			expect(f.lines()).toHaveLength(1);
-			novaChip().click();
-			await settle();
-			sessions([coding]);
-			expect(f.lines().map((line) => line.classList.contains("coding-line"))).toEqual([false, true, false]);
-			// Closing Nova's transcript goes back to Nova, now on a line of its own.
-			button(f.view.el.querySelector<HTMLElement>(".pair-transcript")!, "Close").click();
-			expect(document.activeElement).toBe(novaChip());
-			expect(novaChip().getAttribute("aria-label")).toBe("Messaged Nova. Open the conversation");
-			// And a keyboard user on Nova's chip stays on it as the line splits.
-			sessions([]);
-			expect(f.lines()).toHaveLength(1);
 			novaChip().focus();
 			sessions([coding]);
-			expect(f.lines()).toHaveLength(3);
+			expect(f.lines()).toHaveLength(1);
+			expect(f.view.el.querySelector(".coding-line")).toBeNull();
 			expect(document.activeElement).toBe(novaChip());
 		});
 	});
