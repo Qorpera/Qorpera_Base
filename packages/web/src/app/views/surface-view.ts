@@ -795,7 +795,20 @@ export class SurfaceView {
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
 		const hasAgents = explorations.length + plainSessions.length > 0;
-		const shownCount = state.mode === "live" ? 0 : store.shownPreviewChangeCount(surface.id);
+		const shownCount =
+			state.mode === "live"
+				? 0
+				: state.mode === "report"
+					? surface.archetype === "studio"
+						? store
+								.activePreviewSessions(surface.id)
+								.flatMap((session) => session.changes)
+								.filter(
+									(change) =>
+										change.kind === "folder_patch" && isOpenChange(change) && store.isChangeShown(change.id),
+								).length
+						: 0
+					: store.shownPreviewChangeCount(surface.id);
 		this.#canvas.classList.toggle("is-previewing-changes", shownCount > 0);
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";

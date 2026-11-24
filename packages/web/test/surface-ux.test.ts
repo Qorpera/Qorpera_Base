@@ -1252,7 +1252,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
 		store.setMode("report");
 		view.update();
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
 		store.setMode("preview");
 
 		view.dispose();
