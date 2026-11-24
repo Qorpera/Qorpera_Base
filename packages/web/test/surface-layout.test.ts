@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { StudioBinaryRef, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setStudioExplainerEngineForTests } from "../src/app/views/studio-explainer-engine.ts";
 import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
@@ -19,8 +19,20 @@ import {
 const PRODUCT_ID = "22222222-2222-4222-8222-222222222240";
 const IDENTITY_ID = "22222222-2222-4222-8222-222222222242";
 const ROOT = "surfaces/lamp";
+const { showModal: originalShowModal, close: originalClose } = HTMLDialogElement.prototype;
+
+beforeEach(() => {
+	HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+		this.open = true;
+	};
+	HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+		this.open = false;
+	};
+});
 
 afterEach(() => {
+	HTMLDialogElement.prototype.showModal = originalShowModal;
+	HTMLDialogElement.prototype.close = originalClose;
 	setStudioExplainerEngineForTests(undefined);
 	setLanguagePreference("en");
 	document.body.replaceChildren();
@@ -104,7 +116,7 @@ function productFiles(): Record<string, string> {
 describe("Product studio on the layout renderer", () => {
 	it("fills every block of the starter from the folder's files", async () => {
 		const { view, tab, tabs, store } = await open(productFiles());
-		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
 		expect(
 			[...view.el.querySelectorAll<HTMLElement>(".studio-tab.is-empty")].map((item) => item.dataset.tab),
 		).toEqual(["breakdowns"]);
@@ -126,7 +138,7 @@ describe("Product studio on the layout renderer", () => {
 		tab("specs");
 		const specList = view.el.querySelector('[data-block="spec_list"]')!;
 		expect(specList.querySelector("h2")?.textContent).toBe("Specs");
-		expect(specList.querySelector(".studio-file-tag")?.textContent).toBe(`${ROOT}/specs.json`);
+		expect(specList.querySelector(".studio-file-tag")).toBeNull();
 		expect([...specList.querySelectorAll(".studio-kv dt")].map((item) => item.textContent)).toEqual([
 			"Tagline",
 			"Battery",
@@ -157,12 +169,6 @@ describe("Product studio on the layout renderer", () => {
 
 		tab("reports");
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why wool");
-
-		tab("files");
-		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')?.textContent).toContain(
-			"Calm evening light.",
-		);
-		expect(view.el.querySelector('[data-file="surfaces/lamp/mark.svg"]')).not.toBeNull();
 		view.dispose();
 		store.dispose();
 	});
@@ -240,11 +246,6 @@ describe("Product studio on the layout renderer", () => {
 		tab("reports");
 		expect(view.el.querySelector(".report-dek.is-changed")?.textContent).toContain("Warmer light.");
 
-		tab("files");
-		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')?.classList.contains("is-changed")).toBe(
-			true,
-		);
-
 		await store.toggleChange(surface.id, CHANGES[0]);
 		view.update();
 		expect(view.el.querySelectorAll(".is-changed")).toHaveLength(0);
@@ -255,7 +256,7 @@ describe("Product studio on the layout renderer", () => {
 		store.dispose();
 	});
 
-	it("carries over today's line, the rest of specs.json and the folder's own pages", async () => {
+	it("carries over today's line, the rest of specs.json and an artifacts section's pages", async () => {
 		const { view, tab, store } = await open({
 			[`${ROOT}/specs.json`]: JSON.stringify({
 				tagline: "A lamp that dims itself.",
@@ -282,12 +283,6 @@ describe("Product studio on the layout renderer", () => {
 		expect(lists[1]!.textContent).not.toContain("A lamp that dims itself.");
 		expect(lists[1]!.querySelector(".studio-subhead")?.textContent).toBe("Certifications");
 		expect(lists[1]!.querySelector(".studio-table td")?.textContent).toBe("CE");
-
-		tab("files");
-		const page = view.el.querySelector('.studio-html-card[data-file="surfaces/lamp/pages/sheet.html"]');
-		expect(page?.querySelector("h2")?.textContent).toBe("Spec sheet");
-		expect(page?.querySelector("iframe.studio-html-frame")).not.toBeNull();
-		expect(view.el.querySelector(".studio-home-empty")).toBeNull();
 		view.dispose();
 		store.dispose();
 	});
@@ -352,8 +347,7 @@ describe("Product studio on the layout renderer", () => {
 		expect(cards[0]!.querySelector("h2")?.textContent).toBe("Pricing");
 		expect(cards[0]!.querySelector(".studio-kv dt")?.textContent).toBe("Retail");
 		expect(cards[0]!.querySelector(".studio-table td")?.textContent).toBe("Early");
-		tab("files");
-		expect(view.el.querySelector('[data-file$=".json"]')).toBeNull();
+		expect(cards[0]!.querySelector(".studio-file-tag")).toBeNull();
 		view.dispose();
 		store.dispose();
 
@@ -368,7 +362,7 @@ describe("Product studio on the layout renderer", () => {
 						title: "All",
 						blocks: [
 							{ type: "spec_list", from: "specs.json#/overview" },
-							{ type: "files", match: ["**/*.json"] },
+							{ type: "artifacts", match: ["**/*.json"] },
 						],
 					},
 				],
@@ -398,7 +392,7 @@ describe("Product studio on the layout renderer", () => {
 		expect(view.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
 		await vi.waitFor(() => expect(view.el.querySelector(".studio-product .studio-facts")).not.toBeNull());
 		expect(view.el.querySelector(".skeleton-surface-studio")).toBeNull();
-		expect(view.el.querySelectorAll(".studio-tab")).toHaveLength(6);
+		expect(view.el.querySelectorAll(".studio-tab")).toHaveLength(5);
 		view.dispose();
 		store.dispose();
 	});
@@ -414,7 +408,7 @@ describe("Product studio on the layout renderer", () => {
 		expect(colour()).toBe("Ash");
 		view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]')[1]!.click();
 		expect(colour()).toBe("Clay");
-		tab("files");
+		tab("specs");
 		tab("overview");
 		expect(colour()).toBe("Clay");
 		expect(
@@ -427,14 +421,7 @@ describe("Product studio on the layout renderer", () => {
 	it("passes the starter's words through Danish and keeps a company's own words as written", async () => {
 		setLanguagePreference("da");
 		const starter = await open(productFiles());
-		expect(starter.tabs()).toEqual([
-			"Overblik",
-			"Specifikationer",
-			"Leverandører",
-			"Rapporter",
-			"Gennemgange",
-			"Filer",
-		]);
+		expect(starter.tabs()).toEqual(["Overblik", "Specifikationer", "Leverandører", "Rapporter", "Gennemgange"]);
 		starter.tab("specs");
 		expect(starter.view.el.querySelector('[data-block="table"] h2')?.textContent).toBe("Dele");
 		starter.view.dispose();
@@ -491,11 +478,11 @@ describe("A folder's own layout.json", () => {
 				blocks: [{ type: "cards", from: "vendors.json#/vendors", title: "vendor" }],
 			},
 			{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "*.report.json" }] },
-			{ id: "files", title: "Files", blocks: [{ type: "files", match: ["*.md"] }] },
+			{ id: "artifacts", title: "Artifacts", blocks: [{ type: "artifacts", match: ["*.md"] }] },
 			{
 				id: "launch",
 				title: "Launch plan",
-				blocks: [{ type: "files", match: ["launch/*.md", "/notes/launch.md"], heading: "Launch" }],
+				blocks: [{ type: "artifacts", match: ["launch/*.md", "/notes/launch.md"], heading: "Launch" }],
 			},
 		],
 	};
@@ -507,7 +494,7 @@ describe("A folder's own layout.json", () => {
 			[`${ROOT}/launch/plan.md`]: "# Launch\nPre-orders open in March.\n",
 			"notes/launch.md": "# Notes\nAsk the shop about May.\n",
 		});
-		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files", "Launch plan"]);
+		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Artifacts", "Launch plan"]);
 		expect(view.el.querySelector(".studio-stage")).toBeNull();
 		expect(view.el.querySelector(".studio-product-line")?.textContent).toBe("Light for long evenings.");
 		expect([...view.el.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
@@ -535,7 +522,7 @@ describe("A folder's own layout.json", () => {
 		expect(view.el.querySelector('[data-file="surfaces/lamp/launch/plan.md"]')?.textContent).toContain("March");
 		expect(view.el.querySelector('[data-file="notes/launch.md"]')?.textContent).toContain("Ask the shop");
 		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).toBeNull();
-		tab("files");
+		tab("artifacts");
 		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).not.toBeNull();
 		expect(view.el.querySelector('[data-file="surfaces/lamp/launch/plan.md"]')).toBeNull();
 		view.dispose();
@@ -549,7 +536,7 @@ describe("A folder's own layout.json", () => {
 		expect(tabs()).toHaveLength(6);
 		await store.toggleChange(surface.id, CHANGES[0]);
 		view.update();
-		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
 		view.dispose();
 		store.dispose();
 	});
@@ -557,7 +544,7 @@ describe("A folder's own layout.json", () => {
 	it("falls back to the starter when layout.json does not parse, and says nothing technical", async () => {
 		for (const broken of ["{not json", JSON.stringify({ schema: "something/else", tabs: [] })]) {
 			const { view, tabs, store } = await open({ ...productFiles(), [`${ROOT}/layout.json`]: broken });
-			expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
+			expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
 			expect(view.el.querySelector(".studio-home-quiet")).toBeNull();
 			expect(view.el.textContent).not.toMatch(/layout|JSON|schema/);
 			view.dispose();
@@ -575,7 +562,7 @@ describe("A folder's own layout.json", () => {
 		const ownFiles = {
 			[`${ROOT}/layout.json`]: JSON.stringify({
 				schema: "qorpera.surface-layout/v1",
-				tabs: [{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files" }] }],
+				tabs: [{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "artifacts" }] }],
 			}),
 			[`${ROOT}/brief.md`]: "# Notes\nWhat we learned.\n",
 		};
@@ -669,14 +656,13 @@ function fullIdentity(): Record<string, string> {
 describe("Identity on the layout renderer", () => {
 	it("draws every home of the starter when the folder is empty, with no whole-page empty state", async () => {
 		const { view, tab, tabs, store } = await open({}, { surface: identityStudio() });
-		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns"]);
 		expect([...view.el.querySelectorAll(".studio-tab.is-empty")].map((item) => item.textContent)).toEqual([
 			"Strategy",
 			"Philosophy",
 			"Voice",
 			"Design system",
 			"Breakdowns",
-			"Files",
 		]);
 		expect(view.el.querySelector(".studio-empty")).toBeNull();
 		const marks = [...view.el.querySelectorAll('[data-block="brand_mark"]')];
@@ -726,17 +712,13 @@ describe("Identity on the layout renderer", () => {
 		tab("system");
 		expect(view.el.querySelectorAll('[data-block="spec_list"]')).toHaveLength(1);
 		expect(view.el.querySelector('[data-block="spec_list"] h2')?.textContent).toBe("Design system");
-		tab("files");
-		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe(
-			"Working files. Models, pictures and notes live here.",
-		);
 		view.dispose();
 		store.dispose();
 	});
 
-	it("carries over the fuller folder: marks, cards, tokens, design system, other files and pages", async () => {
+	it("carries over the fuller folder: marks, cards, tokens, design system and extra JSON", async () => {
 		const { view, tab, tabs, store } = await open(fullIdentity(), { surface: identityStudio() });
-		expect(tabs()).toHaveLength(7);
+		expect(tabs()).toHaveLength(6);
 		expect(
 			[...view.el.querySelectorAll<HTMLElement>(".studio-tab.is-empty")].map((item) => item.dataset.tab),
 		).toEqual(["breakdowns"]);
@@ -758,6 +740,7 @@ describe("Identity on the layout renderer", () => {
 		tab("voice");
 		expect(view.el.querySelector('[data-file="identity/voice.md"]')).not.toBeNull();
 		expect(view.el.querySelector('[data-file="identity/notes/naming.md"]')).toBeNull();
+		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
 		tab("system");
 		const lists = [...view.el.querySelectorAll('[data-block="spec_list"]')];
 		expect(lists.map((list) => list.querySelector("h2")?.textContent)).toEqual(["Tokens", "Design system"]);
@@ -773,13 +756,7 @@ describe("Identity on the layout renderer", () => {
 		expect(lists[1]!.querySelector(".studio-table td")?.textContent).toBe("Website");
 		const data = [...view.el.querySelectorAll("section[data-file]")].map((card) => card.getAttribute("data-file"));
 		expect(data).toEqual(["identity/motion.json"]);
-		tab("files");
-		expect(view.el.querySelector('[data-file="identity/concepts/glow.svg"]')).not.toBeNull();
-		expect(view.el.querySelector('[data-file="identity/notes/naming.md"]')).not.toBeNull();
-		expect(view.el.querySelector('.studio-html-card[data-file="identity/site/index.html"] iframe')).not.toBeNull();
-		for (const path of ["logo.svg", "wordmark.svg", "voice.md", "brief.md", "tokens.css", "tokens.json"]) {
-			expect(view.el.querySelector(`[data-file="identity/${path}"]`)).toBeNull();
-		}
+		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
 		view.dispose();
 		store.dispose();
 	});
@@ -917,7 +894,7 @@ describe("Identity on the layout renderer", () => {
 							blocks: [
 								{ type: "brand_mark", from: "/identity/logo.svg", heading: "Logo" },
 								{ type: "palette", from: "/identity/tokens.json#/colors", heading: "Palette" },
-								{ type: "files", match: ["/identity/voice.md"] },
+								{ type: "artifacts", match: ["/identity/voice.md"] },
 							],
 						},
 					],
@@ -954,7 +931,7 @@ function customStudio(): SurfaceSummary {
 }
 
 describe("Custom interfaces on the layout renderer", () => {
-	it("draws a fresh custom interface's homes: its title, the pale line, the files line and a pale Reports tab", async () => {
+	it("draws a fresh custom interface's homes: its title, the pale line, the artifacts line and a pale Reports tab", async () => {
 		const { view, tab, tabs, store } = await open({}, { surface: customStudio() });
 		expect(tabs()).toEqual(["Overview", "Reports"]);
 		expect([...view.el.querySelectorAll(".studio-tab.is-empty")].map((item) => item.textContent)).toEqual([
@@ -963,9 +940,9 @@ describe("Custom interfaces on the layout renderer", () => {
 		expect(view.el.querySelector(".studio-empty")).toBeNull();
 		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Notes");
 		expect(view.el.querySelector(".studio-product-line.is-empty")?.textContent).toBe("One line about what it is");
-		expect(view.el.querySelector(".studio-section-head h2")?.textContent).toBe("Files");
+		expect(view.el.querySelector(".studio-section-head h2")?.textContent).toBe("Artifacts");
 		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe(
-			"Working files. Models, pictures and notes live here.",
+			"Artifacts. Models, pictures and notes live here.",
 		);
 		tab("reports");
 		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Reports and posts live here.");
@@ -975,7 +952,7 @@ describe("Custom interfaces on the layout renderer", () => {
 		setLanguagePreference("da");
 		const danish = await open({}, { surface: customStudio() });
 		expect(danish.tabs()).toEqual(["Overblik", "Rapporter"]);
-		expect(danish.view.el.querySelector(".studio-section-head h2")?.textContent).toBe("Filer");
+		expect(danish.view.el.querySelector(".studio-section-head h2")?.textContent).toBe("Artefakter");
 		danish.view.dispose();
 		danish.store.dispose();
 	});
@@ -1068,7 +1045,7 @@ function moduleFiles(): Record<string, string> {
 						{
 							type: "row",
 							blocks: [
-								{ type: "files", heading: "Notes" },
+								{ type: "artifacts", heading: "Notes" },
 								{ type: "module", from: "modules/price", height: 480 },
 							],
 						},
@@ -1088,7 +1065,19 @@ function handedHtml(frame: HTMLIFrameElement): string {
 	window.dispatchEvent(ready);
 	const [message] = post.mock.calls.at(-1) as unknown as [{ type: string; html: string }];
 	expect(message.type).toBe(PAGE_CONTENT);
+	post.mockRestore();
 	return message.html;
+}
+
+function expectFrameDisposed(frame: HTMLIFrameElement): void {
+	document.body.append(frame);
+	const post = vi.spyOn(frame.contentWindow as Window, "postMessage").mockImplementation(() => {});
+	const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+	Object.defineProperty(ready, "source", { value: frame.contentWindow });
+	window.dispatchEvent(ready);
+	expect(post).not.toHaveBeenCalled();
+	post.mockRestore();
+	frame.remove();
 }
 
 function sayHeight(frame: HTMLIFrameElement, height: unknown, source: Window | null = frame.contentWindow): void {
@@ -1203,18 +1192,18 @@ describe("The module block", () => {
 						title: "Configure",
 						blocks: [{ type: "module", from: "modules/configurator", height: 600 }],
 					},
-					{ id: "files", title: "Files", blocks: [{ type: "files" }] },
+					{ id: "artifacts", title: "Artifacts", blocks: [{ type: "artifacts" }] },
 				],
 			}),
 		});
-		expect(tabs()).toEqual(["Overview", "Configure", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Configure", "Artifacts"]);
 		tab("configure");
 		const module = view.el.querySelector<HTMLElement>('[data-block="module"]')!;
 		expect(module.classList.contains("is-alone")).toBe(true);
 		const frame = module.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
 		expect(frame.style.minHeight).toBe("600px");
 		expect(handedHtml(frame)).toContain("Pick a colour");
-		tab("files");
+		tab("artifacts");
 		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).not.toBeNull();
 		expect(view.el.querySelector('[data-file="surfaces/lamp/modules/configurator/index.html"]')).toBeNull();
 		view.dispose();
@@ -1317,8 +1306,6 @@ describe("The explainer block and Breakdowns tab", () => {
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="system"]')!.click();
 		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/explainer.json"]')).toBeNull();
 		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/voice/clips.json"]')).toBeNull();
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
-		expect(view.el.querySelector('[data-file="identity/breakdowns/buyer-ux/scenes.js"]')).toBeNull();
 
 		view.dispose();
 		store.dispose();
@@ -1452,6 +1439,222 @@ describe("The explainer block and Breakdowns tab", () => {
 		expect(block.classList.contains("is-changed")).toBe(true);
 		expect(block.querySelector(".studio-changed-pill")?.textContent).toBe("Updated");
 		expect(block.dataset.file).toBe("surfaces/lamp/breakdowns/how-it-works/scenes.js");
+		expect(block.querySelector(".studio-file-tag")).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+});
+
+describe("Artifacts block, hidden filepaths and fullscreen", () => {
+	it("expands every artifacts item (SVGs, raster pictures, docs, JSON and HTML pages) without showing filepaths", async () => {
+		const screenRef: StudioBinaryRef = {
+			manifestSha256: "e".repeat(64),
+			fileSha256: "f".repeat(64),
+			bytes: 4,
+			mediaType: "image/png",
+		};
+		const readCloudBinary = vi.fn(async () => new Uint8Array([137, 80, 78, 71]));
+		const createObjectURL = vi.fn(() => "blob:screen-3");
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		const surface = studio();
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () =>
+					folderContents(
+						{
+							[`${ROOT}/layout.json`]: JSON.stringify({
+								schema: "qorpera.surface-layout/v1",
+								tabs: [
+									{
+										id: "screens",
+										title: "Screens",
+										blocks: [{ type: "artifacts", heading: "App screens", match: ["screens/*"] }],
+									},
+									{
+										id: "materials",
+										title: "Materials",
+										blocks: [{ type: "artifacts", skip: ["screens/*"] }],
+									},
+								],
+							}),
+							[`${ROOT}/screens/01-import.svg`]:
+								'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>',
+							[`${ROOT}/screens/02-review.svg`]:
+								'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>',
+							[`${ROOT}/brief.md`]: "# Brief\nQuiet studio notes.\n",
+							[`${ROOT}/pricing.json`]: JSON.stringify({ retail: "900 kr." }),
+							[`${ROOT}/demo.html`]:
+								"<!doctype html><html><head><title>Demo</title></head><body>Hi</body></html>",
+						},
+						{ [`${ROOT}/screens/03-progress.png`]: screenRef },
+					),
+				),
+				readCloudBinary,
+			},
+		);
+		await store.load();
+		await store.refreshCloudFiles(surface);
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		document.body.append(view.el);
+
+		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
+		expect([...view.el.querySelectorAll(".studio-section-head h2")].map((el) => el.textContent)).toEqual([
+			"App screens",
+		]);
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".studio-svg-card")];
+		expect(cards.map((card) => card.dataset.file)).toEqual([
+			`${ROOT}/screens/01-import.svg`,
+			`${ROOT}/screens/02-review.svg`,
+			`${ROOT}/screens/03-progress.png`,
+		]);
+
+		cards[0]!.querySelector<HTMLButtonElement>("button.studio-svg-stage")!.click();
+		const mediaDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-media")!;
+		expect(mediaDialog).not.toBeNull();
+		expect(mediaDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("01 import");
+		expect(mediaDialog.querySelector(".studio-fullscreen-count")?.textContent).toBe("1 of 3");
+
+		mediaDialog.querySelector<HTMLButtonElement>(".studio-fullscreen-nav.is-next")!.click();
+		expect(mediaDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("02 review");
+		expect(mediaDialog.querySelector(".studio-fullscreen-count")?.textContent).toBe("2 of 3");
+
+		mediaDialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+		expect(mediaDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("03 progress");
+		expect(mediaDialog.querySelector(".studio-fullscreen-count")?.textContent).toBe("3 of 3");
+		await vi.waitFor(() =>
+			expect(mediaDialog.querySelector("img.studio-fullscreen-img")?.getAttribute("src")).toBe("blob:screen-3"),
+		);
+
+		mediaDialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		expect(mediaDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("02 review");
+		mediaDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expect(document.body.querySelector("dialog.studio-fullscreen-dialog")).toBeNull();
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="materials"]')!.click();
+		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
+
+		view.el
+			.querySelector<HTMLButtonElement>('[data-file="surfaces/lamp/brief.md"] [data-act="studio-expand"]')!
+			.click();
+		const docDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-doc")!;
+		expect(docDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("Brief");
+		expect(docDialog.querySelector(".studio-doc-body")?.textContent).toContain("Quiet studio notes.");
+		docDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+
+		view.el
+			.querySelector<HTMLButtonElement>('[data-file="surfaces/lamp/pricing.json"] [data-act="studio-expand"]')!
+			.click();
+		const jsonDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-wide")!;
+		expect(jsonDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("Pricing");
+		expect(jsonDialog.querySelector(".studio-kv dd")?.textContent).toBe("900 kr.");
+		jsonDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+
+		view.el
+			.querySelector<HTMLButtonElement>('[data-file="surfaces/lamp/demo.html"] [data-act="studio-expand"]')!
+			.click();
+		const htmlDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-frame")!;
+		expect(htmlDialog.querySelector(".studio-fullscreen-head h2")?.textContent).toBe("Demo");
+		const fullscreenHtmlFrame = htmlDialog.querySelector<HTMLIFrameElement>(
+			"iframe.studio-html-frame.is-fullscreen",
+		)!;
+		expect(fullscreenHtmlFrame).not.toBeNull();
+		store.setMode("live");
+		view.update();
+		expect(handedHtml(fullscreenHtmlFrame)).toContain("Hi");
+		store.setMode("preview");
+		view.update();
+		htmlDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expectFrameDisposed(fullscreenHtmlFrame);
+
+		view.dispose();
+		store.dispose();
+		Reflect.deleteProperty(URL, "createObjectURL");
+		Reflect.deleteProperty(URL, "revokeObjectURL");
+	});
+
+	it("expands brand_mark, table, module, stage_3d and explainer blocks and restores live hosted nodes", async () => {
+		setStudioExplainerEngineForTests("window.Video = function(el, opts){ this.start = function(){}; };");
+		const { view, tab, store } = await open({
+			...productFiles(),
+			[`${ROOT}/specs.json`]: JSON.stringify({
+				...SPECS,
+				model: { kind: "device", dimensions: "20 cm", layers: ["Shade", "Base"] },
+			}),
+			[`${ROOT}/logo.svg`]: LOGO,
+			[`${ROOT}/modules/calc/index.html`]: "<!doctype html><title>Calc</title><body>42</body>",
+			[`${ROOT}/breakdowns/intro/explainer.json`]: JSON.stringify({ title: "Intro" }),
+			[`${ROOT}/breakdowns/intro/scenes.js`]: 'V.part("Start"); V.scene((s) => { s.say("Hi"); });',
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				schema: "qorpera.surface-layout/v1",
+				tabs: [
+					{
+						id: "overview",
+						title: "Overview",
+						blocks: [
+							{ type: "stage_3d", id: "stage" },
+							{ type: "title" },
+							{ type: "brand_mark", from: "logo.svg", heading: "Logo" },
+							{ type: "table", from: "specs.json#/bom", heading: "Parts" },
+							{ type: "module", from: "modules/calc", heading: "Calculator" },
+						],
+					},
+					{
+						id: "breakdowns",
+						title: "Breakdowns",
+						blocks: [{ type: "explainer", match: "breakdowns/**/scenes.js" }],
+					},
+				],
+			}),
+		});
+
+		const viewer = view.el.querySelector<HTMLElement>(".studio-stage .studio-3d")!;
+		view.el.querySelector<HTMLButtonElement>('.studio-stage [data-act="studio-expand"]')!.click();
+		const stageDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-stage")!;
+		expect(stageDialog.contains(viewer)).toBe(true);
+		view.update();
+		expect(stageDialog.contains(viewer)).toBe(true);
+		stageDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expect(view.el.querySelector(".studio-stage")?.contains(viewer)).toBe(true);
+
+		view.el.querySelector<HTMLButtonElement>('[data-block="brand_mark"] [data-act="studio-expand"]')!.click();
+		const markDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-mark")!;
+		expect(markDialog.querySelectorAll(".studio-mark-grounds.is-fullscreen img")).toHaveLength(2);
+		markDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+
+		view.el.querySelector<HTMLButtonElement>('[data-block="table"] [data-act="studio-expand"]')!.click();
+		const tableDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-wide")!;
+		expect(tableDialog.querySelector(".studio-table td")?.textContent).toBe("Shade");
+		tableDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+
+		view.el.querySelector<HTMLButtonElement>('[data-block="module"] [data-act="studio-expand"]')!.click();
+		const moduleDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-frame")!;
+		const fullscreenModuleFrame = moduleDialog.querySelector<HTMLIFrameElement>(
+			"iframe.studio-module-frame.is-fullscreen",
+		)!;
+		expect(fullscreenModuleFrame).not.toBeNull();
+		store.setMode("live");
+		view.update();
+		expect(handedHtml(fullscreenModuleFrame)).toContain("42");
+		store.setMode("preview");
+		view.update();
+		moduleDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expectFrameDisposed(fullscreenModuleFrame);
+
+		tab("breakdowns");
+		const explainerFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-explainer-frame")!;
+		view.el.querySelector<HTMLButtonElement>('[data-block="explainer"] [data-act="studio-expand"]')!.click();
+		const explainerDialog = document.body.querySelector<HTMLDialogElement>(
+			"dialog.studio-fullscreen-dialog.is-frame",
+		)!;
+		expect(explainerDialog.contains(explainerFrame)).toBe(true);
+		explainerDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+		expect(view.el.querySelector(".studio-explainer-stage")?.contains(explainerFrame)).toBe(true);
+
 		view.dispose();
 		store.dispose();
 	});

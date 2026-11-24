@@ -21,6 +21,7 @@ import {
 	COMPANY,
 	change,
 	fakeClient,
+	folderContents,
 	MESSAGE_IDS,
 	PREVIEW_IDS,
 	pointTarget,
@@ -1275,6 +1276,81 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("discards one change from its overview card on a second press, keeping the button's size", async () => {
+		const ready = session(["staged", "staged"], { id: "33333333-3333-4333-8333-333333333351", title: "Ready" });
+		const waiting = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333352",
+			title: "Waiting",
+			state: "needs_input",
+			question: { text: "Which one?", options: [] },
+			changes: [change(CHANGES[2], 1, "staged")],
+			openChangeCount: 1,
+		});
+		const working = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333353",
+			title: "Working",
+			state: "running",
+		});
+		const discardSurfaceChange = vi.fn(async (changeId: string) =>
+			changeId === CHANGES[0]
+				? {
+						...ready,
+						changes: [change(CHANGES[0], 1, "discarded"), change(CHANGES[1], 2, "staged")],
+						openChangeCount: 1,
+					}
+				: { ...waiting, changes: [change(CHANGES[2], 1, "discarded")], openChangeCount: 0 },
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([ready, waiting, working])),
+			discardSurfaceChange,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const card = (id: string) =>
+			view.el.querySelector<HTMLElement>(`.surface-overview-card.is-agent[data-session="${id}"]`)!;
+		const discardOf = (id: string, changeId: string) =>
+			card(id).querySelector<HTMLElement>(`[data-act="discard-change-armed"][data-change="${changeId}"]`);
+		expect(discardOf(working.id, CHANGES[0])).toBeNull();
+		expect(discardOf(waiting.id, CHANGES[2])).not.toBeNull();
+
+		const first = discardOf(ready.id, CHANGES[0])!;
+		expect(first.textContent).toBe("Discard");
+		expect(first.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Confirm");
+		first.click();
+		const armed = discardOf(ready.id, CHANGES[0])!;
+		expect(armed.classList.contains("is-confirming")).toBe(true);
+		expect(armed.dataset.armed).toBe("true");
+		expect(armed.textContent).toBe("Confirm");
+		expect(armed.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Discard");
+		expect(discardOf(ready.id, CHANGES[1])!.classList.contains("is-confirming")).toBe(false);
+		expect(discardSurfaceChange).not.toHaveBeenCalled();
+
+		armed.click();
+		await flush();
+		await flush();
+		expect(discardSurfaceChange).toHaveBeenCalledWith(CHANGES[0]);
+		view.update();
+		expect(discardOf(ready.id, CHANGES[0])).toBeNull();
+		expect(discardOf(ready.id, CHANGES[1])?.classList.contains("is-confirming")).toBe(false);
+
+		discardOf(waiting.id, CHANGES[2])!.click();
+		discardOf(waiting.id, CHANGES[2])!.click();
+		await flush();
+		await flush();
+		view.update();
+		expect(store.workspace(SURFACE)?.activeSessions.map((item) => item.id)).toContain(waiting.id);
+		expect(card(waiting.id)?.querySelector(".surface-question")?.textContent).toContain("Which one?");
+		expect(discardSurfaceChange).toHaveBeenLastCalledWith(CHANGES[2]);
+		expect(discardOf(waiting.id, CHANGES[2])).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("enters with a page loading screen, defers heavy mounting until after first paint, and cancels mounts when switched away", async () => {
 		const brand = summary({
 			id: "22222222-2222-4222-8222-222222222241",
@@ -1575,6 +1651,213 @@ describe("the surface page", () => {
 		store.setMode("preview");
 		view.update();
 		expect(mountDispose).toHaveBeenCalledTimes(1);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("shows per-change deliverable pills in the sidepanel, deduplicates session Notes, and opens staged articles and HTML pages directly", async () => {
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222261",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 2,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 retention report",
+			summary: "Adds cohort metrics and recommendations.",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3.report.json"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "reports/q3.report.json",
+					content: JSON.stringify({
+						slug: "q3-retention",
+						headline: "Q3 Retention Report",
+						readingTime: "3 min",
+						sections: [{ id: "s1", heading: "Highlights", paragraphs: ["Retention climbed."] }],
+					}),
+				},
+			],
+		});
+		const c2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Launch blog post",
+			summary: "Standalone HTML post for the launch.",
+			kind: "folder_patch",
+			affectedPaths: ["posts/launch.html"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "posts/launch.html",
+					content:
+						"<!doctype html><html><head><title>Launch Post</title></head><body><h1>Launch</h1></body></html>",
+				},
+			],
+		});
+		const sess = session([], {
+			id: SESSION,
+			surfaceId: studio.id,
+			title: "Content writer",
+			changes: [c1, c2],
+			openChangeCount: 2,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([sess], { surface: studio })),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => ({ el: document.createElement("div"), update: vi.fn(), dispose: vi.fn() }),
+				openMigration: () => undefined,
+			},
+			studio.slug,
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(drawer.querySelectorAll(".surface-agent-note")).toHaveLength(0);
+		const overviewPills = [...drawer.querySelectorAll<HTMLButtonElement>(".surface-overview-deliverable")];
+		expect(overviewPills).toHaveLength(2);
+		expect(overviewPills.map((pill) => pill.textContent)).toEqual(["Article", "HTML"]);
+
+		await store.toggleChange(studio.id, c1.id);
+		view.update();
+		expect(store.isChangeShown(c1.id)).toBe(false);
+
+		drawer.querySelectorAll<HTMLButtonElement>(".surface-overview-deliverable")[0]!.click();
+		await flush();
+		view.update();
+		expect(store.isChangeShown(c1.id)).toBe(true);
+		expect(store.state.mode).toBe("report");
+		expect(store.state.activeReportSlug).toBe("q3-retention");
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Q3 Retention Report");
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
+		view.update();
+		expect(drawer.querySelectorAll(".surface-agent-note")).toHaveLength(0);
+		const summaries = [...drawer.querySelectorAll(".surface-drawer-change-summary")].map((el) => el.textContent);
+		expect(summaries).toEqual(["Adds cohort metrics and recommendations.", "Standalone HTML post for the launch."]);
+		const focusedDeliverables = [...drawer.querySelectorAll<HTMLButtonElement>(".surface-drawer-deliverable")];
+		expect(focusedDeliverables).toHaveLength(2);
+		expect(focusedDeliverables[0]!.textContent).toContain("Q3 Retention Report");
+		expect(focusedDeliverables[0]!.classList.contains("is-open")).toBe(true);
+
+		focusedDeliverables[1]!.click();
+		await flush();
+		view.update();
+		expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/posts/launch.html");
+		expect(view.el.querySelector(".report-html-card h2")?.textContent).toBe("Launch Post");
+
+		view.dispose();
+		store.dispose();
+	});
+});
+
+describe("removing an agent from the Changes list", () => {
+	afterEach(async () => {
+		openMenu()?.close();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+
+	it("removes a finished routine at once and asks first for one that is working on a change", async () => {
+		const routine = session([], {
+			id: "33333333-3333-4333-8333-333333333351",
+			title: "Co-Founder Pulse",
+			state: "ready",
+		});
+		const working = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333352",
+			title: "Add the wordmark",
+			state: "running",
+		});
+		const kept = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333353",
+			title: "Kept proposal",
+			state: "ready",
+		});
+		let active = [routine, working, kept];
+		const discardSurfaceSession = vi.fn(async (sessionId: string) => {
+			const ended = active.find((item) => item.id === sessionId)!;
+			active = active.filter((item) => item.id !== sessionId);
+			return {
+				...ended,
+				state: "discarded" as const,
+				changes: ended.changes.map((item) => ({ ...item, status: "discarded" as const })),
+			};
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary()]),
+				getSurfaceWorkspace: vi.fn(async () => workspace(active)),
+				discardSurfaceSession,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const card = (id: string) =>
+			view.el.querySelector<HTMLElement>(`.surface-overview-card.is-agent[data-session="${id}"]`);
+		const chooseRemove = async (id: string) => {
+			card(id)!.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+			const row = [...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+				(item) => item.textContent?.trim() === "Remove",
+			)!;
+			expect(row.classList.contains("danger")).toBe(true);
+			row.click();
+			await flush();
+		};
+		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
+		const dialogButton = (label: string) =>
+			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
+
+		await chooseRemove(routine.id);
+		expect(dialog()).toBeNull();
+		expect(discardSurfaceSession).toHaveBeenCalledWith(routine.id);
+		view.update();
+		expect(card(routine.id)).toBeNull();
+
+		await chooseRemove(working.id);
+		expect(dialog()?.querySelector("p")?.textContent).toBe(
+			"Remove Add the wordmark? The agent stops and its unapproved changes are dropped.",
+		);
+		dialogButton("Cancel").click();
+		await flush();
+		expect(discardSurfaceSession).toHaveBeenCalledTimes(1);
+		expect(card(working.id)).not.toBeNull();
+
+		await chooseRemove(working.id);
+		expect(dialogButton("Remove").classList.contains("btn-danger")).toBe(true);
+		dialogButton("Remove").click();
+		await flush();
+		view.update();
+		expect(discardSurfaceSession).toHaveBeenLastCalledWith(working.id);
+		expect(card(working.id)).toBeNull();
+		expect(card(kept.id)).not.toBeNull();
 		view.dispose();
 		store.dispose();
 	});

@@ -488,7 +488,7 @@ const STUDIO_PAGE_RULES = [
 	`Change the page's shape by staging ${SURFACE_LAYOUT_PATH} with stage_surface_patch like any other file: it shows in Changes and is approved like content. A layout that does not parse is refused when it is staged (checked on top of this session's own waiting changes, not other sessions'); deleting ${SURFACE_LAYOUT_PATH} brings back the starter.`,
 	`Figures filled from an object show only values of at most ${SURFACE_FACT_FIGURE_CHARS} characters.`,
 	"A module is a folder (modules/<name>/) with index.html and its own css and js linked relatively: no network, nothing from outside its folder except tokens.css / qorpera-identity.css, and an auto module must not size itself by the viewport (100vh).",
-	"A files block shows only what no other block draws.",
+	"An artifacts block shows only what no other block draws; add one to any tab in layout.json when that tab should show vector art, pictures, notes, pages or extra files.",
 	"A company file is bound with a leading slash (/identity/tokens.json).",
 ];
 
@@ -579,7 +579,7 @@ function describeStudioPage(
 			: "";
 	if (view.page === "none") return "This interface's page is not drawn from a layout.";
 	if (view.page === "report") {
-		return `## This page\nThis interface is a reading page, not drawn from a layout: it shows every *.report.json and Markdown file in ${folderRoot}/ as an article.\n\n## File formats\n${SURFACE_REPORT_FORMAT}`;
+		return `## This page\nThis interface is a reading page, not drawn from a layout: it presents every *.report.json article and standalone .html document in ${folderRoot}/. Write each report, essay, or blog post as its own *.report.json article (or self-contained .html when bespoke layout is requested) in its own stage_surface_patch call rather than raw Markdown.\n\n## File formats\n${SURFACE_REPORT_FORMAT}`;
 	}
 	if (view.page === "unknown") {
 		const explainerBlock = voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA;
@@ -620,7 +620,8 @@ function buildFolderSurfaceInstructions(
 	return (
 		`This session works on the interface "${input.surfaceTitle}" (${input.surfaceSlug}); its page shows ${folderRoot}/ from Company Files. ` +
 		"Members preview staged patches, any of them on or off together, before they approve one. " +
-		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), one cohesive, conflict-minimizing patch per change. ` +
+		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), calling stage_surface_patch once per independent deliverable (one change per report, blog post, article, or distinct section update — never bundle multiple deliverables into one change). ` +
+		"Write reports, analyses, essays, and blog posts as structured *.report.json articles (or self-contained .html files when custom visual presentation is asked for), not raw .md files; keep .md for brief working notes. " +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.\n\n` +
 		describeStudioPage(view, folderRoot, input.voiceModel, input.voiceName) +
 		describeStudioSkill(view, skill)
@@ -1017,7 +1018,9 @@ export async function runSurfaceSessionTurn(
 					]
 				: [];
 			const tools: CloudNativeTool[] = [
-				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging),
+				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
+					deferSessionCompletion: true,
+				}),
 				...narrateTool,
 				...folderTools,
 				...(ports.extraTools ?? []),

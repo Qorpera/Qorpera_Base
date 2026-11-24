@@ -1,5 +1,6 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
+import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { playOnce } from "../../ui/motion.ts";
@@ -11,11 +12,16 @@ import {
 	formatConflictPaths,
 	isLocalSurfaceId,
 	isOpenChange,
+	isStandaloneHtmlDeliverablePath,
 	normalizeStudioPatchOps,
 	type SurfacesStore,
 	type SurfaceUpdatePhase,
+	surfaceDocSlug,
 } from "../surfaces-store.ts";
+import { htmlDocumentTitle } from "./surface-blocks/artifacts.ts";
+import { readableName } from "./surface-blocks/context.ts";
 import { surfaceTile } from "./surface-rail.ts";
+import { compiledTokensCssFrom, prepareStudioHtmlPreview } from "./surface-studio-html.ts";
 
 export interface SurfaceReportOptions {
 	readonly store: SurfacesStore;
@@ -547,9 +553,44 @@ function updatingLabel(phase: SurfaceUpdatePhase): string {
 
 interface ReportMarkdownDoc {
 	readonly path: string;
+	readonly slug: string;
+	readonly title: string;
 	readonly content: string;
+	readonly baseContent?: string;
 	readonly changed: boolean;
 }
+
+interface ReportHtmlDoc {
+	readonly path: string;
+	readonly slug: string;
+	readonly title: string;
+	readonly html: string;
+	readonly baseHtml?: string;
+	readonly changed: boolean;
+}
+
+type ReportSwitcherItem =
+	| {
+			readonly kind: "report";
+			readonly slug: string;
+			readonly title: string;
+			readonly changed: boolean;
+			readonly doc: ReportDocument;
+	  }
+	| {
+			readonly kind: "html";
+			readonly slug: string;
+			readonly title: string;
+			readonly changed: boolean;
+			readonly doc: ReportHtmlDoc;
+	  }
+	| {
+			readonly kind: "markdown";
+			readonly slug: string;
+			readonly title: string;
+			readonly changed: boolean;
+			readonly doc: ReportMarkdownDoc;
+	  };
 
 interface ReportRenderParams {
 	readonly seq: number;
@@ -564,11 +605,19 @@ interface ReportRenderParams {
 	readonly activeReportSlug: string | undefined;
 }
 
+function markdownDocTitle(content: string, path: string): string {
+	const match = content.match(/^\s*#\s+(.+?)\s*$/m);
+	const heading = match?.[1]?.replace(/[*_`[\]]/g, "").trim();
+	return heading && heading.length <= 100 ? heading : readableName(path);
+}
+
 function parseSingleReportFile(
 	path: string,
 	files: Readonly<Record<string, string>>,
 	baseFiles: Readonly<Record<string, string>>,
+	folderRoot: string | null | undefined,
 	reports: ReportDocument[],
+	htmlDocs: ReportHtmlDoc[],
 	markdownDocs: ReportMarkdownDoc[],
 ): void {
 	const content = files[path] ?? "";
@@ -586,7 +635,27 @@ function parseSingleReportFile(
 			return;
 		}
 	}
-	if (/\.(?:md|markdown)$/i.test(path)) markdownDocs.push({ path, content, changed });
+	if (isStandaloneHtmlDeliverablePath(path, folderRoot)) {
+		htmlDocs.push({
+			path,
+			slug: surfaceDocSlug(path),
+			title: htmlDocumentTitle(content, path),
+			html: content,
+			...(baseContent !== undefined ? { baseHtml: baseContent } : {}),
+			changed,
+		});
+		return;
+	}
+	if (/\.(?:md|markdown)$/i.test(path)) {
+		markdownDocs.push({
+			path,
+			slug: surfaceDocSlug(path),
+			title: markdownDocTitle(content, path),
+			content,
+			...(baseContent !== undefined ? { baseContent } : {}),
+			changed,
+		});
+	}
 }
 
 export class SurfaceReportView {
@@ -598,11 +667,13 @@ export class SurfaceReportView {
 	#showingSkeleton = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#activeSlug = "";
+	#lastStoreSlug: string | undefined;
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#wasUpdating = false;
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 	#renderSeq = 0;
+	readonly #htmlFrames: AppFrame[] = [];
 
 	constructor(options: SurfaceReportOptions) {
 		this.#options = options;
@@ -634,12 +705,42 @@ export class SurfaceReportView {
 		this.#baseFiles = files;
 	}
 
+	#disposeHtmlFrames(): void {
+		for (const frame of this.#htmlFrames) frame.dispose();
+		this.#htmlFrames.length = 0;
+	}
+
+	#createHtmlFrame(
+		html: string,
+		htmlPath: string,
+		title: string,
+		files: Readonly<Record<string, string>>,
+		compiledTokensCss: string,
+	): HTMLElement {
+		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
+		if (live === null) {
+			return h("p", { class: "studio-html-fallback" }, t("This page can't be shown live."));
+		}
+		const frame = new AppFrame(
+			{ html: live },
+			t("Page: {name}", { name: title }),
+			"report-html-frame studio-html-frame",
+			async () => ({ ok: false, error: t("This page can't be shown here.") }),
+			() => undefined,
+			{ again: true },
+		);
+		this.#htmlFrames.push(frame);
+		return frame.frame;
+	}
+
 	deactivate(): void {
 		this.#renderSeq++;
+		this.#disposeHtmlFrames();
 	}
 
 	dispose(): void {
 		this.#renderSeq++;
+		this.#disposeHtmlFrames();
 		if (this.#settleTimer) {
 			clearTimeout(this.#settleTimer);
 			this.#settleTimer = undefined;
@@ -800,13 +901,22 @@ export class SurfaceReportView {
 			.sort();
 
 		const reports: ReportDocument[] = [];
+		const htmlDocs: ReportHtmlDoc[] = [];
 		const markdownDocs: ReportMarkdownDoc[] = [];
 		for (const path of filePaths) {
-			parseSingleReportFile(path, files, params.baseFiles, reports, markdownDocs);
+			parseSingleReportFile(
+				path,
+				files,
+				params.baseFiles,
+				params.surface.folderRoot,
+				reports,
+				htmlDocs,
+				markdownDocs,
+			);
 			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
 		}
 
-		const plan = this.#buildRenderPlan(params, composition, reports, markdownDocs);
+		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, markdownDocs);
 		if (!this.#isRenderActive(params.seq)) return;
 		if (!plan.article || !plan.sectionTasks) {
 			this.el.replaceChildren(...plan.children);
@@ -834,11 +944,20 @@ export class SurfaceReportView {
 			.sort();
 
 		const reports: ReportDocument[] = [];
+		const htmlDocs: ReportHtmlDoc[] = [];
 		const markdownDocs: ReportMarkdownDoc[] = [];
 		for (const path of filePaths) {
-			parseSingleReportFile(path, files, params.baseFiles, reports, markdownDocs);
+			parseSingleReportFile(
+				path,
+				files,
+				params.baseFiles,
+				params.surface.folderRoot,
+				reports,
+				htmlDocs,
+				markdownDocs,
+			);
 		}
-		const plan = this.#buildRenderPlan(params, composition, reports, markdownDocs);
+		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, markdownDocs);
 		if (plan.article && plan.sectionTasks) {
 			for (const task of plan.sectionTasks) plan.article.append(task());
 		}
@@ -850,6 +969,7 @@ export class SurfaceReportView {
 		params: ReportRenderParams,
 		composition: ReturnType<typeof composeStudioPreview>,
 		reports: readonly ReportDocument[],
+		htmlDocs: readonly ReportHtmlDoc[],
 		markdownDocs: readonly ReportMarkdownDoc[],
 	): {
 		readonly children: HTMLElement[];
@@ -857,13 +977,46 @@ export class SurfaceReportView {
 		readonly sectionTasks?: readonly (() => HTMLElement)[];
 		readonly leavingSkeleton: boolean;
 	} {
+		this.#disposeHtmlFrames();
 		const { surface, workspace, initialLoading, updatingPhase, busyReconcile, mode, activeReportSlug } = params;
-		if (activeReportSlug && reports.some((item) => item.slug === activeReportSlug)) {
-			this.#activeSlug = activeReportSlug;
-		} else if (reports.length && !reports.some((item) => item.slug === this.#activeSlug)) {
-			this.#activeSlug = reports[0]!.slug;
+		const primaryItems: ReportSwitcherItem[] = [
+			...reports.map((doc) => ({
+				kind: "report" as const,
+				slug: doc.slug,
+				title: doc.headline,
+				changed: doc.changed,
+				doc,
+			})),
+			...htmlDocs.map((doc) => ({
+				kind: "html" as const,
+				slug: doc.slug,
+				title: doc.title,
+				changed: doc.changed,
+				doc,
+			})),
+		];
+		const fallbackMarkdownItems: ReportSwitcherItem[] = markdownDocs.map((doc) => ({
+			kind: "markdown" as const,
+			slug: doc.slug,
+			title: doc.title,
+			changed: doc.changed,
+			doc,
+		}));
+		const items = primaryItems.length > 0 ? primaryItems : fallbackMarkdownItems;
+
+		if (activeReportSlug !== this.#lastStoreSlug) {
+			this.#lastStoreSlug = activeReportSlug;
+			if (activeReportSlug && items.some((item) => item.slug === activeReportSlug)) {
+				this.#activeSlug = activeReportSlug;
+			}
 		}
-		const activeReport = reports.find((item) => item.slug === this.#activeSlug) ?? reports[0];
+		if (items.length && !items.some((item) => item.slug === this.#activeSlug)) {
+			this.#activeSlug =
+				activeReportSlug && items.some((item) => item.slug === activeReportSlug)
+					? activeReportSlug
+					: items[0]!.slug;
+		}
+		const activeItem = items.find((item) => item.slug === this.#activeSlug) ?? items[0];
 
 		const badgeText =
 			composition.status === "conflicted"
@@ -875,28 +1028,28 @@ export class SurfaceReportView {
 						: null;
 		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
 
-		const showChrome = reports.length > 1 || !this.#options.embedded;
+		const showChrome = items.length > 1 || !this.#options.embedded;
 		const chrome = showChrome
 			? h(
 					"div",
 					{ class: "report-chrome" },
-					reports.length > 1
+					items.length > 1
 						? h(
 								"div",
 								{ class: "report-switcher", role: "tablist", "aria-label": t("Articles & reports") },
-								reports.map((report) =>
+								items.map((item) =>
 									h(
 										"button",
 										{
 											type: "button",
 											role: "tab",
-											class: `report-switch-pill${report.slug === activeReport?.slug ? " is-on" : ""}`,
-											"aria-selected": String(report.slug === activeReport?.slug),
+											class: `report-switch-pill${item.slug === activeItem?.slug ? " is-on" : ""}`,
+											"aria-selected": String(item.slug === activeItem?.slug),
 											"data-act": "report-select",
-											"data-slug": report.slug,
+											"data-slug": item.slug,
 										},
-										report.changed ? h("span", { class: "report-changed-dot", "aria-hidden": "true" }) : null,
-										report.headline,
+										item.changed ? h("span", { class: "report-changed-dot", "aria-hidden": "true" }) : null,
+										item.title,
 									),
 								),
 							)
@@ -955,11 +1108,11 @@ export class SurfaceReportView {
 		if (mode === "compare") {
 			const leavingSkeleton = this.#showingSkeleton;
 			this.#showingSkeleton = false;
-			children.push(this.#renderCompare(reports));
+			children.push(this.#renderCompare(reports, htmlDocs, markdownDocs));
 			return { children, leavingSkeleton };
 		}
 
-		if (!activeReport && markdownDocs.length === 0) {
+		if (!activeItem) {
 			if (initialLoading) {
 				this.#showingSkeleton = true;
 				return { children: [surfaceSkeleton(t("Opening studio…"), "report")], leavingSkeleton: false };
@@ -982,7 +1135,8 @@ export class SurfaceReportView {
 		const leavingSkeleton = this.#showingSkeleton;
 		this.#showingSkeleton = false;
 
-		if (activeReport) {
+		if (activeItem.kind === "report") {
+			const activeReport = activeItem.doc;
 			const subtitleChanged = Boolean(activeReport.base && activeReport.base.subtitle !== activeReport.subtitle);
 			const metricsChanged = Boolean(
 				activeReport.base &&
@@ -1078,30 +1232,129 @@ export class SurfaceReportView {
 			return { children, article, sectionTasks, leavingSkeleton };
 		}
 
-		const article = h("article", { class: "report-article" });
-		const sectionTasks = markdownDocs.map(
-			(doc) => () =>
-				h("section", { class: "report-section" }, h("div", { class: "report-prose" }, markdown(doc.content))),
-		);
+		if (activeItem.kind === "html") {
+			const htmlDoc = activeItem.doc;
+			const fallbackCss = this.#options.store.companyIdentityTokens()?.css ?? "";
+			const compiledTokensCss = compiledTokensCssFrom(composition.files, surface.folderRoot, fallbackCss);
+			const card = h(
+				"section",
+				{
+					class: `studio-section studio-html-card report-html-card${htmlDoc.changed ? " is-changed" : ""}`,
+					"data-report-slug": htmlDoc.slug,
+					"data-file": htmlDoc.path,
+				},
+				h(
+					"div",
+					{ class: "studio-section-head" },
+					h("h2", null, htmlDoc.title),
+					htmlDoc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+				),
+				this.#createHtmlFrame(htmlDoc.html, htmlDoc.path, htmlDoc.title, composition.files, compiledTokensCss),
+			);
+			children.push(h("div", { class: "report-layout is-html" }, card));
+			return { children, leavingSkeleton };
+		}
+
+		const activeDoc = activeItem.doc;
+		const article = h("article", { class: "report-article", "data-report-slug": activeDoc.slug });
+		const sectionTasks = [
+			() =>
+				h(
+					"section",
+					{ class: `report-section${activeDoc.changed ? " is-changed" : ""}` },
+					h("div", { class: "report-prose" }, markdown(activeDoc.content)),
+				),
+		];
 		children.push(h("div", { class: "report-layout" }, article));
 		return { children, article, sectionTasks, leavingSkeleton };
 	}
 
-	#renderCompare(reports: readonly ReportDocument[]): HTMLElement {
-		const changed = reports.filter((report) => report.changed && report.base);
-		if (!changed.length) {
+	#renderCompare(
+		reports: readonly ReportDocument[],
+		htmlDocs: readonly ReportHtmlDoc[],
+		markdownDocs: readonly ReportMarkdownDoc[],
+	): HTMLElement {
+		const changedReports = reports.filter((report) => report.changed);
+		const changedHtml = htmlDocs.filter((doc) => doc.changed);
+		const changedMarkdown =
+			changedReports.length === 0 && changedHtml.length === 0 ? markdownDocs.filter((doc) => doc.changed) : [];
+		if (!changedReports.length && !changedHtml.length && !changedMarkdown.length) {
 			return h(
 				"div",
 				{ class: "report-compare-wrap" },
 				h("div", { class: "studio-compare-empty" }, h("p", null, t("No open changes to compare against Base."))),
 			);
 		}
-		return h(
-			"div",
-			{ class: "report-compare-wrap" },
-			changed.map((report) => {
-				const base = report.base!;
-				const rows: HTMLElement[] = [];
+		const cards: HTMLElement[] = [];
+		for (const report of changedReports) {
+			const base = report.base;
+			const rows: HTMLElement[] = [];
+			if (!base) {
+				if (report.subtitle) {
+					rows.push(
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, t("Subtitle")),
+							h("span", null, t("Not in Base")),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, t("Subtitle")),
+							h("strong", null, report.subtitle),
+						),
+					);
+				}
+				for (const metric of report.keyMetrics) {
+					rows.push(
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, metric.label),
+							h("span", null, t("Not in Base")),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, metric.label),
+							h("strong", null, `${metric.value}${metric.delta ? ` · ${metric.delta}` : ""}`),
+						),
+					);
+				}
+				for (const sec of report.sections) {
+					rows.push(
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, sec.heading),
+							h("span", null, t("Not in Base")),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, sec.heading),
+							h("strong", null, sec.paragraphs.join(" ") || sec.heading),
+						),
+					);
+				}
+				if (rows.length === 0) {
+					rows.push(
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, t("Article")),
+							h("span", null, t("Not in Base")),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, t("Article")),
+							h("strong", null, report.headline),
+						),
+					);
+				}
+			} else {
 				if (base.subtitle !== report.subtitle) {
 					rows.push(
 						h(
@@ -1154,14 +1407,16 @@ export class SurfaceReportView {
 						),
 					);
 				});
-				return h(
+			}
+			cards.push(
+				h(
 					"section",
 					{ class: "studio-section studio-compare-card", "data-compare-file": report.path },
 					h(
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, report.headline),
-						h("code", { class: "studio-file-tag" }, report.path),
+						!base ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(
 						"div",
@@ -1170,9 +1425,78 @@ export class SurfaceReportView {
 						h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
 						...rows,
 					),
-				);
-			}),
-		);
+				),
+			);
+		}
+		for (const doc of changedHtml) {
+			cards.push(
+				h(
+					"section",
+					{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
+					h(
+						"div",
+						{ class: "studio-section-head" },
+						h("h2", null, doc.title),
+						doc.baseHtml === undefined ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
+					),
+					h(
+						"div",
+						{ class: "studio-compare-grid" },
+						h("div", { class: "studio-compare-col-head" }, t("Base")),
+						h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, t("HTML")),
+							h(
+								"span",
+								null,
+								doc.baseHtml === undefined ? t("Not in Base") : htmlDocumentTitle(doc.baseHtml, doc.path),
+							),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, t("HTML")),
+							h("strong", null, doc.title),
+						),
+					),
+				),
+			);
+		}
+		for (const doc of changedMarkdown) {
+			cards.push(
+				h(
+					"section",
+					{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
+					h(
+						"div",
+						{ class: "studio-section-head" },
+						h("h2", null, doc.title),
+						doc.baseContent === undefined ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
+					),
+					h(
+						"div",
+						{ class: "studio-compare-grid" },
+						h("div", { class: "studio-compare-col-head" }, t("Base")),
+						h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, t("Notes")),
+							h("span", null, doc.baseContent === undefined ? t("Not in Base") : doc.baseContent.slice(0, 240)),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, t("Notes")),
+							h("strong", null, doc.content.slice(0, 240)),
+						),
+					),
+				),
+			);
+		}
+		return h("div", { class: "report-compare-wrap" }, ...cards);
 	}
 
 	#click(event: MouseEvent): void {
@@ -1180,8 +1504,11 @@ export class SurfaceReportView {
 		if (!target || !this.el.contains(target)) return;
 		const { act } = target.dataset;
 		if (act === "report-select" && target.dataset.slug) {
-			if (target.dataset.slug !== this.#activeSlug) {
-				this.#activeSlug = target.dataset.slug;
+			const slug = target.dataset.slug;
+			if (slug !== this.#activeSlug) {
+				this.#activeSlug = slug;
+				this.#lastStoreSlug = slug;
+				if (!this.#options.embedded) this.#options.store.selectReport(slug);
 				this.update();
 			}
 			return;

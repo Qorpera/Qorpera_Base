@@ -49,7 +49,7 @@ export const SURFACE_BLOCK_TYPES = [
 	"cards",
 	"report",
 	"explainer",
-	"files",
+	"artifacts",
 	"module",
 ] as const;
 export type SurfaceBlockType = (typeof SURFACE_BLOCK_TYPES)[number];
@@ -191,8 +191,8 @@ export interface SurfaceExplainerMatchBlock extends SurfaceBlockBase {
 
 export type SurfaceExplainerBlock = SurfaceExplainerFileBlock | SurfaceExplainerMatchBlock;
 
-export interface SurfaceFilesBlock extends SurfaceBlockBase {
-	readonly type: "files";
+export interface SurfaceArtifactsBlock extends SurfaceBlockBase {
+	readonly type: "artifacts";
 	readonly match?: readonly string[];
 	readonly skip?: readonly string[];
 	readonly heading?: string;
@@ -218,7 +218,7 @@ export type SurfaceBlock =
 	| SurfaceCardsBlock
 	| SurfaceReportBlock
 	| SurfaceExplainerBlock
-	| SurfaceFilesBlock
+	| SurfaceArtifactsBlock
 	| SurfaceModuleBlock;
 
 export interface SurfaceUnknownBlock {
@@ -430,9 +430,10 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		],
 	},
 	{
-		type: "files",
-		family: "files",
-		summary: "working files no other block shows, .json too; its empty line only alone on a tab or with a heading",
+		type: "artifacts",
+		family: "artifacts",
+		summary:
+			"rendered artifacts (vector art, pictures, docs, pages, .json) no other block shows, expandable fullscreen; add to any tab",
 		fields: [
 			{ name: "match", kind: "globs", required: false, note: "default every file" },
 			{ name: "skip", kind: "globs", required: false, note: "files to leave out" },
@@ -1183,7 +1184,7 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 					],
 					heading: "Other details",
 				},
-				{ type: "files", match: ["**/*.json"] },
+				{ type: "artifacts", match: ["**/*.json"] },
 			],
 		},
 		{
@@ -1209,16 +1210,6 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 			id: "breakdowns",
 			title: "Breakdowns",
 			blocks: [{ type: "explainer", match: "breakdowns/**/scenes.js" }],
-		},
-		{
-			id: "files",
-			title: "Files",
-			blocks: [
-				{
-					type: "files",
-					match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm"],
-				},
-			],
 		},
 	],
 };
@@ -1305,7 +1296,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 			id: "voice",
 			title: "Voice",
 			blocks: [
-				{ type: "files", id: "voice", match: ["/identity/voice.md", "/identity/brief.md"], heading: "Voice" },
+				{ type: "artifacts", id: "voice", match: ["/identity/voice.md", "/identity/brief.md"], heading: "Voice" },
 			],
 		},
 		{
@@ -1336,7 +1327,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 					from: "/identity/design-system.json",
 					heading: "Design system",
 				},
-				{ type: "files", id: "data", match: ["/identity/**/*.json"] },
+				{ type: "artifacts", id: "data", match: ["/identity/**/*.json"] },
 			],
 		},
 		{
@@ -1346,32 +1337,13 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 				{ type: "explainer", id: "breakdowns", match: "/identity/breakdowns/**/scenes.js", heading: "Breakdowns" },
 			],
 		},
-		{
-			id: "files",
-			title: "Files",
-			blocks: [
-				{
-					type: "files",
-					id: "files",
-					match: [
-						"/identity/**/*.md",
-						"/identity/**/*.markdown",
-						"/identity/**/*.txt",
-						"/identity/**/*.svg",
-						"/identity/**/*.html",
-						"/identity/**/*.htm",
-					],
-					skip: ["/identity/voice.md", "/identity/brief.md"],
-				},
-			],
-		},
 	],
 };
 
 const CUSTOM_STARTER_LAYOUT: SurfaceLayout = {
 	schema: SURFACE_LAYOUT_SCHEMA,
 	tabs: [
-		{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files", heading: "Files" }] },
+		{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "artifacts", heading: "Artifacts" }] },
 		{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "**/*.report.json" }] },
 	],
 };

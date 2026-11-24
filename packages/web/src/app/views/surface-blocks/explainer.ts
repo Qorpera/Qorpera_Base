@@ -15,6 +15,7 @@ import {
 	sectionHead,
 	surfaceGlobFinds,
 } from "./context.ts";
+import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
 
 const SCENES_FILE_RE = /\.js$/i;
 const CAPTION_HASH_RE = /^[0-9a-f]{8}$/;
@@ -246,12 +247,14 @@ function buildExplainerDocument(
 export class SurfaceExplainers {
 	readonly #read: StudioBinaryReader;
 	readonly #signal: AbortSignal;
+	readonly #fullscreen: StudioFullscreen;
 	readonly #selected = new Map<string, string>();
 	readonly #mounted = new Map<string, MountedExplainer>();
 
-	constructor(read: StudioBinaryReader, signal: AbortSignal) {
+	constructor(read: StudioBinaryReader, signal: AbortSignal, fullscreen: StudioFullscreen) {
 		this.#read = read;
 		this.#signal = signal;
+		this.#fullscreen = fullscreen;
 		signal.addEventListener("abort", () => this.dispose(), { once: true });
 	}
 
@@ -316,7 +319,7 @@ export class SurfaceExplainers {
 							}
 							if (heading) prev.section.insertBefore(sectionHead(heading, false), prev.meta);
 							if (switcher) prev.section.insertBefore(switcher, prev.meta);
-							this.#renderMeta(prev.meta, active);
+							this.#renderMeta(prev.meta, active, prev.frame, prev.stage);
 							this.#mounted.set(key, { ...prev, items });
 							return prev.section;
 						}
@@ -369,6 +372,7 @@ export class SurfaceExplainers {
 
 	deactivate(): void {
 		for (const mounted of this.#mounted.values()) {
+			this.#fullscreen.closeIfHosting(mounted.frame.frame);
 			mounted.loadAbort.abort();
 			mounted.frame.dispose();
 		}
@@ -383,19 +387,20 @@ export class SurfaceExplainers {
 	#unmount(key: string): void {
 		const mounted = this.#mounted.get(key);
 		if (!mounted) return;
+		this.#fullscreen.closeIfHosting(mounted.frame.frame);
 		mounted.loadAbort.abort();
 		mounted.frame.dispose();
 		this.#mounted.delete(key);
 	}
 
-	#renderMeta(meta: HTMLElement, item: ExplainerItem): void {
+	#renderMeta(meta: HTMLElement, item: ExplainerItem, frame: AppFrame, stage: HTMLElement): void {
 		meta.replaceChildren(
 			h(
 				"div",
 				{ class: "studio-section-head" },
 				h("h3", null, item.title),
-				h("code", { class: "studio-file-tag" }, item.path),
 				item.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+				expandButton(item.title, () => this.#fullscreen.openHosted(item.title, frame.frame, stage, "frame")),
 			),
 		);
 	}
@@ -410,7 +415,6 @@ export class SurfaceExplainers {
 		stage: HTMLElement,
 	): void {
 		this.#unmount(key);
-		this.#renderMeta(meta, item);
 		const loadAbort = new AbortController();
 		const onGlobalAbort = () => loadAbort.abort();
 		if (this.#signal.aborted) {
@@ -423,6 +427,7 @@ export class SurfaceExplainers {
 		}
 		const showError = () => {
 			if (loadAbort.signal.aborted) return;
+			this.#fullscreen.closeIfHosting(frame.frame);
 			stage.replaceChildren(h("p", { class: "studio-html-fallback" }, t("Breakdown could not load.")));
 		};
 		const pagePromise = this.#buildPage(item, loadAbort.signal);
@@ -434,6 +439,7 @@ export class SurfaceExplainers {
 			showError,
 			{ again: true },
 		);
+		this.#renderMeta(meta, item, frame, stage);
 		stage.replaceChildren(frame.frame);
 		this.#mounted.set(key, { frame, loadAbort, section, stage, meta, items, signature });
 	}
