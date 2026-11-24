@@ -129,6 +129,9 @@ declare
 	v_b1 uuid;
 	v_b2 uuid;
 	v_b3 uuid;
+	v_b_demoted uuid;
+	v_kick text;
+	v_seq_before integer;
 	v_builder public.qorpera_surface_preview_builders%rowtype;
 	v_owner_builder public.qorpera_surface_preview_builders%rowtype;
 	v_worker public.qorpera_runtime_workers%rowtype;
@@ -455,6 +458,32 @@ begin
 		and (select status = 'composing' from public.qorpera_surface_previews where id = v_p2),
 		'viewer preview wakes once fallback builder finishes'
 	);
+
+	select sequence into strict v_seq_before from public.qorpera_runtime_workers where id = v_worker.id;
+	insert into public.qorpera_surface_preview_builds(
+		profile_id, surface_id, builder_id, repository_key, commit_sha, tree_sha, recipe, recipe_sha256
+	)
+	values (
+		v_company_a, v_surface, v_builder.id, 'surfaces/store', repeat('c', 40), repeat('9', 40), v_recipe, repeat('0', 64)
+	)
+	returning id into v_b_demoted;
+	update public.qorpera_profile_members set role = 'viewer' where profile_id = v_company_a and user_id = v_contributor;
+	v_kick := public.qorpera_surface_preview_builder_kick(v_builder.id);
+	perform pg_temp.spbns_assert(
+		v_kick = 'no_member'
+		and (select sequence = v_seq_before and state = 'succeeded' from public.qorpera_runtime_workers where id = v_worker.id),
+		'demoted contributor builder kick refuses with no_member without advancing worker sequence: ' || coalesce(v_kick, 'null')
+	);
+	perform pg_temp.spbns_lane();
+	perform pg_temp.spbns_assert(
+		(select state = 'failed'
+			and error_detail = E'PREVIEW_BUILD_FAILED\nNo member who can build this interface is available, so no machine could be opened for the build.'
+			from public.qorpera_surface_preview_builds where id = v_b_demoted)
+		and (select sequence = v_seq_before and state = 'succeeded' from public.qorpera_runtime_workers where id = v_worker.id),
+		'sweep fails queued build on demoted contributor builder with no_member detail and keeps worker idle'
+	);
+	delete from public.qorpera_surface_preview_builds where id = v_b_demoted;
+	update public.qorpera_profile_members set role = 'contributor' where profile_id = v_company_a and user_id = v_contributor;
 
 	update public.qorpera_coding_executors set enabled = false, updated_at = clock_timestamp() where environment_id = v_env_a;
 	v_p3 := pg_temp.spbns_select(v_contributor, v_surface, array[v_c3]);
