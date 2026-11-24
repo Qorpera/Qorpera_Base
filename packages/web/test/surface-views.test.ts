@@ -427,6 +427,10 @@ describe("the surface page", () => {
 		view.update();
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.classList.contains("is-open")).toBe(true);
+		expect(drawer.querySelector(".surface-changes-toggle")?.textContent).toBe("1 change ready");
+		expect(drawer.querySelector('[data-act="approve"]')).toBeNull();
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="open-change"][data-change="${CHANGES[2]}"]`)?.click();
 		const approveBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
 		expect(approveBtn.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Confirm");
 		approveBtn.click();
@@ -772,6 +776,8 @@ describe("the surface page", () => {
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.querySelector(".surface-drawer-change.is-conflicted")).toBeNull();
 		expect(drawer.querySelector('[data-act="reconcile"]')).toBeNull();
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="open-change"][data-change="${CHANGES[0]}"]`)?.click();
 		expect(drawer.querySelector(`[data-act="approve"][data-change="${CHANGES[0]}"]`)).not.toBeNull();
 		view.dispose();
 		store.dispose();
@@ -782,6 +788,9 @@ describe("the surface page", () => {
 			sessionMessage(MESSAGE_IDS[0], "member", "Gør heroen roligere"),
 			sessionMessage(MESSAGE_IDS[1], "session", "Jeg strammer typografien og fjerner støj i hero-sektionen."),
 			sessionMessage(MESSAGE_IDS[2], "system", "Change recorded: Skarpere hero-tekst", { changeId: CHANGES[0] }),
+			sessionMessage("77777777-7777-4777-8777-777777777779", "system", "Merge conflicted. Reconcile to resolve.", {
+				changeId: CHANGES[0],
+			}),
 		];
 		const replyDeferred = deferred<ReturnType<typeof session>>();
 		const client = fakeClient({
@@ -801,7 +810,7 @@ describe("the surface page", () => {
 		expect(messages().map((el) => [el.className, el.textContent])).toEqual([
 			["surface-message is-member", "Gør heroen roligere"],
 			["surface-message is-session", "Jeg strammer typografien og fjerner støj i hero-sektionen."],
-			["surface-message is-system", expect.stringContaining("Change recorded: Skarpere hero-tekst")],
+			["surface-message is-system", expect.stringContaining("Merge conflicted. Reconcile to resolve.")],
 		]);
 		expect(drawer.querySelector(".surface-message.is-system")?.getAttribute("data-change-id")).toBe(CHANGES[0]);
 
@@ -1804,14 +1813,24 @@ describe("the surface page", () => {
 		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
 		view.update();
 		expect(drawer.querySelectorAll(".surface-agent-note")).toHaveLength(0);
-		const summaries = [...drawer.querySelectorAll(".surface-drawer-change-summary")].map((el) => el.textContent);
-		expect(summaries).toEqual(["Adds cohort metrics and recommendations.", "Standalone HTML post for the launch."]);
-		const focusedDeliverables = [...drawer.querySelectorAll<HTMLButtonElement>(".surface-drawer-deliverable")];
-		expect(focusedDeliverables).toHaveLength(2);
-		expect(focusedDeliverables[0]!.textContent).toContain("Q3 Retention Report");
-		expect(focusedDeliverables[0]!.classList.contains("is-open")).toBe(true);
-
-		focusedDeliverables[1]!.click();
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
+		expect(drawer.querySelectorAll(".surface-drawer-change-summary")).toHaveLength(0);
+		const openRow = (index: number): void =>
+			drawer.querySelectorAll<HTMLButtonElement>('[data-act="open-change"]')[index]!.click();
+		openRow(0);
+		const firstSummary = drawer.querySelector(".surface-drawer-change-summary")?.textContent;
+		const firstDeliverables = [...drawer.querySelectorAll<HTMLButtonElement>(".surface-drawer-deliverable")];
+		expect(firstDeliverables).toHaveLength(1);
+		expect(firstDeliverables[0]!.textContent).toContain("Q3 Retention Report");
+		expect(firstDeliverables[0]!.classList.contains("is-open")).toBe(true);
+		openRow(1);
+		expect([firstSummary, drawer.querySelector(".surface-drawer-change-summary")?.textContent]).toEqual([
+			"Adds cohort metrics and recommendations.",
+			"Standalone HTML post for the launch.",
+		]);
+		const secondDeliverables = [...drawer.querySelectorAll<HTMLButtonElement>(".surface-drawer-deliverable")];
+		expect(secondDeliverables).toHaveLength(1);
+		secondDeliverables[0]!.click();
 		await flush();
 		view.update();
 		expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/posts/launch.html");

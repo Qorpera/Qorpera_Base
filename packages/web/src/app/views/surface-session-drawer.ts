@@ -364,6 +364,8 @@ export class SurfaceSessionDrawer {
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
 	#armedApprove: string | undefined;
+	#unfolded: string | undefined;
+	#openChange: string | undefined;
 	#approvable: readonly { readonly sessionId: string; readonly changeIds: readonly string[] }[] = [];
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
@@ -1494,6 +1496,8 @@ export class SurfaceSessionDrawer {
 			look?.kind,
 			look?.accent,
 			this.#armedApprove,
+			this.#unfolded,
+			this.#openChange,
 			ownedNotes,
 		];
 		if (state.unseenNotes[session.id]) store.seeNotes(session.id);
@@ -1677,117 +1681,182 @@ export class SurfaceSessionDrawer {
 						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard")),
 					),
 				);
-		} else if (listed.length && !sessionHeld(session)) {
-			const running = isRunningSession(session);
-			const changeRows: HTMLElement[] = [];
-			for (const change of listed) {
-				const open = isOpenChange(change);
-				const shown = store.isChangeShown(change.id);
-				const busyChange = Boolean(store.state.busy[`change:${change.id}`]);
-				const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
-				const summaryText = change.summary.trim();
-				const showSummary = summaryText.length > 0 && summaryText !== change.title.trim();
-				const deliverables = deliverablesByChange.get(change.id) ?? [];
-				changeRows.push(
-					h(
-						"div",
-						{
-							class: `surface-drawer-change${open ? "" : " is-closed"}`,
-							"data-change": change.id,
-						},
-						h(
-							"div",
-							{ class: "surface-drawer-change-top" },
-							open ? null : h("span", { class: "surface-change-mark" }, icon("check")),
-							h(
-								"div",
-								{ class: "surface-drawer-change-copy" },
-								h("span", { class: "surface-drawer-change-title" }, change.title),
-								showSummary ? h("p", { class: "surface-drawer-change-summary" }, summaryText) : null,
-							),
-							!open ? changeTag(change) : null,
+		} else if (listed.length && !sessionHeld(session))
+			parts.push(this.#changesBox(session, listed, look, deliverablesByChange));
+		return parts;
+	}
+
+	#changesBox(
+		session: SurfaceSession,
+		listed: readonly SurfaceChangeUnit[],
+		look: SurfaceLook | undefined,
+		deliverablesByChange: ReadonlyMap<string, readonly SurfaceChangeDeliverable[]>,
+	): HTMLElement {
+		const running = isRunningSession(session);
+		const unfolded = this.#unfolded === session.id;
+		const open = listed.filter(isOpenChange).length;
+		const armedAll = this.#armedApprove === `approve-all:${session.id}`;
+		const label =
+			open === 1
+				? t("1 change ready")
+				: open > 1
+					? t("{count} changes ready", { count: open })
+					: listed.length === 1
+						? t("1 change")
+						: t("{count} changes", { count: listed.length });
+		const single = listed.length === 1;
+		return h(
+			"div",
+			{ class: `surface-changes${unfolded ? " is-open" : ""}` },
+			h(
+				"div",
+				{ class: "surface-changes-head" },
+				h(
+					"button",
+					{
+						type: "button",
+						class: "surface-changes-toggle",
+						"aria-expanded": String(unfolded),
+						"data-act": "fold-changes",
+					},
+					label,
+				),
+				unfolded && !running && open > 1
+					? h(
+							"button",
+							{
+								type: "button",
+								class: `surface-changes-approve surface-approve-btn${armedAll ? " is-confirming" : ""}`,
+								"data-act": "approve-all",
+								...(armedAll ? { "data-armed": "true" } : {}),
+							},
+							approveLabel(t("Approve all"), armedAll),
+						)
+					: null,
+				h(
+					"button",
+					{
+						type: "button",
+						class: "icon-button surface-changes-fold",
+						"aria-label": unfolded ? t("Hide the changes") : t("Show the changes"),
+						"aria-expanded": String(unfolded),
+						"data-act": "fold-changes",
+					},
+					icon("chevron-down"),
+				),
+			),
+			...(unfolded
+				? listed.map((change) =>
+						this.#changeRow(
+							session,
+							change,
+							look,
+							deliverablesByChange.get(change.id) ?? [],
+							single || this.#openChange === change.id,
+							single,
+							running,
 						),
-						this.#focusedDeliverableButtons(look, change, deliverables),
-						open
-							? h(
-									"div",
-									{ class: "surface-drawer-change-acts" },
-									h("button", {
-										type: "button",
-										class: "surface-switch",
-										role: "switch",
-										"aria-checked": String(shown),
-										"aria-label": t("Show {title} in the preview", { title: change.title }),
-										"data-act": "toggle",
-										"data-change": change.id,
-									}),
-									...(running
-										? []
-										: [
-												h(
-													"button",
-													{
-														type: "button",
-														class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
-														"data-act": "approve",
-														"data-change": change.id,
-														...(armed ? { "data-armed": "true" } : {}),
-														disabled: busyChange,
-													},
-													approveLabel(t("Approve"), armed),
-												),
-												h(
-													"button",
-													{
-														type: "button",
-														class: "surface-change-btn",
-														"data-act": "quote-change",
-														"data-session": session.id,
-														"data-change": change.id,
-														"data-change-title": change.title,
-													},
-													t("Change"),
-												),
-												h(
-													"button",
-													{
-														type: "button",
-														class: "surface-change-btn is-muted",
-														"data-act": "discard-change",
-														"data-change": change.id,
-														disabled: busyChange,
-													},
-													t("Discard"),
-												),
-											]),
-								)
-							: null,
-					),
-				);
-			}
-			parts.push(h("div", { class: "surface-drawer-changes" }, ...changeRows));
-			const open = session.changes.filter(isOpenChange).length;
-			const armedAll = this.#armedApprove === `approve-all:${session.id}`;
-			if (!running && open > 1)
-				parts.push(
-					h(
+					)
+				: []),
+		);
+	}
+
+	#changeRow(
+		session: SurfaceSession,
+		change: SurfaceChangeUnit,
+		look: SurfaceLook | undefined,
+		deliverables: readonly SurfaceChangeDeliverable[],
+		expanded: boolean,
+		single: boolean,
+		running: boolean,
+	): HTMLElement {
+		const store = this.#store;
+		const open = isOpenChange(change);
+		const busyChange = Boolean(store.state.busy[`change:${change.id}`]);
+		const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+		const summaryText = change.summary.trim();
+		const showSummary = expanded && summaryText.length > 0 && summaryText !== change.title.trim();
+		const title = h("span", { class: "surface-drawer-change-title" }, change.title);
+		return h(
+			"div",
+			{
+				class: `surface-drawer-change${open ? "" : " is-closed"}${expanded ? " is-expanded" : ""}`,
+				"data-change": change.id,
+			},
+			h(
+				"div",
+				{ class: "surface-drawer-change-top" },
+				open
+					? h("button", {
+							type: "button",
+							class: "surface-switch",
+							role: "switch",
+							"aria-checked": String(store.isChangeShown(change.id)),
+							"aria-label": t("Show {title} in the preview", { title: change.title }),
+							"data-act": "toggle",
+							"data-change": change.id,
+						})
+					: h("span", { class: "surface-change-mark" }, icon("check")),
+				single
+					? h("div", { class: "surface-drawer-change-row" }, title, open ? null : changeTag(change))
+					: h(
+							"button",
+							{
+								type: "button",
+								class: "surface-drawer-change-row",
+								"aria-expanded": String(expanded),
+								"data-act": "open-change",
+								"data-change": change.id,
+							},
+							title,
+							open ? null : changeTag(change),
+							h("span", { class: "surface-drawer-change-arrow", "aria-hidden": "true" }, icon("chevron-down")),
+						),
+			),
+			showSummary ? h("p", { class: "surface-drawer-change-summary" }, summaryText) : null,
+			expanded ? this.#focusedDeliverableButtons(look, change, deliverables) : null,
+			expanded && open && !running
+				? h(
 						"div",
-						{ class: "surface-drawer-actions" },
+						{ class: "surface-drawer-change-acts" },
 						h(
 							"button",
 							{
 								type: "button",
-								class: `btn btn-small surface-approve-btn${armedAll ? " is-confirming" : ""}`,
-								"data-act": "approve-all",
-								...(armedAll ? { "data-armed": "true" } : {}),
+								class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
+								"data-act": "approve",
+								"data-change": change.id,
+								...(armed ? { "data-armed": "true" } : {}),
+								disabled: busyChange,
 							},
-							approveLabel(t("Approve all {count}", { count: open }), armedAll),
+							approveLabel(t("Approve"), armed),
 						),
-						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard all")),
-					),
-				);
-		}
-		return parts;
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-change-btn is-quiet",
+								"data-act": "quote-change",
+								"data-session": session.id,
+								"data-change": change.id,
+								"data-change-title": change.title,
+							},
+							t("Change"),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-change-btn is-quiet is-muted",
+								"data-act": "discard-change",
+								"data-change": change.id,
+								disabled: busyChange,
+							},
+							t("Discard"),
+						),
+					)
+				: null,
+		);
 	}
 
 	#setPinned(parts: readonly HTMLElement[]): void {
@@ -1802,7 +1871,12 @@ export class SurfaceSessionDrawer {
 		const keep = new Set<string>();
 		const parts: HTMLElement[] = [];
 		if (session.messages.length > 0) {
+			const recorded = new Set<string>();
 			for (const message of session.messages) {
+				if (message.authorKind === "system" && message.changeId && !recorded.has(message.changeId)) {
+					recorded.add(message.changeId);
+					continue;
+				}
 				const attached =
 					message.authorKind === "member" ? sent.find((item) => item.messageId === message.id) : undefined;
 				let images: HTMLElement | undefined;
@@ -1959,6 +2033,14 @@ export class SurfaceSessionDrawer {
 				return;
 			case "approve-all":
 				if (sessionId && this.#confirmOrArm(`approve-all:${sessionId}`)) void store.approveAll(sessionId);
+				return;
+			case "fold-changes":
+				this.#unfolded = this.#unfolded === sessionId ? undefined : sessionId;
+				this.#redraw();
+				return;
+			case "open-change":
+				this.#openChange = this.#openChange === change ? undefined : change;
+				this.#redraw();
 				return;
 			case "approve-shown":
 				if (surfaceId && this.#confirmOrArm(`approve-shown:${surfaceId}`))
