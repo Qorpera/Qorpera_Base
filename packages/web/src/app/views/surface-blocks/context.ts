@@ -77,7 +77,7 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Vendors"),
 	phrase("Reports"),
 	phrase("Breakdowns"),
-	phrase("Files"),
+	phrase("Artifacts"),
 	phrase("Parts"),
 	phrase("Production plan"),
 	phrase("Other details"),
@@ -153,8 +153,8 @@ export function changedPill(changed: boolean): HTMLElement | null {
 	return changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null;
 }
 
-export function sectionHead(title: string, changed: boolean, tag?: HTMLElement | null): HTMLElement {
-	return h("div", { class: "studio-section-head" }, h("h2", null, title), tag ?? null, changedPill(changed));
+export function sectionHead(title: string, changed: boolean, action?: HTMLElement | null): HTMLElement {
+	return h("div", { class: "studio-section-head" }, h("h2", null, title), changedPill(changed), action ?? null);
 }
 
 export function homeEmpty(line: string): HTMLElement {
@@ -248,13 +248,13 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 	};
 	const readPreview = reader((layer) => layer.files);
 	const readBase = reader((layer) => layer.baseFiles);
-	const seen = new Set<string>([
+	const seenPaths = new Set<string>([
 		...Object.keys(input.files),
 		...Object.keys(input.binaries),
 		...(company ? Object.keys(company.files) : []),
 		...(company ? Object.keys(company.binaries) : []),
 	]);
-	const allFiles = [...seen].sort().map((path): SurfaceFolderFile => {
+	const allFiles = [...seenPaths].sort().map((path): SurfaceFolderFile => {
 		const relative = folderRelative(folderRoot, path);
 		return relative === undefined ? { path } : { path, relative };
 	});

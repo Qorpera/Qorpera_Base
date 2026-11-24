@@ -110,7 +110,6 @@ export class SurfacePdfViewer {
 				"div",
 				{ class: "studio-section-head studio-pdf-head" },
 				h("h2", null, title),
-				h("code", { class: "studio-file-tag" }, path),
 				sizeText ? h("span", { class: "studio-pdf-size" }, sizeText) : null,
 				changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 				h("div", { class: "studio-pdf-actions" }, openLink, downloadLink),

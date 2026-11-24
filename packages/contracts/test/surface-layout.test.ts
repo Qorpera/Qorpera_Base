@@ -73,7 +73,7 @@ describe("parseSurfaceLayout", () => {
 				{ type: "cards", from: "vendors.json#/vendors", title: "vendor", badge: "status" },
 				{ type: "report", match: "*.report.json" },
 				{ type: "report", from: "essay.report.json" },
-				{ type: "files" },
+				{ type: "artifacts" },
 				{
 					type: "row",
 					blocks: [
@@ -111,7 +111,10 @@ describe("parseSurfaceLayout", () => {
 		["no tabs", { schema: SCHEMA, tabs: [] }, "layout.tabs", "1 to 12"],
 		[
 			"thirteen tabs",
-			{ schema: SCHEMA, tabs: many(13, (index) => ({ id: `t${index}`, title: "T", blocks: [{ type: "files" }] })) },
+			{
+				schema: SCHEMA,
+				tabs: many(13, (index) => ({ id: `t${index}`, title: "T", blocks: [{ type: "artifacts" }] })),
+			},
 			"layout.tabs",
 			"1 to 12",
 		],
@@ -123,14 +126,14 @@ describe("parseSurfaceLayout", () => {
 		],
 		[
 			"a tab title past 40 chars",
-			{ schema: SCHEMA, tabs: [{ id: "m", title: "x".repeat(41), blocks: [{ type: "files" }] }] },
+			{ schema: SCHEMA, tabs: [{ id: "m", title: "x".repeat(41), blocks: [{ type: "artifacts" }] }] },
 			"layout.tabs[0].title",
 			"longer than 40",
 		],
 		["an empty tab", layoutWith([]), "layout.tabs[0].blocks", "at least one block"],
 		[
 			"a repeated tab id",
-			layoutWith([{ type: "files" }], [{ id: "main", title: "Again", blocks: [{ type: "files" }] }]),
+			layoutWith([{ type: "artifacts" }], [{ id: "main", title: "Again", blocks: [{ type: "artifacts" }] }]),
 			"layout.tabs[1].id",
 			"repeats the id of layout.tabs[0]",
 		],
@@ -141,7 +144,7 @@ describe("parseSurfaceLayout", () => {
 			"must be one of stage_3d",
 		],
 		["a block without a type", layoutWith([{ from: "a.json" }]), "layout.tabs[0].blocks[0].type", "must be one of"],
-		["a block that is a string", layoutWith(["files"]), "layout.tabs[0].blocks[0]", "must be an object"],
+		["a block that is a string", layoutWith(["artifacts"]), "layout.tabs[0].blocks[0]", "must be an object"],
 		[
 			"an unknown field",
 			layoutWith([{ type: "palette", from: "a.json", colour: "red" }]),
@@ -151,7 +154,7 @@ describe("parseSurfaceLayout", () => {
 		["a missing required field", layoutWith([{ type: "spec_list" }]), "layout.tabs[0].blocks[0].from", "is missing"],
 		[
 			"a block id that is not a slug",
-			layoutWith([{ type: "files", id: "my files" }]),
+			layoutWith([{ type: "artifacts", id: "my artifacts" }]),
 			"layout.tabs[0].blocks[0].id",
 			"slug",
 		],
@@ -269,13 +272,13 @@ describe("parseSurfaceLayout", () => {
 		],
 		[
 			"a heading past 80 chars",
-			layoutWith([{ type: "files", heading: "x".repeat(81) }]),
+			layoutWith([{ type: "artifacts", heading: "x".repeat(81) }]),
 			"layout.tabs[0].blocks[0].heading",
 			"longer than 80",
 		],
 		[
 			"an empty heading",
-			layoutWith([{ type: "files", heading: " " }]),
+			layoutWith([{ type: "artifacts", heading: " " }]),
 			"layout.tabs[0].blocks[0].heading",
 			"is empty",
 		],
@@ -300,19 +303,19 @@ describe("parseSurfaceLayout", () => {
 		],
 		[
 			"a bare / glob",
-			layoutWith([{ type: "files", match: ["/"] }]),
+			layoutWith([{ type: "artifacts", match: ["/"] }]),
 			"layout.tabs[0].blocks[0].match[0]",
 			"names no glob",
 		],
 		[
 			"a glob with ** inside a name",
-			layoutWith([{ type: "files", match: ["a**b.md"] }]),
+			layoutWith([{ type: "artifacts", match: ["a**b.md"] }]),
 			"layout.tabs[0].blocks[0].match[0]",
 			"** stands alone",
 		],
 		[
 			"a glob with five **",
-			layoutWith([{ type: "files", match: ["**/a/**/b/**/c/**/d/**/*.md"] }]),
+			layoutWith([{ type: "artifacts", match: ["**/a/**/b/**/c/**/d/**/*.md"] }]),
 			"layout.tabs[0].blocks[0].match[0]",
 			"more than 4 **",
 		],
@@ -324,12 +327,17 @@ describe("parseSurfaceLayout", () => {
 		],
 		[
 			"a glob seventeen folders deep",
-			layoutWith([{ type: "files", match: [many(17, () => "a").join("/")] }]),
+			layoutWith([{ type: "artifacts", match: [many(17, () => "a").join("/")] }]),
 			"layout.tabs[0].blocks[0].match[0]",
 			"more than 16 folder levels",
 		],
 		["a .. glob", layoutWith([{ type: "report", match: "../*.json" }]), "layout.tabs[0].blocks[0].match", ". or .."],
-		["an empty glob list", layoutWith([{ type: "files", match: [] }]), "layout.tabs[0].blocks[0].match", "1 to 16"],
+		[
+			"an empty glob list",
+			layoutWith([{ type: "artifacts", match: [] }]),
+			"layout.tabs[0].blocks[0].match",
+			"1 to 16",
+		],
 		[
 			"a rooted module",
 			layoutWith([{ type: "module", from: "/modules/x" }]),
@@ -362,13 +370,13 @@ describe("parseSurfaceLayout", () => {
 		],
 		[
 			"a row of one",
-			layoutWith([{ type: "row", blocks: [{ type: "files" }] }]),
+			layoutWith([{ type: "row", blocks: [{ type: "artifacts" }] }]),
 			"layout.tabs[0].blocks[0].blocks",
 			"2 or 3 blocks, not 1",
 		],
 		[
 			"a row of four",
-			layoutWith([{ type: "row", blocks: many(4, () => ({ type: "files" })) }]),
+			layoutWith([{ type: "row", blocks: many(4, () => ({ type: "artifacts" })) }]),
 			"layout.tabs[0].blocks[0].blocks",
 			"not 4",
 		],
@@ -377,7 +385,7 @@ describe("parseSurfaceLayout", () => {
 			layoutWith([
 				{
 					type: "row",
-					blocks: [{ type: "files" }, { type: "row", blocks: [{ type: "files" }, { type: "files" }] }],
+					blocks: [{ type: "artifacts" }, { type: "row", blocks: [{ type: "artifacts" }, { type: "artifacts" }] }],
 				},
 			]),
 			"layout.tabs[0].blocks[0].blocks[1].type",
@@ -385,13 +393,13 @@ describe("parseSurfaceLayout", () => {
 		],
 		[
 			"a row with an id",
-			layoutWith([{ type: "row", id: "pair", blocks: [{ type: "files" }, { type: "files" }] }]),
+			layoutWith([{ type: "row", id: "pair", blocks: [{ type: "artifacts" }, { type: "artifacts" }] }]),
 			"layout.tabs[0].blocks[0]",
 			"has a field that row does not take",
 		],
 		[
 			"a broken block inside a row",
-			layoutWith([{ type: "row", blocks: [{ type: "files" }, { type: "table" }] }]),
+			layoutWith([{ type: "row", blocks: [{ type: "artifacts" }, { type: "table" }] }]),
 			"layout.tabs[0].blocks[0].blocks[1].from",
 			"is missing",
 		],
@@ -404,7 +412,7 @@ describe("parseSurfaceLayout", () => {
 		[
 			"tints naming a block that is not a stage",
 			layoutWith([
-				{ type: "files", id: "stage" },
+				{ type: "artifacts", id: "stage" },
 				{ type: "swatch_row", from: "a.json", tints: "stage" },
 			]),
 			"layout.tabs[0].blocks[1].tints",
@@ -422,12 +430,12 @@ describe("parseSurfaceLayout", () => {
 		[
 			"a repeated block id across tabs",
 			layoutWith(
-				[{ type: "files", id: "notes" }],
+				[{ type: "artifacts", id: "notes" }],
 				[
 					{
 						id: "other",
 						title: "Other",
-						blocks: [{ type: "row", blocks: [{ type: "files" }, { type: "files", id: "notes" }] }],
+						blocks: [{ type: "row", blocks: [{ type: "artifacts" }, { type: "artifacts", id: "notes" }] }],
 					},
 				],
 			),
@@ -436,7 +444,7 @@ describe("parseSurfaceLayout", () => {
 		],
 		[
 			"25 blocks on a tab",
-			layoutWith(many(25, () => ({ type: "files" }))),
+			layoutWith(many(25, () => ({ type: "artifacts" }))),
 			"layout.tabs[0].blocks",
 			"holds 25 blocks",
 		],
@@ -445,8 +453,12 @@ describe("parseSurfaceLayout", () => {
 			{
 				schema: SCHEMA,
 				tabs: [
-					...many(2, (index) => ({ id: `t${index}`, title: "T", blocks: many(24, () => ({ type: "files" })) })),
-					{ id: "t2", title: "T", blocks: many(17, () => ({ type: "files" })) },
+					...many(2, (index) => ({
+						id: `t${index}`,
+						title: "T",
+						blocks: many(24, () => ({ type: "artifacts" })),
+					})),
+					{ id: "t2", title: "T", blocks: many(17, () => ({ type: "artifacts" })) },
 				],
 			},
 			"layout.tabs",
@@ -459,7 +471,7 @@ describe("parseSurfaceLayout", () => {
 	});
 
 	it("counts a row and its blocks against a tab's 24", () => {
-		const pair = { type: "row", blocks: [{ type: "files" }, { type: "files" }] };
+		const pair = { type: "row", blocks: [{ type: "artifacts" }, { type: "artifacts" }] };
 		expect(() => parseSurfaceLayout(layoutWith(many(8, () => pair)))).not.toThrow();
 		expect(refusal(layoutWith(many(9, () => pair)))).toBe(
 			"layout.tabs[0].blocks holds 27 blocks; a tab holds at most 24, a row and the blocks in it each counted",
@@ -472,7 +484,7 @@ describe("parseSurfaceLayout", () => {
 	});
 
 	it("parses file text and refuses text that is not JSON", () => {
-		expect(parseSurfaceLayoutText(JSON.stringify(layoutWith([{ type: "files" }]))).tabs[0]?.id).toBe("main");
+		expect(parseSurfaceLayoutText(JSON.stringify(layoutWith([{ type: "artifacts" }]))).tabs[0]?.id).toBe("main");
 		expect(() => parseSurfaceLayoutText("{")).toThrow("layout is not valid JSON");
 		expect(() => parseSurfaceLayoutText(" ".repeat(SURFACE_LAYOUT_MAX_BYTES + 1))).toThrow(/larger than 65536/);
 	});
@@ -480,7 +492,7 @@ describe("parseSurfaceLayout", () => {
 	it("never quotes a value in a refusal", () => {
 		expect(refusal(layoutWith([{ type: "secret-token-123" }]))).not.toContain("secret-token-123");
 		expect(refusal(layoutWith([{ type: "table", from: "secret-token-123#x" }]))).not.toContain("secret-token-123");
-		expect(refusal(layoutWith([{ type: "files", "secret-token-123": 1 }]))).not.toContain("secret-token-123");
+		expect(refusal(layoutWith([{ type: "artifacts", "secret-token-123": 1 }]))).not.toContain("secret-token-123");
 		expect(refusal({ schema: SCHEMA, tabs: [], "secret-token-123": 1 })).not.toContain("secret-token-123");
 	});
 });
@@ -503,13 +515,13 @@ describe("readSurfaceLayout", () => {
 		const blocks = read(
 			layoutWith([
 				{ type: "carousel" },
-				{ type: "files", heading: "Notes" },
+				{ type: "artifacts", heading: "Notes" },
 				{ type: "table" },
-				"files",
+				"artifacts",
 				{ type: "spec_list", from: "a.json", extra: true },
 			]),
 		);
-		expect(blocks.map((block) => block.type)).toEqual(["unknown", "files", "unknown", "unknown", "unknown"]);
+		expect(blocks.map((block) => block.type)).toEqual(["unknown", "artifacts", "unknown", "unknown", "unknown"]);
 		expect(blocks[0]).toMatchObject({ reason: expect.stringContaining("layout.tabs[0].blocks[0].type") });
 		expect(blocks[2]).toMatchObject({ reason: expect.stringContaining("layout.tabs[0].blocks[2].from is missing") });
 	});
@@ -517,31 +529,31 @@ describe("readSurfaceLayout", () => {
 	it("keeps a row whose child is broken, with the child unknown", () => {
 		const blocks = read(
 			layoutWith([
-				{ type: "row", blocks: [{ type: "files" }, { type: "row", blocks: [] }] },
-				{ type: "row", blocks: [{ type: "files" }] },
-				{ type: "row", blocks: [{ type: "files" }, { type: "nope" }, { type: "files" }] },
+				{ type: "row", blocks: [{ type: "artifacts" }, { type: "row", blocks: [] }] },
+				{ type: "row", blocks: [{ type: "artifacts" }] },
+				{ type: "row", blocks: [{ type: "artifacts" }, { type: "nope" }, { type: "artifacts" }] },
 			]),
 		);
-		expect(blocks[0]).toMatchObject({ type: "row", blocks: [{ type: "files" }, { type: "unknown" }] });
+		expect(blocks[0]).toMatchObject({ type: "row", blocks: [{ type: "artifacts" }, { type: "unknown" }] });
 		expect(blocks[1]).toMatchObject({ type: "unknown", reason: expect.stringContaining("2 or 3 blocks") });
 		expect(blocks[2]).toMatchObject({
 			type: "row",
-			blocks: [{ type: "files" }, { type: "unknown" }, { type: "files" }],
+			blocks: [{ type: "artifacts" }, { type: "unknown" }, { type: "artifacts" }],
 		});
 	});
 
 	it("turns a repeated id unknown and drops a tints that names no stage", () => {
 		const blocks = read(
 			layoutWith([
-				{ type: "files", id: "notes" },
-				{ type: "row", blocks: [{ type: "files" }, { type: "files", id: "notes" }] },
+				{ type: "artifacts", id: "notes" },
+				{ type: "row", blocks: [{ type: "artifacts" }, { type: "artifacts", id: "notes" }] },
 				{ type: "swatch_row", from: "a.json", tints: "stage" },
 			]),
 		);
-		expect(blocks[0]).toEqual({ type: "files", id: "notes" });
+		expect(blocks[0]).toEqual({ type: "artifacts", id: "notes" });
 		expect(blocks[1]).toMatchObject({
 			type: "row",
-			blocks: [{ type: "files" }, { type: "unknown", reason: expect.stringContaining("repeats the id") }],
+			blocks: [{ type: "artifacts" }, { type: "unknown", reason: expect.stringContaining("repeats the id") }],
 		});
 		expect(blocks[2]).toEqual({ type: "swatch_row", from: "a.json" });
 	});
@@ -553,9 +565,13 @@ describe("readSurfaceLayout", () => {
 				extra: "ignored",
 				tabs: [
 					{ id: "bad id", title: "x", blocks: [] },
-					{ id: "a", title: "A", blocks: many(30, () => ({ type: "files" })) },
-					{ id: "a", title: "Again", blocks: [{ type: "files" }] },
-					...many(14, (index) => ({ id: `t${index}`, title: "T", blocks: many(5, () => ({ type: "files" })) })),
+					{ id: "a", title: "A", blocks: many(30, () => ({ type: "artifacts" })) },
+					{ id: "a", title: "Again", blocks: [{ type: "artifacts" }] },
+					...many(14, (index) => ({
+						id: `t${index}`,
+						title: "T",
+						blocks: many(5, () => ({ type: "artifacts" })),
+					})),
 				],
 			}),
 		);
@@ -761,13 +777,16 @@ describe("source lists and spec_list skip", () => {
 
 	it("reads a block with a broken source list as unknown and keeps the rest", () => {
 		const read = readSurfaceLayout(
-			JSON.stringify(layoutWith([{ type: "title", line: ["specs.json", ["x.json"]] }, { type: "files" }])),
+			JSON.stringify(layoutWith([{ type: "title", line: ["specs.json", ["x.json"]] }, { type: "artifacts" }])),
 		);
-		expect("layout" in read && read.layout.tabs[0]?.blocks.map((node) => node.type)).toEqual(["unknown", "files"]);
+		expect("layout" in read && read.layout.tabs[0]?.blocks.map((node) => node.type)).toEqual([
+			"unknown",
+			"artifacts",
+		]);
 	});
 });
 
-describe("named cards and files skip", () => {
+describe("named cards and artifacts skip", () => {
 	it("takes cards as items of a title and a source, or as from and a title key", () => {
 		const items = [
 			{ title: "Mission", from: "/identity/company.json#/mission" },
@@ -777,13 +796,13 @@ describe("named cards and files skip", () => {
 			layoutWith([
 				{ type: "cards", id: "mission", items, heading: "Mission & Ambition" },
 				{ type: "cards", from: "vendors.json#/vendors", title: "vendor" },
-				{ type: "files", match: ["**/*.svg"], skip: ["logo.svg", "/identity/wordmark.svg"] },
+				{ type: "artifacts", match: ["**/*.svg"], skip: ["logo.svg", "/identity/wordmark.svg"] },
 			]),
 		);
 		expect(layout.tabs[0]?.blocks).toEqual([
 			{ type: "cards", id: "mission", items, heading: "Mission & Ambition" },
 			{ type: "cards", from: "vendors.json#/vendors", title: "vendor", lines: [] },
-			{ type: "files", match: ["**/*.svg"], skip: ["logo.svg", "/identity/wordmark.svg"] },
+			{ type: "artifacts", match: ["**/*.svg"], skip: ["logo.svg", "/identity/wordmark.svg"] },
 		]);
 		expect(parseSurfaceLayout(layout)).toEqual(layout);
 	});
@@ -825,8 +844,8 @@ describe("named cards and files skip", () => {
 			"layout.tabs[0].blocks[0].items[0].title is longer than 40 chars",
 		],
 		[
-			"an empty files skip",
-			{ type: "files", skip: [] },
+			"an empty artifacts skip",
+			{ type: "artifacts", skip: [] },
 			"layout.tabs[0].blocks[0].skip must hold 1 to 16 entries, not 0",
 		],
 	])("refuses %s", (_name, block, message) => {
@@ -834,8 +853,8 @@ describe("named cards and files skip", () => {
 	});
 
 	it("reads a broken cards block as unknown and keeps the rest", () => {
-		const nodes = read(layoutWith([{ type: "cards", items: [{ title: "A" }] }, { type: "files" }]));
-		expect(nodes.map((node) => node.type)).toEqual(["unknown", "files"]);
+		const nodes = read(layoutWith([{ type: "cards", items: [{ title: "A" }] }, { type: "artifacts" }]));
+		expect(nodes.map((node) => node.type)).toEqual(["unknown", "artifacts"]);
 	});
 });
 
@@ -880,7 +899,7 @@ describe("the block registry", () => {
 		);
 		expect(text).toContain("- facts: short key figures (with from, only values of <=18 chars); ? where missing.");
 		expect(text).toContain(
-			"- files: working files no other block shows, .json too; its empty line only alone on a tab or with a heading.",
+			"- artifacts: rendered artifacts (vector art, pictures, docs, pages, .json) no other block shows, expandable fullscreen; add to any tab.",
 		);
 		expect(text).toContain("items? [{title, from}] 1-6");
 		expect(text).toContain("facts and cards take items or from, not both; cards with from needs title");
@@ -930,21 +949,14 @@ describe("starter layouts", () => {
 			expect(identityPaths).toContain(`/${canonical}`);
 		}
 		const voice = nodesOf(SURFACE_STARTER_LAYOUTS.identity).find(
-			(node) => node.type === "files" && node.id === "voice",
+			(node) => node.type === "artifacts" && node.id === "voice",
 		);
 		expect(voice).toMatchObject({ match: [`/${IDENTITY_VOICE_PATH}`, `/${IDENTITY_BRIEF_PATH}`] });
 	});
 
-	it("keeps the product page's homes in today's order with Breakdowns", () => {
+	it("keeps the product page's homes in order with Breakdowns and no Files tab", () => {
 		const product = SURFACE_STARTER_LAYOUTS.product;
-		expect(product.tabs.map((tab) => tab.title)).toEqual([
-			"Overview",
-			"Specs",
-			"Vendors",
-			"Reports",
-			"Breakdowns",
-			"Files",
-		]);
+		expect(product.tabs.map((tab) => tab.title)).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
 		expect(product.tabs[0]?.blocks.map((node) => node.type)).toEqual(["stage_3d", "title", "swatch_row", "facts"]);
 		expect(product.tabs[0]?.blocks[1]).toEqual({
 			type: "title",
@@ -963,7 +975,12 @@ describe("starter layouts", () => {
 			from: ["specs.json#/colorways", "specs.json#/colors", "specs.json#/palette", "specs.json#/swatches"],
 			tints: "stage",
 		});
-		expect(product.tabs[1]?.blocks.map((node) => node.type)).toEqual(["spec_list", "table", "spec_list", "files"]);
+		expect(product.tabs[1]?.blocks.map((node) => node.type)).toEqual([
+			"spec_list",
+			"table",
+			"spec_list",
+			"artifacts",
+		]);
 		const otherDetails = product.tabs[1]?.blocks[2];
 		expect(otherDetails).toMatchObject({ type: "spec_list", from: "specs.json", heading: "Other details" });
 		const skip = otherDetails?.type === "spec_list" ? (otherDetails.skip ?? []) : [];
@@ -971,7 +988,7 @@ describe("starter layouts", () => {
 		for (const key of ["overview", "bom", "tagline", "model", "colorways", "colors", "palette", "typography"]) {
 			expect(skip).toContain(key);
 		}
-		expect(product.tabs[1]?.blocks[3]).toEqual({ type: "files", match: ["**/*.json"] });
+		expect(product.tabs[1]?.blocks[3]).toEqual({ type: "artifacts", match: ["**/*.json"] });
 		expect(product.tabs[2]?.blocks.map((node) => node.type)).toEqual(["spec_list", "cards"]);
 		expect(product.tabs[2]?.blocks[1]).toMatchObject({
 			from: ["vendors.json#/vendors", "vendors.json#/suppliers"],
@@ -979,15 +996,9 @@ describe("starter layouts", () => {
 		});
 		expect(product.tabs[3]?.blocks).toEqual([{ type: "report", match: "**/*.report.json" }]);
 		expect(product.tabs[4]?.blocks).toEqual([{ type: "explainer", match: "breakdowns/**/scenes.js" }]);
-		expect(product.tabs[5]?.blocks).toEqual([
-			{
-				type: "files",
-				match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm", "**/*.pdf"],
-			},
-		]);
 	});
 
-	it("gives Identity its homes in order, the face first", () => {
+	it("gives Identity its homes in order, the face first, with no Files tab", () => {
 		const identity = SURFACE_STARTER_LAYOUTS.identity;
 		const ids = nodesOf(identity).flatMap((node) => (node.type !== "row" && node.id ? [node.id] : []));
 		expect(ids).toEqual([
@@ -1004,7 +1015,6 @@ describe("starter layouts", () => {
 			"design-system",
 			"data",
 			"breakdowns",
-			"files",
 		]);
 		expect(identity.tabs.map((tab) => tab.title)).toEqual([
 			"Overview",
@@ -1013,7 +1023,6 @@ describe("starter layouts", () => {
 			"Voice",
 			"Design system",
 			"Breakdowns",
-			"Files",
 		]);
 		expect(identity.tabs[0]?.blocks[0]).toMatchObject({
 			type: "row",
@@ -1028,14 +1037,15 @@ describe("starter layouts", () => {
 			],
 			heading: "Mission & Ambition",
 		});
-		expect(nodesOf(identity).find((node) => node.type === "files" && node.id === "files")).toMatchObject({
-			skip: ["/identity/voice.md", "/identity/brief.md"],
-		});
 	});
 
-	it("starts Custom with a title, its files under a heading, and a home for reports", () => {
+	it("starts Custom with a title, its artifacts under a heading, and a home for reports", () => {
 		expect(SURFACE_STARTER_LAYOUTS.custom.tabs).toEqual([
-			{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files", heading: "Files" }] },
+			{
+				id: "overview",
+				title: "Overview",
+				blocks: [{ type: "title" }, { type: "artifacts", heading: "Artifacts" }],
+			},
 			{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "**/*.report.json" }] },
 		]);
 	});

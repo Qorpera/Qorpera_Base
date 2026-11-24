@@ -12,6 +12,7 @@ import {
 	sameValue,
 	sourceFile,
 } from "./context.ts";
+import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
 
 export interface LegacyStudioModel {
 	readonly value: unknown;
@@ -63,13 +64,15 @@ function stageModel(block: SurfaceStage3dBlock, ctx: SurfaceBlockContext): Studi
 export class SurfaceStages {
 	readonly #read: StudioBinaryReader;
 	readonly #signal: AbortSignal;
+	readonly #fullscreen: StudioFullscreen;
 	readonly #stages = new Map<string, StudioModelStage>();
 	readonly #viewers = new Map<string, Studio3DViewer>();
 	readonly #lifetimes = new Map<string, AbortController>();
 
-	constructor(read: StudioBinaryReader, signal: AbortSignal) {
+	constructor(read: StudioBinaryReader, signal: AbortSignal, fullscreen: StudioFullscreen) {
 		this.#read = read;
 		this.#signal = signal;
+		this.#fullscreen = fullscreen;
 	}
 
 	prepare(
@@ -117,7 +120,20 @@ export class SurfaceStages {
 						} else {
 							shown = h("div", { class: "studio-stage-floor", "aria-hidden": "true" });
 						}
-						return h("div", { class: filled ? "studio-stage" : "studio-stage is-empty" }, shown);
+						const container = h("div", { class: filled ? "studio-stage" : "studio-stage is-empty" });
+						if (filled) {
+							container.append(
+								expandButton(ctx.surface.title, () =>
+									this.#fullscreen.openHosted(ctx.surface.title, shown, container, "stage"),
+								),
+							);
+						}
+						if (filled && this.#fullscreen.isHosting(shown)) {
+							this.#fullscreen.setReturnTarget(shown, container);
+						} else {
+							container.append(shown);
+						}
+						return container;
 					},
 				},
 			],
@@ -127,6 +143,10 @@ export class SurfaceStages {
 	keep(keys: ReadonlySet<string>): void {
 		for (const [key, lifetime] of this.#lifetimes) {
 			if (keys.has(key)) continue;
+			const stage = this.#stages.get(key);
+			if (stage) this.#fullscreen.closeIfHosting(stage.el);
+			const viewer = this.#viewers.get(key);
+			if (viewer) this.#fullscreen.closeIfHosting(viewer.el);
 			lifetime.abort();
 			this.#lifetimes.delete(key);
 			this.#stages.delete(key);

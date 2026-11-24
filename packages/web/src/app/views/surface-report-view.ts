@@ -25,8 +25,8 @@ import {
 	type SurfaceUpdatePhase,
 	surfaceDocSlug,
 } from "../surfaces-store.ts";
+import { htmlDocumentTitle, PDF_FILE_RE } from "./surface-blocks/artifacts.ts";
 import { readableName } from "./surface-blocks/context.ts";
-import { htmlDocumentTitle, PDF_FILE_RE } from "./surface-blocks/files.ts";
 import { formatPdfBytes, SurfacePdfViewer } from "./surface-blocks/pdf.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { compiledTokensCssFrom, prepareStudioHtmlPreview } from "./surface-studio-html.ts";
@@ -1340,7 +1340,6 @@ export class SurfaceReportView {
 					"div",
 					{ class: "studio-section-head" },
 					h("h2", null, htmlDoc.title),
-					h("code", { class: "studio-file-tag" }, htmlDoc.path),
 					htmlDoc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 				),
 				this.#createHtmlFrame(htmlDoc.html, htmlDoc.path, htmlDoc.title, composition.files, compiledTokensCss),
@@ -1525,7 +1524,6 @@ export class SurfaceReportView {
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, report.headline),
-						h("code", { class: "studio-file-tag" }, report.path),
 						!base ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(
@@ -1547,7 +1545,6 @@ export class SurfaceReportView {
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, doc.title),
-						h("code", { class: "studio-file-tag" }, doc.path),
 						doc.baseHtml === undefined ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(
@@ -1584,7 +1581,6 @@ export class SurfaceReportView {
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, doc.title),
-						h("code", { class: "studio-file-tag" }, doc.path),
 						!doc.baseRef ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(
@@ -1617,7 +1613,6 @@ export class SurfaceReportView {
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, doc.title),
-						h("code", { class: "studio-file-tag" }, doc.path),
 						doc.baseContent === undefined ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(

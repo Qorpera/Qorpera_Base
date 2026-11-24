@@ -31,12 +31,6 @@ import {
 	type SurfaceUpdatePhase,
 } from "../surfaces-store.ts";
 import {
-	parseJsonObject,
-	readableName,
-	type StudioSectionTask,
-	type SurfaceFileLayer,
-} from "./surface-blocks/context.ts";
-import {
 	docPriority,
 	HTML_FILE_RE,
 	htmlDocumentTitle,
@@ -47,7 +41,13 @@ import {
 	type StudioSvgAsset,
 	SVG_FILE_RE,
 	svgDataUrl,
-} from "./surface-blocks/files.ts";
+} from "./surface-blocks/artifacts.ts";
+import {
+	parseJsonObject,
+	readableName,
+	type StudioSectionTask,
+	type SurfaceFileLayer,
+} from "./surface-blocks/context.ts";
 import { collectSpecs, type SpecEntry } from "./surface-blocks/specs.ts";
 import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
@@ -278,6 +278,7 @@ export class SurfaceStudioView {
 		compiledTokensCss: string,
 		className: string,
 		listen?: (data: unknown) => void,
+		owned?: (dispose: () => void) => void,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
@@ -291,7 +292,8 @@ export class SurfaceStudioView {
 			() => undefined,
 			{ again: true },
 		);
-		this.#htmlFrames.push(frame);
+		if (owned) owned(() => frame.dispose());
+		else this.#htmlFrames.push(frame);
 		if (listen) {
 			window.addEventListener(
 				"message",
@@ -838,12 +840,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, spec.title),
-								h("code", { class: "studio-file-tag" }, spec.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, spec.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -874,12 +871,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, asset.title),
-								h("code", { class: "studio-file-tag" }, asset.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, asset.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -908,12 +900,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, doc.title),
-								h("code", { class: "studio-file-tag" }, doc.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, doc.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -947,12 +934,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, page.title),
-								h("code", { class: "studio-file-tag" }, page.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, page.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1168,6 +1150,7 @@ export class SurfaceStudioView {
 						page.previewTokensCss,
 						frame.className,
 						frame.listen,
+						frame.owned,
 					),
 				linksChanged: (html, path) =>
 					studioHtmlDependencyChanged(

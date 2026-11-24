@@ -22,7 +22,7 @@ A custom interface is a page for a goal no template covers. Its starter layout i
 - Write to the member about the page, not about files or steps: no paths, file names or tool names in a change's title, its summary or your reply.
 
 ## Blocks first, a module when blocks cannot
-- Prefer a native block. Figures, a table, cards, a list of values, a report, a 3D stage and files are blocks, and they wear the company look on their own.
+- Prefer a native block. Figures, a table, cards, a list of values, a report, a 3D stage and artifacts are blocks, and they wear the company look on their own. Add an artifacts block to any tab that should show vector art, pictures, notes, pages or extra structured files.
 - A module is a small app built for this page. It is the right tool for what no block can do: a calculator, a planner the member drags, a chart that answers what the member types.
 - Know what a module cannot do: it has no network, it sees only its own folder (and the company stylesheet it may link), and a module that sizes itself to its content must not size itself by the viewport. Data it needs goes in its own folder; anything from elsewhere is a block's job.
 - Link the company stylesheet so a module wears the company look; never copy colours or fonts into it.

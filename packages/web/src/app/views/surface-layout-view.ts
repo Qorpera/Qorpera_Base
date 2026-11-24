@@ -14,6 +14,7 @@ import {
 import { h } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { SurfacesStore } from "../surfaces-store.ts";
+import { prepareArtifacts, type StudioHtmlPages } from "./surface-blocks/artifacts.ts";
 import { SurfacePictures } from "./surface-blocks/brand-mark.ts";
 import { prepareCards } from "./surface-blocks/cards.ts";
 import { type ColorToken, prepareSwatchRow, readSwatches } from "./surface-blocks/colours.ts";
@@ -29,7 +30,7 @@ import {
 } from "./surface-blocks/context.ts";
 import { explainerClaimedPaths, SurfaceExplainers } from "./surface-blocks/explainer.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
-import { prepareFiles, type StudioHtmlPages } from "./surface-blocks/files.ts";
+import { StudioFullscreen } from "./surface-blocks/fullscreen.ts";
 import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
 import { SurfacePdfViewer } from "./surface-blocks/pdf.ts";
@@ -108,7 +109,7 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 		tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])),
 	);
 	for (const block of leaves) {
-		if (block.type === "unknown" || block.type === "files") continue;
+		if (block.type === "unknown" || block.type === "artifacts") continue;
 		if (block.type === "report") {
 			const { include } = reportFiles(block, ctx);
 			for (const path of Object.keys(ctx.files)) if (include(path)) claimed.add(path);
@@ -120,7 +121,10 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 		}
 		if (block.type === "module") {
 			const folder = moduleFolder(block, ctx);
-			if (folder) for (const path of Object.keys(ctx.files)) if (path.startsWith(`${folder}/`)) claimed.add(path);
+			if (folder) {
+				for (const path of Object.keys(ctx.files)) if (path.startsWith(`${folder}/`)) claimed.add(path);
+				for (const path of Object.keys(ctx.binaries)) if (path.startsWith(`${folder}/`)) claimed.add(path);
+			}
 			continue;
 		}
 		const bindings = Object.entries(block).flatMap(([field, value]) =>
@@ -178,6 +182,7 @@ function nodeKey(block: SurfaceReadBlock, place: string): string {
 
 export class SurfaceLayoutView {
 	readonly #options: SurfaceLayoutOptions;
+	readonly #fullscreen: StudioFullscreen;
 	readonly #stages: SurfaceStages;
 	readonly #reports: SurfaceReports;
 	readonly #explainers: SurfaceExplainers;
@@ -189,10 +194,11 @@ export class SurfaceLayoutView {
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
 		const read = (file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal);
-		this.#stages = new SurfaceStages(read, options.signal);
+		this.#fullscreen = new StudioFullscreen(options.signal);
+		this.#stages = new SurfaceStages(read, options.signal, this.#fullscreen);
 		this.#pictures = new SurfacePictures(read, options.signal);
 		this.#pdfs = new SurfacePdfViewer(read, options.signal);
-		this.#explainers = new SurfaceExplainers(read, options.signal);
+		this.#explainers = new SurfaceExplainers(read, options.signal, this.#fullscreen);
 		this.#reports = new SurfaceReports({
 			store: options.store,
 			surface: options.surface,
@@ -332,7 +338,7 @@ export class SurfaceLayoutView {
 			case "palette":
 				return preparePalette(block, ctx);
 			case "brand_mark":
-				return this.#pictures.prepare(block, ctx);
+				return this.#pictures.prepare(block, ctx, this.#fullscreen);
 			case "type_specimen":
 				return prepareTypeSpecimen(block, ctx);
 			case "facts":
@@ -340,17 +346,25 @@ export class SurfaceLayoutView {
 			case "spec_list":
 				return prepareSpecList(block, ctx);
 			case "table":
-				return prepareTable(block, ctx);
+				return prepareTable(block, ctx, this.#fullscreen);
 			case "cards":
 				return prepareCards(block, ctx);
 			case "report":
 				return this.#reports.prepare(block, ctx);
 			case "explainer":
 				return this.#explainers.prepare(key, block, ctx);
-			case "files":
-				return prepareFiles(block, ctx, scope.input.htmlPages, { claimed: scope.claimed, alone }, this.#pdfs);
+			case "artifacts":
+				return prepareArtifacts(
+					block,
+					ctx,
+					scope.input.htmlPages,
+					this.#pictures,
+					this.#fullscreen,
+					{ claimed: scope.claimed, alone },
+					this.#pdfs,
+				);
 			case "module":
-				return prepareModule(block, ctx, scope.input.htmlPages, { alone });
+				return prepareModule(block, ctx, scope.input.htmlPages, this.#fullscreen, { alone });
 			default:
 				return prepareUnknown();
 		}
@@ -415,11 +429,13 @@ export class SurfaceLayoutView {
 	}
 
 	deactivate(): void {
+		this.#fullscreen.close(false);
 		this.#reports.deactivate();
 		this.#explainers.deactivate();
 	}
 
 	dispose(): void {
+		this.#fullscreen.close(false);
 		this.#reports.dispose();
 		this.#explainers.dispose();
 		this.#pdfs.dispose();

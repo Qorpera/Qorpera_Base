@@ -2107,7 +2107,7 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
     to the app's own CSP, or moving the whole app to `strict-origin-when-cross-origin` with `https://*.qorpera.com` in
     its `form-action`.
   - `/pdf-preview/` (`packages/web/public/pdf-preview/`) follows the same door pattern for inline PDF previews in
-    Studio Files tabs and Report view (`packages/web/src/app/views/surface-blocks/pdf.ts`), so the app's own `/*` CSP
+    Studio `artifacts` blocks and Report view (`packages/web/src/app/views/surface-blocks/pdf.ts`), so the app's own `/*` CSP
     stays free of `frame-src` and `blob:` framing. Its `_headers` entry removes the inherited `Content-Security-Policy`,
     `X-Frame-Options` and `Permissions-Policy`, then sets `Permissions-Policy: camera=(), microphone=(), geolocation=(),
     payment=(), usb=()`, `X-Frame-Options: SAMEORIGIN`, and `Content-Security-Policy: default-src 'none'; script-src
