@@ -83,6 +83,22 @@ export function approveLabel(rest: string, armed: boolean, glyph?: string): HTML
 	);
 }
 
+function overviewDiscardButton(sessionId: string, changeId: string, armed: boolean, busy: boolean): HTMLElement {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: `surface-overview-act is-quiet surface-discard-btn${armed ? " is-confirming" : ""}`,
+			disabled: busy,
+			"data-act": "discard-change-armed",
+			"data-session": sessionId,
+			"data-change": changeId,
+			...(armed ? { "data-armed": "true" } : {}),
+		},
+		approveLabel(t("Discard"), armed),
+	);
+}
+
 function actionCard(
 	change: SurfaceChangeUnit,
 	look: SurfaceLook,
@@ -1018,6 +1034,7 @@ export class SurfaceSessionDrawer {
 		const store = this.#store;
 		const state = store.state;
 		const running = isRunningSession(session);
+		const canDiscard = !running || session.state === "needs_input";
 		const listed = session.changes.filter((change) => change.status !== "discarded");
 		const openChanges = listed.filter(isOpenChange);
 		const actionSession =
@@ -1115,6 +1132,7 @@ export class SurfaceSessionDrawer {
 					{ class: "surface-overview-changes" },
 					...openChanges.map((change) => {
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+						const busyChange = Boolean(state.busy[`change:${change.id}`]);
 						return h(
 							"div",
 							{ class: "surface-overview-change" },
@@ -1122,6 +1140,14 @@ export class SurfaceSessionDrawer {
 								"div",
 								{ class: "surface-overview-change-row" },
 								h("span", { class: "surface-overview-change-title" }, change.title),
+								canDiscard
+									? overviewDiscardButton(
+											session.id,
+											change.id,
+											this.#armedApprove === `discard:${session.id}:${change.id}`,
+											busyChange,
+										)
+									: null,
 								!running
 									? h(
 											"button",
@@ -1156,6 +1182,7 @@ export class SurfaceSessionDrawer {
 							deliverables.length === 1
 								? this.#overviewDeliverablePill(look, change, deliverables[0]!, false)
 								: null;
+						const busyChange = Boolean(state.busy[`change:${change.id}`]);
 						return h(
 							"div",
 							{ class: `surface-overview-change${conflicted ? " is-conflicted" : ""}` },
@@ -1173,6 +1200,14 @@ export class SurfaceSessionDrawer {
 								}),
 								h("span", { class: "surface-overview-change-title" }, change.title),
 								inlineDeliverable,
+								canDiscard
+									? overviewDiscardButton(
+											session.id,
+											change.id,
+											this.#armedApprove === `discard:${session.id}:${change.id}`,
+											busyChange,
+										)
+									: null,
 								conflicted && !running
 									? h(
 											"button",
@@ -1933,6 +1968,12 @@ export class SurfaceSessionDrawer {
 				return;
 			case "discard-change":
 				if (sessionId && change) {
+					if (this.#quotedChange?.changeId === change) this.#setQuotedChange(undefined);
+					void store.discardChange(sessionId, change);
+				}
+				return;
+			case "discard-change-armed":
+				if (sessionId && change && this.#confirmOrArm(`discard:${sessionId}:${change}`)) {
 					if (this.#quotedChange?.changeId === change) this.#setQuotedChange(undefined);
 					void store.discardChange(sessionId, change);
 				}
