@@ -628,7 +628,6 @@ export class SurfaceView {
 			this.#chromeShown = "";
 			this.#toastShown = "";
 			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
-			this.#canvas.classList.remove("is-previewing-changes");
 			if (this.#panelsHidden) {
 				this.#panelsHidden = false;
 				this.#paintNotch();
@@ -837,20 +836,7 @@ export class SurfaceView {
 			explorations.length;
 		const hasAgents = explorations.length + plainSessions.length > 0;
 		const shownCount =
-			state.mode === "live"
-				? 0
-				: state.mode === "report"
-					? surface.archetype === "studio"
-						? store
-								.activePreviewSessions(surface.id)
-								.flatMap((session) => session.changes)
-								.filter(
-									(change) =>
-										change.kind === "folder_patch" && isOpenChange(change) && store.isChangeShown(change.id),
-								).length
-						: 0
-					: store.shownPreviewChangeCount(surface.id);
-		this.#canvas.classList.toggle("is-previewing-changes", shownCount > 0);
+			state.mode === "preview" || state.mode === "compare" ? store.shownPreviewChangeCount(surface.id) : 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
 		const served = this.#host.isSiteLive?.(surface);

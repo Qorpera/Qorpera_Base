@@ -3,6 +3,7 @@ import { constants, realpathSync } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withAbortScope } from "./abort-scope.ts";
 import { lxdNativeCompanyRuntimeFromEnvironment } from "./lxd-company-runtime.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { ProviderNodeObservability } from "./node-observability.ts";
@@ -167,9 +168,10 @@ async function main(): Promise<void> {
 	// run's slot and its company-ceiling reservation are released within a few
 	// seconds either way. Failures are counted, never printed with their text.
 	let reconcileFailures = 0;
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	const reconcile = async (): Promise<void> => {
 		try {
-			await backend.reconcile(shutdown.signal);
+			await withAbortScope(shutdown.signal, (scoped) => backend.reconcile(scoped));
 			reconcileFailures = 0;
 		} catch {
 			if (++reconcileFailures === 1 || reconcileFailures % 60 === 0)
@@ -178,14 +180,21 @@ async function main(): Promise<void> {
 				);
 		}
 	};
-	const timer = setInterval(() => void reconcile(), 5000);
+	const schedule = (): void => {
+		if (shutdown.signal.aborted) return;
+		timer = setTimeout(() => {
+			void reconcile().finally(schedule);
+		}, 5000);
+		timer.unref();
+	};
+	schedule();
 	try {
 		await service.start();
 		await new Promise<void>((resolveWait) =>
 			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
 		);
 	} finally {
-		clearInterval(timer);
+		if (timer) clearTimeout(timer);
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
 		await service.close();

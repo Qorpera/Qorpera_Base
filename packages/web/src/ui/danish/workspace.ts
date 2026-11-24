@@ -452,17 +452,7 @@ export const WORKSPACE: Record<string, string> = {
 
 	// app/views/approvals.ts
 
-	// app/views/meet.ts
-	"This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company; until then there is no agent to dress.":
-		"Denne virksomhed har ingen Co-Founder endnu. Skyen opretter en, når Order 0 starter virksomheden; indtil da er der ingen agent at give et udseende.",
-	"Open the company": "Åbn virksomheden",
-	"Your journey starts here": "Din rejse starter her",
-	"Choose a figure": "Vælg en figur",
 	"Saving…": "Gemmer…",
-	"Save appearance and continue": "Gem udseende og fortsæt",
-	"The appearance change could not be confirmed. Open the company to check it before saving again.":
-		"Ændringen af udseendet kunne ikke bekræftes. Åbn virksomheden og tjek det, før du gemmer igen.",
-	"Open the company without changing appearance": "Åbn virksomheden uden at ændre udseende",
 
 	// app/views/computer.ts, ui/machine-screen-view.ts: an agent's computer window (20260930712000)
 	"Connecting…": "Forbinder…",
@@ -597,27 +587,9 @@ export const WORKSPACE: Record<string, string> = {
 	Purple: "Lilla",
 	Pink: "Pink",
 	Slate: "Skifergrå",
-	// ui/computer-viewer.ts: the desktop's screen viewer, translated where it shows
 	"Back to thread": "Tilbage til tråden",
-	"Checking your private sign-in access": "Tjekker din private login-adgang",
-	"Close screen viewer": "Luk skærmen",
-	"Cloud screen unavailable. Reconnect to check access again.":
-		"Skærmen er ikke tilgængelig. Forbind igen for at tjekke adgangen.",
-	"Connecting to cloud desktop": "Forbinder til computeren",
 	Connecting: "Forbinder",
-	Disconnected: "Afbrudt",
 	Enter: "Gå ind",
-	"Full screen unavailable": "Fuld skærm er ikke tilgængelig",
-	"Private sign-in · Closing this view leaves the office private":
-		"Privat login · Lukker du visningen, forbliver kontoret privat",
-	Reconnect: "Forbind igen",
-	"Release control": "Giv kontrollen tilbage",
-	"Shared with the agent": "Delt med agenten",
-	"Starting the screen and connecting…": "Starter skærmen og forbinder…",
-	"Take control": "Overtag",
-	"Waiting for the cloud screen to release agent control": "Venter på, at agenten slipper kontrollen",
-	"Watching only": "Ser kun med",
-	"You control this cloud screen": "Du styrer skærmen",
 	"Opening Company File": "Åbner Virksomhedsfilen",
 	"The cloud could not be reached. {error}": "Skyen kunne ikke nås. {error}",
 	"Loading agents": "Henter agenter",
@@ -696,6 +668,18 @@ export const WORKSPACE: Record<string, string> = {
 	Group: "Gruppe",
 	"Move to": "Flyt til",
 	"No group": "Ingen gruppe",
+	"No section": "Ingen sektion",
+	"New section…": "Ny sektion…",
+	"Move up": "Flyt op",
+	"Move down": "Flyt ned",
+	"Delete your section {name}?": "Slet din sektion {name}?",
+	"Delete your section {name}? Its interfaces move out of it, to the end of the list.":
+		"Slet din sektion {name}? Dens interfaces flyttes ud af den, nederst på listen.",
+	"Your interfaces changed in another tab. Try again.": "Dine interfaces blev ændret i en anden fane. Prøv igen.",
+	"The interfaces could not be arranged. Try again.": "Dine interfaces kunne ikke arrangeres. Prøv igen.",
+	"Only {count} interfaces can be arranged.": "Kun {count} interfaces kan arrangeres.",
+	"That name can't be used for a section.": "Det navn kan ikke bruges til en sektion.",
+	"The order and sections of your interfaces": "Rækkefølgen og sektionerne af dine interfaces",
 	"Rename group": "Omdøb gruppe",
 	Ungroup: "Opløs gruppe",
 	// The drawer's Colour menu (12 Nov 2026): its first row takes the member's own colour away.

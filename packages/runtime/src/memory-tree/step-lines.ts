@@ -280,12 +280,12 @@ export class CloudRunStepLines {
 				const read = await this.#read(io);
 				// Before the run's first step there is nothing to read; a log that kept moving is read by the next pass.
 				if (!read?.T) return;
-				const { generation, T, texts, narrow } = read;
+				const { generation, T, textAt, narrow } = read;
 				this.#generation ??= generation;
 				// What was read at one generation is never stored at another (§4.3).
 				if (generation !== this.#generation) this.#stale = true;
 				const scope = this.#scope(T);
-				if (scope.leaves.length && !build.aborted) await this.#build(T, texts, narrow, scope, build);
+				if (scope.leaves.length && !build.aborted) await this.#build(T, textAt, narrow, scope, build);
 				await this.#commit(this.#generation, io);
 			} catch (error) {
 				// What was built stays, and the next pass tries again; a gone log ends the writer.
@@ -303,10 +303,10 @@ export class CloudRunStepLines {
 	 */
 	async #read(
 		signal: AbortSignal,
-	): Promise<{ generation: number; T: number; texts: (string | null)[]; narrow: boolean[] } | null> {
+	): Promise<{ generation: number; T: number; textAt: (i: number) => string | null; narrow: boolean[] } | null> {
 		for (let attempt = 1; attempt <= READS; attempt++) {
 			const generation = this.#log.generation();
-			const { T, texts, narrow } = await this.#texts(signal);
+			const { T, textAt, narrow } = await this.#texts(signal);
 			const blocks = await this.#blocks(T, signal);
 			if (this.#log.generation() !== generation) continue;
 			for (const [path, lines] of blocks) {
@@ -314,7 +314,7 @@ export class CloudRunStepLines {
 					if (!this.#known.has(nodeKey(line.l, line.k))) this.#known.set(nodeKey(line.l, line.k), line.text);
 				this.#loaded.add(path);
 			}
-			return { generation, T, texts, narrow };
+			return { generation, T, textAt, narrow };
 		}
 		return null;
 	}
@@ -323,19 +323,24 @@ export class CloudRunStepLines {
 	 * Every step `[0, T)` as its line sees it: the earlier process's, then this one's in order as committed; and which
 	 * of them are this process's narrow steps.
 	 */
-	async #texts(signal: AbortSignal): Promise<{ T: number; texts: (string | null)[]; narrow: boolean[] }> {
+	async #texts(signal: AbortSignal): Promise<{ T: number; textAt: (i: number) => string | null; narrow: boolean[] }> {
 		const own = this.#log.steps() as readonly CloudRunStepLinesStep[];
 		let T = this.#first;
 		for (const step of own) {
 			if (step.j !== T) break;
 			T += 1;
 		}
-		const texts = new Array<string | null>(T).fill(null);
+		const steps = new Array<CloudRunStepLinesStep | undefined>(T);
+		const isEarlier = new Uint8Array(T);
 		const narrow = new Array<boolean>(T).fill(false);
 		if (this.#first > 0) {
 			try {
-				for (const step of (await this.#log.earlier(signal)) as readonly CloudRunStepLinesStep[])
-					if (step.j < this.#first) texts[step.j] = cloudRunStepText(step, true);
+				for (const step of (await this.#log.earlier(signal)) as readonly CloudRunStepLinesStep[]) {
+					if (step.j < this.#first) {
+						steps[step.j] = step;
+						isEarlier[step.j] = 1;
+					}
+				}
 			} catch (error) {
 				// Without them, only their stored lines serve.
 				if (error instanceof CloudRunLogGone) throw error;
@@ -343,10 +348,19 @@ export class CloudRunStepLines {
 		}
 		for (const step of own) {
 			if (step.j >= T) continue;
-			texts[step.j] = cloudRunStepText(step, false);
+			steps[step.j] = step;
 			narrow[step.j] = step.narrow === true;
 		}
-		return { T, texts, narrow };
+		const cache = new Map<number, string | null>();
+		const textAt = (i: number): string | null => {
+			if (i < 0 || i >= T) return null;
+			if (cache.has(i)) return cache.get(i)!;
+			const step = steps[i];
+			const rendered = step ? cloudRunStepText(step, isEarlier[i] === 1) : null;
+			cache.set(i, rendered);
+			return rendered;
+		};
+		return { T, textAt, narrow };
 	}
 
 	/**
@@ -409,7 +423,7 @@ export class CloudRunStepLines {
 
 	async #build(
 		T: number,
-		texts: readonly (string | null)[],
+		textAt: (i: number) => string | null,
 		narrow: readonly boolean[],
 		scope: { leaves: number[]; nodes: [number, number][] },
 		signal: AbortSignal,
@@ -421,8 +435,8 @@ export class CloudRunStepLines {
 				built: this.built,
 				leaves: scope.leaves,
 				event: async (i) => {
-					const text = texts[i];
-					if (text === null || text === undefined) throw new Error("Step not readable");
+					const text = textAt(i);
+					if (text === null) throw new Error("Step not readable");
 					return { text };
 				},
 			},
@@ -452,12 +466,17 @@ export class CloudRunStepLines {
 		}
 		// A deadline or a stopped lane leaves nodes missing that did not fail.
 		if (signal.aborted || this.#lane.stopped) return;
-		const readable = (i: number) => texts[i] !== null && texts[i] !== undefined;
+		const readable = (i: number) => textAt(i) !== null;
+		const windowReadable = (k: number): boolean => {
+			if (!readable(k)) return false;
+			for (let i = memoryWindowStart(k); i < k; i++) if (!readable(i)) return false;
+			return true;
+		};
 		for (const [l, k] of scope.nodes) {
 			if (this.#known.has(nodeKey(l, k))) continue;
 			const inputs =
 				l === 0
-					? readable(k) && texts.slice(memoryWindowStart(k), k).every((text) => text !== null)
+					? windowReadable(k)
 					: this.#known.has(nodeKey(l - 1, 2 * k)) && this.#known.has(nodeKey(l - 1, 2 * k + 1));
 			if (inputs) this.#failed.add(nodeKey(l, k));
 		}

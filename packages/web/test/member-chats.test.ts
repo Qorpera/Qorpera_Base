@@ -37,6 +37,7 @@ import {
 	userA,
 } from "./fixtures.ts";
 import { searchFromRail } from "./search-window-helpers.ts";
+import "./register-lazy.ts";
 
 /* Members of a company message each other (Jonas, 10 Nov 2026): the cloud's shapes (cloud/member-chats.ts), the chats'
  * state (app/member-chats.ts), the chat on screen (app/views/member-chat.ts) and the members as contacts in the rail. */

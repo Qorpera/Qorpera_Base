@@ -216,31 +216,3 @@ export class SurfaceDialog {
 		else if (this.#previous) this.findOpener?.()?.focus({ preventScroll: true });
 	}
 }
-
-/** The heading of a page shown inside a dialog: the way back, a title and an
- * optional line under it. */
-export function dialogPageHeader(
-	title: string,
-	back?: () => void,
-	backLabel = t("Back"),
-	detail?: string,
-): HTMLElement {
-	return h(
-		"header",
-		{ class: "dialog-page-header" },
-		back
-			? h(
-					"button",
-					{
-						type: "button",
-						class: "icon-button dialog-page-back",
-						title: backLabel,
-						"aria-label": backLabel,
-						onclick: back,
-					},
-					icon("back"),
-				)
-			: null,
-		h("div", { class: "dialog-page-title" }, h("h2", null, title), detail ? h("p", null, detail) : null),
-	);
-}

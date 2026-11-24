@@ -1,5 +1,5 @@
-import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.112.3";
-import { createTimedFetch, DEFAULT_RPC_TIMEOUT_MS, preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
+import { DEFAULT_RPC_TIMEOUT_MS, preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
+import { createPostgrestClient, type PostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	FOLDER_DRAINS,
 	orchestratorAuthFailure,
@@ -10,16 +10,12 @@ import {
 } from "./runner-orchestrator.ts";
 
 const UTF8_ENCODER = new TextEncoder();
-const timedFetch = createTimedFetch({ timeoutMs: DEFAULT_RPC_TIMEOUT_MS });
-let cachedClient: { readonly key: string; readonly client: SupabaseClient } | undefined;
+let cachedClient: { readonly key: string; readonly client: PostgrestClient } | undefined;
 
-function getClient(supabaseUrl: string, serviceKey: string): SupabaseClient {
+function getClient(supabaseUrl: string, serviceKey: string): PostgrestClient {
 	const key = `${supabaseUrl}\0${serviceKey}`;
 	if (cachedClient?.key === key) return cachedClient.client;
-	const client = createClient(supabaseUrl, serviceKey, {
-		auth: { autoRefreshToken: false, persistSession: false },
-		global: { fetch: timedFetch },
-	});
+	const client = createPostgrestClient(supabaseUrl, serviceKey, { timeoutMs: DEFAULT_RPC_TIMEOUT_MS });
 	cachedClient = { key, client };
 	return client;
 }
@@ -49,15 +45,17 @@ Deno.serve(async (request) => {
 	const client = getClient(supabaseUrl, serviceKey);
 	const tokenSha256 = await sha256(token);
 	try {
-		const { data: valid, error: validationError } = await withAbortSignal(
-			client.rpc("qorpera_runner_orchestrator_control_valid", {
-				p_orchestrator_id: action.orchestratorId,
-				p_control_token_sha256: tokenSha256,
-			}),
-			request.signal,
-		);
-		const authFailure = orchestratorAuthFailure(validationError, valid);
-		if (authFailure) return jsonResponse({ error: authFailure.error }, authFailure.status);
+		if (action.action !== "rotate_control") {
+			const { data: valid, error: validationError } = await withAbortSignal(
+				client.rpc("qorpera_runner_orchestrator_control_valid", {
+					p_orchestrator_id: action.orchestratorId,
+					p_control_token_sha256: tokenSha256,
+				}),
+				request.signal,
+			);
+			const authFailure = orchestratorAuthFailure(validationError, valid);
+			if (authFailure) return jsonResponse({ error: authFailure.error }, authFailure.status);
+		}
 		let rpc: string;
 		let args: Record<string, unknown>;
 		switch (action.action) {

@@ -72,9 +72,6 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		});
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
 		assert.match(initial.manifest.implementation["supabase/migrations/20260828020000_runtime_wake_bus.sql"], /^[0-9a-f]{64}$/);
-		for (const path of ["packages/runtime/src/cloud-company-computer-browser-control.ts", "packages/runtime/src/cloud-company-computer-privacy.ts", "deploy/lxd-company-computer-guest/qorpera-screen-session", "deploy/lxd-company-computer-guest/qorpera-company-computer.service", "packages/runtime/src/cloud-company-computer-service-main.ts", "scripts/package-company-computer.mjs", "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-pebble-00.png"]) {
-			assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
-		}
 		assert.equal((await generateCloudRuntimeBundle(true, fixture)).sha256, initial.sha256);
 		// Behavioral law and hire defaults have explicit, independently reviewable pins.
 		for (const [name, component] of [["cloud-runtime-constitution", "constitution"], ["cloud-runtime-hire-overlays", "contextComposer"]]) {

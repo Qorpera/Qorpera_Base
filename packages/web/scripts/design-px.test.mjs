@@ -7,12 +7,9 @@ import { transformSync } from "esbuild";
 import { readUiScale, scaleDesignPx } from "./design-px.mjs";
 
 const web = join(dirname(fileURLToPath(import.meta.url)), "..");
-const stylesheets = [
-	...readdirSync(join(web, "src/styles")).map((file) => join(web, "src/styles", file)),
-	join(web, "../member-web/ui/screens.css"),
-];
+const stylesheets = readdirSync(join(web, "src/styles")).map((file) => join(web, "src/styles", file));
 
-test("design pixels become calc() on --px; hairlines, SVG strokes and literals stay", () => {
+test("design pixels become rem except local --px scopes; hairlines, SVG strokes and literals stay", () => {
 	const css = [
 		'@import "./tokens.css";',
 		".a { padding: 8px 12.5px; margin: -6px 0; font: 13px/1.5 var(--font-sans); border: 1px solid; box-shadow: 0 0 0 .5px red; }",
@@ -20,17 +17,21 @@ test("design pixels become calc() on --px; hairlines, SVG strokes and literals s
 		".icon { stroke-width: 4px; width: 18px; }",
 		'.c::before { content: "12px"; background: url("icon-16px.svg"); mask: url(data:image/svg+xml,a%2012px) } /* 40px */',
 		".d { transition: opacity 120ms; color: #12a4px; width: 100%; margin: +12px 12PX; }",
+		".computer-panel .bar { font-size: 14px; border: 1px solid; }",
+		".picture-crop-view { --px: 1px; width: 288px; }",
 		"@property --rail-width { syntax: \"*\"; inherits: false; initial-value: 456px; }",
 	].join("\n");
 	assert.equal(
 		scaleDesignPx(css, 1.25),
 		[
 			'@import "./tokens.css";',
-			".a { padding: calc(8 * var(--px)) calc(12.5 * var(--px)); margin: calc(-6 * var(--px)) 0; font: calc(13 * var(--px))/1.5 var(--font-sans); border: 1px solid; box-shadow: 0 0 0 .5px red; }",
-			".b { width: calc(100% - calc(16 * var(--px))); max-height: min(calc(360 * var(--px)), 65dvh); left: var(--x, calc(20 * var(--px))); }",
-			".icon { stroke-width: 4px; width: calc(18 * var(--px)); }",
+			".a { padding: 0.8rem 1.25rem; margin: -0.6rem 0; font: 1.3rem/1.5 var(--font-sans); border: 1px solid; box-shadow: 0 0 0 .5px red; }",
+			".b { width: calc(100% - 1.6rem); max-height: min(36rem, 65dvh); left: var(--x, 2rem); }",
+			".icon { stroke-width: 4px; width: 1.8rem; }",
 			'.c::before { content: "12px"; background: url("icon-16px.svg"); mask: url(data:image/svg+xml,a%2012px) } /* 40px */',
-			".d { transition: opacity 120ms; color: #12a4px; width: 100%; margin: calc(+12 * var(--px)) calc(12 * var(--px)); }",
+			".d { transition: opacity 120ms; color: #12a4px; width: 100%; margin: +1.2rem 1.2rem; }",
+			".computer-panel .bar { font-size: calc(14 * var(--px)); border: 1px solid; }",
+			".picture-crop-view { --px: 1px; width: calc(288 * var(--px)); }",
 			"@property --rail-width { syntax: \"*\"; inherits: false; initial-value: 456px; }",
 		].join("\n"),
 	);
@@ -41,10 +42,10 @@ test("Big keeps pointer-aware breakpoints and Small restores unscaled breakpoint
 	assert.equal(
 		scaleDesignPx(css, 1.25),
 		[
-			':where(:root:not([data-ui-size="small"])) { @media (pointer: coarse) and (max-width: 760px), (pointer: fine) and (max-width: 950px), (pointer: none) and (max-width: 950px) { .rail { width: calc(304 * var(--px)); } } }',
-			':where(:root[data-ui-size="small"]) { @media (max-width: 760px) { .rail { width: calc(304 * var(--px)); } } }',
-			':where(:root:not([data-ui-size="small"])) { @media (pointer: coarse) and (hover: none) and (min-width: 1100px), (pointer: fine) and (hover: none) and (min-width: 1375px), (pointer: none) and (hover: none) and (min-width: 1375px), (pointer: coarse) and ((max-width: 560px) or (max-height: 400px)), (pointer: fine) and ((max-width: 700px) or (max-height: 500px)), (pointer: none) and ((max-width: 700px) or (max-height: 500px)) { .x { gap: calc(2 * var(--px)); } } }',
-			':where(:root[data-ui-size="small"]) { @media (hover: none) and (min-width: 1100px), (max-width: 560px) or (max-height: 400px) { .x { gap: calc(2 * var(--px)); } } }',
+			':where(:root:not([data-ui-size="small"])) { @media (pointer: coarse) and (max-width: 760px), (pointer: fine) and (max-width: 950px), (pointer: none) and (max-width: 950px) { .rail { width: 30.4rem; } } }',
+			':where(:root[data-ui-size="small"]) { @media (max-width: 760px) { .rail { width: 30.4rem; } } }',
+			':where(:root:not([data-ui-size="small"])) { @media (pointer: coarse) and (hover: none) and (min-width: 1100px), (pointer: fine) and (hover: none) and (min-width: 1375px), (pointer: none) and (hover: none) and (min-width: 1375px), (pointer: coarse) and ((max-width: 560px) or (max-height: 400px)), (pointer: fine) and ((max-width: 700px) or (max-height: 500px)), (pointer: none) and ((max-width: 700px) or (max-height: 500px)) { .x { gap: 0.2rem; } } }',
+			':where(:root[data-ui-size="small"]) { @media (hover: none) and (min-width: 1100px), (max-width: 560px) or (max-height: 400px) { .x { gap: 0.2rem; } } }',
 			"@media (prefers-reduced-motion: reduce) { .y { top: 0; } }",
 		].join("\n"),
 	);

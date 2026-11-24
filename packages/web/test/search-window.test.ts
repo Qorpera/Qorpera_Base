@@ -14,6 +14,7 @@ import {
 import { markSettingsPlace } from "../src/app/views/settings.ts";
 import { h } from "../src/ui/dom.ts";
 import { stubDialogs } from "./search-window-helpers.ts";
+import "./register-lazy.ts";
 
 const opened: string[] = [];
 const hit = (

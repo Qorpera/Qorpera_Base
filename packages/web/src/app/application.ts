@@ -13,7 +13,6 @@ import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { askCompanyNumbers } from "../cloud/company-numbers.ts";
-import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
 import { createWebEventHooks } from "../cloud/event-hooks.ts";
@@ -63,7 +62,7 @@ import { CompanyMail } from "./company-mail.ts";
 import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
 import { DATA_PAGE, wantDataList } from "./data-page.ts";
 import { folderImageReader } from "./folder-images.ts";
-import { FoundingController } from "./founding.ts";
+import type { FoundingController } from "./founding.ts";
 import {
 	type CompanyApp,
 	CompanyApps,
@@ -89,25 +88,22 @@ import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, su
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
-import { type AccountViewState, renderAccount } from "./views/account.ts";
-import { AgentDetails } from "./views/agent-details.ts";
+import type { AccountViewState } from "./views/account.ts";
+import type { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
-import { noteBankReturn } from "./views/bank.ts";
-import { CompanyFolderBrowser } from "./views/company-folder.ts";
-import { chooseInCompanyFolder } from "./views/company-folder-choose.ts";
-import { ComputerPanels } from "./views/computer.ts";
-import { ConceptsView } from "./views/concepts.ts";
+import type { CompanyFolderBrowser } from "./views/company-folder.ts";
+import { type ComputerPanelsLike, LazyComputerPanels } from "./views/computer-lazy.ts";
+import type { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
-import { FeedbackView } from "./views/feedback.ts";
-import { FoundingView } from "./views/founding.ts";
-import { FriendsWindow } from "./views/friends-window.ts";
-import { GroupDetails } from "./views/group-details.ts";
+import type { FeedbackView } from "./views/feedback.ts";
+import type { FoundingView } from "./views/founding.ts";
+import type { FriendsWindow } from "./views/friends-window.ts";
+import { takeGoodWillReturn } from "./views/good-will-format.ts";
+import type { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
-import { disposeInterface, renderInterface } from "./views/interface.ts";
-import { type MeetState, renderMeet } from "./views/meet.ts";
-import { MemberChatView } from "./views/member-chat.ts";
+import type { MemberChatView } from "./views/member-chat.ts";
 import {
 	hasWebsiteIdea,
 	keepWebsiteIdea,
@@ -115,12 +111,13 @@ import {
 	renderNewCompany,
 	type Viewer,
 } from "./views/new-company.ts";
-import { NewConversationView } from "./views/new-conversation.ts";
-import { NewProgramPage, type ProgramAddHost } from "./views/program-add.ts";
+import type { NewConversationView } from "./views/new-conversation.ts";
+import type { NewProgramPage, ProgramAddHost } from "./views/program-add.ts";
 import type { QuestionDockHost } from "./views/question-dock.ts";
-import { type SettingsTab, SettingsView } from "./views/settings.ts";
-import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
-import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
+import { whatsNewEntry } from "./views/release-desk.ts";
+import type { SettingsView } from "./views/settings.ts";
+import type { MyGoodWillView } from "./views/settings-good-will.ts";
+import type { SettingsTab } from "./views/settings-places.ts";
 import {
 	appLook,
 	clearShellCompanyState,
@@ -130,13 +127,113 @@ import {
 	type ShellContext,
 } from "./views/shell.ts";
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
-import { SiteView } from "./views/site-view.ts";
+import type { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
-import { openMigrationSheet } from "./views/surface-migration-sheet.ts";
-import { type SurfaceMount, SurfaceView } from "./views/surface-view.ts";
-import { renderTeam, type TeamFeedback } from "./views/team.ts";
-import { WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
+import type { SurfaceMount, SurfaceView } from "./views/surface-view.ts";
+import type { TeamFeedback } from "./views/team.ts";
+import type { WhatsNewView } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
+
+interface LazyModule<T> {
+	value: T | undefined;
+	promise: Promise<T> | undefined;
+}
+
+function lazyModule<T>(load: () => Promise<T>): {
+	get: () => T | undefined;
+	set: (mod: T) => void;
+	load: () => Promise<T>;
+} {
+	const state: LazyModule<T> = { value: undefined, promise: undefined };
+	return {
+		get: () => state.value,
+		set: (mod: T) => {
+			state.value = mod;
+		},
+		load: () => {
+			if (state.value) return Promise.resolve(state.value);
+			state.promise ??= load().then((mod) => {
+				state.value = mod;
+				return mod;
+			});
+			return state.promise;
+		},
+	};
+}
+
+const interfaceViewModule = lazyModule(() => import("./views/interface.ts"));
+const surfaceViewModule = lazyModule(() => import("./views/surface-view.ts"));
+const companyFolderModule = lazyModule(() => import("./views/company-folder.ts"));
+const foundingModule = lazyModule(async () => {
+	const [{ FoundingController }, { FoundingView }] = await Promise.all([
+		import("./founding.ts"),
+		import("./views/founding.ts"),
+	]);
+	return { FoundingController, FoundingView };
+});
+const conceptsModule = lazyModule(() => import("./views/concepts.ts"));
+const newProgramModule = lazyModule(() => import("./views/program-add.ts"));
+const siteViewModule = lazyModule(() => import("./views/site-view.ts"));
+const settingsViewModule = lazyModule(() => import("./views/settings.ts"));
+const friendsWindowModule = lazyModule(() => import("./views/friends-window.ts"));
+const feedbackViewModule = lazyModule(() => import("./views/feedback.ts"));
+const accountViewModule = lazyModule(async () => {
+	const [{ renderAccount }, { MyGoodWillView }] = await Promise.all([
+		import("./views/account.ts"),
+		import("./views/settings-good-will.ts"),
+	]);
+	return { renderAccount, MyGoodWillView };
+});
+const teamViewModule = lazyModule(() => import("./views/team.ts"));
+const memberChatModule = lazyModule(() => import("./views/member-chat.ts"));
+const newConversationModule = lazyModule(() => import("./views/new-conversation.ts"));
+const whatsNewModule = lazyModule(() => import("./views/whats-new.ts"));
+const agentDetailsModule = lazyModule(() => import("./views/agent-details.ts"));
+const groupDetailsModule = lazyModule(() => import("./views/group-details.ts"));
+
+export function registerLazyApplicationModules(modules: {
+	readonly interfaceView?: typeof import("./views/interface.ts");
+	readonly surfaceView?: typeof import("./views/surface-view.ts");
+	readonly companyFolder?: typeof import("./views/company-folder.ts");
+	readonly founding?: {
+		readonly FoundingController: typeof FoundingController;
+		readonly FoundingView: typeof FoundingView;
+	};
+	readonly concepts?: typeof import("./views/concepts.ts");
+	readonly newProgram?: typeof import("./views/program-add.ts");
+	readonly siteView?: typeof import("./views/site-view.ts");
+	readonly settingsView?: typeof import("./views/settings.ts");
+	readonly friendsWindow?: typeof import("./views/friends-window.ts");
+	readonly feedbackView?: typeof import("./views/feedback.ts");
+	readonly accountView?: {
+		readonly renderAccount: typeof import("./views/account.ts").renderAccount;
+		readonly MyGoodWillView: typeof MyGoodWillView;
+	};
+	readonly teamView?: typeof import("./views/team.ts");
+	readonly memberChat?: typeof import("./views/member-chat.ts");
+	readonly newConversation?: typeof import("./views/new-conversation.ts");
+	readonly whatsNew?: typeof import("./views/whats-new.ts");
+	readonly agentDetails?: typeof import("./views/agent-details.ts");
+	readonly groupDetails?: typeof import("./views/group-details.ts");
+}): void {
+	if (modules.interfaceView) interfaceViewModule.set(modules.interfaceView);
+	if (modules.surfaceView) surfaceViewModule.set(modules.surfaceView);
+	if (modules.companyFolder) companyFolderModule.set(modules.companyFolder);
+	if (modules.founding) foundingModule.set(modules.founding);
+	if (modules.concepts) conceptsModule.set(modules.concepts);
+	if (modules.newProgram) newProgramModule.set(modules.newProgram);
+	if (modules.siteView) siteViewModule.set(modules.siteView);
+	if (modules.settingsView) settingsViewModule.set(modules.settingsView);
+	if (modules.friendsWindow) friendsWindowModule.set(modules.friendsWindow);
+	if (modules.feedbackView) feedbackViewModule.set(modules.feedbackView);
+	if (modules.accountView) accountViewModule.set(modules.accountView);
+	if (modules.teamView) teamViewModule.set(modules.teamView);
+	if (modules.memberChat) memberChatModule.set(modules.memberChat);
+	if (modules.newConversation) newConversationModule.set(modules.newConversation);
+	if (modules.whatsNew) whatsNewModule.set(modules.whatsNew);
+	if (modules.agentDetails) agentDetailsModule.set(modules.agentDetails);
+	if (modules.groupDetails) groupDetailsModule.set(modules.groupDetails);
+}
 
 /* Entry point. One cloud client, one auth controller, one company controller
  * at a time. The route decides the view; every view renders from cloud state
@@ -290,10 +387,15 @@ export function mountApplication(
 	/** Friends as a window of its own, over whatever is open: Settings stay open behind it (Jonas, 9 Nov 2026). */
 	function openFriends(): void {
 		if (friendsWindow || feedback || !auth.userId) return;
-		// Over Settings it shares their friends list, so the invitation picker behind it follows every change.
-		friendsWindow = new FriendsWindow(api, hub, () => closeFriends(), settings?.friends);
-		root.append(friendsWindow.el);
-		friendsWindow.open();
+		const mount = (Loaded: typeof FriendsWindow) => {
+			if (disposed || friendsWindow || feedback || !auth.userId) return;
+			friendsWindow = new Loaded(api, hub, () => closeFriends(), settings?.friends);
+			root.append(friendsWindow.el);
+			friendsWindow.open();
+		};
+		const cached = friendsWindowModule.get();
+		if (cached) mount(cached.FriendsWindow);
+		else void friendsWindowModule.load().then((mod) => mount(mod.FriendsWindow));
 	}
 	function closeFeedback(restoreFocus = true): void {
 		if (!feedback) return;
@@ -303,9 +405,15 @@ export function mountApplication(
 	}
 	function openFeedback(): void {
 		if (feedback || settings || friendsWindow || !auth.userId) return;
-		feedback = new FeedbackView(api, () => closeFeedback());
-		root.append(feedback.el);
-		feedback.open();
+		const mount = (Loaded: typeof FeedbackView) => {
+			if (disposed || feedback || settings || friendsWindow || !auth.userId) return;
+			feedback = new Loaded(api, () => closeFeedback());
+			root.append(feedback.el);
+			feedback.open();
+		};
+		const cached = feedbackViewModule.get();
+		if (cached) mount(cached.FeedbackView);
+		else void feedbackViewModule.load().then((mod) => mount(mod.FeedbackView));
 	}
 	function closeSettings(restoreFocus = true): void {
 		// A Friends window over Settings uses their friends list: it closes with them (access to the company lost).
@@ -341,20 +449,26 @@ export function mountApplication(
 	function openSettings(tab?: SettingsTab): void {
 		if (settings || feedback || !auth.userId) return;
 		closeFriends(false);
-		settings = new SettingsView(
-			api,
-			auth,
-			hub,
-			profiles,
-			company?.store.get().accessLost ? undefined : company,
-			() => closeSettings(),
-			companyRemovedHandler(),
-			tab,
-			openFriends,
-		);
-		frame.inert = true;
-		root.append(settings.el);
-		settings.focus();
+		const mount = (Loaded: typeof SettingsView) => {
+			if (disposed || settings || feedback || !auth.userId) return;
+			settings = new Loaded(
+				api,
+				auth,
+				hub,
+				profiles,
+				company?.store.get().accessLost ? undefined : company,
+				() => closeSettings(),
+				companyRemovedHandler(),
+				tab,
+				openFriends,
+			);
+			frame.inert = true;
+			root.append(settings.el);
+			settings.focus();
+		};
+		const cached = settingsViewModule.get();
+		if (cached) mount(cached.SettingsView);
+		else void settingsViewModule.load().then((mod) => mount(mod.SettingsView));
 	}
 	/** Shows a Company File page beside the open chat. Again on what is shown already, it reads it again. */
 	function openSide(target: SidePanelTarget): void {
@@ -630,8 +744,7 @@ export function mountApplication(
 	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
-	let computer: WebCompanyComputer | undefined;
-	let computerPanels: ComputerPanels | undefined;
+	let computerPanels: ComputerPanelsLike | undefined;
 	let conversation: ConversationView | undefined;
 	/** The chat with another member on screen, and the company it is in. */
 	let memberChat: { view: MemberChatView; company: CompanyController } | undefined;
@@ -678,7 +791,6 @@ export function mountApplication(
 	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	let accountPayments: MyGoodWillView | undefined;
-	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
 	/** A Settings tab to open once the company home has resolved: home moves on to the Co-Founder's
@@ -724,7 +836,6 @@ export function mountApplication(
 			accountState = {};
 			accountPayments?.dispose();
 			accountPayments = undefined;
-			meetState = {};
 			resolvingRoute = undefined;
 			routeError = undefined;
 			navigationOpen = false;
@@ -753,7 +864,7 @@ export function mountApplication(
 			openFriends,
 			invites: api,
 			invitations: hub.store.get().invitations.length,
-			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
+			...(route.name === "company" && company && !company.store.get().accessLost
 				? {
 						navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) },
 						sidebar: {
@@ -797,11 +908,14 @@ export function mountApplication(
 		// The founding table's page and the new-company box keep their text between refreshes; a new language
 		// builds them again.
 		relabelNewCompany(hub);
-		if (founding)
-			founding = {
-				controller: founding.controller,
-				view: new FoundingView(founding.controller, founding.view.drafts()),
-			};
+		if (founding) {
+			const mod = foundingModule.get();
+			if (mod)
+				founding = {
+					controller: founding.controller,
+					view: new mod.FoundingView(founding.controller, founding.view.drafts()),
+				};
+		}
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -830,7 +944,7 @@ export function mountApplication(
 	}
 
 	function disposeCompanyViews(): void {
-		disposeInterface(main);
+		interfaceViewModule.get()?.disposeInterface(main);
 		notices?.dispose();
 		notices = undefined;
 		interfacePages?.dispose();
@@ -889,10 +1003,8 @@ export function mountApplication(
 		releasesRead = undefined;
 		showWaitingInTitle(0);
 		agentPage = undefined;
-		computer = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
-		meetState = {};
 	}
 
 	function companyRemovedHandler(): (profileId: string) => void {
@@ -1039,15 +1151,11 @@ export function mountApplication(
 						current,
 						team.capabilities.write,
 					).folder();
-					const bytes = new Uint8Array(file.bytes);
-					let offset = 0;
-					await folder.readFilePieces(
+					const bytes = await folder.readFile(
 						{ ...file, executable: (file as { readonly executable?: unknown }).executable === true },
 						readSignal,
-						(piece) => {
-							bytes.set(piece, offset);
-							offset += piece.byteLength;
-						},
+						file.bytes,
+						{ cached: true },
 					);
 					current();
 					return bytes;
@@ -1207,7 +1315,9 @@ export function mountApplication(
 								if (auth.userId !== userId) throw new Error("The account changed.");
 							},
 						);
-						void finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome);
+						void import("./views/settings-connections.ts").then(({ finishPlanSignIn, memberPlanSignIn }) =>
+							finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome),
+						);
 						queueMicrotask(() => {
 							if (disposed || company !== controller) return;
 							const route = currentRoute();
@@ -1218,49 +1328,61 @@ export function mountApplication(
 				}
 				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
 				// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
-				if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
+				if (connectorReturn?.connector === "bank") {
+					const bankReturn = connectorReturn;
+					void import("./views/bank.ts").then(({ noteBankReturn }) => noteBankReturn(bankReturn));
+				}
 				connectorReturn = undefined;
-				computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
-					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
-						throw new Error(t("Company access is unavailable."));
-				});
-				// Open computers outlive the thread they were opened in; leaving the company ends them. A `machines` hint
-				// reads an open window's machines at once.
-				computerPanels = new ComputerPanels(computer, controller.signal, {
-					hints: (listener) => controller.onInvalidate(listener),
-					// The machine's clock and backdrop follow the company's time zone (20260930739000).
-					timeZone: () => controller.store.get().team?.timeZone,
-					// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
-					// folder when the page is its index.html (the helper serves the folder), else the page itself.
-					apps: () =>
-						controller.store
-							.get()
-							.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
-							.map((app) => ({
-								name: app.manifest?.name ?? app.name,
-								path:
-									app.manifest === null || app.manifest.entry === "index.html"
-										? app.path
-										: `${app.path}/${app.manifest.entry}`,
-							})),
-					// Open's "A file…": the company folder's own browser in choose mode, read as the member.
-					chooseFile: (signal) => {
-						const role = controller.store.get().team?.role;
-						if (!role) return Promise.resolve(null);
-						return chooseInCompanyFolder(
-							new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
-								if (
-									disposed ||
-									company !== controller ||
-									auth.userId !== userId ||
-									controller.store.get().accessLost
-								)
-									throw new Error(t("Company access changed."));
-							}),
-							signal,
-						);
+				computerPanels = new LazyComputerPanels(
+					(WebComputer) =>
+						new WebComputer(cloud, profile, userId, controller.signal, () => {
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access is unavailable."));
+						}),
+					controller.signal,
+					{
+						hints: (listener) => controller.onInvalidate(listener),
+						// The machine's clock and backdrop follow the company's time zone (20260930739000).
+						timeZone: () => controller.store.get().team?.timeZone,
+						// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
+						// folder when the page is its index.html (the helper serves the folder), else the page itself.
+						apps: () =>
+							controller.store
+								.get()
+								.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
+								.map((app) => ({
+									name: app.manifest?.name ?? app.name,
+									path:
+										app.manifest === null || app.manifest.entry === "index.html"
+											? app.path
+											: `${app.path}/${app.manifest.entry}`,
+								})),
+						// Open's "A file…": the company folder's own browser in choose mode, read as the member.
+						chooseFile: (signal) => {
+							const role = controller.store.get().team?.role;
+							if (!role) return Promise.resolve(null);
+							return import("./views/company-folder-choose.ts").then(({ chooseInCompanyFolder }) =>
+								chooseInCompanyFolder(
+									new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
+										if (
+											disposed ||
+											company !== controller ||
+											auth.userId !== userId ||
+											controller.store.get().accessLost
+										)
+											throw new Error(t("Company access changed."));
+									}),
+									signal,
+								),
+							);
+						},
 					},
-				});
+				);
 				unsubscribeCompany = controller.store.subscribe(() => render());
 				void controller.start();
 				return controller;
@@ -1410,10 +1532,19 @@ export function mountApplication(
 				renderNewCompany(hub, main, viewer);
 			} else if (route.name === "found") {
 				const userId = auth.userId!;
+				const loadedFounding = foundingModule.get();
+				if (!loadedFounding) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					void foundingModule.load().then(() => {
+						if (!disposed) render();
+					});
+					return;
+				}
 				if (founding?.controller.profileId !== route.profileId) {
 					teardownFounding();
 					const profileId = route.profileId;
-					const controller = new FoundingController(api, userId, profileId, {
+					const controller = new loadedFounding.FoundingController(api, userId, profileId, {
 						currentUserId: () => auth.userId,
 						onSeatChanged: () => void hub.refresh(),
 						// Still on this table's page: open the company, which opens its Co-Founder's thread. The table's
@@ -1433,7 +1564,7 @@ export function mountApplication(
 							});
 						},
 					});
-					founding = { controller, view: new FoundingView(controller) };
+					founding = { controller, view: new loadedFounding.FoundingView(controller) };
 					let companyListed = false;
 					controller.store.subscribe(() => {
 						if (founding?.controller !== controller) return;
@@ -1449,18 +1580,26 @@ export function mountApplication(
 				if (!main.contains(founding.view.el)) replace(main, founding.view.el);
 				founding.view.update();
 			} else if (route.name === "account") {
+				const loadedAccount = accountViewModule.get();
+				if (!loadedAccount) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Account"))));
+					void accountViewModule.load().then(() => {
+						if (!disposed) render();
+					});
+					return;
+				}
 				const revision = accountRevision;
-				renderAccount(auth, main, accountState, (next) => {
+				loadedAccount.renderAccount(auth, main, accountState, (next) => {
 					if (disposed || accountRevision !== revision) return;
 					accountState = { ...accountState, ...next };
 					render();
 				});
-				// The standalone account page shows the good will of the member's companies below the general settings.
 				if (checkoutReturn) {
 					accountPayments?.dispose();
 					accountPayments = undefined;
 				}
-				accountPayments ??= new MyGoodWillView(
+				accountPayments ??= new loadedAccount.MyGoodWillView(
 					() => api.getMyGoodWill(),
 					new AbortController().signal,
 					checkoutReturn === "card-saved" ? t("Card saved. It pays the company's next invoice.") : undefined,
@@ -1477,7 +1616,7 @@ export function mountApplication(
 			topbar.classList.remove("topbar-plain");
 			topbar.classList.add("topbar-company");
 			replace(topbar);
-			rail.hidden = route.section === "meet" || route.section === "concepts";
+			rail.hidden = route.section === "concepts";
 			syncRailReopen();
 			if (!rail.hidden) replace(rail, ...railSkeleton());
 			if (
@@ -1815,8 +1954,7 @@ export function mountApplication(
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
 		// The Concepts viewer is full screen: its own side panel leads back.
-		rail.hidden =
-			route.section === "meet" || route.section === "concepts" || controller.store.get().accessLost === true;
+		rail.hidden = route.section === "concepts" || controller.store.get().accessLost === true;
 		syncRailReopen();
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
@@ -1875,56 +2013,68 @@ export function mountApplication(
 		};
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
-			const opened = new AgentDetails(
-				controller,
-				agent,
-				{
-					...agentActions,
-					...workspaceActions,
-					// The card's routines page: routines are files, written through the member's own folder client, with
-					// the company's own checks (the chat's routines check the conversation instead).
-					routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
-						memberFolder(companyCurrent, t("Company access changed.")),
-					),
-					eventHooks: createWebEventHooks(cloud, controller.profile),
-					nativeSubscription: createWebNativeSubscription(
-						cloud,
-						controller.profile.profileId,
-						controller.userId,
-						controller.signal,
-						companyCurrent,
-					),
-				},
-				() => {
-					if (agentCard === opened) agentCard = undefined;
-				},
-				anchor,
-				controller.signal,
-				{
-					computer: () => showAgentPage(agent.id, "computer"),
-					...card,
-				},
-				"beside",
-			);
-			opened.dialog.findOpener = findAnchor;
-			agentCard = opened;
+			const mount = (Loaded: typeof AgentDetails) => {
+				if (disposed || company !== controller || controller.signal.aborted) return;
+				agentCard?.dispose();
+				const opened = new Loaded(
+					controller,
+					agent,
+					{
+						...agentActions,
+						...workspaceActions,
+						routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+							memberFolder(companyCurrent, t("Company access changed.")),
+						),
+						eventHooks: createWebEventHooks(cloud, controller.profile),
+						nativeSubscription: createWebNativeSubscription(
+							cloud,
+							controller.profile.profileId,
+							controller.userId,
+							controller.signal,
+							companyCurrent,
+						),
+					},
+					() => {
+						if (agentCard === opened) agentCard = undefined;
+					},
+					anchor,
+					controller.signal,
+					{
+						computer: () => showAgentPage(agent.id, "computer"),
+						...card,
+					},
+					"beside",
+				);
+				opened.dialog.findOpener = findAnchor;
+				agentCard = opened;
+			};
+			const cached = agentDetailsModule.get();
+			if (cached) mount(cached.AgentDetails);
+			else void agentDetailsModule.load().then((mod) => mount(mod.AgentDetails));
 		};
 		const openGroupCard: ShellContext["openGroupCard"] = (session, anchor, card, findAnchor) => {
 			agentCard?.dispose();
-			const opened = new GroupDetails(
-				controller,
-				session.sessionId,
-				() => {
-					if (agentCard === opened) agentCard = undefined;
-				},
-				anchor,
-				controller.signal,
-				{ ...agentActions, ...groupActions, ...workspaceActions },
-				card,
-				"beside",
-			);
-			opened.dialog.findOpener = findAnchor;
-			agentCard = opened;
+			const mount = (Loaded: typeof GroupDetails) => {
+				if (disposed || company !== controller || controller.signal.aborted) return;
+				agentCard?.dispose();
+				const opened = new Loaded(
+					controller,
+					session.sessionId,
+					() => {
+						if (agentCard === opened) agentCard = undefined;
+					},
+					anchor,
+					controller.signal,
+					{ ...agentActions, ...groupActions, ...workspaceActions },
+					card,
+					"beside",
+				);
+				opened.dialog.findOpener = findAnchor;
+				agentCard = opened;
+			};
+			const cached = groupDetailsModule.get();
+			if (cached) mount(cached.GroupDetails);
+			else void groupDetailsModule.load().then((mod) => mount(mod.GroupDetails));
 		};
 		// The tab counts the agents that wait on the member here (app/tab-title.ts).
 		showWaitingInTitle(
@@ -2417,8 +2567,7 @@ export function mountApplication(
 			newConversation?.dispose();
 			newConversation = undefined;
 		}
-		if (route.section !== "interface") disposeInterface(main);
-		if (route.section !== "meet") meetState = {};
+		if (route.section !== "interface") interfaceViewModule.get()?.disposeInterface(main);
 		const interfaceWrites = (): InterfaceWrites => ({
 			mailManage: () => {
 				const environment = {
@@ -2474,8 +2623,15 @@ export function mountApplication(
 				const slug = surface.siteSlug;
 				const website = () => liveWebsite(slug);
 				if (!website()) return undefined;
+				const loadedSite = siteViewModule.get();
+				if (!loadedSite) {
+					void siteViewModule.load().then(() => {
+						if (!disposed && !signal.aborted) render();
+					});
+					return undefined;
+				}
 				const sites = createWebSites(cloud, controller.profile);
-				const view = new SiteView(
+				const view = new loadedSite.SiteView(
 					{
 						site: website,
 						pass: (site, passSignal) => sites.memberPass(site, passSignal),
@@ -2515,12 +2671,24 @@ export function mountApplication(
 							: undefined;
 			if (page) {
 				const el = h("div", { class: "surface-ops" });
-				const update = () => renderInterface(el, controller, page, interfaceWrites());
+				let closed = false;
+				const update = () => {
+					if (closed) return;
+					const mod = interfaceViewModule.get();
+					if (!mod) {
+						void interfaceViewModule.load().then(() => {
+							if (!closed && !disposed && !signal.aborted) update();
+						});
+						return;
+					}
+					mod.renderInterface(el, controller, page, interfaceWrites());
+				};
 				return {
 					el,
 					update,
 					dispose: () => {
-						disposeInterface(el);
+						closed = true;
+						interfaceViewModule.get()?.disposeInterface(el);
 						el.replaceChildren();
 					},
 				};
@@ -2528,7 +2696,9 @@ export function mountApplication(
 			if (!controller.store.get().team) return undefined;
 			const el = h("div", { class: "surface-files" });
 			let shown: { browser: CompanyFolderBrowser; stop: AbortController; authority: string } | undefined;
+			let closedFiles = false;
 			const close = () => {
+				closedFiles = true;
 				if (!shown) return;
 				if (filesShown?.browser === shown.browser) filesShown = undefined;
 				shown.stop.abort();
@@ -2536,17 +2706,30 @@ export function mountApplication(
 				shown = undefined;
 			};
 			const draw = () => {
+				if (closedFiles) return;
 				const team = controller.store.get().team;
 				const authority =
 					team && !controller.store.get().accessLost
 						? JSON.stringify([team.role, team.capabilities.read, team.capabilities.write])
 						: "";
 				if (shown?.authority === authority) return;
-				close();
+				if (shown) {
+					if (filesShown?.browser === shown.browser) filesShown = undefined;
+					shown.stop.abort();
+					shown.browser.dispose();
+					shown = undefined;
+				}
 				el.replaceChildren();
 				if (!team || !authority) return;
+				const folderMod = companyFolderModule.get();
+				if (!folderMod) {
+					void companyFolderModule.load().then(() => {
+						if (!closedFiles && !disposed && !signal.aborted) draw();
+					});
+					return;
+				}
 				const stop = new AbortController();
-				const browser = new CompanyFolderBrowser(
+				const browser = new folderMod.CompanyFolderBrowser(
 					el,
 					new WebCompanyFiles(
 						cloud,
@@ -2618,7 +2801,15 @@ export function mountApplication(
 							}
 						},
 					});
-					newConversation = new NewConversationView(
+					const loadedNewConversation = newConversationModule.get();
+					if (!loadedNewConversation) {
+						showThreadSkeleton(t("Opening conversation"));
+						void newConversationModule.load().then(() => {
+							if (!disposed) render();
+						});
+						return;
+					}
+					newConversation = new loadedNewConversation.NewConversationView(
 						controller,
 						{ ...agentActions, startConversation, ...workspaceActions },
 						() => navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
@@ -2843,7 +3034,6 @@ export function mountApplication(
 							},
 							...agentActions,
 							...workspaceActions,
-							computer,
 							computerPanels,
 							notificationHost: executionNotices,
 						},
@@ -2874,9 +3064,19 @@ export function mountApplication(
 					return;
 				}
 				if (memberChat?.view.userId !== userId || memberChat.company !== controller) {
+					const loadedMemberChat = memberChatModule.get();
+					if (!loadedMemberChat) {
+						showThreadSkeleton(t("Opening company"));
+						void memberChatModule.load().then(() => {
+							if (!disposed) render();
+						});
+						return;
+					}
 					memberChat?.view.dispose();
 					memberChat = {
-						view: new MemberChatView(controller, userId, () => setNavigationOpen(!navigationOpen)),
+						view: new loadedMemberChat.MemberChatView(controller, userId, () =>
+							setNavigationOpen(!navigationOpen),
+						),
 						company: controller,
 					};
 					replace(main, memberChat.view.el);
@@ -2969,9 +3169,18 @@ export function mountApplication(
 					conceptsView.update(state.apps ?? [], route.id);
 					return;
 				}
+				const loadedConcepts = conceptsModule.get();
+				if (!loadedConcepts) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					void conceptsModule.load().then(() => {
+						if (!disposed) render();
+					});
+					return;
+				}
 				conceptsView?.dispose();
 				const reader = cardImage;
-				conceptsView = new ConceptsView(
+				conceptsView = new loadedConcepts.ConceptsView(
 					{
 						panel: panelHost(),
 						profileId: controller.profile.profileId,
@@ -3011,28 +3220,19 @@ export function mountApplication(
 				);
 				return;
 			}
-			case "meet":
-				renderMeet(
-					controller,
-					(agent, figure, color) =>
-						agents().update(
-							agent,
-							{ displayName: agent.displayName, role: agent.role, charter: agent.charter, figure, color },
-							controller.signal,
-						),
-					main,
-					meetState,
-					(next) => {
-						if (!current() || company !== controller) return;
-						meetState = next;
-						render();
-					},
-					current,
-				);
+			case "interface": {
+				const loadedInterface = interfaceViewModule.get();
+				if (!loadedInterface) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					void interfaceViewModule.load().then(() => {
+						if (!disposed) render();
+					});
+					return;
+				}
+				loadedInterface.renderInterface(main, controller, route.id ?? "", interfaceWrites());
 				return;
-			case "interface":
-				renderInterface(main, controller, route.id ?? "", interfaceWrites());
-				return;
+			}
 			case "site": {
 				// One of the company's websites, live, with its numbers (company views step 4): the site in a frame the member
 				// is let into without its password, and the numbers watched while it shows.
@@ -3060,8 +3260,17 @@ export function mountApplication(
 						);
 						return;
 					}
+					const loadedSite = siteViewModule.get();
+					if (!loadedSite) {
+						if (!main.querySelector(":scope > .page > .skeleton-page"))
+							replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+						void siteViewModule.load().then(() => {
+							if (!disposed) render();
+						});
+						return;
+					}
 					const sites = createWebSites(cloud, controller.profile);
-					const view = new SiteView(
+					const view = new loadedSite.SiteView(
 						{
 							site: website,
 							pass: (site, signal) => sites.memberPass(site, signal),
@@ -3086,6 +3295,15 @@ export function mountApplication(
 					return;
 				}
 				if (!surfaceView) {
+					const loadedSurface = surfaceViewModule.get();
+					if (!loadedSurface) {
+						if (!main.querySelector(":scope > .page > .skeleton-page"))
+							replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+						void surfaceViewModule.load().then(() => {
+							if (!disposed) render();
+						});
+						return;
+					}
 					const loadStudioFiles = async (
 						surface: SurfaceSummary,
 						signal: AbortSignal,
@@ -3109,7 +3327,7 @@ export function mountApplication(
 						controller.store,
 						createWebSiteHosting(cloud, controller.profile),
 					);
-					const view = new SurfaceView(
+					const view = new loadedSurface.SurfaceView(
 						{
 							store: surfaces,
 							mount: surfaceMount,
@@ -3140,7 +3358,11 @@ export function mountApplication(
 								}
 								return false;
 							},
-							openMigration: () => openMigrationSheet(surfaces),
+							openMigration: () => {
+								void import("./views/surface-migration-sheet.ts").then(({ openMigrationSheet }) =>
+									openMigrationSheet(surfaces),
+								);
+							},
 							loadStudioFiles,
 						},
 						route.id ?? "",
@@ -3163,7 +3385,16 @@ export function mountApplication(
 					return;
 				}
 				if (!newProgramPage) {
-					const view = new NewProgramPage(programAdds());
+					const loadedProgram = newProgramModule.get();
+					if (!loadedProgram) {
+						if (!main.querySelector(":scope > .page > .skeleton-page"))
+							replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+						void newProgramModule.load().then(() => {
+							if (!disposed) render();
+						});
+						return;
+					}
+					const view = new loadedProgram.NewProgramPage(programAdds());
 					newProgramPage = { company: controller, view };
 				}
 				const shown = newProgramPage.view.el.parentElement;
@@ -3172,11 +3403,18 @@ export function mountApplication(
 				return;
 			}
 			case "whats-new": {
-				// The changes to the company's sites made from its code, ready to go live, and what is live (own code storage
-				// step 4). Every member sees it; owners and admins put a version live and go back (the kernel's own rule).
 				if (!whatsNewPage) {
+					const loadedWhatsNew = whatsNewModule.get();
+					if (!loadedWhatsNew) {
+						if (!main.querySelector(":scope > .page > .skeleton-page"))
+							replace(main, h("section", { class: "page" }, pageSkeleton(t("What's new"))));
+						void whatsNewModule.load().then(() => {
+							if (!disposed) render();
+						});
+						return;
+					}
 					const desk = releaseDesk();
-					const view = new WhatsNewView(controller, desk.client, controller.signal, desk.options);
+					const view = new loadedWhatsNew.WhatsNewView(controller, desk.client, controller.signal, desk.options);
 					whatsNewPage = {
 						company: controller,
 						view,
@@ -3197,8 +3435,17 @@ export function mountApplication(
 				if (whatsNewPage.el.parentElement !== main) replace(main, whatsNewPage.el);
 				return;
 			}
-			case "team":
-				renderTeam(
+			case "team": {
+				const loadedTeam = teamViewModule.get();
+				if (!loadedTeam) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Team"))));
+					void teamViewModule.load().then(() => {
+						if (!disposed) render();
+					});
+					return;
+				}
+				loadedTeam.renderTeam(
 					api,
 					controller,
 					main,
@@ -3215,6 +3462,7 @@ export function mountApplication(
 					},
 				);
 				return;
+			}
 		}
 	}
 

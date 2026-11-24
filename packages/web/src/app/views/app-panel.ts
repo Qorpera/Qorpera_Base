@@ -16,7 +16,7 @@ import {
 } from "../interface-apps.ts";
 import { AppAskBar } from "./app-ask-bar.ts";
 import type { ProgramAddHost } from "./program-add.ts";
-import { ProgramPage, readProgram } from "./program-page.ts";
+import type { ProgramPage } from "./program-page.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
 /* An agent's interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an HTML page of the Company File, live
@@ -621,6 +621,8 @@ export class AppPanel {
 		signal: AbortSignal,
 	): Promise<void> {
 		if (this.#program?.busy) return;
+		const { ProgramPage, readProgram } = await import("./program-page.ts");
+		if (signal.aborted) return;
 		const read = await readProgram(this.#host.folder(), app.path, signal);
 		if (signal.aborted) return;
 		if (!read.ok) return this.#status(read.message);

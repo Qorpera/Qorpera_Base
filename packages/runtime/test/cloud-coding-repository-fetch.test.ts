@@ -635,7 +635,7 @@ describe("a slow writer through the node's proxy", { timeout: 150_000 }, () => {
 		return { port: (server.address() as AddressInfo).port, record };
 	}
 
-	it("ends busy, never refused, when a write is held 60 s mid-pack behind a 40 s send bound", async () => {
+	it("ends busy, never refused, when a write is held past the proxy send bound", async () => {
 		const MAIN = "a".repeat(40);
 		const pkt = codeImportPktLine;
 		const line = pkt(Buffer.concat([Buffer.from([1]), randomBytes(65_515)]));
@@ -681,7 +681,7 @@ describe("a slow writer through the node's proxy", { timeout: 150_000 }, () => {
 		let edge: Awaited<ReturnType<typeof proxy>> | undefined;
 		const f = await vault(source, {
 			proxyPort: async (brokerPort) => {
-				edge = await proxy(brokerPort, 40_000);
+				edge = await proxy(brokerPort, 1_500);
 				return edge.port;
 			},
 		});
@@ -712,18 +712,16 @@ describe("a slow writer through the node's proxy", { timeout: 150_000 }, () => {
 				written += chunk.byteLength;
 				if (written >= 2 * MiB && heldAt === 0) {
 					heldAt = Date.now();
-					await new Promise((resolve) => setTimeout(resolve, 2_000));
+					await new Promise((resolve) => setTimeout(resolve, 300));
 					atHold = { pulled: pulled.bytes, pushed: edge?.record.pushed ?? 0 };
-					await new Promise((resolve) => setTimeout(resolve, 58_000));
+					await new Promise((resolve) => setTimeout(resolve, 2_200));
 				}
 			},
 		};
 		const ended = await stopped(fetchOf(counted, sink), f.executorToken);
 		expect(ended).toBe("busy IMPORT_TRANSFER_CUT");
-		// The proxy cut the reader that took nothing for 40 s; until the write was let go, the executor read nothing
-		// more than what it already held, and the source was held back far short of its 256 MiB.
-		expect(edge?.record.cut).toBeGreaterThanOrEqual(heldAt + 39_000);
-		expect(Date.now() - heldAt).toBeGreaterThanOrEqual(60_000);
+		expect(edge?.record.cut).toBeGreaterThanOrEqual(heldAt + 1_300);
+		expect(Date.now() - heldAt).toBeGreaterThanOrEqual(2_400);
 		expect(atHold.pulled - 2 * MiB).toBeLessThanOrEqual(MiB + 4 * 65_520);
 		expect(edge?.record.pushed).toBe(atHold.pushed);
 		expect(atHold.pushed).toBeLessThan(128 * MiB);

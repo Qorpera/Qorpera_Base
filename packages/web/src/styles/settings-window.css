@@ -29,7 +29,6 @@
 	grid-column: 1; grid-row: 1; min-height: 0; padding: 16px 10px 12px; gap: 6px; border-right: 1px solid var(--border);
 	background: var(--bg); font-size: 13.5px;
 }
-.settings-nav-heading { padding: 2px 10px 6px; color: var(--text-soft); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 :root .settings-dialog.settings-unified .settings-nav [role=tablist] { display: flex; flex-direction: column; gap: 2px; }
 :root .settings-dialog.settings-unified .settings-nav :is([role=tab], .settings-back) {
 	min-height: 36px; padding: 7px 10px; gap: 11px; border-radius: 8px; color: var(--text); font-weight: 400;
@@ -79,7 +78,6 @@
 	:root .settings-dialog.settings-unified .settings-nav [role=tab] { min-height: 32px; gap: 7px; padding: 5px 11px; white-space: nowrap; border-radius: 999px; }
 	:root .settings-dialog.settings-unified .settings-nav [role=tab] > .icon { width: 16px; height: 16px; }
 	:root .settings-dialog.settings-unified .settings-nav .settings-back { flex: none; margin: 0 0 0 auto; min-height: 32px; padding: 5px 10px; white-space: nowrap; }
-	.settings-nav-heading { display: none; }
 	:root .settings-dialog.settings-unified .settings-content { grid-column: 1; grid-row: 2; padding: 18px 16px 24px; }
 	:root .settings-dialog.settings-unified .settings-content h1 { font-size: 20px; margin-bottom: 22px; }
 	:root .settings-dialog.settings-unified .account .preference-picker-button { min-width: 0; }

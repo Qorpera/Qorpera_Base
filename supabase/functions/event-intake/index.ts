@@ -1,5 +1,5 @@
-import { createClient } from "npm:@supabase/supabase-js@2.112.3";
-import { createTimedFetch, preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
+import { preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
+import { createPostgrestClient } from "../_shared/postgrest-rpc.ts";
 import { handleEventIntake, type IntakeStore, IntakeStoreError } from "./event-intake.ts";
 
 function required(name: string): string {
@@ -14,10 +14,7 @@ function serviceKey(): string {
 	return key;
 }
 
-const supabase = createClient(required("SUPABASE_URL"), serviceKey(), {
-	auth: { persistSession: false, autoRefreshToken: false },
-	global: { fetch: createTimedFetch({ timeoutMs: 15_000 }) },
-});
+const supabase = createPostgrestClient(required("SUPABASE_URL"), serviceKey(), { timeoutMs: 15_000 });
 
 const store: IntakeStore = {
 	async receive(address, contentType, headers, bodyBase64, signal) {

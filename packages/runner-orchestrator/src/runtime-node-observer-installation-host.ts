@@ -2,7 +2,6 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { officeInstallHash } from "./lxd-office-installation.ts";
 import {
 	assertOfficeInstallUnitsUnmodified,
 	officeInstallCommand as command,
@@ -19,6 +18,7 @@ import {
 	NODE_OBSERVER_INSTALL_ROOT,
 	NODE_OBSERVER_USER,
 	type NodeObserverInstallDocument,
+	officeInstallHash,
 	parseNodeObserverInstallationManifest,
 	parseNodeObserverInstallationSpec,
 	validateNodeObserverInstallationDocuments,

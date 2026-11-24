@@ -13,8 +13,13 @@ import {
 import type { FolderGcAuthority } from "./folder-gc.ts";
 import type { FolderActor, FolderDownloadFence, FolderObjectAuthority } from "./folder-objects.ts";
 import type { MemberFolderObjectAuthority } from "./member-folder-objects.ts";
-import type { LegacyObjectMigrationItem } from "./migration.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
+
+export interface LegacyObjectMigrationItem {
+	profileId: string;
+	sha256: string;
+	bytes: number;
+}
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
 /** `qorpera_folder_object_collecting()`'s message (migration 20260928349860). */

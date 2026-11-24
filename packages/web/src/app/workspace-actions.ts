@@ -1,7 +1,6 @@
 import type { WebCompanyComputer } from "../cloud/computer.ts";
 import type { WebEventHooks } from "../cloud/event-hooks.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
-import type { InterfaceChange, InterfaceUndo } from "../cloud/interface-changes.ts";
 import type { WebMessageErases } from "../cloud/message-erases.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { CodeReleases } from "../cloud/releases.ts";
@@ -12,7 +11,7 @@ import type { SkillSuggestion } from "../cloud/skills.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import type { InteractionCardApp } from "../ui/interaction-card.ts";
-import type { ComputerPanels } from "./views/computer.ts";
+import type { ComputerPanelsLike } from "./views/computer-lazy.ts";
 import type { QuestionDockHost } from "./views/question-dock.ts";
 import type { ReleaseClient, ReleaseDeskOptions } from "./views/release-desk.ts";
 import type { ThreadSitesClient } from "./views/thread-sites.ts";
@@ -45,16 +44,13 @@ export interface WorkspaceActions {
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	/** The company's open computers, kept across the threads a member moves between. */
-	computerPanels?: ComputerPanels;
+	computerPanels?: ComputerPanelsLike;
 	runControl?: WebSessionRunControl;
 	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;
 	routines?: WebRoutines;
 	/** The company's webhooks, shown under an agent's routines: what arrives at one starts the routines that wait for it. */
 	eventHooks?: WebEventHooks;
-	/** Takes back an agent's change to the company's interfaces or tables, as the member's own change (I10). Not
-	 * passed while agents make no pages (Interfaces C6a), so the thread offers no Undo. */
-	undoInterfaceChange?: (change: InterfaceChange, signal: AbortSignal) => Promise<InterfaceUndo>;
 	/** Erases one message of a conversation for the whole company, and reads how far it got (summary trees M3c). The
 	 * route takes owners and admins; the thread offers it to them. */
 	messageErases?: WebMessageErases;

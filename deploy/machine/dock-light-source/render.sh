@@ -7,7 +7,7 @@ set -euo pipefail
 # idle icon has no mark and is the same picture on every ground, so only the six marked states are here. Rendering
 # uses a local headless Chromium/Chrome; nothing here runs on a node, and nothing here is packaged but the PNGs.
 here=$(cd "$(dirname "$0")" && pwd -P)
-design="${here}/../../lxd-company-computer-guest/design"
+design="${here}"
 out="${here}/../dock-light"
 chrome=${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}
 mkdir -p "${out}"

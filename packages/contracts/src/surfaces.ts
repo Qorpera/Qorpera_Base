@@ -1,6 +1,5 @@
 import type { SurfaceStarterKind } from "./surface-layout.ts";
 import {
-	isUuid,
 	parseBoundedText,
 	parseClosedRecord,
 	parseInteger,
@@ -12,8 +11,6 @@ import {
 } from "./wire-values.ts";
 
 export const SURFACE_SCHEMA_VERSION = "qorpera.surface/v1";
-export const SURFACE_ORDER_SCHEMA_VERSION = "qorpera.surface-order/v1";
-export const AUTOMATION_SCHEMA_VERSION = "qorpera.automation/v1";
 
 export const SURFACE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SURFACE_MAX_TITLE_CHARS = 80;
@@ -21,8 +18,6 @@ export const SURFACE_MAX_PROMPT_CHARS = 16_000;
 export const SURFACE_MAX_CHANGE_TITLE_CHARS = 160;
 export const SURFACE_MAX_CHANGE_SUMMARY_CHARS = 2_000;
 export const SURFACE_MAX_COMPARE_VARIANTS = 3;
-// WHY: Each coding VM stays responsive around 6 concurrent turns; overflow spins up another machine rather than capping total sessions.
-export const SURFACE_DEFAULT_MACHINE_TURN_DENSITY = 6;
 
 export const SURFACE_GROUPS = ["products", "operations"] as const;
 export type SurfaceGroup = (typeof SURFACE_GROUPS)[number];
@@ -155,8 +150,6 @@ export type SurfaceSessionMessageAuthor = (typeof SURFACE_SESSION_MESSAGE_AUTHOR
 
 export const SURFACE_INSPECTOR_MODE_MESSAGE = "qorpera-inspector-mode";
 export const SURFACE_INSPECTOR_PICK_MESSAGE = "qorpera-inspector-pick";
-export const SURFACE_SITE_DOOR_ACTION_PATTERN =
-	/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*(?:--p[a-z0-9]{8})?\.qorpera\.com\/__qorpera\/member$/;
 
 export interface SurfaceSessionMessage {
 	readonly id: string;
@@ -1210,10 +1203,6 @@ export function parseSurfaceMigrationChecklist(
 			};
 		}),
 	};
-}
-
-export function isValidSurfaceId(value: unknown): value is string {
-	return isUuid(value);
 }
 
 export function normalizeStudioFolderRoot(folderRoot: string | null | undefined): string {

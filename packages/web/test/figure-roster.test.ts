@@ -79,7 +79,9 @@ describe("the figures the web draws", () => {
 			.filter((file) => file.endsWith(".webp") && !/-reference-\d+\.webp$/.test(file))
 			.sort();
 		expect(shipped).toEqual(wanted);
-		const manifest = JSON.parse(readFileSync(new URL("artwork-manifest.json", ARTWORK), "utf8")) as {
+		const manifest = JSON.parse(
+			readFileSync(new URL("./fixtures/avatar-artwork-manifest.json", import.meta.url), "utf8"),
+		) as {
 			file: string;
 			sha256: string;
 			bytes: number;

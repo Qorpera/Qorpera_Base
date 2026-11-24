@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
-import { officeInstallHash } from "../src/lxd-office-installation.ts";
 import {
 	NODE_OBSERVER_INSTALL_ARTIFACTS,
+	officeInstallHash,
 	parseNodeObserverInstallationManifest,
 	parseNodeObserverInstallationSpec,
 	validateNodeObserverInstallationDocuments,

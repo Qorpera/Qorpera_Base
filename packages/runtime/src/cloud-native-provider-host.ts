@@ -1410,6 +1410,22 @@ export class NativeProviderHost {
 		) {
 			throw new Error("Native login capability is invalid");
 		}
+		const now = Date.now();
+		for (const [id, entry] of this.#logins) {
+			if (entry.status !== "awaiting_member" && Date.parse(entry.request.expiresAt) <= now) {
+				entry.request.capability = "";
+				this.#logins.delete(id);
+			}
+		}
+		if (this.#logins.size >= 64) {
+			for (const [id, entry] of this.#logins) {
+				if (this.#logins.size < 64) break;
+				if (entry.status !== "awaiting_member") {
+					entry.request.capability = "";
+					this.#logins.delete(id);
+				}
+			}
+		}
 		const existing = this.#logins.get(request.loginId);
 		if (existing) {
 			if (!sameLogin(existing.request, request)) throw new Error("Native login id is bound to another request");

@@ -1,8 +1,7 @@
 import type { ApplySurfaceMigrationInput } from "@qorpera/cloud-client/surfaces";
 import type { SurfaceAutomationSummary, SurfaceMigrationChecklist } from "@qorpera/contracts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
-import { fmtTime, h, icon } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
+import { h, icon } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import {
 	markSurfaceFigure,
@@ -168,109 +167,6 @@ export function openMigrationSheet(store: SurfacesStore): void {
 		);
 	sections.push(h("div", { class: "surface-sheet-actions" }, status, apply));
 	dialog.content.append(...sections);
-	dialog.open();
-}
-
-function automationLine(automation: SurfaceAutomationSummary): string {
-	const parts = [automation.scheduleSummary];
-	if (automation.lastRunAt) parts.push(t("Last run {time}", { time: fmtTime(automation.lastRunAt) }));
-	if (automation.lastOutcomeSummary) parts.push(automation.lastOutcomeSummary);
-	return parts.join(" · ");
-}
-
-export function openAutomationsSheet(store: SurfacesStore): void {
-	const list = h("ul", { class: "surface-automations" });
-	const status = h("p", { class: "surface-sheet-status", role: "status" });
-	const toggling = new Set<string>();
-	let closed = false;
-	const draw = () => {
-		if (closed) return;
-		const state = store.state;
-		const rows = state.automations.map((automation) => {
-			const toggle = h("button", {
-				type: "button",
-				class: "surface-switch is-large",
-				role: "switch",
-				"aria-checked": String(automation.enabled),
-				"aria-label": t("Turn {name} on or off", { name: automation.title }),
-				disabled: toggling.has(automation.id) || Boolean(state.busy[`automation:${automation.id}`]),
-			});
-			toggle.addEventListener("click", async () => {
-				if (toggling.has(automation.id)) return;
-				toggling.add(automation.id);
-				toggle.disabled = true;
-				try {
-					await store.toggleAutomation(automation.id, !automation.enabled);
-				} finally {
-					toggling.delete(automation.id);
-				}
-				if (closed) return;
-				status.textContent = store.state.error ?? "";
-				draw();
-			});
-			return h(
-				"li",
-				{ class: automation.enabled ? "" : "is-paused" },
-				h("span", { class: "surface-automation-mark" }, interfaceEmblem("pulse", 18)),
-				h("div", null, h("strong", null, automation.title), h("small", null, automationLine(automation))),
-				toggle,
-			);
-		});
-		list.replaceChildren(
-			...(rows.length
-				? rows
-				: [
-						h(
-							"li",
-							{ class: "surface-automations-empty" },
-							t("No automations yet. Background routines appear here once they move out of agents."),
-						),
-					]),
-		);
-	};
-	const dialog = new SurfaceDialog(t("Automations"), "surface-sheet", () => {
-		closed = true;
-	});
-	const sections: HTMLElement[] = [
-		h("h2", null, t("Automations")),
-		h(
-			"p",
-			{ class: "surface-sheet-lead" },
-			t("Background routines work quietly and surface results as sessions or decisions."),
-		),
-		list,
-		status,
-	];
-	if (store.isLocalInteractive)
-		sections.push(
-			h(
-				"p",
-				{ class: "surface-local-note" },
-				t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
-			),
-		);
-	if (migrationPending(store.state.migration))
-		sections.push(
-			h(
-				"div",
-				{ class: "surface-sheet-actions" },
-				h(
-					"button",
-					{
-						type: "button",
-						class: "btn",
-						onclick: () => {
-							dialog.close(false);
-							openMigrationSheet(store);
-						},
-					},
-					icon("reset"),
-					t("Review the move to Surfaces"),
-				),
-			),
-		);
-	dialog.content.append(...sections);
-	draw();
 	dialog.open();
 }
 

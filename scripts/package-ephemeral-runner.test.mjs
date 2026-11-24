@@ -37,6 +37,12 @@ test("packages directly executable ephemeral runner bundles", async () => {
 		assert.equal(nativeService.status, 1);
 		assert.equal(nativeService.stderr.trim(), "QORPERA_SUPABASE_URL is required");
 
+		const nativeHostText = await readFile(join(outputRoot, "qorpera-native-provider-host.mjs"), "utf-8");
+		assert.ok(nativeHostText.includes("QORPERA_THREE"));
+		assert.ok(nativeHostText.includes("data:image/webp;base64,"));
+		assert.ok(nativeHostText.includes("product-studio"));
+		assert.ok(!nativeHostText.includes("kits/model/engine.js"));
+
 		const probe = spawnSync(process.execPath, [join(outputRoot, "qorpera-sandbox-probe.mjs")], {
 			input: "{}\n",
 			encoding: "utf-8",

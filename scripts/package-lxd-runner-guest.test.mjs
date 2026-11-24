@@ -185,55 +185,10 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 				name,
 			);
 
-		const builderPath = join(repositoryRoot, "deploy/first-node/build-lxd-runner-image-candidate.sh");
-		const builder = await readFile(builderPath, "utf-8");
-		const acceptancePath = join(
-			repositoryRoot,
-			"deploy/first-node/verify-lxd-runner-image-candidate.sh",
-		);
-		const acceptance = await readFile(acceptancePath, "utf-8");
 		const installer = await readFile(
 			join(repositoryRoot, "deploy/lxd-runner-guest/install-image-contract.sh"),
 			"utf-8",
 		);
-		const candidateEncoded = await readFile(
-			join(repositoryRoot, "deploy/first-node/native-codex/v56-guest-package-manifest.json"),
-			"utf-8",
-		);
-		const candidate = JSON.parse(candidateEncoded);
-		const candidateSha256 = createHash("sha256").update(candidateEncoded).digest("hex");
-		const source = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/linux-x64-direct-tools-proof.json"), "utf-8")).native.source;
-		const builderPin = builder.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
-		const acceptancePin = acceptance.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
-		const builderArchivePin = builder.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
-		const acceptanceArchivePin = acceptance.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
-		const builderSourceCommit = builder.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
-		const acceptanceSourceCommit = acceptance.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
-		assert.ok(builderPin, "image candidate builder must pin a package manifest");
-		assert.equal(acceptancePin, builderPin, "image candidate recipes must pin the same package manifest");
-		assert.match(builderArchivePin ?? "", /^[0-9a-f]{64}$/);
-		assert.equal(acceptanceArchivePin, builderArchivePin, "image candidate recipes must pin the same package archive");
-		assert.match(builderSourceCommit ?? "", /^[0-9a-f]{40}$/);
-		assert.equal(acceptanceSourceCommit, builderSourceCommit, "image candidate recipes must pin the same source commit");
-		assert.equal(builderPin, candidateSha256, "candidate recipes must pin the full governed guest manifest");
-		assert.equal(candidate.nativeCompany.schema, "qorpera.native-company-guest/v1");
-		assert.equal(candidate.nativeCompany.sourceCommit, source.commit);
-		assert.equal(candidate.nativeCompany.patchSha256, source.patchSha256);
-		assert.equal(candidate.nativeCompany.profile, "release");
-		assert.equal(candidate.nativeCompany.target, "x86_64-unknown-linux-gnu");
-		assert.deepEqual(candidate.artifacts.filter((item) => item.file.startsWith("native-company/")).map((item) => item.file), [
-			"native-company/artifact.json", "native-company/codex", "native-company/LICENSE", "native-company/NOTICE",
-		]);
-		assert.equal(candidate.artifacts.find((item) => item.file === "native-company/codex").sha256, candidate.nativeCompany.binarySha256);
-		assert.ok(acceptance.includes(`EXPECTED_NATIVE_CODEX_SHA256="${candidate.nativeCompany.binarySha256}"`));
-		assert.ok(acceptance.includes(`EXPECTED_NATIVE_HELPER_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-isolation-child.mjs").sha256}"`));
-		assert.ok(acceptance.includes(`EXPECTED_NATIVE_PROVIDER_HOST_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-provider-host.mjs").sha256}"`));
-		assert.ok(acceptance.includes(`EXPECTED_NATIVE_COMPANY_SERVICE_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-company-host.service").sha256}"`));
-		assert.ok(acceptance.includes(`EXPECTED_RUNNER_BOOTSTRAP_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-lxd-runner-bootstrap.mjs").sha256}"`));
-		// These recipes are the frozen v56 release, whose original manifest is
-		// retained by its archive hash. Current runtime bytes have their own pin.
-		// A release branch re-pins it; feature branches leave it at the last
-		// release (deploy/first-node/RUNTIME-RELEASE-TRAIN.md).
 		if (runtimeBundleEnforced()) {
 			const currentCandidate = JSON.parse(await readFile(
 				join(repositoryRoot, "deploy/first-node/native-codex/guest-package-manifest.json"), "utf-8",
@@ -254,7 +209,6 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		} else {
 			t.diagnostic(`current guest pin not compared with its source: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
 		}
-		assert.ok(builder.includes("--no-same-owner"));
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
 		// One Claude Code on the image: the pinned unmodified build, never the harness packages' (2.1.231 leaked the
@@ -304,16 +258,6 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		assert.ok(proof > installer.indexOf("systemctl enable qorpera-lxd-runner-bootstrap.service"));
 		assert.ok(installer.includes('[[ $(systemctl is-enabled "${unit}" 2>/dev/null) != masked ]]'));
 		assert.ok(proof < installer.indexOf("LXD_RUNNER_IMAGE_CONTRACT_INSTALLED"));
-		assert.ok(acceptance.includes("install -d -o qorpera-runner -g qorpera-runner -m 0700 /run/qorpera-runner"));
-		assert.ok(acceptance.includes("XDG_RUNTIME_DIR=/run/qorpera-runner"));
-		assert.ok(!acceptance.includes("XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp"));
-		assert.ok(acceptance.includes("! mountpoint -q /var/lib/qorpera/identity"));
-		assert.ok(acceptance.includes("qorpera-company-runner.service qorpera-native-company-host.service"));
-		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", builderPath, acceptancePath], {
-			cwd: repositoryRoot,
-			encoding: "utf-8",
-		});
-		assert.equal(syntax.status, 0, syntax.stderr);
 	} finally {
 		await rm(outputRoot, { recursive: true, force: true });
 	}

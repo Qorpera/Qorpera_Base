@@ -1,5 +1,5 @@
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
-import { preferredServiceKey, readBoundedJson } from "../_shared/http-guards.ts";
+import { preferredServiceKey, readBoundedJson, serviceHeaders } from "../_shared/http-guards.ts";
 import { chatGptPlanReturnUrl, handleChatGptPlanCallback } from "./chatgpt-plan-callback.ts";
 
 const RPC_TIMEOUT_MS = 5_000;
@@ -15,7 +15,7 @@ async function callbackTarget(state: string, parentSignal?: AbortSignal): Promis
 		async (signal) => {
 			const response = await fetch(new URL("/rest/v1/rpc/qorpera_chatgpt_plan_callback_target", base), {
 				method: "POST",
-				headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
+				headers: serviceHeaders(key, { "content-type": "application/json", accept: "application/json" }),
 				body: JSON.stringify({ p_state: state }),
 				redirect: "error",
 				signal,

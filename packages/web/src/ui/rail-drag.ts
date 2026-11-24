@@ -24,7 +24,7 @@ export interface RailDrop {
 	order: string[];
 }
 
-export type RailDragKind = "agent" | "room" | "member";
+export type RailDragKind = "agent" | "room" | "member" | "surface";
 
 export interface RailDragHooks {
 	/** Whether this item can be picked up now (no search running, the sidebar is loaded…). */
@@ -39,13 +39,14 @@ export interface RailDragHooks {
 }
 
 /** What the rail drags: agents, group chats and member contacts. */
-export const RAIL_ITEM = "[data-agent-id], [data-room-id], [data-member-id]";
+export const RAIL_ITEM = "[data-agent-id], [data-room-id], [data-member-id], [data-surface-id]";
 export const railItemId = (element: HTMLElement) =>
-	element.dataset.agentId ?? element.dataset.roomId ?? element.dataset.memberId;
+	element.dataset.agentId ?? element.dataset.roomId ?? element.dataset.memberId ?? element.dataset.surfaceId;
 const itemSelector = (itemId: string) =>
-	`[data-agent-id="${itemId}"], [data-room-id="${itemId}"], [data-member-id="${itemId}"]`;
+	`[data-agent-id="${itemId}"], [data-room-id="${itemId}"], [data-member-id="${itemId}"], [data-surface-id="${itemId}"]`;
 /** What glides when the space moves: every row and card, and the titles and slots between them. */
-const LEAVES = ".rail-row, .rail-pin, .rail-section-title, .rail-hidden-toggle, .rail-drop-slot, .rail-empty";
+const LEAVES =
+	".rail-row, .rail-pin, .rail-section-title, .rail-hidden-toggle, .rail-drop-slot, .rail-empty, .rail-surface-item, .rail-surface-proposed";
 
 /** Design pixels: how far a press moves before it drags, and the band at the list's edges that scrolls it. */
 const THRESHOLD = 6;
@@ -152,7 +153,13 @@ export class RailDrag {
 		const rect = source.getBoundingClientRect();
 		this.#active = {
 			itemId,
-			kind: source.dataset.memberId ? "member" : source.dataset.roomId ? "room" : "agent",
+			kind: source.dataset.memberId
+				? "member"
+				: source.dataset.roomId
+					? "room"
+					: source.dataset.surfaceId
+						? "surface"
+						: "agent",
 			pointerId: event.pointerId,
 			start: { x: event.clientX, y: event.clientY },
 			offset: { x: event.clientX - rect.left, y: event.clientY - rect.top },
@@ -216,7 +223,7 @@ export class RailDrag {
 	/** The zone's rows or cards in order, the dragged one left out and its space in its place. */
 	#items(zone: HTMLElement, active: Active): HTMLElement[] {
 		return [...zone.querySelectorAll<HTMLElement>(`${RAIL_ITEM}, .rail-drop-gap`)].filter(
-			(item) => item !== active.source,
+			(item) => item !== active.source && item.parentElement?.closest(`${RAIL_ITEM}, [data-drop-zone]`) === zone,
 		);
 	}
 
@@ -225,7 +232,7 @@ export class RailDrag {
 		const gap = active.gap!;
 		const card = zone?.dataset.dropZone === "pinned";
 		gap.classList.toggle("is-pin", card);
-		const like = card ? ".rail-pin" : ".rail-row";
+		const like = card ? ".rail-pin" : active.kind === "surface" ? ".rail-surface-item" : ".rail-row";
 		const sample = active.source.matches(like)
 			? undefined
 			: ((zone ?? this.#list).querySelector<HTMLElement>(`${like}:not(.is-drag-source)`) ??
@@ -447,7 +454,7 @@ export class RailDrag {
 		const selector = itemSelector(active.itemId);
 		const landed =
 			(same && active.source.isConnected ? active.source : undefined) ??
-			zone.querySelector<HTMLElement>(selector) ??
+			(zone.isConnected ? zone.querySelector<HTMLElement>(selector) : null) ??
 			this.#list.querySelector<HTMLElement>(selector) ??
 			active.source;
 		if (landed !== active.source) active.source.classList.remove("is-drag-source");

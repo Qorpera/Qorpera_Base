@@ -1,5 +1,5 @@
-import type { Activity as MotionActivity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
 import { type AtComputerFrame, atComputerFrame, atComputerLight } from "./at-computer-motion.ts";
+import type { Activity as MotionActivity, MotionPose } from "./avatars/status-2d-v1/motion.mjs";
 import {
 	type Act,
 	type Ask,

@@ -17,8 +17,11 @@ import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { HostedFriend } from "../cloud/types.ts";
 import { isUnnamed } from "../ui/company-name.ts";
 import { t } from "../ui/preferences.ts";
+import { type FoundingIntent, lobbyError, setFoundingIntent, takeFoundingIntent } from "./founding-intent.ts";
 import { Store } from "./state.ts";
 import { ConnectionsView, memberProviderSignIns } from "./views/settings-connections.ts";
+
+export { type FoundingIntent, lobbyError, setFoundingIntent };
 
 /* One founding table, as one member sees it. The server owns every rule; this controller keeps
  * the table fresh while it is open (other founders edit it too) and sends one action at a time. */
@@ -103,66 +106,6 @@ export interface FoundingOptions {
 	onSeatChanged?: () => void;
 	/** The company is made and its Co-Founder's first run is on its way: open the company (once per table page). */
 	onCompanyReady?: () => void;
-}
-
-/** What the new-company box asked for as it opened a table: the friends list open at once, the idea, if
- * saving it with the opening failed, and, from the arrow alone, to start the company at once. Kept in the tab,
- * through a reload, until the table's page has used it: the friends list once, the idea until it is saved, the
- * start until it went through or stopped. */
-export interface FoundingIntent {
-	friends?: boolean;
-	vision?: string;
-	start?: boolean;
-	founders?: string[];
-	spectators?: string[];
-}
-
-const intents = new Map<string, FoundingIntent>();
-const intentKey = (profileId: string) => `qorpera:founding-intent:${profileId}`;
-
-export function setFoundingIntent(profileId: string, intent: FoundingIntent): void {
-	if (!intent.friends && !intent.vision && !intent.start && !intent.founders?.length && !intent.spectators?.length) {
-		intents.delete(profileId);
-		try {
-			sessionStorage.removeItem(intentKey(profileId));
-		} catch {
-			/* Nothing was kept. */
-		}
-		return;
-	}
-	intents.set(profileId, intent);
-	try {
-		sessionStorage.setItem(intentKey(profileId), JSON.stringify(intent));
-	} catch {
-		/* This page still has it. */
-	}
-}
-
-function takeFoundingIntent(profileId: string): FoundingIntent | undefined {
-	const kept = intents.get(profileId);
-	if (kept) return kept;
-	try {
-		const saved: unknown = JSON.parse(sessionStorage.getItem(intentKey(profileId)) ?? "null");
-		if (!saved || typeof saved !== "object") return undefined;
-		const vision = "vision" in saved && typeof saved.vision === "string" ? saved.vision.trim() : "";
-		const founders = "founders" in saved ? texts(saved.founders) : [];
-		const spectators = "spectators" in saved ? texts(saved.spectators) : [];
-		return {
-			...("friends" in saved && saved.friends === true ? { friends: true } : {}),
-			...(vision ? { vision } : {}),
-			...("start" in saved && saved.start === true ? { start: true } : {}),
-			...(founders.length ? { founders } : {}),
-			...(spectators.length ? { spectators } : {}),
-		};
-	} catch {
-		return undefined;
-	}
-}
-
-function texts(value: unknown): string[] {
-	return Array.isArray(value)
-		? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
-		: [];
 }
 
 /** Automatic tries at saving the idea the opening could not; after them it waits in the box as your draft. */
@@ -950,11 +893,4 @@ export class FoundingController {
 		this.store.set({ gone: reason, connectOpen: false, friendsOpen: false, loading: false });
 		this.#options.onSeatChanged?.();
 	}
-}
-
-/** The lobby switched off (the rollback) refuses opening and starting with 0A000: say it as the hub does. */
-export function lobbyError(error: unknown): string {
-	return error instanceof CloudRpcError && error.code === "0A000"
-		? t("Creating a company is paused. Try again later.")
-		: describeError(error);
 }

@@ -2,7 +2,6 @@ import { isUuid } from "@qorpera/contracts";
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import { APP_COVER_KINDS, APPS_FOLDER, appFileKind, appFolder, appRelativePath } from "./interface-apps.ts";
 
-export const PROGRAM_KIT = "program";
 export const PROGRAM_FILE = "program.json";
 export const PROGRAM_VERSIONS_FOLDER = "versions";
 export const PROGRAM_FILE_MAX_BYTES = 256 * 1024;

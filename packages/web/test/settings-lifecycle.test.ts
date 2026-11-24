@@ -27,6 +27,7 @@ import {
 	userA,
 	userB,
 } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 const { showModal, close } = HTMLDialogElement.prototype;

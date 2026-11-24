@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { buildContainerName, checkLocale, expandTestFixture, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
-import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
+import { MIGRATED, sessionPerFile, WARM_IN, WARM_START, warmChain, warmCopy, warmVolumes } from "./test-hosted-db-cluster.mjs";
 
 /**
  * The folder core's load test (C1e, deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md §9): one folder-v2 company
@@ -158,7 +158,7 @@ function run(command, commandArgs, input) {
 	return result.stdout;
 }
 /** `options` are the sessions' settings (PGOPTIONS), for every session the psql process opens. */
-const psql = (sql, { options } = {}) =>
+const psql = (sql, { options, db = database } = {}) =>
 	run(
 		"docker",
 		[
@@ -171,7 +171,7 @@ const psql = (sql, { options } = {}) =>
 			"-U",
 			"postgres",
 			"-d",
-			database,
+			db,
 			"--no-psqlrc",
 			"-v",
 			"ON_ERROR_STOP=1",
@@ -906,7 +906,30 @@ function report(seconds) {
 
 try {
 	run("docker", ["info", "--format", "{{.ServerVersion}}"]);
-	// A real disk: the data directory is an anonymous Docker volume (removed with the container), fsync on.
+	const migrations = sortMigrationNames(readdirSync(join(repositoryRoot, "supabase", "migrations")));
+	for (const name of options.skipped) if (!migrations.includes(name)) throw new Error(`No migration ${name} to skip`);
+	const warm =
+		options.skipped.size === 0
+			? warmCopy(warmVolumes(), warmChain(migrations), Math.floor(Date.now() / 1000))
+			: null;
+	const pgArgs = [
+		"-c",
+		"max_connections=300",
+		"-c",
+		"shared_buffers=512MB",
+		"-c",
+		"log_lock_waits=on",
+		"-c",
+		`deadlock_timeout=${options.lockLogMs}ms`,
+		"-c",
+		"track_functions=all",
+		"-c",
+		"shared_preload_libraries=auto_explain",
+		"-c",
+		"auto_explain.log_min_duration=1000",
+		"-c",
+		"auto_explain.log_nested_statements=on",
+	];
 	run("docker", [
 		"run",
 		"--detach",
@@ -920,55 +943,52 @@ try {
 		...(options.cpus ? [`--cpus=${options.cpus}`] : []),
 		"--volume",
 		"/var/lib/postgresql/data",
+		...(warm ? ["--volume", `${warm.volume}:${WARM_IN}:ro`] : []),
 		"--env",
 		`POSTGRES_PASSWORD=${password}`,
 		"--env",
 		`POSTGRES_DB=${database}`,
 		...POSTGRES_LOCALE,
-		POSTGRES_IMAGE,
-		"-c",
-		"max_connections=300",
-		"-c",
-		"shared_buffers=512MB",
-		"-c",
-		"log_lock_waits=on",
-		"-c",
-		`deadlock_timeout=${options.lockLogMs}ms`,
-		// Where the time goes: PL/pgSQL functions' totals, and every statement over 1 s, nested ones too, with its text.
-		"-c",
-		"track_functions=all",
-		"-c",
-		"shared_preload_libraries=auto_explain",
-		"-c",
-		"auto_explain.log_min_duration=1000",
-		"-c",
-		"auto_explain.log_nested_statements=on",
+		...(warm ? ["--entrypoint", "/bin/sh", POSTGRES_IMAGE, "-c", `${WARM_START} "$@"`, "_", ...pgArgs] : [POSTGRES_IMAGE, ...pgArgs]),
 	]);
+	const readyDb = warm ? "postgres" : database;
 	for (let ready = 0, attempt = 0; ready < 2; attempt += 1) {
 		if (attempt > 120) throw new Error("Disposable PostgreSQL did not become ready within 60 seconds");
 		ready =
-			spawnSync("docker", ["exec", containerName, "pg_isready", "-U", "postgres", "-d", database]).status === 0
+			spawnSync("docker", ["exec", containerName, "pg_isready", "-U", "postgres", "-d", readyDb]).status === 0
 				? ready + 1
 				: 0;
 		spawnSync("sleep", ["0.5"]);
 	}
-	checkLocale(psql(LOCALE_QUERY));
+	checkLocale(psql(LOCALE_QUERY, { db: readyDb }));
 	const disk = run("docker", ["exec", containerName, "sh", "-c", "df -PT /var/lib/postgresql/data | tail -1"]).trim();
 	if (/tmpfs/.test(disk)) throw new Error(`The data directory is on tmpfs, not a real disk: ${disk}`);
-	const migrations = sortMigrationNames(readdirSync(join(repositoryRoot, "supabase", "migrations")));
-	for (const name of options.skipped) if (!migrations.includes(name)) throw new Error(`No migration ${name} to skip`);
-	// One psql process applies the test bootstrap and every migration, each file in a fresh session as one psql run
-	// per file did, without a docker exec and a psql start per file (test-hosted-db-cluster.mjs replays them the same way).
-	// Its sessions don't wait for each commit to reach the disk; fsync stays on, and the setup and the load below commit
-	// as the server does by default.
 	const migrateStarted = performance.now();
 	run("docker", ["exec", containerName, "mkdir", "-p", "/qorpera"]);
 	run("docker", ["cp", join(repositoryRoot, "supabase", "migrations"), `${containerName}:/qorpera/migrations`]);
 	run("docker", ["cp", join(repositoryRoot, "supabase", "tests", "bootstrap.sql"), `${containerName}:/qorpera/bootstrap.sql`]);
-	const files = ["bootstrap.sql", ...migrations.filter((name) => !options.skipped.has(name)).map((name) => `migrations/${name}`)];
-	psql(`\\o /dev/null\n${sessionPerFile(database, files.map((file) => `/qorpera/${file}`))}`, {
-		options: "-c synchronous_commit=off",
-	});
+	let fromWarm = 0;
+	if (warm) {
+		psql(`alter role postgres with password '${password}';`, { db: "postgres" });
+		const hasMigrated = psql(`select 1 from pg_database where datname = '${MIGRATED}';`, { db: "postgres" }).trim() === "1";
+		if (hasMigrated) {
+			psql(`drop database if exists ${database} with (force); create database ${database} template ${MIGRATED};`, {
+				db: "postgres",
+			});
+			fromWarm = warm.applied;
+		} else {
+			psql(`drop database if exists ${database} with (force); create database ${database};`, { db: "postgres" });
+		}
+	}
+	const files =
+		fromWarm > 0
+			? migrations.slice(fromWarm).map((name) => `migrations/${name}`)
+			: ["bootstrap.sql", ...migrations.filter((name) => !options.skipped.has(name)).map((name) => `migrations/${name}`)];
+	if (files.length > 0) {
+		psql(`\\o /dev/null\n${sessionPerFile(database, files.map((file) => `/qorpera/${file}`))}`, {
+			options: "-c synchronous_commit=off",
+		});
+	}
 	const migrateSeconds = (performance.now() - migrateStarted) / 1000;
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
 	const fixture = expandTestFixture("load-folder-core.sql", (name) =>

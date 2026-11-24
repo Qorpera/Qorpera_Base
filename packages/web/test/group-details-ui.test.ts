@@ -18,6 +18,7 @@ import {
 	userA,
 	visibleText,
 } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {

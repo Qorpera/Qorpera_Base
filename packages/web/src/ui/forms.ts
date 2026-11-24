@@ -28,13 +28,3 @@ export function preserveFormDrafts(container: HTMLElement, owner: string, preser
 		}
 	};
 }
-
-export function clearSubmittedDraft(container: HTMLElement, owner: string, key: string, submitted: string): void {
-	const view = [...container.querySelectorAll<HTMLElement>("[data-form-owner]")].find(
-		(element) => element.dataset.formOwner === owner,
-	);
-	const field = [...(view?.querySelectorAll<Field>("[data-draft]") ?? [])].find(
-		(element) => element.dataset.draft === key,
-	);
-	if (field?.value === submitted) field.value = "";
-}

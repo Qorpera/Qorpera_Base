@@ -4,11 +4,7 @@ import { type FileHandle, lstat, open, readlink, realpath } from "node:fs/promis
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { OFFICE_HOST_NAMESPACE_RECORD, parseLxdOfficeHostNamespace } from "./lxd-office-host-namespace.ts";
-import {
-	type LxdOfficeMountPolicy,
-	type LxdOfficePhysicalPolicy,
-	officePhysicalPath,
-} from "./lxd-office-physical-policy.ts";
+import { type LxdOfficeMountPolicy, officePhysicalPath } from "./lxd-office-physical-policy.ts";
 
 async function rootParents(path: string): Promise<void> {
 	let current = dirname(path);
@@ -202,101 +198,6 @@ export function assertLxdOfficeHostMount(
 		)
 			throw new Error("OFFICE_NAS_MOUNT_POLICY_MISMATCH");
 	}
-}
-
-async function directory(
-	path: string,
-	policy: LxdOfficeMountPolicy,
-	uid: number,
-	gid: number | undefined,
-	serverAddress: string | undefined,
-): Promise<ReturnType<typeof identity>> {
-	await rootParents(path);
-	const handle = await open(
-		path,
-		constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-	);
-	try {
-		// Inspect proc first; this does not require an NFS metadata round trip.
-		const inspect = async () =>
-			assertLxdOfficeHostMount(
-				await metadata("/proc/self/mountinfo", 1048576),
-				await metadata(`/proc/self/fdinfo/${handle.fd}`, 4096),
-				policy,
-				path,
-				serverAddress,
-			);
-		await inspect();
-		const before = await handle.stat();
-		if (
-			!before.isDirectory() ||
-			before.uid !== uid ||
-			(gid !== undefined && before.gid !== gid) ||
-			(before.mode & 0o7777) !== 0o700 ||
-			(await realpath(path)) !== path
-		)
-			throw new Error("OFFICE_HOST_DIRECTORY_UNPROTECTED");
-		await inspect();
-		const after = await handle.stat();
-		if (
-			!isDeepStrictEqual(identity(before), identity(after)) ||
-			!isDeepStrictEqual(identity(after), identity(await lstat(path)))
-		)
-			throw new Error("OFFICE_HOST_DIRECTORY_CHANGED");
-		return identity(after);
-	} finally {
-		await handle.close();
-	}
-}
-
-/** A read-only observation, not NAS durability, inventory, adoption or VM
- * readiness. Its caller must retain this operation after a deadline: Linux
- * may still be waiting for NFS and it must not launch replacement probes. */
-export async function inspectLxdOfficePhysicalHost(policy: LxdOfficePhysicalPolicy, signal: AbortSignal) {
-	if (process.platform !== "linux" || !process.geteuid?.())
-		throw new Error("OFFICE_PROVIDER_UNPRIVILEGED_LINUX_REQUIRED");
-	signal.throwIfAborted();
-	const bootId = await metadata("/proc/sys/kernel/random/boot_id", 64);
-	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n$/.test(bootId))
-		throw new Error("OFFICE_PROVIDER_BOOT_UNCONFIRMED");
-	const namespace = await assertLxdOfficeHostNamespace(bootId.trim());
-	const machine = new TextDecoder("utf8", { fatal: true }).decode(
-		await readLxdOfficeProtectedFile("/etc/machine-id", 64),
-	);
-	if (
-		!/^[0-9a-f]{32}\n?$/.test(machine) ||
-		/^0{32}\n?$/.test(machine) ||
-		createHash("sha256").update(machine.trim()).digest("hex") !== policy.host.machineIdSha256
-	)
-		throw new Error("OFFICE_PROVIDER_HOST_MISMATCH");
-	signal.throwIfAborted();
-	await rootParents(policy.host.socketPath);
-	const socket = await lstat(policy.host.socketPath);
-	if (
-		!socket.isSocket() ||
-		socket.uid !== 0 ||
-		socket.gid !== policy.host.socketGid ||
-		(socket.mode & 0o7777) !== 0o660 ||
-		(await realpath(policy.host.socketPath)) !== policy.host.socketPath
-	)
-		throw new Error("OFFICE_PROVIDER_SOCKET_UNPROTECTED");
-	const journal = await directory(policy.journal.path, policy.journal, process.geteuid!(), undefined, undefined);
-	signal.throwIfAborted();
-	const workbench = await directory(
-		policy.guest.workbenchSource,
-		policy.workbench,
-		policy.workbench.uid,
-		policy.workbench.gid,
-		policy.workbench.serverAddress,
-	);
-	signal.throwIfAborted();
-	if (
-		!isDeepStrictEqual(identity(socket), identity(await lstat(policy.host.socketPath))) ||
-		bootId !== (await metadata("/proc/sys/kernel/random/boot_id", 64)) ||
-		namespace !== (await readlink("/proc/self/ns/mnt"))
-	)
-		throw new Error("OFFICE_PROVIDER_HOST_CHANGED");
-	return { bootId: bootId.trim(), namespace, socket: identity(socket), journal, workbench };
 }
 
 /** Linux restricts /proc/1/ns to PID 1's UID or a privileged observer. A

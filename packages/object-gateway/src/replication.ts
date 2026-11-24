@@ -1,7 +1,6 @@
 import { ObjectDependencyError } from "./dependency.ts";
 import type { ObjectGatewayJournal } from "./journal.ts";
 import { createSerialGate, type MaintenanceGate } from "./maintenance.ts";
-import type { LegacyObjectMigrationItem } from "./migration.ts";
 import {
 	type FileSystemObjectStore,
 	isVerifiedObjectBytes,
@@ -9,7 +8,7 @@ import {
 	type VerifiedObjectBytes,
 	verifyObjectBytes,
 } from "./object-store.ts";
-import type { ObjectGatewayAuthority, WriteReplicaResult } from "./supabase-authority.ts";
+import type { LegacyObjectMigrationItem, ObjectGatewayAuthority, WriteReplicaResult } from "./supabase-authority.ts";
 
 export interface ObjectReplicationAuthority extends ObjectGatewayAuthority {
 	listLegacyObjects(

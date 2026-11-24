@@ -365,25 +365,44 @@ export function cloudDataTools(options: {
 			if (need === undefined) return answer.value;
 			if (!Array.isArray(need) || need.length === 0) refusal(502, answer.value);
 			// The files the gateway asks for, read as the run: a file changed since the pass is left for the next pass.
+			const entries: { path: string; hash: string }[] = [];
+			for (const wanted of need) {
+				const { path, sha256: hash } = answerOf(wanted);
+				if (typeof path !== "string" || typeof hash !== "string") refusal(502, answer.value);
+				entries.push({ path, hash });
+			}
 			texts = {};
 			// The next body as the door sends it, each text as JSON escapes it (a hash and its text add `"hash":"text",`).
 			let bytes = Buffer.byteLength(JSON.stringify({ ...body, pass: passed.pass, texts: {} }));
 			let sent = 0;
-			for (const wanted of need) {
-				const { path, sha256: hash } = answerOf(wanted);
-				if (typeof path !== "string" || typeof hash !== "string") refusal(502, answer.value);
-				let read: Awaited<ReturnType<typeof folder.readText>> = null;
-				try {
-					read = await folder.readText(path, FILE_BYTES, signal);
-				} catch (error) {
-					if (!(error instanceof CloudCompanyPathNotText)) throw error;
+			const batchSize = 6;
+			for (let offset = 0; offset < entries.length; offset += batchSize) {
+				const slice = entries.slice(offset, offset + batchSize);
+				const reads = await Promise.all(
+					slice.map(async ({ path }) => {
+						try {
+							return await folder.readText(path, FILE_BYTES, signal);
+						} catch (error) {
+							if (!(error instanceof CloudCompanyPathNotText)) throw error;
+							return null;
+						}
+					}),
+				);
+				let full = false;
+				for (let i = 0; i < slice.length; i++) {
+					const read = reads[i];
+					const { hash } = slice[i]!;
+					if (!read || read.entry.file.fileSha256 !== hash) continue;
+					const size = Buffer.byteLength(JSON.stringify(hash)) + Buffer.byteLength(JSON.stringify(read.text)) + 2;
+					if (sent > 0 && bytes + size > BODY_BYTES) {
+						full = true;
+						break;
+					}
+					texts[hash] = read.text;
+					bytes += size;
+					sent++;
 				}
-				if (!read || read.entry.file.fileSha256 !== hash) continue;
-				const size = Buffer.byteLength(JSON.stringify(hash)) + Buffer.byteLength(JSON.stringify(read.text)) + 2;
-				if (sent > 0 && bytes + size > BODY_BYTES) break;
-				texts[hash] = read.text;
-				bytes += size;
-				sent++;
+				if (full) break;
 			}
 		}
 		throw new CloudToolRefusal("The database's files kept changing while they were read: try again");

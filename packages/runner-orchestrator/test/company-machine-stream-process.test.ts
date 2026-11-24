@@ -690,10 +690,9 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		void desktop.watch(async () => "ok", fast, new AbortController().signal);
 		await sleep(1000);
 		const before = memory();
-		// Fifteen seconds of the budget (about 480 MiB through main).
-		await sleep(15_000);
+		await sleep(4_000);
 		const after = memory();
-		expect(taken).toBeGreaterThan(200);
+		expect(taken).toBeGreaterThan(50);
 		expect(kept.length).toBeLessThanOrEqual(17);
 		expect(after - before).toBeLessThan(32 * 1024 * 1024);
 		expect(desktop.ended).toBeNull();

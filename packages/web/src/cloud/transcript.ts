@@ -23,7 +23,6 @@ import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionI
 
 export const RUNNER_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
 export const LEGACY_PART_SCHEMA = "qorpera.shared-trail-entry-part/v1";
-export const SESSION_METADATA_SCHEMA = "qorpera.shared-session-metadata/v1";
 export const AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
 /** A message between two agents, written by the kernel into their pair transcript (contract 14.6). */
 export const PEER_MESSAGE_SCHEMA = "qorpera.peer-message/v1";

@@ -405,18 +405,35 @@ export class CloudDigitalPostSyncs {
 			),
 		);
 		if (kept.state === "staging") {
-			for (const [fileIndex, file] of layout.files.entries())
-				for (let start = 0; start < file.bytes.byteLength; start += DIGITAL_POST_CHUNK_BYTES)
-					await this.#authority.stageDigitalPostChunk(
-						{
-							...lease,
-							letterId: kept.letterId,
-							fileIndex,
-							chunkIndex: start / DIGITAL_POST_CHUNK_BYTES,
-							content: file.bytes.subarray(start, start + DIGITAL_POST_CHUNK_BYTES),
-						},
-						database(),
-					);
+			const chunks: { fileIndex: number; chunkIndex: number; content: Uint8Array }[] = [];
+			for (const [fileIndex, file] of layout.files.entries()) {
+				for (let start = 0; start < file.bytes.byteLength; start += DIGITAL_POST_CHUNK_BYTES) {
+					chunks.push({
+						fileIndex,
+						chunkIndex: start / DIGITAL_POST_CHUNK_BYTES,
+						content: file.bytes.subarray(start, start + DIGITAL_POST_CHUNK_BYTES),
+					});
+				}
+			}
+			let cursor = 0;
+			const workers = Math.min(4, chunks.length);
+			await Promise.all(
+				Array.from({ length: workers }, async () => {
+					while (cursor < chunks.length) {
+						const item = chunks[cursor++]!;
+						await this.#authority.stageDigitalPostChunk(
+							{
+								...lease,
+								letterId: kept.letterId,
+								fileIndex: item.fileIndex,
+								chunkIndex: item.chunkIndex,
+								content: item.content,
+							},
+							database(),
+						);
+					}
+				}),
+			);
 			if (
 				parseKept(await this.#authority.sealDigitalPostLetter({ ...lease, letterId: kept.letterId }, database()))
 					.state !== "kept"
