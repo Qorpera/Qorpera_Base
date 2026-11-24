@@ -1,6 +1,6 @@
 import { compileIdentityTokensCss, IDENTITY_TOKENS_CSS_PATH, IDENTITY_TOKENS_JSON_PATH } from "@qorpera/contracts";
 import { frameParsedPage } from "../../ui/page-frame.ts";
-import { SVG_FILE_RE, svgDataUrl } from "./surface-blocks/files.ts";
+import { SVG_FILE_RE, svgDataUrl } from "./surface-blocks/artifacts.ts";
 
 const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
 const SCRIPT_FILE_RE = /\.m?js$/i;
