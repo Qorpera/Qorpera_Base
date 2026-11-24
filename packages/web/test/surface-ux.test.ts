@@ -631,7 +631,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-drawer-head h2")?.textContent).toBe("Forsidens udtryk");
-		expect(drawer.querySelector(".surface-drawer-body > .surface-agent-note")).not.toBeNull();
+		expect(drawer.querySelector(".surface-drawer-pinned > .surface-agent-note")).not.toBeNull();
 		expect(drawer.querySelectorAll(".surface-drawer-option-row")).toHaveLength(3);
 
 		const useVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;

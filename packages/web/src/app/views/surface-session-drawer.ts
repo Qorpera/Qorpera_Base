@@ -1361,7 +1361,7 @@ export class SurfaceSessionDrawer {
 			h("div", { class: "surface-drawer-title" }, h("h2", null, session.title)),
 		);
 		this.#crew.settle();
-		this.#setPinned(this.#content(session, notes, resolvedSurface, look, ownedNotes));
+		this.#setPinned(this.#content(session, resolvedSurface, look, ownedNotes));
 		this.#body.replaceChildren(...this.#thread(session, notes));
 		const count = (session.messages.length || (session.prompt ? 1 : 0)) + notes.length;
 		if (session.id !== this.#sessionId || count !== this.#messages) {
@@ -1373,7 +1373,6 @@ export class SurfaceSessionDrawer {
 
 	#content(
 		session: SurfaceSession,
-		notes: readonly SurfaceNote[],
 		surface: SurfaceSummary | undefined,
 		look: SurfaceLook | undefined,
 		ownedNotes: readonly SurfaceReportSummary[],
