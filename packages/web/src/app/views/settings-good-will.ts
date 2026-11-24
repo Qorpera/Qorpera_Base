@@ -9,29 +9,14 @@ import {
 import { companyInSentence, companyNameText } from "../../ui/company-name.ts";
 import { button, fmtDate, h, notice, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
+import { goodWillName, kroner, monthName, takeGoodWillReturn } from "./good-will-format.ts";
 
-/** The good will's name, one string so it is easy to change (Danish "Goodwill" for now, Jonas has not chosen). */
-export const goodWillName = () => t("Good will");
+export { goodWillName, kroner, monthName, takeGoodWillReturn };
 
 const locale = () => (presentationLocale() === "da" ? "da-DK" : "en-GB");
 
-/** Øre as kroner: whole kroner, øre only when there are some. */
-export function kroner(ore: number): string {
-	return `${new Intl.NumberFormat(locale(), { maximumFractionDigits: 2 }).format(ore / 100)} kr`;
-}
-
 const percent = (rateBp: number) =>
 	`${new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }).format(rateBp / 100)} %`;
-
-/** "November 2026" for "2026-11". */
-export function monthName(month: string): string {
-	const [year, number] = month.split("-").map(Number);
-	return new Date(Date.UTC(year!, number! - 1, 1)).toLocaleDateString(locale(), {
-		month: "long",
-		year: "numeric",
-		timeZone: "UTC",
-	});
-}
 
 /** What became of a month, in a line. */
 function monthLine(month: GoodWillMonth, card: boolean, minChargeOre: number | null): string {
@@ -375,16 +360,4 @@ export class MyGoodWillView {
 			),
 		);
 	}
-}
-
-/** Stripe sends the founder back to "#/account?good-will=card-saved" (or "=card-cancelled"): read once, then removed
- * from the address, like a connector's return (cloud/connectors.ts). */
-export function takeGoodWillReturn(): "card-saved" | "card-cancelled" | undefined {
-	const hash = location.hash;
-	const at = hash.indexOf("?");
-	if (at < 0) return undefined;
-	const value = new URLSearchParams(hash.slice(at + 1)).get("good-will");
-	if (value !== "card-saved" && value !== "card-cancelled") return undefined;
-	history.replaceState(null, "", hash.slice(0, at) || "#/");
-	return value;
 }

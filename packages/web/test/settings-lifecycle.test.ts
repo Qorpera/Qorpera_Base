@@ -2,13 +2,11 @@
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
 import { REALTIME_SUBSCRIBE_STATES, RealtimeClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mountApplication, registerLazyApplicationModules } from "../src/app/application.ts";
+import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import * as companyFolder from "../src/app/views/company-folder.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
-import * as surfaceView from "../src/app/views/surface-view.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { GoodWillCardError } from "../src/cloud/good-will.ts";
@@ -29,8 +27,7 @@ import {
 	userA,
 	userB,
 } from "./fixtures.ts";
-
-registerLazyApplicationModules({ companyFolder, surfaceView });
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 const { showModal, close } = HTMLDialogElement.prototype;

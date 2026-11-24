@@ -4,17 +4,14 @@ import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mountApplication, registerLazyApplicationModules } from "../src/app/application.ts";
+import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { takeWantedDataList } from "../src/app/data-page.ts";
 import { tellAgent } from "../src/app/tell-agent.ts";
-import * as companyFolder from "../src/app/views/company-folder.ts";
-import * as concepts from "../src/app/views/concepts.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { pageNoteCard } from "../src/app/views/page-note.ts";
 import { renderRail } from "../src/app/views/shell.ts";
-import * as surfaceView from "../src/app/views/surface-view.ts";
 import { CloudRpcError, describeError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
@@ -42,8 +39,7 @@ import {
 } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 import { summary as surfaceSummary, workspace as surfaceWorkspace } from "./surface-fixtures.ts";
-
-registerLazyApplicationModules({ companyFolder, concepts, surfaceView });
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {

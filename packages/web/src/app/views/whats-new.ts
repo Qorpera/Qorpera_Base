@@ -1,4 +1,4 @@
-import type { CodeReleaseLive, CodeReleaseSite, CodeReleases } from "../../cloud/releases.ts";
+import type { CodeReleaseLive, CodeReleaseSite } from "../../cloud/releases.ts";
 import { button, fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { type CompanyController, type SiteAnswer, sitePublicAnswer } from "../company.ts";
@@ -6,14 +6,16 @@ import { surfaceHash } from "../router.ts";
 import { surfacesOf } from "../surfaces-store.ts";
 import {
 	keyOf,
-	quieted,
 	type ReleaseClient,
 	ReleaseDesk,
 	type ReleaseDeskOptions,
 	readyCount,
 	titleOf,
+	whatsNewEntry,
 } from "./release-desk.ts";
 import { siteEmblem } from "./site-shared.ts";
+
+export { whatsNewEntry };
 
 /**
  * The What's new page (`#/c/<id>/whats-new`, a platform page in the apps drawer; own code storage step 4): for each of
@@ -43,19 +45,6 @@ import { siteEmblem } from "./site-shared.ts";
 
 /** What the page is told and reads beside it: What's new's desk's options (app/views/release-desk.ts). */
 export type WhatsNewOptions = ReleaseDeskOptions;
-
-/** The apps drawer's entry for a read: present while a project makes a website, with how many changes are ready that
- * this member did not answer Not yet to. Only an owner or admin can put them live or say Not yet, so only they get the
- * count: anyone else would carry a badge they could never clear. */
-export function whatsNewEntry(company: CompanyController, releases: CodeReleases): { ready: number } | undefined {
-	if (!releases.sites.length) return undefined;
-	if (!releases.canRelease) return { ready: 0 };
-	const silent = quieted(company);
-	let ready = 0;
-	for (const { ready: point } of releases.sites)
-		if (point && !silent.has(point.token)) ready += point.changes.length + point.quiet;
-	return { ready };
-}
 
 export class WhatsNewView {
 	readonly el = h("div", { class: "whats-new" });

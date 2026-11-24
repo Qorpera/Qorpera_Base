@@ -7,6 +7,7 @@ import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
 import { isGroupChat } from "../src/ui/group-chat.ts";
 import { fixture, id, profileA, session, staff, team, userA } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {

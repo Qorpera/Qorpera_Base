@@ -12,7 +12,7 @@ import type { WebRoutine, WebRoutines } from "../../cloud/routines.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
-import { goodWillName, kroner, monthName } from "./settings-good-will.ts";
+import { goodWillName, kroner, monthName } from "./good-will-format.ts";
 
 type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
 /** A worker's own run, which has no conversation: the notice line offers its Stop (gap 4b). */

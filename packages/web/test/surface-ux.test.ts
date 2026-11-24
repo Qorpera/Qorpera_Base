@@ -56,6 +56,7 @@ import {
 	summary,
 	workspace,
 } from "./surface-fixtures.ts";
+import "./register-lazy.ts";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 

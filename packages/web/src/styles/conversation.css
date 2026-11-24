@@ -1719,7 +1719,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
  * both buttons stay within reach (review r1 of #1633, F3: twelve cells of 500 characters on a phone). */
 .app-ask-lines {
 	display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 0;
-	max-height: min(40vh, 18rem); overflow-y: auto; overscroll-behavior: contain;
+	max-height: min(40vh, 288px); overflow-y: auto; overscroll-behavior: contain;
 }
 .app-ask-lines:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .app-ask-lines dt { color: var(--text-muted); overflow-wrap: anywhere; }
@@ -1779,7 +1779,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-ask-button.is-go:hover { background: color-mix(in srgb, var(--text) 86%, var(--bg)); }
 .app-ask-note {
 	display: flex; flex: 1 1 260px; align-items: center; gap: 8px; min-width: 0; margin: 0; overflow-wrap: anywhere;
-	max-height: min(40vh, 18rem); overflow-y: auto;
+	max-height: min(40vh, 288px); overflow-y: auto;
 }
 .app-ask-note .icon { flex: none; width: 16px; height: 16px; }
 .app-ask-note.is-saved .icon { color: var(--ok); }

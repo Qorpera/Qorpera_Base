@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { deferred, fixture, profileA, session, settle, userB } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {

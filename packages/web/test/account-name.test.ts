@@ -5,6 +5,7 @@ import { mountApplication } from "../src/app/application.ts";
 import { AuthController, accountName, displayName } from "../src/app/auth.ts";
 import { renderAccount } from "../src/app/views/account.ts";
 import { deferred, fixture, settle, userA, userB } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 let auth: AuthController;
 let root: HTMLElement;

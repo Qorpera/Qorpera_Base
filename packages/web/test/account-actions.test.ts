@@ -6,6 +6,7 @@ import conversationCss from "../src/styles/conversation.css?raw";
 import settingsCss from "../src/styles/settings.css?raw";
 import tokensCss from "../src/styles/tokens.css?raw";
 import { fixture, id, profileA, settle, timestamp, userA, userB } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 /** jsdom does not implement the native dialog methods the Friends window opens and closes with. */

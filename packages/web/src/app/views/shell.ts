@@ -90,14 +90,13 @@ import { activeTaskSessions, isOpenChange, isRunningSession, openExplorations, s
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
-import { personFace } from "./friends.ts";
 import { type InviteCalls, openInviteSheet } from "./invite-sheet.ts";
-import { memberPresence } from "./member-chat.ts";
+import { memberPresence, personFace } from "./person-face.ts";
 import { type FoundFile, fileHit, isPlumbing, oneCopyEach, settledPath } from "./search-files.ts";
-import { type SearchHit, type SearchMark, type SearchSources, SearchWindow } from "./search-window.ts";
-import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
+import type { SearchHit, SearchMark, SearchSources, SearchWindow } from "./search-window.ts";
+import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings-places.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
-import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
+import type * as SurfaceMigrationSheetMod from "./surface-migration-sheet.ts";
 import { isActionChange, SurfaceRail, surfaceTile } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -995,7 +994,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const store = surfacesOf(company);
 				if (!store) return;
 				event.preventDefault();
-				openCreateSurfaceSheet(store);
+				withSurfaceMigrationSheet((mod) => mod.openCreateSurfaceSheet(store));
 			},
 			{ signal: company.signal },
 		);
@@ -2368,7 +2367,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 						{
 							type: "button",
 							class: "rail-agent-hub-row",
-							onclick: () => openScheduleAgentSheet(store, automation),
+							onclick: () => withSurfaceMigrationSheet((mod) => mod.openScheduleAgentSheet(store, automation)),
 						},
 						owned.face ? h("span", { class: "rail-automation-fig" }, stand, automationFace(owned.face)) : stand,
 						h(
@@ -4520,10 +4519,41 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 	};
 }
 
+let preloadedSearchWindow: typeof SearchWindow | undefined;
+let preloadedSurfaceMigrationSheet: typeof SurfaceMigrationSheetMod | undefined;
+
+export function registerLazyShellModules(modules: {
+	readonly SearchWindow?: typeof SearchWindow;
+	readonly surfaceMigrationSheet?: typeof SurfaceMigrationSheetMod;
+}): void {
+	if (modules.SearchWindow) preloadedSearchWindow = modules.SearchWindow;
+	if (modules.surfaceMigrationSheet) preloadedSurfaceMigrationSheet = modules.surfaceMigrationSheet;
+}
+
+function withSurfaceMigrationSheet(run: (mod: typeof SurfaceMigrationSheetMod) => void): void {
+	if (preloadedSurfaceMigrationSheet) {
+		run(preloadedSurfaceMigrationSheet);
+		return;
+	}
+	void import("./surface-migration-sheet.ts").then((mod) => {
+		preloadedSurfaceMigrationSheet = mod;
+		run(mod);
+	});
+}
+
 function openSearchWindow(company: CompanyController, context: ShellContext | undefined, opener: HTMLElement): void {
 	if (!context) return;
-	searchWindow ??= new SearchWindow();
-	searchWindow.open(searchSources(company, context), opener);
+	const mount = (Loaded: typeof SearchWindow) => {
+		if (company.signal.aborted) return;
+		searchWindow ??= new Loaded();
+		searchWindow.open(searchSources(company, context), opener);
+	};
+	if (preloadedSearchWindow) mount(preloadedSearchWindow);
+	else
+		void import("./search-window.ts").then(({ SearchWindow: Loaded }) => {
+			preloadedSearchWindow = Loaded;
+			mount(Loaded);
+		});
 }
 
 function anotherModalOpen(): boolean {

@@ -22,6 +22,7 @@ import { h } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 import { searchFromRail } from "./search-window-helpers.ts";
+import "./register-lazy.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,

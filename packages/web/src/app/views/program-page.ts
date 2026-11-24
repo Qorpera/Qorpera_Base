@@ -20,7 +20,7 @@ import { uiScale } from "../../ui/scale.ts";
 import { dayLabel } from "../agent-line.ts";
 import { folderImageReader, forgetPictureUrl, pictureUrl } from "../folder-images.ts";
 import { downloadOffer, isPhoneSystem, memberSystem, PROGRAM_KIND_NAMES } from "../program-download.ts";
-import { MAX_DOWNLOAD_BYTES } from "./company-folder.ts";
+import { MAX_DOWNLOAD_BYTES } from "./company-folder-meta.ts";
 import { hasFiles, type ProgramAddHost, ProgramDrop } from "./program-add.ts";
 
 export type ProgramFolder = Pick<CloudMemberFolderClient, "read" | "readFile"> &

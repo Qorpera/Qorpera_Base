@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { fixture, profileA, session, settle, team, timestamp, userA, userB } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 /* What's new in the app (own code storage step 4): the read for the apps drawer's entry when the company opens and
  * when the window gets focus, a cloud without it (or one that refuses the member) showing no entry, and the page at
