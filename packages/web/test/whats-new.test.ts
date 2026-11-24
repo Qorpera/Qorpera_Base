@@ -416,6 +416,35 @@ describe("What's new: the page", () => {
 		}
 	});
 
+	it("says a version live is only the company's once the answer comes, after the page was drawn, and follows it", async () => {
+		const listed = {
+			id: id(81),
+			slug: "wristband-shop",
+			title: "Wristband shop",
+			kind: "files",
+			url: "https://sites.qorpera.com/wristband-shop/",
+			state: "live",
+		} as CompanySite;
+		const { view, controller, client } = await page([releasesOf([shop()])]);
+		const meta = () =>
+			[...block(view).querySelectorAll(".whats-new-live .site-meta")].map((line) => line.textContent);
+		expect(meta()).toHaveLength(1);
+		controller.store.set({ siteList: [listed] });
+		await settle();
+		expect(meta()).toHaveLength(1);
+		controller.store.set({ sitesPublic: new Map([[listed.id, false]]) });
+		await settle();
+		expect(meta()[1]).toBe("Only the company can open it until you go live.");
+		controller.store.set({ sitesPublic: new Map([[listed.id, true]]) });
+		await settle();
+		expect(meta()).toHaveLength(1);
+		expect(client.list).toHaveBeenCalledTimes(1);
+		view.dispose();
+		controller.store.set({ sitesPublic: new Map([[listed.id, false]]) });
+		await settle();
+		expect(view.el.textContent).toBe("");
+	});
+
 	it("tells the Sites page the version each site made from code has live", () => {
 		expect(
 			liveVersions(

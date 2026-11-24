@@ -1,6 +1,7 @@
 import { type CompanySite, type CompanySiteTakedown, siteOfLink, type WebSites } from "../../cloud/sites.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
+import type { SiteAnswer } from "../company.ts";
 import { changeError, hasPassword, shownLink, siteEmblem, stateOf, toClipboard } from "./settings-sites.ts";
 
 /**
@@ -28,6 +29,7 @@ export class ThreadSites {
 	readonly #client: ThreadSitesClient;
 	readonly #canManage: () => boolean;
 	readonly #changed: () => void;
+	readonly #answer: (siteId: string) => SiteAnswer;
 	readonly #profileId: string;
 	readonly #lifetime = new AbortController();
 	#sites: readonly CompanySite[] = [];
@@ -35,6 +37,7 @@ export class ThreadSites {
 	/** What the list says that a card's matching follows: a change draws the thread's messages again. */
 	#key = "";
 	#manage: boolean;
+	#answers = "";
 	/** The site whose password is being read and copied: its key is off meanwhile. */
 	#copying: string | undefined;
 	/** What a press on a site's key did, said on its address line for a moment. */
@@ -51,11 +54,13 @@ export class ThreadSites {
 		profileId: string,
 		signal: AbortSignal,
 		changed: () => void,
+		answer: (siteId: string) => SiteAnswer = () => "unknown",
 	) {
 		this.#client = client;
 		this.#canManage = canManage;
 		this.#profileId = profileId;
 		this.#changed = changed;
+		this.#answer = answer;
 		this.#manage = canManage();
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
@@ -92,7 +97,8 @@ export class ThreadSites {
 	update(): void {
 		if (this.#lifetime.signal.aborted) return;
 		const manage = this.#canManage();
-		if (manage === this.#manage) return;
+		const answers = this.#answersKey();
+		if (manage === this.#manage && answers === this.#answers) return;
 		this.#manage = manage;
 		this.#drawAll();
 	}
@@ -126,7 +132,19 @@ export class ThreadSites {
 	 * drawn again, or left the thread. Every redraw comes after the task that made a card and put it in its message (a
 	 * read, the window's focus, a change of role, a key's line), so a card that is not in the page by then never will be
 	 * (review r1 of #1848, F2). */
+	#answersKey(): string {
+		return this.#sites.map((site) => (hasPassword(site) ? "" : this.#answer(site.id))).join(",");
+	}
+
+	#state(site: CompanySite, down: boolean): HTMLElement | null {
+		if (down || hasPassword(site) || site.state !== "live") return stateOf(site, down);
+		const answer = this.#answer(site.id);
+		if (answer === "live") return stateOf(site, false);
+		return answer === "private" ? h("span", { class: "site-state is-not-live" }, t("Not live yet")) : null;
+	}
+
 	#drawAll(): void {
+		this.#answers = this.#answersKey();
 		for (const [card, id] of [...this.#cards]) {
 			if (!card.isConnected) this.#cards.delete(card);
 			else this.#draw(card, id);
@@ -166,7 +184,7 @@ export class ThreadSites {
 					"span",
 					{ class: "site-card-head" },
 					h("strong", { class: "app-card-title", title: name }, name),
-					stateOf(site, Boolean(down)),
+					this.#state(site, Boolean(down)),
 				),
 				h(
 					"small",

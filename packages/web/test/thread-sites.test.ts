@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyController } from "../src/app/company.ts";
+import { CompanyController, type SiteAnswer } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { ThreadSites, type ThreadSitesClient } from "../src/app/views/thread-sites.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
@@ -96,10 +96,14 @@ function client(sites: CompanySite[] = [gift, shop, app, old], options: { down?:
 	} satisfies ThreadSitesClient;
 }
 
-async function cards(manage = true, calls: ThreadSitesClient = client()) {
+async function cards(
+	manage = true,
+	calls: ThreadSitesClient = client(),
+	answer: (siteId: string) => SiteAnswer = () => "unknown",
+) {
 	const changed = vi.fn();
 	const lifetime = new AbortController();
-	const sites = new ThreadSites(calls, () => manage, profileA.profileId, lifetime.signal, changed);
+	const sites = new ThreadSites(calls, () => manage, profileA.profileId, lifetime.signal, changed, answer);
 	cleanup.push(() => lifetime.abort());
 	await settle();
 	return { sites, changed, calls };
@@ -182,7 +186,7 @@ describe("A site a message links: the card under the words", () => {
 		expect(open.getAttribute("aria-label")).toBe("Open SAML gift message");
 		expect(open.querySelector(".app-card-emblem svg.site-emblem")).not.toBeNull();
 		expect(card.querySelector(".app-card-title")?.textContent).toBe("SAML gift message");
-		expect(card.querySelector(".site-state")?.textContent).toBe("Live");
+		expect(card.querySelector(".site-state")).toBeNull();
 		expect(note(card)).toBe("saml-gift-message.qorpera.com");
 		expect(card.querySelector<HTMLElement>(".app-card-note")?.title).toBe(gift.url);
 		expect([...card.children].map((child) => child.className)).toEqual(["site-card-open", "app-card-go"]);
@@ -349,10 +353,60 @@ describe("A site a message links: the card under the words", () => {
 			"https://saml-gift-message.qorpera.com/ https://orders-api-preview.qorpera.com/ https://spring-sale.qorpera.com/",
 		);
 		const [live, api, down] = [...root.querySelectorAll<HTMLElement>(".site-card")];
-		expect(live?.querySelector(".site-state")?.textContent).toBe("Live");
+		expect(live?.querySelector(".site-state")).toBeNull();
 		expect(keyOf(live!)).toBeNull();
 		expect(keyOf(api!)?.getAttribute("aria-label")).toBe("Kopiér adgangskoden");
 		expect(down?.querySelector(".site-state")?.textContent).toBe("Taget ned");
+	});
+
+	it("calls a website Live only when everyone can open it, Not live yet when not, and nothing while unknown", async () => {
+		const answers = new Map<string, SiteAnswer>();
+		const draft: CompanySite = {
+			...shop,
+			id: id(85),
+			slug: "launch",
+			url: "https://launch.qorpera.com/",
+			state: "publishing",
+		};
+		const { sites } = await cards(
+			true,
+			client([gift, shop, app, old, draft]),
+			(siteId) => answers.get(siteId) ?? "unknown",
+		);
+		const root = message(
+			sites,
+			"https://saml-gift-message.qorpera.com/ https://orders-api-preview.qorpera.com/ https://spring-sale.qorpera.com/ https://launch.qorpera.com/",
+		);
+		const card = (siteId: string) => root.querySelector<HTMLElement>(`.site-card[data-site-id="${siteId}"]`)!;
+		const state = (siteId: string) => card(siteId).querySelector(".site-state");
+		expect(state(gift.id)).toBeNull();
+		expect(state(app.id)?.textContent).toBe("Live");
+		expect(state(old.id)?.textContent).toBe("Taken down");
+		expect(state(draft.id)?.textContent).toBe("Publishing…");
+		answers.set(gift.id, "private").set(app.id, "private").set(old.id, "live").set(draft.id, "live");
+		sites.update();
+		expect(state(gift.id)?.textContent).toBe("Not live yet");
+		expect(state(gift.id)?.querySelector(".site-dot")).toBeNull();
+		expect(state(app.id)?.textContent).toBe("Live");
+		expect(keyOf(card(app.id))).not.toBeNull();
+		expect(state(old.id)?.textContent).toBe("Taken down");
+		expect(state(draft.id)?.textContent).toBe("Publishing…");
+		answers.set(gift.id, "live");
+		sites.update();
+		expect(state(gift.id)?.textContent).toBe("Live");
+		expect(state(gift.id)?.querySelector(".site-dot")).not.toBeNull();
+		expect(keyOf(card(gift.id))).toBeNull();
+		answers.delete(gift.id);
+		sites.update();
+		expect(state(gift.id)).toBeNull();
+		setLanguagePreference("da");
+		answers.set(gift.id, "private");
+		sites.update();
+		expect(state(gift.id)?.textContent).toBe("Ikke live endnu");
+		answers.set(gift.id, "live");
+		sites.update();
+		expect(state(gift.id)?.textContent).toBe("Live");
+		expect(state(old.id)?.textContent).toBe("Taget ned");
 	});
 
 	it("wears the app card's frame and lays its key above the row's link", () => {
@@ -401,7 +455,7 @@ describe("A site a message links, in a thread", () => {
 			projection: { items: [item], hiddenCount: 0, lastSequence: 1 },
 		});
 		view.update();
-		return { view, calls };
+		return { view, calls, company };
 	}
 
 	it("draws an agent's message with its site's card once the company's sites are read", async () => {
@@ -420,6 +474,21 @@ describe("A site a message links, in a thread", () => {
 		const parts = [...message.querySelectorAll(":scope > .bubble")].map((part) => part.firstElementChild?.className);
 		expect(parts).toEqual(["text", "app-cards site-cards"]);
 		expect(message.querySelector(".site-card .app-card-title")?.textContent).toBe("Wristband shop");
+	});
+
+	it("follows what the company knows of whether everyone can open the site, as it comes", async () => {
+		const { view, company } = await thread("It is up: https://saml-gift-message.qorpera.com/");
+		const state = () => view.el.querySelector(".site-card .site-state");
+		expect(state()).toBeNull();
+		company.store.set({ sitesPublic: new Map([[gift.id, false]]) });
+		await settle();
+		expect(state()?.textContent).toBe("Not live yet");
+		company.store.set({ sitesPublic: new Map([[gift.id, true]]) });
+		await settle();
+		expect(state()?.textContent).toBe("Live");
+		company.store.set({ sitesTakenDown: new Set([gift.id]) });
+		await settle();
+		expect(state()?.textContent).toBe("Not live yet");
 	});
 
 	it("reads no sites while the company has none, and draws the link as before", async () => {

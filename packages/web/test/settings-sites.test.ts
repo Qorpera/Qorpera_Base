@@ -189,10 +189,7 @@ describe("Sites: the rows", () => {
 		expect(row.getAttribute("aria-label")).toBe("Wristband shop");
 		expect(row.querySelector("svg.site-emblem")).not.toBeNull();
 		expect(row.querySelector(".site-name")?.textContent).toBe("Wristband shop");
-		// The state is a dot and a word; when and by whom it was published is its tip. No sizes, file counts or folders.
-		const state = row.querySelector<HTMLElement>(".site-state")!;
-		expect(state.textContent).toBe("Live");
-		expect(state.title).toMatch(/^Published .+ by Co-Founder$/);
+		expect(row.querySelector(".site-state, .site-public-badge")).toBeNull();
 		expect(row.textContent).not.toMatch(/files|KiB|product\/|From /);
 		// The link, as the page shows it, copies on a press; the arrow opens the site in a new tab.
 		expect(control(shop.id, "copy-link")?.textContent).toBe("sites.qorpera.com/wristband-shop");
@@ -1001,7 +998,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		expect(buttonsIn(link)).toEqual([]);
 		// A site not taken down is as before; a project's site keeps its way to What's new.
 		const other = rowOf(gift.id)!;
-		expect(other.querySelector(".site-state")?.textContent).toBe("Live");
+		expect(other.querySelector(".site-state")).toBeNull();
 		expect(other.querySelector(".site-down")).toBeNull();
 		expect(control(gift.id, "copy-link")?.textContent).toBe("sites.qorpera.com/gift-message");
 		expect(rowOf(gift.id)?.querySelector(".site-secret")).toBeNull();
@@ -2036,6 +2033,25 @@ describe("Sites: a website has no password, an app link keeps its own", () => {
 		expect(menuLabels().map((item) => item.label)).toEqual(["Change password", "Make public", "Take offline"]);
 		openMenu()?.close();
 		expect(client.password).not.toHaveBeenCalled();
+	});
+
+	it("calls a website nothing while whether everyone can open it is unknown, then what the read says", async () => {
+		const hosting = hostingOf({ [shop.id]: true });
+		const ready = await hosting.read();
+		const held = deferred<CompanySiteHostingState>();
+		vi.mocked(hosting.read).mockImplementationOnce(() => held.promise);
+		setup([shop, summer, draft, app], admin, undefined, { hosting });
+		await settle();
+		expect([word(shop.id), badge(shop.id)]).toEqual([null, null]);
+		expect([word(summer.id), badge(summer.id)]).toEqual([null, null]);
+		expect(word(draft.id)).toBe("Publishing…");
+		expect([word(app.id), badge(app.id)]).toEqual(["Live", null]);
+		held.resolve(ready);
+		await settle();
+		expect([word(shop.id), badge(shop.id)]).toEqual([null, "Live"]);
+		expect([word(summer.id), badge(summer.id)]).toEqual([null, "Not live yet"]);
+		expect(word(draft.id)).toBe("Publishing…");
+		expect([word(app.id), badge(app.id)]).toEqual(["Live", null]);
 	});
 
 	it("puts a website live and takes it back in the owner's words, and an app link public as before", async () => {

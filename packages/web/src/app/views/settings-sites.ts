@@ -1355,7 +1355,7 @@ export class SitesView {
 				"div",
 				{ class: "site-head" },
 				h("strong", { class: "site-name" }, name),
-				liveBadge && site.state === "live" ? null : stateOf(site, Boolean(down)),
+				website && !down && site.state === "live" ? null : stateOf(site, Boolean(down)),
 				publicBadge,
 				kindBadge,
 				from,

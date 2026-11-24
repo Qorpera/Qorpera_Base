@@ -1,7 +1,7 @@
 import type { CodeReleaseLive, CodeReleaseSite, CodeReleases } from "../../cloud/releases.ts";
 import { button, fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import type { CompanyController } from "../company.ts";
+import { type CompanyController, sitePublicAnswer } from "../company.ts";
 import {
 	keyOf,
 	quieted,
@@ -71,6 +71,7 @@ export class WhatsNewView {
 	readonly #desk: ReleaseDesk;
 	/** The change cards drawn, by what they show: a draw keeps them, and their pictures, as they are. */
 	#cards = new Map<string, HTMLElement>();
+	#notLiveDrawn = "";
 
 	constructor(company: CompanyController, client: ReleaseClient, signal: AbortSignal, options: WhatsNewOptions = {}) {
 		this.#company = company;
@@ -79,6 +80,10 @@ export class WhatsNewView {
 		this.#desk = new ReleaseDesk(company, client, this.#lifetime.signal, options, (focusKey) => this.#draw(focusKey));
 		this.#draw();
 		void this.#desk.refresh();
+		const unsubscribe = company.store.subscribe(() => {
+			if (this.#notLiveKey() !== this.#notLiveDrawn) this.#draw();
+		});
+		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
 	}
 
 	dispose(): void {
@@ -117,9 +122,15 @@ export class WhatsNewView {
 	}
 
 	#notLive(slug: string): boolean {
-		const { siteList, sitesPublic } = this.#company.store.get();
-		const site = siteList?.find((item) => item.slug === slug && item.kind === "files");
-		return site !== undefined && sitesPublic?.get(site.id) === false;
+		const state = this.#company.store.get();
+		const site = state.siteList?.find((item) => item.slug === slug && item.kind === "files");
+		return site !== undefined && sitePublicAnswer(state, site.id) === "private";
+	}
+
+	#notLiveKey(): string {
+		return (this.#desk.releases?.sites ?? [])
+			.map((site) => (site.site ? this.#notLive(site.site.slug) : ""))
+			.join(",");
 	}
 
 	/** What is live, as a row of the Sites page (styles/sites.css): the Sites globe, the version and who said go, where
@@ -279,6 +290,7 @@ export class WhatsNewView {
 
 	#draw(focusKey?: string): void {
 		if (this.#lifetime.signal.aborted) return;
+		this.#notLiveDrawn = this.#notLiveKey();
 		const active = document.activeElement as HTMLElement | null;
 		const key = focusKey ?? (this.el.contains(active) ? active?.dataset.focusKey : undefined);
 		const releases = this.#desk.releases;
