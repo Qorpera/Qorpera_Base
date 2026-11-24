@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { JsonValue } from "@qorpera/contracts";
+import { describeSurfaceBlocks, type JsonValue, starterSurfaceLayout } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { cloudActionEffect, cloudActionReviewMandate } from "../src/cloud-action-review.ts";
 import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
@@ -583,10 +583,8 @@ describe("cloud surface runtime tools", () => {
 		});
 		expect(identitySelf).toContain("## Live Shared Company Files");
 		expect(identitySelf).toContain("automatically recompile `identity/tokens.css`");
-		expect(identitySelf).toContain("`identity/voice.md` and `identity/brief.md`");
-		expect(identitySelf).toContain(
-			"do not hand-edit `identity/tokens.css` or create standalone HTML/CSS showcase pages",
-		);
+		expect(identitySelf).not.toContain("Identity Studio Projection");
+		expect(identitySelf).not.toContain("Palette, Typography, Design System");
 	});
 
 	it("bridges Surface tools to control-plane RPCs via createControlPlaneSurfaceToolsPort", async () => {
@@ -1591,7 +1589,12 @@ describe("cloud surface runtime tools", () => {
 					return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: entry !== null, entry };
 				}
 				if (method === "qorpera_folder_list") {
-					return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries: [], next: null };
+					const parent = `${args.p_parent as string}/`;
+					const entries = [...folderFiles.keys()]
+						.filter((path) => path.startsWith(parent) && !path.slice(parent.length).includes("/"))
+						.sort()
+						.map((path) => folderEntry(path));
+					return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries, next: null };
 				}
 				if (method === "qorpera_folder_record_release") {
 					return {
@@ -2233,7 +2236,7 @@ describe("cloud surface runtime tools", () => {
 		}
 	});
 
-	it("threads surfaceKind and productFolderRoots from qorpera_native_surface_read_session_turn into Product Studio instructions and shared specs", async () => {
+	it("threads the interface kind, icon and folder from qorpera_native_surface_read_session_turn into the page contract and shared specs", async () => {
 		const tempRoot = await mkdtemp(join(tmpdir(), "qorpera-product-surface-session-test-"));
 		const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
 		const binarySha256 = createHash("sha256")
@@ -2453,7 +2456,10 @@ describe("cloud surface runtime tools", () => {
 						surfaceId,
 						surfaceSlug: "thetabands",
 						surfaceTitle: "Thetabands",
-						surfaceKind: "product",
+						surfaceKind: "custom",
+						surfaceIcon: "box",
+						surfaceIsGlobal: false,
+						surfaceArchetype: "studio",
 						sourceKind: "folder",
 						prompt: "Design headband variants and audit suppliers.",
 						state: "queued",
@@ -2543,11 +2549,13 @@ describe("cloud surface runtime tools", () => {
 				turnParameters: unknown;
 			};
 			const instructions = evidence.threadParameters.developerInstructions ?? "";
-			expect(instructions).toContain("Product Studio file layout");
+			expect(instructions).toContain(describeSurfaceBlocks());
+			expect(instructions).toContain(
+				`No surfaces/thetabands/layout.json yet, so the page shows the product starter:\n${JSON.stringify(starterSurfaceLayout("product"))}`,
+			);
+			expect(instructions).toContain('A report file (*.report.json) is {"category"');
+			expect(instructions).not.toContain("Product Studio file layout");
 			expect(instructions).not.toContain("When this surface represents a physical product");
-			expect(instructions).toContain("specs.json");
-			expect(instructions).toContain("vendors.json");
-			expect(instructions).toContain("<slug>.report.json");
 			expect(JSON.stringify(evidence.turnParameters)).toContain("Thetabands Gen 1");
 		} finally {
 			bundleSpy.mockRestore();

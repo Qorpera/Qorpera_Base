@@ -7,14 +7,17 @@ import {
 	parseInteger,
 	parseRecord,
 	parseStudioPatchOps,
+	parseSurfaceLayoutText,
 	parseSurfaceSlug,
 	parseUuid,
+	resolveStudioFolderPath,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_AUTOMATION_STATUSES,
 	SURFACE_FIGURES,
 	SURFACE_GROUPS,
 	SURFACE_KINDS,
+	SURFACE_LAYOUT_PATH,
 	SURFACE_MAX_CHANGE_SUMMARY_CHARS,
 	SURFACE_MAX_CHANGE_TITLE_CHARS,
 	SURFACE_MAX_COMPARE_VARIANTS,
@@ -41,6 +44,7 @@ import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
+	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 
@@ -1003,7 +1007,91 @@ export function createStartSurfaceSessionTool(
 	};
 }
 
-export function createStageSurfacePatchTool(sessionId: string, port: SurfacePatchToolPort): CloudNativeTool {
+export interface SurfaceLayoutStaging {
+	readonly folderRoot: string;
+	readLayout(signal: AbortSignal): Promise<string | null>;
+}
+
+function mergeLayoutJson(base: unknown, patch: Readonly<Record<string, unknown>>): Record<string, unknown> {
+	const target: Record<string, unknown> =
+		base && typeof base === "object" && !Array.isArray(base) ? { ...(base as Record<string, unknown>) } : {};
+	for (const [key, value] of Object.entries(patch)) {
+		if (DISALLOWED_MERGE_JSON_KEYS.has(key)) continue;
+		const prior = target[key];
+		if (value === null) delete target[key];
+		else if (
+			typeof value === "object" &&
+			!Array.isArray(value) &&
+			prior &&
+			typeof prior === "object" &&
+			!Array.isArray(prior)
+		)
+			target[key] = mergeLayoutJson(prior, value as Record<string, unknown>);
+		else target[key] = structuredClone(value);
+	}
+	return target;
+}
+
+const LAYOUT_REFUSAL_PREFIX = `${SURFACE_LAYOUT_PATH} would not draw:`;
+const LAYOUT_REFUSAL_FIX = "Fix it and stage the patch again; nothing was staged.";
+
+function layoutRefusal(problem: string): CloudToolRefusal {
+	const plain = problem.replace(/[^\u0020-\u007e]/g, "?");
+	const room = 1000 - LAYOUT_REFUSAL_PREFIX.length - LAYOUT_REFUSAL_FIX.length - 4;
+	return new CloudToolRefusal(
+		`${LAYOUT_REFUSAL_PREFIX} ${plain.length > room ? `${plain.slice(0, room)}...` : plain}. ${LAYOUT_REFUSAL_FIX}`,
+	);
+}
+
+export async function checkStagedSurfaceLayout(
+	ops: readonly StudioPatchOp[],
+	layout: SurfaceLayoutStaging,
+	signal: AbortSignal,
+): Promise<void> {
+	let layoutPath: string;
+	try {
+		layoutPath = resolveStudioFolderPath(layout.folderRoot, SURFACE_LAYOUT_PATH);
+	} catch {
+		return;
+	}
+	let text: string | null | undefined;
+	for (const op of ops) {
+		let path: string;
+		try {
+			path = resolveStudioFolderPath(layout.folderRoot, op.path);
+		} catch {
+			continue;
+		}
+		if (path !== layoutPath) continue;
+		if (op.op === "write_text") text = op.content;
+		else if (op.op === "delete") text = null;
+		else if (op.op === "write_file") throw layoutRefusal("it must be written as text with write_text");
+		else {
+			const prior = text === undefined ? await layout.readLayout(signal) : text;
+			let parsed: unknown = {};
+			if (prior !== null && prior.trim().length > 0) {
+				try {
+					parsed = JSON.parse(prior);
+				} catch {
+					throw layoutRefusal("the file it merges into is not JSON; write it whole with write_text");
+				}
+			}
+			text = `${JSON.stringify(mergeLayoutJson(parsed, op.patch), null, 2)}\n`;
+		}
+	}
+	if (text === undefined || text === null) return;
+	try {
+		parseSurfaceLayoutText(text);
+	} catch (error) {
+		throw layoutRefusal(error instanceof Error ? error.message : "it does not parse");
+	}
+}
+
+export function createStageSurfacePatchTool(
+	sessionId: string,
+	port: SurfacePatchToolPort,
+	layout?: SurfaceLayoutStaging,
+): CloudNativeTool {
 	return {
 		name: "stage_surface_patch",
 		source: "worker",
@@ -1111,6 +1199,18 @@ export function createStageSurfacePatchTool(sessionId: string, port: SurfacePatc
 				finishSession,
 			};
 		},
+		...(layout
+			? {
+					async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
+						await checkStagedSurfaceLayout(
+							(parsed as unknown as StageSurfacePatchRequest).ops,
+							layout,
+							context.signal,
+						);
+						return parsed;
+					},
+				}
+			: {}),
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as StageSurfacePatchRequest;
 			const result = await port.stageSurfacePatch(sessionId, parsed, context);

@@ -371,11 +371,11 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "An interface's Studio files now change only through staged changes that the member previews, toggles and approves. In a Studio or Identity session, company_write, company_edit, company_mkdir, moves and deletions inside the Studio folder are refused, and the session stages the change for the member instead. When you start a Studio session, ask for staged changes, not direct edits. Notes under the interface's notes folder are unaffected and can still be written directly.",
 	},
 	{
-		id: "product-studio-one-column",
+		id: "interface-pages-shaped-by-a-layout",
 		kind: "behaviour",
-		date: "2026-11-23",
-		title: "A Product Studio is one column with five fixed tabs",
-		text: "A Product Studio now always shows Overview, Specs, Vendors, Reports and Files, also before it holds anything. Overview is the product alone on its row, then its name, one line, colour dots and up to four short figures. When you start a Product Studio session, ask for a tagline (the one line under the name) and for the four figures that matter most first, each short, such as 14 h, 44 g or 1.995 kr. Every spec and the parts table show under Specs, vendors under Vendors, reports under Reports, the brief and other documents under Files. A Product Studio that holds only loose notes shows an empty Overview, so ask for structured specs, vendors and reports.",
+		date: "2026-11-24",
+		title: "An interface's page is shaped by a layout it can change",
+		text: "Every Studio interface's page, Identity and Product included, is now drawn from a layout: its tabs, and in each tab blocks such as a 3D model, a name and one line, colour dots, short figures, specs, tables, cards, reports and files, side by side when it helps, or a small app built for the page. A new interface starts from a starter layout. The session working on an interface sees that layout and can change it like any other file, as a staged change the member previews and approves. When you start a session, ask for the page the member wants, not only for files.",
 	},
 ]);
 

@@ -211,6 +211,7 @@ import {
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
 import {
+	cloudStudioFileReader,
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
 	extractPointToChangeTarget,
@@ -219,6 +220,7 @@ import {
 	runSurfaceSessionTurn,
 	type SurfaceSessionTurnExecutionOutcome,
 	type SurfaceSessionTurnInput,
+	surfaceArchetypeOf,
 } from "./cloud-surface-session-runner.ts";
 import {
 	type CloudSurfaceToolsPort,
@@ -2201,6 +2203,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const surfaceArchetype = surfaceArchetypeOf(sessionTurnRaw.surfaceArchetype);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const memberImagesSection = surfaceMemberImagesSection(
 			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
@@ -2213,6 +2216,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			surfaceSlug,
 			surfaceTitle,
 			...(typeof sessionTurnRaw.surfaceKind === "string" ? { surfaceKind: sessionTurnRaw.surfaceKind } : {}),
+			...(typeof sessionTurnRaw.surfaceIcon === "string" ? { surfaceIcon: sessionTurnRaw.surfaceIcon } : {}),
+			...(typeof sessionTurnRaw.surfaceIsGlobal === "boolean"
+				? { surfaceIsGlobal: sessionTurnRaw.surfaceIsGlobal }
+				: {}),
+			...(surfaceArchetype ? { surfaceArchetype } : {}),
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
@@ -2603,6 +2611,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 
 		const turnResult = await runSurfaceSessionTurn(turnInput, {
 			folder: folderClient,
+			readStudioFiles: cloudStudioFileReader(folderClient),
 			surfaceTools,
 			executeTurn: async (turnReq) =>
 				runModelTurn({
