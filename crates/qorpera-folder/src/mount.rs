@@ -46,7 +46,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A raced name is dropped again at 1, 2, 4 … ms after its change, CHASE_STEPS times (the last about 16 s after it);
@@ -400,12 +400,12 @@ impl<J> Drop for RetryQueue<J> {
 }
 
 struct Shared {
-	tree: Mutex<Tree>,
+	tree: RwLock<Tree>,
 	link: Link,
 	feed_up: AtomicBool,
 	listing: Mutex<HashSet<u64>>,
 	listed: Condvar,
-	handles: Mutex<HashMap<u64, Handle>>,
+	handles: RwLock<HashMap<u64, Handle>>,
 	next_fh: AtomicU64,
 	ttl: Duration,
 	answered: Mutex<Answered>,
@@ -416,7 +416,7 @@ struct Shared {
 	versions: Mutex<VersionMap>,
 	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
 	/// waited for (the order is a file's lock, then this map).
-	writing: Mutex<HashMap<u64, Arc<Mutex<Open>>>>,
+	writing: RwLock<HashMap<u64, Arc<Mutex<Open>>>>,
 	/// A writable view's own git files and caches on the machine's disk (`on_disk.rs`); None for a read-only view,
 	/// which shows the node's copy of every path.
 	local: Option<Local>,
@@ -453,8 +453,18 @@ impl Shared {
 
 	fn children_inner(&self, dir: u64, hold: Option<&str>, hold_all: bool) -> Result<(Arc<Vec<Child>>, bool, Vec<u64>), i32> {
 		loop {
-			let (path, started) = {
-				let mut tree = self.tree.lock().unwrap();
+			let (path, started) = if !hold_all && hold.is_none() {
+				let tree = self.tree.read().unwrap();
+				let Some(path) = tree.path(dir).map(str::to_string) else { return Err(libc::ENOENT) };
+				if tree.attr(dir).is_some_and(|a| a.kind != EntryKind::Folder) {
+					return Err(libc::ENOTDIR);
+				}
+				if let Some(listing) = tree.listing(dir) {
+					return Ok((listing, true, Vec::new()));
+				}
+				(path, tree.changes())
+			} else {
+				let mut tree = self.tree.write().unwrap();
 				let Some(path) = tree.path(dir).map(str::to_string) else { return Err(libc::ENOENT) };
 				if tree.attr(dir).is_some_and(|a| a.kind != EntryKind::Folder) {
 					return Err(libc::ENOTDIR);
@@ -490,7 +500,7 @@ impl Shared {
 			let fetched = self.link.list(&path).map_err(|f| f.errno()).map(|entries| {
 				let entries = entries.into_iter().filter(|e| valid_name(&e.name)).collect();
 				let keep = self.feed_up.load(Ordering::SeqCst);
-				let mut tree = self.tree.lock().unwrap();
+				let mut tree = self.tree.write().unwrap();
 				if hold_all {
 					tree.install_dir(dir, entries, started, keep)
 				} else {
@@ -517,7 +527,7 @@ impl Shared {
 		if inodes.is_empty() {
 			return;
 		}
-		let mut tree = self.tree.lock().unwrap();
+		let mut tree = self.tree.write().unwrap();
 		for &ino in inodes {
 			tree.forget(ino, 1);
 		}
@@ -526,7 +536,7 @@ impl Shared {
 	/// Current attributes of a node: from memory, or by listing its folder again.
 	fn attr(&self, ino: u64) -> Result<(Attr, bool), i32> {
 		let (parent, name) = {
-			let tree = self.tree.lock().unwrap();
+			let tree = self.tree.read().unwrap();
 			if let Some(a) = tree.attr(ino) {
 				return Ok((a, true));
 			}
@@ -538,7 +548,7 @@ impl Shared {
 			Some(c) if c.ino == ino => Ok((c.attr.clone(), kept)),
 			// A newer version got its own inode and this one keeps its version (detached); a path that is gone
 			// is gone.
-			_ => self.tree.lock().unwrap().attr(ino).map(|a| (a, kept)).ok_or(libc::ENOENT),
+			_ => self.tree.read().unwrap().attr(ino).map(|a| (a, kept)).ok_or(libc::ENOENT),
 		}
 	}
 
@@ -558,17 +568,17 @@ impl Shared {
 
 	fn handle(&self, h: Handle) -> FileHandle {
 		let fh = self.next_fh.fetch_add(1, Ordering::SeqCst);
-		self.handles.lock().unwrap().insert(fh, h);
+		self.handles.write().unwrap().insert(fh, h);
 		FileHandle(fh)
 	}
 
 	fn path_of(&self, ino: u64) -> Result<String, i32> {
-		self.tree.lock().unwrap().path(ino).map(str::to_string).ok_or(libc::ENOENT)
+		self.tree.read().unwrap().path(ino).map(str::to_string).ok_or(libc::ENOENT)
 	}
 
 	/// The attributes the kernel gets: a file open for writing here is as long as its writer says.
 	fn shown(&self, ino: u64, mut attr: Attr) -> Attr {
-		let open = self.writing.lock().unwrap().get(&ino).cloned();
+		let open = self.writing.read().unwrap().get(&ino).cloned();
 		if let Some(writer) = open.as_ref().and_then(|o| o.lock().unwrap().writer.as_ref().map(Writer::size)) {
 			attr.size = writer;
 		}
@@ -618,7 +628,7 @@ impl Shared {
 		}
 		// WHY: release self.tree before self.versions so version-map disk compaction never stalls FUSE handlers.
 		let current = {
-			let tree = self.tree.lock().unwrap();
+			let tree = self.tree.read().unwrap();
 			let its = tree.path(ino) == Some(path) && tree.last_seen(ino).is_some_and(|a| a.version == version);
 			if !its {
 				return;
@@ -642,7 +652,7 @@ impl Shared {
 	/// never make two node handles, and nothing else waits.
 	fn open_write(&self, ino: u64, path: &str, attr: &Attr, truncate: bool) -> Result<Arc<Mutex<Open>>, i32> {
 		loop {
-			let open = self.writing.lock().unwrap().entry(ino).or_insert_with(Open::new).clone();
+			let open = self.writing.write().unwrap().entry(ino).or_insert_with(Open::new).clone();
 			let mut o = open.lock().unwrap();
 			if !self.writes(ino, &open) {
 				// Closed and let go meanwhile, or its first open failed: start again.
@@ -669,7 +679,7 @@ impl Shared {
 			o.handles = 1;
 			// The node's version of it now (a truncate made one at once), on the same inode; before the file's lock goes,
 			// so a close through another handle never sees its version taken back.
-			self.tree.lock().unwrap().set_local(ino, Attr { size: opened.size, version: opened.version, ..attr.clone() });
+			self.tree.write().unwrap().set_local(ino, Attr { size: opened.size, version: opened.version, ..attr.clone() });
 			drop(o);
 			return Ok(open);
 		}
@@ -677,12 +687,12 @@ impl Shared {
 
 	/// Whether `open` is what the map holds for `ino` (called with the file's lock held).
 	fn writes(&self, ino: u64, open: &Arc<Mutex<Open>>) -> bool {
-		self.writing.lock().unwrap().get(&ino).is_some_and(|o| Arc::ptr_eq(o, open))
+		self.writing.read().unwrap().get(&ino).is_some_and(|o| Arc::ptr_eq(o, open))
 	}
 
 	/// The file is no longer written here (called with its lock held, no handle on it and the node's closed).
 	fn let_go(&self, ino: u64, open: &Arc<Mutex<Open>>) {
-		let mut writing = self.writing.lock().unwrap();
+		let mut writing = self.writing.write().unwrap();
 		if writing.get(&ino).is_some_and(|o| Arc::ptr_eq(o, open)) {
 			writing.remove(&ino);
 		}
@@ -693,7 +703,7 @@ impl Shared {
 	fn writer<'a>(&self, ino: u64, open: &'a mut Open) -> Result<&'a mut Writer, i32> {
 		if open.writer.is_none() {
 			let path = {
-				let tree = self.tree.lock().unwrap();
+				let tree = self.tree.read().unwrap();
 				// A file this mount removed, or replaced, since takes no more writes: its path holds another file now, or
 				// none. (One a newer version from the node replaced is still that path's file: a log published while a
 				// program that inherited its descriptor is quiet; the base tells the node which version it was.)
@@ -724,7 +734,7 @@ impl Shared {
 		let version = self.link.close_write(writer.handle, size)?;
 		let writer = open.writer.take().expect("held above");
 		let saved_path = {
-			let mut tree = self.tree.lock().unwrap();
+			let mut tree = self.tree.write().unwrap();
 			if tree.current(ino) {
 				let path = tree.path(ino).map(str::to_string);
 				if let Some(attr) = tree.last_seen(ino) {
@@ -797,7 +807,7 @@ impl Shared {
 	/// before the kernel's release) writes no more unless a write comes on it after all, which then finds what `f` left.
 	fn unwritten<T>(&self, ino: u64, f: impl FnOnce() -> Result<T, i32>) -> Result<T, i32> {
 		loop {
-			let open = self.writing.lock().unwrap().entry(ino).or_insert_with(Open::new).clone();
+			let open = self.writing.write().unwrap().entry(ino).or_insert_with(Open::new).clone();
 			let o = open.lock().unwrap();
 			if !self.writes(ino, &open) {
 				continue;
@@ -1080,7 +1090,7 @@ impl Filesystem for FolderFs {
 		if local::is_local(ino.0) {
 			self.s.kernel.forget(ino.0, nlookup);
 		} else {
-			self.s.tree.lock().unwrap().forget(ino.0, nlookup);
+			self.s.tree.write().unwrap().forget(ino.0, nlookup);
 		}
 	}
 
@@ -1123,7 +1133,7 @@ impl Filesystem for FolderFs {
 			eprintln!("qorpera-folder: could not record a directory read: {e}");
 			return reply.error(Errno::EIO);
 		}
-		let parent = self.s.tree.lock().unwrap().parent(ino.0).unwrap_or(ROOT);
+		let parent = self.s.tree.read().unwrap().parent(ino.0).unwrap_or(ROOT);
 		let mut entries = Vec::with_capacity(children.len() + 2);
 		entries.push(DirItem { ino: ino.0, kind: FileType::Directory, name: ".".to_string(), plus: DirPlus::Dot });
 		entries.push(DirItem { ino: parent, kind: FileType::Directory, name: "..".to_string(), plus: DirPlus::Dot });
@@ -1142,7 +1152,7 @@ impl Filesystem for FolderFs {
 
 	fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
 		let Some(mut reply) = self.served(reply) else { return };
-		let entries = match self.s.handles.lock().unwrap().get(&fh.0) {
+		let entries = match self.s.handles.read().unwrap().get(&fh.0) {
 			Some(Handle::Dir(entries, _, _)) => entries.clone(),
 			_ => return reply.error(Errno::EBADF),
 		};
@@ -1156,7 +1166,7 @@ impl Filesystem for FolderFs {
 
 	fn readdirplus(&self, _req: &Request, dir: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectoryPlus) {
 		let Some(mut reply) = self.served(reply) else { return };
-		let entries = match self.s.handles.lock().unwrap().get(&fh.0) {
+		let entries = match self.s.handles.read().unwrap().get(&fh.0) {
 			Some(Handle::Dir(entries, _, _)) => entries.clone(),
 			_ => return reply.error(Errno::EBADF),
 		};
@@ -1187,7 +1197,7 @@ impl Filesystem for FolderFs {
 				}
 				DirPlus::Node { attr, kept } => {
 					let (held, use_attr, ttl) = {
-						let mut tree = self.s.tree.lock().unwrap();
+						let mut tree = self.s.tree.write().unwrap();
 						let held = tree.hold(item.ino);
 						if held && prime_node && *kept && !node_ttl.is_zero() {
 							let fresh = self.s.writable && tree.path(item.ino).is_some_and(on_disk::fresh);
@@ -1209,7 +1219,7 @@ impl Filesystem for FolderFs {
 					let file_attr = self.s.file_attr(item.ino, &shown);
 					if reply.add(INodeNo(item.ino), next_off, &item.name, &ttl, &file_attr, Generation(0)) {
 						if held {
-							self.s.tree.lock().unwrap().forget(item.ino, 1);
+							self.s.tree.write().unwrap().forget(item.ino, 1);
 						}
 						break;
 					}
@@ -1221,7 +1231,7 @@ impl Filesystem for FolderFs {
 
 	fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
 		let Some(reply) = self.served(reply) else { return };
-		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
+		let handle = self.s.handles.write().unwrap().remove(&fh.0);
 		if let Some(Handle::Dir(_, local_key, node_holds)) = handle {
 			self.s.release_dir_holds(&node_holds);
 			if let (Some(key), Some(local)) = (local_key, &self.s.local) {
@@ -1242,7 +1252,7 @@ impl Filesystem for FolderFs {
 		let Some(reply) = self.local_open(ino.0, flags.0, write, reply) else { return };
 		// One this program moved into a cache, by the name the kernel moved it to: the kernel looks that up again, and
 		// finds the cache's file (the chase has it drop the name soon after).
-		if self.s.tree.lock().unwrap().in_cache(ino.0) {
+		if self.s.tree.read().unwrap().in_cache(ino.0) {
 			return reply.error(Errno::ESTALE);
 		}
 		let (attr, kept) = match self.s.attr(ino.0) {
@@ -1275,7 +1285,7 @@ impl Filesystem for FolderFs {
 		// Keep cached pages across opens while the feed is up and nothing writes the file here. They are this
 		// version's only: a newer version is another inode (tree.rs), and this program's own saves are what was written
 		// through this inode.
-		let writing = self.s.writing.lock().unwrap().contains_key(&ino.0);
+		let writing = self.s.writing.read().unwrap().contains_key(&ino.0);
 		// The kernel can answer EOF for an empty file without sending a read. Its empty content is already known at
 		// this read-only open, so remember that version before a later writer or feed change can replace it. A file
 		// being written here instead reads from its writer; its listed size may not describe those bytes.
@@ -1305,7 +1315,7 @@ impl Filesystem for FolderFs {
 		};
 		// A new file, where the folder's listing has none: this view's own until a boundary publishes it (`Unpublished`).
 		let fresh = request.exclusive || {
-			let tree = self.s.tree.lock().unwrap();
+			let tree = self.s.tree.read().unwrap();
 			tree.listing(parent.0).is_some_and(|l| find_child(&l, &name).is_none())
 		};
 		let noted = fresh && self.s.unpublished.lock().unwrap().note(&path);
@@ -1321,7 +1331,7 @@ impl Filesystem for FolderFs {
 		let mut attr =
 			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version, authority: None };
 		let ino = {
-			let mut tree = self.s.tree.lock().unwrap();
+			let mut tree = self.s.tree.write().unwrap();
 			if request.exclusive {
 				on_disk::locked(&mut tree, &path);
 			}
@@ -1333,20 +1343,20 @@ impl Filesystem for FolderFs {
 			o.writer = Some(Writer::new(opened.handle, opened.size));
 			o.handles = 1;
 		}
-		self.s.writing.lock().unwrap().insert(ino, open.clone());
+		self.s.writing.write().unwrap().insert(ino, open.clone());
 		// A program that makes a file executable at create (a checkout, `cp` of a script) gets the bit at once.
 		if mode & !umask & 0o100 != 0 {
 			match self.s.link.set_executable(&path, None, true) {
 				Ok(version) => {
 					attr.executable = true;
 					attr.version = version;
-					self.s.tree.lock().unwrap().set_local(ino, attr.clone());
+					self.s.tree.write().unwrap().set_local(ino, attr.clone());
 				}
 				Err(f) => {
 					// The file is made, but the program gets no handle on it: it is closed at the node, and the kernel
 					// holds no entry for it.
 					self.s.leave(ino, open);
-					self.s.tree.lock().unwrap().forget(ino, 1);
+					self.s.tree.write().unwrap().forget(ino, 1);
 					return reply.error(errno(f));
 				}
 			}
@@ -1371,14 +1381,14 @@ impl Filesystem for FolderFs {
 	) {
 		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_read(fh.0, offset, size, reply) else { return };
-		let (ino, file, written) = match self.s.handles.lock().unwrap().get(&fh.0) {
+		let (ino, file, written) = match self.s.handles.read().unwrap().get(&fh.0) {
 			Some(Handle::File { ino, path, version, size }) => (*ino, Some((path.clone(), version.clone(), *size)), None),
 			Some(Handle::Write { ino, open, .. }) => (*ino, None, Some(open.clone())),
 			_ => return reply.error(Errno::EBADF),
 		};
 		// A file being written here reads as written, whichever handle reads it (once the node has closed it, it reads as
 		// the version that close made).
-		let writing = written.or_else(|| self.s.writing.lock().unwrap().get(&ino).cloned());
+		let writing = written.or_else(|| self.s.writing.read().unwrap().get(&ino).cloned());
 		if let Some(open) = writing {
 			let mut o = open.lock().unwrap();
 			if let Some(writer) = o.writer.as_mut() {
@@ -1392,7 +1402,7 @@ impl Filesystem for FolderFs {
 		// An inode this program saved goes on as the version it saved (the same inode); any other is the version it
 		// was opened at.
 		let current = {
-			let tree = self.s.tree.lock().unwrap();
+			let tree = self.s.tree.read().unwrap();
 			match (tree.path(ino), tree.attr(ino)) {
 				(Some(p), Some(a)) if a.kind == EntryKind::File => Some((p.to_string(), a.version, a.size)),
 				_ => None,
@@ -1423,7 +1433,7 @@ impl Filesystem for FolderFs {
 				if matches!(&f, Fail::Remote(e) if e.code == code::STALE) {
 					// The file changed under this open file. Forget it here; the kernel hears from the
 					// feed (telling it from inside a read could deadlock on the page being read).
-					self.s.tree.lock().unwrap().invalidate([path.as_str()]);
+					self.s.tree.write().unwrap().invalidate([path.as_str()]);
 				} else {
 					eprintln!("qorpera-folder: read failed: {f}");
 				}
@@ -1447,7 +1457,7 @@ impl Filesystem for FolderFs {
 		let Some(reply) = self.served(reply) else { return };
 		let cache = write_flags.contains(WriteFlags::FUSE_WRITE_CACHE);
 		let Some(reply) = self.local_write(fh.0, offset, data, cache, reply) else { return };
-		let (ino, open) = match self.s.handles.lock().unwrap().get(&fh.0) {
+		let (ino, open) = match self.s.handles.read().unwrap().get(&fh.0) {
 			Some(Handle::Write { ino, open, .. }) => (*ino, open.clone()),
 			_ => return reply.error(Errno::EBADF),
 		};
@@ -1473,7 +1483,7 @@ impl Filesystem for FolderFs {
 	fn flush(&self, req: &Request, _ino: INodeNo, fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
 		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_handle(fh.0, false, false, reply) else { return };
-		let (ino, open, opener) = match self.s.handles.lock().unwrap().get(&fh.0) {
+		let (ino, open, opener) = match self.s.handles.read().unwrap().get(&fh.0) {
 			Some(Handle::Write { ino, open, opener }) => (*ino, open.clone(), *opener),
 			_ => return reply.ok(),
 		};
@@ -1496,7 +1506,7 @@ impl Filesystem for FolderFs {
 	fn fsync(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
 		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_handle(fh.0, true, false, reply) else { return };
-		let open = match self.s.handles.lock().unwrap().get(&fh.0) {
+		let open = match self.s.handles.read().unwrap().get(&fh.0) {
 			Some(Handle::Write { open, .. }) => open.clone(),
 			_ => return reply.ok(),
 		};
@@ -1519,7 +1529,7 @@ impl Filesystem for FolderFs {
 	) {
 		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_handle(fh.0, false, true, reply) else { return };
-		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
+		let handle = self.s.handles.write().unwrap().remove(&fh.0);
 		if let Some(Handle::Write { ino, open, .. }) = handle {
 			self.s.leave(ino, open);
 		}
@@ -1583,7 +1593,7 @@ impl Filesystem for FolderFs {
 				match self.s.link.set_executable(&path, base, executable) {
 					Ok(version) => {
 						self.s.versions.lock().unwrap().saved(&path, &version);
-						self.s.tree.lock().unwrap().set_local(ino.0, Attr { executable, version, ..current });
+						self.s.tree.write().unwrap().set_local(ino.0, Attr { executable, version, ..current });
 					}
 					Err(f) => return reply.error(errno(f)),
 				}
@@ -1605,7 +1615,7 @@ impl Filesystem for FolderFs {
 		}
 		self.caches_gone(&path);
 		let attr = Attr { kind: EntryKind::Folder, size: 0, mtime_ms: now_ms(), executable: false, version: String::new(), authority: None };
-		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
+		let ino = self.s.tree.write().unwrap().add_local(parent.0, &name, attr.clone());
 		reply.entry(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0));
 	}
 
@@ -1662,7 +1672,7 @@ impl Filesystem for FolderFs {
 		};
 		let index = self.index_before(&from, &to, &source);
 		let fresh = {
-			let tree = self.s.tree.lock().unwrap();
+			let tree = self.s.tree.read().unwrap();
 			tree.listing(newparent.0).is_some_and(|l| find_child(&l, &to_name).is_none())
 		};
 		let (stays, noted) = self.s.unpublished.lock().unwrap().renaming(&from, &to, folder, fresh);
@@ -1674,7 +1684,7 @@ impl Filesystem for FolderFs {
 		}
 		self.s.unpublished.lock().unwrap().renamed(&from, &to, folder, stays);
 		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
-		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
+		self.s.tree.write().unwrap().renamed_local(&from, &to, newparent.0);
 		let told = if folder { self.caches_renamed(held, &from, &to) } else { Ok(()) };
 		self.index_after(&to, index);
 		match told {
@@ -1717,7 +1727,7 @@ impl Filesystem for FolderFs {
 			Err(f) => {
 				if matches!(&f, Fail::Remote(e) if e.code == code::STALE) {
 					// Changed since it was listed: the next lookup lists its folder again.
-					self.s.tree.lock().unwrap().invalidate([path.as_str()]);
+					self.s.tree.write().unwrap().invalidate([path.as_str()]);
 				}
 				reply.error(errno(f))
 			}
@@ -1742,7 +1752,7 @@ impl Filesystem for FolderFs {
 		self.s.versions.lock().unwrap().saved(&path, &version);
 		let attr =
 			Attr { kind: EntryKind::Symlink, size: target.len() as u64, mtime_ms: now_ms(), executable: false, version, authority: None };
-		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
+		let ino = self.s.tree.write().unwrap().add_local(parent.0, &name, attr.clone());
 		reply.entry(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0));
 	}
 
@@ -1777,7 +1787,7 @@ impl Filesystem for FolderFs {
 			Ok(v) => v,
 			Err(f) => {
 				if matches!(&f, Fail::Remote(e) if e.code == code::STALE) {
-					self.s.tree.lock().unwrap().invalidate([from.as_str()]);
+					self.s.tree.write().unwrap().invalidate([from.as_str()]);
 				}
 				return reply.error(errno(f));
 			}
@@ -1787,13 +1797,13 @@ impl Filesystem for FolderFs {
 		// The source's kind, size and executable bit; the kernel takes a new node in the reply (proved on the test
 		// machine: a node of the same type with its own number).
 		let attr = Attr { version, mtime_ms: now_ms(), authority: None, ..attr };
-		let new = self.s.tree.lock().unwrap().add_local(newparent.0, &name, attr.clone());
+		let new = self.s.tree.write().unwrap().add_local(newparent.0, &name, attr.clone());
 		reply.entry(&self.s.ttl(true), &self.s.file_attr(new, &attr), Generation(0));
 	}
 
 	fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
 		let Some(reply) = self.served(reply) else { return };
-		let files = self.s.tree.lock().unwrap().known() as u64;
+		let files = self.s.tree.read().unwrap().known() as u64;
 		// Room is the company's, not this machine's: a writable mount says there is plenty, so programs that check
 		// before they save do save; the node and the core refuse what does not fit.
 		let (blocks, free) = if self.s.writable { (1 << 32, 1 << 31) } else { (0, 0) };
@@ -1822,7 +1832,7 @@ impl FolderFs {
 		}
 		self.s.versions.lock().unwrap().removed(&path);
 		self.s.unpublished.lock().unwrap().forget(&path);
-		self.s.tree.lock().unwrap().removed_local(&path);
+		self.s.tree.write().unwrap().removed_local(&path);
 		if folder {
 			self.caches_gone(&path);
 		}
@@ -1889,7 +1899,7 @@ fn follow(
 				}
 			}
 			let (inval, raced) = {
-				let mut tree = s.tree.lock().unwrap();
+				let mut tree = s.tree.write().unwrap();
 				let inval = if change.resync {
 					tree.resync()
 				} else if change.paths.is_empty() {
@@ -1916,7 +1926,7 @@ fn follow(
 		feed.close();
 		s.feed_up.store(false, Ordering::SeqCst);
 		let (inval, raced) = {
-			let mut tree = s.tree.lock().unwrap();
+			let mut tree = s.tree.write().unwrap();
 			let inval = tree.resync();
 			let raced = s.raced(&inval, tree.changes());
 			(inval, raced)
@@ -1931,7 +1941,7 @@ fn follow(
 					eprintln!("qorpera-folder: feed back at change {}", ok.as_of_seq);
 					// Anything fetched before this moment may be older than the feed's start.
 					let (inval, raced) = {
-						let mut tree = s.tree.lock().unwrap();
+						let mut tree = s.tree.write().unwrap();
 						let inval = tree.resync();
 						let raced = s.raced(&inval, tree.changes());
 						(inval, raced)
@@ -2092,19 +2102,19 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	let (chased, names) = mpsc::channel();
 	let kernel = kernel::Kernel::new(local.as_ref());
 	let shared = Arc::new(Shared {
-		tree: Mutex::new(Tree::new()),
+		tree: RwLock::new(Tree::new()),
 		link,
 		feed_up: AtomicBool::new(true),
 		listing: Mutex::new(HashSet::new()),
 		listed: Condvar::new(),
-		handles: Mutex::new(HashMap::new()),
+		handles: RwLock::new(HashMap::new()),
 		next_fh: AtomicU64::new(1),
 		ttl: options.ttl,
 		answered: Mutex::new(Answered::default()),
 		writable,
 		owner,
 		versions: Mutex::new(versions),
-		writing: Mutex::new(HashMap::new()),
+		writing: RwLock::new(HashMap::new()),
 		local,
 		code_host: ok.code_host,
 		chased: chased.clone(),
