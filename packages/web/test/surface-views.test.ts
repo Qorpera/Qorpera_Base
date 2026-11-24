@@ -681,6 +681,7 @@ describe("the surface page", () => {
 			target,
 			originKind: "point_to_change",
 			originLabel: "PreorderCta · /pricing",
+			previewBaseChangeIds: [CHANGES[0]],
 		});
 		expect(view.el.querySelector(".surface-target-pill")).toBeNull();
 		view.dispose();

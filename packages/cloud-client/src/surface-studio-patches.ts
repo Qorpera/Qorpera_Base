@@ -123,6 +123,147 @@ function resolveChangeBaseFile(
 	return Object.hasOwn(baseFiles, path) ? (baseFiles[path] ?? null) : null;
 }
 
+export interface LineageChangeDescriptor {
+	readonly id: string;
+	readonly status?: string;
+	readonly affectedPaths: readonly string[];
+	readonly previewBaseChangeIds?: readonly string[];
+}
+
+export interface LineageReconciliationTarget {
+	readonly kind: "chain" | "missing_base";
+	readonly changeIds: readonly string[];
+	readonly conflictPaths: readonly string[];
+}
+
+function normalizeLineagePath(rawPath: string, normalizedRoot: string | null): string {
+	const cleaned = rawPath.trim().replace(/^\/+|\/+$/g, "");
+	if (!cleaned) return "";
+	if (normalizedRoot && cleaned.startsWith(`${normalizedRoot}/`)) {
+		return cleaned.slice(normalizedRoot.length + 1);
+	}
+	return cleaned;
+}
+
+export function detectLineageReconciliationTarget(
+	allOpenChanges: readonly LineageChangeDescriptor[],
+	selectedChangeIds: readonly string[],
+	folderRoot?: string | null,
+): LineageReconciliationTarget | null {
+	if (selectedChangeIds.length === 0 || allOpenChanges.length === 0) return null;
+	const normalizedRoot = folderRoot?.trim().replace(/^\/+|\/+$/g, "") || null;
+	const selectedSet = new Set(selectedChangeIds);
+	const openById = new Map<string, LineageChangeDescriptor>();
+	const pathsById = new Map<string, Set<string>>();
+	for (const change of allOpenChanges) {
+		openById.set(change.id, change);
+		const normalized = new Set<string>();
+		for (const p of change.affectedPaths) {
+			const clean = normalizeLineagePath(p, normalizedRoot);
+			if (clean) normalized.add(clean);
+		}
+		pathsById.set(change.id, normalized);
+	}
+
+	const selectedChanges = allOpenChanges.filter((change) => selectedSet.has(change.id));
+	if (selectedChanges.length === 0) return null;
+
+	const ancestorCache = new Map<string, Set<string>>();
+	const ancestorsOf = (changeId: string): Set<string> => {
+		const cached = ancestorCache.get(changeId);
+		if (cached) return cached;
+		const visited = new Set<string>();
+		const stack = [...(openById.get(changeId)?.previewBaseChangeIds ?? [])];
+		while (stack.length > 0) {
+			const current = stack.pop()!;
+			if (current === changeId || visited.has(current) || !openById.has(current)) continue;
+			visited.add(current);
+			for (const parent of openById.get(current)?.previewBaseChangeIds ?? []) {
+				if (!visited.has(parent)) stack.push(parent);
+			}
+		}
+		ancestorCache.set(changeId, visited);
+		return visited;
+	};
+
+	const overlapPaths = (aId: string, bId: string): string[] => {
+		const a = pathsById.get(aId);
+		const b = pathsById.get(bId);
+		if (!a || !b || a.size === 0 || b.size === 0) return [];
+		const out: string[] = [];
+		for (const path of a) {
+			if (b.has(path)) out.push(path);
+		}
+		return out;
+	};
+
+	const chainMemberSet = new Set<string>();
+	const chainOverlapPaths = new Set<string>();
+	for (const modifier of selectedChanges) {
+		const modifierAncestors = ancestorsOf(modifier.id);
+		for (const base of selectedChanges) {
+			if (base.id === modifier.id) continue;
+			const shared = overlapPaths(base.id, modifier.id);
+			if (shared.length === 0) continue;
+			let matchedDependent = false;
+			for (const dep of selectedChanges) {
+				if (dep.id === base.id || dep.id === modifier.id) continue;
+				const depAncestors = ancestorsOf(dep.id);
+				if (!depAncestors.has(base.id) || depAncestors.has(modifier.id)) continue;
+				if (modifierAncestors.has(dep.id) && overlapPaths(modifier.id, dep.id).length > 0) continue;
+				matchedDependent = true;
+				chainMemberSet.add(dep.id);
+				for (const anc of depAncestors) {
+					if (selectedSet.has(anc)) chainMemberSet.add(anc);
+				}
+			}
+			if (matchedDependent) {
+				chainMemberSet.add(base.id);
+				chainMemberSet.add(modifier.id);
+				for (const anc of ancestorsOf(base.id)) {
+					if (selectedSet.has(anc)) chainMemberSet.add(anc);
+				}
+				for (const anc of modifierAncestors) {
+					if (selectedSet.has(anc)) chainMemberSet.add(anc);
+				}
+				for (const path of shared) chainOverlapPaths.add(path);
+			}
+		}
+	}
+
+	if (chainMemberSet.size >= 3) {
+		return {
+			kind: "chain",
+			changeIds: selectedChanges.filter((c) => chainMemberSet.has(c.id)).map((c) => c.id),
+			conflictPaths: [...chainOverlapPaths].sort(),
+		};
+	}
+
+	const missingBaseTargets = new Set<string>();
+	const missingBasePaths = new Set<string>();
+	for (const change of selectedChanges) {
+		const baseIds = change.previewBaseChangeIds ?? [];
+		if (baseIds.length === 0) continue;
+		const hasMissingOpenBase = baseIds.some((baseId) => openById.has(baseId) && !selectedSet.has(baseId));
+		if (!hasMissingOpenBase) continue;
+		missingBaseTargets.add(change.id);
+		for (const anc of ancestorsOf(change.id)) {
+			if (selectedSet.has(anc)) missingBaseTargets.add(anc);
+		}
+		for (const path of pathsById.get(change.id) ?? []) missingBasePaths.add(path);
+	}
+
+	if (missingBaseTargets.size > 0) {
+		return {
+			kind: "missing_base",
+			changeIds: selectedChanges.filter((c) => missingBaseTargets.has(c.id)).map((c) => c.id),
+			conflictPaths: [...missingBasePaths].sort(),
+		};
+	}
+
+	return null;
+}
+
 function applyReconciledSubset(
 	orderedChanges: readonly StudioPatchChange[],
 	reconciliations: readonly StudioPreviewReconciliation[] | undefined,
@@ -138,15 +279,32 @@ function applyReconciledSubset(
 		};
 	}
 	const activeSet = new Set(orderedChanges.map((change) => change.changeId));
+	const previewBasesById = new Map<string, readonly string[]>();
+	for (const change of orderedChanges) {
+		if (change.previewBaseChangeIds && change.previewBaseChangeIds.length > 0) {
+			previewBasesById.set(change.changeId, change.previewBaseChangeIds);
+		}
+	}
 	const readyMatches = reconciliations
-		.filter(
-			(rec) =>
-				rec.status === "ready" &&
-				Array.isArray(rec.patchManifest) &&
-				rec.patchManifest.length > 0 &&
-				rec.selectedChangeIds.length > 0 &&
-				rec.selectedChangeIds.every((id) => activeSet.has(id)),
-		)
+		.filter((rec) => {
+			if (
+				rec.status !== "ready" ||
+				!Array.isArray(rec.patchManifest) ||
+				rec.patchManifest.length === 0 ||
+				rec.selectedChangeIds.length === 0 ||
+				!rec.selectedChangeIds.every((id) => activeSet.has(id))
+			) {
+				return false;
+			}
+			const coveredSet = new Set(rec.selectedChangeIds);
+			for (const id of rec.selectedChangeIds) {
+				const bases = previewBasesById.get(id);
+				if (bases?.some((baseId) => activeSet.has(baseId) && !coveredSet.has(baseId))) {
+					return false;
+				}
+			}
+			return true;
+		})
 		.sort((a, b) => b.selectedChangeIds.length - a.selectedChangeIds.length);
 
 	for (const chosen of readyMatches) {

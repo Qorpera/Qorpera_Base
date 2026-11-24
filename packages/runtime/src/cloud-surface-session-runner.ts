@@ -4,6 +4,7 @@ import {
 	type SurfaceFolderReader,
 	surfaceFolderRoots,
 } from "@qorpera/cloud-client/surface-folder-files";
+import type { StudioPreviewReconciliation } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	compileIdentityTokens,
 	describeSurfaceBlocks,
@@ -50,6 +51,12 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkill, type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
+import {
+	createSurfaceFolderPreviewOverlay,
+	parseSurfaceOmittedBaseChanges,
+	type SurfaceOmittedBaseChange,
+	type SurfacePreviewBaseChange,
+} from "./cloud-surface-preview-overlay.ts";
 import {
 	type CloudSurfaceToolsPort,
 	createStageSurfaceOpsActionTool,
@@ -130,6 +137,10 @@ export interface SurfaceSessionTurnInput {
 	readonly originRef?: unknown;
 	readonly conflictPaths?: readonly string[] | null;
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
+	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
+	readonly previewReconciliations?: readonly StudioPreviewReconciliation[] | null;
+	readonly chainMode?: boolean;
+	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
 	readonly mainSha?: string | null;
 	readonly leaseToken?: string | null;
 	readonly voiceModel?: string | null;
@@ -676,8 +687,26 @@ function buildFolderSurfaceInstructions(
 	notesRoot: string,
 	view: SurfaceStudioPageView,
 	skill: CloudStudioSkill | null,
+	options?: { readonly chainMode?: boolean; readonly hasOmittedBases?: boolean },
 ): string {
 	if (input.isInternal && input.state === "reconciling") {
+		if (options?.hasOmittedBases) {
+			return (
+				`This is an automatic silent reconciliation turn for the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), projecting ${folderRoot}/ from Company Files. ` +
+				"A previous preview change that this change built on was removed or toggled off. " +
+				"Your job is to adapt the staged change(s) listed in the Conflict Reconciliation section via stage_surface_patch so they work cleanly on the current published files without relying on the omitted preview changes. " +
+				"Inspect current published files read-only via company_read as needed, call stage_surface_patch once with complete, untruncated ops covering every required path, and finish with surface_reply. Never ask the founder questions."
+			);
+		}
+		if (options?.chainMode) {
+			return (
+				`This is an automatic silent reconciliation turn for the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), projecting ${folderRoot}/ from Company Files. ` +
+				"Your job is to combine the overlapping staged changes listed in the Conflict Reconciliation section into one cohesive set of StudioPatchOp operations via stage_surface_patch covering every overlapping file listed, AND adapt any downstream dependent change files whose tokens, names, or copy must match newer modifications to their base changes. " +
+				"Any non-conflicting files you do not emit are preserved automatically. " +
+				"If two changes directly contradict on the exact same choice, value, or sentence, prefer the newer change (higher Change number). " +
+				"Inspect current published files read-only via company_read as needed, call stage_surface_patch once with complete, untruncated ops, and finish with surface_reply. Never ask the founder questions."
+			);
+		}
 		return (
 			`This is an automatic silent reconciliation turn for the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), projecting ${folderRoot}/ from Company Files. ` +
 			"Your job is to combine the overlapping staged changes listed in the Conflict Reconciliation section into a single clean set of StudioPatchOp operations via stage_surface_patch covering every overlapping file listed. " +
@@ -946,13 +975,47 @@ export async function runSurfaceSessionTurn(
 	}
 
 	try {
+		const normalizedFolderRoot =
+			input.sourceKind === "folder"
+				? normalizeFolderRoot(
+						input.folderRoot ?? (input.surfaceSlug === "identity" ? "identity" : input.surfaceSlug),
+					)
+				: input.folderRoot
+					? normalizeFolderRoot(input.folderRoot)
+					: null;
+		const isInternalReconciliation = Boolean(input.isInternal && input.state === "reconciling");
+		const originRefRecord =
+			input.originRef && typeof input.originRef === "object" && !Array.isArray(input.originRef)
+				? (input.originRef as Record<string, unknown>)
+				: null;
+		const chainMode = input.chainMode ?? originRefRecord?.chainMode === true;
+		const omittedBaseChanges =
+			input.omittedBaseChanges ?? parseSurfaceOmittedBaseChanges(originRefRecord?.omittedBaseChanges);
+		const previewBaseChanges = input.previewBaseChanges ?? [];
+		const previewOverlay =
+			!isInternalReconciliation &&
+			input.sourceKind === "folder" &&
+			normalizedFolderRoot &&
+			folderReader &&
+			previewBaseChanges.length > 0
+				? createSurfaceFolderPreviewOverlay({
+						folderRoot: normalizedFolderRoot,
+						previewBaseChanges,
+						previewReconciliations: input.previewReconciliations ?? [],
+						liveReader: folderReader,
+					})
+				: null;
+		const previewOverlayStatus = previewOverlay ? await previewOverlay.prepare(signal) : null;
+		const effectiveFolderReader =
+			previewOverlay && folderReader ? previewOverlay.wrapTextReader(folderReader) : folderReader;
+
 		const explicitBrief = input.briefMarkdown?.trim() || null;
-		const [loaded, folderBrief] = folderReader
+		const [loaded, folderBrief] = effectiveFolderReader
 			? await Promise.all([
-					loadSurfaceSharedAssets(folderReader, signal, input.productFolderRoots),
+					loadSurfaceSharedAssets(effectiveFolderReader, signal, input.productFolderRoots),
 					explicitBrief === null
 						? readOptionalFolderText(
-								folderReader,
+								effectiveFolderReader,
 								`QorperaOS/surfaces/${input.surfaceSlug}/brief.md`,
 								MAX_SURFACE_BRIEF_BYTES,
 								signal,
@@ -986,16 +1049,7 @@ export async function runSurfaceSessionTurn(
 		}
 		const briefMarkdown = explicitBrief ?? folderBrief ?? input.briefSummary?.trim() ?? null;
 		const pointToChangeTarget = extractPointToChangeTarget(input.originRef);
-		const normalizedFolderRoot =
-			input.sourceKind === "folder"
-				? normalizeFolderRoot(
-						input.folderRoot ?? (input.surfaceSlug === "identity" ? "identity" : input.surfaceSlug),
-					)
-				: input.folderRoot
-					? normalizeFolderRoot(input.folderRoot)
-					: null;
 
-		const isInternalReconciliation = Boolean(input.isInternal && input.state === "reconciling");
 		const turnBrief = buildSurfaceTurnBrief({
 			sessionId: input.sessionId,
 			surfaceSlug: input.surfaceSlug,
@@ -1011,6 +1065,11 @@ export async function runSurfaceSessionTurn(
 			pointToChangeTarget,
 			conflictPaths: input.conflictPaths ?? null,
 			conflictDetails: input.conflictDetails ?? null,
+			previewBaseChanges,
+			previewOverlayStatus: previewOverlayStatus?.status ?? null,
+			previewSkippedPaths: previewOverlayStatus?.skippedPaths ?? null,
+			chainMode,
+			omittedBaseChanges,
 			mainSha: input.mainSha ?? null,
 		});
 
@@ -1035,9 +1094,9 @@ export async function runSurfaceSessionTurn(
 			const trackedSurfacePatch: SurfacePatchToolPort = {
 				async stageSurfacePatch(sessionIdArg, request, context) {
 					let effectiveRequest = request;
-					if (!input.isInternal && request.baseFiles === undefined && folderReader) {
+					if (!input.isInternal && request.baseFiles === undefined && effectiveFolderReader) {
 						const baseFiles = await collectFolderPatchBaseFiles(
-							folderReader,
+							effectiveFolderReader,
 							folderRoot,
 							request.ops,
 							context.signal,
@@ -1055,9 +1114,9 @@ export async function runSurfaceSessionTurn(
 				const rel = normalizeStudioRelativePath(relativePath, folderRoot);
 				if (!rel) return null;
 				if (stagedText.has(rel)) return stagedText.get(rel) ?? null;
-				if (!folderReader) return null;
+				if (!effectiveFolderReader) return null;
 				return readRawOptionalFolderText(
-					folderReader,
+					effectiveFolderReader,
 					`${folderRoot}/${rel}`,
 					MAX_STUDIO_TEXT_READ_BYTES,
 					reqSignal,
@@ -1069,15 +1128,16 @@ export async function runSurfaceSessionTurn(
 						operations: ports.folderToolsContext.operations,
 						identity: ports.folderToolsContext.identity,
 						surfaceFilePolicy: { mode: "surface_worker", writableRoots, stagedRoots },
+						...(previewOverlay ? { previewOverlay } : {}),
 					})
 				: [];
-			const layoutStaging: SurfaceLayoutStaging | undefined = folderReader
+			const layoutStaging: SurfaceLayoutStaging | undefined = effectiveFolderReader
 				? {
 						folderRoot,
 						waitingOps: input.openLayoutOps ?? null,
 						readLayout: (readSignal) =>
 							folderText(
-								folderReader,
+								effectiveFolderReader,
 								`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
 								MAX_STAGED_LAYOUT_READ_BYTES,
 								readSignal,
@@ -1114,9 +1174,23 @@ export async function runSurfaceSessionTurn(
 			const readStudioFiles =
 				ports.readStudioFiles ??
 				(ports.folderToolsContext ? cloudStudioFileReader(ports.folderToolsContext.folder) : undefined);
-			const contents = readStudioFiles
+			let contents = readStudioFiles
 				? await readStudioContents(readStudioFiles, { folderRoot, slug: input.surfaceSlug }, signal)
 				: null;
+			if (contents && previewOverlay) {
+				const layoutPath = `${folderRoot}/${SURFACE_LAYOUT_PATH}`;
+				const overlaidLayout = await previewOverlay.lookup(layoutPath, signal);
+				if (overlaidLayout?.kind === "file") {
+					contents = {
+						...contents,
+						files: { ...contents.files, [layoutPath]: overlaidLayout.content },
+					};
+				} else if (overlaidLayout?.kind === "deleted") {
+					const nextFiles = { ...contents.files };
+					delete nextFiles[layoutPath];
+					contents = { ...contents, files: nextFiles };
+				}
+			}
 			signal.throwIfAborted();
 			const view = surfaceStudioPageView(input, folderRoot, contents);
 			const readSkill: CloudStudioSkillReader | undefined = folderReader
@@ -1129,7 +1203,10 @@ export async function runSurfaceSessionTurn(
 			outcome = await ports.executeTurn({
 				input,
 				mode: "folder",
-				instructions: buildFolderSurfaceInstructions(input, folderRoot, notesRoot, view, skill),
+				instructions: buildFolderSurfaceInstructions(input, folderRoot, notesRoot, view, skill, {
+					chainMode,
+					hasOmittedBases: omittedBaseChanges.length > 0,
+				}),
 				turnBrief,
 				tools,
 				identityContext,
@@ -1192,6 +1269,9 @@ export async function runSurfaceSessionTurn(
 				pointToChangeTarget,
 				conflictPaths: input.conflictPaths ?? null,
 				conflictDetails: input.conflictDetails ?? null,
+				previewBaseChanges,
+				chainMode,
+				omittedBaseChanges,
 				mainSha: input.mainSha ?? null,
 				recordChange: recordChange.bind(ports.surfaceTools),
 			};

@@ -234,6 +234,7 @@ export interface StudioPatchChange {
 	readonly changeId: string;
 	readonly ops: readonly StudioPatchOp[];
 	readonly baseFiles?: Readonly<Record<string, string | null>> | null;
+	readonly previewBaseChangeIds?: readonly string[];
 }
 
 export interface SurfaceReconciliation {
@@ -319,6 +320,7 @@ export interface SurfaceChangeUnit {
 	readonly parentSha: string | null;
 	readonly headSha: string | null;
 	readonly dependsOnChangeIds: readonly string[];
+	readonly previewBaseChangeIds?: readonly string[];
 	readonly affectedPaths: readonly string[];
 	readonly patchManifest?: readonly StudioPatchOp[] | null;
 	readonly baseFiles?: Readonly<Record<string, string | null>> | null;
@@ -748,6 +750,10 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 					? parseStudioPatchOps(raw.patchManifest, `${label}.patchManifest`)
 					: null;
 	const baseFiles = parseOptionalBaseFiles(raw.baseFiles, `${label}.baseFiles`);
+	const previewBaseChangeIds =
+		raw.previewBaseChangeIds === undefined || raw.previewBaseChangeIds === null
+			? undefined
+			: parseUuidArray(raw.previewBaseChangeIds, `${label}.previewBaseChangeIds`, 64);
 	const publishedAt =
 		raw.publishedAt === undefined ? undefined : parseOptionalTimestamp(raw.publishedAt, `${label}.publishedAt`);
 	const approvedByUserId =
@@ -766,6 +772,7 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		parentSha: parseOptionalText(raw.parentSha, `${label}.parentSha`, 64),
 		headSha: parseOptionalText(raw.headSha, `${label}.headSha`, 64),
 		dependsOnChangeIds: parseUuidArray(raw.dependsOnChangeIds ?? [], `${label}.dependsOnChangeIds`, 64),
+		...(previewBaseChangeIds !== undefined ? { previewBaseChangeIds } : {}),
 		affectedPaths: parseStringArray(raw.affectedPaths ?? [], `${label}.affectedPaths`, 500, 512),
 		...(patchManifest !== undefined ? { patchManifest } : {}),
 		...(baseFiles !== undefined ? { baseFiles } : {}),

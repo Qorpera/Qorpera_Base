@@ -105,7 +105,8 @@ function sameOrderedChanges(
 		if (
 			prev[i]!.changeId !== next[i]!.changeId ||
 			prev[i]!.ops !== next[i]!.ops ||
-			prev[i]!.baseFiles !== next[i]!.baseFiles
+			prev[i]!.baseFiles !== next[i]!.baseFiles ||
+			prev[i]!.previewBaseChangeIds !== next[i]!.previewBaseChangeIds
 		)
 			return false;
 	}
@@ -342,6 +343,7 @@ export class SurfaceStudioView {
 						changeId: change.id,
 						ops: normalizeStudioPatchOps(ops, folderRoot),
 						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
 					});
 			}
 		}
@@ -452,6 +454,7 @@ export class SurfaceStudioView {
 			companyFiles,
 			workspace?.briefSummary ?? "",
 			workspace?.reconciliations,
+			state.reconciliationRequests,
 			linkedSurfacesKey,
 		];
 		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
@@ -696,6 +699,7 @@ export class SurfaceStudioView {
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
 			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+			readonly ordered: readonly StudioPatchChange[];
 			readonly initialLoading: boolean;
 			readonly updatingPhase: SurfaceUpdatePhase | null;
 			readonly activeOtherSurfaces: readonly SurfaceSummary[];
@@ -723,18 +727,63 @@ export class SurfaceStudioView {
 			const conflictIds = composition.conflictReport.changeIds;
 			const conflictPaths = composition.conflictReport.paths;
 			const existingRec = this.#options.store.reconciliationFor(surface.id, conflictIds);
-			if (!existingRec) {
-				void this.#options.store.ensureReconciliation(surface.id, conflictIds, conflictPaths);
-			}
-			if (existingRec?.status === "failed" || existingRec?.status === "ready") {
+			const reqState = this.#options.store.reconciliationRequestState(surface.id, conflictIds);
+			if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else if (existingRec?.status === "failed" || existingRec?.status === "ready" || reqState === "failed") {
 				reconciliationFailed = true;
 				this.#pendingRetryTarget = { changeIds: conflictIds, paths: conflictPaths };
-			} else {
+			} else if (!existingRec && this.#options.store.canEnsureReconciliation(surface.id)) {
+				void this.#options.store.ensureReconciliation(surface.id, conflictIds, conflictPaths);
 				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else {
 				this.#pendingRetryTarget = null;
 			}
 		} else {
-			this.#pendingRetryTarget = null;
+			const selectedIds = params.ordered.map((item) => item.changeId);
+			const lineageTarget = this.#options.store.lineageReconciliationTarget(surface.id, selectedIds);
+			if (lineageTarget) {
+				const existingRec = this.#options.store.reconciliationFor(surface.id, lineageTarget.changeIds);
+				const reqState = this.#options.store.reconciliationRequestState(surface.id, lineageTarget.changeIds);
+				if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (existingRec?.status === "failed" || (!existingRec && reqState === "failed")) {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: lineageTarget.changeIds,
+						paths: lineageTarget.conflictPaths,
+					};
+				} else if (!existingRec && reqState === undefined) {
+					if (this.#options.store.canEnsureReconciliation(surface.id)) {
+						void this.#options.store.ensureReconciliation(
+							surface.id,
+							lineageTarget.changeIds,
+							lineageTarget.conflictPaths,
+						);
+						reconcilingPreview = true;
+					}
+					this.#pendingRetryTarget = null;
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			} else {
+				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
+				if (activeRec?.status === "queued" || activeRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (activeRec?.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: activeRec.selectedChangeIds,
+						paths: activeRec.conflictPaths ?? [],
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			}
 		}
 
 		const badgeText =
