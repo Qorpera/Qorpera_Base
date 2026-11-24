@@ -406,6 +406,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in its layout. When a member asks for a video, walkthrough or visual breakdown, start a Studio session on that interface so it stages an animated breakdown and records spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
 	},
 	{
+		id: "split-surface-report-deliverables",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "Reports and posts stage one deliverable per change",
+		text: "Studio and report sessions now stage each report, analysis, essay or blog post as its own staged change rather than bundling several pieces together, and malformed report payloads are refused at stage time. Write finished reports and posts as structured reports (or standalone HTML pages when bespoke presentation is requested) instead of raw Markdown, and members open each piece directly from its change row in Preview before approving it.",
+	},
+	{
 		id: "surface-single-session-option-groups",
 		kind: "capability",
 		date: "2026-11-24",

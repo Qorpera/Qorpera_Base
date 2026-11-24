@@ -142,13 +142,19 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	if (folderRoot) headerLines.push(`Folder root: ${folderRoot}`);
 	if (explorationVariantLabel) headerLines.push(`Exploration direction: ${explorationVariantLabel}`);
 
+	const isFolderOnly = Boolean(folderRoot && !repositoryKey);
 	const sections: string[] = [
 		headerLines.join("\n"),
-		"## Surface Projection & Parallel Preview\n" +
-			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview (resolving `site.folder` from `.qorpera/checks.json`, root `index.html`, `dist`/`build`/`out`/`public`, or `apps/<repo>*/index.html`; commit the built output folder when using a bundler). " +
-			"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
-			'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
-			"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
+		isFolderOnly
+			? "## Surface Projection & Parallel Preview\n" +
+				"This Surface projects its Company Files folder directly into live Preview. " +
+				"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving them. " +
+				"Keep each staged change atomic, self-contained, and conflict-minimizing: stage one `stage_surface_patch` call per independent deliverable (for example, one change per report, article, blog post, or layout/section update) rather than bundling unrelated deliverables into a single change."
+			: "## Surface Projection & Parallel Preview\n" +
+				"This Surface projects its underlying codebase or Company Files folder directly into the live Preview (resolving `site.folder` from `.qorpera/checks.json`, root `index.html`, `dist`/`build`/`out`/`public`, or `apps/<repo>*/index.html`; commit the built output folder when using a bundler). " +
+				"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
+				'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
+				"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
 	if (explorationVariantLabel) {

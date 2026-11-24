@@ -1701,4 +1701,113 @@ describe("SurfaceReportView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("renders standalone HTML deliverables alongside reports, keeps switcher interactive, switches multiple Markdown files, and compares brand-new reports", async () => {
+		const reportSurface = summary({
+			id: "22222222-2222-4222-8222-222222222252",
+			slug: "editorial",
+			title: "Editorial",
+			archetype: "studio",
+			kind: "report",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/editorial",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: reportSurface.id,
+			title: "Q3 report",
+			kind: "folder_patch",
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "q3.report.json",
+					content: JSON.stringify({
+						slug: "q3-report",
+						headline: "Q3 Retention Analysis",
+						subtitle: "Retention rose across every tier.",
+						sections: [{ id: "s1", heading: "Findings", paragraphs: ["Strong quarter."] }],
+					}),
+				},
+			],
+		});
+		const c2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: reportSurface.id,
+			title: "Launch HTML post",
+			kind: "folder_patch",
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "launch.html",
+					content:
+						"<!doctype html><html><head><title>Launch Day Essay</title></head><body><h1>Launch</h1></body></html>",
+				},
+			],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [reportSurface]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace([session([], { surfaceId: reportSurface.id, changes: [c1, c2], openChangeCount: 2 })], {
+						surface: reportSurface,
+					}),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(reportSurface.slug);
+		await Promise.resolve();
+		store.selectReport("q3-report");
+
+		const view = new SurfaceReportView({
+			store,
+			surface: reportSurface,
+			signal: new AbortController().signal,
+			baseFiles: {},
+			timeSlice: false,
+		});
+		document.body.append(view.el);
+
+		const pills = [...view.el.querySelectorAll<HTMLButtonElement>(".report-switch-pill")];
+		expect(pills.map((pill) => pill.textContent)).toEqual(["Q3 Retention Analysis", "Launch Day Essay"]);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Q3 Retention Analysis");
+
+		pills[1]!.click();
+		expect(view.el.querySelector(".report-html-card h2")?.textContent).toBe("Launch Day Essay");
+		expect(view.el.querySelector("iframe.report-html-frame")).not.toBeNull();
+		expect(store.state.activeReportSlug).toBe("doc:surfaces/editorial/launch.html");
+
+		store.setMode("compare");
+		view.update();
+		const compareCards = [...view.el.querySelectorAll(".studio-compare-card")];
+		expect(compareCards).toHaveLength(2);
+		expect(compareCards[0]!.textContent).toContain("Q3 Retention Analysis");
+		expect(compareCards[0]!.textContent).toContain("Added");
+		expect(compareCards[1]!.textContent).toContain("Launch Day Essay");
+		view.dispose();
+
+		const mdView = new SurfaceReportView({
+			store,
+			surface: reportSurface,
+			signal: new AbortController().signal,
+			baseFiles: {
+				"surfaces/editorial/a.md": "# First Note\n\nAlpha body.",
+				"surfaces/editorial/b.md": "# Second Note\n\nBeta body.",
+			},
+			patches: {},
+			timeSlice: false,
+		});
+		store.setMode("live");
+		mdView.update();
+		const mdPills = [...mdView.el.querySelectorAll<HTMLButtonElement>(".report-switch-pill")];
+		expect(mdPills.map((pill) => pill.textContent)).toEqual(["First Note", "Second Note"]);
+		expect(mdView.el.querySelector(".report-article")?.textContent).toContain("Alpha body.");
+		expect(mdView.el.querySelector(".report-article")?.textContent).not.toContain("Beta body.");
+		mdPills[1]!.click();
+		expect(mdView.el.querySelector(".report-article")?.textContent).toContain("Beta body.");
+		mdView.dispose();
+		store.dispose();
+	});
 });

@@ -21,6 +21,7 @@ import {
 	COMPANY,
 	change,
 	fakeClient,
+	folderContents,
 	MESSAGE_IDS,
 	PREVIEW_IDS,
 	pointTarget,
@@ -1532,6 +1533,123 @@ describe("the surface page", () => {
 		store.setMode("preview");
 		view.update();
 		expect(mountDispose).toHaveBeenCalledTimes(1);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("shows per-change deliverable pills in the sidepanel, deduplicates session Notes, and opens staged articles and HTML pages directly", async () => {
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222261",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 2,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 retention report",
+			summary: "Adds cohort metrics and recommendations.",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3.report.json"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "reports/q3.report.json",
+					content: JSON.stringify({
+						slug: "q3-retention",
+						headline: "Q3 Retention Report",
+						readingTime: "3 min",
+						sections: [{ id: "s1", heading: "Highlights", paragraphs: ["Retention climbed."] }],
+					}),
+				},
+			],
+		});
+		const c2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Launch blog post",
+			summary: "Standalone HTML post for the launch.",
+			kind: "folder_patch",
+			affectedPaths: ["posts/launch.html"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "posts/launch.html",
+					content:
+						"<!doctype html><html><head><title>Launch Post</title></head><body><h1>Launch</h1></body></html>",
+				},
+			],
+		});
+		const sess = session([], {
+			id: SESSION,
+			surfaceId: studio.id,
+			title: "Content writer",
+			changes: [c1, c2],
+			openChangeCount: 2,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([sess], { surface: studio })),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => ({ el: document.createElement("div"), update: vi.fn(), dispose: vi.fn() }),
+				openMigration: () => undefined,
+			},
+			studio.slug,
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(drawer.querySelectorAll(".surface-agent-note")).toHaveLength(0);
+		const overviewPills = [...drawer.querySelectorAll<HTMLButtonElement>(".surface-overview-deliverable")];
+		expect(overviewPills).toHaveLength(2);
+		expect(overviewPills.map((pill) => pill.textContent)).toEqual(["Article", "HTML"]);
+
+		await store.toggleChange(studio.id, c1.id);
+		view.update();
+		expect(store.isChangeShown(c1.id)).toBe(false);
+
+		drawer.querySelectorAll<HTMLButtonElement>(".surface-overview-deliverable")[0]!.click();
+		await flush();
+		view.update();
+		expect(store.isChangeShown(c1.id)).toBe(true);
+		expect(store.state.mode).toBe("report");
+		expect(store.state.activeReportSlug).toBe("q3-retention");
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Q3 Retention Report");
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
+		view.update();
+		expect(drawer.querySelectorAll(".surface-agent-note")).toHaveLength(0);
+		const summaries = [...drawer.querySelectorAll(".surface-drawer-change-summary")].map((el) => el.textContent);
+		expect(summaries).toEqual(["Adds cohort metrics and recommendations.", "Standalone HTML post for the launch."]);
+		const focusedDeliverables = [...drawer.querySelectorAll<HTMLButtonElement>(".surface-drawer-deliverable")];
+		expect(focusedDeliverables).toHaveLength(2);
+		expect(focusedDeliverables[0]!.textContent).toContain("Q3 Retention Report");
+		expect(focusedDeliverables[0]!.classList.contains("is-open")).toBe(true);
+
+		focusedDeliverables[1]!.click();
+		await flush();
+		view.update();
+		expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/posts/launch.html");
+		expect(view.el.querySelector(".report-html-card h2")?.textContent).toBe("Launch Post");
+
 		view.dispose();
 		store.dispose();
 	});

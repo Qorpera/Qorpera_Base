@@ -582,7 +582,7 @@ function describeStudioPage(
 			: "";
 	if (view.page === "none") return "This interface's page is not drawn from a layout.";
 	if (view.page === "report") {
-		return `## This page\nThis interface is a reading page, not drawn from a layout: it shows every *.report.json and Markdown file in ${folderRoot}/ as an article.\n\n## File formats\n${SURFACE_REPORT_FORMAT}`;
+		return `## This page\nThis interface is a reading page, not drawn from a layout: it presents every *.report.json article and standalone .html document in ${folderRoot}/. Write each report, essay, or blog post as its own *.report.json article (or self-contained .html when bespoke layout is requested) in its own stage_surface_patch call rather than raw Markdown.\n\n## File formats\n${SURFACE_REPORT_FORMAT}`;
 	}
 	if (view.page === "unknown") {
 		const explainerBlock = voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA;
@@ -623,7 +623,8 @@ function buildFolderSurfaceInstructions(
 	return (
 		`This session works on the interface "${input.surfaceTitle}" (${input.surfaceSlug}); its page shows ${folderRoot}/ from Company Files. ` +
 		"Members preview staged patches, any of them on or off together, before they approve one. " +
-		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), one cohesive, conflict-minimizing patch per change. ` +
+		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), calling stage_surface_patch once per independent deliverable (one change per report, blog post, article, or distinct section update — never bundle multiple deliverables into one change). ` +
+		"Write reports, analyses, essays, and blog posts as structured *.report.json articles (or self-contained .html files when custom visual presentation is asked for), not raw .md files; keep .md for brief working notes. " +
 		"When the founder asks for multiple design, layout, or copy directions to flick through inside this session, stage each complete standalone alternative with stage_surface_patch using the same optionGroup slug (and optional optionGroupTitle) so they appear as a single multiple-choice picker in Changes — never embed a concept switcher or design-question UI into the real page or module. " +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.\n\n` +
 		describeStudioPage(view, folderRoot, input.voiceModel, input.voiceName) +
@@ -1023,7 +1024,9 @@ export async function runSurfaceSessionTurn(
 					]
 				: [];
 			const tools: CloudNativeTool[] = [
-				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging),
+				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
+					deferSessionCompletion: true,
+				}),
 				...narrateTool,
 				...folderTools,
 				...(ports.extraTools ?? []),

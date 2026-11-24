@@ -27,7 +27,7 @@ import {
 	type SurfacePreviewMode,
 	type SurfacesStore,
 	surfaceBySlug,
-	surfaceHasReports,
+	surfaceHasDeliverables,
 } from "../surfaces-store.ts";
 import { type AddressMark, SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
@@ -611,7 +611,7 @@ export class SurfaceView {
 		const look = store.lookOf(surface);
 		const workspace = state.workspaces[surface.id];
 		const preview = workspace?.previewState;
-		const reportMode = state.mode === "report" && look.kind !== "report" && surfaceHasReports(state, surface.id);
+		const reportMode = state.mode === "report" && look.kind !== "report" && surfaceHasDeliverables(state, surface.id);
 		const skeletonKind: SurfaceSkeletonKind =
 			reportMode || look.kind === "report"
 				? "report"
