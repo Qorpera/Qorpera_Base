@@ -795,8 +795,7 @@ export class SurfaceView {
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
 		const hasAgents = explorations.length + plainSessions.length > 0;
-		const previewing = state.mode === "preview" || state.mode === "compare";
-		const shownCount = previewing ? store.visiblePreviewChangeIds(surface.id).length : 0;
+		const shownCount = state.mode === "live" ? 0 : store.shownPreviewChangeCount(surface.id);
 		this.#canvas.classList.toggle("is-previewing-changes", shownCount > 0);
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";

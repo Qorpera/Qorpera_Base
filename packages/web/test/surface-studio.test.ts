@@ -1723,9 +1723,12 @@ describe("SurfaceReportView", () => {
 		});
 		document.body.append(view.el);
 		expect(view.el.querySelector(".studio-badge")).toBeNull();
+		expect(view.el.textContent).toContain("Q3, sharper");
 
 		await store.toggleChange(BRAND_ID, CHANGES[0]);
 		view.update();
+		expect(view.el.textContent).not.toContain("Q3, sharper");
+		expect(view.el.textContent).toContain("Q3");
 		expect(view.el.querySelector(".report-chrome")).not.toBeNull();
 		view.dispose();
 		store.dispose();

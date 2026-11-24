@@ -1250,6 +1250,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		expect(pill.querySelector(".surface-notch-count")?.textContent).toBe("1");
 		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
+		store.setMode("report");
+		view.update();
+		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
+		store.setMode("preview");
 
 		view.dispose();
 		store.dispose();
