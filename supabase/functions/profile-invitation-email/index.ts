@@ -1,5 +1,5 @@
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
-import { configuredSecretKeys, constantTimeIncludes, preferredServiceKey, readBoundedJson } from "../_shared/http-guards.ts";
+import { configuredSecretKeys, constantTimeIncludes, jsonResponse, preferredServiceKey, readBoundedJson } from "../_shared/http-guards.ts";
 import { createPostgrestClient, type PostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	type ClaimedInvitationDeliveries,
@@ -34,13 +34,6 @@ interface FunctionConfiguration {
 	resendApiKey: string;
 	from: string;
 	invitationUrl: string;
-}
-
-function jsonResponse(value: unknown, status = 200): Response {
-	return Response.json(value, {
-		status,
-		headers: { "cache-control": "no-store" },
-	});
 }
 
 function configuration(request: Request): FunctionConfiguration | Response {

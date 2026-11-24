@@ -1,6 +1,6 @@
-import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
-import { configuredSecretKeys, createTimedFetch, readBoundedJson } from "../_shared/http-guards.ts";
+import { configuredSecretKeys, createTimedFetch, jsonResponse, readBoundedJson } from "../_shared/http-guards.ts";
+import { createPostgrestClient, type PostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	parseAuthorizedArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
@@ -21,26 +21,17 @@ const WORKER_BUDGET_MS = 110_000;
 const GATEWAY_RESPONSE_MAX_BYTES = 64 * 1024;
 const RPC_FETCH = createTimedFetch({ timeoutMs: 15_000 });
 
-let cachedClient:
-	| { readonly url: string; readonly key: string; readonly client: ReturnType<typeof createClient> }
-	| undefined;
+let cachedClient: { readonly url: string; readonly key: string; readonly client: PostgrestClient } | undefined;
 
-function serviceClient(url: string, key: string): ReturnType<typeof createClient> {
+function serviceClient(url: string, key: string): PostgrestClient {
 	if (!cachedClient || cachedClient.url !== url || cachedClient.key !== key) {
 		cachedClient = {
 			url,
 			key,
-			client: createClient(url, key, {
-				auth: { autoRefreshToken: false, persistSession: false },
-				global: { fetch: RPC_FETCH },
-			}),
+			client: createPostgrestClient(url, key, { timeoutMs: 15_000, fetchImplementation: RPC_FETCH }),
 		};
 	}
 	return cachedClient.client;
-}
-
-function jsonResponse(value: unknown, status = 200): Response {
-	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
 function configuredServiceKeys(): string[] {
