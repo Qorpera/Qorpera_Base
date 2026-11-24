@@ -133,9 +133,9 @@ interface Company {
 }
 
 export const ORGANIZE_APPS_DESCRIPTION = [
-	"Sort the company's apps into groups in the apps drawer, where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, the file apps/groups.md: no member approval is needed, and every member sees a change at once.",
+	"Sort the company's apps into groups in the apps drawer, where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, the file apps/groups.md: no member approval is needed, and every member sees a change at once.",
 	"Actions:",
-	"- list: the layout as the drawer shows it, one line each in the file's own form: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) with its title, in its group; the groups by id and name, with how many apps they hold and their colour; the loose entries last. A long layout comes in pages: call again with the cursor it answers. An app that is not posted shows only once it is posted.",
+	"- list: the layout as the drawer shows it, one line each in the file's own form: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new) with its title, in its group; the groups by id and name, with how many apps they hold and their colour; the loose entries last. A long layout comes in pages: call again with the cursor it answers. An app that is not posted shows only once it is posted.",
 	"- create_group: a group called name, answering its id (a group of that name already there is that group); parent puts it inside another group, items moves those keys (or group:<id>) into it, in order, and colour gives it a colour.",
 	"- rename_group: group gets name; its id stays. colour_group: group gets colour, or none with null. ungroup: group goes, and what was in it stands where it stood.",
 	"- move: item (a key, or group:<id>) goes into group, or loose with group null, before the entry named by before, else last.",
@@ -158,7 +158,7 @@ const entryRef = (value: unknown, label: string): string => {
 		return `${APP_GROUP_KEY_PREFIX}${groupRef(value, label)}`;
 	if (typeof value !== "string" || !isAppDrawerKey(value))
 		throw new CloudToolArgumentRefusal(
-			`${label} must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) or group:<id>`,
+			`${label} must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new) or group:<id>`,
 		);
 	return value;
 };

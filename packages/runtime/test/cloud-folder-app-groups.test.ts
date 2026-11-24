@@ -255,14 +255,14 @@ Our own note: trips first.
 	for (const item of ["whats_new", "Whats-new", "page:whats-new", "news"]) {
 		expect(() => tool.parseArguments({ action: "move", item, group: null })).toThrow(CloudToolArgumentRefusal);
 		expect(() => tool.parseArguments({ action: "move", item, group: null })).toThrow(
-			"item must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) or group:<id>",
+			"item must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new) or group:<id>",
 		);
 	}
 	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
-		"(Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new)",
+		"(Mailbox, Members, Bank, each posted app, Concepts, What's new)",
 	);
 	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
-		"each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new)",
+		"each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new)",
 	);
 });
 

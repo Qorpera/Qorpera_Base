@@ -1143,7 +1143,7 @@ export function describeCloudAction(
 		if (ported && typeof args.livePort === "number") add("until now port", args.livePort);
 		add(
 			"effect",
-			"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
+			"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins copy the password from the link's card under the message that links it",
 		);
 	} else if (tool.name === "unpublish_site") {
 		// The call names only the slug, so the card is true for a website and an app link alike (v195).
