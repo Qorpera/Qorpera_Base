@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readSurfaceFolderFiles } from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
 import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +20,6 @@ import {
 	migrationPending,
 	normalizeStudioPatchOps,
 	PREVIEW_PASS_TTL_MS,
-	readSurfaceFolderFiles,
 	reportsOwnedBy,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,

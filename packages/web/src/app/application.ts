@@ -1,5 +1,10 @@
+import {
+	readSurfaceFolderFiles,
+	type SurfaceFolderContents,
+	surfaceFolderRoots,
+} from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
-import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
+import { inferSurfaceKind, type StudioBinaryRef, type SurfaceSummary } from "@qorpera/contracts";
 import type { User } from "@supabase/supabase-js";
 import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { CloudApi } from "../cloud/api.ts";
@@ -73,16 +78,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { inferSurfaceKind } from "./surface-kinds.ts";
-import {
-	attachSurfaces,
-	isLocalSurfaceId,
-	readSurfaceFolderFiles,
-	type SurfaceFolderContents,
-	SurfacesStore,
-	surfacesDisabledOf,
-	surfacesOf,
-} from "./surfaces-store.ts";
+import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -1001,10 +997,7 @@ export function mountApplication(
 				): Promise<SurfaceFolderContents | undefined> => {
 					const team = controller.store.get().team;
 					if (!team) return undefined;
-					const roots = [
-						surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
-						`QorperaOS/surfaces/${surface.slug}/notes`,
-					].filter((item): item is string => Boolean(item));
+					const roots = surfaceFolderRoots(surface);
 					if (!roots.length) return { files: {}, binaries: {} };
 					const readScope = new AbortController();
 					const forwardAbort = () => readScope.abort();
@@ -3139,10 +3132,7 @@ export function mountApplication(
 						surface: SurfaceSummary,
 						signal: AbortSignal,
 					): Promise<Readonly<Record<string, string>>> => {
-						const roots = [
-							surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
-							`QorperaOS/surfaces/${surface.slug}/notes`,
-						].filter((item): item is string => Boolean(item));
+						const roots = surfaceFolderRoots(surface);
 						const team = controller.store.get().team;
 						if (!roots.length || !team) return {};
 						const readSignal = AbortSignal.any([controller.signal, signal]);

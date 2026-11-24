@@ -1,4 +1,4 @@
-import type { SurfaceSpecListBlock, SurfaceTableBlock } from "@qorpera/contracts";
+import { SURFACE_MODEL_GROUPS, type SurfaceSpecListBlock, type SurfaceTableBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import { COLOR_VALUE } from "./colours.ts";
@@ -31,7 +31,7 @@ export interface SpecEntry {
 
 export const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
 export const TYPE_GROUPS = new Set(["font", "fonts", "typography", "type", "typeface"]);
-export const MODEL_GROUPS = new Set(["model", "3d", "geometry"]);
+export const MODEL_GROUPS: ReadonlySet<string> = new Set(SURFACE_MODEL_GROUPS);
 const MAX_INITIAL_TABLE_ROWS = 100;
 const EMPTY_ROWS = [0, 1, 2];
 
