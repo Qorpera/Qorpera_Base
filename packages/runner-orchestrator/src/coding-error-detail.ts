@@ -36,10 +36,6 @@ export function redactCodingErrorText(text: string): string {
 		);
 }
 
-/** What an error says beyond its fixed code, for an operator's log: a code host error's own detail (git's message, the
- * paths its rule names), else its message, or when that is a bare code its causes' (at most three deep). Made one line
- * and redacted (redactCodingErrorText), then cut to its first and last characters, MAX_DETAIL in all. Empty when it
- * says nothing beyond its code. */
 export function codingErrorDetail(error: unknown): string {
 	let said = "";
 	for (let current = error, depth = 0; depth < 4 && !said; depth++) {
