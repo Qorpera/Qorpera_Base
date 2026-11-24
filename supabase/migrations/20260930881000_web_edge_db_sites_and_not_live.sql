@@ -2,6 +2,7 @@ do $$
 begin
 	if to_regprocedure('public.qorpera_web_edge_snapshot()') is null
 		or to_regprocedure('public.qorpera_company_deleting(uuid)') is null
+		or to_regprocedure('public.qorpera_web_notify_route_change()') is null
 		or to_regclass('public.qorpera_company_site_deployments') is null
 		or not exists (select 1 from pg_roles where rolname = 'qorpera_web_router')
 		or strpos(pg_get_functiondef('public.qorpera_web_edge_snapshot()'::regprocedure), '''qorpera_web_router''') = 0 then
@@ -75,9 +76,7 @@ end $$;
 
 select pg_temp.web_edge_881000_patch('public.qorpera_web_edge_snapshot()'::regprocedure, array[
 $old$where sec.site_id = site.id$old$,
-$new$where sec.site_id = site.id
-						and (site.kind <> 'files'
-							or (site.is_public and coalesce(v_settings.enabled and v_settings.public_enabled, false)))$new$,
+$new$where sec.site_id = site.id and site.kind <> 'files'$new$,
 $old$'live_deployment', ($old$,
 $new$'db_live', (
 					select jsonb_build_object(
@@ -132,9 +131,10 @@ revoke all on function
 
 grant execute on function public.qorpera_web_edge_site_file(uuid, uuid, text) to service_role, qorpera_web_router;
 
+create trigger qorpera_web_notify_site_versions
+	after insert or update or delete on public.qorpera_company_site_versions
+	for each statement execute function public.qorpera_web_notify_route_change();
+
 update public.qorpera_company_sites as site
 set password_version = site.password_version + 1
-where site.kind = 'files'
-	and not (site.is_public and coalesce((
-		select settings.enabled and settings.public_enabled from public.qorpera_site_settings as settings limit 1
-	), false));
+where site.kind = 'files';

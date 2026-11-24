@@ -88,6 +88,14 @@ begin
 			and not (select prosecdef from pg_proc where oid = 'public.qorpera_web_edge_db_servable(uuid,uuid)'::regprocedure)
 			and not (select prosecdef from pg_proc where oid = 'public.qorpera_web_edge_db_manifest(uuid)'::regprocedure),
 		'only the RPC is security definer');
+	perform pg_temp.base_assert((
+		select count(*) = 1 from pg_trigger as trg
+		where trg.tgrelid = 'public.qorpera_company_site_versions'::regclass
+			and trg.tgname = 'qorpera_web_notify_site_versions'
+			and trg.tgfoid = 'public.qorpera_web_notify_route_change()'::regprocedure
+			and trg.tgtype = 28
+			and trg.tgenabled = 'O'
+	), 'a change to a site''s versions tells the router: after insert, update or delete, once a statement');
 	perform pg_temp.base_assert(
 		strpos(pg_get_functiondef('public.qorpera_web_edge_site_file(uuid,uuid,text)'::regprocedure),
 			$g$auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role', 'qorpera_web_router')$g$) > 0,
@@ -164,13 +172,13 @@ declare
 begin
 	perform pg_temp.base_assert(v_web -> 'password_sha256' = 'null' and v_dep -> 'password_sha256' = 'null'
 		and v_bare -> 'password_sha256' = 'null', 'a website that is not public has no hash');
-	perform pg_temp.base_assert(v_open ->> 'password_sha256' = pg_temp.sh_sha('notch-open-password'), 'a public website keeps its hash');
+	perform pg_temp.base_assert(v_open -> 'password_sha256' = 'null' and (v_open ->> 'is_public')::boolean, 'nor has a public website');
 	perform pg_temp.base_assert(v_app ->> 'password_sha256' = pg_temp.sh_sha('notch-app-link-password'), 'an app link keeps its hash');
 	perform pg_temp.base_assert(not exists (
 		select 1 from jsonb_array_elements(v_snap -> 'sites') as s
 		join public.qorpera_company_sites as site on site.id = (s ->> 'id')::uuid
-		where site.kind = 'files' and not site.is_public and s ->> 'password_sha256' is not null
-	), 'no website that is not public has a hash');
+		where site.kind = 'files' and s ->> 'password_sha256' is not null
+	), 'no website has a hash');
 	perform pg_temp.base_assert(pg_temp.sh_sha('notch-web-password') is distinct from v_web ->> 'password_sha256'
 		and pg_temp.sh_sha('notch-app-link-password') = v_app ->> 'password_sha256',
 		'the right old password matches nothing for the website, still the app link''s hash');
@@ -305,17 +313,14 @@ begin
 
 	update public.qorpera_company_sites as site
 	set password_version = site.password_version + 1
-	where site.kind = 'files'
-		and not (site.is_public and coalesce((
-			select settings.enabled and settings.public_enabled from public.qorpera_site_settings as settings limit 1
-		), false));
+	where site.kind = 'files';
 
 	v_after := (select jsonb_object_agg(slug, password_version) from public.qorpera_company_sites
 		where slug in ('notch-db-web', 'notch-db-open', 'notch-dep-web', 'notch-bare-web', 'notch-app-link'));
 	perform pg_temp.base_assert((v_after ->> 'notch-db-web')::integer = (v_before ->> 'notch-db-web')::integer + 1
 		and (v_after ->> 'notch-dep-web')::integer = (v_before ->> 'notch-dep-web')::integer + 1
 		and (v_after ->> 'notch-bare-web')::integer = (v_before ->> 'notch-bare-web')::integer + 1
-		and v_after -> 'notch-db-open' = v_before -> 'notch-db-open'
+		and (v_after ->> 'notch-db-open')::integer = (v_before ->> 'notch-db-open')::integer + 1
 		and v_after -> 'notch-app-link' = v_before -> 'notch-app-link', 'the bump: ' || v_before::text || ' ' || v_after::text);
 	perform pg_temp.base_assert((pg_temp.wf_snap_site('notch-db-web') ->> 'password_version')::integer
 		= (v_after ->> 'notch-db-web')::integer, 'the router reads the new version');
