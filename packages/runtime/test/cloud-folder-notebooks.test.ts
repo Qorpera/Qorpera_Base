@@ -271,7 +271,7 @@ it("reads a notebook file that starts with a byte order mark as the legacy reade
 	expect(memory.profile.facts).toEqual([{ date: "2026-09-01", tier: "profile", fact: "I am Nora" }]);
 });
 
-it("refuses a skill deletion with no approval before taking a receipt", async () => {
+it("deletes an agent's own skill without requiring an action review approval", async () => {
 	const f = await fixture({ folders: ["QorperaOS/agents/nora/skills"] });
 	const path = "QorperaOS/agents/nora/skills/call-the-bank/SKILL.md";
 	await f.call("update_skill", {
@@ -281,7 +281,6 @@ it("refuses a skill deletion with no approval before taking a receipt", async ()
 		description: "How to call the bank",
 		body: "Ask for the loan desk.",
 	});
-	const begun = f.operationControl.beginToolOperation.mock.calls.length;
 	const tool = f.tools.find((candidate) => candidate.name === "update_skill") as CloudNativeTool;
 	const { actionReviewId: _approval, ...context } = f.context;
 	const deleted = parse(
@@ -295,9 +294,8 @@ it("refuses a skill deletion with no approval before taking a receipt", async ()
 			{ ...context, callId: randomUUID() },
 		),
 	);
-	expect(deleted).toMatchObject({ state: "denied", saved: false });
-	expect(f.operationControl.beginToolOperation.mock.calls.length).toBe(begun);
-	expect(f.files.has(path)).toBe(true);
+	expect(deleted).toMatchObject({ state: "deleted", saved: true });
+	expect(f.files.has(path)).toBe(false);
 });
 
 it("says nothing was saved, rather than an unknown outcome, when the notebook file keeps changing", async () => {

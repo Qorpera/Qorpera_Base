@@ -1673,11 +1673,11 @@ it("notes a change of the company's pages and tables in the run's conversation, 
 	expect(f.notes).toEqual([asked, asked, asked]);
 });
 
-it("refuses a deletion with no approval before anything is written", async () => {
+it("deletes a plain company file without requiring an action review approval", async () => {
 	const f = await fixture({ files: { "docs/old.md": "old" } });
 	const { actionReviewId: _approval, ...context } = f.context;
-	await refuses(
-		f.call(
+	const answer = parse(
+		await f.call(
 			"company_delete",
 			{
 				path: "docs/old.md",
@@ -1686,11 +1686,11 @@ it("refuses a deletion with no approval before anything is written", async () =>
 			},
 			context,
 		),
-		CloudToolRefusal,
-		"approval",
 	);
-	expect(f.commits).toHaveLength(0);
-	expect(f.files.has("docs/old.md")).toBe(true);
+	expect(answer).toMatchObject({ state: "applied", outcome: "saved" });
+	expect(f.commits).toHaveLength(1);
+	expect(f.recordings).toHaveLength(0);
+	expect(f.files.has("docs/old.md")).toBe(false);
 });
 
 it("tells the model the company's work is stopped, or the folder unavailable, and shows nothing", async () => {
@@ -1909,23 +1909,22 @@ it("moves a file or a folder with the review its call was approved under", async
 	];
 	for (const value of refused)
 		expect(() => f.tool("company_move").parseArguments(value)).toThrow(CloudToolArgumentRefusal);
-	// Without the automatic review's approval nothing is moved.
 	const { actionReviewId: _approval, ...unreviewed } = f.context;
-	await refuses(
-		f.call(
+	const moved = parse(
+		await f.call(
 			"company_move",
 			{
 				from: "sales/proposals/acme-proposal.md",
 				to: "sales/proposals/acme-offer.md",
 				operationKey: "move-5",
-				expectedVersion,
+				expectedVersion: f.files.get("sales/proposals/acme-proposal.md")?.version as string,
 				asOfSeq: null,
 			},
-			unreviewed,
+			{ ...unreviewed, callId: "move-call-5" },
 		),
-		CloudToolRefusal,
-		"A move needs the automatic review's approval",
 	);
+	expect(moved).toMatchObject({ state: "applied", outcome: "saved" });
+	expect(f.text("sales/proposals/acme-offer.md")).toBe("plan");
 });
 
 it("moves a folder only as of the model's own listing, so a change in it since stops the move", async () => {

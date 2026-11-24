@@ -230,10 +230,6 @@ export class CloudFolderRoutineDecision {
 		if (rewrite && request.action === "conclude")
 			throw new CloudToolRefusal("A conclusion keeps the routine's title and instructions: conclude without them");
 		const actionReviewId = context.actionReviewId;
-		if (rewrite && !actionReviewId)
-			throw new CloudToolRefusal(
-				"New instructions or a new title need the automatic review's approval of this call, and it has none: decide next without intent or title, or call again",
-			);
 		let text: string;
 		// The next run, spread for the agent (cloud-routine-pace.ts) while it stays before the routine's end.
 		const spread = cloudRoutineSpreadInstant(

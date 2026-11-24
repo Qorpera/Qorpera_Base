@@ -164,14 +164,11 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 				if (input.expectedVersion === null) throw new Error("A deletion names the version it deletes");
 				unit = { op: "delete", path, expectedVersion: input.expectedVersion };
 			}
-			// A deletion is reviewed (C1B §6). update_skill's of the agent's own skill records the automatic review's
-			// approval of the call, as company_delete's (P20, 20260930001200); the recorder takes no other.
 			let review: string | undefined;
 			if (operation === "delete" && changes.tool === "update_skill") {
 				const own = `${changes.agentFolder}/skills/`.toLowerCase();
 				review = changes.context.actionReviewId;
-				// Refused before any receipt: another library, or no approval to record.
-				if (!path.toLowerCase().startsWith(own) || path.length <= own.length || !review)
+				if (!path.toLowerCase().startsWith(own) || path.length <= own.length)
 					throw new CloudCompanyPathToolRefusal();
 			}
 			// The tools key a change by the version it replaces. An absent path has none on folder-v2 (the legacy gateway

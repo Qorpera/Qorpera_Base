@@ -363,7 +363,12 @@ export async function folderWriterFixture(
 						const into = to.split("/").slice(0, -1).join("/");
 						if (into !== "" && !folders.has(into))
 							return { ...moved, outcome: "refused", reason: "parent_missing" };
-						if (!reviewed(args, units)) return { ...moved, outcome: "denied", reason: "review_required" };
+						const rolePath = (p: string) =>
+							/^qorperaos\/agents\/(groups\/[^/]+(\/group\.md)?|(?!groups(\/|$)|sections\.md$)[^/]+(\/agent\.md)?)$/i.test(
+								p.replace(/^\/+|\/+$/g, ""),
+							);
+						if ((rolePath(from) || rolePath(to)) && !reviewed(args, units))
+							return { ...moved, outcome: "denied", reason: "review_required" };
 						const renamed = (path: string) =>
 							path === from ? to : path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : null;
 						for (const map of [files, links] as Map<string, unknown>[])
@@ -440,7 +445,13 @@ export async function folderWriterFixture(
 						const inside = (candidate: string) => candidate.startsWith(`${path}/`);
 						if ([...files.keys(), ...folders].some(inside) && (unit.asOfSeq as number) < seq)
 							return { ...base, outcome: "conflict", reason: "unseen_change" };
-						if (!reviewed(args, units)) return { ...base, outcome: "denied", reason: "review_required" };
+						if (
+							/^qorperaos\/agents\/(groups\/[^/]+|(?!groups(\/|$)|sections\.md$)[^/]+)$/i.test(
+								path.replace(/^\/+|\/+$/g, ""),
+							) &&
+							!reviewed(args, units)
+						)
+							return { ...base, outcome: "denied", reason: "review_required" };
 						folders.delete(path);
 						folderVersions.delete(path);
 						return { ...base, outcome: "saved", version: randomUUID() };
@@ -449,8 +460,13 @@ export async function folderWriterFixture(
 						const current = files.get(path) ?? links.get(path);
 						if (current?.version !== unit.expectedVersion)
 							return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
-						// A deletion is reviewed (C1B §6).
-						if (!reviewed(args, units)) return { ...base, outcome: "denied", reason: "review_required" };
+						if (
+							/^qorperaos\/agents\/(groups\/[^/]+(\/group\.md)?|(?!groups(\/|$)|sections\.md$)[^/]+(\/agent\.md)?)$/i.test(
+								path.replace(/^\/+|\/+$/g, ""),
+							) &&
+							!reviewed(args, units)
+						)
+							return { ...base, outcome: "denied", reason: "review_required" };
 						files.delete(path);
 						links.delete(path);
 						routineStates.delete(path.slice(ROUTINES.length + 1, -3));
@@ -486,23 +502,6 @@ export async function folderWriterFixture(
 						const key = path.slice(ROUTINES.length + 1, -3);
 						const next = routineOf(path, bytesBySha.get((unit.file as CloudCompanyFolderFile).fileSha256));
 						const previous = current ? routineOf(path, bytesBySha.get(current.file.fileSha256)) : null;
-						// Delegation, except a dynamic routine's decision: a new at, effort or reply, or its conclusion.
-						const without = (routine: RoutineFile, keys: readonly string[]) =>
-							JSON.stringify(
-								Object.fromEntries(Object.entries(routine).filter(([name]) => !keys.includes(name))),
-							);
-						const decision =
-							options.decisionRoutineId !== undefined &&
-							previous?.id === options.decisionRoutineId &&
-							previous.trigger.when === "once" &&
-							((next.status === "active" &&
-								next.trigger.when === "once" &&
-								without(next, ["trigger", "effort", "reply"]) ===
-									without(previous, ["trigger", "effort", "reply"])) ||
-								(next.status === "concluded" &&
-									without(next, ["status", "conclusion"]) === without(previous, ["status", "conclusion"])));
-						if (!decision && !reviewed(args, units))
-							return { ...base, outcome: "denied", reason: "review_required" };
 						// SQL's resume rule: a paid save of the active file, unchanged, ends the platform's pause, and a paid edit
 						// that makes a new version (a new title, instructions, trigger with its time zone and reply, or effort)
 						// ends a wait for a login; any other edit keeps the pause. A change of the file's status overrides, and so
