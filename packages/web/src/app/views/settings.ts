@@ -55,7 +55,7 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions default models conversational coding effort credits my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer standardmodeller mine forbindelser modelkonti udbydere abonnementer log ind forbrug kredit",
+			"ai subscriptions default models conversational coding voice tts effort credits my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer standardmodeller stemme lyd mine forbindelser modelkonti udbydere abonnementer log ind forbrug kredit",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
@@ -151,7 +151,7 @@ export function settingsPlaces(deletes: boolean): SettingsPlace[] {
 			"ai-subscriptions",
 			t("Default models"),
 			subscriptions,
-			"model effort coding conversational standardmodeller",
+			"model effort coding conversational voice tts standardmodeller stemme",
 			t("Default models"),
 		),
 		place("ai-subscriptions", t("Gemini API key"), subscriptions, "google gemini api key nøgle", t("Gemini API key")),

@@ -34,6 +34,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_claude_worker_fall_back"
 	| "qorpera_record_claude_run_usage"
 	| "qorpera_record_gemini_run_usage"
+	| "qorpera_record_gemini_voice_usage"
 	| "qorpera_record_gemini_cap_reached"
 	| "qorpera_record_gemini_key_error"
 	| "qorpera_describe_company_run_context"

@@ -398,6 +398,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "No Sites page: each site is managed where it shows",
 		text: "The Sites page is gone, so never send anyone to a Sites page. A website is managed on its own page in the app, and Go live is there. An app link shared with share_app shows as its card under the message that links it, and owners and admins copy its password from that card. You still never see a password: put the link in your message.",
 	},
+	{
+		id: "studio-explainer-breakdowns-and-voice",
+		kind: "capability",
+		date: "2026-11-24",
+		title: "Animated breakdowns and voice settings in Studio",
+		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in its layout. When a member asks for a video, walkthrough or visual breakdown, start a Studio session on that interface so it stages an animated breakdown and records spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
