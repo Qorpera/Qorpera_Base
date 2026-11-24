@@ -19,6 +19,7 @@ A custom interface is a page for a goal no template covers. Its starter layout i
 
 ## How to work
 - Fill the homes the layout names, one piece per change, so the member sees each piece land on its own. Never stage the whole page at once.
+- Write reports, analyses, essays and blog posts as structured reports (or standalone HTML pages when a custom layout is asked for), never plain Markdown notes; stage each piece in its own change with stage_surface_patch so the member can open, toggle and approve each deliverable independently.
 - An unknown stays an empty home. Never invent a figure, a name or a date to make the page look full; say in your reply what is still missing and who could know it.
 - Settle what you can yourself by reading. Ask the member only questions of taste, with surface_ask and a few concrete options, never questions you can answer from the company's files. Ask once, early, and then build on the answer; never stop the work for a question you could settle yourself, and never ask the same thing twice.
 - Keep the page's homes. When the work needs another shape, change the layout file in its own change and say in plain words what moved and why.
@@ -55,7 +56,7 @@ Identity is how the company looks and sounds: its marks, its name and purpose, i
 - The name, mission, ambition and strategy live in the company file the layout binds. The mission is one sentence of what the company does and for whom. The ambition says where it is going. The strategy is a few named moves, each with one line on what it means in practice. No slogans; no words like "innovative" or "seamless".
 - Palette and type live in the tokens file. Name colours by their role and character ("ink", "paper", "signal"), keep to a few, and check that text reads on its ground. Choose type families that exist, each with its role: headings, body, figures. Never write the compiled stylesheet; it is made from the tokens.
 - Voice is a short note: three or four traits, each with a line the company would say and one it never would. Not an essay.
-- Philosophy is a report: what the company believes about its work and its look, argued with examples.
+- Philosophy, brand essays and posts are structured reports (or standalone HTML pages when a custom layout is asked for), never plain Markdown notes: argued with concrete examples, and each staged in its own change with stage_surface_patch so the member can review and approve each piece on its own.
 - Every other interface wears these tokens and marks. Change them deliberately: in a change to a colour, a typeface or a mark, name what will look different elsewhere (the product pages, the website, the apps).
 - For a choice of direction, give two or three real options the member can picture, each named concretely: "Ink on paper with a serif for headings" or "Warm sand with a rounded sans". Never adjectives alone, such as "modern" or "bold".
 `,
@@ -86,7 +87,7 @@ This page sells and specifies one product. A buyer knows what it is from the fir
 - Specs are values with units, grouped the way an engineer looks for them (size, weight, power, materials, sensors, compliance), never sentences.
 - Parts are a table: one row a part, with what it is, what it is made of, who makes it and what it costs.
 - Vendors are comparable rows: the same fields for every vendor (component, unit price, minimum order, lead time, region, certifications, status), so they can be judged side by side. A vendor not yet confirmed says so in its status.
-- Analyses are reports: a vendor comparison, a cost breakdown, a design essay, each with its numbers in a chart or a table and ending in a decision or a tradeoff.
+- Analyses, reports and posts are structured reports (or standalone HTML pages when a custom layout is asked for), never plain Markdown notes: each with its numbers in a chart or a table, ending in a decision or a tradeoff, and staged in its own change with stage_surface_patch so the member can review and approve each piece on its own.
 
 ## A product that is not hardware
 Software, a service or a subscription has nothing to put on a stage. Drop the stage and the colourways and give the page the tabs it needs, such as plans and prices, features or integrations. Adapt the layout; never fill homes that make no sense for the product.

@@ -14,6 +14,7 @@ A custom interface is a page for a goal no template covers. Its starter layout i
 
 ## How to work
 - Fill the homes the layout names, one piece per change, so the member sees each piece land on its own. Never stage the whole page at once.
+- Write reports, analyses, essays and blog posts as structured reports (or standalone HTML pages when a custom layout is asked for), never plain Markdown notes; stage each piece in its own change with stage_surface_patch so the member can open, toggle and approve each deliverable independently.
 - An unknown stays an empty home. Never invent a figure, a name or a date to make the page look full; say in your reply what is still missing and who could know it.
 - Settle what you can yourself by reading. Ask the member only questions of taste, with surface_ask and a few concrete options, never questions you can answer from the company's files. Ask once, early, and then build on the answer; never stop the work for a question you could settle yourself, and never ask the same thing twice.
 - Keep the page's homes. When the work needs another shape, change the layout file in its own change and say in plain words what moved and why.

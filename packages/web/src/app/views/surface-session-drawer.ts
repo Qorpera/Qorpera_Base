@@ -15,6 +15,7 @@ import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { SurfaceLook } from "../surface-kinds.ts";
 import {
+	changeDeliverables,
 	formatConflictPaths,
 	hasConflictedChange,
 	isOpenChange,
@@ -22,6 +23,8 @@ import {
 	isRunningSession,
 	openExplorations,
 	reportsOwnedBy,
+	type SurfaceChangeDeliverable,
+	type SurfaceDeliverableKind,
 	type SurfaceNote,
 	type SurfaceReportSummary,
 	type SurfacesStore,
@@ -283,6 +286,10 @@ function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 function drawerCap(): number {
 	const scale = uiScale();
 	return Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, Math.floor((window.innerWidth * DRAWER_MAX_SHARE) / scale)));
+}
+
+function deliverableKindLabel(kind: SurfaceDeliverableKind): string {
+	return kind === "html" ? t("HTML") : t("Article");
 }
 
 function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
@@ -720,6 +727,70 @@ export class SurfaceSessionDrawer {
 		return false;
 	}
 
+	#isDeliverableOpen(look: SurfaceLook | undefined, changeId: string, slug: string): boolean {
+		const state = this.#store.state;
+		if (!this.#store.isChangeShown(changeId)) return false;
+		if (look?.kind === "report") return state.mode !== "live" && state.activeReportSlug === slug;
+		return state.mode === "report" && state.activeReportSlug === slug;
+	}
+
+	#overviewDeliverablePill(
+		look: SurfaceLook | undefined,
+		change: SurfaceChangeUnit,
+		item: SurfaceChangeDeliverable,
+		showTitle: boolean,
+	): HTMLElement {
+		const open = this.#isDeliverableOpen(look, change.id, item.slug);
+		const label = showTitle ? item.title : open ? t("Open") : deliverableKindLabel(item.kind);
+		return h(
+			"button",
+			{
+				type: "button",
+				class: `surface-overview-deliverable${open ? " is-open" : ""}`,
+				"aria-pressed": String(open),
+				"aria-label": t("Open {title}", { title: item.title }),
+				title: item.title,
+				"data-act": "open-deliverable",
+				"data-change": change.id,
+				"data-report": item.slug,
+			},
+			icon("file"),
+			h("span", null, label),
+		);
+	}
+
+	#focusedDeliverableButtons(
+		look: SurfaceLook | undefined,
+		change: SurfaceChangeUnit,
+		deliverables: readonly SurfaceChangeDeliverable[],
+	): HTMLElement | null {
+		if (!deliverables.length) return null;
+		return h(
+			"div",
+			{ class: "surface-drawer-change-deliverables" },
+			...deliverables.map((item) => {
+				const open = this.#isDeliverableOpen(look, change.id, item.slug);
+				const meta = [deliverableKindLabel(item.kind), item.readingTime].filter(Boolean).join(" · ");
+				return h(
+					"button",
+					{
+						type: "button",
+						class: `surface-drawer-deliverable${open ? " is-open" : ""}`,
+						"aria-pressed": String(open),
+						"data-act": "open-deliverable",
+						"data-change": change.id,
+						"data-report": item.slug,
+					},
+					h("span", { class: "surface-agent-note-icon", "aria-hidden": "true" }, icon("file")),
+					h("span", { class: "surface-agent-note-copy" }, h("small", null, meta), h("strong", null, item.title)),
+					open
+						? h("span", { class: "surface-agent-note-active" }, t("Open"))
+						: h("span", { class: "surface-agent-note-go", "aria-hidden": "true" }, icon("chevron")),
+				);
+			}),
+		);
+	}
+
 	#noteButtons(reports: readonly SurfaceReportSummary[]): HTMLElement[] {
 		if (!reports.length) return [];
 		const state = this.#store.state;
@@ -972,7 +1043,18 @@ export class SurfaceSessionDrawer {
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const failed = session.state === "failed";
 		const attention = session.state === "needs_input" || hasConflictedChange(session) || failed;
-		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id });
+		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
+		const claimedPaths = new Set<string>();
+		for (const change of openChanges) {
+			const items = changeDeliverables(state, surface.id, change);
+			if (items.length > 0) {
+				deliverablesByChange.set(change.id, items);
+				for (const item of items) claimedPaths.add(item.path);
+			}
+		}
+		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id }).filter(
+			(note) => !claimedPaths.has(note.path),
+		);
 		const noteNodes = this.#noteButtons(ownedNotes);
 		const statusLine = agentStatusLine(session);
 
@@ -1095,6 +1177,11 @@ export class SurfaceSessionDrawer {
 						const conflicted = change.status === "conflicted";
 						const shown = store.isChangeShown(change.id);
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+						const deliverables = deliverablesByChange.get(change.id) ?? [];
+						const inlineDeliverable =
+							deliverables.length === 1
+								? this.#overviewDeliverablePill(look, change, deliverables[0]!, false)
+								: null;
 						const busyChange = Boolean(state.busy[`change:${change.id}`]);
 						return h(
 							"div",
@@ -1112,6 +1199,7 @@ export class SurfaceSessionDrawer {
 									"data-change": change.id,
 								}),
 								h("span", { class: "surface-overview-change-title" }, change.title),
+								inlineDeliverable,
 								canDiscard
 									? overviewDiscardButton(
 											session.id,
@@ -1148,6 +1236,13 @@ export class SurfaceSessionDrawer {
 											)
 										: null,
 							),
+							deliverables.length > 1
+								? h(
+										"div",
+										{ class: "surface-overview-change-deliverables" },
+										...deliverables.map((item) => this.#overviewDeliverablePill(look, change, item, true)),
+									)
+								: null,
 						);
 					}),
 				),
@@ -1326,6 +1421,9 @@ export class SurfaceSessionDrawer {
 			state.activeReportSlug,
 			state.hiddenChanges,
 			state.busy,
+			state.studioPatches,
+			resolvedSurface ? state.localStudioBase[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.cloudSurfaceFiles[resolvedSurface.id] : undefined,
 			look?.kind,
 			look?.accent,
 			this.#armedApprove,
@@ -1373,12 +1471,24 @@ export class SurfaceSessionDrawer {
 		const store = this.#store;
 		const parts: HTMLElement[] = [];
 		const listed = session.changes.filter((change) => change.status !== "discarded");
+		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
+		const claimedPaths = new Set<string>();
+		if (surface) {
+			for (const change of listed) {
+				const items = changeDeliverables(store.state, surface.id, change);
+				if (items.length > 0) {
+					deliverablesByChange.set(change.id, items);
+					for (const item of items) claimedPaths.add(item.path);
+				}
+			}
+		}
+		const standaloneNotes = ownedNotes.filter((note) => !claimedPaths.has(note.path));
 		const actionSession = Boolean(
 			surface &&
 				(surface.archetype === "ops" ||
 					(listed.length > 0 && listed.every((change) => isActionChange(change, surface)))),
 		);
-		if (surface && ownedNotes.length > 0) parts.push(...this.#noteButtons(ownedNotes));
+		if (surface && standaloneNotes.length > 0) parts.push(...this.#noteButtons(standaloneNotes));
 		if (isRunningSession(session) && session.state !== "needs_input")
 			parts.push(
 				h(
@@ -1511,6 +1621,9 @@ export class SurfaceSessionDrawer {
 				const busyChange = Boolean(store.state.busy[`change:${change.id}`]);
 				const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
 				const conflictPaths = change.conflictPaths?.length ? formatConflictPaths(change.conflictPaths) : "";
+				const summaryText = change.summary.trim();
+				const showSummary = summaryText.length > 0 && summaryText !== change.title.trim();
+				const deliverables = deliverablesByChange.get(change.id) ?? [];
 				changeRows.push(
 					h(
 						"div",
@@ -1533,6 +1646,7 @@ export class SurfaceSessionDrawer {
 											changeTag(change),
 										)
 									: h("span", { class: "surface-drawer-change-title" }, change.title),
+								showSummary ? h("p", { class: "surface-drawer-change-summary" }, summaryText) : null,
 								conflicted && conflictPaths
 									? h(
 											"small",
@@ -1543,6 +1657,7 @@ export class SurfaceSessionDrawer {
 							),
 							!open ? changeTag(change) : null,
 						),
+						this.#focusedDeliverableButtons(look, change, deliverables),
 						open
 							? h(
 									"div",
@@ -1785,6 +1900,9 @@ export class SurfaceSessionDrawer {
 				return;
 			case "open-report":
 				store.openReport(surfaceId, report);
+				return;
+			case "open-deliverable":
+				if (change && report) void store.openChangeDeliverable(surfaceId, change, report);
 				return;
 			case "focus-session":
 				if (session) store.openDrawer(surfaceId, session);
