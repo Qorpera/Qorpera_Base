@@ -1858,6 +1858,17 @@ starter; null for an agent-started session nobody replied to). Its messages may 
 - `qorpera_surface_notes_seen(p_session_id)` (any member) marks the caller's own notes in that session seen and
   answers how many.
 
+### Interface turns waiting on a usage limit (20260930873000_surface_turn_waits_on_usage)
+
+A session's JSON carries `waitingOnUsage` while its turn waits for a full login to reset: `{userId, until,
+continueWith}` (else null). `userId` is the member whose login is full, `until` the reset (null when unknown).
+`continueWith` is `{account}` (the email, or null) only for that member while the turn waits in the queue and the login
+the payer rules would now pick for it (in a coding-backed session, its coding login) has room, else null.
+
+- `qorpera_surface_session_continue(p_session_id)` (the waiting member, not a viewer) lets the waiting turn try again
+  at once on the login `continueWith` names, and answers the session. Refuses another member (42501), a turn that
+  already runs or no such login with room (55000) and a missing session (P0002).
+
 ### Asking a teammate to publish (20260930867000_surface_publish_ask)
 
 A surface's summary (`qorpera_list_surfaces`, the workspace's `surface` and every call that answers a summary) carries

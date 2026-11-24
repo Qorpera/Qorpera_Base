@@ -25,7 +25,7 @@ import {
 	openExplorations,
 	type SurfacesState,
 	type SurfacesStore,
-	type SurfaceTeammate,
+	type SurfaceTurnHolder,
 } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
 
@@ -74,7 +74,7 @@ function crewRow(
 	state: SurfacesState,
 	surface: SurfaceSummary,
 	crew: CrewFigures,
-	turn: (session: SurfaceSession) => SurfaceTeammate | undefined,
+	turn: (session: SurfaceSession) => SurfaceTurnHolder | undefined,
 ): HTMLElement | null {
 	const workspace = state.workspaces[surface.id];
 	const sessions = workspace?.activeSessions ?? [];

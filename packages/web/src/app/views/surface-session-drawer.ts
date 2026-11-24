@@ -7,7 +7,7 @@ import type {
 	SurfaceSummary,
 	SurfaceWorkspace,
 } from "@qorpera/contracts";
-import { fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
+import { button, fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { leadingMentions, type MentionTarget, matchTargets, mentionQuery } from "../../ui/mentions.ts";
 import { t } from "../../ui/preferences.ts";
@@ -28,6 +28,7 @@ import {
 	type SurfaceTeammate,
 	sessionHeld,
 } from "../surfaces-store.ts";
+import { usageCard } from "./session-execution.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { openPublishSheet } from "./surface-publish-sheet.ts";
@@ -321,7 +322,15 @@ export class SurfaceSessionDrawer {
 		hidden: true,
 		"aria-label": t("Teammates to write to"),
 	});
-	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#picker, this.#replyStrip, this.#compose);
+	readonly #usage = h("div", { class: "surface-drawer-usage", hidden: true });
+	readonly #form = h(
+		"form",
+		{ class: "surface-drawer-foot" },
+		this.#picker,
+		this.#usage,
+		this.#replyStrip,
+		this.#compose,
+	);
 	readonly #images: SurfaceComposerImages;
 	readonly #sentImages = new Map<string, ReceivedAttachments>();
 	readonly #localImageUrls = new Map<File, string>();
@@ -805,6 +814,7 @@ export class SurfaceSessionDrawer {
 		];
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
+		this.#syncUsage(undefined);
 		const explorations = openExplorations(workspace);
 		const plainSessions = rankSessions(
 			(workspace?.activeSessions ?? []).filter((session) => !isOpenVariant(session, workspace)),
@@ -1164,6 +1174,7 @@ export class SurfaceSessionDrawer {
 		if (picked && state.unseenNotes[picked.id]) store.seeNotes(picked.id);
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
+		this.#syncUsage(picked);
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
@@ -1299,6 +1310,7 @@ export class SurfaceSessionDrawer {
 		if (state.unseenNotes[session.id]) store.seeNotes(session.id);
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
+		this.#syncUsage(session);
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
@@ -1344,7 +1356,7 @@ export class SurfaceSessionDrawer {
 					(listed.length > 0 && listed.every((change) => isActionChange(change, surface)))),
 		);
 		if (surface && ownedNotes.length > 0) parts.push(...this.#noteButtons(ownedNotes));
-		if (isRunningSession(session) && session.state !== "needs_input")
+		if (isRunningSession(session) && session.state !== "needs_input" && !session.waitingOnUsage)
 			parts.push(
 				h(
 					"p",
@@ -1629,6 +1641,8 @@ export class SurfaceSessionDrawer {
 		const sent = store.state.sessionImages[session.id]?.messages ?? [];
 		const keep = new Set<string>();
 		const parts: HTMLElement[] = [];
+		const waiting = session.waitingOnUsage?.userId;
+		let waitingRow: HTMLElement | undefined;
 		if (session.messages.length > 0) {
 			for (const message of session.messages) {
 				const attached =
@@ -1643,8 +1657,11 @@ export class SurfaceSessionDrawer {
 					message.authorKind === "note"
 						? (message.noteTo ?? []).flatMap((userId) => this.#person(userId) ?? [])
 						: undefined;
-				parts.push(messageRow(message, this.#person(message.authorUserId), images, to));
+				const row = messageRow(message, this.#person(message.authorUserId), images, to);
+				if (waiting && message.authorKind === "member" && message.authorUserId === waiting) waitingRow = row;
+				parts.push(row);
 			}
+			waitingRow?.classList.add("is-waiting");
 		} else if (session.prompt) {
 			parts.push(memberBubble(session.prompt, "", undefined, this.#person(session.createdByUserId)));
 		}
@@ -1673,6 +1690,39 @@ export class SurfaceSessionDrawer {
 				this.#localImageUrls.delete(file);
 			}
 		return parts;
+	}
+
+	#syncUsage(session: SurfaceSession | undefined): void {
+		const wait = session && isRunningSession(session) ? this.#store.myUsageWait(session) : undefined;
+		if (!session || !wait) {
+			if (!this.#usage.hidden) {
+				this.#usage.hidden = true;
+				replace(this.#usage);
+			}
+			return;
+		}
+		const account = wait.continueWith?.account ?? t("your other login");
+		replace(
+			this.#usage,
+			usageCard(
+				wait.until ? t("Out of usage until {time}", { time: fmtTime(wait.until) }) : t("Out of usage"),
+				wait.continueWith
+					? t("Keep going with {account}", { account })
+					: t("Your turn goes on by itself when it resets."),
+				false,
+				wait.continueWith
+					? [
+							button(t("Continue"), () => void this.#store.continueWaiting(session.id), {
+								small: true,
+								primary: true,
+								disabled: Boolean(this.#store.state.busy[`continue:${session.id}`]),
+								title: t("Use {account}", { account }),
+							}),
+						]
+					: [],
+			),
+		);
+		this.#usage.hidden = false;
 	}
 
 	#person(userId: string | null | undefined): SurfaceTeammate | undefined {

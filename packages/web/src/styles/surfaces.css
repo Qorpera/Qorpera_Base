@@ -2237,6 +2237,20 @@ a.surface-address-row:hover { text-decoration: none; }
 .rail-surface.active .surface-tile > .rail-mention {
 	background: var(--rail-selection-text); color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection);
 }
+.surface-crew > .surface-crew-turn.is-waiting,
+.surface-message-group.is-waiting > .surface-message-face { background: var(--warning); }
+.surface-crew > .surface-crew-turn.is-waiting {
+	box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.rail .surface-crew > .surface-crew-turn.is-waiting {
+	box-shadow: 0 0 0 1.5px var(--rail), 0 0 0 3px color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.surface-message-group.is-waiting > .surface-message-face {
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 35%, transparent);
+}
+.surface-message-group.is-waiting > .surface-message.is-member { color: var(--text-muted); }
+.surface-drawer-usage { padding: 0 4px 10px; }
+.surface-drawer-usage[hidden] { display: none; }
 
 .surface-door-retry { margin-top: 4px; }
 .surface-door-retry[hidden] { display: none; }

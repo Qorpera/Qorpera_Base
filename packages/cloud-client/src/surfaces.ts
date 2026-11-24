@@ -672,6 +672,11 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
+	async continueSurfaceSession(sessionId: string): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_surface_session_continue", { p_session_id: sessionId });
+		return parseSurfaceSession(data, "session");
+	}
+
 	async unseenSurfaceNotes(companyId: string): Promise<SurfaceUnseenNote[]> {
 		const data = await this.#rpc("qorpera_surface_unseen_notes", { p_profile_id: companyId });
 		return parseSurfaceUnseenNotes(data);

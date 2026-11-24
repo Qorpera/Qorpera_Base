@@ -2670,6 +2670,48 @@ used-up login until its reset, with nothing in the thread to say so. Now:
 - This replaces the 2026-11-05 amendment's "one already waiting stays on its
   login" for the member's own posts.
 
+2026-11-23 amendment: a surface turn waits at its usage limit (founder, 5 and 23
+November 2026: "yes to all five, build it"; migration 20260930873000). The
+2026-11-05 rule (work at its usage limit waits on its own login and goes on by
+itself; it never moves to someone else's login) now holds for surface sessions,
+as the 2026-11-09 amendment made it hold for Agent notebooks. Before, a turn whose
+login was full sat on it until a sweep expired it, retried once and ended
+failed. Now:
+
+- A member whose payable logins are all at their limit can still reply; the
+  reply is kept. The turn is paid by the login the payer rules pick for that
+  member (a login of theirs with room first, else their own login at its
+  limit), never another member's.
+- When that login is at its limit, `qorpera_surface_enqueue_session_run` makes no
+  wake and no coding worker. It answers `deferred` with reason `usage_limit`, the
+  reset (`resetsAt`, null when unknown) and `retryAfterSeconds`, and puts the
+  session back in the queue until its recheck: the reset, at most 15 minutes
+  ahead, so a reading with room ends the wait early. The session records the
+  wait (`waiting_on_usage_user_id`: the member whose login is full;
+  `waiting_on_usage_until`: the reset). No retry is spent and no failure is
+  posted. At the recheck it runs if the login has room, else it waits again; no
+  click is needed.
+- A turn that reaches the limit mid-run waits the same way. A turn completed
+  `failed` while its payer's login is full goes back to the queue as above. A
+  running turn whose lease lapses while its wake or coding worker waits on a full
+  login is left running: neither the sessions lane's sweep nor
+  `qorpera_surface_expire_coding_sessions` expires, retries or cancels it; its
+  lease moves to the recheck and the wait is recorded. A paused run keeps its
+  login and goes on after the reset, as for every run. When the login has room
+  again, such a turn gets one 10-minute grace lease, so the resumed run, the
+  held wake or the coding claim takes it up before any expiry. Only the turn's
+  own work counts: a coding worker left from an earlier member's turn does not
+  make a later turn wait.
+- A new reply, a turn that starts or renews its lease, and a completed turn clear
+  the wait.
+- Session reads carry `waitingOnUsage` (`userId`, `until`) while the wait
+  holds. For the waiting member only, and only before the turn is admitted,
+  `continueWith` names the login of theirs the payer rules would now pick for
+  the turn (in a coding-backed session: the coding login for the session's
+  harness, or the first harness with a login), when that login has room;
+  `qorpera_surface_session_continue` then lets the turn try again at once on it. It refuses anyone else (42501) and a member with
+  no login with room (55000). Nothing moves to another member's login.
+
 2026-11-23 amendment: notes between members in a surface session (founder, 23
 November 2026: "yes to all five, build it"; migration 20260930866000). Members
 who share a session can now write to each other there without waking its agent:

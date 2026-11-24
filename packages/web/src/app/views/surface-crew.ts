@@ -5,7 +5,7 @@ import { FIGURE_IDS, type FigureId, figureElement } from "../../ui/avatar.ts";
 import { h, icon, personAvatar } from "../../ui/dom.ts";
 import type { Activity, Ask } from "../../ui/figure-motion.ts";
 import { t } from "../../ui/preferences.ts";
-import { hasConflictedChange, isRunningSession, type SurfaceTeammate, sessionHeld } from "../surfaces-store.ts";
+import { hasConflictedChange, isRunningSession, type SurfaceTurnHolder, sessionHeld } from "../surfaces-store.ts";
 
 // WHY: The Crown is the Co-Founder's alone, so sessions draw only from the staff crew.
 const CREW: readonly FigureId[] = FIGURE_IDS.filter((figure) => figure !== "crown");
@@ -39,6 +39,8 @@ export function sessionCrew(sessionId: string): { readonly figure: FigureId; rea
 export function crewLook(session: SurfaceSession): CrewLook {
 	if (session.state === "needs_input")
 		return { tone: "waiting", activity: "Waiting", ask: "question", alive: true, label: t("Needs you") };
+	if (isRunningSession(session) && session.waitingOnUsage)
+		return { tone: "working", activity: "Idle", alive: true, label: t("Waiting for usage to reset") };
 	if (isRunningSession(session)) return { tone: "working", activity: "Working", alive: true, label: t("Working") };
 	if (session.state === "failed")
 		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Failed") };
@@ -61,15 +63,17 @@ export function explorationCrewLook(variants: readonly SurfaceSession[]): CrewLo
 	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
 }
 
-function turnFace(turn: SurfaceTeammate): HTMLElement {
+function turnFace(turn: SurfaceTurnHolder): HTMLElement {
 	const face = personAvatar(turn.name, turn.userId);
 	face.classList.add("surface-crew-turn");
+	face.classList.toggle("is-waiting", turn.waiting === true);
 	face.title = turnLabel(turn);
 	return face;
 }
 
-function turnLabel(turn: SurfaceTeammate): string {
-	return t("{name}'s turn", { name: turn.name.split(/\s+/)[0] || turn.name });
+function turnLabel(turn: SurfaceTurnHolder): string {
+	const name = turn.name.split(/\s+/)[0] || turn.name;
+	return turn.waiting ? t("Waiting for {name}'s usage to reset", { name }) : t("{name}'s turn", { name });
 }
 
 export function crewWave(): HTMLElement | string {
@@ -82,7 +86,7 @@ export class CrewFigures {
 	#kept = new Map<string, HTMLElement>();
 	#used = new Map<string, HTMLElement>();
 
-	take(session: SurfaceSession, size: number, className = "", turn?: SurfaceTeammate): HTMLElement {
+	take(session: SurfaceSession, size: number, className = "", turn?: SurfaceTurnHolder): HTMLElement {
 		const look = crewLook(session);
 		const crew = sessionCrew(session.id);
 		const key = JSON.stringify([
@@ -94,6 +98,7 @@ export class CrewFigures {
 			className,
 			turn?.userId ?? "",
 			turn?.name ?? "",
+			turn?.waiting === true,
 		]);
 		let stand = this.#used.get(key) ?? this.#kept.get(key);
 		if (!stand) {
