@@ -160,7 +160,19 @@ export class SurfaceView {
 		"data-act": "expand-pill",
 	});
 	readonly #notchBar = h("nav", { class: "surface-pill" });
-	readonly #notch = h("div", { class: "surface-notch" }, this.#notchPill, this.#notchBar);
+	readonly #showPanels = h(
+		"button",
+		{
+			type: "button",
+			class: "surface-notch-show",
+			"aria-label": t("Show panels"),
+			title: t("Show panels"),
+			"data-act": "show-panels",
+			hidden: true,
+		},
+		icon("show"),
+	);
+	readonly #notch = h("div", { class: "surface-notch" }, this.#notchPill, this.#notchBar, this.#showPanels);
 	readonly #panelToggle = h("button", {
 		type: "button",
 		class: "surface-panel-toggle",
@@ -226,6 +238,7 @@ export class SurfaceView {
 	#toastShown = "";
 	#barOpen = false;
 	#barPinned = false;
+	#panelsHidden = false;
 	readonly #thumbAt = new Map<string, readonly [number, number]>();
 	#phoneModelId = PHONE_MODELS[0]!.id;
 	#phoneBarShown = "";
@@ -481,17 +494,40 @@ export class SurfaceView {
 	}
 
 	#paintNotch(): void {
-		const open = this.#barOpen || this.#barPinned;
+		const hidden = this.#panelsHidden;
+		const open = !hidden && (this.#barOpen || this.#barPinned);
+		this.el.classList.toggle("is-panels-hidden", hidden);
 		this.#notch.classList.toggle("is-open", open);
-		this.#notchPill.hidden = this.#barPinned;
+		this.#notch.classList.toggle("is-panels-hidden", hidden);
+		this.#showPanels.hidden = !hidden;
+		this.#notchPill.hidden = hidden || this.#barPinned;
 		this.#notchPill.inert = open;
 		this.#notchPill.setAttribute("aria-expanded", String(open));
+		this.#notchBar.hidden = hidden;
 		this.#notchBar.inert = !open;
 		this.#fitNotch();
 	}
 
+	#setPanelsHidden(hidden: boolean): void {
+		if (this.#panelsHidden === hidden) return;
+		const hadFocus = this.#notch.contains(document.activeElement);
+		this.#panelsHidden = hidden;
+		this.#barOpen = false;
+		this.#barShown = "";
+		const surface = this.surface;
+		if (surface) this.#drawBar(surface);
+		else this.#paintNotch();
+		if (hidden) this.#showPanels.focus({ preventScroll: true });
+		else if (hadFocus) this.#notchPill.focus({ preventScroll: true });
+		window.dispatchEvent(new Event("qorpera-rail-resize"));
+	}
+
 	#fitNotch(): void {
-		const layer = this.#notch.classList.contains("is-open") ? this.#notchBar : this.#notchPill;
+		const layer = this.#panelsHidden
+			? this.#showPanels
+			: this.#notch.classList.contains("is-open")
+				? this.#notchBar
+				: this.#notchPill;
 		const width = layer.offsetWidth;
 		const height = layer.offsetHeight;
 		if (width > 0 && height > 0) {
@@ -592,6 +628,11 @@ export class SurfaceView {
 			this.#chromeShown = "";
 			this.#toastShown = "";
 			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
+			if (this.#panelsHidden) {
+				this.#panelsHidden = false;
+				this.#paintNotch();
+				window.dispatchEvent(new Event("qorpera-rail-resize"));
+			}
 			this.#drawer.update(undefined);
 			if (state.source === "loading") {
 				this.#showLoading("live", t("Opening surface…"));
@@ -851,7 +892,7 @@ export class SurfaceView {
 			this.#barOpen = true;
 			if (state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 		}
-		this.#askShown = askKey;
+		if (!this.#panelsHidden) this.#askShown = askKey;
 		if (site === "private" && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 
 		const effectiveMode: SurfacePreviewMode = state.mode === "compare" ? "preview" : state.mode;
@@ -1050,6 +1091,21 @@ export class SurfaceView {
 				: []),
 		);
 
+		if (groups.length > 0)
+			groups.push(
+				h(
+					"button",
+					{
+						type: "button",
+						class: "surface-hide-panels",
+						"aria-label": t("Hide panels"),
+						title: t("Hide panels"),
+						"data-act": "hide-panels",
+					},
+					icon("hide"),
+				),
+			);
+		else this.#panelsHidden = false;
 		this.#bar.hidden = groups.length === 0;
 		this.#barTitle.textContent = surface.title;
 		const notchLabel =
@@ -1628,7 +1684,12 @@ export class SurfaceView {
 		}
 		if (event.key === "Escape") {
 			const inside = this.#bar.contains(document.activeElement);
-			if (this.#closeBar() && inside) this.#notchPill.focus();
+			if (this.#closeBar()) {
+				if (inside) this.#notchPill.focus();
+			} else if (this.#panelsHidden && !this.#barHeld() && !isEditableTarget(event.target)) {
+				event.preventDefault();
+				this.#setPanelsHidden(false);
+			}
 			return;
 		}
 		if (event.key !== "p" && event.key !== "P") return;
@@ -1761,6 +1822,12 @@ export class SurfaceView {
 				return;
 			case "toggle-panel":
 				store.togglePreviewPanel(surface.id);
+				return;
+			case "hide-panels":
+				this.#setPanelsHidden(true);
+				return;
+			case "show-panels":
+				this.#setPanelsHidden(false);
 				return;
 			case "point":
 				this.#setPointing(!this.#pointing);
