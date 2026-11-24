@@ -364,6 +364,7 @@ describe("surfaces contracts", () => {
 			"audio/mp4",
 			"audio/mpeg",
 			"audio/webm",
+			"application/pdf",
 		]);
 		for (const mediaType of STUDIO_BINARY_MEDIA_TYPES) {
 			expect(parseStudioPatchOps([{ ...op, file: { ...file, mediaType } }])[0]).toEqual({

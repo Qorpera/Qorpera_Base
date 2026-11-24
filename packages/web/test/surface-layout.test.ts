@@ -2,6 +2,7 @@
 import type { StudioBinaryRef, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setStudioExplainerEngineForTests } from "../src/app/views/studio-explainer-engine.ts";
+import { PDF_PREVIEW_DATA, PDF_PREVIEW_READY, PDF_PREVIEW_URL } from "../src/app/views/surface-blocks/pdf.ts";
 import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -1657,5 +1658,91 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 
 		view.dispose();
 		store.dispose();
+	});
+
+	it("renders PDF binary files in an artifacts block with a pinned application/pdf blob and revokes URLs on dispose", async () => {
+		const board = studio({ kind: "custom", icon: "star" });
+		const pdfRef: StudioBinaryRef = {
+			manifestSha256: "e".repeat(64),
+			fileSha256: "f".repeat(64),
+			bytes: 4096,
+			mediaType: "application/pdf",
+		};
+		const readCloudBinary = vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]));
+		let createdBlobType = "";
+		const createObjectURL = vi.fn((blob: Blob) => {
+			createdBlobType = blob.type;
+			return "blob:spec-sheet";
+		});
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		try {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [board]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: board })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () => folderContents({}, { "surfaces/lamp/spec-sheet.pdf": pdfRef })),
+					readCloudBinary,
+				},
+			);
+			await store.load();
+			await store.openSurface(board.slug);
+			const lifetime = new AbortController();
+			const view = new SurfaceStudioView({
+				store,
+				surface: board,
+				signal: lifetime.signal,
+				timeSlice: false,
+			});
+			document.body.append(view.el);
+			const card = view.el.querySelector<HTMLElement>('.studio-pdf-card[data-file="surfaces/lamp/spec-sheet.pdf"]')!;
+			expect(card).not.toBeNull();
+			expect(card.querySelector("h2")?.textContent).toBe("Spec sheet");
+			expect(card.querySelector(".studio-file-tag")).toBeNull();
+			await vi.waitFor(() =>
+				expect(card.querySelector("iframe.studio-pdf-frame")?.getAttribute("src")).toBe(PDF_PREVIEW_URL),
+			);
+			const frame = card.querySelector<HTMLIFrameElement>("iframe.studio-pdf-frame")!;
+			const posted: { message: unknown; origin: string }[] = [];
+			vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(((message: unknown, origin: string) => {
+				posted.push({ message, origin });
+			}) as never);
+			const ready = new MessageEvent("message", {
+				data: { type: PDF_PREVIEW_READY },
+				origin: location.origin,
+			});
+			Object.defineProperty(ready, "source", { value: frame.contentWindow });
+			window.dispatchEvent(ready);
+			expect(posted).toHaveLength(1);
+			expect(posted[0]).toEqual({
+				origin: location.origin,
+				message: {
+					type: PDF_PREVIEW_DATA,
+					bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+					title: "Spec sheet",
+				},
+			});
+			expect(createdBlobType).toBe("application/pdf");
+			expect(card.querySelector('a[download="spec-sheet.pdf"]')?.getAttribute("href")).toBe("blob:spec-sheet");
+			expect(readCloudBinary).toHaveBeenCalledWith(pdfRef, expect.anything());
+			card.querySelector<HTMLButtonElement>('[data-act="studio-expand"]')!.click();
+			const dialog = document.querySelector<HTMLElement>(".studio-fullscreen-dialog.is-frame")!;
+			expect(dialog).not.toBeNull();
+			await vi.waitFor(() =>
+				expect(dialog.querySelector("iframe.studio-pdf-frame.is-fullscreen")?.getAttribute("src")).toBe(
+					PDF_PREVIEW_URL,
+				),
+			);
+			expect(readCloudBinary).toHaveBeenCalledTimes(1);
+			lifetime.abort();
+			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:spec-sheet"));
+			view.dispose();
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
 	});
 });

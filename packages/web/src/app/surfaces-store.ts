@@ -751,7 +751,7 @@ export interface SurfaceReportSummary {
 	readonly ownerTitle?: string;
 }
 
-export type SurfaceDeliverableKind = "report" | "html";
+export type SurfaceDeliverableKind = "report" | "html" | "pdf";
 
 export interface SurfaceChangeDeliverable {
 	readonly kind: SurfaceDeliverableKind;
@@ -768,6 +768,7 @@ export function surfaceDocSlug(path: string): string {
 
 const REPORT_FILE_RE = /\.report\.json$/i;
 const HTML_DELIVERABLE_RE = /\.html?$/i;
+const PDF_DELIVERABLE_RE = /\.pdf$/i;
 const MODULE_DELIVERABLE_RE = /(?:^|\/)modules\/[^/]+\//i;
 const HTML_TITLE_ENTITIES: Readonly<Record<string, string>> = {
 	amp: "&",
@@ -875,7 +876,17 @@ function parseReportsFromFiles(files: Readonly<Record<string, string>>): readonl
 }
 
 type SurfaceReportReadState = Pick<SurfacesState, "localStudioBase"> &
-	Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches" | "workspaces" | "studioPatches">>;
+	Partial<
+		Pick<
+			SurfacesState,
+			| "cloudSurfaceFiles"
+			| "cloudSurfaceBinaries"
+			| "localStudioBinaries"
+			| "pendingStudioPatches"
+			| "workspaces"
+			| "studioPatches"
+		>
+	>;
 
 function folderRootForState(state: SurfaceReportReadState, surfaceId: string): string | null {
 	return state.workspaces?.[surfaceId]?.surface.folderRoot ?? null;
@@ -898,15 +909,24 @@ export function changeDeliverables(
 ): readonly SurfaceChangeDeliverable[] {
 	const folderRoot = folderRootForState(state, surfaceId);
 	const baseFiles = effectiveStudioBaseFiles(state, surfaceId) ?? {};
+	const baseBinaries = effectiveStudioBaseBinaries(state, surfaceId);
 	const ops = state.studioPatches?.[change.id];
 	const touched = new Map<string, "deleted" | "present">();
 	let files: Readonly<Record<string, string>> = baseFiles;
+	let binaries: Readonly<Record<string, StudioBinaryRef>> = baseBinaries;
 	if (ops && ops.length > 0) {
 		const normalizedOps = normalizeStudioPatchOps(ops, folderRoot);
 		for (const op of normalizedOps) {
 			touched.set(op.path, op.op === "delete" ? "deleted" : "present");
 		}
-		files = composeStudioPreview(baseFiles, [{ changeId: change.id, ops: normalizedOps }], folderRoot).files;
+		const composed = composeStudioPreview(
+			baseFiles,
+			[{ changeId: change.id, ops: normalizedOps }],
+			folderRoot,
+			baseBinaries,
+		);
+		files = composed.files;
+		binaries = composed.binaries;
 	} else {
 		for (const rawPath of change.affectedPaths) {
 			const path = normalizeSurfacePath(rawPath, folderRoot);
@@ -941,6 +961,16 @@ export function changeDeliverables(
 				path,
 				slug: surfaceDocSlug(path),
 				title: content ? extractHtmlDeliverableTitle(content, path) : readableDeliverableTitle(path),
+			});
+			continue;
+		}
+		if (PDF_DELIVERABLE_RE.test(path) && binaries[path]) {
+			seen.add(path);
+			results.push({
+				kind: "pdf",
+				path,
+				slug: surfaceDocSlug(path),
+				title: readableDeliverableTitle(path),
 			});
 		}
 	}
@@ -1057,6 +1087,10 @@ export function surfaceHasDeliverables(state: SurfaceReportReadState, surfaceId:
 		for (const path of Object.keys(baseFiles)) {
 			if (isStandaloneHtmlDeliverablePath(path, folderRoot)) return true;
 		}
+	}
+	const baseBinaries = effectiveStudioBaseBinaries(state, surfaceId);
+	for (const path of Object.keys(baseBinaries)) {
+		if (PDF_DELIVERABLE_RE.test(path)) return true;
 	}
 	return false;
 }

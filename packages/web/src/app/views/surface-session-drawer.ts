@@ -290,7 +290,9 @@ function drawerCap(): number {
 }
 
 function deliverableKindLabel(kind: SurfaceDeliverableKind): string {
-	return kind === "html" ? t("HTML") : t("Article");
+	if (kind === "html") return t("HTML");
+	if (kind === "pdf") return t("PDF");
+	return t("Article");
 }
 
 function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
@@ -925,6 +927,8 @@ export class SurfaceSessionDrawer {
 			this.#armedApprove,
 			state.localStudioBase[surface.id],
 			state.cloudSurfaceFiles[surface.id],
+			state.localStudioBinaries[surface.id],
+			state.cloudSurfaceBinaries[surface.id],
 			state.studioPatches,
 			workspace,
 		];
@@ -1462,6 +1466,8 @@ export class SurfaceSessionDrawer {
 			state.studioPatches,
 			resolvedSurface ? state.localStudioBase[resolvedSurface.id] : undefined,
 			resolvedSurface ? state.cloudSurfaceFiles[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.localStudioBinaries[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.cloudSurfaceBinaries[resolvedSurface.id] : undefined,
 			look?.kind,
 			look?.accent,
 			this.#armedApprove,

@@ -33,6 +33,7 @@ import { prepareFacts } from "./surface-blocks/facts.ts";
 import { StudioFullscreen } from "./surface-blocks/fullscreen.ts";
 import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
+import { SurfacePdfViewer } from "./surface-blocks/pdf.ts";
 import { reportFiles, SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
 import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts";
@@ -186,6 +187,7 @@ export class SurfaceLayoutView {
 	readonly #reports: SurfaceReports;
 	readonly #explainers: SurfaceExplainers;
 	readonly #pictures: SurfacePictures;
+	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
 
@@ -195,6 +197,7 @@ export class SurfaceLayoutView {
 		this.#fullscreen = new StudioFullscreen(options.signal);
 		this.#stages = new SurfaceStages(read, options.signal, this.#fullscreen);
 		this.#pictures = new SurfacePictures(read, options.signal);
+		this.#pdfs = new SurfacePdfViewer(read, options.signal);
 		this.#explainers = new SurfaceExplainers(read, options.signal, this.#fullscreen);
 		this.#reports = new SurfaceReports({
 			store: options.store,
@@ -351,10 +354,15 @@ export class SurfaceLayoutView {
 			case "explainer":
 				return this.#explainers.prepare(key, block, ctx);
 			case "artifacts":
-				return prepareArtifacts(block, ctx, scope.input.htmlPages, this.#pictures, this.#fullscreen, {
-					claimed: scope.claimed,
-					alone,
-				});
+				return prepareArtifacts(
+					block,
+					ctx,
+					scope.input.htmlPages,
+					this.#pictures,
+					this.#fullscreen,
+					{ claimed: scope.claimed, alone },
+					this.#pdfs,
+				);
 			case "module":
 				return prepareModule(block, ctx, scope.input.htmlPages, this.#fullscreen, { alone });
 			default:
@@ -430,5 +438,6 @@ export class SurfaceLayoutView {
 		this.#fullscreen.close(false);
 		this.#reports.dispose();
 		this.#explainers.dispose();
+		this.#pdfs.dispose();
 	}
 }

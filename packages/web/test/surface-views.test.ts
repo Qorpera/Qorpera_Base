@@ -12,6 +12,7 @@ import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from 
 import { previewStatusText, publishFailureText, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
+import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
@@ -1652,6 +1653,252 @@ describe("the surface page", () => {
 
 		view.dispose();
 		store.dispose();
+	});
+
+	it("opens a staged PDF deliverable from its sidepanel PDF pill and compares it against Base", async () => {
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222262",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const pdfRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 3072,
+			mediaType: "application/pdf",
+		};
+		const pdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Investor Q3 deck",
+			summary: "Attached board summary PDF.",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3-deck.pdf"],
+			patchManifest: [{ op: "write_file", path: "reports/q3-deck.pdf", file: pdfRef }],
+		});
+		const sess = session([], {
+			id: SESSION,
+			surfaceId: studio.id,
+			title: "Analyst",
+			changes: [pdfChange],
+			openChangeCount: 1,
+		});
+		const createObjectURL = vi.fn(() => "blob:q3-deck");
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		try {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [studio]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([sess], { surface: studio })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () => folderContents({})),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await store.load();
+			const view = new SurfaceView(
+				{
+					store,
+					mount: () => ({ el: document.createElement("div"), update: vi.fn(), dispose: vi.fn() }),
+					openMigration: () => undefined,
+				},
+				studio.slug,
+			);
+			document.body.append(view.el);
+			await flush();
+			view.update();
+
+			const pill = view.el.querySelector<HTMLButtonElement>(".surface-overview-deliverable")!;
+			expect(pill.textContent).toBe("PDF");
+			pill.click();
+			await flush();
+			view.update();
+
+			expect(store.state.mode).toBe("report");
+			expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/reports/q3-deck.pdf");
+			const card = view.el.querySelector<HTMLElement>(
+				'.studio-pdf-card[data-file="surfaces/marketing/reports/q3-deck.pdf"]',
+			)!;
+			expect(card).not.toBeNull();
+			await vi.waitFor(() =>
+				expect(card.querySelector("iframe.studio-pdf-frame")?.getAttribute("src")).toBe("./pdf-preview/"),
+			);
+			expect(card.querySelector('a[download="q3-deck.pdf"]')?.getAttribute("href")).toBe("blob:q3-deck");
+			expect(view.el.querySelector(".surface-overview-deliverable")?.classList.contains("is-open")).toBe(true);
+
+			const dedicated = new SurfaceReportView({
+				store,
+				surface: studio,
+				signal: new AbortController().signal,
+				baseFiles: {},
+				timeSlice: false,
+			});
+			store.setMode("compare");
+			dedicated.update();
+			expect(dedicated.el.querySelector(".studio-compare-card")?.textContent).toContain("Q3 deck");
+			expect(dedicated.el.querySelector(".studio-compare-card")?.textContent).toContain("Added");
+			dedicated.dispose();
+
+			view.dispose();
+			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:q3-deck"));
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
+	it("keeps Markdown fallback items alongside PDFs unless structured reports or HTML exist", async () => {
+		const reportSurface = summary({
+			id: "22222222-2222-4222-8222-222222222263",
+			slug: "research",
+			title: "Research",
+			archetype: "studio",
+			kind: "report",
+			icon: "doc",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/research",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const basePdfRef = {
+			manifestSha256: "c".repeat(64),
+			fileSha256: "d".repeat(64),
+			bytes: 2048,
+			mediaType: "application/pdf",
+		};
+		const stagedPdfRef = {
+			manifestSha256: "e".repeat(64),
+			fileSha256: "f".repeat(64),
+			bytes: 3072,
+			mediaType: "application/pdf",
+		};
+		const mdAndPdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: reportSurface.id,
+			sessionId: SESSION,
+			title: "Notes and appendix",
+			summary: "Updates memo and attaches appendix PDF.",
+			kind: "folder_patch",
+			affectedPaths: ["notes/memo.md", "appendix.pdf"],
+			patchManifest: [
+				{ op: "write_text", path: "notes/memo.md", content: "# Field Memo\n\nKey findings." },
+				{ op: "write_file", path: "appendix.pdf", file: stagedPdfRef },
+			],
+		});
+		const sess = session([], {
+			id: SESSION,
+			surfaceId: reportSurface.id,
+			title: "Analyst",
+			changes: [mdAndPdfChange],
+			openChangeCount: 1,
+		});
+		const createObjectURL = vi.fn(() => "blob:appendix");
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		try {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [reportSurface]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([sess], { surface: reportSurface })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(
+							{ "surfaces/research/notes/memo.md": "# Field Memo\n\nOld findings." },
+							{ "surfaces/research/appendix.pdf": basePdfRef },
+						),
+					),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await store.load();
+			await store.openSurface(reportSurface.slug);
+			const reportView = new SurfaceReportView({
+				store,
+				surface: reportSurface,
+				signal: new AbortController().signal,
+				baseFiles: { "surfaces/research/notes/memo.md": "# Field Memo\n\nOld findings." },
+				timeSlice: false,
+			});
+			reportView.update();
+			const switcherLabels = [...reportView.el.querySelectorAll(".report-switcher button")].map((b) =>
+				b.textContent?.trim(),
+			);
+			expect(switcherLabels).toEqual(["Field Memo", "Appendix"]);
+
+			store.setMode("compare");
+			reportView.update();
+			const compareCards = [...reportView.el.querySelectorAll(".studio-compare-card")].map(
+				(c) => c.textContent ?? "",
+			);
+			expect(compareCards).toHaveLength(2);
+			expect(compareCards.some((text) => text.includes("Appendix"))).toBe(true);
+			expect(compareCards.some((text) => text.includes("Field Memo"))).toBe(true);
+			reportView.dispose();
+			store.dispose();
+
+			const structuredStore = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [reportSurface]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: reportSurface })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(
+							{
+								"surfaces/research/notes/memo.md": "# Scratchpad",
+								"surfaces/research/reports/q4.report.json": JSON.stringify({
+									headline: "Q4 Outlook",
+									sections: [{ heading: "Summary", body: "Growth holds steady." }],
+								}),
+							},
+							{ "surfaces/research/appendix.pdf": basePdfRef },
+						),
+					),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await structuredStore.load();
+			await structuredStore.openSurface(reportSurface.slug);
+			const structuredView = new SurfaceReportView({
+				store: structuredStore,
+				surface: reportSurface,
+				signal: new AbortController().signal,
+				baseFiles: {
+					"surfaces/research/notes/memo.md": "# Scratchpad",
+					"surfaces/research/reports/q4.report.json": JSON.stringify({
+						headline: "Q4 Outlook",
+						sections: [{ heading: "Summary", body: "Growth holds steady." }],
+					}),
+				},
+				timeSlice: false,
+			});
+			structuredView.update();
+			const structuredLabels = [...structuredView.el.querySelectorAll(".report-switcher button")].map((b) =>
+				b.textContent?.trim(),
+			);
+			expect(structuredLabels).toEqual(["Q4 Outlook", "Appendix"]);
+			structuredView.dispose();
+			structuredStore.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
 	});
 });
 
