@@ -5,6 +5,7 @@ import {
 	nextSurfaceSessionLifecycleState,
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
+	parseSurfacePreviewFrameState,
 	parseSurfaceSession,
 	parseSurfaceSummary,
 	STUDIO_BINARY_MAX_BYTES,
@@ -341,9 +342,42 @@ describe("surfaces contracts", () => {
 		expect(parseSurfaceSummary({ ...base, publishAsk: ask }).publishAsk).toEqual(ask);
 		expect(parseSurfaceSummary({ ...base, publishAsk: null }).publishAsk).toBeNull();
 		expect("publishAsk" in parseSurfaceSummary(base)).toBe(false);
+		expect(parseSurfaceSummary({ ...base, publishBeingFixed: true }).publishBeingFixed).toBe(true);
+		expect("publishBeingFixed" in parseSurfaceSummary(base)).toBe(false);
 		expect(() => parseSurfaceSummary({ ...base, publishAsk: { ...ask, status: "accepted" } })).toThrow(
 			"surface.publishAsk.status",
 		);
+	});
+
+	it("parses the last preview that built beside a failed one, and whether a fix runs", () => {
+		const failed = {
+			previewId: randomUUID(),
+			status: "failed",
+			doorActionUrl: null,
+			memberPass: null,
+			activeRoute: "/",
+			toggledChangeIds: [],
+			conflictReport: null,
+			errorDetail: "PREVIEW_BUILD_FAILED\nThe build exited with code 1.",
+		};
+		const kept = {
+			previewId: randomUUID(),
+			doorActionUrl: "https://shop--pab12cd34.qorpera.com/__qorpera/member",
+			memberPass: null,
+		};
+		const frame = parseSurfacePreviewFrameState({ ...failed, kept, fixing: true });
+		expect(frame.kept).toEqual(kept);
+		expect(frame.fixing).toBe(true);
+		expect(parseSurfacePreviewFrameState({ ...failed, kept: null, fixing: false })).toMatchObject({
+			kept: null,
+			fixing: false,
+		});
+		const before = parseSurfacePreviewFrameState(failed);
+		expect("kept" in before || "fixing" in before).toBe(false);
+		expect(() => parseSurfacePreviewFrameState({ ...failed, kept: { previewId: "x" } })).toThrow(
+			"previewFrame.kept.previewId",
+		);
+		expect(() => parseSurfacePreviewFrameState({ ...failed, fixing: "yes" })).toThrow("previewFrame.fixing");
 	});
 
 	it("parses write_file ops that reference a stored folder file", () => {

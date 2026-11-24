@@ -276,6 +276,7 @@ export interface SurfaceSummary {
 	readonly needsAttentionCount: number;
 	readonly sortOrder: number;
 	readonly publishAsk?: SurfacePublishAsk | null;
+	readonly publishBeingFixed?: boolean;
 }
 
 export interface SurfaceChangeDiffStats {
@@ -375,6 +376,12 @@ export interface SurfacePreviewConflict {
 	readonly paths: readonly string[];
 }
 
+export interface SurfacePreviewKeptFrame {
+	readonly previewId: string;
+	readonly doorActionUrl: string | null;
+	readonly memberPass: string | null;
+}
+
 export interface SurfacePreviewFrameState {
 	readonly previewId: string | null;
 	readonly status: SurfacePreviewStatus;
@@ -384,6 +391,8 @@ export interface SurfacePreviewFrameState {
 	readonly toggledChangeIds: readonly string[];
 	readonly conflictReport: SurfacePreviewConflict | null;
 	readonly errorDetail: string | null;
+	readonly kept?: SurfacePreviewKeptFrame | null;
+	readonly fixing?: boolean;
 }
 
 export interface SurfacePreviewCompositionState {
@@ -516,6 +525,12 @@ function parseOptionalUuid(value: unknown, label: string): string | null {
 	return parseUuid(value, label);
 }
 
+function parseOptionalFlag(value: unknown, label: string): boolean | undefined {
+	if (value === null || value === undefined) return undefined;
+	if (typeof value !== "boolean") throw new WireValueError(label);
+	return value;
+}
+
 function parseOptionalTimestamp(value: unknown, label: string): string | null {
 	if (value === null || value === undefined) return null;
 	return parseTimestamp(value, label).text;
@@ -620,6 +635,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		raw.publishAsk === undefined || raw.publishAsk === null
 			? raw.publishAsk
 			: parseSurfacePublishAsk(raw.publishAsk, `${label}.publishAsk`);
+	const publishBeingFixed = parseOptionalFlag(raw.publishBeingFixed, `${label}.publishBeingFixed`);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
@@ -654,6 +670,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		needsAttentionCount: parseInteger(raw.needsAttentionCount ?? 0, `${label}.needsAttentionCount`, 0, 100_000),
 		sortOrder: parseInteger(raw.sortOrder ?? 0, `${label}.sortOrder`, -10_000, 100_000),
 		...(publishAsk !== undefined ? { publishAsk } : {}),
+		...(publishBeingFixed !== undefined ? { publishBeingFixed } : {}),
 	};
 }
 
@@ -874,6 +891,17 @@ export function parseSurfacePreviewFrameState(value: unknown, label = "previewFr
 			paths: parseStringArray(conflict.paths ?? [], `${label}.conflictReport.paths`, 200, 512),
 		};
 	}
+	let kept: SurfacePreviewKeptFrame | null | undefined;
+	if (raw.kept === null) kept = null;
+	else if (raw.kept !== undefined) {
+		const frame = parseRecord(raw.kept, `${label}.kept`);
+		kept = {
+			previewId: parseUuid(frame.previewId, `${label}.kept.previewId`),
+			doorActionUrl: parseOptionalText(frame.doorActionUrl, `${label}.kept.doorActionUrl`, 512),
+			memberPass: parseOptionalText(frame.memberPass, `${label}.kept.memberPass`, 128),
+		};
+	}
+	const fixing = parseOptionalFlag(raw.fixing, `${label}.fixing`);
 	return {
 		previewId: parseOptionalUuid(raw.previewId, `${label}.previewId`),
 		status: parseEnum(raw.status, SURFACE_PREVIEW_STATUSES, `${label}.status`),
@@ -883,6 +911,8 @@ export function parseSurfacePreviewFrameState(value: unknown, label = "previewFr
 		toggledChangeIds: parseUuidArray(raw.toggledChangeIds ?? [], `${label}.toggledChangeIds`, 128),
 		conflictReport,
 		errorDetail: parseOptionalText(raw.errorDetail, `${label}.errorDetail`, 1000),
+		...(kept !== undefined ? { kept } : {}),
+		...(fixing !== undefined ? { fixing } : {}),
 	};
 }
 
