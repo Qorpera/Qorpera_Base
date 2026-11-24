@@ -185,6 +185,12 @@ begin
 	from jsonb_array_elements(v_claimed -> 'merges') m
 	where (m ->> 'surfaceId')::uuid = v_surface
 	limit 1;
+	reset role;
+	update public.qorpera_surface_jobs
+	set payload = payload || jsonb_build_object('reconciliationId', extensions.gen_random_uuid())
+	where id = v_job_id;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
 	perform public.qorpera_surface_complete_merge(
 		v_job_id, 'conflicted', repeat('4', 40), null, v_change_2, array['src/hero.tsx'], 'Conflict in hero.tsx', null, v_job_lease
 	);

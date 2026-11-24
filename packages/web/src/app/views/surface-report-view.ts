@@ -1,11 +1,5 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
-import type {
-	StudioBinaryRef,
-	StudioPatchChange,
-	StudioPatchOp,
-	SurfacePreviewConflict,
-	SurfaceSummary,
-} from "@qorpera/contracts";
+import type { StudioBinaryRef, StudioPatchChange, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
@@ -16,7 +10,6 @@ import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/t
 import {
 	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
-	formatConflictPaths,
 	isLocalSurfaceId,
 	isOpenChange,
 	isStandaloneHtmlDeliverablePath,
@@ -626,7 +619,6 @@ interface ReportRenderParams {
 	readonly ordered: readonly StudioPatchChange[];
 	readonly initialLoading: boolean;
 	readonly updatingPhase: SurfaceUpdatePhase | null;
-	readonly busyReconcile: boolean;
 	readonly mode: SurfacesStore["state"]["mode"];
 	readonly activeReportSlug: string | undefined;
 }
@@ -715,7 +707,7 @@ export class SurfaceReportView {
 	#baseFiles: Readonly<Record<string, string>>;
 	#loading = false;
 	#showingSkeleton = false;
-	#lastConflict: SurfacePreviewConflict | null = null;
+	#pendingRetryTarget: { readonly changeIds: readonly string[]; readonly paths: readonly string[] } | null = null;
 	#activeSlug = "";
 	#lastStoreSlug: string | undefined;
 	#shownDeps: readonly unknown[] | undefined;
@@ -832,7 +824,13 @@ export class SurfaceReportView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
+				if (ops?.length)
+					ordered.push({
+						changeId: change.id,
+						ops: normalizeStudioPatchOps(ops, folderRoot),
+						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
+					});
 			}
 		}
 		return ordered;
@@ -859,7 +857,6 @@ export class SurfaceReportView {
 		const baseBinaries = this.#effectiveBaseBinaries(surface.id);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges(surface.folderRoot);
-		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const updatingPhase = this.#options.embedded ? null : store.surfaceUpdatePhase(surface.id);
 		const updating = updatingPhase !== null;
 		const initialLoading =
@@ -897,7 +894,8 @@ export class SurfaceReportView {
 			surface.title,
 			surface.folderRoot,
 			workspace?.briefSummary ?? "",
-			busyReconcile,
+			workspace?.reconciliations,
+			state.reconciliationRequests,
 		];
 		const sameDeps =
 			this.#shownDeps !== undefined &&
@@ -908,7 +906,10 @@ export class SurfaceReportView {
 			this.#shownOrdered.length === ordered.length &&
 			ordered.every(
 				(item, index) =>
-					this.#shownOrdered![index]!.changeId === item.changeId && this.#shownOrdered![index]!.ops === item.ops,
+					this.#shownOrdered![index]!.changeId === item.changeId &&
+					this.#shownOrdered![index]!.ops === item.ops &&
+					this.#shownOrdered![index]!.baseFiles === item.baseFiles &&
+					this.#shownOrdered![index]!.previewBaseChangeIds === item.previewBaseChangeIds,
 			);
 		if (sameDeps && sameOrdered) return;
 		this.#shownDeps = deps;
@@ -937,7 +938,6 @@ export class SurfaceReportView {
 			ordered,
 			initialLoading,
 			updatingPhase,
-			busyReconcile,
 			mode: state.mode,
 			activeReportSlug: state.activeReportSlug,
 		};
@@ -969,8 +969,10 @@ export class SurfaceReportView {
 			params.ordered,
 			params.surface.folderRoot,
 			params.baseBinaries,
+			{
+				reconciliations: params.workspace?.reconciliations,
+			},
 		);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const include = this.#options.include;
 		const filePaths = Object.keys(files)
@@ -1018,8 +1020,10 @@ export class SurfaceReportView {
 			params.ordered,
 			params.surface.folderRoot,
 			params.baseBinaries,
+			{
+				reconciliations: params.workspace?.reconciliations,
+			},
 		);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const include = this.#options.include;
 		const filePaths = Object.keys(files)
@@ -1063,7 +1067,7 @@ export class SurfaceReportView {
 		readonly leavingSkeleton: boolean;
 	} {
 		this.#disposeHtmlFrames();
-		const { surface, workspace, initialLoading, updatingPhase, busyReconcile, mode, activeReportSlug } = params;
+		const { surface, workspace, initialLoading, updatingPhase, mode, activeReportSlug } = params;
 		const structuredItems: ReportSwitcherItem[] = [
 			...reports.map((doc) => ({
 				kind: "report" as const,
@@ -1111,15 +1115,80 @@ export class SurfaceReportView {
 		}
 		const activeItem = items.find((item) => item.slug === this.#activeSlug) ?? items[0];
 
+		let reconciliationFailed = false;
+		let reconcilingPreview = false;
+		if (composition.status === "conflicted") {
+			const conflictIds = composition.conflictReport.changeIds;
+			const conflictPaths = composition.conflictReport.paths;
+			const existingRec = this.#options.store.reconciliationFor(surface.id, conflictIds);
+			const reqState = this.#options.store.reconciliationRequestState(surface.id, conflictIds);
+			if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else if (existingRec?.status === "failed" || existingRec?.status === "ready" || reqState === "failed") {
+				reconciliationFailed = true;
+				this.#pendingRetryTarget = { changeIds: conflictIds, paths: conflictPaths };
+			} else if (!existingRec && this.#options.store.canEnsureReconciliation(surface.id)) {
+				void this.#options.store.ensureReconciliation(surface.id, conflictIds, conflictPaths);
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else {
+				this.#pendingRetryTarget = null;
+			}
+		} else {
+			const selectedIds = params.ordered.map((item) => item.changeId);
+			const lineageTarget = this.#options.store.lineageReconciliationTarget(surface.id, selectedIds);
+			if (lineageTarget) {
+				const existingRec = this.#options.store.reconciliationFor(surface.id, lineageTarget.changeIds);
+				const reqState = this.#options.store.reconciliationRequestState(surface.id, lineageTarget.changeIds);
+				if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (existingRec?.status === "failed" || (!existingRec && reqState === "failed")) {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: lineageTarget.changeIds,
+						paths: lineageTarget.conflictPaths,
+					};
+				} else if (!existingRec && reqState === undefined) {
+					if (this.#options.store.canEnsureReconciliation(surface.id)) {
+						void this.#options.store.ensureReconciliation(
+							surface.id,
+							lineageTarget.changeIds,
+							lineageTarget.conflictPaths,
+						);
+						reconcilingPreview = true;
+					}
+					this.#pendingRetryTarget = null;
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			} else {
+				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
+				if (activeRec?.status === "queued" || activeRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (activeRec?.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: activeRec.selectedChangeIds,
+						paths: activeRec.conflictPaths ?? [],
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			}
+		}
+
 		const badgeText =
-			composition.status === "conflicted"
-				? t("Conflict")
-				: composition.appliedChangeIds.length === 1
-					? t("1 live change applied")
-					: composition.appliedChangeIds.length > 1
-						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: null;
-		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
+			composition.appliedChangeIds.length === 1
+				? t("1 live change applied")
+				: composition.appliedChangeIds.length > 1
+					? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
+					: null;
+		const effectiveUpdatingPhase = updatingPhase ?? (reconcilingPreview ? "updating" : null);
+		const updatingText =
+			updatingPhase !== null ? updatingLabel(updatingPhase) : reconcilingPreview ? t("Updating preview…") : null;
 
 		const showChrome = items.length > 1 || !this.#options.embedded;
 		const chrome = showChrome
@@ -1151,20 +1220,20 @@ export class SurfaceReportView {
 						? h(
 								"div",
 								{ class: "report-chrome-tools" },
-								updatingPhase
+								effectiveUpdatingPhase && updatingText
 									? h(
 											"span",
 											{
 												class: "studio-updating-pill",
 												role: "status",
 												"aria-live": "polite",
-												"data-updating-phase": updatingPhase,
+												"data-updating-phase": effectiveUpdatingPhase,
 											},
 											h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-											h("span", null, updatingLabel(updatingPhase)),
+											h("span", null, updatingText),
 										)
 									: null,
-								badgeText ? h("span", { class: badgeClass }, badgeText) : null,
+								badgeText ? h("span", { class: "studio-badge is-live" }, badgeText) : null,
 							)
 						: null,
 				)
@@ -1172,27 +1241,20 @@ export class SurfaceReportView {
 
 		const children: HTMLElement[] = chrome ? [chrome] : [];
 
-		if (composition.status === "conflicted") {
-			const paths = formatConflictPaths(composition.conflictReport.paths);
+		if (reconciliationFailed && this.#pendingRetryTarget) {
 			children.push(
 				h(
 					"div",
-					{ class: "studio-conflict report-conflict", role: "alert" },
-					h("span", { class: "surface-state is-conflicted", "aria-hidden": "true" }),
-					h(
-						"span",
-						{ title: composition.conflictReport.paths.join(", ") },
-						t("Studio changes conflict in {paths}", { paths }),
-					),
+					{ class: "studio-reconcile-retry", role: "status" },
+					h("span", null, t("Couldn't update preview")),
 					h(
 						"button",
 						{
 							type: "button",
-							class: "btn btn-primary btn-small",
-							"data-act": "report-reconcile",
-							disabled: busyReconcile || composition.conflictReport.changeIds.length === 0,
+							class: "btn btn-small",
+							"data-act": "report-retry-preview",
 						},
-						t("Reconcile"),
+						t("Retry"),
 					),
 				),
 			);
@@ -1658,9 +1720,16 @@ export class SurfaceReportView {
 			node?.scrollIntoView({ behavior: "smooth", block: "start" });
 			return;
 		}
-		if (act === "report-reconcile") {
-			const ids = this.#lastConflict?.changeIds ?? [];
-			if (ids.length) void this.#options.store.reconcileChanges(this.#options.surface.id, ids);
+		if (act === "report-retry-preview") {
+			const target = this.#pendingRetryTarget;
+			if (target && target.changeIds.length > 0) {
+				void this.#options.store.ensureReconciliation(
+					this.#options.surface.id,
+					target.changeIds,
+					target.paths,
+					true,
+				);
+			}
 		}
 	}
 }

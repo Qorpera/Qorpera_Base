@@ -183,7 +183,7 @@ begin
 end $$;
 
 select pg_temp.surf_esc_patch('public.qorpera_surface_summary_json(public.qorpera_surfaces)', array[
-	$old$		'needsAttentionCount', coalesce(stats.attention_sessions, 0) + coalesce(change_stats.conflicted_changes, 0),$old$,
+	$old$		'needsAttentionCount', coalesce(stats.attention_sessions, 0),$old$,
 	$new$		'needsAttentionCount', 0 /* 20260930893000 */,$new$
 ]);
 
@@ -193,7 +193,7 @@ select pg_temp.surf_esc_patch('public.qorpera_surface_complete_session_turn(uuid
 	return public.qorpera_surface_session_json(v_session);$old$,
 	$new$	returning * into v_session;
 
-	if v_next_state in ('needs_input', 'failed') then
+	if v_next_state in ('needs_input', 'failed') and not coalesce(v_session.is_internal, false) then
 		/* 20260930893000 */
 		perform public.qorpera_surface_emit_cofounder_escalation(
 			v_session.id,
@@ -211,24 +211,30 @@ select pg_temp.surf_esc_patch('public.qorpera_surface_complete_session_turn(uuid
 ]);
 
 select pg_temp.surf_esc_patch('public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)', array[
-	$old$			from (
-				select v_job.session_id as sid where v_job.session_id is not null
-				union
-				select ch.session_id as sid from public.qorpera_surface_changes ch where ch.id = any(v_change_ids)
-			) affected;
+	$old$				from (
+					select v_job.session_id as sid where v_job.session_id is not null
+					union
+					select ch.session_id as sid from public.qorpera_surface_changes ch where ch.id = any(v_change_ids)
+				) affected;
+			end if;
 		else
 			update public.qorpera_surface_changes
 			set status = 'staged'$old$,
-	$new$			from (
-				select v_job.session_id as sid where v_job.session_id is not null
-				union
-				select ch.session_id as sid from public.qorpera_surface_changes ch where ch.id = any(v_change_ids)
-			) affected;
+	$new$				from (
+					select v_job.session_id as sid where v_job.session_id is not null
+					union
+					select ch.session_id as sid from public.qorpera_surface_changes ch where ch.id = any(v_change_ids)
+				) affected;
+			end if;
 
-			if coalesce(
-				v_job.session_id,
-				(select ch.session_id from public.qorpera_surface_changes ch where ch.id = p_conflict_change_id and ch.surface_id = v_job.surface_id)
-			) is not null then
+			if ((v_job.payload ? 'reconciliationId')
+				or v_rec.id is null
+				or v_rec.status = 'failed'
+				or (v_rec.status = 'ready' and v_rec.updated_at <= v_job.created_at))
+				and coalesce(
+					v_job.session_id,
+					(select ch.session_id from public.qorpera_surface_changes ch where ch.id = p_conflict_change_id and ch.surface_id = v_job.surface_id)
+				) is not null then
 				/* 20260930893000 */
 				perform public.qorpera_surface_emit_cofounder_escalation(
 					coalesce(

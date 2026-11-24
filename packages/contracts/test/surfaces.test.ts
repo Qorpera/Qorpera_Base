@@ -8,6 +8,7 @@ import {
 	parseSurfacePreviewFrameState,
 	parseSurfaceSession,
 	parseSurfaceSummary,
+	parseSurfaceWorkspace,
 	STUDIO_BINARY_MAX_BYTES,
 	STUDIO_BINARY_MEDIA_TYPES,
 	SURFACE_SITE_DOOR_ACTION_PATTERN,
@@ -424,5 +425,174 @@ describe("surfaces contracts", () => {
 		for (const [value, label] of refused) {
 			expect(() => parseStudioPatchOps([value])).toThrow(label);
 		}
+	});
+
+	it("parses workspace reconciliations with >128 conflictPaths up to the 500/512 change bounds", () => {
+		const surfaceId = randomUUID();
+		const recId = randomUUID();
+		const c1 = randomUUID();
+		const c2 = randomUUID();
+		const now = "2026-11-24T05:00:00Z";
+		const longPath = `src/${"nested/".repeat(45)}component.tsx`;
+		expect(longPath.length).toBeGreaterThan(256);
+		expect(longPath.length).toBeLessThanOrEqual(512);
+		const manyPaths = [longPath, ...Array.from({ length: 149 }, (_, i) => `src/file-${i}.ts`)];
+
+		const baseWorkspace = {
+			surface: {
+				id: surfaceId,
+				slug: "website",
+				title: "Website",
+				group: "products",
+				archetype: "live_build",
+				status: "active",
+				icon: "globe",
+				sourceKind: "code_repo",
+				repositoryKey: "surfaces/website",
+				folderRoot: null,
+				siteSlug: "website",
+				previewMode: "static_site",
+				autoPublish: false,
+				liveUrl: "https://website.qorpera.com/",
+				hasUnpublishedChanges: false,
+				unpublishedChangeCount: 0,
+				sortOrder: 0,
+			},
+			briefSummary: null,
+			activeSessions: [],
+			recentHistory: [],
+			explorations: [],
+			previewState: {
+				surfaceId,
+				mode: "single",
+				primary: {
+					previewId: null,
+					status: "reconciling",
+					doorActionUrl: null,
+					memberPass: null,
+					activeRoute: "/",
+					toggledChangeIds: [],
+					conflictReport: null,
+					errorDetail: null,
+				},
+				compareFrames: [],
+			},
+			reconciliations: [
+				{
+					id: recId,
+					surfaceId,
+					compositionKey: "k-many",
+					baseFingerprint: "a".repeat(40),
+					selectedChangeIds: [c1, c2],
+					status: "queued",
+					patchManifest: null,
+					conflictPaths: manyPaths,
+					commitSha: null,
+					treeSha: null,
+					errorDetail: null,
+					updatedAt: now,
+				},
+			],
+		};
+
+		const parsed = parseSurfaceWorkspace(baseWorkspace);
+		expect(parsed.reconciliations).toHaveLength(1);
+		expect(parsed.reconciliations?.[0]?.conflictPaths).toHaveLength(150);
+		expect(parsed.reconciliations?.[0]?.conflictPaths?.[0]).toBe(longPath);
+
+		expect(() =>
+			parseSurfaceWorkspace({
+				...baseWorkspace,
+				reconciliations: [
+					{
+						...baseWorkspace.reconciliations[0]!,
+						conflictPaths: Array.from({ length: 501 }, (_, i) => `src/f-${i}.ts`),
+					},
+				],
+			}),
+		).toThrow("workspace.reconciliations[0].conflictPaths");
+
+		expect(() =>
+			parseSurfaceWorkspace({
+				...baseWorkspace,
+				reconciliations: [
+					{
+						...baseWorkspace.reconciliations[0]!,
+						conflictPaths: ["x".repeat(513)],
+					},
+				],
+			}),
+		).toThrow("workspace.reconciliations[0].conflictPaths[0]");
+	});
+
+	it("parses optional previewBaseChangeIds on SurfaceChangeUnit and enforces UUID array bounds", () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const base1 = randomUUID();
+		const now = "2026-11-24T06:00:00Z";
+		const baseChange = {
+			id: changeId,
+			sessionId,
+			surfaceId,
+			seq: 1,
+			title: "Launch promo",
+			summary: "Built on accent change",
+			kind: "folder_patch",
+			status: "staged",
+			parentSha: null,
+			headSha: null,
+			dependsOnChangeIds: [],
+			affectedPaths: ["promo.md"],
+			diffStats: null,
+			conflictPaths: null,
+			landedChangeNumber: null,
+			canUndo: false,
+			createdAt: now,
+			resolvedAt: null,
+		};
+
+		const withLineage = parseSurfaceSession({
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Promo",
+			prompt: "Write promo",
+			state: "ready",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: null,
+			hasActiveChat: false,
+			question: null,
+			changes: [{ ...baseChange, previewBaseChangeIds: [base1] }],
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		});
+		expect(withLineage.changes[0]?.previewBaseChangeIds).toEqual([base1]);
+
+		expect(() =>
+			parseSurfaceSession({
+				id: sessionId,
+				surfaceId,
+				workerId: null,
+				title: "Promo",
+				prompt: "Write promo",
+				state: "ready",
+				originKind: "member",
+				originLabel: null,
+				explorationId: null,
+				explorationVariantLabel: null,
+				hasActiveChat: false,
+				question: null,
+				changes: [{ ...baseChange, previewBaseChangeIds: ["not-a-uuid"] }],
+				messages: [],
+				createdAt: now,
+				updatedAt: now,
+				closedAt: null,
+			}),
+		).toThrow("session.changes[0].previewBaseChangeIds[0]");
 	});
 });

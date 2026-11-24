@@ -124,12 +124,13 @@ describe("session crew", () => {
 			alive: true,
 			label: "Paused",
 		});
-		expect(crewLook(session(["conflicted"]))).toEqual({
+		expect(crewLook(session([], { state: "failed" }))).toEqual({
 			tone: "attention",
 			activity: "Idle",
 			alive: true,
-			label: "Conflict",
+			label: "Failed",
 		});
+		expect(crewLook(session(["conflicted"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["staged"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["merged"]))).toMatchObject({ tone: "merged" });
 	});

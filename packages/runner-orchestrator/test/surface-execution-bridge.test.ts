@@ -16,6 +16,7 @@ import {
 import { cherryPickChangeUnits } from "../src/code-host-surfaces.ts";
 import { SupabaseCloudRunnerOrchestratorControlPlane } from "../src/orchestrator.ts";
 import {
+	applyStudioFolderPatches,
 	assertSurfaceFolderPatchPath,
 	collectSharedCompanyAssets,
 	createSurfaceExecutionHandlers,
@@ -2419,5 +2420,205 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 			}),
 			expect.any(AbortSignal),
 		);
+	});
+
+	it("3-way merges disjoint write_text ops in applyStudioFolderPatches and lands reconciledPatchManifest in runMergeJob", async () => {
+		const baseText = "a\nb\nc\nd\ne\n";
+		const merged = applyStudioFolderPatches(
+			{ "identity/guide.md": baseText },
+			[
+				{
+					changeId: randomUUID(),
+					ops: [{ op: "write_text", path: "identity/guide.md", content: "A\nb\nc\nd\ne\n" }],
+					baseFiles: { "identity/guide.md": baseText },
+				},
+				{
+					changeId: randomUUID(),
+					ops: [{ op: "write_text", path: "identity/guide.md", content: "a\nb\nc\nd\nE\n" }],
+					baseFiles: { "identity/guide.md": baseText },
+				},
+			],
+			"identity",
+		);
+		expect(merged.status).toBe("ready");
+		if (merged.status === "ready") {
+			expect(merged.files["identity/guide.md"]).toBe("A\nb\nc\nd\nE\n");
+		}
+
+		const profileId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeA = randomUUID();
+		const changeB = randomUUID();
+		const mem = createInMemoryCompanyFolder({ "identity/guide.md": baseText });
+		const completeSurfaceMerge = vi.fn().mockResolvedValue(undefined);
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+		});
+		await handlers.runMergeJob(
+			{
+				jobId: randomUUID(),
+				kind: "land_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeA, changeB] },
+				reconciledPatchManifest: [{ op: "write_text", path: "identity/guide.md", content: "combined\n" }],
+				approvedChanges: [
+					{
+						changeId: changeA,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "A",
+						summary: "",
+						patchManifest: [{ op: "write_text", path: "identity/guide.md", content: "A\n" }],
+						affectedPaths: ["identity/guide.md"],
+					},
+					{
+						changeId: changeB,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "B",
+						summary: "",
+						patchManifest: [{ op: "write_text", path: "identity/guide.md", content: "B\n" }],
+						affectedPaths: ["identity/guide.md"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+		expect(completeSurfaceMerge).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: "landed",
+				preMergeSnapshot: expect.objectContaining({ changeIds: [changeA, changeB] }),
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(mem.files.get("identity/guide.md")).toBe("combined\n");
+
+		const memPreserved = createInMemoryCompanyFolder({ "identity/report.md": "base\n" });
+		const completePreserved = vi.fn().mockResolvedValue(undefined);
+		const preservedHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: completePreserved,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: memPreserved.folder,
+		});
+		await preservedHandlers.runMergeJob(
+			{
+				jobId: randomUUID(),
+				kind: "land_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeA, changeB] },
+				reconciledConflictPaths: ["identity/report.md"],
+				reconciledPatchManifest: [{ op: "write_text", path: "identity/report.md", content: "merged report\n" }],
+				approvedChanges: [
+					{
+						changeId: changeA,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "A",
+						summary: "",
+						patchManifest: [
+							{ op: "write_text", path: "identity/report.md", content: "A\n" },
+							{ op: "write_text", path: "identity/diagram.svg", content: "<svg>ok</svg>" },
+						],
+						affectedPaths: ["identity/report.md", "identity/diagram.svg"],
+					},
+					{
+						changeId: changeB,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "B",
+						summary: "",
+						patchManifest: [{ op: "write_text", path: "identity/report.md", content: "B\n" }],
+						affectedPaths: ["identity/report.md"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+		expect(completePreserved).toHaveBeenCalledWith(
+			expect.objectContaining({ status: "landed" }),
+			expect.any(AbortSignal),
+		);
+		expect(memPreserved.files.get("identity/report.md")).toBe("merged report\n");
+		expect(memPreserved.files.get("identity/diagram.svg")).toBe("<svg>ok</svg>");
+
+		const memIncomplete = createInMemoryCompanyFolder({ "identity/report.md": "base\n" });
+		const completeIncomplete = vi.fn().mockResolvedValue(undefined);
+		const incompleteHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: completeIncomplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: memIncomplete.folder,
+		});
+		await incompleteHandlers.runMergeJob(
+			{
+				jobId: randomUUID(),
+				kind: "land_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeA, changeB] },
+				reconciledConflictPaths: ["identity/report.md"],
+				reconciledPatchManifest: [{ op: "write_text", path: "identity/other.md", content: "partial\n" }],
+				approvedChanges: [
+					{
+						changeId: changeA,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "A",
+						summary: "",
+						patchManifest: [{ op: "write_text", path: "identity/report.md", content: "A\n" }],
+						affectedPaths: ["identity/report.md"],
+					},
+					{
+						changeId: changeB,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "B",
+						summary: "",
+						patchManifest: [{ op: "write_text", path: "identity/report.md", content: "B\n" }],
+						affectedPaths: ["identity/report.md"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+		expect(completeIncomplete).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: "failed",
+				errorDetail: expect.stringContaining("SURFACE_RECONCILIATION_INCOMPLETE"),
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(memIncomplete.commitCalls).toHaveLength(0);
 	});
 });

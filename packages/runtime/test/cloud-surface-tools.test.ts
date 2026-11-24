@@ -566,6 +566,77 @@ describe("cloud surface runtime tools", () => {
 		expect(brief).toContain("git cherry-pick <parentSha>..<headSha>");
 	});
 
+	it("renders folder reconciliation patches without git instructions in buildSurfaceTurnBrief and sends baseFiles envelope", async () => {
+		const sessionId = randomUUID();
+		const brief = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "identity",
+			surfaceTitle: "Identity",
+			sourceKind: "folder",
+			isInternalReconciliation: true,
+			folderRoot: "identity",
+			briefMarkdown: "Brand guide",
+			conflictPaths: ["identity/guide.md"],
+			conflictDetails: [
+				{
+					changeId: randomUUID(),
+					title: "Buyer journey",
+					kind: "folder_patch",
+					prompt: "Add buyer journey diagram",
+					summary: "Adds buyer journey section",
+					affectedPaths: ["identity/guide.md", "identity/journey.svg"],
+					patchManifest: [
+						{ op: "write_text", path: "identity/guide.md", content: "# Brand\nJourney" },
+						{ op: "write_text", path: "identity/journey.svg", content: "<svg />" },
+					],
+				},
+				{
+					changeId: randomUUID(),
+					title: "Lighter blue",
+					kind: "folder_patch",
+					prompt: "Use lighter blue on dark backgrounds",
+					summary: "Lighter blue token and copy",
+					affectedPaths: ["identity/guide.md"],
+					patchManifest: [{ op: "write_text", path: "identity/guide.md", content: "# Brand\nLighter blue" }],
+				},
+			],
+		});
+
+		expect(brief).toContain("## Conflict Reconciliation");
+		expect(brief).toContain("Target Studio folder: `identity/`");
+		expect(brief).toContain("Add buyer journey diagram");
+		expect(brief).toContain("identity/journey.svg");
+		expect(brief).toContain("stage_surface_patch");
+		expect(brief).toContain("Never ask the founder questions.");
+		expect(brief).not.toContain("git cherry-pick");
+		expect(brief).not.toContain("git merge main");
+
+		const calls: { method: string; args: Record<string, unknown> }[] = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				calls.push({ method, args });
+				return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+			},
+		});
+		await port.stageSurfacePatch!(
+			sessionId,
+			{
+				title: "Update guide",
+				summary: "Adds section",
+				ops: [{ op: "write_text", path: "identity/guide.md", content: "# Brand\nNew" }],
+				baseFiles: { "identity/guide.md": "# Brand\nOld" },
+				notePaths: [],
+				finishSession: true,
+			},
+			toolContext(),
+		);
+		expect(calls[0]?.method).toBe("qorpera_native_surface_record_change");
+		expect(calls[0]?.args.p_patch_manifest).toEqual({
+			ops: [{ op: "write_text", path: "identity/guide.md", content: "# Brand\nNew" }],
+			baseFiles: { "identity/guide.md": "# Brand\nOld" },
+		});
+	});
+
 	it("injects Global Company Identity into buildSurfaceTurnBrief when identityContext has content", () => {
 		const sessionId = randomUUID();
 		const withIdentity = buildSurfaceTurnBrief({

@@ -681,32 +681,32 @@ describe("the surface page", () => {
 			target,
 			originKind: "point_to_change",
 			originLabel: "PreorderCta · /pricing",
+			previewBaseChangeIds: [CHANGES[0]],
 		});
 		expect(view.el.querySelector(".surface-target-pill")).toBeNull();
 		view.dispose();
 		store.dispose();
 	});
 
-	it("surfaces conflicts in the rail, drawer, and viewport with 1-click Reconcile", async () => {
-		const conflictedSession = session(["conflicted", "staged"], {
+	it("hides conflict banners and Reconcile buttons while rendering calm Updating preview status during silent reconciliation", async () => {
+		const overlappingSession = session(["conflicted", "staged"], {
 			changes: [
 				change(CHANGES[0], 1, "conflicted", { conflictPaths: ["src/hero.tsx", "src/theme.css"] }),
 				change(CHANGES[1], 2, "staged"),
 			],
 		});
-		const ws = workspace([conflictedSession], {
+		const ws = workspace([overlappingSession], {
 			previewState: {
 				surfaceId: SURFACE,
 				mode: "single",
 				primary: {
-					...previewFrame({ status: "conflicted", doorActionUrl: null, memberPass: null }),
-					conflictReport: { changeIds: [CHANGES[0], CHANGES[1]], paths: ["src/hero.tsx"] },
+					...previewFrame({ status: "reconciling", doorActionUrl: null, memberPass: null }),
+					conflictReport: null,
 				},
 				compareFrames: [],
 			},
 		});
-		const reconcileChanges = vi.fn(async () => session(["staged", "staged"], { state: "reconciling" }));
-		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws), reconcileChanges }));
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws) }));
 		await store.load();
 		await store.openSurface("website");
 
@@ -715,16 +715,14 @@ describe("the surface page", () => {
 		await flush();
 		store.openDrawer(SURFACE, SESSION);
 		view.update();
-		expect(view.el.querySelector(".surface-banner.is-conflict")?.textContent).toContain("src/hero.tsx");
-		view.el.querySelector<HTMLButtonElement>('.surface-banner.is-conflict [data-act="reconcile"]')!.click();
-		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(1, SURFACE, [CHANGES[0], CHANGES[1]]);
+		expect(view.el.querySelector(".surface-banner.is-conflict")).toBeNull();
+		expect(view.el.querySelector('[data-act="reconcile"]')).toBeNull();
+		expect(view.el.querySelector(".surface-frame.is-waiting")?.textContent).toContain("Updating preview…");
 
 		const drawer = view.el.querySelector(".surface-drawer")!;
-		expect(drawer.querySelector(".surface-drawer-change.is-conflicted")?.textContent).toContain("src/hero.tsx");
-		drawer.querySelector<HTMLButtonElement>(`[data-act="reconcile"][data-change="${CHANGES[0]}"]`)!.click();
-		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(2, SURFACE, [CHANGES[0]]);
+		expect(drawer.querySelector(".surface-drawer-change.is-conflicted")).toBeNull();
+		expect(drawer.querySelector('[data-act="reconcile"]')).toBeNull();
+		expect(drawer.querySelector(`[data-act="approve"][data-change="${CHANGES[0]}"]`)).not.toBeNull();
 		view.dispose();
 		store.dispose();
 	});

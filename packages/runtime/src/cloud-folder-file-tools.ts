@@ -55,6 +55,7 @@ import {
 	type CloudRuntimeErrorCategory,
 	type CloudRuntimeToolOperation,
 } from "./cloud-runtime-observability.ts";
+import type { CloudFolderPreviewOverlay } from "./cloud-surface-preview-overlay.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /*
@@ -622,8 +623,9 @@ export function cloudFolderFileTools(options: {
 	operations: CloudNativeToolOperations;
 	identity: CloudNativeToolIdentity;
 	surfaceFilePolicy?: SurfaceFilePolicy;
+	previewOverlay?: CloudFolderPreviewOverlay;
 }): CloudNativeTool[] {
-	const { folder, operations, identity, surfaceFilePolicy } = options;
+	const { folder, operations, identity, surfaceFilePolicy, previewOverlay } = options;
 	const pathSchema = { type: "string", maxLength: 4096 };
 	const nullableVersion = { type: ["string", "null"], pattern: UUID_PATTERN.source };
 
@@ -786,6 +788,142 @@ export function cloudFolderFileTools(options: {
 			entry = (await folder.read(targetPath, signal)).entry;
 		} catch (error) {
 			return failed(error);
+		}
+		if (previewOverlay?.isUnderRoot(targetPath)) {
+			const overlaid = await previewOverlay.lookup(targetPath, signal);
+			if (overlaid?.kind === "deleted") {
+				return {
+					answer: { path: targetPath, kind: "absent", version: null },
+					...(entry ? { release: cloudCompanyFolderRelease(entry) } : {}),
+				};
+			}
+			if (overlaid?.kind === "folder" && !entry) {
+				let rootEntry: CloudCompanyFolderEntry | null = null;
+				try {
+					rootEntry = (await folder.read(previewOverlay.folderRoot, signal)).entry;
+				} catch (error) {
+					return failed(error);
+				}
+				return {
+					answer: { path: overlaid.path, kind: "folder", version: null },
+					...(rootEntry ? { release: cloudCompanyFolderRelease(rootEntry) } : {}),
+				};
+			}
+			if (overlaid?.kind === "file") {
+				let releaseEntry: CloudCompanyFolderEntry | null = entry;
+				if (!releaseEntry) {
+					try {
+						releaseEntry = (await folder.read(previewOverlay.folderRoot, signal)).entry;
+					} catch (error) {
+						return failed(error);
+					}
+				}
+				const release = releaseEntry ? cloudCompanyFolderRelease(releaseEntry) : undefined;
+				const total = overlaid.bytes.byteLength;
+				const named = { path: overlaid.path, kind: "file", version: entry?.version ?? null };
+				if (!hasLineRange) {
+					const bytes = overlaid.bytes.subarray(0, MAX_READ_BYTES + SECRET_MARGIN);
+					const window = bytes.subarray(0, MAX_READ_BYTES);
+					const text = windowText(window, window.byteLength >= total);
+					if (text === null) {
+						return {
+							answer: {
+								...named,
+								refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on a machine",
+							},
+							...(release ? { release } : {}),
+						};
+					}
+					const around = text + AROUND.decode(bytes.subarray(Buffer.byteLength(text)));
+					return {
+						answer: { ...named, offset: 0 },
+						text: {
+							field: "text",
+							points: Array.from(text),
+							around,
+							secrets: cloudSecretSpans(around),
+							more: bytes.byteLength < total,
+							offset: 0,
+							total,
+						},
+						...(release ? { release } : {}),
+					};
+				}
+				const bytes = overlaid.bytes.subarray(0, LINE_RANGE_READ_BYTES + SECRET_MARGIN);
+				const scanWindow = bytes.subarray(0, Math.min(bytes.byteLength, LINE_RANGE_READ_BYTES));
+				const scanned = windowText(scanWindow, scanWindow.byteLength >= total);
+				if (scanned === null) {
+					return {
+						answer: {
+							...named,
+							refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on a machine",
+						},
+						...(release ? { release } : {}),
+					};
+				}
+				const fullScanned = Buffer.byteLength(scanned) >= total;
+				const spans = splitLineSpans(scanned);
+				const startLine = reqStartLine ?? 1;
+				const completeCount = fullScanned
+					? spans.length
+					: Math.max(0, spans.length - (scanned.endsWith("\n") ? 0 : 1));
+				if (startLine > completeCount) {
+					if (!fullScanned) {
+						return {
+							answer: {
+								...named,
+								refused:
+									"COMPANY_LINE_RANGE_BEYOND_SCAN: startLine is past the first 256 KiB of this file; read it alone with path and offset",
+							},
+							...(release ? { release } : {}),
+						};
+					}
+					return {
+						answer: {
+							...named,
+							offset: total,
+							startLine,
+							endLine: startLine - 1,
+							totalLines: spans.length,
+							bytesRead: 0,
+							totalBytes: total,
+							text: "",
+							nextOffset: null,
+						},
+						...(release ? { release } : {}),
+					};
+				}
+				const firstSpan = spans[startLine - 1]!;
+				const lastIdx = Math.min((reqEndLine ?? completeCount) - 1, completeCount - 1);
+				const lastSpan = spans[lastIdx]!;
+				const tailAround = AROUND.decode(bytes.subarray(Buffer.byteLength(scanned)));
+				const behind = scanned.slice(Math.max(0, firstSpan.startChar - SECRET_MARGIN), firstSpan.startChar);
+				const rest = scanned.slice(firstSpan.startChar) + tailAround;
+				const lead = windowLead(behind, rest);
+				const startOffset = firstSpan.startByte - Buffer.byteLength(lead);
+				const rawSlice = lead + scanned.slice(firstSpan.startChar, lastSpan.endChar);
+				const sliceText = head(rawSlice, MAX_READ_BYTES);
+				const sliceBodyLen = sliceText.length - lead.length;
+				const around = sliceText + rest.slice(sliceBodyLen, sliceBodyLen + SECRET_MARGIN);
+				const actualStartLine = Math.max(1, startLine - countNewlines(lead));
+				return {
+					answer: { ...named, offset: startOffset },
+					text: {
+						field: "text",
+						points: Array.from(sliceText),
+						around,
+						secrets: cloudSecretSpans(around),
+						more: startOffset + Buffer.byteLength(around) < total,
+						offset: startOffset,
+						total,
+						lineRange: {
+							startLine: actualStartLine,
+							...(fullScanned ? { totalLines: spans.length } : {}),
+						},
+					},
+					...(release ? { release } : {}),
+				};
+			}
 		}
 		if (!entry) return { answer: { path: targetPath, kind: "absent", version: null } };
 		const release = cloudCompanyFolderRelease(entry);
@@ -1221,6 +1359,73 @@ export function cloudFolderFileTools(options: {
 					return readMany((value as { paths: PathReadTarget[] }).paths, context);
 				const input = value as { path: string; offset: number; limit: number };
 				const entry = await read(input.path, "read", context.signal);
+				if (previewOverlay?.isUnderRoot(input.path)) {
+					const overlaid = await previewOverlay.lookup(input.path, context.signal);
+					if (overlaid?.kind === "deleted") {
+						return released(
+							folder,
+							identity.runId,
+							context,
+							cloudToolJsonText({ path: input.path, kind: "absent", version: null }),
+							entry ? [cloudCompanyFolderRelease(entry)] : [],
+						);
+					}
+					if (overlaid?.kind === "folder" && !entry) {
+						const rootEntry = await read(previewOverlay.folderRoot, "read", context.signal);
+						return released(
+							folder,
+							identity.runId,
+							context,
+							cloudToolJsonText({ path: overlaid.path, kind: "folder", version: null }),
+							rootEntry ? [cloudCompanyFolderRelease(rootEntry)] : [],
+						);
+					}
+					if (overlaid?.kind === "file") {
+						const releaseEntry = entry ?? (await read(previewOverlay.folderRoot, "read", context.signal));
+						const total = overlaid.bytes.byteLength;
+						const behind = Math.min(SECRET_MARGIN, input.offset);
+						const startIdx = Math.max(0, input.offset - behind);
+						const endIdx = Math.min(total, startIdx + behind + input.limit + SECRET_MARGIN);
+						const bytes = overlaid.bytes.subarray(startIdx, endIdx);
+						const window = bytes.subarray(behind, behind + input.limit);
+						const atEnd = input.offset + window.byteLength >= total;
+						const text = windowText(window, atEnd);
+						if (text === null) {
+							throw new CloudToolRefusal(
+								"COMPANY_FILE_NOT_TEXT: this file, or this offset, is not UTF-8 text; open such files on a machine",
+							);
+						}
+						const after = AROUND.decode(bytes.subarray(behind + Buffer.byteLength(text)));
+						const lead = behind === 0 ? "" : windowLead(AROUND.decode(bytes.subarray(0, behind)), text + after);
+						const start = input.offset - Buffer.byteLength(lead);
+						const around = lead + text + after;
+						const more = input.offset - behind + bytes.byteLength < total;
+						const secrets = cloudSecretSpans(around);
+						const render = (room: string) => {
+							const { end, runsOn } = windowEnd(around, room.length, more, secrets);
+							const shown = around.slice(0, end);
+							const included = Buffer.byteLength(shown);
+							return cloudToolJsonText({
+								path: overlaid.path,
+								kind: "file",
+								version: entry?.version ?? null,
+								offset: start,
+								bytesRead: included,
+								totalBytes: total,
+								text: shown,
+								nextOffset: start + included < total ? start + included : null,
+								...(runsOn ? { secretRun: secretRunsOn(start) } : {}),
+							});
+						};
+						return released(
+							folder,
+							identity.runId,
+							context,
+							fitted(lead + text, 1, (room) => redactCloudWebhookSecrets(render(room))),
+							releaseEntry ? [cloudCompanyFolderRelease(releaseEntry)] : [],
+						);
+					}
+				}
 				if (!entry)
 					return released(
 						folder,
@@ -1408,9 +1613,22 @@ export function cloudFolderFileTools(options: {
 					limit: number;
 				};
 				let parent: CloudCompanyFolderEntry | null = null;
+				let virtualParent = false;
+				let virtualRootRelease: CloudCompanyFolderEntry | null = null;
 				if (input.path !== "") {
 					parent = await read(input.path, "listed", context.signal);
-					if (!parent)
+					if (!parent && previewOverlay?.isUnderRoot(input.path)) {
+						const overlaidParent = await previewOverlay.lookup(input.path, context.signal);
+						if (overlaidParent?.kind === "folder") {
+							virtualParent = true;
+							virtualRootRelease = await read(previewOverlay.folderRoot, "listed", context.signal);
+						} else if (overlaidParent?.kind === "file") {
+							throw new CloudToolRefusal(
+								"COMPANY_FILE_NOT_A_FOLDER: that path is a file; read it with company_read",
+							);
+						}
+					}
+					if (!parent && !virtualParent)
 						return released(
 							folder,
 							identity.runId,
@@ -1418,7 +1636,7 @@ export function cloudFolderFileTools(options: {
 							`${input.path}: absent; nothing is there that you may read.`,
 							[],
 						);
-					if (parent.kind !== "folder")
+					if (parent && parent.kind !== "folder")
 						throw new CloudToolRefusal(
 							`COMPANY_FILE_NOT_A_FOLDER: that path is a ${parent.kind === "file" ? "file" : "link"}; read it with company_read`,
 						);
@@ -1477,54 +1695,109 @@ export function cloudFolderFileTools(options: {
 				// a change elsewhere costs a look too: two looks that read the same are no proof (a file renamed back and
 				// forth in step with the pages is missed alike by both; review r1 of #1748). If no look was one moment,
 				// the answer says so (owed from v240, 13 November 2026).
-				let listed = await look();
-				for (let looks = 1; !listed.steady && looks < LIST_LOOKS; looks++) {
-					if (performance.now() - begun >= LIST_CALL_MS) break;
+				let listed: ListLook;
+				if (virtualParent) {
+					listed = { looked: [], matched: [], asOfSeq: 0, steady: true, ended: true };
+				} else {
 					listed = await look();
+					for (let looks = 1; !listed.steady && looks < LIST_LOOKS; looks++) {
+						if (performance.now() - begun >= LIST_CALL_MS) break;
+						listed = await look();
+					}
 				}
 				const settled = listed.steady;
-				const { matched, asOfSeq, ended } = listed;
+				const { asOfSeq, ended } = listed;
 				const looked = listed.looked.length;
 				const last = listed.looked.at(-1);
-				// A target shown in part never ends inside a secret: before it, or past it whole (windowEnd).
+				type ListRow =
+					| { readonly kind: "live"; readonly entry: CloudCompanyFolderEntry; readonly overrideBytes?: number }
+					| { readonly kind: "virtual_file"; readonly path: string; readonly bytes: number }
+					| { readonly kind: "virtual_folder"; readonly path: string };
+				let rows: ListRow[] = listed.matched.map((entry) => ({ kind: "live", entry }));
+				if (previewOverlay?.mayAffectList(input.path, input.depth > 1)) {
+					const overlayList = await previewOverlay.listUnder(input.path, input.depth > 1, context.signal);
+					const overlayFilesByKey = new Map(overlayList.files.map((item) => [folderKey(item.path), item]));
+					const seenKeys = new Set<string>();
+					const merged: ListRow[] = [];
+					for (const row of rows) {
+						if (row.kind !== "live") continue;
+						const key = folderKey(row.entry.path);
+						if (overlayList.deletedKeys.has(key)) continue;
+						seenKeys.add(key);
+						const override = overlayFilesByKey.get(key);
+						if (override && row.entry.kind === "file") {
+							merged.push({ kind: "live", entry: row.entry, overrideBytes: override.bytes });
+						} else {
+							merged.push(row);
+						}
+					}
+					const afterKey = input.after === null ? null : folderKey(input.after);
+					const lastKey = !ended && last ? folderKey(last.path) : null;
+					const matchesVirtualFilter = (candidatePath: string): boolean => {
+						const key = folderKey(candidatePath);
+						if (seenKeys.has(key)) return false;
+						if (afterKey !== null && key <= afterKey) return false;
+						if (lastKey !== null && key > lastKey) return false;
+						const names = candidatePath.split("/");
+						if (names.length - levels > input.depth) return false;
+						if (glob && !globMatches(glob, folderKey(names.slice(levels).join("/")))) return false;
+						return true;
+					};
+					for (const file of overlayList.files) {
+						if (!matchesVirtualFilter(file.path)) continue;
+						seenKeys.add(folderKey(file.path));
+						merged.push({ kind: "virtual_file", path: file.path, bytes: file.bytes });
+					}
+					for (const folderPath of overlayList.folders) {
+						if (!matchesVirtualFilter(folderPath)) continue;
+						seenKeys.add(folderKey(folderPath));
+						merged.push({ kind: "virtual_folder", path: folderPath });
+					}
+					merged.sort((a, b) => {
+						const keyA = folderKey(a.kind === "live" ? a.entry.path : a.path);
+						const keyB = folderKey(b.kind === "live" ? b.entry.path : b.path);
+						return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
+					});
+					rows = merged;
+				}
+				const rowPath = (row: ListRow): string => (row.kind === "live" ? row.entry.path : row.path);
 				const shownTo = (whole: string, room: string) => {
 					const shown = whole.slice(0, windowEnd(whole, room.length, false).end);
 					return `-> ${JSON.stringify(shown)}${shown.length < whole.length ? " (cut; company_read shows all)" : ""}`;
 				};
-				const line = (entry: CloudCompanyFolderEntry, target?: string): string =>
-					entry.kind === "folder"
+				const line = (row: ListRow, target?: string): string => {
+					if (row.kind === "virtual_folder") return `${row.path}/`;
+					if (row.kind === "virtual_file") return `${row.path}\t${row.bytes}`;
+					const entry = row.entry;
+					return entry.kind === "folder"
 						? `${entry.path}/`
 						: entry.kind === "file"
-							? `${entry.path}\t${entry.file.bytes}`
+							? `${entry.path}\t${row.overrideBytes ?? entry.file.bytes}`
 							: `${entry.path}\t${shownTo(entry.target, target ?? head(entry.target, LIST_TARGET_BYTES))}`;
-				const header = `${input.path === "" ? "The top of the company folder" : `${input.path}/ (version ${parent?.version})`}, asOfSeq ${asOfSeq}, depth ${input.depth}${input.glob === null ? "" : `, glob ${JSON.stringify(input.glob)}`}:`;
-				// What is said after the lines shown: there is more after the last one shown, none, or perhaps more after the
-				// last entry looked at, which the answer then shows (and releases) too.
+				};
+				const header = `${input.path === "" ? "The top of the company folder" : `${input.path}/ (version ${parent?.version ?? null})`}, asOfSeq ${asOfSeq}, depth ${input.depth}${input.glob === null ? "" : `, glob ${JSON.stringify(input.glob)}`}:`;
 				const ending = (count: number): string => {
 					const shown = count === 0 ? "No entries" : `${count} ${count === 1 ? "entry" : "entries"}`;
-					if (count < matched.length)
-						return `${shown} shown. More: call again with after ${JSON.stringify(matched[count - 1]?.path)}.`;
+					if (count < rows.length)
+						return `${shown} shown. More: call again with after ${JSON.stringify(rowPath(rows[count - 1]!))}.`;
 					if (ended || !last) return `${shown}. Nothing more.`;
 					return `${shown} shown, ${looked} looked through. More may follow: call again with after ${JSON.stringify(last.path)}.`;
 				};
 				const render = (count: number, first?: string): string =>
 					[
 						header,
-						...matched.slice(0, count).map((entry, index) => line(entry, index === 0 ? first : undefined)),
+						...rows.slice(0, count).map((row, index) => line(row, index === 0 ? first : undefined)),
 						"",
 						...(settled ? [] : [CHANGED_WHILE_LISTED]),
 						ending(count),
 					].join("\n");
-				// As many entries as fit one result (the longest start that fits, found by halving); at least one. A first
-				// link whose target, escaped at worst, still passes one result shows less of it: only a path makes an
-				// answer too long to show.
-				let count = Math.min(matched.length, input.limit, 1);
+				let count = Math.min(rows.length, input.limit, 1);
 				let output = render(count);
-				const first = matched[0];
-				if (first?.kind === "symlink" && !fitsOneResult(output))
-					output = fitted(head(first.target, LIST_TARGET_BYTES), 0, (shown) => render(1, shown));
+				const first = rows[0];
+				if (first?.kind === "live" && first.entry.kind === "symlink" && !fitsOneResult(output))
+					output = fitted(head(first.entry.target, LIST_TARGET_BYTES), 0, (shown) => render(1, shown));
 				else if (count > 0) {
-					let high = Math.min(matched.length, input.limit);
+					let high = Math.min(rows.length, input.limit);
 					while (count < high) {
 						const middle = Math.ceil((count + high) / 2);
 						if (fitsOneResult(render(middle))) count = middle;
@@ -1532,14 +1805,18 @@ export function cloudFolderFileTools(options: {
 					}
 					output = render(count);
 				}
-				const shown = matched.slice(0, count);
+				const shown = rows.slice(0, count);
+				const shownLiveEntries = shown
+					.filter((row): row is Extract<ListRow, { kind: "live" }> => row.kind === "live")
+					.map((row) => row.entry);
 				const named =
-					count === matched.length && !ended && last && !shown.includes(last)
+					count === rows.length && !ended && last && !shownLiveEntries.includes(last)
 						? [cloudCompanyFolderRelease(last)]
 						: [];
 				return released(folder, identity.runId, context, output, [
 					...(parent ? [cloudCompanyFolderRelease(parent)] : []),
-					...shown.map(cloudCompanyFolderRelease),
+					...(virtualRootRelease ? [cloudCompanyFolderRelease(virtualRootRelease)] : []),
+					...shownLiveEntries.map(cloudCompanyFolderRelease),
 					...named,
 				]);
 			},
