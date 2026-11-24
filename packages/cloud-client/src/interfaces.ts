@@ -1858,6 +1858,7 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 	const problems: InterfaceProblem[] = [];
 	const keys = new Set<string>();
 	const note = (p: InterfaceProblem) => problems.push(p);
+	const columnIndices = table.columns.map((column) => named.indexOf(column.name));
 	for (const record of records.slice(1)) {
 		if (record.fields.length === 1 && record.fields[0] === "") continue;
 		if (record.fields.length !== named.length) {
@@ -1866,8 +1867,9 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 		}
 		const row: Record<string, TableValue> = {};
 		let bad: string | null = null;
-		for (const column of table.columns) {
-			const at = named.indexOf(column.name);
+		for (let i = 0; i < table.columns.length; i++) {
+			const column = table.columns[i]!;
+			const at = columnIndices[i]!;
 			const out = tableFieldValue(column, at < 0 ? "" : (record.fields[at] ?? ""));
 			if ("problem" in out) {
 				bad = out.problem;

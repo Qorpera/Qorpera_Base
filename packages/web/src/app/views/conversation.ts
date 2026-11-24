@@ -2790,8 +2790,7 @@ export class ConversationView {
 		const foldOf = new Map<string, string>();
 		for (const [first, group] of folds) for (const id of group.items) foldOf.set(id, first);
 		for (const first of this.#openFolds) if (!folds.has(first)) this.#openFolds.delete(first);
-		const key = JSON.stringify([
-			items.map(cachedTranscriptItemJson),
+		const key = `${items.map(cachedTranscriptItemJson).join("\0")}\x01${JSON.stringify([
 			mentionTargets,
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
@@ -2833,7 +2832,7 @@ export class ConversationView {
 			conversation.optimistic.map((item) => item.inputId ?? null),
 			this.#ready?.shown,
 			this.#siteCards?.key,
-		]);
+		])}`;
 		this.#messagesSnap = {
 			projection: conversation.projection,
 			optimistic: conversation.optimistic,

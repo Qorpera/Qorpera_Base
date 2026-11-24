@@ -132,3 +132,22 @@ export function opsComposerPlaceholder(kind: SurfaceKind): string {
 			return t("Ask an agent to handle a task here…");
 	}
 }
+
+export function isThetabandCompany(companyName: string): boolean {
+	return /\bthetaband\b/i.test(companyName);
+}
+
+export function slugifySurfaceTitle(title: string, taken: ReadonlySet<string>): string {
+	const raw = title
+		.toLowerCase()
+		.normalize("NFKD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 34);
+	const base = raw && /^[a-z0-9]/.test(raw) ? raw : "surface";
+	if (!taken.has(base)) return base;
+	let index = 2;
+	while (taken.has(`${base}-${index}`)) index += 1;
+	return `${base}-${index}`;
+}
