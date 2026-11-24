@@ -439,4 +439,83 @@ describe("surface preview runner and change dispatcher", () => {
 		if (synced.peerSync[0]?.result.status !== "clean") throw new Error("expected clean peer rebase");
 		expect(synced.peerSync[0].result.rebasedChanges[0]?.parentSha).toBe(synced.mainAfter);
 	}, 20_000);
+
+	it("resets the session branch and worktree to mainAfter when approving an earlier chosen option with no remaining siblings", async () => {
+		const f = await surfaceRepoFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit({ "index.html": "<main>Base</main>\n" }, "Seed");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed" }],
+		});
+
+		const session = await f.startSession(base.mainAfter);
+		const opt1Id = randomUUID();
+		const opt1Head = await session.commit(
+			{ "index.html": "<main>Option 1 Chosen</main>\n", "opt1.css": "body { color: navy; }\n" },
+			"Option 1",
+		);
+		await f.git(session.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt2Head = await session.commit(
+			{ "index.html": "<main>Option 2 Rejected</main>\n", "opt2.css": "body { color: crimson; }\n" },
+			"Option 2",
+		);
+
+		const landed = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: session.workerId,
+				sessionBranchHeadSha: opt2Head,
+				repository: f.repository,
+				expectMainSha: base.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: true,
+				allSessionChangeStatuses: [{ changeId: opt1Id, status: "staged" }],
+				approvedChanges: [{ changeId: opt1Id, parentSha: base.mainAfter, headSha: opt1Head, title: "Option 1" }],
+				siblingRemainingChanges: [],
+				peerSessions: [],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+
+		expect(landed.status).toBe("landed");
+		if (landed.status !== "landed") throw new Error("expected landed");
+		expect(landed.siblingRebase?.status).toBe("clean");
+		if (landed.siblingRebase?.status !== "clean") throw new Error("expected clean branch reset");
+		expect(landed.siblingRebase.rebasedChanges).toEqual([]);
+		expect(landed.siblingRebase.branchHeadSha).toBe(landed.mainAfter);
+		expect(await f.git(session.worktree, "rev-parse", "HEAD")).toBe(landed.mainAfter);
+		expect(await readFile(join(session.worktree, "index.html"), "utf8")).toBe("<main>Option 1 Chosen</main>\n");
+
+		const followUpId = randomUUID();
+		const followUpHead = await session.commit({ "footer.html": "<footer>Follow-up</footer>\n" }, "Follow-up");
+		const landedFollowUp = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: session.workerId,
+				sessionBranchHeadSha: followUpHead,
+				repository: f.repository,
+				expectMainSha: landed.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: false,
+				allSessionChangeStatuses: [{ changeId: followUpId, status: "staged" }],
+				approvedChanges: [
+					{ changeId: followUpId, parentSha: landed.mainAfter, headSha: followUpHead, title: "Follow-up" },
+				],
+				siblingRemainingChanges: [],
+				peerSessions: [],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+
+		expect(landedFollowUp.status).toBe("landed");
+		expect(await readFile(join(f.code, "main/index.html"), "utf8")).toBe("<main>Option 1 Chosen</main>\n");
+		expect(await readFile(join(f.code, "main/footer.html"), "utf8")).toBe("<footer>Follow-up</footer>\n");
+	}, 20_000);
 });

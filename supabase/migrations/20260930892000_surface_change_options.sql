@@ -94,18 +94,22 @@ $new$'kind', ch.kind,
 ]);
 
 select pg_temp.sco_patch('public.qorpera_approve_surface_change(uuid,boolean)'::regprocedure, array[
-$old$	if v_change.status not in ('staged', 'conflicted') then
-		raise exception 'Change is not open for approval' using errcode = '22023';
+$old$	else
+		v_target_ids := array[v_change.id];
 	end if;$old$,
-$new$	if v_change.status not in ('staged', 'conflicted') then
-		raise exception 'Change is not open for approval' using errcode = '22023';
+$new$	else
+		v_target_ids := array[v_change.id];
 	end if;
-	if v_change.option_group_key is not null and exists (
-		select 1 from public.qorpera_surface_changes sib
-		where sib.session_id = v_change.session_id
-			and sib.option_group_key = v_change.option_group_key
-			and sib.id <> v_change.id
+	if exists (
+		select 1
+		from public.qorpera_surface_changes tc
+		join public.qorpera_surface_changes sib
+			on sib.session_id = tc.session_id
+			and sib.option_group_key = tc.option_group_key
+			and sib.id <> tc.id
 			and sib.status in ('staged', 'conflicted')
+		where tc.id = any(v_target_ids)
+			and tc.option_group_key is not null
 	) then
 		raise exception 'Choose one option before approving' using errcode = '22023';
 	end if;$new$
@@ -219,7 +223,7 @@ $new$		'branchHeadSha', v_session.branch_head_sha,
 					from public.qorpera_surface_changes c
 					where c.session_id = v_session.id
 						and c.status in ('staged', 'conflicted')
-					order by c.seq asc
+					order by c.seq desc
 					limit 32
 				) oc
 			),
@@ -234,8 +238,20 @@ $old$	if v_change.published_at is not null then
 $new$	if v_change.published_at is not null then
 		raise exception 'Published change cannot be rolled back before release; start a new change instead' using errcode = '22023';
 	end if;
-	if v_change.status = 'discarded' and v_change.option_group_key is not null and v_change.discarded_by_exploration then
-		raise exception 'Another option was chosen; this one cannot be restored' using errcode = '22023';
+	if v_change.status = 'discarded' and v_change.option_group_key is not null then
+		if v_change.discarded_by_exploration then
+			raise exception 'Another option was chosen; this one cannot be restored' using errcode = '22023';
+		end if;
+		if not exists (
+			select 1 from public.qorpera_surface_changes sib
+			where sib.session_id = v_change.session_id
+				and sib.option_group_key = v_change.option_group_key
+				and sib.id <> v_change.id
+				and sib.status in ('staged', 'conflicted')
+				and (v_change.kind <> 'git_range' or sib.parent_sha is not distinct from v_change.parent_sha)
+		) then
+			raise exception 'This option group is no longer open; this option cannot be restored' using errcode = '22023';
+		end if;
 	end if;$new$
 ]);
 

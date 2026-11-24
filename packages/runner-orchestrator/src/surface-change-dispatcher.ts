@@ -90,9 +90,15 @@ export async function approveAndSyncSurfaceChanges(
 
 	// WHY: Once cherryPickChangeUnits advances refs/heads/main, isolate non-abort rebase errors so one peer session never fails an already-landed merge.
 	let siblingRebase: RebaseSessionChangesResult | null = null;
-	if (request.siblingRemainingChanges.length > 0) {
+	const needsBranchReset = Boolean(
+		request.sessionBranchHeadSha &&
+			!request.approvedChanges.some((change) => change.headSha === request.sessionBranchHeadSha),
+	);
+	if (request.siblingRemainingChanges.length > 0 || needsBranchReset) {
 		const allowedBranchTips = [
-			request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha,
+			...(request.siblingRemainingChanges.length > 0
+				? [request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha]
+				: []),
 			...request.approvedChanges.map((change) => change.headSha),
 			...(request.sessionBranchHeadSha ? [request.sessionBranchHeadSha] : []),
 		];

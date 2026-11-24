@@ -236,6 +236,83 @@ begin
 		'discarding down to one remaining option graduates the survivor to a normal staged change'
 	);
 
+	perform pg_temp.sco_assert(
+		pg_temp.sco_errcode(v_anna, format('select public.qorpera_undo_surface_change(%L::uuid)', v_opt_g2_a)) = '22023',
+		'undo cannot revive a manually discarded option after its sibling graduated out of the option group'
+	);
+
+	declare
+		v_trio_a uuid;
+		v_trio_b uuid;
+		v_trio_c uuid;
+		v_dep_on_opt uuid;
+	begin
+		v_lease := extensions.gen_random_uuid();
+		update public.qorpera_surface_sessions
+		set state = 'running', lease_token = v_lease, lease_expires_at = clock_timestamp() + interval '5 minutes', closed_at = null
+		where id = v_session;
+
+		v_trio_a := (public.qorpera_native_surface_record_change(
+			v_company, v_session, 'Nav A', 'Top nav', 'folder_patch',
+			null, null, '{}'::uuid[], array['nav.md'], null,
+			jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'nav.md', 'content', 'A')),
+			false, v_lease, 'nav-style', 'Navigation style'
+		) ->> 'changeId')::uuid;
+		v_trio_b := (public.qorpera_native_surface_record_change(
+			v_company, v_session, 'Nav B', 'Side nav', 'folder_patch',
+			null, null, '{}'::uuid[], array['nav.md'], null,
+			jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'nav.md', 'content', 'B')),
+			false, v_lease, 'nav-style', null
+		) ->> 'changeId')::uuid;
+		v_trio_c := (public.qorpera_native_surface_record_change(
+			v_company, v_session, 'Nav C', 'Compact nav', 'folder_patch',
+			null, null, '{}'::uuid[], array['nav.md'], null,
+			jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'nav.md', 'content', 'C')),
+			false, v_lease, 'nav-style', null
+		) ->> 'changeId')::uuid;
+		v_dep_on_opt := (public.qorpera_native_surface_record_change(
+			v_company, v_session, 'Badge on Nav B', 'Depends on Nav B', 'folder_patch',
+			null, null, array[v_trio_b], array['badge.md'], null,
+			jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'badge.md', 'content', 'Badge')),
+			false, v_lease, null, null
+		) ->> 'changeId')::uuid;
+		update public.qorpera_surface_sessions set state = 'ready', lease_token = null, lease_expires_at = null where id = v_session;
+
+		perform pg_temp.sco_assert(
+			pg_temp.sco_errcode(v_anna, format('select public.qorpera_approve_surface_change(%L::uuid, true)', v_dep_on_opt)) = '22023',
+			'approving a regular change with dependencies cannot bypass an unresolved option group'
+		);
+
+		perform pg_temp.sco_as(v_anna);
+		set local role authenticated;
+		perform public.qorpera_discard_surface_change(v_trio_a);
+		reset role;
+		perform pg_temp.sco_assert(
+			(select status = 'discarded' from public.qorpera_surface_changes where id = v_trio_a)
+			and (select count(*) = 2 from public.qorpera_surface_changes where id in (v_trio_b, v_trio_c) and option_group_key = 'nav-style' and status = 'staged'),
+			'discarding 1 of 3 options keeps the remaining 2 grouped'
+		);
+
+		perform pg_temp.sco_as(v_anna);
+		set local role authenticated;
+		perform public.qorpera_undo_surface_change(v_trio_a);
+		reset role;
+		perform pg_temp.sco_assert(
+			(select status = 'staged' and option_group_key = 'nav-style' from public.qorpera_surface_changes where id = v_trio_a),
+			'undo still restores a discarded option while 2+ open siblings remain in the group'
+		);
+
+		perform pg_temp.sco_as(v_anna);
+		set local role authenticated;
+		perform public.qorpera_discard_surface_option_group(v_session, 'nav-style');
+		perform public.qorpera_discard_surface_change(v_dep_on_opt);
+		reset role;
+		perform pg_temp.sco_assert(
+			pg_temp.sco_errcode(v_anna, format('select public.qorpera_undo_surface_change(%L::uuid)', v_trio_b)) = '22023',
+			'undo cannot revive an option after its entire option group was discarded'
+		);
+	end;
+
 	declare
 		v_viewer constant uuid := '13740000-0000-4000-8000-000000000088';
 		v_studio uuid;
@@ -483,5 +560,38 @@ begin
 			v_err := sqlstate;
 		end;
 		perform pg_temp.sco_assert(v_err = '22023', 'internal reconciliation sessions are forbidden from staging option groups');
+	end;
+
+	declare
+		v_many_session uuid;
+		v_many_lease uuid := extensions.gen_random_uuid();
+		v_i integer;
+		v_turn jsonb;
+	begin
+		perform pg_temp.sco_as(v_anna);
+		set local role authenticated;
+		v_many_session := (public.qorpera_start_surface_session(v_surface, 'Many changes', 'Many changes') ->> 'id')::uuid;
+		reset role;
+
+		update public.qorpera_surface_sessions
+		set state = 'running', lease_token = v_many_lease, lease_expires_at = clock_timestamp() + interval '5 minutes'
+		where id = v_many_session;
+
+		for v_i in 1..34 loop
+			perform public.qorpera_native_surface_record_change(
+				v_company, v_many_session, 'Change ' || v_i::text, 'Step ' || v_i::text, 'folder_patch',
+				null, null, '{}'::uuid[], array['c' || v_i::text || '.md'], null,
+				jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'c' || v_i::text || '.md', 'content', v_i::text)),
+				false, v_many_lease, null, null
+			);
+		end loop;
+
+		v_turn := public.qorpera_native_surface_read_session_turn(v_company, v_many_session, v_many_lease);
+		perform pg_temp.sco_assert(
+			jsonb_array_length(v_turn -> 'openChanges') = 32
+			and (v_turn -> 'openChanges' -> 0 ->> 'title') = 'Change 3'
+			and (v_turn -> 'openChanges' -> 31 ->> 'title') = 'Change 34',
+			'openChanges returns the newest 32 open changes in ascending seq order'
+		);
 	end;
 end $$;

@@ -1730,6 +1730,7 @@ export class SurfaceSessionDrawer {
 					const { group } = entry;
 					const pickedId = store.pickedOption(session, group.key);
 					const busyGroup = Boolean(store.state.busy[`option-group:${optionGroupId(session.id, group.key)}`]);
+					const discardArmed = this.#armedApprove === `discard-group:${session.id}:${group.key}`;
 					parts.push(
 						h(
 							"div",
@@ -1801,13 +1802,14 @@ export class SurfaceSessionDrawer {
 													"button",
 													{
 														type: "button",
-														class: "surface-change-btn is-muted",
+														class: `surface-change-btn is-muted${discardArmed ? " is-danger" : ""}`,
 														disabled: busyGroup,
-														"data-act": "discard-option-group",
+														"data-act": "discard-option-group-armed",
 														"data-session": session.id,
 														"data-option-group": group.key,
+														...(discardArmed ? { "data-armed": "true" } : {}),
 													},
-													t("Discard"),
+													discardArmed ? t("Confirm") : t("Discard"),
 												),
 											)
 										: null,
@@ -1821,13 +1823,14 @@ export class SurfaceSessionDrawer {
 											"button",
 											{
 												type: "button",
-												class: "surface-change-btn is-muted",
+												class: `surface-change-btn is-muted${discardArmed ? " is-danger" : ""}`,
 												disabled: busyGroup,
-												"data-act": "discard-option-group",
+												"data-act": "discard-option-group-armed",
 												"data-session": session.id,
 												"data-option-group": group.key,
+												...(discardArmed ? { "data-armed": "true" } : {}),
 											},
-											t("Discard"),
+											discardArmed ? t("Confirm") : t("Discard"),
 										),
 									)
 								: null,
@@ -2112,9 +2115,6 @@ export class SurfaceSessionDrawer {
 				return;
 			case "choose-option":
 				if (sessionId && change) void store.chooseOption(sessionId, change);
-				return;
-			case "discard-option-group":
-				if (sessionId && optionGroup) void store.discardOptionGroup(sessionId, optionGroup);
 				return;
 			case "discard-option-group-armed":
 				if (sessionId && optionGroup && this.#confirmOrArm(`discard-group:${sessionId}:${optionGroup}`)) {

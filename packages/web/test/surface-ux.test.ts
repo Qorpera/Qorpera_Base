@@ -2678,7 +2678,17 @@ describe("single-session change option groups", () => {
 		const focusedDrawer = focusedView.el.querySelector<HTMLElement>(".surface-drawer")!;
 		expect(focusedDrawer.querySelector('[data-act="approve-all"]')).toBeNull();
 		expect(focusedDrawer.querySelectorAll('[data-act="pick-option"]')).toHaveLength(3);
-		focusedDrawer.querySelector<HTMLButtonElement>('[data-act="discard-option-group"]')!.click();
+		const focusedDiscard = focusedDrawer.querySelector<HTMLButtonElement>('[data-act="discard-option-group-armed"]')!;
+		expect(focusedDiscard.textContent).toBe("Discard");
+		focusedDiscard.click();
+		await flush();
+		expect(discardSurfaceOptionGroup).not.toHaveBeenCalled();
+		const armedFocusedDiscard = focusedDrawer.querySelector<HTMLButtonElement>(
+			'[data-act="discard-option-group-armed"]',
+		)!;
+		expect(armedFocusedDiscard.textContent).toBe("Confirm");
+		expect(armedFocusedDiscard.dataset.armed).toBe("true");
+		armedFocusedDiscard.click();
 		await flush();
 		expect(discardSurfaceOptionGroup).toHaveBeenCalledWith(SESSION, "concept");
 		focusedView.dispose();

@@ -3504,5 +3504,32 @@ describe("cloud surface runtime tools", () => {
 		expect(brief).toContain("## Active Staged Changes on This Session");
 		expect(brief).toContain(`git read-tree --reset -u ${chosenHead}`);
 		expect(brief).toContain("Option 2: Showcase");
+
+		const mainSha = "4".repeat(40);
+		const emptyOpenBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			mainSha,
+			branchHeadSha: branchTip,
+			openChanges: [],
+		});
+		expect(emptyOpenBrief).toContain("## Session Branch Sync");
+		expect(emptyOpenBrief).toContain(`git read-tree --reset -u ${mainSha}`);
+		expect(emptyOpenBrief).toContain(`parentSha: "${mainSha}"`);
+
+		const syncedBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			mainSha,
+			branchHeadSha: mainSha,
+			openChanges: [],
+		});
+		expect(syncedBrief).not.toContain("## Session Branch Sync");
 	});
 });

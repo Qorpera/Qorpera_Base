@@ -224,21 +224,28 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 
 	const openChanges = binding.openChanges ?? [];
 	const branchHeadSha = binding.branchHeadSha?.trim() || null;
-	if (openChanges.length > 0 && binding.repositoryKey) {
-		const latestOpen = openChanges[openChanges.length - 1];
-		const lines = [
-			"## Active Staged Changes on This Session",
-			...openChanges.map(
-				(ch) =>
-					`- ${ch.title}${ch.optionGroupKey ? ` (optionGroup: ${ch.optionGroupKey})` : ""}${ch.headSha ? ` · commit \`${ch.headSha}\`` : ""}`,
-			),
-		];
-		if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
-			lines.push(
-				`Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the chosen option, and pass \`parentSha: "${latestOpen.headSha}"\` to \`coding_record_change\`.`,
+	const mainSha = binding.mainSha?.trim() || null;
+	if (binding.repositoryKey && !binding.isInternalReconciliation) {
+		if (openChanges.length > 0) {
+			const latestOpen = openChanges[openChanges.length - 1];
+			const lines = [
+				"## Active Staged Changes on This Session",
+				...openChanges.map(
+					(ch) =>
+						`- ${ch.title}${ch.optionGroupKey ? ` (optionGroup: ${ch.optionGroupKey})` : ""}${ch.headSha ? ` · commit \`${ch.headSha}\`` : ""}`,
+				),
+			];
+			if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
+				lines.push(
+					`Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the chosen option, and pass \`parentSha: "${latestOpen.headSha}"\` to \`coding_record_change\`.`,
+				);
+			}
+			sections.push(lines.join("\n"));
+		} else if (branchHeadSha && mainSha && branchHeadSha !== mainSha) {
+			sections.push(
+				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. Before making new edits, run \`git read-tree --reset -u ${mainSha}\` (keeping HEAD on the branch tip) so your new commit starts cleanly from \`main\`, and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
 			);
 		}
-		sections.push(lines.join("\n"));
 	}
 
 	const fullPrompt = binding.fullPrompt?.trim();
