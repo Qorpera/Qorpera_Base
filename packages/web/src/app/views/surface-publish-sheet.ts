@@ -73,12 +73,14 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 					surface.lastPublishError?.trim() ||
 					t("The last publish failed. Try again.")
 				: "";
+		const beingFixed = Boolean(publishError) && surface.publishBeingFixed === true;
 
 		const renderKey = JSON.stringify([
 			surface.title,
 			surface.unpublishedChangeCount,
 			surface.publishStatus ?? "",
 			publishError,
+			beingFixed,
 			host,
 			look.kind,
 			look.accent ?? "",
@@ -310,6 +312,7 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 				),
 			),
 			...(publishError ? [h("p", { class: "surface-sheet-error", role: "alert" }, publishError)] : []),
+			...(beingFixed ? [h("p", { class: "surface-sheet-lead", role: "status" }, t("Being fixed"))] : []),
 			...(list ? [list] : []),
 			...(askNote ? [askNote] : []),
 			...(picker ? [picker] : []),

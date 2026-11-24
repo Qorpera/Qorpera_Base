@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readSurfaceFolderFiles } from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
 import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import {
 	activeTaskSessions,
 	approvalOutcome,
 	attachSurfaces,
+	changeDeliverables,
 	clearLocalSandboxCache,
 	compiledCompanyIdentity,
 	effectiveStudioBaseBinaries,
@@ -19,10 +21,13 @@ import {
 	migrationPending,
 	normalizeStudioPatchOps,
 	PREVIEW_PASS_TTL_MS,
-	readSurfaceFolderFiles,
 	reportsOwnedBy,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,
+	surfaceDocSlug,
+	surfaceHasDeliverables,
+	surfaceHasReports,
+	surfaceReports,
 	surfacesDisabledOf,
 	surfacesOf,
 	synthesizeMigration,
@@ -1091,6 +1096,56 @@ describe("SurfacesStore", () => {
 		missingStore.dispose();
 	});
 
+	it("mints a pass for the last preview that built beside a failed one and keeps it across refreshes", async () => {
+		const mintPreviewPass = vi.fn(async (previewId: string) => ({
+			previewId,
+			doorActionUrl: `https://thetaband--p${previewId.slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		}));
+		const failedFrame = previewFrame({
+			previewId: PREVIEW_IDS[0],
+			status: "failed",
+			doorActionUrl: null,
+			memberPass: null,
+			errorDetail: "PREVIEW_BUILD_FAILED\nlog",
+			kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null },
+			fixing: true,
+		});
+		const client = fakeClient({
+			isSurfacesEnabled: vi.fn(async () => true),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"])], {
+					previewState: { surfaceId: SURFACE, mode: "single", primary: failedFrame, compareFrames: [] },
+				}),
+			),
+			setPreviewSelection: vi.fn(async () => ({
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary: failedFrame,
+				compareFrames: [],
+			})),
+			mintPreviewPass,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(mintPreviewPass).not.toHaveBeenCalledWith(PREVIEW_IDS[0]);
+
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[1])).toBe(true);
+		const kept = store.workspace(SURFACE)!.previewState.primary.kept;
+		expect(kept).toEqual({
+			previewId: PREVIEW_IDS[1],
+			doorActionUrl: `https://thetaband--p${PREVIEW_IDS[1].slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		});
+		expect(store.workspace(SURFACE)!.previewState.primary.memberPass).toBeNull();
+
+		await store.refreshWorkspace(SURFACE);
+		expect(store.workspace(SURFACE)!.previewState.primary.kept?.memberPass).toBe(VALID_PASS);
+		store.dispose();
+	});
+
 	it("mints preview passes automatically when ready primary or compare previews arrive without a pass", async () => {
 		const mintPreviewPass = vi.fn(async (previewId: string) => ({
 			previewId,
@@ -1922,18 +1977,16 @@ describe("SurfacesStore", () => {
 			});
 		});
 		const approveDeferred = deferred<ReturnType<typeof session>>();
-		let discardAttempts = 0;
+		const discardSurfaceSession = vi.fn(async (): Promise<ReturnType<typeof session>> => {
+			throw new Error("discard failed");
+		});
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [summary(), secondSurface]),
 			getSurfaceWorkspace,
 			mintPreviewPass,
 			approveSurfaceChange: vi.fn(() => approveDeferred.promise),
 			approveSessionAll: vi.fn(async () => session(["merged", "merged"])),
-			discardSurfaceChange: vi.fn(async () => {
-				discardAttempts += 1;
-				if (discardAttempts === 1) return session(["discarded", "staged"]);
-				throw new Error("second discard failed");
-			}),
+			discardSurfaceSession,
 		});
 		const store = storeWith(client);
 		await store.load();
@@ -1988,8 +2041,11 @@ describe("SurfacesStore", () => {
 		expect(store.state.undo).toBeUndefined();
 
 		await store.refreshWorkspace(SURFACE);
+		const before = store.session(SESSION);
 		expect(await store.discardSession(SESSION)).toBe(false);
-		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		expect(discardSurfaceSession).toHaveBeenCalledWith(SESSION);
+		expect(store.session(SESSION)).toBe(before);
+		expect(store.state.error).toBe("discard failed");
 		store.dispose();
 	});
 
@@ -2580,6 +2636,240 @@ describe("SurfacesStore", () => {
 		store.setMode("live");
 		await store.startSession(SURFACE, "Build on live base");
 		expect(startSurfaceSession).toHaveBeenLastCalledWith(SURFACE, "Build on live base", {});
+		store.dispose();
+	});
+
+	it("discovers staged reports and per-change deliverables before merge and attributes relative paths accurately", async () => {
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222241",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 retention report",
+			summary: "Cohort breakdown with bar chart.",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3.report.json"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "reports/q3.report.json",
+					content: JSON.stringify({
+						slug: "q3-retention",
+						headline: "Q3 Retention Breakdown",
+						category: "Analysis",
+						readingTime: "4 min",
+						sections: [{ id: "s1", heading: "Summary", paragraphs: ["Retention improved."] }],
+					}),
+				},
+			],
+		});
+		const c2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Launch announcement HTML",
+			summary: "Standalone formatted post.",
+			kind: "folder_patch",
+			affectedPaths: ["posts/launch.html", "modules/calc/index.html"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "posts/launch.html",
+					content:
+						"<!doctype html><html><head><title>Quiet Launch Post</title></head><body><h1>Hello</h1></body></html>",
+				},
+				{
+					op: "write_text",
+					path: "modules/calc/index.html",
+					content: "<!doctype html><html><head><title>Calculator Widget</title></head><body></body></html>",
+				},
+			],
+		});
+		const otherSession = session([], {
+			id: "33333333-3333-4333-8333-333333333332",
+			surfaceId: studio.id,
+			title: "Earlier session",
+		});
+		const reportSession = session([], {
+			id: SESSION,
+			surfaceId: studio.id,
+			title: "Editorial writer",
+			changes: [c1, c2],
+			openChangeCount: 2,
+		});
+		const dedicatedReport = summary({
+			id: "22222222-2222-4222-8222-222222222242",
+			slug: "blog",
+			title: "Blog & Reports",
+			archetype: "studio",
+			kind: "report",
+			icon: "book",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/blog",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio, dedicatedReport]),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					id === dedicatedReport.id
+						? workspace([], { surface: dedicatedReport })
+						: workspace([otherSession, reportSession], { surface: studio }),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(studio.slug);
+		await Promise.resolve();
+
+		const reports = surfaceReports(store.state, studio.id);
+		expect(reports.map((r) => ({ path: r.path, slug: r.slug, title: r.title }))).toEqual([
+			{ path: "surfaces/marketing/reports/q3.report.json", slug: "q3-retention", title: "Q3 Retention Breakdown" },
+		]);
+		expect(surfaceHasReports(store.state, studio.id)).toBe(true);
+		expect(surfaceHasDeliverables(store.state, studio.id)).toBe(true);
+
+		expect(reportsOwnedBy(store.state, studio.id, { kind: "session", id: otherSession.id })).toHaveLength(0);
+		expect(reportsOwnedBy(store.state, studio.id, { kind: "session", id: reportSession.id })).toHaveLength(1);
+
+		expect(changeDeliverables(store.state, studio.id, c1)).toEqual([
+			{
+				kind: "report",
+				path: "surfaces/marketing/reports/q3.report.json",
+				slug: "q3-retention",
+				title: "Q3 Retention Breakdown",
+				category: "Analysis",
+				readingTime: "4 min",
+			},
+		]);
+		expect(changeDeliverables(store.state, studio.id, c2)).toEqual([
+			{
+				kind: "html",
+				path: "surfaces/marketing/posts/launch.html",
+				slug: surfaceDocSlug("surfaces/marketing/posts/launch.html"),
+				title: "Quiet Launch Post",
+			},
+		]);
+
+		await store.toggleChange(studio.id, c1.id);
+		expect(store.isChangeShown(c1.id)).toBe(false);
+		await store.openChangeDeliverable(studio.id, c1.id, "q3-retention");
+		expect(store.isChangeShown(c1.id)).toBe(true);
+		expect(store.state.mode).toBe("report");
+		expect(store.state.activeReportSlug).toBe("q3-retention");
+
+		await store.openChangeDeliverable(studio.id, c2.id, surfaceDocSlug("surfaces/marketing/posts/launch.html"));
+		expect(store.state.mode).toBe("report");
+		expect(store.state.activeReportSlug).toBe(surfaceDocSlug("surfaces/marketing/posts/launch.html"));
+
+		await store.openChangeDeliverable(studio.id, c2.id, surfaceDocSlug("surfaces/marketing/posts/launch.html"));
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.activeReportSlug).toBeUndefined();
+
+		await store.openChangeDeliverable(dedicatedReport.id, CHANGES[2], "launch-essay");
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.activeReportSlug).toBe("launch-essay");
+		store.dispose();
+	});
+
+	it("admits application/pdf binaries in readSurfaceFolderFiles and extracts staged PDF change deliverables", async () => {
+		const pdfRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 2048,
+			mediaType: "application/pdf",
+		};
+		const loaded = await readSurfaceFolderFiles(
+			{
+				async list() {
+					return {
+						entries: [
+							{
+								path: "surfaces/marketing/q3-deck.pdf",
+								kind: "file",
+								file: pdfRef,
+							},
+						],
+					};
+				},
+				async readFile() {
+					return new Uint8Array();
+				},
+			},
+			["surfaces/marketing"],
+			new AbortController().signal,
+		);
+		expect(loaded.binaries["surfaces/marketing/q3-deck.pdf"]).toEqual(pdfRef);
+
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222249",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const pdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 board deck PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3-deck.pdf"],
+			patchManifest: [{ op: "write_file", path: "reports/q3-deck.pdf", file: pdfRef }],
+		});
+		const missingPdfChange = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Unbacked PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/missing.pdf"],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace(
+						[session([], { surfaceId: studio.id, changes: [pdfChange, missingPdfChange], openChangeCount: 2 })],
+						{
+							surface: studio,
+						},
+					),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(studio.slug);
+		await Promise.resolve();
+
+		expect(changeDeliverables(store.state, studio.id, pdfChange)).toEqual([
+			{
+				kind: "pdf",
+				path: "surfaces/marketing/reports/q3-deck.pdf",
+				slug: surfaceDocSlug("surfaces/marketing/reports/q3-deck.pdf"),
+				title: "Q3 deck",
+			},
+		]);
+		expect(changeDeliverables(store.state, studio.id, missingPdfChange)).toEqual([]);
+		expect(surfaceHasDeliverables(store.state, studio.id)).toBe(true);
 		store.dispose();
 	});
 });

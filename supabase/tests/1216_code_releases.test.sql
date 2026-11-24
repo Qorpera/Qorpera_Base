@@ -1223,7 +1223,7 @@ begin
 	perform pg_temp.base_error(format('select public.qorpera_site_publish_begin(%L, %L, %L, null)', pg_temp.c3_alice(), 'rel-call-3',
 		pg_temp.rel_publish('brand-new', 'codex/site')), '42501');
 	perform pg_temp.base_error(format('select public.qorpera_site_unpublish(%L, %L)', pg_temp.c3_alice(), 'webshop'), '55000',
-		'SITE_FROM_CODE: this site is made from code kept in Qorpera; only a member takes it offline, in Sites');
+		'SITE_FROM_CODE: this site is made from code kept in Qorpera; unpublish_site cannot take it offline');
 	-- A repository's site that is not live yet holds its name: it is never abandoned.
 	update public.qorpera_company_sites set updated_at = clock_timestamp() - interval '2 days' where id = (pg_temp.rel_site_row('up')).id;
 	perform pg_temp.base_assert(not public.qorpera_site_abandoned(pg_temp.rel_site_row('up'))

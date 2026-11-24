@@ -9,7 +9,9 @@ site's password, exactly as a static site is.
 ## What the member sees
 
 - The agent says: "Your app is live at https://saml-shop-preview.qorpera.com/". The link shows the same password page
-  as a site. The password is in Settings → Sites, where the member also changes it or turns the link off.
+  as a site. The link's card shows under the agent's message, where owners and admins copy the password. Since the
+  Sites page went (24 Nov 2026) nobody changes the password or turns the link off in the app; an agent's
+  `unpublish_site` turns the link off.
 - The first share asks for approval, as a new site does (an access-change card: "Share a private app link …").
 - While the app's machine runs and its link program runs, the app answers. Otherwise the link shows "This app is not
   running right now" (503).
@@ -120,9 +122,9 @@ The result tells the agent the link, whether the program started, and whether th
 
 Its description: for a server app (a coding session's work too, at `/company/code/<owner>/<name>/worktrees/<id>`):
 start an always-on machine, run the app there listening on a port, then `share_app`; static files go with
-`publish_site`. The password is never in the result: members read it in Settings → Sites. `unpublish_site` turns the
-link off. Registered where `publish_site` is (company agents' runs only, no workers), with its review kind and
-observation name.
+`publish_site`. The password is never in the result: owners and admins copy it from the link's card under the message
+that links it. `unpublish_site` turns the link off. Registered where `publish_site` is (company agents' runs only, no
+workers), with its review kind and observation name.
 
 ### 3. The relay and the link program (`deploy/sites/app-relay/`)
 

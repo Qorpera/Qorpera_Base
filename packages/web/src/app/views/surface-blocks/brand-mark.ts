@@ -1,8 +1,9 @@
 import type { StudioBinaryRef, SurfaceBrandMarkBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import type { StudioBinaryReader } from "../surface-studio-stage.ts";
+import { SVG_FILE_RE, svgDataUrl } from "./artifacts.ts";
 import { readableName, type SurfaceBlockContext, type SurfaceBlockPrepared, sectionHead } from "./context.ts";
-import { SVG_FILE_RE, svgDataUrl } from "./files.ts";
+import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
 
 type Picture =
 	| { readonly kind: "svg"; readonly src: string }
@@ -25,7 +26,7 @@ export class SurfacePictures {
 		signal.addEventListener("abort", () => this.#revoke(), { once: true });
 	}
 
-	prepare(block: SurfaceBrandMarkBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
+	prepare(block: SurfaceBrandMarkBlock, ctx: SurfaceBlockContext, fullscreen: StudioFullscreen): SurfaceBlockPrepared {
 		const path = ctx.companyPath(block.from);
 		let picture: Picture;
 		let changed = false;
@@ -45,28 +46,44 @@ export class SurfacePictures {
 		}
 		const heading = block.heading ? ctx.words(block.heading) : "";
 		const name = heading || readableName(block.from);
+		const renderGrounds = (pic: Picture, className: string) => {
+			const grounds = h(
+				"div",
+				{ class: `${className}${pic ? "" : " is-empty"}` },
+				block.grounds.map((ground) =>
+					h(
+						"div",
+						{ class: `studio-mark-ground is-${ground}`, "data-ground": ground },
+						pic ? this.#image(pic, name) : null,
+					),
+				),
+			);
+			grounds.style.setProperty("--studio-mark-grounds", String(block.grounds.length));
+			return grounds;
+		};
 		return {
 			filled: picture !== undefined,
 			pieces: [
 				{
 					build: () => {
-						const grounds = h(
-							"div",
-							{ class: `studio-mark-grounds${picture ? "" : " is-empty"}` },
-							block.grounds.map((ground) =>
-								h(
-									"div",
-									{ class: `studio-mark-ground is-${ground}`, "data-ground": ground },
-									picture ? this.#image(picture, name) : null,
-								),
-							),
-						);
-						grounds.style.setProperty("--studio-mark-grounds", String(block.grounds.length));
+						const expand = picture
+							? expandButton(name, () =>
+									fullscreen.openContent(
+										name,
+										() => renderGrounds(picture, "studio-mark-grounds is-fullscreen"),
+										"mark",
+									),
+								)
+							: null;
 						return h(
 							"section",
 							{ class: `studio-section studio-mark${changed ? " is-changed" : ""}`, "data-block": "brand_mark" },
-							heading ? sectionHead(heading, changed) : null,
-							grounds,
+							heading
+								? sectionHead(heading, changed, expand)
+								: expand
+									? h("div", { class: "studio-section-head is-actions-only" }, expand)
+									: null,
+							renderGrounds(picture, "studio-mark-grounds"),
 						);
 					},
 				},
@@ -74,16 +91,20 @@ export class SurfacePictures {
 		};
 	}
 
-	#image(picture: NonNullable<Picture>, name: string): HTMLElement {
-		if (picture.kind === "svg") return h("img", { class: "studio-mark-img", src: picture.src, alt: name });
-		const img = h("img", { class: "studio-mark-img", alt: name });
-		this.#url(picture.ref).then(
+	binaryImage(ref: StudioBinaryRef, alt: string, className: string): HTMLElement {
+		const img = h("img", { class: className, alt });
+		this.#url(ref).then(
 			(url) => {
 				if (!this.#signal.aborted) img.setAttribute("src", url);
 			},
 			() => undefined,
 		);
 		return img;
+	}
+
+	#image(picture: NonNullable<Picture>, name: string): HTMLElement {
+		if (picture.kind === "svg") return h("img", { class: "studio-mark-img", src: picture.src, alt: name });
+		return this.binaryImage(picture.ref, name, "studio-mark-img");
 	}
 
 	#url(ref: StudioBinaryRef): Promise<string> {

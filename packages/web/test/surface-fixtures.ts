@@ -1,3 +1,4 @@
+import type { SurfaceFolderContents } from "@qorpera/cloud-client/surface-folder-files";
 import type {
 	PointToChangeTarget,
 	StudioBinaryRef,
@@ -10,7 +11,6 @@ import type {
 } from "@qorpera/contracts";
 import { vi } from "vitest";
 import {
-	type SurfaceFolderContents,
 	type SurfacesClient,
 	SurfacesStore,
 	type SurfacesStoreOptions,
@@ -220,6 +220,7 @@ export function fakeClient(overrides: Partial<SurfacesClient> = {}): SurfacesCli
 		approveSurfaceChange: vi.fn(fail),
 		approveSessionAll: vi.fn(fail),
 		discardSurfaceChange: vi.fn(fail),
+		discardSurfaceSession: vi.fn(fail),
 		undoSurfaceChange: vi.fn(fail),
 		chooseExploration: vi.fn(fail),
 		reconcileChanges: vi.fn(fail),

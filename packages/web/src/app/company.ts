@@ -300,8 +300,6 @@ export interface CompanyState {
 	/** The apps whose agent was asked to draw new icons, by name: since when, and the icons it had then. The drawer shows
 	 * the app drawing until a new one is read, or for ten minutes. */
 	appIconsDrawing?: Readonly<Record<string, { readonly since: number; readonly known: readonly string[] }>>;
-	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
-	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
 	/** The company's sites as last read, with `siteCount`: each live website is an owed view, first in the apps drawer,
 	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
@@ -315,9 +313,6 @@ export interface CompanyState {
 	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
 	 * is set. Unset until read, and on a cloud without it. */
 	whatsNew?: { readonly ready: number };
-	/** The version What's new has live of each site made from a project's code, by the site's name in its link: the
-	 * Sites page names it on the site's row. Read with What's new. */
-	siteVersions?: Readonly<Record<string, number>>;
 	/** What the rail says of each agent between runs: its next planned run (app/agent-notes.ts). Unset until the first
 	 * read lands; an agent with nothing has no entry. */
 	agentNotes?: AgentNotesState;
@@ -840,7 +835,6 @@ export class CompanyController {
 	readonly #seenLiveAt = new Map<string, number>();
 	/** What this tab says it shows (app/presence-place.ts): the open conversation and its place while the tab is visible. */
 	#tracked: string | null = null;
-	/** Where this tab is outside a conversation: an interface's page, an app, Concepts, Sites or an agent's card. */
 	#openPlace: string | undefined;
 
 	constructor(

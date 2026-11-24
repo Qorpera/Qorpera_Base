@@ -904,7 +904,7 @@ the field when an agent saves the program: the version then reads by its day, no
 dashed tile "New program", only for a member who may write (and only while the drawer itself shows), opens
 `#/c/<profileId>/new-program`: the big line "New program" in a muted tone, one dashed drop area ("Drop a program here",
 under it "or choose a file", a real file chooser; on a phone the area reads "Choose a program"), and the Co-Founder's
-figure (`agentFigure`, as the Sites page draws it) beside the chat's own bubble: "Made something yourself? Drop it here
+figure (`agentFigure`) beside the chat's own bubble: "Made something yourself? Drop it here
 and everyone in <company> can get it." A file's kind comes from its name (`.apk` Android; `.ipa` iPhone; `.exe`, `.msi`
 Windows; `.dmg`, `.pkg` Mac; `.AppImage`, `.deb`, `.rpm`, `.flatpak`, `.tar.gz`, `.tar.xz`, `.tgz` Linux); any other
 asks "What is it for?" over the five kinds, and a click answers. Two files of one kind, more than five, an empty file,

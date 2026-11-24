@@ -1,3 +1,4 @@
+import type { SurfaceStarterKind } from "./surface-layout.ts";
 import {
 	isUuid,
 	parseBoundedText,
@@ -205,6 +206,7 @@ export const STUDIO_BINARY_MEDIA_TYPES = [
 	"audio/mp4",
 	"audio/mpeg",
 	"audio/webm",
+	"application/pdf",
 ] as const;
 export const STUDIO_BINARY_MAX_BYTES = 64 * 1024 * 1024;
 
@@ -297,6 +299,7 @@ export interface SurfaceSummary {
 	readonly needsAttentionCount: number;
 	readonly sortOrder: number;
 	readonly publishAsk?: SurfacePublishAsk | null;
+	readonly publishBeingFixed?: boolean;
 }
 
 export interface SurfaceChangeDiffStats {
@@ -398,6 +401,12 @@ export interface SurfacePreviewConflict {
 	readonly paths: readonly string[];
 }
 
+export interface SurfacePreviewKeptFrame {
+	readonly previewId: string;
+	readonly doorActionUrl: string | null;
+	readonly memberPass: string | null;
+}
+
 export interface SurfacePreviewFrameState {
 	readonly previewId: string | null;
 	readonly status: SurfacePreviewStatus;
@@ -407,6 +416,8 @@ export interface SurfacePreviewFrameState {
 	readonly toggledChangeIds: readonly string[];
 	readonly conflictReport: SurfacePreviewConflict | null;
 	readonly errorDetail: string | null;
+	readonly kept?: SurfacePreviewKeptFrame | null;
+	readonly fixing?: boolean;
 }
 
 export interface SurfacePreviewCompositionState {
@@ -540,6 +551,12 @@ function parseOptionalUuid(value: unknown, label: string): string | null {
 	return parseUuid(value, label);
 }
 
+function parseOptionalFlag(value: unknown, label: string): boolean | undefined {
+	if (value === null || value === undefined) return undefined;
+	if (typeof value !== "boolean") throw new WireValueError(label);
+	return value;
+}
+
 function parseOptionalTimestamp(value: unknown, label: string): string | null {
 	if (value === null || value === undefined) return null;
 	return parseTimestamp(value, label).text;
@@ -648,6 +665,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		raw.publishAsk === undefined || raw.publishAsk === null
 			? raw.publishAsk
 			: parseSurfacePublishAsk(raw.publishAsk, `${label}.publishAsk`);
+	const publishBeingFixed = parseOptionalFlag(raw.publishBeingFixed, `${label}.publishBeingFixed`);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
@@ -683,6 +701,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		needsAttentionCount: parseInteger(raw.needsAttentionCount ?? 0, `${label}.needsAttentionCount`, 0, 100_000),
 		sortOrder: parseInteger(raw.sortOrder ?? 0, `${label}.sortOrder`, -10_000, 100_000),
 		...(publishAsk !== undefined ? { publishAsk } : {}),
+		...(publishBeingFixed !== undefined ? { publishBeingFixed } : {}),
 	};
 }
 
@@ -934,6 +953,17 @@ export function parseSurfacePreviewFrameState(value: unknown, label = "previewFr
 			paths: parseStringArray(conflict.paths ?? [], `${label}.conflictReport.paths`, 200, 512),
 		};
 	}
+	let kept: SurfacePreviewKeptFrame | null | undefined;
+	if (raw.kept === null) kept = null;
+	else if (raw.kept !== undefined) {
+		const frame = parseRecord(raw.kept, `${label}.kept`);
+		kept = {
+			previewId: parseUuid(frame.previewId, `${label}.kept.previewId`),
+			doorActionUrl: parseOptionalText(frame.doorActionUrl, `${label}.kept.doorActionUrl`, 512),
+			memberPass: parseOptionalText(frame.memberPass, `${label}.kept.memberPass`, 128),
+		};
+	}
+	const fixing = parseOptionalFlag(raw.fixing, `${label}.fixing`);
 	return {
 		previewId: parseOptionalUuid(raw.previewId, `${label}.previewId`),
 		status: parseEnum(raw.status, SURFACE_PREVIEW_STATUSES, `${label}.status`),
@@ -943,6 +973,8 @@ export function parseSurfacePreviewFrameState(value: unknown, label = "previewFr
 		toggledChangeIds: parseUuidArray(raw.toggledChangeIds ?? [], `${label}.toggledChangeIds`, 128),
 		conflictReport,
 		errorDetail: parseOptionalText(raw.errorDetail, `${label}.errorDetail`, 1000),
+		...(kept !== undefined ? { kept } : {}),
+		...(fixing !== undefined ? { fixing } : {}),
 	};
 }
 
@@ -1226,4 +1258,154 @@ export function surfaceCompanyPath(folderRoot: string, bindingPath: string): str
 		throw new Error(`Unsafe company file path: ${bindingPath}`);
 	}
 	return rooted ? body : `${normalizeStudioFolderRoot(folderRoot)}/${body}`;
+}
+
+export type SurfaceLookKind = Exclude<SurfaceKind, "members">;
+
+export interface SurfaceKindFacts {
+	readonly slug: string;
+	readonly icon: string;
+	readonly archetype: SurfaceArchetype;
+	readonly kind?: SurfaceKind | null;
+}
+
+export function inferSurfaceKind(surface: Pick<SurfaceKindFacts, "slug" | "icon" | "archetype">): SurfaceLookKind {
+	const { slug, icon } = surface;
+	if (surface.archetype === "ops") {
+		if (slug === "inbox" || slug === "mail" || icon === "mail") return "inbox";
+		if (slug === "money" || slug === "bank" || icon === "coin" || icon === "bank") return "money";
+		if (slug === "data" || slug === "databases" || icon === "database") return "data";
+		if (slug === "files" || icon === "drawers") return "files";
+		return "custom";
+	}
+	if (surface.archetype === "studio") {
+		if (/identity|manifesto/.test(slug)) return "identity";
+		if (icon === "book" || /report|journal|essay|analysis|blog|research|philosophy/.test(slug)) return "report";
+		if (icon === "database" || /(^|-)(data|database|tables|crm)(-|$)/.test(slug)) return "database";
+		if (icon === "box" || icon === "board" || /product|hardware|spec|headband/.test(slug)) return "product";
+		if (icon === "spark" || /brand/.test(slug)) return "brand";
+		return "custom";
+	}
+	if (icon === "phone" || /mobile|ios|android/.test(slug)) return "mobile_app";
+	if (icon === "window" || /desktop/.test(slug)) return "desktop_app";
+	if (icon === "chart" || /dashboard|finance|kpi|metrics/.test(slug)) return "dashboard";
+	if (icon === "spark" || /(^|-)(app|portal)(-|$)/.test(slug)) return "web_app";
+	if (!icon || icon === "globe" || icon === "page") return "website";
+	return "custom";
+}
+
+export function surfaceLookKind(surface: SurfaceKindFacts): SurfaceLookKind {
+	return surface.kind && surface.kind !== "custom" && surface.kind !== "members"
+		? surface.kind
+		: inferSurfaceKind(surface);
+}
+
+export type SurfacePageKind = "layout" | "report";
+
+export function surfacePageKind(surface: {
+	readonly archetype: SurfaceArchetype;
+	readonly lookKind: SurfaceLookKind;
+}): SurfacePageKind | null {
+	if (surface.archetype !== "studio") return null;
+	return surface.lookKind === "report" ? "report" : "layout";
+}
+
+export interface SurfaceStarterFacts {
+	readonly lookKind: SurfaceLookKind;
+	readonly slug: string;
+	readonly isGlobal: boolean;
+	readonly paths: readonly string[];
+	readonly hasModel: boolean;
+}
+
+export function surfaceStarterKind(facts: SurfaceStarterFacts): SurfaceStarterKind {
+	if (
+		facts.isGlobal ||
+		facts.lookKind === "identity" ||
+		facts.slug === "identity" ||
+		facts.paths.some((path) => path.startsWith("identity/"))
+	) {
+		return "identity";
+	}
+	return facts.lookKind === "product" || facts.hasModel ? "product" : "custom";
+}
+
+export const SURFACE_MODEL_GROUPS = ["model", "3d", "geometry"] as const;
+
+export function surfaceLegacyModelKey(value: Readonly<Record<string, unknown>>): string | undefined {
+	return Object.keys(value).find((name) => (SURFACE_MODEL_GROUPS as readonly string[]).includes(name.toLowerCase()));
+}
+
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function surfaceFilesHaveModel(
+	files: Readonly<Record<string, string>>,
+	binaryPaths: readonly string[],
+): boolean {
+	if (binaryPaths.some((path) => /\.glb$/i.test(path))) return true;
+	for (const path of Object.keys(files).sort()) {
+		if (/(?:^|\/)object\.json$/i.test(path) || /\.report\.json$/i.test(path) || !path.toLowerCase().endsWith(".json"))
+			continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(files[path] ?? "");
+		} catch {
+			continue;
+		}
+		if (!isPlainJsonObject(parsed)) continue;
+		const key = surfaceLegacyModelKey(parsed);
+		if (key !== undefined) return isPlainJsonObject(parsed[key]);
+	}
+	return false;
+}
+
+export interface SurfaceStudioFacts {
+	readonly archetype: SurfaceArchetype;
+	readonly kind?: SurfaceKind | null;
+	readonly slug: string;
+	readonly icon: string;
+	readonly isGlobal: boolean;
+	readonly paths: readonly string[];
+	readonly hasModel: boolean;
+}
+
+export type SurfaceStudioPage =
+	| { readonly page: "layout"; readonly starter: SurfaceStarterKind }
+	| { readonly page: "report" }
+	| { readonly page: null };
+
+export function surfaceStudioPage(facts: SurfaceStudioFacts): SurfaceStudioPage {
+	const lookKind = surfaceLookKind(facts);
+	const page = surfacePageKind({ archetype: facts.archetype, lookKind });
+	if (page !== "layout") return { page };
+	return { page, starter: surfaceStarterKind({ ...facts, lookKind }) };
+}
+
+const SURFACE_STUDIO_ICONS_THAT_DECIDE = ["", "book", "database", "box", "board", "spark"];
+
+export function surfaceStudioPageWhenKnown(
+	facts: Omit<SurfaceStudioFacts, "icon" | "isGlobal"> & {
+		readonly icon?: string | null;
+		readonly isGlobal?: boolean | null;
+		readonly hasOwnLayout: boolean;
+	},
+): SurfaceStudioPage | undefined {
+	const icons = typeof facts.icon === "string" ? [facts.icon] : SURFACE_STUDIO_ICONS_THAT_DECIDE;
+	const globals = typeof facts.isGlobal === "boolean" ? [facts.isGlobal] : [false, true];
+	let known: SurfaceStudioPage | undefined;
+	for (const icon of icons) {
+		for (const isGlobal of globals) {
+			const page = surfaceStudioPage({ ...facts, icon, isGlobal });
+			if (!known) {
+				known = page;
+				continue;
+			}
+			if (known.page !== page.page) return undefined;
+			if (known.page === "layout" && page.page === "layout" && !facts.hasOwnLayout && known.starter !== page.starter)
+				return undefined;
+		}
+	}
+	return known;
 }

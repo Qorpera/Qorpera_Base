@@ -1,10 +1,8 @@
 import {
-	IDENTITY_BRIEF_PATH,
 	IDENTITY_COMPANY_PATH,
 	IDENTITY_LOGO_PATH,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
-	IDENTITY_VOICE_PATH,
 	type PointToChangeTarget,
 	PRODUCT_CATALOG_PATH,
 	PRODUCT_SPECS_PATH,
@@ -169,13 +167,21 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	if (folderRoot) headerLines.push(`Folder root: ${folderRoot}`);
 	if (explorationVariantLabel) headerLines.push(`Exploration direction: ${explorationVariantLabel}`);
 
+	const isFolderOnly = Boolean(folderRoot && !repositoryKey);
 	const sections: string[] = [
 		headerLines.join("\n"),
-		"## Surface Projection & Parallel Preview\n" +
-			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview (resolving `site.folder` from `.qorpera/checks.json`, root `index.html`, `dist`/`build`/`out`/`public`, or `apps/<repo>*/index.html`; commit the built output folder when using a bundler). " +
-			"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
-			'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
-			"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
+		isFolderOnly
+			? "## Surface Projection & Parallel Preview\n" +
+				"This Surface projects its Company Files folder directly into live Preview. " +
+				"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving them. " +
+				(binding.isInternalReconciliation
+					? "This is an internal reconciliation turn: submit one `stage_surface_patch` call covering every overlapping file listed below."
+					: "Keep each staged change atomic, self-contained, and conflict-minimizing: stage one `stage_surface_patch` call per independent deliverable (for example, one change per report, article, blog post, or layout/section update) rather than bundling unrelated deliverables into a single change.")
+			: "## Surface Projection & Parallel Preview\n" +
+				"This Surface projects its underlying codebase or Company Files folder directly into the live Preview (resolving `site.folder` from `.qorpera/checks.json`, root `index.html`, `dist`/`build`/`out`/`public`, or `apps/<repo>*/index.html`; commit the built output folder when using a bundler). " +
+				"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
+				'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
+				"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
 	if (explorationVariantLabel) {
@@ -217,7 +223,6 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				"## Live Shared Company Files",
 				`- **Visual Identity CSS Live Sync:** Changes you stage to \`${IDENTITY_TOKENS_JSON_PATH}\` automatically recompile \`${IDENTITY_TOKENS_CSS_PATH}\` and flow live as \`${SURFACE_IDENTITY_CSS_MOUNT_PATH}\` CSS custom properties (\`--q-color-*\`, \`--q-font-*\`, \`--q-radius-*\`, \`--q-space-*\`) into every downstream surface with zero manual copy-paste.`,
 				`- **Shared Company Data:** Keep canonical company details in \`${IDENTITY_COMPANY_PATH}\` and the vector mark in \`${IDENTITY_LOGO_PATH}\` so downstream surfaces consume them from \`${SURFACE_SHARED_DIR}/\` automatically.`,
-				`- **Identity Studio Projection:** Studio renders \`${IDENTITY_TOKENS_JSON_PATH}\` (Palette, Typography, Design System), \`${IDENTITY_LOGO_PATH}\` (Brand mark), \`${IDENTITY_VOICE_PATH}\` and \`${IDENTITY_BRIEF_PATH}\` (Voice & guidelines as Markdown prose), and \`identity/*.report.json\` (Philosophy) natively — do not hand-edit \`${IDENTITY_TOKENS_CSS_PATH}\` or create standalone HTML/CSS showcase pages like \`identity/index.html\`.`,
 			]
 		: [
 				"## Live Shared Company Files",

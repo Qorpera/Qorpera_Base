@@ -724,6 +724,11 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
+	async discardSurfaceSession(sessionId: string): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_discard_surface_session", { p_session_id: sessionId });
+		return parseSurfaceSession(data, "session");
+	}
+
 	async undoSurfaceChange(changeId: string): Promise<SurfaceSession> {
 		const data = await this.#rpc("qorpera_undo_surface_change", { p_change_id: changeId });
 		return parseSurfaceSession(data, "session");

@@ -12,7 +12,7 @@ import {
 } from "../../cloud/site-hosting.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
-import { pressToCopy, toClipboard } from "./settings-sites.ts";
+import { pressToCopy, toClipboard } from "./site-shared.ts";
 import { APPROVE_ARM_MS, approveLabel } from "./surface-session-drawer.ts";
 
 export interface SurfaceSiteHosting {
@@ -227,7 +227,7 @@ export class SurfaceAddress {
 	button(): HTMLButtonElement | null {
 		if (!this.#liveUrl) return null;
 		const mark = this.mark();
-		const title = mark === "private" ? t("Not live yet") : mark === "live" ? t("Live") : undefined;
+		const title = mark === "private" ? t("Not live yet") : mark === "live" ? t("Live") : this.name();
 		return h(
 			"button",
 			{
@@ -236,9 +236,9 @@ export class SurfaceAddress {
 				"aria-haspopup": "dialog",
 				"aria-expanded": String(this.#open),
 				"data-act": "address",
-				...(title ? { title } : {}),
+				title,
 			},
-			mark === "unknown" ? null : h("span", { class: "surface-address-dot", "aria-hidden": "true" }),
+			h("span", { class: "surface-address-dot", "aria-hidden": "true" }),
 			h("span", { class: "surface-address-host" }, this.name()),
 		);
 	}

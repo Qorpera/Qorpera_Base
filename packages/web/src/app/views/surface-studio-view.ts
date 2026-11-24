@@ -1,9 +1,6 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type CompiledIdentityTokens,
-	compileIdentityTokensCss,
-	IDENTITY_TOKENS_CSS_PATH,
-	IDENTITY_TOKENS_JSON_PATH,
 	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
@@ -11,12 +8,14 @@ import {
 	type SurfaceSummary,
 	sharedAssetsConsumedBy,
 	sharedAssetsProducedBy,
+	surfaceFilesHaveModel,
+	surfaceLegacyModelKey,
+	surfaceStarterKind,
 } from "@qorpera/contracts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { playOnce } from "../../ui/motion.ts";
-import { frameParsedPage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
@@ -30,13 +29,6 @@ import {
 	type SurfaceUpdatePhase,
 } from "../surfaces-store.ts";
 import {
-	isPlainRecord,
-	parseJsonObject,
-	readableName,
-	type StudioSectionTask,
-	type SurfaceFileLayer,
-} from "./surface-blocks/context.ts";
-import {
 	docPriority,
 	HTML_FILE_RE,
 	htmlDocumentTitle,
@@ -47,12 +39,20 @@ import {
 	type StudioSvgAsset,
 	SVG_FILE_RE,
 	svgDataUrl,
-} from "./surface-blocks/files.ts";
-import { collectSpecs, MODEL_GROUPS, type SpecEntry } from "./surface-blocks/specs.ts";
+} from "./surface-blocks/artifacts.ts";
+import {
+	parseJsonObject,
+	readableName,
+	type StudioSectionTask,
+	type SurfaceFileLayer,
+} from "./surface-blocks/context.ts";
+import { collectSpecs, type SpecEntry } from "./surface-blocks/specs.ts";
 import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
-import { pickStudioModel } from "./surface-studio-model.ts";
+import { compiledTokensCssFrom, prepareStudioHtmlPreview, studioHtmlDependencyChanged } from "./surface-studio-html.ts";
+
+export { prepareStudioHtmlPreview };
 
 export interface SurfaceStudioOptions {
 	readonly store: SurfacesStore;
@@ -81,149 +81,6 @@ interface StudioHtmlPage {
 
 const OBJECT_JSON_RE = /(?:^|\/)object\.json$/i;
 const REPORT_JSON_RE = /\.report\.json$/i;
-const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
-const SCRIPT_FILE_RE = /\.m?js$/i;
-
-function resolveRelativeStudioPath(fromFilePath: string, href: string): string | null {
-	const trimmed = href.trim();
-	if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return null;
-	const withoutQuery = trimmed.split(/[?#]/, 1)[0] ?? "";
-	if (!withoutQuery) return null;
-	const fromParts = fromFilePath.includes("/") ? fromFilePath.slice(0, fromFilePath.lastIndexOf("/")).split("/") : [];
-	const minDepth = fromParts.length > 0 ? 1 : 0;
-	const baseParts = withoutQuery.startsWith("/") ? [] : [...fromParts];
-	for (const part of withoutQuery.split("/")) {
-		if (!part || part === ".") continue;
-		if (part === "..") {
-			if (baseParts.length <= (withoutQuery.startsWith("/") ? 0 : minDepth)) return null;
-			baseParts.pop();
-			continue;
-		}
-		baseParts.push(part);
-	}
-	const resolved = baseParts.join("/");
-	if (!resolved) return null;
-	if (withoutQuery.startsWith("/") && minDepth > 0 && !TOKEN_STYLESHEET_RE.test(resolved)) {
-		if (resolved !== fromParts[0] && !resolved.startsWith(`${fromParts[0]}/`)) return null;
-	}
-	return resolved;
-}
-
-function compiledTokensCssFrom(
-	files: Readonly<Record<string, string>>,
-	folderRoot: string | null | undefined,
-	fallbackCss: string,
-): string {
-	const cleanRoot = folderRoot?.replace(/^\/+|\/+$/g, "");
-	const tokensJson =
-		files[IDENTITY_TOKENS_JSON_PATH] ??
-		(cleanRoot ? files[`${cleanRoot}/tokens.json`] : undefined) ??
-		files["tokens.json"];
-	if (tokensJson?.trim()) {
-		const compiled = compileIdentityTokensCss(tokensJson);
-		if (compiled) return compiled;
-	}
-	return files[IDENTITY_TOKENS_CSS_PATH] ?? (cleanRoot ? files[`${cleanRoot}/tokens.css`] : undefined) ?? fallbackCss;
-}
-
-function studioHtmlDependencyChanged(
-	html: string,
-	htmlPath: string,
-	files: Readonly<Record<string, string>>,
-	baseFiles: Readonly<Record<string, string>>,
-	previewTokensCss: string,
-	baseTokensCss: string,
-): boolean {
-	for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
-		const tag = match[0];
-		if (!/\brel\s*=\s*(?:"[^"]*\bstylesheet\b[^"]*"|'[^']*\bstylesheet\b[^']*'|stylesheet\b)/i.test(tag)) continue;
-		const href = tag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
-		const rawHref = href?.[1] ?? href?.[2] ?? href?.[3] ?? "";
-		const resolved = resolveRelativeStudioPath(htmlPath, rawHref);
-		if (!resolved) continue;
-		if (TOKEN_STYLESHEET_RE.test(resolved)) {
-			const nextCss = previewTokensCss || files[resolved] || files[IDENTITY_TOKENS_CSS_PATH] || "";
-			const prevCss = baseTokensCss || baseFiles[resolved] || baseFiles[IDENTITY_TOKENS_CSS_PATH] || "";
-			if (nextCss !== prevCss) return true;
-		} else if (/\.css$/i.test(resolved)) {
-			if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
-		}
-	}
-	for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
-		const src = match[0].match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
-		const rawSrc = src?.[1] ?? src?.[2] ?? src?.[3] ?? "";
-		const resolved = resolveRelativeStudioPath(htmlPath, rawSrc);
-		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
-		if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
-	}
-	return false;
-}
-
-export function prepareStudioHtmlPreview(
-	html: string,
-	htmlPath: string,
-	files: Readonly<Record<string, string>>,
-	compiledTokensCss: string,
-): string | null {
-	const doc = new DOMParser().parseFromString(html, "text/html");
-	let modified = false;
-	for (const link of [...doc.querySelectorAll("link[href]")]) {
-		const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/);
-		if (!rel.includes("stylesheet")) continue;
-		const resolved = resolveRelativeStudioPath(htmlPath, link.getAttribute("href") ?? "");
-		if (!resolved) continue;
-		let css: string | undefined;
-		if (TOKEN_STYLESHEET_RE.test(resolved)) {
-			css = compiledTokensCss || files[resolved] || files[IDENTITY_TOKENS_CSS_PATH];
-		} else if (/\.css$/i.test(resolved)) {
-			css = files[resolved];
-		}
-		if (!css) continue;
-		const style = doc.createElement("style");
-		style.textContent = css.replace(/<\/(style)/gi, "<\\/$1");
-		link.replaceWith(style);
-		modified = true;
-	}
-	const deferred: HTMLScriptElement[] = [];
-	for (const script of [...doc.querySelectorAll("script[src]")]) {
-		const resolved = resolveRelativeStudioPath(htmlPath, script.getAttribute("src") ?? "");
-		const code = resolved && SCRIPT_FILE_RE.test(resolved) ? files[resolved] : undefined;
-		if (code === undefined) continue;
-		const classic = (script.getAttribute("type") ?? "").trim().toLowerCase() !== "module";
-		const inline = doc.createElement("script");
-		for (const attribute of [...script.attributes])
-			if (attribute.name !== "src" && !(classic && (attribute.name === "defer" || attribute.name === "async")))
-				inline.setAttribute(attribute.name, attribute.value);
-		inline.textContent = code.replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "\\x3c!--");
-		if (classic && script.hasAttribute("defer")) {
-			script.remove();
-			deferred.push(inline);
-		} else {
-			script.replaceWith(inline);
-		}
-		modified = true;
-	}
-	doc.body.append(...deferred);
-	for (const img of [...doc.querySelectorAll("img[src]")]) {
-		const resolved = resolveRelativeStudioPath(htmlPath, img.getAttribute("src") ?? "");
-		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
-		const svg = files[resolved]?.trim();
-		if (!svg || !/<svg[\s>]/i.test(svg)) continue;
-		img.setAttribute("src", svgDataUrl(svg));
-		modified = true;
-	}
-	if (!modified) return frameParsedPage(doc, html);
-	return frameParsedPage(doc);
-}
-
-function surfaceStarter(
-	isIdentity: boolean,
-	lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"],
-	hasModel: boolean,
-): SurfaceStarterKind {
-	if (isIdentity) return "identity";
-	return lookKind === "product" || hasModel ? "product" : "custom";
-}
 
 function updatingLabel(phase: SurfaceUpdatePhase): string {
 	if (phase === "publishing") return t("Publishing…");
@@ -286,7 +143,7 @@ function parseSingleStudioFile(
 		if (!parsed) return;
 		const baseParsed = parseJsonObject(baseContent);
 		if (!out.legacyModel) {
-			const key = Object.keys(parsed).find((name) => MODEL_GROUPS.has(name.toLowerCase()));
+			const key = surfaceLegacyModelKey(parsed);
 			if (key) out.legacyModel = { value: parsed[key], base: baseParsed?.[key] };
 		}
 		if (!compare) return;
@@ -425,6 +282,7 @@ export class SurfaceStudioView {
 		compiledTokensCss: string,
 		className: string,
 		listen?: (data: unknown) => void,
+		owned?: (dispose: () => void) => void,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
@@ -438,7 +296,8 @@ export class SurfaceStudioView {
 			() => undefined,
 			{ again: true },
 		);
-		this.#htmlFrames.push(frame);
+		if (owned) owned(() => frame.dispose());
+		else this.#htmlFrames.push(frame);
 		if (listen) {
 			window.addEventListener(
 				"message",
@@ -522,10 +381,13 @@ export class SurfaceStudioView {
 		const look = store.lookOf(surface);
 		const lookKind = look.kind;
 		const isIdentitySurface =
-			surface.isGlobal === true ||
-			lookKind === "identity" ||
-			surface.slug === "identity" ||
-			Object.keys(baseFiles).some((path) => path.startsWith("identity/"));
+			surfaceStarterKind({
+				lookKind,
+				slug: surface.slug,
+				isGlobal: surface.isGlobal === true,
+				paths: Object.keys(baseFiles),
+				hasModel: false,
+			}) === "identity";
 		const identityTokens = store.companyIdentityTokens();
 		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
@@ -616,7 +478,6 @@ export class SurfaceStudioView {
 			surface,
 			look,
 			lookKind,
-			isIdentitySurface,
 			identityTokens,
 			workspace,
 			baseFiles,
@@ -651,7 +512,6 @@ export class SurfaceStudioView {
 		readonly surface: SurfaceSummary;
 		readonly look: ReturnType<SurfacesStore["lookOf"]>;
 		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-		readonly isIdentitySurface: boolean;
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
@@ -762,7 +622,6 @@ export class SurfaceStudioView {
 		readonly surface: SurfaceSummary;
 		readonly look: ReturnType<SurfacesStore["lookOf"]>;
 		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-		readonly isIdentitySurface: boolean;
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
@@ -836,7 +695,6 @@ export class SurfaceStudioView {
 			readonly surface: SurfaceSummary;
 			readonly look: ReturnType<SurfacesStore["lookOf"]>;
 			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-			readonly isIdentitySurface: boolean;
 			readonly identityTokens: CompiledIdentityTokens | null;
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
@@ -859,18 +717,8 @@ export class SurfaceStudioView {
 		readonly gridTasks?: readonly StudioSectionTask[];
 		readonly leavingSkeleton: boolean;
 	} {
-		const {
-			surface,
-			look,
-			lookKind,
-			isIdentitySurface,
-			identityTokens,
-			workspace,
-			baseFiles,
-			initialLoading,
-			updatingPhase,
-			mode,
-		} = params;
+		const { surface, look, lookKind, identityTokens, workspace, baseFiles, initialLoading, updatingPhase, mode } =
+			params;
 		const { specs, docs, htmlPages, svgs, legacyModel } = parsed;
 
 		let reconciliationFailed = false;
@@ -994,13 +842,14 @@ export class SurfaceStudioView {
 		const allChangedPaths = [...new Set([...Object.keys(baseFiles), ...filePaths])]
 			.sort()
 			.filter((path) => baseFiles[path] !== files[path]);
-		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
-		const modelFile = isIdentity ? undefined : pickStudioModel(files, composition.binaries, surface.folderRoot);
-		const starter = surfaceStarter(
-			isIdentity,
+		const starter = surfaceStarterKind({
 			lookKind,
-			isPlainRecord(legacyModel?.value) || modelFile !== undefined,
-		);
+			slug: surface.slug,
+			isGlobal: surface.isGlobal === true,
+			paths: [...Object.keys(baseFiles), ...filePaths],
+			hasModel: surfaceFilesHaveModel(files, Object.keys(composition.binaries)),
+		});
+		const isIdentity = starter === "identity";
 
 		if (filePaths.length === 0 && (mode !== "compare" || allChangedPaths.length === 0)) {
 			if (initialLoading) {
@@ -1046,12 +895,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, spec.title),
-								h("code", { class: "studio-file-tag" }, spec.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, spec.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1082,12 +926,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, asset.title),
-								h("code", { class: "studio-file-tag" }, asset.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, asset.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1116,12 +955,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, doc.title),
-								h("code", { class: "studio-file-tag" }, doc.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, doc.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1155,12 +989,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, page.title),
-								h("code", { class: "studio-file-tag" }, page.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, page.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1376,6 +1205,7 @@ export class SurfaceStudioView {
 						page.previewTokensCss,
 						frame.className,
 						frame.listen,
+						frame.owned,
 					),
 				linksChanged: (html, path) =>
 					studioHtmlDependencyChanged(

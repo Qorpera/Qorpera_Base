@@ -1,4 +1,4 @@
-import type { SurfaceSpecListBlock, SurfaceTableBlock } from "@qorpera/contracts";
+import { SURFACE_MODEL_GROUPS, type SurfaceSpecListBlock, type SurfaceTableBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import { COLOR_VALUE } from "./colours.ts";
@@ -14,6 +14,7 @@ import {
 	sectionHead,
 	sourceFile,
 } from "./context.ts";
+import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
 
 export interface SpecTable {
 	readonly title: string;
@@ -31,7 +32,7 @@ export interface SpecEntry {
 
 export const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
 export const TYPE_GROUPS = new Set(["font", "fonts", "typography", "type", "typeface"]);
-export const MODEL_GROUPS = new Set(["model", "3d", "geometry"]);
+export const MODEL_GROUPS: ReadonlySet<string> = new Set(SURFACE_MODEL_GROUPS);
 const MAX_INITIAL_TABLE_ROWS = 100;
 const EMPTY_ROWS = [0, 1, 2];
 
@@ -109,8 +110,8 @@ function renderSpecRow(columns: readonly string[], row: Readonly<Record<string, 
 	);
 }
 
-export function renderSpecTable(table: SpecTable, signal: AbortSignal): HTMLElement {
-	const truncated = table.rows.length > MAX_INITIAL_TABLE_ROWS;
+export function renderSpecTable(table: SpecTable, signal: AbortSignal, full = false): HTMLElement {
+	const truncated = !full && table.rows.length > MAX_INITIAL_TABLE_ROWS;
 	const initialRows = truncated ? table.rows.slice(0, MAX_INITIAL_TABLE_ROWS) : table.rows;
 	const tbody = h(
 		"tbody",
@@ -160,8 +161,8 @@ export function renderSpecTable(table: SpecTable, signal: AbortSignal): HTMLElem
 	);
 }
 
-export function renderSpecTables(tables: readonly SpecTable[], signal: AbortSignal): HTMLElement[] {
-	return tables.map((table) => renderSpecTable(table, signal));
+export function renderSpecTables(tables: readonly SpecTable[], signal: AbortSignal, full = false): HTMLElement[] {
+	return tables.map((table) => renderSpecTable(table, signal, full));
 }
 
 function paleBar(): HTMLElement {
@@ -172,12 +173,6 @@ function headingOf(heading: string | undefined, binding: string | undefined, ctx
 	if (heading) return ctx.words(heading);
 	const file = sourceFile(binding);
 	return file ? readableName(file) : "";
-}
-
-function fileTag(binding: string | undefined, ctx: SurfaceBlockContext): HTMLElement | null {
-	const file = sourceFile(binding);
-	const path = file ? ctx.companyPath(file) : undefined;
-	return path ? h("code", { class: "studio-file-tag" }, path) : null;
 }
 
 interface ListedSpecs {
@@ -238,7 +233,7 @@ export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockCo
 					h(
 						"section",
 						{ class: `studio-section${changed ? " is-changed" : ""}`, "data-block": "spec_list" },
-						heading ? sectionHead(heading, changed, filled ? fileTag(read.binding, ctx) : null) : null,
+						heading ? sectionHead(heading, changed) : null,
 						filled
 							? [entries.length ? renderSpecEntries(entries) : null, ...renderSpecTables(tables, ctx.signal)]
 							: h(
@@ -252,22 +247,47 @@ export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockCo
 	};
 }
 
-export function prepareTable(block: SurfaceTableBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
+export function prepareTable(
+	block: SurfaceTableBlock,
+	ctx: SurfaceBlockContext,
+	fullscreen: StudioFullscreen,
+): SurfaceBlockPrepared {
 	const read = ctx.read(block.from);
 	const rows = Array.isArray(read.value) ? read.value.filter(isPlainRecord) : [];
 	const columns = block.columns?.map((column) => ({ key: column.key, label: ctx.words(column.label) }));
 	const table = rows.length ? tableOf("", rows, columns) : undefined;
 	const heading = headingOf(block.heading, read.binding, ctx);
+	const title = heading || ctx.surface.title;
 	const changed = table !== undefined && read.changed;
+	const caption = block.caption ? ctx.words(block.caption) : "";
 	return {
 		filled: table !== undefined,
 		pieces: [
 			{
-				build: () =>
-					h(
+				build: () => {
+					const expand = table
+						? expandButton(title, () =>
+								fullscreen.openContent(
+									title,
+									() =>
+										h(
+											"div",
+											{ class: "studio-json-body" },
+											renderSpecTable(table, ctx.signal, true),
+											caption ? h("p", { class: "studio-caption" }, caption) : null,
+										),
+									"wide",
+								),
+							)
+						: null;
+					return h(
 						"section",
 						{ class: `studio-section${changed ? " is-changed" : ""}`, "data-block": "table" },
-						heading ? sectionHead(heading, changed) : null,
+						heading
+							? sectionHead(heading, changed, expand)
+							: expand
+								? h("div", { class: "studio-section-head is-actions-only" }, expand)
+								: null,
 						table
 							? renderSpecTable(table, ctx.signal)
 							: h(
@@ -300,8 +320,9 @@ export function prepareTable(block: SurfaceTableBlock, ctx: SurfaceBlockContext)
 										),
 									),
 								),
-						block.caption ? h("p", { class: "studio-caption" }, ctx.words(block.caption)) : null,
-					),
+						caption ? h("p", { class: "studio-caption" }, caption) : null,
+					);
+				},
 			},
 		],
 	};

@@ -346,7 +346,8 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   the web never writes; an empty layout leaves no row). The layout is
   `qorpera.member-app-layout/v1` `{places, groups, colours?}` (packages/web/src/cloud/app-groups.ts).
   A place's key is `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`,
-  `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`.
+  `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`. The Sites page is gone (24 Nov 2026):
+  `sites` is still a valid key, and the web draws no tile for it.
   `colours` (since `20260930731000`) maps such a key to one of the agents' palette
   colours (`charcoal`, `brown`, `coral`, `orange`, `gold`, `green`, `teal`, `blue`,
   `purple`, `pink`, `gray`), at most 300; a layout with colours alone is kept.
@@ -1885,6 +1886,23 @@ site. Preview frames (`doorActionUrl` of `qorpera_get_surface_workspace`, `qorpe
 `hosts_domain` is, and site-serve redeems and serves them there; who gets a pass, its 60 seconds, one use and the
 12-hour preview session are unchanged.
 
+### A failed build goes back to its session (20260930889000_surface_preview_build_failure_to_session)
+
+The main preview frame (`previewState.primary` of `qorpera_get_surface_workspace` and `qorpera_set_preview_selection`;
+not compare frames) carries two more fields:
+
+- `kept`: null, or `{previewId, doorActionUrl, memberPass}`, the caller's newest unexpired `ready` preview of the same
+  surface, given only while the frame's `status` is `failed`. It is null when the caller has no earlier ready preview
+  or the surface has no site. `memberPass` is always null: the client mints one for `kept.previewId` with
+  `qorpera_mint_surface_preview_pass`, as for a ready frame without a pass.
+- `fixing`: true while the frame is `failed` and a session whose change is in this composition has a fix turn waiting
+  or running for a failed build; false otherwise.
+
+A surface's summary carries `publishBeingFixed`: true while `publishStatus` is `failed` and the session whose change
+landed last has a fix turn waiting or running for the failed publish build; false otherwise. A server without this
+migration sends none of the three fields; a client treats a missing field as null or false. The rows behind
+them change with the `surfaces` hint.
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
@@ -1987,7 +2005,9 @@ ends a sign-in; a member's own end when they leave, as their other secrets do. R
 
 Websites the company's agents publish from the company folder (`publish_site`), each at a private link
 `https://sites.qorpera.com/<slug>/` that visitors open with the site's password (`supabase/functions/site-serve`).
-Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until the sites host is routed.
+No page in the app lists them (the Sites page is gone, 24 Nov 2026): a website is managed on its own interface, and an
+app link shows as its card under a message that links it, where owners and admins copy its password. Built switched
+off (`qorpera_site_settings.enabled`) until the sites host is routed.
 
 - `qorpera_list_company_sites(profile)`: `[{schema: "qorpera.company-site/v1", id, slug, title, url, state, source,
   files, bytes, publishedAt, publishedBy, createdAt, passwordChangedAt}]`, newest published first, for any member of
@@ -2040,15 +2060,15 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
 - `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId, slug,
   title, kind, source, takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites"
   otherwise). `hosts` says whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's
-  operators took down (Sites says why: "Qorpera took this site down: <reason>"), else null. Every site of the company,
-  by slug, also a project's site that never went live, which `qorpera_list_company_sites` leaves out: Sites draws the
-  row of such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read leniently: later steps add
-  keys (public sites, own addresses).
+  operators took down, else null (the site's card under a message says "Taken down", with the reason as its line).
+  Every site of the company, by slug, also a project's site that never went live, which `qorpera_list_company_sites`
+  leaves out: the web draws such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read
+  leniently: later steps add keys (public sites, own addresses).
 - A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
   new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted, and a takedown
   sticks until the operator restores it: `qorpera_unpublish_company_site` refuses such a site (55000 "Qorpera took this
   site down, so it stays as it is until Qorpera restores it. If you think this is wrong, tell us with Feedback in your
-  menu.", nothing written; Sites offers no menu for its row), `qorpera_delete_hosted_profile` refuses while any site
+  menu.", nothing written; the web no longer calls it), `qorpera_delete_hosted_profile` refuses while any site
   of the company is down (55000 "Qorpera took one of this company's sites down, so the company can't be deleted until
   Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu."), a deletion asked before
   waits, and its name is never free to another company. Only the operator takes a site down or restores it.
@@ -2103,6 +2123,17 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
     frame may navigate to a site's host; only the door frames one. Not taken: adding `frame-src https://*.qorpera.com`
     to the app's own CSP, or moving the whole app to `strict-origin-when-cross-origin` with `https://*.qorpera.com` in
     its `form-action`.
+  - `/pdf-preview/` (`packages/web/public/pdf-preview/`) follows the same door pattern for inline PDF previews in
+    Studio `artifacts` blocks and Report view (`packages/web/src/app/views/surface-blocks/pdf.ts`), so the app's own `/*` CSP
+    stays free of `frame-src` and `blob:` framing. Its `_headers` entry removes the inherited `Content-Security-Policy`,
+    `X-Frame-Options` and `Permissions-Policy`, then sets `Permissions-Policy: camera=(), microphone=(), geolocation=(),
+    payment=(), usb=()`, `X-Frame-Options: SAMEORIGIN`, and `Content-Security-Policy: default-src 'none'; script-src
+    'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`. The
+    parent viewer and `preview.js` check `event.source` and `event.origin === location.origin` both ways; `preview.js`
+    accepts one `Uint8Array`/`ArrayBuffer` payload, pins the Blob MIME type to `application/pdf`, frames the resulting
+    `blob:` URL, and revokes it on `pagehide`. `scripts/test-web-pdf-preview-browser.mjs` proves in Chromium under
+    `public/_headers` that valid PDFs render in Chromium's PDF viewer with `object-src 'none'`, `Open PDF` opens in a
+    new tab, and HTML bytes disguised as a PDF never execute script.
 - The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
   `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
 
@@ -3196,3 +3227,8 @@ above.
   (owner or admin) does nothing while the founding table is open, and after Start invites each as a viewer through
   `qorpera_invite_profile_member`, an email the company already has or has invited counting as done, and takes each
   off the list. It answers the emails it invited. Any other refusal rolls the whole call back and keeps the list.
+
+#### The code site refusal and the Go live test site (20260930891000_site_texts_and_go_live_test_cleanup)
+
+- `qorpera_site_unpublish` refuses a site made from code with `SITE_FROM_CODE: this site is made from code kept in Qorpera; unpublish_site cannot take it offline` (it named the deleted Sites page).
+- The migration removes one throwaway site, `thetaband-go-live-test` (the 24 Nov 2026 Go live test, its interface already deleted), and only while it is not public, not taken down, has no custom domain and no interface that is not deleted points at it.

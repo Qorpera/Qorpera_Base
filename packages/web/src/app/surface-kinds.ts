@@ -1,9 +1,14 @@
-import { SURFACE_KINDS as STORED_KINDS, type SurfaceKind as StoredKind, type SurfaceSummary } from "@qorpera/contracts";
+import {
+	SURFACE_KINDS as STORED_KINDS,
+	type SurfaceLookKind,
+	type SurfaceSummary,
+	surfaceLookKind,
+} from "@qorpera/contracts";
 import type { Emblem } from "../ui/interface-emblem.ts";
 import { phrase, t } from "../ui/preferences.ts";
 import { type SurfaceFigureId, surfaceFigureFromIcon } from "../ui/surface-figure.ts";
 
-export type SurfaceKind = Exclude<StoredKind, "members">;
+export type SurfaceKind = SurfaceLookKind;
 export const SURFACE_KINDS: readonly SurfaceKind[] = STORED_KINDS.filter(
 	(kind): kind is SurfaceKind => kind !== "members",
 );
@@ -70,43 +75,14 @@ const EMBLEM_FIGURES: Readonly<Record<string, SurfaceFigureId>> = {
 	calendar: "book",
 };
 
-export function inferSurfaceKind(surface: Pick<SurfaceSummary, "slug" | "icon" | "archetype">): SurfaceKind {
-	const { slug, icon } = surface;
-	if (surface.archetype === "ops") {
-		if (slug === "inbox" || slug === "mail" || icon === "mail") return "inbox";
-		if (slug === "money" || slug === "bank" || icon === "coin" || icon === "bank") return "money";
-		if (slug === "data" || slug === "databases" || icon === "database") return "data";
-		if (slug === "files" || icon === "drawers") return "files";
-		return "custom";
-	}
-	if (surface.archetype === "studio") {
-		if (/identity|manifesto/.test(slug)) return "identity";
-		if (icon === "book" || /report|journal|essay|analysis|blog|research|philosophy/.test(slug)) return "report";
-		if (icon === "database" || /(^|-)(data|database|tables|crm)(-|$)/.test(slug)) return "database";
-		if (icon === "box" || icon === "board" || /product|hardware|spec|headband/.test(slug)) return "product";
-		if (icon === "spark" || /brand/.test(slug)) return "brand";
-		return "custom";
-	}
-	if (icon === "phone" || /mobile|ios|android/.test(slug)) return "mobile_app";
-	if (icon === "window" || /desktop/.test(slug)) return "desktop_app";
-	if (icon === "chart" || /dashboard|finance|kpi|metrics/.test(slug)) return "dashboard";
-	if (icon === "spark" || /(^|-)(app|portal)(-|$)/.test(slug)) return "web_app";
-	if (!icon || icon === "globe" || icon === "page") return "website";
-	return "custom";
-}
-
 export function surfaceLookOf(
 	surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype" | "kind" | "accentHex">,
 	looks: Readonly<Record<string, SurfaceLook>> = {},
 ): SurfaceLook {
 	const local = looks[surface.id];
 	if (local) return local;
-	const kind =
-		surface.kind && surface.kind !== "custom" && surface.kind !== "members"
-			? surface.kind
-			: inferSurfaceKind(surface);
 	return {
-		kind,
+		kind: surfaceLookKind(surface),
 		...(surface.accentHex ? { accent: surface.accentHex } : {}),
 	};
 }
