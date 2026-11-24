@@ -1023,6 +1023,56 @@ describe("SurfacesStore", () => {
 		missingStore.dispose();
 	});
 
+	it("mints a pass for the last preview that built beside a failed one and keeps it across refreshes", async () => {
+		const mintPreviewPass = vi.fn(async (previewId: string) => ({
+			previewId,
+			doorActionUrl: `https://thetaband--p${previewId.slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		}));
+		const failedFrame = previewFrame({
+			previewId: PREVIEW_IDS[0],
+			status: "failed",
+			doorActionUrl: null,
+			memberPass: null,
+			errorDetail: "PREVIEW_BUILD_FAILED\nlog",
+			kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null },
+			fixing: true,
+		});
+		const client = fakeClient({
+			isSurfacesEnabled: vi.fn(async () => true),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"])], {
+					previewState: { surfaceId: SURFACE, mode: "single", primary: failedFrame, compareFrames: [] },
+				}),
+			),
+			setPreviewSelection: vi.fn(async () => ({
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary: failedFrame,
+				compareFrames: [],
+			})),
+			mintPreviewPass,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(mintPreviewPass).not.toHaveBeenCalledWith(PREVIEW_IDS[0]);
+
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[1])).toBe(true);
+		const kept = store.workspace(SURFACE)!.previewState.primary.kept;
+		expect(kept).toEqual({
+			previewId: PREVIEW_IDS[1],
+			doorActionUrl: `https://thetaband--p${PREVIEW_IDS[1].slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		});
+		expect(store.workspace(SURFACE)!.previewState.primary.memberPass).toBeNull();
+
+		await store.refreshWorkspace(SURFACE);
+		expect(store.workspace(SURFACE)!.previewState.primary.kept?.memberPass).toBe(VALID_PASS);
+		store.dispose();
+	});
+
 	it("mints preview passes automatically when ready primary or compare previews arrive without a pass", async () => {
 		const mintPreviewPass = vi.fn(async (previewId: string) => ({
 			previewId,
@@ -1854,18 +1904,16 @@ describe("SurfacesStore", () => {
 			});
 		});
 		const approveDeferred = deferred<ReturnType<typeof session>>();
-		let discardAttempts = 0;
+		const discardSurfaceSession = vi.fn(async (): Promise<ReturnType<typeof session>> => {
+			throw new Error("discard failed");
+		});
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [summary(), secondSurface]),
 			getSurfaceWorkspace,
 			mintPreviewPass,
 			approveSurfaceChange: vi.fn(() => approveDeferred.promise),
 			approveSessionAll: vi.fn(async () => session(["merged", "merged"])),
-			discardSurfaceChange: vi.fn(async () => {
-				discardAttempts += 1;
-				if (discardAttempts === 1) return session(["discarded", "staged"]);
-				throw new Error("second discard failed");
-			}),
+			discardSurfaceSession,
 		});
 		const store = storeWith(client);
 		await store.load();
@@ -1920,8 +1968,11 @@ describe("SurfacesStore", () => {
 		expect(store.state.undo).toBeUndefined();
 
 		await store.refreshWorkspace(SURFACE);
+		const before = store.session(SESSION);
 		expect(await store.discardSession(SESSION)).toBe(false);
-		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		expect(discardSurfaceSession).toHaveBeenCalledWith(SESSION);
+		expect(store.session(SESSION)).toBe(before);
+		expect(store.state.error).toBe("discard failed");
 		store.dispose();
 	});
 
@@ -2625,6 +2676,94 @@ describe("SurfacesStore", () => {
 		await store.openChangeDeliverable(dedicatedReport.id, CHANGES[2], "launch-essay");
 		expect(store.state.mode).toBe("preview");
 		expect(store.state.activeReportSlug).toBe("launch-essay");
+		store.dispose();
+	});
+
+	it("admits application/pdf binaries in readSurfaceFolderFiles and extracts staged PDF change deliverables", async () => {
+		const pdfRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 2048,
+			mediaType: "application/pdf",
+		};
+		const loaded = await readSurfaceFolderFiles(
+			{
+				async list() {
+					return {
+						entries: [
+							{
+								path: "surfaces/marketing/q3-deck.pdf",
+								kind: "file",
+								file: pdfRef,
+							},
+						],
+					};
+				},
+				async readFile() {
+					return new Uint8Array();
+				},
+			},
+			["surfaces/marketing"],
+			new AbortController().signal,
+		);
+		expect(loaded.binaries["surfaces/marketing/q3-deck.pdf"]).toEqual(pdfRef);
+
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222249",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const pdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 board deck PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3-deck.pdf"],
+			patchManifest: [{ op: "write_file", path: "reports/q3-deck.pdf", file: pdfRef }],
+		});
+		const missingPdfChange = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Unbacked PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/missing.pdf"],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace(
+						[session([], { surfaceId: studio.id, changes: [pdfChange, missingPdfChange], openChangeCount: 2 })],
+						{
+							surface: studio,
+						},
+					),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(studio.slug);
+		await Promise.resolve();
+
+		expect(changeDeliverables(store.state, studio.id, pdfChange)).toEqual([
+			{
+				kind: "pdf",
+				path: "surfaces/marketing/reports/q3-deck.pdf",
+				slug: surfaceDocSlug("surfaces/marketing/reports/q3-deck.pdf"),
+				title: "Q3 deck",
+			},
+		]);
+		expect(changeDeliverables(store.state, studio.id, missingPdfChange)).toEqual([]);
+		expect(surfaceHasDeliverables(store.state, studio.id)).toBe(true);
 		store.dispose();
 	});
 });

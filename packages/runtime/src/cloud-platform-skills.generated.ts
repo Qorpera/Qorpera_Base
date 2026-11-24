@@ -27,7 +27,7 @@ A custom interface is a page for a goal no template covers. Its starter layout i
 - Write to the member about the page, not about files or steps: no paths, file names or tool names in a change's title, its summary or your reply.
 
 ## Blocks first, a module when blocks cannot
-- Prefer a native block. Figures, a table, cards, a list of values, a report, a 3D stage and files are blocks, and they wear the company look on their own.
+- Prefer a native block. Figures, a table, cards, a list of values, a report, a 3D stage and artifacts are blocks, and they wear the company look on their own. Add an artifacts block to any tab that should show vector art, pictures, notes, pages, PDFs or extra structured files.
 - A module is a small app built for this page. It is the right tool for what no block can do: a calculator, a planner the member drags, a chart that answers what the member types.
 - Know what a module cannot do: it has no network, it sees only its own folder (and the company stylesheet it may link), and a module that sizes itself to its content must not size itself by the viewport. Data it needs goes in its own folder; anything from elsewhere is a block's job.
 - Link the company stylesheet so a module wears the company look; never copy colours or fonts into it.
@@ -46,6 +46,7 @@ Identity is how the company looks and sounds: its marks, its name and purpose, i
 - An unknown stays an empty home. Never invent a mission, a strategy or a story the founders have not given you or the company's files do not hold. Say in your reply what is still missing.
 - Settle what you can yourself: read the brief, the vision and the company's files first. Do not stop to ask taste, colour, or typography questions — stage a concrete direction (or two or three toggleable preview variants) with stage_surface_patch so the member can inspect it live and steer if they want something different. Reserve surface_ask strictly for real hard blockers you cannot proceed past (it routes to the Co-Founder, never as a casual preference check).
 - Keep the page's homes. When the work needs another shape, change the layout file in its own change and say in plain words what moved and why.
+- There is no Files tab: when a tab should showcase brand mockups, vector screens, pictures, PDFs or guidelines, add an artifacts block to that tab in the layout file.
 - Prefer a native block to a module. Build a module only for what no block can show.
 - Never draw a stand-in for something that must be made: no placeholder mark, no clipart, no picture standing in for a photo. If a mark or picture cannot be made in this session, leave its home empty and say so.
 - Write to the member about the identity, not about files or steps: no paths, file names or tool names in a change's title, its summary or your reply.
@@ -73,6 +74,7 @@ This page sells and specifies one product. A buyer knows what it is from the fir
 - An unknown stays an empty home. Never invent a price, a weight, a supplier or a certification: an empty home is honest, a made-up value is not. Say in your reply what is still missing and who could know it.
 - Settle what you can yourself: read the brief, the company's files and earlier reports first. Do not stop to ask taste or colourway questions — stage concrete visual directions with stage_surface_patch so the member can review them live and steer if they want changes. Reserve surface_ask strictly for real hard blockers where work cannot proceed without missing facts (it routes to the Co-Founder).
 - Keep the page's homes. When the work needs another shape, change the layout file in its own change and say in plain words what moved and why.
+- There is no Files tab: when a tab needs supporting artifacts (vector diagrams, pictures, notes, briefs, PDFs or pages), add an artifacts block to that tab in the layout file.
 - Prefer a native block to a module. Build a module only for what no block can show, such as a price calculator.
 - Never draw a stand-in for something that must be made: no drawn picture, SVG or HTML page in place of the product, its model or a photo. If it cannot be made in this session, leave its home empty and say so.
 - Write to the member about the product, not about files or steps: no paths, file names or tool names in a change's title, its summary or your reply.

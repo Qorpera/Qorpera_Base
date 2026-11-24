@@ -58,6 +58,7 @@ export type SurfacesClient = Pick<
 	| "approveSurfaceChange"
 	| "approveSessionAll"
 	| "discardSurfaceChange"
+	| "discardSurfaceSession"
 	| "undoSurfaceChange"
 	| "chooseExploration"
 	| "reconcileChanges"
@@ -750,7 +751,7 @@ export interface SurfaceReportSummary {
 	readonly ownerTitle?: string;
 }
 
-export type SurfaceDeliverableKind = "report" | "html";
+export type SurfaceDeliverableKind = "report" | "html" | "pdf";
 
 export interface SurfaceChangeDeliverable {
 	readonly kind: SurfaceDeliverableKind;
@@ -767,6 +768,7 @@ export function surfaceDocSlug(path: string): string {
 
 const REPORT_FILE_RE = /\.report\.json$/i;
 const HTML_DELIVERABLE_RE = /\.html?$/i;
+const PDF_DELIVERABLE_RE = /\.pdf$/i;
 const MODULE_DELIVERABLE_RE = /(?:^|\/)modules\/[^/]+\//i;
 const HTML_TITLE_ENTITIES: Readonly<Record<string, string>> = {
 	amp: "&",
@@ -874,7 +876,17 @@ function parseReportsFromFiles(files: Readonly<Record<string, string>>): readonl
 }
 
 type SurfaceReportReadState = Pick<SurfacesState, "localStudioBase"> &
-	Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches" | "workspaces" | "studioPatches">>;
+	Partial<
+		Pick<
+			SurfacesState,
+			| "cloudSurfaceFiles"
+			| "cloudSurfaceBinaries"
+			| "localStudioBinaries"
+			| "pendingStudioPatches"
+			| "workspaces"
+			| "studioPatches"
+		>
+	>;
 
 function folderRootForState(state: SurfaceReportReadState, surfaceId: string): string | null {
 	return state.workspaces?.[surfaceId]?.surface.folderRoot ?? null;
@@ -897,15 +909,24 @@ export function changeDeliverables(
 ): readonly SurfaceChangeDeliverable[] {
 	const folderRoot = folderRootForState(state, surfaceId);
 	const baseFiles = effectiveStudioBaseFiles(state, surfaceId) ?? {};
+	const baseBinaries = effectiveStudioBaseBinaries(state, surfaceId);
 	const ops = state.studioPatches?.[change.id];
 	const touched = new Map<string, "deleted" | "present">();
 	let files: Readonly<Record<string, string>> = baseFiles;
+	let binaries: Readonly<Record<string, StudioBinaryRef>> = baseBinaries;
 	if (ops && ops.length > 0) {
 		const normalizedOps = normalizeStudioPatchOps(ops, folderRoot);
 		for (const op of normalizedOps) {
 			touched.set(op.path, op.op === "delete" ? "deleted" : "present");
 		}
-		files = composeStudioPreview(baseFiles, [{ changeId: change.id, ops: normalizedOps }], folderRoot).files;
+		const composed = composeStudioPreview(
+			baseFiles,
+			[{ changeId: change.id, ops: normalizedOps }],
+			folderRoot,
+			baseBinaries,
+		);
+		files = composed.files;
+		binaries = composed.binaries;
 	} else {
 		for (const rawPath of change.affectedPaths) {
 			const path = normalizeSurfacePath(rawPath, folderRoot);
@@ -940,6 +961,16 @@ export function changeDeliverables(
 				path,
 				slug: surfaceDocSlug(path),
 				title: content ? extractHtmlDeliverableTitle(content, path) : readableDeliverableTitle(path),
+			});
+			continue;
+		}
+		if (PDF_DELIVERABLE_RE.test(path) && binaries[path]) {
+			seen.add(path);
+			results.push({
+				kind: "pdf",
+				path,
+				slug: surfaceDocSlug(path),
+				title: readableDeliverableTitle(path),
 			});
 		}
 	}
@@ -1056,6 +1087,10 @@ export function surfaceHasDeliverables(state: SurfaceReportReadState, surfaceId:
 		for (const path of Object.keys(baseFiles)) {
 			if (isStandaloneHtmlDeliverablePath(path, folderRoot)) return true;
 		}
+	}
+	const baseBinaries = effectiveStudioBaseBinaries(state, surfaceId);
+	for (const path of Object.keys(baseBinaries)) {
+		if (PDF_DELIVERABLE_RE.test(path)) return true;
 	}
 	return false;
 }
@@ -2366,6 +2401,12 @@ export class SurfacesStore {
 					memberPass: prevState.primary.memberPass,
 				});
 			}
+			if (prevState?.primary.kept?.memberPass) {
+				prevPasses.set(prevState.primary.kept.previewId, {
+					doorActionUrl: prevState.primary.kept.doorActionUrl,
+					memberPass: prevState.primary.kept.memberPass,
+				});
+			}
 			for (const entry of prevState?.compareFrames ?? []) {
 				if (entry.frame.previewId && entry.frame.memberPass) {
 					prevPasses.set(entry.frame.previewId, {
@@ -2374,18 +2415,35 @@ export class SurfacesStore {
 					});
 				}
 			}
-			const keepPass = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
-				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
-				const prev = prevPasses.get(frame.previewId);
-				if (!prev) return frame;
-				const meta = this.#previewPassMeta.get(frame.previewId);
-				if (
-					meta &&
+			const usablePrevPass = (
+				previewId: string,
+			): { readonly doorActionUrl: string | null; readonly memberPass: string } | null => {
+				const prev = prevPasses.get(previewId);
+				if (!prev) return null;
+				const meta = this.#previewPassMeta.get(previewId);
+				return meta &&
 					meta.pass === prev.memberPass &&
 					(meta.consumed || now - meta.mintedAt >= PREVIEW_PASS_TTL_MS)
-				) {
-					return frame;
+					? null
+					: prev;
+			};
+			const keepPass = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+				if (frame.kept && !frame.kept.memberPass) {
+					const prev = usablePrevPass(frame.kept.previewId);
+					return prev
+						? {
+								...frame,
+								kept: {
+									...frame.kept,
+									doorActionUrl: frame.kept.doorActionUrl ?? prev.doorActionUrl,
+									memberPass: prev.memberPass,
+								},
+							}
+						: frame;
 				}
+				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
+				const prev = usablePrevPass(frame.previewId);
+				if (!prev) return frame;
 				return {
 					...frame,
 					doorActionUrl: frame.doorActionUrl ?? prev.doorActionUrl,
@@ -2548,6 +2606,13 @@ export class SurfacesStore {
 					if (!workspace) return {};
 					let changed = false;
 					const patchFrame = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+						if (frame.kept?.previewId === grant.previewId) {
+							changed = true;
+							return {
+								...frame,
+								kept: { ...frame.kept, doorActionUrl: grant.doorActionUrl, memberPass: grant.memberPass },
+							};
+						}
 						if (frame.previewId !== grant.previewId) return frame;
 						changed = true;
 						return {
@@ -4017,23 +4082,12 @@ export class SurfacesStore {
 			this.#applySession(updated, "history");
 			return true;
 		}
-		let latest: SurfaceSession | undefined;
-		for (const change of session.changes.filter(isOpenChange)) {
-			const next = await this.#run(`change:${change.id}`, (client) => client.discardSurfaceChange(change.id));
-			if (!next) {
-				if (latest) {
-					this.#applySession(latest, approvalOutcome(latest, this.drawerOpenOn(sessionId)));
-					void this.refreshSurfaces();
-				}
-				return false;
-			}
-			latest = next;
-		}
-		if (this.drawerOpenOn(sessionId)) {
-			this.store.set({ drawer: undefined });
-			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
-		}
-		this.#applySession(latest ?? session, "history");
+		const closed = await this.#run(`discard-session:${sessionId}`, (client) =>
+			client.discardSurfaceSession(sessionId),
+		);
+		if (!closed) return false;
+		if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
+		this.#applySession(closed, "history");
 		void this.refreshSurfaces();
 		return true;
 	}

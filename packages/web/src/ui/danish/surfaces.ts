@@ -52,6 +52,9 @@ export const SURFACES: Record<string, string> = {
 	Changes: "Ændringer",
 	"Remove change reference": "Fjern ændringsreference",
 	"Discard all": "Kassér alle",
+	"Remove {title}? The agent stops and its unapproved changes are dropped.":
+		"Fjern {title}? Agenten stopper, og dens ikke-godkendte ændringer kasseres.",
+	"Remove {title}? Its unapproved changes are dropped.": "Fjern {title}? Dens ikke-godkendte ændringer kasseres.",
 	"Discarded “{title}”": "Kasserede “{title}”",
 	"Got it — updated “{title}” with “{note}”.": "Forstået — opdaterede “{title}” med “{note}”.",
 	"Needs your attention": "Kræver din opmærksomhed",
@@ -71,6 +74,7 @@ export const SURFACES: Record<string, string> = {
 	"These changes conflict. Turn one off to preview the rest.":
 		"Ændringerne er i konflikt. Slå én fra for at se resten.",
 	"The preview could not be built.": "Forhåndsvisningen kunne ikke bygges.",
+	"Being fixed": "Bliver rettet",
 	"The company is out of computer hours, so the preview could not be built.":
 		"Virksomheden har ikke flere computertimer, så forhåndsvisningen kunne ikke bygges.",
 	"No machine was free to build the preview. Try again in a moment.":
@@ -263,6 +267,8 @@ export const SURFACES: Record<string, string> = {
 	Tokens: "Designtokens",
 	Reports: "Rapporter",
 	Breakdowns: "Gennemgange",
+	Artifacts: "Artefakter",
+	Visuals: "Visuelle elementer",
 	"Animated breakdowns live here.": "Animerede gennemgange ligger her.",
 	"Breakdown: {name}": "Gennemgang: {name}",
 	"Breakdown could not load.": "Gennemgangen kunne ikke indlæses.",
@@ -271,7 +277,7 @@ export const SURFACES: Record<string, string> = {
 	"Made of": "Lavet af",
 	Price: "Pris",
 	"Reports and posts live here.": "Rapporter og indlæg ligger her.",
-	"Working files. Models, pictures and notes live here.": "Arbejdsfiler. Modeller, billeder og noter ligger her.",
+	"Artifacts. Models, pictures and notes live here.": "Artefakter. Modeller, billeder og noter ligger her.",
 	"No open changes to compare against Base.": "Ingen åbne ændringer at sammenligne med Base.",
 	"Not set": "Ikke angivet",
 	"Not in Base": "Ikke i Base",
@@ -379,6 +385,10 @@ export const SURFACES: Record<string, string> = {
 	"yourdomain.com": "ditdomæne.dk",
 	Article: "Artikel",
 	HTML: "HTML",
+	PDF: "PDF",
 	Added: "Tilføjet",
 	"Open {title}": "Åbn {title}",
+	"Open PDF": "Åbn PDF",
+	"Loading PDF…": "Indlæser PDF…",
+	"This PDF can't be loaded.": "Denne PDF kan ikke indlæses.",
 };

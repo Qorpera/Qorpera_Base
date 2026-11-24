@@ -12,6 +12,7 @@ import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from 
 import { previewStatusText, publishFailureText, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
+import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
@@ -1048,6 +1049,124 @@ describe("the surface page", () => {
 		expect(publishFailureText("Missing index.html")).toBeNull();
 	});
 
+	it("keeps the last preview that built on screen with a quiet mark while a failed build is being fixed", () => {
+		const controller = new AbortController();
+		const remints: string[] = [];
+		const stage = new SurfaceDoorStage(controller.signal, {
+			onNeedFreshPass: (previewId) => {
+				remints.push(previewId);
+				return undefined;
+			},
+		});
+		document.body.append(stage.el);
+		const pill = stage.el.querySelector<HTMLElement>(".surface-preview-pill")!;
+		const failed = (overrides: Partial<ReturnType<typeof previewFrame>> = {}) =>
+			previewFrame({
+				previewId: PREVIEW_IDS[0],
+				status: "failed",
+				doorActionUrl: null,
+				memberPass: null,
+				errorDetail: 'PREVIEW_BUILD_FAILED\nThe build "npm run build" exited with code 1.',
+				kept: {
+					previewId: PREVIEW_IDS[1],
+					doorActionUrl: "https://thetaband--p12ab34cd.qorpera.com/__qorpera/member",
+					memberPass: VALID_PASS,
+				},
+				fixing: true,
+				...overrides,
+			});
+
+		stage.sync(failed(), "Website");
+		const kept = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		const posted = spyFrameMessages(kept);
+		sendFromFrame(kept, { type: SITE_DOOR_READY });
+		expect(posted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: VALID_PASS });
+		sendFromFrame(kept, { type: SITE_DOOR_SHOWN });
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(stage.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(true);
+		expect(pill.hidden).toBe(false);
+		expect(pill.textContent).toBe("Being fixed");
+		expect(pill.querySelector(".surface-state.is-running")).not.toBeNull();
+		expect(stage.el.textContent).not.toContain("could not be built");
+		expect(stage.el.textContent).not.toContain("npm run build");
+
+		stage.sync(failed({ kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null } }), "Website");
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+		expect(pill.textContent).toBe("Being fixed");
+		expect(remints).toEqual([]);
+
+		stage.sync(failed({ fixing: false }), "Website");
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(pill.textContent).toBe("The preview could not be built.");
+		expect(pill.querySelector(".surface-state.is-failed")).not.toBeNull();
+
+		stage.sync(
+			previewFrame({ previewId: PREVIEW_IDS[0], status: "building", doorActionUrl: null, memberPass: null }),
+			"Website",
+		);
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(pill.textContent).toBe("Building preview…");
+
+		stage.sync(failed({ kept: null, fixing: false }), "Website");
+		expect(stage.el.querySelector("iframe")).toBeNull();
+		expect(pill.hidden).toBe(true);
+		expect(stage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+		expect(stage.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe(
+			"The preview could not be built.",
+		);
+
+		const fresh = new SurfaceDoorStage(controller.signal, {
+			onNeedFreshPass: (previewId) => {
+				remints.push(previewId);
+				return undefined;
+			},
+		});
+		fresh.sync(failed({ kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null } }), "Website");
+		expect(remints).toEqual([PREVIEW_IDS[1]]);
+		expect(fresh.el.querySelector<HTMLElement>(".surface-preview-pill")?.hidden).toBe(true);
+		controller.abort();
+	});
+
+	it("says a failed publish is being fixed under its sentence, and nothing when the field is missing", async () => {
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const failedPublish = {
+			publishStatus: "failed" as const,
+			lastPublishError: "PREVIEW_BUILD_FAILED\nlog",
+			hasUnpublishedChanges: true,
+			unpublishedChangeCount: 1,
+		};
+		for (const [extra, shown] of [
+			[{ publishBeingFixed: true }, true],
+			[{ publishBeingFixed: false }, false],
+			[{}, false],
+		] as const) {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [summary({ ...failedPublish, ...extra })]),
+					getSurfaceWorkspace: vi.fn(async () =>
+						workspace([session(["merged"])], { surface: summary({ ...failedPublish, ...extra }) }),
+					),
+				}),
+			);
+			await store.load();
+			const sheet = openPublishSheet(store, store.state.surfaces[0]!);
+			expect(sheet.el.querySelector(".surface-sheet-error")?.textContent).toBe(
+				"The site could not be built, so nothing was published.",
+			);
+			const note = sheet.el.querySelector(".surface-sheet-lead[role=status]");
+			expect(note?.textContent ?? null).toBe(shown ? "Being fixed" : null);
+			sheet.close();
+			store.dispose();
+		}
+	});
+
 	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in the publish window", async () => {
 		const controller = new AbortController();
 		const onRetry = vi.fn();
@@ -1650,6 +1769,342 @@ describe("the surface page", () => {
 		expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/posts/launch.html");
 		expect(view.el.querySelector(".report-html-card h2")?.textContent).toBe("Launch Post");
 
+		view.dispose();
+		store.dispose();
+	});
+
+	it("opens a staged PDF deliverable from its sidepanel PDF pill and compares it against Base", async () => {
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222262",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const pdfRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 3072,
+			mediaType: "application/pdf",
+		};
+		const pdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Investor Q3 deck",
+			summary: "Attached board summary PDF.",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3-deck.pdf"],
+			patchManifest: [{ op: "write_file", path: "reports/q3-deck.pdf", file: pdfRef }],
+		});
+		const sess = session([], {
+			id: SESSION,
+			surfaceId: studio.id,
+			title: "Analyst",
+			changes: [pdfChange],
+			openChangeCount: 1,
+		});
+		const createObjectURL = vi.fn(() => "blob:q3-deck");
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		try {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [studio]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([sess], { surface: studio })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () => folderContents({})),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await store.load();
+			const view = new SurfaceView(
+				{
+					store,
+					mount: () => ({ el: document.createElement("div"), update: vi.fn(), dispose: vi.fn() }),
+					openMigration: () => undefined,
+				},
+				studio.slug,
+			);
+			document.body.append(view.el);
+			await flush();
+			view.update();
+
+			const pill = view.el.querySelector<HTMLButtonElement>(".surface-overview-deliverable")!;
+			expect(pill.textContent).toBe("PDF");
+			pill.click();
+			await flush();
+			view.update();
+
+			expect(store.state.mode).toBe("report");
+			expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/reports/q3-deck.pdf");
+			const card = view.el.querySelector<HTMLElement>(
+				'.studio-pdf-card[data-file="surfaces/marketing/reports/q3-deck.pdf"]',
+			)!;
+			expect(card).not.toBeNull();
+			await vi.waitFor(() =>
+				expect(card.querySelector("iframe.studio-pdf-frame")?.getAttribute("src")).toBe("./pdf-preview/"),
+			);
+			expect(card.querySelector('a[download="q3-deck.pdf"]')?.getAttribute("href")).toBe("blob:q3-deck");
+			expect(view.el.querySelector(".surface-overview-deliverable")?.classList.contains("is-open")).toBe(true);
+
+			const dedicated = new SurfaceReportView({
+				store,
+				surface: studio,
+				signal: new AbortController().signal,
+				baseFiles: {},
+				timeSlice: false,
+			});
+			store.setMode("compare");
+			dedicated.update();
+			expect(dedicated.el.querySelector(".studio-compare-card")?.textContent).toContain("Q3 deck");
+			expect(dedicated.el.querySelector(".studio-compare-card")?.textContent).toContain("Added");
+			dedicated.dispose();
+
+			view.dispose();
+			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:q3-deck"));
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
+	it("keeps Markdown fallback items alongside PDFs unless structured reports or HTML exist", async () => {
+		const reportSurface = summary({
+			id: "22222222-2222-4222-8222-222222222263",
+			slug: "research",
+			title: "Research",
+			archetype: "studio",
+			kind: "report",
+			icon: "doc",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/research",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const basePdfRef = {
+			manifestSha256: "c".repeat(64),
+			fileSha256: "d".repeat(64),
+			bytes: 2048,
+			mediaType: "application/pdf",
+		};
+		const stagedPdfRef = {
+			manifestSha256: "e".repeat(64),
+			fileSha256: "f".repeat(64),
+			bytes: 3072,
+			mediaType: "application/pdf",
+		};
+		const mdAndPdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: reportSurface.id,
+			sessionId: SESSION,
+			title: "Notes and appendix",
+			summary: "Updates memo and attaches appendix PDF.",
+			kind: "folder_patch",
+			affectedPaths: ["notes/memo.md", "appendix.pdf"],
+			patchManifest: [
+				{ op: "write_text", path: "notes/memo.md", content: "# Field Memo\n\nKey findings." },
+				{ op: "write_file", path: "appendix.pdf", file: stagedPdfRef },
+			],
+		});
+		const sess = session([], {
+			id: SESSION,
+			surfaceId: reportSurface.id,
+			title: "Analyst",
+			changes: [mdAndPdfChange],
+			openChangeCount: 1,
+		});
+		const createObjectURL = vi.fn(() => "blob:appendix");
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		try {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [reportSurface]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([sess], { surface: reportSurface })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(
+							{ "surfaces/research/notes/memo.md": "# Field Memo\n\nOld findings." },
+							{ "surfaces/research/appendix.pdf": basePdfRef },
+						),
+					),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await store.load();
+			await store.openSurface(reportSurface.slug);
+			const reportView = new SurfaceReportView({
+				store,
+				surface: reportSurface,
+				signal: new AbortController().signal,
+				baseFiles: { "surfaces/research/notes/memo.md": "# Field Memo\n\nOld findings." },
+				timeSlice: false,
+			});
+			reportView.update();
+			const switcherLabels = [...reportView.el.querySelectorAll(".report-switcher button")].map((b) =>
+				b.textContent?.trim(),
+			);
+			expect(switcherLabels).toEqual(["Field Memo", "Appendix"]);
+
+			store.setMode("compare");
+			reportView.update();
+			const compareCards = [...reportView.el.querySelectorAll(".studio-compare-card")].map(
+				(c) => c.textContent ?? "",
+			);
+			expect(compareCards).toHaveLength(2);
+			expect(compareCards.some((text) => text.includes("Appendix"))).toBe(true);
+			expect(compareCards.some((text) => text.includes("Field Memo"))).toBe(true);
+			reportView.dispose();
+			store.dispose();
+
+			const structuredStore = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [reportSurface]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: reportSurface })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(
+							{
+								"surfaces/research/notes/memo.md": "# Scratchpad",
+								"surfaces/research/reports/q4.report.json": JSON.stringify({
+									headline: "Q4 Outlook",
+									sections: [{ heading: "Summary", body: "Growth holds steady." }],
+								}),
+							},
+							{ "surfaces/research/appendix.pdf": basePdfRef },
+						),
+					),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await structuredStore.load();
+			await structuredStore.openSurface(reportSurface.slug);
+			const structuredView = new SurfaceReportView({
+				store: structuredStore,
+				surface: reportSurface,
+				signal: new AbortController().signal,
+				baseFiles: {
+					"surfaces/research/notes/memo.md": "# Scratchpad",
+					"surfaces/research/reports/q4.report.json": JSON.stringify({
+						headline: "Q4 Outlook",
+						sections: [{ heading: "Summary", body: "Growth holds steady." }],
+					}),
+				},
+				timeSlice: false,
+			});
+			structuredView.update();
+			const structuredLabels = [...structuredView.el.querySelectorAll(".report-switcher button")].map((b) =>
+				b.textContent?.trim(),
+			);
+			expect(structuredLabels).toEqual(["Q4 Outlook", "Appendix"]);
+			structuredView.dispose();
+			structuredStore.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+});
+
+describe("removing an agent from the Changes list", () => {
+	afterEach(async () => {
+		openMenu()?.close();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+
+	it("removes a finished routine at once and asks first for one that is working on a change", async () => {
+		const routine = session([], {
+			id: "33333333-3333-4333-8333-333333333351",
+			title: "Co-Founder Pulse",
+			state: "ready",
+		});
+		const working = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333352",
+			title: "Add the wordmark",
+			state: "running",
+		});
+		const kept = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333353",
+			title: "Kept proposal",
+			state: "ready",
+		});
+		let active = [routine, working, kept];
+		const discardSurfaceSession = vi.fn(async (sessionId: string) => {
+			const ended = active.find((item) => item.id === sessionId)!;
+			active = active.filter((item) => item.id !== sessionId);
+			return {
+				...ended,
+				state: "discarded" as const,
+				changes: ended.changes.map((item) => ({ ...item, status: "discarded" as const })),
+			};
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary()]),
+				getSurfaceWorkspace: vi.fn(async () => workspace(active)),
+				discardSurfaceSession,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const card = (id: string) =>
+			view.el.querySelector<HTMLElement>(`.surface-overview-card.is-agent[data-session="${id}"]`);
+		const chooseRemove = async (id: string) => {
+			card(id)!.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+			const row = [...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+				(item) => item.textContent?.trim() === "Remove",
+			)!;
+			expect(row.classList.contains("danger")).toBe(true);
+			row.click();
+			await flush();
+		};
+		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
+		const dialogButton = (label: string) =>
+			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
+
+		await chooseRemove(routine.id);
+		expect(dialog()).toBeNull();
+		expect(discardSurfaceSession).toHaveBeenCalledWith(routine.id);
+		view.update();
+		expect(card(routine.id)).toBeNull();
+
+		await chooseRemove(working.id);
+		expect(dialog()?.querySelector("p")?.textContent).toBe(
+			"Remove Add the wordmark? The agent stops and its unapproved changes are dropped.",
+		);
+		dialogButton("Cancel").click();
+		await flush();
+		expect(discardSurfaceSession).toHaveBeenCalledTimes(1);
+		expect(card(working.id)).not.toBeNull();
+
+		await chooseRemove(working.id);
+		expect(dialogButton("Remove").classList.contains("btn-danger")).toBe(true);
+		dialogButton("Remove").click();
+		await flush();
+		view.update();
+		expect(discardSurfaceSession).toHaveBeenLastCalledWith(working.id);
+		expect(card(working.id)).toBeNull();
+		expect(card(kept.id)).not.toBeNull();
 		view.dispose();
 		store.dispose();
 	});
