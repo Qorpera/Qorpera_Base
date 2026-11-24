@@ -8,6 +8,7 @@
 .rail-surface-title { display: flex; align-items: center; justify-content: space-between; }
 .rail-surface-item { display: grid; grid-template-columns: minmax(0, 1fr); }
 .rail-dragging .rail-surface-loose.is-empty { min-height: 24px; }
+.frame:not(.rail-compact) .rail.has-surface-rail .rail-surface-loose:not(.is-empty) { padding-top: 6px; }
 .rail-surface-create {
 	display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; margin: 2px 0 4px; padding: 0 10px;
 	border: 1px dashed color-mix(in srgb, var(--text) 16%, transparent); border-radius: 8px;
