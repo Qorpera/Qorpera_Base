@@ -208,10 +208,23 @@ describe("the captions the kernel state produces", () => {
 		expect(codingSessionStatus(codingSession(checking), owner, NOW).text).toBe(
 			"Opening the pull request · 3 files changed",
 		);
+		const noChange = { phase: "publishing" as const, lastStep: "Finishing without changes", filesChanged: 0 };
+		expect(codingSessionStatus(codingSession({ ...noChange, repository: kept }), owner, NOW)).toEqual({
+			text: "Finishing",
+			tone: "working",
+		});
+		expect(codingSessionStatus(codingSession(noChange), owner, NOW)).toEqual({
+			text: "Finishing",
+			tone: "working",
+		});
+		expect(codingSessionGoing(codingSession({ phase: "completed", repository: kept, filesChanged: 0 }))).toBe(false);
 		setLanguagePreference("da");
 		try {
 			expect(codingSessionStatus(codingSession({ ...checking, repository: kept }), owner, NOW).text).toBe(
 				"Tjekker ændringen, før den gemmes · 3 filer ændret",
+			);
+			expect(codingSessionStatus(codingSession({ ...noChange, repository: kept }), owner, NOW).text).toBe(
+				"Afslutter",
 			);
 		} finally {
 			setLanguagePreference("system");

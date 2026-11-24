@@ -294,6 +294,7 @@ export const PUBLICATION_UNFINISHED =
  * The web shows the founder's card line for checks by these exact words. */
 const CODING_LANDING_STEP = "Checking and saving the change";
 const CODING_STAGING_STEP = "Staging changes for preview";
+const CODING_NO_CHANGE_STEP = "Finishing without changes";
 const CODING_PREVIEW_BUILD_STEP = "Building the interface preview";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
@@ -1165,15 +1166,19 @@ export class CloudCodingExecutor {
 				// 3. What the harness left behind decides the outcome; prose never does.
 				const submission = turn.submission;
 				if (submission?.kind === "finish" && turn.jobStatus === "completed") {
+					const noChanges =
+						submission.headSha === workspace.baseSha && !claimed.pullRequest && !claimed.surfaceSession;
 					await progress({
 						p_phase: "publishing",
 						// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
 						// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
 						p_last_step: claimed.surfaceSession
 							? CODING_STAGING_STEP
-							: claimed.repository.host === "qorpera"
-								? CODING_LANDING_STEP
-								: "Publishing the draft pull request",
+							: noChanges
+								? CODING_NO_CHANGE_STEP
+								: claimed.repository.host === "qorpera"
+									? CODING_LANDING_STEP
+									: "Publishing the draft pull request",
 					});
 					const emitCodeChange = async (
 						kind: "landed" | "checks_failed" | "conflict",
