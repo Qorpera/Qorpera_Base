@@ -435,6 +435,7 @@ export class Run {
 		const files = [
 			`${this.repo}/HEAD`,
 			`${this.repo}/config`,
+			`${this.repo}/worktrees/main/HEAD`,
 			`${this.repo}/worktrees/main/commondir`,
 			`${this.repo}/worktrees/main/gitdir`,
 			`${this.repo}/worktrees/main/locked`,
@@ -463,7 +464,8 @@ export class Run {
 		const made = type.get(this.repo) === "directory",
 			seeded = made && type.get(`${this.repo}/HEAD`) === "file";
 		const mainAdmin = type.get(`${this.repo}/worktrees/main`) === "directory",
-			mainTree = type.get(this.main) === "directory";
+			mainTree = type.get(this.main) === "directory",
+			mainWhole = mainAdmin && mainTree && type.get(`${this.repo}/worktrees/main/HEAD`) === "file";
 		if (made && options.readOnly !== true) {
 			const before: (readonly [string, string])[] = [[`${this.repo}/config`, CODE_AREA_CONFIG]];
 			const stray = [
@@ -474,7 +476,7 @@ export class Run {
 				`${this.repo}/worktrees/main/config.worktree`,
 			];
 			const after: (readonly [string, string])[] = [];
-			if (seeded && mainAdmin && mainTree) {
+			if (seeded && mainWhole) {
 				after.push(
 					[`${this.repo}/worktrees/main/commondir`, "../..\n"],
 					[`${this.repo}/worktrees/main/gitdir`, `${this.main}/.git\n`],
@@ -489,12 +491,7 @@ export class Run {
 			made,
 			seeded,
 			restoring: type.get(mark) === "file",
-			main:
-				mainAdmin && mainTree
-					? ("present" as const)
-					: mainAdmin || mainTree
-						? ("partial" as const)
-						: ("none" as const),
+			main: mainWhole ? ("present" as const) : mainAdmin || mainTree ? ("partial" as const) : ("none" as const),
 			worktree:
 				worktree && admin
 					? {

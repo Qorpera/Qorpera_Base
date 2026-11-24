@@ -50,6 +50,7 @@ import {
 	listCodeBranches,
 	listCodeChangeArchives,
 	logCodeArea,
+	MAIN_LOCK,
 	previewCodeMerge,
 	pruneCodeArea,
 	removeCodeDownloads,
@@ -1013,7 +1014,7 @@ async function session(f: Fixture, c: Company, baseSha: string) {
 }
 
 describe("code host: a repository kept in Qorpera (own code storage, slice 1)", () => {
-	it("starts empty: one commit of no files on the default branch, its mark, and main/ at it; again, the same", async () => {
+	it("starts empty: one commit of no files on the default branch, its mark, and main/ at it; again, the same; main/ made again when lost or its admin directory has no HEAD", async () => {
 		const f = await fixture(),
 			c = await f.company();
 		const started = await startCodeArea(c.job, { repository: kept });
@@ -1046,6 +1047,21 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 		await rm(join(c.repo, "worktrees/main"), { recursive: true });
 		expect((await startCodeArea(c.job, { repository: kept })).baseSha).toBe(started.baseSha);
 		expect(await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8")).toBe(`${started.baseSha}\n`);
+		await rm(join(c.repo, "worktrees/main/HEAD"));
+		await writeFile(join(c.code, "main/stray.txt"), "left\n");
+		expect(await startCodeArea(c.job, { repository: kept })).toEqual({
+			state: "present",
+			baseSha: started.baseSha,
+			restored: ["code/qorpera/example/main"],
+		});
+		expect(await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8")).toBe(`${started.baseSha}\n`);
+		expect(await readdir(join(c.code, "main"))).toEqual([".git"]);
+		expect(await readFile(join(c.repo, "worktrees/main/locked"), "utf8")).toBe(`${MAIN_LOCK}\n`);
+		expect(await startCodeArea(c.job, { repository: kept })).toEqual({
+			state: "present",
+			baseSha: started.baseSha,
+			restored: [],
+		});
 	});
 
 	it("never holds a GitHub copy and a repository kept in Qorpera in one code area", async () => {

@@ -476,6 +476,33 @@ describe("CodeHostRepositories", () => {
 			/already holds a copy of a GitHub repository.+\[code=CODE_HOST_AREA_FROM_GITHUB\]$/,
 		);
 	});
+	it("a start whose code host job fails says what git said last, on one line, masked and cut", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const start = () => f.repositories.start({ claim, assertAuthorized: f.authorized }, signal()).catch((e) => e);
+		const opening = "Opening the company's repository failed. Nothing was changed; a follow-up tries again.";
+		vi.mocked(startCodeArea).mockRejectedValueOnce(
+			new CodeHostJobFailure(
+				"CODE_HOST_MAIN_FAILED",
+				"Preparing worktree (detached HEAD 0123456)\nfatal: could not open '/company/code/qorpera/example/main/.git' for writing: token=Abc123secretvalue\n",
+			),
+		);
+		const failed = await start();
+		expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
+		expect(failed.summary).toBe(
+			`${opening} The code host said: "Preparing worktree (detached HEAD 0123456) fatal: could not open '/company/code/qorpera/example/main/.git' for writing: token=[redacted]" [code=CODE_HOST_MAIN_FAILED]`,
+		);
+		const long = `${"a".repeat(3000)} fatal: the last word\n`;
+		vi.mocked(startCodeArea).mockRejectedValueOnce(new CodeHostJobFailure("CODE_HOST_MAIN_FAILED", long));
+		const cut = (await start()).summary as string;
+		expect(cut.length).toBeLessThan(opening.length + 600);
+		expect(cut).toMatch(/ \.\.\. a+ fatal: the last word" \[code=CODE_HOST_MAIN_FAILED\]$/);
+		vi.mocked(startCodeArea).mockRejectedValueOnce(new CodeHostJobFailure("CODE_HOST_MAIN_FAILED"));
+		expect((await start()).summary).toBe(`${opening} [code=CODE_HOST_MAIN_FAILED]`);
+		vi.mocked(startCodeArea).mockRejectedValueOnce(new CodeHostRefusal("CODE_HOST_LINK", ["code/qorpera"]));
+		expect((await start()).summary).toBe(`${opening} [code=CODE_HOST_LINK]`);
+	});
 	it("seeds the company's code area from GitHub and adds the session's worktree in one job, and gives the machine its path", async () => {
 		const f = await fixture(),
 			given = signal(),
@@ -542,19 +569,25 @@ describe("CodeHostRepositories", () => {
 
 	it("fails the turn with the code host's own code when its job fails a step or is refused, keeping what it said (C8 C4-1)", async () => {
 		const f = await fixture();
-		const summary = (code: string) =>
-			`Making the session's copy of the code failed. The workspace is kept; a follow-up tries again. [code=${code}]`;
+		const summary = (code: string, said: string) =>
+			`Making the session's copy of the code failed. The workspace is kept; a follow-up tries again.${said} [code=${code}]`;
 		// As the job of 26 Oct 2026 06:53:43Z may have ended: git's worktree add failed while it wrote the worktree.
 		const failure = new CodeHostJobFailure(
 			"CODE_HOST_WORKTREE_FAILED",
 			"fatal: could not create work tree dir '/company/code/qorpera/example/worktrees/x': Input/output error",
 		);
 		const refusal = new CodeHostRefusal("CODE_HOST_WORKTREE_INCOMPLETE", ["code/qorpera/example/worktrees/x"]);
-		for (const error of [failure, refusal]) {
+		for (const [error, said] of [
+			[
+				failure,
+				` The code host said: "fatal: could not create work tree dir '/company/code/qorpera/example/worktrees/x': Input/output error"`,
+			],
+			[refusal, ""],
+		] as const) {
 			vi.mocked(attachCodeSession).mockRejectedValueOnce(error);
 			const failed = await f.repositories.prepare(f.session, signal()).catch((caught: unknown) => caught);
 			expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
-			expect(failed).toMatchObject({ message: error.code, summary: summary(error.code), cause: error });
+			expect(failed).toMatchObject({ message: error.code, summary: summary(error.code, said), cause: error });
 		}
 		// Anything else, and a job whose caller gave up, fail as they are.
 		const other = new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_REMOVING");
@@ -731,13 +764,16 @@ describe("CodeHostRepositories", () => {
 			new CodeHostRefusal("CODE_HOST_SEED_HEADS", ["refs/heads/main"]),
 			new CodeHostRefusal("CODE_HOST_LINK", ["code/qorpera"]),
 			new CodeHostRefusal("CODE_HOST_WORKTREE_INCOMPLETE", ["code/qorpera/example/worktrees/x"]),
-			new CodeHostJobFailure("CODE_HOST_NAMES_LISTING", "not a refusal"),
 			new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE"),
 		])
 			for (const session of [own, github])
 				expect(await words(session, error)).toBe(
 					`Making the session's copy of the code failed. The workspace is kept; a follow-up tries again. [code=${error.code}]`,
 				);
+		for (const session of [own, github])
+			expect(await words(session, new CodeHostJobFailure("CODE_HOST_NAMES_LISTING", "not a refusal"))).toBe(
+				`Making the session's copy of the code failed. The workspace is kept; a follow-up tries again. The code host said: "not a refusal" [code=CODE_HOST_NAMES_LISTING]`,
+			);
 	});
 
 	it("asks the session's authority once its job's turn comes and once its steps are done, before the job publishes", async () => {

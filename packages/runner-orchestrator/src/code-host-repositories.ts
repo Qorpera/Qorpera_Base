@@ -62,6 +62,7 @@ import {
 	codeSiteRefusedSummary,
 	codeSiteReported,
 } from "./code-site.ts";
+import { codingErrorDetail } from "./coding-error-detail.ts";
 import { CodingLandConflict, CodingLandRefused, CodingWorkspaceFailed, landRefusal } from "./coding-executor.ts";
 import {
 	CODING_FOLDER_COMPANY_ROOT,
@@ -274,7 +275,9 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
 			throw new CodingWorkspaceFailed(
 				error.code,
-				error.code === RESTORING ? CODE_RESTORING : (namesRefused(session, error) ?? CODE_COPY_FAILED),
+				error.code === RESTORING
+					? CODE_RESTORING
+					: (namesRefused(session, error) ?? saying(CODE_COPY_FAILED, error)),
 				{ cause: error },
 			);
 		}
@@ -1821,9 +1824,14 @@ function namedPaths(paths: readonly string[]): string {
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 
+function saying(summary: string, error: CodeHostJobFailure | CodeHostRefusal): string {
+	const said = error instanceof CodeHostJobFailure ? codingErrorDetail(error) : "";
+	return said ? `${summary} The code host said: "${said}"` : summary;
+}
+
 function formatStartFailure(error: CodeHostJobFailure | CodeHostRefusal): string {
 	if (!(error instanceof CodeHostJobFailure) || error.code !== "CODE_HOST_PUBLISH_REFUSED" || !error.detail) {
-		return CODE_START_FAILED;
+		return saying(CODE_START_FAILED, error);
 	}
 	// WHY: Surface a sanitized, bounded refusal diagnostic (excluding key-like paths) so publish refusals during repo open are actionable instead of opaque.
 	const parts: string[] = [];
