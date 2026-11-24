@@ -3,8 +3,11 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_surface_reconciliations') is null
-		or to_regprocedure('public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)') is null then
-		raise exception '20260930890000 requires 20260930888000';
+		or to_regprocedure('public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)') is null
+		or to_regprocedure('public.qorpera_discard_surface_session(uuid)') is null
+		or to_regprocedure('public.qorpera_discard_exploration(uuid)') is null
+		or to_regprocedure('public.qorpera_choose_exploration(uuid,uuid)') is null then
+		raise exception '20260930890000 requires 20260930884000, 20260930874000, and 20260930888000';
 	end if;
 	if exists (
 		select 1 from information_schema.columns
@@ -508,6 +511,58 @@ begin
 		null;
 	end;
 end $$;
+revoke all on function public.qorpera_surface_enqueue_chain_reconciliation(uuid, uuid) from public, anon, authenticated;
+
+create function public.qorpera_surface_enqueue_standalone_dependents(
+	p_surface_id uuid,
+	p_discarded_change_ids uuid[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_surface public.qorpera_surfaces%rowtype;
+	v_dep record;
+	v_target_ids uuid[];
+begin
+	if p_surface_id is null or coalesce(cardinality(p_discarded_change_ids), 0) = 0 then
+		return;
+	end if;
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
+	if v_surface.id is null or v_surface.status <> 'active' or v_surface.source_kind not in ('folder', 'code_repo') then
+		return;
+	end if;
+	for v_dep in
+		select ch.id, ch.preview_base_change_ids
+		from public.qorpera_surface_changes ch
+		where ch.surface_id = p_surface_id
+			and not (ch.id = any(p_discarded_change_ids))
+			and ch.status in ('staged', 'conflicted')
+			and ch.preview_base_change_ids && p_discarded_change_ids
+		order by ch.created_at asc, ch.seq asc, ch.id asc
+		limit 8
+	loop
+		select coalesce(
+			array_agg(open_ch.id order by open_ch.created_at asc, open_ch.seq asc, open_ch.id asc),
+			array[v_dep.id]
+		)
+		into v_target_ids
+		from public.qorpera_surface_changes open_ch
+		where open_ch.surface_id = p_surface_id
+			and open_ch.status in ('staged', 'conflicted')
+			and (open_ch.id = v_dep.id or open_ch.id = any(v_dep.preview_base_change_ids));
+		begin
+			perform public.qorpera_surface_enqueue_silent_reconciliation(
+				p_surface_id, v_target_ids, '{}'::text[], null, false, false
+			);
+		exception when others then
+			null;
+		end;
+	end loop;
+end $$;
+revoke all on function public.qorpera_surface_enqueue_standalone_dependents(uuid, uuid[]) from public, anon, authenticated;
 
 select pg_temp.spl_patch(
 	'public.qorpera_start_surface_session(uuid,text,text,text,text,jsonb,integer,text,text[])'::regprocedure,
@@ -975,8 +1030,6 @@ $new$declare
 	v_surface public.qorpera_surfaces%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_discarded_count integer := 0;
-	v_dep record;
-	v_target_ids uuid[];
 begin
 	select session_id, surface_id, profile_id into v_lookup
 	from public.qorpera_surface_changes
@@ -999,36 +1052,136 @@ $new$	update public.qorpera_surface_changes
 $old$	v_session := public.qorpera_evaluate_surface_session_lifecycle(v_change.session_id);
 	return public.qorpera_surface_session_json(v_session);$old$,
 $new$	if v_discarded_count > 0 then
-		if v_surface.id is not null and v_surface.status = 'active' and v_surface.source_kind in ('folder', 'code_repo') then
-			for v_dep in
-				select ch.id, ch.preview_base_change_ids
-				from public.qorpera_surface_changes ch
-				where ch.surface_id = v_change.surface_id
-					and ch.id <> p_change_id
-					and ch.status in ('staged', 'conflicted')
-					and p_change_id = any(ch.preview_base_change_ids)
-				order by ch.created_at asc, ch.seq asc, ch.id asc
-				limit 8
-			loop
-				select coalesce(array_agg(open_ch.id order by open_ch.created_at asc, open_ch.seq asc, open_ch.id asc), array[v_dep.id])
-				into v_target_ids
-				from public.qorpera_surface_changes open_ch
-				where open_ch.surface_id = v_change.surface_id
-					and open_ch.status in ('staged', 'conflicted')
-					and (open_ch.id = v_dep.id or open_ch.id = any(v_dep.preview_base_change_ids));
-				begin
-					perform public.qorpera_surface_enqueue_silent_reconciliation(
-						v_change.surface_id, v_target_ids, '{}'::text[], null, false, false
-					);
-				exception when others then
-					null;
-				end;
-			end loop;
-		end if;
+		perform public.qorpera_surface_enqueue_standalone_dependents(v_change.surface_id, array[p_change_id]);
 	end if;
 
 	v_session := public.qorpera_evaluate_surface_session_lifecycle(v_change.session_id);
 	return public.qorpera_surface_session_json(v_session);$new$
+	]
+);
+
+select pg_temp.spl_patch(
+	'public.qorpera_discard_surface_session(uuid)'::regprocedure,
+	array[
+$old$	v_change_ids uuid[];
+begin$old$,
+$new$	v_change_ids uuid[];
+	v_discarded_ids uuid[] := '{}'::uuid[];
+begin$new$,
+$old$	if v_session.state in ('completed', 'discarded') then
+		return public.qorpera_surface_session_json(v_session);
+	end if;
+	if exists (
+		select 1 from public.qorpera_surface_changes ch$old$,
+$new$	if v_session.state in ('completed', 'discarded') then
+		return public.qorpera_surface_session_json(v_session);
+	end if;
+	-- WHY: Acquire session -> surface -> change locks in canonical order before silent reconciliation to avoid 40P01 deadlocks.
+	perform 1 from public.qorpera_surfaces where id = v_session.surface_id for key share;
+	if exists (
+		select 1 from public.qorpera_surface_changes ch$new$,
+$old$	update public.qorpera_surface_changes
+	set status = 'discarded', resolved_at = v_now
+	where session_id = p_session_id and status in ('staged', 'conflicted');$old$,
+$new$	with discarded as (
+		update public.qorpera_surface_changes
+		set status = 'discarded', resolved_at = v_now
+		where session_id = p_session_id and status in ('staged', 'conflicted')
+		returning id
+	)
+	select coalesce(array_agg(id), '{}'::uuid[]) into v_discarded_ids from discarded;$new$,
+$old$	where id = p_session_id
+	returning * into v_session;
+
+	return public.qorpera_surface_session_json(v_session);$old$,
+$new$	where id = p_session_id
+	returning * into v_session;
+
+	if coalesce(cardinality(v_discarded_ids), 0) > 0 then
+		perform public.qorpera_surface_enqueue_standalone_dependents(v_session.surface_id, v_discarded_ids);
+	end if;
+
+	return public.qorpera_surface_session_json(v_session);$new$
+	]
+);
+
+select pg_temp.spl_patch(
+	'public.qorpera_discard_exploration(uuid)'::regprocedure,
+	array[
+$old$declare
+	v_exploration public.qorpera_surface_explorations%rowtype;
+begin$old$,
+$new$declare
+	v_exploration public.qorpera_surface_explorations%rowtype;
+	v_discarded_ids uuid[] := '{}'::uuid[];
+begin$new$,
+$old$	update public.qorpera_surface_changes
+	set status = 'discarded', resolved_at = clock_timestamp()
+	where session_id in (
+		select id from public.qorpera_surface_sessions where exploration_id = p_exploration_id
+	) and status in ('staged', 'conflicted');$old$,
+$new$	-- WHY: Acquire session -> surface -> change locks in canonical order before silent reconciliation to avoid 40P01 deadlocks.
+	perform 1 from public.qorpera_surface_sessions where exploration_id = p_exploration_id order by id asc for update;
+	perform 1 from public.qorpera_surfaces where id = v_exploration.surface_id for key share;
+	with discarded as (
+		update public.qorpera_surface_changes
+		set status = 'discarded', resolved_at = clock_timestamp()
+		where session_id in (
+			select id from public.qorpera_surface_sessions where exploration_id = p_exploration_id
+		) and status in ('staged', 'conflicted')
+		returning id
+	)
+	select coalesce(array_agg(id), '{}'::uuid[]) into v_discarded_ids from discarded;$new$,
+$old$	return jsonb_build_object(
+		'id', v_exploration.id,$old$,
+$new$	if coalesce(cardinality(v_discarded_ids), 0) > 0 then
+		perform public.qorpera_surface_enqueue_standalone_dependents(v_exploration.surface_id, v_discarded_ids);
+	end if;
+
+	return jsonb_build_object(
+		'id', v_exploration.id,$new$
+	]
+);
+
+select pg_temp.spl_patch(
+	'public.qorpera_choose_exploration(uuid,uuid)'::regprocedure,
+	array[
+$old$	v_exploration public.qorpera_surface_explorations%rowtype;
+	v_winner jsonb;
+begin$old$,
+$new$	v_exploration public.qorpera_surface_explorations%rowtype;
+	v_winner jsonb;
+	v_discarded_ids uuid[] := '{}'::uuid[];
+begin$new$,
+$old$		update public.qorpera_surface_changes
+		set status = 'discarded', discarded_by_exploration = true, resolved_at = clock_timestamp()
+		where session_id in (
+			select id from public.qorpera_surface_sessions where exploration_id = p_exploration_id and id <> p_session_id
+		) and status in ('staged', 'conflicted');$old$,
+$new$		-- WHY: Acquire session -> surface -> change locks in canonical order before silent reconciliation to avoid 40P01 deadlocks.
+		perform 1 from public.qorpera_surface_sessions where exploration_id = p_exploration_id and id <> p_session_id order by id asc for update;
+		perform 1 from public.qorpera_surfaces where id = v_exploration.surface_id for key share;
+		with discarded as (
+			update public.qorpera_surface_changes
+			set status = 'discarded', discarded_by_exploration = true, resolved_at = clock_timestamp()
+			where session_id in (
+				select id from public.qorpera_surface_sessions where exploration_id = p_exploration_id and id <> p_session_id
+			) and status in ('staged', 'conflicted')
+			returning id
+		)
+		select coalesce(array_agg(id), '{}'::uuid[]) into v_discarded_ids from discarded;$new$,
+$old$		update public.qorpera_member_surface_state
+		set active_exploration_session_id = null, compare_session_ids = '{}'::uuid[]
+		where surface_id = v_exploration.surface_id;
+	end if;$old$,
+$new$		update public.qorpera_member_surface_state
+		set active_exploration_session_id = null, compare_session_ids = '{}'::uuid[]
+		where surface_id = v_exploration.surface_id;
+
+		if coalesce(cardinality(v_discarded_ids), 0) > 0 then
+			perform public.qorpera_surface_enqueue_standalone_dependents(v_exploration.surface_id, v_discarded_ids);
+		end if;
+	end if;$new$
 	]
 );
 
@@ -1298,6 +1451,9 @@ begin
 			'public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)'::regprocedure,
 			'public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean)'::regprocedure,
 			'public.qorpera_discard_surface_change(uuid)'::regprocedure,
+			'public.qorpera_discard_surface_session(uuid)'::regprocedure,
+			'public.qorpera_discard_exploration(uuid)'::regprocedure,
+			'public.qorpera_choose_exploration(uuid,uuid)'::regprocedure,
 			'public.qorpera_approve_surface_change(uuid,boolean)'::regprocedure,
 			'public.qorpera_approve_session_all(uuid)'::regprocedure,
 			'public.qorpera_surface_upsert_preview(public.qorpera_surfaces,text,uuid[],uuid)'::regprocedure,
@@ -1308,7 +1464,7 @@ begin
 			raise exception 'Preview lineage function has an API owner: %', v_owner;
 		end if;
 		execute format(
-			'grant execute on function public.qorpera_surface_normalize_paths(text, text[]), public.qorpera_surface_dependent_chain(uuid, uuid[]), public.qorpera_surface_preview_turn_context(public.qorpera_surfaces, uuid[]), public.qorpera_surface_reconciliation_omitted_bases(uuid, uuid[]), public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces, uuid[]), public.qorpera_surface_enqueue_chain_reconciliation(uuid, uuid) to %I',
+			'grant execute on function public.qorpera_surface_normalize_paths(text, text[]), public.qorpera_surface_dependent_chain(uuid, uuid[]), public.qorpera_surface_preview_turn_context(public.qorpera_surfaces, uuid[]), public.qorpera_surface_reconciliation_omitted_bases(uuid, uuid[]), public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces, uuid[]), public.qorpera_surface_enqueue_chain_reconciliation(uuid, uuid), public.qorpera_surface_enqueue_standalone_dependents(uuid, uuid[]) to %I',
 			v_owner
 		);
 	end loop;

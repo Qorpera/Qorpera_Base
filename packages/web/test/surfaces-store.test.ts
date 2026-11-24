@@ -2872,4 +2872,47 @@ describe("SurfacesStore", () => {
 		expect(surfaceHasDeliverables(store.state, studio.id)).toBe(true);
 		store.dispose();
 	});
+
+	it("refreshes the workspace after discardSession when another active session depends on a discarded change", async () => {
+		const s1Id = "77777777-7777-4777-8777-777777777701";
+		const s2Id = "77777777-7777-4777-8777-777777777702";
+		const s3Id = "77777777-7777-4777-8777-777777777703";
+		const baseChange = change(CHANGES[0], 1, "staged", { sessionId: s1Id });
+		const depChange = change(CHANGES[1], 1, "staged", {
+			sessionId: s2Id,
+			previewBaseChangeIds: [CHANGES[0]],
+		});
+		const unrelatedChange = change(CHANGES[2], 1, "staged", { sessionId: s3Id });
+		const s1 = session([], { id: s1Id, changes: [baseChange], openChangeCount: 1 });
+		const s2 = session([], { id: s2Id, changes: [depChange], openChangeCount: 1 });
+		const s3 = session([], { id: s3Id, changes: [unrelatedChange], openChangeCount: 1 });
+		const getSurfaceWorkspace = vi.fn(async () => workspace([s1, s2, s3]));
+		const discardSurfaceSession = vi.fn(async (sessionId: string) =>
+			sessionId === s1Id
+				? {
+						...s1,
+						state: "discarded" as const,
+						openChangeCount: 0,
+						changes: [{ ...baseChange, status: "discarded" as const }],
+					}
+				: {
+						...s3,
+						state: "discarded" as const,
+						openChangeCount: 0,
+						changes: [{ ...unrelatedChange, status: "discarded" as const }],
+					},
+		);
+		const client = fakeClient({ getSurfaceWorkspace, discardSurfaceSession });
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		const callsAfterOpen = getSurfaceWorkspace.mock.calls.length;
+
+		await store.discardSession(s3Id);
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(callsAfterOpen);
+
+		await store.discardSession(s1Id);
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(callsAfterOpen + 1);
+		store.dispose();
+	});
 });

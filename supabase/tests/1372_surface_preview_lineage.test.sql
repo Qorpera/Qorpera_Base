@@ -749,4 +749,176 @@ begin
 		v_f3_rec.id is not null and v_f3_rec.selected_change_ids = array[v_f3_ca, v_f3_c1, v_f3_c2, v_f3_c3],
 		'F3 chain reconciliation when C3 has preview bases [A, C1, C2] must include [A, C1, C2, C3]'
 	);
+
+	declare
+		v_ds_surface uuid;
+		v_ds_s1 uuid;
+		v_ds_s2 uuid;
+		v_ds_c1 uuid;
+		v_ds_c1b uuid;
+		v_ds_c2 uuid;
+		v_ds_rec public.qorpera_surface_reconciliations%rowtype;
+		v_ds_origin_ref jsonb;
+		v_ex_id uuid;
+		v_ex_v1 uuid;
+		v_ex_v2 uuid;
+		v_ex_c1 uuid;
+		v_ex_dep_s uuid;
+		v_ex_dep_c uuid;
+		v_ex_rec public.qorpera_surface_reconciliations%rowtype;
+		v_ch_id uuid;
+		v_ch_v1 uuid;
+		v_ch_v2 uuid;
+		v_ch_c2 uuid;
+		v_ch_dep_s uuid;
+		v_ch_dep_c uuid;
+		v_ch_rec public.qorpera_surface_reconciliations%rowtype;
+	begin
+		perform pg_temp.spl_as(v_owner);
+		insert into public.qorpera_surfaces(
+			profile_id, slug, title, surface_group, archetype, source_kind, folder_root, status
+		)
+		values (
+			v_profile, 'lineage-discard-session', 'Lineage Discard Session', 'products', 'studio', 'folder', 'ds', 'active'
+		)
+		returning id into v_ds_surface;
+
+		v_ds_s1 := (public.qorpera_start_surface_session(v_ds_surface, 'Base session S1') ->> 'id')::uuid;
+		perform pg_temp.as_service();
+		v_ds_c1 := (public.qorpera_record_surface_change(
+			v_ds_s1, 'Base C1', 'Adds token', 'folder_patch', null, null, '{}'::uuid[], array['tokens.json'], null,
+			jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'tokens.json', 'content', '{"accent":"#112233"}' || E'\n'))),
+			false
+		) ->> 'changeId')::uuid;
+		v_ds_c1b := (public.qorpera_record_surface_change(
+			v_ds_s1, 'Same-session C1b', 'Uses token in same session', 'folder_patch', null, null, '{}'::uuid[], array['same.md'], null,
+			jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'same.md', 'content', 'Same session' || E'\n'))),
+			true
+		) ->> 'changeId')::uuid;
+		update public.qorpera_surface_changes set preview_base_change_ids = array[v_ds_c1] where id = v_ds_c1b;
+
+		perform pg_temp.spl_as(v_owner);
+		v_ds_s2 := (public.qorpera_start_surface_session(
+			v_ds_surface, 'Dependent session S2', null, 'member', null,
+			jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_ds_c1))
+		) ->> 'id')::uuid;
+		perform pg_temp.as_service();
+		v_ds_c2 := (public.qorpera_record_surface_change(
+			v_ds_s2, 'Dependent C2', 'Uses C1 token', 'folder_patch', null, null, '{}'::uuid[], array['banner.md'], null,
+			jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'banner.md', 'content', 'Banner using C1' || E'\n'))),
+			true
+		) ->> 'changeId')::uuid;
+
+		perform pg_temp.spl_as(v_owner);
+		perform public.qorpera_discard_surface_session(v_ds_s1);
+
+		perform pg_temp.as_service();
+		select * into v_ds_rec
+		from public.qorpera_surface_reconciliations
+		where surface_id = v_ds_surface and selected_change_ids = array[v_ds_c2]
+		order by created_at desc
+		limit 1;
+		perform pg_temp.spl_assert(
+			v_ds_rec.id is not null and v_ds_rec.status = 'queued',
+			'discard_surface_session must enqueue standalone reconciliation for open cross-session dependent C2'
+		);
+		perform pg_temp.spl_assert(
+			not exists (
+				select 1 from public.qorpera_surface_reconciliations
+				where surface_id = v_ds_surface and v_ds_c1b = any(selected_change_ids)
+			),
+			'discard_surface_session must not enqueue standalone reconciliation for same-session discarded change C1b'
+		);
+		select origin_ref into v_ds_origin_ref
+		from public.qorpera_surface_sessions
+		where id = v_ds_rec.session_id;
+		perform pg_temp.spl_assert(
+			jsonb_typeof(v_ds_origin_ref -> 'omittedBaseChanges') = 'array'
+				and exists (
+					select 1 from jsonb_array_elements(v_ds_origin_ref -> 'omittedBaseChanges') as elem
+					where elem ->> 'changeId' = v_ds_c1::text
+				),
+			'Standalone reconciliation after discard_surface_session must include discarded base C1 in omittedBaseChanges'
+		);
+
+		perform pg_temp.spl_as(v_owner);
+		insert into public.qorpera_surface_explorations(profile_id, surface_id, title, status)
+		values (v_profile, v_ds_surface, 'Discard Exp', 'open')
+		returning id into v_ex_id;
+		insert into public.qorpera_surface_sessions(profile_id, surface_id, exploration_id, title, prompt, state, origin_kind)
+		values (v_profile, v_ds_surface, v_ex_id, 'Variant A', 'Try A', 'ready', 'member')
+		returning id into v_ex_v1;
+		insert into public.qorpera_surface_sessions(profile_id, surface_id, exploration_id, title, prompt, state, origin_kind)
+		values (v_profile, v_ds_surface, v_ex_id, 'Variant B', 'Try B', 'ready', 'member')
+		returning id into v_ex_v2;
+		perform pg_temp.as_service();
+		v_ex_c1 := (public.qorpera_record_surface_change(
+			v_ex_v1, 'Exp Base E1', 'Variant A patch', 'folder_patch', null, null, '{}'::uuid[], array['exp.md'], null,
+			jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'exp.md', 'content', 'Exp A' || E'\n'))),
+			true
+		) ->> 'changeId')::uuid;
+		perform pg_temp.spl_as(v_owner);
+		v_ex_dep_s := (public.qorpera_start_surface_session(
+			v_ds_surface, 'Dep on Exp E1', null, 'member', null,
+			jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_ex_c1))
+		) ->> 'id')::uuid;
+		perform pg_temp.as_service();
+		v_ex_dep_c := (public.qorpera_record_surface_change(
+			v_ex_dep_s, 'Dep E2', 'Follow-up on E1', 'folder_patch', null, null, '{}'::uuid[], array['exp-dep.md'], null,
+			jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'exp-dep.md', 'content', 'Follow-up' || E'\n'))),
+			true
+		) ->> 'changeId')::uuid;
+		perform pg_temp.spl_as(v_owner);
+		perform public.qorpera_discard_exploration(v_ex_id);
+		perform pg_temp.as_service();
+		select * into v_ex_rec
+		from public.qorpera_surface_reconciliations
+		where surface_id = v_ds_surface and selected_change_ids = array[v_ex_dep_c]
+		order by created_at desc
+		limit 1;
+		perform pg_temp.spl_assert(
+			v_ex_rec.id is not null and v_ex_rec.status = 'queued',
+			'discard_exploration must enqueue standalone reconciliation for open dependent E2'
+		);
+
+		perform pg_temp.spl_as(v_owner);
+		insert into public.qorpera_surface_explorations(profile_id, surface_id, title, status)
+		values (v_profile, v_ds_surface, 'Choose Exp', 'open')
+		returning id into v_ch_id;
+		insert into public.qorpera_surface_sessions(profile_id, surface_id, exploration_id, title, prompt, state, origin_kind)
+		values (v_profile, v_ds_surface, v_ch_id, 'Winner A', 'Win A', 'ready', 'member')
+		returning id into v_ch_v1;
+		insert into public.qorpera_surface_sessions(profile_id, surface_id, exploration_id, title, prompt, state, origin_kind)
+		values (v_profile, v_ds_surface, v_ch_id, 'Loser B', 'Lose B', 'ready', 'member')
+		returning id into v_ch_v2;
+		perform pg_temp.as_service();
+		v_ch_c2 := (public.qorpera_record_surface_change(
+			v_ch_v2, 'Loser B1', 'Variant B patch', 'folder_patch', null, null, '{}'::uuid[], array['loser.md'], null,
+			jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'loser.md', 'content', 'Loser B' || E'\n'))),
+			true
+		) ->> 'changeId')::uuid;
+		perform pg_temp.spl_as(v_owner);
+		v_ch_dep_s := (public.qorpera_start_surface_session(
+			v_ds_surface, 'Dep on Loser B1', null, 'member', null,
+			jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_ch_c2))
+		) ->> 'id')::uuid;
+		perform pg_temp.as_service();
+		v_ch_dep_c := (public.qorpera_record_surface_change(
+			v_ch_dep_s, 'Dep B2', 'Follow-up on B1', 'folder_patch', null, null, '{}'::uuid[], array['loser-dep.md'], null,
+			jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'loser-dep.md', 'content', 'Follow-up B' || E'\n'))),
+			true
+		) ->> 'changeId')::uuid;
+		perform pg_temp.spl_as(v_owner);
+		perform public.qorpera_choose_exploration(v_ch_id, v_ch_v1);
+		perform pg_temp.as_service();
+		select * into v_ch_rec
+		from public.qorpera_surface_reconciliations
+		where surface_id = v_ds_surface and selected_change_ids = array[v_ch_dep_c]
+		order by created_at desc
+		limit 1;
+		perform pg_temp.spl_assert(
+			v_ch_rec.id is not null and v_ch_rec.status = 'queued',
+			'choose_exploration must enqueue standalone reconciliation for open dependent B2 of discarded loser variant'
+		);
+	end;
 end $$;

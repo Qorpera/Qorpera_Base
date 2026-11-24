@@ -4145,7 +4145,24 @@ export class SurfacesStore {
 		);
 		if (!closed) return false;
 		if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
+		const discardedIds = new Set<string>([
+			...session.changes.filter(isOpenChange).map((change) => change.id),
+			...closed.changes.filter((change) => change.status === "discarded").map((change) => change.id),
+		]);
+		const hasDependents =
+			discardedIds.size > 0 &&
+			(this.workspace(closed.surfaceId)?.activeSessions.some(
+				(other) =>
+					other.id !== sessionId &&
+					other.changes.some(
+						(change) =>
+							isOpenChange(change) &&
+							(change.previewBaseChangeIds?.some((baseId) => discardedIds.has(baseId)) ?? false),
+					),
+			) ??
+				false);
 		this.#applySession(closed, "history");
+		if (hasDependents) void this.refreshWorkspace(closed.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
