@@ -1,4 +1,4 @@
-import type { StudioBinaryRef, StudioPatchOp } from "@qorpera/contracts";
+import { parseStudioPatchOps, type StudioBinaryRef, type StudioPatchOp } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { captionHash } from "../src/cloud-app-kit-explainer.ts";
 import { GeminiCapReachedError } from "../src/cloud-gemini-tool-session.ts";
@@ -99,6 +99,7 @@ describe("cloud-surface-narrate-tool", () => {
 		});
 		expect(synthesized).toEqual([{ model: "gemini-3.8-flash-tts", voiceName: "Kore", text: c2 }]);
 		expect(stagedCalls).toHaveLength(1);
+		expect(parseStudioPatchOps(stagedCalls[0]?.ops)).toEqual(stagedCalls[0]?.ops);
 		expect(stagedCalls[0]?.ops).toHaveLength(2);
 		expect(stagedCalls[0]?.ops[0]).toEqual({
 			op: "write_file",
