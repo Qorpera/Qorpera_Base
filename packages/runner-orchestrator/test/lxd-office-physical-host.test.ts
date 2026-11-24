@@ -1,29 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { assertLxdOfficeHostMount } from "../src/lxd-office-physical-host.ts";
-import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
+import type { LxdOfficeMountPolicy } from "../src/lxd-office-physical-policy.ts";
 
+const workbench: LxdOfficeMountPolicy = {
+	mountPoint: "/mnt/office-workbench",
+	filesystem: "nfs4",
+	source: "192.0.2.1:/offices/test",
+	options: ["nosuid", "nodev", "vers=4.2", "hard", "proto=tcp"],
+};
+const journal: LxdOfficeMountPolicy = {
+	mountPoint: "/mnt/office-journal",
+	filesystem: "ext4",
+	source: "/dev/vdb",
+	options: [],
+};
+const workbenchSource = "/mnt/office-workbench/profiles";
+const serverAddress = "192.0.2.1";
+const journalPath = "/mnt/office-journal/provider";
 const nfs =
 	"42 1 0:48 / /mnt/office-workbench rw,nosuid,nodev,relatime - nfs4 192.0.2.1:/offices/test rw,vers=4.2,hard,proto=tcp,addr=192.0.2.1";
 const local = "43 1 8:16 / /mnt/office-journal rw,relatime - ext4 /dev/vdb rw";
 const fd = "pos:\t0\nflags:\t02304000\nmnt_id:\t42\nino:\t12\n";
 const mountInfo = `${nfs}\n${local}\n`;
 function check(info = mountInfo, fdInfo = fd) {
-	const { policy } = officePhysicalFixture();
-	assertLxdOfficeHostMount(
-		info,
-		fdInfo,
-		policy.workbench,
-		policy.guest.workbenchSource,
-		policy.workbench.serverAddress,
-	);
+	assertLxdOfficeHostMount(info, fdInfo, workbench, workbenchSource, serverAddress);
 }
 describe("provider descriptor-bound storage inspection", () => {
 	it("accepts the exact NFS v4 backing and a separate persistent local journal", () => {
 		expect(() => check()).not.toThrow();
-		const { policy } = officePhysicalFixture();
-		expect(() =>
-			assertLxdOfficeHostMount(mountInfo, "mnt_id:\t43\n", policy.journal, policy.journal.path),
-		).not.toThrow();
+		expect(() => assertLxdOfficeHostMount(mountInfo, "mnt_id:\t43\n", journal, journalPath)).not.toThrow();
 	});
 	it.each([
 		["nfs4", "ext4"],

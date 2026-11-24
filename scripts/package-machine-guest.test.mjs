@@ -8,7 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import { build } from "esbuild";
-import { BACKDROP_SOURCE_FIGURES, backdropEyes, productFaces } from "../deploy/lxd-company-computer-guest/backdrops-source/eyes.mjs";
+import { BACKDROP_SOURCE_FIGURES, backdropEyes, productFaces } from "../deploy/machine/backdrops-source/eyes.mjs";
 import {
 	BACKDROP_FILES,
 	DOCK_ICONS,
@@ -1127,7 +1127,6 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	const session = read("deploy/machine/desktop-session");
 	const opener = read("deploy/machine/desktop-dock-open");
 	const packager = read("scripts/package-machine-guest.mjs");
-	const office = read("deploy/lxd-company-computer-guest/qorpera-screen-session");
 
 	// The pictures: a backdrop set for every figure an agent can have, under the figure's own name, from the office's
 	// files by the runtime's table; a saved ghost is drawn as the moon, as every client draws it.
@@ -1138,12 +1137,6 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	);
 	assert.equal(figures.length, 12);
 	assert.deepEqual(Object.keys(BACKDROP_FILES), figures);
-	const table = pairs(
-		read("packages/runtime/src/cloud-company-computer-wallpapers.ts").match(
-			/COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER = Object\.freeze\(\{([^}]+)\}/,
-		)[1],
-	);
-	for (const figure of figures) assert.equal(BACKDROP_FILES[figure], table[figure], figure);
 	assert.deepEqual(pairs(characters.match(/RETIRED_STAFF_CHARACTERS = Object\.freeze\(\{([^}]+)\}/)[1]), { ghost: "moon" });
 	assert.match(look, /\n\t\[\[ \$word != ghost \]\] \|\| word=moon\n/);
 	// Every picture is there and is a PNG of its size: the nine dock icons, the six with a mark drawn again for a light
@@ -1591,14 +1584,33 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		[...panel.matchAll(/<property name="plugin-(\d)" type="string" value="(\w+)">/g)].map((match) => `${match[1]} ${match[2]}`).toSorted(),
 		["1 separator", "2 separator", "3 clock", "4 launcher", "5 launcher", "6 launcher", "7 clock"],
 	);
-	const officeXfce = read("deploy/lxd-company-computer-guest/qorpera-screen-xfce");
 	const carried = [
-		...officeXfce.matchAll(/\n\s*set_(?:cosmetic|xfce)_property (xfwm4|xfce4-terminal) \/(?:general\/)?([a-z_-]+) (bool|int|string) "?([^"\n]+)"?(?=\n)/g),
-	].filter(([, , path]) => !["run-custom-command", "custom-command", "color-palette"].includes(path));
-	assert.equal(carried.length, 22);
-	for (const [, channelName, path, type, value] of carried)
+		["xfwm4", "show_dock_shadow", "bool", "false"],
+		["xfwm4", "use_compositing", "bool", "false"],
+		["xfwm4", "show_frame_shadow", "bool", "false"],
+		["xfwm4", "show_popup_shadow", "bool", "false"],
+		["xfwm4", "cycle_preview", "bool", "false"],
+		["xfwm4", "zoom_desktop", "bool", "false"],
+		["xfwm4", "box_resize", "bool", "true"],
+		["xfwm4", "workspace_count", "int", "1"],
+		["xfwm4", "scroll_workspaces", "bool", "false"],
+		["xfwm4", "placement_mode", "string", "center"],
+		["xfwm4", "placement_ratio", "int", "100"],
+		["xfwm4", "button_layout", "string", "O|HMC"],
+		["xfwm4", "title_font", "string", "Liberation Sans Bold 10"],
+		["xfce4-terminal", "misc-menubar-default", "bool", "false"],
+		["xfce4-terminal", "misc-default-geometry", "string", "110x30"],
+		["xfce4-terminal", "scrolling-bar", "string", "TERMINAL_SCROLLBAR_NONE"],
+		["xfce4-terminal", "font-use-system", "bool", "false"],
+		["xfce4-terminal", "font-name", "string", "DejaVu Sans Mono 11"],
+		["xfce4-terminal", "color-foreground", "string", "#e6e9ef"],
+		["xfce4-terminal", "color-background", "string", "#12141a"],
+		["xfce4-terminal", "color-cursor", "string", "#7ee787"],
+		["xfce4-terminal", "color-cursor-use-default", "bool", "false"],
+	];
+	for (const [channelName, path, type, value] of carried)
 		assert.ok(look.includes(`<property name="${path}" type="${type}" value="${value}"/>`), `${channelName} ${path}`);
-	const palette = office.match(/\nColorPalette=([#0-9a-f;]+)\n/)[1];
+	const palette = "#1b1f2a;#f47067;#7ee787;#f5a524;#5aa9ff;#c297ff;#56d4dd;#c9ced8;#565d6b;#ff938a;#a5f3ae;#ffd166;#8cc4ff;#d8b9ff;#8ae7ee;#ffffff";
 	assert.ok(look.includes(`<property name="color-palette" type="string" value="${palette}"/>`));
 	assert.ok(look.includes(`\nColorPalette=${palette}\n`));
 	for (const line of [
@@ -1686,7 +1698,7 @@ test("every figure's backdrop carries its eyes, where the product draws them (14
 		return above.subarray(x * 3, x * 3 + 3).toString("hex");
 	};
 	for (const [source, figure] of Object.entries(BACKDROP_SOURCE_FIGURES)) {
-		const html = read(`deploy/lxd-company-computer-guest/backdrops-source/${source}.html`);
+		const html = read(`deploy/machine/backdrops-source/${source}.html`);
 		const eyes = faces[figure];
 		assert.equal(eyes.length, 2, figure);
 		// The source: the figure's own group, then its eyes in the same frame, white, exactly the product's.
@@ -1696,7 +1708,7 @@ test("every figure's backdrop carries its eyes, where the product draws them (14
 		// The pictures: the middle of each eye is white by day and at night (a frame is 1920x1200; the figure's 100-unit
 		// frame is turned 4 degrees about its middle, drawn 8 times as large, 560 right and 200 down).
 		for (const hour of ["00", "07", "12"]) {
-			const bytes = readFileSync(join(repositoryRoot, `deploy/lxd-company-computer-guest/backdrops/qorpera-screen-${source}-${hour}.png`));
+			const bytes = readFileSync(join(repositoryRoot, `deploy/machine/backdrops/qorpera-screen-${source}-${hour}.png`));
 			for (const eye of eyes) {
 				const turn = (-4 * Math.PI) / 180;
 				const [dx, dy] = [eye.x - 50, eye.y - 50];
@@ -1708,8 +1720,7 @@ test("every figure's backdrop carries its eyes, where the product draws them (14
 	}
 	// The retired ghost has no eyes in the product, and its source none; the neutral backdrop is the wordmark.
 	assert.equal(faces.ghost, undefined);
-	for (const file of ["deploy/lxd-company-computer-guest/backdrops-source/wisp.html", "deploy/machine/backdrops-source/neutral.html"])
-		assert.doesNotMatch(read(file), /<g id="eyes"/, file);
+	assert.doesNotMatch(read("deploy/machine/backdrops-source/neutral.html"), /<g id="eyes"/, "deploy/machine/backdrops-source/neutral.html");
 	// The web's copies of the figures (the start scene draws its own eyes over them) read the figure's group alone.
 	assert.match(read("packages/web/scripts/desktop-backdrops.mjs"), /html\.match\(\/<g id="fig"\(\[\^>\]\*\)>\(\[\\s\\S\]\*\?\)<\\\/g>\/\)/);
 });

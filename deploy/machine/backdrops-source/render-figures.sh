@@ -24,7 +24,7 @@ here=$(cd "$(dirname "$0")" && pwd -P)
 out="${here}/../backdrops"
 chrome=${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}
 mkdir -p "${out}"
-if [ "$#" -gt 0 ]; then characters=("$@"); else characters=(bloom brain folio halo pebble ribbon wisp star cloud bolt mushroom moon puzzle); fi
+if [ "$#" -gt 0 ]; then characters=("$@"); else characters=(bloom brain folio halo pebble ribbon star cloud bolt mushroom moon puzzle); fi
 for character in "${characters[@]}"; do
 	[ -f "${here}/${character}.html" ] || { echo "no template for ${character}" >&2; exit 1; }
 	for ((h = 0; h < 24; h++)); do
@@ -32,6 +32,5 @@ for character in "${characters[@]}"; do
 		"${chrome}" --headless=new --hide-scrollbars --window-size=1920,1200 --default-background-color=00000000 \
 			--screenshot="${out}/qorpera-screen-${character}-${hour}.png" "file://${here}/${character}.html?h=${h}" >/dev/null 2>&1
 	done
-	cp -f "${out}/qorpera-screen-${character}-12.png" "${out}/qorpera-screen-${character}.png"
 done
 ls "${out}" | wc -l

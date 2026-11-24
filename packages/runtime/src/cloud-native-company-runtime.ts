@@ -71,7 +71,6 @@ import {
 	prepareCloudCodexSpare,
 } from "./cloud-codex-tool-session.ts";
 import { type CloudCompanyAccountClient, cloudCompanyAccountTool } from "./cloud-company-account-tools.ts";
-import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import {
 	type CloudCompanyFolderBytes,
 	CloudCompanyFolderClient,
@@ -368,8 +367,6 @@ export interface CloudNativeCompanyRuntimeOptions {
 	companyAccounts?: CloudCompanyAccountClient;
 	/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
 	eventHooks?: CloudCompanyFolderSignedHooks;
-	/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
-	computerSession?: CloudCompanyComputerSessionFactory;
 	/** The coding composition (Order 9): only a node with the coding command
 	 * gateway installed carries it. A coding wake on a node without it fails visibly. */
 	coding?: CloudNativeCodingDriver;
@@ -421,7 +418,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
 	readonly #companyAccounts: CloudCompanyAccountClient | undefined;
 	readonly #eventHooks: CloudCompanyFolderSignedHooks | undefined;
-	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
 	readonly #homeChannel: ((binding: CloudNativeToolBinding) => CloudCodexHomeChannel) | undefined;
@@ -454,7 +450,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#secretBroker = options.secretBroker;
 		this.#companyAccounts = options.companyAccounts;
 		this.#eventHooks = options.eventHooks;
-		this.#computerSession = options.computerSession;
 		this.#homeChannel = options.homeChannel;
 		this.#claudeWorker = options.claudeWorker;
 		this.#geminiKeys = options.geminiKeys;
@@ -1210,8 +1205,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 			try {
 				stage = "native-tools";
-				// Whether the run had a machine, whose changes are noted after it (Interfaces I10, below).
-				let machine = false;
 				// The run's own offline commands (F3 4d): its computer tools add each one it starts, and its action review
 				// lets input to them through as it lets their start through.
 				const offlineShells = new Set<string>();
@@ -1483,8 +1476,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								: error;
 						});
 						runWork = opened?.composeContext;
-						const computer = await this.#computerSession?.(run, operations, { offlineShells });
-						if (computer) machine = true;
 						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
 						// too: it only reads.
 						const folderSearch = this.#folderSearch
@@ -1513,7 +1504,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									}
 								: undefined;
 						const runTools: CloudNativeTool[] = [
-							...(computer?.tools ?? []),
 							// A run's file tools act through the folder core with its own authority (P19), and so do the
 							// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
 							...[
@@ -1852,8 +1842,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						// on demand, and more_tools, which tells it where those are.
 						offeredTools = new Set(offered.tools.map((tool) => tool.name));
 						return {
-							captures: computer?.captures,
-							folderReports: computer?.folderReports,
 							tools: offered.tools,
 							deferred: offered.deferred,
 							assertContext: (requestSignal, timeoutMs) =>
@@ -1863,28 +1851,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								gateway.recordContextView(frame, outputs, requestSignal),
 							fenceContextView: (frame, outputs, requestSignal) =>
 								gateway.fenceContextView(frame, outputs, requestSignal),
-							...(computer || folderSearch
+							...(folderSearch
 								? {
 										close: async () => {
-											folderSearch?.close();
-											await computer?.close();
+											folderSearch.close();
 										},
 									}
 								: {}),
 							...(opened?.log ? { runLog: { log: opened.log, lines: opened.lines } } : {}),
 						};
 					},
-				}).finally(async () => {
-					// What the run's machine saved under QorperaOS/interfaces/ or QorperaOS/tables/ (its shell, its screen)
-					// shows in its conversation with Undo, as a tool's change does (Interfaces I10): SQL notes each of the run's
-					// commits there once, now that the machine is closed. A note that fails leaves the change without its line;
-					// the run's outcome stands.
-					if (machine && context.identity.sessionId !== null)
-						await folder.client.noteInterfaceChanges(signal).catch((error: unknown) => {
-							console.error(
-								`The run's interface changes were not noted (${cloudRuntimeErrorCategory(error, signal)})`,
-							);
-						});
 				});
 				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
 				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment). Recorded first, so nothing

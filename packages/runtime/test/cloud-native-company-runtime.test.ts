@@ -3,7 +3,6 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
 import {
@@ -12,11 +11,6 @@ import {
 	type CloudAgentSendReceipt,
 } from "@qorpera/runtime/cloud-agent-mouth";
 import { CLAUDE_WORKER_CATALOG } from "@qorpera/runtime/cloud-claude-worker";
-import {
-	type CloudCompanyComputerSessionFactory,
-	createCloudCompanyComputerSession,
-} from "@qorpera/runtime/cloud-company-computer-control";
-import type { CompanyComputerCloudEndpoint } from "@qorpera/runtime/cloud-company-computer-tools";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
 import type {
@@ -605,7 +599,7 @@ async function fixture(
 	const control = {
 		describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
 		beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async (_binding, input) => {
-			if (mode !== "company-secret" && mode !== "company-office") throw new Error("No generic effects expected");
+			if (mode !== "company-secret") throw new Error("No generic effects expected");
 			return {
 				run_id: f.binding.runId,
 				receipt_id: input.receiptId,
@@ -617,7 +611,7 @@ async function fixture(
 		}),
 		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(
 			async (_binding, input) => {
-				if (mode !== "company-secret" && mode !== "company-office") throw new Error("No generic effects expected");
+				if (mode !== "company-secret") throw new Error("No generic effects expected");
 				return {
 					run_id: f.binding.runId,
 					receipt_id: input.receiptId,
@@ -676,67 +670,6 @@ async function fixture(
 				}
 			: undefined;
 	const evidence = join(root, "evidence.json");
-	const officeScope = {
-		companyId: f.authority.identity.companyId,
-		environmentId: f.authority.identity.environmentId,
-		companyComputerId: randomUUID(),
-		logicalComputerId: randomUUID(),
-	};
-	const officeLease: CompanyComputerScreenLease = {
-		binding: {
-			...officeScope,
-			computerGeneration: 1,
-			screenId: randomUUID(),
-			screenOrdinal: 1,
-			screenGeneration: 1,
-			staffAgentId: f.authority.identity.staffAgentId,
-		},
-		leaseId: randomUUID(),
-		epoch: 1,
-		validForMs: 30_000,
-		driver: { kind: "agent", runId: f.binding.runId, staffAgentId: f.authority.identity.staffAgentId },
-	};
-	const officeCall = vi.fn(async (_method: string, args: Record<string, unknown>, signal: AbortSignal) => {
-		expect(args.p_binding).toEqual(f.binding);
-		expect(args.p_scope).toEqual(officeScope);
-		signal.throwIfAborted();
-		return args.p_action === "release"
-			? { state: "released" }
-			: { state: "admitted", lease: structuredClone(officeLease) };
-	});
-	const officeEndpoint: CompanyComputerCloudEndpoint = {
-		capabilities: ["shell"],
-		resourceTarget: { grantId: randomUUID(), version: 1 },
-		authorize: vi.fn(async () => {}),
-		perform: vi.fn<CompanyComputerCloudEndpoint["perform"]>(async (operation, lease, effect) => {
-			expect(operation).toMatchObject({
-				tool: "computer_shell",
-				arguments: { command: "printf office" },
-				target: { binding: officeLease.binding, resources: officeEndpoint.resourceTarget },
-			});
-			expect(lease).toEqual(officeLease);
-			expect(effect.identity).toEqual(f.authority.identity);
-			expect(effect.receiptId).toEqual(expect.any(String));
-			return { kind: "text", value: "SYNTHETIC_OFFICE_RESULT" };
-		}),
-	};
-	const officeClose = vi.fn<() => Promise<void>>();
-	const officeSession = vi.fn<CloudCompanyComputerSessionFactory>(async (run, operations) => {
-		expect(run.binding).toEqual(f.binding);
-		expect(run.signal.aborted).toBe(false);
-		const session = createCloudCompanyComputerSession({
-			run,
-			operations,
-			scope: officeScope,
-			control: { call: officeCall },
-			endpoint: officeEndpoint,
-		});
-		officeClose.mockImplementation(async () => {
-			expect(run.signal.aborted).toBe(true);
-			await session.close();
-		});
-		return { tools: session.tools, close: officeClose };
-	});
 	// The native host's dispatch with the job begun, as the provider service begins it; below its fetch, the entry point
 	// as SQL answers it: the call it names, with its arguments, or a test's own answer for one call.
 	const entryCalls: { entry: string; name: string; args: Record<string, unknown>; apikey: string | null }[] = [];
@@ -798,7 +731,6 @@ async function fixture(
 				throw new Error("No company account expected");
 			},
 		},
-		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 		...extra,
 		// A relay socket only offers the search here; this suite never searches.
 		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
@@ -932,10 +864,6 @@ async function fixture(
 		connectorGrantId,
 		moreConnectors,
 		observations,
-		officeCall,
-		officeSession,
-		officeClose,
-		officeEndpoint,
 	};
 }
 
@@ -1109,93 +1037,10 @@ it("starts a run whose continuation printed a webhook signing secret without the
 	expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
 });
 
-it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
-	const f = await fixture("company-office");
-	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
-	// The office command is an acting call: it passed the review step (approved in this fixture).
-	expect(f.reviewedTools).toEqual(["computer_shell"]);
-	expect(result.delivery.messageCount).toBe(2);
-	expect(f.officeSession).toHaveBeenCalledTimes(1);
-	// The run's offline commands (F3 4d), which its computer tools add to and its review reads: none here.
-	expect(f.officeSession.mock.calls[0][2]).toEqual({ offlineShells: new Set() });
-	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
-	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
-	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
-	expect(f.officeClose).toHaveBeenCalledTimes(1);
-	expect(f.officeCall.mock.calls.filter(([, args]) => args.p_action === "release")).toHaveLength(1);
-	// What the machine saved under QorperaOS/interfaces/ or QorperaOS/tables/ is noted in the run's conversation once,
-	// after it closed (Interfaces I10).
-	const notes = f.pathCall.mock.calls.flatMap(([method], index) =>
-		method === "qorpera_folder_note_interface_changes" ? [f.pathCall.mock.invocationCallOrder[index]] : [],
-	);
-	expect(notes).toHaveLength(1);
-	expect(notes[0]).toBeGreaterThan(f.officeClose.mock.invocationCallOrder[0]);
-	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
-	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
-	expect(names).toContain("computer_shell");
-	expect(names).toContain("computer_screen");
-	expect(names).not.toContain("computer_browser");
-	expect(names).not.toContain("computer_screenshot");
-	expect(JSON.parse(evidence.fenced.outputs[1].output)).toMatchObject({ trust: "untrusted_data" });
-	expect(JSON.stringify(evidence.fenced.outputs)).toContain("SYNTHETIC_OFFICE_RESULT");
-	expect(await readFile(join(f.companyRoot, "private-sentinel"), "utf8")).toBe("UNCHANGED_COMPANY_BYTES");
-});
-
-it("fails the native result when office cleanup is unconfirmed, without repeating the effect", async () => {
-	const f = await fixture("company-office");
-	const original = f.officeCall.getMockImplementation()!;
-	f.officeCall.mockImplementation(async (method, args, signal) => {
-		if (args.p_action === "release") throw new Error("OFFICE_RELEASE_UNAVAILABLE");
-		return original(method, args, signal);
-	});
-	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow("cleanup");
-	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
-	expect(f.officeClose).toHaveBeenCalledTimes(1);
-	// A failed run's machine changes are noted too.
-	const methods = f.pathCall.mock.calls.map(([method]) => method);
-	expect(methods.filter((method) => method === "qorpera_folder_note_interface_changes")).toHaveLength(1);
-});
-
-it("keeps the run's outcome when its machine's changes could not be noted, and logs the category only", async () => {
-	const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-	try {
-		const f = await fixture("company-office");
-		const original = f.pathCall.getMockImplementation()!;
-		f.pathCall.mockImplementation(async (method, args, signal) => {
-			if (method === "qorpera_folder_note_interface_changes")
-				throw new CloudCompanyFolderRpcError("55000", "PRIVATE_NOTE_ERROR");
-			return original(method, args, signal);
-		});
-		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
-		expect(result.delivery.messageCount).toBe(2);
-		expect(f.officeClose).toHaveBeenCalledTimes(1);
-		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("The run's interface changes"))).toEqual([
-			["The run's interface changes were not noted (authority_unavailable)"],
-		]);
-	} finally {
-		logged.mockRestore();
-	}
-});
-
 it("asks for no interface change notes after a run with no machine: its tools note their own", async () => {
 	const f = await fixture("company-runtime");
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_folder_note_interface_changes");
-});
-
-it("closes an initialized office session when native execution admission fails", async () => {
-	const f = await fixture("company-office");
-	const original = f.pathCall.getMockImplementation()!;
-	f.pathCall.mockImplementation(async (method, args, signal) => {
-		if (method === "qorpera_begin_native_company_execution_v3") throw new Error("START_REVOKED");
-		return original(method, args, signal);
-	});
-	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
-		"START_REVOKED",
-	);
-	expect(f.officeClose).toHaveBeenCalledTimes(1);
-	expect(f.officeEndpoint.perform).not.toHaveBeenCalled();
-	expect(f.control.sendMessage).not.toHaveBeenCalled();
 });
 
 it("waits for the run's admission and context bind as long as the database may run them, and sends each once", async () => {

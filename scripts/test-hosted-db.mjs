@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HostedDbCluster, migrationNames, newestBundleActivation, sessionPerFile } from "./test-hosted-db-cluster.mjs";
+import { HostedDbCluster, migrationNames, sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 /** Debian's image, not Alpine's: PostgreSQL on musl spends as long in the kernel as on its own code, mostly page faults
  * and munmap from musl's allocator. The same 924 migrations and 49 SQL tests in one slot, alternating (7 Nov): replay
@@ -87,8 +87,6 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-email-draft-e2e.mjs",
 	"scripts/test-runtime-node-capacity.mjs",
 	"scripts/test-runtime-cpu-allocation-ratio.mjs",
-	"scripts/test-runtime-office-delete-disposition.mjs",
-	"scripts/test-runtime-office-current-provider-activation.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",
 	"scripts/test-runtime-roll.mjs",
 	"scripts/test-sql-only-packets.mjs",
@@ -105,7 +103,6 @@ export const HOSTED_DB_SCRIPTS = [
  * the run's replay and then runs in turn with the others. */
 const OWN_SERVER_SCRIPTS = new Set([
 	"scripts/test-runtime-node-capacity.mjs",
-	"scripts/test-runtime-office-delete-disposition.mjs",
 ]);
 
 /** Where those scripts start in the migration chain; the one replay leaves a copy at each. A point missing
@@ -113,7 +110,6 @@ const OWN_SERVER_SCRIPTS = new Set([
 function scriptStartPoints(names) {
 	return [
 		"20260926034000_runtime_bundle_activation_v128.sql", // test-runtime-bundle-activation
-		newestBundleActivation(names), // test-runtime-office-delete-disposition holds it back
 	].filter((name) => names.includes(name));
 }
 

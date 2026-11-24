@@ -1,5 +1,6 @@
-import { COMPANY_COMPUTER_UUID } from "./cloud-company-computer-contract.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
+
+const COMPANY_COMPUTER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Where one of an agent's machines stands (qorpera_company_machine_state): on its way up while `starting` (placed)
  * or `waiting` (for room or computer hours), on, going to sleep, or asleep. */

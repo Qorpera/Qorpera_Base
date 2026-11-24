@@ -1,8 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import { describe, expect, it } from "vitest";
-import { companyComputerScreenCharacter } from "../../runtime/src/cloud-company-computer-desktop.ts";
-import { computerBinding } from "../../runtime/test/fixtures/company-computer.ts";
 import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "../src/company-machine-figure.ts";
 
 const source = (path: string) => readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
@@ -78,25 +76,9 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 			}
 	});
 
-	it("draws the figure the office desktop draws, and follows the web client's rule", () => {
+	it("follows the web client's rule", () => {
 		expect([1, 2, 3, 4, 8].map((n) => byId(id(n)))).toEqual(["heart", "star", "cloud", "bolt", "planet"]);
 		expect(byId("9f0c1b2e-7d4a-4c3b-8e5f-a1b2c3d4e5f6")).toBe("flame");
-		const templates = [
-			undefined,
-			"co-founder",
-			"no-such-template",
-			"__proto__",
-			...Object.keys(STAFF_CHARACTER_BY_TEMPLATE),
-		];
-		const figures = [undefined, "ghost", "dragon", ...STAFF_CHARACTER_IDS];
-		for (const n of Array.from({ length: 24 }, (_, index) => index + 1)) {
-			const binding = { ...computerBinding(), staffAgentId: id(n) };
-			for (const templateId of templates)
-				for (const figure of figures)
-					expect(companyMachineDesktopFigure({ staffAgentId: id(n), figure, templateId })).toBe(
-						companyComputerScreenCharacter(binding, templateId, figure),
-					);
-		}
 		const walk = /for \(const character of [a-zA-Z.]+\) seed = \(seed \* 31 \+ character\.charCodeAt\(0\)\) >>> 0;/;
 		const web = source("packages/web/src/ui/avatar.ts");
 		expect(web).toMatch(walk);

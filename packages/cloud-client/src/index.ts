@@ -1,10 +1,4 @@
 /** Browser-safe member APIs. Node filesystem/view transports use explicit node/* subpaths. */
-export * from "./cloud-company-computer-contract.ts";
-export * from "./cloud-company-computer-privacy.ts";
-export * from "./cloud-company-computer-start.ts";
-export * from "./cloud-company-computer-view-channel.ts";
-export * from "./cloud-company-computer-viewer.ts";
-export * from "./cloud-company-computer-views.ts";
 export * from "./cloud-member-company-computer.ts";
 export * from "./cloud-member-data.ts";
 export * from "./cloud-member-folder.ts";

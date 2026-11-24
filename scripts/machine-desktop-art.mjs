@@ -56,7 +56,7 @@ const HOURS = Array.from({ length: 24 }, (_value, hour) => String(hour).padStart
 export const MACHINE_DESKTOP_PICTURES = Object.freeze([
 	...DOCK_ICONS.map((icon) => ({
 		name: `dock/${icon}.png`,
-		source: `deploy/lxd-company-computer-guest/design/icons/${icon}.png`,
+		source: `deploy/machine/dock/${icon}.png`,
 	})),
 	...DOCK_ICONS_LIGHT.map((icon) => ({
 		name: `dock-light/${icon}.png`,
@@ -65,7 +65,7 @@ export const MACHINE_DESKTOP_PICTURES = Object.freeze([
 	...Object.entries(BACKDROP_FILES).flatMap(([figure, file]) =>
 		HOURS.map((hour) => ({
 			name: `backdrops/${figure}/${hour}.png`,
-			source: `deploy/lxd-company-computer-guest/backdrops/qorpera-screen-${file}-${hour}.png`,
+			source: `deploy/machine/backdrops/qorpera-screen-${file}-${hour}.png`,
 		})),
 	),
 	...HOURS.map((hour) => ({

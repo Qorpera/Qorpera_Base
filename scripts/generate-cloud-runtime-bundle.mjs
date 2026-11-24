@@ -128,24 +128,6 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const name of (await readdir(join(root, "packages/runner-orchestrator/src"))).filter((name) => /^coding-.*\.ts$/.test(name)).sort()) await include(`packages/runner-orchestrator/src/${name}`);
 	for (const name of (await readdir(join(root, "deploy/coding-worker"))).filter((name) => /\.(service|timer|slice|json|ts)$/.test(name)).sort()) await include(`deploy/coding-worker/${name}`);
 	for (const name of (await readdir(join(root, "scripts"))).filter((name) => /^package-coding-.*\.mjs$/.test(name)).sort()) await include(`scripts/${name}`);
-	// Office adapters are injected at composition boundaries. Pin their sources
-	// even before a deployed service entrypoint selects the concrete guest.
-	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^cloud-company-computer-.*\.ts$/.test(name)).sort()) {
-		await include(`packages/runtime/src/${name}`);
-	}
-	for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-office-browser-bwrap.apparmor", "qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in"]) await include(`deploy/lxd-company-computer-guest/${name}`);
-	await include("packages/runner-orchestrator/src/lxd-office-image-installation-cli.ts");
-	await include("packages/runner-orchestrator/src/lxd-office-fleet-cli.ts");
-	await include("packages/runner-orchestrator/src/lxd-office-fleet-installation-cli.ts");
-	await include("packages/runner-orchestrator/src/lxd-office-node-base-cli.ts");
-	await include("scripts/package-lxd-office-fleet.mjs");
-	for (const name of ["office-code-package-control.ts", "office-code-package-measure.ts"]) await include(`deploy/lxd-company-computer-guest/${name}`);
-	await include("packages/runner-orchestrator/src/lxd-office-code-package-loader.ts");
-	await include("deploy/lxd-company-computer-guest/qorpera-screen-browser");
-	for (const name of (await readdir(join(root, "deploy/lxd-company-computer-guest/backdrops"))).sort()) {
-		if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
-		await include(`deploy/lxd-company-computer-guest/backdrops/${name}`);
-	}
 	for (const name of (await readdir(join(root, "supabase/migrations"))).filter((name) => name.endsWith(".sql")).sort()) {
 		await include(`supabase/migrations/${name}`);
 	}
@@ -159,8 +141,7 @@ export async function cloudRuntimeBundle(root = repository) {
 		"deploy/claude-box/qorpera-claude-box-ns.apparmor",
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
 		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
-		"scripts/package-lxd-runner-guest.mjs", "scripts/package-company-computer.mjs",
-		"scripts/package-office-code-package-control.mjs",
+		"scripts/package-lxd-runner-guest.mjs",
 		"package-lock.json", "packages/runtime/package.json", "packages/cloud-client/package.json",
 	]) await include(path);
 	// The accepted native input is independent of the later compiled guest
