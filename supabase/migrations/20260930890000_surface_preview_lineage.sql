@@ -114,7 +114,8 @@ create function public.qorpera_surface_preview_turn_context(
 returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
 declare
-	v_manifest_budget constant integer := 73728;
+	v_manifest_budget constant integer := 69632;
+	v_meta_budget constant integer := 77824;
 	v_max_bytes constant integer := 98304;
 	v_used_bytes integer := 0;
 	v_open_ids uuid[] := '{}'::uuid[];
@@ -130,6 +131,7 @@ declare
 	v_rec_item jsonb;
 	v_item_bytes integer;
 	v_meta_bytes integer;
+	v_stub_bytes integer;
 begin
 	if p_surface.id is null or coalesce(cardinality(p_base_change_ids), 0) = 0 then
 		return jsonb_build_object(
@@ -195,7 +197,7 @@ begin
 		end if;
 
 		v_meta_bytes := octet_length(v_meta_item::text);
-		if v_used_bytes + v_meta_bytes <= v_max_bytes then
+		if v_used_bytes + v_meta_bytes <= v_meta_budget then
 			v_changes := v_changes || jsonb_build_array(v_meta_item);
 			v_used_bytes := v_used_bytes + v_meta_bytes;
 		else
@@ -207,7 +209,7 @@ begin
 
 			v_stub_item := jsonb_build_object(
 				'changeId', v_ch.id,
-				'title', left(coalesce(v_ch.title, ''), 80),
+				'title', public.qorpera_surface_utf8_left(coalesce(v_ch.title, ''), 80),
 				'summary', '',
 				'kind', v_ch.kind,
 				'parentSha', v_ch.parent_sha,
@@ -217,8 +219,26 @@ begin
 				'truncated', true,
 				'pathsTruncated', coalesce(v_paths_truncated, false)
 			);
+			v_stub_bytes := octet_length(v_stub_item::text);
+			if v_used_bytes + v_stub_bytes > v_meta_budget then
+				-- WHY: Reserves 20 KiB inside the 96 KiB cap and strips JSON-escaped chars so 64 pathless stubs always fit strictly under 96 KiB.
+				v_stub_item := jsonb_build_object(
+					'changeId', v_ch.id,
+					'title', public.qorpera_surface_utf8_left(
+						regexp_replace(coalesce(v_ch.title, ''), '[[:cntrl:]"\\]+', ' ', 'g'),
+						48
+					),
+					'summary', '',
+					'kind', v_ch.kind,
+					'affectedPaths', '[]'::jsonb,
+					'previewBaseChangeIds', '[]'::jsonb,
+					'truncated', true,
+					'pathsTruncated', coalesce(cardinality(v_ch.affected_paths), 0) > 0
+				);
+				v_stub_bytes := octet_length(v_stub_item::text);
+			end if;
 			v_changes := v_changes || jsonb_build_array(v_stub_item);
-			v_used_bytes := v_used_bytes + octet_length(v_stub_item::text);
+			v_used_bytes := v_used_bytes + v_stub_bytes;
 		end if;
 	end loop;
 

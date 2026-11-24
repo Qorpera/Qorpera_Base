@@ -55,6 +55,8 @@ declare
 	v_c_fill uuid;
 	v_s_tail uuid;
 	v_c_tail uuid;
+	v_s_tail2 uuid;
+	v_c_tail2 uuid;
 	v_s_over uuid;
 	v_f2_surface uuid;
 	v_f2_s1 uuid;
@@ -323,7 +325,7 @@ begin
 	v_c_fill := (public.qorpera_record_surface_change(
 		v_s_fill, 'Fill budget', 'Fills manifest budget', 'folder_patch', null, null, '{}'::uuid[],
 		array['fill.md'], null,
-		jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'fill.md', 'content', repeat('f', 68000)))),
+		jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'fill.md', 'content', repeat('f', 69000)))),
 		true
 	) ->> 'changeId')::uuid;
 
@@ -334,14 +336,25 @@ begin
 		v_s_tail, 'Tail change', 'Many long paths', 'folder_patch', null, null, '{}'::uuid[],
 		(select array_agg('dir/' || repeat('p', 900) || '-' || g::text || '.md' order by g) from generate_series(1, 35) as g),
 		null,
-		jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'tail.json', 'content', '{"accent":"#123456"}' || E'\n'))),
+		jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'dir/p.md', 'content', 'tail' || E'\n'))),
+		true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_as(v_owner);
+	v_s_tail2 := (public.qorpera_start_surface_session(v_surface, 'Tail change 2') ->> 'id')::uuid;
+	perform pg_temp.as_service();
+	v_c_tail2 := (public.qorpera_record_surface_change(
+		v_s_tail2, 'Tail change 2', 'Pushes past meta budget', 'folder_patch', null, null, '{}'::uuid[],
+		(select array_agg('dir2/' || repeat('q', 900) || '-' || g::text || '.md' order by g) from generate_series(1, 35) as g),
+		null,
+		jsonb_build_object('ops', jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'dir2/q.md', 'content', 'tail2' || E'\n'))),
 		true
 	) ->> 'changeId')::uuid;
 
 	perform pg_temp.spl_as(v_owner);
 	v_s_over := (public.qorpera_start_surface_session(
 		v_surface, 'Over budget read', null, 'member', null,
-		jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_c_fill, v_c_tail))
+		jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_c_fill, v_c_tail, v_c_tail2))
 	) ->> 'id')::uuid;
 	perform pg_temp.as_service();
 	v_lease := extensions.gen_random_uuid();
@@ -350,13 +363,17 @@ begin
 	where id = v_s_over;
 	v_turn := public.qorpera_native_surface_read_session_turn(v_profile, v_s_over, v_lease);
 	perform pg_temp.spl_assert(
-		jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges') = 2
+		octet_length((v_turn -> 'previewContext')::text) <= 98304
+			and jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges') = 3
 			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'changeId')::uuid = v_c_tail
 			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'truncated') = 'true'
 			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'pathsTruncated') = 'true'
-			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 ->> 'summary') = ''
-			and jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 -> 'affectedPaths') = 32,
-		'Exhausted 96 KiB budget must still emit compact truncated stub with pathsTruncated=true instead of dropping base change'
+			and jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges' -> 1 -> 'affectedPaths') = 32
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 2 ->> 'changeId')::uuid = v_c_tail2
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 2 ->> 'truncated') = 'true'
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 2 ->> 'pathsTruncated') = 'true'
+			and jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges' -> 2 -> 'affectedPaths') = 0,
+		'Exhausted budget must emit 32-path then pathless truncated stubs while keeping previewContext strictly <= 96 KiB'
 	);
 
 	perform pg_temp.spl_as(v_owner);
