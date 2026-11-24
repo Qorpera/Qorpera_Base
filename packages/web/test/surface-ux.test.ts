@@ -2021,8 +2021,8 @@ describe("a website that is not live", () => {
 		const base = "a".repeat(40);
 		const { store, view, client, raise, settle, done } = await website({
 			served: false,
-			shown: { autoPublish: true, unpublishedChangeCount: 0, liveHeadSha: base, publishedHeadSha: null },
-			publishAnswer: { publishedHeadSha: base },
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
+			publishAnswer: { hasUnpublishedChanges: false },
 		});
 		expect(client.publishSurface).toHaveBeenCalledTimes(1);
 		for (let turn = 0; turn < 5; turn++) view.update();
@@ -2030,45 +2030,33 @@ describe("a website that is not live", () => {
 		expect(client.publishSurface).toHaveBeenCalledTimes(1);
 		noProblem(store, view);
 
-		await raise({ liveHeadSha: "b".repeat(40) });
+		await raise({ liveHeadSha: "b".repeat(40), hasUnpublishedChanges: true });
 		expect(client.publishSurface).toHaveBeenCalledTimes(2);
 		done();
 
 		const reader = await website({
 			served: false,
 			canWrite: false,
-			shown: { autoPublish: true, unpublishedChangeCount: 0, liveHeadSha: base, publishedHeadSha: null },
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
 		});
 		expect(reader.client.publishSurface).not.toHaveBeenCalled();
 		reader.done();
 	});
 
-	it("publishes nothing more when the server does not say what was published, or nothing was ever built", async () => {
-		const unsaid = await website({
+	it("publishes nothing when Base has nothing a publish would add", async () => {
+		const { client, done } = await website({
 			served: false,
-			shown: { autoPublish: true, unpublishedChangeCount: 0, liveHeadSha: "a".repeat(40) },
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: false, liveHeadSha: "a".repeat(40) },
 		});
-		expect(unsaid.client.publishSurface).not.toHaveBeenCalled();
-		unsaid.done();
-
-		const empty = await website({
-			served: false,
-			shown: { autoPublish: true, unpublishedChangeCount: 0, liveHeadSha: null, publishedHeadSha: null },
-		});
-		expect(empty.client.publishSurface).not.toHaveBeenCalled();
-		empty.done();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
 	});
 
 	it("goes live by publishing a Base that moved since its last publish first", async () => {
 		const { store, view, order, settle, done } = await website({
-			shown: {
-				autoPublish: true,
-				unpublishedChangeCount: 0,
-				liveHeadSha: "b".repeat(40),
-				publishedHeadSha: "a".repeat(40),
-			},
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: "b".repeat(40) },
 			publishFails: 1,
-			publishAnswer: { publishedHeadSha: "b".repeat(40) },
+			publishAnswer: { hasUnpublishedChanges: false },
 		});
 		expect(order).toEqual(["publish"]);
 		await pressGoLive(view, settle);

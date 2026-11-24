@@ -116,14 +116,6 @@ function phoneModelById(id: string | null | undefined): PhoneModelSpec {
 	return PHONE_MODELS.find((model) => model.id === id) ?? PHONE_MODELS[0]!;
 }
 
-function baseUnpublished(surface: SurfaceSummary): boolean {
-	return (
-		Boolean(surface.liveHeadSha) &&
-		surface.publishedHeadSha !== undefined &&
-		surface.publishedHeadSha !== surface.liveHeadSha
-	);
-}
-
 function hostOf(url: string | null): string {
 	if (!url) return "";
 	try {
@@ -1087,7 +1079,7 @@ export class SurfaceView {
 			void store.setAutoPublish(surface.id, true, { quiet: true });
 		}
 		const count = surface.unpublishedChangeCount;
-		if (count === 0 && !baseUnpublished(surface)) {
+		if (count === 0 && !surface.hasUnpublishedChanges) {
 			this.#publishedAt.delete(surface.id);
 			return;
 		}
@@ -1126,7 +1118,7 @@ export class SurfaceView {
 			if (!(await this.#until(settled, signal))) return false;
 			const surface = this.surface;
 			if (!surface) return false;
-			if (surface.unpublishedChangeCount === 0 && !baseUnpublished(surface)) return true;
+			if (surface.unpublishedChangeCount === 0 && !surface.hasUnpublishedChanges) return true;
 			if (!(await store.publish(surface.id, { quiet: true }))) return false;
 			if (!(await this.#until(settled, signal))) return false;
 			const after = this.surface;
