@@ -1279,6 +1279,67 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 	);
 
 	it(
+		"a coding session's repack leaves the object folders the core holds, and its next commit's objects go into them (C4)",
+		async () => {
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
+			const first = await mountSession(at, "first");
+			const objects = join(first.company, R, "objects");
+			const folders = async () => (await readdir(objects)).filter((name) => /^[0-9a-f]{2}$/.test(name)).sort();
+			const kept = await folders();
+			expect(kept.length).toBeGreaterThan(0);
+			for (const folder of kept) expect(at.core.entries.has(`${R}/objects/${folder}`), folder).toBe(true);
+
+			await first.git("repack", "-a", "-d", "-q");
+			expect(await folders()).toEqual(kept);
+			for (const folder of kept) expect(await readdir(join(objects, folder)), folder).toEqual([]);
+
+			for (const folder of kept) {
+				let n = 0;
+				while (!looseObject("blob", `${folder} ${n}\n`).name.startsWith(`objects/${folder}/`)) n++;
+				await writeFile(join(first.worktree, `${folder}.txt`), `${folder} ${n}\n`);
+			}
+			await first.git("add", ".");
+			for (const folder of kept) expect((await readdir(join(objects, folder))).length, folder).toBeGreaterThan(0);
+			await first.git("commit", "-q", "-m", "into the folders");
+			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBeGreaterThan(0);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
+			expect(await first.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"a coding session's object goes into a folder its repack emptied while its repository holds a refused change (5j-5 (a))",
+		async () => {
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
+			const first = await mountSession(at, "first");
+			const before = versions(at.core, `${R}/`);
+			const env = `${AREA}/worktrees/w1/.env`;
+			const objects = join(first.company, R, "objects");
+			const folder = (await readdir(objects)).find((name) => /^[0-9a-f]{2}$/.test(name));
+			expect(folder).toBeDefined();
+			await writeFile(join(first.worktree, ".env"), `KEY=${VALUE}\n`);
+			await first.git("add", ".env");
+			expect((await first.gitRun("commit", "-q", "-m", "settings")).code).not.toBe(0);
+			await first.git("repack", "-a", "-d", "-q");
+			expect(await readdir(join(objects, folder!))).toEqual([]);
+			expect(refusedIn(await at.service.boundary(CODING_MACHINE_ID)).carries).toContain(env);
+
+			let n = 0;
+			while (!looseObject("blob", `${folder} ${n}\n`).name.startsWith(`objects/${folder}/`)) n++;
+			await writeFile(join(first.worktree, "note.txt"), `${folder} ${n}\n`);
+			await first.git("add", "note.txt");
+			expect(await readdir(join(objects, folder!))).toHaveLength(1);
+			expect(refusedIn(await at.service.boundary(CODING_MACHINE_ID)).carries).toContain(env);
+			expect(versions(at.core, `${R}/`)).toEqual(before);
+		},
+		TIMEOUT,
+	);
+
+	it(
 		"holds a clean commit and a branch's delete while the worktree's git files hold a refused change, and publishes after the way out (5j-5 (a))",
 		async () => {
 			const at = await area({}, true);

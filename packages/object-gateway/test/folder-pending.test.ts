@@ -887,6 +887,40 @@ describe("a view's pending changes", () => {
 		expect(f.commit(units)).toEqual(units.map((u) => (u.op === "delete" ? "saved" : "conflict")));
 	});
 
+	it("refuses a session's removal of a git object folder the folder holds, so its next object there publishes nothing first", () => {
+		const objects = "code/acme/app/repo.git/objects";
+		const object = `${objects}/ab/${"0".repeat(38)}`;
+		const seed: Record<string, Content> = {
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			"code/acme/app/repo.git": null,
+			[objects]: null,
+			[`${objects}/ab`]: null,
+			[object]: "packed since",
+			[`${objects}/pack`]: null,
+		};
+		const session = setup(seed);
+		refused(() => session.view.rmdir(`${objects}/ab`), "NOT_EMPTY");
+		session.view.unlink(object);
+		refused(() => session.view.rmdir(`${objects}/ab`), "NOT_PERMITTED");
+		refused(() => session.view.rmdir(`${objects}/pack`), "NOT_PERMITTED");
+		expect(session.view.get(`${objects}/ab`)).toMatchObject({ kind: "folder" });
+		refused(() => session.view.mkdir(`${objects}/ab`), "EXISTS");
+		write(session.view, `${objects}/ab/${"1".repeat(38)}`, "new");
+		session.view.mkdir(`${objects}/cd`);
+		session.view.rmdir(`${objects}/cd`);
+		session.view.mkdir(`${objects}/cd`);
+		const removals = session.plan().units.filter((u) => u.unit.op === "delete");
+		expect(removals.map((u) => u.paths)).toEqual([[object]]);
+
+		const host = setup(seed, true);
+		host.view.unlink(object);
+		host.view.rmdir(`${objects}/ab`);
+		publishFirst(() => host.view.mkdir(`${objects}/ab`));
+		expect(host.publish()).toMatchObject([{ op: "delete", path: `${objects}/ab` }]);
+	});
+
 	it("refuses at once what the folder never takes, folded as the core folds", () => {
 		const f = setup({
 			QorperaOS: null,
