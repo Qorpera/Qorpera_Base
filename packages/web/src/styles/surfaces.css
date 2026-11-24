@@ -710,15 +710,6 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: var(--bg);
 	box-shadow: 0 1px 3px rgb(18 18 17 / 4%);
 }
-.surface-canvas::after {
-	content: ""; position: absolute; inset: 0; z-index: 30; border-radius: inherit; pointer-events: none;
-	box-shadow: inset 0 0 0 1.5px transparent, inset 0 0 0 4px transparent;
-	transition: box-shadow var(--motion-slow) ease;
-}
-.surface-canvas.is-previewing-changes::after {
-	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--sidebar-selection) 62%, transparent),
-		inset 0 0 0 4px color-mix(in srgb, var(--sidebar-selection) 14%, transparent);
-}
 .surface-page.has-drawer .surface-canvas { margin-right: 2px; }
 .frame.rail-hidden-desktop .surface-canvas { margin-left: 8px; }
 @media (max-width: 1180px) {

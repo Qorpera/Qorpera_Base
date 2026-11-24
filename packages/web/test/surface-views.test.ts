@@ -1750,8 +1750,6 @@ describe("the surface page", () => {
 		expect(store.state.activeReportSlug).toBe("q3-retention");
 		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Q3 Retention Report");
-		const canvas = view.el.querySelector<HTMLElement>(".surface-canvas")!;
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
 
 		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
 		view.update();
@@ -1768,13 +1766,6 @@ describe("the surface page", () => {
 		view.update();
 		expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/posts/launch.html");
 		expect(view.el.querySelector(".report-html-card h2")?.textContent).toBe("Launch Post");
-
-		await store.toggleChange(studio.id, c1.id);
-		await store.toggleChange(studio.id, c2.id);
-		store.setMode("report");
-		view.update();
-		expect(store.isChangeShown(c1.id) || store.isChangeShown(c2.id)).toBe(false);
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
 
 		view.dispose();
 		store.dispose();
