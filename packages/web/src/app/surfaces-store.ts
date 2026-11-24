@@ -4020,6 +4020,59 @@ export class SurfacesStore {
 		return true;
 	}
 
+	async approveChanges(
+		surfaceId: string,
+		groups: readonly { readonly sessionId: string; readonly changeIds: readonly string[] }[],
+	): Promise<boolean> {
+		const targets = groups.filter((group) => group.changeIds.length > 0);
+		const ids = targets.flatMap((group) => group.changeIds);
+		if (ids.length === 0) return false;
+		const titleOf = (id: string): string | undefined =>
+			targets
+				.map((group) => this.session(group.sessionId)?.changes.find((change) => change.id === id)?.title)
+				.find(Boolean);
+		const label = ids.length === 1 ? (titleOf(ids[0]!) ?? "") : t("{count} changes", { count: ids.length });
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			for (const group of targets) {
+				for (const id of group.changeIds) await this.approveChange(group.sessionId, id);
+			}
+			this.#offerUndo(label, ids, this.#undoVerbFor(surfaceId));
+			return true;
+		}
+		const approved = new Map<string, SurfaceSession>();
+		const finished = await this.#run(`approve-changes:${surfaceId}`, async (client) => {
+			for (const group of targets) {
+				const open = this.session(group.sessionId)?.changes.filter(isOpenChange) ?? [];
+				const whole =
+					open.length === group.changeIds.length && open.every((change) => group.changeIds.includes(change.id));
+				if (whole) {
+					approved.set(group.sessionId, await client.approveSessionAll(group.sessionId));
+					continue;
+				}
+				for (const id of group.changeIds) approved.set(group.sessionId, await client.approveSurfaceChange(id));
+			}
+			return true;
+		});
+		if (approved.size === 0) return false;
+		const statusById = new Map<string, SurfaceChangeUnit["status"]>();
+		for (const updated of approved.values()) {
+			if (this.drawerOpenOn(updated.id) && !updated.changes.some(isOpenChange)) {
+				this.store.set({ drawer: undefined });
+				void this.#options.client?.setSessionChatOpen(updated.id, false).catch(() => undefined);
+			}
+			this.#applySession(updated, approvalOutcome(updated, this.drawerOpenOn(updated.id)));
+			for (const change of updated.changes) statusById.set(change.id, change.status);
+		}
+		const merged = ids.filter((id) => statusById.get(id) === "merged");
+		const merging = ids.filter((id) => statusById.get(id) === "merging");
+		const verb = this.#undoVerbFor(surfaceId);
+		if (merging.length > 0) this.#offerPendingMerge(surfaceId, label, [...merged, ...merging], verb);
+		else if (merged.length > 0) this.#offerUndo(label, merged, verb);
+		if (ids.some((id) => statusById.get(id) === "staged")) void this.refreshWorkspace(surfaceId);
+		void this.refreshSurfaces();
+		return Boolean(finished);
+	}
+
 	async discardChange(sessionId: string, changeId: string): Promise<boolean> {
 		const found = this.#sessionAt(sessionId);
 		if (!found) return false;
@@ -4215,21 +4268,26 @@ export class SurfacesStore {
 		if (this.isLocalInteractive && undo.changeIds.every((id) => id.startsWith("local-"))) {
 			return Boolean(this.#undoLocalChangeIds(undo.changeIds));
 		}
-		let restored: SurfaceSession | undefined;
+		const restored = new Map<string, SurfaceSession>();
+		const applyRestored = (): void => {
+			for (const session of restored.values())
+				this.#applySession(session, approvalOutcome(session, this.drawerOpenOn(session.id)));
+			if (restored.size > 0) void this.refreshSurfaces();
+		};
 		for (const changeId of undo.changeIds) {
-			if (restored?.changes.find((item) => item.id === changeId)?.status === "staged") continue;
+			const already = [...restored.values()].some(
+				(session) => session.changes.find((item) => item.id === changeId)?.status === "staged",
+			);
+			if (already) continue;
 			const next = await this.#run(`undo:${changeId}`, (client) => client.undoSurfaceChange(changeId));
 			if (!next) {
-				if (restored) {
-					this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
-					void this.refreshSurfaces();
-				}
+				applyRestored();
 				return false;
 			}
-			restored = next;
+			restored.set(next.id, next);
 		}
-		if (restored) this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
-		void this.refreshSurfaces();
+		applyRestored();
+		if (restored.size === 0) void this.refreshSurfaces();
 		return true;
 	}
 
