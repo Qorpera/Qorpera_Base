@@ -60,6 +60,7 @@ export const SURFACES: Record<string, string> = {
 	"All changes merged": "Alle ændringer er flettet",
 	"They are in Base. Publish when you're ready.": "De er i Base. Udgiv, når du er klar.",
 	"Approve all {count}": "Godkend alle {count}",
+	"{count} changes": "{count} ændringer",
 	"Composing preview…": "Sammensætter forhåndsvisning…",
 	"Updating preview…": "Opdaterer forhåndsvisning…",
 	"Couldn't update preview": "Kunne ikke opdatere forhåndsvisningen",

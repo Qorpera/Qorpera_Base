@@ -303,6 +303,78 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("approves turned-on changes across sessions with one Undo that restores every session", async () => {
+		const OTHER = "33333333-3333-4333-8333-333333333334";
+		const other = (status: "staged" | "merged") =>
+			session([], {
+				id: OTHER,
+				title: "Footer copy",
+				state: status === "merged" ? "completed" : "ready",
+				changes: [change(CHANGES[2], 1, status, { sessionId: OTHER, title: "Footer text" })],
+				openChangeCount: status === "staged" ? 1 : 0,
+			});
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"]), other("staged")])),
+			approveSurfaceChange: vi.fn(async () => session(["merged", "staged"])),
+			approveSessionAll: vi.fn(async () => other("merged")),
+			undoSurfaceChange: vi.fn(async (id: string) =>
+				id === CHANGES[2] ? other("staged") : session(["staged", "staged"]),
+			),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		const approving = store.approveChanges(SURFACE, [
+			{ sessionId: SESSION, changeIds: [CHANGES[0]] },
+			{ sessionId: OTHER, changeIds: [CHANGES[2]] },
+		]);
+		expect(store.state.busy[`change:${CHANGES[0]}`]).toBe(true);
+		expect(store.state.busy[`change:${CHANGES[2]}`]).toBe(true);
+		expect(await approving).toBe(true);
+		expect(store.state.busy[`change:${CHANGES[0]}`]).toBeUndefined();
+		expect(client.approveSurfaceChange).toHaveBeenCalledWith(CHANGES[0]);
+		expect(client.approveSessionAll).toHaveBeenCalledWith(OTHER);
+		expect(store.state.undo).toMatchObject({ label: "2 changes", changeIds: [CHANGES[0], CHANGES[2]] });
+
+		expect(await store.undo()).toBe(true);
+		expect(client.undoSurfaceChange).toHaveBeenCalledTimes(2);
+		expect(store.session(SESSION)?.changes.map((item) => item.status)).toEqual(["staged", "staged"]);
+		expect(store.session(OTHER)?.changes.map((item) => item.status)).toEqual(["staged"]);
+		store.dispose();
+	});
+
+	it("keeps what was approved when Approve all fails partway", async () => {
+		const OTHER = "33333333-3333-4333-8333-333333333334";
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([
+					session(["staged", "staged"]),
+					session([], {
+						id: OTHER,
+						changes: [change(CHANGES[2], 1, "staged", { sessionId: OTHER, title: "Footer text" })],
+					}),
+				]),
+			),
+			approveSurfaceChange: vi.fn(async () => session(["merged", "staged"])),
+			approveSessionAll: vi.fn(async () => Promise.reject(new Error("merge refused"))),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		expect(
+			await store.approveChanges(SURFACE, [
+				{ sessionId: SESSION, changeIds: [CHANGES[0]] },
+				{ sessionId: OTHER, changeIds: [CHANGES[2]] },
+			]),
+		).toBe(false);
+		expect(store.state.error).toBe("merge refused");
+		expect(store.state.undo).toMatchObject({ label: "Change 1", changeIds: [CHANGES[0]] });
+		expect(store.state.busy[`change:${CHANGES[2]}`]).toBeUndefined();
+		store.dispose();
+	});
+
 	it("previews every open change that is turned on", async () => {
 		const client = fakeClient({
 			setPreviewSelection: vi.fn(async () => workspace([]).previewState),
@@ -1060,6 +1132,37 @@ describe("SurfacesStore", () => {
 
 		await store.rollbackChange(tokenChange.id);
 		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe("#7c6fd6");
+		store.dispose();
+	});
+
+	it("puts the local studio base back when Undo follows Approve all", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const identity = store.state.surfaces.find((item) => item.slug === "identity")!;
+		await store.openSurface("identity");
+		const identitySession = store.workspace(identity.id)!.activeSessions[0]!;
+		const staged = identitySession.changes.filter((item) => item.status === "staged").map((item) => item.id);
+		store.setMode("live");
+		const before = store.companyIdentityTokens()?.vars["--q-color-accent"];
+
+		expect(await store.approveChanges(identity.id, [{ sessionId: identitySession.id, changeIds: staged }])).toBe(
+			true,
+		);
+		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).not.toBe(before);
+		expect(store.state.undo?.changeIds).toEqual(staged);
+
+		expect(await store.undo()).toBe(true);
+		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe(before);
+		expect(
+			store
+				.session(identitySession.id)
+				?.changes.filter((item) => staged.includes(item.id))
+				.map((item) => item.status),
+		).toEqual(staged.map(() => "staged"));
 		store.dispose();
 	});
 

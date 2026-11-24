@@ -1525,6 +1525,56 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
+	it("approves every turned-on change from the Changes header and drops changes that are merging", async () => {
+		stubFigureMotion();
+		const OTHER = "33333333-3333-4333-8333-333333333334";
+		const first = session(["staged", "staged"], { title: "Header split" });
+		const second = session([], {
+			id: OTHER,
+			title: "Footer copy",
+			changes: [change(CHANGES[2], 1, "staged", { sessionId: OTHER, title: "Footer text" })],
+		});
+		const approveSurfaceChange = vi.fn(async () => session(["merging", "staged"], { title: "Header split" }));
+		const approveSessionAll = vi.fn(async () => ({
+			...second,
+			changes: [change(CHANGES[2], 1, "merging", { sessionId: OTHER, title: "Footer text" })],
+			openChangeCount: 0,
+		}));
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary()]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([first, second])),
+			approveSurfaceChange,
+			approveSessionAll,
+		});
+		const store = storeWith(client);
+		await store.load();
+		store.store.set({ hiddenChanges: { [CHANGES[1]]: true } });
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const all = () => view.el.querySelector<HTMLButtonElement>('.surface-drawer-head [data-act="approve-shown"]');
+		expect(all()?.textContent).toContain("Approve all 2");
+		all()!.click();
+		expect(approveSurfaceChange).not.toHaveBeenCalled();
+		all()!.click();
+		await flush();
+		view.update();
+
+		expect(approveSurfaceChange).toHaveBeenCalledWith(CHANGES[0]);
+		expect(approveSessionAll).toHaveBeenCalledWith(OTHER);
+		const titles = [...view.el.querySelectorAll(".surface-overview-change-title")].map((el) => el.textContent);
+		expect(titles).toEqual(["Change 2"]);
+		expect(view.el.querySelectorAll(".surface-overview-card.is-agent")).toHaveLength(1);
+		expect(store.state.undo).toMatchObject({ pending: true, changeIds: [CHANGES[0], CHANGES[2]] });
+		expect(view.el.querySelector(".surface-toast.is-pending")?.textContent).toContain("2 changes");
+		expect(all()).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
 	it("shows no file links and no folder source footer in the Changes drawer", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
