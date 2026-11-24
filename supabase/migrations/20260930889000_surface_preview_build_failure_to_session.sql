@@ -359,12 +359,10 @@ $new$	perform public.qorpera_surface_build_handbacks_deliver(p_now);
 ]);
 
 select pg_temp.sbfs_patch('public.qorpera_surface_enqueue_session_run(uuid,uuid)'::regprocedure, array[
-$old$	v_conflict_paths text[];
-begin
+$old$	v_followup text;
 $old$,
-$new$	v_conflict_paths text[];
+$new$	v_followup text;
 	v_build_fix text;
-begin
 $new$,
 $old$			v_followup := public.qorpera_surface_utf8_left(v_followup, 2000);
 
