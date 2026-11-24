@@ -705,6 +705,7 @@ export const WORKSPACE: Record<string, string> = {
 		"Slet din sektion {name}? Dens interfaces flyttes ud af den, nederst på listen.",
 	"Your interfaces changed in another tab. Try again.": "Dine interfaces blev ændret i en anden fane. Prøv igen.",
 	"The interfaces could not be arranged. Try again.": "Dine interfaces kunne ikke arrangeres. Prøv igen.",
+	"Only {count} interfaces can be arranged.": "Kun {count} interfaces kan arrangeres.",
 	"The order and sections of your interfaces": "Rækkefølgen og sektionerne af dine interfaces",
 	"Rename group": "Omdøb gruppe",
 	Ungroup: "Opløs gruppe",

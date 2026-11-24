@@ -13,6 +13,7 @@ import {
 	removeSection,
 	renameSection,
 	SECTION_ZONE,
+	SURFACE_RAIL_MAX_IDS,
 	SURFACE_SECTION_NAME_LIMIT,
 	type SurfaceRailLayout,
 } from "../../cloud/surface-rail-layout.ts";
@@ -420,6 +421,11 @@ export class SurfaceRail {
 	}
 
 	#change(next: SurfaceRailLayout): void {
+		const ids = next.order.length + next.sections.reduce((sum, section) => sum + section.surfaces.length, 0);
+		if (ids > SURFACE_RAIL_MAX_IDS) {
+			this.#arranger?.refuse(t("Only {count} interfaces can be arranged.", { count: SURFACE_RAIL_MAX_IDS }));
+			return;
+		}
 		this.#arranger?.change(next);
 	}
 

@@ -3854,7 +3854,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	} else if (!target.closest("a[href], a[data-href], button, input") && surfacesOf(company)) {
 		const surfaces = surfaceRailFor(company);
 		items = [
-			...(surfaces?.canArrange()
+			...(surfaces?.canArrange() && !target.closest(".rail-dock")
 				? [{ label: t("New section"), icon: "section_plus", select: () => void surfaces.askNewSection() }]
 				: []),
 			...resetEntries(company, parts),

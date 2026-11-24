@@ -1971,3 +1971,54 @@ describe("agent execution state", () => {
 		expect(layoutSignals).toContain(controller.signal);
 	});
 });
+
+describe("the member's own interfaces layout (20260930892000)", () => {
+	const layout = (order: string[]) => ({ schema: "qorpera.member-surface-rail/v1" as const, order, sections: [] });
+	const read = (order: string[], updatedAt: string | null) => ({ layout: layout(order), updatedAt });
+
+	it("arranges nothing on a cloud before the migration", async () => {
+		const { api, controller } = company();
+		vi.spyOn(api, "readMemberSurfaceRail").mockRejectedValue(
+			new CloudRpcError("qorpera_member_surface_rail", { code: "PGRST202", message: "Could not find" }, 404),
+		);
+		await controller.refreshSurfaceRail();
+		expect(controller.store.get().surfaceRailUnavailable).toBe(true);
+		expect(controller.canArrangeSurfaces()).toBe(false);
+		expect(await controller.changeSurfaceRail(layout([id(1)]))).toBe(false);
+	});
+
+	it("writes each move on the time the one before it answered with", async () => {
+		const { api, controller } = company();
+		vi.spyOn(api, "readMemberSurfaceRail").mockResolvedValue(read([], null));
+		vi.spyOn(api, "readCompanySidebar").mockReturnValue(new Promise(() => {}));
+		const set = vi
+			.spyOn(api, "setMemberSurfaceRail")
+			.mockResolvedValueOnce(read([id(1)], "2026-11-24T10:00:01.000Z"))
+			.mockResolvedValueOnce(read([id(2), id(1)], "2026-11-24T10:00:02.000Z"));
+		await controller.refreshSurfaceRail();
+		expect(controller.canArrangeSurfaces()).toBe(true);
+		const first = controller.changeSurfaceRail(layout([id(1)]));
+		const second = controller.changeSurfaceRail(layout([id(2), id(1)]));
+		expect(controller.store.get().surfaceRail?.layout.order).toEqual([id(2), id(1)]);
+		expect(await first).toBe(true);
+		expect(await second).toBe(true);
+		expect(set.mock.calls.map((call) => call[2])).toEqual([null, "2026-11-24T10:00:01.000Z"]);
+		expect(controller.store.get().surfaceRail?.updatedAt).toBe("2026-11-24T10:00:02.000Z");
+	});
+
+	it("says another tab changed it and reads it again on QSR01", async () => {
+		const { api, controller } = company();
+		const readRail = vi
+			.spyOn(api, "readMemberSurfaceRail")
+			.mockResolvedValueOnce(read([], null))
+			.mockResolvedValueOnce(read([id(3)], "2026-11-24T10:00:03.000Z"));
+		vi.spyOn(api, "setMemberSurfaceRail").mockRejectedValue(
+			new CloudRpcError("qorpera_set_member_surface_rail", { code: "QSR01", message: "changed" }, 400),
+		);
+		await controller.refreshSurfaceRail();
+		expect(await controller.changeSurfaceRail(layout([id(1)]))).toBe(false);
+		expect(controller.store.get().railError).toBe("Your interfaces changed in another tab. Try again.");
+		expect(readRail).toHaveBeenCalledTimes(2);
+		expect(controller.store.get().surfaceRail?.layout.order).toEqual([id(3)]);
+	});
+});

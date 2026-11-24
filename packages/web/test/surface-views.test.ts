@@ -342,6 +342,55 @@ describe("the surface rail", () => {
 			expect(openMenu()!.el.querySelector('[role="separator"]')).toBeNull();
 			store.dispose();
 		});
+
+		it("deletes a member's own section from its title, its interfaces moving out of it (Jonas, 24 Nov 2026)", async () => {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [summary(quiet), inbox]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: summary(quiet) })),
+				}),
+			);
+			await store.load();
+			let layout = {
+				schema: "qorpera.member-surface-rail/v1" as const,
+				order: [inbox.id],
+				sections: [{ id: "design", name: "Design", surfaces: [SURFACE] }],
+			};
+			const change = vi.fn((next: typeof layout) => {
+				layout = next;
+			});
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, {
+				layout: () => layout,
+				canArrange: () => true,
+				change,
+				refuse: vi.fn(),
+			});
+			document.body.append(rail.el);
+			rail.update("website");
+			expect([...rail.el.querySelectorAll(".rail-surface-title")].map((item) => item.textContent)).toEqual([
+				"Design",
+			]);
+
+			rail.el
+				.querySelector<HTMLElement>('[data-surface-section="design"]')!
+				.dispatchEvent(
+					new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+				);
+			expect(menuRow("Rename section")).toBeDefined();
+			menuRow("Delete section")!.click();
+			await flush();
+			expect(dialog()?.querySelector("p")?.textContent).toBe(
+				'Delete your section "Design"? Its interfaces move out of it, to the end of the list.',
+			);
+			dialogButton("Delete section").click();
+			await flush();
+			expect(change).toHaveBeenCalledOnce();
+			expect(layout).toEqual({ schema: "qorpera.member-surface-rail/v1", order: [inbox.id, SURFACE], sections: [] });
+			rail.update("website");
+			expect(rail.el.querySelectorAll(".rail-surface-title")).toHaveLength(0);
+			expect(railRow(rail, "website")).not.toBeNull();
+			store.dispose();
+		});
 	});
 });
 

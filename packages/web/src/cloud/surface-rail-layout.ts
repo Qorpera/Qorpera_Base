@@ -3,7 +3,7 @@ import { POSTGRES_UUID_PATTERN, parseRecord } from "@qorpera/contracts";
 export const SURFACE_RAIL_SCHEMA = "qorpera.member-surface-rail/v1";
 export const SURFACE_SECTION_NAME_LIMIT = 40;
 const MAX_SECTIONS = 50;
-const MAX_IDS = 500;
+export const SURFACE_RAIL_MAX_IDS = 500;
 const SECTION_ID = /^[a-z0-9-]{1,40}$/;
 
 export const LOOSE_ZONE = "surfaces";
@@ -33,7 +33,10 @@ export function sectionNameOk(name: string): boolean {
 		name.length >= 1 &&
 		name.length <= SURFACE_SECTION_NAME_LIMIT &&
 		name === name.trim() &&
-		![...name].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+		![...name].some((character) => {
+			const code = character.charCodeAt(0);
+			return code < 32 || (code >= 127 && code <= 159);
+		})
 	);
 }
 
@@ -43,7 +46,12 @@ export function parseSurfaceRailLayout(value: unknown): SurfaceRailLayout {
 	const seen = new Set<string>();
 	const ids = (list: unknown): string[] =>
 		(Array.isArray(list) ? list : []).filter((id): id is string => {
-			if (typeof id !== "string" || !POSTGRES_UUID_PATTERN.test(id) || seen.has(id) || seen.size >= MAX_IDS)
+			if (
+				typeof id !== "string" ||
+				!POSTGRES_UUID_PATTERN.test(id) ||
+				seen.has(id) ||
+				seen.size >= SURFACE_RAIL_MAX_IDS
+			)
 				return false;
 			seen.add(id);
 			return true;
