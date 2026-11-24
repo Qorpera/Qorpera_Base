@@ -12,7 +12,7 @@ use qorpera_folder::transport::Stream;
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 
 pub const PASS: &str = "right-pass";
 
@@ -75,6 +75,8 @@ struct State {
 	/// The next lists of a folder, each with the seconds it is answered after it was made and the feeds heard of a
 	/// change there.
 	slow_lists: Vec<(String, u64)>,
+	lists_to_hold: Vec<String>,
+	held_lists: Vec<mpsc::Sender<()>>,
 	/// The next lists of a folder to answer with an error, each with its code.
 	failed_lists: Vec<(String, &'static str)>,
 	/// Files whose reads are answered UNAVAILABLE.
@@ -357,6 +359,18 @@ impl FakeNode {
 		self.state.lock().unwrap().slow_lists.extend(secs.iter().map(|s| (path.to_string(), *s)));
 	}
 
+	pub fn hold_list(&self, path: &str) {
+		self.state.lock().unwrap().lists_to_hold.push(path.to_string());
+	}
+
+	pub fn lists_held(&self) -> usize {
+		self.state.lock().unwrap().held_lists.len()
+	}
+
+	pub fn answer_held_lists(&self) {
+		self.state.lock().unwrap().held_lists.clear();
+	}
+
 	/// The next lists of the folder `path` are answered with the errors `codes`, one each, in turn, whatever is there.
 	#[allow(dead_code)] // `tests/kernel.rs` only.
 	pub fn fail_lists(&self, path: &str, codes: &[&'static str]) {
@@ -434,6 +448,13 @@ fn listing(st: &State, path: &str) -> Option<Vec<Entry>> {
 	Some(entries)
 }
 
+fn send_listing(s: &mut Stream, entries: Option<Vec<Entry>>) -> std::io::Result<()> {
+	match entries {
+		Some(entries) => send_json(s, kind::LISTING, &Listing { entries, next: None }),
+		None => error(s, code::NOT_FOUND),
+	}
+}
+
 fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 	let Ok((kind_byte, body)) = read_frame(&mut s) else { return };
 	assert_eq!(kind_byte, kind::HELLO);
@@ -500,6 +521,19 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 			}
 			continue;
 		}
+		if let Some(i) = listed.as_ref().and_then(|path| st.lists_to_hold.iter().position(|p| p == path)) {
+			let path = st.lists_to_hold.remove(i);
+			let entries = listing(&st, &path);
+			notify(&mut st, vec![path], false);
+			let (held, answered) = mpsc::channel();
+			st.held_lists.push(held);
+			drop(st);
+			let _ = answered.recv();
+			if send_listing(&mut s, entries).is_err() {
+				return;
+			}
+			continue;
+		}
 		if let Some(i) = listed.and_then(|path| st.slow_lists.iter().position(|(p, _)| *p == path)) {
 			// The entries are those of now, and the answer comes later, after the feeds heard of a change there.
 			let (path, secs) = st.slow_lists.remove(i);
@@ -507,11 +541,7 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 			notify(&mut st, vec![path], false);
 			drop(st);
 			std::thread::sleep(std::time::Duration::from_secs(secs));
-			let result = match entries {
-				Some(entries) => send_json(&mut s, kind::LISTING, &Listing { entries, next: None }),
-				None => error(&mut s, code::NOT_FOUND),
-			};
-			if result.is_err() {
+			if send_listing(&mut s, entries).is_err() {
 				return;
 			}
 			continue;
@@ -519,10 +549,7 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 		let result = match k {
 			kind::LIST => {
 				let req: ListRequest = serde_json::from_slice(&body).unwrap();
-				match listing(&st, &req.path) {
-					Some(entries) => send_json(&mut s, kind::LISTING, &Listing { entries, next: None }),
-					None => error(&mut s, code::NOT_FOUND),
-				}
+				send_listing(&mut s, listing(&st, &req.path))
 			}
 			kind::READ => {
 				let req: ReadRequest = serde_json::from_slice(&body).unwrap();

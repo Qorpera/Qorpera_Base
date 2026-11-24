@@ -1395,6 +1395,10 @@ export class SurfaceView {
 					entry = { ...entry, head: nextHead };
 					this.#compareDoors.set(session.id, entry);
 				}
+				const compareLook = store.lookOf(surface);
+				entry.stage?.setFigure(JSON.stringify([surface.icon, compareLook]), () =>
+					surfaceTile(surface, compareLook, "is-loader", "working", "now"),
+				);
 				entry.stage?.sync(frameState, label);
 			}
 			this.#frames.hidden = false;
@@ -1407,6 +1411,10 @@ export class SurfaceView {
 				this.#frames.replaceChildren(this.#primaryDoor.el);
 				this.#framesMode = "primary";
 			}
+			const look = store.lookOf(surface);
+			this.#primaryDoor.setFigure(JSON.stringify([surface.icon, look]), () =>
+				surfaceTile(surface, look, "is-loader", "working", "now"),
+			);
 			this.#primaryDoor.sync(preview.primary, t("Preview of {title}", { title: surface.title }));
 			this.#frames.hidden = false;
 			this.#mountSlot.hidden = true;

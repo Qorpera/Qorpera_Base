@@ -2106,6 +2106,34 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
 - The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
   `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
 
+#### A website on the web router: not live yet, and stored in the database (20260930881000_web_edge_db_sites_and_not_live)
+
+The native web router (`crates/qorpera-web-router`) serves `https://<slug>.<hosts_domain>/` from the snapshot
+`qorpera_web_edge_snapshot()` (service role and `qorpera_web_router` only, unchanged).
+
+- Every website (kind `files`) has `password_sha256: null`: no password opens one on the router. For a website that
+  is not public (public is `is_public` and `public_enabled` both on) the router answers its own "Not live yet" page
+  (401, no form, English or Danish by `Accept-Language`); `POST /.qorpera/unlock` answers that page too, and so does
+  any website's next host without Look first. A public website is open to everyone. App links (kind `app`) keep
+  their hash and their password page. Members' passes (`/__qorpera/member`) and Look first (`/.qorpera/enter` on the
+  next host) open it as before.
+- Each site gains `db_live` and `db_previews`, set only for a website with no live deployment, not taken down, of a
+  company not being deleted, for a version in `ready`, `live` or `kept` that has no deployment and all its bytes:
+  `db_live` (the current version, or null) is `{"id":"db:<version id>","kind":"static","manifest":{"files":{"<path>":
+  {"sha256":"<64 hex>","bytes":<n>,"content_type":"<type>"}}}}`; `db_previews` is `{"<version id>": <the same shape>}`
+  (`{}` when none). A content type outside `type/subtype` with an optional `; charset=utf-8` is
+  `application/octet-stream`. A router from before this ignores both keys.
+- `qorpera_web_edge_site_file(site uuid, version uuid, path text) returns bytea`: the router's read of one file's
+  bytes, with the edge RPCs' guard and grants (service role and `qorpera_web_router`; 42501 for any other caller).
+  Null for anything the snapshot would not list: another site's version, a version uploading or with a deployment, a
+  site with a live deployment, taken down or of a company being deleted, an app link, a path the version does not
+  have. The router checks the bytes' SHA-256 against the snapshot before it serves or keeps them.
+- A statement that inserts, updates or deletes `qorpera_company_site_versions` notifies `qorpera_web_route_changes`
+  (trigger `qorpera_web_notify_site_versions`), so the router learns of a finished or pruned version at once and not
+  at its next reconcile.
+- The migration raised `password_version` once for every website: every visitor's and member's session from before
+  ends (the app asks a new member's pass on the next open).
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
