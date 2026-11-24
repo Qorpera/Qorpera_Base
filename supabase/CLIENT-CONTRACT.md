@@ -2134,11 +2134,27 @@ The native web router (`crates/qorpera-web-router`) serves `https://<slug>.<host
 - The migration raised `password_version` once for every website: every visitor's and member's session from before
   ends (the app asks a new member's pass on the next open).
 
+#### Deleting an interface closes its website (20260930885000_surface_delete_closes_site)
+
+`qorpera_archive_surface(surface)` (the rail's Delete; who may delete and everything else it does are unchanged) also
+makes the interface's website not public in the same transaction, when the website is public, is a website (kind
+`files`) and no other interface of the company that is not deleted (`active` or `proposed`) points at it:
+
+- It writes what `qorpera_set_company_site_public(site, false)` ("Make it not live") writes, `is_public = false` and
+  `updated_at`, and raises `password_version` once, so every visitor's and member's session from before ends. The
+  statement fires `qorpera_web_notify_sites`: the router reads the website as not public at once, on its address and
+  on its custom domains ("Not live yet" on the router; members' passes still open it).
+- A website that is not public, or that another interface still points at, is not written (no notification). The
+  site, its versions, files, domains and name stay; `qorpera_set_company_site_public` is unchanged.
+- An app link (kind `app`) is left as it is: its auth mode decides who reaches it.
+- The migration settled once every public website whose interfaces are all deleted, the same way.
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
 website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, or at
-`https://<slug>.qorpera.com/` once hosts are on, behind its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+`https://<slug>.qorpera.com/` once hosts are on; since `20260930881000` a website has no password, and until an owner or
+admin makes it public with Go live, everyone outside the company sees "Not live yet"), and only an owner or admin puts a version live, or goes back to the one before, on
 the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,

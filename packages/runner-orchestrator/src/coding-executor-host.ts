@@ -19,7 +19,7 @@ import {
 	isUuid,
 	parseCloudCodingNasPolicy,
 } from "@qorpera/contracts";
-import { withAbortScope } from "./abort-scope.ts";
+import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
 import {
 	CODE_CHECKS_EARLIER_RUN_NOT_STOPPED,
@@ -125,6 +125,7 @@ import {
 	lxdCodingSessionStorage,
 	reconcileCodingMachine,
 	recordCodingMachineDisk,
+	settleAcceptedCodingMachine,
 	undropCodingMachineStart,
 } from "./coding-machine.ts";
 import { EMPTY_CODING_SETUP_DIGEST, type ParsedCodingSetup } from "./coding-setup.ts";
@@ -1628,21 +1629,34 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * sessions run in parallel between them. A caller that gives up while
 	 * waiting (its signal aborts) leaves at once and its step never starts; a
 	 * step that has started holds the machine until it settles. */
-	#exclusive<T>(machineId: string, signal: AbortSignal, use: () => Promise<T>): Promise<T> {
+	#exclusive<T>(machineId: string, signal: AbortSignal, use: () => Promise<T>, cancel?: AbortSignal): Promise<T> {
 		const previous = this.#machineWork.get(machineId) ?? Promise.resolve();
+		const queueAbort = cancel ? new AbortController() : undefined;
+		const onCancel = queueAbort ? () => queueAbort.abort(cancel?.reason) : undefined;
+		if (cancel && onCancel) {
+			if (cancel.aborted) onCancel();
+			else cancel.addEventListener("abort", onCancel, { once: true });
+		}
+		const clearCancel = () => {
+			if (cancel && onCancel) cancel.removeEventListener("abort", onCancel);
+		};
 		const work = previous
 			.catch(() => undefined)
 			.then(() => {
+				clearCancel();
 				signal.throwIfAborted();
+				cancel?.throwIfAborted();
 				return use();
 			});
 		this.#machineWork.set(machineId, work);
 		void work
 			.catch(() => undefined)
 			.finally(() => {
+				clearCancel();
 				if (this.#machineWork.get(machineId) === work) this.#machineWork.delete(machineId);
 			});
-		return abortable(work, signal);
+		if (!queueAbort) return abortable(work, signal);
+		return withAbortScopes([signal, queueAbort.signal], (wait) => abortable(work, wait));
 	}
 	async #storageTask<T>(use: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 		const limit = AbortSignal.timeout(this.#options.storageStepTimeoutMs ?? CODING_STORAGE_STEP_MS);
@@ -1813,30 +1827,48 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		starting?: CodingMachineReconcileOptions["starting"],
 		extra?: {
 			claimStandby?: CodingMachineReconcileOptions["claimStandby"];
+			cancel?: AbortSignal;
 		},
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
 			AbortSignal.timeout(desiredState === "running" ? 300000 : CODING_VM_STOP_BUDGET_MS),
 		]);
+		let sawPending = false;
 		for (let attempt = 0; ; attempt++) {
 			checked.throwIfAborted();
-			const journalRoot = await this.#directory("machines", checked);
-			const result = await reconcileCodingMachine({
-				plan: journal,
-				journalRoot,
-				desiredState,
-				client: this.#options.client,
-				authorize,
-				signal: checked,
-				plug: this.#options.agentPlug,
-				stoppedFromOutside,
-				starting,
-				claimStandby: extra?.claimStandby,
-				projectAllowsAgentCard: (project, read) => this.#options.client.allowsAgentCard(project, read),
-			});
+			if (!sawPending) extra?.cancel?.throwIfAborted();
+			const journalRoot = sawPending
+				? await this.#directory("machines", checked)
+				: await withAbortScopes([checked, extra?.cancel], (beforeDispatch) =>
+						this.#directory("machines", beforeDispatch),
+					);
+			if (!sawPending) extra?.cancel?.throwIfAborted();
+			let result: Awaited<ReturnType<typeof reconcileCodingMachine>>;
+			try {
+				result = await reconcileCodingMachine({
+					plan: journal,
+					journalRoot,
+					desiredState,
+					client: this.#options.client,
+					authorize,
+					signal: checked,
+					cancel: extra?.cancel,
+					plug: this.#options.agentPlug,
+					stoppedFromOutside,
+					starting,
+					claimStandby: extra?.claimStandby,
+					projectAllowsAgentCard: (project, read) => this.#options.client.allowsAgentCard(project, read),
+				});
+			} catch (error) {
+				if (sawPending && error instanceof CodingMachineUnavailable && !checked.aborted) {
+					await this.#settleAccepted(journal, checked);
+				}
+				throw error;
+			}
 			checked.throwIfAborted();
 			if (result.state === "pending") {
+				sawPending = true;
 				await setTimeout(pollBackoffMs(attempt), undefined, { signal: checked });
 				continue;
 			}
@@ -1854,6 +1886,26 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				throw new Error("CODING_HOST_VM_RECOVERY_REQUIRED");
 			return result.state;
 		}
+	}
+	async #settleAccepted(journal: CodingMachineJournalPlan, signal: AbortSignal): Promise<void> {
+		await withTimeoutScope(signal, 30000, async (budget) => {
+			for (let attempt = 0; ; attempt++) {
+				if (budget.aborted) return;
+				try {
+					const journalRoot = await this.#directory("machines", budget);
+					const state = await settleAcceptedCodingMachine({
+						plan: journal,
+						journalRoot,
+						client: this.#options.client,
+						signal: budget,
+					});
+					if (state !== "pending") return;
+					await setTimeout(pollBackoffMs(attempt), undefined, { signal: budget });
+				} catch {
+					return;
+				}
+			}
+		});
 	}
 	/** The member's machine for this turn, as SQL planned it from the policy the
 	 * executor itself runs with. */
@@ -2484,7 +2536,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const authorize = async () => {
 			await this.#run(claim, machine, storage, overlapSignal);
 		};
-		const startPromise = this.#startFolder(folder, claim, machine, storage, journal, overlapSignal, undefined, true);
+		const startPromise = this.#startFolder(
+			folder,
+			claim,
+			machine,
+			storage,
+			journal,
+			signal,
+			undefined,
+			true,
+			overlap.signal,
+		);
 		const repoPromise = (async (): Promise<{ root: string; baseSha: string; cwd: string }> => {
 			const { root, baseSha } = await this.#base(claim, turn, authorize, overlapSignal);
 			const { cwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
@@ -2564,22 +2626,32 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 		restart?: { starts: number; newDisk: boolean },
 		storagePrepared = false,
+		cancel?: AbortSignal,
 	): Promise<{ bootId: string; uid: number; starts: number }> {
-		return this.#exclusive(machine.machineId, signal, async () => {
-			if (!storagePrepared) await this.#run(claim, machine, storage, signal, true);
-			if (
-				restart !== undefined &&
-				(restart.newDisk || (this.#folderStarts.get(machine.machineId) ?? 0) === restart.starts)
-			)
-				await this.#stopForFolder(folder, machine, journal, signal, restart.newDisk);
-			await this.#runFolder(folder, claim, machine, storage, journal, signal);
-			const receipt = await this.#run(claim, machine, storage, signal);
-			const uid = receipt.guestUid;
-			if (uid === null || uid < CODING_GUEST.minUid || uid > CODING_GUEST.maxUid)
-				throw new Error("CODING_FOLDER_SESSION_UID_MISSING");
-			const bootId = await this.#folderReady(machine, signal);
-			return { bootId, uid, starts: this.#folderStarts.get(machine.machineId) ?? 0 };
-		});
+		return withAbortScopes([signal, cancel], (waitSignal) =>
+			this.#exclusive(
+				machine.machineId,
+				signal,
+				async () => {
+					waitSignal.throwIfAborted();
+					if (!storagePrepared) await this.#run(claim, machine, storage, waitSignal, true);
+					if (
+						restart !== undefined &&
+						(restart.newDisk || (this.#folderStarts.get(machine.machineId) ?? 0) === restart.starts)
+					)
+						await this.#stopForFolder(folder, machine, journal, signal, restart.newDisk);
+					await this.#runFolder(folder, claim, machine, storage, journal, signal, cancel);
+					waitSignal.throwIfAborted();
+					const receipt = await this.#run(claim, machine, storage, waitSignal);
+					const uid = receipt.guestUid;
+					if (uid === null || uid < CODING_GUEST.minUid || uid > CODING_GUEST.maxUid)
+						throw new Error("CODING_FOLDER_SESSION_UID_MISSING");
+					const bootId = await this.#folderReady(machine, waitSignal);
+					return { bootId, uid, starts: this.#folderStarts.get(machine.machineId) ?? 0 };
+				},
+				cancel,
+			),
+		);
 	}
 	/** The folder model's machine runs, started if it was stopped, under the turn's run authority (a new disk under
 	 * custody's), and the start it runs under is read (#folderStartOperations). Called under #exclusive. */
@@ -2590,6 +2662,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		storage: Readonly<CloudCodingStorageBinding>,
 		journal: CodingMachineJournalPlan,
 		signal: AbortSignal,
+		cancel?: AbortSignal,
 	): Promise<void> {
 		// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
 		await this.#hostLeases.renew(journal);
@@ -2635,10 +2708,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				} else if (await this.#recordFolderRestart(machine, afterOperationId, checked)) return "rebuild";
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
-			this.#options.standbyPool
+			this.#options.standbyPool || cancel
 				? {
-						claimStandby: (project, request, checked) =>
-							this.#options.standbyPool!.claim(project, request, checked),
+						...(this.#options.standbyPool
+							? {
+									claimStandby: (project, request, checked) =>
+										this.#options.standbyPool!.claim(project, request, checked),
+								}
+							: {}),
+						...(cancel ? { cancel } : {}),
 					}
 				: undefined,
 		).catch(async (error: unknown) => {
