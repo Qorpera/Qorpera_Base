@@ -974,7 +974,7 @@ export function parseSurfaceReconciliation(value: unknown, label = "reconciliati
 	const conflictPaths =
 		raw.conflictPaths === undefined || raw.conflictPaths === null
 			? undefined
-			: parseStringArray(raw.conflictPaths, `${label}.conflictPaths`, 128, 256);
+			: parseStringArray(raw.conflictPaths, `${label}.conflictPaths`, 500, 512);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),

@@ -83,7 +83,7 @@ create table public.qorpera_surface_reconciliations (
 	reconciled_patch_manifest jsonb,
 	reconciled_commit_sha text check (reconciled_commit_sha is null or reconciled_commit_sha ~ '^[0-9a-f]{40}$'),
 	reconciled_tree_sha text check (reconciled_tree_sha is null or reconciled_tree_sha ~ '^[0-9a-f]{40}$'),
-	conflict_paths text[] not null default '{}'::text[],
+	conflict_paths text[] not null default '{}'::text[] check (cardinality(conflict_paths) <= 500),
 	error_detail text check (error_detail is null or char_length(error_detail) <= 1000),
 	attempts integer not null default 0 check (attempts >= 0),
 	auto_approve_after boolean not null default false,
@@ -125,7 +125,11 @@ language sql immutable set search_path = '' as $$
 		'selectedChangeIds', to_jsonb(p_rec.selected_change_ids),
 		'status', p_rec.status,
 		'patchManifest', p_rec.reconciled_patch_manifest,
-		'conflictPaths', to_jsonb(coalesce(p_rec.conflict_paths, '{}'::text[])),
+		'conflictPaths', (
+			select coalesce(jsonb_agg(left(btrim(p), 512) order by ord), '[]'::jsonb)
+			from unnest(coalesce(p_rec.conflict_paths, '{}'::text[])) with ordinality as u(p, ord)
+			where ord <= 500 and nullif(btrim(p), '') is not null
+		),
 		'commitSha', p_rec.reconciled_commit_sha,
 		'treeSha', p_rec.reconciled_tree_sha,
 		'errorDetail', p_rec.error_detail,
@@ -418,6 +422,16 @@ begin
 		where ch.surface_id = p_surface_id and ch.id = any(v_ordered_ids)
 			and nullif(btrim(p), '') is not null;
 	end if;
+
+	select coalesce(array_agg(capped.p order by capped.p), '{}'::text[])
+	into v_paths
+	from (
+		select distinct left(btrim(p), 512) as p
+		from unnest(coalesce(v_paths, '{}'::text[])) as p
+		where nullif(btrim(p), '') is not null
+		order by 1
+		limit 500
+	) capped;
 
 	delete from public.qorpera_surface_reconciliations
 	where surface_id = p_surface_id

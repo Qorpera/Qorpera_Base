@@ -758,4 +758,32 @@ begin
 		),
 		'rebase conflict keeps change staged and enqueues system-triggered cofounder silent reconciliation'
 	);
+
+	-- WHY: Verify conflict_paths enforces the 500-item / 512-char bounds in both storage and workspace JSON.
+	update public.qorpera_surface_reconciliations
+	set status = 'failed'
+	where surface_id = v_code_surface_id and v_cc_rebase = any(selected_change_ids);
+	perform pg_temp.ssr_as(v_owner);
+	set local role authenticated;
+	v_rec1 := public.qorpera_ensure_surface_reconciliation(
+		v_code_surface_id,
+		array[v_cc_rebase],
+		array(select 'src/p-' || lpad(i::text, 3, '0') || '-' || repeat('a', 550) from generate_series(1, 520) as i),
+		true
+	);
+	v_ws := public.qorpera_get_surface_workspace(v_code_surface_id);
+	reset role;
+
+	perform pg_temp.ssr_assert(
+		jsonb_array_length(v_rec1 -> 'conflictPaths') = 500
+		and char_length(v_rec1 #>> '{conflictPaths,0}') = 512
+		and (select cardinality(conflict_paths) = 500 and char_length(conflict_paths[1]) = 512
+			from public.qorpera_surface_reconciliations where id = (v_rec1 ->> 'id')::uuid)
+		and exists (
+			select 1 from jsonb_array_elements(v_ws -> 'reconciliations') r
+			where (r ->> 'id')::uuid = (v_rec1 ->> 'id')::uuid
+				and jsonb_array_length(r -> 'conflictPaths') = 500
+		),
+		'reconciliation conflict_paths and workspace JSON enforce 500 entries and 512 chars'
+	);
 end $$;
