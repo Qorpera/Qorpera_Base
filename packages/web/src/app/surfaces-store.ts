@@ -4027,20 +4027,75 @@ export class SurfacesStore {
 		const targets = groups.filter((group) => group.changeIds.length > 0);
 		const ids = targets.flatMap((group) => group.changeIds);
 		if (ids.length === 0) return false;
-		const titleOf = (id: string): string | undefined =>
+		const titleOf = (id: string): string =>
 			targets
 				.map((group) => this.session(group.sessionId)?.changes.find((change) => change.id === id)?.title)
-				.find(Boolean);
-		const label = ids.length === 1 ? (titleOf(ids[0]!) ?? "") : t("{count} changes", { count: ids.length });
+				.find(Boolean) ?? "";
+		const labelFor = (done: readonly string[]): string =>
+			done.length === 1 ? titleOf(done[0]!) : t("{count} changes", { count: done.length });
+		const verb = this.#undoVerbFor(surfaceId);
 		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			const now = new Date().toISOString();
+			const updatedSessions: SurfaceSession[] = [];
 			for (const group of targets) {
-				for (const id of group.changeIds) await this.approveChange(group.sessionId, id);
+				const found = this.#sessionAt(group.sessionId);
+				if (!found) continue;
+				const chosen = new Set(group.changeIds);
+				const drawerOpen = this.drawerOpenOn(group.sessionId);
+				const changes = found.session.changes.map((change) =>
+					chosen.has(change.id) && isOpenChange(change)
+						? { ...change, status: "merged" as const, canUndo: true, resolvedAt: now }
+						: change,
+				);
+				const openCount = countOpenSurfaceChanges(changes);
+				updatedSessions.push({
+					...found.session,
+					state: openCount === 0 && !drawerOpen ? "completed" : "ready",
+					hasActiveChat: drawerOpen,
+					changes,
+					openChangeCount: openCount,
+					messages: [
+						...found.session.messages,
+						...found.session.changes
+							.filter((change) => chosen.has(change.id) && isOpenChange(change))
+							.map((change) => ({
+								id: `local-message-${++this.#localSeq}`,
+								sessionId: group.sessionId,
+								authorKind: "system" as const,
+								text: this.#doneLine(verb, change.title),
+								changeId: change.id,
+								createdAt: now,
+							})),
+					],
+					updatedAt: now,
+					closedAt: openCount === 0 && !drawerOpen ? now : null,
+				});
 			}
-			this.#offerUndo(label, ids, this.#undoVerbFor(surfaceId));
+			const done = ids.filter((id) =>
+				updatedSessions.some((session) => session.changes.some((change) => change.id === id)),
+			);
+			if (done.length === 0) return false;
+			this.#commitLocalChangesToBase(surfaceId, done);
+			for (const updated of updatedSessions)
+				this.#applySession(updated, approvalOutcome(updated, this.drawerOpenOn(updated.id)));
+			this.#offerUndo(labelFor(done), done, verb);
 			return true;
 		}
+		const client = this.#options.client;
+		if (!client) {
+			this.store.set({ error: this.#options.unavailableMessage });
+			return false;
+		}
+		const keys = ids.map((id) => `change:${id}`);
+		if (keys.some((key) => this.state.busy[key])) return false;
+		this.store.set((state) => {
+			const busy = { ...state.busy };
+			for (const key of keys) busy[key] = true;
+			return { busy, error: undefined };
+		});
 		const approved = new Map<string, SurfaceSession>();
-		const finished = await this.#run(`approve-changes:${surfaceId}`, async (client) => {
+		let finished = false;
+		try {
 			for (const group of targets) {
 				const open = this.session(group.sessionId)?.changes.filter(isOpenChange) ?? [];
 				const whole =
@@ -4051,26 +4106,38 @@ export class SurfacesStore {
 				}
 				for (const id of group.changeIds) approved.set(group.sessionId, await client.approveSurfaceChange(id));
 			}
-			return true;
-		});
+			finished = true;
+		} catch (error) {
+			if (!this.#options.signal.aborted)
+				this.store.set({
+					error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
+				});
+		} finally {
+			if (!this.#options.signal.aborted)
+				this.store.set((state) => {
+					const busy = { ...state.busy };
+					for (const key of keys) delete busy[key];
+					return { busy };
+				});
+		}
 		if (approved.size === 0) return false;
 		const statusById = new Map<string, SurfaceChangeUnit["status"]>();
 		for (const updated of approved.values()) {
 			if (this.drawerOpenOn(updated.id) && !updated.changes.some(isOpenChange)) {
 				this.store.set({ drawer: undefined });
-				void this.#options.client?.setSessionChatOpen(updated.id, false).catch(() => undefined);
+				void client.setSessionChatOpen(updated.id, false).catch(() => undefined);
 			}
 			this.#applySession(updated, approvalOutcome(updated, this.drawerOpenOn(updated.id)));
 			for (const change of updated.changes) statusById.set(change.id, change.status);
 		}
 		const merged = ids.filter((id) => statusById.get(id) === "merged");
 		const merging = ids.filter((id) => statusById.get(id) === "merging");
-		const verb = this.#undoVerbFor(surfaceId);
-		if (merging.length > 0) this.#offerPendingMerge(surfaceId, label, [...merged, ...merging], verb);
-		else if (merged.length > 0) this.#offerUndo(label, merged, verb);
-		if (ids.some((id) => statusById.get(id) === "staged")) void this.refreshWorkspace(surfaceId);
+		const done = [...merged, ...merging];
+		if (merging.length > 0) this.#offerPendingMerge(surfaceId, labelFor(done), done, verb);
+		else if (merged.length > 0) this.#offerUndo(labelFor(merged), merged, verb);
+		if (!finished || ids.some((id) => statusById.get(id) === "staged")) void this.refreshWorkspace(surfaceId);
 		void this.refreshSurfaces();
-		return Boolean(finished);
+		return finished;
 	}
 
 	async discardChange(sessionId: string, changeId: string): Promise<boolean> {

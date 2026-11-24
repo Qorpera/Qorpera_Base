@@ -364,7 +364,6 @@ export class SurfaceSessionDrawer {
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
 	#armedApprove: string | undefined;
-	#approvingIds: ReadonlySet<string> = new Set();
 	#approvable: readonly { readonly sessionId: string; readonly changeIds: readonly string[] }[] = [];
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
@@ -744,22 +743,6 @@ export class SurfaceSessionDrawer {
 		this.update(current);
 	}
 
-	async #approveShown(surfaceId: string): Promise<void> {
-		const groups = this.#approvable;
-		const ids = groups.flatMap((group) => group.changeIds);
-		if (ids.length === 0) return;
-		this.#approvingIds = new Set([...this.#approvingIds, ...ids]);
-		this.#redraw();
-		try {
-			await this.#store.approveChanges(surfaceId, groups);
-		} finally {
-			const left = new Set(this.#approvingIds);
-			for (const id of ids) left.delete(id);
-			this.#approvingIds = left;
-			this.#redraw();
-		}
-	}
-
 	#arm(key: string): void {
 		if (this.#armTimer) clearTimeout(this.#armTimer);
 		this.#armedApprove = key;
@@ -983,7 +966,6 @@ export class SurfaceSessionDrawer {
 							{
 								type: "button",
 								class: `surface-overview-act surface-approve-btn surface-approve-all${armedAll ? " is-confirming" : ""}`,
-								disabled: Boolean(state.busy[`approve-changes:${surface.id}`]),
 								"data-act": "approve-shown",
 								...(armedAll ? { "data-armed": "true" } : {}),
 							},
@@ -1124,11 +1106,7 @@ export class SurfaceSessionDrawer {
 	}
 
 	#isApplying(change: SurfaceChangeUnit): boolean {
-		return (
-			change.status === "merging" ||
-			this.#approvingIds.has(change.id) ||
-			Boolean(this.#store.state.busy[`change:${change.id}`])
-		);
+		return change.status === "merging" || Boolean(this.#store.state.busy[`change:${change.id}`]);
 	}
 
 	#agentCard(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): HTMLElement | null {
@@ -1983,7 +1961,8 @@ export class SurfaceSessionDrawer {
 				if (sessionId && this.#confirmOrArm(`approve-all:${sessionId}`)) void store.approveAll(sessionId);
 				return;
 			case "approve-shown":
-				if (surfaceId && this.#confirmOrArm(`approve-shown:${surfaceId}`)) void this.#approveShown(surfaceId);
+				if (surfaceId && this.#confirmOrArm(`approve-shown:${surfaceId}`))
+					void store.approveChanges(surfaceId, this.#approvable);
 				return;
 			case "open-publish": {
 				const targetSurface = store.state.surfaces.find((item) => item.id === surfaceId);
