@@ -1141,6 +1141,7 @@ export class SurfaceCodeHostWorker {
 					const composed = await composePreviewTree(codeHostJob, {
 						repository,
 						...(baseSha ? { baseSha } : {}),
+						...(preview.reconciledCommitSha ? { reconciledCommitSha: preview.reconciledCommitSha } : {}),
 						...(preview.exploration ? { exploration: preview.exploration } : {}),
 						changes: (preview.changes ?? []).map((change) => ({
 							changeId: change.changeId,

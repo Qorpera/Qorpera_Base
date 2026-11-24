@@ -119,7 +119,8 @@ describe("session crew", () => {
 		expect(sessionCrew(ids[3]!)).toEqual(sessionCrew(ids[3]!));
 		expect(crewLook(session([], { state: "running" }))).toMatchObject({ tone: "working", activity: "Working" });
 		expect(crewLook(session([], { state: "needs_input" }))).toMatchObject({ activity: "Waiting", ask: "question" });
-		expect(crewLook(session(["conflicted"]))).toMatchObject({ tone: "attention", ask: "bang" });
+		expect(crewLook(session([], { state: "failed" }))).toMatchObject({ tone: "attention", ask: "bang" });
+		expect(crewLook(session(["conflicted"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["staged"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["merged"]))).toMatchObject({ tone: "merged" });
 	});
@@ -871,7 +872,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		const tabLabels = () =>
 			[...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
+		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
@@ -1094,6 +1095,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const address = () => view.el.querySelector<HTMLButtonElement>(".surface-pill-address");
 
 		expect(address()?.className).toBe("surface-pill-address is-unknown");
+		expect(address()?.title).toBe(address()?.querySelector(".surface-address-host")?.textContent);
+		expect(address()?.title).not.toBe("");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
 		expect(address()?.dataset.act).toBe("address");
 		expect(hosting.client.read).not.toHaveBeenCalled();
 
@@ -1313,7 +1317,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("renders the foundational Identity interface from its starter layout with the Used by line, Philosophy and Voice", async () => {
+	it("renders the foundational Identity interface from its starter layout without link indicators, with Philosophy and Voice", async () => {
 		stubFigureMotion();
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
@@ -1327,12 +1331,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
+		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns"]);
 
-		const reachChips = [
-			...view.el.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
-		].map((chip) => chip.dataset.slug);
-		expect(reachChips).toEqual(expect.arrayContaining(["website", "phone-app", "product"]));
+		expect(view.el.querySelector(".studio-reach")).toBeNull();
+		expect(view.el.querySelector("[data-link-dir]")).toBeNull();
 		expect(view.el.querySelector('[data-token="colors.Aften Lavendel"] code')?.textContent).toBe("#6f61cf");
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="philosophy"]')!.click();
@@ -1646,13 +1648,11 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		hub.dispose();
 	});
 
-	it("renders the Used by line on Identity, the same one-line links on Product, and applies live Identity CSS vars to Product", async () => {
+	it("omits link indicators on Identity and Product while still applying live Identity CSS vars to Product", async () => {
 		stubFigureMotion();
-		const navigated: string[] = [];
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
-			onNavigateSurface: (slug) => navigated.push(slug),
 			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
 		});
 		await store.load();
@@ -1667,11 +1667,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		identityView.update();
 
-		const identityReach = identityView.el.querySelector<HTMLElement>('.studio-reach[data-live-linked="true"]')!;
-		expect(identityReach).not.toBeNull();
-		expect(identityReach.querySelector('[data-link-dir="out"]')?.textContent).toContain("Used by");
-		expect(identityReach.textContent).not.toContain("identity/tokens.json");
-		expect(identityReach.querySelector(".studio-live-dot")).toBeNull();
+		expect(identityView.el.querySelector(".studio-reach")).toBeNull();
+		expect(identityView.el.querySelector("[data-link-dir]")).toBeNull();
 		identityView.dispose();
 
 		const productView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
@@ -1683,29 +1680,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(productStudio.classList.contains("has-identity-tokens")).toBe(true);
 		expect(productStudio.style.getPropertyValue("--q-color-accent")).toBe("#6f61cf");
 
-		const sharedStrip = productView.el.querySelector<HTMLElement>('.studio-reach[data-live-linked="true"]')!;
-		expect(sharedStrip).not.toBeNull();
+		expect(productView.el.querySelector(".studio-reach")).toBeNull();
 		expect(productView.el.querySelector(".studio-shared-links")).toBeNull();
-		expect(sharedStrip.querySelector('[data-link-dir="in"]')?.textContent).toContain("Builds on");
-		expect(sharedStrip.querySelector('[data-link-dir="out"]')?.textContent).toContain("Used by");
-		expect(sharedStrip.textContent).not.toContain("tokens.css");
-		expect(sharedStrip.textContent).not.toContain("specs.json");
-		expect(sharedStrip.textContent).not.toContain("CSS vars");
-
-		const outSlugs = [
-			...sharedStrip.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
-		].map((chip) => chip.dataset.slug);
-		expect(outSlugs).toContain("website");
-		expect(outSlugs).toContain("phone-app");
-		expect(new Set(outSlugs).size).toBe(outSlugs.length);
-		const inSlugs = [
-			...sharedStrip.querySelectorAll<HTMLButtonElement>('[data-link-dir="in"] .studio-reach-chip'),
-		].map((chip) => chip.dataset.slug);
-		expect(inSlugs).toContain("identity");
-		expect(new Set(inSlugs).size).toBe(inSlugs.length);
-
-		sharedStrip.querySelector<HTMLButtonElement>('[data-link-dir="in"] [data-slug="identity"]')!.click();
-		expect(navigated).toEqual(["identity"]);
+		expect(productView.el.querySelector("[data-link-dir]")).toBeNull();
 
 		const identityTokenChange = store.workspace(identitySurface.id)!.activeSessions[0]!.changes[0]!;
 		await store.toggleChange(identitySurface.id, identityTokenChange.id);
@@ -2014,6 +1991,65 @@ describe("a website that is not live", () => {
 		expect(client.publishSurface).toHaveBeenCalledTimes(2);
 		expect(store.state.surfaces.find((item) => item.id === SURFACE)?.unpublishedChangeCount).toBe(0);
 		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("publishes a website whose Base was never published, once per Base, silently, and never for a read-only member", async () => {
+		const base = "a".repeat(40);
+		const { store, view, client, raise, settle, done } = await website({
+			served: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
+			publishAnswer: { hasUnpublishedChanges: false },
+		});
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await settle();
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		noProblem(store, view);
+
+		await raise({ liveHeadSha: "b".repeat(40), hasUnpublishedChanges: true });
+		expect(client.publishSurface).toHaveBeenCalledTimes(2);
+		done();
+
+		const reader = await website({
+			served: false,
+			canWrite: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
+		});
+		expect(reader.client.publishSurface).not.toHaveBeenCalled();
+		reader.done();
+	});
+
+	it("publishes nothing when Base has nothing a publish would add", async () => {
+		const { client, done } = await website({
+			served: false,
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: false,
+				liveHeadSha: "a".repeat(40),
+			},
+		});
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("goes live by publishing a Base that moved since its last publish first", async () => {
+		const { store, view, order, settle, done } = await website({
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: true,
+				liveHeadSha: "b".repeat(40),
+			},
+			publishFails: 1,
+			publishAnswer: { hasUnpublishedChanges: false },
+		});
+		expect(order).toEqual(["publish"]);
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish", "publish", "public:true", "auto:false"]);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-live");
+		noProblem(store, view);
 		done();
 	});
 

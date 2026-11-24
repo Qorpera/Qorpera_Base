@@ -375,7 +375,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-24",
 		title: "An interface's page is shaped by a layout it can change",
-		text: "Every Studio interface's page, Identity and Product included, is now drawn from a layout: its tabs, and in each tab blocks such as a 3D model, a name and one line, colour dots, short figures, specs, tables, cards, reports and files, side by side when it helps, or a small app built for the page. A new interface starts from a starter layout. The session working on an interface sees that layout and can change it like any other file, as a staged change the member previews and approves. When you start a session, ask for the page the member wants, not only for files.",
+		text: "Every Studio interface's page, Identity and Product included, is now drawn from a layout: its tabs, and in each tab blocks such as a 3D model, a name and one line, colour dots, short figures, specs, tables, cards, reports and artifacts, side by side when it helps, or a small app built for the page. A new interface starts from a starter layout. The session working on an interface sees that layout and can change it like any other file, as a staged change the member previews and approves. When you start a session, ask for the page the member wants, not only for files.",
 	},
 	{
 		id: "interface-template-skills",
@@ -404,6 +404,27 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-24",
 		title: "Animated breakdowns and voice settings in Studio",
 		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in its layout. When a member asks for a video, walkthrough or visual breakdown, start a Studio session on that interface so it stages an animated breakdown and records spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
+	},
+	{
+		id: "failed-interface-builds-go-back-to-their-session",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "A failed interface build goes back to its session",
+		text: "When Qorpera cannot build a code interface's preview or publish because of the code, the session whose change broke it gets a turn of its own with the end of the build log, and fixes and stages the fix, at most three times in a row. Members keep seeing the last preview that built, marked as being fixed. You need not start a session to fix such a build. If three fixes did not help, start one with the member's request and the build's words, or ask the member what the page should do.",
+	},
+	{
+		id: "split-surface-report-deliverables",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "Reports and posts stage one deliverable per change",
+		text: "Studio and report sessions now stage each report, analysis, essay or blog post as its own staged change rather than bundling several pieces together, and malformed report payloads are refused at stage time. Write finished reports and posts as structured reports (or standalone HTML pages when bespoke presentation is requested) instead of raw Markdown, and members open each piece directly from its change row in Preview before approving it.",
+	},
+	{
+		id: "studio-artifacts-block",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "Studio tabs use an artifacts section instead of a Files tab",
+		text: "Product and Identity interfaces no longer have a catch-all Files tab. When a tab needs vector art, pictures, notes, briefs, pages or extra structured files, the session working on that interface adds an artifacts block to the tab in its layout. Members can expand every artifact fullscreen without seeing raw filepaths.",
 	},
 ]);
 

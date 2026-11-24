@@ -12,6 +12,7 @@ export * from "./cloud-machine.ts";
 export * from "./folder-key.ts";
 export * from "./idle-rule.ts";
 export * from "./surface-layout.ts";
+export * from "./surface-merge.ts";
 export * from "./surface-shared-assets.ts";
 export * from "./surfaces.ts";
 export * from "./wire-values.ts";

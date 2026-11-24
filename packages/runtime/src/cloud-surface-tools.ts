@@ -176,6 +176,7 @@ export interface StageSurfacePatchRequest {
 	readonly title: string;
 	readonly summary: string;
 	readonly ops: readonly StudioPatchOp[];
+	readonly baseFiles?: Readonly<Record<string, string | null>>;
 	readonly notePaths: readonly string[];
 	readonly finishSession: boolean;
 }
@@ -589,6 +590,10 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async stageSurfacePatch(sessionId, request, context) {
 			const affectedPaths = [...new Set(request.ops.map((op) => op.path))];
+			const hasBaseFiles = request.baseFiles !== undefined && Object.keys(request.baseFiles).length > 0;
+			const patchManifest = hasBaseFiles
+				? { ops: [...request.ops], baseFiles: request.baseFiles }
+				: [...request.ops];
 			const response = await rpc(
 				"qorpera_native_surface_record_change",
 				{
@@ -602,7 +607,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_depends_on_change_ids: [],
 					p_affected_paths: affectedPaths,
 					p_diff_stats: null,
-					p_patch_manifest: [...request.ops],
+					p_patch_manifest: patchManifest,
 					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 				},
@@ -1040,6 +1045,10 @@ function mergeLayoutJson(base: unknown, patch: Readonly<Record<string, unknown>>
 
 const LAYOUT_REFUSAL_PREFIX = `${SURFACE_LAYOUT_PATH} would not draw:`;
 const LAYOUT_REFUSAL_FIX = "Fix it and stage the patch again; nothing was staged.";
+const REPORT_FILE_RE = /\.report\.json$/i;
+const STANDALONE_HTML_FILE_RE = /\.html?$/i;
+const MODULE_PATH_RE = /(?:^|\/)modules\/[^/]+\//i;
+const REPORT_BLOCK_KINDS = new Set(["quote", "bar_chart", "line_chart", "table", "callout", "figure"]);
 
 function layoutRefusal(problem: string): CloudToolRefusal {
 	const plain = problem.replace(/[^\u0020-\u007e]/g, "?");
@@ -1047,6 +1056,150 @@ function layoutRefusal(problem: string): CloudToolRefusal {
 	return new CloudToolRefusal(
 		`${LAYOUT_REFUSAL_PREFIX} ${plain.length > room ? `${plain.slice(0, room)}...` : plain}. ${LAYOUT_REFUSAL_FIX}`,
 	);
+}
+
+function reportRefusal(path: string, problem: string): CloudToolRefusal {
+	const rawPath = path.replace(/[^\u0020-\u007e]/g, "?");
+	const safePath = rawPath.length > 160 ? `${rawPath.slice(0, 157)}...` : rawPath;
+	const prefix = `${safePath} would not render as a report:`;
+	const fix = "Fix it to match the *.report.json format and stage again; nothing was staged.";
+	const plain = problem.replace(/[^\u0020-\u007e]/g, "?");
+	const room = Math.max(80, 1000 - prefix.length - fix.length - 4);
+	return new CloudToolRefusal(`${prefix} ${plain.length > room ? `${plain.slice(0, room)}...` : plain}. ${fix}`);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): boolean {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function validateReportBlock(block: unknown, path: string, label: string): void {
+	if (!isPlainRecord(block)) throw reportRefusal(path, `${label} must be an object`);
+	const kind = typeof block.kind === "string" ? block.kind : "";
+	if (!REPORT_BLOCK_KINDS.has(kind)) {
+		throw reportRefusal(path, `${label}.kind must be one of quote, bar_chart, line_chart, table, callout, figure`);
+	}
+	if (kind === "quote") {
+		if (!nonEmptyString(block.text)) throw reportRefusal(path, `${label} (quote) needs a non-empty text`);
+		return;
+	}
+	if (kind === "bar_chart") {
+		if (!Array.isArray(block.items) || !block.items.some(isPlainRecord)) {
+			throw reportRefusal(path, `${label} (bar_chart) needs a non-empty items array`);
+		}
+		return;
+	}
+	if (kind === "line_chart") {
+		const validSeries =
+			Array.isArray(block.series) &&
+			block.series.some((entry) => isPlainRecord(entry) && Array.isArray(entry.values) && entry.values.length > 1);
+		if (!validSeries) {
+			throw reportRefusal(path, `${label} (line_chart) needs series entries with at least 2 numeric values`);
+		}
+		return;
+	}
+	if (kind === "table") {
+		if (!Array.isArray(block.columns) || block.columns.length === 0 || !Array.isArray(block.rows)) {
+			throw reportRefusal(path, `${label} (table) needs non-empty columns and rows arrays`);
+		}
+		return;
+	}
+	if (kind === "callout") {
+		if (!nonEmptyString(block.body) && !nonEmptyString(block.heading) && !nonEmptyString(block.title)) {
+			throw reportRefusal(path, `${label} (callout) needs a non-empty heading or body`);
+		}
+		return;
+	}
+	if (!Array.isArray(block.panels) || !block.panels.some(isPlainRecord)) {
+		throw reportRefusal(path, `${label} (figure) needs a non-empty panels array`);
+	}
+}
+
+function validateReportSections(sections: unknown, path: string): void {
+	if (!Array.isArray(sections) || sections.length === 0) {
+		throw reportRefusal(path, "sections must be a non-empty array");
+	}
+	for (let i = 0; i < sections.length; i += 1) {
+		const section = sections[i];
+		const label = `sections[${i}]`;
+		if (!isPlainRecord(section)) throw reportRefusal(path, `${label} must be an object`);
+		if (!nonEmptyString(section.heading) && !nonEmptyString(section.title)) {
+			throw reportRefusal(path, `${label} needs a non-empty heading`);
+		}
+		const hasParagraphs =
+			Array.isArray(section.paragraphs) && section.paragraphs.some((item) => nonEmptyString(item));
+		if (section.paragraphs !== undefined && !Array.isArray(section.paragraphs)) {
+			throw reportRefusal(path, `${label}.paragraphs must be an array of strings`);
+		}
+		if (section.blocks !== undefined) {
+			if (!Array.isArray(section.blocks)) throw reportRefusal(path, `${label}.blocks must be an array`);
+			for (let j = 0; j < section.blocks.length; j += 1) {
+				validateReportBlock(section.blocks[j], path, `${label}.blocks[${j}]`);
+			}
+		}
+		const hasBlocks = Array.isArray(section.blocks) && section.blocks.length > 0;
+		if (!hasParagraphs && !hasBlocks) {
+			throw reportRefusal(path, `${label} needs at least one non-empty paragraph or block`);
+		}
+	}
+}
+
+function validateReportMetrics(metrics: unknown, path: string): void {
+	if (!Array.isArray(metrics)) throw reportRefusal(path, "keyMetrics must be an array");
+	for (let i = 0; i < metrics.length; i += 1) {
+		const metric = metrics[i];
+		if (!isPlainRecord(metric) || !nonEmptyString(metric.label) || !nonEmptyString(metric.value)) {
+			throw reportRefusal(path, `keyMetrics[${i}] needs non-empty string label and value`);
+		}
+	}
+}
+
+export function checkStagedSurfaceDeliverables(
+	ops: readonly StudioPatchOp[],
+	options?: { readonly allowMultipleDeliverables?: boolean },
+): void {
+	const deliverablePaths = new Set<string>();
+	for (const op of ops) {
+		if (op.op === "delete") continue;
+		const normalized = op.path
+			.trim()
+			.replace(/^\/+|\/+$/g, "")
+			.toLowerCase();
+		if (REPORT_FILE_RE.test(op.path)) {
+			deliverablePaths.add(normalized);
+			if (op.op === "write_text") {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(op.content);
+				} catch {
+					throw reportRefusal(op.path, "content is not valid JSON");
+				}
+				if (!isPlainRecord(parsed)) throw reportRefusal(op.path, "top-level value must be a JSON object");
+				if (!nonEmptyString(parsed.headline) && !nonEmptyString(parsed.title)) {
+					throw reportRefusal(op.path, "needs a non-empty headline string");
+				}
+				if (parsed.keyMetrics !== undefined) validateReportMetrics(parsed.keyMetrics, op.path);
+				validateReportSections(parsed.sections, op.path);
+			} else if (op.op === "merge_json") {
+				const patch = op.patch;
+				if (patch.headline !== undefined && !nonEmptyString(patch.headline)) {
+					throw reportRefusal(op.path, "headline must be a non-empty string");
+				}
+				if (patch.keyMetrics !== undefined) validateReportMetrics(patch.keyMetrics, op.path);
+				if (patch.sections !== undefined) validateReportSections(patch.sections, op.path);
+			}
+		} else if (STANDALONE_HTML_FILE_RE.test(op.path) && !MODULE_PATH_RE.test(normalized)) {
+			deliverablePaths.add(normalized);
+		}
+	}
+	if (!options?.allowMultipleDeliverables && deliverablePaths.size > 1) {
+		throw new CloudToolRefusal(
+			"Stage each report (*.report.json) or standalone HTML document in its own stage_surface_patch call so members can preview, toggle, and approve each deliverable independently. Nothing was staged.",
+		);
+	}
 }
 
 export async function checkStagedSurfaceLayout(
@@ -1110,62 +1263,73 @@ export async function checkStagedSurfaceLayout(
 	return "checked";
 }
 
+export interface StageSurfacePatchToolOptions {
+	readonly deferSessionCompletion?: boolean;
+	readonly allowMultipleDeliverables?: boolean;
+}
+
 export function createStageSurfacePatchTool(
 	sessionId: string,
 	port: SurfacePatchToolPort,
 	layout?: SurfaceLayoutStaging,
+	options: StageSurfacePatchToolOptions = {},
 ): CloudNativeTool {
 	const stagedThisTurn: StudioPatchOp[] = [];
+	const schemaProperties: Record<string, JsonValue> = {
+		title: {
+			type: "string",
+			minLength: 1,
+			maxLength: SURFACE_MAX_CHANGE_TITLE_CHARS,
+			description: "Short plain founder-facing title for this single staged change.",
+		},
+		summary: {
+			type: "string",
+			maxLength: SURFACE_MAX_CHANGE_SUMMARY_CHARS,
+			description: "1-2 sentences describing what the founder will see in this change.",
+		},
+		ops: {
+			type: "array",
+			minItems: 1,
+			maxItems: 256,
+			description: options.allowMultipleDeliverables
+				? "Ordered StudioPatchOp entries (write_text, delete, or merge_json) relative to the surface folder root."
+				: "Ordered StudioPatchOp entries (write_text, delete, or merge_json) relative to the surface folder root. Keep each call scoped to one deliverable: stage each *.report.json article or standalone .html document in its own call.",
+			items: {
+				type: "object",
+				additionalProperties: true,
+				required: ["op", "path"],
+				properties: {
+					op: { type: "string", enum: ["write_text", "delete", "merge_json"] },
+					path: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
+					content: { type: "string" },
+					patch: { type: "object", additionalProperties: true },
+				},
+			},
+		},
+		notePaths: {
+			type: "array",
+			maxItems: MAX_SURFACE_NOTE_PATHS,
+			items: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
+			description: "Optional supporting rationale note paths under the surface notes folder.",
+		},
+	};
+	if (!options.deferSessionCompletion) {
+		schemaProperties.finishSession = {
+			type: "boolean",
+			description: "Set true when this patch completes the turn and marks the session ready for review.",
+		};
+	}
 	return {
 		name: "stage_surface_patch",
 		source: "worker",
-		description:
-			"Stage a cohesive folder_patch ChangeUnit on a Studio or Identity Surface session. Members toggle and preview each patch live before approving it; attach any supporting analyses as notePaths.",
+		description: options.allowMultipleDeliverables
+			? "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session covering all requested paths in a single call. Write reports as valid *.report.json articles when updating report deliverables."
+			: "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session. Call this tool once per independent deliverable (for example, one call per report, article, blog post, or page section) so members can toggle, preview, and approve each piece individually; never bundle multiple reports or standalone HTML documents into one call. Write reports and blog posts as *.report.json articles (or self-contained .html when bespoke layout is needed) rather than raw .md files.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
 			required: ["title", "summary", "ops"],
-			properties: {
-				title: {
-					type: "string",
-					minLength: 1,
-					maxLength: SURFACE_MAX_CHANGE_TITLE_CHARS,
-					description: "Short plain founder-facing title for this staged patch.",
-				},
-				summary: {
-					type: "string",
-					maxLength: SURFACE_MAX_CHANGE_SUMMARY_CHARS,
-					description: "1-2 sentences describing what the founder will see.",
-				},
-				ops: {
-					type: "array",
-					minItems: 1,
-					maxItems: 256,
-					description:
-						"Ordered StudioPatchOp entries (write_text, delete, or merge_json) relative to the surface folder root.",
-					items: {
-						type: "object",
-						additionalProperties: true,
-						required: ["op", "path"],
-						properties: {
-							op: { type: "string", enum: ["write_text", "delete", "merge_json"] },
-							path: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
-							content: { type: "string" },
-							patch: { type: "object", additionalProperties: true },
-						},
-					},
-				},
-				notePaths: {
-					type: "array",
-					maxItems: MAX_SURFACE_NOTE_PATHS,
-					items: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
-					description: "Optional supporting Note or report file paths folded onto this session.",
-				},
-				finishSession: {
-					type: "boolean",
-					description: "Set true when this patch completes the turn and marks the session ready for review.",
-				},
-			},
+			properties: schemaProperties,
 		},
 		parseArguments(value: JsonValue): JsonValue {
 			let raw: Record<string, unknown>;
@@ -1214,7 +1378,8 @@ export function createStageSurfacePatchTool(
 				throw new CloudToolArgumentRefusal(`ops exceeds ${MAX_STAGE_SURFACE_PATCH_BYTES} bytes`);
 			}
 			const notePaths = parseOptionalNotePathsArg(raw.notePaths);
-			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			const parsedFinishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			const finishSession = options.deferSessionCompletion ? false : parsedFinishSession;
 			return {
 				title,
 				summary,
@@ -1223,23 +1388,20 @@ export function createStageSurfacePatchTool(
 				finishSession,
 			};
 		},
-		...(layout
-			? {
-					async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
-						const check = await checkStagedSurfaceLayout(
-							(parsed as unknown as StageSurfacePatchRequest).ops,
-							{
-								...layout,
-								waitingOps: layout.waitingOps === null ? null : [...layout.waitingOps, ...stagedThisTurn],
-							},
-							context.signal,
-						);
-						return check === "unchecked"
-							? { ...(parsed as Record<string, JsonValue>), layoutUnchecked: true }
-							: parsed;
-					},
-				}
-			: {}),
+		async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
+			const ops = (parsed as unknown as StageSurfacePatchRequest).ops;
+			checkStagedSurfaceDeliverables(ops, { allowMultipleDeliverables: options.allowMultipleDeliverables });
+			if (!layout) return parsed;
+			const check = await checkStagedSurfaceLayout(
+				ops,
+				{
+					...layout,
+					waitingOps: layout.waitingOps === null ? null : [...layout.waitingOps, ...stagedThisTurn],
+				},
+				context.signal,
+			);
+			return check === "unchecked" ? { ...(parsed as Record<string, JsonValue>), layoutUnchecked: true } : parsed;
+		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as StageSurfacePatchRequest & { readonly layoutUnchecked?: boolean };
 			const result = await port.stageSurfacePatch(sessionId, parsed, context);
@@ -1254,7 +1416,7 @@ export function createStageSurfacePatchTool(
 					openChangeCount: result.openChangeCount,
 					opCount: parsed.ops.length,
 					notePaths: [...parsed.notePaths],
-					finishSession: parsed.finishSession,
+					...(options.deferSessionCompletion ? {} : { finishSession: parsed.finishSession }),
 					staged: true,
 					...(parsed.layoutUnchecked === true ? { note: LAYOUT_UNCHECKED_NOTE } : {}),
 				}),

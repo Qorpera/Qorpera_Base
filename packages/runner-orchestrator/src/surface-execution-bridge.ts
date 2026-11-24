@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import {
 	type CloudCodingRepository,
 	compileIdentityTokensCss,
+	composeReconciledFolderChanges,
 	IDENTITY_SHARED_ASSET_PATHS,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	isUuid,
+	mergeStudioTextContent,
 	PRODUCT_CATALOG_PATH,
 	PRODUCT_SPECS_PATH,
 	parseCloudCodingRepository,
@@ -441,9 +443,24 @@ function mergeJsonPatch(
 	return { merged, conflicts };
 }
 
+function lookupChangeBaseFile(
+	baseFiles: Readonly<Record<string, string | null>> | null | undefined,
+	rawPath: string,
+	safePath: string,
+): { readonly hasBase: boolean; readonly content: string | null } {
+	if (!baseFiles) return { hasBase: false, content: null };
+	if (Object.hasOwn(baseFiles, rawPath)) return { hasBase: true, content: baseFiles[rawPath] ?? null };
+	if (Object.hasOwn(baseFiles, safePath)) return { hasBase: true, content: baseFiles[safePath] ?? null };
+	return { hasBase: false, content: null };
+}
+
 export function applyStudioFolderPatches(
 	baseFiles: Readonly<Record<string, SurfaceFolderFileValue>>,
-	changes: readonly { readonly changeId: string; readonly ops: readonly StudioPatchOp[] }[],
+	changes: readonly {
+		readonly changeId: string;
+		readonly ops: readonly StudioPatchOp[];
+		readonly baseFiles?: Readonly<Record<string, string | null>> | null;
+	}[],
 	folderRoot: string,
 ): ApplyStudioFolderPatchesResult {
 	const normalizedRoot = normalizeSurfaceFolderRoot(folderRoot);
@@ -470,22 +487,81 @@ export function applyStudioFolderPatches(
 			const safePath = assertSurfaceFolderPatchPath(op.path, normalizedRoot);
 			if (op.op === "write_text" || op.op === "delete" || op.op === "write_file") {
 				const priorOwner = nextWholeFiles.get(safePath);
-				if (priorOwner && priorOwner !== change.changeId) {
-					conflictPaths.push(safePath);
+				const jsonOwners = nextJsonKeys.get(safePath);
+				const hasPriorWholeOther = Boolean(priorOwner && priorOwner !== change.changeId);
+				const hasPriorJsonOther = Boolean(
+					jsonOwners && [...jsonOwners.values()].some((owner) => owner !== change.changeId),
+				);
+				const changeBase = lookupChangeBaseFile(change.baseFiles, op.path, safePath);
+				const existingVal = working[safePath] ?? null;
+
+				if (op.op === "write_file") {
+					if (hasPriorWholeOther || hasPriorJsonOther) {
+						conflictPaths.push(safePath);
+						continue;
+					}
+					nextWholeFiles.set(safePath, change.changeId);
+					working[safePath] = storedFileValue({ ...op.file, executable: false });
+					changeModifiedPaths.add(safePath);
 					continue;
 				}
-				const jsonOwners = nextJsonKeys.get(safePath);
-				if (jsonOwners && [...jsonOwners.values()].some((owner) => owner !== change.changeId)) {
+
+				if (op.op === "delete") {
+					if (hasPriorWholeOther || hasPriorJsonOther) {
+						if (existingVal !== null) {
+							conflictPaths.push(safePath);
+							continue;
+						}
+					} else if (changeBase.hasBase && existingVal !== null && existingVal !== changeBase.content) {
+						conflictPaths.push(safePath);
+						continue;
+					}
+					nextWholeFiles.set(safePath, change.changeId);
+					working[safePath] = null;
+					changeModifiedPaths.add(safePath);
+					continue;
+				}
+
+				const initialLiveVal = baseFiles[safePath] ?? null;
+				const effectiveBase: { readonly hasBase: boolean; readonly content: string | null } = changeBase.hasBase
+					? changeBase
+					: hasPriorWholeOther || hasPriorJsonOther
+						? {
+								hasBase: typeof initialLiveVal === "string" || initialLiveVal === null,
+								content: typeof initialLiveVal === "string" ? initialLiveVal : null,
+							}
+						: { hasBase: false, content: null };
+
+				if (effectiveBase.hasBase && (existingVal === null || typeof existingVal === "string")) {
+					if (existingVal === effectiveBase.content) {
+						working[safePath] = op.content;
+					} else if (effectiveBase.content === null) {
+						if (existingVal !== op.content) {
+							conflictPaths.push(safePath);
+							continue;
+						}
+					} else if (existingVal === null) {
+						conflictPaths.push(safePath);
+						continue;
+					} else {
+						const merged = mergeStudioTextContent(safePath, effectiveBase.content, existingVal, op.content);
+						if (!merged.ok) {
+							conflictPaths.push(safePath);
+							continue;
+						}
+						working[safePath] = merged.content;
+					}
+					nextWholeFiles.set(safePath, change.changeId);
+					changeModifiedPaths.add(safePath);
+					continue;
+				}
+
+				if (hasPriorWholeOther || hasPriorJsonOther) {
 					conflictPaths.push(safePath);
 					continue;
 				}
 				nextWholeFiles.set(safePath, change.changeId);
-				working[safePath] =
-					op.op === "delete"
-						? null
-						: op.op === "write_file"
-							? storedFileValue({ ...op.file, executable: false })
-							: op.content;
+				working[safePath] = op.content;
 				changeModifiedPaths.add(safePath);
 				continue;
 			}
@@ -788,6 +864,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				shortHostId: job.shortHostId,
 				repository,
 				...(baseSha ? { baseSha } : {}),
+				...(job.reconciledCommitSha ? { reconciledCommitSha: job.reconciledCommitSha } : {}),
 				...(job.exploration ? { exploration: job.exploration } : {}),
 				changes: (job.changes ?? []).map((change) => ({
 					changeId: change.changeId,
@@ -864,6 +941,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			workerId: job.sessionWorkerId ?? job.sessionId ?? job.jobId,
 			repository,
 			...(job.expectMainSha ? { expectMainSha: job.expectMainSha } : {}),
+			...(job.reconciledCommitSha ? { reconciledCommitSha: job.reconciledCommitSha } : {}),
 			autoPublish: job.autoPublish ?? Boolean(job.payload.autoPublish),
 			sessionState: job.sessionState ?? "ready",
 			sessionHasActiveChat: job.sessionHasActiveChat ?? false,
@@ -936,8 +1014,11 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			throw new Error("No approved folder patches were provided to land");
 		}
 
-		const parsedChanges: { readonly changeId: string; readonly ops: readonly StudioPatchOp[] }[] = [];
-		const targetPaths = new Set<string>();
+		const originalChanges: {
+			readonly changeId: string;
+			readonly ops: readonly StudioPatchOp[];
+			readonly baseFiles?: Readonly<Record<string, string | null>> | null;
+		}[] = [];
 		for (const change of approvedRaw) {
 			if (change.patchManifest === null || change.patchManifest === undefined) {
 				throw new Error(`Approved folder change ${change.changeId} has no patchManifest`);
@@ -946,10 +1027,64 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			if (ops.length === 0) {
 				throw new Error(`Approved folder change ${change.changeId} has an empty patchManifest`);
 			}
-			for (const op of ops) {
+			originalChanges.push({ changeId: change.changeId, ops, baseFiles: change.baseFiles ?? null });
+		}
+
+		const parsedChanges: {
+			readonly changeId: string;
+			readonly ops: readonly StudioPatchOp[];
+			readonly baseFiles?: Readonly<Record<string, string | null>> | null;
+		}[] = [];
+		const targetPaths = new Set<string>();
+		if (job.reconciledPatchManifest !== undefined && job.reconciledPatchManifest !== null) {
+			let reconciledOps: StudioPatchOp[] | null = null;
+			try {
+				const parsed = parseStudioPatchOps(job.reconciledPatchManifest, "reconciledPatchManifest");
+				if (parsed.length > 0) reconciledOps = parsed;
+			} catch {}
+			if (!reconciledOps) {
+				await completeMerge(
+					{
+						jobId: job.jobId,
+						status: "failed",
+						errorDetail: "SURFACE_RECONCILIATION_INCOMPLETE: reconciled patch manifest is empty or invalid",
+					},
+					signal,
+				);
+				return;
+			}
+			const composed = composeReconciledFolderChanges(originalChanges, reconciledOps, {
+				folderRoot: normalizedRoot,
+				conflictPaths: job.reconciledConflictPaths,
+			});
+			if (!composed.ok) {
+				await completeMerge(
+					{
+						jobId: job.jobId,
+						status: "failed",
+						errorDetail: `SURFACE_RECONCILIATION_INCOMPLETE: missing required paths: ${composed.missingPaths.join(", ")}`,
+					},
+					signal,
+				);
+				return;
+			}
+			for (const preserved of composed.preservedChanges) {
+				for (const op of preserved.ops) {
+					targetPaths.add(assertSurfaceFolderPatchPath(op.path, normalizedRoot));
+				}
+				parsedChanges.push(preserved);
+			}
+			for (const op of composed.reconciledOps) {
 				targetPaths.add(assertSurfaceFolderPatchPath(op.path, normalizedRoot));
 			}
-			parsedChanges.push({ changeId: change.changeId, ops });
+			parsedChanges.push({ changeId: approvedRaw[0]!.changeId, ops: composed.reconciledOps });
+		} else {
+			for (const change of originalChanges) {
+				for (const op of change.ops) {
+					targetPaths.add(assertSurfaceFolderPatchPath(op.path, normalizedRoot));
+				}
+				parsedChanges.push(change);
+			}
 		}
 
 		const shouldCompileIdentityCss =
@@ -976,7 +1111,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				{
 					profileId: job.profileId,
 					surfaceId: job.surfaceId,
-					changeId: parsedChanges[0]!.changeId,
+					changeId: approvedRaw[0]!.changeId,
 				},
 				signal,
 			);
@@ -987,7 +1122,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 						folderValueDigest(filesBefore[path] ?? null) === (existingSnapshot.afterContentSha256![path] ?? null),
 				)
 			) {
-				const changeIds = parsedChanges.map((change) => change.changeId);
+				const changeIds = approvedRaw.map((change) => change.changeId);
 				const versionsFitInline = Object.values(versionsBefore).every(
 					(value) => value === null || value.length <= MAX_SNAPSHOT_VERSION_CHARS,
 				);
@@ -1045,7 +1180,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			}
 		}
 
-		const changeIds = parsedChanges.map((change) => change.changeId);
+		const changeIds = approvedRaw.map((change) => change.changeId);
 		const afterContentSha256: Record<string, string | null> = {};
 		const placeholderVersionsAfter: Record<string, string> = {};
 		for (const path of orderedPaths) {

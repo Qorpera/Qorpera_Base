@@ -121,10 +121,11 @@ export function previewStatusText(frame: SurfacePreviewFrameState): string {
 	switch (frame.status) {
 		case "composing":
 			return t("Composing preview…");
+		case "reconciling":
+		case "conflicted":
+			return t("Updating preview…");
 		case "building":
 			return t("Building preview…");
-		case "conflicted":
-			return t("These changes conflict. Turn one off to preview the rest.");
 		case "failed":
 			return previewFailureText(frame.errorDetail);
 		default:
@@ -158,10 +159,11 @@ export class SurfaceDoorStage {
 		this.#retryBtn,
 	);
 	readonly #pillText = h("span");
+	readonly #pillDot = h("span", { class: "surface-state is-running" });
 	readonly #pill = h(
 		"div",
 		{ class: "surface-preview-pill", hidden: true, role: "status" },
-		h("span", { class: "surface-state is-running" }),
+		this.#pillDot,
 		this.#pillText,
 	);
 	readonly #options: SurfaceDoorOptions;
@@ -172,6 +174,7 @@ export class SurfaceDoorStage {
 	#inspectorActive = false;
 	#identityTokens: CompiledIdentityTokens | null = null;
 	#identityTokensCss = "";
+	#mark: { readonly words: string; readonly kind: "running" | "failed" } | null = null;
 
 	constructor(signal: AbortSignal, options: SurfaceDoorOptions = {}) {
 		this.#options = options;
@@ -187,6 +190,31 @@ export class SurfaceDoorStage {
 
 	sync(frame: SurfacePreviewFrameState, title: string): void {
 		if (this.#lifetime.signal.aborted) return;
+		const kept = frame.status === "failed" ? frame.kept : null;
+		if (!kept) {
+			this.#mark = null;
+			this.#show(frame, title);
+			return;
+		}
+		this.#mark = frame.fixing
+			? { words: t("Being fixed"), kind: "running" }
+			: { words: previewFailureText(frame.errorDetail), kind: "failed" };
+		this.#show(
+			{
+				...frame,
+				status: "ready",
+				previewId: kept.previewId,
+				doorActionUrl: kept.doorActionUrl,
+				memberPass: kept.memberPass,
+				errorDetail: null,
+				kept: null,
+				fixing: false,
+			},
+			title,
+		);
+	}
+
+	#show(frame: SurfacePreviewFrameState, title: string): void {
 		const previewId = frame.previewId ?? "";
 		if (frame.status === "ready" && (previewId || (frame.doorActionUrl && frame.memberPass))) {
 			const path = frame.activeRoute.startsWith("/") ? frame.activeRoute : "/";
@@ -201,7 +229,7 @@ export class SurfaceDoorStage {
 				this.#retriedPreviewId = undefined;
 				this.#requestedPassKey = undefined;
 				this.#waiting.hidden = true;
-				this.#pill.hidden = true;
+				this.#restPill();
 				return;
 			}
 			if (!frame.doorActionUrl || !frame.memberPass) {
@@ -210,7 +238,7 @@ export class SurfaceDoorStage {
 				if (previewId && this.#options.onNeedFreshPass && this.#requestedPassKey !== needKey) {
 					this.#requestFreshPass(previewId, needKey);
 				}
-				this.#pill.hidden = true;
+				this.#restPill();
 				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
 				return;
 			}
@@ -225,7 +253,7 @@ export class SurfaceDoorStage {
 				if (this.#options.onNeedFreshPass && this.#requestedPassKey !== staleKey) {
 					this.#requestFreshPass(previewId, staleKey, frame.memberPass);
 				}
-				this.#pill.hidden = true;
+				this.#restPill();
 				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
 				return;
 			}
@@ -256,12 +284,12 @@ export class SurfaceDoorStage {
 					this.#dropStaging();
 					if (previewId && this.#options.onNeedFreshPass && this.#retriedPreviewId !== previewId) {
 						this.#retriedPreviewId = previewId;
-						this.#pill.hidden = true;
+						this.#restPill();
 						if (!this.#active) this.#showWaiting("running", t("Reconnecting preview…"));
 						this.#requestFreshPass(previewId, `${previewId}\0${slot.pass}`, slot.pass);
 						return;
 					}
-					this.#pill.hidden = true;
+					this.#restPill();
 					this.#dropActive();
 					this.#showWaiting("failed", t("The preview could not be opened."));
 				}, timeoutMs);
@@ -269,7 +297,7 @@ export class SurfaceDoorStage {
 			this.#staging = slot;
 			this.el.append(iframe);
 			iframe.src = SITE_DOOR_URL;
-			this.#pill.hidden = true;
+			this.#restPill();
 			if (this.#active) {
 				this.#waiting.hidden = true;
 			} else {
@@ -280,27 +308,23 @@ export class SurfaceDoorStage {
 		this.#retriedPreviewId = undefined;
 		this.#requestedPassKey = undefined;
 		this.#dropStaging();
-		if (frame.status === "composing" || frame.status === "building") {
+		if (
+			frame.status === "composing" ||
+			frame.status === "reconciling" ||
+			frame.status === "building" ||
+			frame.status === "conflicted"
+		) {
 			const words = previewStatusText(frame);
 			if (this.#active) {
 				this.#waiting.hidden = true;
-				this.#pillText.textContent = words;
-				this.#pill.hidden = false;
+				this.#showPill(words, "running");
 			} else {
-				this.#pill.hidden = true;
+				this.#restPill();
 				this.#showWaiting("running", words);
 			}
 			return;
 		}
-		this.#pill.hidden = true;
-		if (frame.status === "conflicted") {
-			if (this.#active) {
-				this.#waiting.hidden = true;
-				return;
-			}
-			this.#showWaiting("conflicted", previewStatusText(frame));
-			return;
-		}
+		this.#restPill();
 		this.#dropActive();
 		this.#showWaiting(
 			frame.status === "failed" ? "failed" : "running",
@@ -331,6 +355,7 @@ export class SurfaceDoorStage {
 	}
 
 	clear(): void {
+		this.#mark = null;
 		if (this.#inspectorActive) {
 			this.#postInspectorMode(false);
 			this.#inspectorActive = false;
@@ -341,7 +366,7 @@ export class SurfaceDoorStage {
 		this.#dropActive();
 		this.#retryBtn.hidden = true;
 		this.#waiting.hidden = true;
-		this.#pill.hidden = true;
+		this.#restPill();
 	}
 
 	dispose(): void {
@@ -356,7 +381,7 @@ export class SurfaceDoorStage {
 			if (this.#lifetime.signal.aborted || this.#requestedPassKey !== requestKey || this.#staging) return;
 			this.#requestedPassKey = undefined;
 			this.#retriedPreviewId = undefined;
-			this.#pill.hidden = true;
+			this.#restPill();
 			this.#dropActive();
 			this.#showWaiting("failed", t("The preview could not be opened."));
 		};
@@ -372,6 +397,17 @@ export class SurfaceDoorStage {
 				if (minted === false) onFailure();
 			}, onFailure);
 		}
+	}
+
+	#showPill(words: string, kind: "running" | "failed"): void {
+		this.#pillDot.className = `surface-state is-${kind}`;
+		this.#pillText.textContent = words;
+		this.#pill.hidden = false;
+	}
+
+	#restPill(): void {
+		if (this.#mark && this.#active) this.#showPill(this.#mark.words, this.#mark.kind);
+		else this.#pill.hidden = true;
 	}
 
 	#showWaiting(kind: "running" | "conflicted" | "failed", words: string): void {
@@ -403,6 +439,7 @@ export class SurfaceDoorStage {
 		if (!this.#active) return;
 		this.#active.iframe.remove();
 		this.#active = undefined;
+		this.#pill.hidden = true;
 		this.#options.onShownChange?.();
 	}
 
@@ -452,7 +489,7 @@ export class SurfaceDoorStage {
 				staging.iframe.classList.add("is-shown");
 				previous?.iframe.remove();
 				this.#waiting.hidden = true;
-				this.#pill.hidden = true;
+				this.#restPill();
 				this.#options.onShownChange?.();
 				if (this.#inspectorActive) this.#postInspectorMode(true);
 				if (this.#identityTokens) this.#postIdentityTokens();

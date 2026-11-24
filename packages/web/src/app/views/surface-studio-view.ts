@@ -1,17 +1,11 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type CompiledIdentityTokens,
-	compileIdentityTokensCss,
-	IDENTITY_TOKENS_CSS_PATH,
-	IDENTITY_TOKENS_JSON_PATH,
 	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
-	type SurfacePreviewConflict,
 	type SurfaceStarterKind,
 	type SurfaceSummary,
-	sharedAssetsConsumedBy,
-	sharedAssetsProducedBy,
 	surfaceFilesHaveModel,
 	surfaceLegacyModelKey,
 	surfaceStarterKind,
@@ -20,26 +14,18 @@ import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { playOnce } from "../../ui/motion.ts";
-import { frameParsedPage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
 import {
 	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
-	formatConflictPaths,
 	isLocalSurfaceId,
 	isOpenChange,
 	normalizeStudioPatchOps,
 	type SurfacesStore,
 	type SurfaceUpdatePhase,
 } from "../surfaces-store.ts";
-import {
-	parseJsonObject,
-	readableName,
-	type StudioSectionTask,
-	type SurfaceFileLayer,
-} from "./surface-blocks/context.ts";
 import {
 	docPriority,
 	HTML_FILE_RE,
@@ -51,11 +37,20 @@ import {
 	type StudioSvgAsset,
 	SVG_FILE_RE,
 	svgDataUrl,
-} from "./surface-blocks/files.ts";
+} from "./surface-blocks/artifacts.ts";
+import {
+	parseJsonObject,
+	readableName,
+	type StudioSectionTask,
+	type SurfaceFileLayer,
+} from "./surface-blocks/context.ts";
 import { collectSpecs, type SpecEntry } from "./surface-blocks/specs.ts";
 import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
+import { compiledTokensCssFrom, prepareStudioHtmlPreview, studioHtmlDependencyChanged } from "./surface-studio-html.ts";
+
+export { prepareStudioHtmlPreview };
 
 export interface SurfaceStudioOptions {
 	readonly store: SurfacesStore;
@@ -84,140 +79,6 @@ interface StudioHtmlPage {
 
 const OBJECT_JSON_RE = /(?:^|\/)object\.json$/i;
 const REPORT_JSON_RE = /\.report\.json$/i;
-const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
-const SCRIPT_FILE_RE = /\.m?js$/i;
-
-function resolveRelativeStudioPath(fromFilePath: string, href: string): string | null {
-	const trimmed = href.trim();
-	if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return null;
-	const withoutQuery = trimmed.split(/[?#]/, 1)[0] ?? "";
-	if (!withoutQuery) return null;
-	const fromParts = fromFilePath.includes("/") ? fromFilePath.slice(0, fromFilePath.lastIndexOf("/")).split("/") : [];
-	const minDepth = fromParts.length > 0 ? 1 : 0;
-	const baseParts = withoutQuery.startsWith("/") ? [] : [...fromParts];
-	for (const part of withoutQuery.split("/")) {
-		if (!part || part === ".") continue;
-		if (part === "..") {
-			if (baseParts.length <= (withoutQuery.startsWith("/") ? 0 : minDepth)) return null;
-			baseParts.pop();
-			continue;
-		}
-		baseParts.push(part);
-	}
-	const resolved = baseParts.join("/");
-	if (!resolved) return null;
-	if (withoutQuery.startsWith("/") && minDepth > 0 && !TOKEN_STYLESHEET_RE.test(resolved)) {
-		if (resolved !== fromParts[0] && !resolved.startsWith(`${fromParts[0]}/`)) return null;
-	}
-	return resolved;
-}
-
-function compiledTokensCssFrom(
-	files: Readonly<Record<string, string>>,
-	folderRoot: string | null | undefined,
-	fallbackCss: string,
-): string {
-	const cleanRoot = folderRoot?.replace(/^\/+|\/+$/g, "");
-	const tokensJson =
-		files[IDENTITY_TOKENS_JSON_PATH] ??
-		(cleanRoot ? files[`${cleanRoot}/tokens.json`] : undefined) ??
-		files["tokens.json"];
-	if (tokensJson?.trim()) {
-		const compiled = compileIdentityTokensCss(tokensJson);
-		if (compiled) return compiled;
-	}
-	return files[IDENTITY_TOKENS_CSS_PATH] ?? (cleanRoot ? files[`${cleanRoot}/tokens.css`] : undefined) ?? fallbackCss;
-}
-
-function studioHtmlDependencyChanged(
-	html: string,
-	htmlPath: string,
-	files: Readonly<Record<string, string>>,
-	baseFiles: Readonly<Record<string, string>>,
-	previewTokensCss: string,
-	baseTokensCss: string,
-): boolean {
-	for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
-		const tag = match[0];
-		if (!/\brel\s*=\s*(?:"[^"]*\bstylesheet\b[^"]*"|'[^']*\bstylesheet\b[^']*'|stylesheet\b)/i.test(tag)) continue;
-		const href = tag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
-		const rawHref = href?.[1] ?? href?.[2] ?? href?.[3] ?? "";
-		const resolved = resolveRelativeStudioPath(htmlPath, rawHref);
-		if (!resolved) continue;
-		if (TOKEN_STYLESHEET_RE.test(resolved)) {
-			const nextCss = previewTokensCss || files[resolved] || files[IDENTITY_TOKENS_CSS_PATH] || "";
-			const prevCss = baseTokensCss || baseFiles[resolved] || baseFiles[IDENTITY_TOKENS_CSS_PATH] || "";
-			if (nextCss !== prevCss) return true;
-		} else if (/\.css$/i.test(resolved)) {
-			if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
-		}
-	}
-	for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
-		const src = match[0].match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
-		const rawSrc = src?.[1] ?? src?.[2] ?? src?.[3] ?? "";
-		const resolved = resolveRelativeStudioPath(htmlPath, rawSrc);
-		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
-		if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
-	}
-	return false;
-}
-
-export function prepareStudioHtmlPreview(
-	html: string,
-	htmlPath: string,
-	files: Readonly<Record<string, string>>,
-	compiledTokensCss: string,
-): string | null {
-	const doc = new DOMParser().parseFromString(html, "text/html");
-	let modified = false;
-	for (const link of [...doc.querySelectorAll("link[href]")]) {
-		const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/);
-		if (!rel.includes("stylesheet")) continue;
-		const resolved = resolveRelativeStudioPath(htmlPath, link.getAttribute("href") ?? "");
-		if (!resolved) continue;
-		let css: string | undefined;
-		if (TOKEN_STYLESHEET_RE.test(resolved)) {
-			css = compiledTokensCss || files[resolved] || files[IDENTITY_TOKENS_CSS_PATH];
-		} else if (/\.css$/i.test(resolved)) {
-			css = files[resolved];
-		}
-		if (!css) continue;
-		const style = doc.createElement("style");
-		style.textContent = css.replace(/<\/(style)/gi, "<\\/$1");
-		link.replaceWith(style);
-		modified = true;
-	}
-	const deferred: HTMLScriptElement[] = [];
-	for (const script of [...doc.querySelectorAll("script[src]")]) {
-		const resolved = resolveRelativeStudioPath(htmlPath, script.getAttribute("src") ?? "");
-		const code = resolved && SCRIPT_FILE_RE.test(resolved) ? files[resolved] : undefined;
-		if (code === undefined) continue;
-		const classic = (script.getAttribute("type") ?? "").trim().toLowerCase() !== "module";
-		const inline = doc.createElement("script");
-		for (const attribute of [...script.attributes])
-			if (attribute.name !== "src" && !(classic && (attribute.name === "defer" || attribute.name === "async")))
-				inline.setAttribute(attribute.name, attribute.value);
-		inline.textContent = code.replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "\\x3c!--");
-		if (classic && script.hasAttribute("defer")) {
-			script.remove();
-			deferred.push(inline);
-		} else {
-			script.replaceWith(inline);
-		}
-		modified = true;
-	}
-	doc.body.append(...deferred);
-	for (const img of [...doc.querySelectorAll("img[src]")]) {
-		const resolved = resolveRelativeStudioPath(htmlPath, img.getAttribute("src") ?? "");
-		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
-		const svg = files[resolved]?.trim();
-		if (!svg || !/<svg[\s>]/i.test(svg)) continue;
-		img.setAttribute("src", svgDataUrl(svg));
-		modified = true;
-	}
-	if (!modified) return frameParsedPage(doc, html);
-	return frameParsedPage(doc);
-}
 
 function updatingLabel(phase: SurfaceUpdatePhase): string {
 	if (phase === "publishing") return t("Publishing…");
@@ -239,7 +100,13 @@ function sameOrderedChanges(
 ): boolean {
 	if (!prev || prev.length !== next.length) return false;
 	for (let i = 0; i < next.length; i++) {
-		if (prev[i]!.changeId !== next[i]!.changeId || prev[i]!.ops !== next[i]!.ops) return false;
+		if (
+			prev[i]!.changeId !== next[i]!.changeId ||
+			prev[i]!.ops !== next[i]!.ops ||
+			prev[i]!.baseFiles !== next[i]!.baseFiles ||
+			prev[i]!.previewBaseChangeIds !== next[i]!.previewBaseChangeIds
+		)
+			return false;
 	}
 	return true;
 }
@@ -346,7 +213,7 @@ export class SurfaceStudioView {
 	#loading = false;
 	#showingSkeleton = false;
 	#renderSeq = 0;
-	#lastConflict: SurfacePreviewConflict | null = null;
+	#pendingRetryTarget: { readonly changeIds: readonly string[]; readonly paths: readonly string[] } | null = null;
 	#layout: SurfaceLayoutView | undefined;
 	readonly #htmlFrames: AppFrame[] = [];
 	#tab = "overview";
@@ -413,6 +280,7 @@ export class SurfaceStudioView {
 		compiledTokensCss: string,
 		className: string,
 		listen?: (data: unknown) => void,
+		owned?: (dispose: () => void) => void,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
@@ -426,7 +294,8 @@ export class SurfaceStudioView {
 			() => undefined,
 			{ again: true },
 		);
-		this.#htmlFrames.push(frame);
+		if (owned) owned(() => frame.dispose());
+		else this.#htmlFrames.push(frame);
 		if (listen) {
 			window.addEventListener(
 				"message",
@@ -467,7 +336,13 @@ export class SurfaceStudioView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
+				if (ops?.length)
+					ordered.push({
+						changeId: change.id,
+						ops: normalizeStudioPatchOps(ops, folderRoot),
+						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
+					});
 			}
 		}
 		return ordered;
@@ -515,7 +390,6 @@ export class SurfaceStudioView {
 		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges(surface.folderRoot);
-		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const updatingPhase = store.surfaceUpdatePhase(surface.id);
 		const updating = updatingPhase !== null;
 		const initialLoading =
@@ -537,24 +411,8 @@ export class SurfaceStudioView {
 			}, 600);
 		}
 		this.#wasUpdating = updating;
-		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const identityFiles = store.companyIdentityFiles();
 		const companyFiles = identityFiles && identityFiles.surfaceId !== surface.id ? identityFiles : undefined;
-		const linkedSurfacesKey = JSON.stringify(
-			activeOtherSurfaces.map((item) => {
-				const itemLook = store.lookOf(item);
-				return [
-					item.id,
-					item.slug,
-					item.title,
-					item.group,
-					item.isGlobal === true,
-					item.icon,
-					itemLook.kind,
-					itemLook.accent ?? "",
-				];
-			}),
-		);
 		const deps: readonly unknown[] = [
 			initialLoading,
 			updatingPhase,
@@ -577,8 +435,8 @@ export class SurfaceStudioView {
 			identityTokens?.css ?? "",
 			companyFiles,
 			workspace?.briefSummary ?? "",
-			linkedSurfacesKey,
-			busyReconcile,
+			workspace?.reconciliations,
+			state.reconciliationRequests,
 		];
 		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
 		this.#shownDeps = deps;
@@ -608,8 +466,6 @@ export class SurfaceStudioView {
 			ordered,
 			initialLoading,
 			updatingPhase,
-			busyReconcile,
-			activeOtherSurfaces,
 			companyFiles,
 			mode: state.mode,
 		};
@@ -643,8 +499,6 @@ export class SurfaceStudioView {
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
-		readonly busyReconcile: boolean;
-		readonly activeOtherSurfaces: readonly SurfaceSummary[];
 		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): Promise<void> {
@@ -658,8 +512,8 @@ export class SurfaceStudioView {
 			params.ordered,
 			params.surface.folderRoot,
 			params.baseBinaries,
+			{ reconciliations: params.workspace?.reconciliations },
 		);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
 		const previewTokensCss = compiledTokensCssFrom(
@@ -754,8 +608,6 @@ export class SurfaceStudioView {
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
-		readonly busyReconcile: boolean;
-		readonly activeOtherSurfaces: readonly SurfaceSummary[];
 		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): void {
@@ -764,8 +616,8 @@ export class SurfaceStudioView {
 			params.ordered,
 			params.surface.folderRoot,
 			params.baseBinaries,
+			{ reconciliations: params.workspace?.reconciliations },
 		);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
 		const previewTokensCss = compiledTokensCssFrom(
@@ -825,10 +677,9 @@ export class SurfaceStudioView {
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
 			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+			readonly ordered: readonly StudioPatchChange[];
 			readonly initialLoading: boolean;
 			readonly updatingPhase: SurfaceUpdatePhase | null;
-			readonly busyReconcile: boolean;
-			readonly activeOtherSurfaces: readonly SurfaceSummary[];
 			readonly companyFiles: SurfaceFileLayer | undefined;
 			readonly mode: SurfacesStore["state"]["mode"];
 		},
@@ -843,75 +694,123 @@ export class SurfaceStudioView {
 		readonly gridTasks?: readonly StudioSectionTask[];
 		readonly leavingSkeleton: boolean;
 	} {
-		const {
-			surface,
-			look,
-			lookKind,
-			identityTokens,
-			workspace,
-			baseFiles,
-			initialLoading,
-			updatingPhase,
-			busyReconcile,
-			mode,
-		} = params;
+		const { surface, look, lookKind, identityTokens, workspace, baseFiles, initialLoading, updatingPhase, mode } =
+			params;
 		const { specs, docs, htmlPages, svgs, legacyModel } = parsed;
 
+		let reconciliationFailed = false;
+		let reconcilingPreview = false;
+		if (composition.status === "conflicted") {
+			const conflictIds = composition.conflictReport.changeIds;
+			const conflictPaths = composition.conflictReport.paths;
+			const existingRec = this.#options.store.reconciliationFor(surface.id, conflictIds);
+			const reqState = this.#options.store.reconciliationRequestState(surface.id, conflictIds);
+			if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else if (existingRec?.status === "failed" || existingRec?.status === "ready" || reqState === "failed") {
+				reconciliationFailed = true;
+				this.#pendingRetryTarget = { changeIds: conflictIds, paths: conflictPaths };
+			} else if (!existingRec && this.#options.store.canEnsureReconciliation(surface.id)) {
+				void this.#options.store.ensureReconciliation(surface.id, conflictIds, conflictPaths);
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else {
+				this.#pendingRetryTarget = null;
+			}
+		} else {
+			const selectedIds = params.ordered.map((item) => item.changeId);
+			const lineageTarget = this.#options.store.lineageReconciliationTarget(surface.id, selectedIds);
+			if (lineageTarget) {
+				const existingRec = this.#options.store.reconciliationFor(surface.id, lineageTarget.changeIds);
+				const reqState = this.#options.store.reconciliationRequestState(surface.id, lineageTarget.changeIds);
+				if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (existingRec?.status === "failed" || (!existingRec && reqState === "failed")) {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: lineageTarget.changeIds,
+						paths: lineageTarget.conflictPaths,
+					};
+				} else if (!existingRec && reqState === undefined) {
+					if (this.#options.store.canEnsureReconciliation(surface.id)) {
+						void this.#options.store.ensureReconciliation(
+							surface.id,
+							lineageTarget.changeIds,
+							lineageTarget.conflictPaths,
+						);
+						reconcilingPreview = true;
+					}
+					this.#pendingRetryTarget = null;
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			} else {
+				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
+				if (activeRec?.status === "queued" || activeRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (activeRec?.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: activeRec.selectedChangeIds,
+						paths: activeRec.conflictPaths ?? [],
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			}
+		}
+
 		const badgeText =
-			composition.status === "conflicted"
-				? t("Conflict")
-				: composition.appliedChangeIds.length === 1
-					? t("1 live change applied")
-					: composition.appliedChangeIds.length > 1
-						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: null;
-		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
+			composition.appliedChangeIds.length === 1
+				? t("1 live change applied")
+				: composition.appliedChangeIds.length > 1
+					? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
+					: null;
+		const effectiveUpdatingPhase = updatingPhase ?? (reconcilingPreview ? "updating" : null);
+		const updatingText =
+			updatingPhase !== null ? updatingLabel(updatingPhase) : reconcilingPreview ? t("Updating preview…") : null;
 
 		const children: HTMLElement[] = [];
-		if (badgeText || updatingPhase) {
+		if (badgeText || effectiveUpdatingPhase) {
 			children.push(
 				h(
 					"div",
 					{ class: "studio-head" },
-					badgeText ? h("span", { class: badgeClass }, badgeText) : h("span"),
-					updatingPhase
+					badgeText ? h("span", { class: "studio-badge is-live" }, badgeText) : h("span"),
+					effectiveUpdatingPhase && updatingText
 						? h(
 								"span",
 								{
 									class: "studio-updating-pill",
 									role: "status",
 									"aria-live": "polite",
-									"data-updating-phase": updatingPhase,
+									"data-updating-phase": effectiveUpdatingPhase,
 								},
 								h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-								h("span", null, updatingLabel(updatingPhase)),
+								h("span", null, updatingText),
 							)
 						: null,
 				),
 			);
 		}
 
-		if (composition.status === "conflicted") {
-			const paths = formatConflictPaths(composition.conflictReport.paths);
+		if (reconciliationFailed && this.#pendingRetryTarget) {
 			children.push(
 				h(
 					"div",
-					{ class: "studio-conflict", role: "alert" },
-					h("span", { class: "surface-state is-conflicted", "aria-hidden": "true" }),
-					h(
-						"span",
-						{ title: composition.conflictReport.paths.join(", ") },
-						t("Studio changes conflict in {paths}", { paths }),
-					),
+					{ class: "studio-reconcile-retry", role: "status" },
+					h("span", null, t("Couldn't update preview")),
 					h(
 						"button",
 						{
 							type: "button",
-							class: "btn btn-primary btn-small",
-							"data-act": "studio-reconcile",
-							disabled: busyReconcile || composition.conflictReport.changeIds.length === 0,
+							class: "btn btn-small",
+							"data-act": "studio-retry-preview",
 						},
-						t("Reconcile"),
+						t("Retry"),
 					),
 				),
 			);
@@ -973,12 +872,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, spec.title),
-								h("code", { class: "studio-file-tag" }, spec.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, spec.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1009,12 +903,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, asset.title),
-								h("code", { class: "studio-file-tag" }, asset.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, asset.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1043,12 +932,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, doc.title),
-								h("code", { class: "studio-file-tag" }, doc.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, doc.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1082,12 +966,7 @@ export class SurfaceStudioView {
 						h(
 							"section",
 							{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, page.title),
-								h("code", { class: "studio-file-tag" }, page.path),
-							),
+							h("div", { class: "studio-section-head" }, h("h2", null, page.title)),
 							h(
 								"div",
 								{ class: "studio-compare-grid" },
@@ -1174,90 +1053,12 @@ export class SurfaceStudioView {
 		});
 	}
 
-	#sharedLinks(
-		surface: SurfaceSummary,
-		lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"],
-		activeOtherSurfaces: readonly SurfaceSummary[],
-	): HTMLElement | null {
-		const store = this.#options.store;
-		const consumed = sharedAssetsConsumedBy(lookKind);
-		const produced = sharedAssetsProducedBy(lookKind);
-		const builtOn = new Map<string, (typeof activeOtherSurfaces)[number]>();
-		const seenIncomingProducers = new Set<string>();
-		for (const link of consumed) {
-			if (link.liveSyncMode === "prompt_context" && link.producedBy.every((k) => seenIncomingProducers.has(k))) {
-				continue;
-			}
-			const producers = activeOtherSurfaces.filter((item) => {
-				const targetKind = store.lookOf(item).kind;
-				return (
-					link.producedBy.includes(targetKind) || (link.producedBy.includes("identity") && item.isGlobal === true)
-				);
-			});
-			if (!producers.length) continue;
-			for (const k of link.producedBy) seenIncomingProducers.add(k);
-			for (const target of producers) builtOn.set(target.slug, target);
-		}
-		const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
-		const primaryProductRoot = store.state.surfaces
-			.filter(
-				(item) =>
-					item.status === "active" &&
-					item.archetype === "studio" &&
-					store.lookOf(item).kind === "product" &&
-					Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
-			)
-			.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
-			.at(0)
-			?.folderRoot?.replace(/^\/+|\/+$/g, "");
-		const usedBy = new Map<string, (typeof activeOtherSurfaces)[number]>();
-		for (const link of produced) {
-			if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
-				continue;
-			}
-			const consumers = activeOtherSurfaces
-				.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
-				.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
-			for (const target of consumers) usedBy.set(target.slug, target);
-		}
-		if (builtOn.size === 0 && usedBy.size === 0) return null;
-		const group = (dir: "in" | "out", label: string, targets: Map<string, (typeof activeOtherSurfaces)[number]>) =>
-			targets.size === 0
-				? null
-				: h(
-						"span",
-						{ class: "studio-reach-group", "data-link-dir": dir },
-						h("span", { class: "studio-reach-label" }, label),
-						[...targets.values()].map((target) =>
-							h(
-								"button",
-								{
-									type: "button",
-									class: "studio-reach-chip",
-									"data-act": "studio-open-surface",
-									"data-slug": target.slug,
-								},
-								surfaceTile(target, store.lookOf(target), "is-tiny"),
-								h("span", null, target.title),
-							),
-						),
-					);
-		return h(
-			"section",
-			{ class: "studio-reach", "data-live-linked": "true" },
-			group("in", t("Builds on"), builtOn),
-			group("out", t("Used by"), usedBy),
-		);
-	}
-
 	#layoutPlan(
 		params: {
 			readonly surface: SurfaceSummary;
-			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
 			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
-			readonly activeOtherSurfaces: readonly SurfaceSummary[];
 			readonly companyFiles: SurfaceFileLayer | undefined;
 		},
 		children: HTMLElement[],
@@ -1303,6 +1104,7 @@ export class SurfaceStudioView {
 						page.previewTokensCss,
 						frame.className,
 						frame.listen,
+						frame.owned,
 					),
 				linksChanged: (html, path) =>
 					studioHtmlDependencyChanged(
@@ -1317,15 +1119,9 @@ export class SurfaceStudioView {
 		});
 		this.#tab = plan.tab;
 		if (plan.tabBar) children.push(plan.tabBar);
-		const gridTasks: StudioSectionTask[] = [];
-		if (plan.firstTab) {
-			const links = this.#sharedLinks(params.surface, params.lookKind, params.activeOtherSurfaces);
-			if (links) gridTasks.push({ build: () => links });
-		}
-		gridTasks.push(...plan.tasks);
 		const leavingSkeleton = this.#showingSkeleton;
 		this.#showingSkeleton = false;
-		return { children, gridTasks, leavingSkeleton };
+		return { children, gridTasks: plan.tasks, leavingSkeleton };
 	}
 
 	#click(event: MouseEvent): void {
@@ -1341,13 +1137,16 @@ export class SurfaceStudioView {
 			}
 			return;
 		}
-		if (act === "studio-open-surface" && target.dataset.slug) {
-			this.#options.store.navigateSurface(target.dataset.slug);
-			return;
-		}
-		if (act === "studio-reconcile") {
-			const ids = this.#lastConflict?.changeIds ?? [];
-			if (ids.length) void this.#options.store.reconcileChanges(this.#options.surface.id, ids);
+		if (act === "studio-retry-preview") {
+			const target = this.#pendingRetryTarget;
+			if (target && target.changeIds.length > 0) {
+				void this.#options.store.ensureReconciliation(
+					this.#options.surface.id,
+					target.changeIds,
+					target.paths,
+					true,
+				);
+			}
 			return;
 		}
 	}

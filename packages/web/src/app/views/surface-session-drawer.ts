@@ -7,7 +7,8 @@ import type {
 	SurfaceSummary,
 	SurfaceWorkspace,
 } from "@qorpera/contracts";
-import { fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
+import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
+import { confirmDialog, fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { leadingMentions, type MentionTarget, matchTargets, mentionQuery } from "../../ui/mentions.ts";
 import { t } from "../../ui/preferences.ts";
@@ -15,13 +16,14 @@ import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { SurfaceLook } from "../surface-kinds.ts";
 import {
-	formatConflictPaths,
-	hasConflictedChange,
+	changeDeliverables,
 	isOpenChange,
 	isOpenVariant,
 	isRunningSession,
 	openExplorations,
 	reportsOwnedBy,
+	type SurfaceChangeDeliverable,
+	type SurfaceDeliverableKind,
 	type SurfaceNote,
 	type SurfaceReportSummary,
 	type SurfacesStore,
@@ -77,6 +79,22 @@ export function approveLabel(rest: string, armed: boolean, glyph?: string): HTML
 		{ class: "surface-approve-label" },
 		approveFace(rest, !armed, false, glyph),
 		approveFace(t("Confirm"), armed, true),
+	);
+}
+
+function overviewDiscardButton(sessionId: string, changeId: string, armed: boolean, busy: boolean): HTMLElement {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: `surface-overview-act is-quiet surface-discard-btn${armed ? " is-confirming" : ""}`,
+			disabled: busy,
+			"data-act": "discard-change-armed",
+			"data-session": sessionId,
+			"data-change": changeId,
+			...(armed ? { "data-armed": "true" } : {}),
+		},
+		approveLabel(t("Discard"), armed),
 	);
 }
 
@@ -225,7 +243,6 @@ function messageRow(
 
 function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 	if (change.status === "merged") return h("span", { class: "surface-tag is-merged" }, icon("check"), t("Merged"));
-	if (change.status === "conflicted") return h("span", { class: "surface-tag is-conflicted" }, t("Conflict"));
 	if (change.status === "discarded") return h("span", { class: "surface-tag" }, t("Discarded"));
 	if (change.status === "reverted") return h("span", { class: "surface-tag" }, t("Reverted"));
 	if (change.status === "merging") return h("span", { class: "surface-tag" }, t("Merging"));
@@ -236,7 +253,6 @@ function agentStatusLine(session: SurfaceSession): string | null {
 	if (session.state === "needs_input") return t("Needs you");
 	if (session.state === "failed") return t("Failed");
 	if (isRunningSession(session)) return t("Working");
-	if (hasConflictedChange(session)) return t("Conflict");
 	return null;
 }
 
@@ -254,19 +270,23 @@ function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 			? 0
 			: session.state === "failed"
 				? 1
-				: hasConflictedChange(session)
+				: isRunningSession(session)
 					? 2
-					: isRunningSession(session)
+					: session.changes.some(isOpenChange)
 						? 3
-						: session.changes.some(isOpenChange)
-							? 4
-							: 5;
+						: 4;
 	return [...sessions].sort((a, b) => score(a) - score(b));
 }
 
 function drawerCap(): number {
 	const scale = uiScale();
 	return Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, Math.floor((window.innerWidth * DRAWER_MAX_SHARE) / scale)));
+}
+
+function deliverableKindLabel(kind: SurfaceDeliverableKind): string {
+	if (kind === "html") return t("HTML");
+	if (kind === "pdf") return t("PDF");
+	return t("Article");
 }
 
 function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
@@ -339,9 +359,11 @@ export class SurfaceSessionDrawer {
 	#armedApprove: string | undefined;
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
+	readonly #signal: AbortSignal;
 
 	constructor(store: SurfacesStore, signal: AbortSignal) {
 		this.#store = store;
+		this.#signal = signal;
 		try {
 			const stored = Number(localStorage.getItem(DRAWER_WIDTH_KEY));
 			if (Number.isFinite(stored) && stored >= DRAWER_MIN) this.#preferredWidth = stored;
@@ -453,6 +475,41 @@ export class SurfaceSessionDrawer {
 			{ signal },
 		);
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
+		this.el.addEventListener("contextmenu", (event) => this.#cardMenu(event), { signal });
+		pressToOpenMenu(this.el, signal, (event) => this.#cardMenu(event));
+	}
+
+	#cardMenu(event: MouseEvent): void {
+		if (event.shiftKey && (event.clientX || event.clientY)) return;
+		const card = (event.target as Element | null)?.closest<HTMLElement>(".surface-overview-card.is-agent");
+		const sessionId = card?.dataset.session;
+		const session = sessionId ? this.#store.session(sessionId) : undefined;
+		if (!card || !session) return;
+		event.preventDefault();
+		openContextMenu({
+			label: session.title,
+			...menuPoint(event, card),
+			opener: card,
+			findOpener: () =>
+				[...this.el.querySelectorAll<HTMLElement>(".surface-overview-card.is-agent")].find(
+					(item) => item.dataset.session === session.id,
+				) ?? null,
+			items: [{ label: t("Remove"), icon: "trash", danger: true, select: () => void this.#remove(session.id) }],
+		});
+	}
+
+	async #remove(sessionId: string): Promise<void> {
+		const session = this.#store.session(sessionId);
+		if (!session) return;
+		const running = isRunningSession(session);
+		const open = session.changes.some(isOpenChange);
+		if (running || open) {
+			const question = running
+				? t("Remove {title}? The agent stops and its unapproved changes are dropped.", { title: session.title })
+				: t("Remove {title}? Its unapproved changes are dropped.", { title: session.title });
+			if (!(await confirmDialog(question, t("Remove"), true, undefined, this.#signal))) return;
+		}
+		await this.#store.discardSession(sessionId);
 	}
 
 	#teammates(): MentionTarget[] {
@@ -704,6 +761,70 @@ export class SurfaceSessionDrawer {
 		return false;
 	}
 
+	#isDeliverableOpen(look: SurfaceLook | undefined, changeId: string, slug: string): boolean {
+		const state = this.#store.state;
+		if (!this.#store.isChangeShown(changeId)) return false;
+		if (look?.kind === "report") return state.mode !== "live" && state.activeReportSlug === slug;
+		return state.mode === "report" && state.activeReportSlug === slug;
+	}
+
+	#overviewDeliverablePill(
+		look: SurfaceLook | undefined,
+		change: SurfaceChangeUnit,
+		item: SurfaceChangeDeliverable,
+		showTitle: boolean,
+	): HTMLElement {
+		const open = this.#isDeliverableOpen(look, change.id, item.slug);
+		const label = showTitle ? item.title : open ? t("Open") : deliverableKindLabel(item.kind);
+		return h(
+			"button",
+			{
+				type: "button",
+				class: `surface-overview-deliverable${open ? " is-open" : ""}`,
+				"aria-pressed": String(open),
+				"aria-label": t("Open {title}", { title: item.title }),
+				title: item.title,
+				"data-act": "open-deliverable",
+				"data-change": change.id,
+				"data-report": item.slug,
+			},
+			icon("file"),
+			h("span", null, label),
+		);
+	}
+
+	#focusedDeliverableButtons(
+		look: SurfaceLook | undefined,
+		change: SurfaceChangeUnit,
+		deliverables: readonly SurfaceChangeDeliverable[],
+	): HTMLElement | null {
+		if (!deliverables.length) return null;
+		return h(
+			"div",
+			{ class: "surface-drawer-change-deliverables" },
+			...deliverables.map((item) => {
+				const open = this.#isDeliverableOpen(look, change.id, item.slug);
+				const meta = [deliverableKindLabel(item.kind), item.readingTime].filter(Boolean).join(" · ");
+				return h(
+					"button",
+					{
+						type: "button",
+						class: `surface-drawer-deliverable${open ? " is-open" : ""}`,
+						"aria-pressed": String(open),
+						"data-act": "open-deliverable",
+						"data-change": change.id,
+						"data-report": item.slug,
+					},
+					h("span", { class: "surface-agent-note-icon", "aria-hidden": "true" }, icon("file")),
+					h("span", { class: "surface-agent-note-copy" }, h("small", null, meta), h("strong", null, item.title)),
+					open
+						? h("span", { class: "surface-agent-note-active" }, t("Open"))
+						: h("span", { class: "surface-agent-note-go", "aria-hidden": "true" }, icon("chevron")),
+				);
+			}),
+		);
+	}
+
 	#noteButtons(reports: readonly SurfaceReportSummary[]): HTMLElement[] {
 		if (!reports.length) return [];
 		const state = this.#store.state;
@@ -800,6 +921,8 @@ export class SurfaceSessionDrawer {
 			this.#armedApprove,
 			state.localStudioBase[surface.id],
 			state.cloudSurfaceFiles[surface.id],
+			state.localStudioBinaries[surface.id],
+			state.cloudSurfaceBinaries[surface.id],
 			state.studioPatches,
 			workspace,
 		];
@@ -852,7 +975,7 @@ export class SurfaceSessionDrawer {
 		const picked = variants.find((item) => item.id === pickedId) ?? variants[0];
 		const busy = Boolean(state.busy[`exploration:${exploration.id}`]);
 		const running = variants.some(isRunningSession);
-		const attention = variants.some((v) => v.state === "needs_input" || hasConflictedChange(v));
+		const attention = variants.some((v) => v.state === "needs_input");
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "exploration", id: exploration.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
 		return h(
@@ -947,15 +1070,26 @@ export class SurfaceSessionDrawer {
 		const store = this.#store;
 		const state = store.state;
 		const running = isRunningSession(session);
+		const canDiscard = !running || session.state === "needs_input";
 		const listed = session.changes.filter((change) => change.status !== "discarded");
 		const openChanges = listed.filter(isOpenChange);
 		const actionSession =
 			surface.archetype === "ops" ||
 			(listed.length > 0 && listed.every((change) => isActionChange(change, surface)));
-		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const failed = session.state === "failed";
-		const attention = session.state === "needs_input" || hasConflictedChange(session) || failed;
-		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id });
+		const attention = session.state === "needs_input" || failed;
+		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
+		const claimedPaths = new Set<string>();
+		for (const change of openChanges) {
+			const items = changeDeliverables(state, surface.id, change);
+			if (items.length > 0) {
+				deliverablesByChange.set(change.id, items);
+				for (const item of items) claimedPaths.add(item.path);
+			}
+		}
+		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id }).filter(
+			(note) => !claimedPaths.has(note.path),
+		);
 		const noteNodes = this.#noteButtons(ownedNotes);
 		const statusLine = agentStatusLine(session);
 
@@ -1033,6 +1167,7 @@ export class SurfaceSessionDrawer {
 					{ class: "surface-overview-changes" },
 					...openChanges.map((change) => {
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+						const busyChange = Boolean(state.busy[`change:${change.id}`]);
 						return h(
 							"div",
 							{ class: "surface-overview-change" },
@@ -1040,6 +1175,14 @@ export class SurfaceSessionDrawer {
 								"div",
 								{ class: "surface-overview-change-row" },
 								h("span", { class: "surface-overview-change-title" }, change.title),
+								canDiscard
+									? overviewDiscardButton(
+											session.id,
+											change.id,
+											this.#armedApprove === `discard:${session.id}:${change.id}`,
+											busyChange,
+										)
+									: null,
 								!running
 									? h(
 											"button",
@@ -1066,12 +1209,17 @@ export class SurfaceSessionDrawer {
 					"div",
 					{ class: "surface-overview-changes" },
 					...openChanges.map((change) => {
-						const conflicted = change.status === "conflicted";
 						const shown = store.isChangeShown(change.id);
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+						const deliverables = deliverablesByChange.get(change.id) ?? [];
+						const inlineDeliverable =
+							deliverables.length === 1
+								? this.#overviewDeliverablePill(look, change, deliverables[0]!, false)
+								: null;
+						const busyChange = Boolean(state.busy[`change:${change.id}`]);
 						return h(
 							"div",
-							{ class: `surface-overview-change${conflicted ? " is-conflicted" : ""}` },
+							{ class: "surface-overview-change" },
 							h(
 								"div",
 								{ class: "surface-overview-change-row" },
@@ -1085,34 +1233,38 @@ export class SurfaceSessionDrawer {
 									"data-change": change.id,
 								}),
 								h("span", { class: "surface-overview-change-title" }, change.title),
-								conflicted && !running
+								inlineDeliverable,
+								canDiscard
+									? overviewDiscardButton(
+											session.id,
+											change.id,
+											this.#armedApprove === `discard:${session.id}:${change.id}`,
+											busyChange,
+										)
+									: null,
+								!running
 									? h(
 											"button",
 											{
 												type: "button",
-												class: "surface-overview-act is-danger",
-												disabled: busyReconcile,
-												"data-act": "reconcile",
+												class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
+												disabled: Boolean(state.busy[`change:${change.id}`]),
+												"data-act": "approve",
+												"data-session": session.id,
 												"data-change": change.id,
+												...(armed ? { "data-armed": "true" } : {}),
 											},
-											t("Reconcile"),
+											approveLabel(t("Approve"), armed),
 										)
-									: !running
-										? h(
-												"button",
-												{
-													type: "button",
-													class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
-													disabled: Boolean(state.busy[`change:${change.id}`]),
-													"data-act": "approve",
-													"data-session": session.id,
-													"data-change": change.id,
-													...(armed ? { "data-armed": "true" } : {}),
-												},
-												approveLabel(t("Approve"), armed),
-											)
-										: null,
+									: null,
 							),
+							deliverables.length > 1
+								? h(
+										"div",
+										{ class: "surface-overview-change-deliverables" },
+										...deliverables.map((item) => this.#overviewDeliverablePill(look, change, item, true)),
+									)
+								: null,
 						);
 					}),
 				),
@@ -1291,6 +1443,11 @@ export class SurfaceSessionDrawer {
 			state.activeReportSlug,
 			state.hiddenChanges,
 			state.busy,
+			state.studioPatches,
+			resolvedSurface ? state.localStudioBase[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.cloudSurfaceFiles[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.localStudioBinaries[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.cloudSurfaceBinaries[resolvedSurface.id] : undefined,
 			look?.kind,
 			look?.accent,
 			this.#armedApprove,
@@ -1338,12 +1495,24 @@ export class SurfaceSessionDrawer {
 		const store = this.#store;
 		const parts: HTMLElement[] = [];
 		const listed = session.changes.filter((change) => change.status !== "discarded");
+		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
+		const claimedPaths = new Set<string>();
+		if (surface) {
+			for (const change of listed) {
+				const items = changeDeliverables(store.state, surface.id, change);
+				if (items.length > 0) {
+					deliverablesByChange.set(change.id, items);
+					for (const item of items) claimedPaths.add(item.path);
+				}
+			}
+		}
+		const standaloneNotes = ownedNotes.filter((note) => !claimedPaths.has(note.path));
 		const actionSession = Boolean(
 			surface &&
 				(surface.archetype === "ops" ||
 					(listed.length > 0 && listed.every((change) => isActionChange(change, surface)))),
 		);
-		if (surface && ownedNotes.length > 0) parts.push(...this.#noteButtons(ownedNotes));
+		if (surface && standaloneNotes.length > 0) parts.push(...this.#noteButtons(standaloneNotes));
 		if (isRunningSession(session) && session.state !== "needs_input")
 			parts.push(
 				h(
@@ -1466,21 +1635,21 @@ export class SurfaceSessionDrawer {
 					),
 				);
 		} else if (listed.length && !sessionHeld(session)) {
-			const busyReconcile = Boolean(store.state.busy[`reconcile:${session.surfaceId}`]);
 			const running = isRunningSession(session);
 			const changeRows: HTMLElement[] = [];
 			for (const change of listed) {
 				const open = isOpenChange(change);
-				const conflicted = change.status === "conflicted";
 				const shown = store.isChangeShown(change.id);
 				const busyChange = Boolean(store.state.busy[`change:${change.id}`]);
 				const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
-				const conflictPaths = change.conflictPaths?.length ? formatConflictPaths(change.conflictPaths) : "";
+				const summaryText = change.summary.trim();
+				const showSummary = summaryText.length > 0 && summaryText !== change.title.trim();
+				const deliverables = deliverablesByChange.get(change.id) ?? [];
 				changeRows.push(
 					h(
 						"div",
 						{
-							class: `surface-drawer-change${open ? "" : " is-closed"}${conflicted ? " is-conflicted" : ""}`,
+							class: `surface-drawer-change${open ? "" : " is-closed"}`,
 							"data-change": change.id,
 						},
 						h(
@@ -1490,24 +1659,12 @@ export class SurfaceSessionDrawer {
 							h(
 								"div",
 								{ class: "surface-drawer-change-copy" },
-								conflicted
-									? h(
-											"div",
-											{ class: "surface-drawer-change-head" },
-											h("span", { class: "surface-drawer-change-title" }, change.title),
-											changeTag(change),
-										)
-									: h("span", { class: "surface-drawer-change-title" }, change.title),
-								conflicted && conflictPaths
-									? h(
-											"small",
-											{ class: "surface-conflict-paths", title: change.conflictPaths?.join(", ") },
-											t("Conflicts in {paths}", { paths: conflictPaths }),
-										)
-									: null,
+								h("span", { class: "surface-drawer-change-title" }, change.title),
+								showSummary ? h("p", { class: "surface-drawer-change-summary" }, summaryText) : null,
 							),
 							!open ? changeTag(change) : null,
 						),
+						this.#focusedDeliverableButtons(look, change, deliverables),
 						open
 							? h(
 									"div",
@@ -1524,30 +1681,18 @@ export class SurfaceSessionDrawer {
 									...(running
 										? []
 										: [
-												conflicted
-													? h(
-															"button",
-															{
-																type: "button",
-																class: "surface-change-btn is-danger",
-																"data-act": "reconcile",
-																"data-change": change.id,
-																disabled: busyReconcile,
-															},
-															t("Reconcile"),
-														)
-													: h(
-															"button",
-															{
-																type: "button",
-																class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
-																"data-act": "approve",
-																"data-change": change.id,
-																...(armed ? { "data-armed": "true" } : {}),
-																disabled: busyChange,
-															},
-															approveLabel(t("Approve"), armed),
-														),
+												h(
+													"button",
+													{
+														type: "button",
+														class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
+														"data-act": "approve",
+														"data-change": change.id,
+														...(armed ? { "data-armed": "true" } : {}),
+														disabled: busyChange,
+													},
+													approveLabel(t("Approve"), armed),
+												),
 												h(
 													"button",
 													{
@@ -1579,39 +1724,23 @@ export class SurfaceSessionDrawer {
 			}
 			parts.push(h("div", { class: "surface-drawer-changes" }, ...changeRows));
 			const open = session.changes.filter(isOpenChange).length;
-			const conflictedCount = session.changes.filter((change) => change.status === "conflicted").length;
 			const armedAll = this.#armedApprove === `approve-all:${session.id}`;
-			if (!running && (conflictedCount > 1 || open > 1))
+			if (!running && open > 1)
 				parts.push(
 					h(
 						"div",
 						{ class: "surface-drawer-actions" },
-						conflictedCount > 1
-							? h(
-									"button",
-									{
-										type: "button",
-										class: "btn btn-primary btn-small",
-										"data-act": "reconcile-all",
-										disabled: busyReconcile,
-									},
-									t("Reconcile all"),
-								)
-							: open > 1 && conflictedCount === 0
-								? h(
-										"button",
-										{
-											type: "button",
-											class: `btn btn-small surface-approve-btn${armedAll ? " is-confirming" : ""}`,
-											"data-act": "approve-all",
-											...(armedAll ? { "data-armed": "true" } : {}),
-										},
-										approveLabel(t("Approve all {count}", { count: open }), armedAll),
-									)
-								: null,
-						open > 1
-							? h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard all"))
-							: null,
+						h(
+							"button",
+							{
+								type: "button",
+								class: `btn btn-small surface-approve-btn${armedAll ? " is-confirming" : ""}`,
+								"data-act": "approve-all",
+								...(armedAll ? { "data-armed": "true" } : {}),
+							},
+							approveLabel(t("Approve all {count}", { count: open }), armedAll),
+						),
+						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard all")),
 					),
 				);
 		}
@@ -1751,6 +1880,9 @@ export class SurfaceSessionDrawer {
 			case "open-report":
 				store.openReport(surfaceId, report);
 				return;
+			case "open-deliverable":
+				if (change && report) void store.openChangeDeliverable(surfaceId, change, report);
+				return;
 			case "focus-session":
 				if (session) store.openDrawer(surfaceId, session);
 				return;
@@ -1790,15 +1922,6 @@ export class SurfaceSessionDrawer {
 				if (targetSurface) openPublishSheet(store, targetSurface);
 				return;
 			}
-			case "reconcile":
-				if (change) void store.reconcileChanges(surfaceId, [change]);
-				return;
-			case "reconcile-all": {
-				const current = sessionId ? store.session(sessionId) : undefined;
-				const ids = current?.changes.filter((item) => item.status === "conflicted").map((item) => item.id) ?? [];
-				if (ids.length) void store.reconcileChanges(surfaceId, ids);
-				return;
-			}
 			case "retry-session":
 				if (sessionId) void store.retrySession(sessionId);
 				return;
@@ -1815,6 +1938,12 @@ export class SurfaceSessionDrawer {
 				return;
 			case "discard-change":
 				if (sessionId && change) {
+					if (this.#quotedChange?.changeId === change) this.#setQuotedChange(undefined);
+					void store.discardChange(sessionId, change);
+				}
+				return;
+			case "discard-change-armed":
+				if (sessionId && change && this.#confirmOrArm(`discard:${sessionId}:${change}`)) {
 					if (this.#quotedChange?.changeId === change) this.#setQuotedChange(undefined);
 					void store.discardChange(sessionId, change);
 				}

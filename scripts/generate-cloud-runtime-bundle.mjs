@@ -7,45 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027899_runtime_bundle_activation_v278.sql";
-const activationVersion = 278;
-const previousActivationVersion = 277;
-const previousActivationSha256 = "3ae879e9b5715593cf3822cfb47b1ff94fcd8fd9cb0a79f85896709da7c8a470";
+const activation = "supabase/migrations/20260929028099_runtime_bundle_activation_v280.sql";
+const activationVersion = 280;
+const previousActivationVersion = 279;
+const previousActivationSha256 = "243b75c47eb22c7241d603303ef3348aa9196c02e996de8c3d73c2e07a14a9ee";
 const activationRequires = Object.freeze([
 	[
-		"20260930835000_code_checks_skipped_paths",
-		"#2106 (Checks v2): bundle 278 emits paths_unmatched skipped steps in qorpera.code-checks/v1 results",
-		"position('paths_unmatched' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_code_checks_passed_valid(jsonb,text,text)')), '')) > 0",
-	],
-	[
-		"20260930839000_app_relay_auth_health_and_site_rollbacks",
-		"#2133 (app-relay & site rollbacks): bundle 278 uses static site version listing/rollback and app supervision RPCs",
-		"to_regprocedure('public.qorpera_site_agent_list_versions(jsonb,text)') is not null",
-	],
-	[
-		"20260930849000_code_ops_status_claims_and_lifecycle",
-		"#2146 (agent code ops): bundle 278 uses SQL code status, claimedPaths overlap checks, and repo lifecycle RPCs",
-		"to_regprocedure('public.qorpera_folder_code_status(jsonb,text,text)') is not null",
-	],
-	[
-		"20260930854000_coding_snapshots_5h_and_standby",
-		"#2177 (F3 slice 5h snapshots & standby): bundle 278 binds pre-warmed coding snapshots and environment hooks",
-		"to_regprocedure('public.qorpera_coding_machine_policy_matches(public.qorpera_coding_machines,jsonb)') is not null",
-	],
-	[
-		"20260930861000_surface_studio_kind_and_product_roots",
-		"#2196 (Studio isolation & product roots): bundle 278 passes surfaceKind and shared product folder roots",
-		"to_regprocedure('public.qorpera_surface_shared_product_folder_roots(uuid)') is not null",
-	],
-	[
-		"20260930870000_fast_coding_command_auth_and_session_lifecycle",
-		"#2179 (fast coding VM lifecycle): bundle 278 uses consolidated coding command auth v2 and worktree_created_at",
-		"to_regprocedure('public.qorpera_record_coding_worktree_created(uuid,uuid)') is not null",
-	],
-	[
-		"20260930872000_surface_reply_reaches_turn",
-		"#2247 (surface reply reaches turn): bundle 278 expects folder session turns to include subsequent member replies",
-		"position('## The conversation since this request' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)')), '')) > 0",
+		"20260930889000_surface_preview_build_failure_to_session",
+		"#2319 (failed build handback): bundle 280 pairs with surface build handback table and RPCs",
+		"to_regclass('public.qorpera_surface_build_handbacks') is not null and to_regprocedure('public.qorpera_surface_build_hand_back(uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

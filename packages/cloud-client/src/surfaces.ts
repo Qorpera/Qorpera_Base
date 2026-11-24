@@ -5,6 +5,7 @@ import {
 	parseSurfaceAutomationSummary,
 	parseSurfaceMigrationChecklist,
 	parseSurfacePreviewCompositionState,
+	parseSurfaceReconciliation,
 	parseSurfaceSession,
 	parseSurfaceSessionImages,
 	parseSurfaceSummary,
@@ -17,6 +18,8 @@ import {
 	type SurfaceKind,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
+	type SurfacePreviewMode,
+	type SurfaceReconciliation,
 	type SurfaceSession,
 	type SurfaceSessionImages,
 	type SurfaceSessionMessage,
@@ -36,6 +39,7 @@ export interface StartSurfaceSessionOptions {
 	readonly originLabel?: string;
 	readonly clientInputId?: string;
 	readonly images?: readonly SurfaceImageRef[];
+	readonly previewBaseChangeIds?: readonly string[];
 }
 
 export interface CreateSurfaceRpcInput {
@@ -234,13 +238,22 @@ export class CloudSurfacesClient {
 		const images = options.images ?? [];
 		if (images.length > 0 && !options.clientInputId)
 			throw new CloudSurfacesError("Surface session images need a client input id");
+		const previewBaseChangeIds = [
+			...new Set((options.previewBaseChangeIds ?? []).map((id) => id.trim()).filter((id) => id.length > 0)),
+		].slice(0, 64);
+		const originRef =
+			previewBaseChangeIds.length > 0
+				? target
+					? { ...target, previewBaseChangeIds }
+					: { previewBaseChangeIds }
+				: target;
 		const args = {
 			p_surface_id: surfaceId,
 			p_prompt: prompt,
 			p_title: options.title ?? null,
 			p_origin_kind: options.originKind ?? (target ? "point_to_change" : "member"),
 			p_origin_label: options.originLabel ?? null,
-			p_origin_ref: target,
+			p_origin_ref: originRef,
 			p_exploration_count: options.explorationCount ?? null,
 			p_exploration_title: options.explorationTitle ?? null,
 			...(options.variantLabels ? { p_variant_labels: [...options.variantLabels] } : {}),
@@ -323,6 +336,11 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
+	async discardSurfaceSession(sessionId: string): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_discard_surface_session", { p_session_id: sessionId });
+		return parseSurfaceSession(data, "session");
+	}
+
 	async undoSurfaceChange(changeId: string): Promise<SurfaceSession> {
 		const data = await this.#rpc("qorpera_undo_surface_change", { p_change_id: changeId });
 		return parseSurfaceSession(data, "session");
@@ -346,6 +364,21 @@ export class CloudSurfacesClient {
 			p_change_ids: [...changeIds],
 		});
 		return parseSurfaceSession(data, "session");
+	}
+
+	async ensureSurfaceReconciliation(
+		surfaceId: string,
+		changeIds: readonly string[],
+		conflictPaths: readonly string[] = [],
+		retry = false,
+	): Promise<SurfaceReconciliation> {
+		const data = await this.#rpc("qorpera_ensure_surface_reconciliation", {
+			p_surface_id: surfaceId,
+			p_change_ids: [...changeIds],
+			p_conflict_paths: [...conflictPaths],
+			p_retry: retry,
+		});
+		return parseSurfaceReconciliation(data, "reconciliation");
 	}
 
 	async spawnCrossSurfaceSession(request: CrossSurfaceHandoffRequest): Promise<SurfaceSession> {
@@ -474,6 +507,7 @@ export type {
 	SurfaceChangeUnit,
 	SurfaceMigrationChecklist,
 	SurfacePreviewCompositionState,
+	SurfaceReconciliation,
 	SurfaceSession,
 	SurfaceSessionMessage,
 	SurfaceSummary,
