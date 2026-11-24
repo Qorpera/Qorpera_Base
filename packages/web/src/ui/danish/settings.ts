@@ -2,7 +2,6 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Good will, Friends, Company, AI subscriptions, Sites. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -588,59 +587,19 @@ export const SETTINGS: Record<string, string> = {
 	"The mailbox is ready. Email sent to it can start the company's routines.":
 		"Postkassen er klar. E-mail sendt til den kan starte virksomhedens rutiner.",
 
-	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
-	Sites: "Hjemmesider",
-	"Share a site with its link once it is live.": "Del en hjemmeside med dens link, når den er live.",
-	"Share a site with its link once it is live. An app link also needs its password.":
-		"Del en hjemmeside med dens link, når den er live. Et app-link skal også bruge sin adgangskode.",
-	"Only founders and admins can make a site live or take it offline.":
-		"Kun stiftere og administratorer kan sætte en hjemmeside live eller tage den offline.",
-	"Only founders and admins can see passwords or take sites offline.":
-		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
-	"No sites yet": "Ingen hjemmesider endnu",
-	"Ask an agent for a website and it shows up here.": "Bed en agent om en hjemmeside, så dukker den op her.",
-	"The company's sites could not be read.": "Virksomhedens hjemmesider kunne ikke hentes.",
+	"Only founders and admins can see passwords.": "Kun stiftere og administratorer kan se adgangskoder.",
 	"Publishing…": "Udgiver…",
 	"Published {time} by {agent}": "Udgivet {time} af {agent}",
 	"Published {time}": "Udgivet {time}",
-	"Copy the link": "Kopiér linket",
-	"The link": "Linket",
-	"The link is copied.": "Linket er kopieret.",
-	"Show password": "Vis adgangskode",
-	"Hide password": "Skjul adgangskode",
 	"Copy the password": "Kopiér adgangskoden",
-	"The password": "Adgangskoden",
 	"The password is copied.": "Adgangskoden er kopieret.",
 	"Press ⌘C to copy.": "Tryk ⌘C for at kopiere.",
 	"Press Ctrl+C to copy.": "Tryk Ctrl+C for at kopiere.",
 	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
 	"More options for {name}": "Flere muligheder for {name}",
-	"Change password": "Skift adgangskode",
-	"Type a new password, 10 to 128 characters": "Skriv en ny adgangskode på 10 til 128 tegn",
-	"New password for {name}": "Ny adgangskode til {name}",
 	"Save password": "Gem adgangskode",
-	"Make a new password": "Lav en ny adgangskode",
-	"Every visitor enters the new password; the old one stops working at once.":
-		"Alle besøgende skal skrive den nye adgangskode; den gamle holder op med at virke med det samme.",
-	"A site password is 10 to 128 characters.": "En adgangskode til en hjemmeside er på 10 til 128 tegn.",
-	"The password is changed.": "Adgangskoden er skiftet.",
-	"The password could not be changed. Try again.": "Adgangskoden kunne ikke skiftes. Prøv igen.",
-	"Take offline": "Tag offline",
-	"Take {name} offline? Its link stops working. The files stay in the Company File.":
-		"Tag {name} offline? Linket holder op med at virke. Filerne bliver i Virksomhedsfilen.",
-	"{name} is offline.": "{name} er offline.",
-	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
-	// An app link: one port of a company machine at a site's link (v195)
-	"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.":
-		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
-	// A project's site made from its code kept in Qorpera: its version goes live from What's new (own code storage step 4)
-	"Version {version}": "Version {version}",
-	"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new until you put it live.":
-		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder, til du sætter den live.",
 	// A site Qorpera took down: why, in place of its link and password (own code storage step 5.1)
 	"Taken down": "Taget ned",
-	"Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.":
-		"Qorpera har taget hjemmesiden ned: {reason}. Hvis du mener, det er forkert, så skriv til os under {feedback} i din menu.",
 
 	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
 	"What's new": "Nyheder",
@@ -659,7 +618,7 @@ export const SETTINGS: Record<string, string> = {
 		"Version {version} · siden {time} · sat live igen automatisk",
 	"Version {version} · since {time} · went back automatically (enabled by {name})":
 		"Version {version} · siden {time} · sat live igen automatisk (slået til af {name})",
-	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
+	"The browser would not copy the password.": "Browseren ville ikke kopiere adgangskoden.",
 	"Only the company can open it. Go live on its page.": "Kun virksomheden kan åbne den. Gå live på dens side.",
 	"Only the company can open it.": "Kun virksomheden kan åbne den.",
 	"Open the site": "Åbn hjemmesiden",
@@ -694,8 +653,8 @@ export const SETTINGS: Record<string, string> = {
 	"Qorpera was busy for a moment": "Qorpera havde travlt et øjeblik",
 	"the project is no longer there": "projektet findes ikke længere",
 	"something went wrong on Qorpera's side": "noget gik galt hos Qorpera",
-	"This project can't get a site: the company has 10. Take one offline in Sites.":
-		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10. Tag en offline under Hjemmesider.",
+	"This project can't get a site: the company has 10.":
+		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10.",
 	"The newest version could not be prepared. Qorpera is trying again.":
 		"Den nyeste version kunne ikke gøres klar. Qorpera prøver igen.",
 	"The newest version could not be prepared. The next change that is saved gets a new try.":
@@ -718,8 +677,7 @@ export const SETTINGS: Record<string, string> = {
 	"The next version could not be opened. Try again.": "Den næste version kunne ikke åbnes. Prøv igen.",
 	"The next version could not be opened: Qorpera could not be reached. Try again.":
 		"Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen.",
-	"Qorpera took this site down, so it can't be opened. See why in Sites.":
-		"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+	"Qorpera took this site down, so it can't be opened.": "Qorpera har taget hjemmesiden ned, så den kan ikke åbnes.",
 	"Only founders and admins can look at a version before it goes live.":
 		"Kun stiftere og administratorer kan se en version, før den går live.",
 	"Qorpera took this site down": "Qorpera har taget hjemmesiden ned",
@@ -835,38 +793,5 @@ export const SETTINGS: Record<string, string> = {
 	"This website was taken offline.": "Hjemmesiden er taget offline.",
 	"This website isn't live yet.": "Hjemmesiden er ikke live endnu.",
 	"Try again in a moment.": "Prøv igen om et øjeblik.",
-	"Make public": "Gør offentlig",
-	"Make private": "Gør privat",
-	"Custom domain": "Eget domæne",
-	Public: "Offentlig",
-	"The site is now public.": "Siden er nu offentlig.",
-	"The site is now private.": "Siden er nu privat.",
-	"The site is live.": "Hjemmesiden er live.",
-	"The site is not live any more.": "Hjemmesiden er ikke live længere.",
-	"Site visibility could not be changed. Try again.": "Sidens synlighed kunne ikke ændres. Prøv igen.",
-	"Add a custom domain for {name}": "Tilføj et eget domæne til {name}",
-	"Enter your domain (for example example.dk or www.example.dk).":
-		"Indtast dit domæne (for eksempel eksempel.dk eller www.eksempel.dk).",
-	"Add domain": "Tilføj domæne",
 	"The domain could not be added. Try again.": "Domænet kunne ikke tilføjes. Prøv igen.",
-	"Domain added. Point your DNS records below:": "Domæne tilføjet. Peg dine DNS-poster som vist herunder:",
-	"Waiting for DNS": "Venter på DNS",
-	"DNS verified": "DNS bekræftet",
-	"HTTPS active": "HTTPS aktiv",
-	"DNS moved": "DNS flyttet",
-	"DNS failed": "DNS fejlede",
-	Primary: "Primært",
-	"Set as primary": "Sæt som primært",
-	"Remove domain": "Fjern domæne",
-	"The domain was removed.": "Domænet blev fjernet.",
-	"The domain could not be removed. Try again.": "Domænet kunne ikke fjernes. Prøv igen.",
-	"Primary domain updated.": "Primært domæne opdateret.",
-	"Primary domain could not be updated. Try again.": "Primært domæne kunne ikke opdateres. Prøv igen.",
-	"example.dk": "eksempel.dk",
-	"Record {type} · {host} · {value}": "Post {type} · {host} · {value}",
-	"Check DNS": "Tjek DNS",
-	"DNS check queued.": "DNS-tjek sat i kø.",
-	"DNS check could not be started. Try again.": "DNS-tjek kunne ikke startes. Prøv igen.",
-	Webapp: "Webapp",
-	Hybrid: "Hybrid",
 };

@@ -1397,13 +1397,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			!owedAppsSet.has(app),
 	);
 	const concepts = companyConcepts(state.apps ?? []).length;
-	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
-	const sites = state.siteCount ?? 0;
 	const hasApps =
 		interfacesShown.length > 0 ||
 		postedApps.length > 0 ||
 		concepts > 0 ||
-		sites > 0 ||
 		state.whatsNew !== undefined ||
 		owed.websites.length > 0 ||
 		owed.apps.length > 0;
@@ -1414,7 +1411,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		if (
 			(section === "interface" ||
 				section === "app" ||
-				section === "sites" ||
 				section === "whats-new" ||
 				section === "site" ||
 				section === "new-program") &&
@@ -1450,7 +1446,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, route);
 	drawOwed(parts, company, owed, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
@@ -2548,9 +2544,7 @@ function placeOf(element: HTMLElement): string | undefined {
 	if (roomId) return `room:${roomId.toLowerCase()}`;
 	if (owedPlace) return owedPlace;
 	if (!appKey) return undefined;
-	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "sites" || appKey === "whats-new"
-		? appKey
-		: `page:${appKey}`;
+	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "whats-new" ? appKey : `page:${appKey}`;
 }
 
 function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
@@ -2714,7 +2708,6 @@ function drawInterfaces(
 	shown: readonly CompanyInterface[],
 	apps: readonly CompanyApp[],
 	concepts: number,
-	sites: number,
 	route: Route,
 ): void {
 	const profileId = company.profile.profileId;
@@ -2796,24 +2789,6 @@ function drawInterfaces(
 		element.dataset.appKey = key;
 		element.dataset.ownEmblem = "board";
 		const open = route.name === "company" && route.section === "concepts";
-		element.classList.toggle("active", open);
-		if (open) element.setAttribute("aria-current", "page");
-		else element.removeAttribute("aria-current");
-		elements.push(element);
-	}
-	// The company's websites: one entry for the Sites page, which lists them all.
-	if (sites > 0) {
-		const key = "sites";
-		colours.set(key, "blue");
-		const choice = emblemChoice(key);
-		const model = JSON.stringify([key, t("Sites"), sites, choice.model]);
-		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : withEmblem(sitesIcon(`#/c/${profileId}/sites`), choice);
-		rows.set(key, { shown: model, element });
-		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
-		element.dataset.appKey = key;
-		element.dataset.ownEmblem = "globe";
-		const open = route.name === "company" && route.section === "sites";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -3242,21 +3217,6 @@ function conceptsIcon(href: string): HTMLElement {
 	);
 }
 
-/** The Sites entry in the drawer: a globe with "Sites" under it, a link to the Sites page. */
-function sitesIcon(href: string): HTMLElement {
-	return h(
-		"a",
-		{
-			class: "rail-app rail-sites",
-			href,
-			draggable: "false",
-		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
-		h("span", { class: "rail-app-name" }, t("Sites")),
-	);
-}
-
-/** A website in the owed row: the Sites globe with the site's title under it, a link to the site's own view. */
 function websiteIcon(name: string, href: string): HTMLElement {
 	return h(
 		"a",

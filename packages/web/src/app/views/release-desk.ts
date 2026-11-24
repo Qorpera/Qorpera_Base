@@ -146,7 +146,7 @@ function lookWords(
 		return {
 			at: "actions",
 			tone: "error",
-			text: t("Qorpera took this site down, so it can't be opened. See why in Sites."),
+			text: t("Qorpera took this site down, so it can't be opened."),
 		};
 	if (failure instanceof CloudRpcError && failure.code === "42501")
 		return {

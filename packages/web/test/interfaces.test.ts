@@ -283,29 +283,17 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-app")).toBeNull();
 	});
 
-	it("shows the company's websites as one Sites entry while there are any, leading to the Sites page", () => {
+	it("shows no Sites entry for the company's websites, whatever order the member kept", () => {
 		const { element, draw, controller } = rail(home);
-		expect(element.querySelector(".rail-sites")).toBeNull();
 		controller.store.set({ siteCount: 2 });
 		draw();
-		const entry = element.querySelector<HTMLAnchorElement>(".rail-app.rail-sites")!;
-		expect(entry.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/sites`);
-		expect(entry.hasAttribute("title")).toBe(false);
-		expect(entry.querySelector(".rail-app-name")?.textContent).toBe("Sites");
-		draw({ name: "company", profileId: profileA.profileId, section: "sites" });
-		expect(entry.getAttribute("aria-current")).toBe("page");
-		expect(drawer(element).classList.contains("is-open")).toBe(true);
-		// It is ordered like every other entry: it carries its key, and an order the member kept puts it first.
-		expect(entry.dataset.appKey).toBe("sites");
-		expect(icons(element).map(([name]) => name)).toEqual(["Bank", "Sites"]);
+		expect(element.querySelector(".rail-sites, [data-app-key='sites']")).toBeNull();
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank"]);
 		localStorage.setItem(`qorpera.web.rail-apps-order:${profileA.profileId}`, JSON.stringify(["sites"]));
 		const ordered = rail(home);
 		ordered.controller.store.set({ siteCount: 2 });
 		ordered.draw();
-		expect(icons(ordered.element).map(([name]) => name)).toEqual(["Sites", "Bank"]);
-		controller.store.set({ siteCount: 0 });
-		draw();
-		expect(element.querySelector(".rail-sites")).toBeNull();
+		expect(icons(ordered.element).map(([name]) => name)).toEqual(["Bank"]);
 	});
 
 	it("shows What's new while a project makes a website, with the changes ready as its badge", () => {
@@ -316,7 +304,6 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		draw();
 		expect(icons(element)).toEqual([
 			["Bank", `#/c/${profileA.profileId}/i/bank`],
-			["Sites", `#/c/${profileA.profileId}/sites`],
 			["What's new", `#/c/${profileA.profileId}/whats-new`],
 		]);
 		expect(entry()?.dataset.appKey).toBe("whats-new");
@@ -417,9 +404,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 				["Wristband shop", `#/c/${profileA.profileId}/site/wristband-shop`],
 				["launch-page", `#/c/${profileA.profileId}/site/launch-page`],
 			]);
-			// The row stands above the member's own arrangement, which keeps the rest: Sites among them.
 			expect(owedRow(element).nextElementSibling?.classList.contains("rail-apps-grid")).toBe(true);
-			expect(gridIcons(element)).toEqual(["Bank", "Sites"]);
+			expect(gridIcons(element)).toEqual(["Bank"]);
 			// Its tiles are the platform's: no key the member drags or groups by, but the place other members are seen in.
 			const shopTile = owedRow(element).querySelector<HTMLElement>(".rail-website")!;
 			expect(shopTile.dataset.appKey).toBeUndefined();
@@ -1102,6 +1088,31 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		controller.store.set({ whatsNew: undefined });
 		await settle();
 		expect(tiles(element)).toEqual(["Launch+", "Old notes", "Brand", "Bank", "Plan", "Trips"]);
+		localStorage.clear();
+	});
+
+	it("draws no tile for a saved layout or groups file that still names sites, and breaks nothing", async () => {
+		localStorage.clear();
+		const layout = parseMemberAppLayout({
+			schema: "qorpera.member-app-layout/v1",
+			places: { sites: { group: "market", after: "app:plan", at: 1 } },
+			groups: {},
+			colours: { sites: "pink" },
+			emblems: { sites: "globe" },
+		});
+		expect(layout.places).toEqual({ sites: { group: "market", after: "app:plan", at: 1 } });
+		const { element, controller, set } = drawer();
+		controller.store.set({
+			appLayout: { layout, updatedAt: "2026-11-11T12:00:00Z" },
+			appGroups: parseAppGroups("- group market: Market\n  - app:brand Brand\n  - sites Sites\n  - app:plan Plan\n"),
+			siteCount: 3,
+		});
+		await settle();
+		expect(tiles(element)).toEqual(["Market", "Bank", "Trips"]);
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Bank", "Trips"]);
+		expect(element.querySelector("[data-app-key='sites'], .rail-sites")).toBeNull();
+		expect(set).not.toHaveBeenCalled();
 		localStorage.clear();
 	});
 

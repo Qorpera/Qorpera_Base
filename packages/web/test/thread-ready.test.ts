@@ -376,19 +376,19 @@ describe("A change is ready: the card", () => {
 		);
 	});
 
-	it("draws no card for a site Qorpera took down: one quiet line in What's new's words, its Sites a way there", async () => {
+	it("draws no card for a site Qorpera took down: one quiet line in What's new's words, with no link", async () => {
 		const { ready } = await card([releasesOf([gift()], true, true)], { takenDown: new Set(["saml-gift-message"]) });
 		expect(ready.shown).toBe(true);
 		expect(ready.el.querySelector(".thread-ready-card, .whats-new-change, button")).toBeNull();
 		const line = ready.el.querySelector<HTMLElement>("p.conversation-note.thread-ready-down")!;
-		expect(line.textContent).toBe("Qorpera took this site down, so it can't be opened. See why in Sites.");
-		const sites = line.querySelector<HTMLAnchorElement>("a")!;
-		expect(sites.textContent).toBe("Sites");
-		expect(sites.getAttribute("data-href") ?? sites.getAttribute("href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(line.textContent).toBe("Qorpera took this site down, so it can't be opened.");
+		expect(line.querySelector("a")).toBeNull();
 		setLanguagePreference("da");
 		window.dispatchEvent(new Event("focus"));
 		await settle();
-		expect(ready.el.querySelector(".thread-ready-down a")?.textContent).toBe("Hjemmesider");
+		const danish = ready.el.querySelector<HTMLElement>(".thread-ready-down")!;
+		expect(danish.textContent).toBe("Qorpera har taget hjemmesiden ned, så den kan ikke åbnes.");
+		expect(danish.querySelector("a")).toBeNull();
 	});
 
 	it("says Put it live for a project's first version too, so its row of buttons is the same row (What's new's page names the first version)", async () => {

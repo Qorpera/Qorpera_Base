@@ -125,7 +125,6 @@ import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
-import { SitesView } from "./views/settings-sites.ts";
 import {
 	appLook,
 	clearShellCompanyState,
@@ -140,7 +139,7 @@ import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
 import { openMigrationSheet } from "./views/surface-migration-sheet.ts";
 import { type SurfaceMount, SurfaceView } from "./views/surface-view.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
-import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
+import { WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -150,8 +149,6 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
 
-/** What the company's store keeps of its sites as read: how many, for the drawer's Sites entry, and the list, for the
- * owed row's websites and their views. */
 function sitesListed(list: readonly CompanySite[]): { siteCount: number; siteList: readonly CompanySite[] } {
 	return { siteCount: list.length, siteList: list };
 }
@@ -599,10 +596,6 @@ export function mountApplication(
 	let appReturn: string | undefined;
 	/** The company's concepts, full screen (`#/c/{id}/concepts`), while that route shows. */
 	let conceptsView: ConceptsView | undefined;
-	/** The company's Sites page (`#/c/{id}/sites`), kept while that route shows. */
-	let sitesPage:
-		| { readonly company: CompanyController; readonly view: SitesView; readonly el: HTMLElement }
-		| undefined;
 	/** The company whose sites were read for the apps drawer. */
 	let sitesRead: CompanyController | undefined;
 	let sitesOncePublished: ReturnType<typeof readSitesOncePublished> | undefined;
@@ -662,19 +655,11 @@ export function mountApplication(
 		}
 		return reads;
 	};
-	/** The drawer's entry and the versions the Sites page names, from the company's latest-started read that answered:
-	 * an answer that comes back after a newer one changes neither. `read` stands in until one did. */
 	const showReleases = (controller: CompanyController, read: CodeReleases) => {
 		const newest = companyReleases(controller).last ?? read;
 		const nextWhatsNew = whatsNewEntry(controller, newest);
-		const nextVersions = liveVersions(newest);
-		const prev = controller.store.get();
-		if (
-			JSON.stringify(prev.whatsNew) === JSON.stringify(nextWhatsNew) &&
-			JSON.stringify(prev.siteVersions) === JSON.stringify(nextVersions)
-		)
-			return;
-		controller.store.set({ whatsNew: nextWhatsNew, siteVersions: nextVersions });
+		if (JSON.stringify(controller.store.get().whatsNew) === JSON.stringify(nextWhatsNew)) return;
+		controller.store.set({ whatsNew: nextWhatsNew });
 	};
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
@@ -832,8 +817,6 @@ export function mountApplication(
 		appPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
-		sitesPage?.view.dispose();
-		sitesPage = undefined;
 		siteView?.view.dispose();
 		siteView = undefined;
 		whatsNewPage?.view.dispose();
@@ -870,8 +853,6 @@ export function mountApplication(
 		appPage?.dispose();
 		appPage = undefined;
 		appReturn = undefined;
-		sitesPage?.view.dispose();
-		sitesPage = undefined;
 		siteView?.view.dispose();
 		siteView = undefined;
 		whatsNewPage?.view.dispose();
@@ -2228,8 +2209,6 @@ export function mountApplication(
 		}
 		// The roster arrives after the company opens, and agents are hired and let go: the rail's notes follow it.
 		agentNotes?.agentsChanged();
-		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
-		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
@@ -2325,9 +2304,8 @@ export function mountApplication(
 								error instanceof CloudRpcError &&
 								(error.missing || error.denied)
 							) {
-								const prev = controller.store.get();
-								if (prev.whatsNew !== undefined || prev.siteVersions !== undefined)
-									controller.store.set({ whatsNew: undefined, siteVersions: undefined });
+								if (controller.store.get().whatsNew !== undefined)
+									controller.store.set({ whatsNew: undefined });
 							}
 						},
 					)
@@ -2411,7 +2389,7 @@ export function mountApplication(
 							? `agent:${route.id.toLowerCase()}`
 							: route.section === "site" && route.id
 								? `site:${route.id}`
-								: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
+								: route.section === "concepts" || route.section === "whats-new"
 									? route.section
 									: COMPANY_PRESENCE_PLACE,
 		);
@@ -2425,10 +2403,6 @@ export function mountApplication(
 		if (route.section !== "concepts") {
 			conceptsView?.dispose();
 			conceptsView = undefined;
-		}
-		if (route.section !== "sites" || sitesPage?.company !== controller) {
-			sitesPage?.view.dispose();
-			sitesPage = undefined;
 		}
 		if (route.section !== "site" || siteView?.company !== controller || siteView.slug !== route.id) {
 			siteView?.view.dispose();
@@ -2866,8 +2840,6 @@ export function mountApplication(
 							folderImage: cardImage,
 							folderApp: cardApp,
 							decisions: questionsHost(),
-							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
-							// the Sites page's row under the words.
 							codeReleases: releaseDesk(true),
 							companySites: { client: createWebSites(cloud, controller.profile), canManage: managesSites },
 							messageErases: {
@@ -3068,40 +3040,6 @@ export function mountApplication(
 			case "interface":
 				renderInterface(main, controller, route.id ?? "", interfaceWrites());
 				return;
-			case "sites": {
-				// The websites the company's agents published (Jonas, 9 Nov 2026: out of Settings, into the apps drawer).
-				// Every member sees them and their links; owners and admins also read and change their passwords and take
-				// them offline (the kernel enforces the same rule).
-				if (!sitesPage) {
-					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
-						access: { canManage: managesSites },
-						hosting: hostingNotingPublic(controller.store, createWebSiteHosting(cloud, controller.profile)),
-						listed: (list) => controller.store.set(sitesListed(list)),
-						// A site made from a project's code names the version What's new has live, and links there.
-						releases: {
-							href: `#/c/${controller.profile.profileId}/whats-new`,
-							version: (site) => controller.store.get().siteVersions?.[site.slug],
-						},
-						// No site yet: the Co-Founder stands on the page (its crown while the roster is still on its way).
-						mascot: () =>
-							agentFigure(
-								controller.staffById(controller.cofounderId()) ?? {
-									id: "",
-									displayName: "Co-Founder",
-									appearance: { color: "", shape: "" },
-									templateId: "co-founder",
-								},
-								"Co-Founder",
-								{ size: 96, className: "sites-mascot" },
-							),
-					});
-					// The page draws its own title and line (views/settings-sites.ts).
-					sitesPage = { company: controller, view, el: h("section", { class: "page sites-page" }, view.el) };
-				}
-				sitesPage.view.update();
-				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
-				return;
-			}
 			case "site": {
 				// One of the company's websites, live, with its numbers (company views step 4): the site in a frame the member
 				// is let into without its password, and the numbers watched while it shows.
