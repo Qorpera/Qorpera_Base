@@ -180,7 +180,6 @@ describe("shell presentation lifecycle", () => {
 		const cap = String(Math.floor(window.innerWidth * 0.44));
 		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
-		// The default is the earlier 406px rail made a tenth thinner; the 1280px fixture window shows all of it.
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("365");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("422");

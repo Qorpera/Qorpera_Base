@@ -382,7 +382,6 @@ label > input, label > select { font-weight: 400; }
  * under the figure. The figure and the name keep their place in the rail. Half the space above
  * the card (Jonas, 5 Nov 2026): the figure stands into the list's band under the top row. */
 .rail-cofounder { padding: calc(var(--lift) / 2 + 8px) 9px 18.5px; }
-/* Half the space down to the interfaces (Jonas, 24 Nov 2026): 34.5px to the first title's words, now 17.25px. */
 .rail.has-surface-rail .rail-cofounder { padding-bottom: 1.25px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
