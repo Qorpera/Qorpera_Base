@@ -1,7 +1,7 @@
 import type { CodeReleaseLive, CodeReleaseSite, CodeReleases } from "../../cloud/releases.ts";
 import { button, fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import { type CompanyController, sitePublicAnswer } from "../company.ts";
+import { type CompanyController, type SiteAnswer, sitePublicAnswer } from "../company.ts";
 import {
 	keyOf,
 	quieted,
@@ -71,7 +71,7 @@ export class WhatsNewView {
 	readonly #desk: ReleaseDesk;
 	/** The change cards drawn, by what they show: a draw keeps them, and their pictures, as they are. */
 	#cards = new Map<string, HTMLElement>();
-	#notLiveDrawn = "";
+	#publicDrawn = "";
 
 	constructor(company: CompanyController, client: ReleaseClient, signal: AbortSignal, options: WhatsNewOptions = {}) {
 		this.#company = company;
@@ -81,7 +81,7 @@ export class WhatsNewView {
 		this.#draw();
 		void this.#desk.refresh();
 		const unsubscribe = company.store.subscribe(() => {
-			if (this.#notLiveKey() !== this.#notLiveDrawn) this.#draw();
+			if (this.#publicKey() !== this.#publicDrawn) this.#draw();
 		});
 		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
 	}
@@ -121,24 +121,23 @@ export class WhatsNewView {
 			: t("Version {version} · since {time} · {name} said go", { version, time, name });
 	}
 
-	#notLive(slug: string): boolean {
+	#publicAnswer(site: CodeReleaseSite): SiteAnswer | undefined {
+		if (!site.site) return undefined;
+		const slug = site.site.slug;
 		const state = this.#company.store.get();
-		const site = state.siteList?.find((item) => item.slug === slug && item.kind === "files");
-		return site !== undefined && sitePublicAnswer(state, site.id) === "private";
+		const listed = state.siteList?.find((item) => item.slug === slug);
+		if (!listed) return "unknown";
+		return listed.kind === "files" ? sitePublicAnswer(state, listed.id) : undefined;
 	}
 
-	#notLiveKey(): string {
-		return (this.#desk.releases?.sites ?? [])
-			.map((site) => (site.site ? this.#notLive(site.site.slug) : ""))
-			.join(",");
+	#publicKey(): string {
+		return (this.#desk.releases?.sites ?? []).map((site) => this.#publicAnswer(site) ?? "").join(",");
 	}
 
-	/** What is live, as a row of the Sites page (styles/sites.css): the Sites globe, the version and who said go, where
-	 * the password is, and the site's link and Go back as pill buttons. A site Qorpera took down (`down`) shows neither:
-	 * every address of it shows a "gone" page, and the kernel refuses going back until Qorpera restores it. */
 	#live(site: CodeReleaseSite, can: boolean, busy: boolean, down: boolean): HTMLElement {
 		const live = site.live;
 		const shown = live && site.site && !down ? site.site : undefined;
+		const answer = this.#publicAnswer(site);
 		const key = keyOf(site);
 		let back: HTMLButtonElement | null = null;
 		if (live && site.back && can && !down) {
@@ -161,7 +160,15 @@ export class WhatsNewView {
 				h(
 					"div",
 					{ class: "site-head" },
-					h("strong", { class: "site-name" }, live ? t("Live now") : t("Not live yet")),
+					h(
+						"strong",
+						{ class: "site-name" },
+						!live || answer === "private"
+							? t("Not live yet")
+							: answer === "unknown"
+								? t("Current version")
+								: t("Live now"),
+					),
 					live ? h("span", { class: "site-meta" }, this.#liveLine(live)) : null,
 					down
 						? h(
@@ -170,8 +177,16 @@ export class WhatsNewView {
 								t("Qorpera took this site down, so it can't be opened. See why in Sites."),
 							)
 						: null,
-					shown && can && this.#notLive(shown.slug)
-						? h("span", { class: "site-meta" }, t("Only the company can open it until you go live."))
+					shown && can && answer === "private"
+						? h(
+								"span",
+								{ class: "site-meta" },
+								h(
+									"a",
+									{ href: `#/c/${this.#company.profile.profileId}/sites` },
+									t("Only the company can open it. Go live in Sites."),
+								),
+							)
 						: null,
 				),
 				// Not live yet, there is nothing to open or go back to: no row for it (a phone would keep it empty).
@@ -290,7 +305,7 @@ export class WhatsNewView {
 
 	#draw(focusKey?: string): void {
 		if (this.#lifetime.signal.aborted) return;
-		this.#notLiveDrawn = this.#notLiveKey();
+		this.#publicDrawn = this.#publicKey();
 		const active = document.activeElement as HTMLElement | null;
 		const key = focusKey ?? (this.el.contains(active) ? active?.dataset.focusKey : undefined);
 		const releases = this.#desk.releases;

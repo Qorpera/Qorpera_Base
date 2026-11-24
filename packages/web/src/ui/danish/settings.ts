@@ -647,6 +647,7 @@ export const SETTINGS: Record<string, string> = {
 	"What's new could not be read.": "Nyheder kunne ikke hentes.",
 	"Live now": "Live nu",
 	"Not live yet": "Ikke live endnu",
+	"Current version": "Nuværende version",
 	"Version {version} · since {time}": "Version {version} · siden {time}",
 	"Version {version} · since {time} · {name} said go": "Version {version} · siden {time} · {name} sagde ja",
 	"Version {version} · since {time} · {name} went back":
@@ -659,7 +660,7 @@ export const SETTINGS: Record<string, string> = {
 	"Version {version} · since {time} · went back automatically (enabled by {name})":
 		"Version {version} · siden {time} · sat live igen automatisk (slået til af {name})",
 	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
-	"Only the company can open it until you go live.": "Kun virksomheden kan åbne den, indtil du går live.",
+	"Only the company can open it. Go live in Sites.": "Kun virksomheden kan åbne den. Gå live under Hjemmesider.",
 	"Open the site": "Åbn hjemmesiden",
 	"Go back to version {version}": "Gå tilbage til version {version}",
 	"Put version {version} back up? Version {current} comes off the site at once; its changes stay ready.":

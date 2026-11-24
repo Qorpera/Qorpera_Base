@@ -36,6 +36,16 @@ import {
  * strict parse. Founders never read a change number, a commit, a check, a branch or a repository path. */
 
 const TOKEN = "a".repeat(64);
+const LISTED = {
+	id: id(81),
+	slug: "wristband-shop",
+	title: "Wristband shop",
+	kind: "files",
+	url: "https://sites.qorpera.com/wristband-shop/",
+	state: "live",
+} as CompanySite;
+const PUBLIC = { siteList: [LISTED], sitesPublic: new Map([[LISTED.id, true]]) };
+const NOT_PUBLIC = { siteList: [LISTED], sitesPublic: new Map([[LISTED.id, false]]) };
 const OTHER_TOKEN = "b".repeat(64);
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Kaya", templateId: "co-founder" };
 const vera: HostedStaffAgent = { ...staff, id: id(41), displayName: "Vera", role: "Developer" };
@@ -160,7 +170,7 @@ const NEXT = `https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET
 
 async function page(reads: CodeReleases[], options: Setup = {}) {
 	const controller = company(options.role, options.agents);
-	if (options.sites) controller.store.set(options.sites);
+	controller.store.set(options.sites ?? PUBLIC);
 	const queue = [...reads];
 	const client = {
 		list: vi.fn(async () => structuredClone(queue.length > 1 ? queue.shift()! : queue[0]!)),
@@ -376,71 +386,86 @@ describe("What's new: the page", () => {
 		expect(block(first.view).querySelector(".site-row.is-whats-new.is-waiting .site-emblem")).not.toBeNull();
 	});
 
-	it("tells an owner a version live is still only the company's until the site goes live, never of a password", async () => {
-		const listed = {
-			id: id(81),
-			slug: "wristband-shop",
-			title: "Wristband shop",
-			kind: "files",
-			url: "https://sites.qorpera.com/wristband-shop/",
-			state: "live",
-		} as CompanySite;
+	it("calls a version Live now only when everyone can open the site, Not live yet when not, Current version while unknown", async () => {
+		const heading = (view: WhatsNewView) => block(view).querySelector(".whats-new-live .site-name")?.textContent;
 		const meta = (view: WhatsNewView) =>
 			[...block(view).querySelectorAll(".whats-new-live .site-meta")].map((line) => line.textContent);
-		const notLive = { siteList: [listed], sitesPublic: new Map([[listed.id, false]]) };
-		const { view } = await page([releasesOf([shop()])], { sites: notLive });
-		expect(meta(view)).toEqual([
-			expect.stringMatching(/^Version 3 · since .+ · Ann said go$/),
-			"Only the company can open it until you go live.",
+		const version = expect.stringMatching(/^Version 3 · since .+ · Ann said go$/);
+		const { view: open } = await page([releasesOf([shop()])], { sites: PUBLIC });
+		expect([heading(open), meta(open)]).toEqual(["Live now", [version]]);
+		open.dispose();
+		const { view: closed } = await page([releasesOf([shop()])], { sites: NOT_PUBLIC });
+		expect([heading(closed), meta(closed)]).toEqual([
+			"Not live yet",
+			[version, "Only the company can open it. Go live in Sites."],
 		]);
-		view.dispose();
-		for (const sites of [
-			{ siteList: [listed], sitesPublic: new Map([[listed.id, true]]) },
-			{ siteList: [listed] },
-			{ siteList: [{ ...listed, kind: "app" } as CompanySite], sitesPublic: new Map([[listed.id, false]]) },
-		]) {
-			const { view: other } = await page([releasesOf([shop()])], { sites });
-			expect(meta(other)).toHaveLength(1);
-			expect(text(block(other))).not.toMatch(/password/i);
-			other.dispose();
+		const link = block(closed).querySelector<HTMLAnchorElement>(".whats-new-live .site-meta a")!;
+		expect(link.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(link.hasAttribute("href")).toBe(false);
+		expect(text(block(closed))).not.toMatch(/password/i);
+		closed.dispose();
+		for (const sites of [{}, { siteList: [LISTED] }, { siteList: [] }]) {
+			const { view: unknown } = await page([releasesOf([shop()])], { sites });
+			expect([heading(unknown), meta(unknown)], JSON.stringify(sites)).toEqual(["Current version", [version]]);
+			unknown.dispose();
 		}
-		const { view: member } = await page([releasesOf([shop()], false)], { role: "contributor", sites: notLive });
-		expect(meta(member)).toHaveLength(1);
-		member.dispose();
+		const { view: app } = await page([releasesOf([shop()])], {
+			sites: { siteList: [{ ...LISTED, kind: "app" } as CompanySite], sitesPublic: new Map([[LISTED.id, false]]) },
+		});
+		expect([heading(app), meta(app)]).toEqual(["Live now", [version]]);
+		app.dispose();
+		const { view: never } = await page([releasesOf([shop({ live: null, back: null })])], { sites: NOT_PUBLIC });
+		expect([heading(never), meta(never)]).toEqual(["Not live yet", []]);
+		never.dispose();
+	});
+
+	it("shows a member who is not an owner or admin the heading, but not the way to go live", async () => {
+		const { view } = await page([releasesOf([shop()], false)], { role: "contributor", sites: NOT_PUBLIC });
+		expect(block(view).querySelector(".whats-new-live .site-name")?.textContent).toBe("Not live yet");
+		expect(block(view).querySelector(".whats-new-live .site-meta a")).toBeNull();
+		expect(text(block(view))).not.toContain("Go live in Sites");
+	});
+
+	it("says the headings and the way to go live in Danish", async () => {
 		setLanguagePreference("da");
 		try {
-			const { view: da } = await page([releasesOf([shop()])], { sites: notLive });
-			expect(meta(da)[1]).toBe("Kun virksomheden kan åbne den, indtil du går live.");
+			const heading = (view: WhatsNewView) => block(view).querySelector(".whats-new-live .site-name")?.textContent;
+			const { view: closed } = await page([releasesOf([shop()])], { sites: NOT_PUBLIC });
+			expect(heading(closed)).toBe("Ikke live endnu");
+			expect(block(closed).querySelector(".whats-new-live .site-meta a")?.textContent).toBe(
+				"Kun virksomheden kan åbne den. Gå live under Hjemmesider.",
+			);
+			closed.dispose();
+			const { view: unknown } = await page([releasesOf([shop()])], { sites: {} });
+			expect(heading(unknown)).toBe("Nuværende version");
+			unknown.dispose();
+			const { view: open } = await page([releasesOf([shop()])], { sites: PUBLIC });
+			expect(heading(open)).toBe("Live nu");
 		} finally {
 			setLanguagePreference("system");
 		}
 	});
 
-	it("says a version live is only the company's once the answer comes, after the page was drawn, and follows it", async () => {
-		const listed = {
-			id: id(81),
-			slug: "wristband-shop",
-			title: "Wristband shop",
-			kind: "files",
-			url: "https://sites.qorpera.com/wristband-shop/",
-			state: "live",
-		} as CompanySite;
-		const { view, controller, client } = await page([releasesOf([shop()])]);
-		const meta = () =>
-			[...block(view).querySelectorAll(".whats-new-live .site-meta")].map((line) => line.textContent);
-		expect(meta()).toHaveLength(1);
-		controller.store.set({ siteList: [listed] });
+	it("draws the heading and the way to go live again as the answer comes, after the page was drawn, and follows it", async () => {
+		const { view, controller, client } = await page([releasesOf([shop()])], { sites: {} });
+		const heading = () => block(view).querySelector(".whats-new-live .site-name")?.textContent;
+		const link = () => block(view).querySelector(".whats-new-live .site-meta a")?.textContent ?? null;
+		expect([heading(), link()]).toEqual(["Current version", null]);
+		controller.store.set({ siteList: [LISTED] });
 		await settle();
-		expect(meta()).toHaveLength(1);
-		controller.store.set({ sitesPublic: new Map([[listed.id, false]]) });
+		expect([heading(), link()]).toEqual(["Current version", null]);
+		controller.store.set({ sitesPublic: new Map([[LISTED.id, false]]) });
 		await settle();
-		expect(meta()[1]).toBe("Only the company can open it until you go live.");
-		controller.store.set({ sitesPublic: new Map([[listed.id, true]]) });
+		expect([heading(), link()]).toEqual(["Not live yet", "Only the company can open it. Go live in Sites."]);
+		controller.store.set({ sitesPublic: new Map([[LISTED.id, true]]) });
 		await settle();
-		expect(meta()).toHaveLength(1);
+		expect([heading(), link()]).toEqual(["Live now", null]);
+		controller.store.set({ sitesTakenDown: new Set([LISTED.id]) });
+		await settle();
+		expect(heading()).toBe("Not live yet");
 		expect(client.list).toHaveBeenCalledTimes(1);
 		view.dispose();
-		controller.store.set({ sitesPublic: new Map([[listed.id, false]]) });
+		controller.store.set({ sitesTakenDown: new Set() });
 		await settle();
 		expect(view.el.textContent).toBe("");
 	});
