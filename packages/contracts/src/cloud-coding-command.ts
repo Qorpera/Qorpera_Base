@@ -1,5 +1,4 @@
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
+import { SHA256_HEX_PATTERN as SHA, UUID_PATTERN as UUID } from "./wire-values.ts";
 /** The most bytes one of the coding guest's helpers may have: the four programs in /opt/qorpera-coding (storage,
  * command, Git, watchdog; scripts/package-coding-guest.mjs). The packager refuses a larger one, and the executor reads
  * each from the machine within it before it compares the helper with its pin (the LXD client allows a read this large

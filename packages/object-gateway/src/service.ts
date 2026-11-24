@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
+import { SHA256_HEX_PATTERN as SHA256_PATTERN, UUID_PATTERN } from "@qorpera/contracts";
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
 import type { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { serveFolderObject } from "./folder-objects.ts";
@@ -23,8 +24,6 @@ import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 import type { ObjectGatewayAuthority } from "./supabase-authority.ts";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const OBJECT_PATH_PATTERN = /^\/v1\/profile-objects\/([^/]+)\/([^/]+)$/;
 const INTERNAL_OBJECT_PATH_PATTERN = /^\/v1\/internal-objects\/([^/]+)\/([^/]+)$/;
 const FOLDER_GC_PATH_PATTERN = /^\/v1\/folder-gc\/([^/]+)\/([^/]+)$/;

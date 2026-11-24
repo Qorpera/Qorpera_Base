@@ -1,3 +1,4 @@
+import { POSTGRES_UUID_PATTERN, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { array, boundedInteger, record, timestamp, uuid } from "./parse.ts";
 
 /* A member's picture is a private storage object named after its content:
@@ -8,7 +9,9 @@ import { array, boundedInteger, record, timestamp, uuid } from "./parse.ts";
 
 export const MEMBER_PICTURE_BUCKET = "qorpera-member-pictures";
 
-const OBJECT_NAME = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/[0-9a-f]{64}\.(webp|jpg|png)$/;
+const OBJECT_NAME = new RegExp(
+	`^(${POSTGRES_UUID_PATTERN.source.slice(1, -1)})/${SHA256_HEX_PATTERN.source.slice(1, -1)}\\.(webp|jpg|png)$`,
+);
 
 export type MemberPictureExtension = "webp" | "jpg" | "png";
 

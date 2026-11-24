@@ -1,3 +1,4 @@
+import { UUID_PATTERN as CONTRACTS_UUID_PATTERN, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type {
 	HostedAccountEntitlement,
 	HostedAccountMatch,
@@ -36,8 +37,8 @@ import {
  * always validated; presentational fields tolerate absence where an older
  * deployed schema could legitimately omit them. */
 
-export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+export const UUID_PATTERN = new RegExp(CONTRACTS_UUID_PATTERN.source, "i");
+export const SHA256_PATTERN = SHA256_HEX_PATTERN;
 
 export class CloudShapeError extends Error {
 	constructor(label: string) {

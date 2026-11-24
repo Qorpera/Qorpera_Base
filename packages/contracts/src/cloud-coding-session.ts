@@ -1,3 +1,5 @@
+import { UUID_PATTERN as UUID } from "./wire-values.ts";
+
 /** Where one coding session lives inside its member's coding machine. A
  * member's machine carries any number of that member's sessions at once; each
  * has its own NAS folders (attached at its data and custody roots), its own
@@ -31,8 +33,6 @@ export const CLOUD_CODING_GUEST_ROOTS = /* @__PURE__ */ Object.freeze({
 	custody: "/var/lib/qorpera-coding",
 	runtime: "/run/qorpera-coding",
 });
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function cloudCodingSessionLayout(workerId: string): Readonly<CloudCodingSessionLayout> {
 	if (typeof workerId !== "string" || !UUID.test(workerId)) throw new Error("INVALID_CODING_SESSION");

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { ObjectDependencyError } from "./dependency.ts";
 
 export const MEMBER_OBSERVATIONS_PATH = "/v1/member-company-observations";
@@ -21,7 +22,6 @@ type MemberErrorCategory =
 	| "response_aborted"
 	| "unknown";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ID_FIELDS = [
 	"companyId",
 	"environmentId",

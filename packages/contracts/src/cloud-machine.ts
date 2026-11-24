@@ -1,7 +1,5 @@
 import { parseCloudCodingCommandReceipt } from "./cloud-coding-command.ts";
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
+import { SHA256_HEX_PATTERN as SHA, UUID_PATTERN as UUID } from "./wire-values.ts";
 
 /** A command on a company machine (runtime 2026-09-28): the same durable
  * handle, bounded log pages and states as a coding command, bound to the

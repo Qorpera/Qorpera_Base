@@ -1,4 +1,5 @@
 import type { CloudSessionAttachment } from "@qorpera/cloud-client/cloud-session-attachments";
+import { SHA256_HEX_PATTERN, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	asksAgain,
 	type DecisionRound,
@@ -32,7 +33,7 @@ export const PEER_LINK_SCHEMA = "qorpera.peer-link/v1";
 export const PEER_BUDGET_SCHEMA = "qorpera.peer-budget/v1";
 /** A member stopped a chain of agent work: the cards it raised in this conversation stay open (contract 14.6). */
 export const CHAIN_STOPPED_SCHEMA = "qorpera.chain-stopped/v1";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID = new RegExp(UUID_PATTERN.source, "i");
 
 export interface TranscriptMessage {
 	kind: "member" | "agent";
@@ -404,7 +405,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 					!ref ||
 					Object.keys(ref).length !== 3 ||
 					typeof ref.objectSha256 !== "string" ||
-					!/^[0-9a-f]{64}$/.test(ref.objectSha256) ||
+					!SHA256_HEX_PATTERN.test(ref.objectSha256) ||
 					typeof ref.bytes !== "number" ||
 					!Number.isSafeInteger(ref.bytes) ||
 					ref.bytes < 1 ||

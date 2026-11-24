@@ -2,10 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
+import { SHA256_HEX_PATTERN as SHA256_PATTERN, UUID_PATTERN } from "@qorpera/contracts";
 import { ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const QUARANTINE = ".quarantine";
 const MAX_QUARANTINED_BYTES = 8 * 1024 * 1024;
 // WHY: a timed-out hard-NFS syscall keeps its libuv worker until the OS lets go; reserving MIN_RESERVED_WORKERS keeps journal I/O alive.

@@ -1,5 +1,6 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import type { TableValue } from "@qorpera/cloud-client/interfaces";
+import { POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 
@@ -136,8 +137,7 @@ function record(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 function uuid(value: unknown): string {
-	if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value))
-		throw invalid();
+	if (typeof value !== "string" || !POSTGRES_UUID_PATTERN.test(value.toLowerCase())) throw invalid();
 	return value;
 }
 function integer(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): number {

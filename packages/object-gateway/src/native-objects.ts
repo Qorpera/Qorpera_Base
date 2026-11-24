@@ -17,7 +17,7 @@ export interface NativeCompanyObjectOptions {
 	folder: FolderObjectAuthority;
 }
 
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const UUID = new RegExp(UUID_PATTERN.source, "i");
 
 /** The native routes' bearer check: the gateway's native credential, compared in constant time. */
 export function assertNativeToken(request: IncomingMessage, token: string): void {
