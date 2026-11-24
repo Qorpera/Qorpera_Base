@@ -3,12 +3,12 @@ set local lock_timeout = '3s';
 create or replace function pg_temp.quiet_approvals_patch(p_target regprocedure, p_edits text[]) returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target); v_found integer;
 begin
-	if position('20260930888000' in v_definition) > 0 then
-		raise exception '20260930888000 is already in %', p_target; end if;
+	if position('20260930892000' in v_definition) > 0 then
+		raise exception '20260930892000 is already in %', p_target; end if;
 	for i in 1..cardinality(p_edits) / 2 loop
 		v_found := (length(v_definition) - length(replace(v_definition, p_edits[2 * i - 1], ''))) / length(p_edits[2 * i - 1]);
 		if v_found <> 1 then
-			raise exception '20260930888000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80); end if;
+			raise exception '20260930892000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80); end if;
 		v_definition := replace(v_definition, p_edits[2 * i - 1], p_edits[2 * i]);
 	end loop;
 	execute v_definition;
@@ -23,7 +23,7 @@ select pg_temp.quiet_approvals_patch('public.qorpera_folder_commit(uuid,jsonb,te
 					and exists (select 1 from public.qorpera_folder_commits c where c.id = v_row.commit_id
 						and c.view_id = v_view.id)) then 'deletion'
 				else public.qorpera_folder_structured_review_class(p_environment_id, v_hook_actor, v_unit, v_eff_path, v_eff_to) end;$old$,
-	$new$			-- 20260930888000: every unit takes the structured hook's review class; plain company file deletes and moves are versioned and need no review.
+	$new$			-- 20260930892000: every unit takes the structured hook's review class; plain company file deletes and moves are versioned and need no review.
 			v_class := public.qorpera_folder_structured_review_class(p_environment_id, v_hook_actor, v_unit, v_eff_path, v_eff_to);$new$
 ]);
 
@@ -75,7 +75,7 @@ select pg_temp.quiet_approvals_patch('public.qorpera_record_action_review(jsonb,
 	$new$	if not v_card and v_decision = 'ask' and p_review ->> 'tool' <> 'decide_routine'
 		and public.qorpera_environment_is_folder_v2(v_run.environment_id)
 		and v_run.audience_kind = 'company'
-		-- 20260930888000: background workers never drop raw approval cards into agent threads; they report blocked to their parent.
+		-- 20260930892000: background workers never drop raw approval cards into agent threads; they report blocked to their parent.
 		and not exists (select 1 from public.qorpera_wake_occurrences as wake
 			where wake.run_id = v_run.id and wake.source_kind = 'worker-dispatch')$new$
 ]);

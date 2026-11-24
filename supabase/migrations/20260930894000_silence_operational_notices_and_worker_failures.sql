@@ -8,15 +8,15 @@ declare
 								or occurrence.source_kind = 'surface-session')$old$;
 	v_new constant text := $new$							and not ((exists (select 1 from public.qorpera_coding_session_turns as coding
 									where coding.occurrence_id = occurrence.id)
-								or occurrence.source_kind in ('surface-session', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin', 'office-activation', 'surface-escalation', 'light-ask')) /* 20260930890000 */$new$;
+								or occurrence.source_kind in ('surface-session', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin', 'office-activation', 'surface-escalation', 'light-ask')) /* 20260930894000 */$new$;
 	v_found integer;
 begin
-	if position('20260930890000' in v_definition) > 0 then
-		raise exception '20260930890000 is already in qorpera_list_staff_execution_activity';
+	if position('20260930894000' in v_definition) > 0 then
+		raise exception '20260930894000 is already in qorpera_list_staff_execution_activity';
 	end if;
 	v_found := (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old);
 	if v_found <> 1 then
-		raise exception '20260930890000 anchor found % time(s) in qorpera_list_staff_execution_activity', v_found;
+		raise exception '20260930894000 anchor found % time(s) in qorpera_list_staff_execution_activity', v_found;
 	end if;
 	execute replace(v_definition, v_old, v_new);
 end $$;

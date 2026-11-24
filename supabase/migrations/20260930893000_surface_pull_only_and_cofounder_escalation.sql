@@ -170,12 +170,12 @@ on conflict (name) do nothing;
 create or replace function pg_temp.surf_esc_patch(p_target regprocedure, p_edits text[]) returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target); v_found integer;
 begin
-	if position('20260930889000' in v_definition) > 0 then
-		raise exception '20260930889000 is already in %', p_target; end if;
+	if position('20260930893000' in v_definition) > 0 then
+		raise exception '20260930893000 is already in %', p_target; end if;
 	for i in 1..cardinality(p_edits) / 2 loop
 		v_found := (length(v_definition) - length(replace(v_definition, p_edits[2 * i - 1], ''))) / length(p_edits[2 * i - 1]);
 		if v_found <> 1 then
-			raise exception '20260930889000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 100); end if;
+			raise exception '20260930893000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 100); end if;
 		v_definition := replace(v_definition, p_edits[2 * i - 1], p_edits[2 * i]);
 	end loop;
 	execute v_definition;
@@ -183,7 +183,7 @@ end $$;
 
 select pg_temp.surf_esc_patch('public.qorpera_surface_summary_json(public.qorpera_surfaces)', array[
 	$old$		'needsAttentionCount', coalesce(stats.attention_sessions, 0) + coalesce(change_stats.conflicted_changes, 0),$old$,
-	$new$		'needsAttentionCount', 0 /* 20260930889000 */,$new$
+	$new$		'needsAttentionCount', 0 /* 20260930893000 */,$new$
 ]);
 
 select pg_temp.surf_esc_patch('public.qorpera_surface_complete_session_turn(uuid,text,text,jsonb,text[],text,uuid)', array[
@@ -193,7 +193,7 @@ select pg_temp.surf_esc_patch('public.qorpera_surface_complete_session_turn(uuid
 	$new$	returning * into v_session;
 
 	if v_next_state in ('needs_input', 'failed') then
-		/* 20260930889000 */
+		/* 20260930893000 */
 		perform public.qorpera_surface_emit_cofounder_escalation(
 			v_session.id,
 			v_next_state,
@@ -228,7 +228,7 @@ select pg_temp.surf_esc_patch('public.qorpera_surface_complete_merge(uuid,text,t
 				v_job.session_id,
 				(select ch.session_id from public.qorpera_surface_changes ch where ch.id = p_conflict_change_id and ch.surface_id = v_job.surface_id)
 			) is not null then
-				/* 20260930889000 */
+				/* 20260930893000 */
 				perform public.qorpera_surface_emit_cofounder_escalation(
 					coalesce(
 						v_job.session_id,
@@ -256,7 +256,7 @@ select pg_temp.surf_esc_patch('public.qorpera_surface_complete_merge(uuid,text,t
 select pg_temp.surf_esc_patch('public.qorpera_pin_wake_occurrence()', array[
 	$old$	v_surf_worker public.qorpera_runtime_workers%rowtype;$old$,
 	$new$	v_surf_worker public.qorpera_runtime_workers%rowtype;
-	v_surf_esc public.qorpera_surface_escalations%rowtype; /* 20260930889000 */$new$,
+	v_surf_esc public.qorpera_surface_escalations%rowtype; /* 20260930893000 */$new$,
 	$old$	elsif new.wake_kind = 'agent' and new.source_kind = 'human-task' then$old$,
 	$new$	elsif new.wake_kind = 'agent' and new.source_kind = 'surface-escalation' then
 		select * into v_surf_esc from public.qorpera_surface_escalations e
@@ -316,7 +316,7 @@ select pg_temp.surf_esc_patch('public.qorpera_pin_wake_occurrence()', array[
 select pg_temp.surf_esc_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', array[
 	$old$		if p_wake.source_kind = 'human-task' then$old$,
 	$new$		if p_wake.source_kind = 'surface-escalation' then
-			/* 20260930889000 */
+			/* 20260930893000 */
 			if p_wake.parent_run_id is not null
 				or not exists (
 					select 1 from public.qorpera_surface_escalations e
@@ -335,7 +335,7 @@ select pg_temp.surf_esc_patch('public.qorpera_folder_wake_authorized(public.qorp
 select pg_temp.surf_esc_patch('public.qorpera_runtime_wake_policy_internal(uuid)', array[
 	$old$			-- 20260930065000 (P31): a human task's wake has its marker and no parent.$old$,
 	$new$			or (v_wake.source_kind = 'surface-escalation' and (v_wake.parent_run_id is not null
-				or not exists (select 1 from public.qorpera_surface_escalations e where e.id = v_wake.source_id and e.profile_id = v_wake.profile_id))) /* 20260930889000 */
+				or not exists (select 1 from public.qorpera_surface_escalations e where e.id = v_wake.source_id and e.profile_id = v_wake.profile_id))) /* 20260930893000 */
 			-- 20260930065000 (P31): a human task's wake has its marker and no parent.$new$,
 	$old$					'human-task','machine-checkin','light-ask','surface-session'))))) -- 20260930098000$old$,
 	$new$					'human-task','machine-checkin','light-ask','surface-session','surface-escalation'))))) -- 20260930098000$new$,
@@ -345,7 +345,7 @@ select pg_temp.surf_esc_patch('public.qorpera_runtime_wake_policy_internal(uuid)
 
 select pg_temp.surf_esc_patch('public.qorpera_folder_read_wake(jsonb)', array[
 	$old$			|| case when v_wake.source_kind in ('worker-dispatch','office-activation','light-ask','surface-session') then '{}'::jsonb$old$,
-	$new$			|| case when v_wake.source_kind in ('worker-dispatch','office-activation','light-ask','surface-session','surface-escalation') /* 20260930889000 */ then '{}'::jsonb$new$
+	$new$			|| case when v_wake.source_kind in ('worker-dispatch','office-activation','light-ask','surface-session','surface-escalation') /* 20260930893000 */ then '{}'::jsonb$new$
 ]);
 
 select pg_temp.surf_esc_patch('public.qorpera_folder_materialize_company(uuid,integer)', array[
@@ -363,7 +363,7 @@ select pg_temp.surf_esc_patch('public.qorpera_folder_materialize_company(uuid,in
 								select 1 from public.qorpera_surface_sessions s
 								where s.id = v_wake.source_id and s.profile_id = v_wake.profile_id
 							))
-						or (v_wake.source_kind = 'surface-escalation' /* 20260930889000 */
+						or (v_wake.source_kind = 'surface-escalation' /* 20260930893000 */
 							and coalesce((v_wake.payload ->> 'memberInitiated')::boolean, false)
 							and v_wake.requested_by_user_id is not null
 							and exists (
@@ -385,7 +385,7 @@ select pg_temp.surf_esc_patch('public.qorpera_run_autonomous_authority(public.qo
 		select 1 from public.qorpera_wake_occurrences w
 		join public.qorpera_surface_escalations e on e.id = w.source_id and e.profile_id = w.profile_id
 		where w.id = p_run.source_id and (w.run_id is null or w.run_id = p_run.id) and w.wake_kind = 'agent'
-			and w.source_kind = 'surface-escalation' and w.profile_id = p_run.profile_id /* 20260930889000 */
+			and w.source_kind = 'surface-escalation' and w.profile_id = p_run.profile_id /* 20260930893000 */
 			and coalesce((w.payload ->> 'memberInitiated')::boolean, false)
 			and w.requested_by_user_id is not null
 			and w.requested_by_user_id = p_run.requested_by_user_id
@@ -394,7 +394,7 @@ select pg_temp.surf_esc_patch('public.qorpera_run_autonomous_authority(public.qo
 
 select pg_temp.surf_esc_patch('public.qorpera_record_runtime_observation(uuid,jsonb)', array[
 	$old$'surface_reply','surface_ask',/* 20260930887000 */'narrate_explainer',$old$,
-	$new$'surface_reply','surface_ask',/* 20260930887000 */'narrate_explainer',/* 20260930889000 */'steer_surface_session',$new$
+	$new$'surface_reply','surface_ask',/* 20260930887000 */'narrate_explainer',/* 20260930893000 */'steer_surface_session',$new$
 ]);
 
 drop function pg_temp.surf_esc_patch(regprocedure, text[]);
