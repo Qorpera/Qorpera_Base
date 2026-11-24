@@ -5,6 +5,7 @@ import {
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
 	type SurfaceSummary,
+	surfacePageKind,
 } from "@qorpera/contracts";
 import { openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon, personAvatar } from "../../ui/dom.ts";
@@ -1154,23 +1155,24 @@ export class SurfaceView {
 			this.#localFrame = undefined;
 			this.#localCover = undefined;
 			this.#localSiteShown = "";
+			const page = surfacePageKind({ archetype: surface.archetype, lookKind: look.kind });
 			this.#mount =
 				this.#host.mount(surface, this.#lifetime.signal) ??
-				(surface.archetype === "studio"
-					? look.kind === "report"
-						? new SurfaceReportView({
+				(page === "report"
+					? new SurfaceReportView({
+							store,
+							surface,
+							signal: this.#lifetime.signal,
+							loadFiles: this.#host.loadStudioFiles,
+						})
+					: page === "layout"
+						? new SurfaceStudioView({
 								store,
 								surface,
 								signal: this.#lifetime.signal,
 								loadFiles: this.#host.loadStudioFiles,
 							})
-						: new SurfaceStudioView({
-								store,
-								surface,
-								signal: this.#lifetime.signal,
-								loadFiles: this.#host.loadStudioFiles,
-							})
-					: undefined);
+						: undefined);
 			if (
 				!this.#mount &&
 				store.isLocalInteractive &&

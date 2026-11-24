@@ -48,6 +48,7 @@ export const SURFACE_BLOCK_TYPES = [
 	"table",
 	"cards",
 	"report",
+	"explainer",
 	"files",
 	"module",
 ] as const;
@@ -176,6 +177,20 @@ export interface SurfaceReportMatchBlock extends SurfaceBlockBase {
 
 export type SurfaceReportBlock = SurfaceReportFileBlock | SurfaceReportMatchBlock;
 
+export interface SurfaceExplainerFileBlock extends SurfaceBlockBase {
+	readonly type: "explainer";
+	readonly from: string;
+	readonly heading?: string;
+}
+
+export interface SurfaceExplainerMatchBlock extends SurfaceBlockBase {
+	readonly type: "explainer";
+	readonly match: string;
+	readonly heading?: string;
+}
+
+export type SurfaceExplainerBlock = SurfaceExplainerFileBlock | SurfaceExplainerMatchBlock;
+
 export interface SurfaceFilesBlock extends SurfaceBlockBase {
 	readonly type: "files";
 	readonly match?: readonly string[];
@@ -202,6 +217,7 @@ export type SurfaceBlock =
 	| SurfaceTableBlock
 	| SurfaceCardsBlock
 	| SurfaceReportBlock
+	| SurfaceExplainerBlock
 	| SurfaceFilesBlock
 	| SurfaceModuleBlock;
 
@@ -398,6 +414,22 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		],
 	},
 	{
+		type: "explainer",
+		family: "explainer",
+		summary: "narrated animated breakdowns from scenes.js",
+		fields: [
+			{
+				name: "from",
+				kind: "file",
+				required: false,
+				note: "one scenes.js; or use match",
+				accepts: [".js"],
+			},
+			{ name: "match", kind: "glob", required: false, note: "every matching scenes.js" },
+			HEADING_FIELD,
+		],
+	},
+	{
 		type: "files",
 		family: "files",
 		summary: "working files no other block shows, .json too; its empty line only alone on a tab or with a heading",
@@ -464,7 +496,7 @@ export function describeSurfaceBlocks(): string {
 		lines.push(`- ${block.type}: ${block.summary}. ${fields.join("; ")}`);
 	}
 	lines.push(
-		"facts and cards take items or from, not both; cards with from needs title; report from or match. Globs: * and ? in a name, ** for any folders; a leading / as in sources.",
+		"facts and cards take items or from, not both; cards with from needs title; report and explainer from or match. Globs: * and ? in a name, ** for any folders; a leading / as in sources.",
 	);
 	return lines.join("\n");
 }
@@ -825,6 +857,9 @@ function finishBlock(type: SurfaceBlockType, block: Record<string, unknown>, lab
 	if (type === "report" && (block.from !== undefined) === (block.match !== undefined)) {
 		fail(label, "report needs from or match, exactly one of them");
 	}
+	if (type === "explainer" && (block.from !== undefined) === (block.match !== undefined)) {
+		fail(label, "explainer needs from or match, exactly one of them");
+	}
 }
 
 function parseBlock(value: unknown, label: string): SurfaceBlock {
@@ -1171,6 +1206,11 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 			blocks: [{ type: "report", match: "**/*.report.json" }],
 		},
 		{
+			id: "breakdowns",
+			title: "Breakdowns",
+			blocks: [{ type: "explainer", match: "breakdowns/**/scenes.js" }],
+		},
+		{
 			id: "files",
 			title: "Files",
 			blocks: [
@@ -1300,6 +1340,13 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 			],
 		},
 		{
+			id: "breakdowns",
+			title: "Breakdowns",
+			blocks: [
+				{ type: "explainer", id: "breakdowns", match: "/identity/breakdowns/**/scenes.js", heading: "Breakdowns" },
+			],
+		},
+		{
 			id: "files",
 			title: "Files",
 			blocks: [
@@ -1337,4 +1384,34 @@ export const SURFACE_STARTER_LAYOUTS: Readonly<Record<SurfaceStarterKind, Surfac
 
 export function starterSurfaceLayout(kind: SurfaceStarterKind): SurfaceLayout {
 	return structuredClone(SURFACE_STARTER_LAYOUTS[kind]);
+}
+
+export const SURFACE_REPORT_FORMAT =
+	'A report file (*.report.json) is {"category","headline","subtitle","author","date","readingTime","keyMetrics":[{"label","value","delta"}],"sections":[{"id","kicker","heading","paragraphs":["..."],"blocks":[...]}]}. Section blocks: bar_chart {heading, subtitle, max, items:[{label, value, display, note, highlight}]}; line_chart {heading, subtitle, xLabels, series:[{name, color, values}]}; table {heading, caption, columns, rows, highlightRow}; callout {tone:"thesis"|"decision"|"tradeoff", heading, body, bullets}; quote {text, attribution}; figure {heading, caption, panels:[{label, heading, body, accent}]}.';
+
+const SURFACE_OBJECT_FORMAT = `A stage_3d model file (default ${SURFACE_STAGE_DEFAULT_MODEL}) is {"model":"<name>.glb","view":{"yaw","pitch"},"parts":[{"id","node","pull":[x,y,z]}],"tint":["<material>"]}, the .glb beside it. With no .glb in the folder, a top-level "model" object in a JSON file, {"kind":"headband"|"device","dimensions","layers":["..."]}, draws a stand-in tinted by the tab's swatch_row.`;
+
+const SURFACE_TOKENS_FORMAT =
+	'The company look is /identity/tokens.json: {"colors":{"<name>":"#rrggbb"},"typography":{"<role>":"<family>"},"radii":{"<name>":"<length>"},"spacing":{"<name>":"<length>"}}. /identity/tokens.css is compiled from it (--q-color-*, --q-font-*, --q-radius-*, --q-space-*); never write it by hand.';
+
+const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>> = {
+	stage_3d: SURFACE_OBJECT_FORMAT,
+	palette: SURFACE_TOKENS_FORMAT,
+	type_specimen: SURFACE_TOKENS_FORMAT,
+	report: SURFACE_REPORT_FORMAT,
+	module: SURFACE_TOKENS_FORMAT,
+};
+
+export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
+	const used = new Set(
+		layout.tabs
+			.flatMap((tab) => tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])))
+			.map((block) => block.type),
+	);
+	const notes: string[] = [];
+	for (const type of SURFACE_BLOCK_TYPES) {
+		const note = SURFACE_BLOCK_FORMATS[type];
+		if (note && used.has(type) && !notes.includes(note)) notes.push(note);
+	}
+	return notes;
 }

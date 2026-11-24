@@ -1,0 +1,87 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
+import { SURFACE_BLOCK_TYPES, SURFACE_STARTER_KINDS } from "@qorpera/contracts";
+import { describe, expect, it } from "vitest";
+import { PLATFORM_SKILL_FILES } from "../src/cloud-platform-skills.generated.ts";
+import { CLOUD_PLATFORM_SKILLS, SURFACE_STARTER_SKILLS } from "../src/cloud-platform-skills.ts";
+import { cloudStudioSkill } from "../src/cloud-skill-tools.ts";
+
+const SKILLS = new URL("../skills/", import.meta.url);
+const STUDIO_TOOLS = [
+	"stage_surface_patch",
+	"surface_reply",
+	"surface_ask",
+	"company_read",
+	"company_list",
+	"read_skill",
+	"search_skills",
+];
+
+describe("the platform's skills", () => {
+	it("ship exactly the SKILL.md files under packages/runtime/skills", () => {
+		const names = readdirSync(SKILLS, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort();
+		expect(Object.keys(PLATFORM_SKILL_FILES).sort()).toEqual(names);
+		for (const name of names)
+			expect(PLATFORM_SKILL_FILES[name], name).toBe(readFileSync(new URL(`${name}/SKILL.md`, SKILLS), "utf8"));
+		expect([...CLOUD_PLATFORM_SKILLS.keys()]).toEqual(names);
+	});
+
+	it("give every Studio starter its own skill, and ship no other", () => {
+		expect(Object.keys(SURFACE_STARTER_SKILLS).sort()).toEqual([...SURFACE_STARTER_KINDS].sort());
+		expect(Object.values(SURFACE_STARTER_SKILLS).sort()).toEqual([...CLOUD_PLATFORM_SKILLS.keys()]);
+	});
+
+	it("are short skill files that name no file, path or tool a Studio session does not have", () => {
+		for (const [name, text] of Object.entries(PLATFORM_SKILL_FILES)) {
+			const document = parseCloudSkillFile(text);
+			expect(Buffer.byteLength(text), name).toBeLessThanOrEqual(4096);
+			expect(document.fields.get("name")?.value, name).toBe(name);
+			expect(document.description, name).toBeTruthy();
+			expect(document.body.trim().length, name).toBeGreaterThan(0);
+			expect(text, name).not.toMatch(/#\d|QorperaOS\/|\.(?:md|ts|sql|json|css|glb|svg|html)\b/);
+			for (const [word] of text.matchAll(/\b[a-z0-9]+(?:_[a-z0-9]+)+\b/g))
+				expect([...STUDIO_TOOLS, ...SURFACE_BLOCK_TYPES], `${name}: ${word}`).toContain(word);
+			expect(CLOUD_PLATFORM_SKILLS.get(name)).toMatchObject({
+				name,
+				description: document.description,
+				body: document.body,
+				version: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+			});
+		}
+	});
+});
+
+describe("the skill a Studio session gets at turn start", () => {
+	const signal = new AbortController().signal;
+	const reader = (files: Record<string, string | Error>) => async (path: string) => {
+		const found = files[path];
+		if (found instanceof Error) throw found;
+		return found ?? null;
+	};
+
+	it("is the platform's without a company folder or without a company skill of the name", async () => {
+		const platform = {
+			name: "custom-surface",
+			path: null,
+			body: CLOUD_PLATFORM_SKILLS.get("custom-surface")!.body.trim(),
+		};
+		expect(await cloudStudioSkill("custom-surface", undefined, signal)).toEqual(platform);
+		expect(await cloudStudioSkill("custom-surface", reader({}), signal)).toEqual(platform);
+		expect(await cloudStudioSkill("no-such-skill", reader({}), signal)).toBeNull();
+		expect(
+			await cloudStudioSkill("no-such-skill", reader({ "QorperaOS/skills/no-such-skill.md": "Ours." }), signal),
+		).toEqual({ name: "no-such-skill", path: "QorperaOS/skills/no-such-skill.md", body: "Ours." });
+	});
+
+	it("stops at an aborted read instead of falling back", async () => {
+		const controller = new AbortController();
+		const read = async () => {
+			controller.abort(new Error("stopped"));
+			throw new Error("aborted read");
+		};
+		await expect(cloudStudioSkill("product-studio", read, controller.signal)).rejects.toThrow("stopped");
+	});
+});

@@ -38,6 +38,7 @@ import {
 	visibleText,
 } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
+import { summary as surfaceSummary, workspace as surfaceWorkspace } from "./surface-fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -2315,5 +2316,111 @@ describe("the rail's line under an idle agent's name in the app", () => {
 		expect(seen?.aborted).toBe(false);
 		stop();
 		expect(seen?.aborted).toBe(true);
+	});
+});
+
+describe("a new website's first publish in the app", () => {
+	const SITE_ID = id(91);
+	const ADDRESS_HOST = "thetaband-go-live-test.qorpera.site";
+	const siteRow = {
+		schema: "qorpera.company-site/v1",
+		id: SITE_ID,
+		slug: "thetaband",
+		title: "Go live test",
+		kind: "files",
+		url: "https://sites.qorpera.com/thetaband/",
+		state: "live",
+		source: "code/thetaband",
+		files: 1,
+		bytes: 10,
+		publishedAt: null,
+		publishedBy: null,
+		createdAt: "2026-11-24T00:00:00Z",
+		passwordChangedAt: "2026-11-24T00:00:00Z",
+		machine: null,
+		port: null,
+	};
+
+	async function firstPublish() {
+		const hosting = { fails: false };
+		surfacesOn();
+		let current = surfaceSummary({
+			title: "Go live test",
+			siteSlug: "thetaband",
+			liveUrl: `https://${ADDRESS_HOST}`,
+			publishStatus: "publishing",
+			activeSessionCount: 1,
+			runningSessionCount: 0,
+			pendingChangeCount: 0,
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(async () => [current]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockImplementation(async () =>
+			surfaceWorkspace([], { surface: current }),
+		);
+		let listed: unknown[] = [];
+		const f = mounted(`#/c/${profileA.profileId}`);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_list_company_sites") return listed;
+			if (name === "qorpera_company_site_access") return { schema: "qorpera.company-site-access/v1", sites: [] };
+			if (name === "qorpera_company_site_hosting") {
+				if (hosting.fails) throw new Error("offline");
+				return {
+					schema: "qorpera.company-site-hosting/v1",
+					hostsDomain: "qorpera.com",
+					hostsEnabled: true,
+					publicEnabled: true,
+					domainsEnabled: true,
+					sites: [
+						{
+							siteId: SITE_ID,
+							slug: "thetaband",
+							isPublic: false,
+							deploymentKind: "static",
+							storageMode: "db",
+							domains: [],
+						},
+					],
+				};
+			}
+			throw new Error("Unexpected RPC");
+		});
+		const count = (name: string) => vi.mocked(f.cloud.rpc).mock.calls.filter(([method]) => method === name).length;
+		const line = () =>
+			f.root.querySelector('.rail-surface[data-surface-slug="website"] .rail-surface-sub')?.textContent ?? null;
+		await draw();
+		await draw();
+		await draw();
+		await vi.advanceTimersByTimeAsync(2_000);
+		await draw();
+		expect(count("qorpera_list_company_sites")).toBe(1);
+		expect(count("qorpera_company_site_hosting")).toBe(0);
+
+		listed = [siteRow];
+		current = { ...current, publishStatus: "idle", liveHeadSha: "a1b2c3", activeSessionCount: 0 };
+		await vi.advanceTimersByTimeAsync(2_000);
+		await draw();
+		await draw();
+		await vi.advanceTimersByTimeAsync(5_000);
+		await draw();
+		return { count, line, hosting };
+	}
+
+	it("reads the site list and whether the site is public once more when the first publish ends, and the rail says Not live yet", async () => {
+		const { count, line } = await firstPublish();
+		expect(count("qorpera_list_company_sites")).toBe(2);
+		expect(count("qorpera_company_site_hosting")).toBe(1);
+		expect(line()).toBe("Not live yet");
+	});
+
+	it("forgets whether the site is public when that read fails, and shows the host alone on the rail", async () => {
+		const { count, line, hosting } = await firstPublish();
+		expect(line()).toBe("Not live yet");
+		hosting.fails = true;
+		window.dispatchEvent(new Event("focus"));
+		await draw();
+		await draw();
+		expect(count("qorpera_list_company_sites")).toBe(3);
+		expect(count("qorpera_company_site_hosting")).toBe(2);
+		expect(line()).toBe(ADDRESS_HOST);
 	});
 });

@@ -12,7 +12,7 @@ import {
 } from "../../cloud/site-hosting.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
-import { pressToCopy, toClipboard } from "./settings-sites.ts";
+import { pressToCopy, toClipboard } from "./site-shared.ts";
 import { APPROVE_ARM_MS, approveLabel } from "./surface-session-drawer.ts";
 
 export interface SurfaceSiteHosting {

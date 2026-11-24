@@ -1,3 +1,4 @@
+import type { SurfaceFolderContents } from "@qorpera/cloud-client/surface-folder-files";
 import type {
 	PointToChangeTarget,
 	StudioBinaryRef,
@@ -10,7 +11,6 @@ import type {
 } from "@qorpera/contracts";
 import { vi } from "vitest";
 import {
-	type SurfaceFolderContents,
 	type SurfacesClient,
 	SurfacesStore,
 	type SurfacesStoreOptions,
