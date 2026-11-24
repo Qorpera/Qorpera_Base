@@ -3241,7 +3241,9 @@ export class ConversationView {
 			} else if (item.kind === "interface_change") {
 				const text = changeLines.get(item.id) ?? "";
 				nodes.push(
-					keep(item.id, JSON.stringify([item.change, text]), "", () => renderInterfaceChangeLine(item.change, text)),
+					keep(item.id, JSON.stringify([item.change, text]), "", () =>
+						renderInterfaceChangeLine(item.change, text),
+					),
 				);
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
 				if (this.#decisions?.shows(item.id)) continue;

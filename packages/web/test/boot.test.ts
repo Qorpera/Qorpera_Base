@@ -63,7 +63,6 @@ describe("which first screen stands while main.js loads", () => {
 			[`#/c/${COMPANY}/i/sales-board`, undefined],
 			[`#/c/${COMPANY}/file`, undefined],
 			[`#/c/${COMPANY}/team`, undefined],
-			[`#/c/${COMPANY}/meet`, undefined],
 		];
 		for (const [hash, view] of expected) expect(bootView(`https://app.example/${hash}`, true), hash).toBe(view);
 	});

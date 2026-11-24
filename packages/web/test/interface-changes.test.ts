@@ -13,18 +13,7 @@ import {
 import { projectTranscript } from "../src/cloud/transcript.ts";
 import type { HostedSessionEvent } from "../src/cloud/types.ts";
 import { interfaceChangeText, renderInterfaceChangeLine } from "../src/ui/interface-change-line.ts";
-import {
-	fixture,
-	id,
-	profileA,
-	session,
-	settle,
-	staff,
-	stubFigureMotion,
-	team,
-	timestamp,
-	userA,
-} from "./fixtures.ts";
+import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 const V = (n: number) => `a0000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 

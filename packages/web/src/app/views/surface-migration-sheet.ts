@@ -1,5 +1,5 @@
 import type { ApplySurfaceMigrationInput } from "@qorpera/cloud-client/surfaces";
-import type { SurfaceMigrationChecklist } from "@qorpera/contracts";
+import type { SurfaceAutomationSummary, SurfaceMigrationChecklist } from "@qorpera/contracts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { h, icon } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";

@@ -255,7 +255,9 @@ export async function runNativeCodexLiveHalvesProbe(binary: string, mode: Native
 			observations.push(...batch);
 		},
 	});
-	const key = `qorpera:${createHash("sha256").update(JSON.stringify([randomUUID(), randomUUID(), randomUUID()])).digest("base64url")}`;
+	const key = `qorpera:${createHash("sha256")
+		.update(JSON.stringify([randomUUID(), randomUUID(), randomUUID()]))
+		.digest("base64url")}`;
 	let requests = 0;
 	let effects = 0;
 	let checksAfterEffect = 0;

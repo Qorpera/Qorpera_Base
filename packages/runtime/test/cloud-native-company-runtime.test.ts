@@ -17,7 +17,6 @@ import type {
 	CloudCompanyPathPresence,
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
-import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { GeminiCapReachedError, GeminiKeyRevokedError } from "@qorpera/runtime/cloud-gemini-tool-session";
 import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/runtime/cloud-light-ask";

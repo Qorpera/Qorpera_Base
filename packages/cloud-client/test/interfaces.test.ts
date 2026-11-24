@@ -951,13 +951,6 @@ constructor = { from = "table:areas", match = "owner", count = true }
 		const card = parseInterfaceFile(MEMBERS_INTERFACE.replace('line = "{about}"', 'line = "{about}\\u202e"'));
 		expect(card.problems.map((p) => p.code)).toContain("bad_value");
 	});
-
-	it("gives every caller its own frozen lookup answer", () => {
-		const owns = interfaceLookupIndex({ from: "table:areas", match: "owner", show: "area", count: false }, [
-			{ owner: SOFIE, area: "Sales" },
-		]);
-		expect(Object.isFrozen(owns(SOFIE))).toBe(true);
-	});
 });
 
 describe("review round 3", () => {

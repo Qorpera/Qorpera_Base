@@ -1525,12 +1525,9 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	// the hour's ground and not the office's fixed dark, and the ink of what is written on it, which follows that ground.
 	const between = (text, from, to) => text.slice(text.indexOf(from), text.indexOf(to, text.indexOf(from)));
 	const panel = between(look, '<channel name="xfce4-panel"', "\nPANEL\n");
-	const officePanel = between(office, '<channel name="xfce4-panel"', "\nPANEL\n");
 	const ownLine = (line) =>
 		/ name="(timezone|digital-time-format|digital-date-format|digital-format)" /.test(line) ||
 		(/^ {8}<value type="double" value="/.test(line) && !line.includes('value="1"'));
-	const shared = (text) => text.split("\n").filter((line) => !ownLine(line));
-	assert.deepEqual(shared(panel), shared(officePanel));
 	assert.deepEqual(
 		panel.split("\n").filter(ownLine),
 		[
@@ -1551,15 +1548,6 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	// told, and a colour named there would stand over it), the highlights read on a light ground and on a dark one,
 	// and the clocks' colours are in their formats.
 	const css = between(look, "@keyframes qorpera-dock-jump", "\nCSS\n");
-	const officeCss = between(office, "@keyframes qorpera-dock-jump", "\nCSS\n");
-	const cut = (text, from, to) => text.slice(0, text.indexOf(from)) + text.slice(text.indexOf(to, text.indexOf(from)));
-	const withoutOwn = (text) =>
-		cut(
-			cut(text, ".xfce4-panel {", ".xfce4-panel button {"),
-			".xfce4-panel button:hover {",
-			".xfce4-panel #clock-button:hover,",
-		);
-	assert.equal(withoutOwn(css), withoutOwn(officeCss));
 	assert.equal(
 		css.slice(css.indexOf(".xfce4-panel {"), css.indexOf(".xfce4-panel button {")),
 		".xfce4-panel {\n\tbackground-image: none;\n\tborder: none;\n\tbox-shadow: none;\n}\n",

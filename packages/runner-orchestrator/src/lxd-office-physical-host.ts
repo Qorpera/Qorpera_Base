@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, readlink, realpath } from "node:fs/promises";
 import { dirname } from "node:path";

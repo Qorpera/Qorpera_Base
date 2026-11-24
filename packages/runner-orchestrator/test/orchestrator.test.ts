@@ -31,7 +31,11 @@ class LocalCloudRunnerProviderAdapter implements CloudRunnerProviderAdapter {
 	readonly #launch: {
 		reconcile(signal?: AbortSignal): Promise<void>;
 		acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance>;
-		deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void>;
+		deliver(
+			runner: CloudRunnerInstance,
+			delivery: CloudRunnerAssignmentDelivery,
+			signal?: AbortSignal,
+		): Promise<void>;
 		stop(
 			runner: CloudRunnerInstance,
 			reason: "delivery_failed" | "idle" | "revoked",
@@ -41,7 +45,11 @@ class LocalCloudRunnerProviderAdapter implements CloudRunnerProviderAdapter {
 	constructor(launch: {
 		reconcile(signal?: AbortSignal): Promise<void>;
 		acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance>;
-		deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void>;
+		deliver(
+			runner: CloudRunnerInstance,
+			delivery: CloudRunnerAssignmentDelivery,
+			signal?: AbortSignal,
+		): Promise<void>;
 		stop(
 			runner: CloudRunnerInstance,
 			reason: "delivery_failed" | "idle" | "revoked",

@@ -428,15 +428,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			dataConfiguration &&
 			(!dataToken ||
 				!TOKEN_PATTERN.test(dataToken) ||
-				[
-					masterKey,
-					bridgeToken,
-					identity.credential,
-					objectToken,
-					secretBrokerToken,
-					computerToken,
-					codingToken,
-				].includes(dataToken))
+				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken, codingToken].includes(
+					dataToken,
+				))
 		)
 			throw new Error("Company databases require a distinct private systemd credential");
 		const companyData =

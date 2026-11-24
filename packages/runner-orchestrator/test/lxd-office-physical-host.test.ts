@@ -4,17 +4,17 @@ import type { LxdOfficeMountPolicy } from "../src/lxd-office-physical-policy.ts"
 
 const workbench: LxdOfficeMountPolicy = {
 	mountPoint: "/mnt/office-workbench",
+	root: "/",
 	filesystem: "nfs4",
 	source: "192.0.2.1:/offices/test",
-	options: ["nosuid", "nodev", "vers=4.2", "hard", "proto=tcp"],
 };
 const journal: LxdOfficeMountPolicy = {
 	mountPoint: "/mnt/office-journal",
+	root: "/",
 	filesystem: "ext4",
 	source: "/dev/vdb",
-	options: [],
 };
-const workbenchSource = "/mnt/office-workbench/profiles";
+const workbenchSource = "/mnt/office-workbench";
 const serverAddress = "192.0.2.1";
 const journalPath = "/mnt/office-journal/provider";
 const nfs =
