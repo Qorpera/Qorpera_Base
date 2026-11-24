@@ -117,7 +117,7 @@ declare
 	v_manifest_budget constant integer := 69632;
 	v_meta_budget constant integer := 77824;
 	v_max_bytes constant integer := 98304;
-	v_used_bytes integer := 0;
+	v_used_bytes integer := 64;
 	v_open_ids uuid[] := '{}'::uuid[];
 	v_changes jsonb := '[]'::jsonb;
 	v_recs jsonb := '[]'::jsonb;
@@ -177,14 +177,14 @@ begin
 				'patchManifest', v_ch.patch_manifest,
 				'baseFiles', v_ch.base_files
 			);
-			v_item_bytes := octet_length(v_full_item::text);
+			v_item_bytes := octet_length(v_full_item::text) + 2;
 			if v_used_bytes + v_item_bytes <= v_manifest_budget then
 				v_changes := v_changes || jsonb_build_array(v_full_item);
 				v_used_bytes := v_used_bytes + v_item_bytes;
 				continue;
 			end if;
 			v_full_item := v_meta_item || jsonb_build_object('patchManifest', v_ch.patch_manifest);
-			v_item_bytes := octet_length(v_full_item::text);
+			v_item_bytes := octet_length(v_full_item::text) + 2;
 			if v_used_bytes + v_item_bytes <= v_manifest_budget then
 				v_changes := v_changes || jsonb_build_array(v_full_item);
 				v_used_bytes := v_used_bytes + v_item_bytes;
@@ -196,7 +196,7 @@ begin
 			);
 		end if;
 
-		v_meta_bytes := octet_length(v_meta_item::text);
+		v_meta_bytes := octet_length(v_meta_item::text) + 2;
 		if v_used_bytes + v_meta_bytes <= v_meta_budget then
 			v_changes := v_changes || jsonb_build_array(v_meta_item);
 			v_used_bytes := v_used_bytes + v_meta_bytes;
@@ -219,7 +219,7 @@ begin
 				'truncated', true,
 				'pathsTruncated', coalesce(v_paths_truncated, false)
 			);
-			v_stub_bytes := octet_length(v_stub_item::text);
+			v_stub_bytes := octet_length(v_stub_item::text) + 2;
 			if v_used_bytes + v_stub_bytes > v_meta_budget then
 				-- WHY: Reserves 20 KiB inside the 96 KiB cap and strips JSON-escaped chars so 64 pathless stubs always fit strictly under 96 KiB.
 				v_stub_item := jsonb_build_object(
@@ -235,7 +235,7 @@ begin
 					'truncated', true,
 					'pathsTruncated', coalesce(cardinality(v_ch.affected_paths), 0) > 0
 				);
-				v_stub_bytes := octet_length(v_stub_item::text);
+				v_stub_bytes := octet_length(v_stub_item::text) + 2;
 			end if;
 			v_changes := v_changes || jsonb_build_array(v_stub_item);
 			v_used_bytes := v_used_bytes + v_stub_bytes;
@@ -264,7 +264,7 @@ begin
 			limit 8
 		loop
 			v_rec_item := public.qorpera_surface_reconciliation_json(v_rec);
-			v_item_bytes := octet_length(v_rec_item::text);
+			v_item_bytes := octet_length(v_rec_item::text) + 2;
 			if v_used_bytes + v_item_bytes <= v_max_bytes then
 				v_recs := v_recs || jsonb_build_array(v_rec_item);
 				v_used_bytes := v_used_bytes + v_item_bytes;
