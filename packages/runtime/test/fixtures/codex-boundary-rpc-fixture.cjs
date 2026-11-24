@@ -85,6 +85,64 @@ const companyCalls = mode === "company-office"
 			{ tool: "save_interface", arguments: { operationKey: "pulse", files: [], effect: "internal" } },
 			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The pages are not mine to change.", phase: "final" } },
 		]
+	: mode === "company-surface-narrate"
+	? [
+			{
+				tool: "stage_surface_patch",
+				arguments: {
+					title: "Add breakdown",
+					summary: "Stages initial animated breakdown scenes.",
+					ops: [
+						{
+							op: "write_text",
+							path: "breakdowns/ux/scenes.js",
+							content: 'V.scene((s) => { s.say("First caption."); s.say("Second caption."); });',
+						},
+					],
+					notePaths: [],
+					finishSession: false,
+				},
+			},
+			{
+				tool: "narrate_explainer",
+				arguments: {
+					scenesPath: "breakdowns/ux/scenes.js",
+					title: "Narrate breakdown",
+					summary: "Recorded spoken narration.",
+				},
+			},
+			{
+				tool: "stage_surface_patch",
+				arguments: {
+					title: "Add third caption",
+					summary: "Adds one more caption after cap.",
+					ops: [
+						{
+							op: "write_text",
+							path: "breakdowns/ux/scenes.js",
+							content: 'V.scene((s) => { s.say("First caption."); s.say("Second caption."); s.say("Third caption."); });',
+						},
+					],
+					notePaths: [],
+					finishSession: false,
+				},
+			},
+			{
+				tool: "narrate_explainer",
+				arguments: {
+					scenesPath: "breakdowns/ux/scenes.js",
+					title: "Narrate third caption",
+					summary: "Attempts narration after spend cap reached.",
+				},
+			},
+			{
+				tool: "surface_reply",
+				arguments: {
+					replyText: "Staged the animated breakdown.",
+					notePaths: [],
+				},
+			},
+		]
 	: mode === "company-surface-session"
 	? [
 			{ tool: "read_skill", arguments: { name: "identity-studio" } },

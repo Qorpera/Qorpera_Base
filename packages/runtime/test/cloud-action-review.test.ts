@@ -240,6 +240,7 @@ describe("which calls are reviewed", () => {
 		// A named change writes the company's own rows, as company_write writes a file (slice 7).
 		["data_change", { database: "shop", change: "mark-shipped", params: { id: 7 } }, "internal"],
 		["narrate_app", { name: "pricing", operationKey: "k", machine: "studio", voice: "cove" }, "internal"],
+		["narrate_explainer", { scenesPath: "breakdowns/ux/scenes.js", voiceName: "Charon" }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them

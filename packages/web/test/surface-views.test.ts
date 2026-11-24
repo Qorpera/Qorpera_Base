@@ -1159,6 +1159,81 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("discards one change from its overview card on a second press, keeping the button's size", async () => {
+		const ready = session(["staged", "staged"], { id: "33333333-3333-4333-8333-333333333351", title: "Ready" });
+		const waiting = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333352",
+			title: "Waiting",
+			state: "needs_input",
+			question: { text: "Which one?", options: [] },
+			changes: [change(CHANGES[2], 1, "staged")],
+			openChangeCount: 1,
+		});
+		const working = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333353",
+			title: "Working",
+			state: "running",
+		});
+		const discardSurfaceChange = vi.fn(async (changeId: string) =>
+			changeId === CHANGES[0]
+				? {
+						...ready,
+						changes: [change(CHANGES[0], 1, "discarded"), change(CHANGES[1], 2, "staged")],
+						openChangeCount: 1,
+					}
+				: { ...waiting, changes: [change(CHANGES[2], 1, "discarded")], openChangeCount: 0 },
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([ready, waiting, working])),
+			discardSurfaceChange,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const card = (id: string) =>
+			view.el.querySelector<HTMLElement>(`.surface-overview-card.is-agent[data-session="${id}"]`)!;
+		const discardOf = (id: string, changeId: string) =>
+			card(id).querySelector<HTMLElement>(`[data-act="discard-change-armed"][data-change="${changeId}"]`);
+		expect(discardOf(working.id, CHANGES[0])).toBeNull();
+		expect(discardOf(waiting.id, CHANGES[2])).not.toBeNull();
+
+		const first = discardOf(ready.id, CHANGES[0])!;
+		expect(first.textContent).toBe("Discard");
+		expect(first.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Confirm");
+		first.click();
+		const armed = discardOf(ready.id, CHANGES[0])!;
+		expect(armed.classList.contains("is-confirming")).toBe(true);
+		expect(armed.dataset.armed).toBe("true");
+		expect(armed.textContent).toBe("Confirm");
+		expect(armed.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Discard");
+		expect(discardOf(ready.id, CHANGES[1])!.classList.contains("is-confirming")).toBe(false);
+		expect(discardSurfaceChange).not.toHaveBeenCalled();
+
+		armed.click();
+		await flush();
+		await flush();
+		expect(discardSurfaceChange).toHaveBeenCalledWith(CHANGES[0]);
+		view.update();
+		expect(discardOf(ready.id, CHANGES[0])).toBeNull();
+		expect(discardOf(ready.id, CHANGES[1])?.classList.contains("is-confirming")).toBe(false);
+
+		discardOf(waiting.id, CHANGES[2])!.click();
+		discardOf(waiting.id, CHANGES[2])!.click();
+		await flush();
+		await flush();
+		view.update();
+		expect(store.workspace(SURFACE)?.activeSessions.map((item) => item.id)).toContain(waiting.id);
+		expect(card(waiting.id)?.querySelector(".surface-question")?.textContent).toContain("Which one?");
+		expect(discardSurfaceChange).toHaveBeenLastCalledWith(CHANGES[2]);
+		expect(discardOf(waiting.id, CHANGES[2])).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("enters with a page loading screen, defers heavy mounting until after first paint, and cancels mounts when switched away", async () => {
 		const brand = summary({
 			id: "22222222-2222-4222-8222-222222222241",
