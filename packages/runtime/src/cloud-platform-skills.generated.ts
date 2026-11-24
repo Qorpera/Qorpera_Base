@@ -50,7 +50,7 @@ Identity is how the company looks and sounds: its marks, its name and purpose, i
 - Write to the member about the identity, not about files or steps: no paths, file names or tool names in a change's title, its summary or your reply.
 
 ## What good looks like
-- The logo and the wordmark are real vector marks: clean paths, no embedded pictures, text turned into shapes or set in a named face. Each must read on a light ground and on a dark one; one that vanishes on dark is not done. Keep the logo simple enough to work as a small icon.
+- The logo and the wordmark are real vector marks: clean paths, no embedded pictures, any lettering turned into outlines so it never depends on a font. Each must read on a light ground and on a dark one; one that vanishes on dark is not done. Keep the logo simple enough to work as a small icon.
 - The name, mission, ambition and strategy live in the company file the layout binds. The mission is one sentence of what the company does and for whom. The ambition says where it is going. The strategy is a few named moves, each with one line on what it means in practice. No slogans; no words like "innovative" or "seamless".
 - Palette and type live in the tokens file. Name colours by their role and character ("ink", "paper", "signal"), keep to a few, and check that text reads on its ground. Choose type families that exist, each with its role: headings, body, figures. Never write the compiled stylesheet; it is made from the tokens.
 - Voice is a short note: three or four traits, each with a line the company would say and one it never would. Not an essay.
