@@ -11,8 +11,9 @@ begin
 		or to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean)') is null
 		or to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null
-		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null then
-		raise exception 'Surface change options (20260930892000) requires prior surface migrations first';
+		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null
+		or to_regprocedure('public.qorpera_surface_enqueue_standalone_dependents(uuid,uuid[])') is null then
+		raise exception 'Surface change options (20260930892000) requires prior surface migrations through 20260930890000 first';
 	end if;
 	v_session_json := pg_get_functiondef('public.qorpera_surface_session_json(public.qorpera_surface_sessions)'::regprocedure);
 	if position('''optionGroupKey''' in v_session_json) > 0 then
@@ -58,6 +59,28 @@ begin
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
 	end loop;
+	execute v_def;
+end $$;
+
+create function pg_temp.sco_recreate(p_old_target regprocedure, p_pairs text[])
+returns void language plpgsql as $$
+declare
+	v_def text := pg_get_functiondef(p_old_target);
+	v_i integer := 1;
+	v_hits integer;
+begin
+	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
+		raise exception '20260930892000: invalid recreate pairs for %', p_old_target;
+	end if;
+	while v_i <= array_length(p_pairs, 1) loop
+		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
+		if v_hits <> 1 then
+			raise exception '20260930892000: recreate anchor matched % time(s) in %: %', v_hits, p_old_target, left(p_pairs[v_i], 120);
+		end if;
+		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
+		v_i := v_i + 2;
+	end loop;
+	execute 'drop function ' || p_old_target::text;
 	execute v_def;
 end $$;
 
@@ -216,37 +239,53 @@ $new$	if v_change.published_at is not null then
 	end if;$new$
 ]);
 
-drop function pg_temp.sco_patch(regprocedure, text[]);
+select pg_temp.sco_patch('public.qorpera_discard_surface_change(uuid)'::regprocedure, array[
+$old$	v_session public.qorpera_surface_sessions%rowtype;
+	v_discarded_count integer := 0;
+begin$old$,
+$new$	v_session public.qorpera_surface_sessions%rowtype;
+	v_discarded_count integer := 0;
+	v_survivor_ids uuid[];
+begin$new$,
+$old$	select * into v_surface from public.qorpera_surfaces where id = v_lookup.surface_id for key share;
+	select * into v_change from public.qorpera_surface_changes where id = p_change_id for update;$old$,
+$new$	select * into v_surface from public.qorpera_surfaces where id = v_lookup.surface_id for key share;
+	perform 1 from public.qorpera_surface_changes where session_id = v_lookup.session_id order by seq asc, id asc for update;
+	select * into v_change from public.qorpera_surface_changes where id = p_change_id for update;$new$,
+$old$	get diagnostics v_discarded_count = row_count;$old$,
+$new$	get diagnostics v_discarded_count = row_count;
 
-drop function public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean);
-create function public.qorpera_record_surface_change(
-	p_session_id uuid,
-	p_title text,
-	p_summary text,
-	p_kind text default 'git_range',
-	p_parent_sha text default null,
-	p_head_sha text default null,
-	p_depends_on_change_ids uuid[] default '{}'::uuid[],
-	p_affected_paths text[] default '{}'::text[],
-	p_diff_stats jsonb default null,
-	p_patch_manifest jsonb default null,
-	p_finish_session boolean default false,
-	p_option_group_key text default null,
-	p_option_group_title text default null
-)
-returns jsonb
-language plpgsql security definer set search_path = '' as $$
-declare
-	v_session public.qorpera_surface_sessions%rowtype;
-	v_next_seq smallint;
-	v_change public.qorpera_surface_changes%rowtype;
-	v_superseded_ids uuid[];
-	v_affected_session_ids uuid[];
-	v_affected_sid uuid;
+	if v_discarded_count > 0 and v_change.option_group_key is not null then
+		select coalesce(array_agg(ch.id), '{}'::uuid[])
+		into v_survivor_ids
+		from public.qorpera_surface_changes ch
+		where ch.session_id = v_change.session_id
+			and ch.option_group_key = v_change.option_group_key
+			and ch.status in ('staged', 'conflicted');
+
+		if cardinality(v_survivor_ids) = 1 then
+			update public.qorpera_surface_changes
+			set option_group_key = null, option_group_title = null
+			where id = v_survivor_ids[1];
+		end if;
+	end if;$new$
+]);
+
+-- WHY: Recreate qorpera_record_surface_change from its live pg_get_functiondef so 20260930888000 silent reconciliation and 20260930890000 preview lineage stay intact.
+select pg_temp.sco_recreate(
+	'public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean)'::regprocedure,
+	array[
+$old$p_finish_session boolean DEFAULT false)$old$,
+$new$p_finish_session boolean DEFAULT false, p_option_group_key text DEFAULT NULL::text, p_option_group_title text DEFAULT NULL::text)$new$,
+$old$	v_retry_enqueued boolean := false;
+	v_now timestamptz := clock_timestamp();
+begin$old$,
+$new$	v_retry_enqueued boolean := false;
 	v_group_key text := nullif(lower(btrim(coalesce(p_option_group_key, ''))), '');
 	v_group_title text := nullif(btrim(coalesce(p_option_group_title, '')), '');
 	v_existing_group_parent text;
 	v_existing_group_title text;
+	v_now timestamptz := clock_timestamp();
 begin
 	if v_group_key is null and v_group_title is not null then
 		raise exception 'optionGroupTitle requires optionGroup' using errcode = '22023';
@@ -258,12 +297,16 @@ begin
 		if v_group_title is not null and char_length(v_group_title) > 160 then
 			raise exception 'optionGroupTitle must be at most 160 characters' using errcode = '22023';
 		end if;
-	end if;
-
-	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	end if;$new$,
+$old$	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;$old$,
+$new$	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
 	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
 
 	if v_group_key is not null then
+		if v_session.is_internal then
+			raise exception 'Internal reconciliation sessions cannot stage option groups' using errcode = '22023';
+		end if;
 		select
 			nullif(btrim(c.parent_sha), ''),
 			nullif(btrim(c.option_group_title), '')
@@ -283,113 +326,44 @@ begin
 			and p_parent_sha is distinct from v_existing_group_parent then
 			raise exception 'All git options in the same optionGroup must share the same parentSha' using errcode = '22023';
 		end if;
-	end if;
-
-	select coalesce(max(seq), 0)::smallint + 1 into v_next_seq
-	from public.qorpera_surface_changes
-	where session_id = p_session_id;
-
-	insert into public.qorpera_surface_changes(
+	end if;$new$,
+$old$	insert into public.qorpera_surface_changes(
 		profile_id, surface_id, session_id, seq, title, summary, kind,
-		parent_sha, head_sha, depends_on_change_ids, affected_paths, diff_stats, patch_manifest, status,
+		parent_sha, head_sha, depends_on_change_ids, preview_base_change_ids,
+		affected_paths, diff_stats, patch_manifest, base_files, status
+	)
+	values (
+		v_session.profile_id, v_session.surface_id, p_session_id, v_next_seq,
+		btrim(p_title), coalesce(p_summary, ''), coalesce(p_kind, 'git_range'),
+		p_parent_sha, p_head_sha, coalesce(p_depends_on_change_ids, '{}'::uuid[]),
+		coalesce(v_preview_base_ids, '{}'::uuid[]),
+		coalesce(p_affected_paths, '{}'::text[]), p_diff_stats, v_patch_manifest, v_base_files, 'staged'
+	)
+	returning * into v_change;$old$,
+$new$	insert into public.qorpera_surface_changes(
+		profile_id, surface_id, session_id, seq, title, summary, kind,
+		parent_sha, head_sha, depends_on_change_ids, preview_base_change_ids,
+		affected_paths, diff_stats, patch_manifest, base_files, status,
 		option_group_key, option_group_title
 	)
 	values (
 		v_session.profile_id, v_session.surface_id, p_session_id, v_next_seq,
 		btrim(p_title), coalesce(p_summary, ''), coalesce(p_kind, 'git_range'),
 		p_parent_sha, p_head_sha, coalesce(p_depends_on_change_ids, '{}'::uuid[]),
-		coalesce(p_affected_paths, '{}'::text[]), p_diff_stats, p_patch_manifest, 'staged',
+		coalesce(v_preview_base_ids, '{}'::uuid[]),
+		coalesce(p_affected_paths, '{}'::text[]), p_diff_stats, v_patch_manifest, v_base_files, 'staged',
 		v_group_key, v_group_title
 	)
-	returning * into v_change;
-
-	insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body, change_id)
-	values (
-		v_session.profile_id, p_session_id, 'system',
-		case when v_group_key is not null then 'Staged option: ' else 'Staged change: ' end
-			|| v_change.title
-			|| case when char_length(v_change.summary) > 0 then ' — ' || v_change.summary else '' end,
-		v_change.id
-	);
-
-	-- WHY: 20260930860000 discards superseded conflicted changes once a reconciliation session records a resolved change.
-	if (
-		v_session.state in ('reconciling', 'reconciling_running')
-		or v_session.origin_label = 'Conflict reconciliation'
-	) and jsonb_typeof(v_session.origin_ref -> 'changeIds') = 'array' then
-		-- WHY: Lock superseded sessions in canonical id order before updating their changes so approve/undo cannot deadlock (40P01).
-		perform 1
-		from public.qorpera_surface_sessions s
-		where s.surface_id = v_session.surface_id
-			and s.profile_id = v_session.profile_id
-			and s.id <> p_session_id
-			and s.id in (
-				select ch.session_id
-				from public.qorpera_surface_changes ch
-				where ch.surface_id = v_session.surface_id
-					and ch.profile_id = v_session.profile_id
-					and ch.id <> v_change.id
-					and ch.id in (
-						select x::uuid
-						from jsonb_array_elements_text(v_session.origin_ref -> 'changeIds') as x
-					)
-			)
-		order by s.id asc
-		for update;
-
-		with resolved as (
-			update public.qorpera_surface_changes ch
-			set
-				status = 'discarded',
-				conflict_paths = null,
-				resolved_at = clock_timestamp()
-			where ch.surface_id = v_session.surface_id
-				and ch.profile_id = v_session.profile_id
-				and ch.id <> v_change.id
-				and ch.status = 'conflicted'
-				and ch.id in (
-					select x::uuid
-					from jsonb_array_elements_text(v_session.origin_ref -> 'changeIds') as x
-				)
-			returning ch.id, ch.session_id
-		)
-		select
-			coalesce(array_agg(distinct id), '{}'::uuid[]),
-			coalesce(array_agg(distinct session_id order by session_id), '{}'::uuid[])
-		into v_superseded_ids, v_affected_session_ids
-		from resolved;
-
-		if cardinality(v_superseded_ids) > 0 then
-			update public.qorpera_member_surface_state
-			set toggled_change_ids = array(
-				select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_superseded_ids))
-			)
-			where surface_id = v_session.surface_id;
-
-			foreach v_affected_sid in array v_affected_session_ids loop
-				if v_affected_sid <> p_session_id then
-					perform public.qorpera_evaluate_surface_session_lifecycle(v_affected_sid);
-				end if;
-			end loop;
-		end if;
-	end if;
-
-	update public.qorpera_surface_sessions
-	set
-		branch_head_sha = coalesce(p_head_sha, branch_head_sha),
-		state = case when p_finish_session then 'ready' else state end,
-		updated_at = clock_timestamp()
-	where id = p_session_id
-	returning * into v_session;
-
-	return jsonb_build_object(
-		'changeId', v_change.id,
-		'seq', v_change.seq,
-		'session', public.qorpera_surface_session_json(v_session)
-	);
-end $$;
+	returning * into v_change;$new$,
+$old$		'Staged change: ' || v_change.title$old$,
+$new$		case when v_group_key is not null then 'Staged option: ' else 'Staged change: ' end || v_change.title$new$
+	]
+);
 revoke all on function public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, text, text) from public, anon, authenticated;
 grant execute on function public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, text, text) to service_role;
+
+drop function pg_temp.sco_patch(regprocedure, text[]);
+drop function pg_temp.sco_recreate(regprocedure, text[]);
 
 drop function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid);
 create function public.qorpera_native_surface_record_change(
@@ -474,58 +448,6 @@ end $$;
 revoke all on function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid, text, text) from public, anon, authenticated;
 grant execute on function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid, text, text) to service_role;
 
-create or replace function public.qorpera_discard_surface_change(p_change_id uuid)
-returns jsonb
-language plpgsql security definer set search_path = '' as $$
-declare
-	v_lookup record;
-	v_change public.qorpera_surface_changes%rowtype;
-	v_session public.qorpera_surface_sessions%rowtype;
-	v_survivor_ids uuid[];
-begin
-	select session_id, surface_id, profile_id into v_lookup
-	from public.qorpera_surface_changes
-	where id = p_change_id;
-	if v_lookup.session_id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
-	perform public.qorpera_assert_surface_member(v_lookup.profile_id, true);
-
-	select * into v_session from public.qorpera_surface_sessions where id = v_lookup.session_id for update;
-	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
-	perform 1 from public.qorpera_surfaces where id = v_session.surface_id for update;
-	perform 1 from public.qorpera_surface_changes where session_id = v_session.id order by seq asc, id asc for update;
-
-	select * into v_change from public.qorpera_surface_changes where id = p_change_id;
-	if v_change.id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
-
-	update public.qorpera_surface_changes
-	set status = 'discarded', resolved_at = clock_timestamp()
-	where id = p_change_id and status in ('staged', 'conflicted');
-
-	if v_change.option_group_key is not null then
-		select coalesce(array_agg(ch.id), '{}'::uuid[])
-		into v_survivor_ids
-		from public.qorpera_surface_changes ch
-		where ch.session_id = v_change.session_id
-			and ch.option_group_key = v_change.option_group_key
-			and ch.status in ('staged', 'conflicted');
-
-		if cardinality(v_survivor_ids) = 1 then
-			update public.qorpera_surface_changes
-			set option_group_key = null, option_group_title = null
-			where id = v_survivor_ids[1];
-		end if;
-	end if;
-
-	update public.qorpera_member_surface_state
-	set toggled_change_ids = array_remove(toggled_change_ids, p_change_id)
-	where surface_id = v_change.surface_id;
-
-	v_session := public.qorpera_evaluate_surface_session_lifecycle(v_change.session_id);
-	return public.qorpera_surface_session_json(v_session);
-end $$;
-revoke all on function public.qorpera_discard_surface_change(uuid) from public, anon;
-grant execute on function public.qorpera_discard_surface_change(uuid) to authenticated;
-
 create function public.qorpera_choose_surface_change_option(p_change_id uuid)
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
@@ -533,7 +455,7 @@ declare
 	v_lookup record;
 	v_change public.qorpera_surface_changes%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
-	v_discarded_ids uuid[];
+	v_discarded_ids uuid[] := '{}'::uuid[];
 begin
 	select session_id, surface_id, profile_id into v_lookup
 	from public.qorpera_surface_changes
@@ -541,9 +463,10 @@ begin
 	if v_lookup.session_id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
 	perform public.qorpera_assert_surface_member(v_lookup.profile_id, true);
 
+	-- WHY: Acquire session -> surface -> change locks in canonical order before silent reconciliation to avoid 40P01 deadlocks.
 	select * into v_session from public.qorpera_surface_sessions where id = v_lookup.session_id for update;
 	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
-	perform 1 from public.qorpera_surfaces where id = v_session.surface_id for update;
+	perform 1 from public.qorpera_surfaces where id = v_session.surface_id for key share;
 	perform 1 from public.qorpera_surface_changes where session_id = v_session.id order by seq asc, id asc for update;
 
 	select * into v_change from public.qorpera_surface_changes where id = p_change_id;
@@ -575,6 +498,8 @@ begin
 				select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_discarded_ids))
 			)
 			where surface_id = v_change.surface_id;
+
+			perform public.qorpera_surface_enqueue_standalone_dependents(v_change.surface_id, v_discarded_ids);
 		end if;
 
 		insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body, change_id)
@@ -602,7 +527,7 @@ declare
 	v_profile_id uuid;
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_key text := nullif(lower(btrim(coalesce(p_option_group_key, ''))), '');
-	v_discarded_ids uuid[];
+	v_discarded_ids uuid[] := '{}'::uuid[];
 begin
 	if v_key is null or char_length(v_key) > 80 or v_key !~ '^[a-z0-9]+(?:-[a-z0-9]+)*$' then
 		raise exception 'Invalid option group key' using errcode = '22023';
@@ -612,9 +537,10 @@ begin
 	if v_profile_id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
 	perform public.qorpera_assert_surface_member(v_profile_id, true);
 
+	-- WHY: Acquire session -> surface -> change locks in canonical order before silent reconciliation to avoid 40P01 deadlocks.
 	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
 	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
-	perform 1 from public.qorpera_surfaces where id = v_session.surface_id for update;
+	perform 1 from public.qorpera_surfaces where id = v_session.surface_id for key share;
 	perform 1 from public.qorpera_surface_changes where session_id = v_session.id order by seq asc, id asc for update;
 
 	with dropped as (
@@ -633,6 +559,8 @@ begin
 			select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_discarded_ids))
 		)
 		where surface_id = v_session.surface_id;
+
+		perform public.qorpera_surface_enqueue_standalone_dependents(v_session.surface_id, v_discarded_ids);
 	end if;
 
 	v_session := public.qorpera_evaluate_surface_session_lifecycle(p_session_id);
@@ -640,3 +568,26 @@ begin
 end $$;
 revoke all on function public.qorpera_discard_surface_option_group(uuid, text) from public, anon;
 grant execute on function public.qorpera_discard_surface_option_group(uuid, text) to authenticated;
+
+do $$
+declare
+	v_owner name;
+begin
+	for v_owner in
+		select distinct pg_get_userbyid(proowner)
+		from pg_proc
+		where oid = any(array[
+			'public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text)'::regprocedure,
+			'public.qorpera_choose_surface_change_option(uuid)'::regprocedure,
+			'public.qorpera_discard_surface_option_group(uuid,text)'::regprocedure
+		])
+	loop
+		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
+			raise exception 'Surface change options function has an API owner: %', v_owner;
+		end if;
+		execute format(
+			'grant execute on function public.qorpera_surface_base_fingerprint(public.qorpera_surfaces), public.qorpera_surface_enqueue_silent_reconciliation(uuid, uuid[], text[], uuid, boolean, boolean), public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces, uuid[]), public.qorpera_surface_enqueue_chain_reconciliation(uuid, uuid), public.qorpera_surface_enqueue_standalone_dependents(uuid, uuid[]) to %I',
+			v_owner
+		);
+	end loop;
+end $$;

@@ -119,7 +119,8 @@ describe("session crew", () => {
 		expect(sessionCrew(ids[3]!)).toEqual(sessionCrew(ids[3]!));
 		expect(crewLook(session([], { state: "running" }))).toMatchObject({ tone: "working", activity: "Working" });
 		expect(crewLook(session([], { state: "needs_input" }))).toMatchObject({ activity: "Waiting", ask: "question" });
-		expect(crewLook(session(["conflicted"]))).toMatchObject({ tone: "attention", ask: "bang" });
+		expect(crewLook(session([], { state: "failed" }))).toMatchObject({ tone: "attention", ask: "bang" });
+		expect(crewLook(session(["conflicted"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["staged"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["merged"]))).toMatchObject({ tone: "merged" });
 	});
@@ -871,7 +872,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		const tabLabels = () =>
 			[...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
+		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
@@ -1094,6 +1095,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const address = () => view.el.querySelector<HTMLButtonElement>(".surface-pill-address");
 
 		expect(address()?.className).toBe("surface-pill-address is-unknown");
+		expect(address()?.title).toBe(address()?.querySelector(".surface-address-host")?.textContent);
+		expect(address()?.title).not.toBe("");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
 		expect(address()?.dataset.act).toBe("address");
 		expect(hosting.client.read).not.toHaveBeenCalled();
 
@@ -1327,7 +1331,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
+		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns"]);
 
 		const reachChips = [
 			...view.el.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
@@ -2017,6 +2021,65 @@ describe("a website that is not live", () => {
 		done();
 	});
 
+	it("publishes a website whose Base was never published, once per Base, silently, and never for a read-only member", async () => {
+		const base = "a".repeat(40);
+		const { store, view, client, raise, settle, done } = await website({
+			served: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
+			publishAnswer: { hasUnpublishedChanges: false },
+		});
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await settle();
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		noProblem(store, view);
+
+		await raise({ liveHeadSha: "b".repeat(40), hasUnpublishedChanges: true });
+		expect(client.publishSurface).toHaveBeenCalledTimes(2);
+		done();
+
+		const reader = await website({
+			served: false,
+			canWrite: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
+		});
+		expect(reader.client.publishSurface).not.toHaveBeenCalled();
+		reader.done();
+	});
+
+	it("publishes nothing when Base has nothing a publish would add", async () => {
+		const { client, done } = await website({
+			served: false,
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: false,
+				liveHeadSha: "a".repeat(40),
+			},
+		});
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("goes live by publishing a Base that moved since its last publish first", async () => {
+		const { store, view, order, settle, done } = await website({
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: true,
+				liveHeadSha: "b".repeat(40),
+			},
+			publishFails: 1,
+			publishAnswer: { hasUnpublishedChanges: false },
+		});
+		expect(order).toEqual(["publish"]);
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish", "publish", "public:true", "auto:false"]);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-live");
+		noProblem(store, view);
+		done();
+	});
+
 	it("goes live by publishing what is approved first, then making the site public, then switching auto-publish off", async () => {
 		const { store, view, order, settle, done } = await website({
 			shown: { autoPublish: true, unpublishedChangeCount: 1 },
@@ -2620,5 +2683,94 @@ describe("single-session change option groups", () => {
 		expect(discardSurfaceOptionGroup).toHaveBeenCalledWith(SESSION, "concept");
 		focusedView.dispose();
 		focusedStore.dispose();
+	});
+
+	it("keeps multiple option groups and standalone changes independent in one session until every group is resolved", async () => {
+		const s1 = change("44444444-4444-4444-8444-444444444450", 1, "staged", { title: "Fix favicon" });
+		const a1 = change("44444444-4444-4444-8444-444444444451", 2, "staged", {
+			title: "Hero A",
+			optionGroupKey: "hero",
+			optionGroupTitle: "Hero layout",
+		});
+		const a2 = change("44444444-4444-4444-8444-444444444452", 3, "staged", {
+			title: "Hero B",
+			optionGroupKey: "hero",
+			optionGroupTitle: "Hero layout",
+		});
+		const b1 = change("44444444-4444-4444-8444-444444444453", 4, "staged", {
+			title: "Pricing A",
+			optionGroupKey: "pricing",
+			optionGroupTitle: "Pricing table",
+		});
+		const b2 = change("44444444-4444-4444-8444-444444444454", 5, "staged", {
+			title: "Pricing B",
+			optionGroupKey: "pricing",
+			optionGroupTitle: "Pricing table",
+		});
+		let current = session([], { title: "Full redesign", changes: [s1, a1, a2, b1, b2], openChangeCount: 5 });
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chooseSurfaceChangeOption = vi.fn(async (changeId: string) => {
+			const picked = current.changes.find((c) => c.id === changeId)!;
+			const nextChanges = current.changes.map((c) => {
+				if (c.id === changeId) return { ...c, optionGroupKey: null, optionGroupTitle: null };
+				if (c.optionGroupKey === picked.optionGroupKey) return { ...c, status: "discarded" as const };
+				return c;
+			});
+			current = {
+				...current,
+				changes: nextChanges,
+				openChangeCount: nextChanges.filter((c) => c.status === "staged").length,
+			};
+			return current;
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([current])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(drawer.querySelectorAll('[data-option-group="hero"] [data-act="pick-option"]')).toHaveLength(2);
+		expect(drawer.querySelectorAll('[data-option-group="pricing"] [data-act="pick-option"]')).toHaveLength(2);
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a1.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-option"][data-change="${a1.id}"]`)!.click();
+		await flush();
+		view.update();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-option"][data-change="${a2.id}"]`)!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="choose-option"][data-change="${a2.id}"]`)!.click();
+		await flush();
+		view.update();
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="choose-option"][data-change="${b1.id}"]`)!.click();
+		await flush();
+		view.update();
+		expect(drawer.querySelector('[data-act="approve-all"]')?.textContent).toContain("Approve all 3");
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
+		view.dispose();
+		store.dispose();
 	});
 });

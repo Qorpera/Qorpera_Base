@@ -362,6 +362,77 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("deduplicates silent ensureReconciliation calls and retries failed reconciliations via retryPreview", async () => {
+		const recId = "66666666-6666-4666-8666-666666666666";
+		const ensureSurfaceReconciliation = vi.fn(async (_surfaceId, ids, _paths, retry) => ({
+			id: recId,
+			surfaceId: SURFACE,
+			compositionKey: "k-code",
+			baseFingerprint: "1".repeat(40),
+			selectedChangeIds: [...ids],
+			status: retry ? ("queued" as const) : ("queued" as const),
+			patchManifest: null,
+			commitSha: null,
+			treeSha: null,
+			errorDetail: null,
+			updatedAt: "2026-11-24T00:00:00Z",
+		}));
+		const ws = workspace([session(["staged", "staged"])], {
+			previewState: {
+				surfaceId: SURFACE,
+				mode: "single",
+				primary: {
+					...previewFrame({ status: "failed", doorActionUrl: null, memberPass: null }),
+					toggledChangeIds: [CHANGES[0], CHANGES[1]],
+					errorDetail: "Couldn't update preview",
+				},
+				compareFrames: [],
+			},
+			reconciliations: [],
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => ws),
+				ensureSurfaceReconciliation,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+		await store.ensureReconciliation(SURFACE, [CHANGES[0], CHANGES[1]], ["src/hero.tsx"]);
+		await store.ensureReconciliation(SURFACE, [CHANGES[1], CHANGES[0]], ["src/hero.tsx"]);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(1);
+
+		const current = store.workspace(SURFACE)!;
+		store.store.set({
+			workspaces: {
+				...store.state.workspaces,
+				[SURFACE]: {
+					...current,
+					reconciliations: [
+						{
+							id: recId,
+							surfaceId: SURFACE,
+							compositionKey: "k-code",
+							baseFingerprint: "1".repeat(40),
+							selectedChangeIds: [CHANGES[0], CHANGES[1]],
+							status: "failed",
+							patchManifest: null,
+							commitSha: null,
+							treeSha: null,
+							errorDetail: "Couldn't update preview",
+							updatedAt: "2026-11-24T00:00:02Z",
+						},
+					],
+				},
+			},
+		});
+		await store.retryPreview(SURFACE);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(2);
+		expect(ensureSurfaceReconciliation).toHaveBeenLastCalledWith(SURFACE, [CHANGES[0], CHANGES[1]], [], true);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("reconciling");
+		store.dispose();
+	});
+
 	it("falls back cleanly when reconciling a local surface conflict without a cloud client", async () => {
 		const store = storeWith(undefined);
 		await store.load();
@@ -416,6 +487,7 @@ describe("SurfacesStore", () => {
 			target,
 			originKind: "point_to_change",
 			originLabel: "PreorderCta · /pricing",
+			previewBaseChangeIds: [...CHANGES],
 		});
 		store.dispose();
 	});
@@ -468,6 +540,7 @@ describe("SurfacesStore", () => {
 		expect(uploadImage.mock.calls[1]?.[1]).toBe(inputId);
 		expect(uploadImage.mock.calls.map((call) => call[0])).toEqual([SURFACE, SURFACE]);
 		expect(startSurfaceSession).toHaveBeenCalledWith(SURFACE, "Ret knappen", {
+			previewBaseChangeIds: [...CHANGES],
 			clientInputId: inputId,
 			images: [
 				{ sha256: "a".repeat(64), bytes: 1, mediaType: "image/png" },
@@ -1022,6 +1095,56 @@ describe("SurfacesStore", () => {
 		expect(surfacesOf(ownerB)).toBeUndefined();
 		expect(surfacesDisabledOf(ownerB)).toBe(true);
 		missingStore.dispose();
+	});
+
+	it("mints a pass for the last preview that built beside a failed one and keeps it across refreshes", async () => {
+		const mintPreviewPass = vi.fn(async (previewId: string) => ({
+			previewId,
+			doorActionUrl: `https://thetaband--p${previewId.slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		}));
+		const failedFrame = previewFrame({
+			previewId: PREVIEW_IDS[0],
+			status: "failed",
+			doorActionUrl: null,
+			memberPass: null,
+			errorDetail: "PREVIEW_BUILD_FAILED\nlog",
+			kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null },
+			fixing: true,
+		});
+		const client = fakeClient({
+			isSurfacesEnabled: vi.fn(async () => true),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"])], {
+					previewState: { surfaceId: SURFACE, mode: "single", primary: failedFrame, compareFrames: [] },
+				}),
+			),
+			setPreviewSelection: vi.fn(async () => ({
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary: failedFrame,
+				compareFrames: [],
+			})),
+			mintPreviewPass,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(mintPreviewPass).not.toHaveBeenCalledWith(PREVIEW_IDS[0]);
+
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[1])).toBe(true);
+		const kept = store.workspace(SURFACE)!.previewState.primary.kept;
+		expect(kept).toEqual({
+			previewId: PREVIEW_IDS[1],
+			doorActionUrl: `https://thetaband--p${PREVIEW_IDS[1].slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		});
+		expect(store.workspace(SURFACE)!.previewState.primary.memberPass).toBeNull();
+
+		await store.refreshWorkspace(SURFACE);
+		expect(store.workspace(SURFACE)!.previewState.primary.kept?.memberPass).toBe(VALID_PASS);
+		store.dispose();
 	});
 
 	it("mints preview passes automatically when ready primary or compare previews arrive without a pass", async () => {
@@ -1855,18 +1978,16 @@ describe("SurfacesStore", () => {
 			});
 		});
 		const approveDeferred = deferred<ReturnType<typeof session>>();
-		let discardAttempts = 0;
+		const discardSurfaceSession = vi.fn(async (): Promise<ReturnType<typeof session>> => {
+			throw new Error("discard failed");
+		});
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [summary(), secondSurface]),
 			getSurfaceWorkspace,
 			mintPreviewPass,
 			approveSurfaceChange: vi.fn(() => approveDeferred.promise),
 			approveSessionAll: vi.fn(async () => session(["merged", "merged"])),
-			discardSurfaceChange: vi.fn(async () => {
-				discardAttempts += 1;
-				if (discardAttempts === 1) return session(["discarded", "staged"]);
-				throw new Error("second discard failed");
-			}),
+			discardSurfaceSession,
 		});
 		const store = storeWith(client);
 		await store.load();
@@ -1921,8 +2042,11 @@ describe("SurfacesStore", () => {
 		expect(store.state.undo).toBeUndefined();
 
 		await store.refreshWorkspace(SURFACE);
+		const before = store.session(SESSION);
 		expect(await store.discardSession(SESSION)).toBe(false);
-		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		expect(discardSurfaceSession).toHaveBeenCalledWith(SESSION);
+		expect(store.session(SESSION)).toBe(before);
+		expect(store.state.error).toBe("discard failed");
 		store.dispose();
 	});
 
@@ -2600,6 +2724,180 @@ describe("SurfacesStore", () => {
 		discardStore.dispose();
 	});
 
+	it("handles rapid out-of-order option picking, Studio identity option switching, and previewBaseChangeIds lineage cleanly", async () => {
+		const opt1 = change(CHANGES[0], 1, "staged", {
+			title: "Direction A",
+			summary: "Editorial",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Concept",
+		});
+		const opt2 = change(CHANGES[1], 2, "staged", {
+			title: "Direction B",
+			summary: "Showcase",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Concept",
+		});
+		const opt3 = change(CHANGES[2], 3, "staged", {
+			title: "Direction C",
+			summary: "Trading board",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Concept",
+		});
+		const groupedSession = session([], { changes: [opt1, opt2, opt3], openChangeCount: 3 });
+
+		const firstCall = deferred<ReturnType<typeof workspace>["previewState"]>();
+		const secondCall = deferred<ReturnType<typeof workspace>["previewState"]>();
+		let previewCalls = 0;
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => {
+			previewCalls += 1;
+			if (previewCalls === 1) return firstCall.promise;
+			if (previewCalls === 2) return secondCall.promise;
+			return {
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary: previewFrame({
+					status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+					toggledChangeIds: selection.toggledChangeIds,
+				}),
+				compareFrames: [],
+			};
+		});
+		const startSurfaceSession = vi.fn(async (_surfaceId: string, prompt: string) =>
+			session(["staged"], { id: "77777777-7777-4777-8777-777777777778", prompt }),
+		);
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([groupedSession])),
+				setPreviewSelection,
+				startSurfaceSession,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+
+		const p1 = store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		const p2 = store.pickOption(SURFACE, SESSION, "concept", opt3.id);
+		const p3 = store.pickOption(SURFACE, SESSION, "concept", opt3.id);
+		const p4 = store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+
+		secondCall.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ status: "ready", toggledChangeIds: [opt2.id] }),
+			compareFrames: [],
+		});
+		firstCall.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ status: "ready", toggledChangeIds: [opt1.id] }),
+			compareFrames: [],
+		});
+		await Promise.all([p1, p2, p3, p4]);
+
+		expect(store.pickedOption(groupedSession, "concept")).toBe(opt2.id);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt2.id]);
+		expect(store.workspace(SURFACE)?.previewState.primary.toggledChangeIds).toEqual([opt2.id]);
+
+		await store.startSession(SURFACE, "Refine the picked option");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(
+			SURFACE,
+			"Refine the picked option",
+			expect.objectContaining({ previewBaseChangeIds: [opt2.id] }),
+		);
+
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(store.pickedOption(groupedSession, "concept")).toBeNull();
+		await store.startSession(SURFACE, "Start fresh from base");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(SURFACE, "Start fresh from base", {});
+		store.dispose();
+
+		const identityId = "22222222-2222-4222-8222-222222222288";
+		const identity = summary({
+			id: identityId,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const idOpt1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			title: "Terracotta",
+			optionGroupKey: "palette",
+			optionGroupTitle: "Palette",
+			patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+		});
+		const idOpt2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			title: "Cobalt",
+			optionGroupKey: "palette",
+			optionGroupTitle: "Palette",
+			patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#2563eb" } }],
+		});
+		const idSession = session([], { surfaceId: identityId, changes: [idOpt1, idOpt2], openChangeCount: 2 });
+		const idStore = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [identity]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([idSession], { surface: identity })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () => folderContents({ "identity/tokens.json": '{"accent":"#111111"}' })),
+			},
+		);
+		await idStore.load();
+		await idStore.openSurface("identity");
+		await idStore.refreshCloudFiles(identity);
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).toContain("#d76f45");
+
+		await idStore.pickOption(identityId, SESSION, "palette", idOpt2.id);
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).toContain("#2563eb");
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).not.toContain("#d76f45");
+
+		await idStore.pickOption(identityId, SESSION, "palette", idOpt2.id);
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).toContain("#111111");
+		idStore.dispose();
+	});
+
+	it("captures visible preview change IDs when starting a session in preview mode and omits them in live mode", async () => {
+		const startSurfaceSession = vi.fn(async (_surfaceId: string, prompt: string) =>
+			session(["staged"], { id: "77777777-7777-4777-8777-777777777777", prompt }),
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"])])),
+			startSurfaceSession,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		await store.startSession(SURFACE, "Build on active preview");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(
+			SURFACE,
+			"Build on active preview",
+			expect.objectContaining({ previewBaseChangeIds: [CHANGES[0], CHANGES[1]] }),
+		);
+
+		await store.toggleChange(SURFACE, CHANGES[1]);
+		await store.startSession(SURFACE, "Build on first change only");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(
+			SURFACE,
+			"Build on first change only",
+			expect.objectContaining({ previewBaseChangeIds: [CHANGES[0]] }),
+		);
+
+		store.setMode("live");
+		await store.startSession(SURFACE, "Build on live base");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(SURFACE, "Build on live base", {});
+		store.dispose();
+	});
+
 	it("discovers staged reports and per-change deliverables before merge and attributes relative paths accurately", async () => {
 		const studio = summary({
 			id: "22222222-2222-4222-8222-222222222241",
@@ -2743,6 +3041,137 @@ describe("SurfacesStore", () => {
 		await store.openChangeDeliverable(dedicatedReport.id, CHANGES[2], "launch-essay");
 		expect(store.state.mode).toBe("preview");
 		expect(store.state.activeReportSlug).toBe("launch-essay");
+		store.dispose();
+	});
+
+	it("admits application/pdf binaries in readSurfaceFolderFiles and extracts staged PDF change deliverables", async () => {
+		const pdfRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 2048,
+			mediaType: "application/pdf",
+		};
+		const loaded = await readSurfaceFolderFiles(
+			{
+				async list() {
+					return {
+						entries: [
+							{
+								path: "surfaces/marketing/q3-deck.pdf",
+								kind: "file",
+								file: pdfRef,
+							},
+						],
+					};
+				},
+				async readFile() {
+					return new Uint8Array();
+				},
+			},
+			["surfaces/marketing"],
+			new AbortController().signal,
+		);
+		expect(loaded.binaries["surfaces/marketing/q3-deck.pdf"]).toEqual(pdfRef);
+
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222249",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const pdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 board deck PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3-deck.pdf"],
+			patchManifest: [{ op: "write_file", path: "reports/q3-deck.pdf", file: pdfRef }],
+		});
+		const missingPdfChange = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Unbacked PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/missing.pdf"],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace(
+						[session([], { surfaceId: studio.id, changes: [pdfChange, missingPdfChange], openChangeCount: 2 })],
+						{
+							surface: studio,
+						},
+					),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(studio.slug);
+		await Promise.resolve();
+
+		expect(changeDeliverables(store.state, studio.id, pdfChange)).toEqual([
+			{
+				kind: "pdf",
+				path: "surfaces/marketing/reports/q3-deck.pdf",
+				slug: surfaceDocSlug("surfaces/marketing/reports/q3-deck.pdf"),
+				title: "Q3 deck",
+			},
+		]);
+		expect(changeDeliverables(store.state, studio.id, missingPdfChange)).toEqual([]);
+		expect(surfaceHasDeliverables(store.state, studio.id)).toBe(true);
+		store.dispose();
+	});
+
+	it("refreshes the workspace after discardSession when another active session depends on a discarded change", async () => {
+		const s1Id = "77777777-7777-4777-8777-777777777701";
+		const s2Id = "77777777-7777-4777-8777-777777777702";
+		const s3Id = "77777777-7777-4777-8777-777777777703";
+		const baseChange = change(CHANGES[0], 1, "staged", { sessionId: s1Id });
+		const depChange = change(CHANGES[1], 1, "staged", {
+			sessionId: s2Id,
+			previewBaseChangeIds: [CHANGES[0]],
+		});
+		const unrelatedChange = change(CHANGES[2], 1, "staged", { sessionId: s3Id });
+		const s1 = session([], { id: s1Id, changes: [baseChange], openChangeCount: 1 });
+		const s2 = session([], { id: s2Id, changes: [depChange], openChangeCount: 1 });
+		const s3 = session([], { id: s3Id, changes: [unrelatedChange], openChangeCount: 1 });
+		const getSurfaceWorkspace = vi.fn(async () => workspace([s1, s2, s3]));
+		const discardSurfaceSession = vi.fn(async (sessionId: string) =>
+			sessionId === s1Id
+				? {
+						...s1,
+						state: "discarded" as const,
+						openChangeCount: 0,
+						changes: [{ ...baseChange, status: "discarded" as const }],
+					}
+				: {
+						...s3,
+						state: "discarded" as const,
+						openChangeCount: 0,
+						changes: [{ ...unrelatedChange, status: "discarded" as const }],
+					},
+		);
+		const client = fakeClient({ getSurfaceWorkspace, discardSurfaceSession });
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		const callsAfterOpen = getSurfaceWorkspace.mock.calls.length;
+
+		await store.discardSession(s3Id);
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(callsAfterOpen);
+
+		await store.discardSession(s1Id);
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(callsAfterOpen + 1);
 		store.dispose();
 	});
 });

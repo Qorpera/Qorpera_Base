@@ -157,6 +157,39 @@ describe("surface preview runner and change dispatcher", () => {
 			recipe,
 		);
 		expect(machine.outcome === "failed" && machine.errorDetail.split("\n")[0]).toBe("PREVIEW_BUILD_NO_MACHINE");
+		const copy = previewBuildOutcome({ state: "not_run", why: "copy", code: "CODE_CHECKS_COPY_FAILED" }, recipe);
+		expect(copy.outcome === "failed" && copy.errorDetail.split("\n")[0]).toBe("PREVIEW_BUILD_NO_MACHINE");
+		expect(copy.outcome === "failed" && copy.errorDetail).toContain("could not be copied into the coding machine");
+	});
+
+	it("codes only a build the code broke as one a session can fix, with the command, exit code, log and its end", () => {
+		const recipe = { run: "npm ci && npm run build", cwd: "web", folder: "web/dist", timeoutSeconds: 180 };
+		const broke = previewBuildOutcome(
+			{
+				state: "failed",
+				ms: 41_000,
+				passed: [],
+				failed: {
+					name: "preview",
+					run: recipe.run,
+					ms: 41_000,
+					exitCode: 2,
+					atLimit: false,
+					tail: "vite v7.1.0 building for production...\nsrc/main.tsx(4,8): error TS2307: Cannot find module './App'",
+					log: "",
+					persistedLog: "code/surfaces/shop/_check-runs/r1/preview.log",
+				},
+				notRun: [],
+			},
+			recipe,
+		);
+		expect(broke.outcome).toBe("failed");
+		const detail = broke.outcome === "failed" ? broke.errorDetail : "";
+		expect(detail.split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
+		expect(detail).toContain('The build "npm ci && npm run build" in "web" exited with code 2 after 41 s.');
+		expect(detail).toContain("Full log: code/surfaces/shop/_check-runs/r1/preview.log.");
+		expect(detail.endsWith("src/main.tsx(4,8): error TS2307: Cannot find module './App'")).toBe(true);
+		expect([...detail].length).toBeLessThanOrEqual(1000);
 	});
 
 	it("builds clean composite previews and skips building on toggle conflicts", async () => {

@@ -49,6 +49,7 @@ export interface CherryPickChangeUnitsInput {
 	readonly repository: CloudCodingRepository;
 	readonly changes: readonly CodeHostChangeRange[];
 	readonly expectMainSha?: string;
+	readonly reconciledCommitSha?: string;
 }
 
 export interface CherryPickChangeUnitsResult {
@@ -106,6 +107,7 @@ export type RebaseSessionChangesResult =
 export interface ComposePreviewTreeInput {
 	readonly repository: CloudCodingRepository;
 	readonly baseSha?: string;
+	readonly reconciledCommitSha?: string;
 	readonly exploration?: {
 		readonly sessionId: string;
 		readonly baseSha: string;
@@ -282,55 +284,97 @@ export async function cherryPickChangeUnits(
 	if (!Array.isArray(input.changes) || input.changes.length === 0) throw new Error("INVALID_CODE_HOST_JOB");
 	for (const change of input.changes) assertChangeRange(change);
 	if (input.expectMainSha !== undefined) assertSha(input.expectMainSha);
+	if (input.reconciledCommitSha !== undefined) assertSha(input.reconciledCommitSha);
 
 	return withJob(job, repository, async (run) => {
 		const { area, base, mainSha } = await prepareKeptArea(run);
 		if (input.expectMainSha && mainSha !== input.expectMainSha) {
 			throw new CodeHostJobFailure("CODE_HOST_LAND_STALE", "default branch moved before cherry-pick");
 		}
-		await assertAllCommits(
-			run,
-			input.changes.flatMap((change) => [change.parentSha, change.headSha]),
-		);
-		for (const change of input.changes) {
-			await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_CHERRY_PICK_FAILED");
-		}
 
 		let cursor = mainSha;
 		let cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
 		const landedCommits: { changeId: string; commitSha: string }[] = [];
-		for (const change of input.changes) {
-			if (change.parentSha === change.headSha) {
-				landedCommits.push({ changeId: change.changeId, commitSha: cursor });
-				continue;
+		let usedReconciled = false;
+		if (input.reconciledCommitSha) {
+			const [hasReconciled] = await run.areCommits(run.repo, [input.reconciledCommitSha]);
+			if (hasReconciled) {
+				const isDescendant =
+					input.reconciledCommitSha === mainSha ||
+					(await run.git(run.repo, ["merge-base", "--is-ancestor", mainSha, input.reconciledCommitSha])).status ===
+						0;
+				if (isDescendant) {
+					const reconciledTree = await treeOfCommit(
+						run,
+						input.reconciledCommitSha,
+						"CODE_HOST_CHERRY_PICK_FAILED",
+					);
+					if (reconciledTree !== cursorTree) {
+						const title = input.changes
+							.map((change) => change.title.trim())
+							.join("; ")
+							.slice(0, 160);
+						const trailers = input.changes.map((change) => `Qorpera-Change: ${change.changeId}`);
+						cursor = await commitTree(
+							run,
+							reconciledTree,
+							cursor,
+							title || "Reconciled surface changes",
+							trailers,
+							"CODE_HOST_CHERRY_PICK_FAILED",
+						);
+						cursorTree = reconciledTree;
+					}
+					for (const change of input.changes) {
+						landedCommits.push({ changeId: change.changeId, commitSha: cursor });
+					}
+					usedReconciled = true;
+				}
 			}
-			const applied = await applyRange(
+		}
+
+		if (!usedReconciled) {
+			await assertAllCommits(
 				run,
-				cursor,
-				change.parentSha,
-				change.headSha,
-				"CODE_HOST_CHERRY_PICK_FAILED",
+				input.changes.flatMap((change) => [change.parentSha, change.headSha]),
 			);
-			if (!applied.ok) {
-				throw new CodeHostChangeConflict("CODE_HOST_CHERRY_PICK_CONFLICT", change.changeId, applied.paths);
+			for (const change of input.changes) {
+				await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_CHERRY_PICK_FAILED");
 			}
-			if (applied.treeSha === cursorTree) {
+
+			for (const change of input.changes) {
+				if (change.parentSha === change.headSha) {
+					landedCommits.push({ changeId: change.changeId, commitSha: cursor });
+					continue;
+				}
+				const applied = await applyRange(
+					run,
+					cursor,
+					change.parentSha,
+					change.headSha,
+					"CODE_HOST_CHERRY_PICK_FAILED",
+				);
+				if (!applied.ok) {
+					throw new CodeHostChangeConflict("CODE_HOST_CHERRY_PICK_CONFLICT", change.changeId, applied.paths);
+				}
+				if (applied.treeSha === cursorTree) {
+					landedCommits.push({ changeId: change.changeId, commitSha: cursor });
+					continue;
+				}
+				const body = change.summary?.trim()
+					? `${change.title.trim()}\n\n${change.summary.trim()}`
+					: change.title.trim();
+				cursor = await commitTree(
+					run,
+					applied.treeSha,
+					cursor,
+					body,
+					[`Qorpera-Change: ${change.changeId}`],
+					"CODE_HOST_CHERRY_PICK_FAILED",
+				);
+				cursorTree = applied.treeSha;
 				landedCommits.push({ changeId: change.changeId, commitSha: cursor });
-				continue;
 			}
-			const body = change.summary?.trim()
-				? `${change.title.trim()}\n\n${change.summary.trim()}`
-				: change.title.trim();
-			cursor = await commitTree(
-				run,
-				applied.treeSha,
-				cursor,
-				body,
-				[`Qorpera-Change: ${change.changeId}`],
-				"CODE_HOST_CHERRY_PICK_FAILED",
-			);
-			cursorTree = applied.treeSha;
-			landedCommits.push({ changeId: change.changeId, commitSha: cursor });
 		}
 
 		if (cursor !== mainSha) {
@@ -634,6 +678,7 @@ export async function composePreviewTree(
 ): Promise<ComposePreviewTreeResult> {
 	const repository = keptRepositoryOf(input.repository);
 	if (input.baseSha !== undefined) assertSha(input.baseSha);
+	if (input.reconciledCommitSha !== undefined) assertSha(input.reconciledCommitSha);
 	if (input.exploration !== undefined) {
 		if (!isUuid(input.exploration.sessionId)) throw new Error("INVALID_CODE_HOST_JOB");
 		assertSha(input.exploration.baseSha);
@@ -652,6 +697,27 @@ export async function composePreviewTree(
 	return withJob(job, repository, async (run) => {
 		const { mainSha } = await prepareKeptArea(run);
 		const baseSha = input.baseSha ?? mainSha;
+		if (input.reconciledCommitSha && !input.exploration) {
+			const [hasBase, hasReconciled] = await run.areCommits(run.repo, [baseSha, input.reconciledCommitSha]);
+			if (hasBase && hasReconciled) {
+				const cursorCommit = input.reconciledCommitSha;
+				const cursorTree = await treeOfCommit(run, cursorCommit, "CODE_HOST_PREVIEW_FAILED");
+				let previewRef: string | null = null;
+				if (input.previewRefId) {
+					previewRef = `refs/qorpera/previews/${input.previewRefId}`;
+					await run.gitOk(run.repo, ["update-ref", previewRef, cursorCommit], "CODE_HOST_PREVIEW_FAILED");
+				}
+				return {
+					status: "ready" as const,
+					baseSha,
+					compositeCommitSha: cursorCommit,
+					compositeTreeSha: cursorTree,
+					appliedChangeIds: input.changes.map((change) => change.changeId),
+					previewRef,
+					restored: run.restored,
+				};
+			}
+		}
 		await assertAllCommits(run, [
 			baseSha,
 			...(input.exploration ? [input.exploration.baseSha, input.exploration.headSha] : []),

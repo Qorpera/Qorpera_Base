@@ -1,5 +1,5 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
-import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
+import type { StudioBinaryRef, StudioPatchChange, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
@@ -8,8 +8,8 @@ import { t } from "../../ui/preferences.ts";
 import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
 import {
+	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
-	formatConflictPaths,
 	isLocalSurfaceId,
 	isOpenChange,
 	isStandaloneHtmlDeliverablePath,
@@ -18,8 +18,9 @@ import {
 	type SurfaceUpdatePhase,
 	surfaceDocSlug,
 } from "../surfaces-store.ts";
+import { htmlDocumentTitle, PDF_FILE_RE } from "./surface-blocks/artifacts.ts";
 import { readableName } from "./surface-blocks/context.ts";
-import { htmlDocumentTitle } from "./surface-blocks/files.ts";
+import { formatPdfBytes, SurfacePdfViewer } from "./surface-blocks/pdf.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { compiledTokensCssFrom, prepareStudioHtmlPreview } from "./surface-studio-html.ts";
 
@@ -28,6 +29,7 @@ export interface SurfaceReportOptions {
 	readonly surface: SurfaceSummary;
 	readonly signal: AbortSignal;
 	readonly baseFiles?: Readonly<Record<string, string>>;
+	readonly baseBinaries?: Readonly<Record<string, StudioBinaryRef>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
 	readonly embedded?: boolean;
@@ -569,6 +571,15 @@ interface ReportHtmlDoc {
 	readonly changed: boolean;
 }
 
+interface ReportPdfDoc {
+	readonly path: string;
+	readonly slug: string;
+	readonly title: string;
+	readonly ref: StudioBinaryRef;
+	readonly baseRef?: StudioBinaryRef;
+	readonly changed: boolean;
+}
+
 type ReportSwitcherItem =
 	| {
 			readonly kind: "report";
@@ -585,6 +596,13 @@ type ReportSwitcherItem =
 			readonly doc: ReportHtmlDoc;
 	  }
 	| {
+			readonly kind: "pdf";
+			readonly slug: string;
+			readonly title: string;
+			readonly changed: boolean;
+			readonly doc: ReportPdfDoc;
+	  }
+	| {
 			readonly kind: "markdown";
 			readonly slug: string;
 			readonly title: string;
@@ -597,12 +615,36 @@ interface ReportRenderParams {
 	readonly surface: SurfaceSummary;
 	readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 	readonly baseFiles: Readonly<Record<string, string>>;
+	readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 	readonly ordered: readonly StudioPatchChange[];
 	readonly initialLoading: boolean;
 	readonly updatingPhase: SurfaceUpdatePhase | null;
-	readonly busyReconcile: boolean;
 	readonly mode: SurfacesStore["state"]["mode"];
 	readonly activeReportSlug: string | undefined;
+}
+
+function collectPdfDocs(
+	binaries: Readonly<Record<string, StudioBinaryRef>>,
+	baseBinaries: Readonly<Record<string, StudioBinaryRef>>,
+	include: ((path: string) => boolean) | undefined,
+): ReportPdfDoc[] {
+	const results: ReportPdfDoc[] = [];
+	for (const path of Object.keys(binaries).sort()) {
+		if (include && !include(path)) continue;
+		if (!PDF_FILE_RE.test(path)) continue;
+		const ref = binaries[path];
+		if (!ref) continue;
+		const baseRef = baseBinaries[path];
+		results.push({
+			path,
+			slug: surfaceDocSlug(path),
+			title: readableName(path),
+			ref,
+			...(baseRef ? { baseRef } : {}),
+			changed: ref.fileSha256 !== baseRef?.fileSha256,
+		});
+	}
+	return results;
 }
 
 function markdownDocTitle(content: string, path: string): string {
@@ -665,7 +707,7 @@ export class SurfaceReportView {
 	#baseFiles: Readonly<Record<string, string>>;
 	#loading = false;
 	#showingSkeleton = false;
-	#lastConflict: SurfacePreviewConflict | null = null;
+	#pendingRetryTarget: { readonly changeIds: readonly string[]; readonly paths: readonly string[] } | null = null;
 	#activeSlug = "";
 	#lastStoreSlug: string | undefined;
 	#shownDeps: readonly unknown[] | undefined;
@@ -674,11 +716,16 @@ export class SurfaceReportView {
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 	#renderSeq = 0;
 	readonly #htmlFrames: AppFrame[] = [];
+	readonly #pdfs: SurfacePdfViewer;
 
 	constructor(options: SurfaceReportOptions) {
 		this.#options = options;
 		if (options.embedded) this.el.classList.add("is-embedded");
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
+		this.#pdfs = new SurfacePdfViewer(
+			(file, signal) => options.store.readStudioBinary(file, signal),
+			this.#lifetime.signal,
+		);
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		if (!options.baseFiles) {
@@ -741,6 +788,7 @@ export class SurfaceReportView {
 	dispose(): void {
 		this.#renderSeq++;
 		this.#disposeHtmlFrames();
+		this.#pdfs.dispose();
 		if (this.#settleTimer) {
 			clearTimeout(this.#settleTimer);
 			this.#settleTimer = undefined;
@@ -776,7 +824,13 @@ export class SurfaceReportView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
+				if (ops?.length)
+					ordered.push({
+						changeId: change.id,
+						ops: normalizeStudioPatchOps(ops, folderRoot),
+						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
+					});
 			}
 		}
 		return ordered;
@@ -789,15 +843,20 @@ export class SurfaceReportView {
 		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
+	#effectiveBaseBinaries(surfaceId: string): Readonly<Record<string, StudioBinaryRef>> {
+		const storeBase = effectiveStudioBaseBinaries(this.#options.store.state, surfaceId);
+		return this.#options.baseBinaries ? { ...this.#options.baseBinaries, ...storeBase } : storeBase;
+	}
+
 	update(): void {
 		if (this.#lifetime.signal.aborted) return;
 		const store = this.#options.store;
 		const state = store.state;
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
+		const baseBinaries = this.#effectiveBaseBinaries(surface.id);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges(surface.folderRoot);
-		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const updatingPhase = this.#options.embedded ? null : store.surfaceUpdatePhase(surface.id);
 		const updating = updatingPhase !== null;
 		const initialLoading =
@@ -826,13 +885,17 @@ export class SurfaceReportView {
 			state.activeReportSlug,
 			this.#activeSlug,
 			this.#baseFiles,
+			this.#options.baseBinaries,
 			state.cloudSurfaceFiles[surface.id],
+			state.cloudSurfaceBinaries[surface.id],
 			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
+			state.localStudioBinaries[surface.id],
 			surface.title,
 			surface.folderRoot,
 			workspace?.briefSummary ?? "",
-			busyReconcile,
+			workspace?.reconciliations,
+			state.reconciliationRequests,
 		];
 		const sameDeps =
 			this.#shownDeps !== undefined &&
@@ -843,7 +906,10 @@ export class SurfaceReportView {
 			this.#shownOrdered.length === ordered.length &&
 			ordered.every(
 				(item, index) =>
-					this.#shownOrdered![index]!.changeId === item.changeId && this.#shownOrdered![index]!.ops === item.ops,
+					this.#shownOrdered![index]!.changeId === item.changeId &&
+					this.#shownOrdered![index]!.ops === item.ops &&
+					this.#shownOrdered![index]!.baseFiles === item.baseFiles &&
+					this.#shownOrdered![index]!.previewBaseChangeIds === item.previewBaseChangeIds,
 			);
 		if (sameDeps && sameOrdered) return;
 		this.#shownDeps = deps;
@@ -851,7 +917,13 @@ export class SurfaceReportView {
 		const seq = ++this.#renderSeq;
 
 		const sliced = this.#options.timeSlice ?? hasBrowserCompositor();
-		if (initialLoading && Object.keys(baseFiles).length === 0 && ordered.length === 0 && state.mode !== "compare") {
+		if (
+			initialLoading &&
+			Object.keys(baseFiles).length === 0 &&
+			Object.keys(baseBinaries).length === 0 &&
+			ordered.length === 0 &&
+			state.mode !== "compare"
+		) {
 			this.#showingSkeleton = true;
 			this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "report"));
 			return;
@@ -862,10 +934,10 @@ export class SurfaceReportView {
 			surface,
 			workspace,
 			baseFiles,
+			baseBinaries,
 			ordered,
 			initialLoading,
 			updatingPhase,
-			busyReconcile,
 			mode: state.mode,
 			activeReportSlug: state.activeReportSlug,
 		};
@@ -892,8 +964,15 @@ export class SurfaceReportView {
 		if (!(await yieldToMain(signal).then(() => this.#isRenderActive(params.seq)))) return;
 		budget.reset();
 
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+			{
+				reconciliations: params.workspace?.reconciliations,
+			},
+		);
 		const files = composition.files;
 		const include = this.#options.include;
 		const filePaths = Object.keys(files)
@@ -915,8 +994,9 @@ export class SurfaceReportView {
 			);
 			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
 		}
+		const pdfDocs = collectPdfDocs(composition.binaries, params.baseBinaries, include);
 
-		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, markdownDocs);
+		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, pdfDocs, markdownDocs);
 		if (!this.#isRenderActive(params.seq)) return;
 		if (!plan.article || !plan.sectionTasks) {
 			this.el.replaceChildren(...plan.children);
@@ -935,8 +1015,15 @@ export class SurfaceReportView {
 	}
 
 	#renderSync(params: ReportRenderParams): void {
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
-		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+			{
+				reconciliations: params.workspace?.reconciliations,
+			},
+		);
 		const files = composition.files;
 		const include = this.#options.include;
 		const filePaths = Object.keys(files)
@@ -957,7 +1044,8 @@ export class SurfaceReportView {
 				markdownDocs,
 			);
 		}
-		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, markdownDocs);
+		const pdfDocs = collectPdfDocs(composition.binaries, params.baseBinaries, include);
+		const plan = this.#buildRenderPlan(params, composition, reports, htmlDocs, pdfDocs, markdownDocs);
 		if (plan.article && plan.sectionTasks) {
 			for (const task of plan.sectionTasks) plan.article.append(task());
 		}
@@ -970,6 +1058,7 @@ export class SurfaceReportView {
 		composition: ReturnType<typeof composeStudioPreview>,
 		reports: readonly ReportDocument[],
 		htmlDocs: readonly ReportHtmlDoc[],
+		pdfDocs: readonly ReportPdfDoc[],
 		markdownDocs: readonly ReportMarkdownDoc[],
 	): {
 		readonly children: HTMLElement[];
@@ -978,8 +1067,8 @@ export class SurfaceReportView {
 		readonly leavingSkeleton: boolean;
 	} {
 		this.#disposeHtmlFrames();
-		const { surface, workspace, initialLoading, updatingPhase, busyReconcile, mode, activeReportSlug } = params;
-		const primaryItems: ReportSwitcherItem[] = [
+		const { surface, workspace, initialLoading, updatingPhase, mode, activeReportSlug } = params;
+		const structuredItems: ReportSwitcherItem[] = [
 			...reports.map((doc) => ({
 				kind: "report" as const,
 				slug: doc.slug,
@@ -995,6 +1084,13 @@ export class SurfaceReportView {
 				doc,
 			})),
 		];
+		const pdfItems: ReportSwitcherItem[] = pdfDocs.map((doc) => ({
+			kind: "pdf" as const,
+			slug: doc.slug,
+			title: doc.title,
+			changed: doc.changed,
+			doc,
+		}));
 		const fallbackMarkdownItems: ReportSwitcherItem[] = markdownDocs.map((doc) => ({
 			kind: "markdown" as const,
 			slug: doc.slug,
@@ -1002,7 +1098,8 @@ export class SurfaceReportView {
 			changed: doc.changed,
 			doc,
 		}));
-		const items = primaryItems.length > 0 ? primaryItems : fallbackMarkdownItems;
+		const items =
+			structuredItems.length > 0 ? [...structuredItems, ...pdfItems] : [...fallbackMarkdownItems, ...pdfItems];
 
 		if (activeReportSlug !== this.#lastStoreSlug) {
 			this.#lastStoreSlug = activeReportSlug;
@@ -1018,15 +1115,80 @@ export class SurfaceReportView {
 		}
 		const activeItem = items.find((item) => item.slug === this.#activeSlug) ?? items[0];
 
+		let reconciliationFailed = false;
+		let reconcilingPreview = false;
+		if (composition.status === "conflicted") {
+			const conflictIds = composition.conflictReport.changeIds;
+			const conflictPaths = composition.conflictReport.paths;
+			const existingRec = this.#options.store.reconciliationFor(surface.id, conflictIds);
+			const reqState = this.#options.store.reconciliationRequestState(surface.id, conflictIds);
+			if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else if (existingRec?.status === "failed" || existingRec?.status === "ready" || reqState === "failed") {
+				reconciliationFailed = true;
+				this.#pendingRetryTarget = { changeIds: conflictIds, paths: conflictPaths };
+			} else if (!existingRec && this.#options.store.canEnsureReconciliation(surface.id)) {
+				void this.#options.store.ensureReconciliation(surface.id, conflictIds, conflictPaths);
+				reconcilingPreview = true;
+				this.#pendingRetryTarget = null;
+			} else {
+				this.#pendingRetryTarget = null;
+			}
+		} else {
+			const selectedIds = params.ordered.map((item) => item.changeId);
+			const lineageTarget = this.#options.store.lineageReconciliationTarget(surface.id, selectedIds);
+			if (lineageTarget) {
+				const existingRec = this.#options.store.reconciliationFor(surface.id, lineageTarget.changeIds);
+				const reqState = this.#options.store.reconciliationRequestState(surface.id, lineageTarget.changeIds);
+				if (reqState === "pending" || existingRec?.status === "queued" || existingRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (existingRec?.status === "failed" || (!existingRec && reqState === "failed")) {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: lineageTarget.changeIds,
+						paths: lineageTarget.conflictPaths,
+					};
+				} else if (!existingRec && reqState === undefined) {
+					if (this.#options.store.canEnsureReconciliation(surface.id)) {
+						void this.#options.store.ensureReconciliation(
+							surface.id,
+							lineageTarget.changeIds,
+							lineageTarget.conflictPaths,
+						);
+						reconcilingPreview = true;
+					}
+					this.#pendingRetryTarget = null;
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			} else {
+				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
+				if (activeRec?.status === "queued" || activeRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (activeRec?.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: activeRec.selectedChangeIds,
+						paths: activeRec.conflictPaths ?? [],
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			}
+		}
+
 		const badgeText =
-			composition.status === "conflicted"
-				? t("Conflict")
-				: composition.appliedChangeIds.length === 1
-					? t("1 live change applied")
-					: composition.appliedChangeIds.length > 1
-						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: null;
-		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
+			composition.appliedChangeIds.length === 1
+				? t("1 live change applied")
+				: composition.appliedChangeIds.length > 1
+					? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
+					: null;
+		const effectiveUpdatingPhase = updatingPhase ?? (reconcilingPreview ? "updating" : null);
+		const updatingText =
+			updatingPhase !== null ? updatingLabel(updatingPhase) : reconcilingPreview ? t("Updating preview…") : null;
 
 		const showChrome = items.length > 1 || !this.#options.embedded;
 		const chrome = showChrome
@@ -1058,20 +1220,20 @@ export class SurfaceReportView {
 						? h(
 								"div",
 								{ class: "report-chrome-tools" },
-								updatingPhase
+								effectiveUpdatingPhase && updatingText
 									? h(
 											"span",
 											{
 												class: "studio-updating-pill",
 												role: "status",
 												"aria-live": "polite",
-												"data-updating-phase": updatingPhase,
+												"data-updating-phase": effectiveUpdatingPhase,
 											},
 											h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-											h("span", null, updatingLabel(updatingPhase)),
+											h("span", null, updatingText),
 										)
 									: null,
-								badgeText ? h("span", { class: badgeClass }, badgeText) : null,
+								badgeText ? h("span", { class: "studio-badge is-live" }, badgeText) : null,
 							)
 						: null,
 				)
@@ -1079,27 +1241,20 @@ export class SurfaceReportView {
 
 		const children: HTMLElement[] = chrome ? [chrome] : [];
 
-		if (composition.status === "conflicted") {
-			const paths = formatConflictPaths(composition.conflictReport.paths);
+		if (reconciliationFailed && this.#pendingRetryTarget) {
 			children.push(
 				h(
 					"div",
-					{ class: "studio-conflict report-conflict", role: "alert" },
-					h("span", { class: "surface-state is-conflicted", "aria-hidden": "true" }),
-					h(
-						"span",
-						{ title: composition.conflictReport.paths.join(", ") },
-						t("Studio changes conflict in {paths}", { paths }),
-					),
+					{ class: "studio-reconcile-retry", role: "status" },
+					h("span", null, t("Couldn't update preview")),
 					h(
 						"button",
 						{
 							type: "button",
-							class: "btn btn-primary btn-small",
-							"data-act": "report-reconcile",
-							disabled: busyReconcile || composition.conflictReport.changeIds.length === 0,
+							class: "btn btn-small",
+							"data-act": "report-retry-preview",
 						},
-						t("Reconcile"),
+						t("Retry"),
 					),
 				),
 			);
@@ -1108,7 +1263,7 @@ export class SurfaceReportView {
 		if (mode === "compare") {
 			const leavingSkeleton = this.#showingSkeleton;
 			this.#showingSkeleton = false;
-			children.push(this.#renderCompare(reports, htmlDocs, markdownDocs));
+			children.push(this.#renderCompare(reports, htmlDocs, pdfDocs, markdownDocs));
 			return { children, leavingSkeleton };
 		}
 
@@ -1247,12 +1402,24 @@ export class SurfaceReportView {
 					"div",
 					{ class: "studio-section-head" },
 					h("h2", null, htmlDoc.title),
-					h("code", { class: "studio-file-tag" }, htmlDoc.path),
 					htmlDoc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 				),
 				this.#createHtmlFrame(htmlDoc.html, htmlDoc.path, htmlDoc.title, composition.files, compiledTokensCss),
 			);
 			children.push(h("div", { class: "report-layout is-html" }, card));
+			return { children, leavingSkeleton };
+		}
+
+		if (activeItem.kind === "pdf") {
+			const pdfDoc = activeItem.doc;
+			const card = this.#pdfs.renderCard({
+				path: pdfDoc.path,
+				title: pdfDoc.title,
+				ref: pdfDoc.ref,
+				changed: pdfDoc.changed,
+				slug: pdfDoc.slug,
+			});
+			children.push(h("div", { class: "report-layout is-pdf" }, card));
 			return { children, leavingSkeleton };
 		}
 
@@ -1273,13 +1440,15 @@ export class SurfaceReportView {
 	#renderCompare(
 		reports: readonly ReportDocument[],
 		htmlDocs: readonly ReportHtmlDoc[],
+		pdfDocs: readonly ReportPdfDoc[],
 		markdownDocs: readonly ReportMarkdownDoc[],
 	): HTMLElement {
 		const changedReports = reports.filter((report) => report.changed);
 		const changedHtml = htmlDocs.filter((doc) => doc.changed);
+		const changedPdf = pdfDocs.filter((doc) => doc.changed);
 		const changedMarkdown =
 			changedReports.length === 0 && changedHtml.length === 0 ? markdownDocs.filter((doc) => doc.changed) : [];
-		if (!changedReports.length && !changedHtml.length && !changedMarkdown.length) {
+		if (!changedReports.length && !changedHtml.length && !changedPdf.length && !changedMarkdown.length) {
 			return h(
 				"div",
 				{ class: "report-compare-wrap" },
@@ -1417,7 +1586,6 @@ export class SurfaceReportView {
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, report.headline),
-						h("code", { class: "studio-file-tag" }, report.path),
 						!base ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(
@@ -1439,7 +1607,6 @@ export class SurfaceReportView {
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, doc.title),
-						h("code", { class: "studio-file-tag" }, doc.path),
 						doc.baseHtml === undefined ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(
@@ -1467,6 +1634,38 @@ export class SurfaceReportView {
 				),
 			);
 		}
+		for (const doc of changedPdf) {
+			cards.push(
+				h(
+					"section",
+					{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
+					h(
+						"div",
+						{ class: "studio-section-head" },
+						h("h2", null, doc.title),
+						!doc.baseRef ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
+					),
+					h(
+						"div",
+						{ class: "studio-compare-grid" },
+						h("div", { class: "studio-compare-col-head" }, t("Base")),
+						h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-base" },
+							h("small", null, t("PDF")),
+							h("span", null, doc.baseRef ? formatPdfBytes(doc.baseRef.bytes) : t("Not in Base")),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-cell is-preview" },
+							h("small", null, t("PDF")),
+							h("strong", null, `${doc.title} (${formatPdfBytes(doc.ref.bytes)})`),
+						),
+					),
+				),
+			);
+		}
 		for (const doc of changedMarkdown) {
 			cards.push(
 				h(
@@ -1476,7 +1675,6 @@ export class SurfaceReportView {
 						"div",
 						{ class: "studio-section-head" },
 						h("h2", null, doc.title),
-						h("code", { class: "studio-file-tag" }, doc.path),
 						doc.baseContent === undefined ? h("span", { class: "studio-changed-pill" }, t("Added")) : null,
 					),
 					h(
@@ -1522,9 +1720,16 @@ export class SurfaceReportView {
 			node?.scrollIntoView({ behavior: "smooth", block: "start" });
 			return;
 		}
-		if (act === "report-reconcile") {
-			const ids = this.#lastConflict?.changeIds ?? [];
-			if (ids.length) void this.#options.store.reconcileChanges(this.#options.surface.id, ids);
+		if (act === "report-retry-preview") {
+			const target = this.#pendingRetryTarget;
+			if (target && target.changeIds.length > 0) {
+				void this.#options.store.ensureReconciliation(
+					this.#options.surface.id,
+					target.changeIds,
+					target.paths,
+					true,
+				);
+			}
 		}
 	}
 }

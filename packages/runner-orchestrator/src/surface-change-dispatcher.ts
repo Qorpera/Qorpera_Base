@@ -27,6 +27,7 @@ export interface SurfaceChangeApprovalRequest {
 	readonly sessionBranchHeadSha?: string | null;
 	readonly repository: CloudCodingRepository;
 	readonly expectMainSha?: string;
+	readonly reconciledCommitSha?: string;
 	readonly autoPublish: boolean;
 	readonly sessionState: SurfaceSessionState;
 	readonly sessionHasActiveChat: boolean;
@@ -74,6 +75,7 @@ export async function approveAndSyncSurfaceChanges(
 			repository: request.repository,
 			changes: request.approvedChanges,
 			...(request.expectMainSha ? { expectMainSha: request.expectMainSha } : {}),
+			...(request.reconciledCommitSha ? { reconciledCommitSha: request.reconciledCommitSha } : {}),
 		});
 	} catch (error) {
 		if (error instanceof CodeHostChangeConflict) {

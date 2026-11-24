@@ -17,7 +17,6 @@ import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.
 import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
 	askedToPublish,
-	formatConflictPaths,
 	isLocalSurfaceId,
 	isOpenChange,
 	isOpenVariant,
@@ -232,7 +231,7 @@ export class SurfaceView {
 	#phoneBarShown = "";
 	#sitePublic = true;
 	readonly #autoPublishAsked = new Set<string>();
-	readonly #publishedAtCount = new Map<string, number>();
+	readonly #publishedAt = new Map<string, string>();
 	readonly #autoPublishOffOwed = new Map<string, { tries: number; at: SurfaceSummary | undefined }>();
 	#viewportResizeObserver: ResizeObserver | undefined;
 	#notchResizeObserver: ResizeObserver | undefined;
@@ -935,6 +934,9 @@ export class SurfaceView {
 					presentHere.length > 3
 						? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
 						: null,
+					presentHere.length > 1
+						? h("span", { class: "surface-pill-presence-fold" }, `+${presentHere.length - 1}`)
+						: null,
 				),
 			);
 		}
@@ -998,7 +1000,14 @@ export class SurfaceView {
 						},
 						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
 						saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
-						publishBusy ? t("Publishing…") : saidNo ? t("{name} said no", { name: saidNo }) : t("Publish"),
+						publishBusy
+							? h("span", { class: "surface-publish-word" }, t("Publishing…"))
+							: saidNo
+								? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
+								: t("Publish"),
+						publishBusy || saidNo
+							? h("span", { class: "surface-publish-short" }, publishBusy ? t("Publish") : t("No"))
+							: null,
 						!publishBusy && !saidNo && count ? h("span", { class: "surface-notch-count" }, String(count)) : null,
 						askedUser && !saidNo
 							? h(
@@ -1079,13 +1088,14 @@ export class SurfaceView {
 			void store.setAutoPublish(surface.id, true, { quiet: true });
 		}
 		const count = surface.unpublishedChangeCount;
-		if (count === 0) {
-			this.#publishedAtCount.delete(surface.id);
+		if (count === 0 && !surface.hasUnpublishedChanges) {
+			this.#publishedAt.delete(surface.id);
 			return;
 		}
 		const publishing = Boolean(store.state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
-		if (publishing || this.#publishedAtCount.get(surface.id) === count) return;
-		this.#publishedAtCount.set(surface.id, count);
+		const at = `${count}:${surface.liveHeadSha ?? ""}`;
+		if (publishing || this.#publishedAt.get(surface.id) === at) return;
+		this.#publishedAt.set(surface.id, at);
 		void store.publish(surface.id, { quiet: true });
 	}
 
@@ -1117,7 +1127,7 @@ export class SurfaceView {
 			if (!(await this.#until(settled, signal))) return false;
 			const surface = this.surface;
 			if (!surface) return false;
-			if (surface.unpublishedChangeCount === 0) return true;
+			if (surface.unpublishedChangeCount === 0 && !surface.hasUnpublishedChanges) return true;
 			if (!(await store.publish(surface.id, { quiet: true }))) return false;
 			if (!(await this.#until(settled, signal))) return false;
 			const after = this.surface;
@@ -1438,9 +1448,6 @@ export class SurfaceView {
 		const state = store.state;
 		const workspace = state.workspaces[surface.id];
 		const preview = workspace?.previewState;
-		const conflict = preview?.primary.conflictReport ?? null;
-		const hasConflict = Boolean(conflict && (conflict.changeIds.length > 0 || conflict.paths.length > 0));
-		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const canStart = store.canStartSessions(surface);
 		const pointVisible = surface.archetype === "live_build";
 		const hasPreviewDoor = Boolean(
@@ -1466,8 +1473,6 @@ export class SurfaceView {
 			running,
 			pending,
 			state.error,
-			hasConflict ? conflict : null,
-			busyReconcile,
 			state.migration?.specialistAgents.length,
 			state.migration?.legacyBoards.length,
 			instead?.id,
@@ -1551,31 +1556,6 @@ export class SurfaceView {
 					h("button", { type: "button", class: "btn btn-small", "data-act": "dismiss-error" }, t("Dismiss")),
 				),
 			);
-		if (hasConflict && conflict) {
-			const paths = formatConflictPaths(conflict.paths);
-			banners.push(
-				h(
-					"div",
-					{ class: "surface-banner is-conflict", role: "alert" },
-					h("span", { class: "surface-state is-conflicted", "aria-hidden": "true" }),
-					h(
-						"span",
-						{ title: conflict.paths.join(", ") || undefined },
-						paths ? t("Preview conflict in {paths}", { paths }) : t("Preview changes conflict."),
-					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "btn btn-primary btn-small",
-							"data-act": "reconcile",
-							disabled: busyReconcile || conflict.changeIds.length === 0,
-						},
-						t("Reconcile"),
-					),
-				),
-			);
-		}
 		if (pending && state.migration) {
 			const agents = state.migration.specialistAgents.length;
 			const boards = state.migration.legacyBoards.length;
@@ -1785,11 +1765,6 @@ export class SurfaceView {
 				this.#target = undefined;
 				this.#drawChrome(surface);
 				return;
-			case "reconcile": {
-				const ids = store.workspace(surface.id)?.previewState.primary.conflictReport?.changeIds ?? [];
-				if (ids.length) void store.reconcileChanges(surface.id, ids);
-				return;
-			}
 			case "ask-yes":
 				void store.publish(surface.id);
 				return;

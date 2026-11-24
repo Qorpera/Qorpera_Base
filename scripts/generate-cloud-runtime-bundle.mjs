@@ -7,45 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027999_runtime_bundle_activation_v279.sql";
-const activationVersion = 279;
-const previousActivationVersion = 278;
-const previousActivationSha256 = "c3e235662f73dd3367eac97d82fe0edf4b7c226d44e4cf0dbc8053ed666db0ec";
+const activation = "supabase/migrations/20260929028099_runtime_bundle_activation_v280.sql";
+const activationVersion = 280;
+const previousActivationVersion = 279;
+const previousActivationSha256 = "243b75c47eb22c7241d603303ef3348aa9196c02e996de8c3d73c2e07a14a9ee";
 const activationRequires = Object.freeze([
 	[
-		"20260930876000_surface_preview_builds",
-		"#2277 (platform preview builds): bundle 279 pairs with platform preview build tables and RPCs",
-		"to_regclass('public.qorpera_surface_preview_builds') is not null",
-	],
-	[
-		"20260930877000_gemini_wake_mediation",
-		"#2283 (Gemini wake mediation): bundle 279 expects wake runs to resolve pinned Gemini choices",
-		"position('''wake''' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = to_regclass('public.qorpera_execution_runs') and conname = 'qorpera_execution_runs_gemini_choice'), '')) > 0",
-	],
-	[
-		"20260930879000_surface_preview_build_no_sponsor",
-		"#2289 (preview builds without sponsor): bundle 279 pairs with sponsorless surface-preview-build workers",
-		"position('surface-preview-build' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = to_regclass('public.qorpera_runtime_workers') and conname = 'qorpera_runtime_workers_owner_check'), '')) > 0",
-	],
-	[
-		"20260930880000_surface_session_turn_starter_fields",
-		"#2311 (Studio layout contract & skills): bundle 279 reads surfaceIcon, surfaceIsGlobal, surfaceArchetype, and openLayoutOps from session turns",
-		"position('''openLayoutOps''' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)')), '')) > 0",
-	],
-	[
-		"20260930882000_conversational_default_no_claude",
-		"#2312 (conversational defaults): bundle 279 requires member default models without legacy conv_effort constraint",
-		"to_regclass('public.qorpera_member_default_models') is not null and not exists (select 1 from pg_constraint where conrelid = to_regclass('public.qorpera_member_default_models') and conname = 'qorpera_member_default_models_conv_effort')",
-	],
-	[
-		"20260930886000_member_default_voice",
-		"#2305 (member Voice preference): bundle 279 resolves voice_model and voice_name via qorpera_resolve_member_voice_preference",
-		"to_regprocedure('public.qorpera_resolve_member_voice_preference(uuid,uuid)') is not null",
-	],
-	[
-		"20260930887000_studio_voice_narration",
-		"#2305 (Studio explainer narration): bundle 279 calls qorpera_record_gemini_voice_usage and reads voiceModel, voiceName, and openScenesOps",
-		"to_regprocedure('public.qorpera_record_gemini_voice_usage(jsonb,text,jsonb)') is not null and position('''openScenesOps''' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)')), '')) > 0",
+		"20260930889000_surface_preview_build_failure_to_session",
+		"#2319 (failed build handback): bundle 280 pairs with surface build handback table and RPCs",
+		"to_regclass('public.qorpera_surface_build_handbacks') is not null and to_regprocedure('public.qorpera_surface_build_hand_back(uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

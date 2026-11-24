@@ -1,5 +1,10 @@
 import type { SurfaceFolderContents } from "@qorpera/cloud-client/surface-folder-files";
-import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
+import {
+	composeStudioPreview,
+	detectLineageReconciliationTarget,
+	findMatchingStudioReconciliation,
+	type LineageReconciliationTarget,
+} from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type ApplySurfaceMigrationInput,
 	type CloudSurfacesClient,
@@ -25,6 +30,7 @@ import {
 	type SurfaceImageRef,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
+	type SurfaceReconciliation,
 	type SurfaceSession,
 	type SurfaceSessionImages,
 	type SurfaceSummary,
@@ -60,6 +66,7 @@ export type SurfacesClient = Pick<
 	| "discardSurfaceChange"
 	| "chooseSurfaceChangeOption"
 	| "discardSurfaceOptionGroup"
+	| "discardSurfaceSession"
 	| "undoSurfaceChange"
 	| "chooseExploration"
 	| "reconcileChanges"
@@ -92,6 +99,7 @@ export type SurfacesClient = Pick<
 			| "askSurfacePublish"
 			| "declineSurfacePublishAsk"
 			| "withdrawSurfacePublishAsk"
+			| "ensureSurfaceReconciliation"
 		>
 	>;
 
@@ -284,6 +292,7 @@ export interface SurfacesState {
 	readonly notes: readonly SurfaceNote[];
 	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
 	readonly unseenNotes: Readonly<Record<string, SurfaceUnseenNote>>;
+	readonly reconciliationRequests: Readonly<Record<string, "pending" | "failed">>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -488,7 +497,7 @@ export function activeTaskSessions(state: Pick<SurfacesState, "surfaces" | "work
 	}
 	return items.sort((a, b) => {
 		const rank = (entry: ActiveTaskSessionEntry) =>
-			entry.running ? 0 : entry.session.state === "needs_input" || hasConflictedChange(entry.session) ? 1 : 2;
+			entry.running ? 0 : entry.session.state === "needs_input" ? 1 : 2;
 		return rank(a) - rank(b) || b.session.updatedAt.localeCompare(a.session.updatedAt);
 	});
 }
@@ -769,11 +778,18 @@ export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles
 				if (change.kind !== "folder_patch" || !isSessionChangeShown(session, change, state)) continue;
 				const ops = state.studioPatches[change.id] ?? change.patchManifest;
 				if (ops?.length)
-					ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, identity.folderRoot) });
+					ordered.push({
+						changeId: change.id,
+						ops: normalizeStudioPatchOps(ops, identity.folderRoot),
+						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
+					});
 			}
 		}
 		if (ordered.length > 0) {
-			const composed = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity", baseBinaries);
+			const composed = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity", baseBinaries, {
+				reconciliations: workspace.reconciliations,
+			});
 			files = composed.files;
 			binaries = composed.binaries;
 		}
@@ -828,7 +844,7 @@ export interface SurfaceReportSummary {
 	readonly ownerTitle?: string;
 }
 
-export type SurfaceDeliverableKind = "report" | "html";
+export type SurfaceDeliverableKind = "report" | "html" | "pdf";
 
 export interface SurfaceChangeDeliverable {
 	readonly kind: SurfaceDeliverableKind;
@@ -845,6 +861,7 @@ export function surfaceDocSlug(path: string): string {
 
 const REPORT_FILE_RE = /\.report\.json$/i;
 const HTML_DELIVERABLE_RE = /\.html?$/i;
+const PDF_DELIVERABLE_RE = /\.pdf$/i;
 const MODULE_DELIVERABLE_RE = /(?:^|\/)modules\/[^/]+\//i;
 const HTML_TITLE_ENTITIES: Readonly<Record<string, string>> = {
 	amp: "&",
@@ -952,7 +969,17 @@ function parseReportsFromFiles(files: Readonly<Record<string, string>>): readonl
 }
 
 type SurfaceReportReadState = Pick<SurfacesState, "localStudioBase"> &
-	Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches" | "workspaces" | "studioPatches">>;
+	Partial<
+		Pick<
+			SurfacesState,
+			| "cloudSurfaceFiles"
+			| "cloudSurfaceBinaries"
+			| "localStudioBinaries"
+			| "pendingStudioPatches"
+			| "workspaces"
+			| "studioPatches"
+		>
+	>;
 
 function folderRootForState(state: SurfaceReportReadState, surfaceId: string): string | null {
 	return state.workspaces?.[surfaceId]?.surface.folderRoot ?? null;
@@ -975,15 +1002,24 @@ export function changeDeliverables(
 ): readonly SurfaceChangeDeliverable[] {
 	const folderRoot = folderRootForState(state, surfaceId);
 	const baseFiles = effectiveStudioBaseFiles(state, surfaceId) ?? {};
+	const baseBinaries = effectiveStudioBaseBinaries(state, surfaceId);
 	const ops = state.studioPatches?.[change.id];
 	const touched = new Map<string, "deleted" | "present">();
 	let files: Readonly<Record<string, string>> = baseFiles;
+	let binaries: Readonly<Record<string, StudioBinaryRef>> = baseBinaries;
 	if (ops && ops.length > 0) {
 		const normalizedOps = normalizeStudioPatchOps(ops, folderRoot);
 		for (const op of normalizedOps) {
 			touched.set(op.path, op.op === "delete" ? "deleted" : "present");
 		}
-		files = composeStudioPreview(baseFiles, [{ changeId: change.id, ops: normalizedOps }], folderRoot).files;
+		const composed = composeStudioPreview(
+			baseFiles,
+			[{ changeId: change.id, ops: normalizedOps }],
+			folderRoot,
+			baseBinaries,
+		);
+		files = composed.files;
+		binaries = composed.binaries;
 	} else {
 		for (const rawPath of change.affectedPaths) {
 			const path = normalizeSurfacePath(rawPath, folderRoot);
@@ -1018,6 +1054,16 @@ export function changeDeliverables(
 				path,
 				slug: surfaceDocSlug(path),
 				title: content ? extractHtmlDeliverableTitle(content, path) : readableDeliverableTitle(path),
+			});
+			continue;
+		}
+		if (PDF_DELIVERABLE_RE.test(path) && binaries[path]) {
+			seen.add(path);
+			results.push({
+				kind: "pdf",
+				path,
+				slug: surfaceDocSlug(path),
+				title: readableDeliverableTitle(path),
 			});
 		}
 	}
@@ -1134,6 +1180,10 @@ export function surfaceHasDeliverables(state: SurfaceReportReadState, surfaceId:
 		for (const path of Object.keys(baseFiles)) {
 			if (isStandaloneHtmlDeliverablePath(path, folderRoot)) return true;
 		}
+	}
+	const baseBinaries = effectiveStudioBaseBinaries(state, surfaceId);
+	for (const path of Object.keys(baseBinaries)) {
+		if (PDF_DELIVERABLE_RE.test(path)) return true;
 	}
 	return false;
 }
@@ -1397,6 +1447,7 @@ export class SurfacesStore {
 	#localSeq = 0;
 	readonly #imageReads = new Map<string, string>();
 	readonly #binaryReads = new Map<string, { readonly read: Promise<Uint8Array>; readonly bytes: number }>();
+	readonly #reconciliationRequested = new Set<string>();
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -1430,6 +1481,7 @@ export class SurfacesStore {
 			notes: [],
 			sessionImages: {},
 			unseenNotes: {},
+			reconciliationRequests: {},
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -1638,6 +1690,12 @@ export class SurfacesStore {
 			for (const exploration of workspace.explorations) {
 				if (state.busy[`exploration:${exploration.id}`]) return "merging";
 			}
+			if (
+				workspace.previewState.primary.status === "reconciling" ||
+				(workspace.reconciliations ?? []).some((rec) => rec.status === "queued" || rec.status === "running")
+			) {
+				return "updating";
+			}
 		}
 		if (state.updatingCloudFiles[surfaceId]) return "updating";
 		return null;
@@ -1665,6 +1723,7 @@ export class SurfacesStore {
 		this.#previewIdSelectionKey.clear();
 		this.#pendingMerges.clear();
 		this.#pendingPublishChanges.clear();
+		this.#reconciliationRequested.clear();
 		for (const timer of this.#previewSyncDebounceTimers.values()) clearTimeout(timer);
 		this.#previewSyncDebounceTimers.clear();
 		for (const waiters of this.#previewSyncDebounceWaiters.values()) {
@@ -1697,9 +1756,7 @@ export class SurfacesStore {
 		const activeSessions = workspace.activeSessions;
 		const running = activeSessions.filter(isRunningSession).length;
 		const pending = activeSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0);
-		const needsAttention = activeSessions.filter(
-			(session) => session.state === "needs_input" || hasConflictedChange(session),
-		).length;
+		const needsAttention = activeSessions.filter((session) => session.state === "needs_input").length;
 		return {
 			...workspace.surface,
 			activeSessionCount: activeSessions.length,
@@ -2451,6 +2508,12 @@ export class SurfacesStore {
 					memberPass: prevState.primary.memberPass,
 				});
 			}
+			if (prevState?.primary.kept?.memberPass) {
+				prevPasses.set(prevState.primary.kept.previewId, {
+					doorActionUrl: prevState.primary.kept.doorActionUrl,
+					memberPass: prevState.primary.kept.memberPass,
+				});
+			}
 			for (const entry of prevState?.compareFrames ?? []) {
 				if (entry.frame.previewId && entry.frame.memberPass) {
 					prevPasses.set(entry.frame.previewId, {
@@ -2459,18 +2522,35 @@ export class SurfacesStore {
 					});
 				}
 			}
-			const keepPass = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
-				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
-				const prev = prevPasses.get(frame.previewId);
-				if (!prev) return frame;
-				const meta = this.#previewPassMeta.get(frame.previewId);
-				if (
-					meta &&
+			const usablePrevPass = (
+				previewId: string,
+			): { readonly doorActionUrl: string | null; readonly memberPass: string } | null => {
+				const prev = prevPasses.get(previewId);
+				if (!prev) return null;
+				const meta = this.#previewPassMeta.get(previewId);
+				return meta &&
 					meta.pass === prev.memberPass &&
 					(meta.consumed || now - meta.mintedAt >= PREVIEW_PASS_TTL_MS)
-				) {
-					return frame;
+					? null
+					: prev;
+			};
+			const keepPass = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+				if (frame.kept && !frame.kept.memberPass) {
+					const prev = usablePrevPass(frame.kept.previewId);
+					return prev
+						? {
+								...frame,
+								kept: {
+									...frame.kept,
+									doorActionUrl: frame.kept.doorActionUrl ?? prev.doorActionUrl,
+									memberPass: prev.memberPass,
+								},
+							}
+						: frame;
 				}
+				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
+				const prev = usablePrevPass(frame.previewId);
+				if (!prev) return frame;
 				return {
 					...frame,
 					doorActionUrl: frame.doorActionUrl ?? prev.doorActionUrl,
@@ -2633,6 +2713,13 @@ export class SurfacesStore {
 					if (!workspace) return {};
 					let changed = false;
 					const patchFrame = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+						if (frame.kept?.previewId === grant.previewId) {
+							changed = true;
+							return {
+								...frame,
+								kept: { ...frame.kept, doorActionUrl: grant.doorActionUrl, memberPass: grant.memberPass },
+							};
+						}
 						if (frame.previewId !== grant.previewId) return frame;
 						changed = true;
 						return {
@@ -2912,10 +2999,15 @@ export class SurfacesStore {
 		return (
 			workspace.surface.publishStatus === "publishing" ||
 			workspace.previewState.primary.status === "composing" ||
+			workspace.previewState.primary.status === "reconciling" ||
 			workspace.previewState.primary.status === "building" ||
 			workspace.previewState.compareFrames.some(
-				(entry) => entry.frame.status === "composing" || entry.frame.status === "building",
+				(entry) =>
+					entry.frame.status === "composing" ||
+					entry.frame.status === "reconciling" ||
+					entry.frame.status === "building",
 			) ||
+			(workspace.reconciliations ?? []).some((rec) => rec.status === "queued" || rec.status === "running") ||
 			workspace.activeSessions.some(
 				(session) => isRunningSession(session) || session.changes.some((change) => change.status === "merging"),
 			)
@@ -2942,10 +3034,15 @@ export class SurfacesStore {
 			(workspace) =>
 				workspace.surface.publishStatus === "publishing" ||
 				workspace.previewState.primary.status === "composing" ||
+				workspace.previewState.primary.status === "reconciling" ||
 				workspace.previewState.primary.status === "building" ||
 				workspace.previewState.compareFrames.some(
-					(entry) => entry.frame.status === "composing" || entry.frame.status === "building",
+					(entry) =>
+						entry.frame.status === "composing" ||
+						entry.frame.status === "reconciling" ||
+						entry.frame.status === "building",
 				) ||
+				(workspace.reconciliations ?? []).some((rec) => rec.status === "queued" || rec.status === "running") ||
 				workspace.activeSessions.some((session) => session.changes.some((change) => change.status === "merging")),
 		);
 		const running = fast || workspaces.some((workspace) => this.#workspaceNeedsPoll(workspace));
@@ -3433,9 +3530,20 @@ export class SurfacesStore {
 			this.#stageLocalSession(surface, id, text);
 			return local;
 		}
+		const resolvedOptions: StartSurfaceSessionOptions =
+			options.previewBaseChangeIds === undefined && this.state.mode !== "live"
+				? (() => {
+						const previewBaseChangeIds = this.visiblePreviewChangeIds(surfaceId);
+						return previewBaseChangeIds.length > 0 ? { ...options, previewBaseChangeIds } : options;
+					})()
+				: options;
 		const session = await this.#run(`start:${surfaceId}:${text}`, async (client) => {
 			const attached = await this.#uploadImages(client, surfaceId, files);
-			return client.startSurfaceSession(surfaceId, text, attached ? { ...options, ...attached } : options);
+			return client.startSurfaceSession(
+				surfaceId,
+				text,
+				attached ? { ...resolvedOptions, ...attached } : resolvedOptions,
+			);
 		});
 		if (!session) return undefined;
 		const workspace = this.workspace(surfaceId);
@@ -3898,6 +4006,8 @@ export class SurfacesStore {
 			);
 		} else if (!change || change.status === "merged") {
 			this.#offerUndo(change?.title ?? updated.title, [changeId], verb);
+		} else if (change.status === "staged") {
+			void this.refreshWorkspace(updated.surfaceId);
 		}
 		void this.refreshSurfaces();
 		return outcome;
@@ -3950,6 +4060,7 @@ export class SurfacesStore {
 		const verb = this.#undoVerbFor(updated.surfaceId);
 		if (merged.length > 0) this.#offerUndo(updated.title, merged, verb);
 		else if (merging.length > 0) this.#offerPendingMerge(updated.surfaceId, updated.title, merging, verb);
+		else if (updated.changes.some(isOpenChange)) void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -4028,7 +4139,16 @@ export class SurfacesStore {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
+		const hasDependents = this.workspace(updated.surfaceId)?.activeSessions.some((session) =>
+			session.changes.some(
+				(change) =>
+					change.id !== changeId &&
+					isOpenChange(change) &&
+					(change.previewBaseChangeIds?.includes(changeId) ?? false),
+			),
+		);
 		this.#applySession(updated, outcome);
+		if (hasDependents) void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -4113,23 +4233,29 @@ export class SurfacesStore {
 			this.#applySession(updated, "history");
 			return true;
 		}
-		let latest: SurfaceSession | undefined;
-		for (const change of session.changes.filter(isOpenChange)) {
-			const next = await this.#run(`change:${change.id}`, (client) => client.discardSurfaceChange(change.id));
-			if (!next) {
-				if (latest) {
-					this.#applySession(latest, approvalOutcome(latest, this.drawerOpenOn(sessionId)));
-					void this.refreshSurfaces();
-				}
-				return false;
-			}
-			latest = next;
-		}
-		if (this.drawerOpenOn(sessionId)) {
-			this.store.set({ drawer: undefined });
-			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
-		}
-		this.#applySession(latest ?? session, "history");
+		const closed = await this.#run(`discard-session:${sessionId}`, (client) =>
+			client.discardSurfaceSession(sessionId),
+		);
+		if (!closed) return false;
+		if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
+		const discardedIds = new Set<string>([
+			...session.changes.filter(isOpenChange).map((change) => change.id),
+			...closed.changes.filter((change) => change.status === "discarded").map((change) => change.id),
+		]);
+		const hasDependents =
+			discardedIds.size > 0 &&
+			(this.workspace(closed.surfaceId)?.activeSessions.some(
+				(other) =>
+					other.id !== sessionId &&
+					other.changes.some(
+						(change) =>
+							isOpenChange(change) &&
+							(change.previewBaseChangeIds?.some((baseId) => discardedIds.has(baseId)) ?? false),
+					),
+			) ??
+				false);
+		this.#applySession(closed, "history");
+		if (hasDependents) void this.refreshWorkspace(closed.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -4533,11 +4659,32 @@ export class SurfacesStore {
 			return true;
 		}
 		const busyKey = pickKey ? `option-group:${pickKey}` : `change:${changeId}`;
+		const droppedIds = new Set(
+			found.session.changes
+				.filter(
+					(change) =>
+						groupKey && change.optionGroupKey === groupKey && change.id !== changeId && isOpenChange(change),
+				)
+				.map((change) => change.id),
+		);
 		const updated = await this.#run(busyKey, (client) => client.chooseSurfaceChangeOption(changeId));
 		if (!updated) return false;
+		const hasDependents =
+			droppedIds.size > 0 &&
+			Boolean(
+				this.workspace(updated.surfaceId)?.activeSessions.some((session) =>
+					session.changes.some(
+						(change) =>
+							!droppedIds.has(change.id) &&
+							isOpenChange(change) &&
+							(change.previewBaseChangeIds?.some((id) => droppedIds.has(id)) ?? false),
+					),
+				),
+			);
 		finalizeLocalState();
 		this.#applySession(updated, "open");
 		await this.#syncPreview(found.workspace.surface.id);
+		if (hasDependents) void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -4586,6 +4733,11 @@ export class SurfacesStore {
 			this.#applySession(updated, outcome);
 			return true;
 		}
+		const droppedIds = new Set(
+			found.session.changes
+				.filter((change) => change.optionGroupKey === optionGroupKey && isOpenChange(change))
+				.map((change) => change.id),
+		);
 		const updated = await this.#run(`option-group:${pickKey}`, (client) =>
 			client.discardSurfaceOptionGroup(sessionId, optionGroupKey),
 		);
@@ -4602,20 +4754,200 @@ export class SurfacesStore {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
+		const hasDependents =
+			droppedIds.size > 0 &&
+			Boolean(
+				this.workspace(updated.surfaceId)?.activeSessions.some((session) =>
+					session.changes.some(
+						(change) =>
+							!droppedIds.has(change.id) &&
+							isOpenChange(change) &&
+							(change.previewBaseChangeIds?.some((id) => droppedIds.has(id)) ?? false),
+					),
+				),
+			);
 		this.#applySession(updated, outcome);
 		await this.#syncPreview(found.workspace.surface.id);
+		if (hasDependents) void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
 
+	canEnsureReconciliation(surfaceId: string): boolean {
+		return !isLocalSurfaceId(surfaceId) && Boolean(this.#options.client?.ensureSurfaceReconciliation);
+	}
+
+	reconciliationFor(surfaceId: string, changeIds: readonly string[]): SurfaceReconciliation | undefined {
+		const workspace = this.workspace(surfaceId);
+		return findMatchingStudioReconciliation(workspace?.reconciliations, changeIds) ?? undefined;
+	}
+
+	lineageReconciliationTarget(
+		surfaceId: string,
+		selectedChangeIds: readonly string[],
+	): LineageReconciliationTarget | null {
+		const workspace = this.workspace(surfaceId);
+		if (!workspace || selectedChangeIds.length === 0) return null;
+		const openChanges: SurfaceChangeUnit[] = [];
+		for (const session of workspace.activeSessions) {
+			for (const change of session.changes) {
+				if (isOpenChange(change)) openChanges.push(change);
+			}
+		}
+		return detectLineageReconciliationTarget(openChanges, selectedChangeIds, workspace.surface.folderRoot);
+	}
+
+	activeReconciliationFor(surfaceId: string, selectedChangeIds: readonly string[]): SurfaceReconciliation | undefined {
+		const workspace = this.workspace(surfaceId);
+		const recs = workspace?.reconciliations;
+		if (!workspace || !recs || recs.length === 0 || selectedChangeIds.length === 0) return undefined;
+		const exact = findMatchingStudioReconciliation(recs, selectedChangeIds);
+		if (exact) return exact;
+		const activeSet = new Set(selectedChangeIds);
+		const basesById = new Map<string, readonly string[]>();
+		for (const session of workspace.activeSessions) {
+			for (const change of session.changes) {
+				if (change.previewBaseChangeIds && change.previewBaseChangeIds.length > 0) {
+					basesById.set(change.id, change.previewBaseChangeIds);
+				}
+			}
+		}
+		const matching = recs
+			.filter((rec) => {
+				if (rec.selectedChangeIds.length === 0 || !rec.selectedChangeIds.every((id) => activeSet.has(id))) {
+					return false;
+				}
+				const covered = new Set(rec.selectedChangeIds);
+				for (const id of rec.selectedChangeIds) {
+					if (basesById.get(id)?.some((baseId) => activeSet.has(baseId) && !covered.has(baseId))) {
+						return false;
+					}
+				}
+				return true;
+			})
+			.sort((a, b) => b.selectedChangeIds.length - a.selectedChangeIds.length);
+		return matching[0];
+	}
+
+	visiblePreviewChangeIds(surfaceId: string): string[] {
+		const ids: string[] = [];
+		for (const session of this.activePreviewSessions(surfaceId)) {
+			for (const change of session.changes) {
+				if (isOpenChange(change) && this.isChangeShown(change.id)) ids.push(change.id);
+			}
+		}
+		return ids;
+	}
+
+	#reconciliationRequestKey(surfaceId: string, changeIds: readonly string[]): string | null {
+		const ids = [...new Set(changeIds.filter(Boolean))];
+		if (!ids.length) return null;
+		const workspace = this.workspace(surfaceId);
+		const revision = workspace?.surface.folderRevision ?? 0;
+		const head = workspace?.surface.liveHeadSha ?? "";
+		return `${surfaceId}:${revision}:${head}:${ids.sort().join(",")}`;
+	}
+
+	#clearReconciliationRequest(key: string): void {
+		if (!(key in this.state.reconciliationRequests)) return;
+		this.store.set((state) => {
+			if (!(key in state.reconciliationRequests)) return {};
+			const next = { ...state.reconciliationRequests };
+			delete next[key];
+			return { reconciliationRequests: next };
+		});
+	}
+
+	reconciliationRequestState(surfaceId: string, changeIds: readonly string[]): "pending" | "failed" | undefined {
+		const key = this.#reconciliationRequestKey(surfaceId, changeIds);
+		return key ? this.state.reconciliationRequests[key] : undefined;
+	}
+
+	async ensureReconciliation(
+		surfaceId: string,
+		changeIds: readonly string[],
+		conflictPaths: readonly string[] = [],
+		retry = false,
+	): Promise<SurfaceReconciliation | undefined> {
+		const ids = [...new Set(changeIds.filter(Boolean))];
+		if (!ids.length) return undefined;
+		const client = this.#options.client;
+		if (isLocalSurfaceId(surfaceId) || !client?.ensureSurfaceReconciliation) return undefined;
+		const workspace = this.workspace(surfaceId);
+		const existing = findMatchingStudioReconciliation(workspace?.reconciliations, ids);
+		if (!retry && existing) return existing;
+		const key = this.#reconciliationRequestKey(surfaceId, ids);
+		if (!key) return undefined;
+		if (this.state.reconciliationRequests[key] === "pending") return undefined;
+		if (!retry && this.#reconciliationRequested.has(key)) return undefined;
+		this.#reconciliationRequested.add(key);
+		this.store.set((state) => ({
+			reconciliationRequests: { ...state.reconciliationRequests, [key]: "pending" },
+		}));
+		try {
+			const record = await client.ensureSurfaceReconciliation(surfaceId, ids, conflictPaths, retry);
+			if (this.#options.signal.aborted) return record;
+			this.#clearReconciliationRequest(key);
+			const current = this.workspace(surfaceId);
+			if (current) {
+				const prior = current.reconciliations ?? [];
+				const nextReconciliations = [record, ...prior.filter((item) => item.id !== record.id)];
+				const flipPreview =
+					retry &&
+					current.surface.sourceKind === "code_repo" &&
+					(current.previewState.primary.status === "failed" ||
+						current.previewState.primary.status === "conflicted");
+				this.#putWorkspace({
+					...current,
+					reconciliations: nextReconciliations,
+					...(flipPreview
+						? {
+								previewState: {
+									...current.previewState,
+									primary: {
+										...current.previewState.primary,
+										status: "reconciling",
+										conflictReport: null,
+										errorDetail: null,
+									},
+								},
+							}
+						: {}),
+				});
+			}
+			return record;
+		} catch (error) {
+			if (!this.#options.signal.aborted) {
+				this.store.set((state) => ({
+					reconciliationRequests: { ...state.reconciliationRequests, [key]: "failed" },
+					...(retry ? { error: describe(error) } : {}),
+				}));
+			}
+			return undefined;
+		}
+	}
+
 	async retryPreview(surfaceId: string): Promise<void> {
+		const workspace = this.workspace(surfaceId);
+		const primary = workspace?.previewState.primary;
+		if (
+			workspace &&
+			primary &&
+			primary.status === "failed" &&
+			primary.toggledChangeIds.length > 0 &&
+			findMatchingStudioReconciliation(workspace.reconciliations, primary.toggledChangeIds)?.status === "failed" &&
+			this.#options.client?.ensureSurfaceReconciliation
+		) {
+			await this.ensureReconciliation(surfaceId, primary.toggledChangeIds, [], true);
+			return;
+		}
 		const timer = this.#previewSyncDebounceTimers.get(surfaceId);
 		if (timer) {
 			clearTimeout(timer);
 			this.#previewSyncDebounceTimers.delete(surfaceId);
 		}
 		this.#lastPreviewSyncKey.delete(surfaceId);
-		const primaryId = this.workspace(surfaceId)?.previewState.primary.previewId;
+		const primaryId = primary?.previewId;
 		if (primaryId) this.#previewIdSelectionKey.delete(primaryId);
 		await this.#syncPreview(surfaceId);
 	}
@@ -4826,6 +5158,17 @@ export class SurfacesStore {
 				const gen = this.#previewSyncGen.get(surfaceId) ?? 0;
 				const info = this.#previewSelectionInfo(surfaceId);
 				this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
+				const currentWorkspace = this.workspace(surfaceId);
+				if (
+					currentWorkspace?.surface.sourceKind === "code_repo" &&
+					info.selection.explorationSessionId === null &&
+					info.selection.toggledChangeIds.length > 0
+				) {
+					const lineageTarget = this.lineageReconciliationTarget(surfaceId, info.selection.toggledChangeIds);
+					if (lineageTarget && !this.reconciliationFor(surfaceId, lineageTarget.changeIds)) {
+						void this.ensureReconciliation(surfaceId, lineageTarget.changeIds, lineageTarget.conflictPaths);
+					}
+				}
 				try {
 					const previewState = await client.setPreviewSelection(surfaceId, info.selection);
 					if (this.#options.signal.aborted) return;

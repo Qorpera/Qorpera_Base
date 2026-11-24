@@ -358,6 +358,67 @@ describe("cloud-client surface automation owners", () => {
 		const { ownable: _ownable, ...unowned } = automation;
 		await expect(fixture([unowned]).client.listAutomations("13500000-0000-4000-8000-000000000009")).rejects.toThrow();
 	});
+
+	it("passes deduplicated previewBaseChangeIds inside p_origin_ref on startSurfaceSession without clobbering target", async () => {
+		const surfaceId = "13500000-0000-4000-8000-000000000010";
+		const sessionId = "13500000-0000-4000-8000-000000000011";
+		const c1 = "13500000-0000-4000-8000-000000000012";
+		const c2 = "13500000-0000-4000-8000-000000000013";
+		const sessionPayload = {
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Promo",
+			prompt: "Write promo",
+			state: "queued",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: null,
+			hasActiveChat: false,
+			question: null,
+			changes: [],
+			messages: [],
+			createdAt: "2026-11-24T06:00:00Z",
+			updatedAt: "2026-11-24T06:00:00Z",
+			closedAt: null,
+		};
+
+		const rpcPlain = vi.fn().mockResolvedValue({ data: sessionPayload, error: null });
+		const clientPlain = new CloudSurfacesClient({ rpc: rpcPlain } as unknown as SupabaseClient);
+		await clientPlain.startSurfaceSession(surfaceId, "Write promo", { previewBaseChangeIds: [c1, c1, c2] });
+		expect(rpcPlain).toHaveBeenCalledWith(
+			"qorpera_start_surface_session",
+			expect.objectContaining({
+				p_origin_ref: { previewBaseChangeIds: [c1, c2] },
+			}),
+		);
+
+		const rpcTarget = vi.fn().mockResolvedValue({ data: sessionPayload, error: null });
+		const clientTarget = new CloudSurfacesClient({ rpc: rpcTarget } as unknown as SupabaseClient);
+		await clientTarget.startSurfaceSession(surfaceId, "Refine hero", {
+			previewBaseChangeIds: [c1],
+			target: {
+				route: "/",
+				selector: "h1",
+				tagName: "h1",
+				textSnippet: "Hello",
+				componentHint: null,
+				boundingBox: { x: 0, y: 0, width: 100, height: 40 },
+				viewport: { width: 1280, height: 800 },
+			},
+		});
+		expect(rpcTarget).toHaveBeenCalledWith(
+			"qorpera_start_surface_session",
+			expect.objectContaining({
+				p_origin_kind: "point_to_change",
+				p_origin_ref: expect.objectContaining({
+					selector: "h1",
+					previewBaseChangeIds: [c1],
+				}),
+			}),
+		);
+	});
 });
 
 describe("cloud-client surface change option groups", () => {

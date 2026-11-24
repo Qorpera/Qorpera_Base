@@ -396,7 +396,7 @@ export interface CompleteSurfacePreviewInput {
 
 export interface CompleteSurfacePreviewResult {
 	readonly previewId: string;
-	readonly status: "ready" | "conflicted" | "failed";
+	readonly status: "ready" | "reconciling" | "conflicted" | "failed";
 	readonly shortHostId: string;
 	readonly compositeTreeSha: string | null;
 }
@@ -1641,6 +1641,10 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 			: input.environmentId === null
 				? null
 				: responseUuid(input.environmentId, "surface preview environment id");
+	const reconciledCommitSha =
+		input.reconciledCommitSha === undefined
+			? undefined
+			: optionalResponseString(input.reconciledCommitSha, "surface preview reconciled commit sha");
 	return {
 		previewId: responseUuid(input.previewId, "surface preview id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
@@ -1651,9 +1655,27 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 		selectedChangeIds: input.selectedChangeIds.map((id) => responseUuid(id, "surface change id")),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
 		...(leaseToken !== undefined ? { leaseToken } : {}),
+		...(reconciledCommitSha !== undefined ? { reconciledCommitSha } : {}),
 		...(exploration !== undefined ? { exploration } : {}),
 		...(changes !== undefined ? { changes } : {}),
 	};
+}
+
+function parseOptionalBaseFiles(value: unknown): Readonly<Record<string, string | null>> | null | undefined {
+	if (value === undefined) return undefined;
+	if (value === null) return null;
+	if (typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Runner orchestrator returned invalid approved change baseFiles");
+	}
+	const out: Record<string, string | null> = {};
+	for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+		if (!key.trim()) continue;
+		if (item !== null && typeof item !== "string") {
+			throw new Error("Runner orchestrator returned invalid approved change baseFiles entry");
+		}
+		out[key] = item;
+	}
+	return out;
 }
 
 function parseClaimedSurfaceApprovedChange(value: unknown): ClaimedSurfaceApprovedChange {
@@ -1667,6 +1689,7 @@ function parseClaimedSurfaceApprovedChange(value: unknown): ClaimedSurfaceApprov
 	) {
 		throw new Error("Runner orchestrator returned invalid approved surface change");
 	}
+	const baseFiles = parseOptionalBaseFiles(input.baseFiles);
 	return {
 		changeId: responseUuid(input.changeId, "approved change id"),
 		kind: input.kind,
@@ -1675,6 +1698,7 @@ function parseClaimedSurfaceApprovedChange(value: unknown): ClaimedSurfaceApprov
 		title: input.title,
 		summary: input.summary,
 		patchManifest: input.patchManifest === undefined ? null : structuredClone(input.patchManifest),
+		...(baseFiles !== undefined ? { baseFiles } : {}),
 		affectedPaths: [...(input.affectedPaths as string[])],
 	};
 }
@@ -1812,6 +1836,20 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 			: input.environmentId === null
 				? null
 				: responseUuid(input.environmentId, "surface merge environment id");
+	const reconciledCommitSha =
+		input.reconciledCommitSha === undefined
+			? undefined
+			: optionalResponseString(input.reconciledCommitSha, "surface merge reconciled commit sha");
+	const reconciledPatchManifest =
+		input.reconciledPatchManifest === undefined ? undefined : structuredClone(input.reconciledPatchManifest);
+	const reconciledConflictPaths =
+		input.reconciledConflictPaths === undefined
+			? undefined
+			: input.reconciledConflictPaths === null
+				? null
+				: Array.isArray(input.reconciledConflictPaths)
+					? input.reconciledConflictPaths.filter((p): p is string => typeof p === "string")
+					: undefined;
 	return {
 		jobId: responseUuid(input.jobId, "surface merge job id"),
 		kind: input.kind,
@@ -1831,6 +1869,9 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		...(sessionHasActiveChat !== undefined ? { sessionHasActiveChat } : {}),
 		payload,
 		...(preMergeSnapshot !== undefined ? { preMergeSnapshot } : {}),
+		...(reconciledPatchManifest !== undefined ? { reconciledPatchManifest } : {}),
+		...(reconciledConflictPaths !== undefined ? { reconciledConflictPaths } : {}),
+		...(reconciledCommitSha !== undefined ? { reconciledCommitSha } : {}),
 		...(allSessionChangeStatuses !== undefined ? { allSessionChangeStatuses } : {}),
 		...(approvedChanges !== undefined ? { approvedChanges } : {}),
 		...(siblingRemainingChanges !== undefined ? { siblingRemainingChanges } : {}),
@@ -1956,7 +1997,12 @@ function parseReleaseSurfaceSessionClaimResult(value: unknown): ReleaseSurfaceSe
 
 function parseCompleteSurfacePreviewResult(value: unknown): CompleteSurfacePreviewResult {
 	const input = record(value, "surface preview completion");
-	if (input.status !== "ready" && input.status !== "conflicted" && input.status !== "failed") {
+	if (
+		input.status !== "ready" &&
+		input.status !== "reconciling" &&
+		input.status !== "conflicted" &&
+		input.status !== "failed"
+	) {
 		throw new Error("Runner orchestrator returned invalid surface preview status");
 	}
 	const compositeTreeSha =

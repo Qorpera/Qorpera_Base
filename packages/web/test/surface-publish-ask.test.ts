@@ -34,6 +34,7 @@ async function setUp(
 	shown: SurfaceSummary,
 	client: Partial<SurfacesClient> = {},
 	team = [JONAS, SOFIE],
+	here: string[] = [],
 ) {
 	let current = shown;
 	const answer = (next: Partial<SurfaceSummary>) => {
@@ -61,6 +62,7 @@ async function setUp(
 			userId: viewer,
 			memberName: (userId) => NAMES[userId],
 			publishers: () => team.map((userId) => ({ userId, name: NAMES[userId]! })),
+			peopleAtSurface: () => here.map((userId) => ({ userId, name: NAMES[userId]! })),
 		},
 	);
 	await store.load();
@@ -149,6 +151,42 @@ describe("asking a teammate to publish", () => {
 		store.dispose();
 	});
 
+	it("gives a narrow bar short forms of Publishing and of the faces here", async () => {
+		const { store } = await setUp(
+			JONAS,
+			site({ publishStatus: "publishing" }),
+			{},
+			[JONAS, SOFIE],
+			[SOFIE, MADS, JONAS],
+		);
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		expect(view.el.querySelector(".surface-publish-main .surface-publish-word")?.textContent).toBe("Publishing…");
+		expect(view.el.querySelector(".surface-publish-main .surface-publish-short")?.textContent).toBe("Publish");
+		const faces = view.el.querySelector(".surface-pill-presence")!;
+		expect(faces.querySelectorAll(".person-avatar")).toHaveLength(3);
+		expect(faces.querySelector(".surface-pill-presence-more")).toBeNull();
+		expect(faces.querySelector(".surface-pill-presence-fold")?.textContent).toBe("+2");
+		view.dispose();
+		store.dispose();
+
+		const one = await setUp(JONAS, site(), {}, [JONAS, SOFIE], [SOFIE]);
+		const alone = new SurfaceView(
+			{ store: one.store, mount: () => undefined, openMigration: () => undefined },
+			"website",
+		);
+		document.body.append(alone.el);
+		await flush();
+		alone.update();
+		expect(alone.el.querySelector(".surface-pill-presence .person-avatar")).not.toBeNull();
+		expect(alone.el.querySelector(".surface-pill-presence-fold")).toBeNull();
+		expect(alone.el.querySelector(".surface-publish-short")).toBeNull();
+		alone.dispose();
+		one.store.dispose();
+	});
+
 	it("tells the asker in plain words that she said no, and clears it", async () => {
 		const shown = site({ publishAsk: ask("declined") });
 		const { store, calls } = await setUp(JONAS, shown);
@@ -156,7 +194,9 @@ describe("asking a teammate to publish", () => {
 		document.body.append(view.el);
 		await flush();
 		view.update();
-		expect(view.el.querySelector(".surface-publish-main")?.textContent).toBe("SLSofie said no");
+		expect(view.el.querySelector(".surface-publish-main .surface-publish-word")?.textContent).toBe("Sofie said no");
+		expect(view.el.querySelector(".surface-publish-main .surface-publish-short")?.textContent).toBe("No");
+		expect(view.el.querySelector(".surface-publish-main .person-avatar")?.textContent).toBe("SL");
 
 		openPublishSheet(store, shown);
 		expect(sheetText()).toContain("Sofie said no.");

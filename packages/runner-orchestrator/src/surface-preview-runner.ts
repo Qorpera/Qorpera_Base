@@ -95,7 +95,6 @@ export type SurfacePreviewBuildOutcome =
 	| { readonly outcome: "failed"; readonly errorDetail: string };
 
 const PREVIEW_BUILD_RUN_SHOWN = 200;
-const NOT_RUN_FOR_THE_MACHINE: ReadonlySet<string> = new Set(["machine", "transport", "authority", "budget"]);
 
 function withTail(head: string, tail: string): string {
 	const room = PREVIEW_BUILD_DETAIL_CHARS - [...head].length - 1;
@@ -134,11 +133,7 @@ export function previewBuildOutcome(run: CodeChecksRun, recipe: SurfacePreviewRe
 		return {
 			outcome: "failed",
 			errorDetail: previewBuildDetail(
-				run.code.endsWith("COMPUTER_HOURS_EXHAUSTED")
-					? PREVIEW_BUILD_NO_HOURS
-					: NOT_RUN_FOR_THE_MACHINE.has(run.why)
-						? PREVIEW_BUILD_NO_MACHINE
-						: PREVIEW_BUILD_FAILED,
+				run.code.endsWith("COMPUTER_HOURS_EXHAUSTED") ? PREVIEW_BUILD_NO_HOURS : PREVIEW_BUILD_NO_MACHINE,
 				`The build "${shownRun}" did not run: ${run.code.endsWith("COMPUTER_HOURS_EXHAUSTED") ? "the company ran out of computer hours" : run.why === "copy" ? "the composed commit could not be copied into the coding machine" : "the coding machine could not run it"}. [code=${run.code}]`,
 			),
 		};
@@ -208,6 +203,7 @@ export interface SurfacePreviewBuildRequest {
 	readonly shortHostId: string;
 	readonly repository: CloudCodingRepository;
 	readonly baseSha?: string;
+	readonly reconciledCommitSha?: string;
 	readonly exploration?: {
 		readonly sessionId: string;
 		readonly baseSha: string;
@@ -245,6 +241,7 @@ export async function buildCompositeSurfacePreview(
 		const composed = await composePreviewTree(job, {
 			repository: request.repository,
 			...(request.baseSha ? { baseSha: request.baseSha } : {}),
+			...(request.reconciledCommitSha ? { reconciledCommitSha: request.reconciledCommitSha } : {}),
 			...(request.exploration ? { exploration: request.exploration } : {}),
 			changes: request.changes,
 		});

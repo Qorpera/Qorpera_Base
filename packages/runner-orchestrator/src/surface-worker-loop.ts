@@ -70,6 +70,7 @@ export interface ClaimedSurfacePreviewJob {
 	readonly selectedChangeIds: readonly string[];
 	readonly repositoryKey: string | null;
 	readonly leaseToken?: string | null;
+	readonly reconciledCommitSha?: string | null;
 	readonly exploration?: ClaimedSurfacePreviewExploration | null;
 	readonly changes?: readonly ClaimedSurfaceChangeRange[];
 }
@@ -82,6 +83,7 @@ export interface ClaimedSurfaceApprovedChange {
 	readonly title: string;
 	readonly summary: string;
 	readonly patchManifest: unknown;
+	readonly baseFiles?: Readonly<Record<string, string | null>> | null;
 	readonly affectedPaths: readonly string[];
 }
 
@@ -111,6 +113,9 @@ export interface ClaimedSurfaceMergeJob {
 	readonly sessionHasActiveChat?: boolean;
 	readonly payload: Readonly<Record<string, unknown>>;
 	readonly preMergeSnapshot?: Readonly<Record<string, unknown>> | null;
+	readonly reconciledPatchManifest?: unknown;
+	readonly reconciledConflictPaths?: readonly string[] | null;
+	readonly reconciledCommitSha?: string | null;
 	readonly allSessionChangeStatuses?: readonly {
 		readonly changeId: string;
 		readonly status: SurfaceChangeStatus;

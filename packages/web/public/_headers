@@ -37,6 +37,16 @@
   Content-Security-Policy: default-src 'none'; script-src 'self'; frame-src https://*.qorpera.com https://*.qorpera.site; base-uri 'none'; form-action https://*.qorpera.com/__qorpera/member https://*.qorpera.site/__qorpera/member; frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN
   Referrer-Policy: strict-origin
+# Inline PDF preview (src/app/views/surface-blocks/pdf.ts): keeps the app's own policy at default-src 'self'
+# with no blob: frames anywhere else. Only this page frames blob: URLs, created from bytes handed by the
+# parent app over postMessage with the Blob MIME type pinned to application/pdf.
+/pdf-preview/*
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  ! Permissions-Policy
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Content-Security-Policy: default-src 'none'; script-src 'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=86400
