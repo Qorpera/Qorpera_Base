@@ -48,6 +48,7 @@ export const SURFACE_BLOCK_TYPES = [
 	"table",
 	"cards",
 	"report",
+	"explainer",
 	"files",
 	"module",
 ] as const;
@@ -176,6 +177,20 @@ export interface SurfaceReportMatchBlock extends SurfaceBlockBase {
 
 export type SurfaceReportBlock = SurfaceReportFileBlock | SurfaceReportMatchBlock;
 
+export interface SurfaceExplainerFileBlock extends SurfaceBlockBase {
+	readonly type: "explainer";
+	readonly from: string;
+	readonly heading?: string;
+}
+
+export interface SurfaceExplainerMatchBlock extends SurfaceBlockBase {
+	readonly type: "explainer";
+	readonly match: string;
+	readonly heading?: string;
+}
+
+export type SurfaceExplainerBlock = SurfaceExplainerFileBlock | SurfaceExplainerMatchBlock;
+
 export interface SurfaceFilesBlock extends SurfaceBlockBase {
 	readonly type: "files";
 	readonly match?: readonly string[];
@@ -202,6 +217,7 @@ export type SurfaceBlock =
 	| SurfaceTableBlock
 	| SurfaceCardsBlock
 	| SurfaceReportBlock
+	| SurfaceExplainerBlock
 	| SurfaceFilesBlock
 	| SurfaceModuleBlock;
 
@@ -398,6 +414,22 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		],
 	},
 	{
+		type: "explainer",
+		family: "explainer",
+		summary: "narrated animated breakdowns from scenes.js",
+		fields: [
+			{
+				name: "from",
+				kind: "file",
+				required: false,
+				note: "one scenes.js; or use match",
+				accepts: [".js"],
+			},
+			{ name: "match", kind: "glob", required: false, note: "every matching scenes.js" },
+			HEADING_FIELD,
+		],
+	},
+	{
 		type: "files",
 		family: "files",
 		summary: "working files no other block shows, .json too; its empty line only alone on a tab or with a heading",
@@ -464,7 +496,7 @@ export function describeSurfaceBlocks(): string {
 		lines.push(`- ${block.type}: ${block.summary}. ${fields.join("; ")}`);
 	}
 	lines.push(
-		"facts and cards take items or from, not both; cards with from needs title; report from or match. Globs: * and ? in a name, ** for any folders; a leading / as in sources.",
+		"facts and cards take items or from, not both; cards with from needs title; report and explainer from or match. Globs: * and ? in a name, ** for any folders; a leading / as in sources.",
 	);
 	return lines.join("\n");
 }
@@ -825,6 +857,9 @@ function finishBlock(type: SurfaceBlockType, block: Record<string, unknown>, lab
 	if (type === "report" && (block.from !== undefined) === (block.match !== undefined)) {
 		fail(label, "report needs from or match, exactly one of them");
 	}
+	if (type === "explainer" && (block.from !== undefined) === (block.match !== undefined)) {
+		fail(label, "explainer needs from or match, exactly one of them");
+	}
 }
 
 function parseBlock(value: unknown, label: string): SurfaceBlock {
@@ -1171,6 +1206,11 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 			blocks: [{ type: "report", match: "**/*.report.json" }],
 		},
 		{
+			id: "breakdowns",
+			title: "Breakdowns",
+			blocks: [{ type: "explainer", match: "breakdowns/**/scenes.js" }],
+		},
+		{
 			id: "files",
 			title: "Files",
 			blocks: [
@@ -1297,6 +1337,13 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 					heading: "Design system",
 				},
 				{ type: "files", id: "data", match: ["/identity/**/*.json"] },
+			],
+		},
+		{
+			id: "breakdowns",
+			title: "Breakdowns",
+			blocks: [
+				{ type: "explainer", id: "breakdowns", match: "/identity/breakdowns/**/scenes.js", heading: "Breakdowns" },
 			],
 		},
 		{

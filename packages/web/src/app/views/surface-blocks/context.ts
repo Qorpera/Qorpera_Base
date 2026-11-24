@@ -76,6 +76,7 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Specs"),
 	phrase("Vendors"),
 	phrase("Reports"),
+	phrase("Breakdowns"),
 	phrase("Files"),
 	phrase("Parts"),
 	phrase("Production plan"),
