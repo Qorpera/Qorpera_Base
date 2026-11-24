@@ -1,0 +1,27 @@
+[Unit]
+Description=Qorpera Loopback OCI Registry for Native Web Apps
+After=network-online.target remote-fs.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/qorpera-web-registry
+
+[Service]
+Type=simple
+User=qorpera-web
+Group=qorpera-web
+ExecStart=/usr/bin/docker-registry serve /etc/qorpera-web/registry.yml
+Restart=always
+RestartSec=2
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-web-registry
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

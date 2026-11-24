@@ -9,6 +9,8 @@ User=caddy
 Group=caddy
 SupplementaryGroups=qorpera-web
 StateDirectory=qorpera-web-certs
+Environment=XDG_DATA_HOME=/var/lib/qorpera-web-certs
+Environment=XDG_CONFIG_HOME=/var/lib/qorpera-web-certs/config
 EnvironmentFile=-/etc/qorpera-web/edge.env
 ExecStart=/usr/bin/caddy run --environ --config /etc/qorpera-web/Caddyfile
 ExecReload=/usr/bin/caddy reload --config /etc/qorpera-web/Caddyfile --force

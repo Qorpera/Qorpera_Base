@@ -1,4 +1,5 @@
 use crate::logs::LogRingBuffer;
+use crate::oci::{ensure_oci_image_imported, OciImportConfig, OciImportLocks};
 use bytes::Bytes;
 use http::{Method, Request, StatusCode};
 use http_body_util::{BodyExt, Full, Limited};
@@ -768,6 +769,8 @@ pub struct LxdAppDriver {
     pub bind_ip: String,
     pub socket_path: PathBuf,
     pub oci_registry_scheme: Option<String>,
+    pub oci_import: Option<OciImportConfig>,
+    oci_locks: Arc<OciImportLocks>,
 }
 
 impl LxdAppDriver {
@@ -792,7 +795,14 @@ impl LxdAppDriver {
             bind_ip,
             socket_path,
             oci_registry_scheme: None,
+            oci_import: None,
+            oci_locks: Arc::new(OciImportLocks::new()),
         }
+    }
+
+    pub fn with_oci_import(mut self, config: OciImportConfig) -> Self {
+        self.oci_import = Some(config);
+        self
     }
 
     pub fn container_name(deployment_id: &str) -> String {
@@ -818,8 +828,11 @@ impl AppRuntimeDriver for LxdAppDriver {
         let project = self.project.clone();
         let profile = self.egress_profile.clone();
         let bind_ip = self.bind_ip.clone();
-        let client = LxdUnixClient::new(self.socket_path.clone());
+        let socket_path = self.socket_path.clone();
+        let client = LxdUnixClient::new(socket_path.clone());
         let oci_scheme = self.oci_registry_scheme.clone();
+        let oci_import = self.oci_import.clone();
+        let oci_locks = Arc::clone(&self.oci_locks);
         Box::pin(async move {
             let image = spec
                 .oci_image_ref
@@ -858,6 +871,37 @@ impl AppRuntimeDriver for LxdAppDriver {
                         }
                     }
 
+                    let raw_source = parse_lxd_image_source(&image, oci_scheme.as_deref());
+                    let resolved_source = if let Some(ref import_cfg) = oci_import {
+                        if raw_source.get("protocol").and_then(|v| v.as_str()) == Some("oci") {
+                            let server = raw_source
+                                .get("server")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                            let alias = raw_source
+                                .get("alias")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                            let fp = ensure_oci_image_imported(
+                                &socket_path,
+                                &project,
+                                server,
+                                alias,
+                                import_cfg,
+                                &oci_locks,
+                            )
+                            .await?;
+                            serde_json::json!({
+                                "type": "image",
+                                "fingerprint": fp,
+                            })
+                        } else {
+                            raw_source
+                        }
+                    } else {
+                        raw_source
+                    };
+
                     let create_payload = serde_json::json!({
                         "name": cname,
                         "type": "container",
@@ -870,7 +914,7 @@ impl AppRuntimeDriver for LxdAppDriver {
                                 "connect": format!("tcp:127.0.0.1:{}", spec.port),
                             }
                         },
-                        "source": parse_lxd_image_source(&image, oci_scheme.as_deref()),
+                        "source": resolved_source,
                     });
                     client
                         .create_instance(&project, create_payload, LXD_CREATE_WAIT_SECS)
