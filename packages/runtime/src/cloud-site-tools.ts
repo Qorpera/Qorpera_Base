@@ -123,7 +123,7 @@ const WEB_EXTENSIONS = new Set([
 ]);
 
 const APP_LINK_PASSWORD =
-	"You never see the password, so never write one: put the address in your message as a link, and members see the site's row under it, where owners and admins copy the password. They also see, copy and change it on the Sites page in the apps drawer.";
+	"You never see the password, so never write one: put the address in your message as a link, and the link's card shows under the message, where owners and admins copy the password.";
 
 const WEBSITE_NOT_LIVE =
 	"A website has no password, so never tell anyone to use one. Until the founder or an admin presses Go live on the website's page in the app, nobody outside the company can open it. The company's members open it from the app. You cannot make it live: put the address in your message as a link, and ask the founder to press Go live when it should open to everyone.";
@@ -962,8 +962,8 @@ export function cloudSiteTools(options: {
 				started = undefined;
 			}
 			const password = shared.newPassword
-				? "The link has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer."
-				: "The password is unchanged. You never see it: it is on the Sites page in the apps drawer.";
+				? "The link has a new password. You never see it: owners and admins copy it from the link's card under the message that links it."
+				: "The password is unchanged. You never see it: owners and admins copy it from the link's card under the message that links it.";
 			const link = {
 				url,
 				slug: prepared.slug,
@@ -998,7 +998,7 @@ export function cloudSiteTools(options: {
 				});
 			return reply("connecting", {
 				linkProgram,
-				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Put url in your message to the member as a link: the link's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password.`,
+				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Put url in your message to the member as a link: the link's card shows under it, where owners and admins copy the password. Never write a password.`,
 			});
 		},
 	};

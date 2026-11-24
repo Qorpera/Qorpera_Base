@@ -25,6 +25,7 @@ const URL_OF = (slug: string) => `https://sites.qorpera.com/${slug}/`;
 const APP_URL_OF = (slug: string) => `https://${slug}-preview.qorpera.com/`;
 /** A one-time claim as the database issues it (base64url). */
 const CLAIM = "q7Zx_3kPmA9vB2nC4dE6fG8hJ0kL1mN3pQ5rS7tU9wY";
+const NO_SITES_PAGE = /\bSites\b|apps drawer|Settings/;
 const MACHINE_IDS: Record<string, string> = { "shop-server": randomUUID(), "old-server": randomUUID() };
 
 /** A company folder of files (path → text or bytes), as the run's own view lists and reads it. */
@@ -894,7 +895,7 @@ describe("share_app", () => {
 				"from machine": "shop-server",
 				port: "3000",
 				effect:
-					"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
+					"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins copy the password from the link's card under the message that links it",
 			},
 		});
 		expect(f.calls("qorpera_site_share_app")).toEqual([
@@ -932,11 +933,12 @@ describe("share_app", () => {
 			linkProgram: { commandId, state: "running" },
 			next: expect.stringContaining("The platform started the link program on shop-server"),
 			password:
-				"The link has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer.",
+				"The link has a new password. You never see it: owners and admins copy it from the link's card under the message that links it.",
 		});
 		expect(result.answer.next).toContain(
-			"Put url in your message to the member as a link: the link's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password.",
+			"Put url in your message to the member as a link: the link's card shows under it, where owners and admins copy the password. Never write a password.",
 		);
+		expect(result.text).not.toMatch(NO_SITES_PAGE);
 		// The tool's answer never holds the claim.
 		expect(result.text).not.toContain(CLAIM);
 		expect(result.text).not.toContain("curl");
@@ -970,7 +972,10 @@ describe("share_app", () => {
 		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
 		expect(f.reviewed).toHaveLength(1);
 		expect(result.answer).toMatchObject({ newPassword: false });
-		expect(result.answer.password).toContain("unchanged");
+		expect(result.answer.password).toBe(
+			"The password is unchanged. You never see it: owners and admins copy it from the link's card under the message that links it.",
+		);
+		expect(result.text).not.toMatch(NO_SITES_PAGE);
 	});
 
 	it("reviews a share of the live link on another port as an access check, naming the port it had", async () => {
@@ -1227,10 +1232,11 @@ describe("share_app", () => {
 		expect(share.description).toContain("SSE");
 		expect(share.description).toContain("manage_site");
 		expect(share.description).not.toContain("auth mode on the Sites page");
+		for (const tool of tools) expect(tool.description, tool.name).not.toMatch(NO_SITES_PAGE);
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
 		const publish = tools.find((tool) => tool.name === "publish_site")!;
 		const password =
-			"You never see the password, so never write one: put the address in your message as a link, and members see the site's row under it, where owners and admins copy the password. They also see, copy and change it on the Sites page in the apps drawer.";
+			"You never see the password, so never write one: put the address in your message as a link, and the link's card shows under the message, where owners and admins copy the password.";
 		expect(share.description).toContain(password);
 		expect(publish.description).not.toContain(password);
 		expect(publish.description).toContain(

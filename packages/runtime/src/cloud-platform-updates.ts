@@ -270,7 +270,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-22",
 		title: "Native hosting for websites, webapps and custom domains",
-		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site public and attach their own custom domain with automatic HTTPS in Sites.",
+		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site live with Go live and attach their own custom domain with automatic HTTPS on the website's page in the app.",
 	},
 	{
 		id: "claude-code-parallel-scale",
@@ -390,6 +390,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-24",
 		title: "Websites have no password: Go live opens them",
 		text: "Websites no longer have a password. A website published with publish_site is closed to everyone outside the company until the founder or an admin presses Go live on the website's page in the app. You cannot make it live. Until then the company's members open it from the app. Never tell anyone to use a password for a website: send its link, and ask the founder to press Go live when it should open to everyone. App links shared with share_app are unchanged: they keep their password.",
+	},
+	{
+		id: "no-sites-page",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "No Sites page: each site is managed where it shows",
+		text: "The Sites page is gone, so never send anyone to a Sites page. A website is managed on its own page in the app, and Go live is there. An app link shared with share_app shows as its card under the message that links it, and owners and admins copy its password from that card. You still never see a password: put the link in your message.",
 	},
 ]);
 
