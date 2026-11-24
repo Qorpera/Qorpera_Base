@@ -12,6 +12,7 @@ import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from 
 import { previewStatusText, publishFailureText, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
+import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
@@ -1577,5 +1578,109 @@ describe("the surface page", () => {
 
 		view.dispose();
 		store.dispose();
+	});
+
+	it("opens a staged PDF deliverable from its sidepanel PDF pill and compares it against Base", async () => {
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222262",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const pdfRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 3072,
+			mediaType: "application/pdf",
+		};
+		const pdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Investor Q3 deck",
+			summary: "Attached board summary PDF.",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3-deck.pdf"],
+			patchManifest: [{ op: "write_file", path: "reports/q3-deck.pdf", file: pdfRef }],
+		});
+		const sess = session([], {
+			id: SESSION,
+			surfaceId: studio.id,
+			title: "Analyst",
+			changes: [pdfChange],
+			openChangeCount: 1,
+		});
+		const createObjectURL = vi.fn(() => "blob:q3-deck");
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		try {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [studio]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([sess], { surface: studio })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () => folderContents({})),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await store.load();
+			const view = new SurfaceView(
+				{
+					store,
+					mount: () => ({ el: document.createElement("div"), update: vi.fn(), dispose: vi.fn() }),
+					openMigration: () => undefined,
+				},
+				studio.slug,
+			);
+			document.body.append(view.el);
+			await flush();
+			view.update();
+
+			const pill = view.el.querySelector<HTMLButtonElement>(".surface-overview-deliverable")!;
+			expect(pill.textContent).toBe("PDF");
+			pill.click();
+			await flush();
+			view.update();
+
+			expect(store.state.mode).toBe("report");
+			expect(store.state.activeReportSlug).toBe("doc:surfaces/marketing/reports/q3-deck.pdf");
+			const card = view.el.querySelector<HTMLElement>(
+				'.studio-pdf-card[data-file="surfaces/marketing/reports/q3-deck.pdf"]',
+			)!;
+			expect(card).not.toBeNull();
+			await vi.waitFor(() =>
+				expect(card.querySelector("iframe.studio-pdf-frame")?.getAttribute("src")).toBe("blob:q3-deck"),
+			);
+			expect(view.el.querySelector(".surface-overview-deliverable")?.classList.contains("is-open")).toBe(true);
+
+			const dedicated = new SurfaceReportView({
+				store,
+				surface: studio,
+				signal: new AbortController().signal,
+				baseFiles: {},
+				timeSlice: false,
+			});
+			store.setMode("compare");
+			dedicated.update();
+			expect(dedicated.el.querySelector(".studio-compare-card")?.textContent).toContain("Q3 deck");
+			expect(dedicated.el.querySelector(".studio-compare-card")?.textContent).toContain("Added");
+			dedicated.dispose();
+
+			view.dispose();
+			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:q3-deck"));
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
 	});
 });

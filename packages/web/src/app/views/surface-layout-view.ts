@@ -32,6 +32,7 @@ import { prepareFacts } from "./surface-blocks/facts.ts";
 import { prepareFiles, type StudioHtmlPages } from "./surface-blocks/files.ts";
 import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
+import { SurfacePdfViewer } from "./surface-blocks/pdf.ts";
 import { reportFiles, SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
 import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts";
@@ -181,6 +182,7 @@ export class SurfaceLayoutView {
 	readonly #reports: SurfaceReports;
 	readonly #explainers: SurfaceExplainers;
 	readonly #pictures: SurfacePictures;
+	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
 
@@ -189,6 +191,7 @@ export class SurfaceLayoutView {
 		const read = (file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal);
 		this.#stages = new SurfaceStages(read, options.signal);
 		this.#pictures = new SurfacePictures(read, options.signal);
+		this.#pdfs = new SurfacePdfViewer(read, options.signal);
 		this.#explainers = new SurfaceExplainers(read, options.signal);
 		this.#reports = new SurfaceReports({
 			store: options.store,
@@ -345,7 +348,7 @@ export class SurfaceLayoutView {
 			case "explainer":
 				return this.#explainers.prepare(key, block, ctx);
 			case "files":
-				return prepareFiles(block, ctx, scope.input.htmlPages, { claimed: scope.claimed, alone });
+				return prepareFiles(block, ctx, scope.input.htmlPages, { claimed: scope.claimed, alone }, this.#pdfs);
 			case "module":
 				return prepareModule(block, ctx, scope.input.htmlPages, { alone });
 			default:
@@ -419,5 +422,6 @@ export class SurfaceLayoutView {
 	dispose(): void {
 		this.#reports.dispose();
 		this.#explainers.dispose();
+		this.#pdfs.dispose();
 	}
 }

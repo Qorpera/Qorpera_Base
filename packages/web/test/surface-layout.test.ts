@@ -1455,4 +1455,63 @@ describe("The explainer block and Breakdowns tab", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("renders PDF binary files in the Files tab with a pinned application/pdf blob and revokes URLs on dispose", async () => {
+		const lamp = studio();
+		const pdfRef: StudioBinaryRef = {
+			manifestSha256: "e".repeat(64),
+			fileSha256: "f".repeat(64),
+			bytes: 4096,
+			mediaType: "application/pdf",
+		};
+		const readCloudBinary = vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]));
+		let createdBlobType = "";
+		const createObjectURL = vi.fn((blob: Blob) => {
+			createdBlobType = blob.type;
+			return "blob:spec-sheet";
+		});
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		try {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [lamp]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: lamp })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(productFiles(), { "surfaces/lamp/spec-sheet.pdf": pdfRef }),
+					),
+					readCloudBinary,
+				},
+			);
+			await store.load();
+			await store.openSurface(lamp.slug);
+			const lifetime = new AbortController();
+			const view = new SurfaceStudioView({
+				store,
+				surface: lamp,
+				signal: lifetime.signal,
+				timeSlice: false,
+			});
+			document.body.append(view.el);
+			view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+			const card = view.el.querySelector<HTMLElement>('.studio-pdf-card[data-file="surfaces/lamp/spec-sheet.pdf"]')!;
+			expect(card).not.toBeNull();
+			expect(card.querySelector("h2")?.textContent).toBe("Spec sheet");
+			await vi.waitFor(() =>
+				expect(card.querySelector("iframe.studio-pdf-frame")?.getAttribute("src")).toBe("blob:spec-sheet"),
+			);
+			expect(createdBlobType).toBe("application/pdf");
+			expect(card.querySelector('a[download="spec-sheet.pdf"]')?.getAttribute("href")).toBe("blob:spec-sheet");
+			expect(readCloudBinary).toHaveBeenCalledWith(pdfRef, expect.anything());
+			lifetime.abort();
+			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:spec-sheet"));
+			view.dispose();
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
 });

@@ -248,8 +248,13 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 	};
 	const readPreview = reader((layer) => layer.files);
 	const readBase = reader((layer) => layer.baseFiles);
-	const companyOnly = company ? Object.keys(company.files).filter((path) => !Object.hasOwn(input.files, path)) : [];
-	const allFiles = [...Object.keys(input.files), ...companyOnly].sort().map((path): SurfaceFolderFile => {
+	const seen = new Set<string>([
+		...Object.keys(input.files),
+		...Object.keys(input.binaries),
+		...(company ? Object.keys(company.files) : []),
+		...(company ? Object.keys(company.binaries) : []),
+	]);
+	const allFiles = [...seen].sort().map((path): SurfaceFolderFile => {
 		const relative = folderRelative(folderRoot, path);
 		return relative === undefined ? { path } : { path, relative };
 	});

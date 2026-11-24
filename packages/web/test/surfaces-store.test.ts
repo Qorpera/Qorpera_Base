@@ -2627,4 +2627,92 @@ describe("SurfacesStore", () => {
 		expect(store.state.activeReportSlug).toBe("launch-essay");
 		store.dispose();
 	});
+
+	it("admits application/pdf binaries in readSurfaceFolderFiles and extracts staged PDF change deliverables", async () => {
+		const pdfRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 2048,
+			mediaType: "application/pdf",
+		};
+		const loaded = await readSurfaceFolderFiles(
+			{
+				async list() {
+					return {
+						entries: [
+							{
+								path: "surfaces/marketing/q3-deck.pdf",
+								kind: "file",
+								file: pdfRef,
+							},
+						],
+					};
+				},
+				async readFile() {
+					return new Uint8Array();
+				},
+			},
+			["surfaces/marketing"],
+			new AbortController().signal,
+		);
+		expect(loaded.binaries["surfaces/marketing/q3-deck.pdf"]).toEqual(pdfRef);
+
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222249",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const pdfChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 board deck PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3-deck.pdf"],
+			patchManifest: [{ op: "write_file", path: "reports/q3-deck.pdf", file: pdfRef }],
+		});
+		const missingPdfChange = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Unbacked PDF",
+			kind: "folder_patch",
+			affectedPaths: ["reports/missing.pdf"],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace(
+						[session([], { surfaceId: studio.id, changes: [pdfChange, missingPdfChange], openChangeCount: 2 })],
+						{
+							surface: studio,
+						},
+					),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(studio.slug);
+		await Promise.resolve();
+
+		expect(changeDeliverables(store.state, studio.id, pdfChange)).toEqual([
+			{
+				kind: "pdf",
+				path: "surfaces/marketing/reports/q3-deck.pdf",
+				slug: surfaceDocSlug("surfaces/marketing/reports/q3-deck.pdf"),
+				title: "Q3 deck",
+			},
+		]);
+		expect(changeDeliverables(store.state, studio.id, missingPdfChange)).toEqual([]);
+		expect(surfaceHasDeliverables(store.state, studio.id)).toBe(true);
+		store.dispose();
+	});
 });

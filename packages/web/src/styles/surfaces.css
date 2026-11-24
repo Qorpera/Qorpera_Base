@@ -1681,8 +1681,28 @@ a.surface-address-row:hover { text-decoration: none; }
 	display: block; width: 100%; height: min(640px, 68dvh); border: 1px solid var(--border);
 	border-radius: 12px; background: #fff; color-scheme: light;
 }
-.report-layout.is-html { grid-template-columns: minmax(0, 1fr); }
+.report-layout.is-html,
+.report-layout.is-pdf { grid-template-columns: minmax(0, 1fr); }
 .report-html-card { width: 100%; }
+.studio-pdf-card {
+	min-width: 0; width: 100%; overflow: hidden; padding: 18px 20px; border: 1px solid var(--border);
+	border-radius: 16px; background: color-mix(in srgb, var(--text) 1.5%, var(--bg));
+}
+.studio-pdf-card.is-changed { border-color: color-mix(in srgb, var(--accent) 36%, transparent); }
+.studio-pdf-head { flex-wrap: wrap; }
+.studio-pdf-size { color: var(--text-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+.studio-pdf-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.studio-pdf-link[aria-disabled="true"] { pointer-events: none; opacity: 0.45; }
+.studio-pdf-stage { min-width: 0; }
+.studio-pdf-frame {
+	display: block; width: 100%; height: min(720px, 74dvh); border: 1px solid var(--border);
+	border-radius: 12px; background: var(--bg);
+}
+.studio-pdf-state {
+	margin: 0; padding: 28px 16px; border: 1px dashed var(--border); border-radius: 12px;
+	color: var(--text-muted); font-size: 13px; text-align: center;
+}
+.studio-pdf-state.is-error { color: var(--danger); }
 .studio-html-frame.is-compare { height: min(440px, 52dvh); }
 .studio-html-fallback { margin: 0; color: var(--text-muted); font-size: 13px; }
 .studio-svg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); min-width: 0; gap: 12px; }

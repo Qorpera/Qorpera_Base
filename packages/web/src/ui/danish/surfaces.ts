@@ -379,6 +379,10 @@ export const SURFACES: Record<string, string> = {
 	"yourdomain.com": "ditdomæne.dk",
 	Article: "Artikel",
 	HTML: "HTML",
+	PDF: "PDF",
 	Added: "Tilføjet",
 	"Open {title}": "Åbn {title}",
+	"Open PDF": "Åbn PDF",
+	"Loading PDF…": "Indlæser PDF…",
+	"This PDF can't be loaded.": "Denne PDF kan ikke indlæses.",
 };

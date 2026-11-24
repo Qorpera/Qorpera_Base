@@ -980,7 +980,10 @@ describe("starter layouts", () => {
 		expect(product.tabs[3]?.blocks).toEqual([{ type: "report", match: "**/*.report.json" }]);
 		expect(product.tabs[4]?.blocks).toEqual([{ type: "explainer", match: "breakdowns/**/scenes.js" }]);
 		expect(product.tabs[5]?.blocks).toEqual([
-			{ type: "files", match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm"] },
+			{
+				type: "files",
+				match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm", "**/*.pdf"],
+			},
 		]);
 	});
 

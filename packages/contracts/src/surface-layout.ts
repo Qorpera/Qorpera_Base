@@ -1216,7 +1216,7 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 			blocks: [
 				{
 					type: "files",
-					match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm"],
+					match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm", "**/*.pdf"],
 				},
 			],
 		},
@@ -1360,6 +1360,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 						"/identity/**/*.svg",
 						"/identity/**/*.html",
 						"/identity/**/*.htm",
+						"/identity/**/*.pdf",
 					],
 					skip: ["/identity/voice.md", "/identity/brief.md"],
 				},

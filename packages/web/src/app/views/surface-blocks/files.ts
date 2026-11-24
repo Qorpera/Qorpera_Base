@@ -1,4 +1,4 @@
-import type { SurfaceFilesBlock } from "@qorpera/contracts";
+import type { StudioBinaryRef, SurfaceFilesBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { markdown } from "../../../ui/markdown.ts";
 import { t } from "../../../ui/preferences.ts";
@@ -13,6 +13,7 @@ import {
 	sectionHead,
 } from "./context.ts";
 import { renderSwatches } from "./palette.ts";
+import type { SurfacePdfViewer } from "./pdf.ts";
 import {
 	COLOR_GROUPS,
 	collectSpecs,
@@ -28,6 +29,7 @@ export const HTML_FILE_RE = /\.html?$/i;
 export const SVG_FILE_RE = /\.svg$/i;
 export const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
 export const PROSE_TEXT_FILE_RE = /\.txt$/i;
+export const PDF_FILE_RE = /\.pdf$/i;
 const JSON_FILE_RE = /\.json$/i;
 const OWN_BLOCK_JSON_RE = /(?:^|\/)object\.json$|\.report\.json$/i;
 const MAX_INITIAL_TEXT_CHARS = 32_000;
@@ -222,14 +224,33 @@ export function prepareFiles(
 	ctx: SurfaceBlockContext,
 	htmlPages: StudioHtmlPages,
 	place: SurfaceFilesPlace,
+	pdfs?: SurfacePdfViewer,
 ): SurfaceBlockPrepared {
 	const svgs: StudioSvgAsset[] = [];
 	const docs: StudioDoc[] = [];
 	const cards: JsonCard[] = [];
 	const pages: { readonly path: string; readonly title: string; readonly html: string; readonly changed: boolean }[] =
 		[];
+	const pdfDocs: {
+		readonly path: string;
+		readonly title: string;
+		readonly ref: StudioBinaryRef;
+		readonly changed: boolean;
+	}[] = [];
 	for (const { path } of ctx.matching(block.match, block.skip)) {
 		if (place.claimed.has(path)) continue;
+		if (PDF_FILE_RE.test(path)) {
+			const binary = ctx.binary(path);
+			if (binary.value) {
+				pdfDocs.push({
+					path,
+					title: readableName(path),
+					ref: binary.value,
+					changed: binary.value.fileSha256 !== binary.base?.fileSha256,
+				});
+			}
+			continue;
+		}
 		const text = ctx.text(path);
 		const content = text.value ?? "";
 		const changed = text.base !== content;
@@ -252,7 +273,7 @@ export function prepareFiles(
 		}
 	}
 	docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
-	const filled = svgs.length + docs.length + cards.length + pages.length > 0;
+	const filled = svgs.length + docs.length + cards.length + pages.length + (pdfs ? pdfDocs.length : 0) > 0;
 	if (!filled && !block.heading && !place.alone) return { filled, pieces: [] };
 	const pieces: StudioSectionTask[] = [];
 	if (block.heading) {
@@ -292,6 +313,14 @@ export function prepareFiles(
 					}),
 				),
 		});
+	}
+	if (pdfs) {
+		for (const pdf of pdfDocs) {
+			pieces.push({
+				heavy: true,
+				build: () => pdfs.renderCard(pdf),
+			});
+		}
 	}
 	return { filled, pieces };
 }

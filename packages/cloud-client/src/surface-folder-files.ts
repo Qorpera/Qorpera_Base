@@ -31,7 +31,7 @@ export interface SurfaceFolderContents {
 }
 
 const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|m?js|svg|html?)$/i;
-const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g|wav|mp4|m4a|mp3|webm)$/i;
+const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g|wav|mp4|m4a|mp3|webm|pdf)$/i;
 const STUDIO_BINARY_TYPES = new Set<string>([...STUDIO_BINARY_MEDIA_TYPES, "application/octet-stream"]);
 const STUDIO_MAX_BINARIES = 256;
 const EMPTY_FOLDER: SurfaceFolderContents = { files: {}, binaries: {} };
