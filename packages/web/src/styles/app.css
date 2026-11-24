@@ -482,7 +482,8 @@ label > input, label > select { font-weight: 400; }
 /* Dragged from the collapsed rail, the image is the figure alone, as the row shows it there. */
 .rail-drag-ghost.compact :is(.rail-row-copy, .rail-pin-name) { display: none; }
 .rail-drag-ghost.compact.rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; }
-.rail-drag-active, .rail-drag-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+/* WHY: The natural cursor stays while a row is dragged, as everywhere (Jonas, 23 Nov 2026: no hand cursor). */
+.rail-drag-active, .rail-drag-active * { cursor: default !important; user-select: none; -webkit-user-select: none; }
 .rail-row {
 	--rail-row-figure: 40px;
 	/* 8px between the figure and the name, as Messages leaves after a contact's picture (Jonas, 9 Nov 2026). */

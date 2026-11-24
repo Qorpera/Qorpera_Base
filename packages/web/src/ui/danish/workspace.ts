@@ -668,6 +668,18 @@ export const WORKSPACE: Record<string, string> = {
 	Group: "Gruppe",
 	"Move to": "Flyt til",
 	"No group": "Ingen gruppe",
+	"No section": "Ingen sektion",
+	"New section…": "Ny sektion…",
+	"Move up": "Flyt op",
+	"Move down": "Flyt ned",
+	"Delete your section {name}?": "Slet din sektion {name}?",
+	"Delete your section {name}? Its interfaces move out of it, to the end of the list.":
+		"Slet din sektion {name}? Dens interfaces flyttes ud af den, nederst på listen.",
+	"Your interfaces changed in another tab. Try again.": "Dine interfaces blev ændret i en anden fane. Prøv igen.",
+	"The interfaces could not be arranged. Try again.": "Dine interfaces kunne ikke arrangeres. Prøv igen.",
+	"Only {count} interfaces can be arranged.": "Kun {count} interfaces kan arrangeres.",
+	"That name can't be used for a section.": "Det navn kan ikke bruges til en sektion.",
+	"The order and sections of your interfaces": "Rækkefølgen og sektionerne af dine interfaces",
 	"Rename group": "Omdøb gruppe",
 	Ungroup: "Opløs gruppe",
 	// The drawer's Colour menu (12 Nov 2026): its first row takes the member's own colour away.

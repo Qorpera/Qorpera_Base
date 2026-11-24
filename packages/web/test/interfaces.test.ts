@@ -827,7 +827,17 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		cover: null,
 		kit: null,
 	});
-	const own = { changes: 0, moved: [], sections: [], pinned: 0, hidden: 0, contacts: 0, pages: 0, apps: 0 };
+	const own = {
+		changes: 0,
+		moved: [],
+		sections: [],
+		pinned: 0,
+		hidden: 0,
+		contacts: 0,
+		pages: 0,
+		apps: 0,
+		surfaces: 0,
+	};
 	function drawer() {
 		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
 		controller.store.set({

@@ -98,6 +98,11 @@ import {
 import { listScreensInUse, type ScreensInUse } from "./screens-in-use.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import { type Leaderboard, markOnline, readLeaderboard, setLeaderboardHidden } from "./social.ts";
+import {
+	parseSurfaceRailLayoutRead,
+	type SurfaceRailLayout,
+	type SurfaceRailLayoutRead,
+} from "./surface-rail-layout.ts";
 import type {
 	HostedAccountMatch,
 	HostedCompanyFile,
@@ -608,6 +613,28 @@ export class CloudApi {
 				p_expected: expected,
 			})
 			.then(parseMemberAppLayoutRead);
+	}
+
+	readMemberSurfaceRail(profileId: string, signal?: AbortSignal): Promise<SurfaceRailLayoutRead> {
+		return this.#rpc(
+			"qorpera_member_surface_rail",
+			{ p_profile_id: requiredUuid(profileId, "Profile id") },
+			signal,
+		).then(parseSurfaceRailLayoutRead);
+	}
+
+	setMemberSurfaceRail(
+		profileId: string,
+		layout: SurfaceRailLayout,
+		expected: string | null,
+	): Promise<SurfaceRailLayoutRead> {
+		return this.cloud
+			.rpc("qorpera_set_member_surface_rail", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_layout: layout,
+				p_expected: expected,
+			})
+			.then(parseSurfaceRailLayoutRead);
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
