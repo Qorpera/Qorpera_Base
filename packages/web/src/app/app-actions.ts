@@ -4,7 +4,7 @@ import {
 	type CloudMemberDataChangeRequest,
 	CloudMemberDataError,
 } from "@qorpera/cloud-client/cloud-member-data";
-import { osPath } from "@qorpera/cloud-client/company-state-files";
+import { osPath } from "@qorpera/cloud-client/company-state-shared";
 import { APP_WRITE_KEPT_TABLES, type AppManifest } from "@qorpera/cloud-client/interface-apps";
 import {
 	csvField,

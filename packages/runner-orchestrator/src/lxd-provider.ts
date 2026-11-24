@@ -1229,60 +1229,62 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				// A sponsor handoff is recorded before the old one-run guest finishes
 				// shutting down. Keep this acquisition (and its renewed dispatch claim)
 				// pending instead of exhausting infrastructure retries during shutdown.
-				const retirementSignal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
-				await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
-				for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
-					if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
-					const settled = this.#settled.get(entry.name);
-					if (settled && settled.runId !== work.runId) continue;
-					let prior: LxdProviderJournal | undefined;
-					try {
-						prior = await this.#readJournal(entry.name);
-					} catch (error) {
-						// A dead journal this build cannot read has no guest to wait for; only its attempt still counts.
-						const dead = await this.#deadJournal(entry.name, signal);
-						if (!dead) throw error;
-						const attempt = dead.attempt ?? 1;
-						if (
-							(dead.runId ?? dead.acquisitionId) === work.runId &&
-							(typeof attempt !== "number" || attempt >= work.attempt)
-						)
-							throw new Error("LXD provider refuses an older run attempt");
-						continue;
-					}
-					if (!prior || (prior.runId ?? prior.acquisitionId) !== work.runId) continue;
-					if ((prior.attempt ?? 1) >= work.attempt) throw new Error("LXD provider refuses an older run attempt");
-					for (;;) {
-						retirementSignal.throwIfAborted();
-						// Each look holds the prior attempt's own lock, never across the wait between looks.
-						const retired = await this.#journals.run(entry.name, async () => {
-							const latest = await this.#readJournal(entry.name);
-							// A settled journal moves to the archive: its guest is gone and its capacity released.
-							if (!latest && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, entry.name))))
-								return undefined;
-							if (!latest) throw new Error("LXD prior run attempt lost its journal");
-							await this.#reconcileJournal(latest, retirementSignal);
-							const journal = await this.#readJournal(entry.name);
-							if (!journal) throw new Error("LXD prior run attempt lost its journal");
-							const instance = await this.#lxd.getInstance(
-								journal.lxd.project,
-								journal.instanceName,
-								retirementSignal,
-							);
-							return { journal, instance };
-						});
-						retirementSignal.throwIfAborted();
-						if (!retired) break;
-						const { journal, instance } = retired;
-						if (["stopped", "lost"].includes(journal.physicalState) && !instance) break;
-						if (!instance || !["registered", "assigned"].includes(journal.physicalState)) {
-							throw new Error("LXD prior run attempt has not retired its guest");
+				await withAbortScopes([signal, AbortSignal.timeout(120_000)], async (retirementSignal) => {
+					await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
+					for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
+						if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
+						const settled = this.#settled.get(entry.name);
+						if (settled && settled.runId !== work.runId) continue;
+						let prior: LxdProviderJournal | undefined;
+						try {
+							prior = await this.#readJournal(entry.name);
+						} catch (error) {
+							// A dead journal this build cannot read has no guest to wait for; only its attempt still counts.
+							const dead = await this.#deadJournal(entry.name, retirementSignal);
+							if (!dead) throw error;
+							const attempt = dead.attempt ?? 1;
+							if (
+								(dead.runId ?? dead.acquisitionId) === work.runId &&
+								(typeof attempt !== "number" || attempt >= work.attempt)
+							)
+								throw new Error("LXD provider refuses an older run attempt");
+							continue;
 						}
-						// Reconciliation validates physical and retained-volume authority on
-						// every poll. Never stop a still-running prior attempt here.
-						await delay(250, undefined, { signal: retirementSignal });
+						if (!prior || (prior.runId ?? prior.acquisitionId) !== work.runId) continue;
+						if ((prior.attempt ?? 1) >= work.attempt)
+							throw new Error("LXD provider refuses an older run attempt");
+						for (;;) {
+							retirementSignal.throwIfAborted();
+							// Each look holds the prior attempt's own lock, never across the wait between looks.
+							const retired = await this.#journals.run(entry.name, async () => {
+								const latest = await this.#readJournal(entry.name);
+								// A settled journal moves to the archive: its guest is gone and its capacity released.
+								if (!latest && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, entry.name))))
+									return undefined;
+								if (!latest) throw new Error("LXD prior run attempt lost its journal");
+								await this.#reconcileJournal(latest, retirementSignal);
+								const journal = await this.#readJournal(entry.name);
+								if (!journal) throw new Error("LXD prior run attempt lost its journal");
+								const instance = await this.#lxd.getInstance(
+									journal.lxd.project,
+									journal.instanceName,
+									retirementSignal,
+								);
+								return { journal, instance };
+							});
+							retirementSignal.throwIfAborted();
+							if (!retired) break;
+							const { journal, instance } = retired;
+							if (["stopped", "lost"].includes(journal.physicalState) && !instance) break;
+							if (!instance || !["registered", "assigned"].includes(journal.physicalState)) {
+								throw new Error("LXD prior run attempt has not retired its guest");
+							}
+							// Reconciliation validates physical and retained-volume authority on
+							// every poll. Never stop a still-running prior attempt here.
+							await delay(250, undefined, { signal: retirementSignal });
+						}
 					}
-				}
+				});
 			}
 			step.stage = "credentials";
 			const credentials = await this.#credentials(acquisitionId);
@@ -2689,8 +2691,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("Machine start was not admitted by the company ceiling");
 		}
 		signal?.throwIfAborted();
+		const alreadyRegistered = current.capacityRegistered || this.#registeredCapacity.has(current.acquisitionId);
 		this.#registeredCapacity.add(current.acquisitionId);
-		await this.#writeJournal(current);
+		if (!alreadyRegistered) await this.#writeJournal(current);
 		// G2-3: the guest's identity credential is bound to this allocation before the guest can start (idempotent on
 		// a re-reservation); only its hash leaves the node host.
 		await this.#rpc(
@@ -2733,6 +2736,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		// failed attempt. The allocation and its demand row are kept for the next try.
 		if (admission.state === "refused") throw new LxdMachineAdmissionRefused("refused", admission.reason);
 		if (prior && prior.nodeId !== admission.nodeId) throw new Error("LXD node placement cannot be changed");
+		const alreadyNodeRegistered = Boolean(
+			current.nodeCapacity ?? this.#registeredNodeCapacity.get(current.acquisitionId),
+		);
 		this.#registeredNodeCapacity.set(current.acquisitionId, {
 			nodeId: admission.nodeId,
 			policySha256,
@@ -2740,7 +2746,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			cpuMillis: policy.cpuMillis,
 			memoryBytes: policy.memoryBytes,
 		});
-		await this.#writeJournal(current);
+		if (!alreadyNodeRegistered) await this.#writeJournal(current);
 		admission.signal.throwIfAborted();
 		return admission.signal;
 	}

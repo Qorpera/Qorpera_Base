@@ -61,6 +61,7 @@ import {
 } from "../cloud/sidebar-sections-file.ts";
 import type { CompanySiteHostingState, WebSiteHosting } from "../cloud/site-hosting.ts";
 import type { CompanySite } from "../cloud/sites.ts";
+import type { SurfaceRailLayout, SurfaceRailLayoutRead } from "../cloud/surface-rail-layout.ts";
 import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -294,6 +295,8 @@ export interface CompanyState {
 	appLayout?: MemberAppLayoutRead;
 	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
 	appLayoutUnavailable?: boolean;
+	surfaceRail?: SurfaceRailLayoutRead;
+	surfaceRailUnavailable?: boolean;
 	/** Each app's own icons (`apps/<name>/icons/`, app/interface-apps.ts), by the app's name, for the apps whose icons
 	 * were asked for: the member opened its Icon and colour panel, or picked one of them. Newest first. */
 	appIcons?: Readonly<Record<string, readonly CompanyAppIcon[]>>;
@@ -547,6 +550,39 @@ const newestActivityByAgent = new WeakMap<
 	readonly HostedStaffExecutionActivity[],
 	Map<string, HostedStaffExecutionActivity>
 >();
+const sessionIndexByList = new WeakMap<readonly HostedSession[], Map<string, HostedSession>>();
+const staffIndexByList = new WeakMap<readonly HostedStaffAgent[], Map<string, HostedStaffAgent>>();
+const memberNameByTeam = new WeakMap<HostedProfileTeam["members"], Map<string, string>>();
+
+function sessionById(sessions: readonly HostedSession[], sessionId: string): HostedSession | undefined {
+	let index = sessionIndexByList.get(sessions);
+	if (!index) {
+		index = new Map<string, HostedSession>();
+		for (const item of sessions) index.set(item.sessionId, item);
+		sessionIndexByList.set(sessions, index);
+	}
+	return index.get(sessionId);
+}
+
+function staffIndex(staff: readonly HostedStaffAgent[]): Map<string, HostedStaffAgent> {
+	let index = staffIndexByList.get(staff);
+	if (!index) {
+		index = new Map<string, HostedStaffAgent>();
+		for (const item of staff) index.set(item.id, item);
+		staffIndexByList.set(staff, index);
+	}
+	return index;
+}
+
+function teamMemberNames(members: HostedProfileTeam["members"]): Map<string, string> {
+	let index = memberNameByTeam.get(members);
+	if (!index) {
+		index = new Map<string, string>();
+		for (const member of members) index.set(member.userId, member.displayName);
+		memberNameByTeam.set(members, index);
+	}
+	return index;
+}
 
 /** Drop optimistic card answers once the projection carries them, or once their
  * input failed: that answer never reached the agent, so the card is open again. */
@@ -771,6 +807,10 @@ export class CompanyController {
 	#resetting = 0;
 	#appLayoutStale = false;
 	#appLayoutWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
+	#surfaceRailReads = 0;
+	#surfaceRailPending = 0;
+	#surfaceRailStale = false;
+	#surfaceRailWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
 	#poll: ReturnType<typeof setInterval> | undefined;
 	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
 	#skippedWhileHidden = false;
@@ -1069,19 +1109,26 @@ export class CompanyController {
 	async refreshAll(): Promise<void> {
 		if (this.#stopped) return;
 		this.store.set({ loading: true, error: undefined });
+		const teamPromise = this.refreshTeam();
+		const sessionsPromise = this.refreshSessions();
+		const groupsPromise = Promise.all([teamPromise, sessionsPromise]).then(() => this.refreshGroups());
+		const afterTeam = teamPromise.then(() => {
+			if (this.#stopped) return;
+			void this.refreshMentions();
+			void this.refreshHoursWait();
+			void this.memberChats.refresh();
+		});
 		await Promise.all([
-			this.refreshTeam(),
+			teamPromise,
 			this.refreshStaff(),
-			this.refreshSessions(),
+			sessionsPromise,
 			this.refreshOrganization(),
 			this.refreshActivity(),
 			this.refreshSidebar(),
+			groupsPromise,
+			afterTeam,
 		]);
-		await this.refreshGroups();
 		this.store.set({ loading: false });
-		void this.refreshMentions();
-		void this.refreshHoursWait();
-		void this.memberChats.refresh();
 	}
 
 	/** Re-read whether the company waits for computer hours. */
@@ -1210,7 +1257,7 @@ export class CompanyController {
 	 * group chat, its agents (only those named then answer). None where the cloud reads no mentions. */
 	mentionTargets(sessionId: string): MentionTarget[] {
 		const state = this.store.get();
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		const roomId = session?.executionScope?.roomId;
 		if (this.#stopped || !state.mentionsReady || !session || typeof roomId !== "string" || !state.team) return [];
 		const name = (userId: string) => state.team?.members.find((member) => member.userId === userId)?.displayName;
@@ -1481,7 +1528,10 @@ export class CompanyController {
 			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
 			if (!sameJson(this.store.get().sidebar, sidebar)) this.store.set({ sidebar });
 			// The member's apps layout is part of their own sidebar: a hint for one is a hint for the other.
-			if (sidebar.own) void this.refreshAppLayout();
+			if (sidebar.own) {
+				void this.refreshAppLayout();
+				void this.refreshSurfaceRail();
+			}
 			// Hints from now on: on the company's topic, or by postgres_changes on a channel of their own, so a cloud without
 			// the sidebar tables must not degrade the company's hints.
 			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
@@ -1585,9 +1635,13 @@ export class CompanyController {
 		// One after the other with the apps layout's writes: a move on its way lands first. Until the reset and the apps
 		// layout's read after it are done, the drawer makes no move, so none is built on what the reset took away.
 		this.#resetting++;
-		const reset = this.#appLayoutWrites
+		const reset = Promise.all([this.#appLayoutWrites, this.#surfaceRailWrites])
 			.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }))
 			.then(async (done) => {
+				if (done && !this.store.get().surfaceRailUnavailable) {
+					this.#surfaceRailStale = true;
+					void this.refreshSurfaceRail(true);
+				}
 				// A cloud without each member's apps layout (before 20260930728000) has none to read again.
 				if (!done || this.store.get().appLayoutUnavailable) return done;
 				// The layout as the reset left it, read here and taken whatever other read is on its way; until one is
@@ -1616,6 +1670,7 @@ export class CompanyController {
 			() => undefined,
 			() => undefined,
 		);
+		this.#surfaceRailWrites = this.#appLayoutWrites;
 		const done = await reset;
 		if (done) void this.memberChats.refresh();
 		return done;
@@ -1791,6 +1846,67 @@ export class CompanyController {
 		} catch (error) {
 			if (this.#stopped) return;
 			if (error instanceof CloudRpcError && error.missing) this.store.set({ appLayoutUnavailable: true });
+		}
+	}
+
+	async refreshSurfaceRail(force = false): Promise<void> {
+		if (this.#stopped || this.store.get().surfaceRailUnavailable) return;
+		const version = ++this.#surfaceRailReads;
+		try {
+			const read = await this.#api.readMemberSurfaceRail(this.profile.profileId, this.signal);
+			if (this.#stopped || version !== this.#surfaceRailReads || (this.#surfaceRailPending && !force)) return;
+			this.#surfaceRailStale = false;
+			if (!sameJson(this.store.get().surfaceRail, read)) this.store.set({ surfaceRail: read });
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) {
+				this.#surfaceRailStale = false;
+				this.store.set({ surfaceRailUnavailable: true });
+			}
+		}
+	}
+
+	canArrangeSurfaces(): boolean {
+		const state = this.store.get();
+		return Boolean(state.surfaceRail && !state.surfaceRailUnavailable && !this.#resetting && !this.#surfaceRailStale);
+	}
+
+	async changeSurfaceRail(next: SurfaceRailLayout): Promise<boolean> {
+		const current = this.store.get().surfaceRail;
+		if (this.#stopped || !current || !this.canArrangeSurfaces()) return false;
+		this.store.set({ surfaceRail: { ...current, layout: next }, railError: undefined, sidebarReset: undefined });
+		const behind = this.#surfaceRailPending > 0;
+		this.#surfaceRailPending++;
+		const write = this.#surfaceRailWrites.then((last) =>
+			this.#api.setMemberSurfaceRail(
+				this.profile.profileId,
+				next,
+				behind && last !== undefined ? last : current.updatedAt,
+			),
+		);
+		this.#surfaceRailWrites = write.then(
+			(read) => read.updatedAt,
+			() => undefined,
+		);
+		try {
+			const read = await write;
+			this.#surfaceRailPending--;
+			if (this.#stopped) return false;
+			++this.#surfaceRailReads;
+			if (!this.#surfaceRailPending) this.store.set({ surfaceRail: read });
+			void this.refreshSidebar();
+			return true;
+		} catch (error) {
+			this.#surfaceRailPending--;
+			if (this.#stopped) return false;
+			this.store.set({
+				railError:
+					error instanceof CloudRpcError && error.code === "QSR01"
+						? t("Your interfaces changed in another tab. Try again.")
+						: t("The interfaces could not be arranged. Try again."),
+			});
+			if (!this.#surfaceRailPending) await this.refreshSurfaceRail();
+			return false;
 		}
 	}
 
@@ -2041,7 +2157,7 @@ export class CompanyController {
 			const current = () => {
 				signal.throwIfAborted();
 				const state = this.store.get();
-				const session = state.sessions.find((item) => item.sessionId === sessionId);
+				const session = sessionById(state.sessions, sessionId);
 				if (
 					state.accessLost ||
 					!state.team?.capabilities.read ||
@@ -2109,7 +2225,7 @@ export class CompanyController {
 			const current = this.store.get();
 			const groups: Record<string, GroupChatDetails> = {};
 			for (const room of rooms) {
-				const session = current.sessions.find((item) => item.sessionId === room.sessionId);
+				const session = sessionById(current.sessions, room.sessionId);
 				if (
 					!session ||
 					session.staffAgentId ||
@@ -2149,7 +2265,7 @@ export class CompanyController {
 			state.team.profileId !== this.profile.profileId
 		)
 			return [];
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		const roomId = session?.executionScope?.roomId;
 		if (
 			!session ||
@@ -2186,13 +2302,14 @@ export class CompanyController {
 	}
 
 	staffById(id: string | undefined): HostedStaffAgent | undefined {
-		return id ? this.store.get().staff.find((agent) => agent.id === id) : undefined;
+		return id ? staffIndex(this.store.get().staff).get(id) : undefined;
 	}
 
 	memberName(userId: string | undefined): string {
 		if (!userId) return t("Member");
 		if (userId === this.#userId) return t("You");
-		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? t("Member");
+		const members = this.store.get().team?.members;
+		return (members ? teamMemberNames(members).get(userId) : undefined) ?? t("Member");
 	}
 
 	/** The agent's newest run as the server reports it, settled or not. A failure from before the agent's newer work
@@ -2433,7 +2550,7 @@ export class CompanyController {
 	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
 	#dismissFailureFor(sessionId: string): void {
 		const state = this.store.get();
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		const current = this.#newestActivity(session?.staffAgentId);
 		// The last failure is the agent's earlier one once it has newer work (20260930542000).
 		const row = current && isFailedRun(current) ? current : this.#earlierFailure(session?.staffAgentId);
@@ -3127,7 +3244,7 @@ export class CompanyController {
 
 	assertCanSend(sessionId: string): void {
 		const state = this.store.get();
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		if (
 			this.#stopped ||
 			state.accessLost ||
@@ -3169,7 +3286,7 @@ export class CompanyController {
 	#sharedDraftRoom(sessionId: string): string | undefined {
 		const state = this.store.get();
 		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return undefined;
-		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const session = sessionById(state.sessions, sessionId);
 		if (session?.status !== "open") return undefined;
 		let roomId: string | undefined;
 		try {

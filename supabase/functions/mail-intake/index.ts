@@ -1,6 +1,6 @@
-import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
-import { createTimedFetch, preferredServiceKey, readBoundedJson, withAbortSignal } from "../_shared/http-guards.ts";
+import { preferredServiceKey, readBoundedJson, withAbortSignal } from "../_shared/http-guards.ts";
+import { createPostgrestClient } from "../_shared/postgrest-rpc.ts";
 import { handleMailIntake, type MailProvider, type MailStore, MailStoreError } from "./mail-intake.ts";
 
 const MAX_PROVIDER_BODY_BYTES = 4 * 1024 * 1024;
@@ -17,10 +17,7 @@ function serviceKey(): string {
 	return key;
 }
 
-const supabase = createClient(required("SUPABASE_URL"), serviceKey(), {
-	auth: { persistSession: false, autoRefreshToken: false },
-	global: { fetch: createTimedFetch({ timeoutMs: 15_000 }) },
-});
+const supabase = createPostgrestClient(required("SUPABASE_URL"), serviceKey(), { timeoutMs: 15_000 });
 const resendApiKey = required("RESEND_API_KEY");
 const secret = required("RESEND_WEBHOOK_SECRET");
 

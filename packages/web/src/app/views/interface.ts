@@ -87,9 +87,12 @@ export function show(container: HTMLElement, key: string, build: () => HTMLEleme
 	const field = again instanceof HTMLInputElement || again instanceof HTMLTextAreaElement ? again : undefined;
 	if (field && same && caret && field === document.activeElement) field.setSelectionRange(caret[0], caret[1]);
 	// Last, so that the focus and the caret move nothing after it.
-	for (const each of drawn) {
-		const was = scrolled.find(([named]) => named === each.dataset.scrollKey);
-		if (was) each.scrollTop = was[1];
+	if (scrolled.length > 0) {
+		const scrolledByKey = new Map(scrolled);
+		for (const each of drawn) {
+			const top = scrolledByKey.get(each.dataset.scrollKey);
+			if (top !== undefined) each.scrollTop = top;
+		}
 	}
 }
 

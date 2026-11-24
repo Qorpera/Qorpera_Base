@@ -22,7 +22,7 @@ use crate::local::{self, is_local, Area, Renaming, Up};
 use crate::peers::{Change, Parent};
 use crate::proto::{split, Entry, CHUNK, MAX_CHUNKS};
 use crate::records::Kind;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -74,7 +74,7 @@ fn when(t: Option<TimeOrNow>) -> Option<SystemTime> {
 impl Shared {
 	/// Whether the node's file `ino` is one of git's shared files in a writable view (`fresh`).
 	pub(super) fn fresh(&self, ino: u64) -> bool {
-		self.writable && self.tree.lock().unwrap().path(ino).is_some_and(fresh)
+		self.writable && self.tree.read().unwrap().path(ino).is_some_and(fresh)
 	}
 
 	/// Where `name` in the folder `parent` is answered by the local files, if it is: in a local folder, or a
@@ -97,7 +97,7 @@ impl Shared {
 
 	/// The path of the node's folder `dir`, if it is in a code area (where the local files can be).
 	fn code_dir(&self, dir: u64) -> Option<String> {
-		let tree = self.tree.lock().unwrap();
+		let tree = self.tree.read().unwrap();
 		tree.path(dir).filter(|p| p.starts_with("code/")).map(str::to_string)
 	}
 
@@ -107,7 +107,7 @@ impl Shared {
 		if self.code_host {
 			return None;
 		}
-		let tree = self.tree.lock().unwrap();
+		let tree = self.tree.read().unwrap();
 		tree.path(dir).filter(|p| !matches!(git::place(p), Place::Git { .. })).map(str::to_string)
 	}
 
@@ -118,7 +118,7 @@ impl Shared {
 		if self.local.is_none() || self.code_host || !self.kernel.on() {
 			return;
 		}
-		let tree = self.tree.lock().unwrap();
+		let tree = self.tree.read().unwrap();
 		if tree.path(dir).is_some_and(|p| !matches!(git::place(p), Place::Git { .. })) {
 			self.answer(dir, name, tree.changes());
 		}
@@ -212,7 +212,7 @@ impl Shared {
 	fn ignored(&self, local: &Local, area: &str, worktree: &str, parent: u64, path: &str, folder: bool) -> bool {
 		let mut dirs = HashMap::new();
 		{
-			let tree = self.tree.lock().unwrap();
+			let tree = self.tree.read().unwrap();
 			let (mut ino, mut rel) = (parent, split(path).0);
 			loop {
 				if tree.path(ino) != Some(below(worktree, rel).as_str()) {
@@ -681,7 +681,7 @@ impl Shared {
 				}
 			}
 			local.mark_whole(&dir, false).map_err(local::errno)?;
-			self.tree.lock().unwrap().invalidate([dir.as_str()]);
+			self.tree.write().unwrap().invalidate([dir.as_str()]);
 			drop(renames);
 		}
 		Ok(())
@@ -1061,7 +1061,8 @@ impl FolderFs {
 			};
 			local.mirrors(dir).into_iter().filter(no_folder).collect::<Vec<_>>()
 		};
-		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entries.iter().any(|e| e.name == c.2));
+		let entry_names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
+		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entry_names.contains(&c.2));
 		if settled(local, dir) && (listed(dir) || !gone(dir).is_empty()) {
 			let mut moved = Vec::new();
 			{
@@ -1087,7 +1088,7 @@ impl FolderFs {
 		}
 		let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
 		for (c_ino, kind, name, attr) in local.entries_of_plus(&dir, Area::Cache) {
-			if !entries.iter().any(|e| e.name == name) {
+			if !entry_names.contains(&name) {
 				entries.push(DirItem { ino: c_ino, kind, name, plus: DirPlus::Local(attr) });
 			}
 		}
@@ -1102,7 +1103,7 @@ impl FolderFs {
 			}
 			return None;
 		}
-		if write && self.s.tree.lock().unwrap().path(ino).is_some_and(alternates) {
+		if write && self.s.tree.read().unwrap().path(ino).is_some_and(alternates) {
 			reply.error(Errno::EPERM);
 			return None;
 		}
@@ -1276,7 +1277,7 @@ impl FolderFs {
 			return None;
 		}
 		let object = |p: &str| matches!(git::place(p), Place::Git { rest, .. } if git::object(rest));
-		if (atime.is_some() || mtime.is_some()) && self.s.tree.lock().unwrap().path(ino).is_some_and(object) {
+		if (atime.is_some() || mtime.is_some()) && self.s.tree.read().unwrap().path(ino).is_some_and(object) {
 			reply.error(Errno::EPERM);
 			return None;
 		}
@@ -1511,7 +1512,7 @@ impl FolderFs {
 			Ok(opened) => opened,
 			Err(f) if f.errno() == libc::EEXIST && !no_replace => {
 				// Made by another view since the mount listed its folder: the kernel looks it up again, and renames again.
-				drop(self.s.tree.lock().unwrap().invalidate([path]));
+				drop(self.s.tree.write().unwrap().invalidate([path]));
 				return Err(libc::ESTALE);
 			}
 			Err(f) => return Err(f.errno()),
@@ -1532,7 +1533,7 @@ impl FolderFs {
 			Err(f) => (version, Err(f.errno())),
 		};
 		self.s.versions.lock().unwrap().saved(path, &version);
-		self.s.tree.lock().unwrap().removed_local(path);
+		self.s.tree.write().unwrap().removed_local(path);
 		// The file is in the folder, but not as it was on the disk: the rename fails, and the cache's file stays.
 		set?;
 		match local.moved_file_out(disk, ino) {
@@ -1597,13 +1598,13 @@ impl FolderFs {
 		self.s.made(local, to.0, to.1, false);
 		if !known {
 			// The kernel looks both names up again: the node's file may be gone or still there.
-			drop(self.s.tree.lock().unwrap().invalidate([path.as_str()]));
+			drop(self.s.tree.write().unwrap().invalidate([path.as_str()]));
 			let _ = self.s.chased.send(vec![(from.0, from.1.to_string()), (to.0, to.1.to_string())]);
 			return Err(libc::EIO);
 		}
 		self.s.versions.lock().unwrap().removed(&path);
 		{
-			let mut tree = self.s.tree.lock().unwrap();
+			let mut tree = self.s.tree.write().unwrap();
 			tree.removed_local(&path);
 			tree.moved_to_cache(source.ino);
 		}

@@ -9,11 +9,6 @@ import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
 import { CloudCommandPages } from "./cloud-command-pages.ts";
-import {
-	createHttpCompanyComputerSessionFactory,
-	parseCompanyComputerNativeRoute,
-} from "./cloud-company-computer-native-client.ts";
-import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import { HttpCloudCompanyFolderBytes } from "./cloud-company-folder-bytes.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
 import { CloudNativeCompanyPresence } from "./cloud-company-path-presence.ts";
@@ -198,17 +193,6 @@ function optionalConcurrency(value: string | undefined): number | undefined {
 	return Number(value);
 }
 
-/** The office endpoint is deployment configuration, never a model or desktop
- * input. A partial selection must not disappear into legacy/local execution. */
-export function nativeCompanyComputerConfiguration(environment: NodeJS.ProcessEnv): { url: string } | undefined {
-	if (environment.QORPERA_COMPANY_COMPUTER_TOKEN !== undefined)
-		throw new Error("Company Computer transport requires a systemd credential");
-	if (environment.QORPERA_COMPANY_COMPUTER_URL === undefined) return undefined;
-	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
-		throw new Error("Company Computer requires the cloud-native Company File runtime");
-	return { url: parseCompanyComputerNativeRoute(required(environment, "QORPERA_COMPANY_COMPUTER_URL")).url };
-}
-
 /** The coding command gateway (the executor's HTTPS origin) is deployment
  * configuration. Without it this node carries no coding composition and a
  * coding wake fails visibly; ordinary company jobs never select it. */
@@ -296,7 +280,6 @@ export function nativeLoginGuestPurpose(environment: NodeJS.ProcessEnv): "sign_i
 
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
-	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
 	const codingConfiguration = nativeCodingConfiguration(environment);
 	const folderSearch = nativeFolderSearchConfiguration(environment);
 	const dataConfiguration = nativeCompanyDataConfiguration(environment);
@@ -424,16 +407,6 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 				[masterKey, bridgeToken, identity.credential, objectToken].includes(secretBrokerToken))
 		)
 			throw new Error("Cloud secret broker requires a distinct private systemd credential");
-		const computerToken = computerConfiguration
-			? await systemdCredential(environment, "qorpera-office-native")
-			: undefined;
-		if (
-			computerConfiguration &&
-			(!computerToken ||
-				!TOKEN_PATTERN.test(computerToken) ||
-				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken].includes(computerToken))
-		)
-			throw new Error("Company Computer requires a distinct private systemd credential");
 		const codingToken = codingConfiguration
 			? await systemdCredential(environment, "qorpera-coding-command")
 			: undefined;
@@ -441,9 +414,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			codingConfiguration &&
 			(!codingToken ||
 				!TOKEN_PATTERN.test(codingToken) ||
-				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken, computerToken].includes(
-					codingToken,
-				))
+				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken].includes(codingToken))
 		)
 			throw new Error("Coding command transport requires a distinct private systemd credential");
 		const pathControl = new HttpCloudCompanyPathControl({
@@ -457,15 +428,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			dataConfiguration &&
 			(!dataToken ||
 				!TOKEN_PATTERN.test(dataToken) ||
-				[
-					masterKey,
-					bridgeToken,
-					identity.credential,
-					objectToken,
-					secretBrokerToken,
-					computerToken,
-					codingToken,
-				].includes(dataToken))
+				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken, codingToken].includes(
+					dataToken,
+				))
 		)
 			throw new Error("Company databases require a distinct private systemd credential");
 		const companyData =
@@ -571,33 +536,6 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								holder,
 							},
 						},
-					}
-				: {}),
-			...(computerConfiguration && computerToken
-				? {
-						computerSession: createHttpCompanyComputerSessionFactory({
-							url: computerConfiguration.url,
-							token: computerToken,
-							holder,
-							registry: new HttpCloudCompanyComputerRegistry({
-								supabaseUrl: baseUrl,
-								serviceRoleKey: publishableKey,
-								fetch: dispatch.fetch,
-							}),
-							// A vault_fill asks this company's vault, which seals the value to the computer (A1-3), as it
-							// does a signed hook's secret (E3b-3); a vault_capture of a coding value goes there too.
-							...(secretBrokerOrigin && secretBrokerToken
-								? (() => {
-										const fills = new HttpCloudSecretBrokerClient({
-											origin: secretBrokerOrigin,
-											runtimeToken: secretBrokerToken,
-											companyId: state.companyId,
-											holder,
-										});
-										return { accountFills: fills, hookFills: fills, codingValues: fills };
-									})()
-								: {}),
-						}),
 					}
 				: {}),
 			...(folderSearch ? { folderSearch } : {}),

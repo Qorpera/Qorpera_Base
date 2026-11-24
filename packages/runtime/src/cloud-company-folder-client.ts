@@ -116,7 +116,6 @@ const CODE_LIFECYCLE_REASONS = [
 	"surface_backed",
 ] as const;
 const CODE_PICTURE_REASONS = ["missing", "not_a_file", "too_large", "not_a_picture", "not_shared"] as const;
-const CODE_REQUEST_KINDS = ["undo", "download", "restore"] as const;
 const CODE_REQUEST_KINDS_V2 = ["undo", "download", "restore", "query", "lifecycle"] as const;
 const CODE_REQUEST_STATES = ["queued", "running", "done", "refused", "failed"] as const;
 /** Why no import was asked for (20260930736000): a repository kept at the place, the same code kept elsewhere, an import
@@ -454,16 +453,6 @@ export type CloudCompanyCodeUndo =
 	| { readonly state: "queued"; readonly requestId: string }
 	| { readonly state: "already"; readonly undoneBy: number }
 	| { readonly state: "refused"; readonly reason: (typeof CODE_UNDO_REASONS)[number] | CloudCompanyCodeRefusal };
-
-export interface CloudCompanyCodeRequest {
-	readonly requestId: string;
-	readonly kind: (typeof CODE_REQUEST_KINDS)[number];
-	readonly state: (typeof CODE_REQUEST_STATES)[number];
-	readonly result: string | null;
-	readonly change: number | null;
-	readonly code: string | null;
-	readonly paths: readonly string[] | null;
-}
 
 export interface CloudCompanyCodeRequestV2 {
 	readonly requestId: string;
@@ -1970,95 +1959,6 @@ export class CloudCompanyFolderClient {
 			this.#uncertainCode.add(request.operationKey);
 			throw reason === undefined ? error : new CloudCompanyFolderError("unknown");
 		}
-	}
-
-	/** Asks for a change of a repository kept in Qorpera to be taken out of its main code
-	 * (`qorpera_folder_request_code_undo`, 20260930720000): that change alone, or with `andLater` that change and every
-	 * later one. The coding executor serves the request; `codeRequest` says how it stands. An open undo of the same
-	 * change is answered instead of a second one. */
-	async requestCodeUndo(
-		request: {
-			readonly operationKey: string;
-			readonly owner: string;
-			readonly name: string;
-			readonly change: number;
-			readonly andLater: boolean;
-			readonly reason: string;
-			readonly notice?: string;
-		},
-		signal: AbortSignal,
-	): Promise<CloudCompanyCodeUndo> {
-		return this.#codeEffect(
-			"qorpera_folder_request_code_undo",
-			{
-				operationKey: request.operationKey,
-				owner: request.owner,
-				name: request.name,
-				change: request.change,
-				andLater: request.andLater,
-				reason: request.reason,
-				...(request.notice === undefined ? {} : { notice: request.notice }),
-			},
-			signal,
-			(answer): CloudCompanyCodeUndo => {
-				const state = (answer as { state?: unknown } | null)?.state;
-				const input = record(
-					answer,
-					state === "queued"
-						? ["schema", "state", "requestId"]
-						: state === "already"
-							? ["schema", "state", "change", "undoneBy"]
-							: ["schema", "state", "reason"],
-				);
-				if (input.schema !== "qorpera.code-request/v1") invalid();
-				if (state === "queued") return { state, requestId: uuid(input.requestId) };
-				if (state === "already") {
-					if (input.change !== request.change || counter(input.undoneBy) < 1) invalid();
-					return { state, undoneBy: input.undoneBy as number };
-				}
-				const reason = CODE_UNDO_REASONS.find((known) => known === input.reason);
-				if (state !== "refused" || reason === undefined) invalid();
-				return { state: "refused", reason };
-			},
-		);
-	}
-
-	/** How a request of the run's company stands (`qorpera_folder_code_request`, 20260930720000): a read, with no
-	 * receipt. A request that is not this company's is SQL's P0002. */
-	async codeRequest(requestId: string, signal: AbortSignal): Promise<CloudCompanyCodeRequest> {
-		const input = record(
-			await this.#once(
-				"qorpera_folder_code_request",
-				{ p_binding: this.#binding, p_request_id: uuid(requestId) },
-				signal,
-			),
-			["schema", "requestId", "kind", "state", "result", "change", "code", "paths"],
-		);
-		const kind = CODE_REQUEST_KINDS.find((known) => known === input.kind);
-		const state = CODE_REQUEST_STATES.find((known) => known === input.state);
-		if (
-			input.schema !== "qorpera.code-request/v1" ||
-			input.requestId !== requestId ||
-			kind === undefined ||
-			state === undefined ||
-			!nullableString(input.result) ||
-			(input.change !== null && counter(input.change) < 1) ||
-			!nullableString(input.code) ||
-			(input.paths !== null &&
-				(!Array.isArray(input.paths) ||
-					input.paths.length > 100 ||
-					input.paths.some((path) => typeof path !== "string")))
-		)
-			invalid();
-		return {
-			requestId,
-			kind,
-			state,
-			result: input.result,
-			change: input.change as number | null,
-			code: input.code,
-			paths: input.paths as string[] | null,
-		};
 	}
 
 	async requestCodeUndoV2(

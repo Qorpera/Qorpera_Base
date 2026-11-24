@@ -1,5 +1,5 @@
-import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.112.3";
-import { createTimedFetch, DEFAULT_RPC_TIMEOUT_MS, preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
+import { DEFAULT_RPC_TIMEOUT_MS, jsonResponse, preferredServiceKey, sha256Hex as sha256, withAbortSignal } from "../_shared/http-guards.ts";
+import { createPostgrestClient, type PostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	parseRunnerBearer,
 	readRunnerControlRequest,
@@ -10,28 +10,14 @@ import {
 	type RunnerControlRequest,
 } from "./runner-control.ts";
 
-const UTF8_ENCODER = new TextEncoder();
-const timedFetch = createTimedFetch({ timeoutMs: DEFAULT_RPC_TIMEOUT_MS });
-let cachedClient: { readonly key: string; readonly client: SupabaseClient } | undefined;
+let cachedClient: { readonly key: string; readonly client: PostgrestClient } | undefined;
 
-function getClient(supabaseUrl: string, serviceKey: string): SupabaseClient {
+function getClient(supabaseUrl: string, serviceKey: string): PostgrestClient {
 	const key = `${supabaseUrl}\0${serviceKey}`;
 	if (cachedClient?.key === key) return cachedClient.client;
-	const client = createClient(supabaseUrl, serviceKey, {
-		auth: { autoRefreshToken: false, persistSession: false },
-		global: { fetch: timedFetch },
-	});
+	const client = createPostgrestClient(supabaseUrl, serviceKey, { timeoutMs: DEFAULT_RPC_TIMEOUT_MS });
 	cachedClient = { key, client };
 	return client;
-}
-
-function jsonResponse(value: unknown, status = 200): Response {
-	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(value));
-	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 Deno.serve(async (request) => {

@@ -775,3 +775,13 @@ export class ReleaseDesk {
 		this.#imageObserver?.unobserve(box);
 	}
 }
+
+export function whatsNewEntry(company: CompanyController, releases: CodeReleases): { ready: number } | undefined {
+	if (!releases.sites.length) return undefined;
+	if (!releases.canRelease) return { ready: 0 };
+	const silent = quieted(company);
+	let ready = 0;
+	for (const { ready: point } of releases.sites)
+		if (point && !silent.has(point.token)) ready += point.changes.length + point.quiet;
+	return { ready };
+}

@@ -1,9 +1,10 @@
-import { X509Certificate } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
-import { officeInstallHash } from "./lxd-office-installation.ts";
 import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 import { RuntimeNodeObserverHttpRegistry } from "./runtime-node-observer-service.ts";
+
+export const officeInstallHash = (bytes: Buffer | string): string => createHash("sha256").update(bytes).digest("hex");
 
 export const NODE_OBSERVER_INSTALL_ROOT = "/opt/qorpera/node-observer";
 export const NODE_OBSERVER_USER = "qorpera-node-observer";

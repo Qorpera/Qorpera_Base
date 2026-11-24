@@ -243,11 +243,6 @@ export function parseCodingValueCaptureAnswer(value: unknown): CodingValueCaptur
 	};
 }
 
-/** The answer of this file's refusal schema, or none. */
-export function isCodingValueRefusal(answer: { readonly schema: string }): answer is CodingValueRefusal {
-	return answer.schema === REFUSAL_SCHEMA;
-}
-
 /** What the database describes for a call's capture key: whose value it is, the company key it is derived under, the
  * id the value keeps (none before a key was reserved for it), and the key it keeps when that one is current. */
 interface Description {

@@ -11,16 +11,16 @@ import {
 } from "@qorpera/cloud-client/app-program";
 import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
-import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
 import { fmtBytes, h, icon, replace } from "../../ui/dom.ts";
+import { WebFileDownloads } from "../../ui/file-downloads.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { presentationDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { dayLabel } from "../agent-line.ts";
 import { folderImageReader, forgetPictureUrl, pictureUrl } from "../folder-images.ts";
 import { downloadOffer, isPhoneSystem, memberSystem, PROGRAM_KIND_NAMES } from "../program-download.ts";
-import { MAX_DOWNLOAD_BYTES } from "./company-folder.ts";
+import { MAX_DOWNLOAD_BYTES } from "./company-folder-meta.ts";
 import { hasFiles, type ProgramAddHost, ProgramDrop } from "./program-add.ts";
 
 export type ProgramFolder = Pick<CloudMemberFolderClient, "read" | "readFile"> &

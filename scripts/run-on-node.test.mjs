@@ -1313,7 +1313,7 @@ test(
 		};
 		const free = (file) => spawnSync("flock", ["--nonblock", file, "true"]).status === 0;
 		const until = async (what, check) => {
-			for (const end = Date.now() + 15_000; !check(); await sleep(100)) if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+			for (const end = Date.now() + 15_000; !check(); await sleep(25)) if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
 		};
 		// A session as runScript leaves it for grow: its first slot locked on fd 9, one slot's cores in the file.
 		const session = (want) => {
@@ -1325,7 +1325,7 @@ test(
 						"set -uo pipefail",
 						`exec 9>${shellQuote(slot(1))}; flock -n 9 || exit 3`,
 						`per=2; want=${want}; cores_file=${shellQuote(cores)}; echo "$per" >"$cores_file"`,
-						freeGrowScript({ locks, allStarted, sideBySide, using, meminfo, arriving }),
+						freeGrowScript({ locks, allStarted, sideBySide, using, meminfo, arriving, tickSeconds: 0.1 }),
 						"exec 4> >(grow)",
 						"echo started",
 						"read -r _",
@@ -1359,7 +1359,7 @@ test(
 			// first, without a queue ticket, and keeps them until its session ends. On an idle machine it reaches three.
 			const first = session(3);
 			await until("the session", () => first.out.includes("started"));
-			await sleep(3_000);
+			await sleep(350);
 			assert.doesNotMatch(first.out, /too/);
 			writeFileSync(sideBySide, "");
 			await until("slots 4 and 3", () => first.out.includes("slot 3 too: 3 slots, 6 cores\n"));
@@ -1372,7 +1372,7 @@ test(
 			for (const n of [2, 3, 4]) await hold(slot(n));
 			const second = session(3);
 			await until("the session", () => second.out.includes("started"));
-			await sleep(3_000);
+			await sleep(350);
 			assert.doesNotMatch(second.out, /too/);
 			assert.deepEqual([5, 6, 7].map((n) => existsSync(slot(n))), [false, false, false]);
 			assert.equal(budget(), "2");
@@ -1382,7 +1382,7 @@ test(
 			await release(slot(3));
 			await release(slot(2));
 			await until("the wait", () => second.out.includes(waits));
-			await sleep(3_000);
+			await sleep(350);
 			assert.doesNotMatch(second.out, /too/);
 			assert.deepEqual([free(slot(3)), free(slot(2))], [true, true]);
 			// A ticket nobody holds is a run that died, not one that waits: once the live one has gone, it takes slot 3, and
@@ -1391,7 +1391,7 @@ test(
 			await release(owner);
 			await until("slot 3", () => second.out.includes("== run-on-node: slot 3 too: 2 slots, 4 cores\n"));
 			await until("the last free slot", () => second.out.includes(last));
-			await sleep(3_000);
+			await sleep(350);
 			assert.equal(second.out, `started\n${waits}== run-on-node: slot 3 too: 2 slots, 4 cores\n${last}`);
 			assert.deepEqual([free(slot(2)), budget()], [true, "4"]);
 			await end(second);
@@ -1411,7 +1411,7 @@ test(
 				const third = session(2);
 				writeFileSync(sideBySide, "");
 				await until(`the wait for ${what}`, () => third.out.includes(waits));
-				await sleep(2_500);
+				await sleep(300);
 				assert.doesNotMatch(third.out, /too/, what);
 				if (ticket) await release(file);
 				else rmSync(file);
@@ -1422,7 +1422,7 @@ test(
 			memory(2047);
 			const fourth = session(2);
 			await until("the low-memory stop", () => fourth.out.includes("== run-on-node: 2047 MiB available, under 2048: no more slots until there is more\n"));
-			await sleep(2_500);
+			await sleep(300);
 			assert.doesNotMatch(fourth.out, /too/);
 			memory(2048);
 			await until("slot 3", () => fourth.out.includes("under 2048: no more slots until there is more\n== run-on-node: slot 3 too: 2 slots, 4 cores\n"));
@@ -1431,7 +1431,7 @@ test(
 			writeFileSync(allStarted, "");
 			const fifth = session(3);
 			await until("the stop", () => fifth.out.includes("== run-on-node: every step has started: no more slots (1 of 3)\n"));
-			await sleep(2_500);
+			await sleep(300);
 			assert.deepEqual([fifth.out.includes("too"), free(slot(3)), budget()], [false, true, "2"]);
 			await end(fifth);
 			assert.deepEqual([free(slot(1)), free(slot(3)), existsSync(cores)], [true, true, false]);
@@ -1460,7 +1460,7 @@ test(
 			// Its steps need 300 hundredths, which fit in two slots; but the line it published names the generation before the
 			// lowered budget, so that is no answer for this one and the slot stays.
 			assert.deepEqual([budget(), free(slot(3))], ["4", false]);
-			await sleep(4_500);
+			await sleep(450);
 			assert.deepEqual([seventh.out.includes("back for"), free(slot(3))], [false, false]);
 			// It answers for the lowered budget's own generation: now the slot goes back, on a later turn.
 			answer(300, 1);
@@ -1469,7 +1469,7 @@ test(
 			// A run still waits: one slot's cores less again, but two steps needing 250 do not fit in one slot, so slot 4 stays.
 			await until("the lower budget again", () => seventh.out.includes(lower(2)));
 			answer(250, 2);
-			await sleep(4_500);
+			await sleep(450);
 			assert.deepEqual([budget(), free(slot(4)), seventh.out.includes("slot 4 back")], ["2", false, false]);
 			// The waiting run goes before the steps fit: the cores go back up to its two slots', while another run holds slot 2
 			// and so slot 3 stays free for the next; once slot 2 frees too, it takes slot 3 again.
@@ -1488,7 +1488,7 @@ test(
 			rmSync(using);
 			await hold(owner2);
 			await until("the lower budget once more", () => seventh.out.split(lower(4)).length === 3);
-			await sleep(4_500);
+			await sleep(450);
 			assert.deepEqual([budget(), free(slot(3)), free(slot(4))], ["4", false, false]);
 			// One step runs alone, needing more than two slots give: it fits all the same (planScript always lets one step
 			// run, as a run in one slot does), so both slots go back, the last taken first, each after its own lowering and
@@ -1510,7 +1510,7 @@ test(
 			await hold(owner2);
 			await until("the lower budget", () => eighth.out.includes(lower(4)));
 			answer(500, 2);
-			await sleep(4_500);
+			await sleep(450);
 			assert.deepEqual([eighth.out.includes("back for"), budget(), free(slot(3))], [false, "4", false]);
 			await end(eighth);
 			assert.deepEqual([free(slot(3)), free(slot(4)), existsSync(cores)], [true, true, false]);
@@ -1523,10 +1523,10 @@ test(
 			chmodSync(locks, 0o555);
 			try {
 				await hold(owner2);
-				await sleep(4_500);
+				await sleep(450);
 				assert.deepEqual([ninth.out.includes("no new step past"), ninth.out.includes("back for"), budget()], [false, false, "6"]);
 				answer(300, 1);
-				await sleep(4_500);
+				await sleep(450);
 				assert.deepEqual([ninth.out.includes("back for"), free(slot(3))], [false, false]);
 			} finally {
 				chmodSync(locks, 0o755);

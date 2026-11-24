@@ -183,15 +183,37 @@
 			return { eye, coefficients: matrix.map((row) => row.slice(3)) };
 		});
 		if (corrections.every(({ coefficients }) => coefficients.every((row) => row.every((value) => value === 0)))) return;
+		const invW = 100 / width;
+		const invH = 100 / height;
+		const count = corrections.length;
 		for (let y = 0; y < height; y++) {
-			for (let x = 0; x < width; x++) {
-				const px = (x + .5) / width * 100, py = (y + .5) / height * 100;
-				const correction = corrections.reduce((closest, item) => Math.hypot(px - item.eye.x, py - item.eye.y) < Math.hypot(px - closest.eye.x, py - closest.eye.y) ? item : closest);
-				const basis = [1, (px - correction.eye.x) / 10, (py - correction.eye.y) / 10];
-				const offset = (y * width + x) * 4;
-				for (let channel = 0; channel < 3; channel++) {
-					plate[offset + channel] += basis.reduce((sum, value, row) => sum + value * correction.coefficients[row][channel], 0);
+			const py = (y + .5) * invH;
+			let offset = y * width * 4;
+			for (let x = 0; x < width; x++, offset += 4) {
+				if (plate[offset + 3] === 0) continue;
+				const px = (x + .5) * invW;
+				let closest = corrections[0];
+				let bestDx = px - closest.eye.x;
+				let bestDy = py - closest.eye.y;
+				let bestDist = bestDx * bestDx + bestDy * bestDy;
+				for (let index = 1; index < count; index++) {
+					const item = corrections[index];
+					const dx = px - item.eye.x;
+					const dy = py - item.eye.y;
+					const dist = dx * dx + dy * dy;
+					if (dist < bestDist) {
+						bestDist = dist;
+						bestDx = dx;
+						bestDy = dy;
+						closest = item;
+					}
 				}
+				const bx = bestDx * .1;
+				const by = bestDy * .1;
+				const c = closest.coefficients;
+				plate[offset] += c[0][0] + bx * c[1][0] + by * c[2][0];
+				plate[offset + 1] += c[0][1] + bx * c[1][1] + by * c[2][1];
+				plate[offset + 2] += c[0][2] + bx * c[1][2] + by * c[2][2];
 			}
 		}
 	}
@@ -203,20 +225,53 @@
 		const source = [1, 3, 5].map((start) => Number.parseInt(shade.slice(start, start + 2), 16));
 		const eyeChannel = source.indexOf(Math.min(...source));
 		const eyeStart = eyeStarts[id] / 255;
-		const eyes = model.faces[id].map((eye) => ({ ...eye, cosine: Math.cos(eye.rotation * Math.PI / 180), sine: Math.sin(eye.rotation * Math.PI / 180) }));
+		const invEyeRange = 1 / (1 - eyeStart);
+		const eyes = model.faces[id].map((eye) => ({
+			...eye,
+			cosine: Math.cos(eye.rotation * Math.PI / 180),
+			sine: Math.sin(eye.rotation * Math.PI / 180),
+			halfSeg: (eye.height - eye.width) / 2,
+			radiusSq: (eye.width / 2 + 1) ** 2,
+		}));
 		const cover = new Float32Array(width * height);
-		for (let index = 0; index < cover.length; index++) {
-			const offset = index * 4;
-			if (!pixels[offset + 3]) continue;
-			const x = (index % width + .5) / width * 100;
-			const y = (Math.floor(index / width) + .5) / height * 100;
-			const inEye = eyes.some((eye) => {
-				const dx = x - eye.x, dy = y - eye.y;
-				const u = dx * eye.cosine + dy * eye.sine;
-				const v = -dx * eye.sine + dy * eye.cosine;
-				return Math.hypot(u, Math.max(0, Math.abs(v) - (eye.height - eye.width) / 2)) <= eye.width / 2 + 1;
-			});
-			if (inEye) cover[index] = Math.max(0, (pixels[offset + eyeChannel] / 255 - eyeStart) / (1 - eyeStart));
+		let minX = width, maxX = -1, minY = height, maxY = -1;
+		for (const eye of eyes) {
+			const pad = Math.max(eye.width, eye.height) / 2 + 2;
+			const x0 = Math.max(0, Math.floor((eye.x - pad) / 100 * width));
+			const x1 = Math.min(width - 1, Math.ceil((eye.x + pad) / 100 * width));
+			const y0 = Math.max(0, Math.floor((eye.y - pad) / 100 * height));
+			const y1 = Math.min(height - 1, Math.ceil((eye.y + pad) / 100 * height));
+			if (x0 < minX) minX = x0;
+			if (x1 > maxX) maxX = x1;
+			if (y0 < minY) minY = y0;
+			if (y1 > maxY) maxY = y1;
+		}
+		const invW = 100 / width;
+		const invH = 100 / height;
+		const eyeCount = eyes.length;
+		for (let py = minY; py <= maxY; py++) {
+			const y = (py + .5) * invH;
+			const rowStart = py * width;
+			for (let px = minX; px <= maxX; px++) {
+				const index = rowStart + px;
+				const offset = index * 4;
+				if (!pixels[offset + 3]) continue;
+				const x = (px + .5) * invW;
+				let inEye = false;
+				for (let e = 0; e < eyeCount; e++) {
+					const eye = eyes[e];
+					const dx = x - eye.x, dy = y - eye.y;
+					const u = dx * eye.cosine + dy * eye.sine;
+					const v = -dx * eye.sine + dy * eye.cosine;
+					const dv = Math.abs(v) - eye.halfSeg;
+					const clv = dv > 0 ? dv : 0;
+					if (u * u + clv * clv <= eye.radiusSq) {
+						inEye = true;
+						break;
+					}
+				}
+				if (inEye) cover[index] = Math.max(0, (pixels[offset + eyeChannel] / 255 - eyeStart) * invEyeRange);
+			}
 		}
 		return cover;
 	}
@@ -270,10 +325,19 @@
 		if (!stops) throw new Error("Avatar light field unavailable");
 		// Anchor the ramp to the body's median light, so a body and its plate
 		// meet without a seam.
-		const lights = [];
-		for (let index = 0; index < stops.length; index++) if (coverage[index] === 1 && !(eyes && eyes[index])) lights.push(stops[index]);
-		lights.sort((first, second) => first - second);
-		const median = lights.length ? lights[lights.length >> 1] : 0;
+		let median = body ? body.median : 0;
+		if (!body) {
+			const lights = new Float32Array(stops.length);
+			let count = 0;
+			for (let index = 0; index < stops.length; index++) {
+				if (coverage[index] === 1 && !(eyes && eyes[index])) lights[count++] = stops[index];
+			}
+			if (count) {
+				const used = lights.subarray(0, count);
+				used.sort();
+				median = used[count >> 1];
+			}
+		}
 		canvas.width = canvas.height = 0;
 		originals.set(id, { pixels, stops, eyes, median, width, height });
 	}
@@ -292,7 +356,11 @@
 		}
 		if (rendered.size >= MAX_RENDERED) {
 			const oldest = rendered.keys().next().value;
-			if (oldest !== undefined) rendered.delete(oldest);
+			if (oldest !== undefined) {
+				const evicted = rendered.get(oldest);
+				rendered.delete(oldest);
+				if (evicted?.image) evicted.image.width = evicted.image.height = 0;
+			}
 		}
 		const canvas = document.createElement("canvas");
 		canvas.width = original.width;

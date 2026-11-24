@@ -12,18 +12,18 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 /** Which source draws which figure: the machine's own table (scripts/machine-desktop-art.mjs BACKDROP_FILES), and the
  * neutral wordmark. */
 export const BACKDROP_SOURCES = Object.freeze({
-	planet: "deploy/lxd-company-computer-guest/backdrops-source/brain.html",
-	acorn: "deploy/lxd-company-computer-guest/backdrops-source/folio.html",
-	flame: "deploy/lxd-company-computer-guest/backdrops-source/ribbon.html",
-	rocket: "deploy/lxd-company-computer-guest/backdrops-source/pebble.html",
-	crown: "deploy/lxd-company-computer-guest/backdrops-source/halo.html",
-	heart: "deploy/lxd-company-computer-guest/backdrops-source/bloom.html",
-	star: "deploy/lxd-company-computer-guest/backdrops-source/star.html",
-	cloud: "deploy/lxd-company-computer-guest/backdrops-source/cloud.html",
-	bolt: "deploy/lxd-company-computer-guest/backdrops-source/bolt.html",
-	mushroom: "deploy/lxd-company-computer-guest/backdrops-source/mushroom.html",
-	moon: "deploy/lxd-company-computer-guest/backdrops-source/moon.html",
-	puzzle: "deploy/lxd-company-computer-guest/backdrops-source/puzzle.html",
+	planet: "deploy/machine/backdrops-source/brain.html",
+	acorn: "deploy/machine/backdrops-source/folio.html",
+	flame: "deploy/machine/backdrops-source/ribbon.html",
+	rocket: "deploy/machine/backdrops-source/pebble.html",
+	crown: "deploy/machine/backdrops-source/halo.html",
+	heart: "deploy/machine/backdrops-source/bloom.html",
+	star: "deploy/machine/backdrops-source/star.html",
+	cloud: "deploy/machine/backdrops-source/cloud.html",
+	bolt: "deploy/machine/backdrops-source/bolt.html",
+	mushroom: "deploy/machine/backdrops-source/mushroom.html",
+	moon: "deploy/machine/backdrops-source/moon.html",
+	puzzle: "deploy/machine/backdrops-source/puzzle.html",
 	neutral: "deploy/machine/backdrops-source/neutral.html",
 });
 

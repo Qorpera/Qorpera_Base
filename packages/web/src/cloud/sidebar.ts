@@ -26,6 +26,7 @@ export interface SidebarOwnChanges {
 	pages: number;
 	/** Apps and groups the member arranged in the drawer (20260930728000); 0 on a cloud before it. */
 	apps: number;
+	surfaces: number;
 }
 
 export interface SidebarPlacement {
@@ -172,6 +173,7 @@ function parseOwnChanges(value: unknown): SidebarOwnChanges {
 		contacts: count(own.contacts, "own sidebar contacts"),
 		pages: count(own.pages, "own sidebar pages"),
 		apps: own.apps === undefined ? 0 : count(own.apps, "own sidebar apps"),
+		surfaces: own.surfaces === undefined ? 0 : count(own.surfaces, "own sidebar interfaces"),
 	};
 }
 

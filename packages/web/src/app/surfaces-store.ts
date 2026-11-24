@@ -40,16 +40,31 @@ import {
 import { phrase, t } from "../ui/preferences.ts";
 import { type SurfaceFigureId, surfaceFigureIcon } from "../ui/surface-figure.ts";
 import { Store } from "./state.ts";
-import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import {
+	isOpsKind,
 	isThetabandCompany,
-	localStudioBinaryBytes,
+	type SurfaceKind,
+	type SurfaceLook,
 	slugifySurfaceTitle,
-	starterOrchestrationPlan,
-	starterStudioBinaries,
-	starterStudioFiles,
-	synthesizeLocalChanges,
-} from "./surface-local-sandbox.ts";
+	surfaceLookOf,
+} from "./surface-kinds.ts";
+
+type LocalSandboxModule = typeof import("./surface-local-sandbox.ts");
+let localSandbox: LocalSandboxModule | undefined;
+let localSandboxLoading: Promise<LocalSandboxModule> | undefined;
+
+export function registerLocalSandbox(mod: LocalSandboxModule): void {
+	localSandbox = mod;
+}
+
+function loadLocalSandbox(): Promise<LocalSandboxModule> {
+	if (localSandbox) return Promise.resolve(localSandbox);
+	localSandboxLoading ??= import("./surface-local-sandbox.ts").then((mod) => {
+		localSandbox = mod;
+		return mod;
+	});
+	return localSandboxLoading;
+}
 
 export type SurfacesClient = Pick<
 	CloudSurfacesClient,
@@ -1615,7 +1630,7 @@ export class SurfacesStore {
 
 	readStudioBinary(file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> {
 		signal.throwIfAborted();
-		const read = localStudioBinaryBytes(file) ?? this.#binaryRead(file);
+		const read = localSandbox?.localStudioBinaryBytes(file) ?? this.#binaryRead(file);
 		if (!read) return Promise.reject(new Error("No folder to read from"));
 		return new Promise<Uint8Array>((resolve, reject) => {
 			const stop = () => reject(signal.reason);
@@ -1871,13 +1886,26 @@ export class SurfacesStore {
 			this.#options.sandboxMode !== false &&
 			isThetabandCompany(this.companyName)
 		) {
-			this.orchestrateStarterSurfaces();
+			if (localSandbox) {
+				this.orchestrateStarterSurfaces();
+			} else {
+				void loadLocalSandbox().then(() => {
+					if (!this.#options.signal.aborted) this.orchestrateStarterSurfaces();
+				});
+			}
 		}
 	}
 
 	orchestrateStarterSurfaces(): readonly SurfaceSummary[] {
 		if (!this.isLocalInteractive) return [];
-		const plan = starterOrchestrationPlan(this.companyName);
+		const sandbox = localSandbox;
+		if (!sandbox) {
+			void loadLocalSandbox().then(() => {
+				if (!this.#options.signal.aborted) this.orchestrateStarterSurfaces();
+			});
+			return [];
+		}
+		const plan = sandbox.starterOrchestrationPlan(this.companyName);
 		const now = new Date().toISOString();
 		const createdSurfaces: SurfaceSummary[] = [];
 		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
@@ -1906,10 +1934,10 @@ export class SurfacesStore {
 			nextLooks[surface.id] = look;
 			if (spec.archetype === "studio") {
 				nextStudioBase[surface.id] = {
-					...starterStudioFiles(surface, this.companyName, spec.kind, spec.brief),
+					...sandbox.starterStudioFiles(surface, this.companyName, spec.kind, spec.brief),
 					...(spec.attachedReports ?? {}),
 				};
-				const binaries = starterStudioBinaries(surface, this.companyName, spec.kind);
+				const binaries = sandbox.starterStudioBinaries(surface, this.companyName, spec.kind);
 				if (Object.keys(binaries).length > 0) nextStudioBinaries[surface.id] = binaries;
 			} else if (spec.attachedReports && Object.keys(spec.attachedReports).length > 0) {
 				nextStudioBase[surface.id] = { ...spec.attachedReports };
@@ -3129,12 +3157,15 @@ export class SurfacesStore {
 		});
 		this.#localCreatedIds.add(created.id);
 		const look: SurfaceLook = { kind: input.kind ?? surfaceLookOf(created).kind };
+		const sandbox = input.archetype === "studio" ? (localSandbox ?? (await loadLocalSandbox())) : undefined;
 		const starterFiles =
-			input.archetype === "studio"
-				? starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
+			sandbox && input.archetype === "studio"
+				? sandbox.starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
 				: undefined;
 		const starterBinaries =
-			input.archetype === "studio" ? starterStudioBinaries(created, this.companyName, look.kind) : {};
+			sandbox && input.archetype === "studio"
+				? sandbox.starterStudioBinaries(created, this.companyName, look.kind)
+				: {};
 		this.store.set((state) => ({
 			surfaces: sortSurfaces([...state.surfaces, created]),
 			workspaces: { ...state.workspaces, [created.id]: { ...localWorkspace(created), briefSummary: description } },
@@ -3385,46 +3416,51 @@ export class SurfacesStore {
 
 	#stageLocalSession(surface: SurfaceSummary, sessionId: string, prompt: string): void {
 		this.#scheduleLocal(650, () => {
-			const workspace = this.workspace(surface.id);
-			const current = workspace?.activeSessions.find((item) => item.id === sessionId);
-			if (!workspace || !current) return;
-			const plan = synthesizeLocalChanges(
-				workspace.surface,
-				sessionId,
-				prompt,
-				() => `local-change-${++this.#localSeq}`,
-				this.companyName,
-				this.lookOf(workspace.surface).kind,
-			);
-			const now = new Date().toISOString();
-			const ready: SurfaceSession = {
-				...current,
-				state: "ready",
-				changes: [...plan.changes],
-				openChangeCount: plan.changes.length,
-				messages: [
-					...current.messages,
-					{
-						id: `local-message-${++this.#localSeq}`,
-						sessionId,
-						authorKind: "session",
-						text: plan.replyText,
-						changeId: null,
-						createdAt: now,
-					},
-				],
-				updatedAt: now,
+			const finish = (sandbox: LocalSandboxModule): void => {
+				if (this.#options.signal.aborted) return;
+				const workspace = this.workspace(surface.id);
+				const current = workspace?.activeSessions.find((item) => item.id === sessionId);
+				if (!workspace || !current) return;
+				const plan = sandbox.synthesizeLocalChanges(
+					workspace.surface,
+					sessionId,
+					prompt,
+					() => `local-change-${++this.#localSeq}`,
+					this.companyName,
+					this.lookOf(workspace.surface).kind,
+				);
+				const now = new Date().toISOString();
+				const ready: SurfaceSession = {
+					...current,
+					state: "ready",
+					changes: [...plan.changes],
+					openChangeCount: plan.changes.length,
+					messages: [
+						...current.messages,
+						{
+							id: `local-message-${++this.#localSeq}`,
+							sessionId,
+							authorKind: "session",
+							text: plan.replyText,
+							changeId: null,
+							createdAt: now,
+						},
+					],
+					updatedAt: now,
+				};
+				if (Object.keys(plan.studioPatches).length > 0) {
+					this.store.set((state) => ({
+						studioPatches: { ...state.studioPatches, ...plan.studioPatches },
+					}));
+				}
+				const nextWorkspace = replaceSession(workspace, ready, "open");
+				this.#putWorkspace({
+					...nextWorkspace,
+					surface: this.#syncLocalSurfaceCounts(nextWorkspace),
+				});
 			};
-			if (Object.keys(plan.studioPatches).length > 0) {
-				this.store.set((state) => ({
-					studioPatches: { ...state.studioPatches, ...plan.studioPatches },
-				}));
-			}
-			const nextWorkspace = replaceSession(workspace, ready, "open");
-			this.#putWorkspace({
-				...nextWorkspace,
-				surface: this.#syncLocalSurfaceCounts(nextWorkspace),
-			});
+			if (localSandbox) finish(localSandbox);
+			else void loadLocalSandbox().then(finish);
 		});
 	}
 
@@ -3443,8 +3479,9 @@ export class SurfacesStore {
 		const upload = this.#options.uploadImage;
 		if (!upload || !client.surfaceSessionImages) throw new Error(t("Images can't be sent here yet."));
 		const clientInputId = crypto.randomUUID();
-		const images: SurfaceImageRef[] = [];
-		for (const file of files) images.push(await upload(surfaceId, clientInputId, file, this.#options.signal));
+		const images = await Promise.all(
+			files.map((file) => upload(surfaceId, clientInputId, file, this.#options.signal)),
+		);
 		return { clientInputId, images };
 	}
 
@@ -4065,6 +4102,126 @@ export class SurfacesStore {
 		return true;
 	}
 
+	async approveChanges(
+		surfaceId: string,
+		groups: readonly { readonly sessionId: string; readonly changeIds: readonly string[] }[],
+	): Promise<boolean> {
+		const targets = groups.filter((group) => group.changeIds.length > 0);
+		const ids = targets.flatMap((group) => group.changeIds);
+		if (ids.length === 0) return false;
+		const titleOf = (id: string): string =>
+			targets
+				.map((group) => this.session(group.sessionId)?.changes.find((change) => change.id === id)?.title)
+				.find(Boolean) ?? "";
+		const labelFor = (done: readonly string[]): string =>
+			done.length === 1 ? titleOf(done[0]!) : t("{count} changes", { count: done.length });
+		const verb = this.#undoVerbFor(surfaceId);
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			const now = new Date().toISOString();
+			const updatedSessions: SurfaceSession[] = [];
+			for (const group of targets) {
+				const found = this.#sessionAt(group.sessionId);
+				if (!found) continue;
+				const chosen = new Set(group.changeIds);
+				const drawerOpen = this.drawerOpenOn(group.sessionId);
+				const changes = found.session.changes.map((change) =>
+					chosen.has(change.id) && isOpenChange(change)
+						? { ...change, status: "merged" as const, canUndo: true, resolvedAt: now }
+						: change,
+				);
+				const openCount = countOpenSurfaceChanges(changes);
+				updatedSessions.push({
+					...found.session,
+					state: openCount === 0 && !drawerOpen ? "completed" : "ready",
+					hasActiveChat: drawerOpen,
+					changes,
+					openChangeCount: openCount,
+					messages: [
+						...found.session.messages,
+						...found.session.changes
+							.filter((change) => chosen.has(change.id) && isOpenChange(change))
+							.map((change) => ({
+								id: `local-message-${++this.#localSeq}`,
+								sessionId: group.sessionId,
+								authorKind: "system" as const,
+								text: this.#doneLine(verb, change.title),
+								changeId: change.id,
+								createdAt: now,
+							})),
+					],
+					updatedAt: now,
+					closedAt: openCount === 0 && !drawerOpen ? now : null,
+				});
+			}
+			const done = ids.filter((id) =>
+				updatedSessions.some((session) => session.changes.some((change) => change.id === id)),
+			);
+			if (done.length === 0) return false;
+			this.#commitLocalChangesToBase(surfaceId, done);
+			for (const updated of updatedSessions)
+				this.#applySession(updated, approvalOutcome(updated, this.drawerOpenOn(updated.id)));
+			this.#offerUndo(labelFor(done), done, verb);
+			return true;
+		}
+		const client = this.#options.client;
+		if (!client) {
+			this.store.set({ error: this.#options.unavailableMessage });
+			return false;
+		}
+		const keys = ids.map((id) => `change:${id}`);
+		if (keys.some((key) => this.state.busy[key])) return false;
+		this.store.set((state) => {
+			const busy = { ...state.busy };
+			for (const key of keys) busy[key] = true;
+			return { busy, error: undefined };
+		});
+		const approved = new Map<string, SurfaceSession>();
+		let finished = false;
+		try {
+			for (const group of targets) {
+				const open = this.session(group.sessionId)?.changes.filter(isOpenChange) ?? [];
+				const whole =
+					open.length === group.changeIds.length && open.every((change) => group.changeIds.includes(change.id));
+				if (whole) {
+					approved.set(group.sessionId, await client.approveSessionAll(group.sessionId));
+					continue;
+				}
+				for (const id of group.changeIds) approved.set(group.sessionId, await client.approveSurfaceChange(id));
+			}
+			finished = true;
+		} catch (error) {
+			if (!this.#options.signal.aborted)
+				this.store.set({
+					error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
+				});
+		} finally {
+			if (!this.#options.signal.aborted)
+				this.store.set((state) => {
+					const busy = { ...state.busy };
+					for (const key of keys) delete busy[key];
+					return { busy };
+				});
+		}
+		if (approved.size === 0) return false;
+		const statusById = new Map<string, SurfaceChangeUnit["status"]>();
+		for (const updated of approved.values()) {
+			if (this.drawerOpenOn(updated.id) && !updated.changes.some(isOpenChange)) {
+				this.store.set({ drawer: undefined });
+				void client.setSessionChatOpen(updated.id, false).catch(() => undefined);
+			}
+			this.#applySession(updated, approvalOutcome(updated, this.drawerOpenOn(updated.id)));
+			for (const change of updated.changes) statusById.set(change.id, change.status);
+		}
+		const merged = ids.filter((id) => statusById.get(id) === "merged");
+		const merging = ids.filter((id) => statusById.get(id) === "merging");
+		const done = [...merged, ...merging];
+		if (merging.length > 0) this.#offerPendingMerge(surfaceId, labelFor(done), done, verb);
+		else if (merged.length > 0) this.#offerUndo(labelFor(merged), merged, verb);
+		if (!finished || ids.some((id) => statusById.get(id) === "staged")) void this.refreshWorkspace(surfaceId);
+		void this.refreshSurfaces();
+		return finished;
+	}
+
 	async discardChange(sessionId: string, changeId: string): Promise<boolean> {
 		const found = this.#sessionAt(sessionId);
 		if (!found) return false;
@@ -4271,21 +4428,26 @@ export class SurfacesStore {
 		if (this.isLocalInteractive && undo.changeIds.every((id) => id.startsWith("local-"))) {
 			return Boolean(this.#undoLocalChangeIds(undo.changeIds));
 		}
-		let restored: SurfaceSession | undefined;
+		const restored = new Map<string, SurfaceSession>();
+		const applyRestored = (): void => {
+			for (const session of restored.values())
+				this.#applySession(session, approvalOutcome(session, this.drawerOpenOn(session.id)));
+			if (restored.size > 0) void this.refreshSurfaces();
+		};
 		for (const changeId of undo.changeIds) {
-			if (restored?.changes.find((item) => item.id === changeId)?.status === "staged") continue;
+			const already = [...restored.values()].some(
+				(session) => session.changes.find((item) => item.id === changeId)?.status === "staged",
+			);
+			if (already) continue;
 			const next = await this.#run(`undo:${changeId}`, (client) => client.undoSurfaceChange(changeId));
 			if (!next) {
-				if (restored) {
-					this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
-					void this.refreshSurfaces();
-				}
+				applyRestored();
 				return false;
 			}
-			restored = next;
+			restored.set(next.id, next);
 		}
-		if (restored) this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
-		void this.refreshSurfaces();
+		applyRestored();
+		if (restored.size === 0) void this.refreshSurfaces();
 		return true;
 	}
 

@@ -640,6 +640,7 @@ export function cloudMemoryTools(
 	const recall: CloudNativeTool = {
 		name: "recall_memory" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_RECALL_MEMORY_DESCRIPTION,
 		inputSchema: {
 			type: "object",

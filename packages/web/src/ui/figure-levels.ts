@@ -6,31 +6,19 @@
  * step averaging exactly. */
 const MAX_LEVELS = 128;
 const levels = new Map<string, HTMLCanvasElement>();
-const scratch = new Map<number, HTMLCanvasElement>();
 
 /** The power of two at or above `side`, from 32 to 512. */
 export function bucketOf(side: number): number {
 	return Math.min(512, 2 ** Math.ceil(Math.log2(Math.max(32, side))));
 }
 
-/** Halve a 512px `image` down to `bucket`, each step onto `canvasFor(size)`;
- * `reused` canvases are cleared first. */
-function halve(
-	image: CanvasImageSource,
-	bucket: number,
-	canvasFor: (size: number) => HTMLCanvasElement,
-	reused = false,
-): CanvasImageSource {
+function halve(image: CanvasImageSource, bucket: number): CanvasImageSource {
 	let current = image,
 		size = 512;
 	while (size > bucket) {
 		size /= 2;
-		const next = canvasFor(size);
+		const next = canvas(size);
 		const nc = next.getContext("2d")!;
-		if (reused) nc.clearRect(0, 0, size, size);
-		// At exactly 2:1, plain bilinear sampling lands between four source pixels: the 2x2
-		// average itself. "high" adds nothing there (WebKit's is further from that average) and
-		// costs 1.5x (WebKit) to 4x (Chromium) per step, which the eyes pay every frame.
 		nc.imageSmoothingQuality = "low";
 		nc.drawImage(current, 0, 0, size, size);
 		current = next;
@@ -62,27 +50,9 @@ export function level(key: string, image: CanvasImageSource, bucket: number): Ca
 			if (evicted) evicted.width = evicted.height = 0;
 		}
 	}
-	scaled = halve(image, bucket, canvas) as HTMLCanvasElement;
+	scaled = halve(image, bucket) as HTMLCanvasElement;
 	levels.set(levelKey, scaled);
 	return scaled;
-}
-
-/** A 512px surface drawn fresh each frame (the eyes) halved down to
- * `bucket` through reused canvases. Valid until the next call. */
-export function reduce(image: CanvasImageSource, bucket: number): CanvasImageSource {
-	return halve(
-		image,
-		bucket,
-		(size) => {
-			let reused = scratch.get(size);
-			if (!reused) {
-				reused = canvas(size);
-				scratch.set(size, reused);
-			}
-			return reused;
-		},
-		true,
-	);
 }
 
 /** A box on the 512px surface, [left, top, right, bottom] in its pixels. */

@@ -2,7 +2,106 @@
  * one file per refusal code the parser gives. interface-state.json holds what parseInterfaceStateFile answers for each,
  * so the SQL side can mirror the shapes and the codes; test/interface-state.test.ts keeps the two equal. */
 
-import { AREAS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "../../src/interface-library.ts";
+import { AREAS_TABLE, NUMBERS_TABLE } from "../../src/interface-library.ts";
+
+const PULSE_INTERFACE = `# QorperaOS/interfaces/pulse/interface.toml
+format = "qorpera.interface/v0"
+
+[interface]
+id = "5b0e7c52-2f4e-4c1e-9d0a-7f3c1a9e6b21"
+name = "Pulse"
+about = "Everything happening in the company now: what needs you, the numbers, the work and what's next."
+emblem = "pulse"
+colour = "coral"
+main = true
+status = "active"
+
+[template]
+from = "qorpera/pulse"
+version = "1.0.0"
+
+[access]
+members = "all"
+agents = "all"
+edit = "anyone"
+
+[[view]]
+name = "Now"
+
+[[view.block]]
+kind = "text"
+from = "vision"
+show = "first-paragraph"
+
+[[view.block]]
+kind = "list"
+title = "Needs you"
+from = "waiting"
+layout = "cards"
+line = "{title}"
+limit = 4
+buttons = ["answer"]
+
+[[view.block]]
+kind = "numbers"
+title = "The numbers"
+from = "table:numbers"
+latest_by = "number"
+value = "value"
+target = "target"
+trend = { over = "at", weeks = 12 }
+opens = "number"
+
+[[view.block]]
+kind = "list"
+title = "Working now"
+from = "working"
+line = "{what}"
+figure = "agent"
+width = "half"
+
+[[view.block]]
+kind = "list"
+title = "What happened"
+from = "activity"
+line = "{line}"
+since = "today"
+order = "-at"
+width = "half"
+
+[[view.block]]
+kind = "list"
+title = "The work"
+from = "todos"
+line = "{title}"
+figure = "agent"
+status = "status"
+where = { status = ["open", "blocked"] }
+order = "-updated"
+limit = 5
+width = "half"
+
+[[view.block]]
+kind = "calendar"
+title = "Coming up"
+from = ["routines", "human_tasks"]
+days = 14
+width = "half"
+
+[[view.block]]
+id = "number"
+kind = "detail"
+from = "table:numbers"
+chart = { x = "at", y = "value", target = "target", weeks = 12 }
+buttons = ["ask-keeper"]
+
+[[button]]
+id = "ask-keeper"
+verb = "message"
+label = "Ask {kept_by} about it"
+to = "{kept_by}"
+text = "About {number}: "
+`;
 
 const page = (body: string) => `format = "qorpera.interface/v0"
 

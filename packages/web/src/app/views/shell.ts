@@ -90,14 +90,13 @@ import { activeTaskSessions, isOpenChange, isRunningSession, openExplorations, s
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
-import { personFace } from "./friends.ts";
 import { type InviteCalls, openInviteSheet } from "./invite-sheet.ts";
-import { memberPresence } from "./member-chat.ts";
+import { memberPresence, personFace } from "./person-face.ts";
 import { type FoundFile, fileHit, isPlumbing, oneCopyEach, settledPath } from "./search-files.ts";
-import { type SearchHit, type SearchMark, type SearchSources, SearchWindow } from "./search-window.ts";
-import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
+import type { SearchHit, SearchMark, SearchSources, SearchWindow } from "./search-window.ts";
+import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings-places.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
-import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
+import type * as SurfaceMigrationSheetMod from "./surface-migration-sheet.ts";
 import { isActionChange, SurfaceRail, surfaceTile } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -342,11 +341,26 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	return accountMenu;
 }
 
+const topbarState = new WeakMap<HTMLElement, { key: string; toggle?: () => void; menu?: HTMLElement }>();
+
 export function renderTopbar(
 	container: HTMLElement,
 	context: ShellContext,
 	company: CompanyController | undefined,
 ): void {
+	const menu = company ? undefined : accountMenuElement(context);
+	const key = `${Boolean(company)}:${context.route.name === "hub"}:${Boolean(context.navigation)}:${Boolean(context.navigation?.open)}:${presentationLocale()}`;
+	const prev = topbarState.get(container);
+	const unchanged =
+		prev !== undefined &&
+		prev.key === key &&
+		prev.toggle === context.navigation?.toggle &&
+		(company
+			? context.navigation
+				? container.childElementCount > 0
+				: container.childElementCount === 0
+			: menu !== undefined && prev.menu === menu && container.contains(menu));
+	if (unchanged) return;
 	const restoreFocus = preserveAccountFocus();
 	// Company pages put the account in the rail. Only the mobile navigation
 	// button needs a toolbar; pages without a rail keep the account here.
@@ -372,8 +386,9 @@ export function renderTopbar(
 			: null,
 		lead,
 		company ? null : h("span", { class: "spacer" }),
-		company ? null : accountMenuElement(context),
+		menu ?? null,
 	);
+	topbarState.set(container, { key, toggle: context.navigation?.toggle, menu });
 	if (!company) restoreFocus();
 }
 
@@ -995,7 +1010,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const store = surfacesOf(company);
 				if (!store) return;
 				event.preventDefault();
-				openCreateSurfaceSheet(store);
+				withSurfaceMigrationSheet((mod) => mod.openCreateSurfaceSheet(store));
 			},
 			{ signal: company.signal },
 		);
@@ -1912,7 +1927,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	);
 	membersFold.released = new Set(membersFold.holding.filter((userId) => membersFold.released.has(userId)));
 	paintMembersFold(parts);
-	surfaceRail?.update(activeSurfaceSlug, false);
+	surfaceRail?.update(activeSurfaceSlug);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
 	let above = pinnedElements.length > 0;
@@ -2368,7 +2383,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 						{
 							type: "button",
 							class: "rail-agent-hub-row",
-							onclick: () => openScheduleAgentSheet(store, automation),
+							onclick: () => withSurfaceMigrationSheet((mod) => mod.openScheduleAgentSheet(store, automation)),
 						},
 						owned.face ? h("span", { class: "rail-automation-fig" }, stand, automationFace(owned.face)) : stand,
 						h(
@@ -2516,7 +2531,12 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 			store,
 			company.profile.profileId,
 			company.signal,
-			() => openCreateSurfaceSheet(store),
+			{
+				layout: () => company.store.get().surfaceRail?.layout,
+				canArrange: () => company.canArrangeSurfaces(),
+				change: (next) => void company.changeSurfaceRail(next),
+				refuse: (message) => company.reportRailError(message),
+			},
 			(text) => company.reportRailError(text),
 			(surface) => siteAnswer(company.store.get(), surface),
 		);
@@ -3007,25 +3027,36 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	if (!before || !box) return;
 	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
 	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
-	let entering = 0;
+	const enteringTiles: HTMLElement[] = [];
+	const moves: { element: HTMLElement; dx: number; dy: number }[] = [];
 	for (const element of drawn) {
 		const was = before.get(element);
 		if (!was || element.classList.contains("is-leaving")) {
-			element.style.setProperty("--enter-i", String(entering++));
-			element.classList.remove("is-entering");
-			void element.offsetWidth;
-			element.classList.add("is-entering");
-			element.addEventListener("animationend", () => element.classList.remove("is-entering"), { once: true });
+			enteringTiles.push(element);
 			continue;
 		}
 		const now = element.getBoundingClientRect();
 		const dx = was.left - now.left;
 		const dy = was.top - now.top;
-		if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1)
-			element.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
-				duration: 400,
-				easing: easing("--ease-out"),
-			});
+		if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) moves.push({ element, dx, dy });
+	}
+	if (enteringTiles.length > 0) {
+		for (let i = 0; i < enteringTiles.length; i++) {
+			const element = enteringTiles[i]!;
+			element.style.setProperty("--enter-i", String(i));
+			element.classList.remove("is-entering");
+		}
+		void grid.offsetWidth;
+		for (const element of enteringTiles) {
+			element.classList.add("is-entering");
+			element.addEventListener("animationend", () => element.classList.remove("is-entering"), { once: true });
+		}
+	}
+	for (const { element, dx, dy } of moves) {
+		element.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
+			duration: 400,
+			easing: easing("--ease-out"),
+		});
 	}
 	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));
@@ -3531,6 +3562,7 @@ function ownChangeLines(company: CompanyController, own: SidebarOwnChanges): str
 		lines.push(
 			own.apps === 1 ? t("1 app or group arranged") : t("{count} apps or groups arranged", { count: own.apps }),
 		);
+	if (own.surfaces) lines.push(t("The order and sections of your interfaces"));
 	if (storedAppsOrder(company.profile.profileId).length) lines.push(t("The order of your apps"));
 	return lines;
 }
@@ -3782,6 +3814,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		event.preventDefault();
 		return;
 	}
+	if (event.defaultPrevented) return;
 	// Shift with a mouse right-click keeps the browser's own menu (Open in new tab, Copy link).
 	// A menu opened from the keyboard carries no pointer position.
 	if (event.shiftKey && (event.clientX || event.clientY)) return;
@@ -3844,6 +3877,15 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		label = t("{name} actions", { name: titleElement.textContent ?? t("Section") });
 		opener = titleElement;
 		findOpener = () => parts.list.querySelector<HTMLElement>(`.rail-section-title[data-section-id="${sectionId}"]`);
+	} else if (!target.closest("a[href], a[data-href], button, input") && surfacesOf(company)) {
+		const surfaces = surfaceRailFor(company);
+		items = [
+			...(surfaces?.canArrange() && !target.closest(".rail-dock")
+				? [{ label: t("New section"), icon: "section_plus", select: () => void surfaces.askNewSection() }]
+				: []),
+			...resetEntries(company, parts),
+		];
+		if (items[0]?.kind === "separator") items.shift();
 	} else if (!target.closest("a[href], a[data-href], button, input") && canOrganize(company)) {
 		items = [
 			{ label: t("New section"), icon: "section_plus", select: () => void askSectionName(company) },
@@ -4136,10 +4178,13 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		const state = company.store.get();
 		return state.sidebarUnavailable ? undefined : state.sidebar;
 	};
+	const surfaces = surfaceRailFor(company);
 	return {
 		canDrag: (itemId: string) =>
-			placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId),
+			surfaces?.canDrag(itemId) ||
+			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
 		accepts: (zone: string, itemId: string) => {
+			if (surfaces?.isOwnZone(zone) || surfaces?.canDrag(itemId)) return Boolean(surfaces?.accepts(zone, itemId));
 			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
 			const pinnable = () => keptOrder(company, "pinned").includes(itemId) || !pinnedRowFull(company);
 			// A contact lands in any zone: where it stands is its member's own.
@@ -4151,6 +4196,10 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			return canOrganize(company);
 		},
 		drop: ({ itemId, kind, zone, order }: RailDrop) => {
+			if (kind === "surface") {
+				surfaces?.drop(itemId, zone, order);
+				return;
+			}
 			// A contact: only where it stands changes. Dragged out of Hidden, it shows again where it lands.
 			if (kind === "member") {
 				settleContacts(company, zone, dropInto(heldOrder(company, zone), itemId, order), itemId);
@@ -4486,10 +4535,41 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 	};
 }
 
+let preloadedSearchWindow: typeof SearchWindow | undefined;
+let preloadedSurfaceMigrationSheet: typeof SurfaceMigrationSheetMod | undefined;
+
+export function registerLazyShellModules(modules: {
+	readonly SearchWindow?: typeof SearchWindow;
+	readonly surfaceMigrationSheet?: typeof SurfaceMigrationSheetMod;
+}): void {
+	if (modules.SearchWindow) preloadedSearchWindow = modules.SearchWindow;
+	if (modules.surfaceMigrationSheet) preloadedSurfaceMigrationSheet = modules.surfaceMigrationSheet;
+}
+
+function withSurfaceMigrationSheet(run: (mod: typeof SurfaceMigrationSheetMod) => void): void {
+	if (preloadedSurfaceMigrationSheet) {
+		run(preloadedSurfaceMigrationSheet);
+		return;
+	}
+	void import("./surface-migration-sheet.ts").then((mod) => {
+		preloadedSurfaceMigrationSheet = mod;
+		run(mod);
+	});
+}
+
 function openSearchWindow(company: CompanyController, context: ShellContext | undefined, opener: HTMLElement): void {
 	if (!context) return;
-	searchWindow ??= new SearchWindow();
-	searchWindow.open(searchSources(company, context), opener);
+	const mount = (Loaded: typeof SearchWindow) => {
+		if (company.signal.aborted) return;
+		searchWindow ??= new Loaded();
+		searchWindow.open(searchSources(company, context), opener);
+	};
+	if (preloadedSearchWindow) mount(preloadedSearchWindow);
+	else
+		void import("./search-window.ts").then(({ SearchWindow: Loaded }) => {
+			preloadedSearchWindow = Loaded;
+			mount(Loaded);
+		});
 }
 
 function anotherModalOpen(): boolean {

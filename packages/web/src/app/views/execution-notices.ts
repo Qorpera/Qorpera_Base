@@ -12,7 +12,7 @@ import type { WebRoutine, WebRoutines } from "../../cloud/routines.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
-import { goodWillName, kroner, monthName } from "./settings-good-will.ts";
+import { goodWillName, kroner, monthName } from "./good-will-format.ts";
 
 type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
 /** A worker's own run, which has no conversation: the notice line offers its Stop (gap 4b). */
@@ -287,14 +287,17 @@ export class ExecutionNotices {
 				const items = await this.#client!.listNotifications(signal);
 				if (signal.aborted) return;
 				this.#items = told(items);
-				await this.#readStop(signal);
-				// The plan card has its own reads; a failed one hides only the card, and the next poll reads again.
-				if (!this.#offerDone)
-					this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
-						if (signal.aborted) throw error;
-						this.#offerChecked = "";
-						return undefined;
-					});
+				const [, offer] = await Promise.all([
+					this.#readStop(signal),
+					this.#offerDone
+						? Promise.resolve(this.#offer)
+						: this.#readOffer(items, signal).catch((error: unknown) => {
+								if (signal.aborted) throw error;
+								this.#offerChecked = "";
+								return undefined;
+							}),
+				]);
+				if (!this.#offerDone) this.#offer = offer;
 			} catch {
 				if (signal.aborted) return;
 				// Nothing stale is shown, and nothing can be dismissed, until a read succeeds. A card shown

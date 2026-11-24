@@ -274,6 +274,7 @@ export function cloudInterfaceTools(options: {
 		{
 			name: "table_read" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
+			parallelRead: true,
 			description: [
 				`Read a table's rows (${osPath("tables")}/<table>/rows.csv, as ${osPath("tables")}/<table>/table.toml defines them), in the order the file keeps them. The first page also gives the column types, who may write the table, and the rows that cannot be read.`,
 				`- where: null, or the rows whose column holds a value or one of a list of values (yes or no for a yes-no column).`,

@@ -1,6 +1,6 @@
 import { h } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import { type FileCategory, fileCategory, tileGlyph } from "./company-folder.ts";
+import { type FileCategory, fileCategory, tileGlyph } from "./company-folder-meta.ts";
 import type { SearchHit, SearchMark } from "./search-window.ts";
 
 export interface FoundFile {

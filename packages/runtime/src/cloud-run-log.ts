@@ -342,6 +342,7 @@ interface Step {
 	block: number | null;
 	/** `args` and `text` as its committed line stores them. */
 	stored: Stored | null;
+	snapshot?: CloudRunLogStep;
 }
 
 interface Stored {
@@ -361,6 +362,8 @@ interface Line {
 	readonly j: number;
 	readonly text: string;
 	readonly pending: boolean;
+	readonly erased: boolean;
+	readonly bytes: number;
 	readonly narrow?: true;
 	/** Its `args` and `text`, where the line has them as strings. */
 	readonly stored?: Stored;
@@ -370,6 +373,7 @@ interface Block {
 	readonly first: number;
 	version: string | null;
 	lines: Line[];
+	bytes: number;
 	/** Read again before the next batch uses it. */
 	stale: boolean;
 }
@@ -404,7 +408,13 @@ function tierOf(path: string): string {
 }
 
 function lineBytes(line: Line): number {
-	return line.pending ? CLOUD_RUN_LOG_STEP_BYTES : Buffer.byteLength(line.text) + 1;
+	return line.bytes;
+}
+
+function sumLineBytes(lines: readonly Line[]): number {
+	let total = 0;
+	for (const line of lines) total += line.bytes;
+	return total;
 }
 
 function blockText(lines: readonly Line[]): string {
@@ -425,11 +435,14 @@ function parseBlock(text: string): Line[] {
 		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid run log block");
 		const record = value as Record<string, unknown>;
 		if (!Number.isSafeInteger(record.j) || (record.j as number) < 0) throw new Error("Invalid run log block");
+		const erased = record.erased === true;
+		const pending = !erased && (record.narrow === true ? record.finished === false : record.result === null);
 		lines.push({
 			j: record.j as number,
 			text: raw,
-			pending:
-				record.erased !== true && (record.narrow === true ? record.finished === false : record.result === null),
+			pending,
+			erased,
+			bytes: pending ? CLOUD_RUN_LOG_STEP_BYTES : Buffer.byteLength(raw) + 1,
 			...(record.narrow === true ? { narrow: true as const } : {}),
 			...(typeof record.args === "string" && typeof record.text === "string"
 				? { stored: { args: record.args, text: record.text } }
@@ -437,14 +450,6 @@ function parseBlock(text: string): Line[] {
 		});
 	}
 	return lines;
-}
-
-function erasedLine(text: string): boolean {
-	try {
-		return (JSON.parse(text) as Record<string, unknown>).erased === true;
-	} catch {
-		return false;
-	}
 }
 
 /** A JSON value without any `address`, `path` or `url` key, at any depth. */
@@ -700,6 +705,7 @@ export class CloudRunLog {
 			}
 		}
 		step.result = envelope;
+		step.snapshot = undefined;
 		// A line marked erased while its call ran is never filled in.
 		step.reads = step.state === "final" ? [] : reads;
 		step.releases = releases.map((release) => release.releaseId);
@@ -764,9 +770,10 @@ export class CloudRunLog {
 
 	/** This process's steps as committed, in step order, as their lines store them. */
 	steps(): readonly CloudRunLogStep[] {
-		return this.#steps
-			.filter((step) => step.state !== "new")
-			.map((step) => {
+		const out: CloudRunLogStep[] = [];
+		for (const step of this.#steps) {
+			if (step.state === "new") continue;
+			if (!step.snapshot) {
 				const base = {
 					j: step.j,
 					call: step.call,
@@ -774,19 +781,25 @@ export class CloudRunLog {
 					hashOnly: step.hashOnly,
 					...(step.narrow ? { narrow: true as const } : {}),
 				};
-				if (step.erased) return erasedStep(base);
-				return Object.freeze({
-					...base,
-					args: step.narrow
-						? step.hashOnly
-							? ""
-							: step.argumentsText
-						: (step.stored?.args ?? (step.hashOnly ? "" : clip(step.argumentsText, CLOUD_RUN_LOG_FIELD_BYTES))),
-					result: step.state === "pending" || step.result === null ? null : storedResult(step.tool, step.result),
-					text: step.stored?.text ?? clip(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
-					at: step.at,
-				});
-			});
+				step.snapshot = step.erased
+					? erasedStep(base)
+					: Object.freeze({
+							...base,
+							args: step.narrow
+								? step.hashOnly
+									? ""
+									: step.argumentsText
+								: (step.stored?.args ??
+									(step.hashOnly ? "" : clip(step.argumentsText, CLOUD_RUN_LOG_FIELD_BYTES))),
+							result:
+								step.state === "pending" || step.result === null ? null : storedResult(step.tool, step.result),
+							text: step.stored?.text ?? clip(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
+							at: step.at,
+						});
+			}
+			out.push(step.snapshot);
+		}
+		return out;
 	}
 
 	/**
@@ -1120,7 +1133,7 @@ export class CloudRunLog {
 			const place = await this.#locate(signal);
 			this.#place = place;
 			if (place.exists && place.last !== null && !this.#blocks.has(place.last))
-				this.#blocks.set(place.last, { first: place.last, version: null, lines: [], stale: true });
+				this.#blocks.set(place.last, { first: place.last, version: null, lines: [], bytes: 0, stale: true });
 		}
 		for (const block of [...this.#blocks.values()]) {
 			if (!block.stale) continue;
@@ -1130,6 +1143,7 @@ export class CloudRunLog {
 				if (step && step.block === block.first) {
 					step.state = "new";
 					step.block = null;
+					step.snapshot = undefined;
 					this.#firstUnfinalized = Math.min(this.#firstUnfinalized, step.j - this.#first);
 				}
 			}
@@ -1139,16 +1153,18 @@ export class CloudRunLog {
 			}
 			block.version = file.version;
 			block.lines = parseBlock(file.text);
+			block.bytes = sumLineBytes(block.lines);
 			block.stale = false;
 			for (const line of block.lines) {
 				if (line.narrow) this.#narrowFrom = Math.min(this.#narrowFrom, line.j);
 				const step = this.#steps[line.j - this.#first];
 				if (!step || step.j !== line.j) continue;
 				step.block = block.first;
-				step.erased = erasedLine(line.text);
+				step.erased = line.erased;
 				step.narrow = line.narrow === true;
 				step.state = step.erased || !line.pending ? "final" : "pending";
 				step.stored = line.stored ?? null;
+				step.snapshot = undefined;
 				if (step.state === "final") releaseFinalInputs(step);
 			}
 			this.#advanceWatermark();
@@ -1242,6 +1258,7 @@ export class CloudRunLog {
 			item.snapshot.argsHash = item.step.argsHash;
 			item.snapshot.narrow = item.narrow;
 			item.step.narrow = item.narrow;
+			item.step.snapshot = undefined;
 			prepared.set(
 				item.step.j,
 				this.#line(
@@ -1269,8 +1286,16 @@ export class CloudRunLog {
 				...(!pending ? { result_hash: resultHash } : {}),
 				narrow: true,
 			});
-			if (Buffer.byteLength(text) + 1 > CLOUD_RUN_LOG_STEP_BYTES) throw new CloudRunLogUnavailable("step_too_large");
-			return { j: step.j, text, pending, narrow: true };
+			const byteLen = Buffer.byteLength(text) + 1;
+			if (byteLen > CLOUD_RUN_LOG_STEP_BYTES) throw new CloudRunLogUnavailable("step_too_large");
+			return {
+				j: step.j,
+				text,
+				pending,
+				erased: false,
+				bytes: pending ? CLOUD_RUN_LOG_STEP_BYTES : byteLen,
+				narrow: true,
+			};
 		}
 		let reads = CLOUD_RUN_LOG_READS_BYTES;
 		let text = CLOUD_RUN_LOG_FIELD_BYTES;
@@ -1278,12 +1303,21 @@ export class CloudRunLog {
 		for (;;) {
 			const stored = { args: step.hashOnly ? "" : clip(step.argumentsText, args), text: clip(step.text, text) };
 			const line = this.#render(step, pending, reads, stored, paths);
-			const over = Buffer.byteLength(line) + 1 - CLOUD_RUN_LOG_STEP_BYTES;
+			const byteLen = Buffer.byteLength(line) + 1;
+			const over = byteLen - CLOUD_RUN_LOG_STEP_BYTES;
 			// Only a result with very many release parts gets past it: the copies give way, never release ids or paths.
 			if (over > 0 && reads > 2) reads = Math.max(2, reads - over);
 			else if (over > 0 && text > 2) text = Math.max(2, text - over);
 			else if (over > 0 && args > 2) args = Math.max(2, args - over);
-			else return { j: step.j, text: line, pending, stored };
+			else
+				return {
+					j: step.j,
+					text: line,
+					pending,
+					erased: false,
+					bytes: pending ? CLOUD_RUN_LOG_STEP_BYTES : byteLen,
+					stored,
+				};
 		}
 	}
 
@@ -1349,11 +1383,14 @@ export class CloudRunLog {
 		const prepared = await this.#prepareLines(candidates, signal);
 		// Each touched block's new lines, starting from the lines the file has.
 		const touched = new Map<number, Line[]>();
+		const touchedBytes = new Map<number, number>();
 		const lines = (first: number): Line[] => {
 			let next = touched.get(first);
 			if (!next) {
-				next = [...(this.#blocks.get(first)?.lines ?? [])];
+				const existing = this.#blocks.get(first);
+				next = [...(existing?.lines ?? [])];
 				touched.set(first, next);
+				touchedBytes.set(first, existing?.bytes ?? 0);
 			}
 			return next;
 		};
@@ -1365,18 +1402,24 @@ export class CloudRunLog {
 				// No longer in its block as read: appended again by the next batch.
 				step.state = "new";
 				step.block = null;
+				step.snapshot = undefined;
 				this.#firstUnfinalized = Math.min(this.#firstUnfinalized, step.j - this.#first);
 				continue;
 			}
 			// A line marked erased is never filled in: that result is dropped.
-			if (erasedLine(read[index]!.text) || !read[index]!.pending) {
-				step.erased = erasedLine(read[index]!.text);
+			if (read[index]!.erased || !read[index]!.pending) {
+				step.erased = read[index]!.erased;
 				step.state = "final";
+				step.snapshot = undefined;
 				releaseFinalInputs(step);
 				this.#advanceWatermark();
 				continue;
 			}
-			lines(step.block!)[index] = prepared.get(step.j)!;
+			const blockLines = lines(step.block!);
+			const prevBytes = blockLines[index]!.bytes;
+			const nextLine = prepared.get(step.j)!;
+			blockLines[index] = nextLine;
+			touchedBytes.set(step.block!, (touchedBytes.get(step.block!) ?? 0) - prevBytes + nextLine.bytes);
 			placed.set(step.j, step.block!);
 		}
 		let last = Math.max(-1, ...this.#blocks.keys(), ...touched.keys());
@@ -1384,7 +1427,7 @@ export class CloudRunLog {
 			const line = prepared.get(step.j)!;
 			// A new step joins the last block only if the block, a pending step counted at its full size, still fits.
 			const block = last >= 0 ? (touched.get(last) ?? this.#blocks.get(last)?.lines) : undefined;
-			const counted = block?.reduce((total, current) => total + lineBytes(current), 0) ?? 0;
+			const counted = last >= 0 ? (touchedBytes.get(last) ?? this.#blocks.get(last)?.bytes ?? 0) : 0;
 			if (
 				!block ||
 				block.length >= CLOUD_RUN_LOG_BLOCK_STEPS ||
@@ -1395,7 +1438,11 @@ export class CloudRunLog {
 				const fresh = lines(last);
 				if (fresh.some((current) => current.j === step.j)) throw new CloudRunLogUnavailable("block_mismatch");
 				fresh.push(line);
-			} else lines(last).push(line);
+				touchedBytes.set(last, (touchedBytes.get(last) ?? 0) + line.bytes);
+			} else {
+				lines(last).push(line);
+				touchedBytes.set(last, (touchedBytes.get(last) ?? 0) + line.bytes);
+			}
 			placed.set(step.j, last);
 		}
 		if (!touched.size) return "done";
@@ -1517,17 +1564,24 @@ export class CloudRunLog {
 				}
 				if (first === null || first === undefined || !unit.version) return;
 				const next = touched.get(first)!;
-				this.#blocks.set(first, { first, version: unit.version, lines: next, stale: false });
+				this.#blocks.set(first, {
+					first,
+					version: unit.version,
+					lines: next,
+					bytes: touchedBytes.get(first) ?? sumLineBytes(next),
+					stale: false,
+				});
 				saved.push({ path: this.#blockPath(first), version: unit.version });
 				for (const line of next) {
 					const step = this.#steps[line.j - this.#first];
 					if (!step || step.j !== line.j) continue;
 					if (placed.get(line.j) === first || step.block === first) {
 						step.block = first;
-						step.erased = erasedLine(line.text);
+						step.erased = line.erased;
 						step.narrow = line.narrow === true;
 						step.state = step.erased || !line.pending ? "final" : "pending";
 						step.stored = line.stored ?? null;
+						step.snapshot = undefined;
 						// Its line is stored: the copy of its reads is no longer needed.
 						if (step.state === "final") releaseFinalInputs(step);
 						if (placed.get(line.j) === first && !line.pending) final.push(line.j);
@@ -1588,6 +1642,6 @@ export class CloudRunLog {
 	#stale(first: number): void {
 		const block = this.#blocks.get(first);
 		if (block) block.stale = true;
-		else this.#blocks.set(first, { first, version: null, lines: [], stale: true });
+		else this.#blocks.set(first, { first, version: null, lines: [], bytes: 0, stale: true });
 	}
 }

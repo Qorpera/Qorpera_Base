@@ -21,13 +21,8 @@ export const OVERFLOW = 1.25;
 /** Attempts to bring a compactor line under NODE (§7.2). */
 export const TRIES = 3;
 // HEAD, the company head and the agent head together (§5.6), is CLOUD_AGENT_HEAD_BYTES in cloud-agent-head.ts.
-/** Pinned text in an agent head, once pins are built (§11). */
-export const PINS = 4_000;
 /** The run's own work: folded lines plus raw steps (§5.7). */
 export const RUN_VIEW = 64_000;
-/** A run commits its steps every STEP_COMMIT_STEPS steps or STEP_COMMIT_MS, whichever comes first, and at run end (§4.5). */
-export const STEP_COMMIT_STEPS = 16;
-export const STEP_COMMIT_MS = 30_000;
 /** The compactor's window: the previous group of WINDOW messages plus the current group up to the message (§7.3). */
 export const WINDOW = 16;
 /** The most raw text in that window, and the most of one event in it (§7.3). */

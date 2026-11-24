@@ -356,6 +356,18 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   icons (`apps/<name>/icons/<id>.svg`, `@qorpera/cloud-client/app-icons`), at most 300.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
   each colour and each icon as one.
+- Each member's own order and sections of the rail's interfaces (`20260930892000`):
+  the company seeds no sections. `qorpera_member_surface_rail(p_profile_id)` →
+  `qorpera.member-surface-rail-read/v1` `{layout, updatedAt}` and
+  `qorpera_set_member_surface_rail(p_profile_id, p_layout, p_expected)` (whole
+  document, QSR01 when `p_expected` is not the last `updatedAt`, 22023 for a shape
+  the web never writes; an empty layout leaves no row). The layout is
+  `qorpera.member-surface-rail/v1` `{order, sections}`: `order` the surface ids in no
+  section, top to bottom; `sections` `[{id, name, surfaces}]`, top to bottom (an id
+  1-40 of `a-z0-9-`, a name 1-40 characters on one line); each surface id at most once,
+  at most 500 ids and 50 sections (packages/web/src/cloud/surface-rail-layout.ts). Any
+  member. Reset takes it away and Undo puts it back; `own.surfaces` counts the
+  order as one and each section as one.
 - Light asks (`20260930761000`, deploy/first-node/RUNTIME-LIGHT-ASK.md): one small
   question a member's own action raises, answered by one call to the small model
   with no tools, with nothing shown in a conversation.

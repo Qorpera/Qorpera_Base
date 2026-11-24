@@ -1,3 +1,7 @@
+use memchr::memmem::Finder;
+use regex_automata::meta::Regex as MetaRegex;
+use regex_automata::MatchKind;
+use regex_syntax::hir::{Class, ClassUnicode, ClassUnicodeRange, Hir, Look, Repetition};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
@@ -76,23 +80,34 @@ fn is_js_space_ascii(b: u8) -> bool {
 	matches!(b, b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ')
 }
 
-fn is_js_space_unicode(ch: char) -> bool {
-	matches!(
-		ch,
-		'\u{00a0}'
-			| '\u{1680}'
-			| '\u{2000}'..='\u{200a}'
-			| '\u{2028}'
-			| '\u{2029}'
-			| '\u{202f}'
-			| '\u{205f}'
-			| '\u{3000}'
-			| '\u{feff}'
-	)
-}
+const JS_SPACE_UNICODE_RANGES: &[(char, char)] = &[
+	('\u{00a0}', '\u{00a0}'),
+	('\u{1680}', '\u{1680}'),
+	('\u{2000}', '\u{200a}'),
+	('\u{2028}', '\u{2029}'),
+	('\u{202f}', '\u{202f}'),
+	('\u{205f}', '\u{205f}'),
+	('\u{3000}', '\u{3000}'),
+	('\u{feff}', '\u{feff}'),
+];
 
-fn is_line_terminator(ch: char) -> bool {
-	matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}')
+fn push_scalar_range(cls: &mut ClassUnicode, lo: u32, hi: u32) {
+	if lo > hi || lo > 0x10ffff {
+		return;
+	}
+	let hi = hi.min(0x10ffff);
+	if lo < 0xd800 {
+		let end = hi.min(0xd7ff);
+		if let (Some(a), Some(b)) = (char::from_u32(lo), char::from_u32(end)) {
+			cls.push(ClassUnicodeRange::new(a, b));
+		}
+	}
+	if hi > 0xdfff {
+		let start = lo.max(0xe000);
+		if let (Some(a), Some(b)) = (char::from_u32(start), char::from_u32(hi)) {
+			cls.push(ClassUnicodeRange::new(a, b));
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,30 +187,57 @@ impl CharClass {
 		Self::build(false, &[], flag)
 	}
 
-	#[inline]
-	fn matches(&self, ch: char) -> bool {
-		let code = ch as u32;
-		if code < 128 {
-			return ((self.ascii_bits[(code >> 6) as usize] >> (code & 63)) & 1) != 0;
-		}
-		let mut matched = false;
-		if (self.shorthands & (SHORTHAND_NOT_D | SHORTHAND_NOT_W)) != 0 {
-			matched = true;
-		} else {
-			if (self.shorthands & SHORTHAND_S) != 0 && is_js_space_unicode(ch) {
-				matched = true;
+	fn to_hir(&self, ascii_icase: bool) -> Hir {
+		let mut cls = ClassUnicode::empty();
+		if ascii_icase {
+			for b in 0u8..128u8 {
+				let folded_b = b.to_ascii_lowercase();
+				if ((self.ascii_bits[(folded_b >> 6) as usize] >> (folded_b & 63)) & 1) != 0 {
+					let ch = b as char;
+					cls.push(ClassUnicodeRange::new(ch, ch));
+				}
 			}
-			if !matched && (self.shorthands & SHORTHAND_NOT_S) != 0 && !is_js_space_unicode(ch) {
-				matched = true;
-			}
+			return Hir::class(Class::Unicode(cls));
 		}
-		if !matched && !self.ranges.is_empty() {
-			let idx = self.ranges.partition_point(|&(lo, _)| lo <= code);
-			if idx > 0 && code <= self.ranges[idx - 1].1 {
-				matched = true;
+		for b in 0u8..128u8 {
+			if ((self.ascii_bits[(b >> 6) as usize] >> (b & 63)) & 1) != 0 {
+				let ch = b as char;
+				cls.push(ClassUnicodeRange::new(ch, ch));
 			}
 		}
-		matched ^ self.negated
+		{
+			let mut non_ascii = ClassUnicode::empty();
+			if (self.shorthands & (SHORTHAND_NOT_D | SHORTHAND_NOT_W)) != 0 {
+				non_ascii.push(ClassUnicodeRange::new('\u{0080}', '\u{10ffff}'));
+			} else {
+				if (self.shorthands & SHORTHAND_S) != 0 {
+					for &(a, b) in JS_SPACE_UNICODE_RANGES {
+						non_ascii.push(ClassUnicodeRange::new(a, b));
+					}
+				}
+				if (self.shorthands & SHORTHAND_NOT_S) != 0 {
+					let mut inv = ClassUnicode::empty();
+					inv.push(ClassUnicodeRange::new('\u{0080}', '\u{10ffff}'));
+					let mut sp = ClassUnicode::empty();
+					for &(a, b) in JS_SPACE_UNICODE_RANGES {
+						sp.push(ClassUnicodeRange::new(a, b));
+					}
+					inv.difference(&sp);
+					non_ascii.union(&inv);
+				}
+				for &(lo, hi) in &self.ranges {
+					push_scalar_range(&mut non_ascii, lo, hi);
+				}
+			}
+			if self.negated {
+				let mut full = ClassUnicode::empty();
+				full.push(ClassUnicodeRange::new('\u{0080}', '\u{10ffff}'));
+				full.difference(&non_ascii);
+				non_ascii = full;
+			}
+			cls.union(&non_ascii);
+		}
+		Hir::class(Class::Unicode(cls))
 	}
 
 	fn small_folded_literals(&self) -> Option<Vec<String>> {
@@ -920,119 +962,145 @@ impl<'a> Parser<'a> {
 	}
 }
 
-#[derive(Debug, Clone)]
-enum Inst {
-	Char(char),
-	AnyNoNl,
-	Class(usize),
-	Split(usize, usize),
-	Jump(usize),
-	Assert(AssertKind),
-	Match,
-}
-
-struct Compiler {
-	insts: Vec<Inst>,
-	classes: Vec<CharClass>,
-}
-
-impl Compiler {
-	fn compile(expr: &Expr) -> Result<(Vec<Inst>, Vec<CharClass>), PatternError> {
-		let mut c = Self { insts: Vec::new(), classes: Vec::new() };
-		c.emit(expr, 1)?;
-		c.push(Inst::Match)?;
-		Ok((c.insts, c.classes))
+fn charge_budget(budget: &mut usize, n: usize) -> Result<(), PatternError> {
+	*budget = budget.saturating_add(n);
+	if *budget >= MAX_NFA_INSTS {
+		return Err(too_large_err());
 	}
+	Ok(())
+}
 
-	fn push(&mut self, inst: Inst) -> Result<usize, PatternError> {
-		if self.insts.len() >= MAX_NFA_INSTS {
-			return Err(too_large_err());
+fn check_expr_budget(expr: &Expr, rep_factor: usize, budget: &mut usize) -> Result<bool, PatternError> {
+	match expr {
+		Expr::Empty | Expr::Flag => Ok(false),
+		Expr::Char(_) | Expr::AnyNoNl | Expr::Class(_) => {
+			charge_budget(budget, 1)?;
+			Ok(false)
 		}
-		let idx = self.insts.len();
-		self.insts.push(inst);
-		Ok(idx)
-	}
-
-	fn emit(&mut self, expr: &Expr, rep_factor: usize) -> Result<(), PatternError> {
-		match expr {
-			Expr::Empty | Expr::Flag => Ok(()),
-			Expr::Char(ch) => {
-				self.push(Inst::Char(*ch))?;
-				Ok(())
-			}
-			Expr::AnyNoNl => {
-				self.push(Inst::AnyNoNl)?;
-				Ok(())
-			}
-			Expr::Class(cc) => {
-				let idx = self.classes.len();
-				self.classes.push(cc.clone());
-				self.push(Inst::Class(idx))?;
-				Ok(())
-			}
-			Expr::Assert(kind) => {
-				self.push(Inst::Assert(*kind))?;
-				Ok(())
-			}
-			Expr::Concat(parts) => {
-				for part in parts {
-					self.emit(part, rep_factor)?;
+		Expr::Assert(kind) => {
+			charge_budget(budget, 1)?;
+			Ok(matches!(kind, AssertKind::StartText | AssertKind::EndText))
+		}
+		Expr::Concat(parts) => {
+			let mut has_text_anchor = false;
+			for part in parts {
+				if check_expr_budget(part, rep_factor, budget)? {
+					has_text_anchor = true;
 				}
-				Ok(())
 			}
-			Expr::Alt(branches) => {
-				let mut jumps = Vec::with_capacity(branches.len().saturating_sub(1));
-				for (i, branch) in branches.iter().enumerate() {
-					let is_last = i + 1 == branches.len();
-					let split = if !is_last { Some(self.push(Inst::Split(0, 0))?) } else { None };
-					let branch_start = self.insts.len();
-					self.emit(branch, rep_factor)?;
-					if !is_last {
-						jumps.push(self.push(Inst::Jump(0))?);
-					}
-					if let Some(sp) = split {
-						let next_branch = self.insts.len();
-						self.insts[sp] = Inst::Split(branch_start, next_branch);
+			Ok(has_text_anchor)
+		}
+		Expr::Alt(branches) => {
+			let mut has_text_anchor = false;
+			if branches.len() > 1 {
+				charge_budget(budget, (branches.len() - 1) * 2)?;
+			}
+			for branch in branches {
+				if check_expr_budget(branch, rep_factor, budget)? {
+					has_text_anchor = true;
+				}
+			}
+			Ok(has_text_anchor)
+		}
+		Expr::Repeat { inner, min, max } => {
+			let count = max.unwrap_or(*min).max(1);
+			let next_factor = rep_factor.saturating_mul(count);
+			if rep_factor > 1 && count > 1 && next_factor > MAX_QUANTIFIER_COUNT {
+				return Err(too_large_err());
+			}
+			let mut has_text_anchor = false;
+			for _ in 0..*min {
+				if check_expr_budget(inner, next_factor, budget)? {
+					has_text_anchor = true;
+				}
+			}
+			match max {
+				None => {
+					charge_budget(budget, 2)?;
+					if check_expr_budget(inner, next_factor, budget)? {
+						has_text_anchor = true;
 					}
 				}
-				let end = self.insts.len();
-				for j in jumps {
-					self.insts[j] = Inst::Jump(end);
-				}
-				Ok(())
-			}
-			Expr::Repeat { inner, min, max } => {
-				let count = max.unwrap_or(*min).max(1);
-				let next_factor = rep_factor.saturating_mul(count);
-				if rep_factor > 1 && count > 1 && next_factor > MAX_QUANTIFIER_COUNT {
-					return Err(too_large_err());
-				}
-				for _ in 0..*min {
-					self.emit(inner, next_factor)?;
-				}
-				match max {
-					None => {
-						let split = self.push(Inst::Split(0, 0))?;
-						let body = self.insts.len();
-						self.emit(inner, next_factor)?;
-						self.push(Inst::Jump(split))?;
-						let end = self.insts.len();
-						self.insts[split] = Inst::Split(body, end);
-					}
-					Some(m) => {
-						for _ in *min..*m {
-							let split = self.push(Inst::Split(0, 0))?;
-							let body = self.insts.len();
-							self.emit(inner, next_factor)?;
-							let end = self.insts.len();
-							self.insts[split] = Inst::Split(body, end);
+				Some(m) => {
+					for _ in *min..*m {
+						charge_budget(budget, 1)?;
+						if check_expr_budget(inner, next_factor, budget)? {
+							has_text_anchor = true;
 						}
 					}
 				}
-				Ok(())
 			}
+			Ok(has_text_anchor)
 		}
 	}
+}
+
+fn any_no_nl_hir(ascii_only: bool) -> Hir {
+	let mut cls = ClassUnicode::empty();
+	if ascii_only {
+		cls.push(ClassUnicodeRange::new('\0', '\x7f'));
+		let mut nl = ClassUnicode::empty();
+		nl.push(ClassUnicodeRange::new('\n', '\n'));
+		nl.push(ClassUnicodeRange::new('\r', '\r'));
+		cls.difference(&nl);
+	} else {
+		cls.push(ClassUnicodeRange::new('\0', '\u{10ffff}'));
+		let mut nl = ClassUnicode::empty();
+		nl.push(ClassUnicodeRange::new('\n', '\n'));
+		nl.push(ClassUnicodeRange::new('\r', '\r'));
+		nl.push(ClassUnicodeRange::new('\u{2028}', '\u{2029}'));
+		cls.difference(&nl);
+	}
+	Hir::class(Class::Unicode(cls))
+}
+
+fn expr_to_hir(expr: &Expr, ascii_icase: bool) -> Hir {
+	match expr {
+		Expr::Empty | Expr::Flag => Hir::empty(),
+		Expr::Char(ch) => {
+			if ascii_icase {
+				if ch.is_ascii_lowercase() {
+					let up = ch.to_ascii_uppercase();
+					Hir::class(Class::Unicode(ClassUnicode::new([
+						ClassUnicodeRange::new(*ch, *ch),
+						ClassUnicodeRange::new(up, up),
+					])))
+				} else if ch.is_ascii() {
+					Hir::literal([*ch as u8])
+				} else {
+					Hir::fail()
+				}
+			} else {
+				let mut buf = [0u8; 4];
+				Hir::literal(ch.encode_utf8(&mut buf).as_bytes())
+			}
+		}
+		Expr::AnyNoNl => any_no_nl_hir(ascii_icase),
+		Expr::Class(cc) => cc.to_hir(ascii_icase),
+		Expr::Assert(kind) => Hir::look(match kind {
+			AssertKind::StartLine => Look::StartLF,
+			AssertKind::EndLine => Look::EndLF,
+			AssertKind::StartText => Look::Start,
+			AssertKind::EndText => Look::End,
+			AssertKind::WordBoundary => Look::WordAscii,
+			AssertKind::NonWordBoundary => Look::WordAsciiNegate,
+		}),
+		Expr::Concat(parts) => Hir::concat(parts.iter().map(|p| expr_to_hir(p, ascii_icase)).collect()),
+		Expr::Alt(branches) => Hir::alternation(branches.iter().map(|b| expr_to_hir(b, ascii_icase)).collect()),
+		Expr::Repeat { inner, min, max } => Hir::repetition(Repetition {
+			min: *min as u32,
+			max: max.map(|m| m as u32),
+			greedy: true,
+			sub: Box::new(expr_to_hir(inner, ascii_icase)),
+		}),
+	}
+}
+
+fn build_meta(hir: &Hir) -> Result<MetaRegex, PatternError> {
+	MetaRegex::builder()
+		.configure(regex_automata::meta::Config::new().match_kind(MatchKind::LeftmostFirst))
+		.build_from_hir(hir)
+		.map_err(|_| too_large_err())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1527,13 +1595,14 @@ pub fn find_subslice_ascii_icase(haystack: &[u8], needle_lower: &[u8]) -> Option
 	let last_idx = needle_lower.len() - 1;
 	let last = needle_lower[last_idx];
 	let first_is_alpha = first.is_ascii_lowercase();
+	let first_upper = first.to_ascii_uppercase();
 	let limit = haystack.len() - needle_lower.len() + 1;
 	let mut i = 0usize;
 	while i < limit {
 		let rel = if first_is_alpha {
-			haystack[i..limit].iter().position(|&b| (b | 0x20) == first)
+			memchr::memchr2(first, first_upper, &haystack[i..limit])
 		} else {
-			haystack[i..limit].iter().position(|&b| b == first)
+			memchr::memchr(first, &haystack[i..limit])
 		};
 		let Some(rel) = rel else {
 			return None;
@@ -1551,44 +1620,23 @@ pub fn find_subslice_ascii_icase(haystack: &[u8], needle_lower: &[u8]) -> Option
 
 #[derive(Debug, Clone)]
 pub struct Regex {
-	insts: Vec<Inst>,
-	classes: Vec<CharClass>,
+	meta: MetaRegex,
+	meta_ascii_icase: Option<MetaRegex>,
 	trigram_query: TrigramQuery,
 	required_folded_literals: Vec<String>,
 	required_exact_literals: Vec<String>,
+	exact_finders: Vec<Finder<'static>>,
+	folded_finders: Vec<Finder<'static>>,
 	run_on_folded: bool,
 	has_text_anchor: bool,
 }
 
-pub struct ExecScratch {
-	curr: Vec<(usize, usize)>,
-	next: Vec<(usize, usize)>,
-	stack: Vec<(usize, usize)>,
-	visited: Vec<u32>,
-	gen: u32,
-}
+#[derive(Debug, Default)]
+pub struct ExecScratch;
 
 impl ExecScratch {
 	pub fn new() -> Self {
-		Self { curr: Vec::new(), next: Vec::new(), stack: Vec::new(), visited: Vec::new(), gen: 0 }
-	}
-
-	fn next_gen(&mut self, n_states: usize) -> u32 {
-		if self.visited.len() < n_states {
-			self.visited.resize(n_states, 0);
-		}
-		self.gen = self.gen.wrapping_add(1);
-		if self.gen == 0 {
-			self.visited.fill(0);
-			self.gen = 1;
-		}
-		self.gen
-	}
-}
-
-impl Default for ExecScratch {
-	fn default() -> Self {
-		Self::new()
+		Self
 	}
 }
 
@@ -1599,10 +1647,15 @@ impl Regex {
 		}
 		let chars: Vec<char> = pattern.chars().collect();
 		let (expr, run_on_folded) = Parser::parse(&chars, case_sensitive)?;
-		let (insts, classes) = Compiler::compile(&expr)?;
-		let has_text_anchor = insts
-			.iter()
-			.any(|inst| matches!(inst, Inst::Assert(AssertKind::StartText | AssertKind::EndText)));
+		let mut budget = 0usize;
+		let has_text_anchor = check_expr_budget(&expr, 1, &mut budget)?;
+		let hir = expr_to_hir(&expr, false);
+		let meta = build_meta(&hir)?;
+		let meta_ascii_icase = if run_on_folded {
+			Some(build_meta(&expr_to_hir(&expr, true))?)
+		} else {
+			None
+		};
 		let info = analyze(&expr);
 		let required_folded_literals: Vec<String> = info
 			.required
@@ -1618,12 +1671,22 @@ impl Regex {
 				.filter(|s| s.len() >= 2)
 				.collect()
 		};
+		let exact_finders = required_exact_literals
+			.iter()
+			.map(|s| Finder::new(s.as_bytes()).into_owned())
+			.collect();
+		let folded_finders = required_folded_literals
+			.iter()
+			.map(|s| Finder::new(s.as_bytes()).into_owned())
+			.collect();
 		Ok(Self {
-			insts,
-			classes,
+			meta,
+			meta_ascii_icase,
 			trigram_query: info.query,
 			required_folded_literals,
 			required_exact_literals,
+			exact_finders,
+			folded_finders,
 			run_on_folded,
 			has_text_anchor,
 		})
@@ -1649,18 +1712,19 @@ impl Regex {
 		self.run_on_folded
 	}
 
-	pub fn find_in_folded(&self, folded_text: &str, scratch: &mut ExecScratch) -> Option<usize> {
+	pub fn find_in_folded(&self, folded_text: &str, _scratch: &mut ExecScratch) -> Option<usize> {
 		if self.run_on_folded {
-			for lit in &self.required_folded_literals {
-				if !folded_text.contains(lit.as_str()) {
+			let bytes = folded_text.as_bytes();
+			for finder in &self.folded_finders {
+				if finder.find(bytes).is_none() {
 					return None;
 				}
 			}
 		}
-		self.run_nfa(folded_text, scratch)
+		self.meta.find(folded_text).map(|m| m.start())
 	}
 
-	pub fn find_in_ascii_folded(&self, ascii_bytes: &[u8], scratch: &mut ExecScratch) -> Option<usize> {
+	pub fn find_in_ascii_folded(&self, ascii_bytes: &[u8], _scratch: &mut ExecScratch) -> Option<usize> {
 		for lit in &self.required_folded_literals {
 			if !lit.is_ascii() {
 				return None;
@@ -1669,235 +1733,35 @@ impl Regex {
 				return None;
 			}
 		}
-		self.run_nfa_ascii_folded(ascii_bytes, scratch)
+		if let Some(ref meta_ascii) = self.meta_ascii_icase {
+			meta_ascii.find(ascii_bytes).map(|m| m.start())
+		} else {
+			self.meta.find(ascii_bytes).map(|m| m.start())
+		}
 	}
 
 	pub fn find_in_text(&self, text: &str, scratch: &mut ExecScratch) -> Option<usize> {
 		if !self.run_on_folded {
-			for lit in &self.required_exact_literals {
-				if !text.contains(lit.as_str()) {
+			let bytes = text.as_bytes();
+			for finder in &self.exact_finders {
+				if finder.find(bytes).is_none() {
 					return None;
 				}
 			}
 			if text.is_ascii() {
 				for lit in &self.required_folded_literals {
-					if !lit.is_ascii() || find_subslice_ascii_icase(text.as_bytes(), lit.as_bytes()).is_none() {
+					if !lit.is_ascii() || find_subslice_ascii_icase(bytes, lit.as_bytes()).is_none() {
 						return None;
 					}
 				}
 			}
-			self.run_nfa(text, scratch)
+			self.meta.find(text).map(|m| m.start())
 		} else if text.is_ascii() {
 			self.find_in_ascii_folded(text.as_bytes(), scratch)
 		} else {
 			let folded = fold_text(text);
 			self.find_in_folded(&folded, scratch)
 		}
-	}
-
-	fn add_state(
-		&self,
-		state: usize,
-		start: usize,
-		prev: Option<char>,
-		curr: Option<char>,
-		gen: u32,
-		visited: &mut [u32],
-		out: &mut Vec<(usize, usize)>,
-		stack: &mut Vec<(usize, usize)>,
-		best_start: &mut Option<usize>,
-	) {
-		stack.clear();
-		stack.push((state, start));
-		while let Some((s, st)) = stack.pop() {
-			if best_start.is_some_and(|best| st >= best) {
-				continue;
-			}
-			if visited[s] == gen {
-				continue;
-			}
-			visited[s] = gen;
-			match self.insts[s] {
-				Inst::Jump(target) => stack.push((target, st)),
-				Inst::Split(a, b) => {
-					stack.push((b, st));
-					stack.push((a, st));
-				}
-				Inst::Assert(kind) => {
-					let holds = match kind {
-						AssertKind::StartLine => prev.is_none() || prev == Some('\n'),
-						AssertKind::EndLine => curr.is_none() || curr == Some('\n'),
-						AssertKind::StartText => prev.is_none(),
-						AssertKind::EndText => curr.is_none(),
-						AssertKind::WordBoundary => {
-							prev.is_some_and(is_word_char) != curr.is_some_and(is_word_char)
-						}
-						AssertKind::NonWordBoundary => {
-							prev.is_some_and(is_word_char) == curr.is_some_and(is_word_char)
-						}
-					};
-					if holds {
-						stack.push((s + 1, st));
-					}
-				}
-				Inst::Match => {
-					*best_start = Some(best_start.map_or(st, |best| best.min(st)));
-				}
-				Inst::Char(_) | Inst::AnyNoNl | Inst::Class(_) => {
-					out.push((s, st));
-				}
-			}
-		}
-	}
-
-	fn run_nfa_ascii_folded(&self, bytes: &[u8], scratch: &mut ExecScratch) -> Option<usize> {
-		let n_states = self.insts.len();
-		scratch.curr.clear();
-		scratch.next.clear();
-		let mut best_start: Option<usize> = None;
-		let first_ch = bytes.first().map(|&b| b.to_ascii_lowercase() as char);
-		let gen0 = scratch.next_gen(n_states);
-		self.add_state(
-			0,
-			0,
-			None,
-			first_ch,
-			gen0,
-			&mut scratch.visited,
-			&mut scratch.curr,
-			&mut scratch.stack,
-			&mut best_start,
-		);
-		if best_start == Some(0) {
-			return Some(0);
-		}
-		for pos in 0..bytes.len() {
-			let ch = bytes[pos].to_ascii_lowercase() as char;
-			let next_pos = pos + 1;
-			let peek_next = bytes.get(next_pos).map(|&b| b.to_ascii_lowercase() as char);
-			scratch.next.clear();
-			let gen = scratch.next_gen(n_states);
-			for i in 0..scratch.curr.len() {
-				let (s, st) = scratch.curr[i];
-				if best_start.is_some_and(|best| st >= best) {
-					break;
-				}
-				let matched = match self.insts[s] {
-					Inst::Char(expected) => ch == expected,
-					Inst::AnyNoNl => !is_line_terminator(ch),
-					Inst::Class(idx) => self.classes[idx].matches(ch),
-					_ => false,
-				};
-				if matched {
-					self.add_state(
-						s + 1,
-						st,
-						Some(ch),
-						peek_next,
-						gen,
-						&mut scratch.visited,
-						&mut scratch.next,
-						&mut scratch.stack,
-						&mut best_start,
-					);
-				}
-			}
-			if best_start.is_none() {
-				self.add_state(
-					0,
-					next_pos,
-					Some(ch),
-					peek_next,
-					gen,
-					&mut scratch.visited,
-					&mut scratch.next,
-					&mut scratch.stack,
-					&mut best_start,
-				);
-			}
-			std::mem::swap(&mut scratch.curr, &mut scratch.next);
-			if let Some(best) = best_start {
-				if scratch.curr.first().is_none_or(|&(_, st)| st >= best) {
-					return Some(best);
-				}
-			}
-		}
-		best_start
-	}
-
-	fn run_nfa(&self, text: &str, scratch: &mut ExecScratch) -> Option<usize> {
-		let n_states = self.insts.len();
-		scratch.curr.clear();
-		scratch.next.clear();
-		let mut best_start: Option<usize> = None;
-		let mut chars = text.char_indices().peekable();
-		let first_ch = chars.peek().map(|&(_, c)| c);
-		let gen0 = scratch.next_gen(n_states);
-		self.add_state(
-			0,
-			0,
-			None,
-			first_ch,
-			gen0,
-			&mut scratch.visited,
-			&mut scratch.curr,
-			&mut scratch.stack,
-			&mut best_start,
-		);
-		if best_start == Some(0) {
-			return Some(0);
-		}
-		while let Some((pos, ch)) = chars.next() {
-			let next_pos = pos + ch.len_utf8();
-			let peek_next = chars.peek().map(|&(_, c)| c);
-			scratch.next.clear();
-			let gen = scratch.next_gen(n_states);
-			for i in 0..scratch.curr.len() {
-				let (s, st) = scratch.curr[i];
-				if best_start.is_some_and(|best| st >= best) {
-					break;
-				}
-				let matched = match self.insts[s] {
-					Inst::Char(expected) => ch == expected,
-					Inst::AnyNoNl => !is_line_terminator(ch),
-					Inst::Class(idx) => self.classes[idx].matches(ch),
-					_ => false,
-				};
-				if matched {
-					self.add_state(
-						s + 1,
-						st,
-						Some(ch),
-						peek_next,
-						gen,
-						&mut scratch.visited,
-						&mut scratch.next,
-						&mut scratch.stack,
-						&mut best_start,
-					);
-				}
-			}
-			if best_start.is_none() {
-				self.add_state(
-					0,
-					next_pos,
-					Some(ch),
-					peek_next,
-					gen,
-					&mut scratch.visited,
-					&mut scratch.next,
-					&mut scratch.stack,
-					&mut best_start,
-				);
-			}
-			std::mem::swap(&mut scratch.curr, &mut scratch.next);
-			if let Some(best) = best_start {
-				if scratch.curr.first().is_none_or(|&(_, st)| st >= best) {
-					return Some(best);
-				}
-			}
-		}
-		best_start
 	}
 }
 

@@ -1,29 +1,11 @@
-import { createHash, X509Certificate } from "node:crypto";
-import { request as httpRequest } from "node:http";
+import { X509Certificate } from "node:crypto";
+import { Agent as HttpAgent, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import {
-	CODING_GUEST_HELPER_MAX_BYTES,
-	COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES,
-	COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES,
-	COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES,
-	COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS,
-	COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES,
-	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
-	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
-	COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES,
-	COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES,
-	COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES,
-	COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES,
-	COMPANY_COMPUTER_SERVICE_START_MAX_BYTES,
-	COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES,
-	type CompanyComputerPreparationCommand,
-	parseCompanyComputerPreparationCommand,
-} from "@qorpera/contracts";
+import { CODING_GUEST_HELPER_MAX_BYTES } from "@qorpera/contracts";
 import { withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import { AGENT_BRIDGE } from "./agent-plug.ts";
 import { lxdMacAddress } from "./lxd-guest-network.ts";
-import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 import { NodeWebSocket } from "./node-websocket.ts";
 
@@ -445,6 +427,11 @@ export interface LxdTrackedClient extends LxdInspectableClient {
 		signal: AbortSignal,
 	): Promise<LxdOperationReference>;
 	inspectInstanceOperation(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	waitForInstanceOperation?(
+		reference: LxdOperationReference,
+		waitSeconds: number,
+		signal: AbortSignal,
+	): Promise<LxdOperationState>;
 }
 
 export interface LxdOfficeServerIdentity {
@@ -466,774 +453,6 @@ export interface LxdHostInventory {
  * physical host inventory and cannot establish spare host capacity. */
 export interface LxdHostInventoryClient {
 	inspectHostInventory(signal: AbortSignal): Promise<LxdHostInventory>;
-}
-export interface LxdOfficeImageRecord {
-	fingerprint: string;
-	architecture: string;
-	size: number;
-}
-export interface LxdOfficeInfrastructure {
-	project: { name: string; config: Record<string, string>; replicaMode: string };
-	network: {
-		name: string;
-		project: string;
-		type: "bridge";
-		managed: true;
-		status: "Created";
-		config: Record<string, string>;
-	};
-	storagePool: { name: string; driver: string; status: "Created"; config: Record<string, string> };
-}
-/** Read-only prerequisites for the separate office provider. These attest
- * daemon-reported identity and a pinned local VM image, not guest readiness. */
-export interface LxdOfficeInspectableClient extends LxdTrackedClient {
-	inspectOfficeServer(project: string, signal: AbortSignal): Promise<LxdOfficeServerIdentity>;
-	inspectOfficeImage(project: string, fingerprint: string, signal: AbortSignal): Promise<LxdOfficeImageRecord>;
-	inspectOfficeInfrastructure(
-		project: string,
-		network: string,
-		storagePool: string,
-		signal: AbortSignal,
-	): Promise<LxdOfficeInfrastructure>;
-}
-
-/** Bounded staging and fixed-purpose tracked preparation execution, separate
- * from generic runner bootstrap. The pinned image must supply the protected
- * root inbox and helper; callers require the exact VM/boot and current provider
- * authority. Staging alone does not install or invoke the active request, and
- * command completion never grants office activation. */
-export interface LxdOfficePreparationClient extends LxdOfficeInspectableClient {
-	submitOfficePreparation(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficePreparation(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficePreparationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficePreparationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-
-/** Confidential configuration staging uses its own fixed path/helper and
- * smaller bound. It grants no command selection or cloud activation. */
-export interface LxdOfficeConfigurationClient extends LxdOfficePreparationClient {
-	submitOfficeConfiguration(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeConfiguration(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-/** Retained-boot configuration has its own fixed helper and bounded packet. */
-export interface LxdOfficeBootConfigurationClient extends LxdOfficeServiceStartClient {
-	submitOfficeBootConfiguration(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeBootConfiguration(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeBootConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeBootConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-/** Fixed ordinary-service control. Inspection uses a fresh caller-owned nonce,
- * never a different start command or arbitrary executable. */
-export interface LxdOfficeServiceStartClient extends LxdOfficeInspectableClient {
-	submitOfficeServiceStart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	submitOfficeServiceInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeServiceStart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-/** First service invocation after retained-boot configuration and SQL admission. */
-export interface LxdOfficeBootServiceStartClient extends LxdOfficeInspectableClient {
-	submitOfficeBootServiceStart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	submitOfficeBootServiceInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeBootServiceStart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeBootServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeBootServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-/** Stop and its read-only inspection use a separate fixed root helper. The
- * owning lifecycle worker must retain SQL revocation before submitting stop. */
-export interface LxdOfficeServiceStopClient extends LxdOfficeInspectableClient {
-	submitOfficeServiceStop(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	submitOfficeServiceStopInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeServiceStop(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeServiceStopRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeServiceStopRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-/** Same-boot successor execution is distinct from initial service start. */
-export interface LxdOfficeServiceRestartClient extends LxdOfficeInspectableClient {
-	submitOfficeServiceRestart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	submitOfficeServiceRestartInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeServiceRestart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-export interface LxdOfficeBootServiceRestartClient extends LxdOfficeInspectableClient {
-	submitOfficeBootServiceRestart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	submitOfficeBootServiceRestartInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeBootServiceRestart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeBootServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeBootServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-export interface LxdOfficeResetServiceRestartClient extends LxdOfficeInspectableClient {
-	submitOfficeResetServiceRestart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	submitOfficeResetServiceRestartInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeResetServiceRestart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeResetServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeResetServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-/** Temporary provider-pinned root tools for governed service-only software
- * revisions. Unlike image helpers, the tools themselves are staged files whose
- * digests the provider pins explicitly in argv. Staging never installs, measures,
- * starts or activates; exec completion is never authority. */
-export type LxdOfficeSoftwareTool = "install" | "measure";
-export interface LxdOfficeSoftwareClient extends LxdOfficeInspectableClient {
-	pushOfficeSoftwareFile(
-		project: string,
-		name: string,
-		fileName: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	submitOfficeSoftwareControl(
-		project: string,
-		name: string,
-		tool: LxdOfficeSoftwareTool,
-		args: readonly string[],
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeSoftwareControl(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	readOfficeSoftwareFile(
-		project: string,
-		name: string,
-		path: string,
-		maximumBytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-/** Bounded custody transport for the governed same-allocation root reset.
- * Listing/reads are confined to the private diagnostic outbox and public root
- * history; pushes are confined to the restore allowlist and carry explicit
- * ownership/mode. Nothing here starts, configures or activates a guest. */
-
-export interface LxdOfficeCodePackageClient {
-	discoverOfficeCodePackage(project: string, name: string, signal: AbortSignal): Promise<string | undefined>;
-	pushOfficeCodePackageDirectory(
-		project: string,
-		name: string,
-		provisionId: string,
-		directory: "root" | "artifacts",
-		signal: AbortSignal,
-	): Promise<void>;
-	pushOfficeCodePackageFile(
-		project: string,
-		name: string,
-		provisionId: string,
-		file: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeCodePackageFile(
-		project: string,
-		name: string,
-		provisionId: string,
-		file: string,
-		maximumBytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-	readOfficeCodePackageReceipt(
-		project: string,
-		name: string,
-		provisionId: string,
-		file: "claim" | "installed",
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-	submitOfficeCodePackageTool(
-		project: string,
-		name: string,
-		provisionId: string,
-		purpose: "bootstrap" | "measure",
-		pin: { bytes: number; sha256: string },
-		args: readonly string[],
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeCodePackageTool(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-}
-const CODE_PACKAGE_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-function officeCodePackageMaximum(file: string, write: boolean): number {
-	if (file === "packet.json") return 4 * 1024 ** 2;
-	if (file === "original-preparation.json") return COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
-	if (file === "trust.json") return 4096;
-	if (["base-manifest.json", "target-manifest.json", "base-installation.json"].includes(file)) return 1024 ** 2;
-	if (["base-mount-template", "base-folder-mount-template"].includes(file)) return 65536;
-	if (["bootstrap.cjs", "measure.cjs"].includes(file)) return 16 * 1024 ** 2;
-	if (COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS.some((name) => file === `artifacts/${name}`)) return 32 * 1024 ** 2;
-	if (new RegExp(`^challenge-${CODE_PACKAGE_UUID}\\.json$`).test(file)) return 65536;
-	if (!write && new RegExp(`^(?:preflight|probe|observation|invocation)-${CODE_PACKAGE_UUID}\\.json$`).test(file))
-		return 65536;
-	throw new Error("code package path");
-}
-function officeCodePackageReadMaximum(path: string): number | undefined {
-	const match = new RegExp(`^/run/qorpera-office-preparation/code-package-${CODE_PACKAGE_UUID}/(.+)$`).exec(path);
-	if (match) return officeCodePackageMaximum(match[1], false);
-	return undefined;
-}
-function officeCodePackageArgs(
-	provisionId: string,
-	purpose: "bootstrap" | "measure",
-	pin: { bytes: number; sha256: string },
-	args: readonly string[],
-): string[] {
-	officeCodePackageStage(provisionId);
-	if (
-		!Number.isSafeInteger(pin.bytes) ||
-		pin.bytes < 1 ||
-		pin.bytes > 16 * 1024 ** 2 ||
-		!/^[0-9a-f]{64}$/.test(pin.sha256) ||
-		!Array.isArray(args) ||
-		!args.every((a) => typeof a === "string")
-	)
-		throw new Error("code package tool");
-	const sha = (s: string) => /^[0-9a-f]{64}$/.test(s),
-		uuid = (s: string) => new RegExp(`^${CODE_PACKAGE_UUID}$`).test(s),
-		duration = (s: string) => /^[1-9][0-9]{0,3}$/.test(s) && Number(s) <= 5000;
-	const valid =
-		purpose === "bootstrap"
-			? (args.length === 4 && args[0] === "preflight" && sha(args[1]) && sha(args[2]) && uuid(args[3])) ||
-				(args.length === 6 &&
-					args[0] === "install" &&
-					sha(args[1]) &&
-					sha(args[2]) &&
-					uuid(args[3]) &&
-					uuid(args[4]) &&
-					duration(args[5]))
-			: purpose === "measure" &&
-				((args.length === 5 &&
-					args[0] === "probe" &&
-					sha(args[1]) &&
-					sha(args[2]) &&
-					uuid(args[3]) &&
-					uuid(args[4])) ||
-					(args.length === 7 &&
-						["observation", "invocation"].includes(args[0]) &&
-						sha(args[1]) &&
-						sha(args[2]) &&
-						uuid(args[3]) &&
-						uuid(args[4]) &&
-						duration(args[5]) &&
-						sha(args[6])));
-	if (!valid) throw new Error("code package arguments");
-	return [
-		"/usr/bin/node",
-		"-e",
-		OFFICE_CODE_PACKAGE_LOADER,
-		purpose,
-		provisionId,
-		pin.sha256,
-		String(pin.bytes),
-		...args,
-	];
-}
-
-export interface LxdOfficeResetClient extends LxdOfficeInspectableClient {
-	listOfficeResetDirectory(project: string, name: string, path: string, signal: AbortSignal): Promise<string[]>;
-	readOfficeResetFile(
-		project: string,
-		name: string,
-		path: string,
-		maximumBytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-	pushOfficeResetDirectory(
-		project: string,
-		name: string,
-		path: string,
-		uid: number,
-		gid: number,
-		mode: number,
-		signal: AbortSignal,
-	): Promise<void>;
-	pushOfficeResetFile(
-		project: string,
-		name: string,
-		path: string,
-		content: Buffer,
-		uid: number,
-		gid: number,
-		mode: number,
-		signal: AbortSignal,
-	): Promise<void>;
-}
-/** Reset successor lane on the recreated root: fresh credential installation
- * under the new boot directory, one ordinary start and its nonce inspection. */
-export interface LxdOfficeResetSuccessorClient extends LxdOfficeInspectableClient {
-	submitOfficeResetConfiguration(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeResetConfiguration(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeResetConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeResetConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-	submitOfficeResetServiceStart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	submitOfficeResetServiceInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference>;
-	inspectOfficeResetServiceStart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
-	pushOfficeResetServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void>;
-	readOfficeResetServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile>;
-}
-export const OFFICE_RESET_OUTBOX_ROOT = "/var/lib/qorpera-office-events";
-export const OFFICE_RESET_HISTORY_ROOT = "/etc/qorpera-office/history";
-const RESET_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const OFFICE_RESET_READ_PATHS: ReadonlyArray<{ pattern: RegExp; maximum: number; directory: boolean }> = Object.freeze([
-	{ pattern: /^\/var\/lib\/qorpera-office-events$/, maximum: 0, directory: true },
-	{
-		pattern: new RegExp(`^/var/lib/qorpera-office-events/(?:scope\\.json|${RESET_UUID}-[0-9]{16}\\.json)$`),
-		maximum: 73729,
-		directory: false,
-	},
-	{ pattern: new RegExp(`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}$`), maximum: 0, directory: true },
-	{
-		pattern: new RegExp(
-			`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}/(?:manifest|claim|[0-9a-f]{64})\\.json$`,
-		),
-		maximum: 65536,
-		directory: false,
-	},
-	{ pattern: /^\/etc\/qorpera-office\/adoption\.json$/, maximum: 65536, directory: false },
-	{ pattern: /^\/etc\/qorpera-office\/credentials\/config\.json$/, maximum: 16384, directory: false },
-	{
-		pattern:
-			/^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/(?:adoption|configuration-claim|configuration-completion|reset-configuration-claim|reset-configuration-completion)\.json$/,
-		maximum: 65536,
-		directory: false,
-	},
-	{
-		pattern: /^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/credentials\/config\.json$/,
-		maximum: 16384,
-		directory: false,
-	},
-]);
-const OFFICE_RESET_WRITE_PATHS: ReadonlyArray<{ pattern: RegExp; maximum: number; directory: boolean }> = Object.freeze(
-	[
-		{ pattern: /^\/var\/lib\/qorpera-office-events$/, maximum: 0, directory: true },
-		{
-			pattern: new RegExp(`^/var/lib/qorpera-office-events/(?:scope\\.json|${RESET_UUID}-[0-9]{16}\\.json)$`),
-			maximum: 73729,
-			directory: false,
-		},
-		{ pattern: /^\/etc\/qorpera-office\/history$/, maximum: 0, directory: true },
-		{ pattern: new RegExp(`^/etc/qorpera-office/history/${RESET_UUID}$`), maximum: 0, directory: true },
-		{ pattern: new RegExp(`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}$`), maximum: 0, directory: true },
-		{
-			pattern: new RegExp(
-				`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}/(?:manifest|claim|[0-9a-f]{64})\\.json$`,
-			),
-			maximum: 65536,
-			directory: false,
-		},
-		{ pattern: /^\/etc\/qorpera-office\/adoption\.json$/, maximum: 65536, directory: false },
-	],
-);
-function officeResetPath(path: unknown, directory: boolean, write: boolean): number {
-	const match = (write ? OFFICE_RESET_WRITE_PATHS : OFFICE_RESET_READ_PATHS).find(
-		(entry) => entry.directory === directory && typeof path === "string" && entry.pattern.test(path),
-	);
-	if (!match || typeof path !== "string" || path !== resolve(path) || path.length > 512) throw new Error("reset path");
-	return match.maximum;
-}
-function officeResetOwner(value: unknown): string {
-	if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 2147483647)
-		throw new Error("owner");
-	return String(value);
-}
-function officeResetMode(value: unknown, directory: boolean): string {
-	if ((directory ? [0o700] : [0o400, 0o444, 0o600]).indexOf(value as number) < 0) throw new Error("mode");
-	return (value as number).toString(8).padStart(4, "0");
-}
-export const OFFICE_SOFTWARE_STAGING_ROOT = "/run/qorpera-office-preparation";
-export const OFFICE_SOFTWARE_JOURNAL_ROOT = "/var/lib/qorpera-office-service-software";
-export const OFFICE_SOFTWARE_INSTALLED_SERVICE = "/opt/qorpera-office/qorpera-company-computer-service.mjs";
-const SOFTWARE_SHA = "[0-9a-f]{64}";
-const SOFTWARE_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-/** Exact staged names and their byte bounds. Every other name is refused. */
-const OFFICE_SOFTWARE_STAGED_FILES: ReadonlyArray<{ pattern: RegExp; maximum: number }> = Object.freeze([
-	{ pattern: /^software-control\.mjs$/, maximum: 16 * 1024 ** 2 },
-	{ pattern: /^software-measurement-control\.mjs$/, maximum: 16 * 1024 ** 2 },
-	{ pattern: new RegExp(`^software-incoming-${SOFTWARE_SHA}\\.json$`), maximum: 65536 },
-	{ pattern: new RegExp(`^software-measurement-incoming-${SOFTWARE_SHA}\\.json$`), maximum: 16384 },
-	{ pattern: new RegExp(`^software-trust-${SOFTWARE_SHA}\\.json$`), maximum: 4096 },
-	{ pattern: new RegExp(`^software-(?:previous|next)-manifest-${SOFTWARE_SHA}\\.json$`), maximum: 1024 ** 2 },
-	{ pattern: new RegExp(`^software-service-${SOFTWARE_SHA}\\.mjs$`), maximum: 32 * 1024 ** 2 },
-	// Guest code entries of a guest-code revision, staged by their content digest.
-	{ pattern: new RegExp(`^software-file-${SOFTWARE_SHA}$`), maximum: 32 * 1024 ** 2 },
-	{ pattern: new RegExp(`^software-capability-${SOFTWARE_UUID}$`), maximum: 64 },
-]);
-export function officeSoftwareStagedPath(fileName: string): { path: string; maximum: number } {
-	const entry =
-		typeof fileName === "string"
-			? OFFICE_SOFTWARE_STAGED_FILES.find((item) => item.pattern.test(fileName))
-			: undefined;
-	if (!entry) throw new Error("INVALID_OFFICE_SOFTWARE_STAGING");
-	return { path: `${OFFICE_SOFTWARE_STAGING_ROOT}/${fileName}`, maximum: entry.maximum };
-}
-/** Read-only public/root outputs the provider may read back. */
-const OFFICE_SOFTWARE_READ_FILES: ReadonlyArray<{ pattern: RegExp; maximum: number }> = Object.freeze([
-	{ pattern: new RegExp(`^${OFFICE_SOFTWARE_INSTALLED_SERVICE.replaceAll(".", "\\.")}$`), maximum: 16 * 1024 ** 2 },
-	// Installed guest code entries of a guest-code revision (closed contract list).
-	...Object.values(COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES).map((entry) => ({
-		pattern: new RegExp(`^${entry.path.replaceAll(".", "\\.")}$`),
-		maximum: 32 * 1024 ** 2,
-	})),
-	{ pattern: new RegExp(`^${OFFICE_SOFTWARE_JOURNAL_ROOT}/${SOFTWARE_UUID}/installed\\.json$`), maximum: 65536 },
-	{
-		pattern: new RegExp(`^${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-${SOFTWARE_UUID}\\.json$`),
-		maximum: 16384,
-	},
-	{
-		pattern: new RegExp(`^${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-claim-${SOFTWARE_UUID}\\.json$`),
-		maximum: 4096,
-	},
-]);
-export function officeSoftwareReadPath(path: string): number {
-	const entry =
-		typeof path === "string" ? OFFICE_SOFTWARE_READ_FILES.find((item) => item.pattern.test(path)) : undefined;
-	if (!entry) throw new Error("INVALID_OFFICE_SOFTWARE_READBACK");
-	return entry.maximum;
-}
-/** install: commandId requestSha256 bootId toolSha256 trustSha256;
- * measure: commandId requestSha256 bootId toolSha256. No secret is an argument. */
-export function officeSoftwareCommand(tool: LxdOfficeSoftwareTool, args: readonly string[]): readonly string[] {
-	const shapes = {
-		install: [SOFTWARE_UUID, SOFTWARE_SHA, SOFTWARE_UUID, SOFTWARE_SHA, SOFTWARE_SHA],
-		measure: [SOFTWARE_UUID, SOFTWARE_SHA, SOFTWARE_UUID, SOFTWARE_SHA],
-	};
-	if (!Object.hasOwn(shapes, tool)) throw new Error("INVALID_OFFICE_SOFTWARE_COMMAND");
-	const shape = shapes[tool];
-	if (
-		!Array.isArray(args) ||
-		args.length !== shape.length ||
-		args.some((value, index) => typeof value !== "string" || !new RegExp(`^${shape[index]}$`).test(value))
-	)
-		throw new Error("INVALID_OFFICE_SOFTWARE_COMMAND");
-	parseCompanyComputerPreparationCommand({ commandId: args[0], requestSha256: args[1], bootId: args[2] });
-	return Object.freeze([
-		"/usr/bin/env",
-		"-i",
-		"/usr/bin/node",
-		`${OFFICE_SOFTWARE_STAGING_ROOT}/${tool === "install" ? "software-control.mjs" : "software-measurement-control.mjs"}`,
-		...args,
-	]);
-}
-type OfficeControlPurpose =
-	| "preparation"
-	| "configuration"
-	| "boot-configuration"
-	| "boot-service-restart"
-	| "boot-service-start"
-	| "service-start"
-	| "service-stop"
-	| "service-restart"
-	| "reset-configuration"
-	| "reset-service-start"
-	| "reset-service-restart";
-const officeControlMaximum = (purpose: OfficeControlPurpose) =>
-	purpose === "reset-service-restart"
-		? COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES
-		: purpose === "reset-configuration"
-			? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
-			: purpose === "reset-service-start"
-				? COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES
-				: purpose === "boot-service-restart"
-					? COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
-					: purpose === "boot-service-start"
-						? COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES
-						: purpose === "boot-configuration"
-							? COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES
-							: purpose === "preparation"
-								? COMPANY_COMPUTER_PREPARATION_MAX_BYTES
-								: purpose === "configuration"
-									? COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES
-									: purpose === "service-start"
-										? COMPANY_COMPUTER_SERVICE_START_MAX_BYTES
-										: purpose === "service-stop"
-											? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
-											: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
-const officeControlError = (purpose: OfficeControlPurpose | "software" | "code_package", operation: string) =>
-	new Error(`LXD_OFFICE_${purpose.replaceAll("-", "_").toUpperCase()}_${operation}_UNCONFIRMED`);
-
-export type LxdOfficePreparationCommand = CompanyComputerPreparationCommand;
-
-/** Only this pinned-image helper is executable through the preparation lane.
- * The helper must independently validate the protected request, current boot,
- * kernel lock and systemd invocation. A zero exit is not office admission. */
-export function lxdOfficePreparationCommand(value: LxdOfficePreparationCommand): readonly string[] {
-	return officeControlCommand(value, "preparation");
-}
-export function lxdOfficeConfigurationCommand(value: LxdOfficePreparationCommand): readonly string[] {
-	return officeControlCommand(value, "configuration");
-}
-export function lxdOfficeBootConfigurationCommand(value: LxdOfficePreparationCommand): readonly string[] {
-	return officeControlCommand(value, "boot-configuration");
-}
-function officeControlCommand(
-	value: LxdOfficePreparationCommand,
-	purpose: OfficeControlPurpose,
-	inspectionId?: string,
-): readonly string[] {
-	const command = parseCompanyComputerPreparationCommand(value);
-	if (
-		inspectionId !== undefined &&
-		((purpose !== "boot-service-restart" &&
-			purpose !== "boot-service-start" &&
-			purpose !== "service-start" &&
-			purpose !== "service-stop" &&
-			purpose !== "service-restart" &&
-			purpose !== "reset-service-start" &&
-			purpose !== "reset-service-restart") ||
-			parseCompanyComputerPreparationCommand({ ...command, commandId: inspectionId }).commandId ===
-				command.commandId)
-	)
-		throw new Error("INVALID_OFFICE_SERVICE_INSPECTION");
-	return Object.freeze([
-		"/usr/bin/env",
-		"-i",
-		"/usr/bin/node",
-		`/opt/qorpera-office/qorpera-company-computer-${purpose}-control.mjs`,
-		command.commandId,
-		command.requestSha256,
-		command.bootId,
-		...(inspectionId === undefined ? [] : [inspectionId]),
-	]);
-}
-
-function officeControlPath(
-	project: string,
-	name: string,
-	requestSha256: string,
-	purpose: OfficeControlPurpose,
-): string {
-	if (
-		![project, name].every((value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(value)) ||
-		typeof requestSha256 !== "string" ||
-		!/^[0-9a-f]{64}$/.test(requestSha256)
-	)
-		throw new Error("INVALID_OFFICE_PREPARATION_STAGING");
-	return `/run/qorpera-office-preparation/${purpose === "preparation" ? "" : `${purpose}-`}incoming-${requestSha256}.json`;
 }
 
 const OPERATION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1280,7 +499,7 @@ function trackedOperation(value: unknown, reference: LxdOperationReference): Lxd
 }
 
 interface HttpResult {
-	headers?: import("node:http").IncomingHttpHeaders;
+	headers?: IncomingHttpHeaders;
 	status: number;
 	body: unknown;
 }
@@ -1629,19 +848,12 @@ export class LxdUnixClient
 		LxdSnapshotImageClient,
 		LxdStandbyClient,
 		LxdProjectClient,
-		LxdOfficeConfigurationClient,
-		LxdOfficeServiceStartClient,
-		LxdOfficeBootServiceStartClient,
-		LxdOfficeServiceStopClient,
-		LxdOfficeServiceRestartClient,
-		LxdOfficeBootServiceRestartClient,
-		LxdOfficeResetServiceRestartClient,
-		LxdOfficeResetClient,
-		LxdOfficeResetSuccessorClient,
+		LxdHostInventoryClient,
 		LxdStoragePoolUseClient
 {
 	readonly #socketPath: string;
 	readonly #operationTimeoutSeconds: number;
+	readonly #agent: HttpAgent;
 
 	constructor(socketPath = "/var/snap/lxd/common/lxd/unix.socket", operationTimeoutSeconds = 120) {
 		if (!socketPath.startsWith("/") || /[\0\r\n]/.test(socketPath)) throw new Error("LXD socket path is invalid");
@@ -1654,17 +866,29 @@ export class LxdUnixClient
 		}
 		this.#socketPath = socketPath;
 		this.#operationTimeoutSeconds = operationTimeoutSeconds;
+		this.#agent = new HttpAgent({
+			keepAlive: true,
+			keepAliveMsecs: 30_000,
+			maxSockets: 32,
+			maxFreeSockets: 8,
+			scheduling: "lifo",
+		});
+	}
+
+	close(): void {
+		this.#agent.destroy();
 	}
 
 	async #officeMetadata(path: string, signal: AbortSignal, maximumBytes = 65536): Promise<Record<string, unknown>> {
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-		checked.throwIfAborted();
-		const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
-		checked.throwIfAborted();
-		const envelope = record(result.body, "office metadata");
-		if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
-			throw new Error("office metadata unavailable");
-		return record(envelope.metadata, "office metadata");
+		return withAbortScopes([signal, AbortSignal.timeout(5000)], async (checked) => {
+			checked.throwIfAborted();
+			const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "office metadata");
+			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
+				throw new Error("office metadata unavailable");
+			return record(envelope.metadata, "office metadata");
+		});
 	}
 
 	async inspectOfficeServer(
@@ -1878,29 +1102,6 @@ export class LxdUnixClient
 		}
 	}
 
-	async inspectOfficeImage(project: string, fingerprint: string, signal: AbortSignal): Promise<LxdOfficeImageRecord> {
-		try {
-			if (!/^[a-z][a-z0-9-]{0,62}$/.test(project) || !/^[0-9a-f]{64}$/.test(fingerprint))
-				throw new Error("invalid image identity");
-			const value = await this.#officeMetadata(projectPath(`/1.0/images/${fingerprint}`, project), signal);
-			if (
-				value.fingerprint !== fingerprint ||
-				value.type !== "virtual-machine" ||
-				value.public !== false ||
-				value.auto_update !== false ||
-				(value.architecture !== "x86_64" && value.architecture !== "aarch64") ||
-				!Number.isSafeInteger(value.size) ||
-				(value.size as number) < 1 ||
-				(value.size as number) > 1024 ** 4 ||
-				strings(value.profiles, "image profiles").length !== 0
-			)
-				throw new Error("unsupported office image");
-			return { fingerprint, architecture: value.architecture, size: value.size as number };
-		} catch {
-			throw new Error("LXD_OFFICE_IMAGE_UNCONFIRMED");
-		}
-	}
-
 	async hasImage(project: string, fingerprint: string, signal: AbortSignal): Promise<boolean> {
 		try {
 			if (!/^[a-z][a-z0-9-]{0,62}$/.test(project) || !/^[0-9a-f]{64}$/.test(fingerprint))
@@ -2069,69 +1270,6 @@ export class LxdUnixClient
 		const entries = envelopeMetadata(result);
 		if (!Array.isArray(entries)) throw new Error("LXD instances list is invalid");
 		return entries.map((entry) => instance(entry));
-	}
-
-	async inspectOfficeInfrastructure(
-		project: string,
-		network: string,
-		storagePool: string,
-		signal: AbortSignal,
-	): Promise<LxdOfficeInfrastructure> {
-		try {
-			if (![project, network, storagePool].every((name) => /^[a-z][a-z0-9-]{0,62}$/.test(name)))
-				throw new Error("invalid infrastructure identity");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			const p = await this.#officeMetadata(`/1.0/projects/${project}`, checked);
-			const n = await this.#officeMetadata(projectPath(`/1.0/networks/${network}`, project), checked);
-			const s = await this.#officeMetadata(`/1.0/storage-pools/${storagePool}`, checked);
-			// The computer's second card is a port of the node's agents' bridge (agent-plug.ts): a bridge LXD does not
-			// manage, which the agent exit owns (deploy/agent-exit). LXD shows such a bridge in its default project,
-			// with every plugged machine of the node in its used_by (unread), so its record is not held to 64 KiB.
-			const a = await this.#officeMetadata(`/1.0/networks/${AGENT_BRIDGE}`, checked, MAX_RESPONSE_BYTES);
-			const pc = stringRecord(p.config, "project config");
-			const nc = stringRecord(n.config, "network config");
-			const sc = stringRecord(s.config, "storage pool config");
-			const networkProject = n.project ?? "";
-			const replicaMode = p.replica_mode ?? "";
-			if (
-				p.name !== project ||
-				replicaMode !== "" ||
-				// LXD would refuse the agent card only at the create, after the journal's claim.
-				!projectAllowsAgentCard(pc) ||
-				n.name !== network ||
-				n.type !== "bridge" ||
-				n.managed !== true ||
-				n.status !== "Created" ||
-				!["", "default", project].includes(networkProject as string) ||
-				nc["ipv4.nat"] !== "true" ||
-				nc["ipv6.address"] !== "none" ||
-				nc["ipv4.firewall"] === "false" ||
-				nc["bridge.external_interfaces"] ||
-				nc["security.acls"] ||
-				a.name !== AGENT_BRIDGE ||
-				a.type !== "bridge" ||
-				a.managed !== false ||
-				s.name !== storagePool ||
-				s.status !== "Created" ||
-				!["dir", "btrfs", "lvm", "zfs"].includes(s.driver as string)
-			)
-				throw new Error("unsupported office infrastructure");
-			checked.throwIfAborted();
-			return {
-				project: { name: project, config: pc, replicaMode },
-				network: {
-					name: network,
-					project: networkProject as string,
-					type: "bridge",
-					managed: true,
-					status: "Created",
-					config: nc,
-				},
-				storagePool: { name: storagePool, driver: s.driver as string, status: "Created", config: sc },
-			};
-		} catch {
-			throw new Error("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED");
-		}
 	}
 
 	async getInstance(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceRecord | undefined> {
@@ -2463,774 +1601,62 @@ export class LxdUnixClient
 				!OPERATION_UUID.test(reference.operationId)
 			)
 				throw new Error("invalid operation reference");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#request(
-				"GET",
-				projectPath(`/1.0/operations/${reference.operationId}`, reference.project),
-				undefined,
-				checked,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD response");
-			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
-			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
-				throw new Error("operation unavailable");
-			return trackedOperation(envelope.metadata, reference);
+			return await withAbortScopes([signal, AbortSignal.timeout(5000)], async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#request(
+					"GET",
+					projectPath(`/1.0/operations/${reference.operationId}`, reference.project),
+					undefined,
+					checked,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "LXD response");
+				if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
+				if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
+					throw new Error("operation unavailable");
+				return trackedOperation(envelope.metadata, reference);
+			});
 		} catch {
 			throw new Error(unknown ? "LXD_OPERATION_UNKNOWN" : "LXD_OPERATION_UNCONFIRMED");
 		}
 	}
 
-	/** Return the accepted identity immediately. Timeouts and malformed replies
-	 * have unknown physical outcomes; callers journal BEFORE calling this. */
-	async submitOfficePreparation(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "preparation");
-	}
-	async submitOfficeConfiguration(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "configuration");
-	}
-	async submitOfficeBootConfiguration(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "boot-configuration");
-	}
-	async submitOfficeServiceStart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "service-start");
-	}
-	async submitOfficeBootServiceStart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "boot-service-start");
-	}
-	async submitOfficeServiceInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		// Undefined must never degrade an inspection into the effectful start mode.
-		if (typeof inspectionId !== "string") throw officeControlError("service-start", "SUBMISSION");
-		return this.#submitOfficeControl(project, name, command, signal, "service-start", inspectionId);
-	}
-	async submitOfficeBootServiceInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		// Undefined must never degrade an inspection into the effectful start mode.
-		if (typeof inspectionId !== "string") throw officeControlError("boot-service-start", "SUBMISSION");
-		return this.#submitOfficeControl(project, name, command, signal, "boot-service-start", inspectionId);
-	}
-	async submitOfficeServiceStop(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "service-stop");
-	}
-	async submitOfficeServiceRestart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "service-restart");
-	}
-	async submitOfficeBootServiceRestart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "boot-service-restart");
-	}
-	async submitOfficeResetServiceRestart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "reset-service-restart");
-	}
-	async submitOfficeServiceStopInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		if (typeof inspectionId !== "string") throw officeControlError("service-stop", "SUBMISSION");
-		return this.#submitOfficeControl(project, name, command, signal, "service-stop", inspectionId);
-	}
-	async submitOfficeServiceRestartInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		if (typeof inspectionId !== "string") throw officeControlError("service-restart", "SUBMISSION");
-		return this.#submitOfficeControl(project, name, command, signal, "service-restart", inspectionId);
-	}
-	async submitOfficeBootServiceRestartInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		if (typeof inspectionId !== "string") throw officeControlError("boot-service-restart", "SUBMISSION");
-		return this.#submitOfficeControl(project, name, command, signal, "boot-service-restart", inspectionId);
-	}
-	async submitOfficeResetServiceRestartInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		if (typeof inspectionId !== "string") throw officeControlError("reset-service-restart", "SUBMISSION");
-		return this.#submitOfficeControl(project, name, command, signal, "reset-service-restart", inspectionId);
-	}
-	async submitOfficeResetConfiguration(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "reset-configuration");
-	}
-	async submitOfficeResetServiceStart(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		return this.#submitOfficeControl(project, name, command, signal, "reset-service-start");
-	}
-	async submitOfficeResetServiceInspection(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		inspectionId: string,
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		// Undefined must never degrade an inspection into the effectful start mode.
-		if (typeof inspectionId !== "string") throw officeControlError("reset-service-start", "SUBMISSION");
-		return this.#submitOfficeControl(project, name, command, signal, "reset-service-start", inspectionId);
-	}
-	async #submitOfficeControl(
-		project: string,
-		name: string,
-		command: LxdOfficePreparationCommand,
-		signal: AbortSignal,
-		purpose: OfficeControlPurpose,
-		inspectionId?: string,
-	): Promise<LxdOperationReference> {
-		let argv: readonly string[];
-		try {
-			officeControlPath(project, name, command.requestSha256, purpose);
-			argv = officeControlCommand(command, purpose, inspectionId);
-		} catch {
-			throw officeControlError(purpose, "SUBMISSION");
-		}
-		return this.#submitOfficeExec(project, name, argv, signal, purpose);
-	}
-	async #submitOfficeExec(
-		project: string,
-		name: string,
-		argv: readonly string[],
-		signal: AbortSignal,
-		purpose: OfficeControlPurpose | "software" | "code_package",
-	): Promise<LxdOperationReference> {
-		try {
-			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("invalid scope");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#request(
-				"POST",
-				projectPath(`/1.0/instances/${name}/exec`, project),
-				{
-					command: argv,
-					interactive: false,
-					"wait-for-websocket": false,
-					// LXD's VM exec bridge closes its control socket early when
-					// stdout/stderr have no recording targets, killing the guest
-					// command. LXD keeps the recorded output on the host, so every
-					// pinned control writes nothing on success and one fixed line on
-					// failure; the locked child that reads protected requests and
-					// credentials runs with ignored stdio (guest README, "Recorded
-					// exec output").
-					"record-output": true,
-					user: 0,
-					group: 0,
-					cwd: "/",
-					environment: {},
-				},
-				checked,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD response");
-			if (
-				result.status !== 202 ||
-				envelope.type !== "async" ||
-				envelope.status_code !== 100 ||
-				(envelope.status !== undefined && envelope.status !== "Operation created") ||
-				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-				(envelope.error !== undefined && envelope.error !== "") ||
-				typeof envelope.operation !== "string" ||
-				!envelope.operation.startsWith("/1.0/operations/")
-			)
-				throw new Error("operation not accepted");
-			const operationId = envelope.operation.slice("/1.0/operations/".length);
-			if (!OPERATION_UUID.test(operationId)) throw new Error("invalid operation identity");
-			const reference = { project, instanceName: name, operationId };
-			trackedOperation(envelope.metadata, reference);
-			return reference;
-		} catch {
-			throw officeControlError(purpose, "SUBMISSION");
-		}
-	}
-
-	async inspectOfficePreparation(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "preparation");
-	}
-	async inspectOfficeConfiguration(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "configuration");
-	}
-	async inspectOfficeBootConfiguration(
+	async waitForInstanceOperation(
 		reference: LxdOperationReference,
+		waitSeconds: number,
 		signal: AbortSignal,
 	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "boot-configuration");
-	}
-	async inspectOfficeServiceStart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "service-start");
-	}
-	async inspectOfficeBootServiceStart(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "boot-service-start");
-	}
-	async inspectOfficeServiceStop(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "service-stop");
-	}
-	async inspectOfficeServiceRestart(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "service-restart");
-	}
-	async inspectOfficeBootServiceRestart(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "boot-service-restart");
-	}
-	async inspectOfficeResetServiceRestart(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "reset-service-restart");
-	}
-	async inspectOfficeResetConfiguration(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "reset-configuration");
-	}
-	async inspectOfficeResetServiceStart(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "reset-service-start");
-	}
-	async pushOfficeSoftwareFile(
-		project: string,
-		name: string,
-		fileName: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		let payload: Buffer | undefined;
-		try {
-			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("invalid scope");
-			const { path, maximum } = officeSoftwareStagedPath(fileName);
-			if (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum)
-				throw new Error("invalid size");
-			payload = Buffer.from(content);
-			await withTimeoutScope(signal, 5000, async (checked) => {
-				checked.throwIfAborted();
-				const result = await this.#requestPayload(
-					"POST",
-					projectPath(
-						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
-						project,
-					),
-					payload,
-					{
-						"content-type": "application/octet-stream",
-						"x-lxd-type": "file",
-						"x-lxd-uid": "0",
-						"x-lxd-gid": "0",
-						"x-lxd-mode": "0400",
-						"x-lxd-modify-perm": "uid,gid,mode",
-					},
-					checked,
-				);
-				checked.throwIfAborted();
-				const envelope = record(result.body, "LXD software staging response");
-				if (
-					result.status !== 200 ||
-					envelope.type !== "sync" ||
-					envelope.status_code !== 200 ||
-					(envelope.status !== undefined && envelope.status !== "Success") ||
-					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-					(envelope.error !== undefined && envelope.error !== "")
-				)
-					throw new Error("staging upload unconfirmed");
-			});
-		} catch {
-			throw officeControlError("software", "UPLOAD");
-		} finally {
-			payload?.fill(0);
-		}
-	}
-	async submitOfficeSoftwareControl(
-		project: string,
-		name: string,
-		tool: LxdOfficeSoftwareTool,
-		args: readonly string[],
-		signal: AbortSignal,
-	): Promise<LxdOperationReference> {
-		let argv: readonly string[];
-		try {
-			argv = officeSoftwareCommand(tool, args);
-		} catch {
-			throw officeControlError("software", "SUBMISSION");
-		}
-		return this.#submitOfficeExec(project, name, argv, signal, "software");
-	}
-	async inspectOfficeSoftwareControl(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-	): Promise<LxdOperationState> {
-		return this.#inspectOfficeControl(reference, signal, "software");
-	}
-	/** Root-owned public outputs only; custody (uid/gid/mode/size/digest) is
-	 * asserted by the caller against its own expectation. */
-	async listOfficeResetDirectory(project: string, name: string, path: string, signal: AbortSignal): Promise<string[]> {
-		try {
-			officeResetPath(path, true, false);
-			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
-			return await withTimeoutScope(signal, 5000, async (checked) => {
-				checked.throwIfAborted();
-				const result = await this.#requestPayload(
-					"GET",
-					projectPath(
-						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
-						project,
-					),
-					undefined,
-					{ accept: "application/json" },
-					checked,
-					1048576,
-				);
-				checked.throwIfAborted();
-				const envelope = record(result.body, "LXD directory listing");
-				if (
-					result.status !== 200 ||
-					envelope.type !== "sync" ||
-					envelope.status_code !== 200 ||
-					!Array.isArray(envelope.metadata) ||
-					envelope.metadata.length > 8200 ||
-					envelope.metadata.some(
-						(entry) =>
-							typeof entry !== "string" || !entry || entry.length > 255 || /[\x00-\x1f\x7f/\\]/.test(entry),
-					)
-				)
-					throw new Error("listing");
-				return [...(envelope.metadata as string[])].sort();
-			});
-		} catch {
-			throw new Error("LXD_OFFICE_RESET_LISTING_UNCONFIRMED");
-		}
-	}
-	async readOfficeResetFile(
-		project: string,
-		name: string,
-		path: string,
-		maximumBytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		try {
-			const maximum = officeResetPath(path, false, false);
-			if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > maximum) throw new Error("size");
-			const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
-			signal.throwIfAborted();
-			return file;
-		} catch {
-			throw new Error("LXD_OFFICE_RESET_READBACK_UNCONFIRMED");
-		}
-	}
-
-	async pushOfficeCodePackageDirectory(
-		project: string,
-		name: string,
-		provisionId: string,
-		directory: "root" | "artifacts",
-		signal: AbortSignal,
-	) {
-		if (!["root", "artifacts"].includes(directory)) throw officeControlError("code_package", "UPLOAD");
-		return this.#pushOfficeCodePackage(
-			project,
-			name,
-			officeCodePackageStage(provisionId) + (directory === "artifacts" ? "/artifacts" : ""),
-			undefined,
-			signal,
-		);
-	}
-	async pushOfficeCodePackageFile(
-		project: string,
-		name: string,
-		provisionId: string,
-		file: string,
-		content: Buffer,
-		signal: AbortSignal,
-	) {
-		try {
-			const maximum = officeCodePackageMaximum(file, true);
-			if (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum) throw new Error("size");
-			return await this.#pushOfficeCodePackage(
-				project,
-				name,
-				`${officeCodePackageStage(provisionId)}/${file}`,
-				content,
-				signal,
-			);
-		} catch {
-			throw officeControlError("code_package", "UPLOAD");
-		}
-	}
-	async #pushOfficeCodePackage(
-		project: string,
-		name: string,
-		path: string,
-		content: Buffer | undefined,
-		signal: AbortSignal,
-	) {
-		let payload: Buffer | undefined;
-		try {
-			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
-			payload = content === undefined ? Buffer.alloc(0) : Buffer.from(content);
-			await withTimeoutScope(signal, 5000, async (checked) => {
-				checked.throwIfAborted();
-				const result = await this.#requestPayload(
-					"POST",
-					projectPath(
-						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
-						project,
-					),
-					payload,
-					{
-						"content-type": "application/octet-stream",
-						"x-lxd-type": content === undefined ? "directory" : "file",
-						"x-lxd-uid": "0",
-						"x-lxd-gid": "0",
-						"x-lxd-mode": content === undefined ? "0700" : "0400",
-						"x-lxd-modify-perm": "uid,gid,mode",
-					},
-					checked,
-				);
-				checked.throwIfAborted();
-				const envelope = record(result.body, "LXD code package staging response");
-				if (
-					result.status !== 200 ||
-					envelope.type !== "sync" ||
-					envelope.status_code !== 200 ||
-					(envelope.status !== undefined && envelope.status !== "Success") ||
-					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-					(envelope.error !== undefined && envelope.error !== "")
-				)
-					throw new Error("upload");
-			});
-		} catch {
-			throw officeControlError("code_package", "UPLOAD");
-		} finally {
-			payload?.fill(0);
-		}
-	}
-	async readOfficeCodePackageFile(
-		project: string,
-		name: string,
-		provisionId: string,
-		file: string,
-		maximumBytes: number,
-		signal: AbortSignal,
-	) {
-		try {
-			const maximum = officeCodePackageMaximum(file, false);
-			if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > maximum) throw new Error("size");
-			return await this.#readInstanceFile(
-				project,
-				name,
-				`${officeCodePackageStage(provisionId)}/${file}`,
-				maximumBytes,
-				signal,
-			);
-		} catch {
-			throw officeControlError("code_package", "READBACK");
-		}
-	}
-	async discoverOfficeCodePackage(project: string, name: string, signal: AbortSignal): Promise<string | undefined> {
-		try {
-			if (![project, name].every((v) => INSTANCE_NAME.test(v))) throw new Error("identity");
-			return await withTimeoutScope(signal, 5000, async (checked) => {
-				const result = await this.#requestPayload(
-					"GET",
-					projectPath(
-						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent("/etc/qorpera-office/code-packages")}`,
-						project,
-					),
-					undefined,
-					undefined,
-					checked,
-					4096,
-				);
-				checked.throwIfAborted();
-				const envelope = record(result.body, "package directory");
-				if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return undefined;
-				if (
-					result.status !== 200 ||
-					envelope.type !== "sync" ||
-					envelope.status_code !== 200 ||
-					result.headers?.["x-lxd-type"] !== "directory" ||
-					result.headers?.["x-lxd-uid"] !== "0" ||
-					result.headers?.["x-lxd-gid"] !== "0" ||
-					!["0700", "448"].includes(String(result.headers?.["x-lxd-mode"]))
-				)
-					throw new Error("custody");
-				if (
-					!Array.isArray(envelope.metadata) ||
-					envelope.metadata.length !== 1 ||
-					typeof envelope.metadata[0] !== "string" ||
-					!OPERATION_UUID.test(envelope.metadata[0])
-				)
-					throw new Error("ambiguous");
-				return envelope.metadata[0];
-			});
-		} catch {
-			throw officeControlError("code_package", "READBACK");
-		}
-	}
-
-	async readOfficeCodePackageReceipt(
-		project: string,
-		name: string,
-		provisionId: string,
-		file: "claim" | "installed",
-		signal: AbortSignal,
-	) {
-		try {
-			officeCodePackageStage(provisionId);
-			if (!["claim", "installed"].includes(file)) throw new Error("file");
-			return await this.#readInstanceFile(
-				project,
-				name,
-				`/etc/qorpera-office/code-packages/${provisionId}/${file}.json`,
-				65536,
-				signal,
-			);
-		} catch {
-			throw officeControlError("code_package", "READBACK");
-		}
-	}
-	async submitOfficeCodePackageTool(
-		project: string,
-		name: string,
-		provisionId: string,
-		purpose: "bootstrap" | "measure",
-		pin: { bytes: number; sha256: string },
-		args: readonly string[],
-		signal: AbortSignal,
-	) {
-		let command: string[];
-		try {
-			command = officeCodePackageArgs(provisionId, purpose, pin, args);
-		} catch {
-			throw officeControlError("code_package", "SUBMISSION");
-		}
-		return this.#submitOfficeExec(project, name, command, signal, "code_package");
-	}
-	async inspectOfficeCodePackageTool(reference: LxdOperationReference, signal: AbortSignal) {
-		return this.#inspectOfficeControl(reference, signal, "code_package");
-	}
-	async pushOfficeResetDirectory(
-		project: string,
-		name: string,
-		path: string,
-		uid: number,
-		gid: number,
-		mode: number,
-		signal: AbortSignal,
-	): Promise<void> {
-		await this.#pushOfficeReset(project, name, path, undefined, uid, gid, mode, signal);
-	}
-	async pushOfficeResetFile(
-		project: string,
-		name: string,
-		path: string,
-		content: Buffer,
-		uid: number,
-		gid: number,
-		mode: number,
-		signal: AbortSignal,
-	): Promise<void> {
-		await this.#pushOfficeReset(project, name, path, content, uid, gid, mode, signal);
-	}
-	async #pushOfficeReset(
-		project: string,
-		name: string,
-		path: string,
-		content: Buffer | undefined,
-		uid: number,
-		gid: number,
-		mode: number,
-		signal: AbortSignal,
-	): Promise<void> {
-		let payload: Buffer | undefined;
-		try {
-			const directory = content === undefined,
-				maximum = officeResetPath(path, directory, true);
-			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
-			if (!directory && (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum))
-				throw new Error("size");
-			payload = directory ? Buffer.alloc(0) : Buffer.from(content);
-			await withTimeoutScope(signal, 5000, async (checked) => {
-				checked.throwIfAborted();
-				const result = await this.#requestPayload(
-					"POST",
-					projectPath(
-						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
-						project,
-					),
-					payload,
-					{
-						"content-type": "application/octet-stream",
-						"x-lxd-type": directory ? "directory" : "file",
-						"x-lxd-uid": officeResetOwner(uid),
-						"x-lxd-gid": officeResetOwner(gid),
-						"x-lxd-mode": officeResetMode(mode, directory),
-						"x-lxd-modify-perm": "uid,gid,mode",
-					},
-					checked,
-				);
-				checked.throwIfAborted();
-				const envelope = record(result.body, "LXD reset restore response");
-				if (
-					result.status !== 200 ||
-					envelope.type !== "sync" ||
-					envelope.status_code !== 200 ||
-					(envelope.status !== undefined && envelope.status !== "Success") ||
-					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-					(envelope.error !== undefined && envelope.error !== "")
-				)
-					throw new Error("restore upload unconfirmed");
-			});
-		} catch {
-			throw new Error("LXD_OFFICE_RESET_RESTORE_UNCONFIRMED");
-		} finally {
-			payload?.fill(0);
-		}
-	}
-	async readOfficeSoftwareFile(
-		project: string,
-		name: string,
-		path: string,
-		maximumBytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		try {
-			const maximum = officeSoftwareReadPath(path);
-			if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > maximum) throw new Error("size");
-			const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
-			signal.throwIfAborted();
-			return file;
-		} catch {
-			throw officeControlError("software", "READBACK");
-		}
-	}
-	async #inspectOfficeControl(
-		reference: LxdOperationReference,
-		signal: AbortSignal,
-		purpose: OfficeControlPurpose | "software" | "code_package",
-	): Promise<LxdOperationState> {
+		let unknown = false;
 		try {
 			if (
-				![reference.project, reference.instanceName].every(
-					(value) => typeof value === "string" && INSTANCE_NAME.test(value),
-				) ||
-				typeof reference.operationId !== "string" ||
+				!INSTANCE_NAME.test(reference.project) ||
+				!INSTANCE_NAME.test(reference.instanceName) ||
 				!OPERATION_UUID.test(reference.operationId)
 			)
 				throw new Error("invalid operation reference");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#request(
-				"GET",
-				projectPath(`/1.0/operations/${reference.operationId}`, reference.project),
-				undefined,
-				checked,
-			);
-			checked.throwIfAborted();
+			const clamped = Math.max(1, Math.min(30, Math.trunc(waitSeconds)));
+			const result = await withAbortScopes([signal, AbortSignal.timeout((clamped + 5) * 1000)], async (checked) => {
+				checked.throwIfAborted();
+				const response = await this.#request(
+					"GET",
+					projectPath(`/1.0/operations/${reference.operationId}/wait?timeout=${clamped}`, reference.project),
+					undefined,
+					checked,
+				);
+				checked.throwIfAborted();
+				return response;
+			});
 			const envelope = record(result.body, "LXD response");
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				(envelope.status !== undefined && envelope.status !== "Success") ||
-				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-				(envelope.error !== undefined && envelope.error !== "")
-			)
+			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
+			if (result.status >= 200 && result.status < 300 && envelope.type === "error") {
+				return await this.inspectInstanceOperation(reference, signal);
+			}
+			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
 				throw new Error("operation unavailable");
-			const state = trackedOperation(envelope.metadata, reference);
-			if (state !== "succeeded") return state;
-			// LXD task Success means the exec operation completed, even when the
-			// guest process exited nonzero. Missing/invalid exit metadata is unknown.
-			const resultMetadata = record(record(envelope.metadata, "operation").metadata, "exec result");
-			const exitCode = resultMetadata.return;
-			if (!Number.isSafeInteger(exitCode) || (exitCode as number) < 0 || (exitCode as number) > 255)
-				throw new Error("exit status unavailable");
-			return exitCode === 0 ? "succeeded" : "failed";
-		} catch {
-			throw officeControlError(purpose, "OPERATION");
+			return trackedOperation(envelope.metadata, reference);
+		} catch (error) {
+			if (error instanceof Error && error.message === "LXD_OPERATION_UNKNOWN") throw error;
+			throw new Error(unknown ? "LXD_OPERATION_UNKNOWN" : "LXD_OPERATION_UNCONFIRMED");
 		}
 	}
 
@@ -3405,24 +1831,26 @@ export class LxdUnixClient
 					output["2"] !== `${prefix}.stderr`
 				)
 					throw new Error("read output identity differs");
-				const stdout = await this.#requestPayload(
-					"GET",
-					projectPath(`${prefix}.stdout`, project),
-					undefined,
-					undefined,
-					checked,
-					Math.min(maximumBytes, path === "/proc/uptime" ? 128 : 64),
-					"text",
-				);
-				const stderr = await this.#requestPayload(
-					"GET",
-					projectPath(`${prefix}.stderr`, project),
-					undefined,
-					undefined,
-					checked,
-					1,
-					"text",
-				);
+				const [stdout, stderr] = await Promise.all([
+					this.#requestPayload(
+						"GET",
+						projectPath(`${prefix}.stdout`, project),
+						undefined,
+						undefined,
+						checked,
+						Math.min(maximumBytes, path === "/proc/uptime" ? 128 : 64),
+						"text",
+					),
+					this.#requestPayload(
+						"GET",
+						projectPath(`${prefix}.stderr`, project),
+						undefined,
+						undefined,
+						checked,
+						1,
+						"text",
+					),
+				]);
 				if (
 					stdout.status !== 200 ||
 					stderr.status !== 200 ||
@@ -3435,301 +1863,17 @@ export class LxdUnixClient
 				if (path === "/proc/uptime") parseLxdProcUptime(Buffer.from(stdout.body));
 				// Delete only the two public output logs belonging to this completed
 				// observation. No guest file or lifecycle command is changed/replayed.
-				for (const suffix of ["stdout", "stderr"]) {
-					const removed = await this.#request(
-						"DELETE",
-						projectPath(`${prefix}.${suffix}`, project),
-						undefined,
-						checked,
-					);
-					if (removed.status !== 200) throw new Error("read log cleanup unconfirmed");
-				}
+				const removed = await Promise.all(
+					["stdout", "stderr"].map((suffix) =>
+						this.#request("DELETE", projectPath(`${prefix}.${suffix}`, project), undefined, checked),
+					),
+				);
+				if (removed.some((entry) => entry.status !== 200)) throw new Error("read log cleanup unconfirmed");
 				checked.throwIfAborted();
 				return Buffer.from(stdout.body);
 			});
 		} catch {
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
-		}
-	}
-
-	async pushOfficePreparationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "preparation");
-	}
-	async pushOfficeConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "configuration");
-	}
-	async pushOfficeBootConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "boot-configuration");
-	}
-	async pushOfficeServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "service-start");
-	}
-	async pushOfficeBootServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "boot-service-start");
-	}
-	async pushOfficeServiceStopRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "service-stop");
-	}
-	async pushOfficeServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "service-restart");
-	}
-	async pushOfficeBootServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "boot-service-restart");
-	}
-	async pushOfficeResetServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "reset-service-restart");
-	}
-	async pushOfficeResetConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "reset-configuration");
-	}
-	async pushOfficeResetServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-	): Promise<void> {
-		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "reset-service-start");
-	}
-	async #pushOfficeControlRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		content: Buffer,
-		signal: AbortSignal,
-		purpose: OfficeControlPurpose,
-	): Promise<void> {
-		let payload: Buffer | undefined;
-		try {
-			const path = officeControlPath(project, name, requestSha256, purpose);
-			if (!Buffer.isBuffer(content) || content.length < 1 || content.length > officeControlMaximum(purpose))
-				throw new Error("invalid request size");
-			// Retain exact bytes across awaits even if the caller changes its buffer.
-			payload = Buffer.from(content);
-			if (createHash("sha256").update(payload).digest("hex") !== requestSha256)
-				throw new Error("request digest mismatch");
-			await withTimeoutScope(signal, 5000, async (checked) => {
-				checked.throwIfAborted();
-				const result = await this.#requestPayload(
-					"POST",
-					projectPath(
-						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
-						project,
-					),
-					payload,
-					{
-						"content-type": "application/octet-stream",
-						"x-lxd-type": "file",
-						"x-lxd-uid": "0",
-						"x-lxd-gid": "0",
-						"x-lxd-mode": "0400",
-						"x-lxd-modify-perm": "uid,gid,mode",
-					},
-					checked,
-				);
-				checked.throwIfAborted();
-				const envelope = record(result.body, "LXD preparation staging response");
-				if (
-					result.status !== 200 ||
-					envelope.type !== "sync" ||
-					envelope.status_code !== 200 ||
-					(envelope.status !== undefined && envelope.status !== "Success") ||
-					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-					(envelope.error !== undefined && envelope.error !== "")
-				)
-					throw new Error("staging upload unconfirmed");
-			});
-		} catch {
-			throw officeControlError(purpose, "UPLOAD");
-		} finally {
-			payload?.fill(0);
-		}
-	}
-
-	async readOfficePreparationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "preparation");
-	}
-	async readOfficeConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "configuration");
-	}
-	async readOfficeBootConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "boot-configuration");
-	}
-	async readOfficeServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "service-start");
-	}
-	async readOfficeBootServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "boot-service-start");
-	}
-	async readOfficeServiceStopRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "service-stop");
-	}
-	async readOfficeServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "service-restart");
-	}
-	async readOfficeBootServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "boot-service-restart");
-	}
-	async readOfficeResetServiceRestartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "reset-service-restart");
-	}
-	async readOfficeResetConfigurationRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "reset-configuration");
-	}
-	async readOfficeResetServiceStartRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-	): Promise<LxdInstanceFile> {
-		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "reset-service-start");
-	}
-	async #readOfficeControlRequest(
-		project: string,
-		name: string,
-		requestSha256: string,
-		bytes: number,
-		signal: AbortSignal,
-		purpose: OfficeControlPurpose,
-	): Promise<LxdInstanceFile> {
-		try {
-			const path = officeControlPath(project, name, requestSha256, purpose);
-			if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > officeControlMaximum(purpose))
-				throw new Error("size");
-			const file = await this.#readInstanceFile(project, name, path, bytes, signal);
-			if (
-				file.uid !== 0 ||
-				file.gid !== 0 ||
-				file.mode !== 0o400 ||
-				file.content.length !== bytes ||
-				createHash("sha256").update(file.content).digest("hex") !== requestSha256
-			)
-				throw new Error("staged request mismatch");
-			signal.throwIfAborted();
-			return file;
-		} catch {
-			throw officeControlError(purpose, "READBACK");
 		}
 	}
 
@@ -3749,93 +1893,89 @@ export class LxdUnixClient
 				/[\x00-\x1f\x7f\\]/.test(path) ||
 				!Number.isSafeInteger(maximumBytes) ||
 				maximumBytes < 1 ||
-				maximumBytes >
-					(officeCodePackageReadMaximum(path) ??
-						(path.startsWith("/run/qorpera-office-preparation/reset-configuration-incoming-") &&
-						/^\/run\/qorpera-office-preparation\/reset-configuration-incoming-[0-9a-f]{64}\.json$/.test(path)
-							? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
-							: COMPANY_COMPUTER_PREPARATION_MAX_BYTES))
+				maximumBytes > (CODING_GUEST_HELPER_PATH.test(path) ? CODING_GUEST_HELPER_MAX_BYTES : 65536)
 			)
 				throw new Error("invalid request");
-			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			return await new Promise<LxdInstanceFile>((resolveRead, reject) => {
-				const request = httpRequest(
-					{
-						method: "GET",
-						socketPath: this.#socketPath,
-						signal: checked,
-						path: projectPath(
-							`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
-							project,
-						),
-						headers: { accept: "application/octet-stream" },
-					},
-					(response) => {
-						const fail = (): void => {
-							response.destroy();
-							request.destroy();
-							reject(new Error("invalid read"));
-						};
-						response.once("error", fail);
-						response.once("aborted", fail);
-						const integer = (key: string): number => {
-							const value = response.headers[key];
-							if (
-								typeof value !== "string" ||
-								!/^(?:0|[1-9][0-9]{0,9})$/.test(value) ||
-								Number(value) > 4294967295
-							)
-								throw new Error("invalid metadata");
-							return Number(value);
-						};
-						let uid: number;
-						let gid: number;
-						let mode: number;
-						let expectedLength: number | undefined;
-						try {
-							if (response.statusCode !== 200 || response.headers["x-lxd-type"] !== "file")
-								throw new Error("not a file");
-							uid = integer("x-lxd-uid");
-							gid = integer("x-lxd-gid");
-							const mask = response.headers["x-lxd-mode"];
-							if (typeof mask !== "string" || !/^(?:0[0-7]{3,4}|[1-9][0-9]{0,3}|0)$/.test(mask))
-								throw new Error("mode");
-							mode = Number.parseInt(mask, mask.startsWith("0") ? 8 : 10);
-							if (mode > 0o7777) throw new Error("mode");
-							if (response.headers["content-length"] !== undefined) {
-								expectedLength = integer("content-length");
-								if (expectedLength > maximumBytes) throw new Error("oversized");
-							}
-						} catch {
-							fail();
-							return;
-						}
-						const chunks: Buffer[] = [];
-						let length = 0;
-						response.on("data", (chunk: Buffer) => {
-							length += chunk.length;
-							if (length > maximumBytes) {
+			return await withAbortScopes([signal, AbortSignal.timeout(5000)], async (checked) => {
+				checked.throwIfAborted();
+				return await new Promise<LxdInstanceFile>((resolveRead, reject) => {
+					const request = httpRequest(
+						{
+							method: "GET",
+							socketPath: this.#socketPath,
+							signal: checked,
+							path: projectPath(
+								`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+								project,
+							),
+							headers: { accept: "application/octet-stream" },
+						},
+						(response) => {
+							const fail = (): void => {
+								response.destroy();
+								request.destroy();
+								reject(new Error("invalid read"));
+							};
+							response.once("error", fail);
+							response.once("aborted", fail);
+							const integer = (key: string): number => {
+								const value = response.headers[key];
+								if (
+									typeof value !== "string" ||
+									!/^(?:0|[1-9][0-9]{0,9})$/.test(value) ||
+									Number(value) > 4294967295
+								)
+									throw new Error("invalid metadata");
+								return Number(value);
+							};
+							let uid: number;
+							let gid: number;
+							let mode: number;
+							let expectedLength: number | undefined;
+							try {
+								if (response.statusCode !== 200 || response.headers["x-lxd-type"] !== "file")
+									throw new Error("not a file");
+								uid = integer("x-lxd-uid");
+								gid = integer("x-lxd-gid");
+								const mask = response.headers["x-lxd-mode"];
+								if (typeof mask !== "string" || !/^(?:0[0-7]{3,4}|[1-9][0-9]{0,3}|0)$/.test(mask))
+									throw new Error("mode");
+								mode = Number.parseInt(mask, mask.startsWith("0") ? 8 : 10);
+								if (mode > 0o7777) throw new Error("mode");
+								if (response.headers["content-length"] !== undefined) {
+									expectedLength = integer("content-length");
+									if (expectedLength > maximumBytes) throw new Error("oversized");
+								}
+							} catch {
 								fail();
 								return;
 							}
-							chunks.push(chunk);
-						});
-						response.once("end", () => {
-							if (
-								checked.aborted ||
-								!response.complete ||
-								(expectedLength !== undefined && length !== expectedLength)
-							) {
-								fail();
-								return;
-							}
-							resolveRead({ content: Buffer.concat(chunks), uid, gid, mode });
-						});
-					},
-				);
-				request.once("error", () => reject(new Error("read unavailable")));
-				request.end();
+							const chunks: Buffer[] = [];
+							let length = 0;
+							response.on("data", (chunk: Buffer) => {
+								length += chunk.length;
+								if (length > maximumBytes) {
+									fail();
+									return;
+								}
+								chunks.push(chunk);
+							});
+							response.once("end", () => {
+								if (
+									checked.aborted ||
+									!response.complete ||
+									(expectedLength !== undefined && length !== expectedLength)
+								) {
+									fail();
+									return;
+								}
+								resolveRead({ content: Buffer.concat(chunks), uid, gid, mode });
+							});
+						},
+					);
+					request.once("error", () => reject(new Error("read unavailable")));
+					request.end();
+				});
 			});
 		} catch {
 			// LXD diagnostics and raw file bytes may contain private bootstrap data.
@@ -4460,23 +2600,36 @@ export class LxdUnixClient
 		signal?: AbortSignal,
 		maximumResponseBytes = MAX_RESPONSE_BYTES,
 		format: "json" | "text" = "json",
+		allowReusedRetry = true,
 	): Promise<HttpResult> {
 		if (!signal) {
 			const defaultTimeoutMs = defaultLxdRequestTimeoutMs(path, this.#operationTimeoutSeconds);
 			return withTimeoutScope(undefined, defaultTimeoutMs, (checked) =>
-				this.#requestPayload(method, path, payload, headers, checked, maximumResponseBytes, format),
+				this.#requestPayload(
+					method,
+					path,
+					payload,
+					headers,
+					checked,
+					maximumResponseBytes,
+					format,
+					allowReusedRetry,
+				),
 			);
 		}
 		return new Promise<HttpResult>((resolve, reject) => {
+			let responded = false;
 			const request = httpRequest(
 				{
 					method,
 					path,
 					socketPath: this.#socketPath,
+					agent: this.#agent,
 					headers: payload ? { ...headers, "content-length": String(payload.byteLength) } : headers,
 					signal,
 				},
 				(response) => {
+					responded = true;
 					const chunks: Buffer[] = [];
 					let length = 0;
 					response.once("error", reject);
@@ -4505,7 +2658,17 @@ export class LxdUnixClient
 					});
 				},
 			);
-			request.once("error", reject);
+			request.once("error", (error) => {
+				// WHY: Retry once on a fresh socket if LXD closed an idle keep-alive Unix connection before an idempotent GET responded.
+				if (allowReusedRetry && method === "GET" && !responded && request.reusedSocket && !signal.aborted) {
+					this.#requestPayload(method, path, payload, headers, signal, maximumResponseBytes, format, false).then(
+						resolve,
+						reject,
+					);
+					return;
+				}
+				reject(error);
+			});
 			if (payload) request.end(payload);
 			else request.end();
 		});

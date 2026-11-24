@@ -7,6 +7,15 @@ export const DEFAULT_BODY_READ_TIMEOUT_MS = 10_000;
 
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
+export function jsonResponse(value: unknown, status = 200): Response {
+	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
+}
+
+export async function sha256Hex(value: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function constantTimeEqual(a: string, b: string): boolean {
 	// WHY: Compare SHA-256 digests with timingSafeEqual so unequal-length secrets never leak length or prefix timing.
 	const digestA = createHash("sha256").update(a, "utf8").digest();
@@ -57,6 +66,14 @@ export interface TimedFetchOptions {
 	readonly timeoutMs?: number;
 	readonly maxResponseBytes?: number;
 	readonly fetchImplementation?: typeof fetch;
+}
+
+const SERVICE_JWT_PATTERN = /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+export function serviceHeaders(secretKey: string, extra?: Record<string, string>): Record<string, string> {
+	return SERVICE_JWT_PATTERN.test(secretKey)
+		? { apikey: secretKey, authorization: `Bearer ${secretKey}`, ...extra }
+		: { apikey: secretKey, ...extra };
 }
 
 export function preferredServiceKey(readEnv: (name: string) => string | undefined): string | undefined {

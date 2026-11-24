@@ -366,24 +366,6 @@ export interface TriggerSurfaceAutomationResult {
 	readonly sessionId?: string | null;
 }
 
-export interface UpdateSurfaceRebasedChangesInput {
-	readonly surfaceId: string;
-	readonly sessionId: string;
-	readonly branchHeadSha?: string | null;
-	readonly rebasedChanges?: readonly {
-		readonly changeId: string;
-		readonly parentSha: string;
-		readonly headSha: string;
-	}[];
-	readonly conflictedChangeId?: string | null;
-	readonly conflictPaths?: readonly string[] | null;
-}
-
-export interface UpdateSurfaceRebasedChangesResult {
-	readonly updated: number;
-	readonly sessionId: string;
-}
-
 export interface CompleteSurfacePreviewInput {
 	readonly previewId: string;
 	readonly status: "ready" | "conflicted" | "failed";
@@ -532,10 +514,6 @@ export interface CloudRunnerOrchestratorControlPlane {
 		signal?: AbortSignal,
 	): Promise<EnqueueSurfaceSessionRunResult>;
 	triggerSurfaceAutomation?(automationId: string, signal?: AbortSignal): Promise<TriggerSurfaceAutomationResult>;
-	updateSurfaceRebasedChanges?(
-		input: UpdateSurfaceRebasedChangesInput,
-		signal?: AbortSignal,
-	): Promise<UpdateSurfaceRebasedChangesResult>;
 	renewSurfaceLease?(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult>;
 	completeSurfacePreview?(
 		input: CompleteSurfacePreviewInput,
@@ -2602,6 +2580,49 @@ function routineFirstSlot(
 	return first ? { nextDueAt: first.toISOString() } : undefined;
 }
 
+function countAdvancedOccurrencesBetween(
+	trigger: Extract<RoutineScheduleTrigger, { windowStart: string }>,
+	afterMs: number,
+	untilMs: number,
+): number {
+	if (untilMs <= afterMs) return 0;
+	const startLocal = calendarParts(new Date(afterMs), trigger.timeZone);
+	const endLocal = calendarParts(new Date(untilMs), trigger.timeZone);
+	const startDayUtc = Date.UTC(startLocal.year, startLocal.month - 1, startLocal.day);
+	const endDayUtc = Date.UTC(endLocal.year, endLocal.month - 1, endLocal.day);
+	const startMin = Number(trigger.windowStart.slice(0, 2)) * 60 + Number(trigger.windowStart.slice(3));
+	const endMin = Number(trigger.windowEnd.slice(0, 2)) * 60 + Number(trigger.windowEnd.slice(3));
+	const step = trigger.intervalMinutes;
+	const stepMs = step * 60_000;
+	const slotsPerFullDay = Math.floor((endMin - startMin) / step) + 1;
+	const dayMs = 86_400_000;
+	let count = 0;
+	for (let dayUtc = startDayUtc - dayMs; dayUtc <= endDayUtc + dayMs; dayUtc += dayMs) {
+		const shifted = new Date(dayUtc);
+		const year = shifted.getUTCFullYear();
+		const month = shifted.getUTCMonth() + 1;
+		const day = shifted.getUTCDate();
+		if (!advancedCalendarDateMatches(trigger, year, month, day)) continue;
+		const offset = constantDayOffsetMs(year, month, day, trigger.timeZone);
+		if (offset !== undefined) {
+			if (dayUtc > startDayUtc + dayMs && dayUtc < endDayUtc - dayMs) {
+				count += slotsPerFullDay;
+				continue;
+			}
+			const firstSlotUtc = dayUtc + startMin * 60_000 - offset;
+			const kMin = Math.max(0, Math.floor((afterMs - firstSlotUtc) / stepMs) + 1);
+			const kMax = Math.min(slotsPerFullDay - 1, Math.floor((untilMs - firstSlotUtc) / stepMs));
+			if (kMax >= kMin) count += kMax - kMin + 1;
+			continue;
+		}
+		for (const occurrence of advancedCalendarOccurrences(trigger, year, month, day)) {
+			const ts = occurrence.getTime();
+			if (ts > afterMs && ts <= untilMs) count += 1;
+		}
+	}
+	return count;
+}
+
 function dueRoutineWakes(
 	head: CloudRoutineScheduleHead,
 	trigger: RoutineScheduleTrigger,
@@ -2622,6 +2643,40 @@ function dueRoutineWakes(
 		return [{ ...routineOccurrence(head, trigger, scheduledFor), nextDueAt: nextDueAt.toISOString(), coalesced: 0 }];
 	}
 	const lastScheduledFor = new Date(cursor.lastScheduledFor);
+	if (!("windowStart" in trigger) && !("localTime" in trigger)) {
+		const intervalMs = trigger.intervalMinutes * 60_000;
+		const anchor = trigger.startAt ? Date.parse(trigger.startAt) : 0;
+		const firstSlot = Math.max(0, Math.floor((lastScheduledFor.getTime() - anchor) / intervalMs) + 1);
+		const firstMs = anchor + firstSlot * intervalMs;
+		if (firstMs > now.getTime()) return [];
+		const lastSlot = Math.floor((now.getTime() - anchor) / intervalMs);
+		const dueCount = lastSlot - firstSlot + 1;
+		const latest = new Date(anchor + lastSlot * intervalMs);
+		const nextCandidate = new Date(anchor + (lastSlot + 1) * intervalMs);
+		if (dueCount > catchUpLimit) {
+			return [
+				{
+					...routineOccurrence(head, trigger, latest),
+					expectedLastScheduledFor: cursor.lastScheduledFor,
+					nextDueAt: nextCandidate.toISOString(),
+					coalesced: dueCount - 1,
+				},
+			];
+		}
+		const wakes: ScheduledRoutineWake[] = [];
+		for (let i = 0; i < dueCount; i += 1) {
+			const scheduledFor = new Date(anchor + (firstSlot + i) * intervalMs);
+			const nextDueAt = new Date(anchor + (firstSlot + i + 1) * intervalMs);
+			const expectedLast = i === 0 ? lastScheduledFor : new Date(anchor + (firstSlot + i - 1) * intervalMs);
+			wakes.push({
+				...routineOccurrence(head, trigger, scheduledFor),
+				expectedLastScheduledFor: expectedLast.toISOString(),
+				nextDueAt: nextDueAt.toISOString(),
+				coalesced: 0,
+			});
+		}
+		return wakes;
+	}
 	let candidate = nextRoutineOccurrence(trigger, lastScheduledFor);
 	const due: Date[] = [];
 	let dueCount = 0;
@@ -2629,7 +2684,20 @@ function dueRoutineWakes(
 	while (candidate && candidate.getTime() <= now.getTime()) {
 		dueCount += 1;
 		latest = candidate;
-		if (dueCount <= catchUpLimit) due.push(candidate);
+		if (dueCount <= catchUpLimit) {
+			due.push(candidate);
+			candidate = nextRoutineOccurrence(trigger, candidate);
+			continue;
+		}
+		if ("windowStart" in trigger) {
+			const finalLatest = latestRoutineOccurrence(trigger, now);
+			if (finalLatest && finalLatest.getTime() > latest.getTime()) {
+				dueCount += countAdvancedOccurrencesBetween(trigger, latest.getTime(), finalLatest.getTime());
+				latest = finalLatest;
+			}
+			candidate = nextRoutineOccurrence(trigger, latest);
+			break;
+		}
 		candidate = nextRoutineOccurrence(trigger, candidate);
 	}
 	if (!latest || !candidate) return [];
@@ -4650,50 +4718,6 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		throw new Error("Runner orchestrator returned invalid surface automation trigger status");
 	}
 
-	async updateSurfaceRebasedChanges(
-		input: UpdateSurfaceRebasedChangesInput,
-		signal?: AbortSignal,
-	): Promise<UpdateSurfaceRebasedChangesResult> {
-		requiredUuid(input.surfaceId, "Surface id");
-		requiredUuid(input.sessionId, "Surface session id");
-		const branchHeadSha =
-			input.branchHeadSha === null || input.branchHeadSha === undefined
-				? undefined
-				: validateSurfaceShortText(input.branchHeadSha, "Surface branch head sha", 64);
-		let conflictedChangeId: string | undefined;
-		if (input.conflictedChangeId !== null && input.conflictedChangeId !== undefined) {
-			requiredUuid(input.conflictedChangeId, "Conflicted change id");
-			conflictedChangeId = input.conflictedChangeId;
-		}
-		const conflictPaths =
-			input.conflictPaths === null || input.conflictPaths === undefined
-				? undefined
-				: validateSurfaceStringList(input.conflictPaths, "Rebase conflict paths", 256, 512);
-		const raw = record(
-			await this.#request(
-				{
-					action: "surface_update_rebased_changes",
-					orchestratorId: this.#orchestratorId,
-					surfaceId: input.surfaceId,
-					sessionId: input.sessionId,
-					...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
-					...(input.rebasedChanges !== undefined ? { rebasedChanges: [...input.rebasedChanges] } : {}),
-					...(conflictedChangeId !== undefined ? { conflictedChangeId } : {}),
-					...(conflictPaths !== undefined ? { conflictPaths } : {}),
-				},
-				signal,
-			),
-			"surface rebased changes update",
-		);
-		if (typeof raw.updated !== "number" || !Number.isSafeInteger(raw.updated) || raw.updated < 0) {
-			throw new Error("Runner orchestrator returned invalid rebased change count");
-		}
-		return {
-			updated: raw.updated,
-			sessionId: responseUuid(raw.sessionId, "surface session id"),
-		};
-	}
-
 	async renewSurfaceLease(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult> {
 		if (input.kind !== "session" && input.kind !== "preview" && input.kind !== "job") {
 			throw new Error("Surface lease kind is invalid");
@@ -4989,47 +5013,5 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		}
 		const envelope = record(value, "response envelope");
 		return envelope.value;
-	}
-}
-
-export interface LocalCloudRunnerLaunch {
-	reconcile(signal?: AbortSignal): Promise<void>;
-	acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance>;
-	deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void>;
-	stop(
-		runner: CloudRunnerInstance,
-		reason: "delivery_failed" | "idle" | "revoked",
-		signal?: AbortSignal,
-	): Promise<void>;
-}
-
-/** Temporary test/development adapter. It deliberately implements the same
- * out-of-band assignment contract as a future managed-computer provider. */
-export class LocalCloudRunnerProviderAdapter implements CloudRunnerProviderAdapter {
-	readonly adapterId = "local";
-	readonly #launch: LocalCloudRunnerLaunch;
-
-	constructor(launch: LocalCloudRunnerLaunch) {
-		this.#launch = launch;
-	}
-
-	reconcile(signal?: AbortSignal): Promise<void> {
-		return signal ? this.#launch.reconcile(signal) : this.#launch.reconcile();
-	}
-
-	acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
-		return this.#launch.acquire(work, signal);
-	}
-
-	deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void> {
-		return signal ? this.#launch.deliver(runner, delivery, signal) : this.#launch.deliver(runner, delivery);
-	}
-
-	stop(
-		runner: CloudRunnerInstance,
-		reason: "delivery_failed" | "idle" | "revoked",
-		signal?: AbortSignal,
-	): Promise<void> {
-		return signal ? this.#launch.stop(runner, reason, signal) : this.#launch.stop(runner, reason);
 	}
 }

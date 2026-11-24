@@ -27,6 +27,9 @@ import {
 	cloudRuntimeOperationHash,
 	cloudRuntimeToolOperation,
 } from "./cloud-runtime-observability.ts";
+import { cloudToolJsonText, DEFAULT_TOOL_JSON_MAX_BYTES } from "./cloud-tool-json.ts";
+
+export { cloudToolJsonText };
 
 export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
 /** One tool result's envelope, as the patched Codex's result fence bounds it (`MAX_RESULT_BYTES`, 32 KiB since perf
@@ -78,8 +81,9 @@ const COMPANY_FILE_PARENT_MISSING =
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
-const MAX_ARGUMENT_BYTES = 64 * 1024;
+const MAX_ARGUMENT_BYTES = DEFAULT_TOOL_JSON_MAX_BYTES;
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
+const MAX_PARALLEL_READS = 6;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 /** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), also as text carries it
@@ -112,10 +116,12 @@ const SECRET_CUTS: readonly (readonly [RegExp, string])[] = [
 	[/([sr]k)(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:test|live)(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{24,}/g, "$1_[REDACTED]"],
 	[/re(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{6,16}(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{16,}/g, "re_[REDACTED]"],
 ];
+const SECRET_FAST_CHECK = /(?:whsec|npm|ghp|github|[sr]k|re)(?:_|%5[Ff]|\\{1,2}u005[Ff])/;
 /** Text with every webhook signing secret and coding value key cut out, as every text tool result has it (E3c-2,
  * 20260930695000), and as everything else the host sends Codex has it: the context message, the developer
  * instructions, every turn's input. */
 export function redactCloudWebhookSecrets(text: string): string {
+	if (!SECRET_FAST_CHECK.test(text)) return text;
 	let cut = text;
 	for (const [secret, replacement] of SECRET_CUTS) cut = cut.replace(secret, replacement);
 	return cut;
@@ -124,6 +130,7 @@ export function redactCloudWebhookSecrets(text: string): string {
  * ones as one span, in order. A tool that shows a file in windows ends and starts its windows outside them
  * (cloud-folder-file-tools.ts), so that each secret is in one window whole, where the cut finds it. */
 export function cloudSecretSpans(text: string): readonly { readonly start: number; readonly end: number }[] {
+	if (!SECRET_FAST_CHECK.test(text)) return [];
 	const found: { start: number; end: number }[] = [];
 	for (const [secret] of SECRET_CUTS)
 		for (const match of text.matchAll(secret)) found.push({ start: match.index, end: match.index + match[0].length });
@@ -260,6 +267,7 @@ export interface CloudNativeTool {
 	readonly inputSchema: { [key: string]: JsonValue };
 	/** Its answers may show the model an image (`CloudToolContent.image`): the native session must then carry images. */
 	readonly images?: true;
+	readonly parallelRead?: true;
 	/** Its arguments' bound as escaped JSON, when larger than every tool's 64 KiB, up to MAX_TOOL_ARGUMENT_BYTES: a file
 	 * write's text. */
 	readonly maxArgumentBytes?: number;
@@ -462,11 +470,6 @@ export function relayControlRefusal(error: unknown): never {
 	throw error;
 }
 
-/** A request's `operationKey`, when it has one. */
-export function cloudOperationKeyOf(request: Record<string, unknown>): string | undefined {
-	return typeof request.operationKey === "string" ? request.operationKey : undefined;
-}
-
 /**
  * `relayControlRefusal` for one tool of one run, keeping what an earlier attempt left unknown: a call whose operation
  * key once ended without an answer (its effect may have committed) is never answered as refused later, because a
@@ -486,57 +489,6 @@ export class CloudControlRefusalRelay {
 			throw error;
 		}
 	}
-}
-
-/** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
-export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): string {
-	let nodes = 0;
-	let remainingBytes = limit;
-	const account = (text: string): string => {
-		remainingBytes -= Buffer.byteLength(text);
-		if (remainingBytes < 0) throw new Error("Tool JSON exceeds its byte limit");
-		return text;
-	};
-	const ancestors = new Set<object>();
-	const encode = (item: unknown, depth: number): string => {
-		if (++nodes > 10_000 || depth > 32) throw new Error("Invalid tool JSON");
-		if (typeof item === "string" && Buffer.byteLength(item) > limit)
-			throw new Error("Tool JSON exceeds its byte limit");
-		if (item === null || typeof item === "boolean" || typeof item === "string") return account(JSON.stringify(item));
-		if (typeof item === "number" && Number.isFinite(item)) return account(JSON.stringify(item));
-		if (!item || typeof item !== "object" || ancestors.has(item)) throw new Error("Invalid tool JSON");
-		ancestors.add(item);
-		try {
-			if (Array.isArray(item)) {
-				if (item.length > 10_000 || Object.keys(item).length !== item.length) throw new Error("Invalid tool JSON");
-				account(`[]${",".repeat(Math.max(0, item.length - 1))}`);
-				const entries: string[] = [];
-				for (let index = 0; index < item.length; index++) {
-					const descriptor = Object.getOwnPropertyDescriptor(item, index);
-					if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new Error("Invalid tool JSON");
-					entries.push(encode(descriptor.value, depth + 1));
-				}
-				return `[${entries.join(",")}]`;
-			}
-			if (Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) {
-				throw new Error("Invalid tool JSON");
-			}
-			const keys = Object.keys(item);
-			if (keys.length > 10_000) throw new Error("Invalid tool JSON");
-			account(`{}${",".repeat(Math.max(0, keys.length - 1))}`);
-			return `{${keys
-				.sort()
-				.map((key) => {
-					const descriptor = Object.getOwnPropertyDescriptor(item, key);
-					if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new Error("Invalid tool JSON");
-					return `${account(`${JSON.stringify(key)}:`)}${encode(descriptor.value, depth + 1)}`;
-				})
-				.join(",")}}`;
-		} finally {
-			ancestors.delete(item);
-		}
-	};
-	return encode(value, 0);
 }
 
 /** A call's arguments as the work log keeps them when the boundary refused them as unreadable or too large. */
@@ -597,9 +549,16 @@ export class CloudNativeToolBoundary {
 	/** The image issued with each exact envelope that showed one, by `callId:sha256(envelope)`: only its hash (never
 	 * pixels), kept as long as the issued results are. */
 	readonly #shownImages = new Map<string, string>();
-	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
+	readonly #shownImageCalls = new Map<string, number>();
+	readonly #nativeResults = new Map<
+		string,
+		{ digest: string; output: string; outputBytes: number; imageSha256?: string }
+	>();
 	readonly #webSearches = new Map<string, string>();
-	#pending: Promise<void> = Promise.resolve();
+	#writerTail: Promise<void> = Promise.resolve();
+	readonly #activeReads = new Set<Promise<void>>();
+	#runningReads = 0;
+	readonly #readSlotWaiters: Array<() => void> = [];
 	/** The calls (by tool and arguments) that made the run's final send, or a card's: once there is one, what the run
 	 * calls next is its bookkeeping, or the same call again, which only replays it. */
 	readonly #answers = new Set<string>();
@@ -757,8 +716,8 @@ export class CloudNativeToolBoundary {
 		// No count of outputs: only their size is bounded, by the reply frame they
 		// must fit in (many tiny outputs grow into envelopes of up to one result's bound).
 		let released = 0;
-		const release = (result: CloudNativeFencedResult): CloudNativeFencedResult => {
-			released += Buffer.byteLength(result.output);
+		const release = (result: CloudNativeFencedResult, outputBytes?: number): CloudNativeFencedResult => {
+			released += outputBytes ?? Buffer.byteLength(result.output);
 			if (released > CLOUD_NATIVE_FENCE_FRAME_BYTES) throw new Error("Native result frame too large");
 			return result;
 		};
@@ -808,7 +767,10 @@ export class CloudNativeToolBoundary {
 				}
 			}
 			// An image a tool showed comes back with exactly the envelope it was issued with, and that envelope never without it.
-			const shown = text === undefined ? undefined : this.#shownImages.get(issuedKey(input.callId, text));
+			const shown =
+				text === undefined || this.#shownImages.size === 0 || !this.#shownImageCalls.has(input.callId)
+					? undefined
+					: this.#shownImages.get(issuedKey(input.callId, text));
 			if (shown !== undefined && imageSha256 !== shown) throw new Error("Native image not issued");
 			if (imageSha256 && shown === undefined && !this.#captures) throw new Error("Native captures unavailable");
 			const capture =
@@ -822,11 +784,17 @@ export class CloudNativeToolBoundary {
 				if (previous.imageSha256 !== imageSha256) throw new Error("Native result changed after release");
 				// WHY: Skip O(N) JSON serialization and SHA-256 hashing when a prior fenced string output is replayed unchanged.
 				if (text !== undefined && text === previous.output)
-					return release({ kind: input.kind, callId: input.callId, output: previous.output, ...image });
+					return release(
+						{ kind: input.kind, callId: input.callId, output: previous.output, ...image },
+						previous.outputBytes,
+					);
 				const wire = cloudToolJsonText(input.output, MAX_SOURCE_BYTES);
 				const digest = createHash("sha256").update(wire).digest("hex");
 				if (previous.digest !== digest) throw new Error("Native result changed after release");
-				return release({ kind: input.kind, callId: input.callId, output: previous.output, ...image });
+				return release(
+					{ kind: input.kind, callId: input.callId, output: previous.output, ...image },
+					previous.outputBytes,
+				);
 			}
 			const wire = cloudToolJsonText(input.output, MAX_SOURCE_BYTES);
 			const digest = createHash("sha256").update(wire).digest("hex");
@@ -853,7 +821,8 @@ export class CloudNativeToolBoundary {
 							kind: "text",
 							value: note ? `${note}\n\n${text ?? wire}` : (text ?? wire),
 						}).contentItems[0].text;
-			this.#nativeResults.set(key, { digest, output, ...(imageSha256 ? { imageSha256 } : {}) });
+			const outputBytes = Buffer.byteLength(output);
+			this.#nativeResults.set(key, { digest, output, outputBytes, ...(imageSha256 ? { imageSha256 } : {}) });
 			remember(this.#nativeResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 			// The first release of one of Codex's own calls: its step keeps the exact envelope the model is shown. A
 			// later request carrying the same output is a replay above, which finishes nothing twice.
@@ -873,7 +842,7 @@ export class CloudNativeToolBoundary {
 						[],
 					);
 			}
-			return release({ kind: input.kind, callId: input.callId, output, ...image });
+			return release({ kind: input.kind, callId: input.callId, output, ...image }, outputBytes);
 		});
 		await untilStopped(() => this.#captures?.assertReadable(this.#signal) ?? Promise.resolve(), this.#signal);
 		this.#signal.throwIfAborted();
@@ -1045,33 +1014,56 @@ export class CloudNativeToolBoundary {
 		if (previous && previous.digest !== digest) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "CALL_ID_REUSED" });
 		}
-		const result =
-			previous?.result ??
-			this.#pending.then(async () => {
-				// After the answer only the run's bookkeeping runs, and the answer's own call again (its key replays it).
-				// Anything else runs nothing and ends the turn at the next model request, as a final send ended it before
-				// (the 2026-11-13 amendment). A use of a bookkeeping tool through more_tools runs as that tool; more_tools' own
-				// call passes only as a describe of bookkeeping tools alone, so that the run can open them (T3-6).
-				if (
-					this.#answers.size > 0 &&
-					!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name) &&
-					!(tool.name === CLOUD_MORE_TOOLS && describesBookkeepingOnly(argumentsText)) &&
-					!this.#answers.has(digest)
-				)
-					return {
-						...this.#result(callId, tool, digest, "denied", { kind: "text", value: AFTER_ANSWER }),
-						completesTurn: true as const,
-					};
-				const executed = await this.#execute(callId, tool, digest, argumentsText, observation, logged);
-				// Before the next call starts: calls run one after another.
-				if (executed.answered) this.#answers.add(digest);
-				return executed;
+		const runCall = async (): Promise<CloudDynamicToolResponse> => {
+			if (
+				this.#answers.size > 0 &&
+				!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name) &&
+				!(tool.name === CLOUD_MORE_TOOLS && describesBookkeepingOnly(argumentsText)) &&
+				!this.#answers.has(digest)
+			)
+				return {
+					...this.#result(callId, tool, digest, "denied", { kind: "text", value: AFTER_ANSWER }),
+					completesTurn: true as const,
+				};
+			const executed = await this.#execute(callId, tool, digest, argumentsText, observation, logged);
+			if (executed.answered) this.#answers.add(digest);
+			return executed;
+		};
+		const canParallelRead =
+			tool.parallelRead === true &&
+			!tool.prepare &&
+			!this.#folderReports &&
+			!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name);
+		let result: Promise<CloudDynamicToolResponse>;
+		if (previous) {
+			result = previous.result;
+		} else if (canParallelRead) {
+			const barrier = this.#writerTail;
+			result = barrier.then(async () => {
+				await this.#acquireReadSlot();
+				try {
+					return await runCall();
+				} finally {
+					this.#releaseReadSlot();
+				}
 			});
-		if (!previous) {
+			const done = result.then(
+				() => undefined,
+				() => undefined,
+			);
+			this.#activeReads.add(done);
+			void done.finally(() => this.#activeReads.delete(done));
 			this.#calls.set(callId, { digest, result, observation });
-			// Calls run one after another, so what this forgets has long settled.
 			remember(this.#calls, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
-			this.#pending = result.then(
+		} else {
+			const waitFor =
+				this.#activeReads.size > 0
+					? Promise.all([this.#writerTail, ...this.#activeReads]).then(() => undefined)
+					: this.#writerTail;
+			result = waitFor.then(runCall);
+			this.#calls.set(callId, { digest, result, observation });
+			remember(this.#calls, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
+			this.#writerTail = result.then(
 				() => undefined,
 				() => undefined,
 			);
@@ -1115,6 +1107,23 @@ export class CloudNativeToolBoundary {
 			logged?.resultPaths.splice(0);
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
+	}
+
+	async #acquireReadSlot(): Promise<void> {
+		if (this.#runningReads < MAX_PARALLEL_READS) {
+			this.#runningReads += 1;
+			return;
+		}
+		await new Promise<void>((resolve) => {
+			this.#readSlotWaiters.push(resolve);
+		});
+		this.#runningReads += 1;
+	}
+
+	#releaseReadSlot(): void {
+		this.#runningReads -= 1;
+		const next = this.#readSlotWaiters.shift();
+		if (next) next();
 	}
 
 	async #execute(
@@ -1388,8 +1397,20 @@ export class CloudNativeToolBoundary {
 					createHash("sha256").update(png).digest("hex") !== sha256
 				)
 					throw new Error("Invalid shown image");
-				this.#shownImages.set(issuedKey(callId, response.contentItems[0].text), sha256);
-				remember(this.#shownImages, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
+				const shownKey = issuedKey(callId, response.contentItems[0].text);
+				if (!this.#shownImages.has(shownKey)) {
+					this.#shownImageCalls.set(callId, (this.#shownImageCalls.get(callId) ?? 0) + 1);
+				}
+				this.#shownImages.set(shownKey, sha256);
+				while (this.#shownImages.size > CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2) {
+					const oldest = this.#shownImages.keys().next().value as string;
+					this.#shownImages.delete(oldest);
+					const sep = oldest.lastIndexOf(":");
+					const oldestCall = sep > 0 ? oldest.slice(0, sep) : "";
+					const remaining = (this.#shownImageCalls.get(oldestCall) ?? 1) - 1;
+					if (remaining <= 0) this.#shownImageCalls.delete(oldestCall);
+					else this.#shownImageCalls.set(oldestCall, remaining);
+				}
 				response.contentItems.push({
 					type: "inputImage",
 					imageUrl: `data:image/png;base64,${png.toString("base64")}`,

@@ -1,5 +1,3 @@
-import { DANISH } from "./danish/index.ts";
-
 export {
 	applyComposerColor,
 	applyTheme,
@@ -38,7 +36,21 @@ export function presentationLocale(): "da" | "en" {
 
 type TextValues = Record<string, string | number>;
 const missing = new Set<string>();
+let danish: Readonly<Record<string, string>> | undefined;
+let danishLoading: Promise<void> | undefined;
 let taskLocale: "da" | "en" | undefined;
+
+export function registerDanishDictionary(dictionary: Readonly<Record<string, string>>): void {
+	danish = dictionary;
+}
+
+export async function ensureLocaleLoaded(): Promise<void> {
+	if (danish || presentationLocale() !== "da") return;
+	danishLoading ??= import("./danish/index.ts").then(({ DANISH }) => {
+		danish = DANISH;
+	});
+	await danishLoading;
+}
 
 /** The locale, read once per task: a render calls t() hundreds of times.
  * A language change clears it at once (setLanguagePreference). */
@@ -60,8 +72,10 @@ function textLocale(): "da" | "en" {
  * reloads the page, but tests switch language in place. */
 export function t(source: string, values?: TextValues): string {
 	let text = source;
-	if (!Object.hasOwn(DANISH, source)) missing.add(source);
-	else if (textLocale() === "da") text = DANISH[source]!;
+	if (danish) {
+		if (!Object.hasOwn(danish, source)) missing.add(source);
+		else if (textLocale() === "da") text = danish[source]!;
+	}
 	return values
 		? text.replace(/\{(\w+)\}/g, (field, name: string) => (name in values ? String(values[name]) : field))
 		: text;
@@ -107,6 +121,12 @@ export function setLanguagePreference(value: string): boolean {
 	taskLocale = undefined;
 	applyLanguage();
 	window.dispatchEvent(new Event("qorpera-language-change"));
+	if (!danish && presentationLocale() === "da") {
+		void ensureLocaleLoaded().then(() => {
+			applyLanguage();
+			window.dispatchEvent(new Event("qorpera-language-change"));
+		});
+	}
 	return true;
 }
 

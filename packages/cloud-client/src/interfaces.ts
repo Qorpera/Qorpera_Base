@@ -1858,6 +1858,7 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 	const problems: InterfaceProblem[] = [];
 	const keys = new Set<string>();
 	const note = (p: InterfaceProblem) => problems.push(p);
+	const columnIndices = table.columns.map((column) => named.indexOf(column.name));
 	for (const record of records.slice(1)) {
 		if (record.fields.length === 1 && record.fields[0] === "") continue;
 		if (record.fields.length !== named.length) {
@@ -1866,8 +1867,9 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 		}
 		const row: Record<string, TableValue> = {};
 		let bad: string | null = null;
-		for (const column of table.columns) {
-			const at = named.indexOf(column.name);
+		for (let i = 0; i < table.columns.length; i++) {
+			const column = table.columns[i]!;
+			const at = columnIndices[i]!;
 			const out = tableFieldValue(column, at < 0 ? "" : (record.fields[at] ?? ""));
 			if ("problem" in out) {
 				bad = out.problem;
@@ -2145,43 +2147,4 @@ export function tableClaimProblems(
 		for (const column of claimed) check(key, column.name, cell(row, column.name), null);
 	}
 	return withMore(problems);
-}
-
-/** The claim rule's other half: a definition change may not drop the protection from a cell someone holds. A
- * needs_yes column can lose `needs_yes`, be renamed or be removed only while no row holds anyone in it, so editing
- * `table.toml` never becomes a way to move a held cell. */
-export function tableDefinitionProblems(
-	before: TableFile,
-	after: TableFile,
-	rows: readonly TableRow[],
-): InterfaceProblem[] {
-	const problems: InterfaceProblem[] = [];
-	const held = (name: string) =>
-		rows.some((row) => Object.hasOwn(row, name) && row[name] !== null && row[name] !== undefined);
-	for (const column of before.columns.filter((c) => c.needsYes)) {
-		const kept = after.columns.find((c) => c.name === column.name);
-		if (kept?.needsYes || !held(column.name)) continue;
-		problems.push(
-			problem(
-				null,
-				column.name,
-				"claim",
-				`${column.name} holds people's claims; it can stop needing a yes only once nobody holds anything in it.`,
-			),
-		);
-	}
-	// Turning needs_yes on over names already in the column would make them claims nobody agreed to.
-	for (const column of after.columns.filter((c) => c.needsYes)) {
-		const was = before.columns.find((c) => c.name === column.name);
-		if (was?.needsYes || !held(column.name)) continue;
-		problems.push(
-			problem(
-				null,
-				column.name,
-				"claim",
-				`${column.name} can start needing a yes only while it is empty in every row; clear it first.`,
-			),
-		);
-	}
-	return problems;
 }

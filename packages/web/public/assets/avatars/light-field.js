@@ -123,19 +123,25 @@
 	// The arrays are copied, so the caller keeps its own.
 	function compute(pixels, coverage, eyes, width, height) {
 		if (broken) return Promise.resolve(lightField(pixels, coverage, eyes, width, height));
-		const input = [pixels.slice(), coverage.slice(), eyes ? eyes.slice() : null, width, height];
+		const fallbackInput = [pixels, coverage, eyes, width, height];
+		const pixelsCopy = pixels.slice();
+		const coverageCopy = coverage.slice();
+		const eyesCopy = eyes ? eyes.slice() : null;
+		const transfer = eyesCopy
+			? [pixelsCopy.buffer, coverageCopy.buffer, eyesCopy.buffer]
+			: [pixelsCopy.buffer, coverageCopy.buffer];
 		return new Promise((resolve) => {
 			let target;
 			try {
 				target = worker();
 			} catch {
 				broken = true;
-				resolve(lightField(...input));
+				resolve(lightField(...fallbackInput));
 				return;
 			}
 			const job = ++jobCount;
-			jobs.set(job, { resolve, input, worker: target });
-			target.postMessage({ job, pixels: input[0], coverage: input[1], eyes: input[2], width, height });
+			jobs.set(job, { resolve, input: fallbackInput, worker: target });
+			target.postMessage({ job, pixels: pixelsCopy, coverage: coverageCopy, eyes: eyesCopy, width, height }, transfer);
 		});
 	}
 

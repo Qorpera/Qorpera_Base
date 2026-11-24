@@ -8,7 +8,6 @@ import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-too
 import {
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
-	createSurfaceSessionProviderHook,
 	loadSurfaceIdentityContext,
 	loadSurfaceSharedAssets,
 	runSurfaceSessionTurn,
@@ -707,99 +706,6 @@ describe("cloud surface session runner", () => {
 		);
 	});
 
-	it("delivers incoming surface sessions through createSurfaceSessionProviderHook without unhandled rejections", async () => {
-		const sessionId = randomUUID();
-		const surfaceId = randomUUID();
-		const profileId = randomUUID();
-		const completeSessionTurn = vi.fn().mockResolvedValue(undefined);
-		const onResult = vi.fn();
-		const onError = vi.fn();
-
-		const hook = createSurfaceSessionProviderHook({
-			resolveRunnerPorts: async () => ({
-				folder: makeMemoryReader({
-					"identity/tokens.json": '{"accent":"#d76f45"}',
-					"product/specs.json": '{"version":2}',
-				}),
-				surfaceTools: { stageSurfacePatch: vi.fn() },
-				completeSessionTurn,
-				async executeTurn(req) {
-					expect(req.mode).toBe("folder");
-					expect(req.turnBrief).toContain('"version":2');
-					return { state: "ready", replyText: "Updated studio." };
-				},
-			}),
-			onResult,
-			onError,
-		});
-
-		await hook.deliverSurfaceSession(
-			{
-				sessionId,
-				surfaceId,
-				profileId,
-				surfaceSlug: "product",
-				surfaceTitle: "Product",
-				surfaceSourceKind: "folder",
-				folderRoot: "product",
-				prompt: "Refine specs.",
-			},
-			"machine-1",
-		);
-		expect(onResult).toHaveBeenCalledTimes(1);
-		expect(onError).not.toHaveBeenCalled();
-		expect(completeSessionTurn).toHaveBeenCalledWith(
-			expect.objectContaining({ sessionId, state: "ready", replyText: "Updated studio." }),
-			expect.any(AbortSignal),
-		);
-
-		const failingOnError = vi.fn();
-		const failingHook = createSurfaceSessionProviderHook({
-			resolveRunnerPorts: async () => {
-				throw new Error("Vault credential missing for machine");
-			},
-			onError: failingOnError,
-		});
-
-		await expect(
-			failingHook.deliverSurfaceSession(
-				{
-					sessionId,
-					surfaceId,
-					profileId,
-					surfaceSlug: "website",
-					surfaceTitle: "Website",
-					repositoryKey: "surfaces/website",
-					prompt: "Build hero.",
-				},
-				"machine-2",
-			),
-		).resolves.toBeUndefined();
-		expect(failingOnError).toHaveBeenCalledWith({
-			sessionId,
-			surfaceId,
-			companyId: profileId,
-			machineId: "machine-2",
-			error: "Vault credential missing for machine",
-		});
-
-		const failedResult = await failingHook.runDeliveredSession(
-			{
-				sessionId,
-				surfaceId,
-				profileId,
-				surfaceSlug: "website",
-				surfaceTitle: "Website",
-				repositoryKey: "surfaces/website",
-				prompt: "Build hero.",
-			},
-			"machine-2",
-		);
-		expect(failedResult.state).toBe("failed");
-		expect(failedResult.sourceKind).toBe("code_repo");
-		expect(failedResult.error).toContain("Vault credential missing");
-	});
-
 	it("renews the session lease throughout a turn that outlives the lease TTL and stops renewing on exit", async () => {
 		const sessionId = randomUUID();
 		const surfaceId = randomUUID();
@@ -961,30 +867,6 @@ describe("cloud surface session runner", () => {
 		expect(result.state).toBe("failed");
 		expect(result.error).toContain("lease lost");
 		expect(completeSessionTurn).not.toHaveBeenCalled();
-
-		const hook = createSurfaceSessionProviderHook({
-			resolveRunnerPorts: async () => ({
-				surfaceTools: { stageSurfacePatch: vi.fn() },
-				executeTurn: vi.fn(),
-				completeSessionTurn: vi.fn(),
-			}),
-		});
-		const unconfigured = await hook.runDeliveredSession(
-			{
-				sessionId,
-				surfaceId,
-				profileId: companyId,
-				surfaceSlug: "identity",
-				surfaceTitle: "Identity",
-				surfaceSourceKind: "folder",
-				folderRoot: "identity",
-				prompt: "Edit tokens",
-				leaseToken,
-			},
-			"machine-1",
-		);
-		expect(unconfigured.state).toBe("failed");
-		expect(unconfigured.error).toContain("renewSessionLease");
 	});
 
 	it("stops lease renewal before completion, retries completion without overwriting with failed, handles caller abort cleanly, and reads brief.md in parallel", async () => {
@@ -1168,28 +1050,16 @@ describe("cloud surface session runner", () => {
 			"surfaces/market-notes": { files: { "surfaces/market-notes/01.report.json": "{}" }, binaries: {} },
 			"surfaces/inventory": { files: {}, binaries: {} },
 		};
-		const hook = createSurfaceSessionProviderHook({
-			resolveRunnerPorts: (job) => ({
-				surfaceTools: { stageSurfacePatch: vi.fn() },
-				readStudioFiles: async (roots) => folders[roots[0] ?? ""] ?? { files: {}, binaries: {} },
-				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
-				renewSessionLease: vi.fn().mockResolvedValue({ renewed: true }),
-				executeTurn: async (req) => {
-					seen[job.surfaceSlug ?? "unknown"] = req.instructions;
-					return { state: "ready", replyText: "Staged." };
-				},
-			}),
-		});
 		const deliver = (slug: string, title: string, kind: string, icon: string) =>
-			hook.runDeliveredSession(
+			runSurfaceSessionTurn(
 				{
 					sessionId: randomUUID(),
 					surfaceId: randomUUID(),
-					profileId: randomUUID(),
+					companyId: randomUUID(),
 					surfaceSlug: slug,
 					surfaceTitle: title,
 					surfaceArchetype: "studio",
-					surfaceSourceKind: "folder",
+					sourceKind: "folder",
 					surfaceKind: kind,
 					surfaceIcon: icon,
 					surfaceIsGlobal: false,
@@ -1197,7 +1067,16 @@ describe("cloud surface session runner", () => {
 					prompt: "Work on it.",
 					leaseToken: randomUUID(),
 				},
-				"machine-1",
+				{
+					surfaceTools: { stageSurfacePatch: vi.fn() },
+					readStudioFiles: async (roots) => folders[roots[0] ?? ""] ?? { files: {}, binaries: {} },
+					completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+					renewSessionLease: vi.fn().mockResolvedValue({ renewed: true }),
+					executeTurn: async (req) => {
+						seen[slug] = req.instructions;
+						return { state: "ready", replyText: "Staged." };
+					},
+				},
 			);
 
 		await deliver("thetabands", "Thetabands", "product", "figure:headband");

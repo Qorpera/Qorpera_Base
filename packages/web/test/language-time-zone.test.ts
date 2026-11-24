@@ -14,6 +14,7 @@ import {
 } from "../src/ui/preferences.ts";
 import { timeZoneCity, timeZoneEntries } from "../src/ui/time-zones.ts";
 import { fixture, profileA, session, settle, userA } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 beforeEach(() => {
 	localStorage.clear();

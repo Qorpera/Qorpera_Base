@@ -630,32 +630,6 @@ export function applyStudioFolderPatches(
 	};
 }
 
-export class InMemorySurfaceFolderSnapshotStore implements SurfaceFolderSnapshotPort {
-	readonly #byKey = new Map<string, SurfaceFolderUndoSnapshot>();
-
-	async saveSnapshot(snapshot: SurfaceFolderUndoSnapshot): Promise<void> {
-		const copy = structuredClone(snapshot);
-		this.#byKey.set(`${snapshot.profileId}:${snapshot.surfaceId}:sha:${snapshot.snapshotId}`, copy);
-		for (const changeId of snapshot.changeIds) {
-			this.#byKey.set(`${snapshot.profileId}:${snapshot.surfaceId}:change:${changeId}`, copy);
-		}
-	}
-
-	async loadSnapshot(input: {
-		readonly profileId: string;
-		readonly surfaceId: string;
-		readonly changeId: string;
-		readonly snapshotId?: string | null;
-	}): Promise<SurfaceFolderUndoSnapshot | null> {
-		if (input.snapshotId) {
-			const bySha = this.#byKey.get(`${input.profileId}:${input.surfaceId}:sha:${input.snapshotId}`);
-			if (bySha) return structuredClone(bySha);
-		}
-		const byChange = this.#byKey.get(`${input.profileId}:${input.surfaceId}:change:${input.changeId}`);
-		return byChange ? structuredClone(byChange) : null;
-	}
-}
-
 export async function undoSurfaceCodeRepoChange(
 	codeHostJob: CodeHostJob,
 	input: {

@@ -13,7 +13,12 @@
  * `save_app` writes the first two (cloud-folder-app-tools.ts); nothing here reads or writes the folder.
  */
 
-import { EXPLAINER_ENGINE_JS } from "./cloud-app-kit-explainer-engine.generated.ts";
+import {
+	EXPLAINER_ENGINE_JS,
+	EXPLAINER_VOICE_CAPTIONS_CJS,
+	EXPLAINER_VOICE_ENCODE_CJS,
+	EXPLAINER_VOICE_PEER_CJS,
+} from "./cloud-embedded-assets.ts";
 
 /** The files of an explainer, relative to its folder. */
 export const EXPLAINER_ENGINE = "engine.js";
@@ -30,14 +35,7 @@ const CAPTION_WORDS = 18;
 /** A video read silently for longer than this many seconds is a lecture. */
 const VIDEO_SECONDS = 180;
 
-export { EXPLAINER_ENGINE_JS };
-/** The scripts a company machine runs to give an explainer its voice (packages/runtime/kits/explainer/voice-*.cjs):
- * the captions as the running video speaks them, the other end of the voice call, and the clips from its turns. */
-export {
-	EXPLAINER_VOICE_CAPTIONS_CJS,
-	EXPLAINER_VOICE_ENCODE_CJS,
-	EXPLAINER_VOICE_PEER_CJS,
-} from "./cloud-app-kit-explainer-voice.generated.ts";
+export { EXPLAINER_ENGINE_JS, EXPLAINER_VOICE_CAPTIONS_CJS, EXPLAINER_VOICE_ENCODE_CJS, EXPLAINER_VOICE_PEER_CJS };
 
 /** Words a voice may take to say one number that a caption writes in digits ("1,200" as "one thousand two
  * hundred" is two numbers and four words; "596" as "five hundred and ninety-six" one number and five). */

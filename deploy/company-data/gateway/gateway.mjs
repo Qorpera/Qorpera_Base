@@ -30,7 +30,7 @@ const TOML_PATH = /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/;
 const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
 const TEST_ROLE_LOGIN = /^c_[0-9a-f]{32}_t([owr])_[0-9a-f]{16}$/;
 /** Connections each login may hold: a folder's role holds as many as its CONNECTION LIMIT allows. */
-export const POOL_SIZE = Object.freeze({ o: 1, w: 8, r: 12, to: 1, tw: 4, tr: 4, qorpera_data_keeper: 4, qorpera_data_admin: 1, qorpera_data_watch: 1, record: 1 });
+export const POOL_SIZE = Object.freeze({ o: 1, w: 8, r: 12, to: 1, tw: 4, tr: 4, qorpera_data_keeper: 4, qorpera_data_admin: 1, qorpera_data_watch: 2, record: 1 });
 const STORED_DDL_MAX_BYTES = 64 * 1024;
 const TRIGGER_MAX_TOTAL = 1_000;
 const TRIGGER_MAX_PER_COMPANY = 256;
@@ -330,6 +330,7 @@ const STORED_DDL_QUERY =
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const TOML_KEY = `(?:[A-Za-z0-9_-]+|"[^"\\\\\\n]*"|'[^'\\n]*')`;
+const TOML_KEY_GLOBAL = new RegExp(TOML_KEY, "g");
 const TOML_KEYS = `${TOML_KEY}(?:\\s*\\.\\s*${TOML_KEY})*`;
 const TOML_STRING = /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/g;
 const TOML_HEADER = new RegExp(`^\\s*\\[\\s*(${TOML_KEYS})\\s*\\]\\s*(?:#.*)?$`);
@@ -338,9 +339,10 @@ const TOML_HEAD = /^(?:[^"'#]|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')*/;
 const TOML_SCALAR = /^(?:"(?:[^"\\]|\\.)*"|'[^']*'|[-+0-9A-Za-z_.:]+)$/;
 const LIST_VALUE = /^(?:"(readers|writers)"|'(readers|writers)')$/;
 const LIST_INLINE = /^\{\s*(?:members|"members"|'members')\s*=\s*("[^"\\]*"|'[^']*')\s*\}$/;
+const VIEWER_PARAM = new RegExp(`(?<![:A-Za-z0-9_]):${VIEWER}(?![A-Za-z0-9_])`);
 
 function tomlParts(text) {
-	return [...text.matchAll(new RegExp(TOML_KEY, "g"))].map((part) => (/^["']/.test(part[0]) ? part[0].slice(1, -1) : part[0]));
+	return [...text.matchAll(TOML_KEY_GLOBAL)].map((part) => (/^["']/.test(part[0]) ? part[0].slice(1, -1) : part[0]));
 }
 
 function tomlValue(text) {
@@ -386,7 +388,7 @@ function listLine(toml) {
 function namesViewer(text) {
 	if (text === null) return true;
 	const statement = readStatement(text);
-	return statement.ok ? statement.parameters.includes(VIEWER) : new RegExp(`(?<![:A-Za-z0-9_]):${VIEWER}(?![A-Za-z0-9_])`).test(text);
+	return statement.ok ? statement.parameters.includes(VIEWER) : VIEWER_PARAM.test(text);
 }
 
 export function listMembers(toml, questions, cut = false) {
@@ -542,6 +544,15 @@ export class DataChangeNotifier {
 		this.#enqueue(trigger, tableName, performance.now());
 	}
 
+	notifyTriggerNotice(id, notice) {
+		if (notice?.ddl) return;
+		const trigger = this.#triggers.get(id);
+		if (!trigger) return;
+		if (notice !== null && notice.schema !== trigger.database) return;
+		if (notice !== null && notice.table !== null && trigger.tables && !trigger.tables.has(notice.table.toLowerCase())) return;
+		this.#enqueue(trigger, notice?.table ?? "*", performance.now());
+	}
+
 	#enqueue(trigger, tableName, now) {
 		let batch = this.#pending.get(trigger.id);
 		if (!batch) {
@@ -615,12 +626,12 @@ function tomlWord(toml, key) {
 	}
 }
 
-function namedFiles(files) {
-	return files.map(({ name, text }) => {
-		const statement = text === null ? null : readStatement(text);
+function namedFiles(files, parseStatement = null) {
+	return files.map(({ name, text, sha256: hash }) => {
+		const statement = text === null ? null : parseStatement && hash ? parseStatement(hash, text) : readStatement(text);
 		return {
 			name,
-			words: text === null ? null : leadingWords(text).join(" "),
+			words: text === null ? null : (statement?.wordsText ?? leadingWords(text).join(" ")),
 			parameters: statement?.ok ? statement.parameters : null,
 			...(statement && !statement.ok ? { problem: statement.problem } : {}),
 		};
@@ -742,6 +753,7 @@ export class Platform {
 					method: "POST",
 					headers: { apikey: this.#key, authorization: `Bearer ${token}`, "content-type": "application/json" },
 					body: JSON.stringify(args),
+					redirect: "error",
 					signal,
 				});
 			} catch {
@@ -759,7 +771,11 @@ export class Platform {
 				void response.body?.cancel().catch(() => undefined);
 				refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
 			}
-			return response.json().catch(() => refuse(503, "The company folder returned an unreadable answer"));
+			try {
+				return JSON.parse(await readBoundedResponseText(response, 4 * 1024 * 1024));
+			} catch {
+				refuse(503, "The company folder returned an unreadable answer");
+			}
 		});
 	}
 	async memberFolders(token, environmentId, parent, limit) {
@@ -820,6 +836,7 @@ export class Platform {
 					method: "POST",
 					headers,
 					body: JSON.stringify({ p_pass: pass }),
+					redirect: "error",
 					signal,
 				});
 			} catch {
@@ -829,7 +846,11 @@ export class Platform {
 				void response.body?.cancel().catch(() => undefined);
 				refuse(503, "The platform refused the pass");
 			}
-			return response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
+			try {
+				return JSON.parse(await readBoundedResponseText(response, 4 * 1024 * 1024));
+			} catch {
+				refuse(503, "The platform's answer is not a pass");
+			}
 		});
 		if (answer === null) return null;
 		const files = Array.isArray(answer?.files) ? answer.files : null;
@@ -889,8 +910,10 @@ function validateHttpUrl(raw, label) {
 
 async function readBoundedResponseText(response, maxBytes) {
 	if (!response.body || typeof response.body.getReader !== "function") {
-		const text = await response.text();
-		if (Buffer.byteLength(text, "utf8") > maxBytes) refuse(503, "Public data reader answer is too large");
+		const text =
+			typeof response.text === "function" ? await response.text() : JSON.stringify(await response.json());
+		if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > maxBytes)
+			refuse(503, "Public data reader answer is too large");
 		return text;
 	}
 	const reader = response.body.getReader();
@@ -1267,6 +1290,7 @@ export class Gateway {
 	#tokens = new Map();
 	#provenInFlight = new Map();
 	#mayWriteInFlight = new Map();
+	#mayListInFlight = new Map();
 	#folderInFlight = new Map();
 	/** Company databases the watcher last found at their size limit. */
 	#full = new Set();
@@ -1527,13 +1551,15 @@ export class Gateway {
 				});
 				pool.on("error", () => undefined);
 				entry = { pool, active: 0 };
-				// WHY: Remove empty idle pools once pg-pool evicts their last client so churned tenants and test schemas do not leak entries.
-				pool.on("remove", () => {
+				const maybeEvict = () => {
 					if (this.#pools.get(key) === entry && entry.active === 0 && pool.totalCount === 0 && pool.waitingCount === 0) {
 						this.#pools.delete(key);
 						pool.end().catch(() => undefined);
 					}
-				});
+				};
+				entry.maybeEvict = maybeEvict;
+				// WHY: Remove empty idle pools once pg-pool evicts their last client so churned tenants and test schemas do not leak entries.
+				pool.on("remove", maybeEvict);
 				this.#pools.set(key, entry);
 			}
 			return entry;
@@ -1552,6 +1578,7 @@ export class Gateway {
 					error = caught;
 				} finally {
 					entry.active--;
+					entry.maybeEvict?.();
 				}
 				const remaining = retryUntil - Date.now();
 				if (this.#closed || error?.code !== "53300" || remaining <= 0) throw error;
@@ -1622,7 +1649,6 @@ export class Gateway {
 					key === asking ||
 					!filter(key) ||
 					entry.active > 0 ||
-					pool.totalCount === 0 ||
 					pool.idleCount < pool.totalCount ||
 					pool.waitingCount > 0
 				)
@@ -1951,7 +1977,7 @@ export class Gateway {
 	#statement(hash, text) {
 		const kept = this.#statements.get(hash);
 		if (kept !== undefined) return kept;
-		const parsed = readStatement(text);
+		const parsed = { ...readStatement(text), wordsText: leadingWords(text).join(" ") };
 		if (this.#statements.size >= 5_000) this.#statements.delete(this.#statements.keys().next().value);
 		this.#statements.set(hash, parsed);
 		return parsed;
@@ -2551,8 +2577,16 @@ export class Gateway {
 		};
 		const found = {
 			toml: read(`${root}/database.toml`, toml),
-			questions: queryFiles.map((file) => ({ name: file.name.slice(0, -4), text: read(`${root}/queries/${file.name}`, file) })),
-			changes: actionFiles.map((file) => ({ name: file.name.slice(0, -4), text: read(`${root}/actions/${file.name}`, file) })),
+			questions: queryFiles.map((file) => ({
+				name: file.name.slice(0, -4),
+				text: read(`${root}/queries/${file.name}`, file),
+				sha256: file.sha256,
+			})),
+			changes: actionFiles.map((file) => ({
+				name: file.name.slice(0, -4),
+				text: read(`${root}/actions/${file.name}`, file),
+				sha256: file.sha256,
+			})),
 			cut: questions.more,
 		};
 		return need.length > 0 ? { need } : found;
@@ -2562,19 +2596,31 @@ export class Gateway {
 		const key = `${caller.key}|${environmentId}|list:${name}`;
 		const kept = this.#proofs.get(key);
 		if (kept && Date.now() - kept.at < this.#limits.proofMs) return kept.value;
-		const path = `data/${name}/database.toml`;
-		const toml = (await this.#proven(caller, environmentId, [path])).get(path);
-		if (!toml) refuse(404, `No database ${name} that you may read`);
-		const found = await this.#folderFiles(caller, environmentId, name, texts, companyDatabase(environmentId), toml, { changes: false });
-		if (found.need) return found;
-		const members = listMembers(
-			found.toml,
-			found.questions.map((question) => question.text),
-			found.cut,
-		);
-		const value = { list: members === "readers" || (await this.#mayWrite(caller, environmentId, name)) };
-		this.#proofs.set(key, { at: Date.now(), value });
-		return value;
+		const run = async () => {
+			const path = `data/${name}/database.toml`;
+			const toml = (await this.#proven(caller, environmentId, [path])).get(path);
+			if (!toml) refuse(404, `No database ${name} that you may read`);
+			const found = await this.#folderFiles(caller, environmentId, name, texts, companyDatabase(environmentId), toml, { changes: false });
+			if (found.need) return found;
+			const members = listMembers(
+				found.toml,
+				found.questions.map((question) => question.text),
+				found.cut,
+			);
+			const value = { list: members === "readers" || (await this.#mayWrite(caller, environmentId, name)) };
+			this.#proofs.set(key, { at: Date.now(), value });
+			return value;
+		};
+		if (texts) return run();
+		let pending = this.#mayListInFlight.get(key);
+		if (!pending) {
+			pending = run().finally(() => {
+				if (this.#mayListInFlight.get(key) === pending) this.#mayListInFlight.delete(key);
+			});
+			pending.catch(() => undefined);
+			this.#mayListInFlight.set(key, pending);
+		}
+		return pending;
 	}
 
 	async #table(caller, environmentId, asked, texts, { first = false, testSchemaName = null } = {}) {
@@ -3062,10 +3108,13 @@ export class Gateway {
 			refuse(400, `A ${op} names the row's whole key and the seen it was read with`);
 		if (op === "remove" && Object.keys(values).length > 0) refuse(400, "A remove sets no values");
 		if (op === "change" && Object.keys(values).length === 0) refuse(400, "A change sets at least one column");
-		const right = await this.#mayList(caller, environmentId, name, body.texts);
-		if (right.need) return { need: right.need };
-		if (!right.list || !(await this.#mayWrite(caller, environmentId, name)))
-			refuse(403, `The rows of ${name} are changed by those who may change its folder`);
+		const tomlPath = `data/${name}/database.toml`;
+		const [proven, canWrite] = await Promise.all([
+			this.#proven(caller, environmentId, [tomlPath]),
+			this.#mayWrite(caller, environmentId, name),
+		]);
+		if (!proven.get(tomlPath)) refuse(404, `No database ${name} that you may read`);
+		if (!canWrite) refuse(403, `The rows of ${name} are changed by those who may change its folder`);
 		const database = companyDatabase(environmentId);
 		const resolvedTest = testSchema !== null ? await this.#resolveTestSchema(environmentId, name, testSchema) : null;
 		const n = resolvedTest ? null : await this.#folder(database, name);
@@ -3417,10 +3466,34 @@ export class Gateway {
 	async #watching(caller, environmentId, body, stop, deadline, holdUntil, found) {
 		const watches = body.watches;
 		const paths = watches
-			.filter((watched) => watched && typeof watched === "object" && typeof watched.database === "string" && typeof watched.question === "string" && watched.table === undefined)
-			.map((watched) => `data/${watched.database}/queries/${watched.question}.sql`)
-			.filter((path) => /^data\/[a-z][a-z0-9_]{0,39}\/queries\/[a-z0-9-]{1,60}\.sql$/.test(path));
+			.filter((watched) => watched && typeof watched === "object" && typeof watched.database === "string")
+			.flatMap((watched) => {
+				if (watched.table !== undefined && watched.question === undefined && DATABASE_NAME.test(watched.database)) {
+					return [`data/${watched.database}/database.toml`];
+				}
+				if (typeof watched.question === "string" && watched.table === undefined) {
+					const path = `data/${watched.database}/queries/${watched.question}.sql`;
+					return /^data\/[a-z][a-z0-9_]{0,39}\/queries\/[a-z0-9-]{1,60}\.sql$/.test(path) ? [path] : [];
+				}
+				return [];
+			});
 		const proofs = await this.#proven(caller, environmentId, [...new Set(paths)]);
+		const watchDatabase = companyDatabase(environmentId);
+		const questionHashes = [];
+		for (const watched of watches) {
+			if (watched && typeof watched === "object" && watched.table === undefined && typeof watched.database === "string" && typeof watched.question === "string") {
+				const proof = proofs.get(`data/${watched.database}/queries/${watched.question}.sql`);
+				if (proof && proof.bytes <= this.#limits.questionTextBytes) questionHashes.push(proof.sha256);
+			}
+		}
+		let watchTexts = body.texts;
+		if (questionHashes.length > 1) {
+			const resolved = await this.#textsFor(watchDatabase, questionHashes, body.texts, this.#limits.questionTextBytes);
+			if (resolved.size > 0) {
+				watchTexts = { ...(body.texts ?? {}) };
+				for (const [hash, text] of resolved) if (!Object.hasOwn(watchTexts, hash)) watchTexts[hash] = text;
+			}
+		}
 		const ready = [];
 		const need = [];
 		for (const watched of watches) {
@@ -3428,8 +3501,8 @@ export class Gateway {
 			if (watched?.table !== undefined && watched.question !== undefined) refuse(400, "A watch names a question or a table");
 			const one =
 				watched?.table !== undefined
-					? await this.#table(caller, environmentId, watched, body.texts, { first: true })
-					: await this.#named("question", caller, environmentId, watched, body.texts, proofs);
+					? await this.#table(caller, environmentId, watched, watchTexts, { first: true })
+					: await this.#named("question", caller, environmentId, watched, watchTexts, proofs);
 			if (one.need) need.push(...[one.need].flat());
 			ready.push(one);
 		}
@@ -4111,8 +4184,8 @@ export class Gateway {
 								...(stored.ddlTruncated ? { ddlTruncated: true } : {}),
 							}
 						: {}),
-					questions: namedFiles(files.questions),
-					changes: namedFiles(files.changes),
+					questions: namedFiles(files.questions, (hash, text) => this.#statement(hash, text)),
+					changes: namedFiles(files.changes, (hash, text) => this.#statement(hash, text)),
 				};
 			}),
 			exists ? this.#ownBytes(database) : 0,
@@ -4569,12 +4642,12 @@ export class Gateway {
 					[...caller.files]
 						// The files directly in the folder, as their texts were asked for: one in a folder below is no question.
 						.filter(([path]) => path.startsWith(`${root}/${folder}/`) && /^[^/]+\.sql$/.test(path.slice(`${root}/${folder}/`.length)))
-						.map(([path]) => {
+						.map(([path, file]) => {
 							const text = texts.get(path);
-							const statement = text === undefined ? null : readStatement(text);
+							const statement = text === undefined ? null : this.#statement(file.sha256, text);
 							return {
 								name: path.slice(`${root}/${folder}/`.length, -4),
-								words: text === undefined ? null : leadingWords(text).join(" "),
+								words: text === undefined ? null : statement.wordsText,
 								parameters: statement?.ok ? statement.parameters : null,
 								...(statement && !statement.ok ? { problem: statement.problem } : {}),
 							};
@@ -4839,7 +4912,7 @@ export class Gateway {
 					}
 					return;
 				}
-				this.#notifier.notify(environmentId, notice);
+				this.#notifier.notifyTriggerNotice(id, notice);
 			});
 			listening = sub;
 			return sub;
@@ -4928,22 +5001,24 @@ export class Gateway {
 			const has = await client.query("select 1 from pg_catalog.pg_roles where rolname = $1", [roleName]);
 			const options = `login noinherit connection limit ${connectionLimit} password '${password}'`;
 			await client.query(has.rowCount === 0 ? `create role ${role} ${options}` : `alter role ${role} ${options}`);
-			await client.query(`alter role ${role} set search_path = ${schema}, qorpera_ext`);
-			await client.query(`alter role ${role} set statement_timeout = ${this.#limits.changeMs}`);
-			await client.query(`grant connect on database ${quoted(database)} to ${role}`);
-			await client.query(`grant usage on schema ${schema}, qorpera_ext to ${role}`);
-			await client.query(`revoke all on all tables in schema ${schema} from ${role}`);
-			await client.query(`revoke all on all sequences in schema ${schema} from ${role}`);
-			await client.query(`grant select on all tables in schema ${schema} to ${role}`);
-			await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} revoke all on tables from ${role}`);
-			await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} revoke all on sequences from ${role}`);
-			await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} grant select on tables to ${role}`);
-			if (access === "read-write") {
-				await client.query(`grant insert, update, delete on all tables in schema ${schema} to ${role}`);
-				await client.query(`grant usage, select on all sequences in schema ${schema} to ${role}`);
-				await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} grant insert, update, delete on tables to ${role}`);
-				await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} grant usage, select on sequences to ${role}`);
-			}
+			await client.query(
+				`alter role ${role} set search_path = ${schema}, qorpera_ext; ` +
+					`alter role ${role} set statement_timeout = ${this.#limits.changeMs}; ` +
+					`grant connect on database ${quoted(database)} to ${role}; ` +
+					`grant usage on schema ${schema}, qorpera_ext to ${role}; ` +
+					`revoke all on all tables in schema ${schema} from ${role}; ` +
+					`revoke all on all sequences in schema ${schema} from ${role}; ` +
+					`grant select on all tables in schema ${schema} to ${role}; ` +
+					`alter default privileges for role ${ownerRole} in schema ${schema} revoke all on tables from ${role}; ` +
+					`alter default privileges for role ${ownerRole} in schema ${schema} revoke all on sequences from ${role}; ` +
+					`alter default privileges for role ${ownerRole} in schema ${schema} grant select on tables to ${role}` +
+					(access === "read-write"
+						? `; grant insert, update, delete on all tables in schema ${schema} to ${role}; ` +
+							`grant usage, select on all sequences in schema ${schema} to ${role}; ` +
+							`alter default privileges for role ${ownerRole} in schema ${schema} grant insert, update, delete on tables to ${role}; ` +
+							`alter default privileges for role ${ownerRole} in schema ${schema} grant usage, select on sequences to ${role}`
+						: ""),
+			);
 			await client.query("commit");
 			const host = this.#directHost ?? this.#store.host;
 			const port = this.#directPort ?? this.#store.port;
@@ -5693,19 +5768,18 @@ export class Gateway {
 					await admin.query(`create role ${quoted(roleName)} ${options}`);
 				}
 				const [ownerQ, writeQ, readQ, schemaQ] = [ownerRole, writeRole, readRole, testSchema].map(quoted);
-				await admin.query(`grant connect on database ${quoted(database)} to ${ownerQ}, ${writeQ}, ${readQ}`);
-				await admin.query(`create schema ${schemaQ} authorization ${ownerQ}`);
-				await admin.query(`grant usage on schema ${schemaQ} to ${writeQ}, ${readQ}`);
 				await admin.query(
-					`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant select on tables to ${writeQ}, ${readQ}; ` +
+					`grant connect on database ${quoted(database)} to ${ownerQ}, ${writeQ}, ${readQ}; ` +
+						`create schema ${schemaQ} authorization ${ownerQ}; ` +
+						`grant usage on schema ${schemaQ} to ${writeQ}, ${readQ}; ` +
+						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant select on tables to ${writeQ}, ${readQ}; ` +
 						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant insert, update, delete on tables to ${writeQ}; ` +
-						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant usage, select on sequences to ${writeQ}`,
+						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant usage, select on sequences to ${writeQ}` +
+						(readLive && liveN !== null
+							? `; grant usage on schema ${quoted(name)} to ${writeQ}, ${readQ}; ` +
+								`grant select on all tables in schema ${quoted(name)} to ${writeQ}, ${readQ}`
+							: ""),
 				);
-				if (readLive && liveN !== null) {
-					const liveQ = quoted(name);
-					await admin.query(`grant usage on schema ${liveQ} to ${writeQ}, ${readQ}`);
-					await admin.query(`grant select on all tables in schema ${liveQ} to ${writeQ}, ${readQ}`);
-				}
 				await this.#persistTestSchemaComment(entry, admin);
 				await admin.query("commit");
 				schemaCreated = true;
@@ -6655,6 +6729,7 @@ export class Gateway {
 		this.#tokens.clear();
 		this.#provenInFlight.clear();
 		this.#mayWriteInFlight.clear();
+		this.#mayListInFlight.clear();
 		this.#folderInFlight.clear();
 		const poolsToEnd = [...this.#pools.values()];
 		this.#pools.clear();

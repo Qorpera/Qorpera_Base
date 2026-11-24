@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { UUID_PATTERN } from "@qorpera/contracts";
 
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const UUID = UUID_PATTERN.source.slice(1, -1);
 const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64}$`);
 const FOLDER_COMMIT = new RegExp(`^/v1/member-folder-commits/${UUID}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);

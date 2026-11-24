@@ -1,11 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyController } from "../src/app/company.ts";
-import { type MeetState, renderMeet } from "../src/app/views/meet.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { agentFigure, figureFor } from "../src/ui/avatar.ts";
 import { FigurePicker } from "../src/ui/figure-picker.ts";
-import { fixture, profileA, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import { staff, stubFigureMotion } from "./fixtures.ts";
 
 const NATIVE = { crown: "#fcb51b", planet: "#5ec0b5", heart: "#fb672a", rocket: "#f96e2d" };
 const TEAL = "#00bfb3";
@@ -118,47 +116,5 @@ describe("agent colour", () => {
 		picker.update({ figure: "crown", color: TEAL });
 		pick("planet");
 		expect(change).toHaveBeenLastCalledWith({ figure: "planet", color: TEAL });
-	});
-});
-
-describe("first-run page", () => {
-	function meet(cofounder: HostedStaffAgent) {
-		const f = fixture();
-		const company = new CompanyController(f.api, profileA, userA.id);
-		company.store.set({ team, staff: [cofounder], loading: false });
-		cleanup.push(() => company.stop());
-		const save = vi.fn(async () => {});
-		const container = document.createElement("div");
-		document.body.append(container);
-		let state: MeetState = {};
-		const render = () =>
-			renderMeet(company, save, container, state, (next) => {
-				state = next;
-				render();
-			});
-		render();
-		const named = (label: string) =>
-			[...container.querySelectorAll<HTMLButtonElement>("button")].find(
-				(item) => item.getAttribute("aria-label") === label || item.textContent === label,
-			)!;
-		return { save, named };
-	}
-
-	it("keeps a colour chosen in the details until a figure is picked here", () => {
-		const cofounder = agent(TEAL, "co-founder", "crown");
-		const kept = meet(cofounder);
-		kept.named("Save appearance and continue").click();
-		expect(kept.save).toHaveBeenCalledWith(cofounder, "crown", TEAL);
-		document.body.replaceChildren();
-		const again = meet(cofounder);
-		// Clicking the figure already shown is no new choice.
-		again.named("crown").click();
-		again.named("Save appearance and continue").click();
-		expect(again.save).toHaveBeenCalledWith(cofounder, "crown", TEAL);
-		document.body.replaceChildren();
-		const picked = meet(cofounder);
-		picked.named("rocket").click();
-		picked.named("Save appearance and continue").click();
-		expect(picked.save).toHaveBeenCalledWith(cofounder, "rocket", NATIVE.rocket);
 	});
 });

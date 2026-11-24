@@ -14,26 +14,11 @@ import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { messagesSkeleton } from "../../ui/skeleton.ts";
-import type { CompanyController, CompanyState } from "../company.ts";
+import type { CompanyController } from "../company.ts";
 import type { MemberChatThread, OutgoingMemberMessage } from "../member-chats.ts";
-import { lastOnline, personFace } from "./friends.ts";
+import { memberPresence, personFace } from "./person-face.ts";
 
-/* A member's chat with another member of the company (Jonas, 10 Nov 2026): the thread an agent's chat is, with a
- * person on the other side. Bubbles, the times between them, a field and a send button, and nothing of an agent's
- * chat that a person does not need: no model, no login, no run. A message shows the moment it is sent; "Seen" stands
- * under the newest one once the other member has looked. */
-
-/** Whether a member is online, and the words for it: in this company now (a tab of theirs is on its presence
- * channel) or online within the last minutes; else when they were last online, when the cloud knows. */
-export function memberPresence(
-	state: Pick<CompanyState, "here" | "memberChats">,
-	userId: string,
-	now = Date.now(),
-): { online: boolean; text: string } | null {
-	if (state.here?.some((member) => member.userId === userId && member.staffAgentId !== null))
-		return { online: true, text: t("Online now") };
-	return lastOnline(state.memberChats?.[userId]?.lastSeenAt, now);
-}
+export { memberPresence };
 
 const LINK = /https?:\/\/[^\s<>"']+/g;
 
@@ -512,17 +497,20 @@ export class MemberChatView {
 		this.#shell.classList.remove("is-expanded");
 		this.#composer.style.height = "auto";
 		const field = getComputedStyle(this.#composer);
-		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
+		const minHeight = Number.parseFloat(field.minHeight) || 0;
+		const oneLine = Math.ceil(minHeight);
 		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
-		this.#shell.classList.toggle("is-expanded", this.#composer.scrollHeight > oneLine);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, tallest)}px`;
-		this.#composer.style.overflowY = this.#composer.scrollHeight > tallest ? "auto" : "hidden";
+		const contentHeight = this.#composer.scrollHeight;
+		const targetHeight = Math.min(contentHeight, tallest);
+		this.#shell.classList.toggle("is-expanded", contentHeight > oneLine);
 		const shell = getComputedStyle(this.#shell);
 		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
 			(sum, value) => sum + (Number.parseFloat(value) || 0),
 			0,
 		);
-		this.#shell.style.height = `${this.#composer.getBoundingClientRect().height + frame}px`;
+		this.#composer.style.height = `${targetHeight}px`;
+		this.#composer.style.overflowY = contentHeight > tallest ? "auto" : "hidden";
+		this.#shell.style.height = `${Math.max(minHeight, targetHeight) + frame}px`;
 	}
 
 	dispose(): void {

@@ -1,4 +1,4 @@
-import { osPath } from "@qorpera/cloud-client/company-state-files";
+import { osPath } from "@qorpera/cloud-client/company-state-shared";
 import { parseTableFile, splitCsv, type TableFile } from "@qorpera/cloud-client/interfaces";
 import { invalid, readStateFile, type WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { WebConnectors } from "../cloud/connectors.ts";

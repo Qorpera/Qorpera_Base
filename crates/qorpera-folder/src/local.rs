@@ -40,7 +40,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// The bit local inodes and handles have.
@@ -93,7 +93,7 @@ pub const CACHE_DIR_MAX: usize = 80;
 const WHOLE: &str = "w";
 
 /// The most local folders held open as reached lately (`Local::reach`); one more lets go of them all.
-const REACHED: usize = 64;
+const REACHED: usize = 256;
 
 /// The folder a local file is in: a folder of the mount's (by its path), or a local one (by its inode).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,17 +444,28 @@ fn latest(names: &Names, ino: u64) -> Option<(Up, String, Area)> {
 
 /// Forgets every name `gone` picks, and then every name in a local folder left with none.
 fn forget_all(names: &mut Names, gone: impl Fn(&Up, &str, Area) -> bool) {
+	let mut any_empty = false;
 	for all in names.values_mut() {
 		all.retain(|(up, name, area)| !gone(up, name, *area));
+		if all.is_empty() {
+			any_empty = true;
+		}
+	}
+	if !any_empty {
+		return;
 	}
 	loop {
 		names.retain(|_, all| !all.is_empty());
 		let named: HashSet<u64> = names.keys().copied().collect();
-		let before: usize = names.values().map(Vec::len).sum();
+		let mut changed = false;
 		for all in names.values_mut() {
+			let len = all.len();
 			all.retain(|(up, _, _)| !matches!(up, Up::Local(ino) if !named.contains(ino)));
+			if all.len() != len {
+				changed = true;
+			}
 		}
-		if names.values().map(Vec::len).sum::<usize>() == before {
+		if !changed {
 			return;
 		}
 	}
@@ -530,22 +541,49 @@ fn aside(gone: &Path) -> PathBuf {
 	gone.join(format!("{started}-{}", NEXT.fetch_add(1, Ordering::SeqCst)))
 }
 
+fn remove_from_disk(disk: &Path) {
+	let removed = match fs::symlink_metadata(disk) {
+		Ok(m) if m.is_dir() => fs::remove_dir_all(disk),
+		Ok(_) => fs::remove_file(disk),
+		Err(e) => Err(e),
+	};
+	match removed {
+		Err(e) if e.kind() != io::ErrorKind::NotFound => {
+			eprintln!("qorpera-folder: {} could not be taken off the disk ({e})", disk.display())
+		}
+		_ => {}
+	}
+}
+
 /// Takes `disk` off the disk on a thread of its own, holding `held` (its lock, `Gone::open`) until it is gone.
 fn take_off(disk: PathBuf, held: Option<File>) {
-	std::thread::spawn(move || {
-		let removed = match fs::symlink_metadata(&disk) {
-			Ok(m) if m.is_dir() => fs::remove_dir_all(&disk),
-			Ok(_) => fs::remove_file(&disk),
-			Err(e) => Err(e),
-		};
-		match removed {
-			Err(e) if e.kind() != io::ErrorKind::NotFound => {
-				eprintln!("qorpera-folder: {} could not be taken off the disk ({e})", disk.display())
-			}
-			_ => {}
-		}
-		drop(held);
+	// WHY: Route async removals through one dedicated worker thread instead of spawning unbounded OS threads under delete bursts.
+	static QUEUE: OnceLock<Option<mpsc::Sender<(PathBuf, Option<File>)>>> = OnceLock::new();
+	let tx = QUEUE.get_or_init(|| {
+		let (tx, rx) = mpsc::channel::<(PathBuf, Option<File>)>();
+		std::thread::Builder::new()
+			.name("qorpera-trash".into())
+			.spawn(move || {
+				for (disk, held) in rx {
+					remove_from_disk(&disk);
+					drop(held);
+				}
+			})
+			.ok()
+			.map(|_| tx)
 	});
+	match tx {
+		Some(tx) => {
+			if let Err(mpsc::SendError((disk, held))) = tx.send((disk, held)) {
+				remove_from_disk(&disk);
+				drop(held);
+			}
+		}
+		None => {
+			remove_from_disk(&disk);
+			drop(held);
+		}
+	}
 }
 
 /// This program's own folder in a `gone/`, locked while it runs: what goes waits in it to be taken off the disk, and so

@@ -57,8 +57,8 @@ import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-i
 import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
-import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { cloudToolJsonText } from "./cloud-tool-json.ts";
 import { markCloudVaultDatabaseFailure } from "./cloud-vault-database-failure.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

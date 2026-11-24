@@ -39,6 +39,7 @@ import {
 } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 import { summary as surfaceSummary, workspace as surfaceWorkspace } from "./surface-fixtures.ts";
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {

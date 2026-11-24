@@ -251,6 +251,13 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 	return null;
 }
 
+function isActionSession(session: SurfaceSession, surface: SurfaceSummary): boolean {
+	const listed = session.changes.filter((change) => change.status !== "discarded");
+	return (
+		surface.archetype === "ops" || (listed.length > 0 && listed.every((change) => isActionChange(change, surface)))
+	);
+}
+
 function agentStatusLine(session: SurfaceSession): string | null {
 	if (session.state === "needs_input") return t("Needs you");
 	if (session.state === "failed") return t("Failed");
@@ -359,6 +366,7 @@ export class SurfaceSessionDrawer {
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
 	#armedApprove: string | undefined;
+	#approvable: readonly { readonly sessionId: string; readonly changeIds: readonly string[] }[] = [];
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
 	readonly #signal: AbortSignal;
@@ -938,8 +946,43 @@ export class SurfaceSessionDrawer {
 		this.#sessionId = "";
 		this.#messages = 0;
 
+		const approvable = plainSessions
+			.filter((session) => !isRunningSession(session) && !isActionSession(session, surface))
+			.map((session) => ({
+				sessionId: session.id,
+				changeIds: groupSessionChanges(session.changes.filter(isOpenChange))
+					.filter(
+						(entry): entry is { readonly kind: "change"; readonly change: SurfaceChangeUnit } =>
+							entry.kind === "change",
+					)
+					.map((entry) => entry.change)
+					.filter(
+						(change) => change.status === "staged" && store.isChangeShown(change.id) && !this.#isApplying(change),
+					)
+					.map((change) => change.id),
+			}))
+			.filter((group) => group.changeIds.length > 0);
+		const approvableCount = approvable.reduce((sum, group) => sum + group.changeIds.length, 0);
+		const armedAll = this.#armedApprove === `approve-shown:${surface.id}`;
 		this.#head.className = "surface-drawer-head is-overview";
-		this.#head.replaceChildren(h("div", { class: "surface-drawer-title" }, h("h2", null, t("Changes"))));
+		this.#head.replaceChildren(
+			h("div", { class: "surface-drawer-title" }, h("h2", null, t("Changes"))),
+			...(approvableCount > 0
+				? [
+						h(
+							"button",
+							{
+								type: "button",
+								class: `surface-overview-act surface-approve-btn surface-approve-all${armedAll ? " is-confirming" : ""}`,
+								"data-act": "approve-shown",
+								...(armedAll ? { "data-armed": "true" } : {}),
+							},
+							approveLabel(t("Approve all {count}", { count: approvableCount }), armedAll),
+						),
+					]
+				: []),
+		);
+		this.#approvable = approvable;
 
 		const parts: HTMLElement[] = [];
 		if (workspace) {
@@ -948,7 +991,8 @@ export class SurfaceSessionDrawer {
 			}
 		}
 		for (const session of plainSessions) {
-			parts.push(this.#agentCard(session, surface, look));
+			const card = this.#agentCard(session, surface, look);
+			if (card) parts.push(card);
 		}
 		if (parts.length === 0) {
 			parts.push(
@@ -1069,18 +1113,22 @@ export class SurfaceSessionDrawer {
 		);
 	}
 
-	#agentCard(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): HTMLElement {
+	#isApplying(change: SurfaceChangeUnit): boolean {
+		return change.status === "merging" || Boolean(this.#store.state.busy[`change:${change.id}`]);
+	}
+
+	#agentCard(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): HTMLElement | null {
 		const store = this.#store;
 		const state = store.state;
 		const running = isRunningSession(session);
 		const canDiscard = !running || session.state === "needs_input";
 		const listed = session.changes.filter((change) => change.status !== "discarded");
-		const openChanges = listed.filter(isOpenChange);
-		const actionSession =
-			surface.archetype === "ops" ||
-			(listed.length > 0 && listed.every((change) => isActionChange(change, surface)));
+		const allOpen = listed.filter(isOpenChange);
+		const openChanges = allOpen.filter((change) => !this.#isApplying(change));
+		const actionSession = isActionSession(session, surface);
 		const failed = session.state === "failed";
 		const attention = session.state === "needs_input" || failed;
+		if (allOpen.length > 0 && openChanges.length === 0 && !running && !failed && !session.question) return null;
 		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
 		const claimedPaths = new Set<string>();
 		for (const change of openChanges) {
@@ -2130,6 +2178,10 @@ export class SurfaceSessionDrawer {
 				return;
 			case "approve-all":
 				if (sessionId && this.#confirmOrArm(`approve-all:${sessionId}`)) void store.approveAll(sessionId);
+				return;
+			case "approve-shown":
+				if (surfaceId && this.#confirmOrArm(`approve-shown:${surfaceId}`))
+					void store.approveChanges(surfaceId, this.#approvable);
 				return;
 			case "open-publish": {
 				const targetSurface = store.state.surfaces.find((item) => item.id === surfaceId);

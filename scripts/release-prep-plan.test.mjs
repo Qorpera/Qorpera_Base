@@ -69,7 +69,7 @@ test("SQL-only plus web-only diff produces sql-only mode with zero image rebuild
 test("web-only, docs-only, test-only, and empty diffs classify as no-release instead of full-image", () => {
 	for (const files of [
 		[],
-		["packages/web/src/app/views/thread.ts", "packages/member-web/ui/card.ts"],
+		["packages/web/src/app/views/thread.ts"],
 		["README.md", "docs-audit/notes.md"],
 		["packages/runtime/test/cloud-native-company-context.test.ts", "scripts/prove-first-requests.mjs"],
 	]) {

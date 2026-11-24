@@ -87,14 +87,6 @@ export function surfaceLookOf(
 	};
 }
 
-export function surfaceKindEmblem(kind: SurfaceKind): Emblem {
-	return KIND_SPECS[kind].emblem;
-}
-
-export function surfaceKindTint(kind: SurfaceKind): string {
-	return KIND_SPECS[kind].tint;
-}
-
 export function surfaceTint(look: SurfaceLook): string {
 	return KIND_SPECS[look.kind].tint;
 }
@@ -139,4 +131,23 @@ export function opsComposerPlaceholder(kind: SurfaceKind): string {
 		default:
 			return t("Ask an agent to handle a task here…");
 	}
+}
+
+export function isThetabandCompany(companyName: string): boolean {
+	return /\bthetaband\b/i.test(companyName);
+}
+
+export function slugifySurfaceTitle(title: string, taken: ReadonlySet<string>): string {
+	const raw = title
+		.toLowerCase()
+		.normalize("NFKD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 34);
+	const base = raw && /^[a-z0-9]/.test(raw) ? raw : "surface";
+	if (!taken.has(base)) return base;
+	let index = 2;
+	while (taken.has(`${base}-${index}`)) index += 1;
+	return `${base}-${index}`;
 }

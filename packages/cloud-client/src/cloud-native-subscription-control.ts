@@ -106,34 +106,6 @@ export interface SessionTurnRequestResult {
 	sponsorMode: SessionTurnSponsorMode;
 }
 
-export interface SessionTurnProvenance {
-	turnRequestId: string;
-	inputId: string;
-	requestedByUserId: string;
-	requestedByName?: string;
-	sponsorMode: SessionTurnSponsorMode;
-	sponsoredByUserId?: string;
-	sponsoredByName?: string;
-	requestedSponsorUserId?: string;
-	provider?: string;
-	providerConnectionId?: string;
-	providerConnectionVersion?: number;
-	nativeHarness?: string;
-	authenticationMode?: string;
-	computeIdentityId?: string;
-	computeIdentityOwnershipKind?: ComputeIdentityOwnershipKind;
-	computeIdentityOwnerUserId?: string;
-	computeIdentityOwnerScopeKey?: string;
-	workerClass: CloudWorkerClass;
-	status: SessionTurnRequestResult["status"];
-	runId?: string;
-	runStatus?: "queued" | "leased" | "completed" | "failed" | "cancelled";
-	failureReason?: string;
-	createdAt: string;
-	sponsoredAt?: string;
-	materializedAt?: string;
-}
-
 export interface CreateMemberComputeIdentityInput {
 	profileId: string;
 	clientIdentityId?: string;
@@ -192,31 +164,10 @@ type NativeControlRpc =
 	| "qorpera_create_member_execution_sponsor"
 	| "qorpera_request_session_turn_v2"
 	| "qorpera_list_member_native_execution_connections"
-	| "qorpera_list_session_turn_requests"
 	| "qorpera_revoke_native_provider_connection";
 
 export interface NativeSubscriptionControlTransport {
 	rpc(name: NativeControlRpc, args: Readonly<Record<string, JsonValue>>): Promise<unknown>;
-}
-
-export type NativeSubscriptionRpcCaller = (
-	name: NativeControlRpc,
-	args: Readonly<Record<string, JsonValue>>,
-) => Promise<{ data: unknown; error: { message: string; code?: string } | null }>;
-
-/** Thin production adapter around an authenticated Supabase RPC caller. */
-export class SupabaseNativeSubscriptionControlTransport implements NativeSubscriptionControlTransport {
-	readonly #call: NativeSubscriptionRpcCaller;
-
-	constructor(call: NativeSubscriptionRpcCaller) {
-		this.#call = call;
-	}
-
-	async rpc(name: NativeControlRpc, args: Readonly<Record<string, JsonValue>>): Promise<unknown> {
-		const { data, error } = await this.#call(name, args);
-		if (error) throw new Error(error.code ? `${error.message} (${error.code})` : error.message);
-		return data;
-	}
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -323,13 +274,6 @@ function parseAccountUsage(value: unknown): NativeProviderAccountUsage | undefin
 	} catch {
 		return undefined;
 	}
-}
-
-function parseWorkerClass(value: unknown): CloudWorkerClass {
-	if (value !== "managed_sandbox" && value !== "company_computer") {
-		throw new Error("Native subscription control returned invalid worker class");
-	}
-	return value;
 }
 
 function parseSponsorMode(value: unknown): SessionTurnSponsorMode {
@@ -653,108 +597,5 @@ export class NativeSubscriptionControlPlane {
 				} satisfies NativeMemberConnection;
 			}),
 		};
-	}
-
-	async listSessionTurnProvenance(sessionId: string, limit = 100): Promise<readonly SessionTurnProvenance[]> {
-		const value = await this.#transport.rpc("qorpera_list_session_turn_requests", {
-			p_session_id: sessionId,
-			p_limit: limit,
-		});
-		if (!Array.isArray(value)) throw new Error("Native subscription control returned invalid turn provenance");
-		return value.map((entry) => {
-			const item = record(entry, "turn provenance");
-			const runStatus = item.run_status;
-			const computeIdentityId = optionalUuid(item.compute_identity_id, "turn compute identity id");
-			const computeIdentityOwnershipKind =
-				item.compute_identity_ownership_kind === null || item.compute_identity_ownership_kind === undefined
-					? undefined
-					: parseOwnershipKind(item.compute_identity_ownership_kind);
-			const computeIdentityOwnerUserId = optionalUuid(
-				item.compute_identity_owner_user_id,
-				"turn compute identity owner user id",
-			);
-			const computeIdentityOwnerScopeKey = optionalText(
-				item.compute_identity_owner_scope_key,
-				"turn compute identity owner scope",
-				160,
-			);
-			if (
-				(computeIdentityId === undefined &&
-					(computeIdentityOwnershipKind !== undefined ||
-						computeIdentityOwnerUserId !== undefined ||
-						computeIdentityOwnerScopeKey !== undefined)) ||
-				(computeIdentityOwnershipKind === "member" &&
-					(!computeIdentityOwnerUserId || computeIdentityOwnerScopeKey)) ||
-				(computeIdentityOwnershipKind === "company" &&
-					(computeIdentityOwnerUserId || computeIdentityOwnerScopeKey)) ||
-				((computeIdentityOwnershipKind === "department" || computeIdentityOwnershipKind === "security_boundary") &&
-					(computeIdentityOwnerUserId || !computeIdentityOwnerScopeKey)) ||
-				(computeIdentityId !== undefined && computeIdentityOwnershipKind === undefined)
-			) {
-				throw new Error("Native subscription control returned inconsistent turn compute ownership");
-			}
-			if (
-				runStatus !== null &&
-				runStatus !== undefined &&
-				runStatus !== "queued" &&
-				runStatus !== "leased" &&
-				runStatus !== "completed" &&
-				runStatus !== "failed" &&
-				runStatus !== "cancelled"
-			) {
-				throw new Error("Native subscription control returned invalid runner status");
-			}
-			return {
-				turnRequestId: uuid(item.turn_request_id, "turn request id"),
-				inputId: uuid(item.input_id, "turn input id"),
-				requestedByUserId: uuid(item.requested_by_user_id, "turn requester id"),
-				...(optionalText(item.requested_by_name, "turn requester name", 256)
-					? { requestedByName: optionalText(item.requested_by_name, "turn requester name", 256) }
-					: {}),
-				sponsorMode: parseSponsorMode(item.sponsor_mode),
-				...(optionalUuid(item.sponsored_by_user_id, "turn sponsor user id")
-					? { sponsoredByUserId: uuid(item.sponsored_by_user_id, "turn sponsor user id") }
-					: {}),
-				...(optionalText(item.sponsored_by_name, "turn sponsor name", 256)
-					? { sponsoredByName: optionalText(item.sponsored_by_name, "turn sponsor name", 256) }
-					: {}),
-				...(optionalUuid(item.requested_sponsor_user_id, "requested sponsor user id")
-					? { requestedSponsorUserId: uuid(item.requested_sponsor_user_id, "requested sponsor user id") }
-					: {}),
-				...(optionalText(item.provider, "turn provider", 64)
-					? { provider: text(item.provider, "turn provider", 64) }
-					: {}),
-				...(optionalUuid(item.provider_connection_id, "turn provider connection id")
-					? { providerConnectionId: uuid(item.provider_connection_id, "turn provider connection id") }
-					: {}),
-				...(item.provider_connection_version === null || item.provider_connection_version === undefined
-					? {}
-					: { providerConnectionVersion: integer(item.provider_connection_version, "turn provider version") }),
-				...(optionalText(item.native_harness, "turn native harness", 120)
-					? { nativeHarness: text(item.native_harness, "turn native harness", 120) }
-					: {}),
-				...(optionalText(item.authentication_mode, "turn authentication mode", 64)
-					? { authenticationMode: text(item.authentication_mode, "turn authentication mode", 64) }
-					: {}),
-				...(computeIdentityId ? { computeIdentityId } : {}),
-				...(computeIdentityOwnershipKind ? { computeIdentityOwnershipKind } : {}),
-				...(computeIdentityOwnerUserId ? { computeIdentityOwnerUserId } : {}),
-				...(computeIdentityOwnerScopeKey ? { computeIdentityOwnerScopeKey } : {}),
-				workerClass: parseWorkerClass(item.worker_class),
-				status: parseTurnStatus(item.status),
-				...(optionalUuid(item.run_id, "turn run id") ? { runId: uuid(item.run_id, "turn run id") } : {}),
-				...(typeof runStatus === "string" ? { runStatus } : {}),
-				...(optionalText(item.failure_reason, "turn failure", 1000)
-					? { failureReason: optionalText(item.failure_reason, "turn failure", 1000) }
-					: {}),
-				createdAt: timestamp(item.created_at, "turn request time"),
-				...(item.sponsored_at === null || item.sponsored_at === undefined
-					? {}
-					: { sponsoredAt: timestamp(item.sponsored_at, "turn sponsorship time") }),
-				...(item.materialized_at === null || item.materialized_at === undefined
-					? {}
-					: { materializedAt: timestamp(item.materialized_at, "turn materialization time") }),
-			} satisfies SessionTurnProvenance;
-		});
 	}
 }

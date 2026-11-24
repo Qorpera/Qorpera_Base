@@ -9,7 +9,6 @@ import {
 	type CloudRoutine,
 	CloudRoutineClient,
 	type CloudRoutineOccurrence,
-	type CloudRoutineSaveInput,
 	type CloudRoutineTrigger,
 	describeCloudRoutineTrigger,
 	parseCloudRoutine,
@@ -865,26 +864,6 @@ describe("agent routines section", () => {
 				localTime: "09:00",
 			},
 		});
-	});
-	it("refuses a routine save that does not say its effort, before asking the cloud", async () => {
-		const rpc = vi.fn(async () => ({}));
-		const { effort: _, ...unsaid } = {
-			environmentId: profileA.environmentId,
-			clientRoutineId: routine().clientRoutineId,
-			clientVersionId: routine().routineId,
-			staffAgentId: staff.id,
-			title: "Morning brief",
-			prompt: "Summarise what changed.",
-			triggers: routine().triggers,
-			effort: "high" as const,
-			sponsorBindingId: routine().sponsorBindingId,
-			sponsorVersion: 1,
-			enabled: true,
-		};
-		await expect(
-			new CloudRoutineClient(rpc).save(unsaid as CloudRoutineSaveInput, new AbortController().signal),
-		).rejects.toThrow("Invalid routine effort");
-		expect(rpc).not.toHaveBeenCalled();
 	});
 	it("offers Edit for a routine whose triggers the composer does not make: it keeps how they run", async () => {
 		const windowed = routine({

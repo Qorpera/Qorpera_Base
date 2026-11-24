@@ -211,7 +211,7 @@ for (const { file, installedPath, mode } of files) {
 await writeFile(resolve(output, "desktop-art.tar"), art, { mode: 0o644 });
 artifacts.push({
 	file: "desktop-art.tar",
-	source: "deploy/lxd-company-computer-guest/design/icons, deploy/lxd-company-computer-guest/backdrops, deploy/machine/backdrops",
+	source: "deploy/machine/dock, deploy/machine/backdrops",
 	installedPath: "/usr/share/qorpera-desktop",
 	owner: "root:root",
 	mode: "0644",

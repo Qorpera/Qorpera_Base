@@ -10,9 +10,7 @@ on:
       - '.github/workflows/web-client.yml'
       - 'packages/web/**'
       - 'packages/contracts/**'
-      - 'packages/company/**'
       - 'packages/cloud-client/**'
-      - 'packages/member-web/ui/**'
       - 'packages/runtime/kits/explainer/**'
       - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
       - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
@@ -20,8 +18,6 @@ on:
       - 'supabase/functions/native-provider-login/**'
       - 'supabase/functions/member-company-gateway/**'
       - 'supabase/functions/computer-billing/**'
-      - 'supabase/functions/_shared/computer-hour-notices*'
-      - 'supabase/functions/computer-hour-notices/**'
       - 'supabase/functions/event-intake/**'
       - 'scripts/check-headless-packages.mjs'
       - 'scripts/generate-cloud-runtime-bundle.mjs'
@@ -34,9 +30,7 @@ on:
       - '.github/workflows/web-client.yml'
       - 'packages/web/**'
       - 'packages/contracts/**'
-      - 'packages/company/**'
       - 'packages/cloud-client/**'
-      - 'packages/member-web/ui/**'
       - 'packages/runtime/kits/explainer/**'
       - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
       - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
@@ -44,8 +38,6 @@ on:
       - 'supabase/functions/native-provider-login/**'
       - 'supabase/functions/member-company-gateway/**'
       - 'supabase/functions/computer-billing/**'
-      - 'supabase/functions/_shared/computer-hour-notices*'
-      - 'supabase/functions/computer-hour-notices/**'
       - 'supabase/functions/event-intake/**'
       - 'scripts/check-headless-packages.mjs'
       - 'scripts/generate-cloud-runtime-bundle.mjs'
@@ -89,7 +81,7 @@ jobs:
       - name: Unit tests
         run: npm test --workspace packages/web
       - name: Deployment configuration and provenance contracts
-        run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts supabase/functions/member-company-gateway/member-company-gateway.test.ts supabase/functions/computer-billing/computer-billing.test.ts supabase/functions/_shared/computer-hour-notices.test.ts supabase/functions/event-intake/event-intake.test.ts
+        run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts supabase/functions/member-company-gateway/member-company-gateway.test.ts supabase/functions/computer-billing/computer-billing.test.ts supabase/functions/event-intake/event-intake.test.ts
       - name: Lint
         run: npx biome check packages/web/src packages/web/test
       # Strict generator check, release branches only. build:release (the

@@ -7,7 +7,6 @@ import type {
 	CloudMemberFolderListPage,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebFileDownloads } from "../../member-web/src/files.ts";
 import { CompanyFolderBrowser, type CompanyFolderSource } from "../src/app/views/company-folder.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import {
@@ -22,6 +21,7 @@ import {
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { CloudShapeError } from "../src/cloud/parse.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
+import { WebFileDownloads } from "../src/ui/file-downloads.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, id, profileA, settle, visibleText } from "./fixtures.ts";
 

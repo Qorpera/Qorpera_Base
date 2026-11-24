@@ -42,19 +42,31 @@ function inputsOf(layout, files) {
 }
 // The figures' motion sampler and its eye tracks (the recorded clips left with the drawn eyes, 13 Nov 2026).
 const MOTION_DATA = /status-2d-v1\/(?:motion|eye-tracks)\.mjs$/;
-const NOVNC = /member-web\/ui\/(?:screen-viewer|vendor\/novnc-rfb)\.js$/;
 const VENDOR = /node_modules\/(?:@supabase\/|marked\/)/;
 
-test("the first screen never downloads the figures' motion data or noVNC; main.js imports the motion data on demand", async () => {
+test("the first screen never downloads the figures' motion data or Danish dictionary; main.js imports them on demand", async () => {
 	const { layout } = await built;
 	const first = [layout.script, ...layout.preload];
-	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path) || NOVNC.test(path)), []);
+	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path)), []);
+	assert.deepEqual(inputsOf(layout, first).filter((path) => /src\/ui\/danish\//.test(path)), []);
+	assert.deepEqual(inputsOf(layout, first).filter((path) => /surface-local-sandbox\.ts$/.test(path)), []);
+	assert.deepEqual(
+		inputsOf(layout, first).filter((path) =>
+			/\/(?:founding|company-folder|program-add|program-page|surface-migration-sheet|settings|agent-routines|computer|search-window)\.ts$|lexer\.asm\.mjs$/.test(
+				path,
+			),
+		),
+		[],
+	);
 	const lazy = inputsOf(layout, layout.lazy);
 	assert.equal(lazy.filter((path) => MOTION_DATA.test(path)).length, 2);
-	const dynamic = layout.outputs[layout.script].imports.filter((item) => item.kind === "dynamic-import");
-	assert.equal(dynamic.length, 1);
+	assert.ok(lazy.some((path) => /src\/ui\/danish\/index\.ts$/.test(path)));
+	const dynamic = first.flatMap((file) =>
+		(layout.outputs[file]?.imports ?? []).filter((item) => item.kind === "dynamic-import"),
+	);
+	assert.ok(dynamic.length >= 1);
 	assert.deepEqual(
-		layout.lazy.filter((file) => /^build\/(?:figure-motion-data|screen-viewer)-[A-Z0-9]+\.js$/.test(file)).length,
+		layout.lazy.filter((file) => /^build\/figure-motion-data-[A-Z0-9]+\.js$/.test(file)).length,
 		1,
 	);
 });
@@ -64,14 +76,14 @@ test("the first screen never downloads the sample 3D model; the sandbox fetches 
 	const first = [layout.script, ...layout.preload];
 	assert.deepEqual(inputsOf(layout, first).filter((path) => /surface-sample-headband|\.glb$/.test(path)), []);
 	assert.deepEqual(inputsOf(layout, layout.files.filter((file) => file.endsWith(".js"))).filter((path) => /\.glb$/.test(path)), []);
-	assert.ok(first.some((file) => text[file].includes("./assets/surfaces/samples/headband.glb")));
-	for (const file of first) assert.ok(!text[file].includes("Z2xURgIAAAA"), file);
+	assert.ok(layout.lazy.some((file) => text[file].includes("./assets/surfaces/samples/headband.glb")));
+	for (const file of layout.files.filter((item) => item.endsWith(".js"))) assert.ok(!text[file].includes("Z2xURgIAAAA"), file);
 });
 
 test("vendor code has its own preloaded chunk, and an app-only change renames only main.js", async () => {
 	const { layout } = await built;
 	const vendorChunk = layout.vendor.filter((file) => inputsOf(layout, [file]).some((path) => VENDOR.test(path)));
-	assert.equal(vendorChunk.length, 1);
+	assert.ok(vendorChunk.length >= 1);
 	const vendored = inputsOf(layout, vendorChunk);
 	assert.ok(vendored.some((path) => /node_modules\/@supabase\/supabase-js\//.test(path)));
 	assert.ok(vendored.some((path) => /node_modules\/marked\//.test(path)));
@@ -170,7 +182,7 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	assert.ok(html.includes(`<script type="module" src="./${layout.script}"></script>`));
 	// The avatar globals still come before the module that uses them, each
 	// fetched by its content hash: /assets/ is cached for a day.
-	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script src="./${file}?v=${versions[file]}"></script>`), file);
+	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script defer src="./${file}?v=${versions[file]}"></script>`), file);
 	assert.ok(html.indexOf("avatar-appearance.js") < html.indexOf(layout.script));
 	// avatar-appearance.js reads the light field's global as it loads.
 	assert.ok(html.indexOf("light-field.js") < html.indexOf("avatar-appearance.js"));

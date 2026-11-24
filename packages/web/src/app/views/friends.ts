@@ -7,7 +7,10 @@ import { presentationLocale, presentationTimeZone, t, uiText } from "../../ui/pr
 import { listSkeleton } from "../../ui/skeleton.ts";
 import { Store } from "../state.ts";
 import type { HubController } from "./hub.ts";
+import { lastOnline, personFace } from "./person-face.ts";
 import { roleLabel } from "./team.ts";
+
+export { lastOnline, personFace };
 
 /* Friends: the account's address book, and the company invitations waiting
  * for it. It opens as a window of its own (friends-window.ts), from the
@@ -200,44 +203,6 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function isFriend(state: FriendsState, address: string): boolean {
 	return state.friends.some((friend) => friend.email.toLowerCase() === address);
-}
-
-const ONLINE_MS = 3 * 60_000;
-
-const HOUR_MS = 60 * 60_000;
-const DAY_MS = 24 * HOUR_MS;
-const WEEK_MS = 7 * DAY_MS;
-
-/** When someone was last online, in words (Jonas, 9 Nov 2026: hours up to a day, then days, then weeks, and no further
- * than two weeks): "Online now", "Last online 20 minutes ago", "… 3 hours ago", "… 2 days ago", "… 1 week ago", and
- * "Last online 2+ weeks ago" for anything older. */
-export function lastOnline(iso: string | null | undefined, now = Date.now()): { online: boolean; text: string } | null {
-	const time = iso ? Date.parse(iso) : Number.NaN;
-	if (!iso || !Number.isFinite(time)) return null;
-	const ago = Math.max(0, now - time);
-	if (ago < ONLINE_MS) return { online: true, text: t("Online now") };
-	if (ago >= 2 * WEEK_MS) return { online: false, text: t("Last online 2+ weeks ago") };
-	// "always", so a day ago reads "1 day ago", not "yesterday", which can be a few hours ago.
-	const words = new Intl.RelativeTimeFormat(presentationLocale(), { numeric: "always" });
-	const when =
-		ago < HOUR_MS
-			? words.format(-Math.floor(ago / 60_000), "minute")
-			: ago < DAY_MS
-				? words.format(-Math.floor(ago / HOUR_MS), "hour")
-				: ago < WEEK_MS
-					? words.format(-Math.floor(ago / DAY_MS), "day")
-					: words.format(-Math.floor(ago / WEEK_MS), "week");
-	return { online: false, text: t("Last online {when}", { when }) };
-}
-
-/** A person's picture, with a green dot while they are online. */
-export function personFace(name: string, userId: string, online: boolean): HTMLElement {
-	return h(
-		"span",
-		{ class: online ? "person-face is-online" : "person-face" },
-		personAvatar(name, userId),
-		online ? h("span", { class: "person-online-dot", "aria-hidden": "true" }) : null,
-	);
 }
 
 /** What a row says on its right: a plain line, or when an accepted friend was last online. */

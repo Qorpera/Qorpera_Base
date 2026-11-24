@@ -2,7 +2,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	nativeCompanyComputerConfiguration,
 	nativeCompanyDataConfiguration,
 	nativeCompanyRuntimeConfiguration,
 	nativeFolderSearchConfiguration,
@@ -87,29 +86,6 @@ describe("native Company File runtime selection", () => {
 			{ QORPERA_CHATGPT_PLAN_AUTH: "file" },
 		])
 			expect(() => nativeCompanyRuntimeConfiguration({ ...configured, ...patch })).toThrow();
-	});
-});
-
-describe("native Company Computer service composition", () => {
-	const url = "https://office.example.test/office/00000000-0000-4000-8000-000000000003/native";
-	it("selects the configured headless office endpoint only with the governed runtime", () => {
-		expect(nativeCompanyComputerConfiguration({})).toBeUndefined();
-		expect(
-			nativeCompanyComputerConfiguration({
-				QORPERA_NATIVE_RUNTIME: "company-path-v1",
-				QORPERA_COMPANY_COMPUTER_URL: url,
-			}),
-		).toEqual({ url });
-	});
-	it("rejects partial selections, insecure endpoints and ambient transport credentials", () => {
-		for (const environment of [
-			{ QORPERA_COMPANY_COMPUTER_URL: url },
-			{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_COMPANY_COMPUTER_URL: "" },
-			{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_COMPANY_COMPUTER_URL: url.replace("https:", "http:") },
-			{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_COMPANY_COMPUTER_URL: `${url}?token=secret` },
-			{ QORPERA_COMPANY_COMPUTER_TOKEN: "A".repeat(43) },
-		])
-			expect(() => nativeCompanyComputerConfiguration(environment)).toThrow();
 	});
 });
 

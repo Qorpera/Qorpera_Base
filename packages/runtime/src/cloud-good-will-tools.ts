@@ -158,6 +158,7 @@ export function cloudGoodWillTools(
 	const list: CloudNativeTool = {
 		name: "good_will_list" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_GOOD_WILL_LIST_DESCRIPTION,
 		inputSchema: {
 			type: "object",

@@ -23,6 +23,7 @@ const SCALED = ["(pointer: fine)", "(pointer: none)"];
 const SVG_GEOMETRY = new Set(["stroke-width", "stroke-dasharray", "stroke-dashoffset", "cx", "cy", "r", "rx", "ry", "x", "y"]);
 /** At-rules whose block must stay literal: @property values cannot hold var(). */
 const LITERAL_BLOCKS = new Set(["property"]);
+const PX_SCOPE = /\.(?:computer-panel|computer-loading|computer-scene|screen-viewer|machine-screen|picture-crop-view)(?![\w-])/;
 const NUMBER_PX = /([+-]?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/iy;
 const QUERY_PX = /(?<![\w.#+-])([+-]?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/gi;
 
@@ -131,6 +132,7 @@ export function scaleDesignPx(css, scale) {
 	let atRule;
 	/** Brace depth at which a literal block (for example @property) closes. */
 	let literalDepth = -1;
+	let pxScopeDepth = -1;
 	let depth = 0;
 	/** Where the current declaration (or selector) began, and whether it is SVG geometry. */
 	let start = 0;
@@ -173,11 +175,16 @@ export function scaleDesignPx(css, scale) {
 		}
 		if (c === "{") {
 			if (atRule && LITERAL_BLOCKS.has(atRule) && literalDepth < 0) literalDepth = depth;
+			if (!atRule && pxScopeDepth < 0) {
+				const selector = css.slice(start, i).replace(/\/\*[\s\S]*?\*\//g, "");
+				if (PX_SCOPE.test(selector)) pxScopeDepth = depth;
+			}
 			atRule = undefined;
 			depth++;
 		} else if (c === "}") {
 			depth--;
 			if (depth === literalDepth) literalDepth = -1;
+			if (depth === pxScopeDepth) pxScopeDepth = -1;
 		} else if (c === ";") atRule = undefined;
 		if (c === "{" || c === "}" || c === ";") {
 			start = i + 1;
@@ -194,7 +201,12 @@ export function scaleDesignPx(css, scale) {
 			NUMBER_PX.lastIndex = i;
 			const number = NUMBER_PX.exec(css);
 			if (number) {
-				out += Math.abs(Number(number[1])) < HAIRLINE ? number[0] : `calc(${number[1]} * var(--px))`;
+				if (Math.abs(Number(number[1])) < HAIRLINE) out += number[0];
+				else if (pxScopeDepth >= 0) out += `calc(${number[1]} * var(--px))`;
+				else {
+					const sign = number[1].startsWith("+") ? "+" : "";
+					out += `${sign}${Number((Number(number[1]) / 10).toFixed(4))}rem`;
+				}
 				i += number[0].length;
 				continue;
 			}

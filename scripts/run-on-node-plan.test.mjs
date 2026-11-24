@@ -71,9 +71,7 @@ test("a web-only change runs the always-on checks and the web client, including 
 });
 
 test("anything that is not web-only also runs runtime, cloud-client and every script test (the old release train)", () => {
-	// The web client's cloud code and member-web's viewer are read by runtime tests.
 	assert.deepEqual(names(["packages/web/src/cloud/email-drafts.ts"]), set([...BASELINE, "web", "hosted-db"]));
-	assert.deepEqual(names(["packages/member-web/ui/viewer.ts"]), set([...BASELINE, "web", "member-web"]));
 	// A migration reaches runtime tests that read the migrations directory, and the vocabulary script test.
 	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db", "folder-core-load"]));
 	// Installer pins: runner-orchestrator sources rebuild packages whose sha256 the deploy scripts pin.
@@ -89,7 +87,7 @@ test("anything that is not web-only also runs runtime, cloud-client and every sc
 });
 
 test("deploy, function and SQL-input paths reach the tests that read them", () => {
-	assert.deepEqual(names(["deploy/lxd-company-computer-guest/office-self-update-mask.ts"]), set([
+	assert.deepEqual(names(["deploy/machine/desktop-look"]), set([
 		...BASELINE,
 		...RUNNER_ORCHESTRATOR,
 		"deploy-node",
@@ -99,7 +97,7 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	for (const file of [
 		"deploy/coding-worker/qorpera-coding-executor.service",
 		"deploy/cloud-secret-broker/supabase-prod-ca-2021.crt",
-		"packages/runtime/test/fixtures/company-computer-guest.ts",
+		"packages/runtime/test/fixtures/native-tool-authority-fixture.ts",
 		"packages/runtime/src/cloud-identity-recovery-filesystems.ts",
 		"packages/cloud-client/src/node/native-account-refresh.ts",
 	])
@@ -114,19 +112,6 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.match(functions, /runner-control\/runner-control\.test\.ts/);
 	assert.match(functions, /site-serve\/site-serve\.test\.ts/);
 	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
-	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
-	// The office delete-disposition script's runtime bundle: its entry points and the files they import.
-	for (const file of [
-		"packages/runtime/src/cloud-company-computer-startup.ts",
-		"packages/runtime/src/cloud-company-computer-screen-lifecycle.ts",
-		"packages/runtime/src/cloud-company-computer-screen-outbox.ts",
-		"packages/runtime/src/cloud-company-computer-registry-http.ts",
-		"packages/runtime/src/cloud-native-tool-authority.ts",
-		"packages/runtime/src/cloud-control-errors.ts",
-		"packages/runtime/src/cloud-runtime-observability.ts",
-		"packages/runtime/src/cloud-runtime-policy.ts",
-	])
-		assert.ok(names([file]).includes("hosted-db"), file);
 	// The folder service's shapes script and the parsers it checks against SQL.
 	for (const file of [
 		"scripts/test-folder-service-core-shapes.mjs",
@@ -162,7 +147,7 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	// The folder key script and the key it checks against the core's (a contracts change runs every step).
 	for (const file of ["scripts/test-folder-key.mjs", "packages/contracts/src/folder-key.ts"])
 		assert.ok(names([file]).includes("hosted-db"), file);
-	assert.ok(!names(["packages/runtime/test/fixtures/company-computer-guest.ts"]).includes("hosted-db"));
+	assert.ok(!names(["packages/runtime/test/fixtures/native-tool-authority-fixture.ts"]).includes("hosted-db"));
 	assert.equal(STEPS.find((step) => step.name === "hosted-db").build, true);
 });
 
@@ -835,21 +820,24 @@ test("beside runs two commands at once, prints the second's output after the fir
 	}
 });
 
-test("deploy-node runs every Node test file under deploy/ once, then Python's tests; side by side, two files at once in under a core", () => {
+test("deploy-node and deploy-agent-exit-proof run every Node test file under deploy/ once, then Python's tests", () => {
 	const [node, python, ...rest] = STEPS.find((candidate) => candidate.name === "deploy-node").commands;
+	const [proof, ...proofRest] = STEPS.find((candidate) => candidate.name === "deploy-agent-exit-proof").commands;
 	assert.deepEqual(rest, []);
+	assert.deepEqual(proofRest, []);
 	assert.match(node, /^node --test [^;&|]+$/);
-	const named = node.slice("node --test ".length).split(" ");
-	// node --test skips a named file that is not there, without failing, as long as another name is a file.
+	assert.match(proof, /^node --test [^;&|]+$/);
+	const named = [...node.slice("node --test ".length).split(" "), ...proof.slice("node --test ".length).split(" ")];
 	const files = filesUnder(repositoryRoot, join(repositoryRoot, "deploy")).filter((file) => file.endsWith(".test.mjs"));
 	assert.ok(files.includes("deploy/agent-exit/qorpera-agent-exit-proof.test.mjs"));
 	assert.equal(new Set(named).size, named.length, named.join(" "));
 	assert.deepEqual(set(named), set(files));
 	assert.equal(python, "python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'");
-	// Side by side it is packed by the little CPU it uses, but still runs two files at once: the proof beside the rest.
 	const step = planChanged(["deploy/node-agent/qorpera-node-launch.py"]).steps.find((candidate) => candidate.name === "deploy-node");
 	assert.ok(step.cores < 1, String(step.cores));
-	assert.match(planScript([step], { cores: 6 }), /\nrest_0\(\) \( export GOMAXPROCS=2; node\(\) .* command node --test --test-concurrency=2 "\$@"/);
+	assert.match(planScript([step], { cores: 6 }), /\nrest_0\(\) \( export GOMAXPROCS=4; node\(\) .* command node --test --test-concurrency=4 "\$@"/);
+	assert.ok(names(["deploy/agent-exit/qorpera-agent-exit.mjs"]).includes("deploy-agent-exit-proof"));
+	assert.ok(!names(["deploy/node-agent/qorpera-node-launch.py"]).includes("deploy-agent-exit-proof"));
 });
 
 test("planReleaseCheck runs the fast enforced release subset when only derived files differ from master and falls back otherwise", () => {

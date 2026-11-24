@@ -9,17 +9,6 @@ export const IDENTITY_COMPANY_PATH = "identity/company.json";
 export const PRODUCT_SPECS_PATH = "product/specs.json";
 export const PRODUCT_CATALOG_PATH = "product/catalog.json";
 
-export const SHARED_COMPANY_ASSET_PATHS = [
-	IDENTITY_TOKENS_JSON_PATH,
-	IDENTITY_TOKENS_CSS_PATH,
-	IDENTITY_BRIEF_PATH,
-	IDENTITY_VOICE_PATH,
-	IDENTITY_LOGO_PATH,
-	IDENTITY_COMPANY_PATH,
-	PRODUCT_SPECS_PATH,
-	PRODUCT_CATALOG_PATH,
-] as const;
-
 export const IDENTITY_SHARED_ASSET_PATHS = [
 	IDENTITY_TOKENS_JSON_PATH,
 	IDENTITY_TOKENS_CSS_PATH,
@@ -53,7 +42,6 @@ export function sharedProductAssetCandidates(
 
 export const SURFACE_SHARED_DIR = "public/qorpera-shared";
 export const SURFACE_IDENTITY_CSS_MOUNT_PATH = "qorpera-identity.css";
-export const SURFACE_IDENTITY_CSS_PUBLIC_URL = "/__qorpera/identity/tokens.css";
 
 export interface SharedSurfaceAssetLink {
 	readonly id: string;

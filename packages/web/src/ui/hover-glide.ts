@@ -116,7 +116,7 @@ export class HoverGlide {
 	}
 
 	#glideTo(item: HTMLElement): void {
-		const to = this.#boxOf(item);
+		const { box: to, tone } = this.#boxOf(item);
 		if (item === this.#target && this.attached && this.#to && sameBox(to, this.#to)) {
 			if (item.classList.contains("active")) item.classList.remove(LIT_CLASS);
 			return;
@@ -127,7 +127,6 @@ export class HoverGlide {
 		this.#to = to;
 		Object.assign(this.tint.style, { width: `${to.width}px`, height: `${to.height}px`, borderRadius: to.radius });
 		this.#show(from ?? to);
-		const tone = getComputedStyle(item).getPropertyValue("--glide-tint").trim();
 		if (tone) this.tint.style.setProperty("--glide-tint", tone);
 		else this.tint.style.removeProperty("--glide-tint");
 		if (this.tint.parentElement !== this.#list) {
@@ -207,8 +206,12 @@ export class HoverGlide {
 		else this.#lighting = window.setTimeout(() => item.classList.add(LIT_CLASS), delay);
 	}
 
-	#boxOf(item: HTMLElement): Box {
-		return boxWithin(this.#list, item.getBoundingClientRect(), getComputedStyle(item).borderRadius);
+	#boxOf(item: HTMLElement): { box: Box; tone: string } {
+		const style = getComputedStyle(item);
+		return {
+			box: boxWithin(this.#list, item.getBoundingClientRect(), style.borderRadius),
+			tone: style.getPropertyValue("--glide-tint").trim(),
+		};
 	}
 }
 

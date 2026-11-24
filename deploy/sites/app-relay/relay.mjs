@@ -149,10 +149,22 @@ function escapeRegExp(text) {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const SLUG_EXACT = new RegExp(`^${SLUG}$`);
+const HOST_SUFFIX_PATTERNS = new Map([[DEFAULT_HOST_SUFFIX, new RegExp(`^(${SLUG})${escapeRegExp(DEFAULT_HOST_SUFFIX)}$`)]]);
+
+function hostPatternForSuffix(suffix) {
+	let pattern = HOST_SUFFIX_PATTERNS.get(suffix);
+	if (!pattern) {
+		pattern = new RegExp(`^(${SLUG})${escapeRegExp(suffix)}$`);
+		if (HOST_SUFFIX_PATTERNS.size < 64) HOST_SUFFIX_PATTERNS.set(suffix, pattern);
+	}
+	return pattern;
+}
+
 export function appHost(header, suffix = DEFAULT_HOST_SUFFIX, customDomains = null) {
 	if (typeof header !== "string") return null;
 	const host = header.toLowerCase();
-	const match = new RegExp(`^(${SLUG})${escapeRegExp(suffix)}$`).exec(host);
+	const match = hostPatternForSuffix(suffix).exec(host);
 	if (match) return { host, slug: match[1] };
 	if (customDomains && CUSTOM_DOMAIN.test(host) && !IPV4_HOST.test(host)) {
 		if (customDomains instanceof Map && customDomains.has(host)) {
@@ -1046,7 +1058,7 @@ export function parseSessionAnswer(value) {
 			parsed.authMode = answer.authMode;
 		}
 		if (Object.hasOwn(answer, "slug")) {
-			if (typeof answer.slug !== "string" || !new RegExp(`^${SLUG}$`).test(answer.slug)) invalid();
+			if (typeof answer.slug !== "string" || !SLUG_EXACT.test(answer.slug)) invalid();
 			parsed.slug = answer.slug;
 		}
 		return parsed;
@@ -1064,7 +1076,7 @@ export function parseSessionAnswer(value) {
 		parsed.memberId = answer.memberId;
 	}
 	if (Object.hasOwn(answer, "slug")) {
-		if (typeof answer.slug !== "string" || !new RegExp(`^${SLUG}$`).test(answer.slug)) invalid();
+		if (typeof answer.slug !== "string" || !SLUG_EXACT.test(answer.slug)) invalid();
 		parsed.slug = answer.slug;
 	}
 	return parsed;

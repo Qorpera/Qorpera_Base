@@ -109,7 +109,8 @@ async fn async_main() {
     };
 
     let blobs = Arc::new(BlobStore::new(blob_root, max_cache_bytes, max_blob_bytes));
-    let state = Arc::new(RouterState::new(blobs, EdgeSnapshot::default(), &cfg));
+    let web_origins = qorpera_web_router::server::parse_web_origins(env::var("QORPERA_WEB_ORIGINS").ok().as_deref());
+    let state = Arc::new(RouterState::new(blobs, EdgeSnapshot::default(), &cfg).with_web_origins(web_origins));
 
     let (dns_tx, dns_rx) = mpsc::channel::<()>(8);
     let dns_interval_sec: u64 = env::var("QORPERA_WEB_DNS_POLL_SEC")

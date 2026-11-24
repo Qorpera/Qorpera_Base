@@ -234,6 +234,49 @@ describe("asking a teammate to publish", () => {
 		store.dispose();
 	});
 
+	it("opens the notch on an ask that came while the panels were hidden, once they are shown", async () => {
+		const { store } = await setUp(SOFIE, site());
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		await store.askToPublish(SURFACE, SOFIE);
+		view.update();
+		await flush();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		expect(store.state.surfaces[0]?.publishAsk?.askedUserId).toBe(SOFIE);
+		expect(view.el.querySelector(".surface-publish.is-asked")).not.toBeNull();
+		expect(notch.classList.contains("is-open")).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!.click();
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(view.el.querySelector(".surface-publish.is-asked")).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("does not reopen the notch on show for an ask the member already saw", async () => {
+		const { store } = await setUp(SOFIE, site({ publishAsk: ask() }));
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		await flush();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		expect(notch.classList.contains("is-open")).toBe(true);
+		document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(notch.classList.contains("is-open")).toBe(false);
+		store.setMode("live");
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!.click();
+		await flush();
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(store.state.mode).toBe("live");
+		view.dispose();
+		store.dispose();
+	});
+
 	it("publishes as the asked member on yes, through her own Publish", async () => {
 		const shown = site({ publishAsk: ask() });
 		const { store, calls } = await setUp(SOFIE, shown);

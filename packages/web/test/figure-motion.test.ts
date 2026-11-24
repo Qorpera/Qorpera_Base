@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { localTime, pose } from "../public/assets/avatars/status-2d-v1/motion.mjs";
+import { localTime, pose } from "../src/ui/avatars/status-2d-v1/motion.mjs";
 import { writingAsk } from "../src/ui/figure-acts.ts";
 import { level } from "../src/ui/figure-levels.ts";
 import { type FigureArtwork, type FigureMotion, loadFigureMotion, mountFigureMotion } from "../src/ui/figure-motion.ts";

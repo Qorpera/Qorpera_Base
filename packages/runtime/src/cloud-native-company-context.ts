@@ -49,7 +49,6 @@ import {
 import { type CloudAgentSkillsBlock, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import { type CloudWakeEnvelope, cloudWakeIsOwnThread } from "./cloud-wake-bus.ts";
 import type { CloudAgentOpenWork } from "./cloud-worker-tools.ts";
-import type { MemoryBranchView } from "./memory-tree/view.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -1347,20 +1346,6 @@ export function escapeCloudNativeContextJson(json: string): string {
 	);
 }
 
-/**
- * What the context message carries beside a primary view (RUNTIME-AGENT-MEMORY-TREE.md §5.3, §5.5, §6.1): the messages
- * the view covers, the sequence of the last of them, and the branches.
- */
-export interface CloudNativeConversationTree {
-	conversationMessages: number;
-	/** The sequence of the view's last message, null when it covers none. The history after it stays. */
-	lastSequence: number | null;
-	branches: readonly MemoryBranchView[];
-}
-
-/** The run's context message. With a head, the parts it shows whole are left out here: the job specification from
- * hireOverlay, and the profile page's facts from memory, which then names the page. With a primary view (`tree`), the
- * history keeps only what follows it. */
 export function composeCloudNativeCompanyPrompt(
 	context: CloudNativeCompanyContext,
 	wake: CloudWakeEnvelope | null = null,
@@ -1370,7 +1355,7 @@ export function composeCloudNativeCompanyPrompt(
 	skills?: CloudAgentSkillsBlock,
 	proposals?: JsonValue,
 	head?: CloudAgentHead,
-	tree?: CloudNativeConversationTree,
+	_tree?: undefined,
 	request: readonly CloudRoomRequest[] = [],
 	updates?: CloudPlatformUpdatesContext,
 	senses?: JsonValue | null,
@@ -1386,13 +1371,10 @@ export function composeCloudNativeCompanyPrompt(
 	};
 	// The agent's folder, and each listed coworker's that the context names.
 	const folders = context.folder;
-	// The view covers the history up to its last message. When it covers some of it, the rest follows on from the view.
-	const last = tree?.lastSequence ?? null;
-	const viewed = last === null ? context.history : context.history.filter((source) => (source.sequence ?? 0) > last);
-	const historyTruncated = viewed.length === context.history.length && context.historyTruncated;
+	const historyTruncated = context.historyTruncated;
 	// The request is shown once, whole, as the request (item 3 of the 21 October 2026 amendment).
 	const requested = new Set(request.map((entry) => entry.input.id));
-	const history = viewed.filter((source) => !requested.has(source.id));
+	const history = context.history.filter((source) => !requested.has(source.id));
 	const json = JSON.stringify({
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity: {
@@ -1435,10 +1417,8 @@ export function composeCloudNativeCompanyPrompt(
 					causalAgentCount: wake.causal.agentIds.length,
 				}
 			: { sourceKind: context.sourceKind, sourceId: context.sourceId },
-		...(tree ? { conversationMessages: tree.conversationMessages } : {}),
 		currentInputs: context.currentInputs,
 		...(request.length ? { request } : {}),
-		...(tree ? { branches: tree.branches } : {}),
 		history,
 		historyTruncated,
 		coworkers: context.coworkers.map((coworker) => withFolder(coworker, folders)),
@@ -1497,7 +1477,7 @@ export function composeCloudNativeCompanyPrompt(
 				skills,
 				proposals,
 				head,
-				tree,
+				undefined,
 				request,
 				updates,
 				senses,
@@ -1559,6 +1539,7 @@ export function cloudCompanyContextTool(
 	return {
 		name: "read_context" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description:
 			"Read more of a context source that was cut short: sourceKind and id from the source, sha256 from its content.sha256, offset from its content.nextOffset (counted in Unicode characters) and limit, up to 16384 UTF-8 bytes. A page can be shorter than the limit so that it fits one result: continue from each returned nextOffset until it is null. These fields are the handle even when the text stops in the middle of JSON: look for no other handle inside the text, and try this one before saying a source is unavailable. It reads only what was already admitted to this run: it adds no request or permission and fetches no attachment.",
 		// The same for every run, so the tool list stays a cached prefix (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the run's

@@ -292,6 +292,7 @@ export function cloudEventTools(
 	const listHooks: CloudNativeTool = {
 		name: "list_hooks" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_LIST_HOOKS_TOOL_DESCRIPTION,
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
 		parseArguments(value) {
@@ -320,6 +321,7 @@ export function cloudEventTools(
 	const readEvent: CloudNativeTool = {
 		name: "read_event" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_READ_EVENT_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
@@ -490,6 +492,7 @@ export function cloudEventTools(
 	const findMail: CloudNativeTool = {
 		name: "find_mail" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_FIND_MAIL_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",

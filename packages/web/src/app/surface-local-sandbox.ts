@@ -8,11 +8,9 @@ import {
 	type SurfaceChangeUnit,
 	type SurfaceSummary,
 } from "@qorpera/contracts";
-import type { SurfaceKind } from "./surface-kinds.ts";
+import { isThetabandCompany, type SurfaceKind, slugifySurfaceTitle } from "./surface-kinds.ts";
 
-export function isThetabandCompany(companyName: string): boolean {
-	return /\bthetaband\b/i.test(companyName);
-}
+export { isThetabandCompany, slugifySurfaceTitle };
 
 export interface LocalStagedChangePlan {
 	readonly changes: readonly SurfaceChangeUnit[];
@@ -48,21 +46,6 @@ const NAME_STOP_WORDS = new Set([
 	"dem",
 	"igen",
 ]);
-
-export function slugifySurfaceTitle(title: string, taken: ReadonlySet<string>): string {
-	const raw = title
-		.toLowerCase()
-		.normalize("NFKD")
-		.replace(/[\u0300-\u036f]/g, "")
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(0, 34);
-	const base = raw && /^[a-z0-9]/.test(raw) ? raw : "surface";
-	if (!taken.has(base)) return base;
-	let index = 2;
-	while (taken.has(`${base}-${index}`)) index += 1;
-	return `${base}-${index}`;
-}
 
 function isSpecSurface(surface: Pick<SurfaceSummary, "slug">, kind: SurfaceKind | undefined): boolean {
 	if (kind) return kind === "product";

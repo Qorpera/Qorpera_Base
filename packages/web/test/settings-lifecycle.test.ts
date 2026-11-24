@@ -27,6 +27,7 @@ import {
 	userA,
 	userB,
 } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 const { showModal, close } = HTMLDialogElement.prototype;
@@ -1817,7 +1818,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".team")).toBeNull();
 		expect(f.root.querySelector(".company-card[data-href]")).toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
-		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
+		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(2);
 		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it.each(["settings", "team page"])("shows a failed company deletion right under its button in %s", async (place) => {

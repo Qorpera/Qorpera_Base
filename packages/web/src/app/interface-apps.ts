@@ -71,7 +71,6 @@ import {
 	prepareTell,
 	restoreTell,
 } from "./app-actions.ts";
-import { bindModules } from "./app-modules.ts";
 import type { AppReadingAnswer, CompanyReading } from "./company-reading.ts";
 import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
@@ -877,12 +876,15 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 	}
 	const ready = await Promise.all(changes);
 	if (!files.warm) for (const change of ready) change?.();
-	const modules = await bindModules(
-		page,
-		{ warm: files.warm, text: (path) => files.moduleText(path), resolve: resolveAppPath },
-		base,
-		new URL(PAGE_FRAME_URL, document.baseURI).href,
-	);
+	const modules =
+		page.querySelector("script[type='module' i], script[type='importmap' i]") !== null
+			? await (await import("./app-modules.ts")).bindModules(
+					page,
+					{ warm: files.warm, text: (path) => files.moduleText(path), resolve: resolveAppPath },
+					base,
+					new URL(PAGE_FRAME_URL, document.baseURI).href,
+				)
+			: null;
 	if (modules && !files.warm) for (const [token, blob] of modules.files) handed.set(token, blob);
 	return { page, files: handed, missing: [...missing], said: [...(modules?.said ?? [])], later };
 }

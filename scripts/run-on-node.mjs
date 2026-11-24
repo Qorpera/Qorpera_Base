@@ -875,7 +875,7 @@ export function growScript({ locks = LOCKS, allStarted, meminfo = "/proc/meminfo
  * more, `$cores_file` goes back up, a generation further. On 13 Nov (node01, 11:04Z) two runs of 30-43 s waited 412-438 s behind a run that held
  * three slots, though it kept one of slots 1-4 free. It says why it takes no more once per reason, again only after it
  * has taken or given back a slot, and keeps the slots it still holds until its stdin ends. */
-export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, using, meminfo = "/proc/meminfo", arriving = ARRIVING }) {
+export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, using, meminfo = "/proc/meminfo", arriving = ARRIVING, tickSeconds = 2 }) {
 	const queues = [LANES.cpu.queue, LANES.quick.queue].map((queue) => `${shellQuote(`${locks}/${queue}`)}/*`).join(" ");
 	const slots = CPU_SLOTS - KEPT_SLOTS;
 	return [
@@ -935,7 +935,7 @@ export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, using, m
 		"\t\t\tfi",
 		"\t\tfi",
 		// A turn ends early when stdin does (read's status 1, a timeout's is over 128): the session is over.
-		"\t\tread -r -t 2 _; [ $? -gt 128 ] || return 0",
+		`\t\tread -r -t ${tickSeconds} _; [ $? -gt 128 ] || return 0`,
 		"\tdone",
 		"}",
 	].join("\n");

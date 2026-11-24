@@ -14,9 +14,7 @@ import {
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { COMPACT_MODEL, MemoryCompactChannel, type MemoryCompactReply } from "@qorpera/runtime/memory-tree/compact";
-import { memoryCacheKeyComposer } from "@qorpera/runtime/memory-tree/compose";
 import { cloudRunWorkComposer, cloudRunWorkMessage } from "@qorpera/runtime/memory-tree/run-work";
-import { memoryPromptCacheKey } from "@qorpera/runtime/memory-tree/view";
 import { nativeCodexFixtureCommand } from "./native-codex-fixture-command.ts";
 
 export type NativeCodexLiveHalvesMode =
@@ -257,11 +255,9 @@ export async function runNativeCodexLiveHalvesProbe(binary: string, mode: Native
 			observations.push(...batch);
 		},
 	});
-	const key = memoryPromptCacheKey({
-		payerLoginConnectionId: randomUUID(),
-		agentId: randomUUID(),
-		conversationId: randomUUID(),
-	});
+	const key = `qorpera:${createHash("sha256")
+		.update(JSON.stringify([randomUUID(), randomUUID(), randomUUID()]))
+		.digest("base64url")}`;
 	let requests = 0;
 	let effects = 0;
 	let checksAfterEffect = 0;
@@ -305,14 +301,14 @@ export async function runNativeCodexLiveHalvesProbe(binary: string, mode: Native
 		],
 	});
 	const compose = composer(mode);
-	const composeContext = memoryCacheKeyComposer(key, (request, signal) => {
+	const composeContext: Composer = async (request, signal) => {
 		composed.push({
 			purpose: request.purpose,
 			threadId: request.threadId,
 			reasoning: request.items.filter((item) => item.kind === "reasoning").length,
 		});
-		return compose(request, signal);
-	});
+		return { ...(await compose(request, signal)), promptCacheKey: key };
+	};
 	const compactor = new MemoryCompactChannel();
 	const closing = async (signal: AbortSignal): Promise<void> => {
 		try {

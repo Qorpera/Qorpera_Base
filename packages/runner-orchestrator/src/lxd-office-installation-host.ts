@@ -1,29 +1,10 @@
 import { execFileSync, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { chmod, chown, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import {
-	assertOfficeInstallationUpgrade,
-	OFFICE_CONFIG_ROOT,
-	OFFICE_INSTALL_ARTIFACTS,
-	OFFICE_INSTALL_DOCUMENTS,
-	OFFICE_INSTALL_ROOT,
-	OFFICE_PROVIDER_USER,
-	type OfficeInstallDocument,
-	officeInstallHash,
-	parseOfficeInstallationManifest,
-	parseOfficeInstallationReceipt,
-	parseOfficeInstallationSpec,
-	validateOfficeInstallationDocuments,
-} from "./lxd-office-installation.ts";
-import { assertLxdOfficeHostMount } from "./lxd-office-physical-host.ts";
 import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
 
-const rootLock = "/run/qorpera-office-provider-install/install.lock";
-const providerUnit = "qorpera-office-provider.service",
-	namespaceUnit = "qorpera-office-host-namespace.service";
-const documentKeys = Object.keys(OFFICE_INSTALL_DOCUMENTS) as OfficeInstallDocument[];
 const environment = { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" };
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 const metadata = (info: Awaited<ReturnType<typeof lstat>>) => [
@@ -38,14 +19,11 @@ const metadata = (info: Awaited<ReturnType<typeof lstat>>) => [
 	info.ctimeMs,
 ];
 
-function rootOnly(): void {
-	if (
-		process.platform !== "linux" ||
-		process.getuid?.() !== 0 ||
-		process.geteuid?.() !== 0 ||
-		process.getegid?.() !== 0
-	)
-		throw new Error("OFFICE_INSTALL_ROOT_LINUX_REQUIRED");
+interface InstallTarget {
+	path: string;
+	bytes: Buffer;
+	mode: number;
+	gid: number;
 }
 
 async function parents(path: string, create = false): Promise<void> {
@@ -144,269 +122,7 @@ function command(file: string, args: string[], absent = false): string {
 	}
 }
 
-function stopped(name: string, exited = false): void {
-	const fields = Object.fromEntries(
-		command("/usr/bin/systemctl", ["show", name, "--property=LoadState,ActiveState,SubState,MainPID,ControlPID,Job"])
-			.split("\n")
-			.map((line) => {
-				const at = line.indexOf("=");
-				return [line.slice(0, at), line.slice(at + 1)];
-			}),
-	);
-	if (
-		!["loaded", "not-found"].includes(fields.LoadState ?? "") ||
-		fields.MainPID !== "0" ||
-		fields.ControlPID !== "0" ||
-		fields.Job !== "" ||
-		!(
-			["inactive", "failed"].includes(fields.ActiveState ?? "") ||
-			(exited && fields.ActiveState === "active" && fields.SubState === "exited")
-		)
-	)
-		throw new Error("OFFICE_INSTALL_SERVICE_NOT_STOPPED");
-}
-
-function identity(uid: number, gid: number, socketGid: number, create = false): void {
-	const byName = command("/usr/bin/getent", ["passwd", OFFICE_PROVIDER_USER], true),
-		byUid = command("/usr/bin/getent", ["passwd", String(uid)], true);
-	const group = command("/usr/bin/getent", ["group", OFFICE_PROVIDER_USER], true),
-		byGid = command("/usr/bin/getent", ["group", String(gid)], true);
-	const socket = command("/usr/bin/getent", ["group", String(socketGid)], true).split(":");
-	if (socket.length !== 4 || !/^[a-z_][a-z0-9_-]{0,31}$/.test(socket[0]!))
-		throw new Error("OFFICE_INSTALL_SOCKET_GROUP_MISSING");
-	if (byName !== byUid || group !== byGid) throw new Error("OFFICE_INSTALL_IDENTITY_CONFLICT");
-	if (group) {
-		const fields = group.split(":");
-		if (
-			fields.length !== 4 ||
-			fields[0] !== OFFICE_PROVIDER_USER ||
-			Number(fields[2]) !== gid ||
-			fields[3]!.split(",").some((member) => member && member !== OFFICE_PROVIDER_USER)
-		)
-			throw new Error("OFFICE_INSTALL_CREDENTIAL_GROUP_SHARED");
-	}
-	if (byName) {
-		const fields = byName.split(":");
-		if (
-			fields.length !== 7 ||
-			fields[0] !== OFFICE_PROVIDER_USER ||
-			Number(fields[2]) !== uid ||
-			Number(fields[3]) !== gid ||
-			fields[5] !== "/nonexistent" ||
-			fields[6] !== "/usr/sbin/nologin"
-		)
-			throw new Error("OFFICE_INSTALL_IDENTITY_CONFLICT");
-		if (command("/usr/bin/passwd", ["--status", OFFICE_PROVIDER_USER]).split(/\s+/)[1] !== "L")
-			throw new Error("OFFICE_INSTALL_ACCOUNT_NOT_LOCKED");
-		const groups = command("/usr/bin/id", ["-G", OFFICE_PROVIDER_USER])
-			.split(/\s+/)
-			.map(Number)
-			.sort((a, b) => a - b);
-		if (
-			!isDeepStrictEqual(
-				groups,
-				[gid, socketGid].sort((a, b) => a - b),
-			)
-		)
-			throw new Error("OFFICE_INSTALL_IDENTITY_GROUPS_CHANGED");
-	}
-	for (const line of command("/usr/bin/getent", ["passwd"]).split("\n")) {
-		const fields = line.split(":");
-		if (fields[0] !== OFFICE_PROVIDER_USER && (Number(fields[2]) === uid || Number(fields[3]) === gid))
-			throw new Error("OFFICE_INSTALL_IDENTITY_SHARED");
-	}
-	if (
-		command("/usr/bin/ps", ["-eo", "uid="])
-			.split(/\s+/)
-			.some((value) => value && Number(value) === uid)
-	)
-		throw new Error("OFFICE_INSTALL_PROVIDER_PROCESSES_REMAIN");
-	if (create) {
-		if (!group) command("/usr/sbin/groupadd", ["--gid", String(gid), OFFICE_PROVIDER_USER]);
-		if (!byName)
-			command("/usr/sbin/useradd", [
-				"--uid",
-				String(uid),
-				"--gid",
-				String(gid),
-				"--groups",
-				socket[0]!,
-				"--no-create-home",
-				"--home-dir",
-				"/nonexistent",
-				"--shell",
-				"/usr/sbin/nologin",
-				"--password",
-				"!",
-				OFFICE_PROVIDER_USER,
-			]);
-		identity(uid, gid, socketGid);
-	}
-}
-
-type Loaded = Awaited<ReturnType<typeof load>>;
-async function load(path: string) {
-	rootOnly();
-	const encoded = await protectedBytes(path, 16384),
-		spec = parseOfficeInstallationSpec(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(encoded)));
-	const manifestBytes = await protectedBytes(join(spec.packageRoot, "manifest.json"), 16384);
-	if (officeInstallHash(manifestBytes) !== spec.packageManifestSha256)
-		throw new Error("OFFICE_INSTALL_PACKAGE_CHANGED");
-	const manifest = parseOfficeInstallationManifest(JSON.parse(manifestBytes.toString("utf8")));
-	const artifacts: Record<string, Buffer> = {};
-	for (const artifact of manifest) {
-		const bytes = await protectedBytes(join(spec.packageRoot, artifact.file), artifact.bytes);
-		if (bytes.length !== artifact.bytes || officeInstallHash(bytes) !== artifact.sha256)
-			throw new Error("OFFICE_INSTALL_ARTIFACT_CHANGED");
-		artifacts[artifact.file] = bytes;
-	}
-	if (
-		!(await protectedBytes(process.argv[1]!, 2 * 1024 ** 2)).equals(artifacts["qorpera-office-provider-install.cjs"]!)
-	)
-		throw new Error("OFFICE_INSTALL_EXECUTABLE_MISMATCH");
-	const documents = {} as Record<OfficeInstallDocument, Buffer>;
-	try {
-		for (const key of documentKeys)
-			documents[key] = await protectedBytes(spec.documents[key].path, spec.documents[key].bytes, key === "registry");
-		const validated = validateOfficeInstallationDocuments(
-			spec,
-			documents,
-			artifacts["qorpera-office-provider.service.in"]!.toString("utf8"),
-		);
-		const machine = (await protectedBytes("/etc/machine-id", 64)).toString("utf8").trim();
-		if (
-			!/^[0-9a-f]{32}$/.test(machine) ||
-			/^0+$/.test(machine) ||
-			officeInstallHash(machine) !== validated.policy.host.machineIdSha256 ||
-			validated.policy.host.architecture !==
-				(process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : "unsupported")
-		)
-			throw new Error("OFFICE_INSTALL_HOST_MISMATCH");
-		const version = /^v(\d+)\.(\d+)\.(\d+)$/.exec(command("/usr/bin/node", ["--version"]));
-		if (!version || Number(version[1]) < 22 || (Number(version[1]) === 22 && Number(version[2]) < 19))
-			throw new Error("OFFICE_INSTALL_NODE_UNSUPPORTED");
-		return { spec, specSha256: officeInstallHash(encoded), manifest, artifacts, documents, ...validated };
-	} catch (error) {
-		documents.registry?.fill(0);
-		throw error;
-	}
-}
-
-async function journal(loaded: Loaded, create = false): Promise<string[]> {
-	const { path } = loaded.policy.journal;
-	await parents(path);
-	const info = await lstat(path).catch((error) => {
-		if (!missing(error)) throw error;
-		return undefined;
-	});
-	const observedPath = info ? path : dirname(path);
-	const fd = await open(observedPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-	try {
-		assertLxdOfficeHostMount(
-			await readFile("/proc/self/mountinfo", "utf8"),
-			await readFile(`/proc/self/fdinfo/${fd.fd}`, "utf8"),
-			loaded.policy.journal,
-			path,
-		);
-	} finally {
-		await fd.close();
-	}
-	if (!info) {
-		if (!create) return [];
-		await mkdir(path, { mode: 0o700 });
-		await chmod(path, 0o700);
-		await chown(path, loaded.uid, loaded.gid);
-	} else if (
-		!info.isDirectory() ||
-		info.uid !== loaded.uid ||
-		info.gid !== loaded.gid ||
-		(info.mode & 0o7777) !== 0o700 ||
-		(await realpath(path)) !== path
-	)
-		throw new Error("OFFICE_INSTALL_JOURNAL_UNPROTECTED");
-	const entries = await readdir(path),
-		lock = join(path, "adoption.lock");
-	if (!entries.includes("adoption.lock")) {
-		if (entries.length) throw new Error("OFFICE_INSTALL_JOURNAL_LOCK_MISSING");
-		if (create) {
-			const f = await open(
-				lock,
-				constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-				0o600,
-			);
-			try {
-				await f.chown(loaded.uid, loaded.gid);
-				await f.chmod(0o600);
-				await f.sync();
-			} finally {
-				await f.close();
-			}
-		}
-	} else {
-		const value = await lstat(lock);
-		if (
-			!value.isFile() ||
-			value.uid !== loaded.uid ||
-			value.gid !== loaded.gid ||
-			(value.mode & 0o7777) !== 0o600 ||
-			value.nlink !== 1 ||
-			value.size !== 0 ||
-			(await realpath(lock)) !== lock
-		)
-			throw new Error("OFFICE_INSTALL_JOURNAL_LOCK_UNPROTECTED");
-	}
-	if (create) {
-		for (const directory of [path, dirname(path)]) {
-			const parent = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-			try {
-				await parent.sync();
-			} finally {
-				await parent.close();
-			}
-		}
-	}
-	return entries.filter((name) => name !== "adoption.lock");
-}
-
-function targets(loaded: Loaded) {
-	const result: Array<{ path: string; bytes: Buffer; mode: number; gid: number }> = [];
-	for (const file of OFFICE_INSTALL_ARTIFACTS.filter((name) => name.endsWith(".cjs")))
-		result.push({ path: join(OFFICE_INSTALL_ROOT, file), bytes: loaded.artifacts[file]!, mode: 0o444, gid: 0 });
-	for (const key of documentKeys)
-		result.push({
-			path: join(OFFICE_CONFIG_ROOT, OFFICE_INSTALL_DOCUMENTS[key].file),
-			bytes: loaded.documents[key],
-			mode: OFFICE_INSTALL_DOCUMENTS[key].mode,
-			gid: key === "registry" ? loaded.gid : 0,
-		});
-	result.push(
-		{ path: `/etc/systemd/system/${providerUnit}`, bytes: Buffer.from(loaded.unit), mode: 0o644, gid: 0 },
-		{ path: `/etc/systemd/system/${namespaceUnit}`, bytes: loaded.artifacts[namespaceUnit]!, mode: 0o644, gid: 0 },
-	);
-	const record = {
-		schema: "qorpera.lxd-office-provider-installation-receipt/v1",
-		packageManifestSha256: loaded.spec.packageManifestSha256,
-		providerPolicySha256: loaded.spec.providerPolicySha256,
-		uid: loaded.uid,
-		gid: loaded.gid,
-		files: result.map((target) => ({
-			path: target.path,
-			bytes: target.bytes.length,
-			sha256: officeInstallHash(target.bytes),
-			mode: target.mode,
-			gid: target.gid,
-		})),
-	};
-	result.push({
-		path: join(OFFICE_INSTALL_ROOT, "installation.json"),
-		bytes: Buffer.from(`${JSON.stringify(record)}\n`),
-		mode: 0o444,
-		gid: 0,
-	});
-	return result;
-}
-
-async function targetExists(target: ReturnType<typeof targets>[number]): Promise<boolean> {
+async function targetExists(target: InstallTarget): Promise<boolean> {
 	try {
 		const bytes = await protectedBytes(target.path, target.bytes.length, false, target.bytes.length === 0);
 		try {
@@ -423,7 +139,7 @@ async function targetExists(target: ReturnType<typeof targets>[number]): Promise
 	}
 }
 
-async function unitOverrides(names: readonly string[] = [providerUnit, namespaceUnit]): Promise<void> {
+async function unitOverrides(names: readonly string[]): Promise<void> {
 	// Inspect disk as well as the manager: a newly written drop-in may not have
 	// been loaded yet. Global and dash-prefix drop-ins affect these units too.
 	const paths = command("/usr/bin/systemd-analyze", ["unit-paths"]).split("\n");
@@ -478,45 +194,6 @@ export {
 	unitOverrides as assertOfficeInstallUnitsUnmodified,
 	localDescriptor as assertOfficeInstallLocalDescriptor,
 };
-
-async function preflight(loaded: Loaded): Promise<void> {
-	stopped(providerUnit);
-	stopped(namespaceUnit, true);
-	await unitOverrides();
-	identity(loaded.uid, loaded.gid, loaded.policy.host.socketGid);
-	const entries = await journal(loaded);
-	const expected = targets(loaded);
-	const existing = new Set<string>();
-	for (const target of expected) if (await targetExists(target)) existing.add(target.path);
-	const absent = expected.length - existing.size;
-	if (absent && entries.length) {
-		const previous = loaded.spec.previousInstallation;
-		if (!previous) throw new Error("OFFICE_INSTALL_STATE_REQUIRES_RECOVERY");
-		const bytes = await protectedBytes(previous.path, previous.bytes);
-		if (officeInstallHash(bytes) !== previous.sha256) throw new Error("OFFICE_INSTALL_PREVIOUS_RECEIPT_CHANGED");
-		const receipt = parseOfficeInstallationReceipt(
-			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)),
-		);
-		await assertOfficeInstallationUpgrade(
-			receipt,
-			{ providerPolicySha256: loaded.spec.providerPolicySha256, uid: loaded.uid, gid: loaded.gid },
-			expected.map((target) => ({
-				path: target.path,
-				sha256: officeInstallHash(target.bytes),
-				bytes: target.bytes.length,
-			})),
-			(path) =>
-				lstat(path).then(
-					() => true,
-					(error) => {
-						if (missing(error)) return false;
-						throw error;
-					},
-				),
-			async (path) => existing.has(path),
-		);
-	}
-}
 
 async function lockFd(path: string, uid: number): Promise<number> {
 	const info = await lstat(path, { bigint: true });
@@ -585,7 +262,7 @@ async function lockedChild(path: string, stage: string, spec: string, inherited?
 	}
 }
 
-async function publish(target: ReturnType<typeof targets>[number]): Promise<void> {
+async function publish(target: InstallTarget): Promise<void> {
 	if (await targetExists(target)) return;
 	await parents(target.path, true);
 	if ((await readdir(dirname(target.path))).filter((name) => name.startsWith(".office-install-")).length >= 128)
@@ -630,98 +307,5 @@ async function publish(target: ReturnType<typeof targets>[number]): Promise<void
 		}
 	} finally {
 		await rm(temporaryRoot, { recursive: true, force: true });
-	}
-}
-
-export async function runOfficeProviderInstallation(
-	stage: "--check" | "--apply" | "--prepare" | "--commit",
-	specPath: string,
-): Promise<void> {
-	const loaded = await load(officePhysicalPath(specPath));
-	try {
-		await preflight(loaded);
-		if (stage === "--check") {
-			console.log(
-				JSON.stringify({
-					schema: "qorpera.lxd-office-provider-installation-check/v1",
-					specSha256: loaded.specSha256,
-					providerPolicySha256: loaded.spec.providerPolicySha256,
-					uid: loaded.uid,
-					gid: loaded.gid,
-					targets: targets(loaded).map((target) => target.path),
-					serviceWillRemain: "disabled-inactive",
-				}),
-			);
-			return;
-		}
-		if (stage === "--apply") {
-			await parents(rootLock, true);
-			const file = await open(
-				rootLock,
-				constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-				0o600,
-			).catch((error) => {
-				if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
-				throw error;
-			});
-			if (file) {
-				await file.chmod(0o600);
-				await file.sync();
-				await file.close();
-			}
-			const value = await lstat(rootLock);
-			if (
-				!value.isFile() ||
-				value.uid !== 0 ||
-				value.gid !== 0 ||
-				value.nlink !== 1 ||
-				value.size !== 0 ||
-				(value.mode & 0o7777) !== 0o600 ||
-				(await realpath(rootLock)) !== rootLock
-			)
-				throw new Error("OFFICE_INSTALL_LOCK_UNPROTECTED");
-			await lockedChild(rootLock, "--prepare", specPath);
-			return;
-		}
-		const master = await lockFd(rootLock, 0);
-		if (stage === "--prepare") {
-			identity(loaded.uid, loaded.gid, loaded.policy.host.socketGid, true);
-			await journal(loaded, true);
-			await lockedChild(join(loaded.policy.journal.path, "adoption.lock"), "--commit", specPath, master);
-			return;
-		}
-		await lockFd(join(loaded.policy.journal.path, "adoption.lock"), loaded.uid);
-		await preflight(loaded);
-		for (const target of targets(loaded)) {
-			await lockFd(rootLock, 0);
-			await lockFd(join(loaded.policy.journal.path, "adoption.lock"), loaded.uid);
-			await publish(target);
-		}
-		command("/usr/bin/systemd-analyze", [
-			"verify",
-			`/etc/systemd/system/${providerUnit}`,
-			`/etc/systemd/system/${namespaceUnit}`,
-		]);
-		command("/usr/bin/systemctl", ["daemon-reload"]);
-		await unitOverrides();
-		command("/usr/bin/systemctl", ["disable", providerUnit]);
-		stopped(providerUnit);
-		stopped(namespaceUnit, true);
-		if (command("/usr/bin/systemctl", ["show", providerUnit, "--property=UnitFileState", "--value"]) !== "disabled")
-			throw new Error("OFFICE_INSTALL_SERVICE_NOT_DISABLED");
-		for (const target of targets(loaded))
-			if (!(await targetExists(target))) throw new Error("OFFICE_INSTALL_READBACK_FAILED");
-		console.log(
-			JSON.stringify({
-				schema: "qorpera.lxd-office-provider-installation-result/v1",
-				specSha256: loaded.specSha256,
-				packageManifestSha256: loaded.spec.packageManifestSha256,
-				service: "disabled-inactive",
-				configuration: "installed-or-preserved",
-				journals: "preserved",
-			}),
-		);
-	} finally {
-		loaded.documents.registry.fill(0);
 	}
 }

@@ -793,36 +793,44 @@ export async function* claudeBoxStdoutLines(
 	onOverflow?: () => void,
 	maxLineChars = CLAUDE_BOX_MAX_STDOUT_LINE_CHARS,
 ): AsyncGenerator<string> {
-	let rest = "";
+	let parts: string[] = [];
+	let partLen = 0;
 	for await (const chunk of stdout) {
-		const scanFrom = rest.length;
-		rest += chunk;
 		let start = 0;
-		let end = rest.indexOf("\n", scanFrom);
+		let end = chunk.indexOf("\n", start);
 		while (end >= 0) {
-			const line = rest.slice(start, end);
-			if (line.length > maxLineChars) {
+			const tail = chunk.slice(start, end);
+			const length = partLen + tail.length;
+			if (length > maxLineChars) {
 				onOverflow?.();
 				return;
 			}
+			const line = parts.length === 0 ? tail : `${parts.join("")}${tail}`;
+			parts = [];
+			partLen = 0;
 			onLine?.(line);
 			yield line;
 			start = end + 1;
-			end = rest.indexOf("\n", start);
+			end = chunk.indexOf("\n", start);
 		}
-		if (start > 0) rest = rest.slice(start);
-		if (rest.length > maxLineChars) {
-			onOverflow?.();
-			return;
+		if (start < chunk.length) {
+			const tail = start === 0 ? chunk : chunk.slice(start);
+			partLen += tail.length;
+			if (partLen > maxLineChars) {
+				onOverflow?.();
+				return;
+			}
+			parts.push(tail);
 		}
 	}
-	if (rest) {
-		if (rest.length > maxLineChars) {
+	if (partLen > 0) {
+		if (partLen > maxLineChars) {
 			onOverflow?.();
 			return;
 		}
-		onLine?.(rest);
-		yield rest;
+		const line = parts.length === 1 ? parts[0]! : parts.join("");
+		onLine?.(line);
+		yield line;
 	}
 }
 

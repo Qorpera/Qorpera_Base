@@ -7,8 +7,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
 	buildContainerName,
-	expandTestFixture,
 	checkLocale,
+	compareTestNames,
+	expandTestFixture,
 	LOCALE_QUERY,
 	POSTGRES_IMAGE,
 	POSTGRES_LOCALE,
@@ -409,24 +410,27 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"000_schema_smoke.test.sql",
 		"040_account_separation.test.sql",
 		"200_deleted_profile_object_gc.test.sql",
-		"508_last.test.sql",
-		"509_first.test.sql",
-		"5090_longer.test.sql",
-		"671_last.test.sql",
-		"672_first.test.sql",
-		"825_last.test.sql",
-		"826_first.test.sql",
-		"892_last.test.sql",
-		"893_first.test.sql",
-		"999_end.test.sql",
+		"529_last.test.sql",
+		"530_first.test.sql",
+		"684_last.test.sql",
+		"685_first.test.sql",
+		"824_last.test.sql",
+		"825_first.test.sql",
+		"964_last.test.sql",
+		"965_first.test.sql",
+		"1100_four_digit.test.sql",
+		"1244_last.test.sql",
+		"1245_first.test.sql",
+		"company_end.test.sql",
 	];
 	const split = splitTests(tests, null);
 	assert.deepEqual(split, [
 		["qorpera_test", tests.slice(0, 4)],
-		["qorpera_test_2", tests.slice(4, 7)],
-		["qorpera_test_3", tests.slice(7, 9)],
-		["qorpera_test_4", tests.slice(9, 11)],
-		["qorpera_test_5", tests.slice(11)],
+		["qorpera_test_2", tests.slice(4, 6)],
+		["qorpera_test_3", tests.slice(6, 8)],
+		["qorpera_test_4", tests.slice(8, 10)],
+		["qorpera_test_5", tests.slice(10, 13)],
+		["qorpera_test_6", tests.slice(13)],
 	]);
 	// Every test runs once, in its usual order.
 	assert.deepEqual(split.flatMap(([, part]) => part), tests);
@@ -435,28 +439,29 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 	assert.deepEqual(
 		splitTests(tests, null, [
 			["a", ""],
-			["b", "1"],
-			["c", "9"],
+			["b", "100"],
+			["c", "900"],
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 12)],
-			["c", tests.slice(12)],
+			["b", tests.slice(2, 9)],
+			["c", tests.slice(9)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");
 	assert.equal(SQL_TEST_DATABASES[0][1], "");
-	for (let i = 1; i < SQL_TEST_DATABASES.length; i++) assert.ok(SQL_TEST_DATABASES[i - 1][1] < SQL_TEST_DATABASES[i][1]);
+	for (let i = 2; i < SQL_TEST_DATABASES.length; i++)
+		assert.ok(compareTestNames(SQL_TEST_DATABASES[i - 1][1], SQL_TEST_DATABASES[i][1]) < 0);
 });
 
 test("the tests that keep rows for later tests stay in the first database", () => {
 	const tests = readdirSync(join(dirname(fileURLToPath(import.meta.url)), "..", "supabase", "tests"))
 		.filter((name) => name.endsWith(".test.sql"))
-		.sort();
+		.sort(compareTestNames);
 	const [[first, kept], ...rest] = splitTests(tests, null);
 	assert.equal(first, "qorpera_test");
 	assert.ok(rest.length >= 1);
 	assert.deepEqual([kept, ...rest.map(([, part]) => part)].flat(), tests);
 	// The tests that keep rows for a later one (000 first, 040 and its readers up to 200) are all 200 or below.
-	for (const test of tests.filter((name) => name < "201")) assert.ok(kept.includes(test), test);
+	for (const test of tests.filter((name) => compareTestNames(name, "201") < 0)) assert.ok(kept.includes(test), test);
 });

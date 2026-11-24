@@ -22,6 +22,7 @@ import { h } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 import { searchFromRail } from "./search-window-helpers.ts";
+import "./register-lazy.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -1497,6 +1498,7 @@ describe("each member's own sidebar (20260930727000)", () => {
 		contacts: 0,
 		pages: 0,
 		apps: 0,
+		surfaces: 0,
 		...changes,
 	});
 	const viewerTeam = { ...team, role: "viewer" as const, capabilities: { ...team.capabilities, write: false } };
@@ -1685,6 +1687,7 @@ describe("Reset sidebar's Undo (review of #1677)", () => {
 		contacts: 0,
 		pages: 0,
 		apps: 0,
+		surfaces: 0,
 	});
 	async function resetOnce() {
 		const appsKey = `qorpera.web.rail-apps-order:${profileA.profileId}`;

@@ -32,6 +32,7 @@ import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { GO_LIVE_PUBLISH_WAIT_MS, SurfaceView } from "../src/app/views/surface-view.ts";
 import type { CompanySite } from "../src/cloud/sites.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
@@ -55,6 +56,7 @@ import {
 	summary,
 	workspace,
 } from "./surface-fixtures.ts";
+import "./register-lazy.ts";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -497,6 +499,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		rail.update(undefined);
 		expect(rail.el.querySelector('[data-surface-slug="members"]')).toBeNull();
+		expect(rail.el.querySelectorAll(".rail-surface-title")).toHaveLength(0);
 		store.dispose();
 	});
 
@@ -774,6 +777,60 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
 		view.update();
 		expect(drawer.classList.contains("is-open")).toBe(true);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("hides both side panels from the notch and leaves the notch as the way back", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		const bar = notch.querySelector<HTMLElement>(".surface-pill")!;
+		const show = notch.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!;
+		expect(show.hidden).toBe(true);
+		expect(bar.lastElementChild?.getAttribute("data-act")).toBe("hide-panels");
+
+		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(bar.hidden).toBe(true);
+		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(true);
+		expect(show.hidden).toBe(false);
+		expect(document.activeElement).toBe(show);
+
+		view.update();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		expect(show.hidden).toBe(false);
+
+		show.click();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
+		expect(show.hidden).toBe(true);
+		expect(bar.hidden).toBe(false);
+		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(false);
+
+		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		const dialog = document.createElement("dialog");
+		dialog.setAttribute("open", "");
+		document.body.append(dialog);
+		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		dialog.remove();
+		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
+
+		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		Object.defineProperty(view, "slug", { value: "no-such-surface" });
+		view.update();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
 		view.dispose();
 		store.dispose();
 	});
@@ -1227,34 +1284,24 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(notch.classList.contains("is-open")).toBe(false);
 
 		const surfaceId = view.surface!.id;
-		const canvas = view.el.querySelector<HTMLElement>(".surface-canvas")!;
 		const shown = store.visiblePreviewChangeIds(surfaceId);
 		expect(shown.length).toBeGreaterThan(0);
 		expect(pill.querySelector(".surface-notch-count")?.textContent).toBe(String(shown.length));
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
 
 		await store.toggleChange(surfaceId, shown[0]!);
 		view.update();
 		const left = shown.length - 1;
 		expect(pill.querySelector(".surface-notch-count")?.textContent ?? "0").toBe(String(left));
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(left > 0);
 		for (const id of shown.slice(1)) await store.toggleChange(surfaceId, id);
 		view.update();
 		expect(pill.querySelector(".surface-notch-count")).toBeNull();
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
 
 		await store.toggleChange(surfaceId, shown[0]!);
 		store.setMode("live");
 		view.update();
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
 		store.setMode("preview");
 		view.update();
 		expect(pill.querySelector(".surface-notch-count")?.textContent).toBe("1");
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(true);
-		store.setMode("report");
-		view.update();
-		expect(canvas.classList.contains("is-previewing-changes")).toBe(false);
-		store.setMode("preview");
 
 		view.dispose();
 		store.dispose();
@@ -1473,6 +1520,56 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
 		expect(document.querySelector(".surface-publish-change-by")?.textContent).toBe("Approved by Mads");
 		document.querySelector<HTMLButtonElement>(".surface-publish-sheet .surface-close")?.click();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("approves every turned-on change from the Changes header and drops changes that are merging", async () => {
+		stubFigureMotion();
+		const OTHER = "33333333-3333-4333-8333-333333333334";
+		const first = session(["staged", "staged"], { title: "Header split" });
+		const second = session([], {
+			id: OTHER,
+			title: "Footer copy",
+			changes: [change(CHANGES[2], 1, "staged", { sessionId: OTHER, title: "Footer text" })],
+		});
+		const approveSurfaceChange = vi.fn(async () => session(["merging", "staged"], { title: "Header split" }));
+		const approveSessionAll = vi.fn(async () => ({
+			...second,
+			changes: [change(CHANGES[2], 1, "merging", { sessionId: OTHER, title: "Footer text" })],
+			openChangeCount: 0,
+		}));
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary()]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([first, second])),
+			approveSurfaceChange,
+			approveSessionAll,
+		});
+		const store = storeWith(client);
+		await store.load();
+		store.store.set({ hiddenChanges: { [CHANGES[1]]: true } });
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const all = () => view.el.querySelector<HTMLButtonElement>('.surface-drawer-head [data-act="approve-shown"]');
+		expect(all()?.textContent).toContain("Approve all 2");
+		all()!.click();
+		expect(approveSurfaceChange).not.toHaveBeenCalled();
+		all()!.click();
+		await flush();
+		view.update();
+
+		expect(approveSurfaceChange).toHaveBeenCalledWith(CHANGES[0]);
+		expect(approveSessionAll).toHaveBeenCalledWith(OTHER);
+		const titles = [...view.el.querySelectorAll(".surface-overview-change-title")].map((el) => el.textContent);
+		expect(titles).toEqual(["Change 2"]);
+		expect(view.el.querySelectorAll(".surface-overview-card.is-agent")).toHaveLength(1);
+		expect(store.state.undo).toMatchObject({ pending: true, changeIds: [CHANGES[0], CHANGES[2]] });
+		expect(view.el.querySelector(".surface-toast.is-pending")?.textContent).toContain("2 changes");
+		expect(all()).toBeNull();
 
 		view.dispose();
 		store.dispose();
@@ -1903,9 +2000,9 @@ describe("a website that is not live", () => {
 	}
 
 	const parts = (view: SurfaceView) =>
-		[...view.el.querySelectorAll<HTMLElement>(".surface-pill > :not(.surface-pill-divider)")].map(
-			(part) => part.dataset.toggle ?? part.className,
-		);
+		[
+			...view.el.querySelectorAll<HTMLElement>(".surface-pill > :not(.surface-pill-divider, .surface-hide-panels)"),
+		].map((part) => part.dataset.toggle ?? part.className);
 	const card = (view: SurfaceView) => view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
 	const openCard = async (view: SurfaceView, settle: () => Promise<void>) => {
 		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
@@ -2623,6 +2720,7 @@ describe("single-session change option groups", () => {
 		expect(optionButtons()).toHaveLength(3);
 		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
 		expect(drawer.querySelector('[data-act="approve"]')).toBeNull();
+		expect(drawer.querySelector('[data-act="approve-shown"]')).toBeNull();
 		expect(drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')?.disabled).toBe(false);
 
 		optionButtons()[1]!.click();
@@ -2656,6 +2754,7 @@ describe("single-session change option groups", () => {
 		const toggleSwitch = drawer.querySelector<HTMLButtonElement>('[data-act="toggle"]');
 		expect(toggleSwitch?.getAttribute("aria-checked")).toBe("true");
 		expect(drawer.querySelector('[data-act="approve"]')?.textContent).toBe("Approve");
+		expect(drawer.querySelector('[data-act="approve-shown"]')?.textContent).toContain("Approve all 1");
 
 		view.dispose();
 		store.dispose();
@@ -2785,6 +2884,65 @@ describe("single-session change option groups", () => {
 		expect(drawer.querySelector('[data-act="approve-all"]')?.textContent).toContain("Approve all 3");
 		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
 		view.dispose();
+		store.dispose();
+	});
+});
+
+describe("the rail's empty-space menu with interfaces (20260930892000)", () => {
+	it("offers the interfaces' New section in the list, never in the Agents and Members dock", async () => {
+		stubFigureMotion();
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const f = fixture();
+		const cofounder = { ...staff, id: id(10), displayName: "Co-Founder", templateId: "co-founder" };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			loading: false,
+			staff: [cofounder, { ...staff, id: id(11), displayName: "Strategi", role: "Strategy" }],
+			surfaceRail: {
+				layout: { schema: "qorpera.member-surface-rail/v1", order: [], sections: [] },
+				updatedAt: null,
+			},
+		});
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: profileA.profileId, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		attachSurfaces(company, store);
+		const container = document.createElement("aside");
+		const frame = document.createElement("div");
+		frame.className = "frame";
+		frame.append(container);
+		document.body.append(frame);
+		renderRail(container, company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section: "surface", id: "inbox" },
+			auth: new AuthController(f.cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			agentActions: {},
+		});
+		const labels = () =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu-item")].map((item) => item.textContent?.trim());
+		const rightClick = (target: Element) =>
+			target.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+
+		rightClick(container.querySelector(".rail-surfaces")!);
+		expect(labels()).toContain("New section");
+		openMenu()?.close();
+		await flush();
+
+		rightClick(container.querySelector(".rail-dock")!);
+		expect(labels()).not.toContain("New section");
+		openMenu()?.close();
+		await flush();
+		company.stop();
 		store.dispose();
 	});
 });

@@ -415,8 +415,11 @@ impl RouteTable {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: EdgeSnapshot) {
+        self.apply_prebuilt(Self::from_snapshot(snapshot));
+    }
+
+    pub fn apply_prebuilt(&mut self, mut next: RouteTable) {
         let old_overrides = std::mem::take(&mut self.upstream_overrides);
-        let mut next = Self::from_snapshot(snapshot);
         if !old_overrides.is_empty() {
             let mut active_upstreams: HashMap<&str, Option<&str>> = HashMap::new();
             for site in next.sites_by_id.values() {

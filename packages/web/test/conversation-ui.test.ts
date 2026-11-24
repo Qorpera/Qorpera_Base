@@ -37,6 +37,7 @@ import {
 	userB,
 	visibleText,
 } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
