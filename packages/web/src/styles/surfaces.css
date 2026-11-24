@@ -461,10 +461,12 @@
 	flex: none; width: 7px; height: 7px; margin: 0 1px; border-radius: 50%;
 	background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft);
 }
-.surface-pill-address.is-unknown .surface-address-dot { display: none; background: var(--text-soft); box-shadow: none; }
+.surface-pill-address.is-unknown .surface-address-dot { visibility: hidden; background: none; box-shadow: none; }
 .surface-pill-address.is-private .surface-address-dot {
-	width: 8px; height: 8px; margin: 0 0.5px; border: 1.5px solid var(--text-soft); background: none; box-shadow: none;
+	display: grid; place-items: center; width: 13px; height: 13px; margin: 0 -2px; border-radius: 0;
+	background: none; box-shadow: none; color: var(--text-soft);
 }
+.surface-pill-address.is-private .surface-address-dot > .icon { width: 13px; height: 13px; stroke-width: 2.2; }
 .surface-address-sheet {
 	position: absolute; z-index: 12; top: 58px; left: 50%; translate: -50% 0; width: min(316px, calc(100% - 24px));
 	overflow: hidden; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--overlay); color: var(--text);
