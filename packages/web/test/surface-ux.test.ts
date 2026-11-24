@@ -2046,7 +2046,12 @@ describe("a website that is not live", () => {
 	it("publishes nothing when Base has nothing a publish would add", async () => {
 		const { client, done } = await website({
 			served: false,
-			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: false, liveHeadSha: "a".repeat(40) },
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: false,
+				liveHeadSha: "a".repeat(40),
+			},
 		});
 		expect(client.publishSurface).not.toHaveBeenCalled();
 		done();
@@ -2054,7 +2059,12 @@ describe("a website that is not live", () => {
 
 	it("goes live by publishing a Base that moved since its last publish first", async () => {
 		const { store, view, order, settle, done } = await website({
-			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: "b".repeat(40) },
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: true,
+				liveHeadSha: "b".repeat(40),
+			},
 			publishFails: 1,
 			publishAnswer: { hasUnpublishedChanges: false },
 		});
