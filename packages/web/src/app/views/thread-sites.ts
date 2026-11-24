@@ -128,10 +128,6 @@ export class ThreadSites {
 		return this.#reading;
 	}
 
-	/** Draws every card again; the keyboard stays on the key it was on. A card not in the page is let go: its message was
-	 * drawn again, or left the thread. Every redraw comes after the task that made a card and put it in its message (a
-	 * read, the window's focus, a change of role, a key's line), so a card that is not in the page by then never will be
-	 * (review r1 of #1848, F2). */
 	#answersKey(): string {
 		return this.#sites.map((site) => (hasPassword(site) ? "" : this.#answer(site.id))).join(",");
 	}
@@ -143,6 +139,10 @@ export class ThreadSites {
 		return answer === "private" ? h("span", { class: "site-state is-not-live" }, t("Not live yet")) : null;
 	}
 
+	/** Draws every card again; the keyboard stays on the key it was on. A card not in the page is let go: its message was
+	 * drawn again, or left the thread. Every redraw comes after the task that made a card and put it in its message (a
+	 * read, the window's focus, a change of role, a key's line), so a card that is not in the page by then never will be
+	 * (review r1 of #1848, F2). */
 	#drawAll(): void {
 		this.#answers = this.#answersKey();
 		for (const [card, id] of [...this.#cards]) {
