@@ -1275,7 +1275,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* Its edge is the rail's line, drawn inside it (an inset shadow) rather than as a border, so the line takes no width
  * and the buttons centred in the folded strip land on whole pixels. */
 .concepts-side {
-	display: flex; flex: none; flex-direction: column; width: var(--concepts-width, 406px); min-height: 0;
+	display: flex; flex: none; flex-direction: column; width: var(--concepts-width, 365px); min-height: 0;
 	padding: 0 10px 11px; box-shadow: inset -1px 0 0 var(--rail-line); background: var(--rail); color: var(--text);
 	transition: width var(--motion-base) var(--ease-spring);
 }

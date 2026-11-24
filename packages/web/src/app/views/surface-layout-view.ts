@@ -66,7 +66,6 @@ export interface SurfaceLayoutInput {
 
 export interface SurfaceLayoutPlan {
 	readonly tab: string;
-	readonly firstTab: boolean;
 	readonly tabBar: HTMLElement | null;
 	readonly tasks: readonly StudioSectionTask[];
 }
@@ -265,7 +264,7 @@ export class SurfaceLayoutView {
 						),
 					)
 				: null;
-		return { tab: current.tab.id, firstTab: current === tabs[0], tabBar, tasks: this.#tasks(current.nodes) };
+		return { tab: current.tab.id, tabBar, tasks: this.#tasks(current.nodes) };
 	}
 
 	#prepareTab(

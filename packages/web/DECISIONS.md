@@ -348,6 +348,12 @@ wider (443, 547, 48%) was tried first and was too much. Stored
 widths moved to `qorpera.web.rail-width.v5`, so every member starts once from
 the new default.
 
+**24 Nov 2026 (Jonas):** the rail is a tenth thinner again: 365 design pixels
+for Big, 452 for Small; stored widths moved to `qorpera.web.rail-width.v6`. The
+Co-Founder's figure is a tenth smaller (82 to 74, its lift 37 to 33), and where
+the expanded rail lists interfaces the space from the Co-Founder's card to the
+first section title's words is halved (34.5 to 17.25 px).
+
 ## 2026-09-25 — Rules and approval cards for agents' actions
 
 **Decision (Jonas).** The web client gets Settings → Rules and live approval

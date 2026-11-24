@@ -1019,6 +1019,11 @@ describe("SurfacesStore", () => {
 			toggledChangeIds: [CHANGES[0], peerChange],
 			explorationSessionId: variantB,
 		});
+		expect(store.shownPreviewChangeCount(SURFACE)).toBe(3);
+
+		await store.toggleChange(SURFACE, changeB);
+		expect(store.visiblePreviewChangeIds(SURFACE)).toEqual([CHANGES[0], peerChange]);
+		expect(store.shownPreviewChangeCount(SURFACE)).toBe(3);
 		store.dispose();
 	});
 
