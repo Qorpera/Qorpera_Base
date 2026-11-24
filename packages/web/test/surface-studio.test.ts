@@ -1092,7 +1092,7 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
-	it("keeps Product Studio tabbed on SVG and markdown drafts and shows its isolated specs path", async () => {
+	it("keeps Product Studio tabbed on SVG and markdown drafts without a link indicator", async () => {
 		const thetabands = summary({
 			id: HEADBAND_ID,
 			slug: "thetabands",
@@ -1140,10 +1140,8 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Thetabands");
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).toBeNull();
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')).toBeNull();
-		const usedBy = view.el.querySelector<HTMLElement>('.studio-reach [data-link-dir="out"]')!;
-		expect(usedBy.textContent).toContain("Used by");
-		expect(usedBy.textContent).toContain("Hjemmeside");
-		expect(view.el.querySelector(".studio-reach")?.textContent).not.toContain("specs.json");
+		expect(view.el.querySelector(".studio-reach")).toBeNull();
+		expect(view.el.querySelector("[data-link-dir]")).toBeNull();
 		view.dispose();
 		store.dispose();
 	});
@@ -1446,7 +1444,22 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
-	it("shows the shared product Feeds link only on the primary Product Studio when multiple exist", async () => {
+	it("omits link indicators across Product and Identity studios even when linked interfaces exist", async () => {
+		const identity = summary({
+			id: "00000000-0000-4000-8000-000000000101",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sortOrder: 0,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
 		const thetabands = summary({
 			id: HEADBAND_ID,
 			slug: "thetabands",
@@ -1482,8 +1495,20 @@ describe("SurfaceStudioView", () => {
 			archetype: "live_build",
 			kind: "website",
 		});
-		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [website, travelCase, thetabands]) }));
+		const store = storeWith(
+			fakeClient({ listSurfaces: vi.fn(async () => [identity, website, travelCase, thetabands]) }),
+		);
 		await store.load();
+
+		const identityView = new SurfaceStudioView({
+			store,
+			surface: identity,
+			signal: new AbortController().signal,
+			baseFiles: { "identity/tokens.json": JSON.stringify({ colors: { Accent: "#6f61cf" } }) },
+		});
+		expect(identityView.el.querySelector(".studio-reach")).toBeNull();
+		expect(identityView.el.querySelector("[data-link-dir]")).toBeNull();
+		identityView.dispose();
 
 		const primaryView = new SurfaceStudioView({
 			store,
@@ -1491,7 +1516,8 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: { "surfaces/thetabands/specs.json": JSON.stringify({ weight: "42g" }) },
 		});
-		expect(primaryView.el.querySelector('[data-link-dir="out"] [data-slug="website"]')).not.toBeNull();
+		expect(primaryView.el.querySelector(".studio-reach")).toBeNull();
+		expect(primaryView.el.querySelector("[data-link-dir]")).toBeNull();
 		primaryView.dispose();
 
 		const secondaryView = new SurfaceStudioView({
@@ -1500,7 +1526,8 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: { "surfaces/travel-case/specs.json": JSON.stringify({ weight: "95g" }) },
 		});
-		expect(secondaryView.el.querySelector('[data-link-dir="out"]')).toBeNull();
+		expect(secondaryView.el.querySelector(".studio-reach")).toBeNull();
+		expect(secondaryView.el.querySelector("[data-link-dir]")).toBeNull();
 		secondaryView.dispose();
 		store.dispose();
 	});
