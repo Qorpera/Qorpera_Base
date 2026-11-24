@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtime-policy.ts";
+import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
@@ -115,9 +116,10 @@ export async function cloudRuntimeBundle(root = repository) {
 		"deploy/first-node/native-claude/linux-x64-artifact.json", "deploy/claude-box/qorpera-claude-box-stage.sh",
 		"deploy/claude-box/qorpera-claude-box-ns.apparmor",
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
-		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
+		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/package-service.mjs", "scripts/runtime-assets-plugin.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
 		"scripts/package-lxd-runner-guest.mjs",
 		"package-lock.json", "packages/runtime/package.json", "packages/cloud-client/package.json",
+		...(await runtimeEmbeddedAssetPaths(root)),
 	]) await include(path);
 	// The accepted native input is independent of the later compiled guest
 	// package, whose host embeds this bundle. Reading that output here creates
