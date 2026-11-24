@@ -45,9 +45,11 @@ function company() {
 		removeChannel: ReturnType<typeof vi.fn>;
 		removeAllChannels?: ReturnType<typeof vi.fn>;
 	};
-	supabase.realtime.setAuth = vi.fn(async () => {
-		realtime.order.push("setAuth");
-	});
+	supabase.realtime = {
+		setAuth: vi.fn(async () => {
+			realtime.order.push("setAuth");
+		}),
+	};
 	supabase.channel = vi.fn((topic: string, options: unknown) => {
 		realtime.order.push(`channel ${topic} ${JSON.stringify(options)}`);
 		return realtime.channel;

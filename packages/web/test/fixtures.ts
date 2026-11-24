@@ -235,7 +235,6 @@ export function fixture() {
 			},
 			channel: vi.fn(() => channel),
 			removeChannel: vi.fn(async () => {}),
-			realtime: { setAuth: vi.fn(async () => {}) },
 		},
 	} as unknown as Cloud;
 	const api = new CloudApi(cloud);
