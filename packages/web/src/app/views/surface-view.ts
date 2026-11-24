@@ -170,7 +170,7 @@ export class SurfaceView {
 			"data-act": "show-panels",
 			hidden: true,
 		},
-		icon("shrink"),
+		icon("show"),
 	);
 	readonly #notch = h("div", { class: "surface-notch" }, this.#notchPill, this.#notchBar, this.#showPanels);
 	readonly #panelToggle = h("button", {
@@ -1111,7 +1111,7 @@ export class SurfaceView {
 						title: t("Hide panels"),
 						"data-act": "hide-panels",
 					},
-					icon("expand"),
+					icon("hide"),
 				),
 			);
 		else this.#panelsHidden = false;
