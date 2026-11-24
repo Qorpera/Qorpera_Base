@@ -32,6 +32,7 @@ import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { GO_LIVE_PUBLISH_WAIT_MS, SurfaceView } from "../src/app/views/surface-view.ts";
 import type { CompanySite } from "../src/cloud/sites.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
@@ -2540,6 +2541,65 @@ describe("a website's rail row", () => {
 		expect(line(everyone)).toBe(`Live · ${host}`);
 		expect(line(nobody)).toBe("Ikke live endnu");
 		expect(line({})).toBe(host);
+		store.dispose();
+	});
+});
+
+describe("the rail's empty-space menu with interfaces (20260930892000)", () => {
+	it("offers the interfaces' New section in the list, never in the Agents and Members dock", async () => {
+		stubFigureMotion();
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const f = fixture();
+		const cofounder = { ...staff, id: id(10), displayName: "Co-Founder", templateId: "co-founder" };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			loading: false,
+			staff: [cofounder, { ...staff, id: id(11), displayName: "Strategi", role: "Strategy" }],
+			surfaceRail: {
+				layout: { schema: "qorpera.member-surface-rail/v1", order: [], sections: [] },
+				updatedAt: null,
+			},
+		});
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: profileA.profileId, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		attachSurfaces(company, store);
+		const container = document.createElement("aside");
+		const frame = document.createElement("div");
+		frame.className = "frame";
+		frame.append(container);
+		document.body.append(frame);
+		renderRail(container, company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section: "surface", id: "inbox" },
+			auth: new AuthController(f.cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			agentActions: {},
+		});
+		const labels = () =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu-item")].map((item) => item.textContent?.trim());
+		const rightClick = (target: Element) =>
+			target.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+
+		rightClick(container.querySelector(".rail-surfaces")!);
+		expect(labels()).toContain("New section");
+		openMenu()?.close();
+		await flush();
+
+		rightClick(container.querySelector(".rail-dock")!);
+		expect(labels()).not.toContain("New section");
+		openMenu()?.close();
+		await flush();
+		company.stop();
 		store.dispose();
 	});
 });

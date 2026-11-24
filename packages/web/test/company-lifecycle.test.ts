@@ -2006,6 +2006,61 @@ describe("the member's own interfaces layout (20260930892000)", () => {
 		expect(controller.store.get().surfaceRail?.updatedAt).toBe("2026-11-24T10:00:02.000Z");
 	});
 
+	it("moves nothing during Reset sidebar until the layout is read again", async () => {
+		const { api, controller } = company();
+		const ownSidebar = {
+			sections: [],
+			placements: {},
+			pinned: [],
+			hidden: [],
+			own: {
+				changes: 1,
+				moved: [],
+				sections: [],
+				pinned: 0,
+				hidden: 0,
+				contacts: 0,
+				pages: 0,
+				apps: 0,
+				surfaces: 1,
+			},
+			groupChats: true,
+		};
+		vi.spyOn(api, "readCompanySidebar").mockResolvedValue(ownSidebar);
+		vi.spyOn(api, "readMemberAppLayout").mockResolvedValue({
+			layout: { schema: "qorpera.member-app-layout/v1" as const, places: {}, groups: {} },
+			updatedAt: null,
+		});
+		let answerReset!: (value: typeof ownSidebar) => void;
+		vi.spyOn(api, "manageCompanySidebar").mockReturnValue(
+			new Promise((resolve) => {
+				answerReset = resolve;
+			}),
+		);
+		let answerRead!: (value: ReturnType<typeof read>) => void;
+		vi.spyOn(api, "readMemberSurfaceRail")
+			.mockResolvedValueOnce(read([id(1)], "2026-11-24T10:00:01.000Z"))
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					answerRead = resolve;
+				}),
+			);
+		await controller.refreshSurfaceRail();
+		controller.store.set({ sidebar: ownSidebar });
+		expect(controller.canArrangeSurfaces()).toBe(true);
+
+		const reset = controller.resetSidebar();
+		expect(controller.canArrangeSurfaces()).toBe(false);
+		answerReset({ ...ownSidebar, own: { ...ownSidebar.own, changes: 0, surfaces: 0 } });
+		await reset;
+		expect(controller.canArrangeSurfaces()).toBe(false);
+		expect(await controller.changeSurfaceRail(layout([id(2)]))).toBe(false);
+		answerRead(read([], null));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(controller.canArrangeSurfaces()).toBe(true);
+		expect(controller.store.get().surfaceRail?.layout.order).toEqual([]);
+	});
+
 	it("says another tab changed it and reads it again on QSR01", async () => {
 		const { api, controller } = company();
 		const readRail = vi

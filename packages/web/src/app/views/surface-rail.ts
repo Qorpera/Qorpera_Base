@@ -16,6 +16,7 @@ import {
 	SURFACE_RAIL_MAX_IDS,
 	SURFACE_SECTION_NAME_LIMIT,
 	type SurfaceRailLayout,
+	sectionNameOk,
 } from "../../cloud/surface-rail-layout.ts";
 import { type MenuEntry, menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { confirmDialog, h, icon } from "../../ui/dom.ts";
@@ -390,6 +391,10 @@ export class SurfaceRail {
 			signal: this.#signal,
 		});
 		if (!name || !this.#arranger?.canArrange()) return;
+		if (!sectionNameOk(name)) {
+			this.#arranger.refuse(t("That name can't be used for a section."));
+			return;
+		}
 		const existing = this.#sectionNamed(name);
 		if (existing && surfaceId) {
 			const next = moveSurfaceTo(this.#arranged, surfaceId, existing.id);
@@ -638,6 +643,10 @@ export class SurfaceRail {
 							signal: this.#signal,
 						});
 						if (!name || !this.#arranger?.canArrange()) return;
+						if (!sectionNameOk(name)) {
+							this.#arranger.refuse(t("That name can't be used for a section."));
+							return;
+						}
 						const clash = this.#sectionNamed(name, section.id);
 						if (clash)
 							this.#arranger.refuse(t("A section called {name} already exists.", { name: `"${clash.name}"` }));

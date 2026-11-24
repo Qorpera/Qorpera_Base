@@ -17,6 +17,7 @@ import {
 	SECTION_ZONE,
 	SURFACE_RAIL_SCHEMA,
 	type SurfaceRailLayout,
+	sectionNameOk,
 } from "../src/cloud/surface-rail-layout.ts";
 import { COMPANY, fakeClient, storeWith, summary } from "./surface-fixtures.ts";
 
@@ -203,5 +204,14 @@ describe("the rail's interfaces, arranged by the member", () => {
 		rail.drop(A, LOOSE_ZONE, [B, A, C]);
 		expect(change).not.toHaveBeenCalled();
 		store.dispose();
+	});
+});
+
+describe("section names", () => {
+	it("refuses what the server's [[:cntrl:]] refuses, C1 controls included", () => {
+		expect(sectionNameOk("Design")).toBe(true);
+		expect(sectionNameOk("Dag til dag")).toBe(true);
+		for (const bad of ["", " Design", "Design ", "a\u0001b", "a\u007fb", "a\u0085b", "a\u009fb", "x".repeat(41)])
+			expect(sectionNameOk(bad), JSON.stringify(bad)).toBe(false);
 	});
 });
