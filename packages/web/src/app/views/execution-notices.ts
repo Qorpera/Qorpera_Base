@@ -287,14 +287,17 @@ export class ExecutionNotices {
 				const items = await this.#client!.listNotifications(signal);
 				if (signal.aborted) return;
 				this.#items = told(items);
-				await this.#readStop(signal);
-				// The plan card has its own reads; a failed one hides only the card, and the next poll reads again.
-				if (!this.#offerDone)
-					this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
-						if (signal.aborted) throw error;
-						this.#offerChecked = "";
-						return undefined;
-					});
+				const [, offer] = await Promise.all([
+					this.#readStop(signal),
+					this.#offerDone
+						? Promise.resolve(this.#offer)
+						: this.#readOffer(items, signal).catch((error: unknown) => {
+								if (signal.aborted) throw error;
+								this.#offerChecked = "";
+								return undefined;
+							}),
+				]);
+				if (!this.#offerDone) this.#offer = offer;
 			} catch {
 				if (signal.aborted) return;
 				// Nothing stale is shown, and nothing can be dismissed, until a read succeeds. A card shown

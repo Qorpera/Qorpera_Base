@@ -5,7 +5,6 @@ import {
 	CloudMemberFolderHints,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
 import { type CodeDownloadCalls, codeDownloadCalls } from "./code-downloads.ts";
 import { memberRouteTarget } from "./deployment-config.ts";
@@ -56,10 +55,23 @@ export function forgetMemberFiles(): void {
 export class WebCompanyFiles {
 	readonly company: { readonly role: HostedProfileRole; readonly canWrite: boolean };
 	readonly signal: AbortSignal;
+	readonly #supabase: Cloud["supabase"];
 	readonly #options: MemberFolderOptions;
 	readonly #current: () => void;
 	readonly #code: CodeDownloadCalls;
 	readonly #dataGateway: string | undefined;
+	readonly #hintListeners = new Set<{ onHint: (seq: number) => void; onState?: (connected: boolean) => void }>();
+	#hintConnected = false;
+	#hintChannel:
+		| {
+				joined: Promise<void>;
+				stop: AbortController;
+				hints?: CloudMemberFolderHints;
+				closing?: Promise<void>;
+				closed: boolean;
+				onAbort: () => void;
+		  }
+		| undefined;
 	constructor(
 		cloud: Cloud,
 		profile: HostedProfile,
@@ -71,6 +83,7 @@ export class WebCompanyFiles {
 	) {
 		this.company = Object.freeze({ role, canWrite });
 		this.signal = signal;
+		this.#supabase = cloud.supabase;
 		this.#current = current;
 		this.#code = codeDownloadCalls(cloud, profile.profileId);
 		this.#dataGateway = cloud.config.memberCompanyGatewayUrl;
@@ -185,47 +198,76 @@ export class WebCompanyFiles {
 	 * only on the 10 s retry (3 Nov 2026). `onState`: whether its channel is subscribed, each time that changes. */
 	folderHints(onHint: (seq: number) => void, onState?: (connected: boolean) => void): { close(): Promise<void> } {
 		this.current();
-		const client = this.#realtime();
-		let hints: CloudMemberFolderHints | undefined;
+		const listener = { onHint, onState };
+		this.#hintListeners.add(listener);
+		if (!this.#hintChannel) {
+			this.#openHintChannel();
+		} else if (this.#hintConnected) {
+			onState?.(true);
+		}
 		let closed = false;
-		let closing: Promise<void> | undefined;
-		const hintsStop = new AbortController();
-		const joined = withCloudDeadline(() => client.realtime.setAuth(), 5000, this.signal)
-			// Without a token the join is refused as before, and the hints' own retry joins again.
+		return {
+			close: async () => {
+				if (closed) return;
+				closed = true;
+				this.#hintListeners.delete(listener);
+				if (this.#hintListeners.size === 0) await this.#closeHintChannel();
+			},
+		};
+	}
+
+	#openHintChannel(): void {
+		const stop = new AbortController();
+		const state: NonNullable<typeof this.#hintChannel> = {
+			joined: Promise.resolve(),
+			stop,
+			closed: false,
+			onAbort: () => {
+				void this.#closeHintChannel();
+			},
+		};
+		this.#hintChannel = state;
+		// WHY: Multiplex folder hints onto the authenticated cloud.supabase WebSocket instead of opening a duplicate Realtime client per subscriber.
+		state.joined = withCloudDeadline(
+			async (authSignal) => {
+				const token = await this.#options.accessToken(authSignal);
+				await this.#supabase.realtime?.setAuth(token);
+			},
+			5000,
+			this.signal,
+		)
 			.catch(() => undefined)
 			.then(() => {
-				if (closed || this.signal.aborted) return;
-				hints = new CloudMemberFolderHints({
+				if (state.closed || this.signal.aborted || this.#hintChannel !== state) return;
+				state.hints = new CloudMemberFolderHints({
 					environmentId: this.#options.environmentId,
-					client,
-					signal: hintsStop.signal,
-					onHint,
-					...(onState ? { onState } : {}),
+					client: this.#supabase,
+					signal: stop.signal,
+					onHint: (seq) => {
+						for (const item of [...this.#hintListeners]) item.onHint(seq);
+					},
+					onState: (connected) => {
+						this.#hintConnected = connected;
+						for (const item of [...this.#hintListeners]) item.onState?.(connected);
+					},
 				});
 			});
-		const teardown = (): Promise<void> => {
-			closed = true;
-			this.signal.removeEventListener("abort", onAbort);
-			closing ??= (async () => {
-				await joined;
-				await hints?.close().catch(() => undefined);
-				hintsStop.abort();
-				await client.removeAllChannels?.().catch(() => undefined);
-				await Promise.resolve(client.realtime.disconnect?.()).catch(() => undefined);
-			})();
-			return closing;
-		};
-		const onAbort = () => {
-			void teardown();
-		};
-		if (this.signal.aborted) void teardown();
-		else this.signal.addEventListener("abort", onAbort, { once: true });
-		return { close: teardown };
+		if (this.signal.aborted) void this.#closeHintChannel();
+		else this.signal.addEventListener("abort", state.onAbort, { once: true });
 	}
-	#realtime() {
-		return createClient(this.#options.supabaseUrl, this.#options.publishableKey, {
-			auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-			accessToken: () => withCloudDeadline((signal) => this.#options.accessToken(signal), 2000, this.signal),
-		});
+
+	#closeHintChannel(): Promise<void> {
+		const state = this.#hintChannel;
+		if (!state) return Promise.resolve();
+		this.#hintChannel = undefined;
+		this.#hintConnected = false;
+		state.closed = true;
+		this.signal.removeEventListener("abort", state.onAbort);
+		state.closing ??= (async () => {
+			await state.joined;
+			await state.hints?.close().catch(() => undefined);
+			state.stop.abort();
+		})();
+		return state.closing;
 	}
 }

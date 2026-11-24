@@ -10,34 +10,21 @@ import { deferred, fixture, profileA, settle, userA } from "./fixtures.ts";
 
 const realtime = vi.hoisted(() => {
 	const order: string[] = [];
-	/** The channel's status callback, as the last subscribe gave it. */
 	const joined = { status: (_status: string): void => {} };
+	const broadcast = { callback: (_message: { payload?: unknown }): void => {} };
 	const channel = {
-		on: () => channel,
+		on: (_kind: string, _filter: unknown, callback: (message: { payload?: unknown }) => void) => {
+			broadcast.callback = callback;
+			return channel;
+		},
 		subscribe: (status?: (status: string) => void) => {
 			order.push("subscribe");
 			if (status) joined.status = status;
 			return channel;
 		},
 	};
-	const client = {
-		realtime: { setAuth: (): Promise<void> => Promise.resolve() },
-		channel: (topic: string, options: unknown) => {
-			order.push(`channel ${topic} ${JSON.stringify(options)}`);
-			return channel;
-		},
-		removeChannel: async () => {
-			order.push("remove");
-			return "ok";
-		},
-	};
-	return { order, client, joined };
+	return { order, channel, joined, broadcast };
 });
-
-vi.mock("@supabase/supabase-js", async (original) => ({
-	...(await original<typeof import("@supabase/supabase-js")>()),
-	createClient: () => realtime.client,
-}));
 
 const stops: AbortController[] = [];
 afterEach(() => {
@@ -51,20 +38,42 @@ afterEach(() => {
 function company() {
 	const stop = new AbortController();
 	stops.push(stop);
-	return new WebCompanyFiles(fixture().cloud, profileA, userA.id, "owner", stop.signal, () => {});
+	const f = fixture();
+	const supabase = f.cloud.supabase as unknown as {
+		realtime: { setAuth: ReturnType<typeof vi.fn>; disconnect?: ReturnType<typeof vi.fn> };
+		channel: ReturnType<typeof vi.fn>;
+		removeChannel: ReturnType<typeof vi.fn>;
+		removeAllChannels?: ReturnType<typeof vi.fn>;
+	};
+	supabase.realtime.setAuth = vi.fn(async () => {
+		realtime.order.push("setAuth");
+	});
+	supabase.channel = vi.fn((topic: string, options: unknown) => {
+		realtime.order.push(`channel ${topic} ${JSON.stringify(options)}`);
+		return realtime.channel;
+	});
+	supabase.removeChannel = vi.fn(async () => {
+		realtime.order.push("remove");
+		return "ok";
+	});
+	return {
+		files: new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", stop.signal, () => {}),
+		supabase,
+		stop,
+	};
 }
 
 describe("the Company File's hint channel", () => {
-	it("joins its private channel only once Realtime holds the member's token", async () => {
+	it("joins its private channel on cloud.supabase only once Realtime holds the member's token", async () => {
 		const auth = deferred<void>();
-		const setAuth = vi.spyOn(realtime.client.realtime, "setAuth").mockImplementation(() => {
+		const { files, supabase } = company();
+		supabase.realtime.setAuth.mockImplementation(() => {
 			realtime.order.push("setAuth");
 			return auth.promise;
 		});
-		const hints = company().folderHints(() => {});
+		const hints = files.folderHints(() => {});
 		await settle();
-		// No argument: Realtime asks for the member's token through the client's accessToken.
-		expect(setAuth).toHaveBeenCalledWith();
+		expect(supabase.realtime.setAuth).toHaveBeenCalledWith("fixture-token");
 		expect(realtime.order).toEqual(["setAuth"]);
 		auth.resolve();
 		await settle();
@@ -78,15 +87,17 @@ describe("the Company File's hint channel", () => {
 	});
 
 	it("still joins when the token can't be set, and never joins once closed", async () => {
-		vi.spyOn(realtime.client.realtime, "setAuth").mockRejectedValueOnce(new Error("Sign in again"));
-		const first = company().folderHints(() => {});
+		const firstCompany = company();
+		firstCompany.supabase.realtime.setAuth.mockRejectedValueOnce(new Error("Sign in again"));
+		const first = firstCompany.files.folderHints(() => {});
 		await settle();
 		expect(realtime.order.filter((step) => step === "subscribe")).toHaveLength(1);
 		await first.close();
 		realtime.order.splice(0);
 		const auth = deferred<void>();
-		vi.spyOn(realtime.client.realtime, "setAuth").mockReturnValueOnce(auth.promise);
-		const second = company().folderHints(() => {});
+		const secondCompany = company();
+		secondCompany.supabase.realtime.setAuth.mockReturnValueOnce(auth.promise);
+		const second = secondCompany.files.folderHints(() => {});
 		const closing = second.close();
 		auth.resolve();
 		await closing;
@@ -97,8 +108,7 @@ describe("the Company File's hint channel", () => {
 	it("tells a hidden tab's apps poll whether the real channel is subscribed: it rests only while it is", async () => {
 		vi.useFakeTimers();
 		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
-		const files = company();
-		// Each read of the apps asks for the folder first; the read that fails here keeps what was read before.
+		const { files } = company();
 		const reads = vi.fn((): never => {
 			throw new Error("No folder in this test");
 		});
@@ -109,48 +119,53 @@ describe("the Company File's hint channel", () => {
 		apps.open();
 		await settle();
 		expect(reads).toHaveBeenCalledTimes(1);
-		// Not subscribed yet: the minute's poll reads.
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(reads).toHaveBeenCalledTimes(2);
 		realtime.joined.status("SUBSCRIBED");
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(reads).toHaveBeenCalledTimes(2);
-		// The channel fails: hints may be missed, so the poll reads again.
 		realtime.joined.status("CHANNEL_ERROR");
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(reads).toHaveBeenCalledTimes(3);
 		apps.dispose();
 	});
 
-	it("disconnects the dedicated Realtime client on close and when the company signal aborts", async () => {
+	it("multiplexes multiple folderHints callers onto one shared channel and removes only that channel on teardown", async () => {
+		const { files, supabase, stop } = company();
 		const removeAllChannels = vi.fn(async () => []);
 		const disconnect = vi.fn();
-		const target = realtime.client as typeof realtime.client & {
-			removeAllChannels?: () => Promise<unknown[]>;
-			realtime: { setAuth: () => Promise<void>; disconnect?: () => void };
-		};
-		target.removeAllChannels = removeAllChannels;
-		target.realtime.disconnect = disconnect;
-		try {
-			const files = company();
-			const hints = files.folderHints(() => {});
-			await settle();
-			await hints.close();
-			expect(removeAllChannels).toHaveBeenCalledTimes(1);
-			expect(disconnect).toHaveBeenCalledTimes(1);
+		supabase.removeAllChannels = removeAllChannels;
+		supabase.realtime.disconnect = disconnect;
 
-			const stop = new AbortController();
-			stops.push(stop);
-			const secondFiles = new WebCompanyFiles(fixture().cloud, profileA, userA.id, "owner", stop.signal, () => {});
-			secondFiles.folderHints(() => {});
-			await settle();
-			stop.abort();
-			await settle();
-			expect(removeAllChannels).toHaveBeenCalledTimes(2);
-			expect(disconnect).toHaveBeenCalledTimes(2);
-		} finally {
-			delete target.removeAllChannels;
-			delete target.realtime.disconnect;
-		}
+		const seenA: number[] = [];
+		const seenB: number[] = [];
+		const statesB: boolean[] = [];
+		const a = files.folderHints((seq) => seenA.push(seq));
+		const b = files.folderHints(
+			(seq) => seenB.push(seq),
+			(connected) => statesB.push(connected),
+		);
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(1);
+		realtime.joined.status("SUBSCRIBED");
+		realtime.broadcast.callback({ payload: { seq: 7 } });
+		expect(seenA).toEqual([7]);
+		expect(seenB).toEqual([7]);
+		expect(statesB).toEqual([true]);
+
+		await a.close();
+		expect(supabase.removeChannel).toHaveBeenCalledTimes(0);
+		await b.close();
+		expect(supabase.removeChannel).toHaveBeenCalledTimes(1);
+		expect(removeAllChannels).not.toHaveBeenCalled();
+		expect(disconnect).not.toHaveBeenCalled();
+
+		files.folderHints(() => {});
+		await settle();
+		stop.abort();
+		await settle();
+		expect(supabase.removeChannel).toHaveBeenCalledTimes(2);
+		expect(removeAllChannels).not.toHaveBeenCalled();
+		expect(disconnect).not.toHaveBeenCalled();
 	});
 });

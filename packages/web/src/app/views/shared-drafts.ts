@@ -508,8 +508,9 @@ export class SharedDrafts {
 	#autosize(input: HTMLTextAreaElement): void {
 		input.style.height = "auto";
 		const tallest = Number.parseFloat(getComputedStyle(input).maxHeight) || Number.POSITIVE_INFINITY;
-		input.style.height = `${Math.min(input.scrollHeight, tallest)}px`;
-		input.style.overflowY = input.scrollHeight > tallest ? "auto" : "hidden";
+		const contentHeight = input.scrollHeight;
+		input.style.height = `${Math.min(contentHeight, tallest)}px`;
+		input.style.overflowY = contentHeight > tallest ? "auto" : "hidden";
 		this.#resized();
 	}
 }

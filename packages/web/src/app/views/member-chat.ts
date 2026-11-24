@@ -497,17 +497,19 @@ export class MemberChatView {
 		this.#shell.classList.remove("is-expanded");
 		this.#composer.style.height = "auto";
 		const field = getComputedStyle(this.#composer);
+		const shell = getComputedStyle(this.#shell);
 		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
 		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
-		this.#shell.classList.toggle("is-expanded", this.#composer.scrollHeight > oneLine);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, tallest)}px`;
-		this.#composer.style.overflowY = this.#composer.scrollHeight > tallest ? "auto" : "hidden";
-		const shell = getComputedStyle(this.#shell);
 		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
 			(sum, value) => sum + (Number.parseFloat(value) || 0),
 			0,
 		);
-		this.#shell.style.height = `${this.#composer.getBoundingClientRect().height + frame}px`;
+		const contentHeight = this.#composer.scrollHeight;
+		const targetHeight = Math.min(contentHeight, tallest);
+		this.#shell.classList.toggle("is-expanded", contentHeight > oneLine);
+		this.#composer.style.height = `${targetHeight}px`;
+		this.#composer.style.overflowY = contentHeight > tallest ? "auto" : "hidden";
+		this.#shell.style.height = `${Math.max(oneLine, targetHeight) + frame}px`;
 	}
 
 	dispose(): void {
