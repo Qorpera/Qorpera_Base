@@ -137,7 +137,13 @@ async function fixture(
 	const f = nativeCompanyContextFixture();
 	// A light ask's run (the fake Codex's compactor modes: only side threads answer there) has no conversation either.
 	const light = mode.startsWith("compact");
-	if (mode === "company-silent" || mode === "company-worker" || mode === "company-claude-worker" || light) {
+	if (
+		mode === "company-silent" ||
+		mode === "company-worker" ||
+		mode === "company-claude-worker" ||
+		mode === "company-surface-narrate" ||
+		light
+	) {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
 		f.authority = { ...f.authority, identity: { ...f.authority.identity, sessionId: null } };
 	}
@@ -4552,8 +4558,6 @@ describe("Gemini 4 Neon conversation runs", () => {
 		);
 		f.stagedBytes();
 		f.context.agentKind = "cofounder";
-		f.context.identity = { ...f.context.identity, sessionId: null };
-		f.authority.identity = { ...f.authority.identity, sessionId: null };
 		const surfaceId = randomUUID();
 		const sessionId = randomUUID();
 		const leaseToken = randomUUID();
