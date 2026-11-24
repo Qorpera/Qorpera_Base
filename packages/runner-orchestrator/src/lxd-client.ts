@@ -1,5 +1,5 @@
 import { X509Certificate } from "node:crypto";
-import { request as httpRequest } from "node:http";
+import { Agent as HttpAgent, type IncomingHttpHeaders, request as httpRequest } from "node:http";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { CODING_GUEST_HELPER_MAX_BYTES } from "@qorpera/contracts";
@@ -427,6 +427,11 @@ export interface LxdTrackedClient extends LxdInspectableClient {
 		signal: AbortSignal,
 	): Promise<LxdOperationReference>;
 	inspectInstanceOperation(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	waitForInstanceOperation?(
+		reference: LxdOperationReference,
+		waitSeconds: number,
+		signal: AbortSignal,
+	): Promise<LxdOperationState>;
 }
 
 export interface LxdOfficeServerIdentity {
@@ -494,7 +499,7 @@ function trackedOperation(value: unknown, reference: LxdOperationReference): Lxd
 }
 
 interface HttpResult {
-	headers?: import("node:http").IncomingHttpHeaders;
+	headers?: IncomingHttpHeaders;
 	status: number;
 	body: unknown;
 }
@@ -848,6 +853,7 @@ export class LxdUnixClient
 {
 	readonly #socketPath: string;
 	readonly #operationTimeoutSeconds: number;
+	readonly #agent: HttpAgent;
 
 	constructor(socketPath = "/var/snap/lxd/common/lxd/unix.socket", operationTimeoutSeconds = 120) {
 		if (!socketPath.startsWith("/") || /[\0\r\n]/.test(socketPath)) throw new Error("LXD socket path is invalid");
@@ -860,6 +866,17 @@ export class LxdUnixClient
 		}
 		this.#socketPath = socketPath;
 		this.#operationTimeoutSeconds = operationTimeoutSeconds;
+		this.#agent = new HttpAgent({
+			keepAlive: true,
+			keepAliveMsecs: 30_000,
+			maxSockets: 32,
+			maxFreeSockets: 8,
+			scheduling: "lifo",
+		});
+	}
+
+	close(): void {
+		this.#agent.destroy();
 	}
 
 	async #officeMetadata(path: string, signal: AbortSignal, maximumBytes = 65536): Promise<Record<string, unknown>> {
@@ -1604,6 +1621,45 @@ export class LxdUnixClient
 		}
 	}
 
+	async waitForInstanceOperation(
+		reference: LxdOperationReference,
+		waitSeconds: number,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		let unknown = false;
+		try {
+			if (
+				!INSTANCE_NAME.test(reference.project) ||
+				!INSTANCE_NAME.test(reference.instanceName) ||
+				!OPERATION_UUID.test(reference.operationId)
+			)
+				throw new Error("invalid operation reference");
+			const clamped = Math.max(1, Math.min(30, Math.trunc(waitSeconds)));
+			const result = await withAbortScopes([signal, AbortSignal.timeout((clamped + 5) * 1000)], async (checked) => {
+				checked.throwIfAborted();
+				const response = await this.#request(
+					"GET",
+					projectPath(`/1.0/operations/${reference.operationId}/wait?timeout=${clamped}`, reference.project),
+					undefined,
+					checked,
+				);
+				checked.throwIfAborted();
+				return response;
+			});
+			const envelope = record(result.body, "LXD response");
+			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
+			if (result.status >= 200 && result.status < 300 && envelope.type === "error") {
+				return await this.inspectInstanceOperation(reference, signal);
+			}
+			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
+				throw new Error("operation unavailable");
+			return trackedOperation(envelope.metadata, reference);
+		} catch (error) {
+			if (error instanceof Error && error.message === "LXD_OPERATION_UNKNOWN") throw error;
+			throw new Error(unknown ? "LXD_OPERATION_UNKNOWN" : "LXD_OPERATION_UNCONFIRMED");
+		}
+	}
+
 	async setInstancePower(
 		project: string,
 		name: string,
@@ -1775,24 +1831,26 @@ export class LxdUnixClient
 					output["2"] !== `${prefix}.stderr`
 				)
 					throw new Error("read output identity differs");
-				const stdout = await this.#requestPayload(
-					"GET",
-					projectPath(`${prefix}.stdout`, project),
-					undefined,
-					undefined,
-					checked,
-					Math.min(maximumBytes, path === "/proc/uptime" ? 128 : 64),
-					"text",
-				);
-				const stderr = await this.#requestPayload(
-					"GET",
-					projectPath(`${prefix}.stderr`, project),
-					undefined,
-					undefined,
-					checked,
-					1,
-					"text",
-				);
+				const [stdout, stderr] = await Promise.all([
+					this.#requestPayload(
+						"GET",
+						projectPath(`${prefix}.stdout`, project),
+						undefined,
+						undefined,
+						checked,
+						Math.min(maximumBytes, path === "/proc/uptime" ? 128 : 64),
+						"text",
+					),
+					this.#requestPayload(
+						"GET",
+						projectPath(`${prefix}.stderr`, project),
+						undefined,
+						undefined,
+						checked,
+						1,
+						"text",
+					),
+				]);
 				if (
 					stdout.status !== 200 ||
 					stderr.status !== 200 ||
@@ -1805,15 +1863,12 @@ export class LxdUnixClient
 				if (path === "/proc/uptime") parseLxdProcUptime(Buffer.from(stdout.body));
 				// Delete only the two public output logs belonging to this completed
 				// observation. No guest file or lifecycle command is changed/replayed.
-				for (const suffix of ["stdout", "stderr"]) {
-					const removed = await this.#request(
-						"DELETE",
-						projectPath(`${prefix}.${suffix}`, project),
-						undefined,
-						checked,
-					);
-					if (removed.status !== 200) throw new Error("read log cleanup unconfirmed");
-				}
+				const removed = await Promise.all(
+					["stdout", "stderr"].map((suffix) =>
+						this.#request("DELETE", projectPath(`${prefix}.${suffix}`, project), undefined, checked),
+					),
+				);
+				if (removed.some((entry) => entry.status !== 200)) throw new Error("read log cleanup unconfirmed");
 				checked.throwIfAborted();
 				return Buffer.from(stdout.body);
 			});
@@ -2545,23 +2600,27 @@ export class LxdUnixClient
 		signal?: AbortSignal,
 		maximumResponseBytes = MAX_RESPONSE_BYTES,
 		format: "json" | "text" = "json",
+		allowReusedRetry = true,
 	): Promise<HttpResult> {
 		if (!signal) {
 			const defaultTimeoutMs = defaultLxdRequestTimeoutMs(path, this.#operationTimeoutSeconds);
 			return withTimeoutScope(undefined, defaultTimeoutMs, (checked) =>
-				this.#requestPayload(method, path, payload, headers, checked, maximumResponseBytes, format),
+				this.#requestPayload(method, path, payload, headers, checked, maximumResponseBytes, format, allowReusedRetry),
 			);
 		}
 		return new Promise<HttpResult>((resolve, reject) => {
+			let responded = false;
 			const request = httpRequest(
 				{
 					method,
 					path,
 					socketPath: this.#socketPath,
+					agent: this.#agent,
 					headers: payload ? { ...headers, "content-length": String(payload.byteLength) } : headers,
 					signal,
 				},
 				(response) => {
+					responded = true;
 					const chunks: Buffer[] = [];
 					let length = 0;
 					response.once("error", reject);
@@ -2590,7 +2649,17 @@ export class LxdUnixClient
 					});
 				},
 			);
-			request.once("error", reject);
+			request.once("error", (error) => {
+				// WHY: Retry once on a fresh socket if LXD closed an idle keep-alive Unix connection before an idempotent GET responded.
+				if (allowReusedRetry && method === "GET" && !responded && request.reusedSocket && !signal.aborted) {
+					this.#requestPayload(method, path, payload, headers, signal, maximumResponseBytes, format, false).then(
+						resolve,
+						reject,
+					);
+					return;
+				}
+				reject(error);
+			});
 			if (payload) request.end(payload);
 			else request.end();
 		});

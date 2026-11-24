@@ -446,4 +446,28 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 		).rejects.toThrow("UNCONFIRMED");
 		expect(calls).toBe(0);
 	});
+	it("waits on /wait and falls back to inspectInstanceOperation on LXD 200 error envelopes", async () => {
+		const seen: string[] = [];
+		const answers: Array<[unknown, number]> = [
+			[envelope(operation({ status_code: 200, status: "Success" })), 200],
+			[{ type: "error", error_code: 500, error: "context deadline exceeded", metadata: null }, 200],
+			[envelope(operation({ status_code: 103, status: "Running" })), 200],
+			[{ type: "error", error_code: 404, error: "not found", metadata: null }, 404],
+		];
+		const client = await fixture((request, response) => {
+			seen.push(`${request.method} ${request.url}`);
+			const [body, status] = answers.shift() ?? [{}, 500];
+			send(response, body, status);
+		});
+		await expect(client.waitForInstanceOperation(reference, 15, signal())).resolves.toBe("succeeded");
+		await expect(client.waitForInstanceOperation(reference, 15, signal())).resolves.toBe("pending");
+		await expect(client.waitForInstanceOperation(reference, 15, signal())).rejects.toThrow(/^LXD_OPERATION_UNKNOWN$/);
+		expect(seen).toEqual([
+			`GET /1.0/operations/${operationId}/wait?timeout=15&project=offices`,
+			`GET /1.0/operations/${operationId}/wait?timeout=15&project=offices`,
+			`GET /1.0/operations/${operationId}?project=offices`,
+			`GET /1.0/operations/${operationId}/wait?timeout=15&project=offices`,
+		]);
+		client.close();
+	});
 });

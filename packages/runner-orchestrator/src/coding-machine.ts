@@ -448,9 +448,32 @@ export interface CodingMachineReconcileResult {
 	machineId: string;
 	instanceName: string;
 	instanceSha256: string;
+	pendingOperationId?: string;
 	/** recovery-required after an effect LXD refused at its submission: LXD's HTTP status. LXD's whole answer is written
 	 * down next to the journal (recordDispatchError). */
 	lxdStatus?: number;
+}
+
+export async function waitPendingLxdOperation(
+	client: Pick<LxdTrackedClient, "waitForInstanceOperation">,
+	reference: { readonly project: string; readonly instanceName: string; readonly operationId?: string },
+	signal: AbortSignal,
+	waitSeconds = 15,
+): Promise<boolean> {
+	if (!reference.operationId || !client.waitForInstanceOperation) return false;
+	const started = performance.now();
+	try {
+		const state = await client.waitForInstanceOperation(
+			{ project: reference.project, instanceName: reference.instanceName, operationId: reference.operationId },
+			waitSeconds,
+			signal,
+		);
+		if (state !== "pending") return true;
+		return performance.now() - started >= 250;
+	} catch (error) {
+		if (signal.aborted) throw error;
+		return error instanceof Error && error.message === "LXD_OPERATION_UNKNOWN";
+	}
 }
 
 /** An error's fixed code (`CODE`, an abort by its name), else UNCLASSIFIED: never its free text. */
@@ -998,7 +1021,7 @@ export async function reconcileCodingMachine(
 			state = seen;
 		}
 		signal.throwIfAborted();
-		if (state === "pending") return result("pending");
+		if (state === "pending") return { ...result("pending"), pendingOperationId: tail.operationId as string };
 		if (state !== "succeeded" && state !== "failed") return result("recovery-required");
 		await append({ action: tail.action, kind: "settled", operationId: tail.operationId, state });
 		current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
@@ -1250,7 +1273,7 @@ export async function reconcileCodingMachine(
 	if (tail?.kind !== "dispatch" || tail.action !== action) throw new Error("CODING_MACHINE_JOURNAL_CONFLICT");
 	await append({ action, kind: "accepted", operationId, state: null });
 	options.signal.throwIfAborted();
-	return result("pending");
+	return { ...result("pending"), pendingOperationId: operationId };
 }
 
 export async function settleAcceptedCodingMachine(options: {
