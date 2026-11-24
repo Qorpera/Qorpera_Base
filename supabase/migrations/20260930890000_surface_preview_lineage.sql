@@ -267,7 +267,7 @@ begin
 		join public.qorpera_surface_changes b
 			on b.id = base_id
 			and b.surface_id = p_surface_id
-			and b.status <> 'merged'
+			and b.status not in ('merged', 'merging')
 		where ch.surface_id = p_surface_id
 			and ch.id = any(p_selected_ids)
 			and not (base_id = any(p_selected_ids))
@@ -327,7 +327,7 @@ begin
 		join public.qorpera_surface_changes b
 			on b.id = base_id
 			and b.surface_id = p_surface.id
-			and b.status <> 'merged'
+			and b.status not in ('merged', 'merging')
 		where ch.surface_id = p_surface.id
 			and ch.id = any(p_target_ids)
 			and not (base_id = any(p_target_ids))
@@ -573,6 +573,30 @@ $new$	v_paths text[];
 	v_omitted_bases jsonb := '[]'::jsonb;
 	v_chain_mode boolean := false;
 	v_now timestamptz := clock_timestamp();$new$,
+$old$begin
+	perform pg_catalog.pg_advisory_xact_lock(
+		pg_catalog.hashtextextended('qorpera.surface-reconcile:' || p_surface_id::text, 0)
+	);
+
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
+	if v_surface.id is null then
+		raise exception 'Surface not found' using errcode = 'P0002';
+	end if;$old$,
+$new$begin
+	-- WHY: Lock the surface row before the reconciliation advisory lock to match approve/merge callers and avoid 40P01 deadlocks.
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id for key share;
+	if v_surface.id is null then
+		raise exception 'Surface not found' using errcode = 'P0002';
+	end if;
+
+	perform pg_catalog.pg_advisory_xact_lock(
+		pg_catalog.hashtextextended('qorpera.surface-reconcile:' || p_surface_id::text, 0)
+	);
+
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
+	if v_surface.id is null then
+		raise exception 'Surface not found' using errcode = 'P0002';
+	end if;$new$,
 $old$					'affectedPaths', to_jsonb(coalesce(ch.affected_paths, '{}'::text[])),
 					'conflictPaths', to_jsonb(coalesce(ch.conflict_paths, '{}'::text[]))
 				)$old$,
@@ -618,24 +642,236 @@ $old$	v_folder_prefix text;
 $new$	v_folder_prefix text;
 	v_missing_paths text[];
 	v_preview_base_ids uuid[] := '{}'::uuid[];
+	v_retry_rec public.qorpera_surface_reconciliations%rowtype;
+	v_recent_reconcile_attempts integer := 0;
+	v_retry_enqueued boolean := false;
 	v_now timestamptz := clock_timestamp();$new$,
 $old$			where p.surface_id = v_session.surface_id
 				and p.status in ('reconciling', 'conflicted')$old$,
 $new$			where p.surface_id = v_session.surface_id
 				and p.status in ('reconciling', 'conflicted', 'ready')$new$,
-$old$				update public.qorpera_surface_changes
+$old$		if v_rec.auto_approve_after
+			and v_rec.base_fingerprint = public.qorpera_surface_base_fingerprint(v_surface)
+			and not exists (
+				select 1 from public.qorpera_surface_jobs j
+				where j.surface_id = v_session.surface_id
+					and j.kind in ('land_change', 'undo_change')
+					and j.status in ('queued', 'running')
+					and exists (
+						select 1
+						from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as x
+						where x::uuid = any(v_rec.selected_change_ids)
+					)
+			) then
+			if (
+				select count(*) from public.qorpera_surface_changes ch
+				where ch.surface_id = v_session.surface_id
+					and ch.id = any(v_rec.selected_change_ids)
+					and ch.status in ('staged', 'conflicted')
+			) = cardinality(v_rec.selected_change_ids) then
+				select ch.session_id into v_target_session_id
+				from public.qorpera_surface_changes ch
+				where ch.id = v_rec.selected_change_ids[1];
+
+				update public.qorpera_surface_changes
 				set status = 'merging', conflict_paths = null
 				where surface_id = v_session.surface_id
 					and id = any(v_rec.selected_change_ids)
-					and status in ('staged', 'conflicted');$old$,
-$new$				update public.qorpera_surface_changes
-				set
-					status = 'merging',
-					conflict_paths = null,
-					approved_by_user_id = coalesce(v_rec.created_by_user_id, approved_by_user_id)
-				where surface_id = v_session.surface_id
-					and id = any(v_rec.selected_change_ids)
-					and status in ('staged', 'conflicted');$new$,
+					and status in ('staged', 'conflicted');
+
+				insert into public.qorpera_surface_jobs(
+					profile_id, surface_id, session_id, kind, payload, requested_by_user_id
+				)
+				values (
+					v_session.profile_id,
+					v_session.surface_id,
+					v_target_session_id,
+					'land_change',
+					jsonb_build_object(
+						'changeIds', to_jsonb(v_rec.selected_change_ids),
+						'reconciliationId', v_rec.id,
+						'autoPublish', v_surface.auto_publish
+					),
+					v_rec.created_by_user_id
+				);
+			end if;
+		end if;$old$,
+$new$		if v_rec.auto_approve_after
+			and not exists (
+				select 1 from public.qorpera_surface_jobs j
+				where j.surface_id = v_session.surface_id
+					and j.kind in ('land_change', 'undo_change')
+					and j.status in ('queued', 'running')
+					and (
+						(j.payload ? 'changeId' and (j.payload ->> 'changeId')::uuid = any(v_rec.selected_change_ids))
+						or exists (
+							select 1
+							from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as x
+							where x::uuid = any(v_rec.selected_change_ids)
+						)
+					)
+			) then
+			if (
+				select count(*) from public.qorpera_surface_changes ch
+				where ch.surface_id = v_session.surface_id
+					and ch.id = any(v_rec.selected_change_ids)
+					and ch.status in ('staged', 'conflicted')
+			) = cardinality(v_rec.selected_change_ids) then
+				update public.qorpera_surface_reconciliations
+				set auto_approve_after = false, updated_at = v_now
+				where id = v_rec.id;
+
+				select ch.session_id into v_target_session_id
+				from public.qorpera_surface_changes ch
+				where ch.id = v_rec.selected_change_ids[1];
+
+				if v_rec.base_fingerprint = public.qorpera_surface_base_fingerprint(v_surface) then
+					update public.qorpera_surface_changes
+					set
+						status = 'merging',
+						conflict_paths = null,
+						approved_by_user_id = coalesce(v_rec.created_by_user_id, approved_by_user_id)
+					where surface_id = v_session.surface_id
+						and id = any(v_rec.selected_change_ids)
+						and status in ('staged', 'conflicted');
+
+					insert into public.qorpera_surface_jobs(
+						profile_id, surface_id, session_id, kind, payload, requested_by_user_id
+					)
+					values (
+						v_session.profile_id,
+						v_session.surface_id,
+						v_target_session_id,
+						'land_change',
+						jsonb_build_object(
+							'changeIds', to_jsonb(v_rec.selected_change_ids),
+							'reconciliationId', v_rec.id,
+							'autoPublish', v_surface.auto_publish
+						),
+						v_rec.created_by_user_id
+					);
+
+					update public.qorpera_member_surface_state
+					set toggled_change_ids = array(
+						select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_rec.selected_change_ids))
+					)
+					where surface_id = v_session.surface_id;
+				elsif jsonb_typeof(v_session.origin_ref -> 'omittedBaseChanges') = 'array'
+					and jsonb_array_length(v_session.origin_ref -> 'omittedBaseChanges') > 0
+					and not public.qorpera_surface_needs_standalone_reconciliation(v_surface, v_rec.selected_change_ids) then
+					update public.qorpera_surface_changes
+					set
+						status = 'merging',
+						conflict_paths = null,
+						approved_by_user_id = coalesce(v_rec.created_by_user_id, approved_by_user_id)
+					where surface_id = v_session.surface_id
+						and id = any(v_rec.selected_change_ids)
+						and status in ('staged', 'conflicted');
+
+					insert into public.qorpera_surface_jobs(
+						profile_id, surface_id, session_id, kind, payload, requested_by_user_id
+					)
+					values (
+						v_session.profile_id,
+						v_session.surface_id,
+						v_target_session_id,
+						'land_change',
+						jsonb_build_object(
+							'changeIds', to_jsonb(v_rec.selected_change_ids),
+							'autoPublish', v_surface.auto_publish
+						),
+						v_rec.created_by_user_id
+					);
+
+					update public.qorpera_member_surface_state
+					set toggled_change_ids = array(
+						select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_rec.selected_change_ids))
+					)
+					where surface_id = v_session.surface_id;
+				else
+					select count(*)
+					into v_recent_reconcile_attempts
+					from public.qorpera_surface_sessions rs
+					where rs.surface_id = v_session.surface_id
+						and rs.is_internal
+						and rs.created_at > v_now - interval '10 minutes'
+						and rs.origin_ref -> 'changeIds' = to_jsonb(v_rec.selected_change_ids);
+
+					v_retry_enqueued := false;
+					if v_surface.status = 'active' and v_recent_reconcile_attempts < 3 then
+						begin
+							v_retry_rec := public.qorpera_surface_enqueue_silent_reconciliation(
+								v_session.surface_id,
+								v_rec.selected_change_ids,
+								coalesce(v_rec.conflict_paths, '{}'::text[]),
+								v_rec.created_by_user_id,
+								true,
+								false
+							);
+							if v_retry_rec.id is not null and v_retry_rec.status = 'failed' then
+								v_retry_rec := public.qorpera_surface_enqueue_silent_reconciliation(
+									v_session.surface_id,
+									v_rec.selected_change_ids,
+									coalesce(v_rec.conflict_paths, '{}'::text[]),
+									v_rec.created_by_user_id,
+									true,
+									true
+								);
+							end if;
+							if v_retry_rec.id is not null and v_retry_rec.status in ('queued', 'running') then
+								v_retry_enqueued := true;
+							elsif v_retry_rec.id is not null and v_retry_rec.status = 'ready' then
+								update public.qorpera_surface_changes
+								set
+									status = 'merging',
+									conflict_paths = null,
+									approved_by_user_id = coalesce(v_rec.created_by_user_id, approved_by_user_id)
+								where surface_id = v_session.surface_id
+									and id = any(v_rec.selected_change_ids)
+									and status in ('staged', 'conflicted');
+
+								insert into public.qorpera_surface_jobs(
+									profile_id, surface_id, session_id, kind, payload, requested_by_user_id
+								)
+								values (
+									v_session.profile_id,
+									v_session.surface_id,
+									v_target_session_id,
+									'land_change',
+									jsonb_build_object(
+										'changeIds', to_jsonb(v_rec.selected_change_ids),
+										'reconciliationId', v_retry_rec.id,
+										'autoPublish', v_surface.auto_publish
+									),
+									v_rec.created_by_user_id
+								);
+
+								update public.qorpera_member_surface_state
+								set toggled_change_ids = array(
+									select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_rec.selected_change_ids))
+								)
+								where surface_id = v_session.surface_id;
+								v_retry_enqueued := true;
+							end if;
+						exception when others then
+							v_retry_enqueued := false;
+						end;
+					end if;
+
+					if not v_retry_enqueued then
+						insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+						select distinct
+							v_session.profile_id,
+							ch.session_id,
+							'system',
+							'Could not apply this change automatically. Try approving again.'
+						from public.qorpera_surface_changes ch
+						where ch.surface_id = v_session.surface_id
+							and ch.id = any(v_rec.selected_change_ids);
+					end if;
+				end if;
+			end if;
+		end if;$new$,
 $old$	insert into public.qorpera_surface_changes(
 		profile_id, surface_id, session_id, seq, title, summary, kind,
 		parent_sha, head_sha, depends_on_change_ids, affected_paths, diff_stats, patch_manifest, base_files, status
@@ -681,15 +917,30 @@ select pg_temp.spl_patch(
 $old$declare
 	v_change public.qorpera_surface_changes%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
-begin$old$,
+begin
+	select * into v_change from public.qorpera_surface_changes where id = p_change_id for update;
+	if v_change.id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
+	perform public.qorpera_assert_surface_member(v_change.profile_id, true);$old$,
 $new$declare
+	v_lookup record;
 	v_change public.qorpera_surface_changes%rowtype;
 	v_surface public.qorpera_surfaces%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_discarded_count integer := 0;
 	v_dep record;
 	v_target_ids uuid[];
-begin$new$,
+begin
+	select session_id, surface_id, profile_id into v_lookup
+	from public.qorpera_surface_changes
+	where id = p_change_id;
+	if v_lookup.session_id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
+	perform public.qorpera_assert_surface_member(v_lookup.profile_id, true);
+
+	-- WHY: Acquire session -> surface -> change locks in canonical order before silent reconciliation to avoid 40P01 deadlocks.
+	perform 1 from public.qorpera_surface_sessions where id = v_lookup.session_id for update;
+	select * into v_surface from public.qorpera_surfaces where id = v_lookup.surface_id for key share;
+	select * into v_change from public.qorpera_surface_changes where id = p_change_id for update;
+	if v_change.id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;$new$,
 $old$	update public.qorpera_surface_changes
 	set status = 'discarded', resolved_at = clock_timestamp()
 	where id = p_change_id and status in ('staged', 'conflicted');$old$,
@@ -700,7 +951,6 @@ $new$	update public.qorpera_surface_changes
 $old$	v_session := public.qorpera_evaluate_surface_session_lifecycle(v_change.session_id);
 	return public.qorpera_surface_session_json(v_session);$old$,
 $new$	if v_discarded_count > 0 then
-		select * into v_surface from public.qorpera_surfaces where id = v_change.surface_id;
 		if v_surface.id is not null and v_surface.status = 'active' and v_surface.source_kind in ('folder', 'code_repo') then
 			for v_dep in
 				select ch.id, ch.preview_base_change_ids
@@ -795,7 +1045,19 @@ $new$	if v_needs_worker then
 				jsonb_build_object('changeIds', to_jsonb(v_target_ids), 'autoPublish', v_surface.auto_publish),
 				v_user_id
 			);
-		end if;$new$
+		end if;$new$,
+$old$	update public.qorpera_member_surface_state
+	set toggled_change_ids = array(
+		select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_target_ids))
+	)
+	where surface_id = v_change.surface_id;$old$,
+$new$	if not v_deferred_for_reconcile then
+		update public.qorpera_member_surface_state
+		set toggled_change_ids = array(
+			select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_target_ids))
+		)
+		where surface_id = v_change.surface_id;
+	end if;$new$
 	]
 );
 
@@ -852,7 +1114,21 @@ $new$	if cardinality(v_change_ids) > 0 and coalesce(v_needs_worker, false) then
 				jsonb_build_object('changeIds', to_jsonb(v_change_ids), 'autoPublish', v_surface.auto_publish),
 				v_user_id
 			);
-		end if;$new$
+		end if;$new$,
+$old$	if cardinality(v_change_ids) > 0 then
+		update public.qorpera_member_surface_state
+		set toggled_change_ids = array(
+			select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_change_ids))
+		)
+		where surface_id = v_session.surface_id;
+	end if;$old$,
+$new$	if cardinality(v_change_ids) > 0 and not v_deferred_for_reconcile then
+		update public.qorpera_member_surface_state
+		set toggled_change_ids = array(
+			select cid from unnest(toggled_change_ids) as cid where not (cid = any(v_change_ids))
+		)
+		where surface_id = v_session.surface_id;
+	end if;$new$
 	]
 );
 

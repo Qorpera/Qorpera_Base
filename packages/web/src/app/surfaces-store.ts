@@ -471,6 +471,7 @@ export interface SurfacesState {
 	readonly notes: readonly SurfaceNote[];
 	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
 	readonly unseenNotes: Readonly<Record<string, SurfaceUnseenNote>>;
+	readonly reconciliationRequests: Readonly<Record<string, "pending" | "failed">>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -1306,6 +1307,7 @@ export class SurfacesStore {
 			notes: [],
 			sessionImages: {},
 			unseenNotes: {},
+			reconciliationRequests: {},
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -4368,6 +4370,30 @@ export class SurfacesStore {
 		return ids;
 	}
 
+	#reconciliationRequestKey(surfaceId: string, changeIds: readonly string[]): string | null {
+		const ids = [...new Set(changeIds.filter(Boolean))];
+		if (!ids.length) return null;
+		const workspace = this.workspace(surfaceId);
+		const revision = workspace?.surface.folderRevision ?? 0;
+		const head = workspace?.surface.liveHeadSha ?? "";
+		return `${surfaceId}:${revision}:${head}:${ids.sort().join(",")}`;
+	}
+
+	#clearReconciliationRequest(key: string): void {
+		if (!(key in this.state.reconciliationRequests)) return;
+		this.store.set((state) => {
+			if (!(key in state.reconciliationRequests)) return {};
+			const next = { ...state.reconciliationRequests };
+			delete next[key];
+			return { reconciliationRequests: next };
+		});
+	}
+
+	reconciliationRequestState(surfaceId: string, changeIds: readonly string[]): "pending" | "failed" | undefined {
+		const key = this.#reconciliationRequestKey(surfaceId, changeIds);
+		return key ? this.state.reconciliationRequests[key] : undefined;
+	}
+
 	async ensureReconciliation(
 		surfaceId: string,
 		changeIds: readonly string[],
@@ -4381,14 +4407,18 @@ export class SurfacesStore {
 		const workspace = this.workspace(surfaceId);
 		const existing = findMatchingStudioReconciliation(workspace?.reconciliations, ids);
 		if (!retry && existing) return existing;
-		const revision = workspace?.surface.folderRevision ?? 0;
-		const head = workspace?.surface.liveHeadSha ?? "";
-		const key = `${surfaceId}:${revision}:${head}:${[...ids].sort().join(",")}`;
+		const key = this.#reconciliationRequestKey(surfaceId, ids);
+		if (!key) return undefined;
+		if (this.state.reconciliationRequests[key] === "pending") return undefined;
 		if (!retry && this.#reconciliationRequested.has(key)) return undefined;
 		this.#reconciliationRequested.add(key);
+		this.store.set((state) => ({
+			reconciliationRequests: { ...state.reconciliationRequests, [key]: "pending" },
+		}));
 		try {
 			const record = await client.ensureSurfaceReconciliation(surfaceId, ids, conflictPaths, retry);
 			if (this.#options.signal.aborted) return record;
+			this.#clearReconciliationRequest(key);
 			const current = this.workspace(surfaceId);
 			if (current) {
 				const prior = current.reconciliations ?? [];
@@ -4418,9 +4448,11 @@ export class SurfacesStore {
 			}
 			return record;
 		} catch (error) {
-			this.#reconciliationRequested.delete(key);
-			if (retry && !this.#options.signal.aborted) {
-				this.store.set({ error: describe(error) });
+			if (!this.#options.signal.aborted) {
+				this.store.set((state) => ({
+					reconciliationRequests: { ...state.reconciliationRequests, [key]: "failed" },
+					...(retry ? { error: describe(error) } : {}),
+				}));
 			}
 			return undefined;
 		}

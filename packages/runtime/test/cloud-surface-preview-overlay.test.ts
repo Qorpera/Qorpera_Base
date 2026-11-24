@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { CloudCompanyFolderClient, CloudCompanyFolderEntry } from "../src/cloud-company-folder-client.ts";
+import { CloudCompanyPathNotText } from "../src/cloud-company-path-gateway.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
 import {
 	createSurfaceFolderPreviewOverlay,
@@ -325,5 +326,258 @@ describe("surface preview overlay and lineage turn context", () => {
 		expect(standaloneBrief).toContain(
 			"WITHOUT relying on anything introduced only by the Omitted Preview Base Changes",
 		);
+	});
+
+	it("falls back to live reads for oversized merge_json files and over-cap path counts without fabricating baseFiles", async () => {
+		const c1 = randomUUID();
+		const bigLiveContent = JSON.stringify({
+			existing: "keep-me",
+			padding: "x".repeat(140 * 1024),
+		});
+		const liveFiles: Record<string, string> = {
+			"identity/big.json": bigLiveContent,
+			"identity/small.md": "Small live\n",
+		};
+		const liveReader = {
+			async readText(path: string, maxBytes: number) {
+				const text = liveFiles[path];
+				if (text === undefined) return null;
+				if (Buffer.byteLength(text, "utf8") > maxBytes) {
+					throw new CloudCompanyPathNotText("Company folder file is larger than text here");
+				}
+				return { text };
+			},
+		};
+
+		const overlay = createSurfaceFolderPreviewOverlay({
+			folderRoot: "identity",
+			previewBaseChanges: [
+				{
+					changeId: c1,
+					title: "Patch big JSON and small doc",
+					summary: "Touches oversized JSON and small markdown",
+					kind: "folder_patch",
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["big.json", "small.md"],
+					previewBaseChangeIds: [],
+					patchManifest: [
+						{ op: "merge_json", path: "big.json", patch: { accent: "#0070f3" } },
+						{ op: "write_text", path: "small.md", content: "Small preview\n" },
+					],
+					baseFiles: null,
+				},
+			],
+			liveReader,
+		});
+		expect(overlay).not.toBeNull();
+		const signal = new AbortController().signal;
+		const status = await overlay!.prepare(signal);
+		expect(status.status).toBe("ready");
+		expect(status.skippedPaths).toEqual(["identity/big.json"]);
+		expect(await overlay!.lookup("identity/big.json", signal)).toBeNull();
+		const small = await overlay!.lookup("identity/small.md", signal);
+		expect(small?.kind).toBe("file");
+		if (small?.kind === "file") expect(small.content).toBe("Small preview\n");
+
+		const wrapped = overlay!.wrapTextReader(liveReader);
+		await expect(wrapped.readText("identity/big.json", 128 * 1024, signal)).rejects.toThrow(CloudCompanyPathNotText);
+		const bigFull = await wrapped.readText("identity/big.json", 256 * 1024, signal);
+		expect(bigFull).toEqual({ text: bigLiveContent });
+
+		const stagedRequests: unknown[] = [];
+		let seenBrief = "";
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				companyId: randomUUID(),
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Update big.json",
+				previewBaseChanges: [
+					{
+						changeId: c1,
+						title: "Patch big JSON",
+						summary: "Touches oversized JSON",
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["big.json", "small.md"],
+						previewBaseChangeIds: [],
+						patchManifest: [
+							{ op: "merge_json", path: "big.json", patch: { accent: "#0070f3" } },
+							{ op: "write_text", path: "small.md", content: "Small preview\n" },
+						],
+						baseFiles: null,
+					},
+				],
+			},
+			{
+				folder: liveReader,
+				surfaceTools: {
+					stageSurfacePatch: async (_sid, req) => {
+						stagedRequests.push(req);
+						return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+					},
+				},
+				executeTurn: async (req) => {
+					seenBrief = req.turnBrief;
+					const patchTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const parsed = patchTool.parseArguments({
+						title: "Edit big json",
+						summary: "Merge extra key",
+						ops: [{ op: "merge_json", path: "big.json", patch: { secondary: "#111" } }],
+					});
+					await patchTool.execute(parsed, {
+						companyId: randomUUID(),
+						runId: randomUUID(),
+						signal: req.signal,
+					} as never);
+					return { state: "ready", replyText: "Staged" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+		expect(seenBrief).toContain("exceeded overlay read limits");
+		expect(seenBrief).toContain("identity/big.json");
+		expect((stagedRequests[0] as { baseFiles?: Record<string, string | null> }).baseFiles).toBeUndefined();
+
+		const manyFiles: Record<string, string> = {};
+		const manyOps: { op: "merge_json"; path: string; patch: Record<string, unknown> }[] = [];
+		for (let i = 1; i <= 50; i += 1) {
+			const rel = `doc-${String(i).padStart(2, "0")}.json`;
+			manyFiles[`identity/${rel}`] = JSON.stringify({ live: i });
+			manyOps.push({ op: "merge_json", path: rel, patch: { staged: i } });
+		}
+		const capOverlay = createSurfaceFolderPreviewOverlay({
+			folderRoot: "identity",
+			previewBaseChanges: [
+				{
+					changeId: randomUUID(),
+					title: "Many files",
+					summary: "50 json patches",
+					kind: "folder_patch",
+					parentSha: null,
+					headSha: null,
+					affectedPaths: manyOps.map((op) => op.path),
+					previewBaseChangeIds: [],
+					patchManifest: manyOps,
+					baseFiles: null,
+				},
+			],
+			liveReader: {
+				async readText(path: string) {
+					return manyFiles[path] !== undefined ? { text: manyFiles[path]! } : null;
+				},
+			},
+		});
+		const capStatus = await capOverlay!.prepare(signal);
+		expect(capStatus.status).toBe("ready");
+		expect(capStatus.skippedPaths).toEqual(["identity/doc-49.json", "identity/doc-50.json"]);
+		const doc48 = await capOverlay!.lookup("identity/doc-48.json", signal);
+		expect(doc48?.kind).toBe("file");
+		if (doc48?.kind === "file") expect(JSON.parse(doc48.content)).toEqual({ live: 48, staged: 48 });
+		expect(await capOverlay!.lookup("identity/doc-49.json", signal)).toBeNull();
+		expect(await capOverlay!.lookup("identity/doc-50.json", signal)).toBeNull();
+	});
+
+	it("drops the overlay to live reads and notes it in turn brief when preview bases conflict", async () => {
+		const c1 = randomUUID();
+		const c2 = randomUUID();
+		const liveReader = {
+			async readText(path: string) {
+				if (path === "identity/tokens.json") return { text: '{"accent":"#222222"}\n' };
+				return null;
+			},
+		};
+		const conflictingChanges = [
+			{
+				changeId: c1,
+				title: "Electric Blue",
+				summary: "Blue accent",
+				kind: "folder_patch",
+				parentSha: null,
+				headSha: null,
+				affectedPaths: ["tokens.json", "promo.md"],
+				previewBaseChangeIds: [],
+				patchManifest: [
+					{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#0070f3"}\n' },
+					{ op: "write_text" as const, path: "promo.md", content: "# Blue Promo\n" },
+				],
+				baseFiles: { "tokens.json": '{"accent":"#222222"}\n' },
+			},
+			{
+				changeId: c2,
+				title: "Sunset Orange",
+				summary: "Orange accent",
+				kind: "folder_patch",
+				parentSha: null,
+				headSha: null,
+				affectedPaths: ["tokens.json"],
+				previewBaseChangeIds: [],
+				patchManifest: [{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#ff5500"}\n' }],
+				baseFiles: { "tokens.json": '{"accent":"#222222"}\n' },
+			},
+		];
+
+		const overlay = createSurfaceFolderPreviewOverlay({
+			folderRoot: "identity",
+			previewBaseChanges: conflictingChanges,
+			liveReader,
+		});
+		const signal = new AbortController().signal;
+		const status = await overlay!.prepare(signal);
+		expect(status.status).toBe("conflicted");
+		expect(await overlay!.lookup("identity/tokens.json", signal)).toBeNull();
+		expect(await overlay!.lookup("identity/promo.md", signal)).toBeNull();
+
+		const stagedRequests: unknown[] = [];
+		let seenBrief = "";
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				companyId: randomUUID(),
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Refine tokens",
+				previewBaseChanges: conflictingChanges,
+			},
+			{
+				folder: liveReader,
+				surfaceTools: {
+					stageSurfacePatch: async (_sid, req) => {
+						stagedRequests.push(req);
+						return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+					},
+				},
+				executeTurn: async (req) => {
+					seenBrief = req.turnBrief;
+					const patchTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const parsed = patchTool.parseArguments({
+						title: "Refine tokens",
+						summary: "Updates tokens from live",
+						ops: [{ op: "write_text", path: "tokens.json", content: '{"accent":"#333333"}\n' }],
+					});
+					await patchTool.execute(parsed, {
+						companyId: randomUUID(),
+						runId: randomUUID(),
+						signal: req.signal,
+					} as never);
+					return { state: "ready", replyText: "Staged" };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+		expect(seenBrief).toContain("currently overlap and are reconciling");
+		expect(seenBrief).toContain("reading the current published live files instead of a partial preview");
+		expect((stagedRequests[0] as { baseFiles?: Record<string, string | null> }).baseFiles).toEqual({
+			"tokens.json": '{"accent":"#222222"}\n',
+		});
 	});
 });

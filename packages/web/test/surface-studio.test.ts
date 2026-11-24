@@ -1994,4 +1994,107 @@ describe("SurfaceReportView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("surfaces Couldn't update preview and Retry without looping when ensureSurfaceReconciliation rejects", async () => {
+		const identity = summary({
+			id: BRAND_ID,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: BRAND_ID,
+			kind: "folder_patch",
+			affectedPaths: ["tokens.json"],
+			patchManifest: [
+				{ op: "write_text", path: "identity/tokens.json", content: '{"colors":{"accent":"#0070f3"}}\n' },
+			],
+		});
+		const c2 = change(CHANGES[1], 1, "staged", {
+			surfaceId: BRAND_ID,
+			sessionId: "22222222-2222-4222-8222-222222222292",
+			kind: "folder_patch",
+			affectedPaths: ["voice.md"],
+			previewBaseChangeIds: [CHANGES[0]],
+			patchManifest: [{ op: "write_text", path: "identity/voice.md", content: "# Electric Blue Voice\n" }],
+		});
+		const s1 = session(["staged"], { surfaceId: BRAND_ID, changes: [c1] });
+		const s2 = session(["staged"], {
+			id: "22222222-2222-4222-8222-222222222292",
+			surfaceId: BRAND_ID,
+			changes: [c2],
+		});
+
+		let attempt = 0;
+		const ensureSurfaceReconciliation = vi.fn(
+			async (surfaceId: string, changeIds: readonly string[], conflictPaths: readonly string[]) => {
+				attempt += 1;
+				if (attempt === 1) throw new Error("Only workspace editors can enqueue reconciliation");
+				return {
+					id: "99999999-9999-4999-8999-999999999999",
+					surfaceId,
+					compositionKey: "k-retry",
+					baseFingerprint: "folder-rev:0",
+					selectedChangeIds: [...changeIds],
+					status: "queued" as const,
+					patchManifest: null,
+					conflictPaths: [...conflictPaths],
+					commitSha: null,
+					treeSha: null,
+					errorDetail: null,
+					updatedAt: "2026-11-24T06:10:00Z",
+				};
+			},
+		);
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary(), identity]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([s1, s2], { surface: identity })),
+			setPreviewSelection: vi.fn(async () => workspace([], { surface: identity }).previewState),
+			ensureSurfaceReconciliation,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("identity");
+		store.setStudioPatch(CHANGES[0], c1.patchManifest!);
+		store.setStudioPatch(CHANGES[1], c2.patchManifest!);
+		await store.toggleChange(BRAND_ID, CHANGES[0]);
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: identity,
+			signal: new AbortController().signal,
+			baseFiles: { "identity/tokens.json": '{"colors":{"accent":"#222"}}\n', "identity/voice.md": "Base voice.\n" },
+			timeSlice: false,
+		});
+		const unsub = store.store.subscribe(() => view.update());
+		document.body.append(view.el);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".studio-updating-pill")).toBeNull();
+		const retryBar = view.el.querySelector(".studio-reconcile-retry");
+		expect(retryBar?.textContent).toContain("Couldn't update preview");
+
+		view.update();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(1);
+
+		retryBar!.querySelector<HTMLButtonElement>('[data-act="studio-retry-preview"]')!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(2);
+		expect(ensureSurfaceReconciliation).toHaveBeenLastCalledWith(BRAND_ID, [CHANGES[1]], ["voice.md"], true);
+		expect(view.el.querySelector(".studio-reconcile-retry")).toBeNull();
+		expect(view.el.querySelector(".studio-updating-pill")?.textContent).toContain("Updating");
+
+		unsub();
+		view.dispose();
+		store.dispose();
+	});
 });

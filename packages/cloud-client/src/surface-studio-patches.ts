@@ -223,6 +223,9 @@ export function detectLineageReconciliationTarget(
 				for (const anc of ancestorsOf(base.id)) {
 					if (selectedSet.has(anc)) chainMemberSet.add(anc);
 				}
+				for (const anc of modifierAncestors) {
+					if (selectedSet.has(anc)) chainMemberSet.add(anc);
+				}
 				for (const path of shared) chainOverlapPaths.add(path);
 			}
 		}

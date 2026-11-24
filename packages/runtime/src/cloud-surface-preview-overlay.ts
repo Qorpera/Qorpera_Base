@@ -70,10 +70,16 @@ export interface CloudFolderPreviewOverlayList {
 	readonly deletedKeys: ReadonlySet<string>;
 }
 
+export interface CloudFolderPreviewOverlayStatus {
+	readonly status: "ready" | "conflicted";
+	readonly skippedPaths: readonly string[];
+}
+
 export interface CloudFolderPreviewOverlay {
 	readonly folderRoot: string;
 	isUnderRoot(companyPath: string): boolean;
 	mayAffectList(parentPath: string, recursive: boolean): boolean;
+	prepare(signal: AbortSignal): Promise<CloudFolderPreviewOverlayStatus>;
 	lookup(companyPath: string, signal: AbortSignal): Promise<CloudFolderPreviewOverlayLookup | null>;
 	listUnder(parentPath: string, recursive: boolean, signal: AbortSignal): Promise<CloudFolderPreviewOverlayList>;
 	wrapTextReader(base: SurfaceFolderTextReader): SurfaceFolderTextReader;
@@ -179,8 +185,10 @@ export function parseSurfaceOmittedBaseChanges(raw: unknown): SurfaceOmittedBase
 }
 
 interface OverlaySnapshot {
+	readonly status: "ready" | "conflicted";
 	readonly entries: ReadonlyMap<string, CloudFolderPreviewOverlayLookup>;
 	readonly virtualFolders: ReadonlyMap<string, string>;
+	readonly skippedPaths: readonly string[];
 }
 
 function collectTouchedPaths(
@@ -223,8 +231,21 @@ export function createSurfaceFolderPreviewOverlay(options: {
 		return null;
 	}
 	const patchChanges: StudioPatchChange[] = [];
+	const truncatedByKey = new Map<string, string>();
 	for (const change of options.previewBaseChanges) {
-		if (change.kind !== "folder_patch" || !change.patchManifest || change.patchManifest.length === 0) continue;
+		if (change.kind !== "folder_patch") continue;
+		if (!change.patchManifest || change.patchManifest.length === 0) {
+			if (change.truncated) {
+				for (const rawPath of change.affectedPaths) {
+					try {
+						const resolved = resolveStudioFolderPath(normalizedRoot, rawPath);
+						const key = folderKey(resolved);
+						if (!truncatedByKey.has(key)) truncatedByKey.set(key, resolved);
+					} catch {}
+				}
+			}
+			continue;
+		}
 		patchChanges.push({
 			changeId: change.changeId,
 			ops: change.patchManifest,
@@ -240,34 +261,101 @@ export function createSurfaceFolderPreviewOverlay(options: {
 	const { paths: touchedPaths, deletedPaths } = collectTouchedPaths(normalizedRoot, patchChanges, reconciliations);
 	if (touchedPaths.length === 0) return null;
 
+	type BaseReadOutcome =
+		| { readonly kind: "text"; readonly fullPath: string; readonly text: string }
+		| { readonly kind: "missing"; readonly fullPath: string }
+		| { readonly kind: "unreadable"; readonly fullPath: string };
+
 	let snapshotPromise: Promise<OverlaySnapshot> | null = null;
 	const loadSnapshot = (signal: AbortSignal): Promise<OverlaySnapshot> => {
 		if (snapshotPromise) return snapshotPromise;
 		const promise = (async (): Promise<OverlaySnapshot> => {
 			const liveBaseFiles: Record<string, string> = {};
+			const unreadableByKey = new Map<string, string>(truncatedByKey);
 			let totalChars = 0;
 			const toRead = touchedPaths.slice(0, MAX_OVERLAY_BASE_FILES);
-			const reads = await Promise.all(
-				toRead.map(async (fullPath) => {
+			for (const overflowPath of touchedPaths.slice(MAX_OVERLAY_BASE_FILES)) {
+				const key = folderKey(overflowPath);
+				if (!unreadableByKey.has(key)) unreadableByKey.set(key, overflowPath);
+			}
+			const reads: BaseReadOutcome[] = await Promise.all(
+				toRead.map(async (fullPath): Promise<BaseReadOutcome> => {
+					if (unreadableByKey.has(folderKey(fullPath))) {
+						return { kind: "unreadable", fullPath };
+					}
 					try {
 						const found = await options.liveReader.readText(fullPath, MAX_OVERLAY_BASE_FILE_BYTES, signal);
-						if (found === null || found === undefined) return [fullPath, null] as const;
+						if (found === null) return { kind: "missing", fullPath };
+						if (found === undefined) return { kind: "unreadable", fullPath };
 						const text = typeof found === "string" ? found : found.text;
-						return [fullPath, text] as const;
+						return { kind: "text", fullPath, text };
 					} catch (error) {
 						if (signal.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
-						return [fullPath, undefined] as const;
+						return { kind: "unreadable", fullPath };
 					}
 				}),
 			);
-			for (const [fullPath, text] of reads) {
-				if (typeof text !== "string") continue;
-				if (totalChars + text.length > MAX_OVERLAY_BASE_TOTAL_CHARS) continue;
-				liveBaseFiles[fullPath] = text;
-				totalChars += text.length;
+			for (const item of reads) {
+				if (item.kind === "unreadable") {
+					const key = folderKey(item.fullPath);
+					if (!unreadableByKey.has(key)) unreadableByKey.set(key, item.fullPath);
+					continue;
+				}
+				if (item.kind === "missing") continue;
+				if (totalChars + item.text.length > MAX_OVERLAY_BASE_TOTAL_CHARS) {
+					const key = folderKey(item.fullPath);
+					if (!unreadableByKey.has(key)) unreadableByKey.set(key, item.fullPath);
+					continue;
+				}
+				liveBaseFiles[item.fullPath] = item.text;
+				totalChars += item.text.length;
 			}
 
-			const composed = composeStudioPreview(liveBaseFiles, patchChanges, normalizedRoot, {}, { reconciliations });
+			const skippedPaths = [...unreadableByKey.values()].sort();
+			const isUnreadableOpPath = (rawPath: string): boolean => {
+				try {
+					return unreadableByKey.has(folderKey(resolveStudioFolderPath(normalizedRoot, rawPath)));
+				} catch {
+					return false;
+				}
+			};
+			// WHY: Exclude unread or over-cap paths before composing so merge_json never fabricates partial files from an empty base.
+			const filteredPatchChanges =
+				unreadableByKey.size === 0
+					? patchChanges
+					: patchChanges
+							.map((change) => ({
+								...change,
+								ops: change.ops.filter((op) => !isUnreadableOpPath(op.path)),
+							}))
+							.filter((change) => change.ops.length > 0);
+			const filteredReconciliations =
+				unreadableByKey.size === 0
+					? reconciliations
+					: reconciliations.map((rec) => ({
+							...rec,
+							patchManifest: rec.patchManifest?.filter((op) => !isUnreadableOpPath(op.path)) ?? null,
+							...(rec.conflictPaths
+								? { conflictPaths: rec.conflictPaths.filter((path) => !isUnreadableOpPath(path)) }
+								: {}),
+						}));
+
+			const composed = composeStudioPreview(
+				liveBaseFiles,
+				filteredPatchChanges,
+				normalizedRoot,
+				{},
+				{ reconciliations: filteredReconciliations },
+			);
+			if (composed.status !== "ready") {
+				return {
+					status: "conflicted",
+					entries: new Map(),
+					virtualFolders: new Map(),
+					skippedPaths,
+				};
+			}
+
 			const entries = new Map<string, CloudFolderPreviewOverlayLookup>();
 			const virtualFolders = new Map<string, string>();
 			const registerAncestors = (fullPath: string) => {
@@ -291,6 +379,7 @@ export function createSurfaceFolderPreviewOverlay(options: {
 
 			for (const path of touchedPaths) {
 				const key = folderKey(path);
+				if (unreadableByKey.has(key)) continue;
 				const next = composedByKey.get(key);
 				const hadLive = liveByKey.has(key);
 				if (!next) {
@@ -311,7 +400,7 @@ export function createSurfaceFolderPreviewOverlay(options: {
 				});
 				registerAncestors(next.path);
 			}
-			return { entries, virtualFolders };
+			return { status: "ready", entries, virtualFolders, skippedPaths };
 		})();
 		snapshotPromise = promise;
 		void promise.catch(() => {
@@ -336,6 +425,10 @@ export function createSurfaceFolderPreviewOverlay(options: {
 		folderRoot: normalizedRoot,
 		isUnderRoot,
 		mayAffectList,
+		async prepare(signal) {
+			const snapshot = await loadSnapshot(signal);
+			return { status: snapshot.status, skippedPaths: snapshot.skippedPaths };
+		},
 		async lookup(companyPath, signal) {
 			const cleaned = companyPath.trim().replace(/^\/+|\/+$/g, "");
 			if (!cleaned || !isUnderRoot(cleaned)) return null;

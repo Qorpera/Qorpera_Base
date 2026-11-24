@@ -131,6 +131,8 @@ export interface SurfaceTurnBriefInput {
 	readonly conflictPaths?: readonly string[] | null;
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
+	readonly previewOverlayStatus?: "ready" | "conflicted" | null;
+	readonly previewSkippedPaths?: readonly string[] | null;
 	readonly chainMode?: boolean;
 	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
 	readonly mainSha?: string | null;
@@ -282,10 +284,23 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const previewBaseChanges = binding.previewBaseChanges ?? [];
 	if (!binding.isInternalReconciliation && previewBaseChanges.length > 0) {
 		const isFolderSurface = binding.sourceKind === "folder";
+		const skippedPaths = (binding.previewSkippedPaths ?? []).filter((p) => p.trim().length > 0);
+		const truncatedCount = previewBaseChanges.filter((item) => item.truncated === true).length;
+		const folderRootLabel = folderRoot || binding.surfaceSlug;
+		const folderIntro =
+			binding.previewOverlayStatus === "conflicted"
+				? `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. Those preview changes currently overlap and are reconciling, so \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` are reading the current published live files instead of a partial preview. Keep your edits atomic and touch only the files needed for this request.`
+				: binding.previewOverlayStatus == null && truncatedCount > 0
+					? `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. Their patch manifests exceeded the turn context budget, so \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` are reading the current published live files instead. Keep your edits atomic and touch only the files needed for this request.`
+					: `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` already reflect this preview state. Build cleanly on top of what is visible in Preview, and touch only the files needed for this request.${
+							skippedPaths.length > 0
+								? ` Note: ${skippedPaths.length} preview-touched path${skippedPaths.length === 1 ? "" : "s"} exceeded overlay read limits and ${skippedPaths.length === 1 ? "is" : "are"} reading published live files instead (${skippedPaths.slice(0, 12).join(", ")}${skippedPaths.length > 12 ? `, +${skippedPaths.length - 12} more` : ""}).`
+								: ""
+						}`;
 		const lines: string[] = [
 			"## Active Preview Changes",
 			isFolderSurface
-				? `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. \`company_read\` and \`company_list\` under \`${folderRoot || binding.surfaceSlug}/\` already reflect this preview state. Build cleanly on top of what is visible in Preview, and touch only the files needed for this request.`
+				? folderIntro
 				: `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. Inspect any relevant staged commits via \`git show <sha>\` or \`git diff <parent>..<head>\` so your work aligns cleanly while staying atomic on this session branch.`,
 		];
 		const maxPreviewChanges = 20;

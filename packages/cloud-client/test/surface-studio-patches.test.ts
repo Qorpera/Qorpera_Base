@@ -646,5 +646,63 @@ describe("studio surface folder_patch overlay engine", () => {
 			];
 			expect(detectLineageReconciliationTarget(descriptors, [c1, c2, c3], "identity")).toBeNull();
 		});
+
+		it("includes selected preview ancestors of the modifying change so client matches SQL chain reconciliation sets", () => {
+			const cA = randomUUID();
+			const c1 = randomUUID();
+			const c2 = randomUUID();
+			const c3 = randomUUID();
+			const descriptors = [
+				{ id: cA, affectedPaths: ["voice.md"] },
+				{ id: c1, affectedPaths: ["tokens.json"] },
+				{ id: c2, affectedPaths: ["promo.md"], previewBaseChangeIds: [c1] },
+				{ id: c3, affectedPaths: ["tokens.json"], previewBaseChangeIds: [cA, c1, c2] },
+			];
+			expect(detectLineageReconciliationTarget(descriptors, [cA, c1, c2, c3], "identity")).toEqual({
+				kind: "chain",
+				changeIds: [cA, c1, c2, c3],
+				conflictPaths: ["tokens.json"],
+			});
+
+			const base = { "identity/tokens.json": '{"accent":"#222"}\n', "identity/voice.md": "Base\n" };
+			const composed = composeStudioPreview(
+				base,
+				[
+					{ changeId: cA, ops: [{ op: "write_text", path: "voice.md", content: "Voice A\n" }] },
+					{ changeId: c1, ops: [{ op: "write_text", path: "tokens.json", content: '{"accent":"#0070f3"}\n' }] },
+					{
+						changeId: c2,
+						previewBaseChangeIds: [c1],
+						ops: [{ op: "write_text", path: "promo.md", content: "# Blue Promo\n" }],
+					},
+					{
+						changeId: c3,
+						previewBaseChangeIds: [cA, c1, c2],
+						ops: [{ op: "write_text", path: "tokens.json", content: '{"accent":"#ff5500"}\n' }],
+					},
+				],
+				"identity",
+				{},
+				{
+					reconciliations: [
+						{
+							id: randomUUID(),
+							status: "ready",
+							selectedChangeIds: [cA, c1, c2, c3],
+							conflictPaths: ["tokens.json"],
+							patchManifest: [
+								{ op: "write_text", path: "tokens.json", content: '{"accent":"#ff5500"}\n' },
+								{ op: "write_text", path: "promo.md", content: "# Sunset Promo\n" },
+							],
+							errorDetail: null,
+						},
+					],
+				},
+			);
+			expect(composed.status).toBe("ready");
+			expect(composed.files["identity/voice.md"]).toBe("Voice A\n");
+			expect(composed.files["identity/tokens.json"]).toBe('{"accent":"#ff5500"}\n');
+			expect(composed.files["identity/promo.md"]).toBe("# Sunset Promo\n");
+		});
 	});
 });

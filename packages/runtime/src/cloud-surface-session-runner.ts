@@ -755,6 +755,7 @@ export async function runSurfaceSessionTurn(
 						liveReader: folderReader,
 					})
 				: null;
+		const previewOverlayStatus = previewOverlay ? await previewOverlay.prepare(signal) : null;
 		const effectiveFolderReader =
 			previewOverlay && folderReader ? previewOverlay.wrapTextReader(folderReader) : folderReader;
 
@@ -815,6 +816,8 @@ export async function runSurfaceSessionTurn(
 			conflictPaths: input.conflictPaths ?? null,
 			conflictDetails: input.conflictDetails ?? null,
 			previewBaseChanges,
+			previewOverlayStatus: previewOverlayStatus?.status ?? null,
+			previewSkippedPaths: previewOverlayStatus?.skippedPaths ?? null,
 			chainMode,
 			omittedBaseChanges,
 			mainSha: input.mainSha ?? null,
