@@ -470,6 +470,11 @@ export class CloudModelLoginUsage {
 		}
 		if (!claimed) return "preparing";
 		this.#started.add(request.requestId);
+		while (this.#started.size > 2_048) {
+			const oldest = this.#started.values().next().value;
+			if (oldest === undefined) break;
+			this.#started.delete(oldest);
+		}
 		const kind = claude.reset as ClaudeResetKind;
 		const envelope = Buffer.from(claude.envelope);
 		const job = (async () => {

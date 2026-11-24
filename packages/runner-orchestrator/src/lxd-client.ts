@@ -863,14 +863,15 @@ export class LxdUnixClient
 	}
 
 	async #officeMetadata(path: string, signal: AbortSignal, maximumBytes = 65536): Promise<Record<string, unknown>> {
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-		checked.throwIfAborted();
-		const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
-		checked.throwIfAborted();
-		const envelope = record(result.body, "office metadata");
-		if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
-			throw new Error("office metadata unavailable");
-		return record(envelope.metadata, "office metadata");
+		return withTimeoutScope(signal, 5000, async (checked) => {
+			checked.throwIfAborted();
+			const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "office metadata");
+			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
+				throw new Error("office metadata unavailable");
+			return record(envelope.metadata, "office metadata");
+		});
 	}
 
 	async inspectOfficeServer(
@@ -1583,20 +1584,21 @@ export class LxdUnixClient
 				!OPERATION_UUID.test(reference.operationId)
 			)
 				throw new Error("invalid operation reference");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#request(
-				"GET",
-				projectPath(`/1.0/operations/${reference.operationId}`, reference.project),
-				undefined,
-				checked,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD response");
-			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
-			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
-				throw new Error("operation unavailable");
-			return trackedOperation(envelope.metadata, reference);
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#request(
+					"GET",
+					projectPath(`/1.0/operations/${reference.operationId}`, reference.project),
+					undefined,
+					checked,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "LXD response");
+				if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
+				if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
+					throw new Error("operation unavailable");
+				return trackedOperation(envelope.metadata, reference);
+			});
 		} catch {
 			throw new Error(unknown ? "LXD_OPERATION_UNKNOWN" : "LXD_OPERATION_UNCONFIRMED");
 		}
@@ -1839,85 +1841,86 @@ export class LxdUnixClient
 				maximumBytes > (CODING_GUEST_HELPER_PATH.test(path) ? CODING_GUEST_HELPER_MAX_BYTES : 65536)
 			)
 				throw new Error("invalid request");
-			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			return await new Promise<LxdInstanceFile>((resolveRead, reject) => {
-				const request = httpRequest(
-					{
-						method: "GET",
-						socketPath: this.#socketPath,
-						signal: checked,
-						path: projectPath(
-							`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
-							project,
-						),
-						headers: { accept: "application/octet-stream" },
-					},
-					(response) => {
-						const fail = (): void => {
-							response.destroy();
-							request.destroy();
-							reject(new Error("invalid read"));
-						};
-						response.once("error", fail);
-						response.once("aborted", fail);
-						const integer = (key: string): number => {
-							const value = response.headers[key];
-							if (
-								typeof value !== "string" ||
-								!/^(?:0|[1-9][0-9]{0,9})$/.test(value) ||
-								Number(value) > 4294967295
-							)
-								throw new Error("invalid metadata");
-							return Number(value);
-						};
-						let uid: number;
-						let gid: number;
-						let mode: number;
-						let expectedLength: number | undefined;
-						try {
-							if (response.statusCode !== 200 || response.headers["x-lxd-type"] !== "file")
-								throw new Error("not a file");
-							uid = integer("x-lxd-uid");
-							gid = integer("x-lxd-gid");
-							const mask = response.headers["x-lxd-mode"];
-							if (typeof mask !== "string" || !/^(?:0[0-7]{3,4}|[1-9][0-9]{0,3}|0)$/.test(mask))
-								throw new Error("mode");
-							mode = Number.parseInt(mask, mask.startsWith("0") ? 8 : 10);
-							if (mode > 0o7777) throw new Error("mode");
-							if (response.headers["content-length"] !== undefined) {
-								expectedLength = integer("content-length");
-								if (expectedLength > maximumBytes) throw new Error("oversized");
-							}
-						} catch {
-							fail();
-							return;
-						}
-						const chunks: Buffer[] = [];
-						let length = 0;
-						response.on("data", (chunk: Buffer) => {
-							length += chunk.length;
-							if (length > maximumBytes) {
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				return await new Promise<LxdInstanceFile>((resolveRead, reject) => {
+					const request = httpRequest(
+						{
+							method: "GET",
+							socketPath: this.#socketPath,
+							signal: checked,
+							path: projectPath(
+								`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+								project,
+							),
+							headers: { accept: "application/octet-stream" },
+						},
+						(response) => {
+							const fail = (): void => {
+								response.destroy();
+								request.destroy();
+								reject(new Error("invalid read"));
+							};
+							response.once("error", fail);
+							response.once("aborted", fail);
+							const integer = (key: string): number => {
+								const value = response.headers[key];
+								if (
+									typeof value !== "string" ||
+									!/^(?:0|[1-9][0-9]{0,9})$/.test(value) ||
+									Number(value) > 4294967295
+								)
+									throw new Error("invalid metadata");
+								return Number(value);
+							};
+							let uid: number;
+							let gid: number;
+							let mode: number;
+							let expectedLength: number | undefined;
+							try {
+								if (response.statusCode !== 200 || response.headers["x-lxd-type"] !== "file")
+									throw new Error("not a file");
+								uid = integer("x-lxd-uid");
+								gid = integer("x-lxd-gid");
+								const mask = response.headers["x-lxd-mode"];
+								if (typeof mask !== "string" || !/^(?:0[0-7]{3,4}|[1-9][0-9]{0,3}|0)$/.test(mask))
+									throw new Error("mode");
+								mode = Number.parseInt(mask, mask.startsWith("0") ? 8 : 10);
+								if (mode > 0o7777) throw new Error("mode");
+								if (response.headers["content-length"] !== undefined) {
+									expectedLength = integer("content-length");
+									if (expectedLength > maximumBytes) throw new Error("oversized");
+								}
+							} catch {
 								fail();
 								return;
 							}
-							chunks.push(chunk);
-						});
-						response.once("end", () => {
-							if (
-								checked.aborted ||
-								!response.complete ||
-								(expectedLength !== undefined && length !== expectedLength)
-							) {
-								fail();
-								return;
-							}
-							resolveRead({ content: Buffer.concat(chunks), uid, gid, mode });
-						});
-					},
-				);
-				request.once("error", () => reject(new Error("read unavailable")));
-				request.end();
+							const chunks: Buffer[] = [];
+							let length = 0;
+							response.on("data", (chunk: Buffer) => {
+								length += chunk.length;
+								if (length > maximumBytes) {
+									fail();
+									return;
+								}
+								chunks.push(chunk);
+							});
+							response.once("end", () => {
+								if (
+									checked.aborted ||
+									!response.complete ||
+									(expectedLength !== undefined && length !== expectedLength)
+								) {
+									fail();
+									return;
+								}
+								resolveRead({ content: Buffer.concat(chunks), uid, gid, mode });
+							});
+						},
+					);
+					request.once("error", () => reject(new Error("read unavailable")));
+					request.end();
+				});
 			});
 		} catch {
 			// LXD diagnostics and raw file bytes may contain private bootstrap data.

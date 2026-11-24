@@ -340,6 +340,18 @@ function head(text: string, bytes: number): string {
 	return shown;
 }
 
+function codePointEndOffsets(text: string): Int32Array {
+	const offsets = new Int32Array(text.length + 1);
+	let count = 0;
+	for (let i = 0; i < text.length; ) {
+		const code = text.charCodeAt(i);
+		const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+		i += code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? 2 : 1;
+		offsets[++count] = i;
+	}
+	return offsets.subarray(0, count + 1);
+}
+
 /** The answer `render` makes of `text`, or of its longest start (at least `least` code points) whose answer fits one
  * tool result: escaping can grow text up to seven times. A start whose answer is past even a tool JSON's own bound
  * (`cloudToolJsonText`'s 64 KiB, which a whole 32 KiB window of line breaks or control characters passes) does not fit
@@ -355,15 +367,15 @@ function fitted(text: string, least: number, render: (shown: string) => string):
 	};
 	const whole = answer(text);
 	if (whole !== undefined) return whole;
-	const points = Array.from(text);
-	let low = least;
-	let high = points.length;
+	const ends = codePointEndOffsets(text);
+	let low = Math.min(least, ends.length - 1);
+	let high = ends.length - 1;
 	while (low < high) {
 		const middle = Math.ceil((low + high) / 2);
-		if (answer(points.slice(0, middle).join("")) !== undefined) low = middle;
+		if (answer(text.slice(0, ends[middle])) !== undefined) low = middle;
 		else high = middle - 1;
 	}
-	return render(points.slice(0, low).join(""));
+	return render(text.slice(0, ends[low]));
 }
 
 /**
@@ -660,6 +672,7 @@ export function cloudFolderFileTools(options: {
 	const showImage = async (
 		entry: CloudCompanyFolderFileEntry,
 		context: CloudToolContext,
+		preloaded?: Uint8Array,
 	): Promise<CloudToolContent> => {
 		const total = entry.file.bytes;
 		if (total > MAX_FOLDER_IMAGE_BYTES)
@@ -669,10 +682,14 @@ export function cloudFolderFileTools(options: {
 		// One image at a time in this process: a call waits here, with nothing read, for the images before it.
 		const view = await oneImageAtATime(context.signal, async () => {
 			let bytes: Uint8Array;
-			try {
-				bytes = await folder.readRange(entry, 0, total, context.signal);
-			} catch (error) {
-				return unavailable(error, "read");
+			if (preloaded !== undefined && preloaded.byteLength >= total) {
+				bytes = preloaded;
+			} else {
+				try {
+					bytes = await folder.readRange(entry, 0, total, context.signal);
+				} catch (error) {
+					return unavailable(error, "read");
+				}
 			}
 			try {
 				return folderImageView(bytes);
@@ -743,7 +760,7 @@ export function cloudFolderFileTools(options: {
 		readonly answer: Record<string, JsonValue>;
 		readonly text?: {
 			readonly field: "text" | "target";
-			readonly points: readonly string[];
+			readonly ends: Int32Array;
 			readonly around: string;
 			readonly secrets: ReturnType<typeof cloudSecretSpans>;
 			readonly more: boolean;
@@ -806,7 +823,7 @@ export function cloudFolderFileTools(options: {
 				answer: { path: entry.path, kind: "symlink", version: entry.version, offset: 0 },
 				text: {
 					field: "target",
-					points: Array.from(entry.target),
+					ends: codePointEndOffsets(entry.target),
 					around: entry.target,
 					secrets: cloudSecretSpans(entry.target),
 					more: false,
@@ -875,7 +892,7 @@ export function cloudFolderFileTools(options: {
 				answer: { ...named, offset: 0 },
 				text: {
 					field: "text",
-					points: Array.from(text),
+					ends: codePointEndOffsets(text),
 					around,
 					secrets: cloudSecretSpans(around),
 					more: bytes.byteLength < total,
@@ -941,7 +958,7 @@ export function cloudFolderFileTools(options: {
 			answer: { ...named, offset: startOffset },
 			text: {
 				field: "text",
-				points: Array.from(sliceText),
+				ends: codePointEndOffsets(sliceText),
 				around,
 				secrets: cloudSecretSpans(around),
 				more: startOffset + Buffer.byteLength(around) < total,
@@ -1004,7 +1021,8 @@ export function cloudFolderFileTools(options: {
 				{
 					files: parts.map((part): JsonValue => {
 						if (!part.text) return part.answer;
-						const room = part.text.points.slice(0, cap).join("").length;
+						const maxCap = part.text.ends.length - 1;
+						const room = part.text.ends[cap < maxCap ? cap : maxCap]!;
 						const { end, runsOn } = windowEnd(part.text.around, room, part.text.more, part.text.secrets);
 						const shown = part.text.around.slice(0, end);
 						const bytesRead = Buffer.byteLength(shown);
@@ -1034,7 +1052,7 @@ export function cloudFolderFileTools(options: {
 				MANY_JSON_BYTES,
 			);
 		let low = 0;
-		let high = Math.max(0, ...parts.map((part) => part.text?.points.length ?? 0));
+		let high = Math.max(0, ...parts.map((part) => (part.text ? part.text.ends.length - 1 : 0)));
 		while (low < high) {
 			const middle = Math.ceil((low + high) / 2);
 			if (fitsOneResult(redactCloudWebhookSecrets(render(middle)))) low = middle;
@@ -1279,6 +1297,57 @@ export function cloudFolderFileTools(options: {
 				// takes SECRET_MARGIN bytes before the window and after it too, so that the window neither starts nor ends
 				// inside a secret (windowLead, windowEnd).
 				const total = entry.file.bytes;
+				const { mediaType } = entry.file;
+				if (
+					input.offset === 0 &&
+					total <= MAX_FOLDER_IMAGE_BYTES &&
+					["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mediaType)
+				) {
+					const single = await oneImageAtATime(context.signal, async () => {
+						let raw: Uint8Array;
+						try {
+							raw = await folder.readRange(entry, 0, total, context.signal);
+						} catch (error) {
+							return unavailable(error, "read");
+						}
+						if (!folderImageFormat(raw)) return { raw };
+						try {
+							return { view: folderImageView(raw) };
+						} catch (error) {
+							if (!(error instanceof FolderImageRefusal)) throw error;
+							throw new CloudToolRefusal(
+								`${error.reason === "too_large" ? "COMPANY_IMAGE_TOO_LARGE" : "COMPANY_IMAGE_UNREADABLE"}: ${error.message}; open it on a machine`,
+							);
+						}
+					});
+					if ("view" in single && single.view) {
+						const { view } = single;
+						const text = cloudToolJsonText({
+							path: entry.path,
+							kind: "image",
+							version: entry.version,
+							mediaType: `image/${view.format}`,
+							totalBytes: total,
+							width: view.width,
+							height: view.height,
+							shownWidth: view.shownWidth,
+							shownHeight: view.shownHeight,
+							imageSha256: view.sha256,
+						});
+						const content = await released(folder, identity.runId, context, text, [
+							cloudCompanyFolderRelease(entry),
+						]);
+						return { ...content, image: { png: view.png, sha256: view.sha256 } };
+					}
+					const other = otherImageFormat(single.raw);
+					if (other === undefined)
+						throw new CloudToolRefusal(
+							"COMPANY_IMAGE_UNREADABLE: the file is not the image its type says; open it on a machine",
+						);
+					throw new CloudToolRefusal(
+						`COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here, and this one is ${other}; open it on a machine`,
+					);
+				}
 				const behind = Math.min(SECRET_MARGIN, input.offset);
 				let bytes: Uint8Array;
 				try {
@@ -1292,10 +1361,10 @@ export function cloudFolderFileTools(options: {
 				}
 				// An image read from its start is shown as an image (chat images PR3), or refused by name.
 				if (input.offset === 0) {
-					if (folderImageFormat(bytes)) return showImage(entry, context);
+					if (folderImageFormat(bytes))
+						return showImage(entry, context, bytes.byteLength >= total ? bytes : undefined);
 					// Its own start names the format; a media type of an image (SVG is text) says it is one in another format.
 					const other = otherImageFormat(bytes);
-					const { mediaType } = entry.file;
 					if (other === undefined && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mediaType))
 						throw new CloudToolRefusal(
 							"COMPANY_IMAGE_UNREADABLE: the file is not the image its type says; open it on a machine",

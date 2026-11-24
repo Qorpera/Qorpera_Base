@@ -2506,6 +2506,49 @@ function routineFirstSlot(
 	return first ? { nextDueAt: first.toISOString() } : undefined;
 }
 
+function countAdvancedOccurrencesBetween(
+	trigger: Extract<RoutineScheduleTrigger, { windowStart: string }>,
+	afterMs: number,
+	untilMs: number,
+): number {
+	if (untilMs <= afterMs) return 0;
+	const startLocal = calendarParts(new Date(afterMs), trigger.timeZone);
+	const endLocal = calendarParts(new Date(untilMs), trigger.timeZone);
+	const startDayUtc = Date.UTC(startLocal.year, startLocal.month - 1, startLocal.day);
+	const endDayUtc = Date.UTC(endLocal.year, endLocal.month - 1, endLocal.day);
+	const startMin = Number(trigger.windowStart.slice(0, 2)) * 60 + Number(trigger.windowStart.slice(3));
+	const endMin = Number(trigger.windowEnd.slice(0, 2)) * 60 + Number(trigger.windowEnd.slice(3));
+	const step = trigger.intervalMinutes;
+	const stepMs = step * 60_000;
+	const slotsPerFullDay = Math.floor((endMin - startMin) / step) + 1;
+	const dayMs = 86_400_000;
+	let count = 0;
+	for (let dayUtc = startDayUtc - dayMs; dayUtc <= endDayUtc + dayMs; dayUtc += dayMs) {
+		const shifted = new Date(dayUtc);
+		const year = shifted.getUTCFullYear();
+		const month = shifted.getUTCMonth() + 1;
+		const day = shifted.getUTCDate();
+		if (!advancedCalendarDateMatches(trigger, year, month, day)) continue;
+		const offset = constantDayOffsetMs(year, month, day, trigger.timeZone);
+		if (offset !== undefined) {
+			if (dayUtc > startDayUtc + dayMs && dayUtc < endDayUtc - dayMs) {
+				count += slotsPerFullDay;
+				continue;
+			}
+			const firstSlotUtc = dayUtc + startMin * 60_000 - offset;
+			const kMin = Math.max(0, Math.floor((afterMs - firstSlotUtc) / stepMs) + 1);
+			const kMax = Math.min(slotsPerFullDay - 1, Math.floor((untilMs - firstSlotUtc) / stepMs));
+			if (kMax >= kMin) count += kMax - kMin + 1;
+			continue;
+		}
+		for (const occurrence of advancedCalendarOccurrences(trigger, year, month, day)) {
+			const ts = occurrence.getTime();
+			if (ts > afterMs && ts <= untilMs) count += 1;
+		}
+	}
+	return count;
+}
+
 function dueRoutineWakes(
 	head: CloudRoutineScheduleHead,
 	trigger: RoutineScheduleTrigger,
@@ -2526,6 +2569,40 @@ function dueRoutineWakes(
 		return [{ ...routineOccurrence(head, trigger, scheduledFor), nextDueAt: nextDueAt.toISOString(), coalesced: 0 }];
 	}
 	const lastScheduledFor = new Date(cursor.lastScheduledFor);
+	if (!("windowStart" in trigger) && !("localTime" in trigger)) {
+		const intervalMs = trigger.intervalMinutes * 60_000;
+		const anchor = trigger.startAt ? Date.parse(trigger.startAt) : 0;
+		const firstSlot = Math.max(0, Math.floor((lastScheduledFor.getTime() - anchor) / intervalMs) + 1);
+		const firstMs = anchor + firstSlot * intervalMs;
+		if (firstMs > now.getTime()) return [];
+		const lastSlot = Math.floor((now.getTime() - anchor) / intervalMs);
+		const dueCount = lastSlot - firstSlot + 1;
+		const latest = new Date(anchor + lastSlot * intervalMs);
+		const nextCandidate = new Date(anchor + (lastSlot + 1) * intervalMs);
+		if (dueCount > catchUpLimit) {
+			return [
+				{
+					...routineOccurrence(head, trigger, latest),
+					expectedLastScheduledFor: cursor.lastScheduledFor,
+					nextDueAt: nextCandidate.toISOString(),
+					coalesced: dueCount - 1,
+				},
+			];
+		}
+		const wakes: ScheduledRoutineWake[] = [];
+		for (let i = 0; i < dueCount; i += 1) {
+			const scheduledFor = new Date(anchor + (firstSlot + i) * intervalMs);
+			const nextDueAt = new Date(anchor + (firstSlot + i + 1) * intervalMs);
+			const expectedLast = i === 0 ? lastScheduledFor : new Date(anchor + (firstSlot + i - 1) * intervalMs);
+			wakes.push({
+				...routineOccurrence(head, trigger, scheduledFor),
+				expectedLastScheduledFor: expectedLast.toISOString(),
+				nextDueAt: nextDueAt.toISOString(),
+				coalesced: 0,
+			});
+		}
+		return wakes;
+	}
 	let candidate = nextRoutineOccurrence(trigger, lastScheduledFor);
 	const due: Date[] = [];
 	let dueCount = 0;
@@ -2533,7 +2610,20 @@ function dueRoutineWakes(
 	while (candidate && candidate.getTime() <= now.getTime()) {
 		dueCount += 1;
 		latest = candidate;
-		if (dueCount <= catchUpLimit) due.push(candidate);
+		if (dueCount <= catchUpLimit) {
+			due.push(candidate);
+			candidate = nextRoutineOccurrence(trigger, candidate);
+			continue;
+		}
+		if ("windowStart" in trigger) {
+			const finalLatest = latestRoutineOccurrence(trigger, now);
+			if (finalLatest && finalLatest.getTime() > latest.getTime()) {
+				dueCount += countAdvancedOccurrencesBetween(trigger, latest.getTime(), finalLatest.getTime());
+				latest = finalLatest;
+			}
+			candidate = nextRoutineOccurrence(trigger, latest);
+			break;
+		}
 		candidate = nextRoutineOccurrence(trigger, candidate);
 	}
 	if (!latest || !candidate) return [];

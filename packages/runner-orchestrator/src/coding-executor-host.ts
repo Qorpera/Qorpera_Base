@@ -5368,6 +5368,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			this.#samples.delete(workerId);
 			this.#folderUidCache.delete(workerId);
+			this.#checksMayRun.delete(workerId);
+			this.#checksUncertain.delete(workerId);
 			this.#deleteKeptCommandsForWorker(workerId);
 		}
 	}

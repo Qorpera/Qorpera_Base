@@ -681,7 +681,10 @@ export class SurfaceCodeHostWorker {
 			return { signal: parentSignal, stop() {} };
 		}
 		const leaseAbort = new AbortController();
-		const combined = AbortSignal.any([parentSignal, leaseAbort.signal]);
+		const onParentAbort = (): void => leaseAbort.abort(parentSignal.reason);
+		if (parentSignal.aborted) onParentAbort();
+		else parentSignal.addEventListener("abort", onParentAbort, { once: true });
+		const combined = leaseAbort.signal;
 		let stopped = false;
 		let renewing = false;
 		const timer = setInterval(() => {
@@ -720,6 +723,7 @@ export class SurfaceCodeHostWorker {
 			stop() {
 				stopped = true;
 				clearInterval(timer);
+				parentSignal.removeEventListener("abort", onParentAbort);
 			},
 		};
 	}

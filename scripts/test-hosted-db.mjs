@@ -38,11 +38,23 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * left. A test connecting to its database again uses `current_database()`, not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "509"],
-	["qorpera_test_3", "672"],
-	["qorpera_test_4", "826"],
-	["qorpera_test_5", "893"],
+	["qorpera_test_2", "628"],
+	["qorpera_test_3", "786"],
+	["qorpera_test_4", "948"],
+	["qorpera_test_5", "1245"],
 ];
+
+export function compareTestNames(a, b) {
+	const numA = /^(\d+)/.exec(a);
+	const numB = /^(\d+)/.exec(b);
+	if (numA && numB) {
+		const diff = Number(numA[1]) - Number(numB[1]);
+		if (diff !== 0) return diff;
+	} else if (numA || numB) {
+		return numA ? -1 : 1;
+	}
+	return a < b ? -1 : a > b ? 1 : 0;
+}
 
 export function sortMigrationNames(names) {
 	const migrations = names.filter((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)).sort();
@@ -223,7 +235,14 @@ export function splitTests(tests, only, databases = SQL_TEST_DATABASES) {
 	return databases
 		.map(([database, first], index) => {
 			const next = databases[index + 1]?.[1];
-			return [database, tests.filter((test) => test >= first && (next === undefined || test < next))];
+			return [
+				database,
+				tests.filter(
+					(test) =>
+						(first === "" || compareTestNames(test, first) >= 0) &&
+						(next === undefined || compareTestNames(test, next) < 0),
+				),
+			];
 		})
 		.filter(([, part]) => part.length > 0);
 }
@@ -233,7 +252,7 @@ async function main() {
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
 	const all = readdirSync(testsRoot)
 		.filter((name) => name.endsWith(".test.sql"))
-		.sort();
+		.sort(compareTestNames);
 	if (all.length === 0) {
 		throw new Error("No hosted database regression tests were found");
 	}

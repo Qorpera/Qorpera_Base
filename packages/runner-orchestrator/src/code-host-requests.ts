@@ -508,13 +508,31 @@ export class CodeHostRequests {
 				if (!scoped.aborted) this.#report({ event: "code-request-error", step: "claim", error });
 				return;
 			}
+			const byCompany = new Map<string, CodeRequest[]>();
 			for (const request of claimed) {
-				if (request.kind === "undo") counts[await this.#guarded(request, () => this.#undo(request, scoped))] += 1;
-				else if (request.kind === "query")
-					counts[await this.#guarded(request, () => this.#query(request, scoped))] += 1;
-				else if (request.kind === "lifecycle")
-					counts[await this.#guarded(request, () => this.#lifecycle(request, scoped))] += 1;
+				if (request.kind !== "undo" && request.kind !== "query" && request.kind !== "lifecycle") continue;
+				const list = byCompany.get(request.companyId);
+				if (list) list.push(request);
+				else byCompany.set(request.companyId, [request]);
 			}
+			const companyLists = [...byCompany.values()];
+			let next = 0;
+			const workers = Math.min(6, companyLists.length);
+			await Promise.all(
+				Array.from({ length: workers }, async () => {
+					while (next < companyLists.length) {
+						const list = companyLists[next++]!;
+						for (const request of list) {
+							if (request.kind === "undo")
+								counts[await this.#guarded(request, () => this.#undo(request, scoped))] += 1;
+							else if (request.kind === "query")
+								counts[await this.#guarded(request, () => this.#query(request, scoped))] += 1;
+							else if (request.kind === "lifecycle")
+								counts[await this.#guarded(request, () => this.#lifecycle(request, scoped))] += 1;
+						}
+					}
+				}),
+			);
 			for (const request of claimed) {
 				if (request.kind === "download" || request.kind === "restore" || request.kind === "import")
 					this.#start(request, signal);

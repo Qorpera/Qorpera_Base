@@ -2515,7 +2515,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				await this.#recordUsageSignalKind(binding, sessionResult.usageSignal);
 			}
 			if (!isGeminiRun) {
-				this.#spareEfforts.set(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+				this.#rememberSpareEffort(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
 			}
 			const outcome = captured as SurfaceSessionTurnExecutionOutcome | null;
 			const mergedNotes = [...new Set([...stagedNotePaths, ...(outcome?.notePaths ?? [])])];
