@@ -222,6 +222,7 @@ import {
 	extractPointToChangeTarget,
 	loadSurfaceIdentityContext,
 	loadSurfaceSharedAssets,
+	openSurfaceLayoutOps,
 	runSurfaceSessionTurn,
 	type SurfaceSessionTurnExecutionOutcome,
 	type SurfaceSessionTurnInput,
@@ -2209,6 +2210,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const surfaceArchetype = surfaceArchetypeOf(sessionTurnRaw.surfaceArchetype);
+		const openLayoutOps = openSurfaceLayoutOps(sessionTurnRaw.openLayoutOps);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const memberImagesSection = surfaceMemberImagesSection(
 			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
@@ -2226,6 +2228,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				? { surfaceIsGlobal: sessionTurnRaw.surfaceIsGlobal }
 				: {}),
 			...(surfaceArchetype ? { surfaceArchetype } : {}),
+			...(openLayoutOps ? { openLayoutOps } : {}),
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",

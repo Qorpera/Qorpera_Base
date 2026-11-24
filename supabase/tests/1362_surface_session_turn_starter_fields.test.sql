@@ -81,7 +81,27 @@ begin
 	perform pg_temp.sstsf_assert(v_turn ->> 'surfaceArchetype' = 'studio', 'Identity is a studio');
 	perform pg_temp.sstsf_assert(v_turn ->> 'folderRoot' = 'identity', 'Identity keeps its folder root');
 
+	v_turn := pg_temp.sstsf_turn(v_company, v_session_product, '13620000-0000-4000-8000-000000000104');
+	perform pg_temp.sstsf_assert(v_turn -> 'openLayoutOps' = '[]'::jsonb, 'a session with no waiting change has no layout ops');
+
+	insert into public.qorpera_surface_changes(profile_id, surface_id, session_id, seq, title, kind, patch_manifest, status)
+	values
+		(v_company, v_custom, v_session_custom, 1, 'Page', 'folder_patch',
+			'[{"op":"write_text","path":"layout.json","content":"{}"},{"op":"write_text","path":"notes.md","content":"x"}]'::jsonb,
+			'staged'),
+		(v_company, v_custom, v_session_custom, 2, 'Dropped', 'folder_patch',
+			'[{"op":"delete","path":"layout.json"}]'::jsonb, 'discarded'),
+		(v_company, v_custom, v_session_custom, 3, 'Rename', 'folder_patch',
+			'[{"op":"merge_json","path":"surfaces/field-notes/layout.json","patch":{"tabs":[]}}]'::jsonb, 'staged');
+	insert into public.qorpera_surface_changes(profile_id, surface_id, session_id, seq, title, kind, patch_manifest, status)
+	values (v_company, v_product, v_session_product, 1, 'Other session', 'folder_patch',
+		'[{"op":"delete","path":"layout.json"}]'::jsonb, 'staged');
+
 	v_turn := pg_temp.sstsf_turn(v_company, v_session_custom, '13620000-0000-4000-8000-000000000103');
+	perform pg_temp.sstsf_assert(
+		v_turn -> 'openLayoutOps' = '[{"op":"write_text","path":"layout.json","content":"{}"},{"op":"merge_json","path":"surfaces/field-notes/layout.json","patch":{"tabs":[]}}]'::jsonb,
+		'the session''s own waiting layout ops come in order, got ' || coalesce(v_turn ->> 'openLayoutOps', 'null')
+	);
 	perform pg_temp.sstsf_assert(v_turn ->> 'surfaceIcon' = 'star', 'the custom interface hands over its icon');
 	perform pg_temp.sstsf_assert(v_turn -> 'surfaceIsGlobal' = 'false'::jsonb, 'the custom interface is not global');
 	perform pg_temp.sstsf_assert(v_turn ->> 'surfaceArchetype' = 'studio', 'the custom interface is a studio');

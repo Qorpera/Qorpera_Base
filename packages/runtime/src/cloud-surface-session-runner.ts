@@ -17,7 +17,9 @@ import {
 	IDENTITY_VOICE_PATH,
 	type PointToChangeTarget,
 	parsePointToChangeTarget,
+	parseStudioPatchOps,
 	readSurfaceLayout,
+	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_FACT_FIGURE_CHARS,
 	SURFACE_KINDS,
@@ -107,6 +109,7 @@ export interface SurfaceSessionTurnInput {
 	readonly surfaceIcon?: string | null;
 	readonly surfaceIsGlobal?: boolean | null;
 	readonly surfaceArchetype?: SurfaceArchetype | null;
+	readonly openLayoutOps?: readonly StudioPatchOp[] | null;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly prompt: string;
 	readonly state?: "queued" | "reconciling";
@@ -422,7 +425,7 @@ export function extractPointToChangeTarget(originRef: unknown): PointToChangeTar
 
 const STUDIO_PAGE_RULES = [
 	"Put values in the files the layout binds; the page draws them from there.",
-	`Change the page's shape by staging ${SURFACE_LAYOUT_PATH} with stage_surface_patch like any other file: it shows in Changes and is approved like content. A layout that does not parse is refused when it is staged; deleting ${SURFACE_LAYOUT_PATH} brings back the starter.`,
+	`Change the page's shape by staging ${SURFACE_LAYOUT_PATH} with stage_surface_patch like any other file: it shows in Changes and is approved like content. A layout that does not parse is refused when it is staged (checked on top of this session's own waiting changes, not other sessions'); deleting ${SURFACE_LAYOUT_PATH} brings back the starter.`,
 	`Figures filled from an object show only values of at most ${SURFACE_FACT_FIGURE_CHARS} characters.`,
 	"A module is a folder (modules/<name>/) with index.html and its own css and js linked relatively: no network, nothing from outside its folder except tokens.css / qorpera-identity.css, and an auto module must not size itself by the viewport (100vh).",
 	"A files block shows only what no other block draws.",
@@ -443,6 +446,15 @@ export type SurfaceStudioPageView =
 
 export function surfaceArchetypeOf(value: unknown): SurfaceArchetype | undefined {
 	return (SURFACE_ARCHETYPES as readonly unknown[]).includes(value) ? (value as SurfaceArchetype) : undefined;
+}
+
+export function openSurfaceLayoutOps(value: unknown): readonly StudioPatchOp[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	try {
+		return parseStudioPatchOps(value, "openLayoutOps");
+	} catch {
+		return undefined;
+	}
 }
 
 function storedSurfaceKind(kind: string | undefined): SurfaceKind | undefined {
@@ -555,7 +567,12 @@ export function cloudStudioFileReader(
 			return folder.readRange(file.entry, 0, file.bytes, signal);
 		},
 	};
-	return (roots, signal) => readSurfaceFolderFiles(reader, roots, signal);
+	return async (roots, signal) => {
+		const unread: string[] = [];
+		const contents = await readSurfaceFolderFiles(reader, roots, signal, (path) => unread.push(path));
+		if (unread.length > 0) throw new Error(`Studio folder could not be read: ${unread.join(", ")}`);
+		return contents;
+	};
 }
 
 async function readStudioContents(
@@ -866,6 +883,7 @@ export async function runSurfaceSessionTurn(
 			const layoutStaging: SurfaceLayoutStaging | undefined = folderReader
 				? {
 						folderRoot,
+						waitingOps: input.openLayoutOps ?? null,
 						readLayout: (readSignal) =>
 							folderText(
 								folderReader,
