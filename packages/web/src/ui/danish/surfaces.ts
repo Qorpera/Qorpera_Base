@@ -227,6 +227,8 @@ export const SURFACES: Record<string, string> = {
 	"Every hour": "Hver time",
 	"Close panel": "Luk panel",
 	"Preview panel": "Forhåndsvisningspanel",
+	"Hide panels": "Skjul paneler",
+	"Show panels": "Vis paneler",
 	"All changes": "Alle ændringer",
 	"View responses": "Se svar",
 	"Use this one": "Brug denne",

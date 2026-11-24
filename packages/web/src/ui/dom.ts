@@ -449,6 +449,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	// Lucide maximize-2: show something large.
 	reload: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"],
 	expand: ["M15 3h6v6", "M9 21H3v-6", "m21 3-7 7", "m3 21 7-7"],
+	shrink: ["M4 14h6v6", "M20 10h-6V4", "m14 10 7-7", "m3 21 7-7"],
 	crosshair: ["M12 2a10 10 0 1 0 0 20 10 10 0 1 0 0-20Z", "M22 12h-4", "M6 12H2", "M12 6V2", "M12 22v-4"],
 	trash: [
 		"M3 6h18",

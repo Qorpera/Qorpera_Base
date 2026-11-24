@@ -778,6 +778,48 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
+	it("hides both side panels from the notch and leaves the notch as the way back", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		const bar = notch.querySelector<HTMLElement>(".surface-pill")!;
+		const show = notch.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!;
+		expect(show.hidden).toBe(true);
+		expect(bar.lastElementChild?.getAttribute("data-act")).toBe("hide-panels");
+
+		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(bar.hidden).toBe(true);
+		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(true);
+		expect(show.hidden).toBe(false);
+		expect(document.activeElement).toBe(show);
+
+		view.update();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
+		expect(show.hidden).toBe(false);
+
+		show.click();
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
+		expect(show.hidden).toBe(true);
+		expect(bar.hidden).toBe(false);
+		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(false);
+
+		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
+		view.dispose();
+		store.dispose();
+	});
+
 	it("drops a session's options when the member says what it should be instead", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
@@ -1903,9 +1945,9 @@ describe("a website that is not live", () => {
 	}
 
 	const parts = (view: SurfaceView) =>
-		[...view.el.querySelectorAll<HTMLElement>(".surface-pill > :not(.surface-pill-divider)")].map(
-			(part) => part.dataset.toggle ?? part.className,
-		);
+		[
+			...view.el.querySelectorAll<HTMLElement>(".surface-pill > :not(.surface-pill-divider, .surface-hide-panels)"),
+		].map((part) => part.dataset.toggle ?? part.className);
 	const card = (view: SurfaceView) => view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
 	const openCard = async (view: SurfaceView, settle: () => Promise<void>) => {
 		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
