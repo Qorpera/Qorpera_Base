@@ -4,7 +4,6 @@
 
 pub mod bridge;
 pub mod cache;
-pub mod command;
 pub mod data;
 pub mod frame;
 pub mod git;

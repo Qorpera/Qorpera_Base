@@ -93,7 +93,7 @@ pub const CACHE_DIR_MAX: usize = 80;
 const WHOLE: &str = "w";
 
 /// The most local folders held open as reached lately (`Local::reach`); one more lets go of them all.
-const REACHED: usize = 64;
+const REACHED: usize = 256;
 
 /// The folder a local file is in: a folder of the mount's (by its path), or a local one (by its inode).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,17 +444,28 @@ fn latest(names: &Names, ino: u64) -> Option<(Up, String, Area)> {
 
 /// Forgets every name `gone` picks, and then every name in a local folder left with none.
 fn forget_all(names: &mut Names, gone: impl Fn(&Up, &str, Area) -> bool) {
+	let mut any_empty = false;
 	for all in names.values_mut() {
 		all.retain(|(up, name, area)| !gone(up, name, *area));
+		if all.is_empty() {
+			any_empty = true;
+		}
+	}
+	if !any_empty {
+		return;
 	}
 	loop {
 		names.retain(|_, all| !all.is_empty());
 		let named: HashSet<u64> = names.keys().copied().collect();
-		let before: usize = names.values().map(Vec::len).sum();
+		let mut changed = false;
 		for all in names.values_mut() {
+			let len = all.len();
 			all.retain(|(up, _, _)| !matches!(up, Up::Local(ino) if !named.contains(ino)));
+			if all.len() != len {
+				changed = true;
+			}
 		}
-		if names.values().map(Vec::len).sum::<usize>() == before {
+		if !changed {
 			return;
 		}
 	}

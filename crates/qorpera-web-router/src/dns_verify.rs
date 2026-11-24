@@ -448,19 +448,62 @@ fn status_sql_str(status: DomainStatus) -> &'static str {
     }
 }
 
+struct DbClientSlot {
+    url: String,
+    client: tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+}
+
+impl DbClientSlot {
+    fn new(url: String) -> Self {
+        Self {
+            url,
+            client: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn get(&self) -> Option<Arc<tokio_postgres::Client>> {
+        let mut guard = self.client.lock().await;
+        if let Some(ref client) = *guard {
+            if !client.is_closed() {
+                return Some(Arc::clone(client));
+            }
+            *guard = None;
+        }
+        match connect_postgres_client(&self.url, DB_OP_TIMEOUT).await {
+            Ok(client) => {
+                let arc = Arc::new(client);
+                *guard = Some(Arc::clone(&arc));
+                Some(arc)
+            }
+            Err(err) => {
+                warn!(error = %err, "dns verifier postgres connect failed");
+                None
+            }
+        }
+    }
+
+    async fn clear_if_same(&self, failed: &Arc<tokio_postgres::Client>) {
+        let mut guard = self.client.lock().await;
+        if guard.as_ref().is_some_and(|held| Arc::ptr_eq(held, failed)) {
+            *guard = None;
+        }
+    }
+}
+
 pub async fn verify_domains_once(
     routes: &Arc<SharedRoutes>,
     dns_servers: &[SocketAddr],
     database_url: Option<&str>,
     query_timeout: Duration,
 ) -> Vec<DomainCheckOutcome> {
-    verify_domains_once_with_tracker(routes, dns_servers, database_url, query_timeout, None, true).await
+    let db_slot = database_url.map(|url| Arc::new(DbClientSlot::new(url.to_string())));
+    verify_domains_once_with_tracker(routes, dns_servers, db_slot.as_ref(), query_timeout, None, true).await
 }
 
 async fn verify_domains_once_with_tracker(
     routes: &Arc<SharedRoutes>,
     dns_servers: &[SocketAddr],
-    database_url: Option<&str>,
+    db_slot: Option<&Arc<DbClientSlot>>,
     query_timeout: Duration,
     persist_tracker: Option<&Arc<DomainPersistTracker>>,
     force_all_persist: bool,
@@ -485,18 +528,6 @@ async fn verify_domains_once_with_tracker(
         let active_ids: HashSet<String> = domains.iter().map(|d| d.id.clone()).collect();
         tracker.prune_missing(&active_ids);
     }
-
-    let db_client = if let Some(url) = database_url {
-        match connect_postgres_client(url, DB_OP_TIMEOUT).await {
-            Ok(client) => Some(Arc::new(client)),
-            Err(err) => {
-                warn!(error = %err, "dns verifier postgres connect failed");
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     struct SweepTargets {
         servers: Vec<SocketAddr>,
@@ -529,7 +560,7 @@ async fn verify_domains_once_with_tracker(
             }
         }
         let targets_ref = Arc::clone(&targets);
-        let db_ref = db_client.clone();
+        let db_slot_ref = db_slot.map(Arc::clone);
         let tracker_ref = persist_tracker.map(Arc::clone);
 
         set.spawn(async move {
@@ -584,25 +615,31 @@ async fn verify_domains_once_with_tracker(
                 t.should_persist(&domain.id, force_persist, UNCHANGED_DB_HEARTBEAT)
             });
             if should_write_db {
-                if let Some(ref client) = db_ref {
-                    let res = tokio::time::timeout(
-                        DB_OP_TIMEOUT,
-                        client.execute(
-                            "SELECT public.qorpera_web_domain_mark_checked($1::text::uuid, $2::text, $3::text)",
-                            &[&domain.id, &status_sql_str(next_status), &err_text],
-                        ),
-                    )
-                    .await;
-                    match res {
-                        Ok(Err(err)) => {
-                            warn!(domain = %domain.hostname, error = %err, "failed persisting domain check");
-                        }
-                        Err(_) => {
-                            warn!(domain = %domain.hostname, "timed out persisting domain check");
-                        }
-                        Ok(Ok(_)) => {
-                            if let Some(ref tracker) = tracker_ref {
-                                tracker.mark_persisted(&domain.id);
+                if let Some(ref slot) = db_slot_ref {
+                    if let Some(client) = slot.get().await {
+                        let res = tokio::time::timeout(
+                            DB_OP_TIMEOUT,
+                            client.execute(
+                                "SELECT public.qorpera_web_domain_mark_checked($1::text::uuid, $2::text, $3::text)",
+                                &[&domain.id, &status_sql_str(next_status), &err_text],
+                            ),
+                        )
+                        .await;
+                        match res {
+                            Ok(Err(err)) => {
+                                warn!(domain = %domain.hostname, error = %err, "failed persisting domain check");
+                                if client.is_closed() {
+                                    slot.clear_if_same(&client).await;
+                                }
+                            }
+                            Err(_) => {
+                                warn!(domain = %domain.hostname, "timed out persisting domain check");
+                                slot.clear_if_same(&client).await;
+                            }
+                            Ok(Ok(_)) => {
+                                if let Some(ref tracker) = tracker_ref {
+                                    tracker.mark_persisted(&domain.id);
+                                }
                             }
                         }
                     }
@@ -656,6 +693,7 @@ pub fn spawn_dns_verifier(
     mut trigger_rx: mpsc::Receiver<()>,
 ) {
     let persist_tracker = Arc::new(DomainPersistTracker::new());
+    let db_slot = database_url.map(|url| Arc::new(DbClientSlot::new(url)));
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -668,7 +706,7 @@ pub fn spawn_dns_verifier(
                     let _ = verify_domains_once_with_tracker(
                         &routes,
                         &dns_servers,
-                        database_url.as_deref(),
+                        db_slot.as_ref(),
                         Duration::from_secs(3),
                         Some(&persist_tracker),
                         false,
@@ -688,7 +726,7 @@ pub fn spawn_dns_verifier(
                     let _ = verify_domains_once_with_tracker(
                         &routes,
                         &dns_servers,
-                        database_url.as_deref(),
+                        db_slot.as_ref(),
                         Duration::from_secs(3),
                         Some(&persist_tracker),
                         true,

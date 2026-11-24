@@ -1177,9 +1177,13 @@ async fn probe_http(addr: &str, path: &str) -> Result<(), String> {
         .map_err(|e| format!("connect: {e}"))?;
     let _ = stream.set_nodelay(true);
     let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| format!("handshake: {e}"))?;
+    let (mut sender, conn) = tokio::time::timeout(
+        Duration::from_millis(500),
+        hyper::client::conn::http1::handshake(io),
+    )
+    .await
+    .map_err(|_| "handshake_timeout".to_string())?
+    .map_err(|e| format!("handshake: {e}"))?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
