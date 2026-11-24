@@ -1023,6 +1023,56 @@ describe("SurfacesStore", () => {
 		missingStore.dispose();
 	});
 
+	it("mints a pass for the last preview that built beside a failed one and keeps it across refreshes", async () => {
+		const mintPreviewPass = vi.fn(async (previewId: string) => ({
+			previewId,
+			doorActionUrl: `https://thetaband--p${previewId.slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		}));
+		const failedFrame = previewFrame({
+			previewId: PREVIEW_IDS[0],
+			status: "failed",
+			doorActionUrl: null,
+			memberPass: null,
+			errorDetail: "PREVIEW_BUILD_FAILED\nlog",
+			kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null },
+			fixing: true,
+		});
+		const client = fakeClient({
+			isSurfacesEnabled: vi.fn(async () => true),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"])], {
+					previewState: { surfaceId: SURFACE, mode: "single", primary: failedFrame, compareFrames: [] },
+				}),
+			),
+			setPreviewSelection: vi.fn(async () => ({
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary: failedFrame,
+				compareFrames: [],
+			})),
+			mintPreviewPass,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(mintPreviewPass).not.toHaveBeenCalledWith(PREVIEW_IDS[0]);
+
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[1])).toBe(true);
+		const kept = store.workspace(SURFACE)!.previewState.primary.kept;
+		expect(kept).toEqual({
+			previewId: PREVIEW_IDS[1],
+			doorActionUrl: `https://thetaband--p${PREVIEW_IDS[1].slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		});
+		expect(store.workspace(SURFACE)!.previewState.primary.memberPass).toBeNull();
+
+		await store.refreshWorkspace(SURFACE);
+		expect(store.workspace(SURFACE)!.previewState.primary.kept?.memberPass).toBe(VALID_PASS);
+		store.dispose();
+	});
+
 	it("mints preview passes automatically when ready primary or compare previews arrive without a pass", async () => {
 		const mintPreviewPass = vi.fn(async (previewId: string) => ({
 			previewId,

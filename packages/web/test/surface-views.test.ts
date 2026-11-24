@@ -1049,6 +1049,124 @@ describe("the surface page", () => {
 		expect(publishFailureText("Missing index.html")).toBeNull();
 	});
 
+	it("keeps the last preview that built on screen with a quiet mark while a failed build is being fixed", () => {
+		const controller = new AbortController();
+		const remints: string[] = [];
+		const stage = new SurfaceDoorStage(controller.signal, {
+			onNeedFreshPass: (previewId) => {
+				remints.push(previewId);
+				return undefined;
+			},
+		});
+		document.body.append(stage.el);
+		const pill = stage.el.querySelector<HTMLElement>(".surface-preview-pill")!;
+		const failed = (overrides: Partial<ReturnType<typeof previewFrame>> = {}) =>
+			previewFrame({
+				previewId: PREVIEW_IDS[0],
+				status: "failed",
+				doorActionUrl: null,
+				memberPass: null,
+				errorDetail: 'PREVIEW_BUILD_FAILED\nThe build "npm run build" exited with code 1.',
+				kept: {
+					previewId: PREVIEW_IDS[1],
+					doorActionUrl: "https://thetaband--p12ab34cd.qorpera.com/__qorpera/member",
+					memberPass: VALID_PASS,
+				},
+				fixing: true,
+				...overrides,
+			});
+
+		stage.sync(failed(), "Website");
+		const kept = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		const posted = spyFrameMessages(kept);
+		sendFromFrame(kept, { type: SITE_DOOR_READY });
+		expect(posted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: VALID_PASS });
+		sendFromFrame(kept, { type: SITE_DOOR_SHOWN });
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(stage.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(true);
+		expect(pill.hidden).toBe(false);
+		expect(pill.textContent).toBe("Being fixed");
+		expect(pill.querySelector(".surface-state.is-running")).not.toBeNull();
+		expect(stage.el.textContent).not.toContain("could not be built");
+		expect(stage.el.textContent).not.toContain("npm run build");
+
+		stage.sync(failed({ kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null } }), "Website");
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+		expect(pill.textContent).toBe("Being fixed");
+		expect(remints).toEqual([]);
+
+		stage.sync(failed({ fixing: false }), "Website");
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(pill.textContent).toBe("The preview could not be built.");
+		expect(pill.querySelector(".surface-state.is-failed")).not.toBeNull();
+
+		stage.sync(
+			previewFrame({ previewId: PREVIEW_IDS[0], status: "building", doorActionUrl: null, memberPass: null }),
+			"Website",
+		);
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(kept);
+		expect(pill.textContent).toBe("Building preview…");
+
+		stage.sync(failed({ kept: null, fixing: false }), "Website");
+		expect(stage.el.querySelector("iframe")).toBeNull();
+		expect(pill.hidden).toBe(true);
+		expect(stage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+		expect(stage.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe(
+			"The preview could not be built.",
+		);
+
+		const fresh = new SurfaceDoorStage(controller.signal, {
+			onNeedFreshPass: (previewId) => {
+				remints.push(previewId);
+				return undefined;
+			},
+		});
+		fresh.sync(failed({ kept: { previewId: PREVIEW_IDS[1], doorActionUrl: null, memberPass: null } }), "Website");
+		expect(remints).toEqual([PREVIEW_IDS[1]]);
+		expect(fresh.el.querySelector<HTMLElement>(".surface-preview-pill")?.hidden).toBe(true);
+		controller.abort();
+	});
+
+	it("says a failed publish is being fixed under its sentence, and nothing when the field is missing", async () => {
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const failedPublish = {
+			publishStatus: "failed" as const,
+			lastPublishError: "PREVIEW_BUILD_FAILED\nlog",
+			hasUnpublishedChanges: true,
+			unpublishedChangeCount: 1,
+		};
+		for (const [extra, shown] of [
+			[{ publishBeingFixed: true }, true],
+			[{ publishBeingFixed: false }, false],
+			[{}, false],
+		] as const) {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [summary({ ...failedPublish, ...extra })]),
+					getSurfaceWorkspace: vi.fn(async () =>
+						workspace([session(["merged"])], { surface: summary({ ...failedPublish, ...extra }) }),
+					),
+				}),
+			);
+			await store.load();
+			const sheet = openPublishSheet(store, store.state.surfaces[0]!);
+			expect(sheet.el.querySelector(".surface-sheet-error")?.textContent).toBe(
+				"The site could not be built, so nothing was published.",
+			);
+			const note = sheet.el.querySelector(".surface-sheet-lead[role=status]");
+			expect(note?.textContent ?? null).toBe(shown ? "Being fixed" : null);
+			sheet.close();
+			store.dispose();
+		}
+	});
+
 	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in the publish window", async () => {
 		const controller = new AbortController();
 		const onRetry = vi.fn();

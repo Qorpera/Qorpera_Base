@@ -74,6 +74,7 @@ export const SURFACES: Record<string, string> = {
 	"These changes conflict. Turn one off to preview the rest.":
 		"Ændringerne er i konflikt. Slå én fra for at se resten.",
 	"The preview could not be built.": "Forhåndsvisningen kunne ikke bygges.",
+	"Being fixed": "Bliver rettet",
 	"The company is out of computer hours, so the preview could not be built.":
 		"Virksomheden har ikke flere computertimer, så forhåndsvisningen kunne ikke bygges.",
 	"No machine was free to build the preview. Try again in a moment.":
