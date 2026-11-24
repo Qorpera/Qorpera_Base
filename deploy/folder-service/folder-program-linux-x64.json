@@ -3,7 +3,7 @@
   "image": "rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082",
   "target": "x86_64-unknown-linux-gnu",
   "profile": "release",
-  "sourceSha256": "dc5817cf75ee731f36291b2613bf1ad1d47d8e989f04299696a3002a77572f00",
-  "bytes": 3544664,
-  "sha256": "1915238f34d42d67af171402bdead5469ed3b58ead5571d10a1b550ed536d5a6"
+  "sourceSha256": "d844e8a8a4da179a5faa3afe79a5c3e420c5dab5d18fdf60de8fe99f1fec0d6e",
+  "bytes": 3560664,
+  "sha256": "04628fcc705346ab6e69ed7ca2e2b6219671de4d7404ad8095b58f625553ac15"
 }
