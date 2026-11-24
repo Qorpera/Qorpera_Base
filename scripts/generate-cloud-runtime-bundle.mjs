@@ -20,12 +20,12 @@ const activationRequires = Object.freeze([
 	[
 		"20260930877000_gemini_wake_mediation",
 		"#2283 (Gemini wake mediation): bundle 279 expects wake runs to resolve pinned Gemini choices",
-		"position('''wake''' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.qorpera_execution_runs'::regclass and conname = 'qorpera_execution_runs_gemini_choice'), '')) > 0",
+		"position('''wake''' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = to_regclass('public.qorpera_execution_runs') and conname = 'qorpera_execution_runs_gemini_choice'), '')) > 0",
 	],
 	[
 		"20260930879000_surface_preview_build_no_sponsor",
 		"#2289 (preview builds without sponsor): bundle 279 pairs with sponsorless surface-preview-build workers",
-		"position('surface-preview-build' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.qorpera_runtime_workers'::regclass and conname = 'qorpera_runtime_workers_owner_check'), '')) > 0",
+		"position('surface-preview-build' in coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid = to_regclass('public.qorpera_runtime_workers') and conname = 'qorpera_runtime_workers_owner_check'), '')) > 0",
 	],
 	[
 		"20260930880000_surface_session_turn_starter_fields",
@@ -35,7 +35,7 @@ const activationRequires = Object.freeze([
 	[
 		"20260930882000_conversational_default_no_claude",
 		"#2312 (conversational defaults): bundle 279 requires member default models without legacy conv_effort constraint",
-		"not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_member_default_models'::regclass and conname = 'qorpera_member_default_models_conv_effort')",
+		"to_regclass('public.qorpera_member_default_models') is not null and not exists (select 1 from pg_constraint where conrelid = to_regclass('public.qorpera_member_default_models') and conname = 'qorpera_member_default_models_conv_effort')",
 	],
 	[
 		"20260930886000_member_default_voice",

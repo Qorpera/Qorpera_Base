@@ -1045,7 +1045,7 @@
     "packages/runtime/src/native-provider-account.ts": "1bab05c1f06759927ed4696d4310eb17319570d567446043582cd150e94f60d2",
     "packages/runtime/src/native-provider-usage.ts": "524d5b91845284ca30865e2db682128287bf2ebc00f645d7c380a98943f824b0",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "b718740518f7a9bcbc4e0285853090b95503344d958d16313ce5610cbb48f0f5",
+    "scripts/generate-cloud-runtime-bundle.mjs": "7208e4cd067bc43ea8b0bd419cf0961454c98f0554ea0114c33b020b07f6ae20",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "51263597763a7a79dbe96d77bd2b4c29fd95a8a451b0f21e8e1802e29a3eaf60",
     "scripts/package-coding-guest-agent.mjs": "5950b5d0fd1c7295fcc5eec53866bccc9b04d3afc0ad5e6a2a1375f272c88978",
