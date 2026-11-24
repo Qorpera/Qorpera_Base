@@ -6,11 +6,11 @@ import {
 	CompanyController,
 	type CompanyState,
 	hostingNotingPublic,
-	noteSitesPublic,
 	readSitesOncePublished,
 	siteAnswer,
 	siteServed,
 	sitesAwaited,
+	startPublicRead,
 } from "../src/app/company.ts";
 import { Store } from "../src/app/state.ts";
 import { inferSurfaceKind, opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
@@ -2399,8 +2399,32 @@ describe("a new website's first publish", () => {
 		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(false);
 		await noted.setPublic(HOSTED_SITE, true);
 		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
-		noteSitesPublic(company, undefined);
+		startPublicRead(company)(undefined);
 		expect(company.get().sitesPublic).toBeUndefined();
+	});
+
+	it("drops a hosting read that started before a Go live finished, or that lands while one runs", async () => {
+		const company = new Store<CompanyState>({ loading: false } as CompanyState);
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		let answerPublic: () => void = () => undefined;
+		hosting.client.setPublic.mockImplementation(
+			(_siteId: string, isPublic: boolean) =>
+				new Promise<boolean>((resolve) => {
+					answerPublic = () => resolve(isPublic);
+				}),
+		);
+		const noted = hostingNotingPublic(company, hosting.client);
+		const older = startPublicRead(company);
+		const going = noted.setPublic(HOSTED_SITE, true);
+		await noted.read();
+		expect(company.get().sitesPublic).toBeUndefined();
+		answerPublic();
+		await going;
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		older(await hosting.client.read());
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		await noted.read();
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(false);
 	});
 });
 
@@ -2409,7 +2433,7 @@ describe("a website's rail row", () => {
 		setLanguagePreference("system");
 	});
 
-	it("says Live only for a site everyone can open, Not live yet for one that is not, and the host alone while unknown", async () => {
+	it("says Live only for a site everyone can open, Not live yet for one that is not or was taken down, and the host alone while unknown", async () => {
 		const store = storeWith(
 			fakeClient({
 				listSurfaces: vi.fn(async () => [
@@ -2419,7 +2443,7 @@ describe("a website's rail row", () => {
 			}),
 		);
 		await store.load();
-		let company: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic"> = {};
+		let company: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic" | "sitesTakenDown"> = {};
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, undefined, (surface) =>
 			siteAnswer(company, surface),
 		);
@@ -2438,6 +2462,7 @@ describe("a website's rail row", () => {
 		expect(line(nobody)).toBe("Not live yet");
 		expect(line({ siteList: [] })).toBe("Not live yet");
 		expect(line({ siteList: [{ ...listed[0]!, state: "publishing" }] })).toBe("Not live yet");
+		expect(line({ ...everyone, sitesTakenDown: new Set([HOSTED_SITE]) })).toBe("Not live yet");
 		expect(line({})).toBe(host);
 		expect(line({ siteList: listed, siteListUnread: true, sitesPublic: everyone.sitesPublic })).toBe(host);
 		expect(line({ siteList: listed })).toBe(host);

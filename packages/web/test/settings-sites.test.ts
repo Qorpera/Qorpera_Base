@@ -2,7 +2,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type CompanyState, hostingNotingPublic, siteAnswer } from "../src/app/company.ts";
+import { Store } from "../src/app/state.ts";
 import { type SitesAccess, SitesView, shownLink } from "../src/app/views/settings-sites.ts";
+import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import type { CompanySiteHostingState, SiteDnsSetup, WebSiteHosting } from "../src/cloud/site-hosting.ts";
 import {
@@ -17,6 +20,7 @@ import {
 import { openMenu } from "../src/ui/context-menu.ts";
 import { setLanguagePreference, t } from "../src/ui/preferences.ts";
 import { deferred, id, oneHostList, settle, timestamp } from "./fixtures.ts";
+import { COMPANY, fakeClient, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
 const ORIGIN = "https://sites.qorpera.com";
 const PASSWORD = "k7mq-x2pa-9fhd";
@@ -1855,5 +1859,75 @@ describe("sites client", () => {
 				{ profileId: "main" },
 			),
 		).toThrow("Invalid company for sites.");
+	});
+});
+
+describe("Sites: a website made private here", () => {
+	it("turns the website's rail line into Not live yet", async () => {
+		const company = new Store<CompanyState>({
+			loading: false,
+			siteList: [shop],
+			siteListUnread: false,
+		} as CompanyState);
+		let isPublic = true;
+		const hostingState = (): CompanySiteHostingState => ({
+			hostsDomain: "qorpera.com",
+			hostsEnabled: true,
+			publicEnabled: true,
+			domainsEnabled: false,
+			edgeIpv4: null,
+			edgeIpv6: null,
+			edgeCnameTarget: null,
+			sites: new Map([
+				[
+					shop.id,
+					{
+						siteId: shop.id,
+						slug: shop.slug,
+						isPublic,
+						deploymentKind: "static",
+						storageMode: "db",
+						liveDeploymentId: null,
+						domains: [],
+					},
+				],
+			]),
+		});
+		const hosting: WebSiteHosting = {
+			read: vi.fn(async () => hostingState()),
+			setPublic: vi.fn(async (_siteId: string, next: boolean) => {
+				isPublic = next;
+				return next;
+			}),
+			addDomain: vi.fn(),
+			removeDomain: vi.fn(),
+			setPrimaryDomain: vi.fn(),
+			recheckDomain: vi.fn(),
+		};
+		const surfaces = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [
+					summary({ siteSlug: shop.slug, liveUrl: shop.url, activeSessionCount: 0 }),
+				]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([])),
+			}),
+		);
+		await surfaces.load();
+		const rail = new SurfaceRail(surfaces, COMPANY, new AbortController().signal, undefined, undefined, (surface) =>
+			siteAnswer(company.get(), surface),
+		);
+		const line = () => {
+			rail.update(undefined);
+			return rail.el.querySelector(".rail-surface-sub")?.textContent;
+		};
+		setup([shop], admin, undefined, { hosting: hostingNotingPublic(company, hosting) });
+		await settle();
+		expect(line()).toBe("Live · sites.qorpera.com");
+		press(shop.id, "more");
+		choose("Make private");
+		await settle();
+		expect(hosting.setPublic).toHaveBeenCalledWith(shop.id, false, expect.any(AbortSignal));
+		expect(line()).toBe("Not live yet");
+		surfaces.dispose();
 	});
 });

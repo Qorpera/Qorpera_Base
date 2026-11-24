@@ -48,9 +48,9 @@ import {
 	agentWorks,
 	CompanyController,
 	hostingNotingPublic,
-	noteSitesPublic,
 	readSitesOncePublished,
 	siteServed,
+	startPublicRead,
 } from "./company.ts";
 import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
@@ -2265,13 +2265,14 @@ export function mountApplication(
 									)
 										controller.store.set({ sitesTakenDown: nextTaken });
 								} catch {}
+								const notePublic = startPublicRead(controller.store);
 								let hosting: CompanySiteHostingState | undefined;
 								try {
 									hosting = await createWebSiteHosting(cloud, controller.profile).read(controller.signal);
 								} catch {
 									hosting = undefined;
 								}
-								if (!controller.signal.aborted) noteSitesPublic(controller.store, hosting);
+								if (!controller.signal.aborted) notePublic(hosting);
 							}
 						},
 						() => {
@@ -3074,7 +3075,7 @@ export function mountApplication(
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
 						access: { canManage: managesSites },
-						hosting: createWebSiteHosting(cloud, controller.profile),
+						hosting: hostingNotingPublic(controller.store, createWebSiteHosting(cloud, controller.profile)),
 						listed: (list) => controller.store.set(sitesListed(list)),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {

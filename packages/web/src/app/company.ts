@@ -349,13 +349,14 @@ function servedSite(list: readonly CompanySite[], slug: string): CompanySite | u
 export type SiteAnswer = "live" | "private" | "unknown";
 
 export function siteAnswer(
-	state: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic">,
+	state: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic" | "sitesTakenDown">,
 	surface: { readonly archetype: string; readonly siteSlug?: string | null },
 ): SiteAnswer {
 	const served = siteServed(state, surface);
 	if (served === undefined) return "unknown";
 	if (!served || !state.siteList || !surface.siteSlug) return "private";
 	const site = servedSite(state.siteList, surface.siteSlug);
+	if (site && state.sitesTakenDown?.has(site.id)) return "private";
 	const isPublic = site ? state.sitesPublic?.get(site.id) : undefined;
 	return isPublic === undefined ? "unknown" : isPublic ? "live" : "private";
 }
@@ -397,13 +398,34 @@ export function readSitesOncePublished(
 	};
 }
 
-export function noteSitesPublic(store: Store<CompanyState>, hosting: CompanySiteHostingState | undefined): void {
-	const next = hosting
-		? new Map([...hosting.sites.values()].map((entry) => [entry.siteId, entry.isPublic] as const))
-		: undefined;
-	const known = store.get().sitesPublic;
-	if (next === undefined ? known === undefined : sameAnswers(known, next)) return;
-	store.set({ sitesPublic: next });
+interface PublicWrites {
+	finished: number;
+	running: number;
+}
+
+const publicWrites = new WeakMap<Store<CompanyState>, PublicWrites>();
+
+function publicWritesOf(store: Store<CompanyState>): PublicWrites {
+	let writes = publicWrites.get(store);
+	if (!writes) {
+		writes = { finished: 0, running: 0 };
+		publicWrites.set(store, writes);
+	}
+	return writes;
+}
+
+export function startPublicRead(store: Store<CompanyState>): (hosting: CompanySiteHostingState | undefined) => void {
+	const writes = publicWritesOf(store);
+	const finished = writes.finished;
+	return (hosting) => {
+		if (writes.running > 0 || writes.finished !== finished) return;
+		const next = hosting
+			? new Map([...hosting.sites.values()].map((entry) => [entry.siteId, entry.isPublic] as const))
+			: undefined;
+		const known = store.get().sitesPublic;
+		if (next === undefined ? known === undefined : sameAnswers(known, next)) return;
+		store.set({ sitesPublic: next });
+	};
 }
 
 function sameAnswers(known: ReadonlyMap<string, boolean> | undefined, next: ReadonlyMap<string, boolean>): boolean {
@@ -411,18 +433,26 @@ function sameAnswers(known: ReadonlyMap<string, boolean> | undefined, next: Read
 }
 
 export function hostingNotingPublic(store: Store<CompanyState>, hosting: WebSiteHosting): WebSiteHosting {
+	const writes = publicWritesOf(store);
 	return {
 		...hosting,
 		read: async (signal) => {
+			const note = startPublicRead(store);
 			const state = await hosting.read(signal);
-			noteSitesPublic(store, state);
+			note(state);
 			return state;
 		},
 		setPublic: async (siteId, isPublic, signal) => {
-			const now = await hosting.setPublic(siteId, isPublic, signal);
-			const known = store.get().sitesPublic;
-			if (known?.get(siteId) !== now) store.set({ sitesPublic: new Map(known ?? []).set(siteId, now) });
-			return now;
+			writes.running += 1;
+			try {
+				const now = await hosting.setPublic(siteId, isPublic, signal);
+				const known = store.get().sitesPublic;
+				if (known?.get(siteId) !== now) store.set({ sitesPublic: new Map(known ?? []).set(siteId, now) });
+				return now;
+			} finally {
+				writes.running -= 1;
+				writes.finished += 1;
+			}
 		},
 	};
 }
