@@ -150,7 +150,7 @@ describe("the Company File's hint channel", () => {
 		await settle();
 		expect(supabase.channel).toHaveBeenCalledTimes(1);
 		realtime.joined.status("SUBSCRIBED");
-		realtime.broadcast.callback({ payload: { seq: 7 } });
+		realtime.broadcast.callback({ payload: { schema: "qorpera.folder-hint/v1", seq: 7 } });
 		expect(seenA).toEqual([7]);
 		expect(seenB).toEqual([7]);
 		expect(statesB).toEqual([true]);
