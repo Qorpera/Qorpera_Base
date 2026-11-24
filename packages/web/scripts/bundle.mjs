@@ -7,6 +7,8 @@
 // and the computer screen renderer with noVNC (ui/screen-viewer.mjs) once the
 // stream imports it again (the computer window shows pictures since 20260930712000).
 // theme.js is a separate classic script for the head.
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
 import { designPxPlugin, readUiScale } from "./design-px.mjs";
@@ -21,6 +23,19 @@ const boundary = {
 		});
 	},
 };
+
+export function threeAsset({ root, serve = false }) {
+	const vendor = resolve(root, "../runtime/kits/object/vendor");
+	const bytes = readFileSync(join(vendor, "three.js"));
+	const name = `three-${createHash("sha256").update(bytes).digest("hex").slice(0, 12)}.js`;
+	return { bytes, name, file: serve ? name : `build/${name}`, license: join(vendor, "three.LICENSE.txt") };
+}
+
+export function explainerAsset({ root, serve = false }) {
+	const bytes = readFileSync(resolve(root, "../runtime/kits/explainer/engine.js"));
+	const name = `explainer-${createHash("sha256").update(bytes).digest("hex").slice(0, 12)}.js`;
+	return { bytes, name, file: serve ? name : `build/${name}` };
+}
 
 /** esbuild options for the app (main.js, its chunks, app.css) and the head script. */
 export function bundleOptions({ root, outdir, serve = false, define }) {
@@ -70,7 +85,11 @@ export function bundleOptions({ root, outdir, serve = false, define }) {
 			external: ["*.woff2", "*.png", "*.svg"],
 			minify: !serve,
 			logLevel: "info",
-			define,
+			define: {
+				...define,
+				__QORPERA_THREE_SRC__: JSON.stringify(threeAsset({ root, serve }).name),
+				__QORPERA_EXPLAINER_SRC__: JSON.stringify(explainerAsset({ root, serve }).name),
+			},
 		},
 	};
 }

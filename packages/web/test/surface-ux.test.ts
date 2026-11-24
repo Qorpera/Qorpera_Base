@@ -1,8 +1,19 @@
 // @vitest-environment jsdom
+import { inferSurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
-import { CompanyController } from "../src/app/company.ts";
-import { inferSurfaceKind, opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
+import {
+	CompanyController,
+	type CompanyState,
+	hostingNotingPublic,
+	readSitesOncePublished,
+	siteAnswer,
+	siteServed,
+	sitesAwaited,
+	startPublicRead,
+} from "../src/app/company.ts";
+import { Store } from "../src/app/state.ts";
+import { opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
 import { recipientOf, renderLocalSitePreviewHtml } from "../src/app/surface-local-sandbox.ts";
 import {
 	activeTaskSessions,
@@ -17,10 +28,12 @@ import { SITE_DOOR_READY, SITE_DOOR_SHOWN } from "../src/app/views/site-view.ts"
 import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
 import { IDENTITY_TOKENS_CSS_MESSAGE, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
-import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
+import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
-import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { GO_LIVE_PUBLISH_WAIT_MS, SurfaceView } from "../src/app/views/surface-view.ts";
+import type { CompanySite } from "../src/cloud/sites.ts";
 import { linkHref } from "../src/ui/dom.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
 import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
@@ -28,12 +41,16 @@ import {
 	COMPANY,
 	change,
 	fakeClient,
+	fakeSiteHosting,
+	HOSTED_SITE,
+	type HostingWorld,
 	MESSAGE_IDS,
 	previewFrame,
 	SESSION,
 	SURFACE,
 	session,
 	sessionMessage,
+	siteDomain,
 	storeWith,
 	summary,
 	workspace,
@@ -223,6 +240,10 @@ describe("operational surfaces", () => {
 		const confirmSend = drawer.querySelector<HTMLButtonElement>('.surface-action-card [data-act="approve"]')!;
 		expect(confirmSend.classList.contains("is-confirming")).toBe(true);
 		expect(confirmSend.textContent).toBe("Confirm");
+		const sendGhost = confirmSend.querySelector(".surface-approve-face.is-ghost")!;
+		expect(sendGhost.getAttribute("data-text")).toBe("Send");
+		expect(sendGhost.querySelector(".icon")).not.toBeNull();
+		expect(confirmSend.querySelector(".surface-approve-face:not(.is-ghost) .icon")).toBeNull();
 		confirmSend.click();
 		await flush();
 		await flush();
@@ -290,6 +311,7 @@ describe("creating surfaces", () => {
 		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("");
 		expect(sheet.querySelector(".surface-sheet-link")).toBeNull();
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
+		expect([...custom.children].map((child) => child.tagName)).toEqual(["TEXTAREA"]);
 		const picked = () =>
 			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
 		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
@@ -311,6 +333,13 @@ describe("creating surfaces", () => {
 		avatar.click();
 		expect(figures.hidden).toBe(false);
 		expect(avatar.getAttribute("aria-expanded")).toBe("true");
+		sheet
+			.querySelector<HTMLElement>('.surface-figure-choice[data-figure="jar"]')!
+			.dispatchEvent(new MouseEvent("pointerenter"));
+		expect(hero()).toBe("jar");
+		expect(picked()).toBe("phone");
+		sheet.querySelector<HTMLElement>(".surface-figure-choices")!.dispatchEvent(new MouseEvent("pointerleave"));
+		expect(hero()).toBe("phone");
 		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
 		expect(figures.hidden).toBe(true);
 		expect(hero()).toBe("piggy");
@@ -365,6 +394,22 @@ describe("creating surfaces", () => {
 		expect(thetabands).toBeDefined();
 		expect(thetabands.folderRoot).toBe("surfaces/thetabands");
 		expect(store.lookOf(thetabands).kind).toBe("product");
+
+		openCreateSurfaceSheet(store);
+		const customSheet = document.querySelector(".surface-create-sheet")!;
+		const customName = customSheet.querySelector<HTMLInputElement>(".surface-create-name")!;
+		customName.value = "Support Desk";
+		customName.dispatchEvent(new Event("input", { bubbles: true }));
+		const brief = customSheet.querySelector<HTMLTextAreaElement>(".surface-create-custom textarea")!;
+		brief.value = "Answers for customers.";
+		customSheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const desk = store.state.surfaces.find((item) => item.slug === "support-desk")!;
+		expect(desk.archetype).toBe("live_build");
+		expect(store.lookOf(desk)).toEqual({ kind: "custom" });
+		expect(store.workspace(desk.id)?.briefSummary).toBe("Answers for customers.");
 		store.dispose();
 	});
 
@@ -539,17 +584,13 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 
 		expect(view.el.querySelector(".surface-bar-lead")).toBeNull();
-		expect(view.el.querySelector(".surface-pill.is-spacious")).not.toBeNull();
-		const modeLabels = [...view.el.querySelectorAll(".surface-pill-modes button")].map((btn) => btn.textContent);
+		const modeLabels = [...view.el.querySelectorAll('.surface-pill [data-toggle="mode"] button')].map(
+			(btn) => btn.textContent,
+		);
 		expect(modeLabels).toEqual(["Live", "Preview"]);
-		expect(view.el.querySelector(".surface-pill-device")).not.toBeNull();
-
-		const headerAgents = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-pill .surface-bar-agent")];
-		expect(headerAgents).toHaveLength(2);
-		expect(headerAgents[0]?.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(headerAgents[0]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("3");
-		expect(headerAgents[1]?.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(headerAgents[1]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("2");
+		expect(view.el.querySelector('.surface-pill [data-toggle="device"]')).not.toBeNull();
+		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
+		expect(view.el.querySelector(".surface-bar .surface-crew")).toBeNull();
 
 		const stage = view.el.querySelector(".surface-stage")!;
 		expect(stage.children[0]?.classList.contains("surface-canvas")).toBe(true);
@@ -582,31 +623,71 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const switchedFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
 		expect(switchedFrame.srcdoc).toContain("Portræt og telefon");
 
+		const ask = view.el.querySelector<HTMLTextAreaElement>(".surface-composer .surface-input")!;
+		const foot = explorationCard.ownerDocument.querySelector(".surface-overview-card.is-exploration .is-options")!;
+		expect([...foot.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+			"Use this one",
+			"None of these",
+		]);
+		foot.querySelector<HTMLButtonElement>('[data-act="instead-of"]')!.click();
+		view.update();
+		expect(ask.placeholder).toBe("What should it be instead?");
+		expect(document.activeElement).toBe(ask);
+		ask.blur();
+		view.update();
+		expect(ask.placeholder).toBe("Describe a change — it runs as its own session");
+		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("open");
+
 		drawer.querySelector<HTMLButtonElement>('[data-act="focus-exploration"]')!.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-drawer-head h2")?.textContent).toBe("Forsidens udtryk");
-		expect(drawer.querySelector(".surface-drawer-body > .surface-agent-note")).not.toBeNull();
+		expect(drawer.querySelector(".surface-drawer-pinned > .surface-agent-note")).not.toBeNull();
 		expect(drawer.querySelectorAll(".surface-drawer-option-row")).toHaveLength(3);
 
-		drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!.click();
-		const confirmVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;
-		expect(confirmVariant.classList.contains("is-confirming")).toBe(true);
-		expect(confirmVariant.textContent).toBe("Confirm");
-		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("open");
-		confirmVariant.click();
+		const useVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;
+		expect(useVariant.textContent).toBe("Use this one");
+		const pickedId = useVariant.dataset.session!;
+		const waiting = store.session(pickedId)!.changes.map((change) => change.status);
+		useVariant.click();
 		await flush();
 		view.update();
-		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("chosen");
+		const chosen = store.workspace(website.id)!;
+		expect(chosen.explorations[0]).toMatchObject({ status: "chosen", chosenSessionId: pickedId });
+		expect(
+			chosen.activeSessions.filter((session) => session.explorationId === chosen.explorations[0]!.id),
+		).toHaveLength(1);
+		expect(store.session(pickedId)!.changes.map((change) => change.status)).toEqual(waiting);
+		expect(store.state.drawer).toEqual({ surfaceId: website.id, sessionId: pickedId });
+		expect(store.state.undo).toBeUndefined();
+		expect(drawer.querySelector('[data-act="choose-variant"]')).toBeNull();
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
+		expect(drawer.classList.contains("is-overview")).toBe(false);
+		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)").length).toBe(waiting.length);
+		expect(drawer.querySelectorAll(".surface-drawer-pinned .surface-drawer-change:not(.is-option)").length).toBe(
+			waiting.length,
+		);
+		expect(drawer.querySelector(".surface-drawer-body .surface-drawer-change")).toBeNull();
+		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector<HTMLElement>(".surface-drawer-pinned")?.hidden).toBe(true);
+		expect(drawer.querySelector(".surface-overview-card.is-exploration")).toBeNull();
+		const keptCard = drawer
+			.querySelector(`.surface-overview-card.is-agent [data-session="${pickedId}"]`)!
+			.closest(".surface-overview-card")!;
+		expect(keptCard.querySelector(".surface-agent-note")?.textContent).toContain(
+			"How Thetaband Presents Itself at First Visit",
+		);
+		expect(await store.approveAll(pickedId)).toBe(true);
+		view.update();
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(1);
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="collapse-pill"]')!.click();
-		expect(view.el.querySelector(".surface-pill")).toBeNull();
-		const notch = view.el.querySelector<HTMLButtonElement>(".surface-notch")!;
-		expect(notch).not.toBeNull();
-		notch.click();
-		expect(view.el.querySelector(".surface-pill")).not.toBeNull();
-		expect(view.el.querySelector(".surface-notch")).toBeNull();
+		expect(view.el.querySelector('[data-act="collapse-pill"]')).toBeNull();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		expect(notch.classList.contains("is-open")).toBe(false);
+		view.el.querySelector<HTMLButtonElement>(".surface-notch-pill")!.click();
+		expect(notch.classList.contains("is-open")).toBe(true);
 
 		const dialog = HTMLDialogElement.prototype;
 		dialog.showModal ??= function (this: HTMLDialogElement) {
@@ -616,10 +697,12 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 			this.open = false;
 		};
 
-		drawer
-			.querySelector<HTMLElement>(
+		[
+			...drawer.querySelectorAll<HTMLElement>(
 				".surface-overview-card.is-agent:not(.is-exploration) .surface-overview-change-title",
-			)!
+			),
+		]
+			.find((title) => title.textContent === "Tydelig pris: 1.995 kr. inkl. fragt")!
 			.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
@@ -647,10 +730,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
 		const patchSheet = document.querySelector(".surface-publish-sheet")!;
 		expect(patchSheet).not.toBeNull();
-		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(2);
+		expect(patchSheet.querySelectorAll(".surface-publish-change")).toHaveLength(2);
 		patchSheet.querySelector<HTMLButtonElement>('[data-act="rollback"]')!.click();
 		await flush();
-		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(1);
+		expect(patchSheet.querySelectorAll(".surface-publish-change")).toHaveLength(1);
 		patchSheet.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
 		await flush();
 		expect(document.querySelector(".surface-publish-sheet")).toBeNull();
@@ -694,6 +777,45 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
+	it("drops a session's options when the member says what it should be instead", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
+		});
+		await store.load();
+		const website = store.state.surfaces.find((surface) => surface.slug === "website")!;
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const options = store.workspace(website.id)!.explorations[0]!;
+		expect(options.status).toBe("open");
+
+		view.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="instead-of"]')!.click();
+		view.update();
+		const ask = view.el.querySelector<HTMLTextAreaElement>(".surface-composer .surface-input")!;
+		expect(ask.placeholder).toBe("What should it be instead?");
+		ask.value = "En rolig forside med ét stort billede";
+		view.el
+			.querySelector<HTMLFormElement>(".surface-composer")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		view.update();
+
+		const after = store.workspace(website.id)!;
+		expect(after.explorations.find((item) => item.id === options.id)?.status).toBe("discarded");
+		expect(after.activeSessions.some((session) => options.variantSessionIds.includes(session.id))).toBe(false);
+		expect(after.activeSessions.some((session) => session.prompt === "En rolig forside med ét stort billede")).toBe(
+			true,
+		);
+		expect(store.state.insteadOf).toBeUndefined();
+		expect(ask.placeholder).toBe("Describe a change — it runs as its own session");
+		expect(view.el.querySelector(".surface-overview-card.is-exploration")).toBeNull();
+		view.el.remove();
+		store.dispose();
+	});
+
 	it("renders Phone App without a desktop/mobile toggle and opens Design Notes from the owning agent", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
@@ -706,7 +828,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		expect(view.el.querySelector(".surface-pill-device")).toBeNull();
+		expect(view.el.querySelector('[data-toggle="device"]')).toBeNull();
 		expect(view.el.querySelector<HTMLElement>(".surface-viewport")?.dataset.device).toBe("mobile");
 		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")?.getAttribute("srcdoc")).toContain(
 			"Thetaband",
@@ -740,27 +862,24 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		expect(view.el.querySelector(".studio-3d-canvas")).not.toBeNull();
+		expect(view.el.querySelector(".studio-stage .studio-model")).not.toBeNull();
+		expect(view.el.querySelector(".studio-3d-canvas")).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".studio-model .studio-3d-view")?.hidden).toBe(true);
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(0);
+		expect(view.el.querySelector(".studio-diff-prev")).toBeNull();
+		expect(view.el.querySelector(".studio-fact.is-changed")).not.toBeNull();
+
+		const tabLabels = () =>
+			[...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns", "Files"]);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
 		expect(view.el.querySelector(".studio-diff-next")?.textContent).toBe("Klar til Batch 1 (BrainBit låst)");
 
-		const explodeBtn = view.el.querySelector<HTMLButtonElement>('[data-act="3d-explode"]')!;
-		explodeBtn.click();
-		expect(view.el.querySelector<HTMLElement>(".studio-3d-callouts")?.hidden).toBe(false);
-
-		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
-		expect(tabs.map((tab) => tab.textContent)).toEqual([
-			"Overview",
-			"Specs & BOM",
-			"Production & Vendors",
-			"Analysis",
-			"Brief & Files",
-		]);
-
-		tabs[2]!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why BrainBit OEM for Batch 1");
 		expect(view.el.querySelectorAll(".report-bar-row")).toHaveLength(3);
 		expect(view.el.querySelector(".report-table")).not.toBeNull();
@@ -774,7 +893,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("unifies sidebar Agents into Working, Scheduled, and Ready with no Move button, no Other agents drawer, and no duplicate agents", async () => {
+	it("unifies sidebar Agents into working rows with no title, Scheduled, and Ready with no Move button, no Other agents drawer, and no duplicate agents", async () => {
 		stubFigureMotion();
 		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 		const f = fixture();
@@ -834,8 +953,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(hub?.querySelector(".rail-agents-legacy")).toBeNull();
 		expect(hub?.textContent).not.toContain("Other agents");
 
-		const subheads = [...hub!.querySelectorAll<HTMLElement>(".rail-agents-subhead")].map((el) => el.textContent);
-		expect(subheads).toEqual(["Working", "Scheduled", "Ready"]);
+		const groups = [...hub!.querySelectorAll<HTMLElement>(".rail-agents-sub")].map(
+			(el) => el.querySelector(".rail-agents-subhead")?.textContent ?? null,
+		);
+		expect(groups).toEqual([null, "Scheduled", "Ready"]);
 
 		const staffHrefs = [...hub!.querySelectorAll<HTMLAnchorElement>("a.rail-agent-hub-row")]
 			.map((a) => linkHref(a))
@@ -900,7 +1021,151 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		vi.unstubAllGlobals();
 	});
 
-	it("keeps the header pill balanced into three flex groups with collapse nested in the right tools", async () => {
+	it("shows a website's address in the bar only while its site is live", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		let live = true;
+		const view = new SurfaceView(
+			{ store, mount: () => undefined, openMigration: () => undefined, isSiteLive: () => live },
+			"website",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const address = view.el.querySelector<HTMLButtonElement>(".surface-pill > button.surface-pill-address");
+		expect(address?.textContent).toBe("thetaband.dk");
+		expect(address?.getAttribute("aria-expanded")).toBe("false");
+		expect(address?.closest('[role="group"]')).toBeNull();
+		address!.click();
+		const sheet = view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
+		expect(sheet.hidden).toBe(false);
+		expect(sheet.querySelector(".surface-address-name")?.textContent).toBe("thetaband.dk");
+		expect(sheet.querySelector(".surface-address-row")).toBeNull();
+		expect(view.el.querySelector(".surface-pill-address")?.getAttribute("aria-expanded")).toBe("true");
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		expect(sheet.hidden).toBe(true);
+		const modes = view.el.querySelector('.surface-toggle[data-toggle="mode"][role="group"]');
+		expect([...(modes?.querySelectorAll("button") ?? [])].map((button) => button.textContent)).toEqual([
+			"Live",
+			"Preview",
+		]);
+
+		live = false;
+		view.update();
+		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
+		expect(view.el.querySelector('[data-toggle="mode"] button')).toBeNull();
+		expect(view.el.querySelector('[data-toggle="device"]')).not.toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("draws the address as a button that marks where the site lives and opens its sheet", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const hosting = fakeSiteHosting();
+		let site: { siteId: string; client: typeof hosting.client } | undefined;
+		let live = true;
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				isSiteLive: () => live,
+				siteHosting: () => site,
+				managesSites: () => true,
+			},
+			"website",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const address = () => view.el.querySelector<HTMLButtonElement>(".surface-pill-address");
+
+		expect(address()?.className).toBe("surface-pill-address is-unknown");
+		expect(address()?.dataset.act).toBe("address");
+		expect(hosting.client.read).not.toHaveBeenCalled();
+
+		site = { siteId: HOSTED_SITE, client: hosting.client };
+		view.update();
+		await flush();
+		expect(hosting.client.read).toHaveBeenCalledTimes(1);
+		expect(address()?.className).toBe("surface-pill-address is-private");
+		expect(address()?.title).toBe("Not live yet");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
+		expect(address()?.textContent).toBe("thetaband.dk");
+
+		address()!.click();
+		await flush();
+		const sheet = view.el.querySelector<HTMLElement>(".surface-canvas > .surface-address-sheet")!;
+		expect(sheet.hidden).toBe(false);
+		sheet.querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		expect(address()?.className).toBe("surface-pill-address is-private");
+		expect(sheet.querySelector(".surface-address-go")?.textContent).toBe("Confirm");
+		sheet.querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		expect(address()?.className).toBe("surface-pill-address is-private");
+		expect(sheet.querySelector(".surface-address-go")?.textContent).toBe("Going live…");
+		await flush();
+		expect(address()?.className).toBe("surface-pill-address is-live");
+		expect(address()?.title).toBe("Live");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
+		await flush();
+
+		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk")];
+		address()!.click();
+		address()!.click();
+		await flush();
+		expect(address()?.className).toBe("surface-pill-address is-live");
+		expect(address()?.title).toBe("Live");
+		expect(address()?.textContent).toBe("thetaband.dk");
+
+		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk", "tls_active", { isPrimary: true })];
+		address()!.click();
+		address()!.click();
+		await flush();
+		expect(address()?.className).toBe("surface-pill-address is-live");
+		expect(address()?.textContent).toBe("www.thetaband.dk");
+
+		address()!.click();
+		await flush();
+		address()!.focus();
+		address()!.click();
+		expect(sheet.hidden).toBe(false);
+		expect(document.activeElement).toBe(sheet);
+		await flush();
+		expect(document.activeElement).toBe(sheet);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(sheet.hidden).toBe(true);
+		expect(document.activeElement).toBe(address());
+
+		const composer = view.el.querySelector<HTMLTextAreaElement>(".surface-input")!;
+		composer.focus();
+		address()!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+		expect(sheet.hidden).toBe(false);
+		expect(document.activeElement).toBe(composer);
+		address()!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+
+		live = false;
+		view.update();
+		expect(address()).toBeNull();
+		expect(sheet.hidden).toBe(true);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("rests the bar closed as a small pill that opens into one bar of toggles, with no agents in it", async () => {
 		stubFigureMotion();
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
@@ -913,20 +1178,142 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		const pill = view.el.querySelector<HTMLElement>(".surface-pill");
-		expect(pill?.classList.contains("is-spacious")).toBe(true);
-		expect([...(pill?.children ?? [])].map((child) => child.className)).toEqual([
-			"surface-pill-modes",
-			"surface-bar-crew",
-			"surface-pill-right",
-		]);
-		expect(pill?.querySelector(".surface-pill-right .surface-pill-collapse")).not.toBeNull();
+		const notch = view.el.querySelector<HTMLElement>(".surface-bar > .surface-notch")!;
+		const pill = notch.querySelector<HTMLButtonElement>(":scope > .surface-notch-pill")!;
+		const bar = notch.querySelector<HTMLElement>(":scope > .surface-pill")!;
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(pill.getAttribute("aria-expanded")).toBe("false");
+		expect(pill.querySelector(".surface-notch-label")?.textContent).toBe("Preview");
+		expect(pill.querySelector(".surface-notch-count")).not.toBeNull();
+		expect(pill.querySelector(".icon, .surface-notch-grip")).toBeNull();
+		expect(bar.inert).toBe(true);
+		const parts = [...bar.children];
+		expect(parts[0]?.getAttribute("data-toggle")).toBe("mode");
+		expect(parts[2]?.getAttribute("data-toggle")).toBe("device");
+		expect(
+			parts.filter((_, index) => index % 2 === 1).every((part) => part.className === "surface-pill-divider"),
+		).toBe(true);
+		expect(bar.querySelector(".surface-crew, [data-act='bar-agent'], [data-act='collapse-pill']")).toBeNull();
+		expect(bar.querySelector('[data-toggle="mode"] > .surface-toggle-thumb')).not.toBeNull();
+
+		pill.click();
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(pill.getAttribute("aria-expanded")).toBe("true");
+		expect(pill.inert).toBe(true);
+		expect(bar.inert).toBe(false);
+
+		bar.querySelector<HTMLButtonElement>('[data-act="mode"]')!.dispatchEvent(
+			new Event("pointerdown", { bubbles: true }),
+		);
+		expect(notch.classList.contains("is-open")).toBe(true);
+		document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(bar.inert).toBe(true);
+
+		pill.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(document.activeElement).toBe(bar.querySelector('[data-toggle="mode"] > button.is-on'));
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(document.activeElement).toBe(pill);
+
+		pill.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+		view.el.querySelector<HTMLTextAreaElement>(".surface-input")!.focus();
+		expect(notch.classList.contains("is-open")).toBe(false);
 
 		view.dispose();
 		store.dispose();
 	});
 
-	it("renders the foundational Identity interface with global reach chips, Design System, Philosophy, and Voice & Files", async () => {
+	it("slides the toggle's thumb under the segment that is on", async () => {
+		stubFigureMotion();
+		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60);
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(40);
+		vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+			return this.parentElement ? [...this.parentElement.children].indexOf(this) * 60 : 0;
+		});
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.setMode("preview");
+		view.update();
+		const thumb = () => view.el.querySelector<HTMLElement>('[data-toggle="mode"] > .surface-toggle-thumb')!;
+		expect([thumb().style.left, thumb().style.width]).toEqual(["120px", "60px"]);
+		expect(view.el.querySelector<HTMLElement>(".surface-notch")?.style.width).toBe("60px");
+
+		view.el.querySelector<HTMLButtonElement>(".surface-notch-pill")!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="live"]')!.click();
+		view.update();
+		expect(view.el.querySelector('[data-toggle="mode"] > button.is-on')?.textContent).toBe("Live");
+		expect([thumb().style.left, thumb().style.width]).toEqual(["60px", "60px"]);
+		expect(view.el.querySelector(".surface-notch-pill .surface-notch-label")?.textContent).toBe("Live");
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps the bar open while the website is private, and while the address sheet is open", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const hosting = fakeSiteHosting();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				isSiteLive: () => true,
+				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+				managesSites: () => true,
+			},
+			"website",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		await flush();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		const pill = notch.querySelector<HTMLButtonElement>(".surface-notch-pill")!;
+		const address = () => view.el.querySelector<HTMLButtonElement>(".surface-pill > .surface-pill-address")!;
+		const outside = () => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(address().className).toBe("surface-pill-address is-private");
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(pill.hidden).toBe(true);
+		outside();
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(notch.classList.contains("is-open")).toBe(true);
+
+		hosting.world.entry!.isPublic = true;
+		address().click();
+		address().click();
+		await flush();
+		expect(address().className).toBe("surface-pill-address is-live");
+		expect(pill.hidden).toBe(false);
+		expect(notch.classList.contains("is-open")).toBe(true);
+
+		address().click();
+		await flush();
+		outside();
+		expect(view.el.querySelector<HTMLElement>(".surface-address-sheet")?.hidden).toBe(true);
+		expect(notch.classList.contains("is-open")).toBe(true);
+		outside();
+		expect(notch.classList.contains("is-open")).toBe(false);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders the foundational Identity interface from its starter layout with the Used by line, Philosophy and Voice", async () => {
 		stubFigureMotion();
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
@@ -940,18 +1327,18 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs).toEqual(["Overview", "Design System", "Philosophy", "Voice & Files"]);
+		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
 
-		const reachChips = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-reach-chip")].map(
-			(chip) => chip.dataset.slug,
-		);
-		expect(reachChips).toEqual(["website", "phone-app", "product", "financials"]);
+		const reachChips = [
+			...view.el.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
+		].map((chip) => chip.dataset.slug);
+		expect(reachChips).toEqual(expect.arrayContaining(["website", "phone-app", "product"]));
 		expect(view.el.querySelector('[data-token="colors.Aften Lavendel"] code')?.textContent).toBe("#6f61cf");
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="philosophy"]')!.click();
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Calm Technology You Actually Put On");
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="voice"]')!.click();
 		expect(view.el.querySelector('[data-file="identity/voice.md"]')?.textContent).toContain(
 			"Vi siger / Vi siger aldrig",
 		);
@@ -999,7 +1386,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and patch notes", async () => {
+	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and the publish window", async () => {
 		stubFigureMotion();
 		const madsId = "99999999-9999-4999-8999-999999999999";
 		const site = summary({
@@ -1051,14 +1438,14 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(view.el.querySelector(".surface-message-author")?.textContent).toBe("Mads");
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
-		expect(document.querySelector(".surface-patchnote-approver")?.textContent).toBe("Approved by Mads");
-		document.querySelector<HTMLButtonElement>('.surface-publish-sheet [data-act="cancel"]')?.click();
+		expect(document.querySelector(".surface-publish-change-by")?.textContent).toBe("Approved by Mads");
+		document.querySelector<HTMLButtonElement>(".surface-publish-sheet .surface-close")?.click();
 
 		view.dispose();
 		store.dispose();
 	});
 
-	it("renders affected file chips and omits the folder source footer in the Changes drawer", async () => {
+	it("shows no file links and no folder source footer in the Changes drawer", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
 		const site = summary({
@@ -1113,23 +1500,21 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		const chips = [...view.el.querySelectorAll<HTMLAnchorElement>(".surface-overview-change .surface-file-chip")];
-		expect(chips.map((chip) => chip.textContent)).toEqual([
-			"identity/tokens.json",
-			"src/Hero.tsx",
-			"src/Footer.tsx",
-			"+1",
-		]);
-		expect(linkHref(chips[0]!)).toBe(`#/c/${COMPANY}/s/files`);
-		expect(store.state.drawer).toBeUndefined();
-		chips[0]!.click();
-		expect(navigated).toEqual(["files"]);
-		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
-		expect(store.state.drawer).toBeUndefined();
+		expect(view.el.querySelector(".surface-overview-change-title")?.textContent).toBe("Refine hero & tokens");
+		expect(view.el.querySelector(".surface-overview-change")?.textContent).not.toContain("src/Hero.tsx");
+		expect(view.el.querySelector(".surface-overview-change a")).toBeNull();
+		expect(navigated).toEqual([]);
 
 		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
 		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();
 		expect(view.el.querySelector(".surface-source-pill")).toBeNull();
+
+		store.openDrawer(site.id, SESSION);
+		view.update();
+		const drawerChange = view.el.querySelector<HTMLElement>(".surface-drawer-change");
+		expect(drawerChange?.querySelector(".surface-drawer-change-title")?.textContent).toBe("Refine hero & tokens");
+		expect(drawerChange?.textContent).not.toContain("src/Hero.tsx");
+		expect(drawerChange?.querySelector("a")).toBeNull();
 
 		view.dispose();
 
@@ -1149,12 +1534,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("renders Share live link bar inside Patch notes sheet, copies link and optional password", async () => {
-		const writeText = vi.fn().mockResolvedValue(undefined);
-		Object.defineProperty(navigator, "clipboard", {
-			configurable: true,
-			value: { writeText },
-		});
+	it("asks one question in the publish sheet, lists what goes live, and shares no link there", async () => {
 		HTMLDialogElement.prototype.showModal = function () {
 			this.open = true;
 		};
@@ -1167,48 +1547,62 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 			slug: "website",
 			title: "Website",
 			liveUrl: "https://thetaband.qorpera.com",
-			unpublishedChangeCount: 1,
+			unpublishedChangeCount: 2,
 			hasUnpublishedChanges: true,
+		});
+		const landed = session([], {
+			state: "completed",
+			changes: [
+				change(CHANGES[0], 1, "merged", { title: "Price on the front page", summary: "Shows 1.995 kr." }),
+				change(CHANGES[1], 2, "merged", { title: "Questions", undoBatchSize: 3 }),
+			],
 		});
 		const client = fakeClient({
 			listSurfaces: vi.fn().mockResolvedValue([site]),
-			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: site })),
+			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: site, recentHistory: [landed] })),
 		});
 		const store = storeWith(client);
 		await store.load();
+		await store.openSurface("website");
 
-		const loadSitePassword = vi.fn().mockResolvedValue("nordic-pass-42");
-		const dialog = openPublishPatchnotesSheet(store, site, { loadSitePassword });
-		await flush();
-
-		const shareBar = document.querySelector<HTMLElement>(".surface-share-bar")!;
-		expect(shareBar).not.toBeNull();
-		expect(shareBar.querySelector(".surface-share-url")?.textContent).toBe("https://thetaband.qorpera.com");
-		const openLink = shareBar.querySelector<HTMLAnchorElement>(".surface-share-btn.is-open")!;
-		expect(openLink.getAttribute("href")).toBe("https://thetaband.qorpera.com");
-		expect(openLink.target).toBe("_blank");
-		expect(openLink.rel).toContain("noopener");
-
-		const copyLinkBtn = shareBar.querySelector<HTMLButtonElement>('[data-act="copy-link"]')!;
-		copyLinkBtn.click();
-		await flush();
-		expect(writeText).toHaveBeenCalledWith("https://thetaband.qorpera.com");
-		expect(document.querySelector('[data-act="copy-link"]')?.textContent).toBe("Copied");
-
-		const copyPassBtn = document.querySelector<HTMLButtonElement>('[data-act="copy-password"]')!;
-		expect(copyPassBtn).not.toBeNull();
-		copyPassBtn.click();
-		await flush();
-		expect(writeText).toHaveBeenCalledWith("nordic-pass-42");
-		expect(document.querySelector('[data-act="copy-password"]')?.textContent).toBe("Copied");
+		const dialog = openPublishSheet(store, site);
+		const sheet = dialog.el;
+		expect(sheet.getAttribute("aria-label")).toBe("Publish");
+		expect(sheet.querySelector(".surface-publish-heading h2")?.textContent).toBe("Publish 2 changes?");
+		expect(sheet.querySelector(".surface-publish-heading p")?.textContent).toBe("Website · thetaband.qorpera.com");
+		expect([...sheet.querySelectorAll(".surface-publish-change")].map((item) => item.textContent)).toEqual([
+			"Price on the front pageUndoShows 1.995 kr.",
+			"QuestionsUndo with 2 others",
+		]);
+		expect(sheet.querySelector('[data-act="rollback"][title]')?.getAttribute("title")).toBe(
+			"They were approved together, so they are undone together.",
+		);
+		expect(
+			[...sheet.querySelectorAll<HTMLButtonElement>(".surface-sheet-actions button")].map(
+				(item) => item.textContent,
+			),
+		).toEqual(["Publish"]);
+		expect(sheet.querySelector("a[href]")).toBeNull();
+		expect(sheet.textContent).not.toContain("Copy");
 		dialog.close();
 
-		const dialogWithoutPass = openPublishPatchnotesSheet(store, site);
-		await flush();
-		expect(document.querySelector(".surface-share-bar")).not.toBeNull();
-		expect(document.querySelector('[data-act="copy-password"]')).toBeNull();
-		dialogWithoutPass.close();
+		const quiet = { ...site, unpublishedChangeCount: 0, hasUnpublishedChanges: false };
+		const empty = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn().mockResolvedValue([quiet]),
+				getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: quiet })),
+			}),
+		);
+		await empty.load();
+		const nothing = openPublishSheet(empty, quiet);
+		expect(nothing.el.querySelector(".surface-publish-heading h2")?.textContent).toBe("Nothing to publish");
+		expect(nothing.el.querySelector('[data-act="confirm-publish"]')).toBeNull();
+		const done = nothing.el.querySelector<HTMLButtonElement>('[data-act="cancel"]')!;
+		expect(done.textContent).toBe("Done");
+		done.click();
+		expect(nothing.el.open).toBe(false);
 		store.dispose();
+		empty.dispose();
 	});
 
 	it("folds optional starting surfaces and reference URL into NewCompanyView submissions without affecting blank ones", () => {
@@ -1273,11 +1667,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		identityView.update();
 
-		const identityReach = identityView.el.querySelector<HTMLElement>(
-			'[data-identity-reach="true"][data-live-linked="true"]',
-		)!;
+		const identityReach = identityView.el.querySelector<HTMLElement>('.studio-reach[data-live-linked="true"]')!;
 		expect(identityReach).not.toBeNull();
-		expect(identityReach.textContent).toContain("Used by");
+		expect(identityReach.querySelector('[data-link-dir="out"]')?.textContent).toContain("Used by");
 		expect(identityReach.textContent).not.toContain("identity/tokens.json");
 		expect(identityReach.querySelector(".studio-live-dot")).toBeNull();
 		identityView.dispose();
@@ -1407,6 +1799,683 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		});
 
 		controller.abort();
+		store.dispose();
+	});
+});
+
+describe("a website that is not live", () => {
+	interface Setup {
+		readonly shown?: Partial<SurfaceSummary>;
+		readonly world?: Partial<HostingWorld>;
+		readonly served?: boolean | "unknown";
+		readonly sites?: Pick<CompanyState, "siteList" | "siteListUnread">;
+		readonly canWrite?: boolean;
+		readonly unread?: boolean;
+		readonly readFails?: boolean;
+		readonly publishFails?: number;
+		readonly publishAnswer?: Partial<SurfaceSummary>;
+		readonly autoFails?: boolean;
+		readonly holdAutoOn?: boolean;
+	}
+
+	async function website(setup: Setup = {}) {
+		let current = summary({ unpublishedChangeCount: 0, ...setup.shown });
+		const answer = (next: Partial<SurfaceSummary>) => {
+			current = { ...current, ...next };
+			return current;
+		};
+		const order: string[] = [];
+		const control = { autoFails: setup.autoFails ?? false, release: (): void => undefined };
+		let publishFails = setup.publishFails ?? 0;
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [current]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: current })),
+			publishSurface: vi.fn(async () => {
+				order.push("publish");
+				if (publishFails-- > 0) throw new Error("refused");
+				return answer(setup.publishAnswer ?? { unpublishedChangeCount: 0, hasUnpublishedChanges: false });
+			}),
+			setSurfaceAutoPublish: vi.fn(async (_id: string, enabled: boolean) => {
+				order.push(`auto:${enabled}`);
+				if (setup.holdAutoOn && enabled)
+					await new Promise<void>((resolve) => {
+						control.release = () => resolve();
+					});
+				if (control.autoFails) throw new Error("refused");
+				return answer({ autoPublish: enabled });
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const hosting = fakeSiteHosting(setup.world);
+		if (setup.unread) hosting.client.read.mockImplementation(() => new Promise(() => undefined));
+		if (setup.readFails) hosting.client.read.mockRejectedValue(new Error("offline"));
+		hosting.client.setPublic.mockImplementation(async (_siteId: string, isPublic: boolean) => {
+			order.push(`public:${isPublic}`);
+			if (hosting.world.entry) hosting.world.entry.isPublic = isPublic;
+			return isPublic;
+		});
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				isSiteLive: (surface) =>
+					setup.sites
+						? siteServed(setup.sites, surface)
+						: setup.served === "unknown"
+							? undefined
+							: (setup.served ?? true),
+				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+				managesSites: () => true,
+				canWrite: () => setup.canWrite ?? true,
+			},
+			"website",
+		);
+		document.body.append(view.el);
+		const settle = async () => {
+			for (let turn = 0; turn < 4; turn++) {
+				await flush();
+				view.update();
+			}
+		};
+		await settle();
+		const raise = async (next: Partial<SurfaceSummary>) => {
+			answer(next);
+			store.store.set((state) => ({
+				surfaces: state.surfaces.map((item) => (item.id === SURFACE ? { ...item, ...next } : item)),
+			}));
+			await settle();
+		};
+		const done = () => {
+			view.dispose();
+			store.dispose();
+		};
+		return { store, view, client, hosting, order, settle, raise, done, control };
+	}
+
+	const parts = (view: SurfaceView) =>
+		[...view.el.querySelectorAll<HTMLElement>(".surface-pill > :not(.surface-pill-divider)")].map(
+			(part) => part.dataset.toggle ?? part.className,
+		);
+	const card = (view: SurfaceView) => view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
+	const openCard = async (view: SurfaceView, settle: () => Promise<void>) => {
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		await settle();
+	};
+	const pressGoLive = async (view: SurfaceView, settle: () => Promise<void>) => {
+		await openCard(view, settle);
+		card(view).querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		card(view).querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		await settle();
+	};
+	const noProblem = (store: { readonly state: { readonly error?: string } }, view: SurfaceView) => {
+		expect(store.state.error).toBeUndefined();
+		expect(view.el.querySelector(".surface-banner.is-error, .surface-toast")).toBeNull();
+		expect(document.querySelector("dialog[open]")).toBeNull();
+	};
+
+	it("draws the address and the desktop / phone switch only: no Live / Preview, no Publish", async () => {
+		const { view, done } = await website({ canWrite: false, shown: { unpublishedChangeCount: 2 } });
+		expect(parts(view)).toEqual(["surface-pill-address is-private", "device"]);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish, [data-act="publish-menu"]')).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".surface-bar")?.hidden).toBe(false);
+		expect(view.el.querySelector(".surface-notch-pill .surface-notch-label")?.textContent).toBe("Preview");
+		expect(view.el.querySelector(".surface-notch-pill .surface-notch-count")).toBeNull();
+		done();
+	});
+
+	it("draws the same bar, without an address, for a website with no served site yet", async () => {
+		const { view, hosting, done } = await website({ served: false, canWrite: false });
+		expect(parts(view)).toEqual(["device"]);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish, .surface-pill-address')).toBeNull();
+		expect(hosting.client.read).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("turns a stored Live view into Preview", async () => {
+		const { store, settle, done } = await website({ canWrite: false });
+		store.setMode("live");
+		await settle();
+		expect(store.state.mode).toBe("preview");
+		done();
+	});
+
+	it("draws neither the view switch nor Publish, and calls nothing, while it is not known whether the site is public", async () => {
+		const { store, view, client, done } = await website({
+			unread: true,
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(parts(view)).toEqual(["surface-pill-address is-unknown", "device"]);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish')).toBeNull();
+		store.setMode("live");
+		view.update();
+		expect(view.el.querySelector('[data-act="mode"]')).toBeNull();
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("keeps the view switch and Publish when whether the site is public could not be read", async () => {
+		const { view, client, done } = await website({
+			readFails: true,
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(view.el.querySelectorAll('.surface-pill [data-act="mode"]')).toHaveLength(2);
+		expect(view.el.querySelector(".surface-pill .surface-publish")).not.toBeNull();
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("switches auto-publish on once and silently, and never for a read-only member", async () => {
+		const writer = await website();
+		expect(writer.client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		expect(writer.client.setSurfaceAutoPublish).toHaveBeenCalledWith(SURFACE, true);
+		expect(writer.store.state.surfaces.find((item) => item.id === SURFACE)?.autoPublish).toBe(true);
+		await writer.raise({ title: "Thetaband" });
+		expect(writer.client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		noProblem(writer.store, writer.view);
+		writer.done();
+
+		const reader = await website({ canWrite: false, shown: { unpublishedChangeCount: 2 } });
+		expect(reader.client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(reader.client.publishSurface).not.toHaveBeenCalled();
+		reader.done();
+	});
+
+	it("does not retry a failed switch on every redraw, and shows nothing for it", async () => {
+		const { store, view, client, raise, settle, done } = await website({ autoFails: true });
+		expect(client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await settle();
+		await raise({ title: "Thetaband" });
+		expect(client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		noProblem(store, view);
+		done();
+	});
+
+	it("publishes approved changes once per count, silently, never while a publish runs, and not again after a failure", async () => {
+		const { store, view, client, raise, settle, done } = await website({
+			shown: { autoPublish: true, unpublishedChangeCount: 2 },
+			publishFails: 1,
+		});
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await settle();
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		noProblem(store, view);
+
+		await raise({ unpublishedChangeCount: 3, publishStatus: "publishing" });
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		await raise({ publishStatus: "idle" });
+		expect(client.publishSurface).toHaveBeenCalledTimes(2);
+		expect(store.state.surfaces.find((item) => item.id === SURFACE)?.unpublishedChangeCount).toBe(0);
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("goes live by publishing what is approved first, then making the site public, then switching auto-publish off", async () => {
+		const { store, view, order, settle, done } = await website({
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+			publishFails: 1,
+		});
+		expect(order).toEqual(["publish"]);
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish", "publish", "public:true", "auto:false"]);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-live");
+		expect(store.state.surfaces.find((item) => item.id === SURFACE)?.autoPublish).toBe(false);
+		expect(parts(view)).toEqual(["surface-pill-address is-live", "mode", "device"]);
+		expect(card(view).querySelector(".surface-address-problem")).toBeNull();
+		noProblem(store, view);
+		done();
+	});
+
+	it("stays not live and says so in the card when publishing before Go live fails", async () => {
+		const { store, view, order, hosting, settle, done } = await website({
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+			publishFails: Number.POSITIVE_INFINITY,
+		});
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish", "publish"]);
+		expect(hosting.client.setPublic).not.toHaveBeenCalled();
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-private");
+		expect(card(view).querySelector(".surface-address-problem")?.textContent).toBe(
+			"The site did not go live. Try again.",
+		);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish')).toBeNull();
+		await settle();
+		expect(order).toEqual(["publish", "publish"]);
+		expect(store.state.error).toBeUndefined();
+		done();
+	});
+
+	it("switches auto-publish back on when it is made not live", async () => {
+		const { view, client, order, settle, done } = await website({
+			world: { entry: { isPublic: true, domains: [] } },
+		});
+		expect(order).toEqual([]);
+		await openCard(view, settle);
+		card(view).querySelector<HTMLButtonElement>('[data-key="not-live"]')!.click();
+		await settle();
+		expect(order).toEqual(["public:false", "auto:true"]);
+		expect(client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-private");
+		done();
+	});
+
+	it("leaves a public website's bar as it was: the switch, Publish and its menu", async () => {
+		const { store, view, order, settle, done } = await website({
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(parts(view)).toEqual(["surface-pill-address is-live", "mode", "device", "surface-publish has-changes"]);
+		expect(view.el.querySelector('[data-act="publish-menu"]')).not.toBeNull();
+		store.setMode("live");
+		await settle();
+		expect(store.state.mode).toBe("live");
+		expect(order).toEqual([]);
+		done();
+	});
+
+	it("calls nothing and draws neither the switch nor Publish while the app does not know whether the site is served", async () => {
+		const { store, view, client, raise, done } = await website({
+			served: "unknown",
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish')).toBeNull();
+		store.setMode("live");
+		await raise({ unpublishedChangeCount: 3 });
+		expect(store.state.mode).toBe("live");
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("calls nothing after the company's site list could not be read, and shows the public bar once it is read", async () => {
+		const sites: { siteList?: readonly CompanySite[]; siteListUnread?: boolean } = {
+			siteList: [],
+			siteListUnread: true,
+		};
+		const { view, client, raise, done } = await website({
+			sites,
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish, .surface-pill-address')).toBeNull();
+		await raise({ unpublishedChangeCount: 3 });
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+
+		sites.siteList = [{ slug: "thetaband", kind: "files", state: "live" } as CompanySite];
+		sites.siteListUnread = false;
+		await raise({ title: "Thetaband" });
+		expect(parts(view)).toEqual(["surface-pill-address is-live", "mode", "device", "surface-publish has-changes"]);
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("knows a site is served only from a site list that was read", () => {
+		const site = { archetype: "live_build", siteSlug: "thetaband" };
+		const listed = [{ slug: "thetaband", kind: "files", state: "live" } as CompanySite];
+		expect(siteServed({}, site)).toBeUndefined();
+		expect(siteServed({ siteList: [], siteListUnread: true }, site)).toBeUndefined();
+		expect(siteServed({ siteList: listed, siteListUnread: true }, site)).toBeUndefined();
+		expect(siteServed({ siteList: listed, siteListUnread: false }, site)).toBe(true);
+		expect(siteServed({ siteList: [] }, site)).toBe(false);
+		expect(siteServed({ siteList: [{ ...listed[0]!, state: "publishing" }] }, site)).toBe(false);
+		expect(siteServed({}, { archetype: "live_build", siteSlug: null })).toBe(false);
+	});
+
+	it("waits for a queued publish to finish before Go live makes the site public", async () => {
+		const { store, view, order, hosting, raise, settle, done } = await website({
+			canWrite: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+			publishAnswer: { publishStatus: "publishing" },
+		});
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish"]);
+		expect(hosting.client.setPublic).not.toHaveBeenCalled();
+		const going = card(view).querySelector<HTMLButtonElement>(".surface-address-go")!;
+		expect(going.textContent).toBe("Going live…");
+		expect(going.disabled).toBe(true);
+		expect(parts(view)).toEqual(["surface-pill-address is-private", "device"]);
+
+		await raise({ unpublishedChangeCount: 0 });
+		expect(hosting.client.setPublic).not.toHaveBeenCalled();
+		await raise({ publishStatus: "idle" });
+		expect(order).toEqual(["publish", "public:true", "auto:false"]);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-live");
+		noProblem(store, view);
+		done();
+	});
+
+	it("stays not live with the card's problem line when the queued publish fails", async () => {
+		const { store, view, order, hosting, raise, settle, done } = await website({
+			canWrite: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+			publishAnswer: { publishStatus: "publishing" },
+		});
+		await pressGoLive(view, settle);
+		await raise({ publishStatus: "failed" });
+		expect(order).toEqual(["publish"]);
+		expect(hosting.client.setPublic).not.toHaveBeenCalled();
+		expect(card(view).querySelector(".surface-address-problem")?.textContent).toBe(
+			"The site did not go live. Try again.",
+		);
+		expect(card(view).querySelector(".surface-address-go")?.textContent).toBe("Go live");
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-private");
+		expect(store.state.error).toBeUndefined();
+		done();
+	});
+
+	it("waits for a publish already running when Go live is pressed, and never starts a second", async () => {
+		const { view, order, hosting, raise, settle, done } = await website({
+			shown: { autoPublish: true, unpublishedChangeCount: 1, publishStatus: "publishing" },
+		});
+		await pressGoLive(view, settle);
+		expect(order).toEqual([]);
+		expect(hosting.client.setPublic).not.toHaveBeenCalled();
+		await raise({ publishStatus: "idle", unpublishedChangeCount: 0 });
+		expect(order).toEqual(["public:true", "auto:false"]);
+		done();
+	});
+
+	it("gives up going live after five minutes of waiting for the publish", async () => {
+		const { view, order, hosting, settle, done } = await website({
+			canWrite: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+			publishAnswer: { publishStatus: "publishing" },
+		});
+		await openCard(view, settle);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		card(view).querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		card(view).querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		await vi.advanceTimersByTimeAsync(GO_LIVE_PUBLISH_WAIT_MS - 1);
+		expect(order).toEqual(["publish"]);
+		expect(card(view).querySelector(".surface-address-go")?.textContent).toBe("Going live…");
+		await vi.advanceTimersByTimeAsync(1);
+		vi.useRealTimers();
+		await settle();
+		expect(hosting.client.setPublic).not.toHaveBeenCalled();
+		expect(card(view).querySelector(".surface-address-problem")?.textContent).toBe(
+			"The site did not go live. Try again.",
+		);
+		done();
+	});
+
+	it("retries switching auto-publish off after Go live on the next summary change, until it reads off", async () => {
+		const { view, order, control, raise, settle, done } = await website({
+			canWrite: false,
+			shown: { autoPublish: true },
+			autoFails: true,
+		});
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["public:true", "auto:false"]);
+		await settle();
+		expect(order).toEqual(["public:true", "auto:false"]);
+		await raise({ title: "Thetaband" });
+		expect(order).toEqual(["public:true", "auto:false", "auto:false"]);
+		control.autoFails = false;
+		await raise({ title: "Thetaband 2" });
+		expect(order).toEqual(["public:true", "auto:false", "auto:false", "auto:false"]);
+		await raise({ title: "Thetaband 3" });
+		expect(order).toHaveLength(4);
+		done();
+	});
+
+	it("makes the fourth failed switch-off a normal call that shows its error, then stops", async () => {
+		const { store, view, order, raise, settle, done } = await website({
+			canWrite: false,
+			shown: { autoPublish: true },
+			autoFails: true,
+		});
+		await pressGoLive(view, settle);
+		for (const title of ["A", "B", "C"]) {
+			expect(store.state.error).toBeUndefined();
+			await raise({ title });
+		}
+		expect(order.filter((step) => step === "auto:false")).toHaveLength(4);
+		expect(store.state.error).not.toBeUndefined();
+		await raise({ title: "D" });
+		expect(order.filter((step) => step === "auto:false")).toHaveLength(4);
+		done();
+	});
+
+	it("corrects an auto-publish switch-on that lands after Go live", async () => {
+		const { store, view, order, control, settle, done } = await website({ holdAutoOn: true });
+		expect(order).toEqual(["auto:true"]);
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["auto:true", "public:true"]);
+		control.release();
+		await settle();
+		expect(order).toEqual(["auto:true", "public:true", "auto:false"]);
+		expect(store.state.surfaces.find((item) => item.id === SURFACE)?.autoPublish).toBe(false);
+		done();
+	});
+
+	it("leaves auto-publish alone on a public website this view did not take live", async () => {
+		const { order, raise, done } = await website({
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+		});
+		await raise({ title: "Thetaband" });
+		expect(order).toEqual([]);
+		done();
+	});
+});
+
+describe("a new website's first publish", () => {
+	const ADDRESS = "https://thetaband-go-live-test.qorpera.site";
+	const listedLive = { id: HOSTED_SITE, slug: "thetaband", kind: "files", state: "live" } as CompanySite;
+
+	it("shows the site, its address and Go live once the first approved change is published, without a reload", async () => {
+		let current = summary({
+			siteSlug: null,
+			liveUrl: null,
+			autoPublish: false,
+			unpublishedChangeCount: 0,
+			activeSessionCount: 1,
+			runningSessionCount: 1,
+			pendingChangeCount: 0,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [current]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: current })),
+			setSurfaceAutoPublish: vi.fn(async (_id: string, enabled: boolean) => {
+				current = { ...current, autoPublish: enabled };
+				return current;
+			}),
+			publishSurface: vi.fn(async () => current),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const company: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic"> = {
+			siteList: [],
+			siteListUnread: false,
+		};
+		let served: readonly CompanySite[] = [];
+		const readSites = vi.fn(() => {
+			void Promise.resolve().then(() => {
+				company.siteList = served;
+			});
+		});
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		const view = new SurfaceView(
+			{
+				store,
+				mount: (surface) => {
+					if (!company.siteList?.some((site) => site.slug === surface.siteSlug && site.state === "live"))
+						return undefined;
+					const el = document.createElement("div");
+					el.className = "surface-site";
+					return { el, update: () => undefined, dispose: () => undefined };
+				},
+				openMigration: () => undefined,
+				isSiteLive: (surface) => siteServed(company, surface),
+				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+				managesSites: () => true,
+				canWrite: () => true,
+			},
+			"website",
+		);
+		const oncePublished = readSitesOncePublished(readSites);
+		const stop = store.store.subscribe(() => oncePublished(company, store.state.surfaces));
+		oncePublished(company, store.state.surfaces);
+		document.body.append(view.el);
+		const settle = async () => {
+			for (let turn = 0; turn < 4; turn++) {
+				await flush();
+				view.update();
+			}
+		};
+		const raise = async (next: Partial<SurfaceSummary>) => {
+			current = { ...current, ...next };
+			store.store.set((state) => ({
+				surfaces: state.surfaces.map((item) => (item.id === SURFACE ? { ...item, ...next } : item)),
+			}));
+			await settle();
+		};
+		await settle();
+		const empty = () => view.el.querySelector(".surface-empty")?.textContent ?? "";
+		expect(empty()).toContain("Nothing is live yet. Describe what to build below.");
+
+		await raise({
+			siteSlug: "thetaband",
+			liveUrl: ADDRESS,
+			publishStatus: "publishing",
+			activeSessionCount: 0,
+			runningSessionCount: 0,
+		});
+		expect(empty()).toContain("Nothing is live yet.");
+		expect(readSites).not.toHaveBeenCalled();
+
+		served = [listedLive];
+		await raise({ publishStatus: "idle", liveHeadSha: "a1b2c3" });
+		expect(readSites).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".surface-empty")).toBeNull();
+		expect(view.el.querySelector(".surface-mount .surface-site")).not.toBeNull();
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-private");
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		await settle();
+		expect(view.el.querySelector(".surface-address-sheet .surface-address-go")?.textContent).toContain("Go live");
+
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await raise({ title: "Go live test" });
+		expect(readSites).toHaveBeenCalledTimes(1);
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		stop();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("reads the site list once per published state whose site it does not list, never while it is unread or a publish runs", () => {
+		const read = vi.fn();
+		const once = readSitesOncePublished(read);
+		const site = summary({ publishStatus: "idle", liveHeadSha: "a1" });
+		once({}, [site]);
+		expect(sitesAwaited({}, [site])).toBe("");
+		once({ siteList: [] }, [{ ...site, publishStatus: "publishing" }]);
+		once({ siteList: [] }, [{ ...site, publishStatus: "failed" }]);
+		once({ siteList: [] }, [{ ...site, siteSlug: null }]);
+		once({ siteList: [] }, [{ ...site, archetype: "studio" }]);
+		expect(read).not.toHaveBeenCalled();
+		once({ siteList: [] }, [site]);
+		once({ siteList: [] }, [site]);
+		once({ siteList: [{ ...listedLive, state: "publishing" }] }, [site]);
+		expect(read).toHaveBeenCalledTimes(1);
+		once({ siteList: [] }, [{ ...site, liveHeadSha: "a2" }]);
+		expect(read).toHaveBeenCalledTimes(2);
+		once({ siteList: [listedLive] }, [{ ...site, liveHeadSha: "a2" }]);
+		once({ siteList: [listedLive] }, [{ ...site, liveHeadSha: "a3" }]);
+		expect(read).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps the company's answer of which sites are public in step with every hosting read and Go live", async () => {
+		const company = new Store<CompanyState>({ loading: false } as CompanyState);
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		hosting.client.setPublic.mockImplementation(async (_siteId: string, isPublic: boolean) => isPublic);
+		const noted = hostingNotingPublic(company, hosting.client);
+		await noted.read();
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(false);
+		await noted.setPublic(HOSTED_SITE, true);
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		startPublicRead(company)(undefined);
+		expect(company.get().sitesPublic).toBeUndefined();
+	});
+
+	it("drops a hosting read that started before a Go live finished, or that lands while one runs", async () => {
+		const company = new Store<CompanyState>({ loading: false } as CompanyState);
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		let answerPublic: () => void = () => undefined;
+		hosting.client.setPublic.mockImplementation(
+			(_siteId: string, isPublic: boolean) =>
+				new Promise<boolean>((resolve) => {
+					answerPublic = () => resolve(isPublic);
+				}),
+		);
+		const noted = hostingNotingPublic(company, hosting.client);
+		const older = startPublicRead(company);
+		const going = noted.setPublic(HOSTED_SITE, true);
+		await noted.read();
+		expect(company.get().sitesPublic).toBeUndefined();
+		answerPublic();
+		await going;
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		older(await hosting.client.read());
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(true);
+		await noted.read();
+		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(false);
+	});
+});
+
+describe("a website's rail row", () => {
+	afterEach(() => {
+		setLanguagePreference("system");
+	});
+
+	it("says Live only for a site everyone can open, Not live yet for one that is not or was taken down, and the host alone while unknown", async () => {
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [
+					summary({ activeSessionCount: 0, liveUrl: "https://thetaband-go-live-test.qorpera.site" }),
+				]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([])),
+			}),
+		);
+		await store.load();
+		let company: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic" | "sitesTakenDown"> = {};
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, undefined, (surface) =>
+			siteAnswer(company, surface),
+		);
+		document.body.append(rail.el);
+		const line = (state: typeof company) => {
+			company = state;
+			rail.update(undefined);
+			return rail.el.querySelector('.rail-surface[data-surface-slug="website"] .rail-surface-sub')?.textContent;
+		};
+		const listed = [{ id: HOSTED_SITE, slug: "thetaband", kind: "files", state: "live" } as CompanySite];
+		const host = "thetaband-go-live-test.qorpera.site";
+		const everyone = { siteList: listed, sitesPublic: new Map([[HOSTED_SITE, true]]) };
+		const nobody = { siteList: listed, sitesPublic: new Map([[HOSTED_SITE, false]]) };
+
+		expect(line(everyone)).toBe(`Live · ${host}`);
+		expect(line(nobody)).toBe("Not live yet");
+		expect(line({ siteList: [] })).toBe("Not live yet");
+		expect(line({ siteList: [{ ...listed[0]!, state: "publishing" }] })).toBe("Not live yet");
+		expect(line({ ...everyone, sitesTakenDown: new Set([HOSTED_SITE]) })).toBe("Not live yet");
+		expect(line({})).toBe(host);
+		expect(line({ siteList: listed, siteListUnread: true, sitesPublic: everyone.sitesPublic })).toBe(host);
+		expect(line({ siteList: listed })).toBe(host);
+
+		expect(setLanguagePreference("da")).toBe(true);
+		expect(line(everyone)).toBe(`Live · ${host}`);
+		expect(line(nobody)).toBe("Ikke live endnu");
+		expect(line({})).toBe(host);
 		store.dispose();
 	});
 });

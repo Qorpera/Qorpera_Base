@@ -2,14 +2,18 @@
 import {
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
+	type SurfaceAutomationSummary,
 	type SurfaceExplorationSet,
+	type SurfaceSummary,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SurfacesClient } from "../src/app/surfaces-store.ts";
 import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from "../src/app/views/site-view.ts";
-import { SurfaceDoorStage } from "../src/app/views/surface-door.ts";
-import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
+import { previewStatusText, publishFailureText, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
+import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { deferred } from "./fixtures.ts";
 import {
@@ -144,6 +148,198 @@ describe("the surface rail", () => {
 		expect(rail.el.querySelectorAll(".rail-surface-proposed")).toHaveLength(0);
 		store.dispose();
 	});
+
+	describe("Delete in the right-click menu", () => {
+		const inbox = summary({
+			id: "55555555-5555-4555-8555-555555555555",
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			icon: "mail",
+			siteSlug: null,
+			activeSessionCount: 0,
+		});
+		const quiet = { activeSessionCount: 0, pendingChangeCount: 0, liveUrl: null };
+		const railRow = (rail: SurfaceRail, slug: string) =>
+			rail.el.querySelector<HTMLElement>(`.rail-surface[data-surface-slug="${slug}"]`);
+		const menuRow = (label: string) =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+				(item) => item.textContent?.trim() === label,
+			);
+		const openRowMenu = (rail: SurfaceRail, slug: string) =>
+			railRow(rail, slug)!.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+		const chooseDelete = async (rail: SurfaceRail, slug: string) => {
+			openRowMenu(rail, slug);
+			menuRow("Delete")!.click();
+			await flush();
+		};
+		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
+		const dialogButton = (label: string) =>
+			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
+		const scheduled = (id: string, targetSurfaceSlug: string | null): SurfaceAutomationSummary => ({
+			id,
+			key: id,
+			title: "Weekly check",
+			scheduleSummary: "Mondays 08:00",
+			targetSurfaceSlug,
+			outputMode: targetSurfaceSlug ? "surface_session" : "decision_card",
+			enabled: true,
+			status: "idle",
+			lastRunAt: null,
+			lastOutcomeSummary: null,
+			nextRunAt: null,
+			ownable: true,
+			ownerUserId: null,
+			offer: null,
+		});
+		const railOf = async (
+			surfaces: readonly SurfaceSummary[],
+			client: Partial<SurfacesClient> = {},
+			open = "website",
+		) => {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [...surfaces]),
+					getSurfaceWorkspace: vi.fn(async (id: string) =>
+						workspace([], { surface: surfaces.find((item) => item.id === id)! }),
+					),
+					...client,
+				}),
+			);
+			await store.load();
+			const reportError = vi.fn();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, reportError);
+			document.body.append(rail.el);
+			rail.update(open);
+			return { store, rail, reportError };
+		};
+
+		afterEach(async () => {
+			openMenu()?.close();
+			await flush();
+			history.replaceState(null, "", location.pathname);
+		});
+
+		it("asks first, deletes on the dialog's Delete, and leaves the deleted surface's page", async () => {
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+			const { store, rail, reportError } = await railOf([summary(quiet), inbox], { archiveSurface });
+
+			openRowMenu(rail, "website");
+			const remove = menuRow("Delete")!;
+			expect(remove.classList.contains("danger")).toBe(true);
+			expect(remove.previousElementSibling?.getAttribute("role")).toBe("separator");
+			remove.click();
+			expect(openMenu()).toBeUndefined();
+			await flush();
+			expect(dialog()?.querySelector("p")?.textContent).toBe(
+				"Delete Website? It is removed for everyone in the company.",
+			);
+			expect(dialog()!.querySelector(".modal-list")).toBeNull();
+			dialogButton("Cancel").click();
+			await flush();
+			expect(dialog()).toBeNull();
+			expect(archiveSurface).not.toHaveBeenCalled();
+			expect(railRow(rail, "website")).not.toBeNull();
+
+			await chooseDelete(rail, "website");
+			expect(dialogButton("Delete").classList.contains("btn-danger")).toBe(true);
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(archiveSurface).toHaveBeenCalledWith(SURFACE);
+			expect(railRow(rail, "website")).toBeNull();
+			expect(railRow(rail, "inbox")).not.toBeNull();
+			expect(location.hash).toBe(`#/c/${COMPANY}`);
+			expect(reportError).not.toHaveBeenCalled();
+			store.dispose();
+		});
+
+		it("stays on the page that is open when another surface is deleted", async () => {
+			const shop = summary({ ...quiet, id: "55555555-5555-4555-8555-555555555577", slug: "shop", title: "Shop" });
+			const { store, rail } = await railOf([summary(), shop]);
+
+			await chooseDelete(rail, "shop");
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(railRow(rail, "shop")).toBeNull();
+			expect(location.hash).toBe("");
+			store.dispose();
+		});
+
+		it("asks the one question whatever the surface holds, and deletes it all with the one call", async () => {
+			const listAutomations = vi.fn(async () => [
+				scheduled("a-1", "website"),
+				scheduled("a-2", "inbox"),
+				scheduled("a-3", null),
+			]);
+			const deleteAutomation = vi.fn(async () => true);
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+			const { store, rail } = await railOf(
+				[summary({ activeSessionCount: 3, runningSessionCount: 2, pendingChangeCount: 1 }), inbox],
+				{ listAutomations, deleteAutomation, archiveSurface },
+				"inbox",
+			);
+			const reads = listAutomations.mock.calls.length;
+
+			await chooseDelete(rail, "website");
+			expect(dialog()!.classList.contains("confirm-dialog")).toBe(true);
+			expect([...dialog()!.children].map((item) => item.tagName)).toEqual(["P", "DIV"]);
+			expect(dialog()!.querySelector("p")?.textContent).toBe(
+				"Delete Website? It is removed for everyone in the company.",
+			);
+			dialogButton("Delete").click();
+			await flush();
+			expect(archiveSurface).toHaveBeenCalledTimes(1);
+			expect(archiveSurface).toHaveBeenCalledWith(SURFACE);
+			expect(deleteAutomation).not.toHaveBeenCalled();
+			expect(listAutomations).toHaveBeenCalledTimes(reads);
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-2", "a-3"]);
+			expect(store.state.surfaces.map((item) => item.slug)).toEqual(["inbox"]);
+			store.dispose();
+		});
+
+		it("says so in the rail and keeps the surface and its scheduled agents when the delete fails", async () => {
+			const { store, rail, reportError } = await railOf([summary()], {
+				listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
+				archiveSurface: vi.fn(async () => Promise.reject(new Error("permission denied"))),
+			});
+
+			await chooseDelete(rail, "website");
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-1", "a-2"]);
+			expect(railRow(rail, "website")).not.toBeNull();
+			expect(location.hash).toBe("");
+			store.dispose();
+		});
+
+		it("opens one dialog for a surface however often Delete is chosen", async () => {
+			const { store, rail } = await railOf([summary()]);
+
+			openRowMenu(rail, "website");
+			menuRow("Delete")!.click();
+			await chooseDelete(rail, "website");
+			expect(document.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+			dialogButton("Cancel").click();
+			store.dispose();
+		});
+
+		it("offers no Delete on a built-in surface, which nothing can bring back", async () => {
+			const { store, rail } = await railOf([summary(), inbox]);
+
+			openRowMenu(rail, "inbox");
+			expect(menuRow("Figure")).toBeDefined();
+			expect(menuRow("Delete")).toBeUndefined();
+			expect(openMenu()!.el.querySelector('[role="separator"]')).toBeNull();
+			store.dispose();
+		});
+	});
 });
 
 describe("the surface page", () => {
@@ -169,7 +365,7 @@ describe("the surface page", () => {
 		await flush();
 		view.update();
 		expect(view.el.querySelector(".surface-title")?.textContent).toBe("Website");
-		expect(view.el.querySelector(".surface-publish .surface-count")?.textContent).toBe("2");
+		expect(view.el.querySelector(".surface-publish .surface-notch-count")?.textContent).toBe("2");
 		expect(view.el.querySelector(".surface-mount .real-site-view")).toBe(mounted);
 		expect(update).toHaveBeenCalled();
 		expect(view.el.querySelector<HTMLTextAreaElement>(".surface-input")?.disabled).toBe(false);
@@ -180,10 +376,12 @@ describe("the surface page", () => {
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.classList.contains("is-open")).toBe(true);
 		const approveBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
+		expect(approveBtn.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Confirm");
 		approveBtn.click();
 		const confirmBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
 		expect(confirmBtn.classList.contains("is-confirming")).toBe(true);
 		expect(confirmBtn.textContent).toBe("Confirm");
+		expect(confirmBtn.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Approve");
 		confirmBtn.click();
 		await flush();
 		await flush();
@@ -369,6 +567,50 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("says each option's first open change under its name in the Changes panel", async () => {
+		const explorationId = "88888888-8888-4888-8888-888888888883";
+		const secondSessionId = "33333333-3333-4333-8333-333333333336";
+		const variantA = session(["staged"], {
+			id: SESSION,
+			explorationId,
+			explorationVariantLabel: "Aftenlys",
+			changes: [change(CHANGES[0], 1, "staged", { summary: "Warm evening light on the hero." })],
+		});
+		const variantB = session([], { id: secondSessionId, explorationId, explorationVariantLabel: "Varmt studie" });
+		const ws = workspace([variantA, variantB], {
+			explorations: [
+				{
+					id: explorationId,
+					surfaceId: SURFACE,
+					title: "Forsidens udtryk",
+					status: "open",
+					chosenSessionId: null,
+					variantSessionIds: [SESSION, secondSessionId],
+					createdAt: "2026-11-21T10:00:00.000Z",
+					resolvedAt: null,
+				},
+			],
+		});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws) }));
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openPreviewPanel();
+		view.update();
+
+		const options = [...view.el.querySelectorAll(".surface-drawer .surface-overview-option")];
+		expect(options.map((option) => option.querySelector(".surface-overview-option-label")?.textContent)).toEqual([
+			"Aftenlys",
+			"Varmt studie",
+		]);
+		expect(
+			options.map((option) => option.querySelector(".surface-overview-option-line")?.textContent ?? null),
+		).toEqual(["Warm evening light on the hero.", null]);
+		view.dispose();
+		store.dispose();
+	});
+
 	it("supports Point-to-Change mode, validates picked targets, and starts a targeted session", async () => {
 		const target = pointTarget();
 		const ws = workspace([session(["staged"])], {
@@ -536,6 +778,30 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("draws an agent's message in the drawer as Markdown", async () => {
+		const text = "**Brooks** afventer jeres aktivering.\n\n- Logo\n- Farver\n\nSe `src/hero.tsx`.";
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[1], "session", text)] })]),
+			),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+
+		const message = view.el.querySelector(".surface-drawer .surface-message.is-session")!;
+		expect(message.querySelector("strong")?.textContent).toBe("Brooks");
+		expect([...message.querySelectorAll("li")].map((item) => item.textContent)).toEqual(["Logo", "Farver"]);
+		expect(message.querySelector("code")?.textContent).toBe("src/hero.tsx");
+		expect(message.textContent).not.toContain("**");
+		view.dispose();
+		store.dispose();
+	});
+
 	it("shows no Send to bar on Brand Studio or on an ops surface like Inbox", async () => {
 		const brand = summary({
 			id: "22222222-2222-4222-8222-222222222229",
@@ -587,7 +853,7 @@ describe("the surface page", () => {
 		await flush();
 		inboxView.update();
 		expect(inboxView.el.querySelector(".surface-handoff-btn")).toBeNull();
-		expect(inboxView.el.querySelector(".surface-notch, .surface-pill")).toBeNull();
+		expect(inboxView.el.querySelector<HTMLElement>(".surface-bar")?.hidden).toBe(true);
 		inboxView.dispose();
 		store.dispose();
 	});
@@ -733,7 +999,7 @@ describe("the surface page", () => {
 			this.dispatchEvent(new Event("close"));
 		};
 		const websiteSurface = store.state.surfaces.find((item) => item.id === SURFACE)!;
-		const sheet = openPublishPatchnotesSheet(store, websiteSurface);
+		const sheet = openPublishSheet(store, websiteSurface);
 		const buttons = [...sheet.el.querySelectorAll<HTMLButtonElement>('[data-act="rollback"]')];
 		expect(buttons).toHaveLength(2);
 		buttons[0]!.click();
@@ -756,7 +1022,32 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
-	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in patch notes", async () => {
+	it("words a failed build for the member by its code and never shows the build log", () => {
+		const failed = (errorDetail: string | null) => previewStatusText(previewFrame({ status: "failed", errorDetail }));
+		expect(failed('PREVIEW_BUILD_FAILED\nThe build "npm run build" exited with code 1.\nsrc/main.tsx: error')).toBe(
+			"The preview could not be built.",
+		);
+		expect(failed("PREVIEW_BUILD_NO_HOURS\nThe company has no computer hours left.")).toBe(
+			"The company is out of computer hours, so the preview could not be built.",
+		);
+		expect(failed("PREVIEW_BUILD_NO_MACHINE\nNo coding machine could be had.")).toBe(
+			"No machine was free to build the preview. Try again in a moment.",
+		);
+		expect(failed('PREVIEW_BUILD_TOO_LARGE\nThe build\'s output in "out" has more than 500 web files.')).toBe(
+			"The built preview does not fit within the limits of a site.",
+		);
+		expect(failed("CODE_HOST_SITE_READ_FAILED: x")).toBe("The preview could not be built.");
+		expect(failed(null)).toBe("The preview could not be built.");
+		expect(publishFailureText("PREVIEW_BUILD_FAILED\nlog")).toBe(
+			"The site could not be built, so nothing was published.",
+		);
+		expect(publishFailureText("PREVIEW_BUILD_TOO_LARGE\nlog")).toBe(
+			"The built site does not fit within the limits of a site, so nothing was published.",
+		);
+		expect(publishFailureText("Missing index.html")).toBeNull();
+	});
+
+	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in the publish window", async () => {
 		const controller = new AbortController();
 		const onRetry = vi.fn();
 		const door = new SurfaceDoorStage(controller.signal, { onRetry });
@@ -826,8 +1117,7 @@ describe("the surface page", () => {
 		await flush();
 		view.update();
 
-		const failedBarBadge = view.el.querySelector(".surface-bar-agent-badge.is-danger");
-		expect(failedBarBadge?.textContent).toBe("Failed");
+		expect(view.el.querySelector(".surface-bar")?.textContent).not.toContain("Failed");
 
 		const cards = [...view.el.querySelectorAll<HTMLElement>(".surface-overview-card.is-agent")];
 		expect(cards[0]?.dataset.session).toBe(failedSession.id);
@@ -852,12 +1142,12 @@ describe("the surface page", () => {
 			this.open = false;
 			this.dispatchEvent(new Event("close"));
 		};
-		const sheet = openPublishPatchnotesSheet(store, store.state.surfaces[0]!);
+		const sheet = openPublishSheet(store, store.state.surfaces[0]!);
 		expect(sheet.el.querySelector(".surface-sheet-error")?.textContent).toBe("Missing index.html");
 		sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
 		await flush();
 		expect(sheet.el.open).toBe(true);
-		expect(sheet.el.querySelector(".surface-sheet-status")?.textContent).toBe("Publishing…");
+		expect(sheet.el.querySelector('[data-act="confirm-publish"]')?.textContent).toBe("Publishing…");
 
 		currentPublishStatus = "idle";
 		await store.refreshWorkspace(SURFACE);

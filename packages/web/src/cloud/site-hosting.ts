@@ -50,14 +50,22 @@ export interface AddedSiteDomain {
 	readonly isPrimary: boolean;
 	readonly status: CustomDomainStatus;
 	readonly verificationToken: string;
-	readonly dns: {
-		readonly recordType: "A" | "CNAME";
-		readonly ipv4: string | null;
-		readonly ipv6: string | null;
-		readonly cnameTarget: string | null;
-		readonly txtHost: string;
-		readonly txtValue: string;
-	};
+	readonly dns: SiteDnsSetup;
+}
+
+export interface SiteDnsSetup {
+	readonly recordType: "A" | "CNAME";
+	readonly ipv4: string | null;
+	readonly ipv6: string | null;
+	readonly cnameTarget: string | null;
+	readonly txtHost: string;
+	readonly txtValue: string;
+}
+
+export interface SiteDnsRecord {
+	readonly type: "A" | "AAAA" | "CNAME" | "TXT";
+	readonly host: string;
+	readonly value: string;
 }
 
 export interface WebSiteHosting {
@@ -109,6 +117,29 @@ function parseCustomDomain(value: unknown): SiteCustomDomain | undefined {
 		verifiedAt: nullableString(item.verifiedAt),
 		tlsActiveAt: nullableString(item.tlsActiveAt),
 		lastError: nullableString(item.lastError),
+	};
+}
+
+export function siteDnsRecords(hostname: string, dns: SiteDnsSetup): SiteDnsRecord[] {
+	const records: SiteDnsRecord[] = [];
+	if (dns.recordType === "A" && dns.ipv4) {
+		records.push({ type: "A", host: "@", value: dns.ipv4 });
+		if (dns.ipv6) records.push({ type: "AAAA", host: "@", value: dns.ipv6 });
+	} else if (dns.cnameTarget) {
+		records.push({ type: "CNAME", host: hostname, value: dns.cnameTarget });
+	}
+	records.push({ type: "TXT", host: dns.txtHost, value: dns.txtValue });
+	return records;
+}
+
+export function domainDnsSetup(state: CompanySiteHostingState, domain: SiteCustomDomain): SiteDnsSetup {
+	return {
+		recordType: domain.isApex ? "A" : "CNAME",
+		ipv4: state.edgeIpv4,
+		ipv6: state.edgeIpv6,
+		cnameTarget: state.edgeCnameTarget,
+		txtHost: `_qorpera.${domain.hostname}`,
+		txtValue: `qorpera-verify=${domain.verificationToken}`,
 	};
 }
 

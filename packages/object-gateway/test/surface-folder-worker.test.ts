@@ -5,6 +5,13 @@ import { ObjectDependencyError } from "../src/dependency.ts";
 import type { MemberCompanyPublisherRpc } from "../src/member-company-authority.ts";
 import { SurfaceFolderWorker } from "../src/surface-folder-worker.ts";
 
+interface StoredFileRef {
+	readonly manifestSha256: string;
+	readonly fileSha256: string;
+	readonly bytes: number;
+	readonly mediaType: string;
+}
+
 interface StoredEntry {
 	kind: "file" | "folder";
 	version: string;
@@ -57,8 +64,25 @@ function createHarness(
 	let saveSnapshotAttemptErrors: Error[] = [];
 	let preCommitErrors: Error[] = [];
 	let postCommitErrors: Error[] = [];
+	const unverifiedManifests = new Set<string>();
+	const storeGets: string[] = [];
 
-	const putFile = (path: string, text: string, version = randomUUID()): string => {
+	const hasProof = (file: { manifestSha256: string; fileSha256: string; bytes: number }): boolean => {
+		const manifestBytes = objects.get(file.manifestSha256);
+		if (!manifestBytes) return false;
+		const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as {
+			fileSha256: string;
+			bytes: number;
+			chunks: { sha256: string }[];
+		};
+		return (
+			manifest.fileSha256 === file.fileSha256 &&
+			manifest.bytes === file.bytes &&
+			manifest.chunks.every((chunk) => objects.has(chunk.sha256))
+		);
+	};
+
+	const ensureParents = (path: string): void => {
 		const parts = path.split("/");
 		for (let i = 1; i < parts.length; i += 1) {
 			const dir = parts.slice(0, i).join("/");
@@ -73,6 +97,42 @@ function createHarness(
 				});
 			}
 		}
+	};
+
+	const storeFile = (bytes: Uint8Array, mediaType: string): StoredFileRef => {
+		const fileSha = digestSha256(bytes);
+		const manifestBytes = new TextEncoder().encode(
+			JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v2",
+				fileSha256: fileSha,
+				bytes: bytes.byteLength,
+				mediaType,
+				executable: false,
+				chunks: [{ sha256: fileSha, bytes: bytes.byteLength }],
+			}),
+		);
+		const manifestSha = digestSha256(manifestBytes);
+		objects.set(fileSha, bytes);
+		objects.set(manifestSha, manifestBytes);
+		return { manifestSha256: manifestSha, fileSha256: fileSha, bytes: bytes.byteLength, mediaType };
+	};
+
+	const putStoredFile = (path: string, bytes: Uint8Array, mediaType: string): StoredFileRef => {
+		ensureParents(path);
+		const ref = storeFile(bytes, mediaType);
+		entries.set(path, {
+			kind: "file",
+			version: randomUUID(),
+			content: bytes,
+			manifestSha256: ref.manifestSha256,
+			fileSha256: ref.fileSha256,
+			mediaType,
+		});
+		return ref;
+	};
+
+	const putFile = (path: string, text: string, version = randomUUID()): string => {
+		ensureParents(path);
 		const bytes = new TextEncoder().encode(text);
 		const fileSha = digestSha256(bytes);
 		const manifestText = JSON.stringify({
@@ -140,7 +200,7 @@ function createHarness(
 				case "qorpera_folder_authorize_object_download": {
 					const hash = String(args.p_sha256);
 					const buf = objects.get(hash);
-					if (!buf) throw new Error(`Missing object ${hash}`);
+					if (!buf) throw new ObjectDependencyError(403);
 					return { schema: "qorpera.folder-object-download/v1", profileId, bytes: buf.byteLength };
 				}
 				case "qorpera_folder_open_upload": {
@@ -212,71 +272,60 @@ function createHarness(
 							file?: { manifestSha256: string; fileSha256: string; bytes: number; mediaType: string };
 						}[];
 						const outcomes: Record<string, unknown>[] = [];
-						const stagedMutations: (() => void)[] = [];
-						let hasFailure = false;
 						for (const unit of units) {
 							const existing = entries.get(unit.path);
 							if (unit.op === "mkdir") {
 								const nextVersion = randomUUID();
-								stagedMutations.push(() => {
-									if (!entries.has(unit.path)) {
-										entries.set(unit.path, {
-											kind: "folder",
-											version: nextVersion,
-											content: null,
-											manifestSha256: null,
-											fileSha256: null,
-											mediaType: "inode/directory",
-										});
-									}
-								});
+								if (!entries.has(unit.path)) {
+									entries.set(unit.path, {
+										kind: "folder",
+										version: nextVersion,
+										content: null,
+										manifestSha256: null,
+										fileSha256: null,
+										mediaType: "inode/directory",
+									});
+								}
 								outcomes.push({ outcome: "saved", version: nextVersion });
 								continue;
 							}
 							if (unit.op === "write") {
 								if (unit.expectedVersion && existing?.version !== unit.expectedVersion) {
-									hasFailure = true;
 									outcomes.push({ outcome: "refused", reason: "version_mismatch" });
 									continue;
 								}
 								if (!unit.expectedVersion && existing) {
-									hasFailure = true;
 									outcomes.push({ outcome: "refused", reason: "exists" });
 									continue;
 								}
 								const fileRef = unit.file!;
-								const content = objects.get(fileRef.fileSha256) ?? new Uint8Array();
+								if (!hasProof(fileRef) || unverifiedManifests.has(fileRef.manifestSha256)) {
+									outcomes.push({ outcome: "refused", reason: "bytes_unverified" });
+									continue;
+								}
 								const nextVersion = randomUUID();
-								stagedMutations.push(() => {
-									entries.set(unit.path, {
-										kind: "file",
-										version: nextVersion,
-										content,
-										manifestSha256: fileRef.manifestSha256,
-										fileSha256: fileRef.fileSha256,
-										mediaType: fileRef.mediaType,
-									});
+								entries.set(unit.path, {
+									kind: "file",
+									version: nextVersion,
+									content: objects.get(fileRef.fileSha256) ?? new Uint8Array(),
+									manifestSha256: fileRef.manifestSha256,
+									fileSha256: fileRef.fileSha256,
+									mediaType: fileRef.mediaType,
 								});
 								outcomes.push({ outcome: "saved", version: nextVersion });
 								continue;
 							}
 							if (unit.op === "delete") {
 								if (!existing || existing.version !== unit.expectedVersion) {
-									hasFailure = true;
 									outcomes.push({ outcome: "refused", reason: "version_mismatch" });
 									continue;
 								}
-								stagedMutations.push(() => {
-									entries.delete(unit.path);
-								});
+								entries.delete(unit.path);
 								outcomes.push({ outcome: "saved", version: null });
 							}
 						}
-						if (!hasFailure) {
-							for (const apply of stagedMutations) apply();
-						}
 						result = { schema: "qorpera.folder-commit/v1", units: outcomes };
-						if (opKey && !hasFailure) {
+						if (opKey) {
 							committedByOpKey.set(opKey, result);
 						}
 					}
@@ -331,6 +380,7 @@ function createHarness(
 
 	const store = {
 		async get(_profileId: string, hash: string): Promise<Uint8Array> {
+			storeGets.push(hash);
 			if (options?.hangStoreGet) {
 				return await new Promise<Uint8Array>(() => undefined);
 			}
@@ -395,6 +445,13 @@ function createHarness(
 			postCommitErrors = [...errors];
 		},
 		putFile,
+		putStoredFile,
+		storeFile,
+		unverifiedManifests,
+		storeGets,
+		dropObject(hash: string) {
+			objects.delete(hash);
+		},
 		setPendingClaim(next: { merges?: unknown[]; publishes?: unknown[] }) {
 			pendingClaim = next;
 		},
@@ -1343,6 +1400,341 @@ describe("SurfaceFolderWorker", () => {
 		expect(await hOk.worker.processDue(8)).toBe(1);
 		expect(hOk.completedMerges[0]?.p_status).toBe("landed");
 		expect(hOk.readText("identity/voice.md")).toBe("Clean voice.\n");
+	});
+
+	describe("write_file", () => {
+		type Harness = ReturnType<typeof createHarness>;
+		const bytesOf = (seed: string, size = 4096): Uint8Array =>
+			Uint8Array.from({ length: size }, (_value, index) => (seed.charCodeAt(index % seed.length) + index) % 256);
+
+		const land = async (h: Harness, changeId: string, patchManifest: unknown[]): Promise<Record<string, unknown>> => {
+			const before = h.completedMerges.length;
+			h.setPendingClaim({
+				merges: [
+					{
+						jobId: randomUUID(),
+						kind: "land_change",
+						surfaceId: h.surfaceId,
+						profileId: h.profileId,
+						environmentId: h.environmentId,
+						leaseToken: randomUUID(),
+						folderRoot: "product",
+						payload: { changeIds: [changeId] },
+						preMergeSnapshot: null,
+						approvedChanges: [
+							{
+								changeId,
+								kind: "folder_patch",
+								title: "Stage files",
+								summary: "",
+								affectedPaths: [],
+								patchManifest,
+							},
+						],
+					},
+				],
+			});
+			expect(await h.worker.processDue(8)).toBe(1);
+			expect(h.completedMerges).toHaveLength(before + 1);
+			return h.completedMerges[before] as Record<string, unknown>;
+		};
+
+		const undo = async (
+			h: Harness,
+			changeId: string,
+			preMergeSnapshot: unknown,
+		): Promise<Record<string, unknown>> => {
+			const before = h.completedMerges.length;
+			h.setPendingClaim({
+				merges: [
+					{
+						jobId: randomUUID(),
+						kind: "undo_change",
+						surfaceId: h.surfaceId,
+						profileId: h.profileId,
+						environmentId: h.environmentId,
+						leaseToken: randomUUID(),
+						folderRoot: "product",
+						payload: { changeId },
+						preMergeSnapshot,
+						approvedChanges: [],
+					},
+				],
+			});
+			expect(await h.worker.processDue(8)).toBe(1);
+			expect(h.completedMerges).toHaveLength(before + 1);
+			return h.completedMerges[before] as Record<string, unknown>;
+		};
+
+		const storedAt = (h: Harness, path: string) => {
+			const entry = h.entries.get(path);
+			return entry ? { manifestSha256: entry.manifestSha256, mediaType: entry.mediaType } : null;
+		};
+
+		it("lands a stored file beside text ops by reference, without reading its bytes, and undo removes it", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const model = h.storeFile(bytesOf("model"), "model/gltf-binary");
+			const changeId = randomUUID();
+			const landed = await land(h, changeId, [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "models/chair.glb", file: model },
+				{ op: "merge_json", path: "meta.json", patch: { model: "models/chair.glb" } },
+			]);
+
+			expect(landed.p_status).toBe("landed");
+			expect(storedAt(h, "product/models/chair.glb")).toEqual({
+				manifestSha256: model.manifestSha256,
+				mediaType: "model/gltf-binary",
+			});
+			expect(h.entries.get("product/models")?.kind).toBe("folder");
+			expect(h.readText("product/spec.md")).toBe("New spec.\n");
+			expect(JSON.parse(h.readText("product/meta.json") ?? "{}")).toEqual({ model: "models/chair.glb" });
+			expect(h.storeGets).not.toContain(model.fileSha256);
+			const snapshot = landed.p_pre_merge_snapshot as {
+				filesBefore: Record<string, unknown>;
+				afterContentSha256: Record<string, unknown>;
+			};
+			expect(snapshot.filesBefore["product/models/chair.glb"]).toBeNull();
+			expect(snapshot.afterContentSha256["product/models/chair.glb"]).toBe(`file:${model.manifestSha256}`);
+
+			const undone = await undo(h, changeId, snapshot);
+			expect(undone.p_status).toBe("landed");
+			expect(h.entries.has("product/models/chair.glb")).toBe(false);
+			expect(h.entries.has("product/meta.json")).toBe(false);
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+			expect(h.storeGets).not.toContain(model.fileSha256);
+		});
+
+		it("lands over text and over stored files, records each before-state by reference, and undo restores them exactly", async () => {
+			const h = createHarness({ "product/cover.webp": "placeholder" });
+			const oldModel = h.putStoredFile("product/model.glb", bytesOf("old-model"), "model/gltf-binary");
+			const oldPoster = h.putStoredFile("product/poster.png", bytesOf("old-poster"), "image/png");
+			const oldPhoto = h.putStoredFile("product/photo.jpg", bytesOf("old-photo"), "image/jpeg");
+			const cover = h.storeFile(bytesOf("cover"), "image/webp");
+			const model = h.storeFile(bytesOf("new-model"), "model/gltf-binary");
+			const changeId = randomUUID();
+			const landed = await land(h, changeId, [
+				{ op: "write_file", path: "cover.webp", file: cover },
+				{ op: "write_file", path: "model.glb", file: model },
+				{ op: "write_text", path: "poster.png", content: "No poster yet.\n" },
+				{ op: "delete", path: "photo.jpg" },
+			]);
+
+			expect(landed.p_status).toBe("landed");
+			expect(storedAt(h, "product/cover.webp")?.manifestSha256).toBe(cover.manifestSha256);
+			expect(storedAt(h, "product/model.glb")?.manifestSha256).toBe(model.manifestSha256);
+			expect(h.readText("product/poster.png")).toBe("No poster yet.\n");
+			expect(h.entries.has("product/photo.jpg")).toBe(false);
+			for (const ref of [oldModel, oldPoster, oldPhoto, cover, model]) {
+				expect(h.storeGets).not.toContain(ref.fileSha256);
+			}
+			const snapshot = landed.p_pre_merge_snapshot as { filesBefore: Record<string, unknown> };
+			expect(snapshot.filesBefore).toEqual({
+				"product/cover.webp": "placeholder",
+				"product/model.glb": { file: { ...oldModel, executable: false } },
+				"product/poster.png": { file: { ...oldPoster, executable: false } },
+				"product/photo.jpg": { file: { ...oldPhoto, executable: false } },
+			});
+
+			const undone = await undo(h, changeId, snapshot);
+			expect(undone.p_status).toBe("landed");
+			expect(h.readText("product/cover.webp")).toBe("placeholder");
+			expect(storedAt(h, "product/model.glb")).toEqual({
+				manifestSha256: oldModel.manifestSha256,
+				mediaType: "model/gltf-binary",
+			});
+			expect(storedAt(h, "product/poster.png")).toEqual({
+				manifestSha256: oldPoster.manifestSha256,
+				mediaType: "image/png",
+			});
+			expect(storedAt(h, "product/photo.jpg")).toEqual({
+				manifestSha256: oldPhoto.manifestSha256,
+				mediaType: "image/jpeg",
+			});
+		});
+
+		it("follows the ops in order as composeStudioPreview does: a later delete or write_text wins", async () => {
+			const h = createHarness({});
+			const a = h.storeFile(bytesOf("a"), "image/png");
+			const b = h.storeFile(bytesOf("b"), "image/png");
+			const c = h.storeFile(bytesOf("c"), "image/webp");
+			const ops = [
+				{ op: "write_file", path: "a.png", file: a },
+				{ op: "delete", path: "a.png" },
+				{ op: "write_file", path: "b.png", file: b },
+				{ op: "write_text", path: "b.png", content: "text now\n" },
+				{ op: "write_text", path: "c.webp", content: "text first\n" },
+				{ op: "write_file", path: "c.webp", file: c },
+			] as const;
+			const changeId = randomUUID();
+			const landed = await land(h, changeId, [...ops]);
+			const preview = composeStudioPreview({}, [{ changeId, ops }], "product");
+
+			expect(landed.p_status).toBe("landed");
+			expect(preview.status).toBe("ready");
+			expect(h.entries.has("product/a.png")).toBe(false);
+			expect(h.readText("product/b.png")).toBe("text now\n");
+			expect(storedAt(h, "product/c.webp")?.manifestSha256).toBe(c.manifestSha256);
+			expect(preview.files).toEqual({ "product/b.png": "text now\n" });
+			expect(preview.binaries).toEqual({ "product/c.webp": c });
+
+			const undone = await undo(h, changeId, landed.p_pre_merge_snapshot);
+			expect(undone.p_status).toBe("landed");
+			expect(h.entries.has("product/b.png")).toBe(false);
+			expect(h.entries.has("product/c.webp")).toBe(false);
+		});
+
+		it("refuses merge_json on a path that is or becomes a stored file as a conflict and commits nothing", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			h.putStoredFile("product/model.glb", bytesOf("model"), "model/gltf-binary");
+			const swatch = h.storeFile(bytesOf("swatch"), "image/png");
+			const ops = [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "swatch.json", file: swatch },
+				{ op: "merge_json", path: "swatch.json", patch: { color: "#c84b31" } },
+				{ op: "merge_json", path: "model.glb", patch: { scale: 2 } },
+			] as const;
+			const changeId = randomUUID();
+			const landed = await land(h, changeId, [...ops]);
+
+			expect(landed).toMatchObject({
+				p_status: "conflicted",
+				p_conflict_paths: ["product/swatch.json", "product/model.glb"],
+			});
+			expect(String(landed.p_error_detail)).toBe(
+				"merge_json cannot change a stored file: product/swatch.json, product/model.glb",
+			);
+			expect(h.getCommitCount()).toBe(0);
+			expect(h.externalSnapshots.size).toBe(0);
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+			expect(h.entries.has("product/swatch.json")).toBe(false);
+			const preview = composeStudioPreview(
+				{ "product/spec.md": "Spec.\n" },
+				[{ changeId, ops: ops.slice(0, 3) }],
+				"product",
+			);
+			expect(preview.status).toBe("conflicted");
+		});
+
+		it("fails a change naming a file the folder does not hold, naming its path, and commits nothing", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const landed = await land(h, randomUUID(), [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{
+					op: "write_file",
+					path: "model.glb",
+					file: {
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: 2048,
+						mediaType: "model/gltf-binary",
+					},
+				},
+			]);
+
+			expect(landed.p_status).toBe("failed");
+			expect(landed.p_error_detail).toBe("Stored file not found in the company folder: product/model.glb");
+			expect(h.getCommitCount()).toBe(0);
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+			expect(h.entries.has("product/model.glb")).toBe(false);
+		});
+
+		it("refuses a reference that fails the contract's parse before reading the folder", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const landed = await land(h, randomUUID(), [
+				{
+					op: "write_file",
+					path: "model.glb",
+					file: {
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: 2048,
+						mediaType: "text/html",
+					},
+				},
+			]);
+
+			expect(landed.p_status).toBe("failed");
+			expect(String(landed.p_error_detail)).toContain("file.mediaType");
+			expect(h.getCommitCount()).toBe(0);
+		});
+
+		it("fails a reference that does not match its stored file, naming the path, before saving or committing anything", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const model = h.storeFile(bytesOf("model"), "model/gltf-binary");
+			const poster = h.storeFile(bytesOf("poster"), "image/png");
+			const landed = await land(h, randomUUID(), [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "wrong-hash.glb", file: { ...model, fileSha256: "c".repeat(64) } },
+				{ op: "write_file", path: "wrong-size.glb", file: { ...model, bytes: model.bytes + 1 } },
+				{ op: "write_file", path: "wrong-type.png", file: { ...model, mediaType: "image/png" } },
+				{ op: "write_file", path: "poster.png", file: poster },
+			]);
+
+			expect(landed.p_status).toBe("failed");
+			expect(landed.p_error_detail).toBe(
+				"Stored file does not match its reference: product/wrong-hash.glb, product/wrong-size.glb, product/wrong-type.png",
+			);
+			expect(h.getCommitCount()).toBe(0);
+			expect(h.externalSnapshots.size).toBe(0);
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+			expect(h.storeGets).not.toContain(model.fileSha256);
+			expect(h.storeGets).not.toContain(poster.fileSha256);
+		});
+
+		it("fails a reference whose stored file lost a chunk, naming the path, before committing anything", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const model = h.storeFile(bytesOf("model"), "model/gltf-binary");
+			h.dropObject(model.fileSha256);
+			const landed = await land(h, randomUUID(), [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "model.glb", file: model },
+			]);
+
+			expect(landed.p_status).toBe("failed");
+			expect(landed.p_error_detail).toBe("Stored file not found in the company folder: product/model.glb");
+			expect(h.getCommitCount()).toBe(0);
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+		});
+
+		it("names the files a commit saved when it refuses a reference that passed the check", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const model = h.storeFile(bytesOf("model"), "model/gltf-binary");
+			h.unverifiedManifests.add(model.manifestSha256);
+			const landed = await land(h, randomUUID(), [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "model.glb", file: model },
+			]);
+
+			expect(landed.p_status).toBe("failed");
+			expect(landed.p_error_detail).toBe(
+				"Stored file not found in the company folder: product/model.glb. Only part of this change was saved; these files did change: product/spec.md",
+			);
+			expect(h.getCommitCount()).toBe(1);
+			expect(h.readText("product/spec.md")).toBe("New spec.\n");
+			expect(h.entries.has("product/model.glb")).toBe(false);
+		});
+
+		it("still undoes an old text-only snapshot", async () => {
+			const h = createHarness({ "product/spec.md": "Edited.\n", "product/notes.md": "Added.\n" });
+			const specVersion = h.entries.get("product/spec.md")?.version;
+			const notesVersion = h.entries.get("product/notes.md")?.version;
+			const undone = await undo(h, randomUUID(), {
+				snapshotId: `merge:${randomUUID()}`,
+				folderRoot: "product",
+				changeIds: [],
+				filesBefore: { "product/spec.md": "Spec.\n", "product/notes.md": null },
+				versionsAfter: { "product/spec.md": specVersion, "product/notes.md": notesVersion },
+				afterContentSha256: {
+					"product/spec.md": digestSha256("Edited.\n"),
+					"product/notes.md": digestSha256("Added.\n"),
+				},
+			});
+
+			expect(undone.p_status).toBe("landed");
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+			expect(h.entries.has("product/notes.md")).toBe(false);
+		});
 	});
 
 	it("reads and stages multiple files concurrently, skips redundant parent directory probes and unchanged writes", async () => {

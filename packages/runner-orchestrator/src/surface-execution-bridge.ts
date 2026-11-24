@@ -41,6 +41,7 @@ const ZERO_SHA = "0".repeat(40);
 const DISALLOWED_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 export const SURFACE_PRE_MERGE_SNAPSHOT_MAX_BYTES = 96 * 1024;
 const MAX_SNAPSHOT_VERSION_CHARS = 128;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 const DEFAULT_COMPLETION_RETRY_DELAYS_MS: readonly number[] = [
 	250, 1_000, 2_500, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000,
 ];
@@ -51,20 +52,34 @@ export interface SurfaceExecutionControlPlane {
 	completeSurfacePublish(input: CompleteSurfacePublishInput, signal?: AbortSignal): Promise<unknown>;
 }
 
+export interface SurfaceCompanyFolderStoredFile {
+	readonly manifestSha256: string;
+	readonly fileSha256: string;
+	readonly bytes: number;
+	readonly mediaType: string;
+	readonly executable: boolean;
+}
+
+export type SurfaceFolderFileValue = string | null | { readonly file: SurfaceCompanyFolderStoredFile };
+
 export interface SurfaceCompanyFolderVersionedFile {
 	readonly content: string | null;
 	readonly version: string | null;
+	readonly file?: SurfaceCompanyFolderStoredFile | null;
 }
 
-export interface SurfaceCompanyFolderCommitOperation {
-	readonly path: string;
-	readonly expectedVersion: string | null;
-	readonly content: string | null;
-}
+export type SurfaceCompanyFolderCommitOperation =
+	| { readonly path: string; readonly expectedVersion: string | null; readonly content: string | null }
+	| { readonly path: string; readonly expectedVersion: string | null; readonly file: SurfaceCompanyFolderStoredFile };
 
 export type SurfaceCompanyFolderCommitResult =
 	| { readonly status: "saved"; readonly versionsAfter?: Readonly<Record<string, string | null>> }
-	| { readonly status: "conflict"; readonly conflictPaths: readonly string[] };
+	| { readonly status: "conflict"; readonly conflictPaths: readonly string[] }
+	| {
+			readonly status: "unverified_files";
+			readonly missingPaths: readonly string[];
+			readonly mismatchedPaths: readonly string[];
+	  };
 
 export interface SurfaceCompanyFolderPort {
 	readFiles(
@@ -96,7 +111,7 @@ export interface SurfaceFolderUndoSnapshot {
 	readonly profileId: string;
 	readonly folderRoot: string;
 	readonly changeIds: readonly string[];
-	readonly filesBefore: Readonly<Record<string, string | null>>;
+	readonly filesBefore: Readonly<Record<string, SurfaceFolderFileValue>>;
 	readonly versionsAfter?: Readonly<Record<string, string | null>>;
 	readonly afterContentSha256?: Readonly<Record<string, string | null>>;
 }
@@ -203,7 +218,7 @@ export type SurfaceExecutionHandlers = Required<
 export type ApplyStudioFolderPatchesResult =
 	| {
 			readonly status: "ready";
-			readonly files: Readonly<Record<string, string | null>>;
+			readonly files: Readonly<Record<string, SurfaceFolderFileValue>>;
 			readonly modifiedPaths: readonly string[];
 			readonly mainBefore: string;
 			readonly mainAfter: string;
@@ -212,7 +227,8 @@ export type ApplyStudioFolderPatchesResult =
 			readonly status: "conflicted";
 			readonly conflictChangeId: string;
 			readonly conflictPaths: readonly string[];
-			readonly files: Readonly<Record<string, string | null>>;
+			readonly files: Readonly<Record<string, SurfaceFolderFileValue>>;
+			readonly errorDetail?: string;
 	  };
 
 function formatErrorDetail(error: unknown, fallback: string): string {
@@ -232,16 +248,79 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function hashFolderFiles(files: Readonly<Record<string, string | null>>): string {
+function hashFolderFiles(files: Readonly<Record<string, SurfaceFolderFileValue>>): string {
 	const sortedEntries = Object.keys(files)
 		.sort()
 		.map((path) => [path, files[path] ?? null] as const);
 	return createHash("sha256").update(JSON.stringify(sortedEntries)).digest("hex");
 }
 
-function hashNullableText(value: string | null): string | null {
+function folderValueDigest(value: SurfaceFolderFileValue): string | null {
 	if (value === null) return null;
-	return createHash("sha256").update(value, "utf-8").digest("hex");
+	if (typeof value === "string") return createHash("sha256").update(value, "utf-8").digest("hex");
+	return `file:${value.file.manifestSha256}`;
+}
+
+function storedFileValue(file: SurfaceCompanyFolderStoredFile): { readonly file: SurfaceCompanyFolderStoredFile } {
+	return {
+		file: {
+			manifestSha256: file.manifestSha256,
+			fileSha256: file.fileSha256,
+			bytes: file.bytes,
+			mediaType: file.mediaType,
+			executable: file.executable,
+		},
+	};
+}
+
+function versionedFileValue(entry: SurfaceCompanyFolderVersionedFile | undefined): SurfaceFolderFileValue {
+	if (!entry) return null;
+	if (entry.file) return storedFileValue(entry.file);
+	return typeof entry.content === "string" ? entry.content : null;
+}
+
+function parseStoredFileValue(value: unknown): { readonly file: SurfaceCompanyFolderStoredFile } | null {
+	if (!isPlainObject(value) || !isPlainObject(value.file)) return null;
+	const file = value.file;
+	if (
+		typeof file.manifestSha256 !== "string" ||
+		!SHA256_HEX.test(file.manifestSha256) ||
+		typeof file.fileSha256 !== "string" ||
+		!SHA256_HEX.test(file.fileSha256) ||
+		typeof file.bytes !== "number" ||
+		!Number.isSafeInteger(file.bytes) ||
+		file.bytes < 0 ||
+		typeof file.mediaType !== "string" ||
+		typeof file.executable !== "boolean"
+	) {
+		return null;
+	}
+	return storedFileValue({
+		manifestSha256: file.manifestSha256,
+		fileSha256: file.fileSha256,
+		bytes: file.bytes,
+		mediaType: file.mediaType,
+		executable: file.executable,
+	});
+}
+
+function unverifiedFilesDetail(missingPaths: readonly string[], mismatchedPaths: readonly string[]): string {
+	const problems = [
+		...(missingPaths.length > 0 ? [`Stored file not found in the company folder: ${missingPaths.join(", ")}`] : []),
+		...(mismatchedPaths.length > 0
+			? [`Stored file does not match its reference: ${mismatchedPaths.join(", ")}`]
+			: []),
+	];
+	return formatErrorDetail(problems.join(". "), "Stored file not found in the company folder");
+}
+
+function commitOperation(
+	path: string,
+	expectedVersion: string | null,
+	value: SurfaceFolderFileValue,
+): SurfaceCompanyFolderCommitOperation {
+	if (value !== null && typeof value === "object") return { path, expectedVersion, file: value.file };
+	return { path, expectedVersion, content: value };
 }
 
 function delayWithAbort(ms: number, signal: AbortSignal): Promise<void> {
@@ -363,7 +442,7 @@ function mergeJsonPatch(
 }
 
 export function applyStudioFolderPatches(
-	baseFiles: Readonly<Record<string, string | null>>,
+	baseFiles: Readonly<Record<string, SurfaceFolderFileValue>>,
 	changes: readonly { readonly changeId: string; readonly ops: readonly StudioPatchOp[] }[],
 	folderRoot: string,
 ): ApplyStudioFolderPatchesResult {
@@ -371,24 +450,25 @@ export function applyStudioFolderPatches(
 	if (!normalizedRoot) {
 		throw new Error("Surface folderRoot is required for folder_patch landing");
 	}
-	const working: Record<string, string | null> = { ...baseFiles };
+	const working: Record<string, SurfaceFolderFileValue> = { ...baseFiles };
 	const touchedWholeFiles = new Map<string, string>();
 	const touchedJsonKeys = new Map<string, Map<string, string>>();
 	const modifiedPaths = new Set<string>();
 
 	for (const change of changes) {
-		const snapshot: Record<string, string | null> = { ...working };
+		const snapshot: Record<string, SurfaceFolderFileValue> = { ...working };
 		const nextWholeFiles = new Map(touchedWholeFiles);
 		const nextJsonKeys = new Map<string, Map<string, string>>();
 		for (const [filePath, keys] of touchedJsonKeys) {
 			nextJsonKeys.set(filePath, new Map(keys));
 		}
 		const conflictPaths: string[] = [];
+		const storedMergePaths: string[] = [];
 		const changeModifiedPaths = new Set<string>();
 
 		for (const op of change.ops) {
 			const safePath = assertSurfaceFolderPatchPath(op.path, normalizedRoot);
-			if (op.op === "write_text" || op.op === "delete") {
+			if (op.op === "write_text" || op.op === "delete" || op.op === "write_file") {
 				const priorOwner = nextWholeFiles.get(safePath);
 				if (priorOwner && priorOwner !== change.changeId) {
 					conflictPaths.push(safePath);
@@ -400,7 +480,12 @@ export function applyStudioFolderPatches(
 					continue;
 				}
 				nextWholeFiles.set(safePath, change.changeId);
-				working[safePath] = op.op === "delete" ? null : op.content;
+				working[safePath] =
+					op.op === "delete"
+						? null
+						: op.op === "write_file"
+							? storedFileValue({ ...op.file, executable: false })
+							: op.content;
 				changeModifiedPaths.add(safePath);
 				continue;
 			}
@@ -412,6 +497,11 @@ export function applyStudioFolderPatches(
 			}
 			let currentObj: Record<string, unknown> = {};
 			const existing = working[safePath];
+			if (existing !== null && typeof existing === "object") {
+				conflictPaths.push(safePath);
+				storedMergePaths.push(safePath);
+				continue;
+			}
 			if (typeof existing === "string") {
 				try {
 					const parsed: unknown = JSON.parse(existing);
@@ -442,6 +532,9 @@ export function applyStudioFolderPatches(
 				conflictChangeId: change.changeId,
 				conflictPaths: [...new Set(conflictPaths)],
 				files: snapshot,
+				...(storedMergePaths.length > 0
+					? { errorDetail: `merge_json cannot change a stored file: ${[...new Set(storedMergePaths)].join(", ")}` }
+					: {}),
 			};
 		}
 
@@ -623,10 +716,15 @@ function parseDurableFolderSnapshot(
 	if (!folderRoot) return null;
 	const filesRaw = raw.filesBefore;
 	if (!filesRaw || typeof filesRaw !== "object" || Array.isArray(filesRaw)) return null;
-	const filesBefore: Record<string, string | null> = {};
+	const filesBefore: Record<string, SurfaceFolderFileValue> = {};
 	for (const [path, value] of Object.entries(filesRaw as Record<string, unknown>)) {
-		if (value !== null && typeof value !== "string") return null;
-		filesBefore[path] = value;
+		if (value === null || typeof value === "string") {
+			filesBefore[path] = value;
+			continue;
+		}
+		const stored = parseStoredFileValue(value);
+		if (!stored) return null;
+		filesBefore[path] = stored;
 	}
 	const changeIds = Array.isArray(raw.changeIds)
 		? raw.changeIds.filter((item): item is string => typeof item === "string")
@@ -890,11 +988,11 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			{ profileId: job.profileId, folderRoot: normalizedRoot, paths: orderedPaths },
 			signal,
 		);
-		const filesBefore: Record<string, string | null> = {};
+		const filesBefore: Record<string, SurfaceFolderFileValue> = {};
 		const versionsBefore: Record<string, string | null> = {};
 		for (const path of orderedPaths) {
 			const entry = versionedMap[path];
-			filesBefore[path] = entry && typeof entry.content === "string" ? entry.content : null;
+			filesBefore[path] = versionedFileValue(entry);
 			versionsBefore[path] = entry && typeof entry.version === "string" ? entry.version : null;
 		}
 
@@ -912,7 +1010,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				existingSnapshot?.afterContentSha256 &&
 				orderedPaths.every(
 					(path) =>
-						hashNullableText(filesBefore[path] ?? null) === (existingSnapshot.afterContentSha256![path] ?? null),
+						folderValueDigest(filesBefore[path] ?? null) === (existingSnapshot.afterContentSha256![path] ?? null),
 				)
 			) {
 				const changeIds = parsedChanges.map((change) => change.changeId);
@@ -954,14 +1052,14 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 					status: "conflicted",
 					conflictChangeId: applied.conflictChangeId,
 					conflictPaths: applied.conflictPaths,
-					errorDetail: formatConflictDetail(applied.conflictPaths),
+					errorDetail: applied.errorDetail ?? formatConflictDetail(applied.conflictPaths),
 				},
 				signal,
 			);
 			return;
 		}
 
-		const finalFiles: Record<string, string | null> = { ...applied.files };
+		const finalFiles: Record<string, SurfaceFolderFileValue> = { ...applied.files };
 		const pathsToWrite = new Set<string>(applied.modifiedPaths);
 		let mainAfter = applied.mainAfter;
 		if (shouldCompileIdentityCss) {
@@ -977,7 +1075,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		const afterContentSha256: Record<string, string | null> = {};
 		const placeholderVersionsAfter: Record<string, string> = {};
 		for (const path of orderedPaths) {
-			afterContentSha256[path] = hashNullableText(finalFiles[path] ?? null);
+			afterContentSha256[path] = folderValueDigest(finalFiles[path] ?? null);
 			placeholderVersionsAfter[path] = "v".repeat(MAX_SNAPSHOT_VERSION_CHARS);
 		}
 
@@ -1021,16 +1119,25 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			await ports.folderSnapshots.saveSnapshot(baseSnapshot, signal);
 		}
 
-		const operations: SurfaceCompanyFolderCommitOperation[] = [...pathsToWrite].sort().map((path) => ({
-			path,
-			expectedVersion: versionsBefore[path] ?? null,
-			content: finalFiles[path] ?? null,
-		}));
+		const operations: SurfaceCompanyFolderCommitOperation[] = [...pathsToWrite]
+			.sort()
+			.map((path) => commitOperation(path, versionsBefore[path] ?? null, finalFiles[path] ?? null));
 
 		const commitResult = await ports.folder.commitFiles(
 			{ profileId: job.profileId, folderRoot: normalizedRoot, operations },
 			signal,
 		);
+		if (commitResult.status === "unverified_files") {
+			await completeMerge(
+				{
+					jobId: job.jobId,
+					status: "failed",
+					errorDetail: unverifiedFilesDetail(commitResult.missingPaths, commitResult.mismatchedPaths),
+				},
+				signal,
+			);
+			return;
+		}
 		if (commitResult.status === "conflict") {
 			await completeMerge(
 				{
@@ -1226,9 +1333,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			throw new Error("Folder undo job has an invalid folderRoot");
 		}
 		const restoreEntries = Object.entries(snapshot.filesBefore)
-			.map(([path, content]) => ({
+			.map(([path, value]) => ({
 				path: assertSurfaceFolderPatchPath(path, normalizedRoot),
-				content,
+				value,
 			}))
 			.sort((left, right) => left.path.localeCompare(right.path));
 		const currentVersioned = await ports.folder.readFilesWithVersions(
@@ -1241,11 +1348,10 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		);
 
 		// WHY: If a prior undo attempt already restored filesBefore and crashed before reporting completion, report landed idempotently instead of conflicting.
-		const alreadyReverted = restoreEntries.every((entry) => {
-			const current = currentVersioned[entry.path];
-			const currentContent = current && typeof current.content === "string" ? current.content : null;
-			return hashNullableText(currentContent) === hashNullableText(entry.content);
-		});
+		const alreadyReverted = restoreEntries.every(
+			(entry) =>
+				folderValueDigest(versionedFileValue(currentVersioned[entry.path])) === folderValueDigest(entry.value),
+		);
 		if (alreadyReverted) {
 			markCommitted();
 			await completeCommittedMerge(
@@ -1264,14 +1370,13 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		for (const entry of restoreEntries) {
 			const current = currentVersioned[entry.path];
 			const currentVersion = current?.version ?? null;
-			const currentContent = current && typeof current.content === "string" ? current.content : null;
 			if (snapshot.versionsAfter && (snapshot.versionsAfter[entry.path] ?? null) !== currentVersion) {
 				conflictPaths.push(entry.path);
 				continue;
 			}
 			if (
 				snapshot.afterContentSha256 &&
-				(snapshot.afterContentSha256[entry.path] ?? null) !== hashNullableText(currentContent)
+				(snapshot.afterContentSha256[entry.path] ?? null) !== folderValueDigest(versionedFileValue(current))
 			) {
 				conflictPaths.push(entry.path);
 			}
@@ -1291,17 +1396,30 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		}
 
 		// WHY: Pin expectedVersion to post-landing versionsAfter so concurrent edits after landing never get overwritten.
-		const operations: SurfaceCompanyFolderCommitOperation[] = restoreEntries.map((entry) => ({
-			path: entry.path,
-			expectedVersion: snapshot.versionsAfter
-				? (snapshot.versionsAfter[entry.path] ?? null)
-				: (currentVersioned[entry.path]?.version ?? null),
-			content: entry.content,
-		}));
+		const operations: SurfaceCompanyFolderCommitOperation[] = restoreEntries.map((entry) =>
+			commitOperation(
+				entry.path,
+				snapshot.versionsAfter
+					? (snapshot.versionsAfter[entry.path] ?? null)
+					: (currentVersioned[entry.path]?.version ?? null),
+				entry.value,
+			),
+		);
 		const commitResult = await ports.folder.commitFiles(
 			{ profileId: job.profileId, folderRoot: normalizedRoot, operations },
 			signal,
 		);
+		if (commitResult.status === "unverified_files") {
+			await completeMerge(
+				{
+					jobId: job.jobId,
+					status: "failed",
+					errorDetail: unverifiedFilesDetail(commitResult.missingPaths, commitResult.mismatchedPaths),
+				},
+				signal,
+			);
+			return;
+		}
 		if (commitResult.status === "conflict") {
 			await completeMerge(
 				{

@@ -30,6 +30,11 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   hosts, and `qorpera_web_edge_tls_allow` denies `--p<8chars>` hosts to stay aligned with it. Accordingly, turning
   `qorpera_surface_settings.enabled = true` requires `site-serve` to remain the front for `--p<8chars>` preview hosts on
   the active `hosts_domain` (or a follow-up PR adding `--p` preview routing and session checks to `qorpera-web-router`).
+  Since `20260930878000` a preview host is `<slug>--p<8chars>.qorpera.com` whatever `hosts_domain` is
+  (`qorpera_site_preview_domain()`): the frame inside `app.qorpera.com` stays same-site, and site-serve keeps serving
+  it while own and `--next` hosts live on `qorpera.site` with the web router. `qorpera_site_host` reads a `--p<8chars>`
+  host only on `qorpera.com`; under `hosts_domain = 'qorpera.site'` an own or `--next` host on `qorpera.com` and a
+  `--p<8chars>` host on `qorpera.site` stay no site host.
 - **One domain, written in four places.** `qorpera.com` is in site-serve (`SITE_HOST`, its old host's `moved`), the
   web (`SITE_HOST` of `cloud/sites.ts`, which `cloud/releases.ts` reads Look first's link by) and the executor's change
   record, so SQL takes no other: `qorpera_site_settings.hosts_domain` is null or `qorpera.com`, nothing else (a check
@@ -243,14 +248,12 @@ them). Errors: 22023 for a reason that is not one line of 1 to 300 characters, P
 - An app link: the password page, and the right password no longer opens it, within 30 seconds (the relay keeps an
   open session that long). Its link program is refused at its next check (within 5 minutes) and stops.
 
-**What members see:** Sites shows the site's row as "Taken down" with the operator's reason, in place of its link and
-password, and how to tell Qorpera it is wrong: Feedback in their menu (no mail address: none is confirmed to reach
-anyone). Its row has no menu (nothing in it would be done while the site is down). A project's site taken down before
-it ever went live, which no list shows, gets the same row (the access read names it). What's new offers no link to it
-and says it was taken down, for a site never live too, and offers none of what would be refused: no Look first, no Put
-it live, no Go back (Not yet stays). The site does not
-go live again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain
-words. The reason comes from `qorpera_company_site_access` (every member). Tell the company's owner too, in plain words.
+**What members see:** the site's card under a message that links it says "Taken down", with your reason as its line,
+so write the reason for the company's members to read. What's new offers no link to it and says it was taken down, for
+a site never live too, and offers none of what would be refused: no Look first, no Put it live, no Go back (Not yet
+stays). The site does not go live again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers
+`gone`, each said in plain words. The reason comes from `qorpera_company_site_access` (every member). Tell the company's
+owner too, in plain words.
 
 **What an agent sees:** a refusal in plain words it can pass on, with your reason and no address: "SITE_TAKEN_DOWN: This
 site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the

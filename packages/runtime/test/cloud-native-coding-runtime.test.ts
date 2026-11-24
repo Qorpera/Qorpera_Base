@@ -292,7 +292,7 @@ describe("the coding composition of a native turn", () => {
 					"once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session's secret values.",
 					// Step 4's live proof (11 November 2026): What's new showed the site's address; a site's title is its name there.
 					// Step 5.1 (v247): the name makes the site's own host, and follows the kernel's name rule in its own words.
-					'It may also give "name", the name in the site\'s address https://<name>.qorpera.com/, used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
+					'It may also give "name", the name in the site\'s address, used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
 					`no space at either end). ${SITE_NAME_RULE} The site is served`,
 					// The first live site (Wristband, 11 November 2026) loaded /src/style.css from the top of the sites' domain,
 					// which the old host never served. Since site hosts (v247) a site is served at the top of its own address,
@@ -300,7 +300,7 @@ describe("the coding composition of a native turn", () => {
 					"The site is served at the top of an address of its own, so its pages, styles and scripts may link its files from / (/src/app.js) or relatively (src/app.js): both work.",
 					"Never build a key into the site.",
 					'For a full-stack or server-rendered webapp (Node, Next.js, Astro, SvelteKit, Python, Go or Docker), set "site": {"kind": "server", "port": 3000, "healthPath": "/health", "dockerfile": "Dockerfile", "name": "...", "title": "..."}',
-					"Every passing change deploys first to the Qorpera hosted domain (https://<name>.qorpera.site/, preview at https://<name>--next.qorpera.site/ via What's new), after which a founder or admin can make it public and attach a custom domain with automatic HTTPS in Sites.",
+					"Every passing change deploys first to the site's own address (What's new shows it, and a preview of the next version), after which a founder or admin can make it live with Go live and attach a custom domain with automatic HTTPS on the website's page in the app.",
 					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
 					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
 					// fix works.
@@ -2009,5 +2009,131 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 		expect(
 			parseCloudCodingTurnContext(omitted, { workerId: f.coding.workerId, sequence: 1 }, repository).secretNames,
 		).toEqual([]);
+	});
+
+	it("guides read-only and zero-commit coding turns to call coding_finish with unchanged headSha instead of coding_ask", async () => {
+		const f = fixture();
+		f.coding.repository = { host: "qorpera", owner: "company", name: "website", baseBranch: "main" };
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				expect(options.runtimeInstructions).toContain(
+					"Never use coding_ask to hand off a read-only or no-change report",
+				);
+				expect(options.runtimeInstructions).toContain(
+					"never mention internal Qorpera tools, harnesses, or landing workflows in a coding_ask question",
+				);
+				expect(options.runtimeInstructions).toContain(
+					"when HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), the platform completes the turn cleanly as a report-only handoff without adding a checks file, running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual.",
+				);
+				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				const ask = adapters.tools.find((tool) => tool.name === "coding_ask")!;
+				expect(finish.description).toContain("where HEAD still equals the session's baseSha");
+				expect(finish.description).toContain("report-only handoff");
+				expect(finish.description).toContain(
+					"without running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual.",
+				);
+				expect(
+					(finish.inputSchema as { properties: { headSha: { description?: string } } }).properties.headSha
+						.description,
+				).toContain("Equals the session's baseSha when no commits exist beyond the session base.");
+				expect(ask.description).toContain("never to hand off a read-only or no-change report");
+				expect(ask.description).toContain("never mention internal Qorpera tools, harnesses, or landing mechanics");
+				const correction = await options.turnCorrection?.(options.signal);
+				expect(correction).toContain(
+					"For a read-only or no-change task where HEAD still equals the session's baseSha",
+				);
+				expect(correction).toContain("nothing will be landed or pushed");
+				expect(correction).toContain("including an unlanded commit from an earlier turn");
+				expect(correction).toContain("without internal harness jargon");
+				await finish.execute(
+					finish.parseArguments({
+						operationKey: "readonly-handoff",
+						headSha: f.coding.baseSha,
+						summary: "Top-level files are index.html, styles.css, and README.md. No files were modified.",
+					}),
+					f.context,
+				);
+				expect(await options.turnCorrection?.(options.signal)).toBeUndefined();
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+			} finally {
+				run.close();
+			}
+		});
+		await f.runtime.execute(f.request, "/private", f.context.signal, f.turn);
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_submit_coding_turn",
+			expect.objectContaining({
+				p_binding: f.binding,
+				p_submission: {
+					kind: "finish",
+					operationKey: "readonly-handoff",
+					headSha: f.coding.baseSha,
+					summary: "Top-level files are index.html, styles.css, and README.md. No files were modified.",
+				},
+			}),
+			expect.any(AbortSignal),
+		);
+
+		const surface = fixture();
+		surface.coding.repository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			const run = await CloudNativeToolRun.open(surface.binding, surface.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					surface.authority.identity,
+					new CloudNativeToolOperations(run, surface.control),
+					run,
+				);
+				expect(options.runtimeInstructions).toContain(
+					"Never use coding_ask to hand off a read-only or no-change report",
+				);
+				expect(options.runtimeInstructions).toContain(
+					"For a read-only, inspection, or no-change turn where HEAD still equals the session's baseSha (no commits beyond the session base), call coding_finish with that headSha",
+				);
+				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				expect(finish.description).toContain(
+					"For a read-only or no-change turn where HEAD still equals the session's baseSha",
+				);
+				const correction = await options.turnCorrection?.(options.signal);
+				expect(correction).toContain(
+					"For a read-only or no-change task where HEAD still equals the session's baseSha",
+				);
+				expect(correction).toContain("without internal harness jargon");
+				await finish.execute(
+					finish.parseArguments({
+						operationKey: "surface-readonly-handoff",
+						headSha: surface.coding.baseSha,
+						summary: "Inspected the surface workspace; no changes needed.",
+					}),
+					surface.context,
+				);
+				return {
+					providerSessionId: "native-surface-thread",
+					toolCalls: 1,
+					codexVersion: "pinned",
+					fencedRequests: 1,
+				};
+			} finally {
+				run.close();
+			}
+		});
+		await surface.runtime.execute(surface.request, "/private", surface.context.signal, {
+			...surface.turn,
+			surfaceSession: {
+				sessionId: randomUUID(),
+				surfaceSlug: "website",
+				surfaceTitle: "Website",
+				repositoryKey: "surfaces/website",
+				folderRoot: null,
+				briefMarkdown: null,
+				recordChange: vi.fn(),
+			},
+		});
 	});
 });

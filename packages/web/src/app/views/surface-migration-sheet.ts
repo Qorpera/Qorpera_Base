@@ -367,7 +367,6 @@ function kindLine(preset: SurfacePreset): string {
 
 export function openCreateSurfaceSheet(store: SurfacesStore): void {
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
-	let customArchetype: "live_build" | "studio" = "live_build";
 	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
 	let figureChosen = false;
 	let customName = false;
@@ -397,42 +396,19 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		placeholder: t("What is this surface for? An agent shapes it from this brief."),
 	});
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
-	const segment = (value: "live_build" | "studio", label: string, hint: string) => {
-		const button = h(
-			"button",
-			{
-				type: "button",
-				class: value === customArchetype ? "is-on" : "",
-				"aria-pressed": String(value === customArchetype),
-				title: hint,
-			},
-			label,
-		);
-		button.addEventListener("click", () => {
-			customArchetype = value;
-			for (const other of archetypeRow.querySelectorAll("button")) {
-				const on = other === button;
-				other.classList.toggle("is-on", on);
-				other.setAttribute("aria-pressed", String(on));
-			}
-		});
-		return button;
-	};
-	const archetypeRow: HTMLElement = h("div", { class: "surface-seg surface-create-seg", role: "group" });
-	archetypeRow.append(
-		segment("live_build", t("Live preview"), t("Built and previewed live, like a website or app.")),
-		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
-	);
-	archetypeRow.setAttribute("aria-label", t("How it is built"));
 	const customPanel = h(
 		"div",
 		{ class: "surface-create-custom", hidden: selected.kind !== "custom" },
-		archetypeRow,
 		descriptionInput,
 	);
 
 	const heroTile = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
-	const showFigure = () => heroTile.replaceChildren(surfaceFigure(figure));
+	let heroFigure = figure;
+	const showFigure = (shown: SurfaceFigureId) => {
+		if (shown === heroFigure) return;
+		heroFigure = shown;
+		heroTile.replaceChildren(surfaceFigure(shown, "rest", "now"));
+	};
 	const avatar = h(
 		"button",
 		{
@@ -445,17 +421,21 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		heroTile,
 		h("span", { class: "surface-create-avatar-edit", "aria-hidden": "true" }, icon("edit")),
 	);
-	const figures = surfaceFigureChoices(figure, (id) => {
-		figure = id;
-		figureChosen = true;
-		showFigure();
-		setPicker(false);
-		avatar.focus({ preventScroll: true });
-	});
+	const figures = surfaceFigureChoices(
+		figure,
+		(id) => {
+			figure = id;
+			figureChosen = true;
+			setPicker(false);
+			avatar.focus({ preventScroll: true });
+		},
+		(id) => showFigure(id ?? figure),
+	);
 	const picker = h("div", { class: "surface-create-figures", hidden: true }, figures);
 	const setPicker = (open: boolean) => {
 		picker.hidden = !open;
 		avatar.setAttribute("aria-expanded", String(open));
+		if (!open) showFigure(figure);
 		if (open) figures.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
 	};
 	avatar.addEventListener("click", () => setPicker(picker.hidden));
@@ -480,7 +460,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		if (!figureChosen) {
 			figure = surfaceKindFigure(preset.kind);
 			markSurfaceFigure(figures, figure);
-			showFigure();
+			showFigure(figure);
 		}
 		if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
 	};
@@ -564,18 +544,16 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 			return;
 		}
 		submit.disabled = true;
-		const custom = selected.kind === "custom";
-		const archetype = custom ? customArchetype : selected.archetype;
 		const matchesPresetTitle = title.toLowerCase() === t(selected.title).trim().toLowerCase();
 		const usePresetSlug = selected.kind === "identity" || (!customName && matchesPresetTitle);
 		const created = await store.createSurface({
 			title,
 			...(usePresetSlug && selected.slug ? { slug: selected.slug } : {}),
-			archetype,
+			archetype: selected.archetype,
 			icon: surfaceFigureIcon(figure),
 			kind: selected.kind,
 			folderRoot: selected.kind === "identity" ? selected.folderRoot : undefined,
-			description: custom ? descriptionInput.value.trim() || undefined : undefined,
+			description: selected.kind === "custom" ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
 		});
 		if (created) dialog.close(false);

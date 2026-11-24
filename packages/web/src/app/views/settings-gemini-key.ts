@@ -4,6 +4,7 @@ import {
 	GEMINI_MAX_CAP_CENTS,
 	GEMINI_MIN_CAP_CENTS,
 	type GeminiKeyErrorCode,
+	type GeminiKeyErrorDetail,
 	GeminiKeyInvalidError,
 	GeminiKeyStaleError,
 	type GeminiKeyState,
@@ -16,26 +17,80 @@ import { monthName } from "./settings-good-will.ts";
 
 const GOOGLE_AI_STUDIO_SPEND_URL = "https://aistudio.google.com/spend";
 
-function geminiErrorMessage(code: GeminiKeyErrorCode): string {
+function geminiErrorDetailMessage(detail: GeminiKeyErrorDetail): string {
+	switch (detail) {
+		case "free_tier_limit_zero":
+			return t(
+				"This key's Google project is on the Free Tier (quota limit 0). Gemini 4 Neon requires paid billing or claimed AI Ultra credits — claim your credits and link billing to this project in Google AI Studio, then click Check key.",
+			);
+		case "quota_limit_zero":
+			return t(
+				"Google returned a quota limit of 0 for Gemini 4 Neon on this key's project. Claim your AI Ultra credits or link a paid billing account to this project in Google AI Studio, then click Check key.",
+			);
+		case "billing_disabled":
+			return t(
+				"Google reported that billing or AI Ultra credits are not enabled for this key's project. Claim your monthly credits or enable billing in Google AI Studio, then click Check key.",
+			);
+		case "prepay_balance_empty":
+			return t(
+				"Google reported that this key's billing account has no prepay credit balance. Even when AI Ultra credits are claimed, Google AI Studio requires a prepay credit balance above $0 to resume service (eligible credits apply first). Top up in Google AI Studio Billing, then click Check key.",
+			);
+		case "spend_limit_reached":
+			return t(
+				"This key's Google AI Studio spending cap or credit balance was reached. Check your spend limit and credits in Google AI Studio.",
+			);
+		case "daily_quota_exhausted":
+			return t(
+				"This key's Google project reached its daily Gemini API quota. Check your usage tier in Google AI Studio or wait for the daily reset.",
+			);
+		case "rate_limited":
+			return t(
+				"Google temporarily rate-limited requests for this key's project. Wait a moment and try again, or check your rate limits in Google AI Studio.",
+			);
+		case "region_unsupported":
+			return t("Google reported that the Gemini API is not available in this key's region.");
+		case "service_disabled":
+			return t(
+				"The Generative Language API is disabled on this key's Google Cloud project. Enable it in Google Cloud or use a key from another project.",
+			);
+		case "api_key_expired":
+			return t("This Gemini API key has expired. Create a new key in Google AI Studio and replace it here.");
+		case "api_key_blocked":
+			return t(
+				"Google blocked this API key due to key restrictions. Allow the Generative Language API without referrer or IP restrictions in Google AI Studio, or replace the key here.",
+			);
+		case "api_key_invalid":
+			return t("Google rejected this API key as invalid. Check it in Google AI Studio or replace it here.");
+		case "model_not_found":
+			return t("Google reported that Gemini 4 Neon is unavailable for this key.");
+		case "overloaded":
+			return t("Google's Gemini API is temporarily overloaded. Try again in a moment.");
+	}
+}
+
+function geminiErrorMessage(code: GeminiKeyErrorCode, detail: GeminiKeyErrorDetail | null = null): string {
+	if (detail) return geminiErrorDetailMessage(detail);
 	switch (code) {
 		case "billing_required":
 			return t(
-				"Google reported that billing or AI Ultra credits are not active for this key. Claim your monthly credits or check billing in Google AI Studio.",
+				"Google reported that billing or AI Ultra credits are not active for this key's project (Gemini 4 Neon requires paid billing, claimed credits, and a prepay balance above $0 in Google AI Studio). Check Billing in Google AI Studio, then click Check key.",
 			);
 		case "quota_exhausted":
 			return t(
-				"Google returned a quota or rate limit for this key. Check your credits and billing in Google AI Studio, or try again shortly.",
+				"Google returned a quota or rate limit for this key's project. Check your rate limits and spend cap in Google AI Studio, or try again shortly.",
 			);
 		case "key_rejected":
-			return t("Google rejected this API key. Check it in Google AI Studio or replace it here.");
+			return t(
+				"Google rejected this API key. Check that it is active and allowed to use the Generative Language API in Google AI Studio, or replace it here.",
+			);
 		case "model_unavailable":
-			return t("Google reported that Gemini 4 Neon is unavailable for this key.");
+			return t("Google reported that Gemini 4 Neon is unavailable for this key or region.");
 		case "invalid_request":
 			return t("Google rejected the last Gemini request made with this key.");
 		case "provider_outage":
-			return t("Google's Gemini API had a temporary server error on the last run.");
+			return t("Google's Gemini API had a temporary server error on the last check or run.");
 		case "transport_unavailable":
-			return t("Qorpera could not reach Google's Gemini API on the last run.");
+			return t("Qorpera could not reach Google's Gemini API on the last check or run.");
 	}
 }
 
@@ -71,6 +126,7 @@ export class GeminiKeyView {
 	#capDraft = "100";
 	#error: string | undefined;
 	#status: string | undefined;
+	#lastErrorDetail: { readonly code: GeminiKeyErrorCode; readonly detail: GeminiKeyErrorDetail } | null = null;
 
 	constructor(client: WebGeminiKey, signal: AbortSignal, onChanged?: () => void) {
 		this.#client = client;
@@ -100,6 +156,7 @@ export class GeminiKeyView {
 			const next = await this.#client.read(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = next;
+			this.#lastErrorDetail = null;
 			if (next.key) {
 				this.#capDraft = formatCapInput(next.key.monthlyCapCents);
 			}
@@ -142,14 +199,37 @@ export class GeminiKeyView {
 			);
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = next;
+			this.#lastErrorDetail = null;
 			this.#keyDraft = "";
 			this.#adding = false;
 			this.#replacing = false;
 			if (next.key) {
 				this.#capDraft = formatCapInput(next.key.monthlyCapCents);
 			}
-			this.#status = t("Gemini API key saved.");
 			this.#onChanged?.();
+			if (this.#client.check && next.key) {
+				this.#working = "check";
+				this.#draw();
+				try {
+					const checked = await this.#client.check(this.#lifetime.signal);
+					if (this.#lifetime.signal.aborted) return;
+					this.#state = checked.state;
+					if (checked.ok) {
+						this.#lastErrorDetail = null;
+						this.#status = t("Gemini API key saved and verified for Gemini 4 Neon.");
+					} else {
+						this.#lastErrorDetail =
+							checked.errorCode && checked.errorDetail
+								? { code: checked.errorCode, detail: checked.errorDetail }
+								: null;
+					}
+				} catch {
+					if (this.#lifetime.signal.aborted) return;
+					this.#status = t("Gemini API key saved.");
+				}
+			} else {
+				this.#status = t("Gemini API key saved.");
+			}
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			this.#error =
@@ -210,7 +290,11 @@ export class GeminiKeyView {
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = result.state;
 			if (result.ok) {
-				this.#status = t("Key verified for Gemini 4 Neon. Google checks billing and credits when a reply runs.");
+				this.#lastErrorDetail = null;
+				this.#status = t("Key verified for Gemini 4 Neon. Ready to use.");
+			} else {
+				this.#lastErrorDetail =
+					result.errorCode && result.errorDetail ? { code: result.errorCode, detail: result.errorDetail } : null;
 			}
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
@@ -246,6 +330,7 @@ export class GeminiKeyView {
 			const next = await this.#client.revoke(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = next;
+			this.#lastErrorDetail = null;
 			this.#keyDraft = "";
 			this.#adding = false;
 			this.#replacing = false;
@@ -476,15 +561,23 @@ export class GeminiKeyView {
 			t("Manage credits in Google AI Studio"),
 		);
 		const lastErrorCode = key.lastErrorCode ?? null;
+		const activeDetail =
+			lastErrorCode && this.#lastErrorDetail?.code === lastErrorCode ? this.#lastErrorDetail.detail : null;
 		const healthNotice = lastErrorCode
 			? notice(
-					lastErrorCode === "key_rejected" || lastErrorCode === "billing_required" ? "danger" : "warn",
+					lastErrorCode === "key_rejected" ||
+						lastErrorCode === "billing_required" ||
+						lastErrorCode === "model_unavailable" ||
+						activeDetail === "spend_limit_reached" ||
+						activeDetail === "daily_quota_exhausted"
+						? "danger"
+						: "warn",
 					key.lastErrorAt
 						? t("{message} ({time})", {
-								message: geminiErrorMessage(lastErrorCode),
+								message: geminiErrorMessage(lastErrorCode, activeDetail),
 								time: fmtTime(key.lastErrorAt),
 							})
-						: geminiErrorMessage(lastErrorCode),
+						: geminiErrorMessage(lastErrorCode, activeDetail),
 				)
 			: null;
 

@@ -55,7 +55,7 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions default models conversational coding effort credits my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer standardmodeller mine forbindelser modelkonti udbydere abonnementer log ind forbrug kredit",
+			"ai subscriptions default models conversational coding voice tts effort credits my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer standardmodeller stemme lyd mine forbindelser modelkonti udbydere abonnementer log ind forbrug kredit",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
@@ -71,6 +71,7 @@ export interface SettingsPlace {
 	readonly tab: SettingsTab;
 	readonly label: string;
 	readonly area: string;
+	readonly icon: string;
 	readonly words: string;
 	readonly mark?: string;
 }
@@ -79,10 +80,11 @@ export function settingsPlaces(deletes: boolean): SettingsPlace[] {
 	const general = phrase("General");
 	const company = phrase("Company");
 	const subscriptions = phrase("AI subscriptions");
-	const place = (tab: SettingsTab, label: string, area: string, words: string, mark?: string): SettingsPlace => ({
+	const place = (tab: SettingsCategory, label: string, area: string, words: string, mark?: string): SettingsPlace => ({
 		tab,
 		label,
 		area,
+		icon: TABS.find((one) => one.id === tab)!.icon,
 		words,
 		...(mark ? { mark } : {}),
 	});
@@ -149,7 +151,7 @@ export function settingsPlaces(deletes: boolean): SettingsPlace[] {
 			"ai-subscriptions",
 			t("Default models"),
 			subscriptions,
-			"model effort coding conversational standardmodeller",
+			"model effort coding conversational voice tts standardmodeller stemme",
 			t("Default models"),
 		),
 		place("ai-subscriptions", t("Gemini API key"), subscriptions, "google gemini api key nøgle", t("Gemini API key")),

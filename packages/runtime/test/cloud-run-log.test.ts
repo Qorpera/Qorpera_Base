@@ -2215,7 +2215,7 @@ describe("the tool boundary with a work log", () => {
 				hashes: async (_run, digests) => {
 					hashAttempt++;
 					if (hashAttempt === 1) throw new CloudRunLogUnavailable("protection_unavailable");
-					const out = digests.map((_, idx) => `${hashAttempt}`.repeat(63) + `${idx}`);
+					const out = digests.map((_, idx) => `${String(hashAttempt).repeat(63)}${idx}`);
 					retryHashes.push(...out);
 					return out;
 				},

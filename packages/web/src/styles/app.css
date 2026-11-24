@@ -432,6 +432,7 @@ label > input, label > select { font-weight: 400; }
  * except in the collapsed rail, where no section shows a title. */
 .rail-section.is-empty > .rail-section-title { display: none; }
 .frame:not(.rail-compact) .rail-dragging .rail-section.is-empty > .rail-section-title:not([hidden]) { display: block; }
+.frame:not(.rail-compact) .rail-dragging .rail-section.is-empty > .rail-agents-head:not([hidden]) { display: flex; }
 .rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .rail-section-list { display: grid; gap: 0; }
 /* Grok Bot's "Hidden Bots": a quiet row at the foot of the list, the count on the right;
@@ -500,6 +501,28 @@ label > input, label > select { font-weight: 400; }
  * member puts it (a card in the pinned row); until then it stands in the Members group at the foot of the list. That
  * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
  * back (ui/rail-drag.ts says what is dragged). */
+/* WHY: sticky inside the list, so Agents and Members stay in view while the interfaces scroll under them. No frame:
+ * a shadow in the rail's own colour fades the list out above it. A shadow takes no clicks, so the rows under the
+ * fade still answer the pointer; a mask on the dock would not let them. */
+.rail-dock {
+	position: sticky; z-index: 3; bottom: 0; margin-top: auto;
+	display: grid; grid-template-columns: minmax(0, 1fr); align-content: start;
+	max-height: 50%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+	background: var(--rail); box-shadow: 0 -9px 9px var(--rail);
+}
+.rail-dock::before, .rail-dock::after {
+	content: ""; position: sticky; z-index: 4; height: 6px; pointer-events: none; background: var(--rail);
+}
+.rail-dock::before { top: 0; -webkit-mask-image: linear-gradient(to top, transparent, #000); mask-image: linear-gradient(to top, transparent, #000); }
+.rail-dock::after { bottom: 0; -webkit-mask-image: linear-gradient(to bottom, transparent, #000); mask-image: linear-gradient(to bottom, transparent, #000); }
+.rail-scroll > :has(+ .rail-dock > :not(.rail-members.is-empty, .rail-hover-tint)),
+.rail-scroll[data-dragging="member"] > :has(+ .rail-dock) { margin-bottom: 20px; }
+.rail-dock .rail-agents-head { padding: 6px 8px; border-radius: 8px; }
+.rail-dock .rail-agents-chevron { opacity: 0.6; }
+.rail-dock:not(:has(> :not(.rail-members.is-empty, .rail-hover-tint))) { display: none; }
+/* WHY: as specific as the rule above, so it must stay after it. */
+.rail-scroll[data-dragging="member"] > .rail-dock { display: grid; }
+.rail-scroll[data-dragging="member"] .rail-members .rail-agents-body { grid-template-rows: 1fr; opacity: 1; }
 .rail-members.is-empty { display: none; }
 .rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
 .rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
@@ -519,8 +542,6 @@ label > input, label > select { font-weight: 400; }
 .sites-page-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .sites-page-heading > svg { flex: none; }
 .sites-page-heading h1 { margin: 0; }
-/* What's new: per project, what is live (a row of the Sites page, styles/sites.css), the changes ready to go live as a
- * picture with one line each (the look of a question's visual choices), and the buttons. */
 .whats-new-site { margin: 0 0 40px; }
 .whats-new-site > h2 { margin: 0 0 4px; overflow-wrap: anywhere; }
 .whats-new-site > h3 { margin: 22px 0 10px; }
@@ -1044,13 +1065,13 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .auth-alert { display: grid; gap: 4px; margin-bottom: 6px; padding: 12px 14px; border-radius: 10px; background: var(--auth-alert); color: var(--auth-alert-ink); font-size: 13.5px; line-height: 1.45; }
 .auth-alert strong { font-weight: 600; }
 .auth-code { position: relative; }
-.auth-code-boxes { display: flex; gap: 8px; }
+.auth-code-boxes { display: flex; gap: 6px; }
 .auth-code-box {
 	flex: 1; display: grid; place-items: center; height: 46px; border: 1px solid var(--auth-line-strong); border-radius: 8px;
-	background: var(--auth-field); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;
+	background: var(--auth-field); font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums;
 	transition: border-color 140ms ease, box-shadow 140ms ease;
 }
-.auth-code-box:nth-child(3) { margin-right: 6px; }
+.auth-code-box:nth-child(4) { margin-right: 6px; }
 .auth-code-box.is-next { border-color: var(--auth-ink); box-shadow: 0 0 0 3px rgba(22, 22, 21, 0.1); }
 .auth-form .auth-code-input {
 	position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0.01;
@@ -1090,6 +1111,13 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 500; }
 .modal { width: min(440px, 92vw); background: var(--overlay); border-radius: var(--radius-xl); padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-dialog { gap: 18px; }
+.confirm-dialog > p { font-size: 17px; line-height: 1.4; text-wrap: balance; }
+.confirm-dialog .modal-list { margin-top: -10px; }
+.confirm-dialog .modal-actions .btn { min-height: 36px; padding: 0 16px; font-size: 15px; }
+.confirm-dialog .btn-danger, .confirm-dialog .btn-danger:hover:not(:disabled) { border-color: transparent; color: #ffffff; }
+.confirm-dialog .btn-danger { background: var(--danger-solid); }
+.confirm-dialog .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger-solid) 88%, #000000); }
 
 .mobile-navigation-toggle, .navigation-backdrop { display: none; }
 /* The phone layout; scripts ask the same query through isPhoneLayout (src/ui/layout.ts). */

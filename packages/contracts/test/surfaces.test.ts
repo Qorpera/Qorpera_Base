@@ -4,8 +4,11 @@ import {
 	countOpenSurfaceChanges,
 	nextSurfaceSessionLifecycleState,
 	parsePointToChangeTarget,
+	parseStudioPatchOps,
 	parseSurfaceSession,
 	parseSurfaceSummary,
+	STUDIO_BINARY_MAX_BYTES,
+	STUDIO_BINARY_MEDIA_TYPES,
 	SURFACE_SITE_DOOR_ACTION_PATTERN,
 } from "../src/surfaces.ts";
 
@@ -341,5 +344,50 @@ describe("surfaces contracts", () => {
 		expect(() => parseSurfaceSummary({ ...base, publishAsk: { ...ask, status: "accepted" } })).toThrow(
 			"surface.publishAsk.status",
 		);
+	});
+
+	it("parses write_file ops that reference a stored folder file", () => {
+		const file = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 1_048_576,
+			mediaType: "model/gltf-binary",
+		};
+		const op = { op: "write_file", path: "product/model.glb", file };
+		expect(parseStudioPatchOps([op])).toEqual([op]);
+		expect(STUDIO_BINARY_MEDIA_TYPES).toEqual([
+			"model/gltf-binary",
+			"image/webp",
+			"image/png",
+			"image/jpeg",
+			"audio/wav",
+			"audio/mp4",
+			"audio/mpeg",
+			"audio/webm",
+		]);
+		for (const mediaType of STUDIO_BINARY_MEDIA_TYPES) {
+			expect(parseStudioPatchOps([{ ...op, file: { ...file, mediaType } }])[0]).toEqual({
+				...op,
+				file: { ...file, mediaType },
+			});
+		}
+		expect(parseStudioPatchOps([{ ...op, file: { ...file, bytes: STUDIO_BINARY_MAX_BYTES } }])).toHaveLength(1);
+
+		const refused: [unknown, string][] = [
+			[{ ...op, file: { ...file, manifestSha256: "A".repeat(64) } }, "patchManifest[0].file.manifestSha256"],
+			[{ ...op, file: { ...file, fileSha256: "b".repeat(63) } }, "patchManifest[0].file.fileSha256"],
+			[{ ...op, file: { ...file, bytes: 0 } }, "patchManifest[0].file.bytes"],
+			[{ ...op, file: { ...file, bytes: 1.5 } }, "patchManifest[0].file.bytes"],
+			[{ ...op, file: { ...file, bytes: STUDIO_BINARY_MAX_BYTES + 1 } }, "patchManifest[0].file.bytes"],
+			[{ ...op, file: { ...file, mediaType: "image/gif" } }, "patchManifest[0].file.mediaType"],
+			[{ ...op, file: { ...file, executable: false } }, "patchManifest[0].file"],
+			[{ op: "write_file", path: "product/model.glb" }, "patchManifest[0].file"],
+			[{ ...op, path: "" }, "patchManifest[0].path"],
+			[{ ...op, path: "x".repeat(513) }, "patchManifest[0].path"],
+			[{ ...op, path: "bad\0path" }, "patchManifest[0].path"],
+		];
+		for (const [value, label] of refused) {
+			expect(() => parseStudioPatchOps([value])).toThrow(label);
+		}
 	});
 });

@@ -76,6 +76,7 @@
 
 	/* status */
 	--danger: #f26b5e;
+	--danger-solid: #d43d31;
 	--danger-soft: rgba(242, 107, 94, 0.14);
 	--danger-muted: color-mix(in srgb, var(--danger) 65%, #ffffff);
 	--warning: #fbbf24;

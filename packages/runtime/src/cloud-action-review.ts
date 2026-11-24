@@ -444,6 +444,7 @@ export function cloudActionEffect(
 		case "manage_code":
 			return args.action === "status" ? "read" : "internal";
 		case "narrate_app":
+		case "narrate_explainer":
 			return "internal";
 		case "propose_surface":
 		case "start_surface_session":
@@ -591,7 +592,9 @@ export function siteAccessCheck(
 	return {
 		...verdict,
 		builtIn: "access_change",
-		proposedRule: verdict.proposedRule ?? "publish a password-protected website for the company",
+		proposedRule:
+			verdict.proposedRule ??
+			"publish a website for the company that is not live until the founder or an admin presses Go live",
 	};
 }
 
@@ -1082,6 +1085,10 @@ export function describeCloudAction(
 		target = text(args.name) || null;
 		add("machine", args.machine);
 		add("voice", args.voice);
+	} else if (tool.name === "narrate_explainer") {
+		title = "Narrate a Studio breakdown";
+		target = text(args.scenesPath) || null;
+		add("voice", args.voiceName);
 	} else if (tool.name === "post_app") {
 		title = args.posted === false ? "Take an app away from the members' apps" : "Post an app for every member";
 		target = text(args.name) || null;
@@ -1096,7 +1103,7 @@ export function describeCloudAction(
 		const moved = args.mode === "update" && sitePublishMoves(args);
 		title =
 			args.mode !== "update"
-				? "Publish a new password-protected website"
+				? "Publish a new website, not live yet"
 				: moved
 					? "Publish a website from another folder"
 					: "Update a published website";
@@ -1118,8 +1125,8 @@ export function describeCloudAction(
 		add(
 			"effect",
 			args.mode === "update"
-				? "Replaces the whole site; people with its password see the new version"
-				: "Anyone with the link and its password can open it; owners and admins see the password in Settings",
+				? "Replaces the whole site; if it is live, everyone sees the new version, and if not, only the company's members do"
+				: "Not live until the founder or an admin presses Go live on the website's page in the app. Until then only the company's members can open it, from the app",
 		);
 	} else if (tool.name === "share_app") {
 		// Its prepared arguments (cloud-site-tools.ts): the database's check, read before the review.
@@ -1141,7 +1148,7 @@ export function describeCloudAction(
 		if (ported && typeof args.livePort === "number") add("until now port", args.livePort);
 		add(
 			"effect",
-			"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
+			"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins copy the password from the link's card under the message that links it",
 		);
 	} else if (tool.name === "unpublish_site") {
 		// The call names only the slug, so the card is true for a website and an app link alike (v195).
@@ -1149,7 +1156,7 @@ export function describeCloudAction(
 		target = text(args.slug) || null;
 		add(
 			"effect",
-			"Its link stops working. A website's published copy and password are deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
+			"Its link stops working. A website's published copy is deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
 		);
 	} else if (tool.name === "manage_site") {
 		target = text(args.slug) || null;

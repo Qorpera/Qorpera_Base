@@ -36,6 +36,25 @@ export const GEMINI_KEY_ERROR_CODES = [
 
 export type GeminiKeyErrorCode = (typeof GEMINI_KEY_ERROR_CODES)[number];
 
+export const GEMINI_KEY_ERROR_DETAILS = [
+	"api_key_invalid",
+	"api_key_expired",
+	"api_key_blocked",
+	"service_disabled",
+	"billing_disabled",
+	"prepay_balance_empty",
+	"free_tier_limit_zero",
+	"quota_limit_zero",
+	"rate_limited",
+	"daily_quota_exhausted",
+	"spend_limit_reached",
+	"region_unsupported",
+	"model_not_found",
+	"overloaded",
+] as const;
+
+export type GeminiKeyErrorDetail = (typeof GEMINI_KEY_ERROR_DETAILS)[number];
+
 export interface GeminiKeyInfo {
 	id: string;
 	keyHint: string;
@@ -58,6 +77,7 @@ export interface GeminiKeyInfo {
 export interface GeminiKeyCheckResult {
 	ok: boolean;
 	errorCode: GeminiKeyErrorCode | null;
+	errorDetail?: GeminiKeyErrorDetail | null;
 	checkedAt: string;
 	state: GeminiKeyState;
 }
@@ -454,9 +474,15 @@ export function createWebGeminiKey(
 							}
 							errorCode = parsed.errorCode as GeminiKeyErrorCode;
 						}
+						const errorDetail: GeminiKeyErrorDetail | null =
+							typeof parsed.errorDetail === "string" &&
+							(GEMINI_KEY_ERROR_DETAILS as readonly string[]).includes(parsed.errorDetail)
+								? (parsed.errorDetail as GeminiKeyErrorDetail)
+								: null;
 						return {
 							ok: parsed.ok,
 							errorCode,
+							errorDetail,
 							checkedAt: timestamp(parsed.checkedAt, "gemini key checked at"),
 						};
 					} finally {

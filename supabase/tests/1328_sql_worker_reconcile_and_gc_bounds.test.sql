@@ -104,8 +104,7 @@ declare
 	v_sha_b text := repeat('b', 64);
 	v_sha_c text := repeat('c', 64);
 	v_claim jsonb;
-	v_plan text := '';
-	v_line text;
+	v_plan jsonb;
 	v_remaining_leases integer;
 	v_older_queued timestamptz;
 begin
@@ -200,43 +199,44 @@ begin
 	);
 
 	perform set_config('enable_seqscan', 'off', true);
-	for v_line in execute $q$
-		explain select queue.profile_id
+	perform set_config('enable_sort', 'off', true);
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_deleted_profile_object_gc_queue_order', $q$
+		select queue.profile_id
 		from public.qorpera_deleted_profile_object_gc_queue as queue
 		where not exists (select 1 from public.qorpera_profiles as profile where profile.id = queue.profile_id)
 			and not exists (select 1 from public.qorpera_deleted_profile_object_gc_leases as lease where lease.profile_id = queue.profile_id)
 		order by queue.queued_at, queue.profile_id
 		limit 100
-	$q$ loop
-		v_plan := v_plan || E'\n' || v_line;
-	end loop;
+	$q$);
+	perform set_config('enable_sort', 'on', true);
 	perform pg_temp.assert_1328(
-		position('qorpera_deleted_profile_object_gc_queue_order' in v_plan) > 0,
-		'deleted-profile GC queue scan should use qorpera_deleted_profile_object_gc_queue_order: ' || v_plan
+		v_plan #>> '{scan,Node Type}' in ('Index Scan', 'Index Only Scan')
+			and not jsonb_path_exists(v_plan, '$.plan.** ? (@."Node Type" like_regex "Sort")'),
+		'deleted-profile GC queue scan should take its order from qorpera_deleted_profile_object_gc_queue_order: ' || v_plan::text
 	);
 end
 $$;
 
 do $$
 declare
-	v_plan text := '';
-	v_line text;
+	v_plan jsonb;
 	v_cutoff timestamptz := clock_timestamp() - interval '24 hours';
 	v_empty jsonb;
 begin
 	perform set_config('enable_seqscan', 'off', true);
-	for v_line in execute format($q$
-		explain select g.profile_id, g.sha256
+	perform set_config('enable_sort', 'off', true);
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_folder_object_gc_due_order', format($q$
+		select g.profile_id, g.sha256
 		from public.qorpera_folder_object_gc g
 		where g.unreferenced_since <= %L::timestamptz
 		order by g.unreferenced_since, g.profile_id, g.sha256 collate "C"
 		limit 40
-	$q$, v_cutoff) loop
-		v_plan := v_plan || E'\n' || v_line;
-	end loop;
+	$q$, v_cutoff));
+	perform set_config('enable_sort', 'on', true);
 	perform pg_temp.assert_1328(
-		position('qorpera_folder_object_gc_due_order' in v_plan) > 0,
-		'folder GC due candidate query should use qorpera_folder_object_gc_due_order: ' || v_plan
+		v_plan #>> '{scan,Index Cond}' ~ '\(unreferenced_since <= '
+			and not jsonb_path_exists(v_plan, '$.plan.** ? (@."Node Type" like_regex "Sort")'),
+		'folder GC due candidate query should take its bound and order from qorpera_folder_object_gc_due_order: ' || v_plan::text
 	);
 	perform set_config('enable_seqscan', 'on', true);
 

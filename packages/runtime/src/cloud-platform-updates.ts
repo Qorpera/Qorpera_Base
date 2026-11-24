@@ -39,7 +39,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-15",
 		title: "Websites at an address of their own",
-		text: "Every company website now has an address of its own, https://<name>.qorpera.com/, served at the top so links that start with / work. A static site published with publish_site gets its link there, behind its password. A repository kept in Qorpera that builds a website names its built site in its checks: each change that passes waits in What's new, where owners and admins can look at the next version first, and an owner or admin puts it live at the site's address. A product or a shop with a website can have a real home for it now.",
+		text: "Every company website now has an address of its own, served at the top so links that start with / work. A static site published with publish_site gets its link there. A repository kept in Qorpera that builds a website names its built site in its checks: each change that passes waits in What's new, where owners and admins can look at the next version first, and an owner or admin puts it live at the site's address. A product or a shop with a website can have a real home for it now.",
 	},
 	{
 		id: "company-databases",
@@ -270,7 +270,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-22",
 		title: "Native hosting for websites, webapps and custom domains",
-		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site public and attach their own custom domain with automatic HTTPS in Sites.",
+		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site live with Go live and attach their own custom domain with automatic HTTPS on the website's page in the app.",
 	},
 	{
 		id: "claude-code-parallel-scale",
@@ -362,6 +362,48 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-22",
 		title: "Pre-warmed coding snapshots and environment hooks",
 		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera computes a setup digest, builds scrubbed per-node snapshot images in the background under the company's network exit rules so new coding machines start with base packages pre-warmed, and runs worktree install, start and tracked background terminal hooks automatically on attach with clean teardown on detach.",
+	},
+	{
+		id: "studio-files-change-only-through-staging",
+		kind: "behaviour",
+		date: "2026-11-23",
+		title: "Studio files change only through staged changes",
+		text: "An interface's Studio files now change only through staged changes that the member previews, toggles and approves. In a Studio or Identity session, company_write, company_edit, company_mkdir, moves and deletions inside the Studio folder are refused, and the session stages the change for the member instead. When you start a Studio session, ask for staged changes, not direct edits. Notes under the interface's notes folder are unaffected and can still be written directly.",
+	},
+	{
+		id: "interface-pages-shaped-by-a-layout",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "An interface's page is shaped by a layout it can change",
+		text: "Every Studio interface's page, Identity and Product included, is now drawn from a layout: its tabs, and in each tab blocks such as a 3D model, a name and one line, colour dots, short figures, specs, tables, cards, reports and files, side by side when it helps, or a small app built for the page. A new interface starts from a starter layout. The session working on an interface sees that layout and can change it like any other file, as a staged change the member previews and approves. When you start a session, ask for the page the member wants, not only for files.",
+	},
+	{
+		id: "interface-template-skills",
+		kind: "capability",
+		date: "2026-11-24",
+		title: "Interface pages follow skills the company can change",
+		text: "A session on an interface now works from the skill for its kind of page: product-studio for a product, identity-studio for the Identity, custom-surface for any other page. Each says how the page is filled piece by piece and what a good one looks like; the session gets it at every turn and can read any other skill with read_skill. The company can change how its Product, Identity or custom pages are built by keeping a company skill of the same name: read the platform's with read_skill and scope platform, then save your own with update_skill and scope company. Yours is used in its place while it can be read and is at most 8 KiB; otherwise the platform's is used.",
+	},
+	{
+		id: "websites-without-password",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "Websites have no password: Go live opens them",
+		text: "Websites no longer have a password. A website published with publish_site is closed to everyone outside the company until the founder or an admin presses Go live on the website's page in the app. You cannot make it live. Until then the company's members open it from the app. Never tell anyone to use a password for a website: send its link, and ask the founder to press Go live when it should open to everyone. App links shared with share_app are unchanged: they keep their password.",
+	},
+	{
+		id: "no-sites-page",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "No Sites page: each site is managed where it shows",
+		text: "The Sites page is gone, so never send anyone to a Sites page. A website is managed on its own page in the app, and Go live is there. An app link shared with share_app shows as its card under the message that links it, and owners and admins copy its password from that card. You still never see a password: put the link in your message.",
+	},
+	{
+		id: "studio-explainer-breakdowns-and-voice",
+		kind: "capability",
+		date: "2026-11-24",
+		title: "Animated breakdowns and voice settings in Studio",
+		text: "Identity and Product Studio interfaces now have a Breakdowns tab for 3Blue1Brown-style animated explainer videos, and any Studio tab can add an explainer block in its layout. When a member asks for a video, walkthrough or visual breakdown, start a Studio session on that interface so it stages an animated breakdown and records spoken clips in the member's chosen voice from Settings, Default models, Voice. With a Gemini TTS voice selected, narration records directly inside the Studio session without a company machine.",
 	},
 ]);
 

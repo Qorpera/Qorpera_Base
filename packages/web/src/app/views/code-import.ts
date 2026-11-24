@@ -593,8 +593,6 @@ export class CodeImport {
 			);
 	}
 
-	/** The question, in the look of the Sites page's own (styles/sites.css): with no target, one field for the GitHub
-	 * address. It stays while the ask is out, and says there why it was refused, keeping what was typed. */
 	#question(title: string, lines: readonly string[], confirm: string, target?: CodeImportTarget): void {
 		const signal = this.#host.signal;
 		if (signal.aborted) return;

@@ -2,7 +2,6 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Good will, Friends, Company, AI subscriptions, Sites. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -354,6 +353,32 @@ export const SETTINGS: Record<string, string> = {
 	"Coding and working effort": "Indsats til kodning og arbejde",
 	"Default for background workers and coding sessions. Routines keep using your ChatGPT login.":
 		"Standard til baggrundsmedarbejdere og kodesessioner. Rutiner bruger fortsat dit ChatGPT-login.",
+	"Voice model": "Stemmemodel",
+	"Voice profile": "Stemmeprofil",
+	"Default model and voice profile for narrated Studio breakdowns.":
+		"Standardmodel og stemmeprofil til indtalte Studio-gennemgange.",
+	Informative: "Informativ",
+	Firm: "Bestemt",
+	Upbeat: "Opløftende",
+	Bright: "Lys",
+	Breezy: "Let",
+	Excitable: "Begejstret",
+	Youthful: "Ungdommelig",
+	"Easy-going": "Afslappet",
+	Breathy: "Luftig",
+	Clear: "Klar",
+	Smooth: "Blød",
+	Gravelly: "Hæs",
+	Soft: "Blid",
+	Even: "Jævn",
+	Mature: "Moden",
+	Direct: "Direkte",
+	Friendly: "Venlig",
+	Casual: "Uformel",
+	Gentle: "Nænsom",
+	Lively: "Livlig",
+	Knowledgeable: "Vidende",
+	Warm: "Varm",
 	"Connect Claude or add a Gemini API key below to choose their models here.":
 		"Forbind Claude eller tilføj en Gemini-API-nøgle nedenfor for at vælge deres modeller her.",
 	"{model} (unavailable here)": "{model} (ikke tilgængelig her)",
@@ -366,22 +391,50 @@ export const SETTINGS: Record<string, string> = {
 	"Credits active": "Kredit aktiv",
 	"Gemini API key": "Gemini-API-nøgle",
 	"Gemini 4 Neon": "Gemini 4 Neon",
-	"Google reported that billing or AI Ultra credits are not active for this key. Claim your monthly credits or check billing in Google AI Studio.":
-		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for denne nøgle. Indløs din månedlige kredit, eller tjek fakturering i Google AI Studio.",
-	"Google returned a quota or rate limit for this key. Check your credits and billing in Google AI Studio, or try again shortly.":
-		"Google returnerede en kvote- eller hastighedsgrænse for denne nøgle. Tjek din kredit og fakturering i Google AI Studio, eller prøv igen om lidt.",
-	"Google rejected this API key. Check it in Google AI Studio or replace it here.":
-		"Google afviste denne API-nøgle. Tjek den i Google AI Studio, eller udskift den her.",
+	"This key's Google project is on the Free Tier (quota limit 0). Gemini 4 Neon requires paid billing or claimed AI Ultra credits — claim your credits and link billing to this project in Google AI Studio, then click Check key.":
+		"Denne nøgles Google-projekt er på gratispakken (kvotegrænse 0). Gemini 4 Neon kræver aktiv fakturering eller indløst AI Ultra-kredit — indløs din kredit, knyt fakturering til projektet i Google AI Studio, og klik på Tjek nøgle.",
+	"Google returned a quota limit of 0 for Gemini 4 Neon on this key's project. Claim your AI Ultra credits or link a paid billing account to this project in Google AI Studio, then click Check key.":
+		"Google returnerede kvotegrænse 0 for Gemini 4 Neon på denne nøgles projekt. Indløs din AI Ultra-kredit, eller knyt en faktureringskonto til projektet i Google AI Studio, og klik på Tjek nøgle.",
+	"Google reported that billing or AI Ultra credits are not enabled for this key's project. Claim your monthly credits or enable billing in Google AI Studio, then click Check key.":
+		"Google meldte, at fakturering eller AI Ultra-kredit ikke er slået til for denne nøgles projekt. Indløs din månedlige kredit, eller slå fakturering til i Google AI Studio, og klik på Tjek nøgle.",
+	"Google reported that this key's billing account has no prepay credit balance. Even when AI Ultra credits are claimed, Google AI Studio requires a prepay credit balance above $0 to resume service (eligible credits apply first). Top up in Google AI Studio Billing, then click Check key.":
+		"Google meldte, at denne nøgles faktureringskonto ikke har nogen forudbetalt kreditsaldo. Selv når AI Ultra-kredit er indløst, kræver Google AI Studio en forudbetalt kreditsaldo over $0 for at genoptage tjenesten (berettiget kredit bruges først). Tank op under Billing i Google AI Studio, og klik på Tjek nøgle.",
+	"This key's Google AI Studio spending cap or credit balance was reached. Check your spend limit and credits in Google AI Studio.":
+		"Denne nøgles forbrugsgrænse eller kreditsaldo i Google AI Studio er nået. Tjek din forbrugsgrænse og kredit i Google AI Studio.",
+	"This key's Google project reached its daily Gemini API quota. Check your usage tier in Google AI Studio or wait for the daily reset.":
+		"Denne nøgles Google-projekt har nået sin daglige Gemini-API-kvote. Tjek dit niveau i Google AI Studio, eller vent på den daglige nulstilling.",
+	"Google temporarily rate-limited requests for this key's project. Wait a moment and try again, or check your rate limits in Google AI Studio.":
+		"Google har midlertidigt begrænset hastigheden for denne nøgles projekt. Vent et øjeblik, og prøv igen, eller tjek dine grænser i Google AI Studio.",
+	"Google reported that the Gemini API is not available in this key's region.":
+		"Google meldte, at Gemini-API'et ikke er tilgængeligt i denne nøgles område.",
+	"The Generative Language API is disabled on this key's Google Cloud project. Enable it in Google Cloud or use a key from another project.":
+		"Generative Language API er slået fra på denne nøgles Google Cloud-projekt. Slå det til i Google Cloud, eller brug en nøgle fra et andet projekt.",
+	"This Gemini API key has expired. Create a new key in Google AI Studio and replace it here.":
+		"Denne Gemini-API-nøgle er udløbet. Opret en ny nøgle i Google AI Studio, og udskift den her.",
+	"Google blocked this API key due to key restrictions. Allow the Generative Language API without referrer or IP restrictions in Google AI Studio, or replace the key here.":
+		"Google blokerede denne API-nøgle på grund af nøglebegrænsninger. Tillad Generative Language API uden henvisnings- eller IP-begrænsninger i Google AI Studio, eller udskift nøglen her.",
+	"Google rejected this API key as invalid. Check it in Google AI Studio or replace it here.":
+		"Google afviste denne API-nøgle som ugyldig. Tjek den i Google AI Studio, eller udskift den her.",
+	"Google's Gemini API is temporarily overloaded. Try again in a moment.":
+		"Googles Gemini-API er midlertidigt overbelastet. Prøv igen om lidt.",
+	"Google reported that billing or AI Ultra credits are not active for this key's project (Gemini 4 Neon requires paid billing, claimed credits, and a prepay balance above $0 in Google AI Studio). Check Billing in Google AI Studio, then click Check key.":
+		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for denne nøgles projekt (Gemini 4 Neon kræver fakturering, indløst kredit og en forudbetalt saldo over $0 i Google AI Studio). Tjek Billing i Google AI Studio, og klik på Tjek nøgle.",
+	"Google returned a quota or rate limit for this key's project. Check your rate limits and spend cap in Google AI Studio, or try again shortly.":
+		"Google returnerede en kvote- eller hastighedsgrænse for denne nøgles projekt. Tjek dine grænser og forbrugsgrænse i Google AI Studio, eller prøv igen om lidt.",
+	"Google rejected this API key. Check that it is active and allowed to use the Generative Language API in Google AI Studio, or replace it here.":
+		"Google afviste denne API-nøgle. Tjek, at den er aktiv og må bruge Generative Language API i Google AI Studio, eller udskift den her.",
 	"Google reported that Gemini 4 Neon is unavailable for this key.":
 		"Google meldte, at Gemini 4 Neon ikke er tilgængelig for denne nøgle.",
+	"Google reported that Gemini 4 Neon is unavailable for this key or region.":
+		"Google meldte, at Gemini 4 Neon ikke er tilgængelig for denne nøgle eller dette område.",
 	"Google rejected the last Gemini request made with this key.":
 		"Google afviste den seneste Gemini-forespørgsel med denne nøgle.",
-	"Google's Gemini API had a temporary server error on the last run.":
-		"Googles Gemini-API havde en midlertidig serverfejl ved den seneste kørsel.",
-	"Qorpera could not reach Google's Gemini API on the last run.":
-		"Qorpera kunne ikke nå Googles Gemini-API ved den seneste kørsel.",
-	"Key verified for Gemini 4 Neon. Google checks billing and credits when a reply runs.":
-		"Nøglen er bekræftet for Gemini 4 Neon. Google tjekker fakturering og kredit, når et svar kører.",
+	"Google's Gemini API had a temporary server error on the last check or run.":
+		"Googles Gemini-API havde en midlertidig serverfejl ved det seneste tjek eller kørsel.",
+	"Qorpera could not reach Google's Gemini API on the last check or run.":
+		"Qorpera kunne ikke nå Googles Gemini-API ved det seneste tjek eller kørsel.",
+	"Key verified for Gemini 4 Neon. Ready to use.": "Nøglen er bekræftet for Gemini 4 Neon. Klar til brug.",
+	"Gemini API key saved and verified for Gemini 4 Neon.": "Gemini-API-nøglen er gemt og bekræftet for Gemini 4 Neon.",
 	"The Gemini API key could not be checked. Try again.": "Gemini-API-nøglen kunne ikke tjekkes. Prøv igen.",
 	"Check key": "Tjek nøgle",
 	"Manage credits in Google AI Studio": "Administrer kredit i Google AI Studio",
@@ -560,61 +613,26 @@ export const SETTINGS: Record<string, string> = {
 	"The mailbox is ready. Email sent to it can start the company's routines.":
 		"Postkassen er klar. E-mail sendt til den kan starte virksomhedens rutiner.",
 
-	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
-	Sites: "Hjemmesider",
-	"Share a site with its link and password.": "Del en hjemmeside med dens link og adgangskode.",
-	"Only founders and admins can see passwords or take sites offline.":
-		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
-	"No sites yet": "Ingen hjemmesider endnu",
-	"Ask an agent for a website and it shows up here.": "Bed en agent om en hjemmeside, så dukker den op her.",
-	"The company's sites could not be read.": "Virksomhedens hjemmesider kunne ikke hentes.",
+	"Only founders and admins can see passwords.": "Kun stiftere og administratorer kan se adgangskoder.",
 	"Publishing…": "Udgiver…",
 	"Published {time} by {agent}": "Udgivet {time} af {agent}",
 	"Published {time}": "Udgivet {time}",
-	"Copy the link": "Kopiér linket",
-	"The link": "Linket",
-	"The link is copied.": "Linket er kopieret.",
-	"Show password": "Vis adgangskode",
-	"Hide password": "Skjul adgangskode",
 	"Copy the password": "Kopiér adgangskoden",
-	"The password": "Adgangskoden",
 	"The password is copied.": "Adgangskoden er kopieret.",
 	"Press ⌘C to copy.": "Tryk ⌘C for at kopiere.",
 	"Press Ctrl+C to copy.": "Tryk Ctrl+C for at kopiere.",
 	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
 	"More options for {name}": "Flere muligheder for {name}",
-	"Change password": "Skift adgangskode",
-	"Type a new password, 10 to 128 characters": "Skriv en ny adgangskode på 10 til 128 tegn",
-	"New password for {name}": "Ny adgangskode til {name}",
 	"Save password": "Gem adgangskode",
-	"Make a new password": "Lav en ny adgangskode",
-	"Every visitor enters the new password; the old one stops working at once.":
-		"Alle besøgende skal skrive den nye adgangskode; den gamle holder op med at virke med det samme.",
-	"A site password is 10 to 128 characters.": "En adgangskode til en hjemmeside er på 10 til 128 tegn.",
-	"The password is changed.": "Adgangskoden er skiftet.",
-	"The password could not be changed. Try again.": "Adgangskoden kunne ikke skiftes. Prøv igen.",
-	"Take offline": "Tag offline",
-	"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.":
-		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Filerne bliver i Virksomhedsfilen.",
-	"{name} is offline.": "{name} er offline.",
-	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
-	// An app link: one port of a company machine at a site's link (v195)
-	"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.":
-		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
-	// A project's site made from its code kept in Qorpera: its version goes live from What's new (own code storage step 4)
-	"Version {version}": "Version {version}",
-	"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.":
-		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder med en ny adgangskode, til du sætter den live.",
 	// A site Qorpera took down: why, in place of its link and password (own code storage step 5.1)
 	"Taken down": "Taget ned",
-	"Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.":
-		"Qorpera har taget hjemmesiden ned: {reason}. Hvis du mener, det er forkert, så skriv til os under {feedback} i din menu.",
 
 	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
 	"What's new": "Nyheder",
 	"What's new could not be read.": "Nyheder kunne ikke hentes.",
 	"Live now": "Live nu",
 	"Not live yet": "Ikke live endnu",
+	"Current version": "Nuværende version",
 	"Version {version} · since {time}": "Version {version} · siden {time}",
 	"Version {version} · since {time} · {name} said go": "Version {version} · siden {time} · {name} sagde ja",
 	"Version {version} · since {time} · {name} went back":
@@ -626,7 +644,9 @@ export const SETTINGS: Record<string, string> = {
 		"Version {version} · siden {time} · sat live igen automatisk",
 	"Version {version} · since {time} · went back automatically (enabled by {name})":
 		"Version {version} · siden {time} · sat live igen automatisk (slået til af {name})",
-	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
+	"The browser would not copy the password.": "Browseren ville ikke kopiere adgangskoden.",
+	"Only the company can open it. Go live on its page.": "Kun virksomheden kan åbne den. Gå live på dens side.",
+	"Only the company can open it.": "Kun virksomheden kan åbne den.",
 	"Open the site": "Åbn hjemmesiden",
 	"Go back to version {version}": "Gå tilbage til version {version}",
 	"Put version {version} back up? Version {current} comes off the site at once; its changes stay ready.":
@@ -659,8 +679,8 @@ export const SETTINGS: Record<string, string> = {
 	"Qorpera was busy for a moment": "Qorpera havde travlt et øjeblik",
 	"the project is no longer there": "projektet findes ikke længere",
 	"something went wrong on Qorpera's side": "noget gik galt hos Qorpera",
-	"This project can't get a site: the company has 10. Take one offline in Sites.":
-		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10. Tag en offline under Hjemmesider.",
+	"This project can't get a site: the company has 10.":
+		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10.",
 	"The newest version could not be prepared. Qorpera is trying again.":
 		"Den nyeste version kunne ikke gøres klar. Qorpera prøver igen.",
 	"The newest version could not be prepared. The next change that is saved gets a new try.":
@@ -683,8 +703,7 @@ export const SETTINGS: Record<string, string> = {
 	"The next version could not be opened. Try again.": "Den næste version kunne ikke åbnes. Prøv igen.",
 	"The next version could not be opened: Qorpera could not be reached. Try again.":
 		"Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen.",
-	"Qorpera took this site down, so it can't be opened. See why in Sites.":
-		"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+	"Qorpera took this site down, so it can't be opened.": "Qorpera har taget hjemmesiden ned, så den kan ikke åbnes.",
 	"Only founders and admins can look at a version before it goes live.":
 		"Kun stiftere og administratorer kan se en version, før den går live.",
 	"Qorpera took this site down": "Qorpera har taget hjemmesiden ned",
@@ -800,36 +819,5 @@ export const SETTINGS: Record<string, string> = {
 	"This website was taken offline.": "Hjemmesiden er taget offline.",
 	"This website isn't live yet.": "Hjemmesiden er ikke live endnu.",
 	"Try again in a moment.": "Prøv igen om et øjeblik.",
-	"Make public": "Gør offentlig",
-	"Make private": "Gør privat",
-	"Custom domain": "Eget domæne",
-	Public: "Offentlig",
-	"The site is now public.": "Siden er nu offentlig.",
-	"The site is now private.": "Siden er nu privat.",
-	"Site visibility could not be changed. Try again.": "Sidens synlighed kunne ikke ændres. Prøv igen.",
-	"Add a custom domain for {name}": "Tilføj et eget domæne til {name}",
-	"Enter your domain (for example example.dk or www.example.dk).":
-		"Indtast dit domæne (for eksempel eksempel.dk eller www.eksempel.dk).",
-	"Add domain": "Tilføj domæne",
 	"The domain could not be added. Try again.": "Domænet kunne ikke tilføjes. Prøv igen.",
-	"Domain added. Point your DNS records below:": "Domæne tilføjet. Peg dine DNS-poster som vist herunder:",
-	"Waiting for DNS": "Venter på DNS",
-	"DNS verified": "DNS bekræftet",
-	"HTTPS active": "HTTPS aktiv",
-	"DNS moved": "DNS flyttet",
-	"DNS failed": "DNS fejlede",
-	Primary: "Primært",
-	"Set as primary": "Sæt som primært",
-	"Remove domain": "Fjern domæne",
-	"The domain was removed.": "Domænet blev fjernet.",
-	"The domain could not be removed. Try again.": "Domænet kunne ikke fjernes. Prøv igen.",
-	"Primary domain updated.": "Primært domæne opdateret.",
-	"Primary domain could not be updated. Try again.": "Primært domæne kunne ikke opdateres. Prøv igen.",
-	"example.dk": "eksempel.dk",
-	"Record {type} · {host} · {value}": "Post {type} · {host} · {value}",
-	"Check DNS": "Tjek DNS",
-	"DNS check queued.": "DNS-tjek sat i kø.",
-	"DNS check could not be started. Try again.": "DNS-tjek kunne ikke startes. Prøv igen.",
-	Webapp: "Webapp",
-	Hybrid: "Hybrid",
 };

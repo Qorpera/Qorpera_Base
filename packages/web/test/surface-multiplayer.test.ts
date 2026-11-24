@@ -58,7 +58,7 @@ describe("two people in one interface session", () => {
 		const face = drawer.querySelector<HTMLElement>(".surface-drawer-head .surface-crew > .surface-crew-turn")!;
 		expect(face.textContent).toBe("SL");
 		expect(face.title).toBe("Sofie's turn");
-		expect(view.el.querySelector(".surface-bar-agent .surface-crew-turn")?.textContent).toBe("SL");
+		expect(view.el.querySelector(".surface-bar .surface-crew")).toBeNull();
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		rail.update("website");
 		expect(rail.el.querySelector(".rail-surface-crew .surface-crew-turn")?.textContent).toBe("SL");
@@ -210,7 +210,6 @@ describe("two people in one interface session", () => {
 		expect(face.textContent).toBe("SL");
 		expect(face.classList.contains("is-waiting")).toBe(true);
 		expect(face.title).toBe("Waiting for Sofie's usage to reset");
-		expect(jonas.view.el.querySelector(".surface-bar-agent .surface-crew-turn.is-waiting")).not.toBeNull();
 		const rail = new SurfaceRail(jonas.store, COMPANY, new AbortController().signal);
 		rail.update("website");
 		expect(rail.el.querySelector(".rail-surface-crew .surface-crew-turn.is-waiting")?.textContent).toBe("SL");
@@ -274,7 +273,7 @@ describe("two people in one interface session", () => {
 		document.body.append(view.el);
 		await flush();
 		view.update();
-		expect(view.el.querySelector(".surface-bar-agent .surface-bar-agent-count.is-note")?.textContent).toBe("@");
+		expect(view.el.querySelector(".surface-bar")?.textContent).not.toContain("@");
 		store.openDrawer(SURFACE, SESSION);
 		view.update();
 		expect(markSurfaceNotesSeen).toHaveBeenCalledWith(SESSION);

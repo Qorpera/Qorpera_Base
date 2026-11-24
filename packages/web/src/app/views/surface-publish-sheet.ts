@@ -1,8 +1,9 @@
 import type { SurfaceSummary } from "@qorpera/contracts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
-import { fmtTime, h, icon, personAvatar } from "../../ui/dom.ts";
+import { h, icon, personAvatar } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { askedToPublish, type SurfacesStore, unpublishedChanges } from "../surfaces-store.ts";
+import { publishFailureText } from "./surface-door.ts";
 import { surfaceTile } from "./surface-rail.ts";
 
 export function firstName(name: string): string {
@@ -18,44 +19,16 @@ function hostOf(url: string | null): string {
 	}
 }
 
-async function copyToClipboard(text: string): Promise<boolean> {
-	try {
-		if (navigator.clipboard?.writeText) {
-			await navigator.clipboard.writeText(text);
-			return true;
-		}
-	} catch {
-		return false;
-	}
-	return false;
-}
-
-export interface PublishPatchnotesOptions {
-	readonly loadSitePassword?: (surface: SurfaceSummary) => Promise<string | null>;
-}
-
-export function openPublishPatchnotesSheet(
-	store: SurfacesStore,
-	initialSurface: SurfaceSummary,
-	options: PublishPatchnotesOptions = {},
-): SurfaceDialog {
+export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSummary): SurfaceDialog {
 	const surfaceId = initialSurface.id;
 	let unsubscribe: (() => void) | undefined;
 	let closed = false;
-	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
-	let copiedKind: "link" | "password" | undefined;
-	let sitePassword: string | null = null;
-	let passwordLoadedFor = "";
-	const dialog = new SurfaceDialog(t("Patch notes"), "surface-sheet surface-publish-sheet", () => {
+	const dialog = new SurfaceDialog(t("Publish"), "surface-sheet surface-publish-sheet", () => {
 		closed = true;
-		if (copiedTimer) {
-			clearTimeout(copiedTimer);
-			copiedTimer = undefined;
-		}
 		unsubscribe?.();
 		unsubscribe = undefined;
 	});
-	const body = h("div", { class: "surface-patchnotes-body" });
+	const body = h("div", { class: "surface-publish-body" });
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
 	const rollingBack = new Set<string>();
 	let publishing = false;
@@ -65,38 +38,6 @@ export function openPublishPatchnotesSheet(
 
 	const currentSurface = (): SurfaceSummary =>
 		store.state.surfaces.find((item) => item.id === surfaceId) ?? initialSurface;
-
-	const markCopied = (kind: "link" | "password") => {
-		if (closed) return;
-		copiedKind = kind;
-		if (copiedTimer) clearTimeout(copiedTimer);
-		copiedTimer = setTimeout(() => {
-			copiedTimer = undefined;
-			copiedKind = undefined;
-			if (!closed) render();
-		}, 2_000);
-		render();
-	};
-
-	const ensurePasswordLoaded = (surface: SurfaceSummary) => {
-		const liveUrl = surface.liveUrl?.trim() || "";
-		if (!liveUrl || !options.loadSitePassword) return;
-		const key = `${surface.id}:${surface.siteSlug ?? ""}:${liveUrl}`;
-		if (key === passwordLoadedFor) return;
-		passwordLoadedFor = key;
-		void Promise.resolve(options.loadSitePassword(surface))
-			.then((password) => {
-				if (closed || key !== passwordLoadedFor) return;
-				const next = password?.trim() || null;
-				if (next !== sitePassword) {
-					sitePassword = next;
-					render();
-				}
-			})
-			.catch(() => {
-				/* WHY: Missing site password permissions gracefully omit the copy-password button. */
-			});
-	};
 
 	const render = () => {
 		if (closed) return;
@@ -111,18 +52,12 @@ export function openPublishPatchnotesSheet(
 				dialog.close();
 				return;
 			}
-			if (surface.publishStatus === "failed") {
-				awaitingAsyncPublish = false;
-				status.textContent = surface.lastPublishError ?? t("Publish failed. Try again.");
-			}
+			if (surface.publishStatus === "failed") awaitingAsyncPublish = false;
 		}
 		const look = store.lookOf(surface);
 		const entries = unpublishedChanges(state, surfaceId);
 		const total = Math.max(entries.length, surface.unpublishedChangeCount);
-		const liveUrl = surface.liveUrl?.trim() || "";
-		const host = hostOf(liveUrl || null);
-		const subtitle = host ? `${surface.title} · ${host}` : surface.title;
-		ensurePasswordLoaded(surface);
+		const host = hostOf(surface.liveUrl?.trim() || null);
 
 		const me = store.userId;
 		const ask = surface.publishAsk ?? null;
@@ -134,7 +69,9 @@ export function openPublishPatchnotesSheet(
 
 		const publishError =
 			surface.publishStatus === "failed"
-				? surface.lastPublishError?.trim() || t("The last publish failed. Try again.")
+				? publishFailureText(surface.lastPublishError) ||
+					surface.lastPublishError?.trim() ||
+					t("The last publish failed. Try again.")
 				: "";
 
 		const renderKey = JSON.stringify([
@@ -142,11 +79,9 @@ export function openPublishPatchnotesSheet(
 			surface.unpublishedChangeCount,
 			surface.publishStatus ?? "",
 			publishError,
-			liveUrl,
+			host,
 			look.kind,
 			look.accent ?? "",
-			sitePassword ?? "",
-			copiedKind ?? "",
 			publishing,
 			awaitingAsyncPublish,
 			status.textContent ?? "",
@@ -156,147 +91,74 @@ export function openPublishPatchnotesSheet(
 			surface.autoPublish,
 			askBusy,
 			choosing,
-			entries.map(({ change, session, exploration }) => [
+			entries.map(({ change }) => [
 				change.id,
 				change.title,
 				change.summary ?? "",
-				change.resolvedAt ?? change.createdAt,
-				change.approvedByUserId ?? "",
+				store.memberName(change.approvedByUserId) ?? "",
 				change.undoBatchSize ?? 1,
-				exploration?.title ?? session.title,
 				rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]),
 			]),
 		]);
 		if (renderKey === lastRenderKey) return;
 		lastRenderKey = renderKey;
 
-		const shareBar = liveUrl
-			? h(
-					"div",
-					{ class: "surface-share-bar" },
-					h(
-						"div",
-						{ class: "surface-share-copy" },
-						h("span", { class: "surface-share-label" }, t("Share live link")),
-						h("span", { class: "surface-share-url", title: liveUrl }, liveUrl),
-					),
-					h(
-						"div",
-						{ class: "surface-share-actions" },
-						h(
-							"button",
-							{
-								type: "button",
-								class: `surface-share-btn${copiedKind === "link" ? " is-copied" : ""}`,
-								"data-act": "copy-link",
-							},
-							icon(copiedKind === "link" ? "check" : "copy"),
-							h("span", null, copiedKind === "link" ? t("Copied") : t("Copy link")),
-						),
-						sitePassword
-							? h(
-									"button",
-									{
-										type: "button",
-										class: `surface-share-btn${copiedKind === "password" ? " is-copied" : ""}`,
-										"data-act": "copy-password",
-									},
-									icon(copiedKind === "password" ? "check" : "key"),
-									h("span", null, copiedKind === "password" ? t("Copied") : t("Copy password")),
-								)
-							: null,
-						h(
-							"a",
-							{
-								class: "surface-share-btn is-open",
-								href: liveUrl,
-								target: "_blank",
-								rel: "noopener noreferrer",
-							},
-							h("span", null, t("Open")),
-							icon("external"),
-						),
-					),
-				)
-			: null;
-
-		const listNodes: HTMLElement[] =
+		const list =
 			entries.length > 0
-				? [
-						h(
-							"ul",
-							{ class: "surface-patchnotes-list" },
-							...entries.map(({ change, session, exploration }) => {
-								const sourceLabel = exploration ? exploration.title : session.title;
-								const approver = store.memberName(change.approvedByUserId);
-								const busy =
-									rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]) || publishing;
-								const stamp = fmtTime(change.resolvedAt ?? change.createdAt);
-								const batchSize =
-									change.kind === "folder_patch" || change.kind === "git_range"
-										? (change.undoBatchSize ?? 1)
-										: 1;
-								return h(
-									"li",
-									{ class: "surface-patchnote-item", "data-change": change.id },
+				? h(
+						"ul",
+						{ class: "surface-publish-changes" },
+						...entries.map(({ change }) => {
+							const approver =
+								change.approvedByUserId && change.approvedByUserId !== me
+									? store.memberName(change.approvedByUserId)
+									: undefined;
+							const busy = rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]) || publishing;
+							const together =
+								change.kind === "folder_patch" || change.kind === "git_range" ? (change.undoBatchSize ?? 1) : 1;
+							return h(
+								"li",
+								{ class: "surface-publish-change", "data-change": change.id },
+								h(
+									"div",
+									{ class: "surface-publish-change-top" },
+									h("strong", null, change.title),
 									h(
-										"div",
-										{ class: "surface-patchnote-top" },
-										h("span", { class: "surface-patchnote-dot", "aria-hidden": "true" }),
-										h("strong", { class: "surface-patchnote-title" }, change.title),
+										"button",
+										{
+											type: "button",
+											class: "surface-publish-undo",
+											disabled: busy,
+											"data-act": "rollback",
+											"data-change": change.id,
+											...(together > 1
+												? { title: t("They were approved together, so they are undone together.") }
+												: {}),
+										},
+										icon("reset"),
 										h(
-											"button",
-											{
-												type: "button",
-												class: "surface-patchnote-rollback",
-												disabled: busy,
-												"data-act": "rollback",
-												"data-change": change.id,
-												...(batchSize > 1
-													? {
-															title: t("Rolls back all {count} changes landed together in this batch", {
-																count: batchSize,
-															}),
-														}
-													: {}),
-											},
-											icon("reset"),
-											h(
-												"span",
-												null,
-												batchSize > 1 ? t("Rollback batch ({count})", { count: batchSize }) : t("Rollback"),
-											),
+											"span",
+											null,
+											together === 2
+												? t("Undo with 1 other")
+												: together > 2
+													? t("Undo with {count} others", { count: together - 1 })
+													: t("Undo"),
 										),
 									),
-									change.summary ? h("p", { class: "surface-patchnote-summary" }, change.summary) : null,
-									h(
-										"div",
-										{ class: "surface-patchnote-meta" },
-										h("span", { class: "surface-patchnote-source" }, sourceLabel),
-										approver
-											? h(
-													"span",
-													{ class: "surface-patchnote-approver" },
-													t("Approved by {name}", { name: approver }),
-												)
-											: null,
-										stamp ? h("time", { datetime: change.resolvedAt ?? change.createdAt }, stamp) : null,
-									),
-								);
-							}),
-						),
-					]
-				: total > 0
-					? [
-							h(
-								"p",
-								{ class: "surface-patchnotes-empty" },
-								total === 1
-									? t("1 approved change in Base is ready to publish.")
-									: t("{count} approved changes in Base are ready to publish.", { count: total }),
-							),
-						]
-					: [h("p", { class: "surface-patchnotes-empty" }, t("No unpublished changes in Base right now."))];
+								),
+								change.summary ? h("p", null, change.summary) : null,
+								approver
+									? h(
+											"p",
+											{ class: "surface-publish-change-by" },
+											t("Approved by {name}", { name: firstName(approver) }),
+										)
+									: null,
+							);
+						}),
+					)
+				: null;
 
 		const publishInProgress = publishing || surface.publishStatus === "publishing";
 		const askLine = (userId: string, text: string, ...actions: HTMLElement[]) =>
@@ -413,56 +275,45 @@ export function openPublishPatchnotesSheet(
 					t("No"),
 				)
 			: null;
-		const cancelBtn = h(
-			"button",
-			{ type: "button", class: "btn", disabled: publishing, "data-act": "cancel" },
-			surface.publishStatus === "publishing" ? t("Close") : t("Cancel"),
-		);
-		const publishLabel = publishInProgress
-			? t("Publishing…")
-			: total === 1
-				? t("Publish 1 change")
-				: total > 1
-					? t("Publish {count} changes", { count: total })
-					: t("Publish");
-		const publishBtn = h(
-			"button",
-			{
-				type: "button",
-				class: "btn btn-primary",
-				disabled: publishInProgress || total === 0,
-				"data-act": "confirm-publish",
-			},
-			publishLabel,
-		);
+		const lastBtn =
+			total > 0 || publishInProgress
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-primary",
+							disabled: publishInProgress,
+							"data-act": "confirm-publish",
+						},
+						publishInProgress ? t("Publishing…") : t("Publish"),
+					)
+				: h("button", { type: "button", class: "btn btn-primary", "data-act": "cancel" }, t("Done"));
 
 		body.replaceChildren(
 			h(
 				"div",
-				{ class: "surface-patchnotes-head" },
+				{ class: "surface-publish-head" },
 				surfaceTile(surface, look, "is-sheet"),
-				h("div", { class: "surface-patchnotes-heading" }, h("h2", null, t("Patch notes")), h("p", null, subtitle)),
-				total > 0
-					? h(
-							"span",
-							{ class: "surface-patchnotes-badge" },
-							total === 1 ? t("1 change") : t("{count} changes", { count: total }),
-						)
-					: null,
+				h(
+					"div",
+					{ class: "surface-publish-heading" },
+					h(
+						"h2",
+						null,
+						total === 1
+							? t("Publish 1 change?")
+							: total > 1
+								? t("Publish {count} changes?", { count: total })
+								: t("Nothing to publish"),
+					),
+					h("p", null, host ? `${surface.title} · ${host}` : surface.title),
+				),
 			),
-			...(shareBar ? [shareBar] : []),
 			...(publishError ? [h("p", { class: "surface-sheet-error", role: "alert" }, publishError)] : []),
-			h(
-				"p",
-				{ class: "surface-sheet-lead" },
-				total > 0
-					? t("Review everything approved into Base. Roll back any change before going live.")
-					: t("Live matches Base"),
-			),
-			...listNodes,
+			...(list ? [list] : []),
 			...(askNote ? [askNote] : []),
 			...(picker ? [picker] : []),
-			h("div", { class: "surface-sheet-actions" }, status, cancelBtn, declineBtn, askBtn, publishBtn),
+			h("div", { class: "surface-sheet-actions" }, status, declineBtn, askBtn, lastBtn),
 		);
 	};
 
@@ -480,21 +331,6 @@ export function openPublishPatchnotesSheet(
 		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
 		if (!target) return;
 		const { act, change } = target.dataset;
-		if (act === "copy-link") {
-			const liveUrl = currentSurface().liveUrl?.trim() || "";
-			if (!liveUrl) return;
-			void copyToClipboard(liveUrl).then((ok) => {
-				if (ok) markCopied("link");
-			});
-			return;
-		}
-		if (act === "copy-password") {
-			if (!sitePassword) return;
-			void copyToClipboard(sitePassword).then((ok) => {
-				if (ok) markCopied("password");
-			});
-			return;
-		}
 		if (act === "cancel") {
 			dialog.close();
 			return;
@@ -536,7 +372,7 @@ export function openPublishPatchnotesSheet(
 		if (act === "confirm-publish") {
 			if (publishing) return;
 			publishing = true;
-			status.textContent = t("Publishing…");
+			status.textContent = "";
 			render();
 			void store.publish(surfaceId).then((ok) => {
 				publishing = false;
@@ -544,7 +380,6 @@ export function openPublishPatchnotesSheet(
 				if (ok) {
 					if (currentSurface().publishStatus === "publishing") {
 						awaitingAsyncPublish = true;
-						status.textContent = t("Publishing…");
 						render();
 					} else {
 						dialog.close();

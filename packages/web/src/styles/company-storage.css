@@ -1,11 +1,11 @@
-.storage-browser, .files-page.storage-browser {
+.storage-browser, .files-page.storage-browser, .search-window {
 	--files-folder: #4a8ef0;
 	--storage-doc: #3f78d8; --storage-pdf: #d8473e; --storage-sheet: #23955a; --storage-image: #8460d4; --storage-other: #7d7d78;
 	--storage-page: #ffffff; --storage-page-edge: rgba(18, 18, 17, 0.2); --storage-page-line: rgba(18, 18, 17, 0.16);
 	--storage-folder-back: #5b9cf3; --storage-folder-front: #84b6f8;
 	--storage-selected: color-mix(in srgb, #4a8ef0 15%, transparent);
 }
-:root[data-theme="dark"] .storage-browser.files-page {
+:root[data-theme="dark"] .storage-browser.files-page, :root[data-theme="dark"] .search-window {
 	--files-folder: #6ea4ff;
 	--storage-doc: #6b9ff0; --storage-pdf: #f0726a; --storage-sheet: #4cc285; --storage-image: #a98bf0; --storage-other: #a3a29d;
 	--storage-page: #ecebe7; --storage-page-edge: rgba(0, 0, 0, 0.35); --storage-page-line: rgba(18, 18, 17, 0.2);

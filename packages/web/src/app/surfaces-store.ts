@@ -1,3 +1,4 @@
+import type { SurfaceFolderContents } from "@qorpera/cloud-client/surface-folder-files";
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type ApplySurfaceMigrationInput,
@@ -15,6 +16,7 @@ import {
 	nextSurfaceSessionLifecycleState,
 	OPEN_SURFACE_CHANGE_STATUSES,
 	RUNNING_SURFACE_SESSION_STATES,
+	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
 	type SurfaceAutomationSummary,
@@ -36,8 +38,10 @@ import { Store } from "./state.ts";
 import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import {
 	isThetabandCompany,
+	localStudioBinaryBytes,
 	slugifySurfaceTitle,
 	starterOrchestrationPlan,
+	starterStudioBinaries,
 	starterStudioFiles,
 	synthesizeLocalChanges,
 } from "./surface-local-sandbox.ts";
@@ -114,54 +118,7 @@ export interface PendingStudioPatch {
 	readonly rev: number;
 }
 
-export interface SurfaceFolderReadableFile {
-	readonly bytes: number;
-}
-
-export interface SurfaceFolderEntry<TFile extends SurfaceFolderReadableFile = SurfaceFolderReadableFile> {
-	readonly path: string;
-	readonly kind: string;
-	readonly file: TFile | null;
-}
-
-export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = SurfaceFolderReadableFile> {
-	list(
-		parent: string | null,
-		after: string | null,
-		limit: number,
-		signal: AbortSignal,
-	): Promise<{ readonly entries: readonly SurfaceFolderEntry<TFile>[] }>;
-	readFile(
-		file: TFile,
-		signal: AbortSignal,
-		maxBytes?: number,
-		options?: { readonly cached?: boolean },
-	): Promise<Uint8Array>;
-}
-
-const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
-const STUDIO_IGNORED_DIR = new Set([
-	"node_modules",
-	".git",
-	"dist",
-	"build",
-	"target",
-	".next",
-	".nuxt",
-	".turbo",
-	".cache",
-	"vendor",
-	"coverage",
-	"__pycache__",
-	".venv",
-	"out",
-]);
-const STUDIO_MAX_FILE_BYTES = 256 * 1024;
-const STUDIO_MAX_TOTAL_BYTES = 1024 * 1024;
-const STUDIO_MAX_FILES = 32;
-const STUDIO_MAX_SUBFOLDERS = 12;
-const STUDIO_LIST_CONCURRENCY = 4;
-const STUDIO_READ_CONCURRENCY = 6;
+export const MAX_CACHED_BINARY_BYTES = 64 * 1024 * 1024;
 const MAX_CACHED_CLOUD_FILES = 6;
 
 function sameFileMap(
@@ -179,13 +136,13 @@ function sameFileMap(
 	return true;
 }
 
-function pruneCloudSurfaceFiles(
-	current: Readonly<Record<string, Readonly<Record<string, string>>>>,
+function pruneCloudSurfaceFiles<T>(
+	current: Readonly<Record<string, T>>,
 	surfaceId: string,
-	files: Readonly<Record<string, string>>,
+	files: T,
 	keepIds: ReadonlySet<string>,
-): Record<string, Readonly<Record<string, string>>> {
-	const next: Record<string, Readonly<Record<string, string>>> = {};
+): Record<string, T> {
+	const next: Record<string, T> = {};
 	for (const [id, entry] of Object.entries(current)) {
 		if (id !== surfaceId) next[id] = entry;
 	}
@@ -203,101 +160,20 @@ function pruneCloudSurfaceFiles(
 	return next;
 }
 
-function studioFilePriority(path: string): number {
-	const lower = path.toLowerCase();
-	if (lower.endsWith(".json")) return 0;
-	if (lower.endsWith(".css") || lower.endsWith(".svg")) return 1;
-	if (lower.endsWith(".md") || lower.endsWith(".markdown")) return 2;
-	if (lower.endsWith(".html") || lower.endsWith(".htm")) return 3;
-	return 4;
-}
-
-export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadableFile>(
-	folder: SurfaceFolderReader<TFile>,
-	roots: readonly string[],
-	signal: AbortSignal,
-): Promise<Record<string, string>> {
-	const uniqueRoots = [...new Set(roots.map((root) => root.replace(/^\/+|\/+$/g, "")).filter(Boolean))];
-	if (!uniqueRoots.length || signal.aborted) return {};
-	const listFolder = async (parent: string): Promise<readonly SurfaceFolderEntry<TFile>[]> => {
-		try {
-			return (await folder.list(parent, null, 100, signal)).entries;
-		} catch {
-			return [];
-		}
-	};
-	const rootPages = await Promise.all(uniqueRoots.map((root) => listFolder(root)));
-	if (signal.aborted) return {};
-	const subfolders: string[] = [];
-	const candidates: { readonly path: string; readonly file: TFile }[] = [];
-	const seenPaths = new Set<string>();
-	const collectEntries = (entries: readonly SurfaceFolderEntry<TFile>[], allowSubfolders: boolean) => {
-		for (const entry of entries) {
-			if (allowSubfolders && entry.kind === "folder") {
-				const base = entry.path.split("/").at(-1)?.toLowerCase() ?? "";
-				if (!STUDIO_IGNORED_DIR.has(base)) subfolders.push(entry.path);
-				continue;
-			}
-			if (
-				entry.kind !== "file" ||
-				!entry.file ||
-				seenPaths.has(entry.path) ||
-				!STUDIO_TEXT_FILE.test(entry.path) ||
-				entry.file.bytes > STUDIO_MAX_FILE_BYTES
-			) {
-				continue;
-			}
-			seenPaths.add(entry.path);
-			candidates.push({ path: entry.path, file: entry.file });
-		}
-	};
-	for (const entries of rootPages) collectEntries(entries, true);
-	if (subfolders.length > 0 && candidates.length < STUDIO_MAX_FILES) {
-		const uniqueSubs = [...new Set(subfolders)].slice(0, STUDIO_MAX_SUBFOLDERS);
-		let subNext = 0;
-		const subPages: (readonly SurfaceFolderEntry<TFile>[])[] = [];
-		const listWorker = async (): Promise<void> => {
-			while (!signal.aborted) {
-				const index = subNext++;
-				if (index >= uniqueSubs.length) return;
-				subPages[index] = await listFolder(uniqueSubs[index]!);
-			}
-		};
-		await Promise.all(
-			Array.from({ length: Math.min(STUDIO_LIST_CONCURRENCY, uniqueSubs.length) }, () => listWorker()),
-		);
-		if (signal.aborted) return {};
-		for (const entries of subPages) if (entries) collectEntries(entries, false);
-	}
-	candidates.sort((a, b) => studioFilePriority(a.path) - studioFilePriority(b.path) || a.file.bytes - b.file.bytes);
-	const selected: { readonly path: string; readonly file: TFile }[] = [];
-	let totalBytes = 0;
-	for (const item of candidates) {
-		if (selected.length >= STUDIO_MAX_FILES) break;
-		if (selected.length > 0 && totalBytes + item.file.bytes > STUDIO_MAX_TOTAL_BYTES) continue;
-		selected.push(item);
-		totalBytes += item.file.bytes;
-	}
-	if (selected.length === 0) return {};
-	const decoder = new TextDecoder();
-	const files: Record<string, string> = {};
-	let next = 0;
-	const worker = async (): Promise<void> => {
-		while (!signal.aborted) {
-			const index = next++;
-			if (index >= selected.length) return;
-			const item = selected[index]!;
-			try {
-				const bytes = await folder.readFile(item.file, signal, STUDIO_MAX_FILE_BYTES, { cached: true });
-				if (!signal.aborted) files[item.path] = decoder.decode(bytes);
-			} catch {
-				if (signal.aborted) return;
-			}
-		}
-	};
-	const workers = Math.min(STUDIO_READ_CONCURRENCY, selected.length);
-	await Promise.all(Array.from({ length: workers }, () => worker()));
-	return files;
+function sameBinaryMap(
+	a: Readonly<Record<string, StudioBinaryRef>> | undefined,
+	b: Readonly<Record<string, StudioBinaryRef>> | undefined,
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	const aKeys = Object.keys(a);
+	if (aKeys.length !== Object.keys(b).length) return false;
+	return aKeys.every(
+		(key) =>
+			Object.hasOwn(b, key) &&
+			a[key]!.fileSha256 === b[key]!.fileSha256 &&
+			a[key]!.manifestSha256 === b[key]!.manifestSha256,
+	);
 }
 
 export function normalizeStudioPatchOps(
@@ -381,6 +257,8 @@ export interface SurfacesState {
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly cloudSurfaceFiles: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly localStudioBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
+	readonly cloudSurfaceBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
 	readonly pendingStudioPatches: Readonly<Record<string, readonly PendingStudioPatch[]>>;
 	readonly loadingCloudFiles: Readonly<Record<string, true>>;
 	readonly updatingCloudFiles: Readonly<Record<string, true>>;
@@ -398,6 +276,7 @@ export interface SurfacesState {
 	readonly publishedChangeIds: Readonly<Record<string, true>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly variantPick: Readonly<Record<string, string>>;
+	readonly insteadOf?: { readonly surfaceId: string; readonly explorationId: string };
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
 	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
@@ -600,7 +479,7 @@ export function activeTaskSessions(state: Pick<SurfacesState, "surfaces" | "work
 		const workspace = state.workspaces[surface.id];
 		if (!workspace) continue;
 		for (const session of workspace.activeSessions) {
-			if (session.explorationId) continue;
+			if (isOpenVariant(session, workspace)) continue;
 			items.push({ surface, session, running: isRunningSession(session) });
 		}
 	}
@@ -613,6 +492,16 @@ export function activeTaskSessions(state: Pick<SurfacesState, "surfaces" | "work
 
 export function openExplorations(workspace: SurfaceWorkspace | undefined): SurfaceExplorationSet[] {
 	return workspace?.explorations.filter((set) => set.status === "open") ?? [];
+}
+
+export function isOpenVariant(
+	session: Pick<SurfaceSession, "explorationId">,
+	workspace: Pick<SurfaceWorkspace, "explorations"> | undefined,
+): boolean {
+	return (
+		Boolean(session.explorationId) &&
+		(workspace?.explorations.some((set) => set.id === session.explorationId && set.status === "open") ?? false)
+	);
 }
 
 export interface UnpublishedChangeEntry {
@@ -687,54 +576,109 @@ export function effectiveStudioBaseFiles(
 	return base;
 }
 
-const compiledIdentityByState = new WeakMap<SurfacesState, CompiledIdentityTokens | null>();
-let lastCompiledIdentity:
+export function effectiveStudioBaseBinaries(
+	state: Partial<Pick<SurfacesState, "localStudioBinaries" | "cloudSurfaceBinaries" | "pendingStudioPatches">>,
+	surfaceId: string,
+): Readonly<Record<string, StudioBinaryRef>> {
+	const cloud = state.cloudSurfaceBinaries?.[surfaceId];
+	const local = state.localStudioBinaries?.[surfaceId];
+	const pending = state.pendingStudioPatches?.[surfaceId];
+	const base: Readonly<Record<string, StudioBinaryRef>> =
+		cloud && local ? { ...cloud, ...local } : (cloud ?? local ?? {});
+	if (!pending?.some((item) => item.ops.some((op) => op.op === "write_file" || op.op === "delete"))) return base;
+	return composeStudioPreview(
+		{},
+		pending.map((item) => ({ changeId: item.changeId, ops: item.ops })),
+		undefined,
+		base,
+	).binaries;
+}
+
+export interface CompanyIdentityFiles {
+	readonly surfaceId: string;
+	readonly folderRoot: string;
+	readonly files: Readonly<Record<string, string>>;
+	readonly baseFiles: Readonly<Record<string, string>>;
+	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+}
+
+const identityFilesByState = new WeakMap<SurfacesState, CompanyIdentityFiles | null>();
+const compiledIdentityByFiles = new WeakMap<CompanyIdentityFiles, CompiledIdentityTokens | null>();
+let lastIdentityFiles:
 	| {
 			readonly identityId: string;
 			readonly folderRoot: string | null | undefined;
 			readonly liveMode: boolean;
 			readonly cloudFiles: Readonly<Record<string, string>> | undefined;
 			readonly localFiles: Readonly<Record<string, string>> | undefined;
+			readonly cloudBinaries: Readonly<Record<string, StudioBinaryRef>> | undefined;
+			readonly localBinaries: Readonly<Record<string, StudioBinaryRef>> | undefined;
 			readonly pendingPatches: readonly PendingStudioPatch[] | undefined;
 			readonly workspace: SurfaceWorkspace | undefined;
 			readonly variantPick: Readonly<Record<string, string>>;
 			readonly hiddenChanges: Readonly<Record<string, true>>;
 			readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
-			readonly result: CompiledIdentityTokens | null;
+			readonly result: CompanyIdentityFiles;
 	  }
 	| undefined;
 
-export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityTokens | null {
-	if (compiledIdentityByState.has(state)) return compiledIdentityByState.get(state) ?? null;
+function sameRecord<T>(a: Readonly<Record<string, T>>, b: Readonly<Record<string, T>>): boolean {
+	if (a === b) return true;
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	return keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key]);
+}
+
+function sameIdentityFiles(a: CompanyIdentityFiles, b: CompanyIdentityFiles): boolean {
+	return (
+		a.surfaceId === b.surfaceId &&
+		a.folderRoot === b.folderRoot &&
+		sameRecord(a.files, b.files) &&
+		sameRecord(a.baseFiles, b.baseFiles) &&
+		sameRecord(a.binaries, b.binaries) &&
+		sameRecord(a.baseBinaries, b.baseBinaries)
+	);
+}
+
+export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles | null {
+	if (identityFilesByState.has(state)) return identityFilesByState.get(state) ?? null;
 	const identity = findIdentitySurface(state);
 	if (!identity) {
-		compiledIdentityByState.set(state, null);
+		identityFilesByState.set(state, null);
 		return null;
 	}
 	const cloudFiles = state.cloudSurfaceFiles[identity.id];
 	const localFiles = state.localStudioBase[identity.id];
+	const cloudBinaries = state.cloudSurfaceBinaries[identity.id];
+	const localBinaries = state.localStudioBinaries[identity.id];
 	const pendingPatches = state.pendingStudioPatches[identity.id];
 	const liveMode = state.mode === "live";
 	const workspace = liveMode ? undefined : state.workspaces[identity.id];
+	const last = lastIdentityFiles;
 	if (
-		lastCompiledIdentity &&
-		lastCompiledIdentity.identityId === identity.id &&
-		lastCompiledIdentity.folderRoot === identity.folderRoot &&
-		lastCompiledIdentity.liveMode === liveMode &&
-		lastCompiledIdentity.cloudFiles === cloudFiles &&
-		lastCompiledIdentity.localFiles === localFiles &&
-		lastCompiledIdentity.pendingPatches === pendingPatches &&
+		last &&
+		last.identityId === identity.id &&
+		last.folderRoot === identity.folderRoot &&
+		last.liveMode === liveMode &&
+		last.cloudFiles === cloudFiles &&
+		last.localFiles === localFiles &&
+		last.cloudBinaries === cloudBinaries &&
+		last.localBinaries === localBinaries &&
+		last.pendingPatches === pendingPatches &&
 		(liveMode ||
-			(lastCompiledIdentity.workspace === workspace &&
-				lastCompiledIdentity.variantPick === state.variantPick &&
-				lastCompiledIdentity.hiddenChanges === state.hiddenChanges &&
-				lastCompiledIdentity.studioPatches === state.studioPatches))
+			(last.workspace === workspace &&
+				last.variantPick === state.variantPick &&
+				last.hiddenChanges === state.hiddenChanges &&
+				last.studioPatches === state.studioPatches))
 	) {
-		compiledIdentityByState.set(state, lastCompiledIdentity.result);
-		return lastCompiledIdentity.result;
+		identityFilesByState.set(state, last.result);
+		return last.result;
 	}
 	const baseFiles: Readonly<Record<string, string>> = effectiveStudioBaseFiles(state, identity.id) ?? {};
-	let effectiveFiles: Readonly<Record<string, string>> = baseFiles;
+	const baseBinaries = effectiveStudioBaseBinaries(state, identity.id);
+	let files: Readonly<Record<string, string>> = baseFiles;
+	let binaries: Readonly<Record<string, StudioBinaryRef>> = baseBinaries;
 	if (!liveMode && workspace) {
 		const pickedVariants = new Set(
 			openExplorations(workspace)
@@ -743,7 +687,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 		);
 		const ordered: StudioPatchChange[] = [];
 		for (const session of workspace.activeSessions) {
-			if (session.explorationId && !pickedVariants.has(session.id)) continue;
+			if (isOpenVariant(session, workspace) && !pickedVariants.has(session.id)) continue;
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || state.hiddenChanges[change.id]) continue;
 				const ops = state.studioPatches[change.id] ?? change.patchManifest;
@@ -752,20 +696,28 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 			}
 		}
 		if (ordered.length > 0) {
-			effectiveFiles = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity").files;
+			const composed = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity", baseBinaries);
+			files = composed.files;
+			binaries = composed.binaries;
 		}
 	}
-	const folderRoot = identity.folderRoot?.replace(/^\/+|\/+$/g, "");
-	const tokensJson =
-		effectiveFiles[IDENTITY_TOKENS_JSON_PATH] ??
-		(folderRoot ? effectiveFiles[`${folderRoot}/tokens.json`] : undefined);
-	const result = tokensJson?.trim() ? compileIdentityTokens(tokensJson) : null;
-	lastCompiledIdentity = {
+	const fresh: CompanyIdentityFiles = {
+		surfaceId: identity.id,
+		folderRoot: identity.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "",
+		files,
+		baseFiles,
+		binaries,
+		baseBinaries,
+	};
+	const result = last && sameIdentityFiles(last.result, fresh) ? last.result : fresh;
+	lastIdentityFiles = {
 		identityId: identity.id,
 		folderRoot: identity.folderRoot,
 		liveMode,
 		cloudFiles,
 		localFiles,
+		cloudBinaries,
+		localBinaries,
 		pendingPatches,
 		workspace,
 		variantPick: state.variantPick,
@@ -773,7 +725,19 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 		studioPatches: state.studioPatches,
 		result,
 	};
-	compiledIdentityByState.set(state, result);
+	identityFilesByState.set(state, result);
+	return result;
+}
+
+export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityTokens | null {
+	const identity = companyIdentityFiles(state);
+	if (!identity) return null;
+	if (compiledIdentityByFiles.has(identity)) return compiledIdentityByFiles.get(identity) ?? null;
+	const tokensJson =
+		identity.files[IDENTITY_TOKENS_JSON_PATH] ??
+		(identity.folderRoot ? identity.files[`${identity.folderRoot}/tokens.json`] : undefined);
+	const result = tokensJson?.trim() ? compileIdentityTokens(tokensJson) : null;
+	compiledIdentityByFiles.set(identity, result);
 	return result;
 }
 
@@ -885,17 +849,23 @@ export function reportsOwnedBy(
 		return cached.byOwner.get(wantedKey) ?? EMPTY_REPORTS;
 	}
 	const explorations = openExplorations(workspace);
-	const plainSessions = workspace.activeSessions.filter((session) => !session.explorationId);
+	const plainSessions = workspace.activeSessions.filter((session) => !isOpenVariant(session, workspace));
 	const variantsByExploration = new Map<string, SurfaceSession[]>();
 	for (const session of workspace.activeSessions) {
-		if (!session.explorationId) continue;
+		if (!session.explorationId || !isOpenVariant(session, workspace)) continue;
 		const list = variantsByExploration.get(session.explorationId);
 		if (list) list.push(session);
 		else variantsByExploration.set(session.explorationId, [session]);
 	}
+	const chosen = workspace.explorations.filter(
+		(exp) => exp.status === "chosen" && plainSessions.some((sess) => sess.id === exp.chosenSessionId),
+	);
 	const ownerKeyFor = (report: SurfaceReportSummary): string | undefined => {
 		for (const exp of explorations) {
 			if (exp.notePaths?.includes(report.path)) return `exploration:${exp.id}`;
+		}
+		for (const exp of chosen) {
+			if (exp.notePaths?.includes(report.path)) return `session:${exp.chosenSessionId}`;
 		}
 		for (const sess of plainSessions) {
 			if (sess.notePaths?.includes(report.path)) return `session:${sess.id}`;
@@ -904,6 +874,8 @@ export function reportsOwnedBy(
 			const wanted = report.ownerTitle.toLowerCase();
 			const exp = explorations.find((item) => item.title.toLowerCase() === wanted);
 			if (exp) return `exploration:${exp.id}`;
+			const kept = chosen.find((item) => item.title.toLowerCase() === wanted);
+			if (kept) return `session:${kept.chosenSessionId}`;
 			const sess = plainSessions.find((item) => item.title.toLowerCase() === wanted);
 			if (sess) return `session:${sess.id}`;
 		}
@@ -985,6 +957,10 @@ function describe(error: unknown): string {
 	return error instanceof Error && error.message ? error.message : String(error);
 }
 
+export interface QuietCall {
+	readonly quiet?: boolean;
+}
+
 export interface SurfacesStoreOptions {
 	readonly companyId: string;
 	readonly companyName?: string;
@@ -1006,7 +982,8 @@ export interface SurfacesStoreOptions {
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
-	) => Promise<Readonly<Record<string, string>> | undefined>;
+	) => Promise<SurfaceFolderContents | undefined>;
+	readonly readCloudBinary?: (file: StudioBinaryRef, signal: AbortSignal) => Promise<Uint8Array>;
 	readonly uploadImage?: (
 		surfaceId: string,
 		clientInputId: string,
@@ -1030,6 +1007,7 @@ interface LocalSandboxCacheEntry {
 	readonly migrationDismissed: boolean;
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly localStudioBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
 	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly hiddenChanges: Readonly<Record<string, true>>;
@@ -1098,6 +1076,7 @@ export class SurfacesStore {
 	#noteSeq = 0;
 	#localSeq = 0;
 	readonly #imageReads = new Map<string, string>();
+	readonly #binaryReads = new Map<string, { readonly read: Promise<Uint8Array>; readonly bytes: number }>();
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -1112,6 +1091,8 @@ export class SurfacesStore {
 			foldedAgentIds: {},
 			localStudioBase: {},
 			cloudSurfaceFiles: {},
+			localStudioBinaries: {},
+			cloudSurfaceBinaries: {},
 			pendingStudioPatches: {},
 			loadingCloudFiles: {},
 			updatingCloudFiles: {},
@@ -1168,6 +1149,7 @@ export class SurfacesStore {
 			migrationDismissed: state.migrationDismissed,
 			foldedAgentIds: state.foldedAgentIds,
 			localStudioBase: state.localStudioBase,
+			localStudioBinaries: state.localStudioBinaries,
 			surfaceLooks: state.surfaceLooks,
 			studioPatches: state.studioPatches,
 			hiddenChanges: state.hiddenChanges,
@@ -1255,8 +1237,59 @@ export class SurfacesStore {
 		return compiledCompanyIdentity(this.state);
 	}
 
+	companyIdentityFiles(): CompanyIdentityFiles | null {
+		return companyIdentityFiles(this.state);
+	}
+
 	get canLoadCloudFiles(): boolean {
 		return Boolean(this.#options.loadCloudFiles);
+	}
+
+	readStudioBinary(file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> {
+		signal.throwIfAborted();
+		const read = localStudioBinaryBytes(file) ?? this.#binaryRead(file);
+		if (!read) return Promise.reject(new Error("No folder to read from"));
+		return new Promise<Uint8Array>((resolve, reject) => {
+			const stop = () => reject(signal.reason);
+			signal.addEventListener("abort", stop, { once: true });
+			read.then(
+				(bytes) => {
+					signal.removeEventListener("abort", stop);
+					resolve(bytes);
+				},
+				(error: unknown) => {
+					signal.removeEventListener("abort", stop);
+					reject(error);
+				},
+			);
+		});
+	}
+
+	#binaryRead(file: StudioBinaryRef): Promise<Uint8Array> | undefined {
+		const key = file.fileSha256;
+		const kept = this.#binaryReads.get(key);
+		if (kept) {
+			this.#binaryReads.delete(key);
+			this.#binaryReads.set(key, kept);
+			return kept.read;
+		}
+		const readCloudBinary = this.#options.readCloudBinary;
+		if (!readCloudBinary) return undefined;
+		const read = readCloudBinary(file, this.#options.signal);
+		if (file.bytes > MAX_CACHED_BINARY_BYTES / 2) return read;
+		const entry = { read, bytes: file.bytes };
+		this.#binaryReads.set(key, entry);
+		read.catch(() => {
+			if (this.#binaryReads.get(key) === entry) this.#binaryReads.delete(key);
+		});
+		let held = 0;
+		for (const item of this.#binaryReads.values()) held += item.bytes;
+		for (const [oldest, item] of this.#binaryReads) {
+			if (held <= MAX_CACHED_BINARY_BYTES || oldest === key) break;
+			this.#binaryReads.delete(oldest);
+			held -= item.bytes;
+		}
+		return read;
 	}
 
 	isCloudFilesLoading(surfaceId: string): boolean {
@@ -1307,6 +1340,7 @@ export class SurfacesStore {
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
 		this.#studioUndoSnapshots.clear();
+		this.#binaryReads.clear();
 		this.#hydratedAttempted.clear();
 		this.#previewPassMeta.clear();
 		this.#previewSyncDirty.clear();
@@ -1331,7 +1365,7 @@ export class SurfacesStore {
 		this.#hintTimer = undefined;
 		this.#folderHintTimer = undefined;
 		this.#retryLoadTimer = undefined;
-		lastCompiledIdentity = undefined;
+		lastIdentityFiles = undefined;
 		this.store.dispose();
 	}
 
@@ -1442,6 +1476,7 @@ export class SurfacesStore {
 				migrationDismissed: cached.migrationDismissed,
 				foldedAgentIds: cached.foldedAgentIds,
 				localStudioBase: cached.localStudioBase,
+				localStudioBinaries: cached.localStudioBinaries,
 				surfaceLooks: cached.surfaceLooks,
 				studioPatches: cached.studioPatches,
 				hiddenChanges: cached.hiddenChanges,
@@ -1476,6 +1511,9 @@ export class SurfacesStore {
 		const nextWorkspaces: Record<string, SurfaceWorkspace> = { ...this.state.workspaces };
 		const nextLooks: Record<string, SurfaceLook> = { ...this.state.surfaceLooks };
 		const nextStudioBase: Record<string, Readonly<Record<string, string>>> = { ...this.state.localStudioBase };
+		const nextStudioBinaries: Record<string, Readonly<Record<string, StudioBinaryRef>>> = {
+			...this.state.localStudioBinaries,
+		};
 		const nextStudioPatches: Record<string, readonly StudioPatchOp[]> = { ...this.state.studioPatches };
 
 		for (const [index, spec] of plan.surfaces.entries()) {
@@ -1497,6 +1535,8 @@ export class SurfacesStore {
 					...starterStudioFiles(surface, this.companyName, spec.kind, spec.brief),
 					...(spec.attachedReports ?? {}),
 				};
+				const binaries = starterStudioBinaries(surface, this.companyName, spec.kind);
+				if (Object.keys(binaries).length > 0) nextStudioBinaries[surface.id] = binaries;
 			} else if (spec.attachedReports && Object.keys(spec.attachedReports).length > 0) {
 				nextStudioBase[surface.id] = { ...spec.attachedReports };
 			}
@@ -1663,6 +1703,7 @@ export class SurfacesStore {
 			workspaces: nextWorkspaces,
 			surfaceLooks: nextLooks,
 			localStudioBase: nextStudioBase,
+			localStudioBinaries: nextStudioBinaries,
 			studioPatches: nextStudioPatches,
 			automations: nextAutomations,
 			scheduledAgentPrompts: nextPrompts,
@@ -2350,8 +2391,9 @@ export class SurfacesStore {
 		let shouldRerun = false;
 		let rerunVisible = false;
 		try {
-			const files = await loadFiles(surface, this.#options.signal);
-			if (!this.#options.signal.aborted && files !== undefined) {
+			const contents = await loadFiles(surface, this.#options.signal);
+			if (!this.#options.signal.aborted && contents !== undefined) {
+				const { files, binaries } = contents;
 				this.store.set((state) => {
 					const existingPending = state.pendingStudioPatches[surface.id];
 					let nextPendingStudioPatches = state.pendingStudioPatches;
@@ -2365,7 +2407,11 @@ export class SurfacesStore {
 						}
 					}
 					const filesUnchanged = sameFileMap(state.cloudSurfaceFiles[surface.id], files);
-					if (filesUnchanged && nextPendingStudioPatches === state.pendingStudioPatches) return {};
+					const hadBinaries = state.cloudSurfaceBinaries[surface.id];
+					const binariesUnchanged =
+						sameBinaryMap(hadBinaries, binaries) || (!hadBinaries && Object.keys(binaries).length === 0);
+					if (filesUnchanged && binariesUnchanged && nextPendingStudioPatches === state.pendingStudioPatches)
+						return {};
 					const keepIds = new Set<string>();
 					if (this.#activeSurfaceId) keepIds.add(this.#activeSurfaceId);
 					if (state.drawer?.surfaceId) keepIds.add(state.drawer.surfaceId);
@@ -2379,6 +2425,16 @@ export class SurfacesStore {
 										state.cloudSurfaceFiles,
 										surface.id,
 										files,
+										keepIds,
+									),
+								}),
+						...(binariesUnchanged
+							? {}
+							: {
+									cloudSurfaceBinaries: pruneCloudSurfaceFiles(
+										state.cloudSurfaceBinaries,
+										surface.id,
+										binaries,
 										keepIds,
 									),
 								}),
@@ -2663,11 +2719,16 @@ export class SurfacesStore {
 			input.archetype === "studio"
 				? starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
 				: undefined;
+		const starterBinaries =
+			input.archetype === "studio" ? starterStudioBinaries(created, this.companyName, look.kind) : {};
 		this.store.set((state) => ({
 			surfaces: sortSurfaces([...state.surfaces, created]),
 			workspaces: { ...state.workspaces, [created.id]: { ...localWorkspace(created), briefSummary: description } },
 			surfaceLooks: { ...state.surfaceLooks, [created.id]: look },
 			...(starterFiles ? { localStudioBase: { ...state.localStudioBase, [created.id]: starterFiles } } : {}),
+			...(Object.keys(starterBinaries).length > 0
+				? { localStudioBinaries: { ...state.localStudioBinaries, [created.id]: starterBinaries } }
+				: {}),
 			...(look.kind === "mobile_app" ? { device: "mobile" as const } : {}),
 			error: undefined,
 		}));
@@ -2838,18 +2899,18 @@ export class SurfacesStore {
 		return this.#sessionAt(sessionId)?.session;
 	}
 
-	async #run<T>(key: string, work: (client: SurfacesClient) => Promise<T>): Promise<T | undefined> {
+	async #run<T>(key: string, work: (client: SurfacesClient) => Promise<T>, quiet = false): Promise<T | undefined> {
 		const client = this.#options.client;
 		if (!client) {
-			this.store.set({ error: this.#options.unavailableMessage });
+			if (!quiet) this.store.set({ error: this.#options.unavailableMessage });
 			return undefined;
 		}
 		if (this.state.busy[key]) return undefined;
-		this.store.set((state) => ({ busy: { ...state.busy, [key]: true }, error: undefined }));
+		this.store.set((state) => ({ busy: { ...state.busy, [key]: true }, ...(quiet ? {} : { error: undefined }) }));
 		try {
 			return await work(client);
 		} catch (error) {
-			if (!this.#options.signal.aborted)
+			if (!this.#options.signal.aborted && !quiet)
 				this.store.set({
 					error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
 				});
@@ -3092,6 +3153,10 @@ export class SurfacesStore {
 				delete cloudSurfaceFiles[surfaceId];
 				const localStudioBase = { ...state.localStudioBase };
 				delete localStudioBase[surfaceId];
+				const cloudSurfaceBinaries = { ...state.cloudSurfaceBinaries };
+				delete cloudSurfaceBinaries[surfaceId];
+				const localStudioBinaries = { ...state.localStudioBinaries };
+				delete localStudioBinaries[surfaceId];
 				const pendingStudioPatches = { ...state.pendingStudioPatches };
 				delete pendingStudioPatches[surfaceId];
 				const loadingCloudFiles = { ...state.loadingCloudFiles };
@@ -3103,6 +3168,8 @@ export class SurfacesStore {
 					workspaces,
 					cloudSurfaceFiles,
 					localStudioBase,
+					cloudSurfaceBinaries,
+					localStudioBinaries,
 					pendingStudioPatches,
 					loadingCloudFiles,
 					updatingCloudFiles,
@@ -3118,6 +3185,15 @@ export class SurfacesStore {
 		const archived = await this.#run(`surface:${surfaceId}`, (client) => client.archiveSurface(surfaceId));
 		if (!archived) return false;
 		remove();
+		return true;
+	}
+
+	async deleteSurface(surfaceId: string): Promise<boolean> {
+		const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+		if (!surface || !(await this.archiveSurface(surfaceId))) return false;
+		this.store.set((state) => ({
+			automations: state.automations.filter((item) => item.targetSurfaceSlug !== surface.slug),
+		}));
 		return true;
 	}
 
@@ -3578,6 +3654,7 @@ export class SurfacesStore {
 	}
 
 	async discardExploration(exploration: SurfaceExplorationSet): Promise<boolean> {
+		if (this.state.insteadOf?.explorationId === exploration.id) this.store.set({ insteadOf: undefined });
 		if (this.isLocalInteractive && isLocalSurfaceId(exploration.surfaceId)) {
 			const workspace = this.workspace(exploration.surfaceId);
 			if (!workspace) return false;
@@ -3784,89 +3861,56 @@ export class SurfacesStore {
 	}
 
 	async chooseVariant(exploration: SurfaceExplorationSet, sessionId: string): Promise<boolean> {
+		const focusChosen = (state: SurfacesState): Partial<SurfacesState> => ({
+			mode: state.mode === "compare" ? "preview" : state.mode,
+			...(state.insteadOf?.explorationId === exploration.id ? { insteadOf: undefined } : {}),
+			...(state.drawer?.explorationId === exploration.id
+				? { drawer: { surfaceId: exploration.surfaceId, sessionId } }
+				: {}),
+		});
 		if (this.isLocalInteractive && isLocalSurfaceId(exploration.surfaceId)) {
 			const workspace = this.workspace(exploration.surfaceId);
-			if (!workspace) return false;
+			if (!workspace?.activeSessions.some((item) => item.id === sessionId)) return false;
 			const now = new Date().toISOString();
 			const variantIds = new Set(exploration.variantSessionIds);
-			const chosen = workspace.activeSessions.find((item) => item.id === sessionId);
-			if (!chosen) return false;
-			const mergedIds = chosen.changes.filter(isOpenChange).map((change) => change.id);
-			const closedVariants: SurfaceSession[] = [];
+			const dropped: SurfaceSession[] = [];
 			const remainingActive: SurfaceSession[] = [];
 			for (const session of workspace.activeSessions) {
-				if (!variantIds.has(session.id)) {
+				if (!variantIds.has(session.id) || session.id === sessionId) {
 					remainingActive.push(session);
 					continue;
 				}
-				if (session.id === sessionId) {
-					closedVariants.push({
-						...session,
-						state: "completed",
-						changes: session.changes.map((change) =>
-							isOpenChange(change)
-								? { ...change, status: "merged" as const, canUndo: true, resolvedAt: now }
-								: change,
-						),
-						openChangeCount: 0,
-						updatedAt: now,
-						closedAt: now,
-					});
-				} else {
-					closedVariants.push({
-						...session,
-						state: "discarded",
-						changes: session.changes.map((change) =>
-							isOpenChange(change) ? { ...change, status: "discarded" as const } : change,
-						),
-						openChangeCount: 0,
-						updatedAt: now,
-						closedAt: now,
-					});
-				}
+				dropped.push({
+					...session,
+					state: "discarded",
+					changes: session.changes.map((change) =>
+						isOpenChange(change) ? { ...change, status: "discarded" as const, resolvedAt: now } : change,
+					),
+					openChangeCount: 0,
+					updatedAt: now,
+					closedAt: now,
+				});
 			}
-			const nextExplorations = workspace.explorations.map((item) =>
-				item.id === exploration.id
-					? { ...item, status: "chosen" as const, chosenSessionId: sessionId, resolvedAt: now }
-					: item,
-			);
-			this.#commitLocalChangesToBase(exploration.surfaceId, mergedIds);
-			const refreshedSurface =
-				this.state.surfaces.find((item) => item.id === exploration.surfaceId) ?? workspace.surface;
 			const nextWorkspace: SurfaceWorkspace = {
 				...workspace,
-				surface: refreshedSurface,
 				activeSessions: remainingActive,
-				recentHistory: [...closedVariants, ...workspace.recentHistory],
-				explorations: nextExplorations,
+				recentHistory: [...dropped, ...workspace.recentHistory],
+				explorations: workspace.explorations.map((item) =>
+					item.id === exploration.id
+						? { ...item, status: "chosen" as const, chosenSessionId: sessionId, resolvedAt: now }
+						: item,
+				),
 			};
 			this.#putWorkspace({ ...nextWorkspace, surface: this.#syncLocalSurfaceCounts(nextWorkspace) });
-			this.store.set((state) => ({
-				mode: state.mode === "compare" ? "preview" : state.mode,
-				...(state.drawer?.explorationId === exploration.id || state.drawer?.sessionId === sessionId
-					? { drawer: undefined }
-					: {}),
-			}));
-			if (mergedIds.length > 0) this.#offerUndo(chosen.explorationVariantLabel ?? chosen.title, mergedIds);
+			this.store.set(focusChosen);
 			return true;
 		}
 		const chosen = await this.#run(`exploration:${exploration.id}`, (client) =>
 			client.chooseExploration(exploration.id, sessionId),
 		);
 		if (!chosen) return false;
-		this.store.set((state) => ({
-			mode: state.mode === "compare" ? "preview" : state.mode,
-			...(state.drawer?.explorationId === exploration.id || state.drawer?.sessionId === sessionId
-				? { drawer: undefined }
-				: {}),
-		}));
+		this.store.set(focusChosen);
 		await this.refreshWorkspace(exploration.surfaceId);
-		const label = chosen.explorationVariantLabel ?? chosen.title;
-		const verb = this.#undoVerbFor(exploration.surfaceId);
-		const mergedIds = chosen.changes.filter((change) => change.status === "merged").map((change) => change.id);
-		const mergingIds = chosen.changes.filter((change) => change.status === "merging").map((change) => change.id);
-		if (mergedIds.length > 0) this.#offerUndo(label, mergedIds, verb);
-		else if (mergingIds.length > 0) this.#offerPendingMerge(exploration.surfaceId, label, mergingIds, verb);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -4081,6 +4125,20 @@ export class SurfacesStore {
 		await this.#syncPreview(surfaceId);
 	}
 
+	askInstead(surfaceId: string, explorationId: string): void {
+		this.store.set({ insteadOf: { surfaceId, explorationId } });
+	}
+
+	keepOptions(): void {
+		if (this.state.insteadOf) this.store.set({ insteadOf: undefined });
+	}
+
+	insteadOf(surfaceId: string): SurfaceExplorationSet | undefined {
+		const asked = this.state.insteadOf;
+		if (asked?.surfaceId !== surfaceId) return undefined;
+		return openExplorations(this.workspace(surfaceId)).find((item) => item.id === asked.explorationId);
+	}
+
 	pickedVariant(exploration: SurfaceExplorationSet): string | undefined {
 		return this.state.variantPick[exploration.id] ?? exploration.variantSessionIds[0];
 	}
@@ -4094,7 +4152,7 @@ export class SurfacesStore {
 		);
 		const sessions: SurfaceSession[] = [];
 		for (const session of workspace?.activeSessions ?? []) {
-			if (session.explorationId && !pickedExplorationSessions.has(session.id)) continue;
+			if (isOpenVariant(session, workspace) && !pickedExplorationSessions.has(session.id)) continue;
 			sessions.push(session);
 		}
 		return sessions;
@@ -4289,7 +4347,7 @@ export class SurfacesStore {
 		}
 	}
 
-	async publish(surfaceId: string): Promise<boolean> {
+	async publish(surfaceId: string, options: QuietCall = {}): Promise<boolean> {
 		const pendingIds = unpublishedChanges(this.state, surfaceId).map((entry) => entry.change.id);
 		const markPublished = () => {
 			if (!pendingIds.length) return;
@@ -4306,7 +4364,11 @@ export class SurfacesStore {
 			this.#putSurface({ ...surface, hasUnpublishedChanges: false, unpublishedChangeCount: 0 });
 			return true;
 		}
-		const surface = await this.#run(`publish:${surfaceId}`, (client) => client.publishSurface(surfaceId));
+		const surface = await this.#run(
+			`publish:${surfaceId}`,
+			(client) => client.publishSurface(surfaceId),
+			options.quiet,
+		);
 		if (!surface) return false;
 		// WHY: Defer marking changes published until async code_repo publish jobs finish transitioning back to idle.
 		if (surface.publishStatus === "publishing") {
@@ -4352,15 +4414,17 @@ export class SurfacesStore {
 		return true;
 	}
 
-	async setAutoPublish(surfaceId: string, enabled: boolean): Promise<boolean> {
+	async setAutoPublish(surfaceId: string, enabled: boolean, options: QuietCall = {}): Promise<boolean> {
 		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
 			const surface = this.state.surfaces.find((item) => item.id === surfaceId);
 			if (!surface) return false;
 			this.#putSurface({ ...surface, autoPublish: enabled });
 			return true;
 		}
-		const surface = await this.#run(`auto:${surfaceId}`, (client) =>
-			client.setSurfaceAutoPublish(surfaceId, enabled),
+		const surface = await this.#run(
+			`auto:${surfaceId}`,
+			(client) => client.setSurfaceAutoPublish(surfaceId, enabled),
+			options.quiet,
 		);
 		if (!surface) return false;
 		this.#putSurface(surface);

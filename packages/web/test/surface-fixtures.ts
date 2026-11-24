@@ -1,5 +1,7 @@
+import type { SurfaceFolderContents } from "@qorpera/cloud-client/surface-folder-files";
 import type {
 	PointToChangeTarget,
+	StudioBinaryRef,
 	SurfaceChangeUnit,
 	SurfacePreviewFrameState,
 	SurfaceSession,
@@ -14,8 +16,22 @@ import {
 	type SurfacesStoreOptions,
 	synthesizeMigration,
 } from "../src/app/surfaces-store.ts";
+import type {
+	AddedSiteDomain,
+	CompanySiteHostingState,
+	CustomDomainStatus,
+	SiteCustomDomain,
+	WebSiteHosting,
+} from "../src/cloud/site-hosting.ts";
 
 export const COMPANY = "11111111-1111-4111-8111-111111111111";
+
+export function folderContents(
+	files: Readonly<Record<string, string>>,
+	binaries: Readonly<Record<string, StudioBinaryRef>> = {},
+): SurfaceFolderContents {
+	return { files, binaries };
+}
 export const SURFACE = "22222222-2222-4222-8222-222222222222";
 export const SESSION = "33333333-3333-4333-8333-333333333333";
 export const CHANGES = [
@@ -236,4 +252,121 @@ export function storeWith(client: SurfacesClient | undefined, extra: Partial<Sur
 		unavailableMessage: "Surfaces aren't enabled for this company yet.",
 		...extra,
 	});
+}
+
+export const HOSTED_SITE = "77777777-7777-4777-8777-777777777701";
+
+export function siteDomain(
+	hostname: string,
+	status: CustomDomainStatus = "pending_dns",
+	overrides: Partial<SiteCustomDomain> = {},
+): SiteCustomDomain {
+	return {
+		id: "77777777-7777-4777-8777-7777777777a1",
+		hostname,
+		isApex: hostname.split(".").length === 2,
+		isPrimary: false,
+		status,
+		verificationToken: "9f3a1c",
+		lastCheckedAt: null,
+		verifiedAt: null,
+		tlsActiveAt: null,
+		lastError: null,
+		...overrides,
+	};
+}
+
+export interface HostingWorld {
+	entry: { isPublic: boolean; domains: SiteCustomDomain[] } | null;
+	publicEnabled: boolean;
+	domainsEnabled: boolean;
+}
+
+export function fakeSiteHosting(world: Partial<HostingWorld> = {}) {
+	const now: HostingWorld = {
+		entry: { isPublic: false, domains: [] },
+		publicEnabled: true,
+		domainsEnabled: true,
+		...world,
+	};
+	const state = (): CompanySiteHostingState => ({
+		hostsDomain: "qorpera.com",
+		hostsEnabled: true,
+		publicEnabled: now.publicEnabled,
+		domainsEnabled: now.domainsEnabled,
+		edgeIpv4: "203.0.113.7",
+		edgeIpv6: "2001:db8::7",
+		edgeCnameTarget: "edge.qorpera.com",
+		sites: new Map(
+			now.entry
+				? [
+						[
+							HOSTED_SITE,
+							{
+								siteId: HOSTED_SITE,
+								slug: "thetaband",
+								isPublic: now.entry.isPublic,
+								deploymentKind: "static" as const,
+								storageMode: "db" as const,
+								liveDeploymentId: null,
+								domains: now.entry.domains.map((domain) => ({ ...domain })),
+							},
+						],
+					]
+				: [],
+		),
+	});
+	let made = 0;
+	const client = {
+		read: vi.fn(async (_signal?: AbortSignal) => state()),
+		setPublic: vi.fn(async (_siteId: string, isPublic: boolean, _signal?: AbortSignal) => {
+			if (now.entry) now.entry.isPublic = isPublic;
+			return isPublic;
+		}),
+		addDomain: vi.fn(
+			async (siteId: string, hostname: string, isApex: boolean, _signal?: AbortSignal): Promise<AddedSiteDomain> => {
+				made++;
+				const domain = siteDomain(hostname, "pending_dns", {
+					id: `77777777-7777-4777-8777-7777777777b${made}`,
+					isApex,
+				});
+				now.entry?.domains.push(domain);
+				return {
+					id: domain.id,
+					siteId,
+					hostname,
+					isApex,
+					isPrimary: false,
+					status: "pending_dns",
+					verificationToken: domain.verificationToken,
+					dns: {
+						recordType: isApex ? "A" : "CNAME",
+						ipv4: "203.0.113.7",
+						ipv6: "2001:db8::7",
+						cnameTarget: "edge.qorpera.com",
+						txtHost: `_qorpera.${hostname}`,
+						txtValue: `qorpera-verify=${domain.verificationToken}`,
+					},
+				};
+			},
+		),
+		removeDomain: vi.fn(async (domainId: string, _signal?: AbortSignal) => {
+			if (now.entry) now.entry.domains = now.entry.domains.filter((domain) => domain.id !== domainId);
+			return true;
+		}),
+		setPrimaryDomain: vi.fn(async (domainId: string, _signal?: AbortSignal) => {
+			let hostname = "";
+			if (now.entry)
+				now.entry.domains = now.entry.domains.map((domain) => {
+					if (domain.id === domainId) hostname = domain.hostname;
+					return { ...domain, isPrimary: domain.id === domainId };
+				});
+			return hostname;
+		}),
+		recheckDomain: vi.fn(
+			async (domainId: string, _signal?: AbortSignal): Promise<CustomDomainStatus> =>
+				now.entry?.domains.find((domain) => domain.id === domainId)?.status ?? "pending_dns",
+		),
+	} satisfies WebSiteHosting;
+	return { client, world: now };
 }

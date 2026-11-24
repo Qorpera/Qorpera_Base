@@ -59,6 +59,7 @@ import {
 	SectionsChangeRefusal,
 	sectionsChange,
 } from "../cloud/sidebar-sections-file.ts";
+import type { CompanySiteHostingState, WebSiteHosting } from "../cloud/site-hosting.ts";
 import type { CompanySite } from "../cloud/sites.ts";
 import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
@@ -299,12 +300,12 @@ export interface CompanyState {
 	/** The apps whose agent was asked to draw new icons, by name: since when, and the icons it had then. The drawer shows
 	 * the app drawing until a new one is read, or for ten minutes. */
 	appIconsDrawing?: Readonly<Record<string, { readonly since: number; readonly known: readonly string[] }>>;
-	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
-	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
 	/** The company's sites as last read, with `siteCount`: each live website is an owed view, first in the apps drawer,
 	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
 	siteList?: readonly CompanySite[];
+	siteListUnread?: boolean;
+	sitesPublic?: ReadonlyMap<string, boolean>;
 	/** The company's sites Qorpera's operators took down, by id, as the access read last said
 	 * (`qorpera_company_site_access`): the owed row leaves them out. Unset until read, and on a cloud without it. */
 	sitesTakenDown?: ReadonlySet<string>;
@@ -312,9 +313,6 @@ export interface CompanyState {
 	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
 	 * is set. Unset until read, and on a cloud without it. */
 	whatsNew?: { readonly ready: number };
-	/** The version What's new has live of each site made from a project's code, by the site's name in its link: the
-	 * Sites page names it on the site's row. Read with What's new. */
-	siteVersions?: Readonly<Record<string, number>>;
 	/** What the rail says of each agent between runs: its next planned run (app/agent-notes.ts). Unset until the first
 	 * read lands; an agent with nothing has no entry. */
 	agentNotes?: AgentNotesState;
@@ -328,6 +326,137 @@ export interface CompanyState {
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;
+}
+
+export function siteServed(
+	state: Pick<CompanyState, "siteList" | "siteListUnread">,
+	surface: { readonly archetype: string; readonly siteSlug?: string | null },
+): boolean | undefined {
+	if (surface.archetype !== "live_build" || !surface.siteSlug) return false;
+	if (state.siteList === undefined || state.siteListUnread) return undefined;
+	return servedSite(state.siteList, surface.siteSlug) !== undefined;
+}
+
+function servedSite(list: readonly CompanySite[], slug: string): CompanySite | undefined {
+	return list.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
+}
+
+export type SiteAnswer = "live" | "private" | "unknown";
+
+export function siteAnswer(
+	state: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic" | "sitesTakenDown">,
+	surface: { readonly archetype: string; readonly siteSlug?: string | null },
+): SiteAnswer {
+	const served = siteServed(state, surface);
+	if (served === undefined) return "unknown";
+	if (!served || !state.siteList || !surface.siteSlug) return "private";
+	const site = servedSite(state.siteList, surface.siteSlug);
+	return site ? sitePublicAnswer(state, site.id) : "unknown";
+}
+
+export function sitePublicAnswer(
+	state: Pick<CompanyState, "sitesPublic" | "sitesTakenDown">,
+	siteId: string,
+): SiteAnswer {
+	if (state.sitesTakenDown?.has(siteId)) return "private";
+	const isPublic = state.sitesPublic?.get(siteId);
+	return isPublic === undefined ? "unknown" : isPublic ? "live" : "private";
+}
+
+interface PublishedSurface {
+	readonly status: string;
+	readonly archetype: string;
+	readonly siteSlug: string | null;
+	readonly publishStatus?: string;
+	readonly liveHeadSha?: string | null;
+}
+
+export function sitesAwaited(state: Pick<CompanyState, "siteList">, surfaces: readonly PublishedSurface[]): string {
+	const list = state.siteList;
+	if (!list) return "";
+	const awaited = surfaces.filter(
+		(surface) =>
+			surface.status === "active" &&
+			surface.archetype === "live_build" &&
+			surface.siteSlug &&
+			surface.publishStatus !== "publishing" &&
+			surface.publishStatus !== "failed" &&
+			!servedSite(list, surface.siteSlug),
+	);
+	return awaited.length
+		? JSON.stringify(awaited.map((surface) => [surface.siteSlug, surface.liveHeadSha ?? null]))
+		: "";
+}
+
+export function readSitesOncePublished(
+	read: () => void,
+): (state: Pick<CompanyState, "siteList">, surfaces: readonly PublishedSurface[]) => void {
+	let asked = "";
+	return (state, surfaces) => {
+		const awaited = sitesAwaited(state, surfaces);
+		if (awaited === asked) return;
+		asked = awaited;
+		if (awaited) read();
+	};
+}
+
+interface PublicWrites {
+	finished: number;
+	running: number;
+}
+
+const publicWrites = new WeakMap<Store<CompanyState>, PublicWrites>();
+
+function publicWritesOf(store: Store<CompanyState>): PublicWrites {
+	let writes = publicWrites.get(store);
+	if (!writes) {
+		writes = { finished: 0, running: 0 };
+		publicWrites.set(store, writes);
+	}
+	return writes;
+}
+
+export function startPublicRead(store: Store<CompanyState>): (hosting: CompanySiteHostingState | undefined) => void {
+	const writes = publicWritesOf(store);
+	const finished = writes.finished;
+	return (hosting) => {
+		if (writes.running > 0 || writes.finished !== finished) return;
+		const next = hosting
+			? new Map([...hosting.sites.values()].map((entry) => [entry.siteId, entry.isPublic] as const))
+			: undefined;
+		const known = store.get().sitesPublic;
+		if (next === undefined ? known === undefined : sameAnswers(known, next)) return;
+		store.set({ sitesPublic: next });
+	};
+}
+
+function sameAnswers(known: ReadonlyMap<string, boolean> | undefined, next: ReadonlyMap<string, boolean>): boolean {
+	return known?.size === next.size && [...next].every(([siteId, isPublic]) => known.get(siteId) === isPublic);
+}
+
+export function hostingNotingPublic(store: Store<CompanyState>, hosting: WebSiteHosting): WebSiteHosting {
+	const writes = publicWritesOf(store);
+	return {
+		...hosting,
+		read: async (signal) => {
+			const note = startPublicRead(store);
+			const state = await hosting.read(signal);
+			note(state);
+			return state;
+		},
+		setPublic: async (siteId, isPublic, signal) => {
+			writes.running += 1;
+			try {
+				const now = await hosting.setPublic(siteId, isPublic, signal);
+				const known = store.get().sitesPublic;
+				if (known?.get(siteId) !== now) store.set({ sitesPublic: new Map(known ?? []).set(siteId, now) });
+				return now;
+			} finally {
+				writes.running -= 1;
+				writes.finished += 1;
+			}
+		},
+	};
 }
 
 export interface ConversationState {
@@ -706,7 +835,6 @@ export class CompanyController {
 	readonly #seenLiveAt = new Map<string, number>();
 	/** What this tab says it shows (app/presence-place.ts): the open conversation and its place while the tab is visible. */
 	#tracked: string | null = null;
-	/** Where this tab is outside a conversation: an interface's page, an app, Concepts, Sites or an agent's card. */
 	#openPlace: string | undefined;
 
 	constructor(

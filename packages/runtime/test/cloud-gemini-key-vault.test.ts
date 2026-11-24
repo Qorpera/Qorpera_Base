@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	CloudGeminiKeyVault,
 	checkGeminiApiKey,
+	classifyGeminiHttpError,
+	type GeminiKeyCheckOutcome,
 	GeminiKeyInvalidError,
 	type GeminiKeyVaultAuthority,
 	geminiKeyHint,
@@ -37,23 +39,7 @@ function digestHex(bytes: Uint8Array | string): string {
 
 function standIn(
 	verifyKey?: (apiKey: string, signal: AbortSignal) => Promise<void>,
-	checkKey?: (
-		apiKey: string,
-		signal: AbortSignal,
-	) => Promise<
-		| { readonly ok: true }
-		| {
-				readonly ok: false;
-				readonly errorCode:
-					| "key_rejected"
-					| "billing_required"
-					| "quota_exhausted"
-					| "model_unavailable"
-					| "invalid_request"
-					| "provider_outage"
-					| "transport_unavailable";
-		  }
-	>,
+	checkKey?: (apiKey: string, signal: AbortSignal) => Promise<GeminiKeyCheckOutcome>,
 ) {
 	const keyring = new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) });
 	const state = {
@@ -242,16 +228,82 @@ describe("Gemini Neon pricing and key formatting", () => {
 		);
 	});
 
-	it("checks a Gemini key against the gemini-4-neon model endpoint and classifies errors", async () => {
-		const seen: { url: string; header: string | null }[] = [];
+	it("checks a Gemini key with a minimal gemini-4-neon generateContent probe and classifies errors", async () => {
+		const seen: { url: string; method: string; header: string | null; body: string | null }[] = [];
 		const okFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-			seen.push({ url: String(input), header: new Headers(init?.headers).get("x-goog-api-key") });
-			return Response.json({ name: "models/gemini-4-neon" });
+			seen.push({
+				url: String(input),
+				method: init?.method ?? "GET",
+				header: new Headers(init?.headers).get("x-goog-api-key"),
+				body: typeof init?.body === "string" ? init.body : null,
+			});
+			return Response.json({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
 		}) as typeof fetch;
 		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), okFetch)).toEqual({ ok: true });
-		expect(seen[0]?.url).toContain("/v1beta/models/gemini-4-neon");
+		expect(seen[0]?.method).toBe("POST");
+		expect(seen[0]?.url).toContain("/v1beta/models/gemini-4-neon:generateContent");
 		expect(seen[0]?.url).not.toContain(CANARY_KEY);
 		expect(seen[0]?.header).toBe(CANARY_KEY);
+		expect(JSON.parse(seen[0]?.body ?? "{}")).toMatchObject({
+			generationConfig: { thinkingConfig: { thinkingLevel: "low" } },
+		});
+
+		const freeTierFetch = (async () =>
+			Response.json(
+				{
+					error: {
+						code: 429,
+						status: "RESOURCE_EXHAUSTED",
+						message:
+							"You exceeded your current quota, please check your plan and billing details. Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-4-neon",
+						details: [
+							{
+								"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+								violations: [
+									{
+										quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+										quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+										quotaValue: "0",
+									},
+								],
+							},
+							{
+								"@type": "type.googleapis.com/google.rpc.RetryInfo",
+								retryDelay: "23s",
+							},
+						],
+					},
+				},
+				{ status: 429 },
+			)) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), freeTierFetch)).toEqual({
+			ok: false,
+			errorCode: "billing_required",
+			errorDetail: "free_tier_limit_zero",
+		});
+
+		const zeroLimitFetch = (async () =>
+			Response.json(
+				{
+					error: {
+						code: 429,
+						status: "RESOURCE_EXHAUSTED",
+						message: "Quota exceeded for metric: generate_content_requests, limit: 0",
+						details: [
+							{
+								"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+								violations: [{ quotaMetric: "generate_content_requests", quotaValue: "0" }],
+							},
+						],
+					},
+				},
+				{ status: 429 },
+			)) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), zeroLimitFetch)).toEqual({
+			ok: false,
+			errorCode: "billing_required",
+			errorDetail: "quota_limit_zero",
+		});
 
 		const billingFetch = (async () =>
 			Response.json(
@@ -261,6 +313,92 @@ describe("Gemini Neon pricing and key formatting", () => {
 		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), billingFetch)).toEqual({
 			ok: false,
 			errorCode: "billing_required",
+			errorDetail: "billing_disabled",
+		});
+
+		const prepayFetch = (async () =>
+			Response.json({ error: { code: 402, message: "Payment Required" } }, { status: 402 })) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), prepayFetch)).toEqual({
+			ok: false,
+			errorCode: "billing_required",
+			errorDetail: "prepay_balance_empty",
+		});
+
+		expect(
+			classifyGeminiHttpError(
+				403,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "PERMISSION_DENIED",
+							message: "Prepay credits depleted for this billing account.",
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "PERMISSION_DENIED",
+			detailCode: "prepay_balance_empty",
+			retryAfterMs: null,
+		});
+
+		expect(
+			classifyGeminiHttpError(
+				402,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "FAILED_PRECONDITION",
+							details: [{ reason: "BILLING_DISABLED" }],
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "FAILED_PRECONDITION",
+			detailCode: "prepay_balance_empty",
+			retryAfterMs: null,
+		});
+
+		expect(
+			classifyGeminiHttpError(
+				403,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "PERMISSION_DENIED",
+							message: "Prepay credits depleted for this billing account.",
+							details: [{ reason: "BILLING_DISABLED" }],
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "PERMISSION_DENIED",
+			detailCode: "billing_disabled",
+			retryAfterMs: null,
+		});
+
+		expect(
+			classifyGeminiHttpError(
+				429,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "RESOURCE_EXHAUSTED",
+							message: "Prepaid credits exhausted for this billing account.",
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "prepay_balance_empty",
+			retryAfterMs: null,
 		});
 
 		const rejectedFetch = (async () =>
@@ -271,6 +409,29 @@ describe("Gemini Neon pricing and key formatting", () => {
 		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), rejectedFetch)).toEqual({
 			ok: false,
 			errorCode: "key_rejected",
+			errorDetail: "api_key_invalid",
+		});
+
+		const blockedFetch = (async () =>
+			Response.json(
+				{ error: { status: "PERMISSION_DENIED", details: [{ reason: "API_KEY_IP_ADDRESS_BLOCKED" }] } },
+				{ status: 403 },
+			)) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), blockedFetch)).toEqual({
+			ok: false,
+			errorCode: "key_rejected",
+			errorDetail: "api_key_blocked",
+		});
+
+		const regionFetch = (async () =>
+			Response.json(
+				{ error: { status: "FAILED_PRECONDITION", message: "User location is not supported for the API use." } },
+				{ status: 400 },
+			)) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), regionFetch)).toEqual({
+			ok: false,
+			errorCode: "model_unavailable",
+			errorDetail: "region_unsupported",
 		});
 
 		const missingFetch = (async () =>
@@ -278,6 +439,137 @@ describe("Gemini Neon pricing and key formatting", () => {
 		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), missingFetch)).toEqual({
 			ok: false,
 			errorCode: "model_unavailable",
+			errorDetail: "model_not_found",
+		});
+
+		const spendLimit = classifyGeminiHttpError(
+			429,
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						message: "Monthly spending cap reached for this project.",
+					},
+				}),
+			),
+		);
+		expect(spendLimit).toEqual({
+			code: "quota_exhausted",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "spend_limit_reached",
+			retryAfterMs: null,
+		});
+
+		const dailyLimit = classifyGeminiHttpError(
+			429,
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						details: [
+							{
+								violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel", quotaValue: "1000" }],
+							},
+						],
+					},
+				}),
+			),
+		);
+		expect(dailyLimit).toEqual({
+			code: "quota_exhausted",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "daily_quota_exhausted",
+			retryAfterMs: null,
+		});
+
+		const paidRateLimit = classifyGeminiHttpError(
+			429,
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						message: "You exceeded your current quota, please check your plan and billing details.",
+						details: [{ retryDelay: "7.5s" }],
+					},
+				}),
+			),
+		);
+		expect(paidRateLimit).toEqual({
+			code: "quota_exhausted",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "rate_limited",
+			retryAfterMs: 7_500,
+		});
+
+		const freeTierNonZeroMinuteLimit = classifyGeminiHttpError(
+			429,
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						message: "Quota exceeded for metric: generate_content_free_tier_requests, limit: 15",
+						details: [
+							{
+								violations: [
+									{
+										quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+										quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+										quotaValue: "15",
+									},
+								],
+							},
+						],
+					},
+				}),
+			),
+			"4",
+		);
+		expect(freeTierNonZeroMinuteLimit).toEqual({
+			code: "quota_exhausted",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "rate_limited",
+			retryAfterMs: 4_000,
+		});
+
+		const freeTierNonZeroDailyLimit = classifyGeminiHttpError(
+			429,
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						details: [
+							{
+								violations: [
+									{
+										quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+										quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+										quotaValue: "50",
+									},
+								],
+							},
+						],
+					},
+				}),
+			),
+		);
+		expect(freeTierNonZeroDailyLimit).toEqual({
+			code: "quota_exhausted",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "daily_quota_exhausted",
+			retryAfterMs: null,
+		});
+
+		expect(classifyGeminiHttpError(503, undefined, "300")).toEqual({
+			code: "provider_outage",
+			providerStatus: null,
+			detailCode: "overloaded",
+			retryAfterMs: 120_000,
+		});
+		expect(classifyGeminiHttpError(429, undefined, "0")).toEqual({
+			code: "quota_exhausted",
+			providerStatus: null,
+			detailCode: "rate_limited",
+			retryAfterMs: null,
 		});
 	});
 });
@@ -344,6 +636,32 @@ describe("CloudGeminiKeyVault sealing and opening", () => {
 			state: "refused",
 			reason: "REVOKED",
 		});
+	});
+
+	it("returns closed errorDetail on checkFromTicket failures while keeping DB completion unchanged", async () => {
+		captureOutput();
+		const f = standIn(undefined, async () => ({
+			ok: false,
+			errorCode: "billing_required",
+			errorDetail: "free_tier_limit_zero",
+		}));
+		await f.vault.saveFromTicket(
+			{ ticketId: f.state.ticketId, capability: f.state.capability, apiKey: CANARY_AQ_KEY },
+			AbortSignal.timeout(5_000),
+		);
+		const checked = await f.vault.checkFromTicket(
+			{ ticketId: f.state.checkTicketId, capability: f.state.checkCapability },
+			AbortSignal.timeout(5_000),
+		);
+		expect(checked).toEqual({
+			schema: "qorpera.gemini-key-checked/v1",
+			ok: false,
+			errorCode: "billing_required",
+			errorDetail: "free_tier_limit_zero",
+			checkedAt: "2026-11-22T18:00:00.000Z",
+		});
+		expect(f.state.lastCheckStatus).toBe("error");
+		expect(f.state.lastCheckErrorCode).toBe("billing_required");
 	});
 });
 

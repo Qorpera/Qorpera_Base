@@ -1,5 +1,10 @@
+import {
+	readSurfaceFolderFiles,
+	type SurfaceFolderContents,
+	surfaceFolderRoots,
+} from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
-import type { SurfaceSummary } from "@qorpera/contracts";
+import { inferSurfaceKind, type StudioBinaryRef, type SurfaceSummary } from "@qorpera/contracts";
 import type { User } from "@supabase/supabase-js";
 import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { CloudApi } from "../cloud/api.ts";
@@ -22,8 +27,8 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
-import { createWebSiteHosting } from "../cloud/site-hosting.ts";
-import { type CompanySite, createWebSites, siteOfLink } from "../cloud/sites.ts";
+import { type CompanySiteHostingState, createWebSiteHosting } from "../cloud/site-hosting.ts";
+import { type CompanySite, createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
@@ -44,7 +49,14 @@ import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
 import { offersWaitingOn } from "./automation-owner.ts";
-import { agentWorks, CompanyController } from "./company.ts";
+import {
+	agentWorks,
+	CompanyController,
+	hostingNotingPublic,
+	readSitesOncePublished,
+	siteServed,
+	startPublicRead,
+} from "./company.ts";
 import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
@@ -73,15 +85,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { inferSurfaceKind } from "./surface-kinds.ts";
-import {
-	attachSurfaces,
-	isLocalSurfaceId,
-	readSurfaceFolderFiles,
-	SurfacesStore,
-	surfacesDisabledOf,
-	surfacesOf,
-} from "./surfaces-store.ts";
+import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -117,7 +121,6 @@ import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
-import { SitesView } from "./views/settings-sites.ts";
 import {
 	appLook,
 	clearShellCompanyState,
@@ -132,7 +135,7 @@ import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
 import { openMigrationSheet } from "./views/surface-migration-sheet.ts";
 import { type SurfaceMount, SurfaceView } from "./views/surface-view.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
-import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
+import { WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -142,8 +145,6 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
 
-/** What the company's store keeps of its sites as read: how many, for the drawer's Sites entry, and the list, for the
- * owed row's websites and their views. */
 function sitesListed(list: readonly CompanySite[]): { siteCount: number; siteList: readonly CompanySite[] } {
 	return { siteCount: list.length, siteList: list };
 }
@@ -591,12 +592,9 @@ export function mountApplication(
 	let appReturn: string | undefined;
 	/** The company's concepts, full screen (`#/c/{id}/concepts`), while that route shows. */
 	let conceptsView: ConceptsView | undefined;
-	/** The company's Sites page (`#/c/{id}/sites`), kept while that route shows. */
-	let sitesPage:
-		| { readonly company: CompanyController; readonly view: SitesView; readonly el: HTMLElement }
-		| undefined;
 	/** The company whose sites were read for the apps drawer. */
 	let sitesRead: CompanyController | undefined;
+	let sitesOncePublished: ReturnType<typeof readSitesOncePublished> | undefined;
 	/** One of the company's websites, live with its numbers (`#/c/{id}/site/{slug}`), kept while that route shows. */
 	let siteView:
 		| {
@@ -653,19 +651,11 @@ export function mountApplication(
 		}
 		return reads;
 	};
-	/** The drawer's entry and the versions the Sites page names, from the company's latest-started read that answered:
-	 * an answer that comes back after a newer one changes neither. `read` stands in until one did. */
 	const showReleases = (controller: CompanyController, read: CodeReleases) => {
 		const newest = companyReleases(controller).last ?? read;
 		const nextWhatsNew = whatsNewEntry(controller, newest);
-		const nextVersions = liveVersions(newest);
-		const prev = controller.store.get();
-		if (
-			JSON.stringify(prev.whatsNew) === JSON.stringify(nextWhatsNew) &&
-			JSON.stringify(prev.siteVersions) === JSON.stringify(nextVersions)
-		)
-			return;
-		controller.store.set({ whatsNew: nextWhatsNew, siteVersions: nextVersions });
+		if (JSON.stringify(controller.store.get().whatsNew) === JSON.stringify(nextWhatsNew)) return;
+		controller.store.set({ whatsNew: nextWhatsNew });
 	};
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
@@ -823,8 +813,6 @@ export function mountApplication(
 		appPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
-		sitesPage?.view.dispose();
-		sitesPage = undefined;
 		siteView?.view.dispose();
 		siteView = undefined;
 		whatsNewPage?.view.dispose();
@@ -861,8 +849,6 @@ export function mountApplication(
 		appPage?.dispose();
 		appPage = undefined;
 		appReturn = undefined;
-		sitesPage?.view.dispose();
-		sitesPage = undefined;
 		siteView?.view.dispose();
 		siteView = undefined;
 		whatsNewPage?.view.dispose();
@@ -899,6 +885,7 @@ export function mountApplication(
 		pendingCompany = undefined;
 		company = undefined;
 		sitesRead = undefined;
+		sitesOncePublished = undefined;
 		releasesRead = undefined;
 		showWaitingInTitle(0);
 		agentPage = undefined;
@@ -997,14 +984,11 @@ export function mountApplication(
 				const loadSurfaceCloudFiles = async (
 					surface: SurfaceSummary,
 					signal: AbortSignal,
-				): Promise<Readonly<Record<string, string>> | undefined> => {
+				): Promise<SurfaceFolderContents | undefined> => {
 					const team = controller.store.get().team;
 					if (!team) return undefined;
-					const roots = [
-						surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
-						`QorperaOS/surfaces/${surface.slug}/notes`,
-					].filter((item): item is string => Boolean(item));
-					if (!roots.length) return {};
+					const roots = surfaceFolderRoots(surface);
+					if (!roots.length) return { files: {}, binaries: {} };
 					const readScope = new AbortController();
 					const forwardAbort = () => readScope.abort();
 					if (controller.signal.aborted || signal.aborted) {
@@ -1036,6 +1020,37 @@ export function mountApplication(
 						controller.signal.removeEventListener("abort", forwardAbort);
 						signal.removeEventListener("abort", forwardAbort);
 					}
+				};
+				const readSurfaceCloudBinary = async (file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> => {
+					const team = controller.store.get().team;
+					const current = () => {
+						if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+							throw new Error(t("Company access changed."));
+					};
+					current();
+					if (!team) throw new Error(t("Company access changed."));
+					const readSignal = AbortSignal.any([controller.signal, signal]);
+					const folder = new WebCompanyFiles(
+						cloud,
+						controller.profile,
+						controller.userId,
+						team.role,
+						readSignal,
+						current,
+						team.capabilities.write,
+					).folder();
+					const bytes = new Uint8Array(file.bytes);
+					let offset = 0;
+					await folder.readFilePieces(
+						{ ...file, executable: (file as { readonly executable?: unknown }).executable === true },
+						readSignal,
+						(piece) => {
+							bytes.set(piece, offset);
+							offset += piece.byteLength;
+						},
+					);
+					current();
+					return bytes;
 				};
 				const surfaces = new SurfacesStore({
 					companyId: profile.profileId,
@@ -1091,6 +1106,7 @@ export function mountApplication(
 							.filter((member) => member.role !== "viewer")
 							.map((member) => ({ userId: member.userId, name: member.displayName || member.email })),
 					loadCloudFiles: loadSurfaceCloudFiles,
+					readCloudBinary: readSurfaceCloudBinary,
 					uploadImage: async (surfaceId, clientInputId, file, signal) => {
 						const current = () => {
 							signal.throwIfAborted();
@@ -2187,8 +2203,6 @@ export function mountApplication(
 		}
 		// The roster arrives after the company opens, and agents are hired and let go: the rail's notes follow it.
 		agentNotes?.agentsChanged();
-		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
-		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
@@ -2209,6 +2223,7 @@ export function mountApplication(
 							const prevList = controller.store.get().siteList;
 							if (prevList === undefined || JSON.stringify(prevList) !== JSON.stringify(list))
 								controller.store.set(sitesListed(list));
+							if (controller.store.get().siteListUnread) controller.store.set({ siteListUnread: false });
 							// WHY: ask for taken-down sites only while a live files site exists; keep the last set on failure.
 							if (list.some((site) => site.kind === "files" && site.state === "live")) {
 								try {
@@ -2223,11 +2238,22 @@ export function mountApplication(
 									)
 										controller.store.set({ sitesTakenDown: nextTaken });
 								} catch {}
+								const notePublic = startPublicRead(controller.store);
+								let hosting: CompanySiteHostingState | undefined;
+								try {
+									hosting = await createWebSiteHosting(cloud, controller.profile).read(controller.signal);
+								} catch {
+									hosting = undefined;
+								}
+								if (!controller.signal.aborted) notePublic(hosting);
 							}
 						},
 						() => {
-							if (!controller.signal.aborted && controller.store.get().siteList === undefined)
-								controller.store.set({ siteList: [] });
+							if (controller.signal.aborted) return;
+							controller.store.set({
+								siteListUnread: true,
+								...(controller.store.get().siteList === undefined ? { siteList: [] } : {}),
+							});
 						},
 					)
 					.finally(() => {
@@ -2240,9 +2266,12 @@ export function mountApplication(
 			};
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
+			sitesOncePublished = readSitesOncePublished(readSites);
 		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)
 			// A member the company's sites are never read for: a site's own page says it can't be shown, not waits.
-			controller.store.set({ siteList: [] });
+			controller.store.set({ siteList: [], siteListUnread: true });
+		if (sitesRead === controller)
+			sitesOncePublished?.(controller.store.get(), surfacesOf(controller)?.state.surfaces ?? []);
 		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
@@ -2269,9 +2298,8 @@ export function mountApplication(
 								error instanceof CloudRpcError &&
 								(error.missing || error.denied)
 							) {
-								const prev = controller.store.get();
-								if (prev.whatsNew !== undefined || prev.siteVersions !== undefined)
-									controller.store.set({ whatsNew: undefined, siteVersions: undefined });
+								if (controller.store.get().whatsNew !== undefined)
+									controller.store.set({ whatsNew: undefined });
 							}
 						},
 					)
@@ -2355,7 +2383,7 @@ export function mountApplication(
 							? `agent:${route.id.toLowerCase()}`
 							: route.section === "site" && route.id
 								? `site:${route.id}`
-								: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
+								: route.section === "concepts" || route.section === "whats-new"
 									? route.section
 									: COMPANY_PRESENCE_PLACE,
 		);
@@ -2369,10 +2397,6 @@ export function mountApplication(
 		if (route.section !== "concepts") {
 			conceptsView?.dispose();
 			conceptsView = undefined;
-		}
-		if (route.section !== "sites" || sitesPage?.company !== controller) {
-			sitesPage?.view.dispose();
-			sitesPage = undefined;
 		}
 		if (route.section !== "site" || siteView?.company !== controller || siteView.slug !== route.id) {
 			siteView?.view.dispose();
@@ -2442,21 +2466,22 @@ export function mountApplication(
 				return tellAgent(controller, accounts, agentId, note);
 			},
 		});
+		const liveWebsite = (slug: string) =>
+			controller.store
+				.get()
+				.siteList?.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
 		const surfaceMount = (surface: SurfaceSummary, signal: AbortSignal): SurfaceMount | undefined => {
 			if (surface.archetype === "live_build" && surface.siteSlug) {
 				const slug = surface.siteSlug;
-				const website = () =>
-					controller.store
-						.get()
-						.siteList?.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
+				const website = () => liveWebsite(slug);
 				if (!website()) return undefined;
 				const sites = createWebSites(cloud, controller.profile);
 				const view = new SiteView(
 					{
 						site: website,
 						pass: (site, passSignal) => sites.memberPass(site, passSignal),
-						numbers: numbersHost(),
 						timeZone: () => controller.store.get().team?.timeZone,
+						siteAlone: true,
 					},
 					slug,
 					AbortSignal.any([controller.signal, signal]),
@@ -2464,7 +2489,7 @@ export function mountApplication(
 				let wasPublishing = surface.publishStatus === "publishing";
 				let lastUnpublished = surface.unpublishedChangeCount;
 				return {
-					el: h("div", { class: "surface-site" }, view.el),
+					el: h("div", { class: "surface-site is-alone" }, view.el),
 					update: () => {
 						view.update();
 						const latest = surfacesOf(controller)?.state.surfaces.find((item) => item.id === surface.id);
@@ -2809,8 +2834,6 @@ export function mountApplication(
 							folderImage: cardImage,
 							folderApp: cardApp,
 							decisions: questionsHost(),
-							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
-							// the Sites page's row under the words.
 							codeReleases: releaseDesk(true),
 							companySites: { client: createWebSites(cloud, controller.profile), canManage: managesSites },
 							messageErases: {
@@ -3011,40 +3034,6 @@ export function mountApplication(
 			case "interface":
 				renderInterface(main, controller, route.id ?? "", interfaceWrites());
 				return;
-			case "sites": {
-				// The websites the company's agents published (Jonas, 9 Nov 2026: out of Settings, into the apps drawer).
-				// Every member sees them and their links; owners and admins also read and change their passwords and take
-				// them offline (the kernel enforces the same rule).
-				if (!sitesPage) {
-					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
-						access: { canManage: managesSites },
-						hosting: createWebSiteHosting(cloud, controller.profile),
-						listed: (list) => controller.store.set(sitesListed(list)),
-						// A site made from a project's code names the version What's new has live, and links there.
-						releases: {
-							href: `#/c/${controller.profile.profileId}/whats-new`,
-							version: (site) => controller.store.get().siteVersions?.[site.slug],
-						},
-						// No site yet: the Co-Founder stands on the page (its crown while the roster is still on its way).
-						mascot: () =>
-							agentFigure(
-								controller.staffById(controller.cofounderId()) ?? {
-									id: "",
-									displayName: "Co-Founder",
-									appearance: { color: "", shape: "" },
-									templateId: "co-founder",
-								},
-								"Co-Founder",
-								{ size: 96, className: "sites-mascot" },
-							),
-					});
-					// The page draws its own title and line (views/settings-sites.ts).
-					sitesPage = { company: controller, view, el: h("section", { class: "page sites-page" }, view.el) };
-				}
-				sitesPage.view.update();
-				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
-				return;
-			}
 			case "site": {
 				// One of the company's websites, live, with its numbers (company views step 4): the site in a frame the member
 				// is let into without its password, and the numbers watched while it shows.
@@ -3102,10 +3091,7 @@ export function mountApplication(
 						surface: SurfaceSummary,
 						signal: AbortSignal,
 					): Promise<Readonly<Record<string, string>>> => {
-						const roots = [
-							surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
-							`QorperaOS/surfaces/${surface.slug}/notes`,
-						].filter((item): item is string => Boolean(item));
+						const roots = surfaceFolderRoots(surface);
 						const team = controller.store.get().team;
 						if (!roots.length || !team) return {};
 						const readSignal = AbortSignal.any([controller.signal, signal]);
@@ -3118,33 +3104,24 @@ export function mountApplication(
 							companyCurrent,
 							team.capabilities.write,
 						).folder();
-						return await readSurfaceFolderFiles(folder, roots, readSignal);
+						return (await readSurfaceFolderFiles(folder, roots, readSignal)).files;
 					};
-					const loadSitePassword = async (surface: SurfaceSummary): Promise<string | null> => {
-						if (!managesSites() || !surface.liveUrl || isLocalSurfaceId(surface.id)) return null;
-						const sites = createWebSites(cloud, controller.profile);
-						const matchSite = (list: readonly CompanySite[]): CompanySite | undefined =>
-							(surface.siteSlug ? list.find((item) => item.slug === surface.siteSlug) : undefined) ??
-							(surface.liveUrl ? siteOfLink(list, surface.liveUrl) : undefined);
-						try {
-							let site = matchSite(controller.store.get().siteList ?? []);
-							if (!site) {
-								const listed = await sites.list(controller.signal);
-								if (controller.signal.aborted) return null;
-								controller.store.set(sitesListed(listed));
-								site = matchSite(listed);
-							}
-							if (!site) return null;
-							const result = await sites.password(site.id, controller.signal);
-							return result.password || null;
-						} catch {
-							return null;
-						}
-					};
+					const siteHosting = hostingNotingPublic(
+						controller.store,
+						createWebSiteHosting(cloud, controller.profile),
+					);
 					const view = new SurfaceView(
 						{
 							store: surfaces,
 							mount: surfaceMount,
+							siteHosting: (surface) => {
+								if (isLocalSurfaceId(surface.id) || !surface.siteSlug) return undefined;
+								const site = liveWebsite(surface.siteSlug);
+								return site ? { siteId: site.id, client: siteHosting } : undefined;
+							},
+							managesSites,
+							canWrite: () => controller.store.get().team?.capabilities.write === true,
+							isSiteLive: (surface) => siteServed(controller.store.get(), surface),
 							isMountLoading: (surface) => {
 								const currentState = controller.store.get();
 								if (currentState.accessLost) return false;
@@ -3166,7 +3143,6 @@ export function mountApplication(
 							},
 							openMigration: () => openMigrationSheet(surfaces),
 							loadStudioFiles,
-							loadSitePassword,
 						},
 						route.id ?? "",
 					);
@@ -3218,6 +3194,7 @@ export function mountApplication(
 						),
 					};
 				}
+				whatsNewPage.view.update();
 				if (whatsNewPage.el.parentElement !== main) replace(main, whatsNewPage.el);
 				return;
 			}

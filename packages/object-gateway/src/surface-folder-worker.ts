@@ -17,7 +17,9 @@ import {
 	mapBounded,
 	PLATFORM_ACTOR,
 	PLATFORM_STAGE_CONCURRENCY,
+	type PlatformFileManifest,
 	type PlatformFileReference,
+	PlatformFolderProblem,
 	PlatformFolderWriter,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
@@ -28,6 +30,7 @@ const DISALLOWED_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const CAS_CONFLICT_REASONS = new Set(["conflict", "version_mismatch", "stale_version", "exists", "not_found"]);
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const UTF8_ENCODER = new TextEncoder();
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 interface ClaimedFolderApprovedChange {
 	readonly changeId: string;
@@ -59,11 +62,70 @@ interface ClaimedFolderPublishJob {
 	readonly leaseToken: string | null;
 }
 
+interface StoredFileValue {
+	readonly file: PlatformFileReference;
+}
+
+type FolderValue = string | null | StoredFileValue;
+
 interface FolderFileState {
 	readonly content: string | null;
 	readonly version: string | null;
 	readonly isDirectory: boolean;
 	readonly fileRef: PlatformFileReference | null;
+	readonly stored: boolean;
+}
+
+const TEXT_MEDIA_TYPES = new Set([
+	"application/json",
+	"application/javascript",
+	"application/xml",
+	"application/yaml",
+	"application/x-yaml",
+	"application/toml",
+]);
+
+function isTextMediaType(mediaType: string): boolean {
+	return mediaType.startsWith("text/") || TEXT_MEDIA_TYPES.has(mediaType) || /\+(json|xml)$/.test(mediaType);
+}
+
+function stateValue(state: FolderFileState): FolderValue {
+	return state.stored && state.fileRef ? { file: state.fileRef } : state.content;
+}
+
+function valueDigest(value: FolderValue): string | null {
+	if (value === null) return null;
+	if (typeof value === "string") return sha256Hex(value);
+	return `file:${value.file.manifestSha256}`;
+}
+
+function parseStoredFileValue(value: unknown): StoredFileValue | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const file = (value as { file?: unknown }).file;
+	if (!file || typeof file !== "object" || Array.isArray(file)) return null;
+	const raw = file as Record<string, unknown>;
+	if (
+		typeof raw.manifestSha256 !== "string" ||
+		!SHA256_HEX.test(raw.manifestSha256) ||
+		typeof raw.fileSha256 !== "string" ||
+		!SHA256_HEX.test(raw.fileSha256) ||
+		typeof raw.bytes !== "number" ||
+		!Number.isSafeInteger(raw.bytes) ||
+		raw.bytes < 0 ||
+		typeof raw.mediaType !== "string" ||
+		typeof raw.executable !== "boolean"
+	) {
+		return null;
+	}
+	return {
+		file: {
+			manifestSha256: raw.manifestSha256,
+			fileSha256: raw.fileSha256,
+			bytes: raw.bytes,
+			mediaType: raw.mediaType,
+			executable: raw.executable,
+		},
+	};
 }
 
 interface FolderEntryMeta {
@@ -93,7 +155,7 @@ interface FolderUndoSnapshot {
 	readonly snapshotId: string;
 	readonly folderRoot: string;
 	readonly changeIds: readonly string[];
-	readonly filesBefore: Readonly<Record<string, string | null>>;
+	readonly filesBefore: Readonly<Record<string, FolderValue>>;
 	readonly versionsAfter?: Readonly<Record<string, string | null>>;
 	readonly afterContentSha256?: Readonly<Record<string, string | null>>;
 }
@@ -285,9 +347,7 @@ function parentDirectoriesOf(paths: Iterable<string>): string[] {
 }
 
 function extractStudioOps(manifest: unknown): StudioPatchOp[] {
-	if (Array.isArray(manifest)) {
-		return parseStudioPatchOps(manifest);
-	}
+	if (Array.isArray(manifest)) return parseStudioPatchOps(manifest);
 	if (manifest && typeof manifest === "object" && Array.isArray((manifest as { ops?: unknown }).ops)) {
 		return parseStudioPatchOps((manifest as { ops: unknown[] }).ops);
 	}
@@ -370,10 +430,15 @@ function parseSnapshotRecord(raw: Record<string, unknown>): FolderUndoSnapshot |
 	if (!filesBeforeRaw || typeof filesBeforeRaw !== "object" || Array.isArray(filesBeforeRaw)) {
 		return null;
 	}
-	const filesBefore: Record<string, string | null> = {};
+	const filesBefore: Record<string, FolderValue> = {};
 	for (const [path, val] of Object.entries(filesBeforeRaw as Record<string, unknown>)) {
-		if (val !== null && typeof val !== "string") return null;
-		filesBefore[path] = val;
+		if (val === null || typeof val === "string") {
+			filesBefore[path] = val;
+			continue;
+		}
+		const stored = parseStoredFileValue(val);
+		if (!stored) return null;
+		filesBefore[path] = stored;
 	}
 	const versionsAfter: Record<string, string | null> | undefined =
 		raw.versionsAfter && typeof raw.versionsAfter === "object" && !Array.isArray(raw.versionsAfter)
@@ -404,6 +469,14 @@ function parseSnapshotRecord(raw: Record<string, unknown>): FolderUndoSnapshot |
 		...(versionsAfter ? { versionsAfter } : {}),
 		...(afterContentSha256 ? { afterContentSha256 } : {}),
 	};
+}
+
+function refusalDetail(lead: string, failureDetail: string | null, savedPaths: readonly string[]): string {
+	const parts = [lead, ...(failureDetail ? [failureDetail] : [])];
+	if (savedPaths.length > 0) {
+		parts.push(`Only part of this change was saved; these files did change: ${savedPaths.join(", ")}`);
+	}
+	return parts.join(". ").slice(0, 1000);
 }
 
 function formatError(error: unknown): string {
@@ -640,10 +713,13 @@ export class SurfaceFolderWorker {
 	async #readFolderEntry(environmentId: string, path: string, signal: AbortSignal): Promise<FolderFileState> {
 		const meta = await this.#readFolderMeta(environmentId, path, signal);
 		if (!meta.found) {
-			return { content: null, version: null, isDirectory: false, fileRef: null };
+			return { content: null, version: null, isDirectory: false, fileRef: null, stored: false };
 		}
 		if (meta.isDirectory) {
-			return { content: null, version: meta.version, isDirectory: true, fileRef: null };
+			return { content: null, version: meta.version, isDirectory: true, fileRef: null, stored: false };
+		}
+		if (meta.fileRef && !isTextMediaType(meta.fileRef.mediaType)) {
+			return { content: null, version: meta.version, isDirectory: false, fileRef: meta.fileRef, stored: true };
 		}
 		const bytes = await raceSignal(
 			this.#folder.read(
@@ -658,7 +734,13 @@ export class SurfaceFolderWorker {
 			),
 			signal,
 		);
-		return { content: UTF8_DECODER.decode(bytes), version: meta.version, isDirectory: false, fileRef: meta.fileRef };
+		return {
+			content: UTF8_DECODER.decode(bytes),
+			version: meta.version,
+			isDirectory: false,
+			fileRef: meta.fileRef,
+			stored: false,
+		};
 	}
 
 	async #findMissingDirectories(
@@ -807,8 +889,7 @@ export class SurfaceFolderWorker {
 			Object.entries(existingSnapshot.afterContentSha256).every(([path, expectedSha]) => {
 				const state = currentByPath.get(path);
 				if (!state || state.isDirectory) return false;
-				const currentSha = state.content === null ? null : sha256Hex(state.content);
-				return currentSha === expectedSha;
+				return valueDigest(stateValue(state)) === expectedSha;
 			})
 		) {
 			// WHY: A previous worker already committed this jobId before crashing; reuse its pre-commit filesBefore so Undo never restores post-merge content.
@@ -872,23 +953,30 @@ export class SurfaceFolderWorker {
 			return;
 		}
 
-		const working = new Map<string, string | null>();
-		const filesBefore: Record<string, string | null> = {};
+		const working = new Map<string, FolderValue>();
+		const filesBefore: Record<string, FolderValue> = {};
 		for (const [path, state] of currentByPath) {
 			if (state.isDirectory) {
 				throw new Error(`Cannot patch folder path as a file: ${path}`);
 			}
-			working.set(path, state.content);
-			filesBefore[path] = state.content;
+			working.set(path, stateValue(state));
+			filesBefore[path] = stateValue(state);
 		}
 
+		const storedMergePaths: string[] = [];
 		for (const { path, op } of resolvedOps) {
 			if (op.op === "write_text") {
 				working.set(path, op.content);
 			} else if (op.op === "delete") {
 				working.set(path, null);
+			} else if (op.op === "write_file") {
+				working.set(path, { file: { ...op.file, executable: false } });
 			} else if (op.op === "merge_json") {
 				const prior = working.get(path);
+				if (prior !== null && typeof prior === "object") {
+					storedMergePaths.push(path);
+					continue;
+				}
 				let parsed: unknown = {};
 				if (prior !== null && prior !== undefined && prior.trim().length > 0) {
 					try {
@@ -901,6 +989,19 @@ export class SurfaceFolderWorker {
 				working.set(path, `${JSON.stringify(merged, null, 2)}\n`);
 			}
 		}
+		if (storedMergePaths.length > 0) {
+			const conflictPaths = [...new Set(storedMergePaths)];
+			await this.#completeMerge(
+				job,
+				{
+					status: "conflicted",
+					conflictPaths,
+					errorDetail: `merge_json cannot change a stored file: ${conflictPaths.join(", ")}`,
+				},
+				signal,
+			);
+			return;
+		}
 
 		if (touchedPaths.has(IDENTITY_TOKENS_JSON_PATH)) {
 			const nextTokens = working.get(IDENTITY_TOKENS_JSON_PATH);
@@ -912,89 +1013,17 @@ export class SurfaceFolderWorker {
 			}
 		}
 
-		const writesToStage: {
-			readonly path: string;
-			readonly content: string;
-			readonly expectedVersion: string | null;
-		}[] = [];
-		const reusedWriteUnits: {
-			readonly path: string;
-			readonly file: PlatformFileReference;
-			readonly expectedVersion: string;
-		}[] = [];
-		const deleteUnits: { readonly path: string; readonly expectedVersion: string }[] = [];
-		for (const [path, nextContent] of working) {
-			const priorState = currentByPath.get(path);
-			if (nextContent === null) {
-				if (!priorState || priorState.version === null) continue;
-				deleteUnits.push({ path, expectedVersion: priorState.version });
-			} else if (
-				priorState &&
-				priorState.version !== null &&
-				priorState.content === nextContent &&
-				priorState.fileRef !== null
-			) {
-				reusedWriteUnits.push({ path, file: priorState.fileRef, expectedVersion: priorState.version });
-			} else {
-				writesToStage.push({ path, content: nextContent, expectedVersion: priorState?.version ?? null });
-			}
+		const newStoredFiles: { readonly path: string; readonly file: PlatformFileReference }[] = [];
+		for (const [path, value] of working) {
+			if (value !== null && typeof value === "object") newStoredFiles.push({ path, file: value.file });
+		}
+		const storedProblem = await this.#storedFilesProblem(environmentId, newStoredFiles, signal);
+		if (storedProblem) {
+			await this.#completeMerge(job, { status: "failed", errorDetail: storedProblem }, signal);
+			return;
 		}
 
-		const [missingDirs, stagedFiles] = await Promise.all([
-			this.#findMissingDirectories(
-				environmentId,
-				writesToStage.map((entry) => entry.path),
-				currentByPath,
-				signal,
-			),
-			mapBounded(
-				writesToStage,
-				PLATFORM_STAGE_CONCURRENCY,
-				async (entry, _index, stepSignal) =>
-					await raceSignal(
-						this.#folder.stage(
-							environmentId,
-							UTF8_ENCODER.encode(entry.content),
-							{ mediaType: mediaTypeForPath(entry.path), executable: false },
-							stepSignal,
-							{ profileId: job.profileId },
-						),
-						stepSignal,
-					),
-				signal,
-			),
-		]);
-
-		const units: Record<string, unknown>[] = [];
-		const unitPaths: (string | null)[] = [];
-		for (const dir of missingDirs) {
-			units.push({ op: "mkdir", path: dir });
-			unitPaths.push(null);
-		}
-		for (const del of deleteUnits) {
-			units.push({ op: "delete", path: del.path, expectedVersion: del.expectedVersion });
-			unitPaths.push(del.path);
-		}
-		for (const reused of reusedWriteUnits) {
-			units.push({
-				op: "write",
-				path: reused.path,
-				file: reused.file,
-				expectedVersion: reused.expectedVersion,
-			});
-			unitPaths.push(reused.path);
-		}
-		for (let i = 0; i < writesToStage.length; i += 1) {
-			const entry = writesToStage[i]!;
-			const file = stagedFiles[i]!;
-			units.push({
-				op: "write",
-				path: entry.path,
-				file,
-				...(entry.expectedVersion ? { expectedVersion: entry.expectedVersion } : {}),
-			});
-			unitPaths.push(entry.path);
-		}
+		const { units, unitPaths } = await this.#planUnits(environmentId, job.profileId, working, currentByPath, signal);
 
 		if (units.length === 0) {
 			await this.#completeMerge(job, { status: "landed", preMergeSnapshot: null }, signal);
@@ -1002,8 +1031,8 @@ export class SurfaceFolderWorker {
 		}
 
 		const afterContentSha256: Record<string, string | null> = {};
-		for (const [path, content] of working) {
-			afterContentSha256[path] = content === null ? null : sha256Hex(content);
+		for (const [path, value] of working) {
+			afterContentSha256[path] = valueDigest(value);
 		}
 
 		// WHY: Persist filesBefore durably before qorpera_folder_commit so crash retries never capture post-merge contents as filesBefore.
@@ -1051,7 +1080,11 @@ export class SurfaceFolderWorker {
 						{
 							status: "conflicted",
 							conflictPaths: commitResult.conflictPaths,
-							errorDetail: "One or more files changed while landing this Studio patch",
+							errorDetail: refusalDetail(
+								"One or more files changed while landing this Studio patch",
+								commitResult.failureDetail,
+								commitResult.savedPaths,
+							),
 						},
 						outcomeSignal,
 					),
@@ -1063,7 +1096,14 @@ export class SurfaceFolderWorker {
 			await withAbortScopes(
 				shutdownSignal ? [shutdownSignal] : [],
 				(outcomeSignal) =>
-					this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, outcomeSignal),
+					this.#completeMerge(
+						job,
+						{
+							status: "failed",
+							errorDetail: refusalDetail(commitResult.errorDetail, null, commitResult.savedPaths),
+						},
+						outcomeSignal,
+					),
 				10_000,
 			);
 			return;
@@ -1201,8 +1241,7 @@ export class SurfaceFolderWorker {
 				}
 			} else if (snapshot.afterContentSha256 && Object.hasOwn(snapshot.afterContentSha256, path)) {
 				const expectedSha = snapshot.afterContentSha256[path] ?? null;
-				const currentSha = current.content === null ? null : sha256Hex(current.content);
-				if (currentSha !== expectedSha) {
+				if (valueDigest(stateValue(current)) !== expectedSha) {
 					conflictPaths.push(path);
 				}
 			}
@@ -1221,6 +1260,92 @@ export class SurfaceFolderWorker {
 			return;
 		}
 
+		const { units, unitPaths } = await this.#planUnits(
+			environmentId,
+			job.profileId,
+			new Map(Object.entries(snapshot.filesBefore)),
+			currentByPath,
+			signal,
+		);
+
+		if (units.length === 0) {
+			await this.#completeMerge(job, { status: "landed" }, signal);
+			return;
+		}
+
+		signal.throwIfAborted();
+		const commitResult = await this.#commitUnits(
+			environmentId,
+			`surface-undo:${job.jobId}`,
+			units,
+			unitPaths,
+			shutdownSignal,
+			markCommitted,
+		);
+		if (commitResult.status === "conflict") {
+			await withAbortScopes(
+				shutdownSignal ? [shutdownSignal] : [],
+				(outcomeSignal) =>
+					this.#completeMerge(
+						job,
+						{
+							status: "conflicted",
+							conflictPaths: commitResult.conflictPaths,
+							errorDetail: refusalDetail(
+								"Files changed concurrently during Studio rollback",
+								commitResult.failureDetail,
+								commitResult.savedPaths,
+							),
+						},
+						outcomeSignal,
+					),
+				10_000,
+			);
+			return;
+		}
+		if (commitResult.status === "failed") {
+			await withAbortScopes(
+				shutdownSignal ? [shutdownSignal] : [],
+				(outcomeSignal) =>
+					this.#completeMerge(
+						job,
+						{
+							status: "failed",
+							errorDetail: refusalDetail(commitResult.errorDetail, null, commitResult.savedPaths),
+						},
+						outcomeSignal,
+					),
+				10_000,
+			);
+			return;
+		}
+		markCommitted();
+
+		const completion = await retryCommittedRpc(
+			(attemptSignal) => this.#completeMerge(job, { status: "landed" }, attemptSignal),
+			shutdownSignal,
+			this.#completionRetryDelaysMs,
+			{ treatNotRunningAsDoneOnRetry: true },
+		);
+		if (completion.outcome === "unconfirmed_423") {
+			this.#emit({
+				kind: "surface_folder_undo_completion_unconfirmed",
+				jobId: job.jobId,
+				surfaceId: job.surfaceId,
+				status: 423,
+			});
+			return;
+		}
+		this.#emit({ kind: "surface_folder_undo_landed", jobId: job.jobId, surfaceId: job.surfaceId });
+	}
+
+	async #planUnits(
+		environmentId: string,
+		profileId: string,
+		targets: ReadonlyMap<string, FolderValue>,
+		currentByPath: ReadonlyMap<string, FolderFileState>,
+		signal: AbortSignal,
+	): Promise<{ readonly units: Record<string, unknown>[]; readonly unitPaths: (string | null)[] }> {
 		const writesToStage: {
 			readonly path: string;
 			readonly content: string;
@@ -1231,28 +1356,30 @@ export class SurfaceFolderWorker {
 			readonly file: PlatformFileReference;
 			readonly expectedVersion: string;
 		}[] = [];
+		const storedWriteUnits: {
+			readonly path: string;
+			readonly file: PlatformFileReference;
+			readonly expectedVersion: string | null;
+		}[] = [];
 		const deleteUnits: { readonly path: string; readonly expectedVersion: string }[] = [];
-		for (const [path, beforeContent] of Object.entries(snapshot.filesBefore)) {
+		for (const [path, next] of targets) {
 			const current = currentByPath.get(path);
-			if (beforeContent === null) {
+			if (next === null) {
 				if (!current || current.version === null) continue;
 				deleteUnits.push({ path, expectedVersion: current.version });
-			} else if (
-				current &&
-				current.version !== null &&
-				current.content === beforeContent &&
-				current.fileRef !== null
-			) {
+			} else if (typeof next === "object") {
+				storedWriteUnits.push({ path, file: next.file, expectedVersion: current?.version ?? null });
+			} else if (current && current.version !== null && current.content === next && current.fileRef !== null) {
 				reusedWriteUnits.push({ path, file: current.fileRef, expectedVersion: current.version });
 			} else {
-				writesToStage.push({ path, content: beforeContent, expectedVersion: current?.version ?? null });
+				writesToStage.push({ path, content: next, expectedVersion: current?.version ?? null });
 			}
 		}
 
 		const [missingDirs, stagedFiles] = await Promise.all([
 			this.#findMissingDirectories(
 				environmentId,
-				writesToStage.map((entry) => entry.path),
+				[...storedWriteUnits, ...writesToStage].map((entry) => entry.path),
 				currentByPath,
 				signal,
 			),
@@ -1266,7 +1393,7 @@ export class SurfaceFolderWorker {
 							UTF8_ENCODER.encode(entry.content),
 							{ mediaType: mediaTypeForPath(entry.path), executable: false },
 							stepSignal,
-							{ profileId: job.profileId },
+							{ profileId },
 						),
 						stepSignal,
 					),
@@ -1293,6 +1420,15 @@ export class SurfaceFolderWorker {
 			});
 			unitPaths.push(reused.path);
 		}
+		for (const stored of storedWriteUnits) {
+			units.push({
+				op: "write",
+				path: stored.path,
+				file: stored.file,
+				...(stored.expectedVersion ? { expectedVersion: stored.expectedVersion } : {}),
+			});
+			unitPaths.push(stored.path);
+		}
 		for (let i = 0; i < writesToStage.length; i += 1) {
 			const entry = writesToStage[i]!;
 			const file = stagedFiles[i]!;
@@ -1304,65 +1440,72 @@ export class SurfaceFolderWorker {
 			});
 			unitPaths.push(entry.path);
 		}
+		return { units, unitPaths };
+	}
 
-		if (units.length === 0) {
-			await this.#completeMerge(job, { status: "landed" }, signal);
-			return;
-		}
-
-		signal.throwIfAborted();
-		const commitResult = await this.#commitUnits(
-			environmentId,
-			`surface-undo:${job.jobId}`,
-			units,
-			unitPaths,
-			shutdownSignal,
-			markCommitted,
+	async #storedFilesProblem(
+		environmentId: string,
+		files: readonly { readonly path: string; readonly file: PlatformFileReference }[],
+		signal: AbortSignal,
+	): Promise<string | null> {
+		const states = await mapBounded(
+			files,
+			PLATFORM_STAGE_CONCURRENCY,
+			(entry, _index, stepSignal) => this.#storedFileState(environmentId, entry.file, stepSignal),
+			signal,
 		);
-		if (commitResult.status === "conflict") {
-			await withAbortScopes(
-				shutdownSignal ? [shutdownSignal] : [],
-				(outcomeSignal) =>
-					this.#completeMerge(
-						job,
-						{
-							status: "conflicted",
-							conflictPaths: commitResult.conflictPaths,
-							errorDetail: "Files changed concurrently during Studio rollback",
-						},
-						outcomeSignal,
-					),
-				10_000,
-			);
-			return;
-		}
-		if (commitResult.status === "failed") {
-			await withAbortScopes(
-				shutdownSignal ? [shutdownSignal] : [],
-				(outcomeSignal) =>
-					this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, outcomeSignal),
-				10_000,
-			);
-			return;
-		}
-		markCommitted();
+		const missing = files.filter((_entry, index) => states[index] === "missing").map((entry) => entry.path);
+		const mismatched = files.filter((_entry, index) => states[index] === "mismatch").map((entry) => entry.path);
+		const problems = [
+			...(missing.length > 0 ? [`Stored file not found in the company folder: ${missing.join(", ")}`] : []),
+			...(mismatched.length > 0 ? [`Stored file does not match its reference: ${mismatched.join(", ")}`] : []),
+		];
+		return problems.length > 0 ? problems.join(". ") : null;
+	}
 
-		const completion = await retryCommittedRpc(
-			(attemptSignal) => this.#completeMerge(job, { status: "landed" }, attemptSignal),
-			shutdownSignal,
-			this.#completionRetryDelaysMs,
-			{ treatNotRunningAsDoneOnRetry: true },
-		);
-		if (completion.outcome === "unconfirmed_423") {
-			this.#emit({
-				kind: "surface_folder_undo_completion_unconfirmed",
-				jobId: job.jobId,
-				surfaceId: job.surfaceId,
-				status: 423,
-			});
-			return;
+	async #storedFileState(
+		environmentId: string,
+		file: PlatformFileReference,
+		signal: AbortSignal,
+	): Promise<"ok" | "missing" | "mismatch"> {
+		const isMissing = (error: unknown): boolean =>
+			error instanceof ObjectDependencyError && (error.status === 403 || error.status === 404);
+		let manifest: PlatformFileManifest;
+		try {
+			manifest = await raceSignal(this.#folder.manifest(environmentId, file.manifestSha256, signal), signal);
+		} catch (error) {
+			if (isMissing(error)) return "missing";
+			if (error instanceof PlatformFolderProblem) return "mismatch";
+			throw error;
 		}
-		this.#emit({ kind: "surface_folder_undo_landed", jobId: job.jobId, surfaceId: job.surfaceId });
+		if (
+			manifest.fileSha256 !== file.fileSha256 ||
+			manifest.bytes !== file.bytes ||
+			manifest.mediaType !== file.mediaType ||
+			manifest.executable !== file.executable
+		) {
+			return "mismatch";
+		}
+		const chunksPresent = await mapBounded(
+			manifest.chunks,
+			PLATFORM_STAGE_CONCURRENCY,
+			async (chunk, _index, stepSignal) => {
+				try {
+					const answer = (await this.#options.authority.publisher(
+						"qorpera_folder_authorize_object_download",
+						{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_sha256: chunk.sha256 },
+						stepSignal,
+					)) as { bytes?: unknown } | null;
+					return answer?.bytes === chunk.bytes ? "ok" : "mismatch";
+				} catch (error) {
+					if (isMissing(error)) return "missing";
+					throw error;
+				}
+			},
+			signal,
+		);
+		if (chunksPresent.includes("missing")) return "missing";
+		return chunksPresent.includes("mismatch") ? "mismatch" : "ok";
 	}
 
 	async #commitUnits(
@@ -1374,8 +1517,13 @@ export class SurfaceFolderWorker {
 		markCommitUncertain: () => void,
 	): Promise<
 		| { readonly status: "saved"; readonly versionsAfter: Record<string, string | null> }
-		| { readonly status: "conflict"; readonly conflictPaths: string[] }
-		| { readonly status: "failed"; readonly errorDetail: string }
+		| {
+				readonly status: "conflict";
+				readonly conflictPaths: string[];
+				readonly savedPaths: string[];
+				readonly failureDetail: string | null;
+		  }
+		| { readonly status: "failed"; readonly errorDetail: string; readonly savedPaths: string[] }
 	> {
 		// WHY: qorpera_folder_commit replays idempotently by operationKey, so retry uncertain transport/timeout errors under a fresh 20 s signal while failing immediately on definite 4xx/SQLSTATE rollbacks.
 		let raw: { schema?: unknown; units?: unknown } | null = null;
@@ -1392,7 +1540,7 @@ export class SurfaceFolderWorker {
 				break;
 			} catch (error) {
 				if (!sawUncertainError && isDefiniteCommitRejection(error)) {
-					return { status: "failed", errorDetail: formatError(error) };
+					return { status: "failed", errorDetail: formatError(error), savedPaths: [] };
 				}
 				if (!isLockConflictRollback(error)) {
 					sawUncertainError = true;
@@ -1414,32 +1562,37 @@ export class SurfaceFolderWorker {
 			!Array.isArray(raw.units) ||
 			raw.units.length !== units.length
 		) {
-			return { status: "failed", errorDetail: "Unexpected folder commit response" };
+			return { status: "failed", errorDetail: "Unexpected folder commit response", savedPaths: [] };
 		}
 		const versionsAfter: Record<string, string | null> = {};
 		const conflictPaths: string[] = [];
 		const failureReasons: string[] = [];
+		const savedPaths: string[] = [];
 		for (let i = 0; i < raw.units.length; i += 1) {
 			const unit = raw.units[i] as { outcome?: unknown; reason?: unknown; version?: unknown };
 			const path = unitPaths[i];
 			if (unit?.outcome === "saved") {
 				if (path) {
 					versionsAfter[path] = typeof unit.version === "string" ? unit.version : null;
+					savedPaths.push(path);
 				}
 				continue;
 			}
 			const reason = typeof unit?.reason === "string" ? unit.reason : String(unit?.outcome ?? "refused");
 			if (CAS_CONFLICT_REASONS.has(reason)) {
 				if (path) conflictPaths.push(path);
+			} else if (reason === "bytes_unverified" && path) {
+				failureReasons.push(`Stored file not found in the company folder: ${path}`);
 			} else {
 				failureReasons.push(path ? `${path}: ${reason}` : reason);
 			}
 		}
+		const failureDetail = failureReasons.length > 0 ? failureReasons.join("; ") : null;
 		if (conflictPaths.length > 0) {
-			return { status: "conflict", conflictPaths: [...new Set(conflictPaths)] };
+			return { status: "conflict", conflictPaths: [...new Set(conflictPaths)], savedPaths, failureDetail };
 		}
-		if (failureReasons.length > 0) {
-			return { status: "failed", errorDetail: failureReasons.join("; ").slice(0, 1000) };
+		if (failureDetail !== null) {
+			return { status: "failed", errorDetail: failureDetail, savedPaths };
 		}
 		return { status: "saved", versionsAfter };
 	}

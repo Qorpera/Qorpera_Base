@@ -1,11 +1,21 @@
 // @vitest-environment jsdom
-import type { SurfaceSummary } from "@qorpera/contracts";
+import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
-import { PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
+import { frameParsedPage, PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
 import { deferred } from "./fixtures.ts";
-import { CHANGES, change, fakeClient, SESSION, session, storeWith, summary, workspace } from "./surface-fixtures.ts";
+import {
+	CHANGES,
+	change,
+	fakeClient,
+	folderContents,
+	SESSION,
+	session,
+	storeWith,
+	summary,
+	workspace,
+} from "./surface-fixtures.ts";
 
 const BRAND_ID = "22222222-2222-4222-8222-222222222229";
 const HEADBAND_ID = "22222222-2222-4222-8222-222222222230";
@@ -30,7 +40,235 @@ function brandSummary() {
 afterEach(() => {
 	document.body.replaceChildren();
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
+
+const MODEL_REF: StudioBinaryRef = {
+	manifestSha256: "a".repeat(64),
+	fileSha256: "b".repeat(64),
+	bytes: 3,
+	mediaType: "model/gltf-binary",
+};
+
+function productStudio() {
+	return summary({
+		id: HEADBAND_ID,
+		slug: "thetabands",
+		title: "Thetabands",
+		archetype: "studio",
+		kind: "product",
+		sourceKind: "folder",
+		repositoryKey: null,
+		folderRoot: "surfaces/thetabands",
+		siteSlug: null,
+		previewMode: "studio_overlay",
+		liveUrl: null,
+	});
+}
+
+async function productStoreWithFolder(
+	binaries: () => Readonly<Record<string, StudioBinaryRef>>,
+	colorways: readonly { readonly name: string; readonly hex: string }[] = [
+		{ name: "Lavendel", hex: "#c3bbea" },
+		{ name: "Skifer", hex: "#4a5963" },
+	],
+) {
+	const surface = productStudio();
+	const readCloudBinary = vi.fn(async () => new Uint8Array([1, 2, 3]));
+	const store = storeWith(
+		fakeClient({
+			listSurfaces: vi.fn(async () => [surface]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+		}),
+		{
+			loadCloudFiles: vi.fn(async () =>
+				folderContents(
+					{
+						"surfaces/thetabands/specs.json": JSON.stringify({
+							model: { kind: "headband", dimensions: "168 x 38 mm", layers: ["Cover", "Board"] },
+							colorways,
+						}),
+						"surfaces/thetabands/object.json": JSON.stringify({ model: "model.glb", tint: ["Shell"] }),
+					},
+					binaries(),
+				),
+			),
+			readCloudBinary,
+		},
+	);
+	await store.load();
+	await store.refreshCloudFiles(surface);
+	return { store, surface, readCloudBinary };
+}
+
+function fakeThree(options: { readonly webgl: boolean; readonly model?: boolean }) {
+	const renderer = { dispose: vi.fn(), forceContextLoss: vi.fn() };
+	const renderers: { readonly domElement: HTMLCanvasElement; readonly setSize: ReturnType<typeof vi.fn> }[] = [];
+	const materials: { name: string; color: FakeColor; dispose(): void }[] = [];
+	class FakeColor {
+		hex = "#ffffff";
+		set(value: string) {
+			this.hex = value;
+			return this;
+		}
+		copy(color: FakeColor) {
+			this.hex = color.hex;
+			return this;
+		}
+		lerp(color: FakeColor) {
+			this.hex = color.hex;
+			return this;
+		}
+	}
+	class Vector3 {
+		x: number;
+		y: number;
+		z: number;
+		constructor(x = 0, y = 0, z = 0) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+		}
+		set(x: number, y: number, z: number) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			return this;
+		}
+	}
+	class Object3D {
+		name = "";
+		children: Object3D[] = [];
+		parent: Object3D | null = null;
+		position = new Vector3();
+		rotation = { x: 0, y: 0, z: 0 };
+		scale = new Vector3(1, 1, 1);
+		userData: Record<string, unknown> = {};
+		material?: (typeof materials)[number];
+		add(...objects: Object3D[]) {
+			for (const object of objects) object.parent = this;
+			this.children.push(...objects);
+			return this;
+		}
+		remove() {
+			return this;
+		}
+		traverse(callback: (object: Object3D) => void) {
+			callback(this);
+			for (const child of this.children) child.traverse(callback);
+		}
+		updateMatrixWorld() {}
+		getWorldPosition(target: Vector3) {
+			return target.set(this.position.x, this.position.y, this.position.z);
+		}
+		worldToLocal(vector: Vector3) {
+			return vector;
+		}
+	}
+	return {
+		renderer,
+		renderers,
+		materials,
+		library: {
+			WebGLRenderer: class {
+				readonly domElement: HTMLCanvasElement;
+				readonly setSize = vi.fn();
+				constructor(init: { readonly canvas: HTMLCanvasElement }) {
+					if (!options.webgl) throw new Error("no WebGL");
+					this.domElement = init.canvas;
+					renderers.push(this);
+				}
+				setClearColor() {}
+				setPixelRatio() {}
+				render() {}
+				dispose() {
+					renderer.dispose();
+				}
+				forceContextLoss() {
+					renderer.forceContextLoss();
+					const canvas = this.domElement;
+					setTimeout(() => canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true })), 0);
+				}
+			},
+			Scene: class extends Object3D {
+				environment = null;
+			},
+			Group: Object3D,
+			PerspectiveCamera: class extends Object3D {
+				updateProjectionMatrix() {}
+				lookAt() {}
+			},
+			Box3: class {
+				min = new Vector3(-1, -1, -1);
+				max = new Vector3(1, 1, 1);
+				setFromObject() {
+					return this;
+				}
+				isEmpty() {
+					return false;
+				}
+				getCenter(target: Vector3) {
+					return target.set(0, 0, 0);
+				}
+				getSize(target: Vector3) {
+					return target.set(2, 2, 2);
+				}
+			},
+			Vector3,
+			Color: FakeColor,
+			PMREMGenerator: class {
+				fromScene() {
+					return { texture: { isTexture: true, dispose() {} } };
+				}
+				dispose() {}
+			},
+			RoomEnvironment: class extends Object3D {
+				dispose() {}
+			},
+			GLTFLoader: class {
+				parse(
+					_data: ArrayBuffer,
+					_path: string,
+					ok: (gltf: { scene: Object3D }) => void,
+					fail: (error: unknown) => void,
+				) {
+					if (!options.model) {
+						fail(new Error("not a model"));
+						return;
+					}
+					const scene = new Object3D();
+					const mesh = new Object3D();
+					mesh.name = "Body";
+					const material = { name: "Shell", color: new FakeColor(), dispose() {} };
+					materials.push(material);
+					mesh.material = material;
+					scene.add(mesh);
+					ok({ scene });
+				}
+			},
+			AgXToneMapping: 7,
+			SRGBColorSpace: "srgb",
+		},
+	};
+}
+
+function sizeBox(stage: HTMLElement): void {
+	const box = stage.querySelector<HTMLElement>(".studio-model-box")!;
+	box.getBoundingClientRect = () => ({ width: 640, height: 300 }) as DOMRect;
+}
+
+function reopenOverview(view: SurfaceStudioView): void {
+	view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
+	view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="overview"]')!.click();
+}
+
+async function laterTasks(): Promise<void> {
+	for (let index = 0; index < 3; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function settle(): Promise<void> {
+	for (let index = 0; index < 6; index++) await Promise.resolve();
+}
 
 describe("SurfaceStudioView", () => {
 	it("composes toggled folder_patch ChangeUnits live over Brand palette, typography, and voice docs", async () => {
@@ -86,9 +324,10 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
 		expect(view.el.querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(true);
 		expect(view.el.querySelector('[data-token="colors.paper"]')?.classList.contains("is-changed")).toBe(false);
-		expect(view.el.querySelector('[data-token="typography.display"] code')?.textContent).toBe(
-			"Newsreader, Georgia, serif",
-		);
+		expect(view.el.querySelector('[data-token="typography.display"] code')?.textContent).toBe("Newsreader");
+		expect(
+			view.el.querySelector<HTMLElement>('[data-token="typography.display"] .studio-type-sample')?.style.fontFamily,
+		).toContain("Newsreader");
 		expect(view.el.querySelector('[data-file="brand/voice.md"]')?.textContent).toContain(
 			"Warm, quiet, Danish craft.",
 		);
@@ -176,15 +415,16 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: {
 				"hardware/headband/specs.json": JSON.stringify({
-					weight: "42g",
+					overview: { weight: "42g" },
 					colorways: [{ name: "Sandstone", hex: "#e8e2d5" }],
 					bom: [{ part: "EEG Sensor", supplier: "Nordic", unitCost: "$14" }],
 				}),
 			},
 		});
-		expect(populated.el.querySelector('[data-token="colorways[0]"] strong')?.textContent).toBe("Sandstone");
-		expect(populated.el.querySelector(".studio-kv dd")?.textContent).toBe("42g");
+		expect(populated.el.querySelector('[data-token="colorways[0]"]')?.getAttribute("aria-label")).toBe("Sandstone");
+		expect(populated.el.querySelector(".studio-fact")?.textContent).toBe("Weight42g");
 		populated.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
+		expect(populated.el.querySelector(".studio-kv dd")?.textContent).toBe("42g");
 		expect(populated.el.querySelector(".studio-table td")?.textContent).toBe("EEG Sensor");
 		populated.dispose();
 
@@ -194,12 +434,28 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: {},
 		});
-		expect(empty.el.querySelector(".studio-empty")?.textContent).toContain("No studio files yet.");
+		expect(empty.el.querySelector(".studio-empty")).toBeNull();
+		expect(empty.el.querySelector(".studio-product-head h2")?.textContent).toBe("Headband");
 		empty.dispose();
+
+		const brand = new SurfaceStudioView({
+			store,
+			surface: brandSummary(),
+			signal: new AbortController().signal,
+			baseFiles: {},
+		});
+		expect(brand.el.querySelector(".studio-empty")).toBeNull();
+		expect(brand.el.querySelector(".studio-product-head h2")?.textContent).toBe("Brand");
+		expect(brand.el.querySelector(".studio-product-line.is-empty")).not.toBeNull();
+		expect(brand.el.querySelector(".studio-section-head h2")?.textContent).toBe("Files");
+		expect(brand.el.querySelector(".studio-home-empty")?.textContent).toBe(
+			"Working files. Models, pictures and notes live here.",
+		);
+		brand.dispose();
 		store.dispose();
 	});
 
-	it("keeps HTML, CSS, and SVG code out of Voice & Files, renders HTML live under Page, and renders SVG brand marks visually", async () => {
+	it("draws Identity from its starter layout: the logo on both grounds, the palette and type changed by a waiting change, pages under Files", async () => {
 		const identity = summary({
 			id: IDENTITY_ID,
 			slug: "identity",
@@ -251,28 +507,52 @@ describe("SurfaceStudioView", () => {
 			surface: identity,
 			signal: new AbortController().signal,
 			baseFiles: {
-				"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
+				"identity/tokens.json": JSON.stringify({
+					colors: { primary: "#18181b", accent: "#2563eb" },
+					typography: { heading: "Newsreader, Georgia, serif" },
+				}),
 				"identity/tokens.css": ":root { --q-color-accent: #2563eb; }\n",
 			},
 		});
 		document.body.append(view.el);
 
-		const tabsWithoutVoice = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map(
-			(tab) => tab.textContent,
-		);
-		expect(tabsWithoutVoice).toEqual(["Overview", "Design System", "Page"]);
-		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
-		expect(view.el.querySelector('[data-token="colors.primary"] code')?.textContent).toBe("#18181b");
-		const svgImg = view.el.querySelector<HTMLImageElement>('[data-file="identity/logo.svg"] img.studio-svg-img');
-		expect(svgImg?.getAttribute("src")).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
+		const tabs = () => [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
+		const palette = view.el.querySelector('[data-block="palette"]')!;
+		expect(palette.querySelector("h2")?.textContent).toBe("Palette");
+		expect(palette.querySelector(".studio-changed-pill")).not.toBeNull();
+		expect(palette.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
+		expect(palette.querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(true);
+		expect(palette.querySelector('[data-token="colors.primary"] code')?.textContent).toBe("#18181b");
+		expect(palette.querySelector('[data-token="colors.primary"]')?.classList.contains("is-changed")).toBe(false);
+		const type = view.el.querySelector('[data-block="type_specimen"]')!;
+		expect([...type.querySelectorAll(".studio-type-meta")].map((row) => row.textContent)).toEqual([
+			"HeadingNewsreader",
+			"BodyInter",
+		]);
+		expect(type.querySelector('[data-token="typography.body"]')?.classList.contains("is-changed")).toBe(true);
+		expect(
+			type.querySelector<HTMLElement>('[data-token="typography.body"] .studio-type-sample')?.style.fontFamily,
+		).toContain("Inter");
+		const [logo, wordmark] = [...view.el.querySelectorAll<HTMLElement>('[data-block="brand_mark"]')];
+		expect(logo?.classList.contains("is-changed")).toBe(true);
+		expect(
+			[...logo!.querySelectorAll<HTMLElement>(".studio-mark-ground")].map((ground) => ground.dataset.ground),
+		).toEqual(["light", "dark"]);
+		const marks = [...logo!.querySelectorAll<HTMLImageElement>("img.studio-mark-img")];
+		expect(marks).toHaveLength(2);
+		expect(marks[0]?.getAttribute("src")).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
+		expect(wordmark?.querySelector("img")).toBeNull();
+		expect(wordmark?.querySelector(".studio-mark-grounds.is-empty")).not.toBeNull();
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="pages"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		const htmlCard = view.el.querySelector('[data-file="identity/index.html"]')!;
 		expect(htmlCard.querySelector("h2")?.textContent).toBe("Visuelt grundlag");
 		expect(htmlCard.querySelector("pre")).toBeNull();
 		const iframe = htmlCard.querySelector<HTMLIFrameElement>("iframe.studio-html-frame");
 		expect(iframe?.getAttribute("src")).toBe(PAGE_FRAME_URL);
 		expect(iframe?.getAttribute("sandbox")).toBe("allow-scripts");
+		expect(view.el.querySelector('[data-file="identity/logo.svg"]')).toBeNull();
 
 		store.setMode("compare");
 		view.update();
@@ -296,11 +576,7 @@ describe("SurfaceStudioView", () => {
 			},
 		});
 		document.body.append(withVoice.el);
-		const tabsWithVoice = [...withVoice.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map(
-			(tab) => tab.textContent,
-		);
-		expect(tabsWithVoice).toEqual(["Overview", "Design System", "Voice & Files", "Page"]);
-		withVoice.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		withVoice.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="voice"]')!.click();
 		expect(withVoice.el.querySelector('[data-file="identity/voice.md"]')?.textContent).toContain(
 			"Calm, direct, grounded.",
 		);
@@ -308,6 +584,10 @@ describe("SurfaceStudioView", () => {
 		expect(withVoice.el.querySelector('[data-file="identity/tokens.css"]')).toBeNull();
 		expect(withVoice.el.querySelector('[data-file="identity/logo.svg"]')).toBeNull();
 		expect(withVoice.el.querySelector("pre")).toBeNull();
+		withVoice.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(withVoice.el.querySelector('[data-file="identity/voice.md"]')).toBeNull();
+		expect(withVoice.el.querySelector('[data-file="identity/index.html"]')).not.toBeNull();
+		expect(withVoice.el.querySelector('[data-file="identity/tokens.css"]')).toBeNull();
 
 		withVoice.dispose();
 		store.dispose();
@@ -333,6 +613,118 @@ describe("SurfaceStudioView", () => {
 		expect(prepared).not.toContain("color: red");
 		expect(prepared).toContain("data:image/svg+xml;charset=utf-8,");
 		expect(prepared).not.toContain('href="./tokens.css"');
+
+		const scripted = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><script type="module" src="./app.js"></script><script src="https://cdn.example/x.js"></script><script src="../outside.js"></script><script src="./missing.js"></script></head><body></body></html>',
+			"identity/index.html",
+			{ "identity/app.js": 'console.log("</script>");', "outside.js": "alert(1)" },
+			"",
+		);
+		expect(scripted).toContain('<script type="module">console.log("<\\/script>");</script>');
+		expect(scripted).toContain('<script src="https://cdn.example/x.js"></script>');
+		expect(scripted).toContain('<script src="../outside.js"></script>');
+		expect(scripted).toContain('<script src="./missing.js"></script>');
+		expect(scripted).not.toContain("alert(1)");
+
+		const cased = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><link rel="stylesheet" href="a.css"><script src="a.js"></script></head><body></body></html>',
+			"identity/index.html",
+			{ "identity/a.css": 'p::after { content: "</STYLE>"; }', "identity/a.js": 'const tag = "</SCRIPT>";' },
+			"",
+		);
+		expect(cased).toContain('content: "<\\/STYLE>";');
+		expect(cased).toContain('const tag = "<\\/SCRIPT>";');
+	});
+
+	it("hands the page frame only text that reads back as the page it checked", () => {
+		const reparsed = (text: string | null) =>
+			text === null ? null : new DOMParser().parseFromString(text, "text/html");
+		const sneaked = (text: string | null) => {
+			const page = reparsed(text);
+			return page !== null && page.querySelector("template, iframe, noscript, link[rel~=preconnect]") !== null;
+		};
+		const trap =
+			'<style>x{}</script></script><template shadowrootmode="open"><iframe srcdoc="<p>out</p>"></iframe></template></style>';
+
+		const viaScript = prepareStudioHtmlPreview(
+			`<!doctype html><html><head><script src="app.js"></script>${trap}</head><body><p>Hi</p></body></html>`,
+			"surfaces/notes/index.html",
+			{ "surfaces/notes/app.js": 'var s="<!--<script>"; var r=/<!--/u; var t=`<!--`;' },
+			"",
+		);
+		expect(viaScript).toContain('var s="\\x3c!--<script>"; var r=/\\x3c!--/u; var t=`\\x3c!--`;');
+		expect(sneaked(viaScript)).toBe(false);
+		expect(reparsed(viaScript)?.querySelector("style")?.textContent).toContain("shadowrootmode");
+
+		const built = new DOMParser().parseFromString(
+			"<!doctype html><html><head><script></script><style></style></head><body></body></html>",
+			"text/html",
+		);
+		built.querySelector("script")!.textContent = 'var s="<!--<script>"';
+		built.querySelector("style")!.textContent =
+			'x{}</script></script><template shadowrootmode="open"><iframe></iframe></template>';
+		expect(frameParsedPage(built)).toBeNull();
+		const hinted = new DOMParser().parseFromString(
+			"<!doctype html><html><head><script></script><style></style></head><body></body></html>",
+			"text/html",
+		);
+		hinted.querySelector("script")!.textContent = 'var s="<!--<script>"';
+		hinted.querySelector("style")!.textContent =
+			'x{}</script></script><noscript></noscript><link rel="preconnect" href="https://out.example">';
+		expect(frameParsedPage(hinted)).toBeNull();
+
+		const viaStylesheet = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><link rel="stylesheet" href="a.css"></head><body><p>Hi</p></body></html>',
+			"surfaces/notes/index.html",
+			{
+				"surfaces/notes/a.css":
+					'x{}</style><template shadowrootmode="open"><iframe></iframe></template></script></script><noscript></noscript>',
+			},
+			"",
+		);
+		expect(viaStylesheet).not.toBeNull();
+		expect(sneaked(viaStylesheet)).toBe(false);
+
+		const viaPicture = prepareStudioHtmlPreview(
+			'<!doctype html><html><head></head><body><img src="mark.svg"></body></html>',
+			"surfaces/notes/index.html",
+			{
+				"surfaces/notes/mark.svg":
+					'<svg xmlns="http://www.w3.org/2000/svg">"></img><template shadowrootmode="open"><iframe></iframe></template></svg>',
+			},
+			"",
+		);
+		expect(viaPicture).toContain("data:image/svg+xml;charset=utf-8,");
+		expect(sneaked(viaPicture)).toBe(false);
+	});
+
+	it("runs an inlined deferred script after the page, in order, and drops what an inline script ignores", () => {
+		const prepared = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><script src="a.js" defer></script><script src="b.js" async></script><script type="module" src="m.js" async></script><script src="c.js" defer async></script></head><body><p id="x"></p><script>window.inline = 1;</script></body></html>',
+			"surfaces/notes/index.html",
+			{
+				"surfaces/notes/a.js": "window.a = 1;",
+				"surfaces/notes/b.js": "window.b = 1;",
+				"surfaces/notes/m.js": "window.m = 1;",
+				"surfaces/notes/c.js": "window.c = 1;",
+			},
+			"",
+		);
+		const page = new DOMParser().parseFromString(prepared!, "text/html");
+		expect(
+			[...page.head.querySelectorAll("script")].map((script) => [script.textContent, script.getAttributeNames()]),
+		).toEqual([
+			["window.b = 1;", []],
+			["window.m = 1;", ["type", "async"]],
+		]);
+		expect(
+			[...page.body.querySelectorAll("script")].map((script) => [script.textContent, script.getAttributeNames()]),
+		).toEqual([
+			["window.inline = 1;", []],
+			["window.a = 1;", []],
+			["window.c = 1;", []],
+		]);
+		expect(page.body.lastElementChild?.textContent).toBe("window.c = 1;");
 	});
 
 	it("marks HTML pages Updated when inlined CSS changes and lists unrendered changed paths in Compare without code", async () => {
@@ -385,7 +777,7 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="pages"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		const pageCard = view.el.querySelector('[data-file="identity/index.html"]')!;
 		expect(pageCard.classList.contains("is-changed")).toBe(true);
 		expect(pageCard.querySelector(".studio-changed-pill")?.textContent).toBe("Updated");
@@ -440,13 +832,13 @@ describe("SurfaceStudioView", () => {
 		const loadCloudFiles = vi.fn(async () => {
 			loadCall += 1;
 			if (loadCall === 1) {
-				return {
+				return folderContents({
 					"brand/tokens.json": JSON.stringify({ colors: { accent: "#d76f45" } }),
 					"brand/old-notes.md": "Stale note",
-				};
+				});
 			}
-			if (loadCall === 2) return await postMergeLoad.promise;
-			return await postPublishLoad.promise;
+			if (loadCall === 2) return folderContents(await postMergeLoad.promise);
+			return folderContents(await postPublishLoad.promise);
 		});
 		const loadFiles = vi.fn(async () => ({ "brand/old-notes.md": "Should not duplicate" }));
 		const client = fakeClient({
@@ -579,7 +971,7 @@ describe("SurfaceStudioView", () => {
 		document.body.append(view.el);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
 		expect(view.el.querySelector(".report-article")?.textContent).toContain("Vendor Deep Dive");
 		const fills = [...view.el.querySelectorAll<HTMLElement>(".report-bar-fill")].map((el) => el.style.width);
 		expect(fills).toEqual(["100%", "4%"]);
@@ -626,9 +1018,23 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 
-		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs).toEqual(["Overview", "Brief & Files"]);
-		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).not.toBeNull();
+		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
+		expect(tabs.map((tab) => tab.textContent)).toEqual([
+			"Overview",
+			"Specs",
+			"Vendors",
+			"Reports",
+			"Breakdowns",
+			"Files",
+		]);
+		expect(tabs.filter((tab) => tab.classList.contains("is-empty")).map((tab) => tab.dataset.tab)).toEqual([
+			"specs",
+			"vendors",
+			"reports",
+			"breakdowns",
+		]);
+		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Thetabands");
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).toBeNull();
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')).toBeNull();
 		const usedBy = view.el.querySelector<HTMLElement>('.studio-reach [data-link-dir="out"]')!;
 		expect(usedBy.textContent).toContain("Used by");
@@ -639,6 +1045,310 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')?.textContent).toContain(
 			"Initial concept notes.",
 		);
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps every Product Studio home in place before any file exists", async () => {
+		const thetabands = summary({
+			id: HEADBAND_ID,
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/thetabands",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [thetabands]) }));
+		await store.load();
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: thetabands,
+			signal: new AbortController().signal,
+			baseFiles: {},
+		});
+		expect(view.el.querySelector(".studio-empty")).toBeNull();
+		expect([...view.el.querySelectorAll(".studio-tab")].map((tab) => tab.textContent)).toEqual([
+			"Overview",
+			"Specs",
+			"Vendors",
+			"Reports",
+			"Breakdowns",
+			"Files",
+		]);
+		expect(view.el.querySelector(".studio-stage .studio-stage-floor")).not.toBeNull();
+		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Thetabands");
+		expect(view.el.querySelector(".studio-product-line.is-empty")).not.toBeNull();
+		expect(view.el.querySelectorAll(".studio-dots.is-empty .studio-dot")).toHaveLength(4);
+		expect([...view.el.querySelectorAll(".studio-facts.is-empty dd")].map((value) => value.textContent)).toEqual([
+			"?",
+			"?",
+			"?",
+			"?",
+		]);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
+		expect(
+			[...view.el.querySelectorAll('[data-block="spec_list"]')].map((block) => [
+				block.querySelector("h2")?.textContent,
+				block.querySelector(".studio-kv.is-empty") !== null,
+			]),
+		).toEqual([["Specs", true]]);
+		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
+		expect([...view.el.querySelectorAll(".studio-grid > *")].map((item) => item.getAttribute("data-block"))).toEqual([
+			"spec_list",
+			"table",
+		]);
+		expect(view.el.querySelector('[data-block="table"] .studio-section-head h2')?.textContent).toBe("Parts");
+		expect(view.el.querySelector('[data-block="table"] .studio-table.is-empty')).not.toBeNull();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();
+		expect(view.el.querySelector('[data-block="spec_list"] h2')?.textContent).toBe("Production plan");
+		expect(view.el.querySelectorAll(".studio-vendor-card.is-empty")).toHaveLength(2);
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
+		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Reports and posts live here.");
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe(
+			"Working files. Models, pictures and notes live here.",
+		);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("draws a Product Studio as one column: the model, its name and line, colour dots and four short figures", async () => {
+		const thetabands = summary({
+			id: HEADBAND_ID,
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/thetabands",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [thetabands]) }));
+		await store.load();
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: thetabands,
+			signal: new AbortController().signal,
+			baseFiles: {
+				"surfaces/thetabands/specs.json": JSON.stringify({
+					model: { kind: "headband", dimensions: "168 x 38 mm", layers: ["Cover", "Board"] },
+					overview: {
+						tagline: "Calm, measured.",
+						sensors: "4 dry EEG",
+						materials: "Moulded PC-ABS with a soft-touch coat and a woven strap",
+						battery: "14 h",
+						weight: "44 g",
+						price: "1.995 kr.",
+						charging: "USB-C",
+					},
+					colorways: [
+						{ name: "Lavendel", hex: "#c3bbea" },
+						{ name: "Skifer", hex: "#4a5963" },
+					],
+				}),
+			},
+		});
+		expect(view.el.querySelector(".studio-stage .studio-3d-canvas")).not.toBeNull();
+		expect(view.el.querySelector(".studio-product-line")?.textContent).toBe("Calm, measured.");
+		expect([...view.el.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
+			"Sensors4 dry EEG",
+			"Battery14 h",
+			"Weight44 g",
+			"Price1.995 kr.",
+		]);
+		expect(view.el.querySelector(".studio-kv")).toBeNull();
+		expect(view.el.querySelector(".studio-swatches")).toBeNull();
+
+		const dots = () => [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]')];
+		const checked = () => dots().map((dot) => dot.getAttribute("aria-checked"));
+		const modelColour = () => view.el.querySelector<HTMLElement>(".studio-3d")?.dataset.colorway;
+		expect(dots().map((dot) => dot.getAttribute("aria-label"))).toEqual(["Lavendel", "Skifer"]);
+		expect(checked()).toEqual(["true", "false"]);
+		expect(modelColour()).toBe("Lavendel");
+		dots()[1]!.click();
+		expect(checked()).toEqual(["false", "true"]);
+		expect(modelColour()).toBe("Skifer");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
+		expect(view.el.querySelector(".studio-kv")?.textContent).toContain("Moulded PC-ABS");
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="overview"]')!.click();
+		expect(checked()).toEqual(["false", "true"]);
+		expect(modelColour()).toBe("Skifer");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("draws the real model on the stage when the folder holds a .glb, and the 2D drawing once it is gone", async () => {
+		let binaries: Readonly<Record<string, StudioBinaryRef>> = { "surfaces/thetabands/model.glb": MODEL_REF };
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => binaries);
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		const stage = view.el.querySelector<HTMLElement>(".studio-stage .studio-model");
+		expect(stage).not.toBeNull();
+		expect(view.el.querySelector(".studio-stage.is-empty")).toBeNull();
+		expect(view.el.querySelector(".studio-3d-canvas")).toBeNull();
+		expect(stage?.querySelector(".studio-stage-floor")).not.toBeNull();
+		expect(stage?.querySelector("canvas")).toBeNull();
+		expect(stage?.querySelector<HTMLElement>(".studio-3d-view")?.hidden).toBe(true);
+		expect(stage?.dataset.tint).toBe("#c3bbea");
+		view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]')[1]!.click();
+		expect(stage?.dataset.tint).toBe("#4a5963");
+		await settle();
+		expect(readCloudBinary).not.toHaveBeenCalled();
+
+		binaries = {};
+		await store.refreshCloudFiles(surface);
+		view.update();
+		expect(view.el.querySelector(".studio-model")).toBeNull();
+		expect(view.el.querySelector(".studio-stage .studio-3d-canvas")).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps the stage an empty floor where the browser cannot draw 3D", async () => {
+		vi.stubGlobal("QORPERA_THREE", fakeThree({ webgl: false }).library);
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		await settle();
+		const stage = view.el.querySelector<HTMLElement>(".studio-model");
+		expect(stage?.querySelector("canvas")).toBeNull();
+		expect(stage?.classList.contains("is-ready")).toBe(false);
+		expect(readCloudBinary).not.toHaveBeenCalled();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("reads the model once, shows nothing technical when it cannot be opened, and frees the drawing on close", async () => {
+		const three = fakeThree({ webgl: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		await vi.waitFor(() => expect(readCloudBinary).toHaveBeenCalledTimes(1));
+		await settle();
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		expect(stage.querySelector("canvas.studio-model-canvas")).not.toBeNull();
+		expect(stage.classList.contains("is-ready")).toBe(false);
+		expect(stage.textContent).toBe("WholeApart");
+		expect(stage.querySelector<HTMLElement>(".studio-3d-view")?.hidden).toBe(true);
+		view.update();
+		await settle();
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+		view.dispose();
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(three.renderer.forceContextLoss).toHaveBeenCalledTimes(1);
+		expect(stage.querySelector("canvas")).toBeNull();
+		store.dispose();
+	});
+
+	it("tints the named materials with every colour form a dot takes, and gives them back their own colour for one it cannot read", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		vi.stubGlobal("matchMedia", () => ({ matches: true }));
+		const { store, surface } = await productStoreWithFolder(
+			() => ({ "surfaces/thetabands/model.glb": MODEL_REF }),
+			[
+				{ name: "Lavendel", hex: "oklch(0.7 0.1 290)" },
+				{ name: "Skifer", hex: "#4a5963cc" },
+				{ name: "Uklar", hex: "rgb(nope)" },
+			],
+		);
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const shell = three.materials[0]!;
+		expect(stage.dataset.tint).toBe("#9d94d9");
+		expect(shell.color.hex).toBe("#9d94d9");
+		const dots = view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]');
+		dots[1]!.click();
+		expect(shell.color.hex).toBe("#4a5963");
+		dots[2]!.click();
+		expect(stage.dataset.tint).toBeUndefined();
+		expect(shell.color.hex).toBe("#ffffff");
+		dots[0]!.click();
+		expect(shell.color.hex).toBe("#9d94d9");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("draws the model again on a new context after the browser gives its graphics back, whatever the old context does later", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		document.body.append(view.el);
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		sizeBox(stage);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const first = stage.querySelector("canvas")!;
+		expect(three.renderers[0]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		const lost = new Event("webglcontextlost", { cancelable: true });
+		first.dispatchEvent(lost);
+		expect(lost.defaultPrevented).toBe(true);
+		expect(three.renderer.dispose).not.toHaveBeenCalled();
+		first.dispatchEvent(new Event("webglcontextrestored"));
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(first.isConnected).toBe(false);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		await laterTasks();
+		const second = stage.querySelector("canvas")!;
+		expect(second).not.toBe(first);
+		expect(second).toBe(three.renderers[1]!.domElement);
+		expect(three.renderers[1]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		reopenOverview(view);
+		expect(three.renderers).toHaveLength(2);
+		expect(second.isConnected).toBe(true);
+		expect(stage.classList.contains("is-ready")).toBe(true);
+		expect(three.materials).toHaveLength(2);
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+		view.dispose();
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
+	it("rebuilds a lost stage on its next update, and a late restore of the old context changes nothing", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		document.body.append(view.el);
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		sizeBox(stage);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const first = stage.querySelector("canvas")!;
+		first.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+		reopenOverview(view);
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		await laterTasks();
+		const second = stage.querySelector("canvas")!;
+		expect(second).toBe(three.renderers[1]!.domElement);
+		expect(three.renderers[1]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		first.dispatchEvent(new Event("webglcontextrestored"));
+		first.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+		reopenOverview(view);
+		expect(three.renderers).toHaveLength(2);
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(second.isConnected).toBe(true);
+		expect(stage.classList.contains("is-ready")).toBe(true);
 		view.dispose();
 		store.dispose();
 	});
@@ -714,7 +1424,9 @@ describe("SurfaceStudioView", () => {
 		});
 		const website = summary();
 		const filesDeferred = deferred<Record<string, string>>();
-		const loadCloudFiles = vi.fn((_surface: SurfaceSummary) => filesDeferred.promise);
+		const loadCloudFiles = vi.fn((_surface: SurfaceSummary) =>
+			filesDeferred.promise.then((files) => folderContents(files)),
+		);
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [website, brand]),
 			getSurfaceWorkspace: vi.fn(async (id: string) =>

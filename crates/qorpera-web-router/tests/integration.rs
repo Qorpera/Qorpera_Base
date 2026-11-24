@@ -10,6 +10,7 @@ use qorpera_web_router::routes::{
     CustomDomainRecord, DeploymentKind, DeploymentRecord, DomainStatus, EdgeSnapshot, HeaderRule,
     ManifestFile, RedirectRule, SiteManifest, SiteRecord,
 };
+use qorpera_web_router::security::{sign_session_cookie, SITE_SESSION_COOKIE};
 use qorpera_web_router::server::{
     BoundServers, EdgeAuthBackend, MemoryAuthBackend, RedeemedMemberPass, RedeemedTicket,
     RouterConfig, RouterState,
@@ -204,6 +205,8 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: Some("minbutik.dk".to_string()),
+                db_live: None,
+                db_previews: HashMap::new(),
             },
             SiteRecord {
                 id: "site-private".to_string(),
@@ -230,6 +233,8 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: None,
+                db_live: None,
+                db_previews: HashMap::new(),
             },
         ],
         custom_domains: vec![
@@ -621,6 +626,8 @@ async fn hybrid_static_fast_path_singleflight_wake_and_websocket_upgrade() {
             }),
             preview_deployments: HashMap::new(),
             primary_custom_domain: None,
+            db_live: None,
+            db_previews: HashMap::new(),
         }],
         ..Default::default()
     };
@@ -838,6 +845,8 @@ async fn preview_ticket_member_pass_and_live_dns_domain_verification() {
             }),
             preview_deployments: previews,
             primary_custom_domain: None,
+            db_live: None,
+            db_previews: HashMap::new(),
         }],
         custom_domains: vec![CustomDomainRecord {
             id: "dom-new".to_string(),
@@ -1162,6 +1171,8 @@ async fn hardening_security_utf8_limits_cookie_strip_stale_pool_and_readiness() 
             }),
             preview_deployments: HashMap::new(),
             primary_custom_domain: None,
+            db_live: None,
+            db_previews: HashMap::new(),
         }],
         ..Default::default()
     };
@@ -1436,6 +1447,8 @@ async fn websocket_concurrency_cap_activity_heartbeat_streaming_blobs_timeouts_a
             }),
             preview_deployments: HashMap::new(),
             primary_custom_domain: None,
+            db_live: None,
+            db_previews: HashMap::new(),
         }],
         ..Default::default()
     };
@@ -1715,6 +1728,8 @@ async fn websocket_per_deployment_isolation_idle_cutoff_and_streamed_sidecar_int
         }),
         preview_deployments: HashMap::new(),
         primary_custom_domain: None,
+        db_live: None,
+        db_previews: HashMap::new(),
     };
 
     let snapshot = EdgeSnapshot {
@@ -1857,4 +1872,436 @@ async fn websocket_per_deployment_isolation_idle_cutoff_and_streamed_sidecar_int
     })
     .await;
     backend_task.abort();
+}
+
+fn get(host: &str, path: &str, headers: &[(&str, &str)]) -> Request<Full<Bytes>> {
+    let mut builder = Request::builder().method("GET").uri(path).header("host", host);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    builder.body(Full::new(Bytes::new())).unwrap()
+}
+
+fn first_cookie(headers: &http::HeaderMap) -> String {
+    headers
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+fn html_file(sha256: String, bytes: usize) -> ManifestFile {
+    ManifestFile {
+        sha256,
+        bytes,
+        content_type: "text/html; charset=utf-8".to_string(),
+        immutable: false,
+    }
+}
+
+fn static_deployment(id: &str, files: HashMap<String, ManifestFile>) -> DeploymentRecord {
+    DeploymentRecord {
+        id: id.to_string(),
+        kind: DeploymentKind::Static,
+        manifest: SiteManifest {
+            files,
+            ..Default::default()
+        },
+        upstream_addr: None,
+        oci_image_ref: None,
+        app_port: None,
+        health_path: "/".to_string(),
+        idle_timeout_sec: 900,
+        memory_mb: 512,
+        vcpu_limit: 1.0,
+        env_spec: HashMap::new(),
+    }
+}
+
+fn site_record(id: &str, slug: &str, is_public: bool, password_sha256: Option<String>) -> SiteRecord {
+    SiteRecord {
+        id: id.to_string(),
+        slug: slug.to_string(),
+        is_public,
+        taken_down: false,
+        password_sha256,
+        password_version: 4,
+        live_deployment: None,
+        preview_deployments: HashMap::new(),
+        primary_custom_domain: None,
+        db_live: None,
+        db_previews: HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn websites_not_live_yet_and_served_from_database_versions() {
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 8 * 1024 * 1024, 8 * 1024 * 1024));
+
+    let live_html = Bytes::from("<html><body>stored-live</body></html>");
+    let next_html = Bytes::from("<html><body>stored-next</body></html>");
+    let missing_html = Bytes::from("<h1>stored 404</h1>");
+    let open_html = Bytes::from("<html><body>open-site</body></html>");
+    let style_css = Bytes::from("body { color: #123456 }".repeat(40));
+    let bad_real = Bytes::from("<p>what the manifest names</p>");
+    let bad_served = Bytes::from("<p>WHAT THE MANIFEST NAMES</p>");
+    assert_eq!(bad_real.len(), bad_served.len());
+    let short_html = Bytes::from("<p>short</p>");
+
+    let mut closed_files = HashMap::new();
+    closed_files.insert("index.html".to_string(), html_file(sha256_hex(&live_html), live_html.len()));
+    closed_files.insert("404.html".to_string(), html_file(sha256_hex(&missing_html), missing_html.len()));
+    closed_files.insert("bad.html".to_string(), html_file(sha256_hex(&bad_real), bad_real.len()));
+    closed_files.insert("short.html".to_string(), html_file(sha256_hex(&short_html), short_html.len() + 5));
+    closed_files.insert("gone.html".to_string(), html_file("e".repeat(64), 10));
+    let mut next_files = HashMap::new();
+    next_files.insert("index.html".to_string(), html_file(sha256_hex(&next_html), next_html.len()));
+    let mut open_files = HashMap::new();
+    open_files.insert("index.html".to_string(), html_file(sha256_hex(&open_html), open_html.len()));
+    open_files.insert(
+        "style.css".to_string(),
+        ManifestFile {
+            sha256: sha256_hex(&style_css),
+            bytes: style_css.len(),
+            content_type: "text/css; charset=utf-8".to_string(),
+            immutable: false,
+        },
+    );
+    open_files.insert("huge.bin".to_string(), html_file("f".repeat(64), 11 * 1024 * 1024));
+
+    let mut closed = site_record("site-closed", "stille-side", false, None);
+    closed.db_live = Some(static_deployment("db:ver-live", closed_files));
+    closed
+        .db_previews
+        .insert("ver-next".to_string(), static_deployment("db:ver-next", next_files));
+    let mut open = site_record("site-open", "aaben-side", true, Some(sha256_hex(b"open-pass")));
+    open.db_live = Some(static_deployment("db:ver-open", open_files));
+    let app_link = site_record("site-app", "lenke-app", false, Some(sha256_hex(b"app-link-pass")));
+    let mut down = site_record("site-down", "nede-side", false, None);
+    down.taken_down = true;
+    down.db_live = Some(static_deployment("db:ver-down", HashMap::new()));
+
+    let snapshot = EdgeSnapshot {
+        hosts_domain: "qorpera.site".to_string(),
+        hosts_enabled: true,
+        public_enabled: true,
+        domains_enabled: true,
+        sites: vec![closed, open, app_link, down],
+        ..Default::default()
+    };
+
+    let auth = Arc::new(MemoryAuthBackend::default());
+    auth.insert_site_file("site-closed", "ver-live", "index.html", live_html.clone());
+    auth.insert_site_file("site-closed", "ver-live", "404.html", missing_html.clone());
+    auth.insert_site_file("site-closed", "ver-live", "bad.html", bad_served.clone());
+    auth.insert_site_file("site-closed", "ver-live", "short.html", short_html.clone());
+    auth.insert_site_file("site-closed", "ver-next", "index.html", next_html.clone());
+    auth.insert_site_file("site-open", "ver-open", "index.html", open_html.clone());
+    auth.insert_site_file("site-open", "ver-open", "style.css", style_css.clone());
+    auth.insert_member_pass(
+        "stille-side.qorpera.site",
+        "member-pass-1",
+        RedeemedMemberPass {
+            site_id: "site-closed".to_string(),
+            password_version: 4,
+            max_age: 43200,
+        },
+    );
+    auth.insert_ticket(
+        "stille-side--next.qorpera.site",
+        "ticket-1",
+        RedeemedTicket {
+            site_id: "site-closed".to_string(),
+            version_id: "ver-next".to_string(),
+            password_version: 4,
+            max_age: 43200,
+        },
+    );
+
+    let mut cfg = test_config(None);
+    cfg.auth_backend = Some(Arc::clone(&auth) as Arc<dyn EdgeAuthBackend>);
+    let state = Arc::new(RouterState::new(Arc::clone(&blobs), snapshot, &cfg));
+    let bound = BoundServers::bind(&cfg, state).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let (_p, _i) = bound.spawn();
+
+    let (st, hdrs, body) = http_call(pub_addr, get("stille-side.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let page = String::from_utf8(body.to_vec()).unwrap();
+    assert!(page.contains("<h1>Not live yet</h1>"));
+    assert!(!page.contains("<form") && !page.contains("password"));
+    assert_eq!(hdrs.get("x-robots-tag").unwrap(), "noindex, nofollow, noarchive");
+    assert_eq!(hdrs.get("cache-control").unwrap(), "no-store, no-transform");
+    assert_eq!(hdrs.get("vary").unwrap(), "Accept-Language");
+    let english_page = body.clone();
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("stille-side.qorpera.site", "/about", &[("accept-language", "da-DK,da;q=0.9,en;q=0.8")]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let page = String::from_utf8(body.to_vec()).unwrap();
+    assert!(page.contains("<h1>Ikke live endnu</h1>") && page.contains("lang=\"da\""));
+    let (_, _, body) = http_call(
+        pub_addr,
+        get("stille-side.qorpera.site", "/", &[("accept-language", "en;q=0.9, da;q=0.5")]),
+    )
+    .await;
+    assert_eq!(body, english_page);
+
+    let (st, _, body) = http_call(pub_addr, get("ingen-side.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, english_page);
+    let (st, _, body) = http_call(pub_addr, get("ingen-side--next.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, english_page);
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/.qorpera/unlock")
+            .header("host", "stille-side.qorpera.site")
+            .header("sec-fetch-site", "same-origin")
+            .header("origin", "https://stille-side.qorpera.site")
+            .body(Full::new(Bytes::from("password=anything-at-all&next=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, english_page);
+
+    let (st, _, body) = http_call(pub_addr, get("stille-side.qorpera.site", "/robots.txt", &[])).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, Bytes::from_static(b"User-agent: *\nDisallow: /\n"));
+
+    let member_post = |pass: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/__qorpera/member")
+            .header("host", "stille-side.qorpera.site")
+            .header("origin", "https://app.qorpera.com")
+            .header("sec-fetch-site", "cross-site")
+            .body(Full::new(Bytes::from(format!("pass={pass}&path=/"))))
+            .unwrap()
+    };
+    let (st, _, body) = http_call(pub_addr, member_post("not-a-pass")).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, english_page);
+    let (st, hdrs, _) = http_call(pub_addr, member_post("member-pass-1")).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let member_cookie = first_cookie(&hdrs);
+
+    assert_eq!(auth.file_fetches(), 0);
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        get("stille-side.qorpera.site", "/", &[("cookie", member_cookie.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, live_html);
+    assert_eq!(hdrs.get("content-type").unwrap(), "text/html; charset=utf-8");
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
+    assert_eq!(auth.file_fetches(), 1);
+    assert!(blobs.exists(&sha256_hex(&live_html)).await.unwrap());
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("stille-side.qorpera.site", "/index.html", &[("cookie", member_cookie.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, live_html);
+    assert_eq!(auth.file_fetches(), 1);
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("stille-side.qorpera.site", "/no-such-page", &[("cookie", member_cookie.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(body, missing_html);
+
+    for path in ["/bad.html", "/short.html", "/gone.html"] {
+        let (st, _, body) = http_call(
+            pub_addr,
+            get("stille-side.qorpera.site", path, &[("cookie", member_cookie.as_str())]),
+        )
+        .await;
+        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(body, Bytes::from_static(b"blob unavailable"), "{path}");
+    }
+    assert!(!blobs.exists(&sha256_hex(&bad_real)).await.unwrap());
+    assert!(!blobs.exists(&sha256_hex(&bad_served)).await.unwrap());
+    assert!(!blobs.exists(&sha256_hex(&short_html)).await.unwrap());
+
+    let before_bump = format!(
+        "{SITE_SESSION_COOKIE}={}",
+        sign_session_cookie(b"secret-cookie-key-32-bytes-minimum!", "site-closed", "site", 3, u64::MAX / 2)
+    );
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("stille-side.qorpera.site", "/", &[("cookie", before_bump.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, english_page);
+
+    let (st, _, body) = http_call(pub_addr, get("stille-side--next.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, english_page);
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("stille-side--next.qorpera.site", "/.qorpera/enter?t=wrong-ticket", &[]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, english_page);
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        get("stille-side--next.qorpera.site", "/.qorpera/enter?t=ticket-1", &[]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let preview_cookie = first_cookie(&hdrs);
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("stille-side--next.qorpera.site", "/", &[("cookie", preview_cookie.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.starts_with("<html><body>stored-next</body></html>"));
+    assert!(html.contains("data-qorpera-preview=\"1\""));
+
+    let (st, hdrs, body) = http_call(pub_addr, get("aaben-side.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, open_html);
+    assert_eq!(hdrs.get("cache-control").unwrap(), "public, max-age=0, must-revalidate");
+    assert!(hdrs.get("x-robots-tag").is_none());
+
+    auth.set_file_delay(Duration::from_millis(150));
+    let fetches_before = auth.file_fetches();
+    let mut readers = Vec::new();
+    for _ in 0..8 {
+        readers.push(tokio::spawn(async move {
+            http_call(pub_addr, get("aaben-side.qorpera.site", "/style.css", &[])).await
+        }));
+    }
+    for reader in readers {
+        let (st, _, body) = reader.await.unwrap();
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body, style_css);
+    }
+    assert_eq!(auth.file_fetches(), fetches_before + 1);
+    auth.set_file_delay(Duration::ZERO);
+
+    let (st, _, _) = http_call(pub_addr, get("aaben-side.qorpera.site", "/huge.bin", &[])).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(auth.file_fetches(), fetches_before + 1);
+
+    let (st, _, body) = http_call(pub_addr, get("lenke-app.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let page = String::from_utf8(body.to_vec()).unwrap();
+    assert!(page.contains("Password required") && page.contains("<form"));
+    let (st, _, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/.qorpera/unlock")
+            .header("host", "lenke-app.qorpera.site")
+            .header("sec-fetch-site", "same-origin")
+            .header("origin", "https://lenke-app.qorpera.site")
+            .body(Full::new(Bytes::from("password=wrong&next=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert!(String::from_utf8(body.to_vec()).unwrap().contains("Incorrect password."));
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/.qorpera/unlock")
+            .header("host", "lenke-app.qorpera.site")
+            .header("sec-fetch-site", "same-origin")
+            .header("origin", "https://lenke-app.qorpera.site")
+            .body(Full::new(Bytes::from("password=app-link-pass&next=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let app_cookie = first_cookie(&hdrs);
+    let (st, _, _) = http_call(
+        pub_addr,
+        get("lenke-app.qorpera.site", "/", &[("cookie", app_cookie.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    let (st, _, _) = http_call(pub_addr, get("nede-side.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn a_snapshot_from_before_database_sites_keeps_the_password_gate() {
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 8 * 1024 * 1024, 8 * 1024 * 1024));
+    let html = Bytes::from("<html><body>deployed</body></html>");
+    let sha = sha256_hex(&html);
+    blobs.put(&sha, html.clone(), false).await.unwrap();
+    let cfg = test_config(None);
+    let state = Arc::new(RouterState::new(blobs, EdgeSnapshot::default(), &cfg));
+    let bound = BoundServers::bind(&cfg, state).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (_p, _i) = bound.spawn();
+
+    let old_shape = format!(
+        r#"{{"hosts_domain":"qorpera.site","hosts_enabled":true,"public_enabled":true,"domains_enabled":true,
+        "sites":[{{"id":"site-old","slug":"gammel-side","is_public":false,"taken_down":false,
+        "password_sha256":"{}","password_version":1,
+        "live_deployment":{{"id":"dep-old","kind":"static","manifest":{{"files":{{"index.html":
+            {{"sha256":"{sha}","bytes":{},"content_type":"text/html; charset=utf-8"}}}}}}}},
+        "preview_deployments":{{}},"primary_custom_domain":null}}],"custom_domains":[]}}"#,
+        sha256_hex(b"old-pass"),
+        html.len()
+    );
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/routes/snapshot")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::from(old_shape)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _, body) = http_call(pub_addr, get("gammel-side.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert!(String::from_utf8(body.to_vec()).unwrap().contains("Password required"));
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/.qorpera/unlock")
+            .header("host", "gammel-side.qorpera.site")
+            .header("sec-fetch-site", "same-origin")
+            .header("origin", "https://gammel-side.qorpera.site")
+            .body(Full::new(Bytes::from("password=old-pass&next=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let cookie = first_cookie(&hdrs);
+    let (st, _, body) = http_call(pub_addr, get("gammel-side.qorpera.site", "/", &[("cookie", cookie.as_str())])).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, html);
 }

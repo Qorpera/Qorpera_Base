@@ -4,12 +4,17 @@ import {
 	compileIdentityTokensCss,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
+	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
 	type SurfacePreviewConflict,
+	type SurfaceStarterKind,
 	type SurfaceSummary,
 	sharedAssetsConsumedBy,
 	sharedAssetsProducedBy,
+	surfaceFilesHaveModel,
+	surfaceLegacyModelKey,
+	surfaceStarterKind,
 } from "@qorpera/contracts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
@@ -20,6 +25,7 @@ import { t } from "../../ui/preferences.ts";
 import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
 import {
+	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
 	formatConflictPaths,
 	isLocalSurfaceId,
@@ -28,9 +34,28 @@ import {
 	type SurfacesStore,
 	type SurfaceUpdatePhase,
 } from "../surfaces-store.ts";
+import {
+	parseJsonObject,
+	readableName,
+	type StudioSectionTask,
+	type SurfaceFileLayer,
+} from "./surface-blocks/context.ts";
+import {
+	docPriority,
+	HTML_FILE_RE,
+	htmlDocumentTitle,
+	MARKDOWN_FILE_RE,
+	PROSE_TEXT_FILE_RE,
+	renderPlainDoc,
+	type StudioDoc,
+	type StudioSvgAsset,
+	SVG_FILE_RE,
+	svgDataUrl,
+} from "./surface-blocks/files.ts";
+import { collectSpecs, type SpecEntry } from "./surface-blocks/specs.ts";
+import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
+import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
-import { SurfaceReportView } from "./surface-report-view.ts";
-import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
 export interface SurfaceStudioOptions {
 	readonly store: SurfacesStore;
@@ -42,60 +67,11 @@ export interface SurfaceStudioOptions {
 	readonly timeSlice?: boolean;
 }
 
-interface ColorToken {
-	readonly key: string;
-	readonly label: string;
-	readonly value: string;
-	readonly changed: boolean;
-}
-
-interface TypeToken {
-	readonly key: string;
-	readonly label: string;
-	readonly value: string;
-	readonly changed: boolean;
-}
-
-interface SpecTable {
-	readonly title: string;
-	readonly columns: readonly string[];
-	readonly rows: readonly Record<string, string>[];
-}
-
-interface SpecEntry {
-	readonly key: string;
-	readonly value: string;
-	readonly prev?: string;
-	readonly changed: boolean;
-}
-
 interface SpecSection {
 	readonly path: string;
 	readonly title: string;
 	readonly changed: boolean;
 	readonly entries: readonly SpecEntry[];
-	readonly tables: readonly SpecTable[];
-}
-
-interface VendorCard {
-	readonly vendor: string;
-	readonly component: string;
-	readonly region?: string;
-	readonly moq?: string;
-	readonly leadTime?: string;
-	readonly unitPrice?: string;
-	readonly status?: string;
-	readonly certifications?: string;
-	readonly changed: boolean;
-}
-
-interface StudioDoc {
-	readonly path: string;
-	readonly title: string;
-	readonly content: string;
-	readonly baseContent?: string;
-	readonly isMarkdown: boolean;
-	readonly changed: boolean;
 }
 
 interface StudioHtmlPage {
@@ -106,270 +82,10 @@ interface StudioHtmlPage {
 	readonly changed: boolean;
 }
 
-interface StudioSvgAsset {
-	readonly path: string;
-	readonly title: string;
-	readonly svg: string;
-	readonly baseSvg?: string;
-	readonly changed: boolean;
-}
-
-type StudioTab = "overview" | "specs" | "vendors" | "analysis" | "files" | "pages";
-
-const COLOR_VALUE = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\([^)]+\)|oklch\([^)]+\))$/i;
-const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
-const TYPE_GROUPS = new Set(["font", "fonts", "typography", "type", "typeface"]);
-const MODEL_GROUPS = new Set(["model", "3d", "geometry"]);
-const VENDOR_GROUPS = new Set(["vendors", "suppliers"]);
-const HTML_FILE_RE = /\.html?$/i;
-const SVG_FILE_RE = /\.svg$/i;
-const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
-const PROSE_TEXT_FILE_RE = /\.txt$/i;
+const OBJECT_JSON_RE = /(?:^|\/)object\.json$/i;
+const REPORT_JSON_RE = /\.report\.json$/i;
 const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
-const MAX_INITIAL_TABLE_ROWS = 100;
-const MAX_INITIAL_TEXT_CHARS = 32_000;
-const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
-	amp: "&",
-	lt: "<",
-	gt: ">",
-	quot: '"',
-	apos: "'",
-	nbsp: " ",
-};
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseJsonObject(text: string | undefined): Record<string, unknown> | undefined {
-	if (!text) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(text);
-		return isPlainRecord(parsed) ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function readableName(raw: string): string {
-	const base =
-		raw
-			.split("/")
-			.at(-1)
-			?.replace(/\.[a-z0-9]+$/i, "") ?? raw;
-	const spaced = base
-		.replace(/[-_]+/g, " ")
-		.replace(/([a-z])([A-Z])/g, "$1 $2")
-		.trim();
-	if (!spaced) return raw;
-	return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-function formatScalar(value: unknown): string {
-	if (typeof value === "string") return value;
-	if (typeof value === "number" || typeof value === "boolean") return String(value);
-	if (value === null || value === undefined) return "–";
-	if (Array.isArray(value)) return value.map(formatScalar).join(", ");
-	return JSON.stringify(value);
-}
-
-function lookupPath(root: Record<string, unknown> | undefined, segments: readonly string[]): unknown {
-	let current: unknown = root;
-	for (const segment of segments) {
-		if (!isPlainRecord(current)) return undefined;
-		current = current[segment];
-	}
-	return current;
-}
-
-function collectColors(
-	value: unknown,
-	baseRoot: Record<string, unknown> | undefined,
-	segments: readonly string[],
-	out: ColorToken[],
-): void {
-	if (typeof value === "string" && COLOR_VALUE.test(value.trim())) {
-		const prev = lookupPath(baseRoot, segments);
-		const label = segments.slice(-1)[0] ?? "";
-		out.push({
-			key: segments.join("."),
-			label: readableName(label),
-			value: value.trim(),
-			changed: prev !== value,
-		});
-		return;
-	}
-	if (Array.isArray(value)) {
-		const prevList = lookupPath(baseRoot, segments);
-		for (let index = 0; index < value.length; index++) {
-			const item = value[index];
-			if (!isPlainRecord(item)) continue;
-			const color = [item.hex, item.color, item.value].find(
-				(candidate): candidate is string => typeof candidate === "string" && COLOR_VALUE.test(candidate.trim()),
-			);
-			if (!color) continue;
-			const name =
-				typeof item.name === "string" ? item.name : typeof item.label === "string" ? item.label : `#${index + 1}`;
-			const prevItem = Array.isArray(prevList) ? prevList[index] : undefined;
-			const prevColor = isPlainRecord(prevItem) ? (prevItem.hex ?? prevItem.color ?? prevItem.value) : undefined;
-			out.push({
-				key: `${segments.join(".")}[${index}]`,
-				label: name,
-				value: color.trim(),
-				changed: prevColor !== color,
-			});
-		}
-		return;
-	}
-	if (!isPlainRecord(value)) return;
-	for (const [key, child] of Object.entries(value)) collectColors(child, baseRoot, [...segments, key], out);
-}
-
-function collectTypography(
-	value: unknown,
-	baseRoot: Record<string, unknown> | undefined,
-	segments: readonly string[],
-	out: TypeToken[],
-): void {
-	if (typeof value === "string" && value.trim()) {
-		const prev = lookupPath(baseRoot, segments);
-		out.push({
-			key: segments.join("."),
-			label: readableName(segments.at(-1) ?? ""),
-			value: value.trim(),
-			changed: prev !== value,
-		});
-		return;
-	}
-	if (!isPlainRecord(value)) return;
-	for (const [key, child] of Object.entries(value)) collectTypography(child, baseRoot, [...segments, key], out);
-}
-
-function collectSpecs(
-	obj: Record<string, unknown>,
-	baseObj: Record<string, unknown> | undefined,
-	prefix: readonly string[],
-	entries: SpecEntry[],
-	tables: SpecTable[],
-): void {
-	for (const [key, value] of Object.entries(obj)) {
-		const segments = [...prefix, key];
-		const lower = key.toLowerCase();
-		if (
-			prefix.length === 0 &&
-			(COLOR_GROUPS.has(lower) || TYPE_GROUPS.has(lower) || MODEL_GROUPS.has(lower) || VENDOR_GROUPS.has(lower))
-		)
-			continue;
-		if (typeof value === "string" && COLOR_VALUE.test(value.trim())) continue;
-		if (Array.isArray(value) && value.length > 0 && value.every(isPlainRecord)) {
-			const columns: string[] = [];
-			for (const row of value) for (const col of Object.keys(row)) if (!columns.includes(col)) columns.push(col);
-			tables.push({
-				title: readableName(key),
-				columns,
-				rows: value.map((row) =>
-					Object.fromEntries(columns.map((col) => [col, formatScalar((row as Record<string, unknown>)[col])])),
-				),
-			});
-			continue;
-		}
-		if (isPlainRecord(value)) {
-			collectSpecs(value, baseObj, segments, entries, tables);
-			continue;
-		}
-		const prev = lookupPath(baseObj, segments);
-		const changed = JSON.stringify(prev) !== JSON.stringify(value);
-		entries.push({
-			key: segments.map(readableName).join(" · "),
-			value: formatScalar(value),
-			...(changed && prev !== undefined ? { prev: formatScalar(prev) } : {}),
-			changed,
-		});
-	}
-}
-
-function collectVendors(
-	value: unknown,
-	baseRoot: Record<string, unknown> | undefined,
-	key: string,
-	out: VendorCard[],
-): void {
-	if (!Array.isArray(value)) return;
-	const baseList = baseRoot?.[key];
-	for (let index = 0; index < value.length; index++) {
-		const row = value[index];
-		if (!isPlainRecord(row)) continue;
-		const vendor = formatScalar(row.vendor ?? row.supplier ?? row.name);
-		const component = formatScalar(row.component ?? row.part ?? row.role ?? "");
-		const prevRow = Array.isArray(baseList) ? baseList[index] : undefined;
-		out.push({
-			vendor,
-			component,
-			...(row.region ? { region: formatScalar(row.region) } : {}),
-			...(row.moq ? { moq: formatScalar(row.moq) } : {}),
-			...(row.leadTime ? { leadTime: formatScalar(row.leadTime) } : {}),
-			...((row.unitPrice ?? row.unitCost) ? { unitPrice: formatScalar(row.unitPrice ?? row.unitCost) } : {}),
-			...(row.status ? { status: formatScalar(row.status) } : {}),
-			...(row.certifications ? { certifications: formatScalar(row.certifications) } : {}),
-			changed: JSON.stringify(prevRow) !== JSON.stringify(row),
-		});
-	}
-}
-
-function extractModelConfig(
-	value: unknown,
-	baseRoot: Record<string, unknown> | undefined,
-	key: string,
-	title: string,
-	colors: readonly ColorToken[],
-): Studio3DConfig | undefined {
-	if (!isPlainRecord(value)) return undefined;
-	const kind = value.kind === "headband" ? "headband" : "device";
-	const dimensions = typeof value.dimensions === "string" ? value.dimensions : "";
-	const layers = Array.isArray(value.layers) ? value.layers.map(formatScalar) : [];
-	const colorways = colors.length
-		? colors.map((c) => ({ name: c.label, hex: c.value }))
-		: [{ name: "Sandstone", hex: "#e6dfd3" }];
-	return {
-		kind,
-		title,
-		dimensions,
-		colorways,
-		layers,
-		changed: JSON.stringify(baseRoot?.[key]) !== JSON.stringify(value),
-	};
-}
-
-function docPriority(path: string): number {
-	const lower = path.toLowerCase();
-	if (lower.includes("voice") || lower.includes("brief") || lower.includes("readme")) return 0;
-	if (lower.includes("spec") || lower.includes("guide")) return 1;
-	return 2;
-}
-
-function svgDataUrl(svg: string): string {
-	return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function htmlDocumentTitle(html: string, fallbackPath: string): string {
-	const match = html.match(/<title\b[^>]*>([\s\S]{1,200}?)<\/title>/i);
-	if (!match) return readableName(fallbackPath);
-	const title = match[1]!
-		.replace(/&(?:#x([0-9a-f]+)|#([0-9]+)|([a-z]+));/gi, (full, hex, dec, named) => {
-			if (hex) {
-				const code = Number.parseInt(hex, 16);
-				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
-			}
-			if (dec) {
-				const code = Number.parseInt(dec, 10);
-				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
-			}
-			return NAMED_HTML_ENTITIES[String(named).toLowerCase()] ?? full;
-		})
-		.trim()
-		.replace(/\s+/g, " ");
-	return title && title.length <= 80 ? title : readableName(fallbackPath);
-}
+const SCRIPT_FILE_RE = /\.m?js$/i;
 
 function resolveRelativeStudioPath(fromFilePath: string, href: string): string | null {
 	const trimmed = href.trim();
@@ -467,10 +183,30 @@ export function prepareStudioHtmlPreview(
 		}
 		if (!css) continue;
 		const style = doc.createElement("style");
-		style.textContent = css.replace(/<\/style/gi, "<\\/style");
+		style.textContent = css.replace(/<\/(style)/gi, "<\\/$1");
 		link.replaceWith(style);
 		modified = true;
 	}
+	const deferred: HTMLScriptElement[] = [];
+	for (const script of [...doc.querySelectorAll("script[src]")]) {
+		const resolved = resolveRelativeStudioPath(htmlPath, script.getAttribute("src") ?? "");
+		const code = resolved && SCRIPT_FILE_RE.test(resolved) ? files[resolved] : undefined;
+		if (code === undefined) continue;
+		const classic = (script.getAttribute("type") ?? "").trim().toLowerCase() !== "module";
+		const inline = doc.createElement("script");
+		for (const attribute of [...script.attributes])
+			if (attribute.name !== "src" && !(classic && (attribute.name === "defer" || attribute.name === "async")))
+				inline.setAttribute(attribute.name, attribute.value);
+		inline.textContent = code.replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "\\x3c!--");
+		if (classic && script.hasAttribute("defer")) {
+			script.remove();
+			deferred.push(inline);
+		} else {
+			script.replaceWith(inline);
+		}
+		modified = true;
+	}
+	doc.body.append(...deferred);
 	for (const img of [...doc.querySelectorAll("img[src]")]) {
 		const resolved = resolveRelativeStudioPath(htmlPath, img.getAttribute("src") ?? "");
 		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
@@ -508,37 +244,16 @@ function sameOrderedChanges(
 	return true;
 }
 
-interface StudioSectionTask {
-	readonly heavy?: boolean;
-	readonly build: () => HTMLElement;
-}
-
 interface ParsedStudioFiles {
-	readonly colors: ColorToken[];
-	readonly typography: TypeToken[];
 	readonly specs: SpecSection[];
-	readonly vendors: VendorCard[];
 	readonly docs: StudioDoc[];
 	readonly htmlPages: StudioHtmlPage[];
 	readonly svgs: StudioSvgAsset[];
-	readonly reportPaths: string[];
-	rawModel:
-		| { readonly value: unknown; readonly base: Record<string, unknown> | undefined; readonly key: string }
-		| undefined;
+	legacyModel: LegacyStudioModel | undefined;
 }
 
 function emptyParsedStudioFiles(): ParsedStudioFiles {
-	return {
-		colors: [],
-		typography: [],
-		specs: [],
-		vendors: [],
-		docs: [],
-		htmlPages: [],
-		svgs: [],
-		reportPaths: [],
-		rawModel: undefined,
-	};
+	return { specs: [], docs: [], htmlPages: [], svgs: [], legacyModel: undefined };
 }
 
 function parseSingleStudioFile(
@@ -547,47 +262,36 @@ function parseSingleStudioFile(
 	baseFiles: Readonly<Record<string, string>>,
 	previewTokensCss: string,
 	baseTokensCss: string,
-	checkHtmlDeps: boolean,
+	compare: boolean,
 	out: ParsedStudioFiles,
 ): void {
+	if (OBJECT_JSON_RE.test(path) || REPORT_JSON_RE.test(path)) return;
 	const content = files[path] ?? "";
 	const baseContent = baseFiles[path];
 	const changed = baseContent !== content;
-	if (/\.report\.json$/i.test(path)) {
-		out.reportPaths.push(path);
-		return;
-	}
 	if (path.toLowerCase().endsWith(".json")) {
 		const parsed = parseJsonObject(content);
-		if (parsed) {
-			const baseParsed = parseJsonObject(baseContent);
-			for (const [k, v] of Object.entries(parsed)) {
-				const lower = k.toLowerCase();
-				if (COLOR_GROUPS.has(lower)) collectColors(v, baseParsed, [k], out.colors);
-				else if (TYPE_GROUPS.has(lower)) collectTypography(v, baseParsed, [k], out.typography);
-				else if (VENDOR_GROUPS.has(lower)) collectVendors(v, baseParsed, k, out.vendors);
-				else if (MODEL_GROUPS.has(lower) && !out.rawModel) out.rawModel = { value: v, base: baseParsed, key: k };
-				else if (typeof v === "string" && COLOR_VALUE.test(v.trim())) collectColors(v, baseParsed, [k], out.colors);
-			}
-			const entries: SpecEntry[] = [];
-			const tables: SpecTable[] = [];
-			collectSpecs(parsed, baseParsed, [], entries, tables);
-			if (entries.length || tables.length)
-				out.specs.push({ path, title: readableName(path), changed, entries, tables });
+		if (!parsed) return;
+		const baseParsed = parseJsonObject(baseContent);
+		if (!out.legacyModel) {
+			const key = surfaceLegacyModelKey(parsed);
+			if (key) out.legacyModel = { value: parsed[key], base: baseParsed?.[key] };
 		}
+		if (!compare) return;
+		const entries: SpecEntry[] = [];
+		collectSpecs(parsed, baseParsed, [], entries, []);
+		if (entries.length) out.specs.push({ path, title: readableName(path), changed, entries });
 		return;
 	}
+	if (!compare) return;
 	if (HTML_FILE_RE.test(path)) {
-		const dependencyChanged =
-			checkHtmlDeps && !changed
-				? studioHtmlDependencyChanged(content, path, files, baseFiles, previewTokensCss, baseTokensCss)
-				: false;
 		out.htmlPages.push({
 			path,
 			title: htmlDocumentTitle(content, path),
 			html: content,
 			...(baseContent !== undefined ? { baseHtml: baseContent } : {}),
-			changed: changed || dependencyChanged,
+			changed:
+				changed || studioHtmlDependencyChanged(content, path, files, baseFiles, previewTokensCss, baseTokensCss),
 		});
 		return;
 	}
@@ -617,6 +321,23 @@ function parseSingleStudioFile(
 	}
 }
 
+function reconcileChildren(parent: HTMLElement, next: readonly HTMLElement[]): void {
+	const keep = new Set<ChildNode>(next);
+	for (let child = parent.firstChild; child; ) {
+		const sibling = child.nextSibling;
+		if (!keep.has(child)) child.remove();
+		child = sibling;
+	}
+	let cursor = parent.firstChild;
+	for (const node of next) {
+		if (node === cursor) {
+			cursor = cursor.nextSibling;
+			continue;
+		}
+		parent.insertBefore(node, cursor);
+	}
+}
+
 export class SurfaceStudioView {
 	readonly el = h("div", { class: "surface-studio" });
 	readonly #options: SurfaceStudioOptions;
@@ -626,10 +347,11 @@ export class SurfaceStudioView {
 	#showingSkeleton = false;
 	#renderSeq = 0;
 	#lastConflict: SurfacePreviewConflict | null = null;
-	#viewer3d: Studio3DViewer | undefined;
-	#reportView: SurfaceReportView | undefined;
+	#layout: SurfaceLayoutView | undefined;
 	readonly #htmlFrames: AppFrame[] = [];
-	#tab: StudioTab = "overview";
+	#tab = "overview";
+	#renderedTab: string | null = null;
+	#renderedGrid: HTMLElement | null = null;
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
@@ -662,7 +384,9 @@ export class SurfaceStudioView {
 
 	deactivate(): void {
 		this.#renderSeq++;
-		this.#reportView?.deactivate();
+		this.#renderedTab = null;
+		this.#renderedGrid = null;
+		this.#layout?.deactivate();
 	}
 
 	dispose(): void {
@@ -672,7 +396,7 @@ export class SurfaceStudioView {
 			clearTimeout(this.#settleTimer);
 			this.#settleTimer = undefined;
 		}
-		this.#reportView?.dispose();
+		this.#layout?.dispose();
 		this.#lifetime.abort();
 	}
 
@@ -688,6 +412,7 @@ export class SurfaceStudioView {
 		files: Readonly<Record<string, string>>,
 		compiledTokensCss: string,
 		className: string,
+		listen?: (data: unknown) => void,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
@@ -702,6 +427,15 @@ export class SurfaceStudioView {
 			{ again: true },
 		);
 		this.#htmlFrames.push(frame);
+		if (listen) {
+			window.addEventListener(
+				"message",
+				(event) => {
+					if (event.source !== null && event.source === frame.frame.contentWindow) listen(event.data);
+				},
+				{ signal: frame.signal },
+			);
+		}
 		return frame.frame;
 	}
 
@@ -770,10 +504,13 @@ export class SurfaceStudioView {
 		const look = store.lookOf(surface);
 		const lookKind = look.kind;
 		const isIdentitySurface =
-			surface.isGlobal === true ||
-			lookKind === "identity" ||
-			surface.slug === "identity" ||
-			Object.keys(baseFiles).some((path) => path.startsWith("identity/"));
+			surfaceStarterKind({
+				lookKind,
+				slug: surface.slug,
+				isGlobal: surface.isGlobal === true,
+				paths: Object.keys(baseFiles),
+				hasModel: false,
+			}) === "identity";
 		const identityTokens = store.companyIdentityTokens();
 		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
@@ -801,7 +538,8 @@ export class SurfaceStudioView {
 		}
 		this.#wasUpdating = updating;
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
-		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
+		const identityFiles = store.companyIdentityFiles();
+		const companyFiles = identityFiles && identityFiles.surfaceId !== surface.id ? identityFiles : undefined;
 		const linkedSurfacesKey = JSON.stringify(
 			activeOtherSurfaces.map((item) => {
 				const itemLook = store.lookOf(item);
@@ -826,6 +564,8 @@ export class SurfaceStudioView {
 			state.cloudSurfaceFiles[surface.id],
 			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
+			state.cloudSurfaceBinaries[surface.id],
+			state.localStudioBinaries[surface.id],
 			surface.id,
 			surface.slug,
 			surface.title,
@@ -835,6 +575,7 @@ export class SurfaceStudioView {
 			lookKind,
 			look.accent ?? "",
 			identityTokens?.css ?? "",
+			companyFiles,
 			workspace?.briefSummary ?? "",
 			linkedSurfacesKey,
 			busyReconcile,
@@ -847,6 +588,8 @@ export class SurfaceStudioView {
 		const sliced = this.#options.timeSlice ?? hasBrowserCompositor();
 		if (initialLoading && Object.keys(baseFiles).length === 0 && ordered.length === 0 && state.mode !== "compare") {
 			this.#disposeHtmlFrames();
+			this.#renderedTab = null;
+			this.#renderedGrid = null;
 			this.#showingSkeleton = true;
 			this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "studio"));
 			return;
@@ -858,16 +601,16 @@ export class SurfaceStudioView {
 			surface,
 			look,
 			lookKind,
-			isIdentitySurface,
 			identityTokens,
 			workspace,
 			baseFiles,
+			baseBinaries: effectiveStudioBaseBinaries(state, surface.id),
 			ordered,
 			initialLoading,
 			updatingPhase,
 			busyReconcile,
 			activeOtherSurfaces,
-			downstreamSurfaces,
+			companyFiles,
 			mode: state.mode,
 		};
 		if (sliced) {
@@ -893,16 +636,16 @@ export class SurfaceStudioView {
 		readonly surface: SurfaceSummary;
 		readonly look: ReturnType<SurfacesStore["lookOf"]>;
 		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-		readonly isIdentitySurface: boolean;
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
+		readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
 		readonly busyReconcile: boolean;
 		readonly activeOtherSurfaces: readonly SurfaceSummary[];
-		readonly downstreamSurfaces: readonly SurfaceSummary[];
+		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): Promise<void> {
 		const signal = this.#lifetime.signal;
@@ -910,7 +653,12 @@ export class SurfaceStudioView {
 		if (!(await yieldToMain(signal).then(() => this.#isRenderActive(params.seq)))) return;
 		budget.reset();
 
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+		);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
@@ -924,10 +672,10 @@ export class SurfaceStudioView {
 			params.surface.folderRoot,
 			params.identityTokens?.css ?? "",
 		);
-		const checkHtmlDeps = params.mode === "compare" || this.#tab === "pages";
+		const compare = params.mode === "compare";
 		const parsed = emptyParsedStudioFiles();
 		for (const path of filePaths) {
-			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, checkHtmlDeps, parsed);
+			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, compare, parsed);
 			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
 		}
 		parsed.docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
@@ -943,12 +691,35 @@ export class SurfaceStudioView {
 		if (!this.#isRenderActive(params.seq)) return;
 		this.#disposeHtmlFrames();
 		if (!plan.gridTasks) {
+			this.#renderedTab = null;
+			this.#renderedGrid = null;
 			this.el.replaceChildren(...plan.children);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
-		const grid = h("div", { class: "studio-grid" });
+		const reuseGrid = this.#renderedTab === this.#tab && this.#renderedGrid?.parentElement === this.el;
+		const grid = reuseGrid ? this.#renderedGrid! : h("div", { class: "studio-grid" });
+		this.#renderedTab = this.#tab;
+		this.#renderedGrid = grid;
 		const tasks = plan.gridTasks;
+		if (reuseGrid) {
+			reconcileChildren(this.el, [...plan.children, grid]);
+			const built: HTMLElement[] = [];
+			budget.reset();
+			for (let i = 0; i < tasks.length; i++) {
+				const task = tasks[i]!;
+				if (task.heavy) {
+					await yieldToMain(signal);
+					if (!this.#isRenderActive(params.seq)) return;
+					budget.reset();
+				} else if (i > 0 && (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq))) {
+					return;
+				}
+				built.push(task.build());
+			}
+			reconcileChildren(grid, built);
+			return;
+		}
 		let start = 0;
 		if (tasks[0] && !tasks[0].heavy) {
 			grid.append(tasks[0].build());
@@ -976,19 +747,24 @@ export class SurfaceStudioView {
 		readonly surface: SurfaceSummary;
 		readonly look: ReturnType<SurfacesStore["lookOf"]>;
 		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-		readonly isIdentitySurface: boolean;
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
+		readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
 		readonly busyReconcile: boolean;
 		readonly activeOtherSurfaces: readonly SurfaceSummary[];
-		readonly downstreamSurfaces: readonly SurfaceSummary[];
+		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): void {
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+		);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
@@ -1002,10 +778,10 @@ export class SurfaceStudioView {
 			params.surface.folderRoot,
 			params.identityTokens?.css ?? "",
 		);
-		const checkHtmlDeps = params.mode === "compare" || this.#tab === "pages";
+		const compare = params.mode === "compare";
 		const parsed = emptyParsedStudioFiles();
 		for (const path of filePaths) {
-			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, checkHtmlDeps, parsed);
+			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, compare, parsed);
 		}
 		parsed.docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
 		const plan = this.#buildRenderPlan(
@@ -1019,11 +795,22 @@ export class SurfaceStudioView {
 		);
 		this.#disposeHtmlFrames();
 		if (!plan.gridTasks) {
+			this.#renderedTab = null;
+			this.#renderedGrid = null;
 			this.el.replaceChildren(...plan.children);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
-		const grid = h("div", { class: "studio-grid" });
+		const reuseGrid = this.#renderedTab === this.#tab && this.#renderedGrid?.parentElement === this.el;
+		const grid = reuseGrid ? this.#renderedGrid! : h("div", { class: "studio-grid" });
+		this.#renderedTab = this.#tab;
+		this.#renderedGrid = grid;
+		if (reuseGrid) {
+			const built = plan.gridTasks.map((task) => task.build());
+			reconcileChildren(this.el, [...plan.children, grid]);
+			reconcileChildren(grid, built);
+			return;
+		}
 		for (const task of plan.gridTasks) grid.append(task.build());
 		this.el.replaceChildren(...plan.children, grid);
 		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
@@ -1034,15 +821,15 @@ export class SurfaceStudioView {
 			readonly surface: SurfaceSummary;
 			readonly look: ReturnType<SurfacesStore["lookOf"]>;
 			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
-			readonly isIdentitySurface: boolean;
 			readonly identityTokens: CompiledIdentityTokens | null;
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
+			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 			readonly initialLoading: boolean;
 			readonly updatingPhase: SurfaceUpdatePhase | null;
 			readonly busyReconcile: boolean;
 			readonly activeOtherSurfaces: readonly SurfaceSummary[];
-			readonly downstreamSurfaces: readonly SurfaceSummary[];
+			readonly companyFiles: SurfaceFileLayer | undefined;
 			readonly mode: SurfacesStore["state"]["mode"];
 		},
 		composition: ReturnType<typeof composeStudioPreview>,
@@ -1056,26 +843,19 @@ export class SurfaceStudioView {
 		readonly gridTasks?: readonly StudioSectionTask[];
 		readonly leavingSkeleton: boolean;
 	} {
-		const store = this.#options.store;
 		const {
 			surface,
 			look,
 			lookKind,
-			isIdentitySurface,
 			identityTokens,
 			workspace,
 			baseFiles,
 			initialLoading,
 			updatingPhase,
 			busyReconcile,
-			activeOtherSurfaces,
-			downstreamSurfaces,
 			mode,
 		} = params;
-		const { colors, typography, specs, vendors, docs, htmlPages, svgs, reportPaths, rawModel } = parsed;
-		const modelConfig = rawModel
-			? extractModelConfig(rawModel.value, rawModel.base, rawModel.key, surface.title, colors)
-			: undefined;
+		const { specs, docs, htmlPages, svgs, legacyModel } = parsed;
 
 		const badgeText =
 			composition.status === "conflicted"
@@ -1140,44 +920,42 @@ export class SurfaceStudioView {
 		const allChangedPaths = [...new Set([...Object.keys(baseFiles), ...filePaths])]
 			.sort()
 			.filter((path) => baseFiles[path] !== files[path]);
+		const starter = surfaceStarterKind({
+			lookKind,
+			slug: surface.slug,
+			isGlobal: surface.isGlobal === true,
+			paths: [...Object.keys(baseFiles), ...filePaths],
+			hasModel: surfaceFilesHaveModel(files, Object.keys(composition.binaries)),
+		});
+		const isIdentity = starter === "identity";
 
 		if (filePaths.length === 0 && (mode !== "compare" || allChangedPaths.length === 0)) {
 			if (initialLoading) {
 				this.#showingSkeleton = true;
 				return { children: [surfaceSkeleton(t("Opening studio…"), "studio")], leavingSkeleton: false };
 			}
-			const leavingSkeleton = this.#showingSkeleton;
-			this.#showingSkeleton = false;
-			children.push(
-				h(
-					"div",
-					{ class: "studio-empty" },
-					surfaceTile(surface, look, "is-hero"),
-					h("h2", null, surface.title),
-					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
-					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),
-				),
-			);
-			return { children, leavingSkeleton };
+			if (mode === "compare") {
+				const leavingSkeleton = this.#showingSkeleton;
+				this.#showingSkeleton = false;
+				children.push(
+					h(
+						"div",
+						{ class: "studio-empty" },
+						surfaceTile(surface, look, "is-hero"),
+						h("h2", null, surface.title),
+						workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
+						h(
+							"p",
+							null,
+							t("No studio files yet. Describe a change below to create tokens, specs, or guidelines."),
+						),
+					),
+				);
+				return { children, leavingSkeleton };
+			}
 		}
 
-		const renderPlainDoc = (content: string, bodyClass: string): HTMLElement[] => {
-			if (content.length <= MAX_INITIAL_TEXT_CHARS) {
-				return [h("div", { class: bodyClass }, content)];
-			}
-			const textEl = h("div", { class: bodyClass }, `${content.slice(0, MAX_INITIAL_TEXT_CHARS)}…`);
-			const moreBtn = h("button", { type: "button", class: "btn btn-small studio-more-btn" }, t("Show full file"));
-			moreBtn.addEventListener(
-				"click",
-				() => {
-					textEl.textContent = content;
-					moreBtn.remove();
-				},
-				{ once: true, signal: this.#lifetime.signal },
-			);
-			return [textEl, moreBtn];
-		};
-
+		const signal = this.#lifetime.signal;
 		const gridTasks: StudioSectionTask[] = [];
 
 		if (mode === "compare") {
@@ -1282,7 +1060,7 @@ export class SurfaceStudioView {
 									...(doc.baseContent
 										? doc.isMarkdown
 											? [markdown(doc.baseContent)]
-											: renderPlainDoc(doc.baseContent, "studio-plain-text")
+											: renderPlainDoc(doc.baseContent, "studio-plain-text", signal)
 										: [h("em", null, t("Not in Base"))]),
 								),
 								h(
@@ -1290,7 +1068,7 @@ export class SurfaceStudioView {
 									{ class: "studio-compare-cell is-preview studio-doc-body" },
 									...(doc.isMarkdown
 										? [markdown(doc.content)]
-										: renderPlainDoc(doc.content, "studio-plain-text")),
+										: renderPlainDoc(doc.content, "studio-plain-text", signal)),
 								),
 							),
 						),
@@ -1387,155 +1165,70 @@ export class SurfaceStudioView {
 			return { children, gridTasks, leavingSkeleton };
 		}
 
-		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
 		this.#applyIdentityVars(isIdentity, identityTokens);
-		const isVendorSpec = (spec: SpecSection) => /vendor|supplier/i.test(spec.path);
-		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
-		const vendorSpecs = specs.filter(isVendorSpec);
-		const detailSpecs = specs.filter((spec) => !isVendorSpec(spec));
-		const hasSpecsTab =
-			detailSpecs.some((spec) => spec.tables.length > 0 || spec.entries.length > 0) || typography.length > 0;
-		const hasVendorsTab = vendors.length > 0 || vendorSpecs.length > 0;
-		const hasAnalysisTab = reportPaths.length > 0;
-		const hasFilesTab = docs.length > 0;
-		const hasPagesTab = htmlPages.length > 0;
-		const isProduct = !isIdentity && lookKind === "product";
-		const hasOverviewContent = Boolean(
-			(isIdentity && downstreamSurfaces.length > 0) ||
-				modelConfig ||
-				svgs.length ||
-				colors.length ||
-				(isIdentity && typography.length) ||
-				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
-		);
-		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity || isProduct);
-		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
-		if (tabbed) {
-			if (hasOverviewContent || (!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab))
-				availableTabs.push({ id: "overview", label: t("Overview") });
-			if (hasSpecsTab)
-				availableTabs.push({ id: "specs", label: isIdentity ? t("Design System") : t("Specs & BOM") });
-			if (hasVendorsTab) availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
-			if (hasAnalysisTab)
-				availableTabs.push({ id: "analysis", label: isIdentity ? t("Philosophy") : t("Analysis") });
-			if (hasFilesTab)
-				availableTabs.push({ id: "files", label: isIdentity ? t("Voice & Files") : t("Brief & Files") });
-			if (hasPagesTab) availableTabs.push({ id: "pages", label: htmlPages.length === 1 ? t("Page") : t("Pages") });
-			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
-			children.push(
-				h(
-					"div",
-					{ class: "studio-tabs", role: "tablist", "aria-label": t("Studio views") },
-					...availableTabs.map((tab) =>
-						h(
-							"button",
-							{
-								type: "button",
-								role: "tab",
-								class: `studio-tab${this.#tab === tab.id ? " is-on" : ""}`,
-								"aria-selected": String(this.#tab === tab.id),
-								"data-act": "studio-tab",
-								"data-tab": tab.id,
-							},
-							tab.label,
-						),
-					),
-				),
-			);
-		}
+		return this.#layoutPlan(params, children, files, composition.binaries, {
+			starter,
+			legacyModel,
+			previewTokensCss,
+			baseTokensCss,
+		});
+	}
 
-		const renderSpecEntries = (entries: readonly SpecEntry[]) =>
-			h(
-				"dl",
-				{ class: "studio-kv" },
-				entries.flatMap((entry) => [
-					h("dt", { class: entry.changed ? "is-changed" : "" }, entry.key),
-					entry.changed && entry.prev !== undefined
-						? h(
-								"dd",
-								{ class: "is-changed studio-diff-dd" },
-								h("span", { class: "studio-diff-prev" }, entry.prev),
-								h("span", { class: "studio-diff-arrow", "aria-hidden": "true" }, "→"),
-								h("span", { class: "studio-diff-next" }, entry.value),
-							)
-						: h("dd", { class: entry.changed ? "is-changed" : "" }, entry.value),
-				]),
-			);
-
-		const renderSpecRow = (columns: readonly string[], row: Readonly<Record<string, string>>) =>
-			h(
-				"tr",
-				null,
-				columns.map((col) => h("td", null, row[col] ?? "–")),
-			);
-
-		const renderSpecTables = (tables: readonly SpecTable[]) =>
-			tables.map((table) => {
-				const truncated = table.rows.length > MAX_INITIAL_TABLE_ROWS;
-				const initialRows = truncated ? table.rows.slice(0, MAX_INITIAL_TABLE_ROWS) : table.rows;
-				const tbody = h(
-					"tbody",
-					null,
-					initialRows.map((row) => renderSpecRow(table.columns, row)),
-				);
-				const moreBtn = truncated
-					? h(
-							"button",
-							{ type: "button", class: "btn btn-small studio-more-btn" },
-							t("Show all {count} rows", { count: table.rows.length }),
-						)
-					: null;
-				if (moreBtn) {
-					moreBtn.addEventListener(
-						"click",
-						() => {
-							const frag = document.createDocumentFragment();
-							for (let i = MAX_INITIAL_TABLE_ROWS; i < table.rows.length; i++) {
-								frag.append(renderSpecRow(table.columns, table.rows[i]!));
-							}
-							tbody.append(frag);
-							moreBtn.remove();
-						},
-						{ once: true, signal: this.#lifetime.signal },
-					);
-				}
-				return h(
-					"div",
-					{ class: "studio-table-wrap" },
-					h("h3", { class: "studio-subhead" }, table.title),
-					h(
-						"table",
-						{ class: "studio-table" },
-						h(
-							"thead",
-							null,
-							h(
-								"tr",
-								null,
-								table.columns.map((col) => h("th", null, readableName(col))),
-							),
-						),
-						tbody,
-					),
-					moreBtn,
+	#sharedLinks(
+		surface: SurfaceSummary,
+		lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"],
+		activeOtherSurfaces: readonly SurfaceSummary[],
+	): HTMLElement | null {
+		const store = this.#options.store;
+		const consumed = sharedAssetsConsumedBy(lookKind);
+		const produced = sharedAssetsProducedBy(lookKind);
+		const builtOn = new Map<string, (typeof activeOtherSurfaces)[number]>();
+		const seenIncomingProducers = new Set<string>();
+		for (const link of consumed) {
+			if (link.liveSyncMode === "prompt_context" && link.producedBy.every((k) => seenIncomingProducers.has(k))) {
+				continue;
+			}
+			const producers = activeOtherSurfaces.filter((item) => {
+				const targetKind = store.lookOf(item).kind;
+				return (
+					link.producedBy.includes(targetKind) || (link.producedBy.includes("identity") && item.isGlobal === true)
 				);
 			});
-
-		const showOverview = !tabbed || this.#tab === "overview";
-		const showSpecs = !tabbed || this.#tab === "specs";
-		const showVendors = !tabbed || this.#tab === "vendors";
-		const showAnalysis = tabbed && this.#tab === "analysis";
-		const showFiles = !tabbed || this.#tab === "files";
-		const showPages = !tabbed || this.#tab === "pages";
-
-		if (isIdentity && showOverview && downstreamSurfaces.length > 0) {
-			gridTasks.push({
-				build: () =>
-					h(
-						"section",
-						{ class: "studio-reach", "data-identity-reach": "true", "data-live-linked": "true" },
-						h("span", { class: "studio-reach-label" }, t("Used by")),
-						downstreamSurfaces.map((target) =>
+			if (!producers.length) continue;
+			for (const k of link.producedBy) seenIncomingProducers.add(k);
+			for (const target of producers) builtOn.set(target.slug, target);
+		}
+		const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
+		const primaryProductRoot = store.state.surfaces
+			.filter(
+				(item) =>
+					item.status === "active" &&
+					item.archetype === "studio" &&
+					store.lookOf(item).kind === "product" &&
+					Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
+			)
+			.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
+			.at(0)
+			?.folderRoot?.replace(/^\/+|\/+$/g, "");
+		const usedBy = new Map<string, (typeof activeOtherSurfaces)[number]>();
+		for (const link of produced) {
+			if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
+				continue;
+			}
+			const consumers = activeOtherSurfaces
+				.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
+				.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
+			for (const target of consumers) usedBy.set(target.slug, target);
+		}
+		if (builtOn.size === 0 && usedBy.size === 0) return null;
+		const group = (dir: "in" | "out", label: string, targets: Map<string, (typeof activeOtherSurfaces)[number]>) =>
+			targets.size === 0
+				? null
+				: h(
+						"span",
+						{ class: "studio-reach-group", "data-link-dir": dir },
+						h("span", { class: "studio-reach-label" }, label),
+						[...targets.values()].map((target) =>
 							h(
 								"button",
 								{
@@ -1548,430 +1241,90 @@ export class SurfaceStudioView {
 								h("span", null, target.title),
 							),
 						),
+					);
+		return h(
+			"section",
+			{ class: "studio-reach", "data-live-linked": "true" },
+			group("in", t("Builds on"), builtOn),
+			group("out", t("Used by"), usedBy),
+		);
+	}
+
+	#layoutPlan(
+		params: {
+			readonly surface: SurfaceSummary;
+			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
+			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
+			readonly baseFiles: Readonly<Record<string, string>>;
+			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+			readonly activeOtherSurfaces: readonly SurfaceSummary[];
+			readonly companyFiles: SurfaceFileLayer | undefined;
+		},
+		children: HTMLElement[],
+		files: Readonly<Record<string, string>>,
+		binaries: Readonly<Record<string, StudioBinaryRef>>,
+		page: {
+			readonly starter: SurfaceStarterKind;
+			readonly legacyModel: LegacyStudioModel | undefined;
+			readonly previewTokensCss: string;
+			readonly baseTokensCss: string;
+		},
+	): {
+		readonly children: HTMLElement[];
+		readonly gridTasks: readonly StudioSectionTask[];
+		readonly leavingSkeleton: boolean;
+	} {
+		this.#layout ??= new SurfaceLayoutView({
+			store: this.#options.store,
+			surface: this.#options.surface,
+			signal: this.#lifetime.signal,
+			baseFiles: () => this.#baseFiles,
+			...(this.#options.patches ? { patches: this.#options.patches } : {}),
+			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
+		});
+		const plan = this.#layout.plan({
+			surface: params.surface,
+			files,
+			baseFiles: params.baseFiles,
+			binaries,
+			baseBinaries: params.baseBinaries,
+			company: params.companyFiles,
+			briefSummary: params.workspace?.briefSummary ?? "",
+			starter: page.starter,
+			tab: this.#tab,
+			legacyModel: page.legacyModel,
+			htmlPages: {
+				frame: (frame) =>
+					this.#createHtmlFrame(
+						frame.html,
+						frame.path,
+						frame.title,
+						frame.files,
+						page.previewTokensCss,
+						frame.className,
+						frame.listen,
 					),
-			});
-		} else if (!isIdentity && showOverview) {
-			const consumed = sharedAssetsConsumedBy(lookKind);
-			const produced = sharedAssetsProducedBy(lookKind);
-			const buildSharedLinks = (): HTMLElement | null => {
-				const builtOn = new Map<string, (typeof activeOtherSurfaces)[number]>();
-				const seenIncomingProducers = new Set<string>();
-				for (const link of consumed) {
-					if (
-						link.liveSyncMode === "prompt_context" &&
-						link.producedBy.every((k) => seenIncomingProducers.has(k))
-					) {
-						continue;
-					}
-					const producers = activeOtherSurfaces.filter((item) => {
-						const targetKind = store.lookOf(item).kind;
-						return (
-							link.producedBy.includes(targetKind) ||
-							(link.producedBy.includes("identity") && item.isGlobal === true)
-						);
-					});
-					if (!producers.length) continue;
-					for (const k of link.producedBy) seenIncomingProducers.add(k);
-					for (const target of producers) builtOn.set(target.slug, target);
-				}
-				const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
-				const primaryProductRoot = store.state.surfaces
-					.filter(
-						(item) =>
-							item.status === "active" &&
-							item.archetype === "studio" &&
-							store.lookOf(item).kind === "product" &&
-							Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
-					)
-					.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
-					.at(0)
-					?.folderRoot?.replace(/^\/+|\/+$/g, "");
-				const usedBy = new Map<string, (typeof activeOtherSurfaces)[number]>();
-				for (const link of produced) {
-					if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
-						continue;
-					}
-					const consumers = activeOtherSurfaces
-						.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
-						.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
-					for (const target of consumers) usedBy.set(target.slug, target);
-				}
-				if (builtOn.size === 0 && usedBy.size === 0) return null;
-				const group = (
-					dir: "in" | "out",
-					label: string,
-					targets: Map<string, (typeof activeOtherSurfaces)[number]>,
-				) =>
-					targets.size === 0
-						? null
-						: h(
-								"span",
-								{ class: "studio-reach-group", "data-link-dir": dir },
-								h("span", { class: "studio-reach-label" }, label),
-								[...targets.values()].map((target) =>
-									h(
-										"button",
-										{
-											type: "button",
-											class: "studio-reach-chip",
-											"data-act": "studio-open-surface",
-											"data-slug": target.slug,
-										},
-										surfaceTile(target, store.lookOf(target), "is-tiny"),
-										h("span", null, target.title),
-									),
-								),
-							);
-				return h(
-					"section",
-					{ class: "studio-reach", "data-live-linked": "true" },
-					group("in", t("Builds on"), builtOn),
-					group("out", t("Used by"), usedBy),
-				);
-			};
-			const built = buildSharedLinks();
-			if (built) gridTasks.push({ build: () => built });
-		}
-
-		if (modelConfig && showOverview) {
-			gridTasks.push({
-				build: () => {
-					if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
-					else this.#viewer3d.update(modelConfig);
-					return this.#viewer3d.el;
-				},
-			});
-		}
-
-		if (svgs.length && showOverview) {
-			gridTasks.push({
-				build: () =>
-					h(
-						"section",
-						{ class: "studio-section" },
-						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, isIdentity ? t("Brand mark") : t("Vector assets")),
-						),
-						h(
-							"div",
-							{ class: "studio-svg-grid" },
-							svgs.map((asset) =>
-								h(
-									"figure",
-									{ class: `studio-svg-card${asset.changed ? " is-changed" : ""}`, "data-file": asset.path },
-									h(
-										"div",
-										{ class: "studio-svg-stage" },
-										h("img", {
-											class: "studio-svg-img",
-											src: svgDataUrl(asset.svg),
-											alt: asset.title,
-										}),
-									),
-									h(
-										"figcaption",
-										{ class: "studio-svg-meta" },
-										h("strong", null, asset.title),
-										h("code", { class: "studio-file-tag" }, asset.path),
-										asset.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-									),
-								),
-							),
-						),
+				linksChanged: (html, path) =>
+					studioHtmlDependencyChanged(
+						html,
+						path,
+						files,
+						params.baseFiles,
+						page.previewTokensCss,
+						page.baseTokensCss,
 					),
-			});
+			},
+		});
+		this.#tab = plan.tab;
+		if (plan.tabBar) children.push(plan.tabBar);
+		const gridTasks: StudioSectionTask[] = [];
+		if (plan.firstTab) {
+			const links = this.#sharedLinks(params.surface, params.lookKind, params.activeOtherSurfaces);
+			if (links) gridTasks.push({ build: () => links });
 		}
-
-		if (colors.length && showOverview) {
-			gridTasks.push({
-				build: () =>
-					h(
-						"section",
-						{ class: "studio-section" },
-						h("div", { class: "studio-section-head" }, h("h2", null, t("Palette"))),
-						h(
-							"div",
-							{ class: "studio-swatches" },
-							colors.map((swatch) => {
-								const chip = h("span", { class: "studio-swatch-chip", "aria-hidden": "true" });
-								chip.style.backgroundColor = swatch.value;
-								return h(
-									"div",
-									{
-										class: `studio-swatch${swatch.changed ? " is-changed" : ""}`,
-										"data-token": swatch.key,
-									},
-									chip,
-									h(
-										"div",
-										{ class: "studio-swatch-meta" },
-										h("strong", null, swatch.label),
-										h("code", null, swatch.value),
-									),
-								);
-							}),
-						),
-					),
-			});
-		}
-
-		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity) {
-			gridTasks.push({
-				build: () =>
-					h(
-						"section",
-						{ class: `studio-section${primarySpec.changed ? " is-changed" : ""}`, "data-file": primarySpec.path },
-						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, t("Key specs")),
-							h("code", { class: "studio-file-tag" }, primarySpec.path),
-							primarySpec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-						),
-						renderSpecEntries(primarySpec.entries),
-					),
-			});
-		}
-
-		if (typography.length && (showSpecs || (isIdentity && showOverview))) {
-			gridTasks.push({
-				build: () =>
-					h(
-						"section",
-						{ class: "studio-section" },
-						h("div", { class: "studio-section-head" }, h("h2", null, t("Typography"))),
-						h(
-							"div",
-							{ class: "studio-type-list" },
-							typography.map((item) => {
-								const sample = h("p", { class: "studio-type-sample" }, t("Aa Bb Cc · 123"));
-								sample.style.fontFamily = item.value;
-								return h(
-									"div",
-									{ class: `studio-type-row${item.changed ? " is-changed" : ""}`, "data-token": item.key },
-									h(
-										"div",
-										{ class: "studio-type-meta" },
-										h("strong", null, item.label),
-										h("code", null, item.value),
-									),
-									sample,
-								);
-							}),
-						),
-					),
-			});
-		}
-
-		if (showVendors && (vendors.length || vendorSpecs.length)) {
-			for (const spec of vendorSpecs) {
-				if (!spec.entries.length) continue;
-				gridTasks.push({
-					build: () =>
-						h(
-							"section",
-							{ class: `studio-section${spec.changed ? " is-changed" : ""}`, "data-file": spec.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, t("Production plan")),
-								h("code", { class: "studio-file-tag" }, spec.path),
-								spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-							),
-							renderSpecEntries(spec.entries),
-						),
-				});
-			}
-			if (vendors.length) {
-				gridTasks.push({
-					build: () =>
-						h(
-							"section",
-							{ class: "studio-section studio-vendors" },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, t("Production & Vendors")),
-								h("span", { class: "studio-file-tag" }, t("{count} suppliers", { count: vendors.length })),
-							),
-							h(
-								"div",
-								{ class: "studio-vendor-grid" },
-								vendors.map((item) =>
-									h(
-										"article",
-										{ class: `studio-vendor-card${item.changed ? " is-changed" : ""}` },
-										h(
-											"div",
-											{ class: "studio-vendor-top" },
-											h("strong", null, item.vendor),
-											item.status ? h("span", { class: "studio-vendor-status" }, item.status) : null,
-										),
-										item.component ? h("p", { class: "studio-vendor-comp" }, item.component) : null,
-										h(
-											"div",
-											{ class: "studio-vendor-meta" },
-											item.unitPrice ? h("span", null, item.unitPrice) : null,
-											item.moq ? h("span", null, t("MOQ {moq}", { moq: item.moq })) : null,
-											item.leadTime ? h("span", null, item.leadTime) : null,
-											item.region ? h("span", null, item.region) : null,
-										),
-										item.certifications
-											? h("div", { class: "studio-vendor-certs" }, item.certifications)
-											: null,
-									),
-								),
-							),
-						),
-				});
-			}
-			if (reportPaths.length > 0) {
-				gridTasks.push({
-					build: () =>
-						h(
-							"div",
-							{ class: "studio-report-link" },
-							h(
-								"div",
-								{ class: "studio-report-link-copy" },
-								h("strong", null, t("Deep-dive vendor analysis")),
-								h(
-									"p",
-									null,
-									t("Read the full rationale, score comparison, and cost curves right here in {surface}.", {
-										surface: surface.title,
-									}),
-								),
-							),
-							h(
-								"button",
-								{
-									type: "button",
-									class: "btn btn-small",
-									"data-act": "studio-tab",
-									"data-tab": "analysis",
-								},
-								t("Read analysis"),
-							),
-						),
-				});
-			}
-		}
-
-		if (showAnalysis && reportPaths.length > 0) {
-			gridTasks.push({
-				build: () => {
-					if (!this.#reportView) {
-						this.#reportView = new SurfaceReportView({
-							store,
-							surface,
-							signal: this.#lifetime.signal,
-							baseFiles: this.#baseFiles,
-							patches: this.#options.patches,
-							embedded: true,
-							...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
-						});
-					} else {
-						this.#reportView.setBaseFiles(this.#baseFiles);
-					}
-					this.#reportView.update();
-					return this.#reportView.el;
-				},
-			});
-		}
-
-		if (showSpecs) {
-			for (const spec of detailSpecs) {
-				gridTasks.push({
-					build: () =>
-						h(
-							"section",
-							{ class: `studio-section${spec.changed ? " is-changed" : ""}`, "data-file": spec.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, spec.title),
-								h("code", { class: "studio-file-tag" }, spec.path),
-								spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-							),
-							spec.entries.length ? renderSpecEntries(spec.entries) : null,
-							...renderSpecTables(spec.tables),
-						),
-				});
-			}
-		}
-
-		if (showFiles) {
-			for (const doc of docs) {
-				gridTasks.push({
-					build: () =>
-						h(
-							"section",
-							{ class: `studio-section studio-doc${doc.changed ? " is-changed" : ""}`, "data-file": doc.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, doc.title),
-								h("code", { class: "studio-file-tag" }, doc.path),
-								doc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-							),
-							...(doc.isMarkdown
-								? [h("div", { class: "studio-doc-body" }, markdown(doc.content))]
-								: renderPlainDoc(doc.content, "studio-doc-body studio-plain-text")),
-						),
-				});
-			}
-		}
-
-		if (showPages) {
-			for (const page of htmlPages) {
-				gridTasks.push({
-					heavy: true,
-					build: () =>
-						h(
-							"section",
-							{
-								class: `studio-section studio-html-card${page.changed ? " is-changed" : ""}`,
-								"data-file": page.path,
-							},
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, page.title),
-								h("code", { class: "studio-file-tag" }, page.path),
-								page.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-							),
-							this.#createHtmlFrame(
-								page.html,
-								page.path,
-								page.title,
-								files,
-								previewTokensCss,
-								"studio-html-frame",
-							),
-						),
-				});
-			}
-		}
-
+		gridTasks.push(...plan.tasks);
 		const leavingSkeleton = this.#showingSkeleton;
 		this.#showingSkeleton = false;
-		if (gridTasks.length === 0) {
-			children.push(
-				h(
-					"div",
-					{ class: "studio-empty" },
-					surfaceTile(surface, store.lookOf(surface), "is-hero"),
-					h("h2", null, surface.title),
-					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
-					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),
-				),
-			);
-			return { children, leavingSkeleton };
-		}
-
 		return { children, gridTasks, leavingSkeleton };
 	}
 
@@ -1979,8 +1332,9 @@ export class SurfaceStudioView {
 		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
 		if (!target || !this.el.contains(target)) return;
 		const { act } = target.dataset;
+		if (this.#layout?.click(target, this.el)) return;
 		if (act === "studio-tab") {
-			const next = target.dataset.tab as StudioTab | undefined;
+			const next = target.dataset.tab;
 			if (next && next !== this.#tab) {
 				this.#tab = next;
 				this.update();

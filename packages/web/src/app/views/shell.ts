@@ -77,6 +77,7 @@ import {
 	isAgentPairSession,
 	isAgentThreadSession,
 	isPrimaryStaffSession,
+	siteAnswer,
 } from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
@@ -99,7 +100,8 @@ import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { type InviteCalls, openInviteSheet } from "./invite-sheet.ts";
 import { memberPresence } from "./member-chat.ts";
-import { type SearchHit, type SearchSources, SearchWindow } from "./search-window.ts";
+import { type FoundFile, fileHit, isPlumbing, oneCopyEach, settledPath } from "./search-files.ts";
+import { type SearchHit, type SearchMark, type SearchSources, SearchWindow } from "./search-window.ts";
 import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
@@ -453,7 +455,10 @@ interface RailParts {
 	/** The company's other members, each a contact (this member's chat with them): those the member has not put
 	 * elsewhere in the rail, after everything the company arranges. */
 	readonly members: SectionParts;
+	readonly membersFold: MembersFold;
 	readonly invite: HTMLButtonElement;
+	readonly dock: HTMLElement;
+	readonly dockHover: RailHover;
 	/** Grok Bot's "Hidden Bots": this member's hidden agents and contacts, folded at the foot of the list. */
 	readonly hiddenGroup: HiddenParts;
 	/** The list's placeholder, built when first shown so it breathes with the page's. */
@@ -485,6 +490,15 @@ interface RailParts {
 	readonly drag: RailDrag;
 	redraw: () => void;
 }
+interface MembersFold {
+	readonly label: HTMLElement;
+	readonly count: HTMLElement;
+	readonly body: HTMLElement;
+	open: boolean;
+	holding: readonly string[];
+	released: Set<string>;
+	rowCount: number;
+}
 interface HiddenParts {
 	readonly el: HTMLElement;
 	readonly toggle: HTMLButtonElement;
@@ -498,6 +512,7 @@ interface HiddenParts {
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
 const AGENTS_OPEN_KEY = "qorpera.web.rail-agents-open";
+const MEMBERS_OPEN_KEY = "qorpera.web.rail-members-open";
 const APPS_OPEN_KEY = "qorpera.web.rail-apps-open";
 /** The drawer's order is kept per company on this device, as whether it is open is (Jonas, 9 Nov 2026). */
 const APPS_ORDER_KEY = "qorpera.web.rail-apps-order";
@@ -607,6 +622,70 @@ function sectionParts(zone: string, sectionId?: string): SectionParts {
 		list,
 	};
 }
+function membersSection(): { section: SectionParts; fold: MembersFold } {
+	const titleId = `rail-section-title-${++sectionTitles}`;
+	const label = h("span", { class: "rail-agents-label" });
+	const count = h("span", { class: "rail-agents-count" });
+	const title = h(
+		"button",
+		{
+			type: "button",
+			class: "rail-section-title rail-agents-head",
+			id: titleId,
+			"aria-controls": "rail-members-body",
+		},
+		label,
+		count,
+		h("span", { class: "rail-agents-chevron", "aria-hidden": "true" }, icon("chevron-down")),
+	);
+	const list = h("div", { class: "rail-section-list" });
+	const body = h(
+		"div",
+		{ class: "rail-agents-body", id: "rail-members-body" },
+		h("div", { class: "rail-agents-inner" }, list),
+	);
+	let open = false;
+	try {
+		open = localStorage.getItem(MEMBERS_OPEN_KEY) === "1";
+	} catch {
+		// WHY: storage can be blocked; the section then starts folded.
+	}
+	return {
+		section: {
+			el: h(
+				"div",
+				{
+					class: "rail-section rail-members",
+					role: "group",
+					"aria-labelledby": titleId,
+					"data-zone": MEMBERS_ZONE,
+				},
+				title,
+				body,
+			),
+			title,
+			list,
+		},
+		fold: { label, count, body, open, holding: [], released: new Set(), rowCount: 0 },
+	};
+}
+
+const membersHeld = (fold: MembersFold) => fold.holding.some((userId) => !fold.released.has(userId));
+
+function paintMembersFold(parts: RailParts): void {
+	const fold = parts.membersFold;
+	const shown = fold.open || membersHeld(fold) || parts.collapsed;
+	parts.members.el.classList.toggle("is-open", shown);
+	parts.members.title.setAttribute("aria-expanded", String(shown));
+	fold.body.toggleAttribute("inert", !shown);
+	fold.count.textContent = String(fold.rowCount);
+	fold.count.hidden = shown || fold.rowCount === 0;
+	parts.members.title.setAttribute(
+		"aria-label",
+		shown || fold.rowCount === 0 ? t("Members") : t("Members: {count}", { count: fold.rowCount }),
+	);
+}
+
 const railParts = new WeakMap<CompanyController, RailParts>();
 
 /** The rail collapsed to its figure column (RailLayout, desktop only), where the search field is hidden. */
@@ -679,6 +758,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
+		const dock = h("div", { class: "rail-dock" });
 		const companyName = h("span", { class: "rail-company-name" });
 		const companyButton = h(
 			"button",
@@ -704,6 +784,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			{ class: "rail-apps-drawer", id: "rail-apps-drawer", role: "group" },
 			h("div", null, appsOwed, appsGrid),
 		);
+		const members = membersSection();
 		const created: RailParts = {
 			company: companyButton,
 			companyName,
@@ -742,7 +823,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			),
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
-			members: sectionParts(MEMBERS_ZONE),
+			members: members.section,
+			membersFold: members.fold,
 			invite: h(
 				"button",
 				{ type: "button", class: "rail-row rail-row-invite" },
@@ -765,13 +847,29 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			presenceElements: new Set(),
 			selection: new RailSelection(),
 			hover: new RailHover(list, company.signal),
+			dock,
+			dockHover: new RailHover(dock, company.signal, list),
 			known: new Set(),
 			settled: false,
 			mentionsRead: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
-		created.members.el.classList.add("rail-members");
+		created.members.title.addEventListener(
+			"click",
+			() => {
+				const fold = created.membersFold;
+				fold.open = !(fold.open || membersHeld(fold));
+				fold.released = new Set(fold.holding);
+				try {
+					localStorage.setItem(MEMBERS_OPEN_KEY, fold.open ? "1" : "0");
+				} catch {
+					// WHY: storage can be blocked; the choice then lasts this visit.
+				}
+				paintMembersFold(created);
+			},
+			{ signal: company.signal },
+		);
 		created.invite.addEventListener(
 			"click",
 			() => {
@@ -958,7 +1056,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
 		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
-		parts.members.title.textContent = t("People");
+		parts.membersFold.label.textContent = t("Members");
 		parts.invite.querySelector("strong")!.textContent = t("Invite");
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
@@ -1299,13 +1397,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			!owedAppsSet.has(app),
 	);
 	const concepts = companyConcepts(state.apps ?? []).length;
-	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
-	const sites = state.siteCount ?? 0;
 	const hasApps =
 		interfacesShown.length > 0 ||
 		postedApps.length > 0 ||
 		concepts > 0 ||
-		sites > 0 ||
 		state.whatsNew !== undefined ||
 		owed.websites.length > 0 ||
 		owed.apps.length > 0;
@@ -1316,7 +1411,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		if (
 			(section === "interface" ||
 				section === "app" ||
-				section === "sites" ||
 				section === "whats-new" ||
 				section === "site" ||
 				section === "new-program") &&
@@ -1352,7 +1446,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, route);
 	drawOwed(parts, company, owed, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
@@ -1556,9 +1650,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				return shown(agent) ? [agentElement(agent)] : [];
 			});
 	// The Members group: the contacts their member has put nowhere else, the dragged ones first, then as they joined.
-	const memberRows = weave([], contactsIn(MEMBERS_ZONE)).flatMap((userId) =>
-		contactShown(contactOf.get(userId)!) ? [memberElement(userId)] : [],
-	);
+	const memberIds = weave([], contactsIn(MEMBERS_ZONE)).filter((userId) => contactShown(contactOf.get(userId)!));
+	const memberRows = memberIds.map((userId) => memberElement(userId));
 	const sectionGroups = (sidebar?.sections ?? []).map((item) => {
 		let group = parts.sections.get(item.sectionId);
 		if (!group) {
@@ -1819,6 +1912,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	zone(parts.members.el, placing);
 	parts.members.el.classList.toggle("is-empty", !people);
 	reconcile(parts.members.list, canInvite ? [...memberRows, parts.invite] : memberRows);
+	const membersFold = parts.membersFold;
+	membersFold.rowCount = memberRows.length;
+	membersFold.holding = memberIds.filter(
+		(userId) => userId === activeMemberId || (memberChats?.[userId]?.unread ?? 0) > 0,
+	);
+	membersFold.released = new Set(membersFold.holding.filter((userId) => membersFold.released.has(userId)));
+	paintMembersFold(parts);
 	surfaceRail?.update(activeSurfaceSlug, false);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
@@ -1868,14 +1968,20 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			...(agentsHub || surfaceRail ? [] : legacyNodes),
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
-			agentsHub,
-			people || placing ? parts.members.el : null,
+			agentsHub || people || placing ? parts.dock : null,
 			parts.hover.attached ?? null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);
+	reconcile(
+		parts.dock,
+		[agentsHub, people || placing ? parts.members.el : null, parts.dockHover.attached ?? null].filter(
+			(element) => element !== null,
+		),
+	);
 	if (shouldMeasure) parts.selection.move(parts.list);
 	parts.hover.settle();
+	parts.dockHover.settle();
 	if (shouldMeasure) glideRows(parts.list, places);
 	parts.layoutKey = layoutKey;
 	parts.rows = rows;
@@ -1933,7 +2039,6 @@ interface AgentsHubParts {
 	releasedOffers: string | undefined;
 	rowCount: number;
 	readonly workingWrap: HTMLElement;
-	readonly workingTitle: HTMLElement;
 	readonly workingList: HTMLElement;
 	readonly scheduledWrap: HTMLElement;
 	readonly scheduledTitle: HTMLElement;
@@ -1991,9 +2096,8 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			count,
 			h("span", { class: "rail-agents-chevron", "aria-hidden": "true" }, icon("chevron-down")),
 		);
-		const workingTitle = h("div", { class: "rail-agents-subhead" }, t("Working"));
 		const workingList = h("div", { class: "rail-agents-list" });
-		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingTitle, workingList);
+		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingList);
 		const scheduledTitle = h("div", { class: "rail-agents-subhead" }, t("Scheduled"));
 		const scheduledList = h("div", { class: "rail-agents-list" });
 		const scheduledWrap = h("div", { class: "rail-agents-sub", hidden: true }, scheduledTitle, scheduledList);
@@ -2026,7 +2130,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			releasedOffers: undefined,
 			rowCount: 0,
 			workingWrap,
-			workingTitle,
 			workingList,
 			scheduledWrap,
 			scheduledTitle,
@@ -2051,7 +2154,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				// WHY: storage can be blocked; the choice then lasts this visit.
 			}
 			paintAgentsFold(made);
-			if (made.open) keepOpeningHubInView(made.el);
 		});
 		hub = made;
 		agentsHubs.set(company, hub);
@@ -2061,7 +2163,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	hub.title.textContent = t("Agents");
 	hub.el.setAttribute("aria-label", t("Agents"));
 
-	hub.workingTitle.textContent = t("Working");
 	hub.workingWrap.hidden = !hasWorking;
 	const workingKey = JSON.stringify([
 		locale,
@@ -2376,31 +2477,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	return hub.el;
 }
 
-// WHY: the hub sits at the foot of the list, so in a list that scrolls it would open below the fold; the list
-// follows it while it grows, so it rises into view.
-function keepOpeningHubInView(hub: HTMLElement): void {
-	const list = hub.closest<HTMLElement>(".rail-scroll");
-	if (!list) return;
-	const until = performance.now() + 520;
-	const interruptions = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
-	let stopped = false;
-	const stop = (): void => {
-		stopped = true;
-		for (const type of interruptions) list.removeEventListener(type, stop);
-	};
-	for (const type of interruptions) list.addEventListener(type, stop, { passive: true });
-	const follow = (): void => {
-		if (stopped) return;
-		const h = hub.getBoundingClientRect();
-		const l = list.getBoundingClientRect();
-		const below = Math.min(h.bottom - l.bottom, h.top - l.top);
-		if (below > 0) list.scrollTop += below;
-		if (performance.now() < until) requestAnimationFrame(follow);
-		else stop();
-	};
-	requestAnimationFrame(follow);
-}
-
 function automationFace(face: AutomationPerson | "nobody"): HTMLElement {
 	if (face === "nobody") return h("span", { class: "rail-automation-face is-nobody", title: t("Nobody") }, "?");
 	const avatar = personAvatar(face.name, face.userId);
@@ -2446,7 +2522,14 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 	if (!store) return undefined;
 	let rail = surfaceRails.get(company);
 	if (!rail) {
-		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () => openCreateSurfaceSheet(store));
+		rail = new SurfaceRail(
+			store,
+			company.profile.profileId,
+			company.signal,
+			() => openCreateSurfaceSheet(store),
+			(text) => company.reportRailError(text),
+			(surface) => siteAnswer(company.store.get(), surface),
+		);
 		surfaceRails.set(company, rail);
 	}
 	return rail;
@@ -2461,9 +2544,7 @@ function placeOf(element: HTMLElement): string | undefined {
 	if (roomId) return `room:${roomId.toLowerCase()}`;
 	if (owedPlace) return owedPlace;
 	if (!appKey) return undefined;
-	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "sites" || appKey === "whats-new"
-		? appKey
-		: `page:${appKey}`;
+	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "whats-new" ? appKey : `page:${appKey}`;
 }
 
 function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
@@ -2627,7 +2708,6 @@ function drawInterfaces(
 	shown: readonly CompanyInterface[],
 	apps: readonly CompanyApp[],
 	concepts: number,
-	sites: number,
 	route: Route,
 ): void {
 	const profileId = company.profile.profileId;
@@ -2709,24 +2789,6 @@ function drawInterfaces(
 		element.dataset.appKey = key;
 		element.dataset.ownEmblem = "board";
 		const open = route.name === "company" && route.section === "concepts";
-		element.classList.toggle("active", open);
-		if (open) element.setAttribute("aria-current", "page");
-		else element.removeAttribute("aria-current");
-		elements.push(element);
-	}
-	// The company's websites: one entry for the Sites page, which lists them all.
-	if (sites > 0) {
-		const key = "sites";
-		colours.set(key, "blue");
-		const choice = emblemChoice(key);
-		const model = JSON.stringify([key, t("Sites"), sites, choice.model]);
-		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : withEmblem(sitesIcon(`#/c/${profileId}/sites`), choice);
-		rows.set(key, { shown: model, element });
-		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
-		element.dataset.appKey = key;
-		element.dataset.ownEmblem = "globe";
-		const open = route.name === "company" && route.section === "sites";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -3155,21 +3217,6 @@ function conceptsIcon(href: string): HTMLElement {
 	);
 }
 
-/** The Sites entry in the drawer: a globe with "Sites" under it, a link to the Sites page. */
-function sitesIcon(href: string): HTMLElement {
-	return h(
-		"a",
-		{
-			class: "rail-app rail-sites",
-			href,
-			draggable: "false",
-		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
-		h("span", { class: "rail-app-name" }, t("Sites")),
-	);
-}
-
-/** A website in the owed row: the Sites globe with the site's title under it, a link to the site's own view. */
 function websiteIcon(name: string, href: string): HTMLElement {
 	return h(
 		"a",
@@ -4270,9 +4317,8 @@ function nudgeItem(company: CompanyController, element: HTMLElement, item: RailI
 }
 
 const SEARCH_SHORTCUT = "Meta+K Control+K";
-const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|svg|avif|heic)$/i;
-const CODE_FILE = /\.(?:[cm]?[jt]sx?|py|rs|go|rb|java|kt|swift|c|h|cpp|cs|php|sh|sql|css|scss|html?|json|ya?ml|toml)$/i;
-const RECENT_FILES = 4;
+const RECENT_FILES = 20;
+const FILE_SEARCH_MOST = 50;
 
 let searchWindow: SearchWindow | undefined;
 let searchTarget: { company: CompanyController; parts: RailParts } | undefined;
@@ -4282,26 +4328,19 @@ function shortcutLabel(): string {
 	return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl+K";
 }
 
-function fileHit(context: ShellContext, path: string, kind: string): SearchHit {
-	const slash = path.lastIndexOf("/");
-	const name = path.slice(slash + 1);
-	const folder = slash < 0 ? t("Company File") : path.slice(0, slash).split("/").join(" / ");
-	const glyph =
-		kind === "folder" ? "folder" : IMAGE_FILE.test(name) ? "image" : CODE_FILE.test(name) ? "code" : "file";
-	return {
-		key: `file:${kind}:${path}`,
-		kind: "files",
-		title: name,
-		detail: kind === "folder" ? `${t("Folder")} · ${folder}` : folder,
-		lead: () => icon(glyph),
-		open: () => context.openInFiles?.(path),
-	};
-}
-
 function searchSources(company: CompanyController, context: ShellContext): SearchSources {
 	const profileId = company.profile.profileId;
 	const go = (href: string) => () => {
 		location.hash = href;
+	};
+	const surfaceTitle = (slug: string) =>
+		surfacesOf(company)?.state.surfaces.find((surface) => surface.slug === slug)?.title;
+	const openFile = (path: string) => context.openInFiles?.(path);
+	const marks = (needsYou: boolean, working: boolean): { marks?: SearchMark[] } => {
+		const held: SearchMark[] = [];
+		if (needsYou) held.push("needs-you");
+		if (working) held.push("working");
+		return held.length ? { marks: held } : {};
 	};
 	const hits = (): SearchHit[] => {
 		const state = company.store.get();
@@ -4310,36 +4349,55 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 		const sectionName = new Map(sidebar?.sections.map((section) => [section.sectionId, section.name]));
 		const placedIn = (itemId: string) => sectionName.get(sidebar?.placements[itemId]?.sectionId ?? "") ?? "";
+		const lastTalk = new Map<string, string>();
+		for (const session of state.sessions) {
+			const staffId = session.staffAgentId;
+			if (staffId && session.updatedAt > (lastTalk.get(staffId) ?? "")) lastTalk.set(staffId, session.updatedAt);
+		}
 		for (const agent of state.staff) {
 			if (agent.employmentStatus !== "active") continue;
 			const href = agent.id === cofounderId ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agent.id}`;
+			const activity = company.agentState(agent.id);
+			const at = lastTalk.get(agent.id);
 			found.push({
 				key: `agent:${agent.id}`,
 				kind: "people",
 				title: agent.displayName,
 				detail: agent.role || t("Agent"),
 				words: `${t("Agent")} ${placedIn(agent.id)}`,
-				lead: () => agentFigure(agent, agent.displayName, { size: 30 }),
+				...(at ? { at } : {}),
+				...marks(
+					activity === "decision",
+					activity === "working" || activity === "writing" || activity === "computer",
+				),
+				lead: () => agentFigure(agent, agent.displayName, { size: 28 }),
 				open: go(href),
 			});
 		}
 		const { others } = companyContacts(company);
-		for (const [userId, member] of others)
+		const memberChats = state.memberChatsUnavailable ? undefined : state.memberChats;
+		for (const [userId, member] of others) {
+			const chat = memberChats?.[userId];
 			found.push({
 				key: `member:${userId}`,
 				kind: "people",
 				title: member.displayName,
 				detail: t("Member"),
+				...(chat?.last ? { at: chat.last.createdAt } : {}),
+				...marks((chat?.unread ?? 0) > 0, false),
 				lead: () => personAvatar(member.displayName, userId),
 				open: go(`#/c/${profileId}/member/${userId}`),
 			});
+		}
 		for (const session of company.groupChatRooms().values())
 			found.push({
 				key: `chat:${session.sessionId}`,
 				kind: "people",
 				title: session.title,
 				detail: t("Group chat"),
-				lead: () => groupChatAvatar(company.groupAgents(session.sessionId), { width: 30, height: 28 }),
+				at: session.updatedAt,
+				...marks(Boolean(state.mentions?.[session.sessionId]), false),
+				lead: () => groupChatAvatar(company.groupAgents(session.sessionId), { width: 28, height: 26 }),
 				open: go(`#/c/${profileId}/chat/${session.sessionId}`),
 			});
 		const store = surfacesOf(company);
@@ -4382,9 +4440,9 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 				key: `setting:${place.tab}:${place.label}`,
 				kind: "settings",
 				title: place.label,
-				detail: `${t("Settings")} · ${place.area}`,
-				words: place.words,
-				lead: () => icon("settings"),
+				detail: place.area,
+				words: `${t("Settings")} ${place.words}`,
+				lead: () => icon(place.icon),
 				open: () => {
 					context.openSettings(place.tab);
 					if (place.mark) markSettingsPlace(place.mark);
@@ -4400,32 +4458,37 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		revive: (key) => {
 			const [, kind, path] = /^file:(file|folder|symlink):(.+)$/.exec(key) ?? [];
 			const readable = company.store.get().team?.capabilities.read === true;
-			return kind && path && readable && context.openInFiles ? fileHit(context, path, kind) : undefined;
+			return kind && path && readable && context.openInFiles
+				? fileHit({ path, kind }, openFile, surfaceTitle)
+				: undefined;
 		},
 		...(folder && company.store.get().team?.capabilities.read
 			? {
 					files: {
 						search: async (query, limit, signal) => {
-							const answer = await folder().search(query, limit, signal);
+							const answer = await folder().search(query, Math.min(FILE_SEARCH_MOST, limit * 3), signal);
+							const files = oneCopyEach(
+								answer.entries.map((entry) => ({ path: entry.path, kind: entry.kind, at: entry.updatedAt })),
+							);
 							return {
-								hits: answer.entries.map((entry) => fileHit(context, entry.path, entry.kind)),
-								more: answer.more,
+								hits: files.slice(0, limit).map((file) => fileHit(file, openFile, surfaceTitle)),
+								more: answer.more || files.length > limit,
 							};
 						},
 						recent: async (signal) => {
 							const page = await folder().history(null, 20, signal);
 							const decided = new Set<string>();
-							const recent: SearchHit[] = [];
+							const recent: FoundFile[] = [];
 							for (const item of page.items)
 								for (const change of item.paths) {
-									if (decided.has(change.path)) continue;
-									decided.add(change.path);
+									const settled = settledPath(change.path);
+									if (decided.has(settled)) continue;
+									decided.add(settled);
 									if (change.op === "delete" || change.op === "move_out" || change.kind !== "file") continue;
-									if (change.path.split("/", 1)[0] === "QorperaOS") continue;
-									recent.push(fileHit(context, change.path, change.kind));
-									if (recent.length === RECENT_FILES) return recent;
+									if (change.path.split("/", 1)[0] === "QorperaOS" || isPlumbing(change.path)) continue;
+									recent.push({ path: change.path, kind: change.kind, at: item.at });
 								}
-							return recent;
+							return recent.slice(0, RECENT_FILES).map((file) => fileHit(file, openFile, surfaceTitle));
 						},
 					},
 				}

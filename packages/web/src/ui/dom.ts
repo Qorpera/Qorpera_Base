@@ -281,6 +281,7 @@ const ICON_GRIDS: Readonly<Record<string, { readonly size: number; readonly stro
 const ICON_PATHS: Record<string, string[]> = {
 	// Lucide list / table-2, matching the existing ISC-licensed icon set.
 	list: ["M3 5h.01", "M3 12h.01", "M3 19h.01", "M8 5h13", "M8 12h13", "M8 19h13"],
+	filter: ["M4 7h16", "M7 12h10", "M10 17h4"],
 	table: ["M3 9h18", "M9 3v18"],
 	// The sidebar, on a grid of its own (ICON_GRIDS): its outline is a rectangle (icon), this is its divider.
 	navigation: ["M7.75 3.75v12.5"],
@@ -615,7 +616,7 @@ export function confirmDialog(
 			{ class: "modal-backdrop", onclick: (event: MouseEvent) => event.target === dialog && close(false) },
 			h(
 				"div",
-				{ class: "modal", role: "alertdialog", "aria-modal": "true" },
+				{ class: "modal confirm-dialog", role: "alertdialog", "aria-modal": "true" },
 				h("p", null, message),
 				details?.length ? h("ul", { class: "modal-list" }, ...details.map((line) => h("li", null, line))) : null,
 				input ?? null,

@@ -14,6 +14,7 @@ export interface HoverGlideOptions {
 	item(node: Element): HTMLElement | undefined;
 	paused?(): boolean;
 	place?(tint: HTMLElement): void;
+	picks?: boolean;
 }
 
 const GAP_WAIT = 100;
@@ -41,16 +42,18 @@ export class HoverGlide {
 		this.tint.className = options.tintClass;
 		this.tint.setAttribute("aria-hidden", "true");
 		const { signal } = options;
-		list.addEventListener("pointerover", (event) => this.#over(event), { signal });
-		list.addEventListener("pointermove", (event) => this.#over(event), { signal });
-		list.addEventListener(
-			"pointerleave",
-			() => {
-				this.#pointer = undefined;
-				this.#hide();
-			},
-			{ signal },
-		);
+		if (!options.picks) {
+			list.addEventListener("pointerover", (event) => this.#over(event), { signal });
+			list.addEventListener("pointermove", (event) => this.#over(event), { signal });
+			list.addEventListener(
+				"pointerleave",
+				() => {
+					this.#pointer = undefined;
+					this.#hide();
+				},
+				{ signal },
+			);
+		}
 		signal?.addEventListener("abort", () => {
 			window.clearTimeout(this.#leaving);
 			window.clearTimeout(this.#lighting);
@@ -64,6 +67,13 @@ export class HoverGlide {
 
 	get attached(): HTMLElement | undefined {
 		return this.tint.parentElement === this.#list ? this.tint : undefined;
+	}
+
+	moveTo(item: HTMLElement | undefined): void {
+		window.clearTimeout(this.#leaving);
+		this.#leaving = 0;
+		if (item && this.#list.contains(item)) this.#glideTo(item);
+		else this.#hide(true);
 	}
 
 	settle(): void {
@@ -261,6 +271,7 @@ const GLIDE_ITEMS = [
 	".surface-overview-option",
 	".surface-change",
 	".surface-variant",
+	".surface-figure-choice",
 	".account-picture-item",
 	".founding-friends li",
 	".mailbox-pick",
