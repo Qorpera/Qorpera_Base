@@ -514,7 +514,6 @@ export class SurfaceView {
 		this.#panelsHidden = hidden;
 		this.#barOpen = false;
 		this.#barShown = "";
-		if (!hidden) this.#askShown = "";
 		const surface = this.surface;
 		if (surface) this.#drawBar(surface);
 		else this.#paintNotch();
@@ -907,7 +906,7 @@ export class SurfaceView {
 			this.#barOpen = true;
 			if (state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 		}
-		this.#askShown = askKey;
+		if (!this.#panelsHidden) this.#askShown = askKey;
 		if (site === "private" && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 
 		const effectiveMode: SurfacePreviewMode = state.mode === "compare" ? "preview" : state.mode;
