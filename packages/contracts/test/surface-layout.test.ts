@@ -840,12 +840,12 @@ describe("named cards and files skip", () => {
 });
 
 describe("the block registry", () => {
-	it("holds one entry per type: eleven families and the row", () => {
+	it("holds one entry per type: twelve families and the row", () => {
 		const types = SURFACE_BLOCKS.map((block) => block.type);
 		expect(types).toEqual([...SURFACE_BLOCK_TYPES, "row"]);
-		expect(new Set(types).size).toBe(14);
+		expect(new Set(types).size).toBe(15);
 		const families = new Set(SURFACE_BLOCKS.filter((block) => block.type !== "row").map((block) => block.family));
-		expect(families.size).toBe(11);
+		expect(families.size).toBe(12);
 	});
 
 	it("is what the parser accepts, field by field", () => {
@@ -864,9 +864,9 @@ describe("the block registry", () => {
 		}
 	});
 
-	it("describes every type for the prompt, within 3 KB", () => {
+	it("describes every type for the prompt, within 3.5 KB", () => {
 		const text = describeSurfaceBlocks();
-		expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(3072);
+		expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(3584);
 		expect(text).toContain(SURFACE_LAYOUT_PATH);
 		expect(text).toContain(SURFACE_LAYOUT_SCHEMA);
 		for (const block of SURFACE_BLOCKS) {
@@ -935,9 +935,16 @@ describe("starter layouts", () => {
 		expect(voice).toMatchObject({ match: [`/${IDENTITY_VOICE_PATH}`, `/${IDENTITY_BRIEF_PATH}`] });
 	});
 
-	it("keeps the product page's homes in today's order", () => {
+	it("keeps the product page's homes in today's order with Breakdowns", () => {
 		const product = SURFACE_STARTER_LAYOUTS.product;
-		expect(product.tabs.map((tab) => tab.title)).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
+		expect(product.tabs.map((tab) => tab.title)).toEqual([
+			"Overview",
+			"Specs",
+			"Vendors",
+			"Reports",
+			"Breakdowns",
+			"Files",
+		]);
 		expect(product.tabs[0]?.blocks.map((node) => node.type)).toEqual(["stage_3d", "title", "swatch_row", "facts"]);
 		expect(product.tabs[0]?.blocks[1]).toEqual({
 			type: "title",
@@ -971,7 +978,8 @@ describe("starter layouts", () => {
 			lines: ["component", "unitPrice", "moq", "leadTime", "region", "certifications"],
 		});
 		expect(product.tabs[3]?.blocks).toEqual([{ type: "report", match: "**/*.report.json" }]);
-		expect(product.tabs[4]?.blocks).toEqual([
+		expect(product.tabs[4]?.blocks).toEqual([{ type: "explainer", match: "breakdowns/**/scenes.js" }]);
+		expect(product.tabs[5]?.blocks).toEqual([
 			{ type: "files", match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm"] },
 		]);
 	});
@@ -992,6 +1000,7 @@ describe("starter layouts", () => {
 			"tokens",
 			"design-system",
 			"data",
+			"breakdowns",
 			"files",
 		]);
 		expect(identity.tabs.map((tab) => tab.title)).toEqual([
@@ -1000,6 +1009,7 @@ describe("starter layouts", () => {
 			"Philosophy",
 			"Voice",
 			"Design system",
+			"Breakdowns",
 			"Files",
 		]);
 		expect(identity.tabs[0]?.blocks[0]).toMatchObject({
@@ -1025,5 +1035,24 @@ describe("starter layouts", () => {
 			{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files", heading: "Files" }] },
 			{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "**/*.report.json" }] },
 		]);
+	});
+});
+
+describe("explainer block", () => {
+	it("accepts from (.js) or match, and refuses neither, both, or non-.js from", () => {
+		expect(
+			parseSurfaceLayout(layoutWith([{ type: "explainer", from: "breakdowns/ux/scenes.js", heading: "UX" }])).tabs[0]
+				?.blocks[0],
+		).toEqual({ type: "explainer", from: "breakdowns/ux/scenes.js", heading: "UX" });
+		expect(
+			parseSurfaceLayout(layoutWith([{ type: "explainer", match: "breakdowns/**/scenes.js" }])).tabs[0]?.blocks[0],
+		).toEqual({ type: "explainer", match: "breakdowns/**/scenes.js" });
+		expect(refusal(layoutWith([{ type: "explainer" }]))).toContain("explainer needs from or match");
+		expect(
+			refusal(
+				layoutWith([{ type: "explainer", from: "breakdowns/ux/scenes.js", match: "breakdowns/**/scenes.js" }]),
+			),
+		).toContain("explainer needs from or match");
+		expect(refusal(layoutWith([{ type: "explainer", from: "breakdowns/ux/notes.md" }]))).toContain(".js");
 	});
 });
