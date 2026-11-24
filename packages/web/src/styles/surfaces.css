@@ -6,12 +6,9 @@
 .rail-surfaces[hidden] { display: none; }
 .rail-surface-group { display: grid; grid-template-columns: minmax(0, 1fr); }
 .rail-surface-title { display: flex; align-items: center; justify-content: space-between; }
-.rail-surface-add {
-	display: grid; place-items: center; width: 22px; height: 22px; margin: -3px -2px -3px 0; padding: 0; border: 0;
-	border-radius: 6px; background: none; color: var(--rail-small); cursor: default;
-}
-.rail-surface-add:hover { background: var(--rail-hover); color: var(--text); text-decoration: none; }
-.rail-surface-add .icon { width: 14px; height: 14px; }
+.rail-surface-item { display: grid; grid-template-columns: minmax(0, 1fr); }
+.rail-dragging .rail-surface-loose.is-empty { min-height: 24px; }
+.frame:not(.rail-compact) .rail.has-surface-rail .rail-surface-loose:not(.is-empty) { padding-top: 6px; }
 .rail-compact .rail-agents-hub { display: none; }
 .rail-compact .rail-surfaces { justify-items: center; gap: 4px; }
 .rail-compact .rail-surface-group { justify-items: center; width: 100%; }

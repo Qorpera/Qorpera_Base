@@ -60,7 +60,7 @@ afterEach(() => {
 });
 
 describe("the surface rail", () => {
-	it("lists Building and Running and nests clean session navigation rows under the active surface without rail switches", async () => {
+	it("lists the interfaces in one list, Inbox first, with no seeded sections and no rail switches", async () => {
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [
 				summary({ unpublishedChangeCount: 1 }),
@@ -81,14 +81,15 @@ describe("the surface rail", () => {
 		await store.openSurface("website");
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
-		rail.update("website", true);
-		const titles = [...rail.el.querySelectorAll(".rail-surface-title > span")].map((node) => node.textContent);
-		expect(titles).toEqual(["Building", "Running"]);
+		rail.update("website");
+		expect(rail.el.querySelectorAll(".rail-surface-title")).toHaveLength(0);
+		const names = [...rail.el.querySelectorAll(".rail-surface-name")].map((node) => node.textContent);
+		expect(names[0]).toBe("Inbox");
+		expect(names).toContain("Website");
 		const active = rail.el.querySelector<HTMLAnchorElement>(".rail-surface.active");
 		expect(active ? linkHref(active) : null).toBe(`#/c/${COMPANY}/s/website`);
 		expect(active?.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("browser");
-		const add = rail.el.querySelector(".rail-surface-add");
-		expect(add ? linkHref(add) : null).toBe(`#/c/${COMPANY}/new-program`);
+		expect(rail.el.querySelector(".rail-surface-add")).toBeNull();
 		expect(rail.el.querySelector(".surface-switch")).toBeNull();
 		const crew = active?.querySelector<HTMLElement>(".rail-surface-crew");
 		expect(crew?.getAttribute("aria-label")).toBe("1 session active");
@@ -339,6 +340,55 @@ describe("the surface rail", () => {
 			expect(menuRow("Figure")).toBeDefined();
 			expect(menuRow("Delete")).toBeUndefined();
 			expect(openMenu()!.el.querySelector('[role="separator"]')).toBeNull();
+			store.dispose();
+		});
+
+		it("deletes a member's own section from its title, its interfaces moving out of it (Jonas, 24 Nov 2026)", async () => {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [summary(quiet), inbox]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: summary(quiet) })),
+				}),
+			);
+			await store.load();
+			let layout = {
+				schema: "qorpera.member-surface-rail/v1" as const,
+				order: [inbox.id],
+				sections: [{ id: "design", name: "Design", surfaces: [SURFACE] }],
+			};
+			const change = vi.fn((next: typeof layout) => {
+				layout = next;
+			});
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, {
+				layout: () => layout,
+				canArrange: () => true,
+				change,
+				refuse: vi.fn(),
+			});
+			document.body.append(rail.el);
+			rail.update("website");
+			expect([...rail.el.querySelectorAll(".rail-surface-title")].map((item) => item.textContent)).toEqual([
+				"Design",
+			]);
+
+			rail.el
+				.querySelector<HTMLElement>('[data-surface-section="design"]')!
+				.dispatchEvent(
+					new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+				);
+			expect(menuRow("Rename section")).toBeDefined();
+			menuRow("Delete section")!.click();
+			await flush();
+			expect(dialog()?.querySelector("p")?.textContent).toBe(
+				'Delete your section "Design"? Its interfaces move out of it, to the end of the list.',
+			);
+			dialogButton("Delete section").click();
+			await flush();
+			expect(change).toHaveBeenCalledOnce();
+			expect(layout).toEqual({ schema: "qorpera.member-surface-rail/v1", order: [inbox.id, SURFACE], sections: [] });
+			rail.update("website");
+			expect(rail.el.querySelectorAll(".rail-surface-title")).toHaveLength(0);
+			expect(railRow(rail, "website")).not.toBeNull();
 			store.dispose();
 		});
 	});
@@ -858,16 +908,16 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
-	it("hides the composer on unavailable surfaces and omits an empty Building group", async () => {
+	it("hides the composer on unavailable surfaces and seeds no section titles", async () => {
 		const store = storeWith(undefined, {
 			synthesize: () => ({ companyId: COMPANY, sites: [], pages: [] }),
 		});
 		await store.load();
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
-		rail.update("missing", true);
+		rail.update("missing");
 		expect(rail.el.querySelector(".rail-surface-create")).toBeNull();
-		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
+		expect(rail.el.querySelectorAll(".rail-surface-title")).toHaveLength(0);
 
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "missing");
 		document.body.append(view.el);

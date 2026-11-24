@@ -1911,7 +1911,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	);
 	membersFold.released = new Set(membersFold.holding.filter((userId) => membersFold.released.has(userId)));
 	paintMembersFold(parts);
-	surfaceRail?.update(activeSurfaceSlug, false);
+	surfaceRail?.update(activeSurfaceSlug);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
 	let above = pinnedElements.length > 0;
@@ -2515,7 +2515,12 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 			store,
 			company.profile.profileId,
 			company.signal,
-			() => withSurfaceMigrationSheet((mod) => mod.openCreateSurfaceSheet(store)),
+			{
+				layout: () => company.store.get().surfaceRail?.layout,
+				canArrange: () => company.canArrangeSurfaces(),
+				change: (next) => void company.changeSurfaceRail(next),
+				refuse: (message) => company.reportRailError(message),
+			},
 			(text) => company.reportRailError(text),
 			(surface) => siteAnswer(company.store.get(), surface),
 		);
@@ -3541,6 +3546,7 @@ function ownChangeLines(company: CompanyController, own: SidebarOwnChanges): str
 		lines.push(
 			own.apps === 1 ? t("1 app or group arranged") : t("{count} apps or groups arranged", { count: own.apps }),
 		);
+	if (own.surfaces) lines.push(t("The order and sections of your interfaces"));
 	if (storedAppsOrder(company.profile.profileId).length) lines.push(t("The order of your apps"));
 	return lines;
 }
@@ -3792,6 +3798,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		event.preventDefault();
 		return;
 	}
+	if (event.defaultPrevented) return;
 	// Shift with a mouse right-click keeps the browser's own menu (Open in new tab, Copy link).
 	// A menu opened from the keyboard carries no pointer position.
 	if (event.shiftKey && (event.clientX || event.clientY)) return;
@@ -3854,6 +3861,15 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		label = t("{name} actions", { name: titleElement.textContent ?? t("Section") });
 		opener = titleElement;
 		findOpener = () => parts.list.querySelector<HTMLElement>(`.rail-section-title[data-section-id="${sectionId}"]`);
+	} else if (!target.closest("a[href], a[data-href], button, input") && surfacesOf(company)) {
+		const surfaces = surfaceRailFor(company);
+		items = [
+			...(surfaces?.canArrange() && !target.closest(".rail-dock")
+				? [{ label: t("New section"), icon: "section_plus", select: () => void surfaces.askNewSection() }]
+				: []),
+			...resetEntries(company, parts),
+		];
+		if (items[0]?.kind === "separator") items.shift();
 	} else if (!target.closest("a[href], a[data-href], button, input") && canOrganize(company)) {
 		items = [
 			{ label: t("New section"), icon: "section_plus", select: () => void askSectionName(company) },
@@ -4146,10 +4162,13 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		const state = company.store.get();
 		return state.sidebarUnavailable ? undefined : state.sidebar;
 	};
+	const surfaces = surfaceRailFor(company);
 	return {
 		canDrag: (itemId: string) =>
-			placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId),
+			surfaces?.canDrag(itemId) ||
+			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
 		accepts: (zone: string, itemId: string) => {
+			if (surfaces?.isOwnZone(zone) || surfaces?.canDrag(itemId)) return Boolean(surfaces?.accepts(zone, itemId));
 			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
 			const pinnable = () => keptOrder(company, "pinned").includes(itemId) || !pinnedRowFull(company);
 			// A contact lands in any zone: where it stands is its member's own.
@@ -4161,6 +4180,10 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			return canOrganize(company);
 		},
 		drop: ({ itemId, kind, zone, order }: RailDrop) => {
+			if (kind === "surface") {
+				surfaces?.drop(itemId, zone, order);
+				return;
+			}
 			// A contact: only where it stands changes. Dragged out of Hidden, it shows again where it lands.
 			if (kind === "member") {
 				settleContacts(company, zone, dropInto(heldOrder(company, zone), itemId, order), itemId);
