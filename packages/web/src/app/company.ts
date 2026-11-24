@@ -59,6 +59,7 @@ import {
 	SectionsChangeRefusal,
 	sectionsChange,
 } from "../cloud/sidebar-sections-file.ts";
+import type { CompanySiteHostingState, WebSiteHosting } from "../cloud/site-hosting.ts";
 import type { CompanySite } from "../cloud/sites.ts";
 import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
@@ -306,6 +307,7 @@ export interface CompanyState {
 	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
 	siteList?: readonly CompanySite[];
 	siteListUnread?: boolean;
+	sitesPublic?: ReadonlyMap<string, boolean>;
 	/** The company's sites Qorpera's operators took down, by id, as the access read last said
 	 * (`qorpera_company_site_access`): the owed row leaves them out. Unset until read, and on a cloud without it. */
 	sitesTakenDown?: ReadonlySet<string>;
@@ -337,9 +339,92 @@ export function siteServed(
 ): boolean | undefined {
 	if (surface.archetype !== "live_build" || !surface.siteSlug) return false;
 	if (state.siteList === undefined || state.siteListUnread) return undefined;
-	return state.siteList.some(
-		(site) => site.slug === surface.siteSlug && site.kind === "files" && site.state === "live",
+	return servedSite(state.siteList, surface.siteSlug) !== undefined;
+}
+
+function servedSite(list: readonly CompanySite[], slug: string): CompanySite | undefined {
+	return list.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
+}
+
+export type SiteAnswer = "live" | "private" | "unknown";
+
+export function siteAnswer(
+	state: Pick<CompanyState, "siteList" | "siteListUnread" | "sitesPublic">,
+	surface: { readonly archetype: string; readonly siteSlug?: string | null },
+): SiteAnswer {
+	const served = siteServed(state, surface);
+	if (served === undefined) return "unknown";
+	if (!served || !state.siteList || !surface.siteSlug) return "private";
+	const site = servedSite(state.siteList, surface.siteSlug);
+	const isPublic = site ? state.sitesPublic?.get(site.id) : undefined;
+	return isPublic === undefined ? "unknown" : isPublic ? "live" : "private";
+}
+
+interface PublishedSurface {
+	readonly status: string;
+	readonly archetype: string;
+	readonly siteSlug: string | null;
+	readonly publishStatus?: string;
+	readonly liveHeadSha?: string | null;
+}
+
+export function sitesAwaited(state: Pick<CompanyState, "siteList">, surfaces: readonly PublishedSurface[]): string {
+	const list = state.siteList;
+	if (!list) return "";
+	const awaited = surfaces.filter(
+		(surface) =>
+			surface.status === "active" &&
+			surface.archetype === "live_build" &&
+			surface.siteSlug &&
+			surface.publishStatus !== "publishing" &&
+			surface.publishStatus !== "failed" &&
+			!servedSite(list, surface.siteSlug),
 	);
+	return awaited.length
+		? JSON.stringify(awaited.map((surface) => [surface.siteSlug, surface.liveHeadSha ?? null]))
+		: "";
+}
+
+export function readSitesOncePublished(
+	read: () => void,
+): (state: Pick<CompanyState, "siteList">, surfaces: readonly PublishedSurface[]) => void {
+	let asked = "";
+	return (state, surfaces) => {
+		const awaited = sitesAwaited(state, surfaces);
+		if (awaited === asked) return;
+		asked = awaited;
+		if (awaited) read();
+	};
+}
+
+export function noteSitesPublic(store: Store<CompanyState>, hosting: CompanySiteHostingState | undefined): void {
+	const next = hosting
+		? new Map([...hosting.sites.values()].map((entry) => [entry.siteId, entry.isPublic] as const))
+		: undefined;
+	const known = store.get().sitesPublic;
+	if (next === undefined ? known === undefined : sameAnswers(known, next)) return;
+	store.set({ sitesPublic: next });
+}
+
+function sameAnswers(known: ReadonlyMap<string, boolean> | undefined, next: ReadonlyMap<string, boolean>): boolean {
+	return known?.size === next.size && [...next].every(([siteId, isPublic]) => known.get(siteId) === isPublic);
+}
+
+export function hostingNotingPublic(store: Store<CompanyState>, hosting: WebSiteHosting): WebSiteHosting {
+	return {
+		...hosting,
+		read: async (signal) => {
+			const state = await hosting.read(signal);
+			noteSitesPublic(store, state);
+			return state;
+		},
+		setPublic: async (siteId, isPublic, signal) => {
+			const now = await hosting.setPublic(siteId, isPublic, signal);
+			const known = store.get().sitesPublic;
+			if (known?.get(siteId) !== now) store.set({ sitesPublic: new Map(known ?? []).set(siteId, now) });
+			return now;
+		},
+	};
 }
 
 export interface ConversationState {
