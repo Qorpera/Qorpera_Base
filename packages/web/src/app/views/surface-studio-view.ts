@@ -248,7 +248,8 @@ function sameOrderedChanges(
 		if (
 			prev[i]!.changeId !== next[i]!.changeId ||
 			prev[i]!.ops !== next[i]!.ops ||
-			prev[i]!.baseFiles !== next[i]!.baseFiles
+			prev[i]!.baseFiles !== next[i]!.baseFiles ||
+			prev[i]!.previewBaseChangeIds !== next[i]!.previewBaseChangeIds
 		)
 			return false;
 	}
@@ -483,6 +484,7 @@ export class SurfaceStudioView {
 						changeId: change.id,
 						ops: normalizeStudioPatchOps(ops, folderRoot),
 						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
 					});
 			}
 		}
@@ -838,6 +840,7 @@ export class SurfaceStudioView {
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
 			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+			readonly ordered: readonly StudioPatchChange[];
 			readonly initialLoading: boolean;
 			readonly updatingPhase: SurfaceUpdatePhase | null;
 			readonly activeOtherSurfaces: readonly SurfaceSummary[];
@@ -886,7 +889,47 @@ export class SurfaceStudioView {
 				this.#pendingRetryTarget = null;
 			}
 		} else {
-			this.#pendingRetryTarget = null;
+			const selectedIds = params.ordered.map((item) => item.changeId);
+			const lineageTarget = this.#options.store.lineageReconciliationTarget(surface.id, selectedIds);
+			if (lineageTarget) {
+				const existingRec = this.#options.store.reconciliationFor(surface.id, lineageTarget.changeIds);
+				if (!existingRec) {
+					if (this.#options.store.canEnsureReconciliation(surface.id)) {
+						void this.#options.store.ensureReconciliation(
+							surface.id,
+							lineageTarget.changeIds,
+							lineageTarget.conflictPaths,
+						);
+						reconcilingPreview = true;
+					}
+					this.#pendingRetryTarget = null;
+				} else if (existingRec.status === "queued" || existingRec.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (existingRec.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: lineageTarget.changeIds,
+						paths: lineageTarget.conflictPaths,
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			} else {
+				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
+				if (activeRec?.status === "queued" || activeRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (activeRec?.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: activeRec.selectedChangeIds,
+						paths: activeRec.conflictPaths ?? [],
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			}
 		}
 
 		const badgeText =

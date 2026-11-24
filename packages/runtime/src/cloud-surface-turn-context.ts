@@ -19,6 +19,7 @@ import {
 	type SurfaceMemberImage,
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
+import type { SurfaceOmittedBaseChange, SurfacePreviewBaseChange } from "./cloud-surface-preview-overlay.ts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
@@ -50,6 +51,7 @@ export interface SurfaceConflictDetail {
 	readonly baseFiles?: Readonly<Record<string, string | null>> | null;
 	readonly affectedPaths?: readonly string[] | null;
 	readonly conflictPaths?: readonly string[] | null;
+	readonly previewBaseChangeIds?: readonly string[] | null;
 }
 
 function parseOptionalStringMap(raw: unknown): Readonly<Record<string, string | null>> | null {
@@ -88,6 +90,9 @@ export function parseSurfaceConflictDetails(raw: unknown): SurfaceConflictDetail
 		const affectedPaths = Array.isArray(item.affectedPaths)
 			? item.affectedPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: null;
+		const previewBaseChangeIds = Array.isArray(item.previewBaseChangeIds)
+			? item.previewBaseChangeIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+			: null;
 		out.push({
 			changeId: typeof item.changeId === "string" ? item.changeId : null,
 			title: typeof item.title === "string" ? item.title : null,
@@ -103,6 +108,7 @@ export function parseSurfaceConflictDetails(raw: unknown): SurfaceConflictDetail
 			baseFiles: parseOptionalStringMap(item.baseFiles),
 			affectedPaths,
 			conflictPaths,
+			...(previewBaseChangeIds && previewBaseChangeIds.length > 0 ? { previewBaseChangeIds } : {}),
 		});
 	}
 	return out;
@@ -124,6 +130,9 @@ export interface SurfaceTurnBriefInput {
 	readonly pointToChangeTarget?: PointToChangeTarget | null;
 	readonly conflictPaths?: readonly string[] | null;
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
+	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
+	readonly chainMode?: boolean;
+	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
 	readonly mainSha?: string | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
 	readonly memberImages?: readonly SurfaceMemberImage[] | null;
@@ -270,12 +279,58 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		sections.push(lines.join("\n"));
 	}
 
+	const previewBaseChanges = binding.previewBaseChanges ?? [];
+	if (!binding.isInternalReconciliation && previewBaseChanges.length > 0) {
+		const isFolderSurface = binding.sourceKind === "folder";
+		const lines: string[] = [
+			"## Active Preview Changes",
+			isFolderSurface
+				? `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. \`company_read\` and \`company_list\` under \`${folderRoot || binding.surfaceSlug}/\` already reflect this preview state. Build cleanly on top of what is visible in Preview, and touch only the files needed for this request.`
+				: `The member started this request while viewing Preview with ${previewBaseChanges.length} unmerged staged change${previewBaseChanges.length === 1 ? "" : "s"} active. Inspect any relevant staged commits via \`git show <sha>\` or \`git diff <parent>..<head>\` so your work aligns cleanly while staying atomic on this session branch.`,
+		];
+		const maxPreviewChanges = 20;
+		for (let i = 0; i < Math.min(previewBaseChanges.length, maxPreviewChanges); i += 1) {
+			const item = previewBaseChanges[i]!;
+			const parts: string[] = [`${i + 1}. ${item.title.slice(0, 160)}`];
+			if (!isFolderSurface) {
+				if (item.parentSha && item.headSha) {
+					parts.push(`range \`${item.parentSha.slice(0, 40)}..${item.headSha.slice(0, 40)}\``);
+				} else if (item.headSha) {
+					parts.push(`commit \`${item.headSha.slice(0, 40)}\``);
+				}
+			}
+			if (item.affectedPaths.length > 0) {
+				parts.push(`paths: ${item.affectedPaths.slice(0, 12).join(", ")}`);
+			}
+			if (item.summary) {
+				parts.push(`summary: ${item.summary.slice(0, 240)}`);
+			}
+			lines.push(`- ${parts.join(" · ")}`);
+		}
+		if (previewBaseChanges.length > maxPreviewChanges) {
+			lines.push(`- ...and ${previewBaseChanges.length - maxPreviewChanges} more active preview changes`);
+		}
+		sections.push(lines.join("\n"));
+	}
+
 	const conflictPaths = binding.conflictPaths?.filter((p) => p.trim().length > 0) ?? [];
 	const conflictDetails = binding.conflictDetails ?? [];
-	if (conflictPaths.length > 0 || conflictDetails.length > 0) {
+	const omittedBaseChanges = binding.omittedBaseChanges ?? [];
+	const chainMode = binding.chainMode === true;
+	if (conflictPaths.length > 0 || conflictDetails.length > 0 || omittedBaseChanges.length > 0) {
 		const isFolderReconcile =
 			binding.sourceKind === "folder" ||
 			conflictDetails.some((detail) => detail.kind === "folder_patch" || Array.isArray(detail.patchManifest));
+		const detailIndexById = new Map<string, { readonly index: number; readonly title: string }>();
+		for (let i = 0; i < conflictDetails.length; i += 1) {
+			const detail = conflictDetails[i];
+			if (detail?.changeId) {
+				detailIndexById.set(detail.changeId, {
+					index: i + 1,
+					title: detail.title?.trim() || detail.changeId,
+				});
+			}
+		}
 		const lines: string[] = ["## Conflict Reconciliation"];
 		if (isFolderReconcile) {
 			const rootLabel = folderRoot || binding.surfaceSlug;
@@ -301,6 +356,16 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				if (detailPrompt) lines.push(`- Original request: ${detailPrompt.slice(0, 1000)}`);
 				const detailSummary = detail.summary?.trim();
 				if (detailSummary) lines.push(`- Summary: ${detailSummary.slice(0, 500)}`);
+				const baseRefs = (detail.previewBaseChangeIds ?? [])
+					.map((id) => {
+						const match = detailIndexById.get(id);
+						return match ? `Change ${match.index} (${match.title.slice(0, 80)})` : null;
+					})
+					.filter((value): value is string => value !== null);
+				const isDependentInChain = chainMode && baseRefs.length > 0;
+				if (baseRefs.length > 0) {
+					lines.push(`- Built on preview change(s): ${baseRefs.join(", ")}`);
+				}
 				const detailPaths =
 					detail.affectedPaths?.filter((p) => p.trim().length > 0) ??
 					detail.conflictPaths?.filter((p) => p.trim().length > 0) ??
@@ -319,11 +384,11 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 						const opPath = typeof opRecord?.path === "string" ? opRecord.path : "";
 						const opKind = typeof opRecord?.op === "string" ? opRecord.op : "";
 						const relPath = normalizeRelativePath(opPath);
-						if (conflictPathSet.size > 0 && relPath && !conflictPathSet.has(relPath)) {
+						if (!isDependentInChain && conflictPathSet.size > 0 && relPath && !conflictPathSet.has(relPath)) {
 							preservedPaths.push(opPath);
 							continue;
 						}
-						if (conflictPathSet.size === 0 && opKind === "write_file") {
+						if (opKind === "write_file" && (conflictPathSet.size === 0 || !conflictPathSet.has(relPath))) {
 							preservedPaths.push(opPath);
 							continue;
 						}
@@ -336,7 +401,9 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 					}
 					if (relevantOps.length > 0) {
 						lines.push(
-							"Staged patch operations for overlapping files (complete, untruncated):",
+							isDependentInChain
+								? "Dependent change patch operations (inspect and emit updated ops if needed to stay consistent with modifications to its base change; untouched files are preserved automatically):"
+								: "Staged patch operations for overlapping files (complete, untruncated):",
 							"```json",
 							JSON.stringify(relevantOps, null, 2),
 							"```",
@@ -346,6 +413,22 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			}
 			if (conflictDetails.length > maxDetails) {
 				lines.push(`- ...and ${conflictDetails.length - maxDetails} more staged changes`);
+			}
+			if (omittedBaseChanges.length > 0) {
+				lines.push("### Omitted Preview Base Changes (removed or toggled off — NOT active in this variant)");
+				for (const omitted of omittedBaseChanges.slice(0, 12)) {
+					lines.push(`- ${omitted.title.slice(0, 160)} (${omitted.status})`);
+					if (omitted.summary) lines.push(`  - Summary: ${omitted.summary.slice(0, 400)}`);
+					if (omitted.affectedPaths.length > 0) {
+						lines.push(`  - Paths: ${omitted.affectedPaths.slice(0, 24).join(", ")}`);
+					}
+					if (omitted.patchManifest && omitted.patchManifest.length > 0) {
+						const textOps = omitted.patchManifest.filter((op) => op.op !== "write_file");
+						if (textOps.length > 0) {
+							lines.push("```json", JSON.stringify(textOps, null, 2), "```");
+						}
+					}
+				}
 			}
 			if (conflictPaths.length > 0) {
 				const maxConflictPaths = 100;
@@ -360,9 +443,13 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			lines.push(
 				"Reconciliation procedure:",
 				`1. Read the current published files under \`${rootLabel}/\` via \`company_read\` as needed for full context.`,
-				"2. Combine the overlapping staged changes into one cohesive set of `StudioPatchOp` operations (`write_text`, `merge_json`, `delete`) covering every overlapping file listed above and preserving all compatible edits, markdown sections, SVG markup, and JSON tokens. Non-conflicting files from the staged changes are preserved automatically.",
+				omittedBaseChanges.length > 0
+					? "2. Adapt the staged change(s) above to stand cleanly on the current published files WITHOUT relying on anything introduced only by the Omitted Preview Base Changes above (update references, names, tokens, or copy as needed while preserving the change's core goal)."
+					: chainMode
+						? "2. Combine the overlapping staged changes into one cohesive set of `StudioPatchOp` operations (`write_text`, `merge_json`, `delete`) covering every overlapping file listed above, AND inspect all downstream dependent changes that built on a modified base change — emit updated ops for any dependent files whose references, tokens, or copy must match the newer modifications. Files you do not re-emit are preserved automatically."
+						: "2. Combine the overlapping staged changes into one cohesive set of `StudioPatchOp` operations (`write_text`, `merge_json`, `delete`) covering every overlapping file listed above and preserving all compatible edits, markdown sections, SVG markup, and JSON tokens. Non-conflicting files from the staged changes are preserved automatically.",
 				"3. If two changes directly contradict on the exact same value, sentence, or visual choice, prefer the newer change (higher Change number) unless the later request clearly intended to preserve both.",
-				"4. Call `stage_surface_patch` once with complete, untruncated operations covering every overlapping file listed above, then call `surface_reply` with a brief summary. Never ask the founder questions.",
+				"4. Call `stage_surface_patch` once with complete, untruncated operations covering every required file listed above, then call `surface_reply` with a brief summary. Never ask the founder questions.",
 			);
 		} else {
 			const mainSha = binding.mainSha?.trim();
@@ -377,6 +464,15 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 					if (!detail) continue;
 					const label = detail.title?.trim() || detail.changeId?.trim() || "Staged change";
 					const parts: string[] = [`#${i + 1} ${label.slice(0, 160)}`];
+					const baseRefs = (detail.previewBaseChangeIds ?? [])
+						.map((id) => {
+							const match = detailIndexById.get(id);
+							return match ? `#${match.index}` : null;
+						})
+						.filter((value): value is string => value !== null);
+					if (baseRefs.length > 0) {
+						parts.push(`built on ${baseRefs.join(", ")}`);
+					}
 					const branch = detail.branch?.trim();
 					if (branch) parts.push(`branch \`${branch.slice(0, 120)}\``);
 					const parentSha = detail.parentSha?.trim();
@@ -404,6 +500,21 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 					lines.push(`- ...and ${conflictDetails.length - maxDetails} more conflicting changes`);
 				}
 			}
+			if (omittedBaseChanges.length > 0) {
+				lines.push("Omitted preview base changes (removed or toggled off — NOT included in this variant):");
+				for (const omitted of omittedBaseChanges.slice(0, 12)) {
+					const parts: string[] = [`${omitted.title.slice(0, 160)} (${omitted.status})`];
+					if (omitted.parentSha && omitted.headSha) {
+						parts.push(`range \`${omitted.parentSha.slice(0, 40)}..${omitted.headSha.slice(0, 40)}\``);
+					} else if (omitted.headSha) {
+						parts.push(`commit \`${omitted.headSha.slice(0, 40)}\``);
+					}
+					if (omitted.affectedPaths.length > 0) {
+						parts.push(`paths: ${omitted.affectedPaths.slice(0, 10).join(", ")}`);
+					}
+					lines.push(`- ${parts.join(" · ")}`);
+				}
+			}
 			if (conflictPaths.length > 0) {
 				const maxConflictPaths = 100;
 				lines.push("Conflicted files:");
@@ -418,7 +529,11 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				"Reconciliation procedure:",
 				"1. Inspect current `main` (`git log -n 5 main`) and integrate your branch cleanly with `git merge main` or apply each conflicting range with `git cherry-pick <parentSha>..<headSha>`.",
 				binding.isInternalReconciliation
-					? "2. Inspect every conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) across the conflicted files. Preserve all compatible behavior from every listed change; if two changes directly contradict on the exact same choice, prefer the newer change (higher #). Never call `coding_ask`."
+					? omittedBaseChanges.length > 0
+						? "2. Adapt the listed change(s) so they build and work cleanly on `main` WITHOUT relying on anything from the omitted preview base changes. Never call `coding_ask`."
+						: chainMode
+							? "2. Inspect every conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) AND inspect all downstream dependent changes (`built on #...`) so their imports, props, tokens, and references stay consistent with the newer modifications. Preserve all compatible behavior; if two changes directly contradict on the exact same choice, prefer the newer change (higher #). Never call `coding_ask`."
+							: "2. Inspect every conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) across the conflicted files. Preserve all compatible behavior from every listed change; if two changes directly contradict on the exact same choice, prefer the newer change (higher #). Never call `coding_ask`."
 					: "2. Inspect every conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) across the conflicted files and preserve the intent of each change cleanly without dropping behavior.",
 				"3. Run the repository's build and test checks (`coding_run_command` with `runChecks: true` when `.qorpera/checks.json` exists, plus targeted tests) to verify the reconciled code passes.",
 				"4. Commit the clean resolution on the session branch, call `coding_record_change` with the resolved commit range, and finish with `coding_finish`.",

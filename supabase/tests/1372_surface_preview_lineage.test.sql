@@ -1,0 +1,421 @@
+-- @fixture 856_folder_company_creation.test.sql until "-- 4. No usable login"
+
+create function pg_temp.spl_assert(p_condition boolean, p_message text)
+returns void language plpgsql as $$
+begin
+	if not coalesce(p_condition, false) then
+		raise exception 'surface_preview_lineage: %', p_message;
+	end if;
+end $$;
+
+create function pg_temp.spl_as(p_user_id uuid)
+returns void language sql as $$
+	select set_config('request.jwt.claims', jsonb_build_object('role', 'authenticated', 'sub', p_user_id)::text, true)::text::void
+$$;
+
+do $$
+declare
+	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
+	v_owner constant uuid := '85600000-0000-4000-8000-000000000001';
+	v_profile uuid := (v_claim ->> 'profileId')::uuid;
+	v_surface uuid;
+	v_code_surface uuid;
+	v_s1 jsonb;
+	v_s2 jsonb;
+	v_s2_id uuid;
+	v_s3 jsonb;
+	v_s_ptc jsonb;
+	v_s_big jsonb;
+	v_s_big_read jsonb;
+	v_c1 uuid;
+	v_c2 uuid;
+	v_c3 uuid;
+	v_c_big uuid;
+	v_lease uuid;
+	v_turn jsonb;
+	v_rec record;
+	v_rec_session public.qorpera_surface_sessions%rowtype;
+	v_rec_count integer;
+	v_discard_rec record;
+	v_approve_res jsonb;
+	v_job_count integer;
+	v_code_s1 uuid;
+	v_code_s2 uuid;
+	v_code_s3 uuid;
+	v_code_c1 uuid;
+	v_code_c2 uuid;
+	v_code_c3 uuid;
+	v_code_rec record;
+	v_code_preview jsonb;
+	v_code_preview_status text;
+	v_priv_leaks integer;
+	v_big_text text;
+	v_turn_bytes integer;
+begin
+	select count(*) into v_priv_leaks
+	from unnest(array[
+		'public.qorpera_surface_normalize_paths(text,text[])',
+		'public.qorpera_surface_dependent_chain(uuid,uuid[])',
+		'public.qorpera_surface_preview_turn_context(public.qorpera_surfaces,uuid[])',
+		'public.qorpera_surface_reconciliation_omitted_bases(uuid,uuid[])',
+		'public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces,uuid[])',
+		'public.qorpera_surface_enqueue_chain_reconciliation(uuid,uuid)'
+	]) as fn(sig)
+	cross join unnest(array['public', 'anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) as r(role_name)
+	where has_function_privilege(r.role_name, fn.sig, 'EXECUTE');
+	perform pg_temp.spl_assert(v_priv_leaks = 0, 'Internal preview lineage helpers must have zero API execute grants');
+
+	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
+
+	perform pg_temp.spl_as(v_owner);
+	insert into public.qorpera_surfaces(
+		profile_id, slug, title, surface_group, archetype, source_kind, folder_root, status
+	)
+	values (
+		v_profile, 'lineage-identity', 'Identity', 'products', 'studio', 'folder', 'identity', 'active'
+	)
+	returning id into v_surface;
+
+	v_s1 := public.qorpera_start_surface_session(v_surface, 'Add Electric Blue accent token', 'Add accent');
+	perform pg_temp.as_service();
+	v_c1 := (public.qorpera_record_surface_change(
+		(v_s1 ->> 'id')::uuid,
+		'Add Electric Blue token',
+		'Sets accent to #0070f3',
+		'folder_patch',
+		null,
+		null,
+		'{}'::uuid[],
+		array['tokens.json'],
+		null,
+		jsonb_build_object(
+			'ops', jsonb_build_array(
+				jsonb_build_object('op', 'write_text', 'path', 'tokens.json', 'content', '{"accent":"#0070f3","name":"Electric Blue"}' || E'\n')
+			),
+			'baseFiles', jsonb_build_object('tokens.json', '{"accent":"#222222"}' || E'\n')
+		),
+		true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_as(v_owner);
+	v_s2 := public.qorpera_start_surface_session(
+		v_surface,
+		'Write launch promo using the new accent color',
+		'Write promo',
+		'member',
+		null,
+		jsonb_build_object(
+			'previewBaseChangeIds', jsonb_build_array(v_c1, 'not-a-uuid', extensions.gen_random_uuid())
+		)
+	);
+	v_s2_id := (v_s2 ->> 'id')::uuid;
+
+	perform pg_temp.spl_assert(
+		(select origin_ref is null from public.qorpera_surface_sessions where id = v_s2_id),
+		'previewBaseChangeIds-only origin_ref must be stripped to null'
+	);
+	perform pg_temp.spl_assert(
+		(select preview_base_change_ids = array[v_c1] from public.qorpera_surface_sessions where id = v_s2_id),
+		'Session must persist validated open previewBaseChangeIds'
+	);
+
+	v_s_ptc := public.qorpera_start_surface_session(
+		v_surface,
+		'Adjust headline copy',
+		'Point to change',
+		'point_to_change',
+		'Headline',
+		jsonb_build_object(
+			'route', '/',
+			'selector', 'h1',
+			'tagName', 'h1',
+			'textSnippet', 'Hello',
+			'boundingBox', jsonb_build_object('x', 0, 'y', 0, 'width', 100, 'height', 40),
+			'viewport', jsonb_build_object('width', 1280, 'height', 800),
+			'previewBaseChangeIds', jsonb_build_array(v_c1)
+		)
+	);
+	perform pg_temp.spl_assert(
+		(select (origin_ref ->> 'selector') = 'h1' and not (origin_ref ? 'previewBaseChangeIds') and preview_base_change_ids = array[v_c1]
+		 from public.qorpera_surface_sessions where id = (v_s_ptc ->> 'id')::uuid),
+		'Point-to-Change origin_ref fields must be preserved when previewBaseChangeIds is stripped'
+	);
+
+	perform pg_temp.as_service();
+	v_lease := extensions.gen_random_uuid();
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease, lease_expires_at = clock_timestamp() + interval '10 minutes'
+	where id = v_s2_id;
+
+	v_turn := public.qorpera_native_surface_read_session_turn(v_profile, v_s2_id, v_lease);
+	perform pg_temp.spl_assert(
+		jsonb_array_length(v_turn -> 'previewBaseChangeIds') = 1
+			and (v_turn -> 'previewBaseChangeIds' ->> 0)::uuid = v_c1,
+		'Turn read must expose previewBaseChangeIds'
+	);
+	perform pg_temp.spl_assert(
+		jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges') = 1
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 0 ->> 'changeId')::uuid = v_c1
+			and jsonb_array_length(v_turn -> 'previewContext' -> 'previewBaseChanges' -> 0 -> 'patchManifest') = 1,
+		'Turn read must expose previewBaseChanges with folder_patch manifest'
+	);
+
+	v_c2 := (public.qorpera_record_surface_change(
+		v_s2_id,
+		'Add Electric Blue promo',
+		'Adds promo.md referencing Electric Blue',
+		'folder_patch',
+		null,
+		null,
+		'{}'::uuid[],
+		array['promo.md'],
+		null,
+		jsonb_build_object(
+			'ops', jsonb_build_array(
+				jsonb_build_object('op', 'write_text', 'path', 'promo.md', 'content', '# Electric Blue Launch' || E'\n')
+			),
+			'baseFiles', jsonb_build_object('promo.md', null)
+		),
+		true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_assert(
+		(select preview_base_change_ids = array[v_c1] from public.qorpera_surface_changes where id = v_c2),
+		'Recorded change must inherit still-open preview_base_change_ids from session'
+	);
+	perform pg_temp.spl_assert(
+		(select (public.qorpera_surface_session_json(s) -> 'changes' -> 0 -> 'previewBaseChangeIds' ->> 0)::uuid = v_c1
+		 from public.qorpera_surface_sessions s where s.id = v_s2_id),
+		'Session JSON must expose previewBaseChangeIds on change'
+	);
+	select count(*) into v_rec_count from public.qorpera_surface_reconciliations where surface_id = v_surface;
+	perform pg_temp.spl_assert(v_rec_count = 0, 'Sequential C1 -> C2 without overlap must not enqueue reconciliation');
+
+	perform pg_temp.spl_as(v_owner);
+	v_s3 := public.qorpera_start_surface_session(v_surface, 'Switch accent to Sunset Orange', 'Sunset Orange');
+	perform pg_temp.as_service();
+	v_c3 := (public.qorpera_record_surface_change(
+		(v_s3 ->> 'id')::uuid,
+		'Switch accent to Sunset Orange',
+		'Updates accent to #ff5500',
+		'folder_patch',
+		null,
+		null,
+		'{}'::uuid[],
+		array['identity/tokens.json', 'identity/banner.md'],
+		null,
+		jsonb_build_object(
+			'ops', jsonb_build_array(
+				jsonb_build_object('op', 'write_text', 'path', 'identity/tokens.json', 'content', '{"accent":"#ff5500","name":"Sunset Orange"}' || E'\n'),
+				jsonb_build_object('op', 'write_text', 'path', 'identity/banner.md', 'content', '# Sunset Banner' || E'\n')
+			),
+			'baseFiles', jsonb_build_object('identity/tokens.json', '{"accent":"#222222"}' || E'\n')
+		),
+		true
+	) ->> 'changeId')::uuid;
+
+	select * into v_rec
+	from public.qorpera_surface_reconciliations
+	where surface_id = v_surface
+	order by created_at desc
+	limit 1;
+	perform pg_temp.spl_assert(v_rec.id is not null, 'C3 overlapping C1 must proactively enqueue chain reconciliation');
+	perform pg_temp.spl_assert(
+		v_rec.selected_change_ids = array[v_c1, v_c2, v_c3],
+		'Chain reconciliation must cover full chain [C1, C2, C3]'
+	);
+	perform pg_temp.spl_assert(
+		v_rec.conflict_paths = array['tokens.json'],
+		'Chain reconciliation conflict_paths must contain normalized overlapping path tokens.json'
+	);
+
+	select * into v_rec_session from public.qorpera_surface_sessions where id = v_rec.session_id;
+	perform pg_temp.spl_assert(v_rec_session.is_internal, 'Chain reconciliation session must be internal');
+	perform pg_temp.spl_assert(
+		v_rec_session.origin_kind = 'cofounder',
+		'System-triggered chain reconciliation must use cofounder origin_kind'
+	);
+	perform pg_temp.spl_assert(
+		v_rec_session.origin_ref ->> 'chainMode' = 'true',
+		'Chain reconciliation origin_ref must set chainMode=true'
+	);
+	perform pg_temp.spl_assert(
+		(v_rec_session.origin_ref -> 'changes' -> 1 -> 'previewBaseChangeIds' ->> 0)::uuid = v_c1,
+		'Chain reconciliation origin_ref changes must carry previewBaseChangeIds lineage'
+	);
+
+	v_big_text := repeat('x', 110000);
+	perform pg_temp.spl_as(v_owner);
+	v_s_big := public.qorpera_start_surface_session(v_surface, 'Add huge file', 'Huge file');
+	perform pg_temp.as_service();
+	v_c_big := (public.qorpera_record_surface_change(
+		(v_s_big ->> 'id')::uuid,
+		'Add huge doc',
+		'Large content',
+		'folder_patch',
+		null,
+		null,
+		'{}'::uuid[],
+		array['huge.md'],
+		null,
+		jsonb_build_object(
+			'ops', jsonb_build_array(
+				jsonb_build_object('op', 'write_text', 'path', 'huge.md', 'content', v_big_text)
+			)
+		),
+		true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_as(v_owner);
+	v_s_big_read := public.qorpera_start_surface_session(
+		v_surface,
+		'Build on huge doc',
+		'Build huge',
+		'member',
+		null,
+		jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_c_big))
+	);
+	perform pg_temp.as_service();
+	v_lease := extensions.gen_random_uuid();
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease, lease_expires_at = clock_timestamp() + interval '10 minutes'
+	where id = (v_s_big_read ->> 'id')::uuid;
+	v_turn := public.qorpera_native_surface_read_session_turn(v_profile, (v_s_big_read ->> 'id')::uuid, v_lease);
+	v_turn_bytes := octet_length(v_turn::text);
+	perform pg_temp.spl_assert(
+		v_turn_bytes < 131072
+			and (v_turn -> 'previewContext' -> 'previewBaseChanges' -> 0 ->> 'truncated') = 'true'
+			and not ((v_turn -> 'previewContext' -> 'previewBaseChanges' -> 0) ? 'patchManifest'),
+		'Oversized preview patch must truncate manifest while keeping metadata under 96 KiB budget'
+	);
+
+	perform pg_temp.spl_as(v_owner);
+	perform public.qorpera_discard_surface_change(v_c1);
+	select * into v_discard_rec
+	from public.qorpera_surface_reconciliations
+	where surface_id = v_surface and selected_change_ids = array[v_c2];
+	perform pg_temp.spl_assert(
+		v_discard_rec.id is not null and v_discard_rec.status = 'queued',
+		'Discarding C1 must proactively enqueue standalone reconciliation for dependent C2'
+	);
+	select * into v_rec_session from public.qorpera_surface_sessions where id = v_discard_rec.session_id;
+	perform pg_temp.spl_assert(
+		v_rec_session.origin_kind = 'cofounder'
+			and jsonb_array_length(v_rec_session.origin_ref -> 'omittedBaseChanges') = 1
+			and (v_rec_session.origin_ref -> 'omittedBaseChanges' -> 0 ->> 'changeId')::uuid = v_c1,
+		'Discard standalone reconciliation must record omitted base change C1 in origin_ref'
+	);
+
+	select count(*) into v_rec_count from public.qorpera_surface_sessions where surface_id = v_surface and is_internal;
+	perform public.qorpera_discard_surface_change(v_c1);
+	perform pg_temp.spl_assert(
+		(select count(*) from public.qorpera_surface_sessions where surface_id = v_surface and is_internal) = v_rec_count,
+		'Idempotent discard of already-discarded C1 must not enqueue extra reconciliations'
+	);
+
+	v_approve_res := public.qorpera_approve_surface_change(v_c2, true);
+	perform pg_temp.spl_assert(
+		(select status from public.qorpera_surface_changes where id = v_c2) = 'staged',
+		'Approving C2 before standalone reconciliation completes must keep C2 staged while auto_approve_after runs'
+	);
+	perform pg_temp.spl_assert(
+		(select auto_approve_after from public.qorpera_surface_reconciliations where id = v_discard_rec.id),
+		'Approving C2 must set auto_approve_after=true on pending standalone reconciliation'
+	);
+	select count(*) into v_job_count from public.qorpera_surface_jobs where surface_id = v_surface and kind = 'land_change';
+	perform pg_temp.spl_assert(v_job_count = 0, 'No land_change job should be queued before standalone reconciliation finishes');
+
+	perform pg_temp.as_service();
+	update public.qorpera_surface_reconciliations set status = 'running' where id = v_discard_rec.id;
+	update public.qorpera_surface_sessions set state = 'reconciling_running' where id = v_discard_rec.session_id;
+	perform public.qorpera_record_surface_change(
+		v_discard_rec.session_id,
+		'Standalone promo',
+		'Adapted promo without C1',
+		'folder_patch',
+		null,
+		null,
+		'{}'::uuid[],
+		array['promo.md'],
+		null,
+		jsonb_build_object(
+			'ops', jsonb_build_array(
+				jsonb_build_object('op', 'write_text', 'path', 'promo.md', 'content', '# Launch Promo' || E'\n')
+			)
+		),
+		true
+	);
+	perform pg_temp.spl_assert(
+		(select status = 'merging' and approved_by_user_id is not null from public.qorpera_surface_changes where id = v_c2),
+		'Completing standalone reconciliation with auto_approve_after must transition C2 to merging with approver'
+	);
+	select count(*) into v_job_count
+	from public.qorpera_surface_jobs
+	where surface_id = v_surface and kind = 'land_change' and (payload ->> 'reconciliationId')::uuid = v_discard_rec.id;
+	perform pg_temp.spl_assert(v_job_count = 1, 'Completing standalone reconciliation must enqueue land_change with reconciliationId');
+
+	perform pg_temp.spl_as(v_owner);
+	insert into public.qorpera_surfaces(
+		profile_id, slug, title, surface_group, archetype, source_kind, repository_key, live_head_sha, status
+	)
+	values (
+		v_profile, 'lineage-site', 'Site', 'products', 'live_build', 'code_repo', 'site', repeat('a', 40), 'active'
+	)
+	returning id into v_code_surface;
+
+	v_code_s1 := (public.qorpera_start_surface_session(v_code_surface, 'Add HeroBanner') ->> 'id')::uuid;
+	perform pg_temp.as_service();
+	v_code_c1 := (public.qorpera_record_surface_change(
+		v_code_s1, 'Add HeroBanner', 'Creates HeroBanner', 'git_range',
+		repeat('a', 40), repeat('1', 40), '{}'::uuid[], array['src/Hero.tsx'], null, null, true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_as(v_owner);
+	v_code_s2 := (public.qorpera_start_surface_session(
+		v_code_surface, 'Use HeroBanner on Pricing', null, 'member', null,
+		jsonb_build_object('previewBaseChangeIds', jsonb_build_array(v_code_c1))
+	) ->> 'id')::uuid;
+	perform pg_temp.as_service();
+	v_code_c2 := (public.qorpera_record_surface_change(
+		v_code_s2, 'Use HeroBanner on Pricing', 'Imports HeroBanner', 'git_range',
+		repeat('a', 40), repeat('2', 40), '{}'::uuid[], array['src/Pricing.tsx'], null, null, true
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.spl_as(v_owner);
+	v_code_s3 := (public.qorpera_start_surface_session(v_code_surface, 'Rename HeroBanner prop') ->> 'id')::uuid;
+	perform pg_temp.as_service();
+	v_code_c3 := (public.qorpera_record_surface_change(
+		v_code_s3, 'Rename HeroBanner prop', 'Changes prop API', 'git_range',
+		repeat('a', 40), repeat('3', 40), '{}'::uuid[], array['src/Hero.tsx'], null, null, true
+	) ->> 'changeId')::uuid;
+
+	select * into v_code_rec
+	from public.qorpera_surface_reconciliations
+	where surface_id = v_code_surface and selected_change_ids = array[v_code_c1, v_code_c2, v_code_c3];
+	perform pg_temp.spl_assert(v_code_rec.id is not null, 'code_repo C3 overlapping C1 must enqueue chain reconciliation');
+
+	perform pg_temp.spl_as(v_owner);
+	v_code_preview := public.qorpera_set_preview_selection(
+		v_code_surface, array[v_code_c1, v_code_c2, v_code_c3], null, '{}'::uuid[], '/'
+	);
+	perform pg_temp.spl_assert(
+		(v_code_preview -> 'primary' ->> 'status') = 'reconciling',
+		'Selecting code_repo chain while reconciliation is queued must start preview in reconciling state'
+	);
+
+	perform pg_temp.as_service();
+	update public.qorpera_surface_previews set status = 'ready' where id = (v_code_preview -> 'primary' ->> 'previewId')::uuid;
+	update public.qorpera_surface_reconciliations set status = 'running' where id = v_code_rec.id;
+	update public.qorpera_surface_sessions set state = 'reconciling_running' where id = v_code_rec.session_id;
+	perform public.qorpera_record_surface_change(
+		v_code_rec.session_id, 'Reconciled chain', 'Adapted Pricing for Hero prop', 'git_range',
+		repeat('a', 40), repeat('9', 40), '{}'::uuid[], array['src/Hero.tsx', 'src/Pricing.tsx'], null, null, true
+	);
+	select status into v_code_preview_status
+	from public.qorpera_surface_previews
+	where id = (v_code_preview -> 'primary' ->> 'previewId')::uuid;
+	perform pg_temp.spl_assert(
+		v_code_preview_status = 'composing',
+		'Completing code_repo chain reconciliation must reset matching ready preview back to composing'
+	);
+end $$;

@@ -481,6 +481,7 @@ describe("SurfacesStore", () => {
 			target,
 			originKind: "point_to_change",
 			originLabel: "PreorderCta · /pricing",
+			previewBaseChangeIds: [...CHANGES],
 		});
 		store.dispose();
 	});
@@ -533,6 +534,7 @@ describe("SurfacesStore", () => {
 		expect(uploadImage.mock.calls[1]?.[1]).toBe(inputId);
 		expect(uploadImage.mock.calls.map((call) => call[0])).toEqual([SURFACE, SURFACE]);
 		expect(startSurfaceSession).toHaveBeenCalledWith(SURFACE, "Ret knappen", {
+			previewBaseChangeIds: [...CHANGES],
 			clientInputId: inputId,
 			images: [
 				{ sha256: "a".repeat(64), bytes: 1, mediaType: "image/png" },
@@ -2545,6 +2547,39 @@ describe("SurfacesStore", () => {
 		expect(cachedIds.length).toBeLessThanOrEqual(6);
 		expect(cachedIds).toContain(extra[0]!.id);
 		expect(cachedIds).toContain(extra.at(-1)!.id);
+		store.dispose();
+	});
+
+	it("captures visible preview change IDs when starting a session in preview mode and omits them in live mode", async () => {
+		const startSurfaceSession = vi.fn(async (_surfaceId: string, prompt: string) =>
+			session(["staged"], { id: "77777777-7777-4777-8777-777777777777", prompt }),
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"])])),
+			startSurfaceSession,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		await store.startSession(SURFACE, "Build on active preview");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(
+			SURFACE,
+			"Build on active preview",
+			expect.objectContaining({ previewBaseChangeIds: [CHANGES[0], CHANGES[1]] }),
+		);
+
+		await store.toggleChange(SURFACE, CHANGES[1]);
+		await store.startSession(SURFACE, "Build on first change only");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(
+			SURFACE,
+			"Build on first change only",
+			expect.objectContaining({ previewBaseChangeIds: [CHANGES[0]] }),
+		);
+
+		store.setMode("live");
+		await store.startSession(SURFACE, "Build on live base");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(SURFACE, "Build on live base", {});
 		store.dispose();
 	});
 });

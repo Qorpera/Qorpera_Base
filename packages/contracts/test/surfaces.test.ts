@@ -489,4 +489,75 @@ describe("surfaces contracts", () => {
 			}),
 		).toThrow("workspace.reconciliations[0].conflictPaths[0]");
 	});
+
+	it("parses optional previewBaseChangeIds on SurfaceChangeUnit and enforces UUID array bounds", () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const base1 = randomUUID();
+		const now = "2026-11-24T06:00:00Z";
+		const baseChange = {
+			id: changeId,
+			sessionId,
+			surfaceId,
+			seq: 1,
+			title: "Launch promo",
+			summary: "Built on accent change",
+			kind: "folder_patch",
+			status: "staged",
+			parentSha: null,
+			headSha: null,
+			dependsOnChangeIds: [],
+			affectedPaths: ["promo.md"],
+			diffStats: null,
+			conflictPaths: null,
+			landedChangeNumber: null,
+			canUndo: false,
+			createdAt: now,
+			resolvedAt: null,
+		};
+
+		const withLineage = parseSurfaceSession({
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Promo",
+			prompt: "Write promo",
+			state: "ready",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: null,
+			hasActiveChat: false,
+			question: null,
+			changes: [{ ...baseChange, previewBaseChangeIds: [base1] }],
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		});
+		expect(withLineage.changes[0]?.previewBaseChangeIds).toEqual([base1]);
+
+		expect(() =>
+			parseSurfaceSession({
+				id: sessionId,
+				surfaceId,
+				workerId: null,
+				title: "Promo",
+				prompt: "Write promo",
+				state: "ready",
+				originKind: "member",
+				originLabel: null,
+				explorationId: null,
+				explorationVariantLabel: null,
+				hasActiveChat: false,
+				question: null,
+				changes: [{ ...baseChange, previewBaseChangeIds: ["not-a-uuid"] }],
+				messages: [],
+				createdAt: now,
+				updatedAt: now,
+				closedAt: null,
+			}),
+		).toThrow("session.changes[0].previewBaseChangeIds[0]");
+	});
 });

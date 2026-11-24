@@ -210,6 +210,7 @@ import {
 	type SurfaceMemberImage,
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
+import { parseSurfaceOmittedBaseChanges, parseSurfacePreviewContext } from "./cloud-surface-preview-overlay.ts";
 import {
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
@@ -2084,6 +2085,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
+		const originRefRec =
+			sessionTurnRaw.originRef &&
+			typeof sessionTurnRaw.originRef === "object" &&
+			!Array.isArray(sessionTurnRaw.originRef)
+				? (sessionTurnRaw.originRef as Record<string, unknown>)
+				: null;
+		const chainMode = originRefRec?.chainMode === true;
+		const omittedBaseChanges = parseSurfaceOmittedBaseChanges(originRefRec?.omittedBaseChanges);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const folderClient = new CloudCompanyFolderClient({
 			binding,
@@ -2137,6 +2147,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			pointToChangeTarget,
 			conflictPaths,
 			conflictDetails,
+			previewBaseChanges: previewContext.previewBaseChanges,
+			chainMode,
+			omittedBaseChanges,
 			mainSha,
 			recordChange: surfaceTools.recordChange,
 			memberImages,
@@ -2203,6 +2216,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
+		const originRefRec =
+			sessionTurnRaw.originRef &&
+			typeof sessionTurnRaw.originRef === "object" &&
+			!Array.isArray(sessionTurnRaw.originRef)
+				? (sessionTurnRaw.originRef as Record<string, unknown>)
+				: null;
+		const chainMode = originRefRec?.chainMode === true;
+		const omittedBaseChanges = parseSurfaceOmittedBaseChanges(originRefRec?.omittedBaseChanges);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const memberImagesSection = surfaceMemberImagesSection(
 			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
@@ -2230,6 +2252,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			originRef: sessionTurnRaw.originRef ?? null,
 			...(conflictPaths.length > 0 ? { conflictPaths } : {}),
 			...(conflictDetails.length > 0 ? { conflictDetails } : {}),
+			...(previewContext.previewBaseChanges.length > 0
+				? { previewBaseChanges: previewContext.previewBaseChanges }
+				: {}),
+			...(previewContext.previewReconciliations.length > 0
+				? { previewReconciliations: previewContext.previewReconciliations }
+				: {}),
+			...(chainMode ? { chainMode: true } : {}),
+			...(omittedBaseChanges.length > 0 ? { omittedBaseChanges } : {}),
 			...(mainSha ? { mainSha } : {}),
 			leaseToken,
 		};

@@ -1,4 +1,9 @@
-import { composeStudioPreview, findMatchingStudioReconciliation } from "@qorpera/cloud-client/surface-studio-patches";
+import {
+	composeStudioPreview,
+	detectLineageReconciliationTarget,
+	findMatchingStudioReconciliation,
+	type LineageReconciliationTarget,
+} from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type ApplySurfaceMigrationInput,
 	type CloudSurfacesClient,
@@ -881,6 +886,7 @@ export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles
 						changeId: change.id,
 						ops: normalizeStudioPatchOps(ops, identity.folderRoot),
 						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
 					});
 			}
 		}
@@ -3273,9 +3279,20 @@ export class SurfacesStore {
 			this.#stageLocalSession(surface, id, text);
 			return local;
 		}
+		const resolvedOptions: StartSurfaceSessionOptions =
+			options.previewBaseChangeIds === undefined && this.state.mode !== "live"
+				? (() => {
+						const previewBaseChangeIds = this.visiblePreviewChangeIds(surfaceId);
+						return previewBaseChangeIds.length > 0 ? { ...options, previewBaseChangeIds } : options;
+					})()
+				: options;
 		const session = await this.#run(`start:${surfaceId}:${text}`, async (client) => {
 			const attached = await this.#uploadImages(client, surfaceId, files);
-			return client.startSurfaceSession(surfaceId, text, attached ? { ...options, ...attached } : options);
+			return client.startSurfaceSession(
+				surfaceId,
+				text,
+				attached ? { ...resolvedOptions, ...attached } : resolvedOptions,
+			);
 		});
 		if (!session) return undefined;
 		const workspace = this.workspace(surfaceId);
@@ -3738,6 +3755,8 @@ export class SurfacesStore {
 			);
 		} else if (!change || change.status === "merged") {
 			this.#offerUndo(change?.title ?? updated.title, [changeId], verb);
+		} else if (change.status === "staged") {
+			void this.refreshWorkspace(updated.surfaceId);
 		}
 		void this.refreshSurfaces();
 		return outcome;
@@ -3790,6 +3809,7 @@ export class SurfacesStore {
 		const verb = this.#undoVerbFor(updated.surfaceId);
 		if (merged.length > 0) this.#offerUndo(updated.title, merged, verb);
 		else if (merging.length > 0) this.#offerPendingMerge(updated.surfaceId, updated.title, merging, verb);
+		else if (updated.changes.some(isOpenChange)) void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -3848,7 +3868,16 @@ export class SurfacesStore {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
+		const hasDependents = this.workspace(updated.surfaceId)?.activeSessions.some((session) =>
+			session.changes.some(
+				(change) =>
+					change.id !== changeId &&
+					isOpenChange(change) &&
+					(change.previewBaseChangeIds?.includes(changeId) ?? false),
+			),
+		);
 		this.#applySession(updated, outcome);
+		if (hasDependents) void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -4273,9 +4302,70 @@ export class SurfacesStore {
 		return !this.state.hiddenChanges[changeId];
 	}
 
+	canEnsureReconciliation(surfaceId: string): boolean {
+		return !isLocalSurfaceId(surfaceId) && Boolean(this.#options.client?.ensureSurfaceReconciliation);
+	}
+
 	reconciliationFor(surfaceId: string, changeIds: readonly string[]): SurfaceReconciliation | undefined {
 		const workspace = this.workspace(surfaceId);
 		return findMatchingStudioReconciliation(workspace?.reconciliations, changeIds) ?? undefined;
+	}
+
+	lineageReconciliationTarget(
+		surfaceId: string,
+		selectedChangeIds: readonly string[],
+	): LineageReconciliationTarget | null {
+		const workspace = this.workspace(surfaceId);
+		if (!workspace || selectedChangeIds.length === 0) return null;
+		const openChanges: SurfaceChangeUnit[] = [];
+		for (const session of workspace.activeSessions) {
+			for (const change of session.changes) {
+				if (isOpenChange(change)) openChanges.push(change);
+			}
+		}
+		return detectLineageReconciliationTarget(openChanges, selectedChangeIds, workspace.surface.folderRoot);
+	}
+
+	activeReconciliationFor(surfaceId: string, selectedChangeIds: readonly string[]): SurfaceReconciliation | undefined {
+		const workspace = this.workspace(surfaceId);
+		const recs = workspace?.reconciliations;
+		if (!workspace || !recs || recs.length === 0 || selectedChangeIds.length === 0) return undefined;
+		const exact = findMatchingStudioReconciliation(recs, selectedChangeIds);
+		if (exact) return exact;
+		const activeSet = new Set(selectedChangeIds);
+		const basesById = new Map<string, readonly string[]>();
+		for (const session of workspace.activeSessions) {
+			for (const change of session.changes) {
+				if (change.previewBaseChangeIds && change.previewBaseChangeIds.length > 0) {
+					basesById.set(change.id, change.previewBaseChangeIds);
+				}
+			}
+		}
+		const matching = recs
+			.filter((rec) => {
+				if (rec.selectedChangeIds.length === 0 || !rec.selectedChangeIds.every((id) => activeSet.has(id))) {
+					return false;
+				}
+				const covered = new Set(rec.selectedChangeIds);
+				for (const id of rec.selectedChangeIds) {
+					if (basesById.get(id)?.some((baseId) => activeSet.has(baseId) && !covered.has(baseId))) {
+						return false;
+					}
+				}
+				return true;
+			})
+			.sort((a, b) => b.selectedChangeIds.length - a.selectedChangeIds.length);
+		return matching[0];
+	}
+
+	visiblePreviewChangeIds(surfaceId: string): string[] {
+		const ids: string[] = [];
+		for (const session of this.activePreviewSessions(surfaceId)) {
+			for (const change of session.changes) {
+				if (isOpenChange(change) && this.isChangeShown(change.id)) ids.push(change.id);
+			}
+		}
+		return ids;
 	}
 
 	async ensureReconciliation(
@@ -4567,6 +4657,17 @@ export class SurfacesStore {
 				const gen = this.#previewSyncGen.get(surfaceId) ?? 0;
 				const info = this.#previewSelectionInfo(surfaceId);
 				this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
+				const currentWorkspace = this.workspace(surfaceId);
+				if (
+					currentWorkspace?.surface.sourceKind === "code_repo" &&
+					info.selection.explorationSessionId === null &&
+					info.selection.toggledChangeIds.length > 0
+				) {
+					const lineageTarget = this.lineageReconciliationTarget(surfaceId, info.selection.toggledChangeIds);
+					if (lineageTarget && !this.reconciliationFor(surfaceId, lineageTarget.changeIds)) {
+						void this.ensureReconciliation(surfaceId, lineageTarget.changeIds, lineageTarget.conflictPaths);
+					}
+				}
 				try {
 					const previewState = await client.setPreviewSelection(surfaceId, info.selection);
 					if (this.#options.signal.aborted) return;

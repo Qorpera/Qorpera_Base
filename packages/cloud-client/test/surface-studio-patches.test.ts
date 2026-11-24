@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { composeStudioPreview } from "../src/surface-studio-patches.ts";
+import { composeStudioPreview, detectLineageReconciliationTarget } from "../src/surface-studio-patches.ts";
 
 describe("studio surface folder_patch overlay engine", () => {
 	it("merges non-overlapping JSON token changes and text edits in memory", () => {
@@ -490,6 +490,161 @@ describe("studio surface folder_patch overlay engine", () => {
 				},
 			);
 			expect(withIncompleteOverlay.status).toBe("conflicted");
+		});
+	});
+
+	describe("preview lineage chain detection and subset reconciliation overlays", () => {
+		it("supports every toggle subset of C1 -> C2 + C3 without letting standalone R(C2) override active C1 + C2", () => {
+			const c1 = randomUUID();
+			const c2 = randomUUID();
+			const c3 = randomUUID();
+			const recChainId = randomUUID();
+			const recPairId = randomUUID();
+			const recStandaloneId = randomUUID();
+
+			const base = {
+				"identity/tokens.json": `${JSON.stringify({ accent: "#222222", primary: "#111111" }, null, 2)}\n`,
+			};
+			const afterC1 = `${JSON.stringify({ accent: "#0070f3", primary: "#111111" }, null, 2)}\n`;
+			const afterC1C2 = `${JSON.stringify({ accent: "#0070f3", primary: "#ffffff" }, null, 2)}\n`;
+
+			const change1 = {
+				changeId: c1,
+				baseFiles: { "identity/tokens.json": base["identity/tokens.json"] },
+				ops: [{ op: "write_text" as const, path: "identity/tokens.json", content: afterC1 }],
+			};
+			const change2 = {
+				changeId: c2,
+				previewBaseChangeIds: [c1],
+				baseFiles: { "identity/tokens.json": afterC1 },
+				ops: [
+					{ op: "write_text" as const, path: "identity/tokens.json", content: afterC1C2 },
+					{ op: "write_text" as const, path: "identity/promo.md", content: "# Electric Blue Promo\n" },
+				],
+			};
+			const change3 = {
+				changeId: c3,
+				baseFiles: { "identity/tokens.json": base["identity/tokens.json"] },
+				ops: [
+					{
+						op: "write_text" as const,
+						path: "identity/tokens.json",
+						content: `${JSON.stringify({ accent: "#ff5500", primary: "#111111" }, null, 2)}\n`,
+					},
+					{ op: "write_text" as const, path: "identity/banner.md", content: "# Sunset Banner\n" },
+				],
+			};
+
+			const descriptors = [
+				{ id: c1, affectedPaths: ["tokens.json"] },
+				{ id: c2, affectedPaths: ["identity/tokens.json", "promo.md"], previewBaseChangeIds: [c1] },
+				{ id: c3, affectedPaths: ["identity/tokens.json", "banner.md"] },
+			];
+
+			expect(detectLineageReconciliationTarget(descriptors, [c1], "identity")).toBeNull();
+			expect(detectLineageReconciliationTarget(descriptors, [c1, c2], "identity")).toBeNull();
+			expect(detectLineageReconciliationTarget(descriptors, [c3], "identity")).toBeNull();
+			expect(detectLineageReconciliationTarget(descriptors, [c1, c3], "identity")).toBeNull();
+			expect(detectLineageReconciliationTarget(descriptors, [c2], "identity")).toEqual({
+				kind: "missing_base",
+				changeIds: [c2],
+				conflictPaths: ["promo.md", "tokens.json"],
+			});
+			expect(detectLineageReconciliationTarget(descriptors, [c1, c2, c3], "identity")).toEqual({
+				kind: "chain",
+				changeIds: [c1, c2, c3],
+				conflictPaths: ["tokens.json"],
+			});
+
+			const reconciliations = [
+				{
+					id: recStandaloneId,
+					status: "ready" as const,
+					selectedChangeIds: [c2],
+					conflictPaths: ["tokens.json", "promo.md"],
+					patchManifest: [
+						{
+							op: "write_text" as const,
+							path: "identity/tokens.json",
+							content: `${JSON.stringify({ accent: "#222222", primary: "#ffffff" }, null, 2)}\n`,
+						},
+						{ op: "write_text" as const, path: "identity/promo.md", content: "# Launch Promo\n" },
+					],
+					errorDetail: null,
+				},
+				{
+					id: recPairId,
+					status: "ready" as const,
+					selectedChangeIds: [c1, c3],
+					conflictPaths: ["tokens.json"],
+					patchManifest: [
+						{
+							op: "write_text" as const,
+							path: "identity/tokens.json",
+							content: `${JSON.stringify({ accent: "#ff5500", primary: "#111111" }, null, 2)}\n`,
+						},
+					],
+					errorDetail: null,
+				},
+				{
+					id: recChainId,
+					status: "ready" as const,
+					selectedChangeIds: [c1, c2, c3],
+					conflictPaths: ["tokens.json"],
+					patchManifest: [
+						{
+							op: "write_text" as const,
+							path: "identity/tokens.json",
+							content: `${JSON.stringify({ accent: "#ff5500", primary: "#ffffff" }, null, 2)}\n`,
+						},
+						{ op: "write_text" as const, path: "identity/promo.md", content: "# Sunset Orange Promo\n" },
+					],
+					errorDetail: null,
+				},
+			];
+
+			const c1Only = composeStudioPreview(base, [change1], "identity", {}, { reconciliations });
+			expect(c1Only.status).toBe("ready");
+			expect(JSON.parse(c1Only.files["identity/tokens.json"]!).accent).toBe("#0070f3");
+
+			const c1c2 = composeStudioPreview(base, [change1, change2], "identity", {}, { reconciliations });
+			expect(c1c2.status).toBe("ready");
+			expect(JSON.parse(c1c2.files["identity/tokens.json"]!)).toEqual({ accent: "#0070f3", primary: "#ffffff" });
+			expect(c1c2.files["identity/promo.md"]).toBe("# Electric Blue Promo\n");
+
+			const c2OnlyNoRec = composeStudioPreview(base, [change2], "identity");
+			expect(c2OnlyNoRec.status).toBe("ready");
+			expect(JSON.parse(c2OnlyNoRec.files["identity/tokens.json"]!)).toEqual({
+				accent: "#222222",
+				primary: "#ffffff",
+			});
+
+			const c2OnlyWithRec = composeStudioPreview(base, [change2], "identity", {}, { reconciliations });
+			expect(c2OnlyWithRec.status).toBe("ready");
+			expect(c2OnlyWithRec.files["identity/promo.md"]).toBe("# Launch Promo\n");
+
+			const c1c3 = composeStudioPreview(base, [change1, change3], "identity", {}, { reconciliations });
+			expect(c1c3.status).toBe("ready");
+			expect(JSON.parse(c1c3.files["identity/tokens.json"]!).accent).toBe("#ff5500");
+			expect(c1c3.files["identity/banner.md"]).toBe("# Sunset Banner\n");
+
+			const c1c2c3 = composeStudioPreview(base, [change1, change2, change3], "identity", {}, { reconciliations });
+			expect(c1c2c3.status).toBe("ready");
+			expect(JSON.parse(c1c2c3.files["identity/tokens.json"]!)).toEqual({ accent: "#ff5500", primary: "#ffffff" });
+			expect(c1c2c3.files["identity/promo.md"]).toBe("# Sunset Orange Promo\n");
+			expect(c1c2c3.files["identity/banner.md"]).toBe("# Sunset Banner\n");
+		});
+
+		it("does not flag chain reconciliation when C3 already built on C2 and updated C2 files directly", () => {
+			const c1 = randomUUID();
+			const c2 = randomUUID();
+			const c3 = randomUUID();
+			const descriptors = [
+				{ id: c1, affectedPaths: ["tokens.json"] },
+				{ id: c2, affectedPaths: ["promo.md"], previewBaseChangeIds: [c1] },
+				{ id: c3, affectedPaths: ["tokens.json", "promo.md"], previewBaseChangeIds: [c1, c2] },
+			];
+			expect(detectLineageReconciliationTarget(descriptors, [c1, c2, c3], "identity")).toBeNull();
 		});
 	});
 });

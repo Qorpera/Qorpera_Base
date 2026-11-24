@@ -678,6 +678,7 @@ export class SurfaceReportView {
 						changeId: change.id,
 						ops: normalizeStudioPatchOps(ops, folderRoot),
 						...(change.baseFiles ? { baseFiles: change.baseFiles } : {}),
+						...(change.previewBaseChangeIds?.length ? { previewBaseChangeIds: change.previewBaseChangeIds } : {}),
 					});
 			}
 		}
@@ -746,7 +747,8 @@ export class SurfaceReportView {
 				(item, index) =>
 					this.#shownOrdered![index]!.changeId === item.changeId &&
 					this.#shownOrdered![index]!.ops === item.ops &&
-					this.#shownOrdered![index]!.baseFiles === item.baseFiles,
+					this.#shownOrdered![index]!.baseFiles === item.baseFiles &&
+					this.#shownOrdered![index]!.previewBaseChangeIds === item.previewBaseChangeIds,
 			);
 		if (sameDeps && sameOrdered) return;
 		this.#shownDeps = deps;
@@ -887,7 +889,47 @@ export class SurfaceReportView {
 				this.#pendingRetryTarget = null;
 			}
 		} else {
-			this.#pendingRetryTarget = null;
+			const selectedIds = params.ordered.map((item) => item.changeId);
+			const lineageTarget = this.#options.store.lineageReconciliationTarget(surface.id, selectedIds);
+			if (lineageTarget) {
+				const existingRec = this.#options.store.reconciliationFor(surface.id, lineageTarget.changeIds);
+				if (!existingRec) {
+					if (this.#options.store.canEnsureReconciliation(surface.id)) {
+						void this.#options.store.ensureReconciliation(
+							surface.id,
+							lineageTarget.changeIds,
+							lineageTarget.conflictPaths,
+						);
+						reconcilingPreview = true;
+					}
+					this.#pendingRetryTarget = null;
+				} else if (existingRec.status === "queued" || existingRec.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (existingRec.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: lineageTarget.changeIds,
+						paths: lineageTarget.conflictPaths,
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			} else {
+				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
+				if (activeRec?.status === "queued" || activeRec?.status === "running") {
+					reconcilingPreview = true;
+					this.#pendingRetryTarget = null;
+				} else if (activeRec?.status === "failed") {
+					reconciliationFailed = true;
+					this.#pendingRetryTarget = {
+						changeIds: activeRec.selectedChangeIds,
+						paths: activeRec.conflictPaths ?? [],
+					};
+				} else {
+					this.#pendingRetryTarget = null;
+				}
+			}
 		}
 
 		const badgeText =
