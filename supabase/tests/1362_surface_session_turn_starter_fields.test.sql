@@ -106,4 +106,29 @@ begin
 	perform pg_temp.sstsf_assert(v_turn -> 'surfaceIsGlobal' = 'false'::jsonb, 'the custom interface is not global');
 	perform pg_temp.sstsf_assert(v_turn ->> 'surfaceArchetype' = 'studio', 'the custom interface is a studio');
 	perform pg_temp.sstsf_assert(v_turn ->> 'folderRoot' = 'surfaces/field-notes', 'the custom interface keeps its folder root');
+
+	insert into public.qorpera_surface_changes(profile_id, surface_id, session_id, seq, title, kind, patch_manifest, status)
+	values
+		(v_company, v_custom, v_session_custom, 4, 'Module', 'folder_patch',
+			'[{"op":"write_text","path":"modules/price/layout.json","content":"{}"},{"op":"delete","path":"mylayout.json"},{"op":"delete","path":"surfaces/field-notes/modules/price/layout.json"},{"op":"delete","path":"surfaces/other/layout.json"}]'::jsonb,
+			'staged'),
+		(v_company, v_custom, v_session_custom, 5, 'Again', 'folder_patch',
+			'[{"op":"merge_json","path":"layout.json","patch":{"a":1}},{"op":"delete","path":"surfaces/field-notes/layout.json"},{"op":"merge_json","path":"layout.json","patch":{"b":2}}]'::jsonb,
+			'conflicted');
+	v_turn := pg_temp.sstsf_turn(v_company, v_session_custom, '13620000-0000-4000-8000-000000000105');
+	perform pg_temp.sstsf_assert(
+		v_turn -> 'openLayoutOps' = '[{"op":"delete","path":"surfaces/field-notes/layout.json"},{"op":"merge_json","path":"layout.json","patch":{"b":2}}]'::jsonb,
+		'only the exact layout path, from the last whole write or delete onward, got ' || coalesce(v_turn ->> 'openLayoutOps', 'null')
+	);
+
+	insert into public.qorpera_surface_changes(profile_id, surface_id, session_id, seq, title, kind, patch_manifest, status)
+	values (v_company, v_product, v_session_product, 2, 'Big page', 'folder_patch',
+		jsonb_build_array(jsonb_build_object('op', 'write_text', 'path', 'surfaces/travel-kit/layout.json', 'content', repeat('x', 100000))),
+		'staged');
+	v_turn := pg_temp.sstsf_turn(v_company, v_session_product, '13620000-0000-4000-8000-000000000106');
+	perform pg_temp.sstsf_assert(
+		v_turn ? 'openLayoutOps' and jsonb_typeof(v_turn -> 'openLayoutOps') = 'null',
+		'waiting layout ops over the cap are null, got ' || coalesce(left(v_turn ->> 'openLayoutOps', 80), 'null')
+	);
+	perform pg_temp.sstsf_assert(octet_length(v_turn::text) < 65536, 'the turn stays small when the layout ops are over the cap');
 end $$;

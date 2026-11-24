@@ -13,6 +13,7 @@ import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-too
 import { CLOUD_PLATFORM_SKILLS, MAX_STUDIO_SKILL_BYTES } from "../src/cloud-platform-skills.ts";
 import {
 	cloudStudioFileReader,
+	openSurfaceLayoutOps,
 	runSurfaceSessionTurn,
 	type SurfaceSessionRunnerPorts,
 	type SurfaceSessionTurnInput,
@@ -547,5 +548,47 @@ describe("stage_surface_patch and the layout", () => {
 		});
 		const plain = await tool.execute(await tool.prepare!(written, toolContext()), toolContext());
 		expect(JSON.parse(plain.value as string)).not.toHaveProperty("note");
+	});
+
+	it("stages a layout merge unchecked with the note when the turn's waiting ops are null or absent", async () => {
+		expect(openSurfaceLayoutOps(null)).toBeUndefined();
+		expect(openSurfaceLayoutOps(undefined)).toBeUndefined();
+		expect(openSurfaceLayoutOps([{ op: "delete", path: "layout.json" }])).toEqual([
+			{ op: "delete", path: "layout.json" },
+		]);
+		for (const openLayoutOps of [openSurfaceLayoutOps(null), undefined]) {
+			const stageSurfacePatch = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+			let answer: unknown;
+			await runSurfaceSessionTurn(
+				{
+					sessionId: randomUUID(),
+					surfaceId: randomUUID(),
+					companyId: randomUUID(),
+					sourceKind: "folder",
+					prompt: "Rename the tab.",
+					...CUSTOM,
+					...(openLayoutOps ? { openLayoutOps } : {}),
+				},
+				{
+					folder: { readText: async () => null },
+					readStudioFiles: async () => ({ files: {}, binaries: {} }),
+					surfaceTools: { stageSurfacePatch },
+					completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+					async executeTurn(req) {
+						const tool = req.tools.find((item) => item.name === "stage_surface_patch")!;
+						const parsed = tool.parseArguments({
+							title: "Board",
+							summary: "One tab.",
+							ops: [{ op: "merge_json", path: "layout.json", patch: { tabs: OWN_LAYOUT.tabs } }],
+						});
+						const result = await tool.execute(await tool.prepare!(parsed, toolContext()), toolContext());
+						answer = JSON.parse(result.value as string);
+						return { state: "ready", replyText: "Done." };
+					},
+				},
+			);
+			expect(answer).toMatchObject({ staged: true, note: LAYOUT_UNCHECKED_NOTE });
+			expect(stageSurfacePatch).toHaveBeenCalledTimes(1);
+		}
 	});
 });

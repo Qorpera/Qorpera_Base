@@ -46,17 +46,29 @@ $new$		'surfaceKind', v_surface.surface_kind,
 		'surfaceIcon', v_surface.icon,
 		'surfaceIsGlobal', v_surface.is_global,
 		'surfaceArchetype', v_surface.archetype,
-		'openLayoutOps', coalesce((
-			select jsonb_agg(o.op order by c.seq, o.n)
-			from public.qorpera_surface_changes c
-			cross join lateral jsonb_array_elements(
-				case when jsonb_typeof(c.patch_manifest) = 'array' then c.patch_manifest else '[]'::jsonb end
-			) with ordinality as o(op, n)
-			where c.session_id = v_session.id
-				and c.kind = 'folder_patch'
-				and c.status in ('staged', 'merging', 'conflicted')
-				and right(coalesce(o.op ->> 'path', ''), 11) = 'layout.json'
-		), '[]'::jsonb),$new$
+		'openLayoutOps', (
+			with ops as (
+				select o.op, row_number() over (order by c.seq, o.n) as i
+				from public.qorpera_surface_changes c
+				cross join lateral jsonb_array_elements(
+					case when jsonb_typeof(c.patch_manifest) = 'array' then c.patch_manifest else '[]'::jsonb end
+				) with ordinality as o(op, n)
+				where c.session_id = v_session.id
+					and c.kind = 'folder_patch'
+					and c.status in ('staged', 'merging', 'conflicted')
+					and o.op ->> 'path' in (
+						'layout.json',
+						coalesce(nullif(btrim(v_surface.folder_root, '/'), ''), v_surface.slug) || '/layout.json'
+					)
+			),
+			kept as (
+				select coalesce(jsonb_agg(ops.op order by ops.i), '[]'::jsonb) as list
+				from ops
+				where ops.i >= coalesce((select max(w.i) from ops w where w.op ->> 'op' in ('write_text', 'delete')), 0)
+			)
+			-- WHY: the runtime reads this whole answer within 256 KiB; over the cap it cannot see the waiting changes.
+			select case when octet_length(kept.list::text) > 98304 then null else kept.list end from kept
+		),$new$
 ]);
 
 drop function pg_temp.sstsf_patch(regprocedure, text[]);
