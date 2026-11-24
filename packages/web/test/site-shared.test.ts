@@ -83,17 +83,13 @@ describe("the site pieces the cards, What's new and the address card share", () 
 
 	it("says why a change was refused, in the interface language", () => {
 		const refused = (code: string) => new CloudRpcError("x", { message: "no", code }, 400);
-		expect(changeError(refused("42501"), "Try again.")).toBe(
-			"Only founders and admins can see passwords or take sites offline.",
-		);
-		expect(changeError(refused("22023"), "Try again.")).toBe("A site password is 10 to 128 characters.");
-		expect(changeError(new Error("offline"), "The password could not be read. Try again.")).toBe(
-			"The password could not be read. Try again.",
-		);
+		const fallback = "The password could not be read. Try again.";
+		expect(changeError(refused("42501"), fallback)).toBe("Only founders and admins can see passwords.");
+		expect(changeError(refused("22023"), fallback)).toBe(fallback);
+		expect(changeError(new Error("offline"), fallback)).toBe(fallback);
 		setLanguagePreference("da");
-		expect(changeError(refused("42501"), "Try again.")).toBe(
-			"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
-		);
+		expect(changeError(refused("42501"), fallback)).toBe("Kun stiftere og administratorer kan se adgangskoder.");
+		expect(changeError(refused("22023"), fallback)).toBe("Adgangskoden kunne ikke hentes. Prøv igen.");
 	});
 
 	it("says what to press to copy by hand, by the member's computer", () => {

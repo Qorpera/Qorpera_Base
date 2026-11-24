@@ -57,8 +57,6 @@ export interface CompanySiteTakedown {
 	readonly reason: string;
 }
 
-/** A site Qorpera took down, by name, as the access read gives it (the review of #1774, F4): Sites draws the row of one the
- * list leaves out (a project's site that never went live) from this. */
 export interface CompanySiteNamed {
 	readonly slug: string;
 	/** The site's title, or null. */
@@ -77,7 +75,6 @@ export interface CompanySiteAccess {
 
 /** The longest reason the kernel keeps (migration 20260930756000). */
 const REASON_MAX = 300;
-/** One read of the access, bounded: the Sites list waits for it. */
 const ACCESS_MS = 10_000;
 
 /** A site's name in its link, as the kernel allows it. */

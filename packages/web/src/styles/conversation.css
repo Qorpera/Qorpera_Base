@@ -1390,12 +1390,11 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
  * site's card stands right under them (app/views/thread-sites.ts). */
 .message-prose a.site-link-word { color: inherit; font-weight: 600; text-decoration: none; }
 .message-prose a.site-link-word:hover { text-decoration: underline; text-underline-offset: 3px; }
-/* The site's card: an app's card (above), one row: the Sites globe in the Sites app's blue (styles/sites.css), its title
- * and state, its address on the line under it, then an owner's key and the arrow. The whole row is the way to the site
- * (a link stretched over the card); the key stands above it. A site Qorpera took down is grey, its line the reason. */
 .site-card { position: relative; --site-ink: #2047bd; --app-colour: var(--site-ink); }
 :root[data-theme="dark"] .site-card { --site-ink: #7193f2; }
 .site-card.is-down { --app-colour: var(--text-soft); }
+.site-card.is-down:hover { border-color: var(--border); background: var(--bg); }
+.site-card.is-down:hover .app-card-emblem .interface-emblem { transform: none; }
 .site-card-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; color: inherit; text-decoration: none; }
 .site-card-open:hover { color: inherit; text-decoration: none; }
 .site-card-open::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }

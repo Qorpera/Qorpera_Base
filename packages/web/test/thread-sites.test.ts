@@ -247,6 +247,7 @@ describe("A site a message links: the card under the words", () => {
 		]);
 		expect(keyOf(api!)?.getAttribute("aria-label")).toBe("Copy the password");
 		expect(sale?.className).toBe("app-card site-card is-down");
+		expect(sale?.tagName).toBe("DIV");
 		expect(sale?.querySelector(".site-state")?.textContent).toBe("Taken down");
 		expect(note(sale!)).toBe(REASON);
 		expect(sale?.querySelector<HTMLElement>(".app-card-note")?.title).toBe(REASON);
@@ -286,7 +287,7 @@ describe("A site a message links: the card under the words", () => {
 		calls.password.mockRejectedValueOnce(new CloudRpcError("x", { message: "denied", code: "42501" }, 403));
 		keyOf(root)!.click();
 		await settle();
-		expect(note(root)).toBe("Only founders and admins can see passwords or take sites offline.");
+		expect(note(root)).toBe("Only founders and admins can see passwords.");
 		expect(root.querySelector(".app-card-note.is-error")).not.toBeNull();
 		expect(root.textContent).not.toContain("42501");
 	});
@@ -416,6 +417,12 @@ describe("A site a message links: the card under the words", () => {
 		expect(conversationCss).toMatch(/\.site-card \{ position: relative;/);
 		expect(conversationCss).toMatch(/\.site-card-open::after \{ content: ""; position: absolute; inset: 0;/);
 		expect(conversationCss).toMatch(/\.site-card-key \{ position: relative; z-index: 1;/);
+		expect(conversationCss).toContain(
+			".site-card.is-down:hover { border-color: var(--border); background: var(--bg); }",
+		);
+		expect(conversationCss).toContain(
+			".site-card.is-down:hover .app-card-emblem .interface-emblem { transform: none; }",
+		);
 		expect(conversationCss).toMatch(/\.message-prose a\.site-link-word \{ color: inherit; font-weight: 600;/);
 	});
 });

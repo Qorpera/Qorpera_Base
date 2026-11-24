@@ -149,8 +149,6 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
 
-/** What the company's store keeps of its sites as read: how many, for the drawer's Sites entry, and the list, for the
- * owed row's websites and their views. */
 function sitesListed(list: readonly CompanySite[]): { siteCount: number; siteList: readonly CompanySite[] } {
 	return { siteCount: list.length, siteList: list };
 }
@@ -2211,8 +2209,6 @@ export function mountApplication(
 		}
 		// The roster arrives after the company opens, and agents are hired and let go: the rail's notes follow it.
 		agentNotes?.agentsChanged();
-		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
-		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
@@ -2844,8 +2840,6 @@ export function mountApplication(
 							folderImage: cardImage,
 							folderApp: cardApp,
 							decisions: questionsHost(),
-							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
-							// the Sites page's row under the words.
 							codeReleases: releaseDesk(true),
 							companySites: { client: createWebSites(cloud, controller.profile), canManage: managesSites },
 							messageErases: {

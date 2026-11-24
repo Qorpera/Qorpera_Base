@@ -4,7 +4,7 @@ import { fmtTime, h } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 
-const MANAGERS_ONLY = phrase("Only founders and admins can see passwords or take sites offline.");
+const MANAGERS_ONLY = phrase("Only founders and admins can see passwords.");
 
 export function hasPassword(site: CompanySite): boolean {
 	return site.kind === "app";
@@ -25,7 +25,6 @@ export function siteEmblem(): SVGSVGElement {
 export function changeError(error: unknown, fallback: string): string {
 	const code = error instanceof CloudRpcError ? error.code : undefined;
 	if (code === "42501") return t(MANAGERS_ONLY);
-	if (code === "22023") return t("A site password is 10 to 128 characters.");
 	return t(fallback);
 }
 

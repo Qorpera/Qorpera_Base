@@ -2,7 +2,6 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Good will, Friends, Company, AI subscriptions, Sites. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -588,8 +587,7 @@ export const SETTINGS: Record<string, string> = {
 	"The mailbox is ready. Email sent to it can start the company's routines.":
 		"Postkassen er klar. E-mail sendt til den kan starte virksomhedens rutiner.",
 
-	"Only founders and admins can see passwords or take sites offline.":
-		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
+	"Only founders and admins can see passwords.": "Kun stiftere og administratorer kan se adgangskoder.",
 	"Publishing…": "Udgiver…",
 	"Published {time} by {agent}": "Udgivet {time} af {agent}",
 	"Published {time}": "Udgivet {time}",
@@ -600,7 +598,6 @@ export const SETTINGS: Record<string, string> = {
 	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
 	"More options for {name}": "Flere muligheder for {name}",
 	"Save password": "Gem adgangskode",
-	"A site password is 10 to 128 characters.": "En adgangskode til en hjemmeside er på 10 til 128 tegn.",
 	// A site Qorpera took down: why, in place of its link and password (own code storage step 5.1)
 	"Taken down": "Taget ned",
 

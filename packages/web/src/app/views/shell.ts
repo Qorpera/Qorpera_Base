@@ -3217,7 +3217,6 @@ function conceptsIcon(href: string): HTMLElement {
 	);
 }
 
-/** A website in the owed row: the Sites globe with the site's title under it, a link to the site's own view. */
 function websiteIcon(name: string, href: string): HTMLElement {
 	return h(
 		"a",

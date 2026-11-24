@@ -4,22 +4,6 @@ import { phrase, t } from "../../ui/preferences.ts";
 import type { SiteAnswer } from "../company.ts";
 import { changeError, hasPassword, shownLink, siteEmblem, stateOf, toClipboard } from "./site-shared.ts";
 
-/**
- * A site a message links, as a card under the message's words (Jonas, 15 Nov 2026: "chat widgets if there are UX
- * components we need to add"): when an agent's or a member's message links one of the company's own sites (its own
- * host, its old link on sites.qorpera.com, or an app link's host, matched against the company's list: never guessed
- * from the text), the site stands under the words as a row of its own, a sibling of an app's card (ui/markdown.ts
- * `appCard`, its frame, size and hover): the Sites globe, the site's title with its state, its address under it, and
- * a press anywhere on it opens the site in a new tab. A thread is calm, so the card is one row and shows each thing
- * once (the lead's review, 15 Nov 2026): no pills in it, and no password on screen. An owner or admin has one key on
- * it that copies the password, read with the Sites page's own call; the address line says so for a moment. A site
- * Qorpera took down is the same row, grey, "Taken down", with the operator's reason as its line; it leads to the
- * Sites page, where the whole sentence and the way to tell Qorpera are.
- *
- * The thread reads the company's sites once it opens (only while the company has any) and again when the window comes
- * back; every card of a site in the thread follows the last read that answered.
- */
-
 export type ThreadSitesClient = Pick<WebSites, "list" | "password"> & Partial<Pick<WebSites, "access">>;
 
 /** How long the address line says what a press on the key did. */

@@ -13,27 +13,6 @@ import {
 } from "./release-desk.ts";
 import { shownLink } from "./site-shared.ts";
 
-/**
- * "A change is ready", in the thread of the agent behind it (Jonas, 15 Nov 2026: "chat widgets if there are UX
- * components we need to add"): the agent says the change is ready, and the member answers it where they are, without
- * going to What's new. One card per project with a change ready from this thread's agent (the Co-Founder's thread when
- * no agent made it, or the agent left: the rule Not yet follows), below the last message, where the saved changes wait.
- *
- * The card is the thread's widget that waits for the member (a question's frame and width, ui/interaction-card.ts),
- * one thing shown once (the lead's review, 15 Nov 2026): the agent's figure and "Ready to go live" in the accent (the
- * project's name after it, quiet, only where the company has several), the picture of the newest change a customer
- * will notice, large (What's new's own tile, read the same way), its one line, and when more ride along "and N more
- * changes" as the way to What's new. An owner or admin has What's new's own Look first, Put it live and Not yet, which
- * do exactly what What's new's do, with every answer handled the same way: they are What's new's desk
- * (app/views/release-desk.ts), not a copy. Not yet puts "Not yet: " into this thread's composer, where the member
- * already is. Everyone else reads What's new's sentence that says who puts changes live. A site Qorpera took down has
- * no card, as nothing on it could be done: one quiet line in What's new's words leads to Sites.
- *
- * Once a change went live from here the card settles the way an answered question does: what the agent offered as its
- * bubble, the member's own "Put it live" on their side, and one quiet line, "Version N is live.", with the site's
- * address as a plain link. It stays while this thread is open; nothing is written to the thread.
- */
-
 /** What a card showed when it was last drawn waiting: what it settles on once its change is live. */
 interface Shown {
 	readonly title: string;

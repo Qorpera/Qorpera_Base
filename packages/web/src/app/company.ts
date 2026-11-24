@@ -300,8 +300,6 @@ export interface CompanyState {
 	/** The apps whose agent was asked to draw new icons, by name: since when, and the icons it had then. The drawer shows
 	 * the app drawing until a new one is read, or for ten minutes. */
 	appIconsDrawing?: Readonly<Record<string, { readonly since: number; readonly known: readonly string[] }>>;
-	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
-	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
 	/** The company's sites as last read, with `siteCount`: each live website is an owed view, first in the apps drawer,
 	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
@@ -837,7 +835,6 @@ export class CompanyController {
 	readonly #seenLiveAt = new Map<string, number>();
 	/** What this tab says it shows (app/presence-place.ts): the open conversation and its place while the tab is visible. */
 	#tracked: string | null = null;
-	/** Where this tab is outside a conversation: an interface's page, an app, Concepts, Sites or an agent's card. */
 	#openPlace: string | undefined;
 
 	constructor(
