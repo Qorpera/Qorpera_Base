@@ -385,6 +385,7 @@ export class SurfaceDoorStage {
 	#syncWaitingFigure(): void {
 		const show = this.#waitingState.classList.contains("is-running") && this.#waitingFigure.childElementCount > 0;
 		this.#waitingFigure.hidden = !show;
+		this.#waiting.classList.toggle("has-figure", show);
 		this.#waitingState.hidden = show;
 	}
 
