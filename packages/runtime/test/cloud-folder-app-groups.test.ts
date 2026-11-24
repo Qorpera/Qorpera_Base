@@ -258,9 +258,7 @@ Our own note: trips first.
 			"item must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new) or group:<id>",
 		);
 	}
-	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
-		"(Mailbox, Members, Bank, each posted app, Concepts, What's new)",
-	);
+	expect(ORGANIZE_APPS_DESCRIPTION).toContain("(Mailbox, Members, Bank, each posted app, Concepts, What's new)");
 	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
 		"each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new)",
 	);
