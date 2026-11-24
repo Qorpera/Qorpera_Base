@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
-import type { JsonValue, SurfaceSessionQuestion, SurfaceSourceKind } from "@qorpera/contracts";
+import type { JsonValue, StudioPatchOp, SurfaceSessionQuestion, SurfaceSourceKind } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
@@ -117,10 +117,12 @@ import {
 	GEMINI_ACTION_REVIEW_MODEL,
 	GeminiCapReachedError,
 	GeminiKeyRevokedError,
+	GeminiProviderError,
 	type GeminiProviderErrorCode,
 	type GeminiUsageReceipt,
 	geminiProviderErrorCode,
 } from "./cloud-gemini-tool-session.ts";
+import { synthesizeGeminiSpeech } from "./cloud-gemini-tts.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import { composeCloudLightAsk } from "./cloud-light-ask.ts";
@@ -203,7 +205,12 @@ import { type ClaudeLoginRunClient, type GeminiKeyRunClient, openGeminiKeyForRun
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
-import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
+import {
+	cloudReadOnlySkillTools,
+	cloudSkillTools,
+	composeCloudAgentSkills,
+	unavailableCloudAgentSkills,
+} from "./cloud-skill-tools.ts";
 import {
 	parseNativeSurfaceSessionImages,
 	readSurfaceMemberImage,
@@ -211,14 +218,17 @@ import {
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
 import {
+	cloudStudioFileReader,
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
 	extractPointToChangeTarget,
 	loadSurfaceIdentityContext,
 	loadSurfaceSharedAssets,
+	openSurfaceLayoutOps,
 	runSurfaceSessionTurn,
 	type SurfaceSessionTurnExecutionOutcome,
 	type SurfaceSessionTurnInput,
+	surfaceArchetypeOf,
 } from "./cloud-surface-session-runner.ts";
 import {
 	type CloudSurfaceToolsPort,
@@ -2203,7 +2213,29 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const surfaceArchetype = surfaceArchetypeOf(sessionTurnRaw.surfaceArchetype);
+		const openLayoutOps = openSurfaceLayoutOps(sessionTurnRaw.openLayoutOps);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
+		const voiceModel =
+			typeof sessionTurnRaw.voiceModel === "string" && sessionTurnRaw.voiceModel.trim()
+				? sessionTurnRaw.voiceModel.trim()
+				: null;
+		const voiceName =
+			typeof sessionTurnRaw.voiceName === "string" && sessionTurnRaw.voiceName.trim()
+				? sessionTurnRaw.voiceName.trim()
+				: null;
+		const openScenesOps: StudioPatchOp[] = [];
+		if (Array.isArray(sessionTurnRaw.openScenesOps)) {
+			for (const entry of sessionTurnRaw.openScenesOps) {
+				if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+				const rec = entry as Record<string, unknown>;
+				if (rec.op === "write_text" && typeof rec.path === "string" && typeof rec.content === "string") {
+					openScenesOps.push({ op: "write_text", path: rec.path, content: rec.content });
+				} else if (rec.op === "delete" && typeof rec.path === "string") {
+					openScenesOps.push({ op: "delete", path: rec.path });
+				}
+			}
+		}
 		const memberImagesSection = surfaceMemberImagesSection(
 			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
 			"company_read",
@@ -2215,6 +2247,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			surfaceSlug,
 			surfaceTitle,
 			...(typeof sessionTurnRaw.surfaceKind === "string" ? { surfaceKind: sessionTurnRaw.surfaceKind } : {}),
+			...(typeof sessionTurnRaw.surfaceIcon === "string" ? { surfaceIcon: sessionTurnRaw.surfaceIcon } : {}),
+			...(typeof sessionTurnRaw.surfaceIsGlobal === "boolean"
+				? { surfaceIsGlobal: sessionTurnRaw.surfaceIsGlobal }
+				: {}),
+			...(surfaceArchetype ? { surfaceArchetype } : {}),
+			...(openLayoutOps ? { openLayoutOps } : {}),
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
@@ -2231,6 +2269,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(conflictPaths.length > 0 ? { conflictPaths } : {}),
 			...(conflictDetails.length > 0 ? { conflictDetails } : {}),
 			...(mainSha ? { mainSha } : {}),
+			...(voiceModel ? { voiceModel } : {}),
+			...(voiceName ? { voiceName } : {}),
+			...(openScenesOps.length > 0 ? { openScenesOps } : {}),
 			leaseToken,
 		};
 
@@ -2252,6 +2293,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const completionPort = createControlPlaneSessionCompletionPort(this.#paths, identity.companyId);
 		const leaseRenewalPort = createControlPlaneSessionLeaseRenewalPort(this.#paths, identity.companyId);
 		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		const agentFolders = cloudAgentFolderPlace(context);
+		const notebooks = new CloudFolderNotebooks({
+			folder: folderClient,
+			runId: binding.runId,
+			agentFolder: cloudAgentFolder(identity.companyId, identity.staffAgentId, agentFolders),
+		});
 		const isGeminiRun = context.gemini !== undefined;
 		let geminiSession:
 			| {
@@ -2611,10 +2658,120 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		};
 
 		const readOnlyNames = new Set(["company_read", "company_list"]);
+		let cachedVoiceKey: Promise<string> | null = null;
+		let voiceCapReached: { readonly monthlyCapCents: number | null; readonly monthSpendMicrodollars: number } | null =
+			null;
+		const openVoiceApiKey = async (): Promise<string> => {
+			if (voiceCapReached) {
+				throw new GeminiCapReachedError(
+					voiceCapReached.monthlyCapCents ?? 0,
+					voiceCapReached.monthSpendMicrodollars,
+				);
+			}
+			if (geminiSession) return geminiSession.apiKey;
+			if (!cachedVoiceKey) {
+				const geminiKeys = this.#geminiKeys;
+				if (!geminiKeys) throw new GeminiKeyRevokedError();
+				cachedVoiceKey = openGeminiKeyForRun(
+					geminiKeys,
+					{
+						leaseId: binding.leaseId,
+						runId: binding.runId,
+						jobId: binding.jobId,
+						runnerId: binding.runnerId,
+						assignmentId: binding.assignmentId,
+						credentialCapsuleId: binding.credentialCapsuleId,
+						computeIdentityId: binding.computeIdentityId,
+					},
+					signal,
+				).then(
+					(opened) => {
+						if (opened.state === "refused") {
+							cachedVoiceKey = null;
+							if (opened.reason === "CAP_REACHED") {
+								voiceCapReached = {
+									monthlyCapCents: opened.monthlyCapCents,
+									monthSpendMicrodollars: opened.monthSpendMicrodollars,
+								};
+								throw new GeminiCapReachedError(opened.monthlyCapCents, opened.monthSpendMicrodollars);
+							}
+							throw new GeminiKeyRevokedError();
+						}
+						return opened.apiKey;
+					},
+					(error) => {
+						cachedVoiceKey = null;
+						if (signal.aborted) throw error;
+						if (error instanceof Error && /refused the Gemini key/i.test(error.message)) {
+							throw new GeminiKeyRevokedError();
+						}
+						throw error;
+					},
+				);
+			}
+			return cachedVoiceKey;
+		};
 
 		const turnResult = await runSurfaceSessionTurn(turnInput, {
 			folder: folderClient,
+			readStudioFiles: cloudStudioFileReader(folderClient),
 			surfaceTools,
+			narrateExplainer: {
+				stageBytes: async (bytes, mediaType, reqSignal) => {
+					const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
+					return {
+						manifestSha256: ref.manifestSha256,
+						fileSha256: ref.fileSha256,
+						bytes: ref.bytes,
+						mediaType: ref.mediaType,
+					};
+				},
+				synthesizeGemini: async ({ model, voiceName: ttsVoice, text, signal: reqSignal }) => {
+					if (voiceCapReached) {
+						throw new GeminiCapReachedError(
+							voiceCapReached.monthlyCapCents ?? 0,
+							voiceCapReached.monthSpendMicrodollars,
+						);
+					}
+					const apiKey = await openVoiceApiKey();
+					reqSignal.throwIfAborted();
+					let speech: Awaited<ReturnType<typeof synthesizeGeminiSpeech>>;
+					try {
+						speech = await synthesizeGeminiSpeech({
+							apiKey,
+							model,
+							voiceName: ttsVoice,
+							text,
+							...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+							...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+							...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
+							signal: reqSignal,
+						});
+					} catch (error) {
+						if (error instanceof GeminiProviderError && error.code === "key_rejected") {
+							throw new GeminiKeyRevokedError();
+						}
+						throw error;
+					}
+					const recorded = (await this.#paths.call(
+						"qorpera_record_gemini_voice_usage",
+						{ p_binding: binding, p_model: model, p_usage: speech.usage },
+						signal,
+					)) as {
+						monthSpendMicrodollars?: unknown;
+						monthlyCapCents?: unknown;
+						capReached?: unknown;
+					} | null;
+					if (recorded?.capReached === true) {
+						voiceCapReached = {
+							monthlyCapCents: typeof recorded.monthlyCapCents === "number" ? recorded.monthlyCapCents : null,
+							monthSpendMicrodollars:
+								typeof recorded.monthSpendMicrodollars === "number" ? recorded.monthSpendMicrodollars : 0,
+						};
+					}
+					return speech;
+				},
+			},
 			executeTurn: async (turnReq) =>
 				runModelTurn({
 					instructions: turnReq.instructions,
@@ -2625,16 +2782,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					buildTools: (runIdentity, operations) => {
 						const folderTools =
 							turnReq.mode === "folder"
-								? cloudFolderFileTools({
-										folder: folderClient,
-										operations,
-										identity: runIdentity,
-										surfaceFilePolicy: {
-											mode: "surface_worker",
-											writableRoots: turnReq.writableRoots,
-											stagedRoots: turnReq.stagedRoots,
-										},
-									})
+								? [
+										...cloudFolderFileTools({
+											folder: folderClient,
+											operations,
+											identity: runIdentity,
+											surfaceFilePolicy: {
+												mode: "surface_worker",
+												writableRoots: turnReq.writableRoots,
+												stagedRoots: turnReq.stagedRoots,
+											},
+										}),
+										...notebooks.tools(
+											(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
+											operations,
+										),
+									]
 								: cloudFolderFileTools({
 										folder: folderClient,
 										operations,

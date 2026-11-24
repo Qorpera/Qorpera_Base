@@ -13,7 +13,7 @@ import {
 	readyCount,
 	titleOf,
 } from "./release-desk.ts";
-import { siteEmblem } from "./settings-sites.ts";
+import { siteEmblem } from "./site-shared.ts";
 
 /**
  * The What's new page (`#/c/<id>/whats-new`, a platform page in the apps drawer; own code storage step 4): for each of
@@ -55,14 +55,6 @@ export function whatsNewEntry(company: CompanyController, releases: CodeReleases
 	for (const { ready: point } of releases.sites)
 		if (point && !silent.has(point.token)) ready += point.changes.length + point.quiet;
 	return { ready };
-}
-
-/** The version live of each project's site, by the site's name in its link: the Sites page names it on the site's
- * row. */
-export function liveVersions(releases: CodeReleases): Readonly<Record<string, number>> {
-	return Object.fromEntries(
-		releases.sites.flatMap((item) => (item.site && item.live ? [[item.site.slug, item.live.version]] : [])),
-	);
 }
 
 export class WhatsNewView {
@@ -198,11 +190,7 @@ export class WhatsNewView {
 					),
 					live ? h("span", { class: "site-meta" }, this.#liveLine(live)) : null,
 					down
-						? h(
-								"span",
-								{ class: "site-meta" },
-								t("Qorpera took this site down, so it can't be opened. See why in Sites."),
-							)
+						? h("span", { class: "site-meta" }, t("Qorpera took this site down, so it can't be opened."))
 						: null,
 					shown && can && answer === "private" ? this.#notLiveLine(shown.slug) : null,
 				),
@@ -298,7 +286,7 @@ export class WhatsNewView {
 				? notice(
 						"warn",
 						site.problem === "SITE_LIMIT"
-							? t("This project can't get a site: the company has 10. Take one offline in Sites.")
+							? t("This project can't get a site: the company has 10.")
 							: // Qorpera tries a change's upload five times; after that it waits for the next change.
 								site.givenUp
 								? t("The newest version could not be prepared. The next change that is saved gets a new try.")

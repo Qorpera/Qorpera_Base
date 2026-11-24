@@ -2201,7 +2201,6 @@ export class ConversationView {
 			this.#siteCards = new ThreadSites(
 				sites.client,
 				sites.canManage,
-				this.#company.profile.profileId,
 				signal,
 				() => this.#redrawItems(),
 				(siteId) => sitePublicAnswer(this.#company.store.get(), siteId),

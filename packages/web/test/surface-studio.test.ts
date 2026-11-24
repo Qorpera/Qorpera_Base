@@ -3,7 +3,7 @@ import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
-import { frameParsedPage, PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
+import { frameParsedPage } from "../src/ui/page-frame.ts";
 import { deferred } from "./fixtures.ts";
 import {
 	CHANGES,
@@ -566,9 +566,9 @@ describe("SurfaceStudioView", () => {
 		expect(brand.el.querySelector(".studio-empty")).toBeNull();
 		expect(brand.el.querySelector(".studio-product-head h2")?.textContent).toBe("Brand");
 		expect(brand.el.querySelector(".studio-product-line.is-empty")).not.toBeNull();
-		expect(brand.el.querySelector(".studio-section-head h2")?.textContent).toBe("Files");
+		expect(brand.el.querySelector(".studio-section-head h2")?.textContent).toBe("Artifacts");
 		expect(brand.el.querySelector(".studio-home-empty")?.textContent).toBe(
-			"Working files. Models, pictures and notes live here.",
+			"Artifacts. Models, pictures and notes live here.",
 		);
 		brand.dispose();
 		store.dispose();
@@ -636,7 +636,7 @@ describe("SurfaceStudioView", () => {
 		document.body.append(view.el);
 
 		const tabs = () => [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns", "Files"]);
+		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Breakdowns"]);
 		const palette = view.el.querySelector('[data-block="palette"]')!;
 		expect(palette.querySelector("h2")?.textContent).toBe("Palette");
 		expect(palette.querySelector(".studio-changed-pill")).not.toBeNull();
@@ -664,21 +664,13 @@ describe("SurfaceStudioView", () => {
 		expect(wordmark?.querySelector("img")).toBeNull();
 		expect(wordmark?.querySelector(".studio-mark-grounds.is-empty")).not.toBeNull();
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
-		const htmlCard = view.el.querySelector('[data-file="identity/index.html"]')!;
-		expect(htmlCard.querySelector("h2")?.textContent).toBe("Visuelt grundlag");
-		expect(htmlCard.querySelector("pre")).toBeNull();
-		const iframe = htmlCard.querySelector<HTMLIFrameElement>("iframe.studio-html-frame");
-		expect(iframe?.getAttribute("src")).toBe(PAGE_FRAME_URL);
-		expect(iframe?.getAttribute("sandbox")).toBe("allow-scripts");
-		expect(view.el.querySelector('[data-file="identity/logo.svg"]')).toBeNull();
-
 		store.setMode("compare");
 		view.update();
 		expect(
 			view.el.querySelector('[data-compare-file="identity/index.html"] iframe.studio-html-frame'),
 		).not.toBeNull();
 		expect(view.el.querySelector('[data-compare-file="identity/index.html"] pre')).toBeNull();
+		expect(view.el.querySelector('[data-compare-file="identity/index.html"] .studio-file-tag')).toBeNull();
 		expect(view.el.querySelector('[data-compare-file="identity/logo.svg"] img.studio-svg-img')).not.toBeNull();
 		expect(view.el.querySelector('[data-compare-file="identity/tokens.css"]')).toBeNull();
 		view.dispose();
@@ -703,10 +695,6 @@ describe("SurfaceStudioView", () => {
 		expect(withVoice.el.querySelector('[data-file="identity/tokens.css"]')).toBeNull();
 		expect(withVoice.el.querySelector('[data-file="identity/logo.svg"]')).toBeNull();
 		expect(withVoice.el.querySelector("pre")).toBeNull();
-		withVoice.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
-		expect(withVoice.el.querySelector('[data-file="identity/voice.md"]')).toBeNull();
-		expect(withVoice.el.querySelector('[data-file="identity/index.html"]')).not.toBeNull();
-		expect(withVoice.el.querySelector('[data-file="identity/tokens.css"]')).toBeNull();
 
 		withVoice.dispose();
 		store.dispose();
@@ -888,6 +876,10 @@ describe("SurfaceStudioView", () => {
 			surface: identity,
 			signal: new AbortController().signal,
 			baseFiles: {
+				"identity/layout.json": JSON.stringify({
+					schema: "qorpera.surface-layout/v1",
+					tabs: [{ id: "artifacts", title: "Artifacts", blocks: [{ type: "artifacts" }] }],
+				}),
 				"identity/index.html":
 					'<!doctype html><html><head><title>Preview</title><link rel="stylesheet" href="./extra.css"></head><body>Hi</body></html>',
 				"identity/extra.css": "body { background: #fff; }",
@@ -896,10 +888,10 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		const pageCard = view.el.querySelector('[data-file="identity/index.html"]')!;
 		expect(pageCard.classList.contains("is-changed")).toBe(true);
 		expect(pageCard.querySelector(".studio-changed-pill")?.textContent).toBe("Updated");
+		expect(pageCard.querySelector(".studio-file-tag")).toBeNull();
 
 		store.setMode("compare");
 		view.update();
@@ -1138,14 +1130,7 @@ describe("SurfaceStudioView", () => {
 		document.body.append(view.el);
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
-		expect(tabs.map((tab) => tab.textContent)).toEqual([
-			"Overview",
-			"Specs",
-			"Vendors",
-			"Reports",
-			"Breakdowns",
-			"Files",
-		]);
+		expect(tabs.map((tab) => tab.textContent)).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
 		expect(tabs.filter((tab) => tab.classList.contains("is-empty")).map((tab) => tab.dataset.tab)).toEqual([
 			"specs",
 			"vendors",
@@ -1159,12 +1144,6 @@ describe("SurfaceStudioView", () => {
 		expect(usedBy.textContent).toContain("Used by");
 		expect(usedBy.textContent).toContain("Hjemmeside");
 		expect(view.el.querySelector(".studio-reach")?.textContent).not.toContain("specs.json");
-
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
-		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')?.textContent).toContain(
-			"Initial concept notes.",
-		);
-		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).not.toBeNull();
 		view.dispose();
 		store.dispose();
 	});
@@ -1199,7 +1178,6 @@ describe("SurfaceStudioView", () => {
 			"Vendors",
 			"Reports",
 			"Breakdowns",
-			"Files",
 		]);
 		expect(view.el.querySelector(".studio-stage .studio-stage-floor")).not.toBeNull();
 		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Thetabands");
@@ -1231,10 +1209,6 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelectorAll(".studio-vendor-card.is-empty")).toHaveLength(2);
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
 		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Reports and posts live here.");
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
-		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe(
-			"Working files. Models, pictures and notes live here.",
-		);
 		view.dispose();
 		store.dispose();
 	});
@@ -1818,6 +1792,115 @@ describe("SurfaceReportView", () => {
 		expect(view.el.querySelector(".skeleton-surface-report")).toBeNull();
 		expect(view.el.querySelectorAll(".report-section")).toHaveLength(4);
 		view.dispose();
+		store.dispose();
+	});
+
+	it("renders standalone HTML deliverables alongside reports, keeps switcher interactive, switches multiple Markdown files, and compares brand-new reports", async () => {
+		const reportSurface = summary({
+			id: "22222222-2222-4222-8222-222222222252",
+			slug: "editorial",
+			title: "Editorial",
+			archetype: "studio",
+			kind: "report",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/editorial",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: reportSurface.id,
+			title: "Q3 report",
+			kind: "folder_patch",
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "q3.report.json",
+					content: JSON.stringify({
+						slug: "q3-report",
+						headline: "Q3 Retention Analysis",
+						subtitle: "Retention rose across every tier.",
+						sections: [{ id: "s1", heading: "Findings", paragraphs: ["Strong quarter."] }],
+					}),
+				},
+			],
+		});
+		const c2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: reportSurface.id,
+			title: "Launch HTML post",
+			kind: "folder_patch",
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "launch.html",
+					content:
+						"<!doctype html><html><head><title>Launch Day Essay</title></head><body><h1>Launch</h1></body></html>",
+				},
+			],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [reportSurface]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace([session([], { surfaceId: reportSurface.id, changes: [c1, c2], openChangeCount: 2 })], {
+						surface: reportSurface,
+					}),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(reportSurface.slug);
+		await Promise.resolve();
+		store.selectReport("q3-report");
+
+		const view = new SurfaceReportView({
+			store,
+			surface: reportSurface,
+			signal: new AbortController().signal,
+			baseFiles: {},
+			timeSlice: false,
+		});
+		document.body.append(view.el);
+
+		const pills = [...view.el.querySelectorAll<HTMLButtonElement>(".report-switch-pill")];
+		expect(pills.map((pill) => pill.textContent)).toEqual(["Q3 Retention Analysis", "Launch Day Essay"]);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Q3 Retention Analysis");
+
+		pills[1]!.click();
+		expect(view.el.querySelector(".report-html-card h2")?.textContent).toBe("Launch Day Essay");
+		expect(view.el.querySelector("iframe.report-html-frame")).not.toBeNull();
+		expect(store.state.activeReportSlug).toBe("doc:surfaces/editorial/launch.html");
+
+		store.setMode("compare");
+		view.update();
+		const compareCards = [...view.el.querySelectorAll(".studio-compare-card")];
+		expect(compareCards).toHaveLength(2);
+		expect(compareCards[0]!.textContent).toContain("Q3 Retention Analysis");
+		expect(compareCards[0]!.textContent).toContain("Added");
+		expect(compareCards[1]!.textContent).toContain("Launch Day Essay");
+		view.dispose();
+
+		const mdView = new SurfaceReportView({
+			store,
+			surface: reportSurface,
+			signal: new AbortController().signal,
+			baseFiles: {
+				"surfaces/editorial/a.md": "# First Note\n\nAlpha body.",
+				"surfaces/editorial/b.md": "# Second Note\n\nBeta body.",
+			},
+			patches: {},
+			timeSlice: false,
+		});
+		store.setMode("live");
+		mdView.update();
+		const mdPills = [...mdView.el.querySelectorAll<HTMLButtonElement>(".report-switch-pill")];
+		expect(mdPills.map((pill) => pill.textContent)).toEqual(["First Note", "Second Note"]);
+		expect(mdView.el.querySelector(".report-article")?.textContent).toContain("Alpha body.");
+		expect(mdView.el.querySelector(".report-article")?.textContent).not.toContain("Beta body.");
+		mdPills[1]!.click();
+		expect(mdView.el.querySelector(".report-article")?.textContent).toContain("Beta body.");
+		mdView.dispose();
 		store.dispose();
 	});
 });

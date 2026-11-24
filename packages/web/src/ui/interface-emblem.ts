@@ -13,8 +13,6 @@ const INK = "#161615";
 
 type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 
-/** An emblem a file may name, or the Bank page's, the Sites page's or What's new's, which only the web draws
- * (app/bank-page.ts, views/settings-sites.ts, views/whats-new.ts). */
 export type Emblem = InterfaceEmblem | "bank" | "globe" | "spark" | "drawers" | "phone" | "window" | "database";
 
 /** Each emblem on a 48×48 grid: the solid parts take the ink, the cuts the page colour. */

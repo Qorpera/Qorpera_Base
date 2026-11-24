@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readSurfaceFolderFiles } from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
 import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import {
 	activeTaskSessions,
 	approvalOutcome,
 	attachSurfaces,
+	changeDeliverables,
 	clearLocalSandboxCache,
 	compiledCompanyIdentity,
 	effectiveStudioBaseBinaries,
@@ -19,10 +21,13 @@ import {
 	migrationPending,
 	normalizeStudioPatchOps,
 	PREVIEW_PASS_TTL_MS,
-	readSurfaceFolderFiles,
 	reportsOwnedBy,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,
+	surfaceDocSlug,
+	surfaceHasDeliverables,
+	surfaceHasReports,
+	surfaceReports,
 	surfacesDisabledOf,
 	surfacesOf,
 	synthesizeMigration,
@@ -2545,6 +2550,152 @@ describe("SurfacesStore", () => {
 		expect(cachedIds.length).toBeLessThanOrEqual(6);
 		expect(cachedIds).toContain(extra[0]!.id);
 		expect(cachedIds).toContain(extra.at(-1)!.id);
+		store.dispose();
+	});
+
+	it("discovers staged reports and per-change deliverables before merge and attributes relative paths accurately", async () => {
+		const studio = summary({
+			id: "22222222-2222-4222-8222-222222222241",
+			slug: "marketing",
+			title: "Marketing",
+			archetype: "studio",
+			kind: "custom",
+			icon: "star",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/marketing",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Q3 retention report",
+			summary: "Cohort breakdown with bar chart.",
+			kind: "folder_patch",
+			affectedPaths: ["reports/q3.report.json"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "reports/q3.report.json",
+					content: JSON.stringify({
+						slug: "q3-retention",
+						headline: "Q3 Retention Breakdown",
+						category: "Analysis",
+						readingTime: "4 min",
+						sections: [{ id: "s1", heading: "Summary", paragraphs: ["Retention improved."] }],
+					}),
+				},
+			],
+		});
+		const c2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: studio.id,
+			sessionId: SESSION,
+			title: "Launch announcement HTML",
+			summary: "Standalone formatted post.",
+			kind: "folder_patch",
+			affectedPaths: ["posts/launch.html", "modules/calc/index.html"],
+			patchManifest: [
+				{
+					op: "write_text",
+					path: "posts/launch.html",
+					content:
+						"<!doctype html><html><head><title>Quiet Launch Post</title></head><body><h1>Hello</h1></body></html>",
+				},
+				{
+					op: "write_text",
+					path: "modules/calc/index.html",
+					content: "<!doctype html><html><head><title>Calculator Widget</title></head><body></body></html>",
+				},
+			],
+		});
+		const otherSession = session([], {
+			id: "33333333-3333-4333-8333-333333333332",
+			surfaceId: studio.id,
+			title: "Earlier session",
+		});
+		const reportSession = session([], {
+			id: SESSION,
+			surfaceId: studio.id,
+			title: "Editorial writer",
+			changes: [c1, c2],
+			openChangeCount: 2,
+		});
+		const dedicatedReport = summary({
+			id: "22222222-2222-4222-8222-222222222242",
+			slug: "blog",
+			title: "Blog & Reports",
+			archetype: "studio",
+			kind: "report",
+			icon: "book",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/blog",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio, dedicatedReport]),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					id === dedicatedReport.id
+						? workspace([], { surface: dedicatedReport })
+						: workspace([otherSession, reportSession], { surface: studio }),
+				),
+			}),
+			{ loadCloudFiles: vi.fn(async () => folderContents({})) },
+		);
+		await store.load();
+		await store.openSurface(studio.slug);
+		await Promise.resolve();
+
+		const reports = surfaceReports(store.state, studio.id);
+		expect(reports.map((r) => ({ path: r.path, slug: r.slug, title: r.title }))).toEqual([
+			{ path: "surfaces/marketing/reports/q3.report.json", slug: "q3-retention", title: "Q3 Retention Breakdown" },
+		]);
+		expect(surfaceHasReports(store.state, studio.id)).toBe(true);
+		expect(surfaceHasDeliverables(store.state, studio.id)).toBe(true);
+
+		expect(reportsOwnedBy(store.state, studio.id, { kind: "session", id: otherSession.id })).toHaveLength(0);
+		expect(reportsOwnedBy(store.state, studio.id, { kind: "session", id: reportSession.id })).toHaveLength(1);
+
+		expect(changeDeliverables(store.state, studio.id, c1)).toEqual([
+			{
+				kind: "report",
+				path: "surfaces/marketing/reports/q3.report.json",
+				slug: "q3-retention",
+				title: "Q3 Retention Breakdown",
+				category: "Analysis",
+				readingTime: "4 min",
+			},
+		]);
+		expect(changeDeliverables(store.state, studio.id, c2)).toEqual([
+			{
+				kind: "html",
+				path: "surfaces/marketing/posts/launch.html",
+				slug: surfaceDocSlug("surfaces/marketing/posts/launch.html"),
+				title: "Quiet Launch Post",
+			},
+		]);
+
+		await store.toggleChange(studio.id, c1.id);
+		expect(store.isChangeShown(c1.id)).toBe(false);
+		await store.openChangeDeliverable(studio.id, c1.id, "q3-retention");
+		expect(store.isChangeShown(c1.id)).toBe(true);
+		expect(store.state.mode).toBe("report");
+		expect(store.state.activeReportSlug).toBe("q3-retention");
+
+		await store.openChangeDeliverable(studio.id, c2.id, surfaceDocSlug("surfaces/marketing/posts/launch.html"));
+		expect(store.state.mode).toBe("report");
+		expect(store.state.activeReportSlug).toBe(surfaceDocSlug("surfaces/marketing/posts/launch.html"));
+
+		await store.openChangeDeliverable(studio.id, c2.id, surfaceDocSlug("surfaces/marketing/posts/launch.html"));
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.activeReportSlug).toBeUndefined();
+
+		await store.openChangeDeliverable(dedicatedReport.id, CHANGES[2], "launch-essay");
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.activeReportSlug).toBe("launch-essay");
 		store.dispose();
 	});
 });

@@ -970,13 +970,22 @@ refused it goes on with the token it holds; it reads a replaced `.credentials.js
 A member saves their own Gemini API key directly from the web client to the shared vault (two-hop save: the web client
 calls `qorpera_begin_gemini_key_save` for a short-lived ticket, then posts the key directly to the vault so it never
 passes through Supabase). The vault verifies the key against Google via `x-goog-api-key`, seals it under the member's
-vault key (`qorpera_gemini_keys`), and opens it (`qorpera_open_gemini_key_for_run`) only for an active run whose lease
-is pinned to that key and whose requester owns it (`owner_user_id = coalesce(requested_by_user_id, created_by_user_id)`):
-attended runs (`session_turn`, `room_delivery`), and — since `20260930877000` — return-trip mediation `wake` runs of
-kinds `worker-completion`, `machine-event`, `machine-checkin`, and `office-activation` chained via `origin_run_id` from
-that member's Gemini-pinned run in the same company, environment, and staff agent (excluding `worker-dispatch` and all
-other wake kinds; unattended wakes of those four kinds, including repeated machine check-ins, spend the member's own
-API key under their monthly spend cap).
+vault key (`qorpera_gemini_keys`), and opens it (`qorpera_open_gemini_key_for_run`) only for an active run whose requester
+owns the key (`owner_user_id = coalesce(requested_by_user_id, created_by_user_id)`), under two mutually exclusive gates:
+- **Gemini-pinned runs (`gemini_key_id` pinned on the run):** attended runs (`session_turn`, `room_delivery`), and —
+  since `20260930877000` — return-trip mediation `wake` runs of kinds `worker-completion`, `machine-event`,
+  `machine-checkin`, and `office-activation` chained via `origin_run_id` from that member's Gemini-pinned run in the
+  same company, environment, and staff agent (excluding `worker-dispatch` and all other pinned wake kinds; unattended
+  wakes of those four kinds, including repeated machine check-ins, spend the member's own API key under their monthly
+  spend cap).
+- **Studio voice narration (`20260930887000`):** member-initiated folder `surface-session` wakes
+  (`qorpera_surface_turn_member_initiated(sess)` and `qorpera_surface_turn_requester(sess) = owner_user_id`). Unlike the
+  pinned path above, `qorpera_run_voice_gemini_key` resolves the member's active key live from their explicit Voice
+  preference (`voice_model in ('gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts')` in `qorpera_member_default_models`;
+  `null` defaults to `'chatgpt-voice'` and never opens a Gemini key) and enforces the key's active status and monthly
+  spend cap (recorded via `qorpera_record_gemini_voice_usage`). Agent-originated and scheduled (`cofounder`,
+  `automation`) folder surface sessions without a member reply are excluded and cannot open or spend a member's Gemini
+  key. All other wake kinds remain excluded.
 
 - **nginx (`:10000` server block on node 1):** callers send `?company=<profileId>` (browser save and key check at
   `packages/web/src/cloud/gemini-key.ts` and runner open at `packages/runtime/src/cloud-secret-broker-http.ts`), so

@@ -186,8 +186,7 @@ it("refuses a third level, a group inside itself, and keys the company does not 
 		f.call({ action: "move", item: "app:finances", group: "trips", before: "page:mailbox" }),
 		"before must be an entry in group trips",
 	);
-	// Sites is the company's while it has a site, which this tool does not read: it is taken.
-	await expect(f.call({ action: "move", item: "sites", group: "market" })).resolves.toMatchObject({ changed: true });
+	await refuses(f.call({ action: "move", item: "sites", group: "market" }), "The company has no sites in its drawer");
 	const tool = f.tool();
 	for (const [value, text] of [
 		[{ action: "move", item: "app:finances" }, "move needs group"],
@@ -208,9 +207,6 @@ it("refuses a third level, a group inside itself, and keys the company does not 
 	});
 });
 
-// Own code storage, step 4: What's new is the platform's page in the drawer, the bare whats-new. As Sites, it is the
-// company's while a repository kept in Qorpera has a site, which this tool does not read: it is taken. app:whats-new is
-// an agent's app, and a bare key the drawer does not know is still refused.
 it("lists and places What's new, the platform's page, and still refuses a bare key the drawer does not know", async () => {
 	const f = await fixture();
 	await expect(f.call({ action: "move", item: "whats-new", group: "trips" })).resolves.toMatchObject({
@@ -255,15 +251,65 @@ Our own note: trips first.
 	for (const item of ["whats_new", "Whats-new", "page:whats-new", "news"]) {
 		expect(() => tool.parseArguments({ action: "move", item, group: null })).toThrow(CloudToolArgumentRefusal);
 		expect(() => tool.parseArguments({ action: "move", item, group: null })).toThrow(
-			"item must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) or group:<id>",
+			"item must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new) or group:<id>",
 		);
 	}
+	expect(ORGANIZE_APPS_DESCRIPTION).toContain("(Mailbox, Members, Bank, each posted app, Concepts, What's new)");
 	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
-		"(Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new)",
+		"each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, whats-new)",
 	);
-	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
-		"each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new)",
+});
+
+it("shows and offers no Sites entry from a layout that still holds sites, and keeps the key and every other entry", async () => {
+	const held = `# Apps
+Our own note: trips first.
+
+- page:mailbox Mailbox
+- group trips: Trips
+  - sites Sites
+  - app:trip-planner Trip planner
+- app:finances Company finances
+`;
+	const f = await fixture({ ...APPS, [PATH]: held });
+	const listed = await f.call({ action: "list" });
+	expect(listed).toMatchObject({
+		notInCompany: ["sites"],
+		layout: [
+			"page:mailbox Mailbox",
+			"group trips: Trips (1 app)",
+			"  app:trip-planner Trip planner",
+			"app:finances Company finances",
+			"page:members Members",
+			"page:bank Bank",
+			"app:draft Draft (not posted)",
+			"app:route-lofoten Lofoten",
+			"app:travel-supply Travel supply",
+			"concepts Concepts",
+		],
+	});
+	expect(JSON.stringify(listed)).not.toContain("Sites");
+	await refuses(f.call({ action: "move", item: "sites", group: null }), "The company has no sites in its drawer");
+	await refuses(
+		f.call({ action: "move", item: "app:nothing", group: null }),
+		"The company has no app:nothing in its drawer",
 	);
+	await refuses(
+		f.call({ action: "create_group", name: "Web", items: ["sites"] }),
+		"The company has no sites in its drawer",
+	);
+	expect(f.text(PATH)).toBe(held);
+	await expect(f.call({ action: "move", item: "app:finances", group: "trips" })).resolves.toMatchObject({
+		changed: true,
+	});
+	expect(f.text(PATH)).toBe(`# Apps
+Our own note: trips first.
+
+- page:mailbox Mailbox
+- group trips: Trips
+  - sites Sites
+  - app:trip-planner Trip planner
+  - app:finances Company finances
+`);
 });
 
 it("makes the file, and the apps folder, when the company has none", async () => {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { SurfaceFolderContents } from "@qorpera/cloud-client/surface-folder-files";
+import { describeSurfaceBlocks, starterSurfaceLayout } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { CloudNativeCodingDriver, CloudNativeCodingTurnContext } from "../src/cloud-native-coding-runtime.ts";
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
@@ -128,7 +130,10 @@ describe("cloud surface session runner", () => {
 						expect(req.writableRoots).toEqual(["QorperaOS/surfaces/product-studio/notes"]);
 						expect(req.stagedRoots).toEqual(["product"]);
 						expect(req.instructions).toContain(
-							"Files in product/ change only through stage_surface_patch; direct file writes are for notes under QorperaOS/surfaces/product-studio/notes/ only.",
+							"Change files in product/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to product/)",
+						);
+						expect(req.instructions).toContain(
+							"Direct file writes are for notes under QorperaOS/surfaces/product-studio/notes/ only;",
 						);
 						expect(req.instructions).not.toContain("strictly confined");
 
@@ -1156,11 +1161,17 @@ describe("cloud surface session runner", () => {
 		expect(opaqueStates).toEqual(["ready", "ready"]);
 	});
 
-	it("threads surfaceKind into folder instructions with Product and Report Studio schemas", async () => {
+	it("threads the interface kind, icon and archetype from a delivered job into the page contract", async () => {
 		const seen: Record<string, string> = {};
+		const folders: Record<string, SurfaceFolderContents> = {
+			"surfaces/thetabands": { files: {}, binaries: {} },
+			"surfaces/market-notes": { files: { "surfaces/market-notes/01.report.json": "{}" }, binaries: {} },
+			"surfaces/inventory": { files: {}, binaries: {} },
+		};
 		const hook = createSurfaceSessionProviderHook({
 			resolveRunnerPorts: (job) => ({
 				surfaceTools: { stageSurfacePatch: vi.fn() },
+				readStudioFiles: async (roots) => folders[roots[0] ?? ""] ?? { files: {}, binaries: {} },
 				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
 				renewSessionLease: vi.fn().mockResolvedValue({ renewed: true }),
 				executeTurn: async (req) => {
@@ -1169,69 +1180,40 @@ describe("cloud surface session runner", () => {
 				},
 			}),
 		});
+		const deliver = (slug: string, title: string, kind: string, icon: string) =>
+			hook.runDeliveredSession(
+				{
+					sessionId: randomUUID(),
+					surfaceId: randomUUID(),
+					profileId: randomUUID(),
+					surfaceSlug: slug,
+					surfaceTitle: title,
+					surfaceArchetype: "studio",
+					surfaceSourceKind: "folder",
+					surfaceKind: kind,
+					surfaceIcon: icon,
+					surfaceIsGlobal: false,
+					folderRoot: `surfaces/${slug}`,
+					prompt: "Work on it.",
+					leaseToken: randomUUID(),
+				},
+				"machine-1",
+			);
 
-		await hook.runDeliveredSession(
-			{
-				sessionId: randomUUID(),
-				surfaceId: randomUUID(),
-				profileId: randomUUID(),
-				surfaceSlug: "thetabands",
-				surfaceTitle: "Thetabands",
-				surfaceArchetype: "studio",
-				surfaceSourceKind: "folder",
-				surfaceKind: "product",
-				folderRoot: "surfaces/thetabands",
-				prompt: "Design headband variants and audit suppliers.",
-				leaseToken: randomUUID(),
-			},
-			"machine-1",
-		);
+		await deliver("thetabands", "Thetabands", "product", "figure:headband");
+		await deliver("market-notes", "Market Notes", "report", "figure:book");
+		await deliver("inventory", "Inventory", "database", "figure:can");
 
-		await hook.runDeliveredSession(
-			{
-				sessionId: randomUUID(),
-				surfaceId: randomUUID(),
-				profileId: randomUUID(),
-				surfaceSlug: "market-notes",
-				surfaceTitle: "Market Notes",
-				surfaceArchetype: "studio",
-				surfaceSourceKind: "folder",
-				surfaceKind: "report",
-				folderRoot: "surfaces/market-notes",
-				prompt: "Compare EEG competitors.",
-				leaseToken: randomUUID(),
-			},
-			"machine-1",
-		);
-
-		expect(seen.thetabands).toContain("specs.json");
-		expect(seen.thetabands).toContain('"kind": "headband" | "device"');
-		expect(seen.thetabands).toContain("vendors.json");
-		expect(seen.thetabands).toContain('"tagline": "one line saying what the product is"');
-		expect(seen.thetabands).toContain("(Overview, Specs, Vendors, Reports, Files) are always there");
-		expect(seen.thetabands).toContain("the first four other `overview` values of at most 18 characters");
-		expect(seen.thetabands).toContain("<slug>.report.json");
+		expect(seen.thetabands).toContain(describeSurfaceBlocks());
+		expect(seen.thetabands).toContain(JSON.stringify(starterSurfaceLayout("product")));
+		expect(seen.thetabands).toContain("breakdowns/<slug>/scenes.js");
+		expect(seen.thetabands).toContain("narrate_explainer");
 		expect(seen.thetabands).toContain("surfaces/thetabands/");
-		expect(seen["market-notes"]).toContain("<slug>.report.json");
-		expect(seen["market-notes"]).toContain("bar_chart");
-		expect(seen["market-notes"]).not.toContain("vendors.json");
-
-		await hook.runDeliveredSession(
-			{
-				sessionId: randomUUID(),
-				surfaceId: randomUUID(),
-				profileId: randomUUID(),
-				surfaceSlug: "inventory",
-				surfaceTitle: "Inventory",
-				surfaceArchetype: "studio",
-				surfaceSourceKind: "folder",
-				surfaceKind: "database",
-				folderRoot: "surfaces/inventory",
-				prompt: "Add SKU table.",
-				leaseToken: randomUUID(),
-			},
-			"machine-1",
-		);
+		expect(seen["market-notes"]).toContain("This interface is a reading page, not drawn from a layout");
+		expect(seen["market-notes"]).toContain("bar_chart {heading");
+		expect(seen["market-notes"]).not.toContain(describeSurfaceBlocks());
+		expect(seen["market-notes"]).not.toContain("layout.json");
+		expect(seen.inventory).toContain(JSON.stringify(starterSurfaceLayout("custom")));
 		expect(seen.inventory).not.toContain("Product Studio file layout");
 		expect(seen.inventory).not.toContain("vendors.json");
 
@@ -1456,5 +1438,142 @@ describe("cloud surface session runner", () => {
 		expect(seenBrief).not.toContain("/* ...truncated... */");
 		expect(seenBrief).toContain("Non-conflicting paths (preserved automatically");
 		expect(seenBrief).toContain("identity/journey.svg");
+	});
+
+	it("wires narrate_explainer with openScenesOps and in-turn stage_surface_patch overlay", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const stagedBatches: { title: string; ops: readonly Record<string, unknown>[] }[] = [];
+		const synthesized: { model: string; voiceName: string; text: string }[] = [];
+		let capturedInstructions = "";
+		let narrateResultText = "";
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				surfaceKind: "identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Create a narrated UX breakdown video.",
+				voiceModel: "gemini-3.8-flash-tts",
+				voiceName: "Kore",
+				openScenesOps: [
+					{
+						op: "write_text",
+						path: "breakdowns/ux/voice/clips.json",
+						content: JSON.stringify({ clips: [{ caption: "deadbeef", file: "deadbeef.wav", seconds: 1.5 }] }),
+					},
+				],
+			},
+			{
+				folder: {
+					async readText() {
+						return null;
+					},
+				},
+				surfaceTools: {
+					async stageSurfacePatch(_sid, request) {
+						stagedBatches.push({
+							title: request.title,
+							ops: request.ops as unknown as readonly Record<string, unknown>[],
+						});
+						return {
+							changeId: randomUUID(),
+							seq: stagedBatches.length,
+							openChangeCount: stagedBatches.length,
+						};
+					},
+				},
+				narrateExplainer: {
+					async stageBytes(bytes, mediaType) {
+						return {
+							manifestSha256: "a".repeat(64),
+							fileSha256: "b".repeat(64),
+							bytes: bytes.byteLength,
+							mediaType,
+						};
+					},
+					async synthesizeGemini(input) {
+						synthesized.push({ model: input.model, voiceName: input.voiceName, text: input.text });
+						return {
+							audio: new Uint8Array([0x52, 0x49, 0x46, 0x46]),
+							mediaType: "audio/wav",
+							fileExtension: "wav",
+							seconds: 2.25,
+							usage: { inputTokens: 12, cachedTokens: 0, outputTokens: 180 },
+							spendMicrodollars: 1626,
+						};
+					},
+				},
+				async executeTurn(req) {
+					capturedInstructions = req.instructions;
+					const stageTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
+					const narrateTool = req.tools.find((t) => t.name === "narrate_explainer")!;
+					expect(narrateTool).toBeDefined();
+					const ctx = {
+						companyId,
+						runId: randomUUID(),
+						agentId: randomUUID(),
+						signal: req.signal,
+					} as never;
+					await stageTool.execute(
+						stageTool.parseArguments({
+							title: "Add UX breakdown",
+							summary: "Staged scenes.js for the buyer and seller journey.",
+							ops: [
+								{
+									op: "write_text",
+									path: "breakdowns/ux/scenes.js",
+									content: 'V.part("Start"); V.scene((s) => { s.say("Welcome to Brooks."); });',
+								},
+							],
+						}),
+						ctx,
+					);
+					const narrated = await narrateTool.execute(
+						narrateTool.parseArguments({
+							scenesPath: "breakdowns/ux/scenes.js",
+							title: "Narrate UX breakdown",
+							summary: "Added Kore voice narration.",
+						}),
+						ctx,
+					);
+					narrateResultText = narrated.kind === "text" ? narrated.value : "";
+					return { state: "ready", replyText: "Staged and narrated." };
+				},
+				async completeSessionTurn() {},
+			},
+		);
+
+		expect(capturedInstructions).toContain("breakdowns/<slug>/scenes.js");
+		expect(capturedInstructions).toContain("gemini-3.8-flash-tts (Kore)");
+		expect(synthesized).toEqual([{ model: "gemini-3.8-flash-tts", voiceName: "Kore", text: "Welcome to Brooks." }]);
+		const parsed = JSON.parse(narrateResultText) as Record<string, unknown>;
+		expect(parsed).toMatchObject({
+			ok: true,
+			state: "spoken",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			spokenNow: 1,
+			left: 0,
+		});
+		expect(stagedBatches).toHaveLength(2);
+		expect(stagedBatches[1]?.ops).toEqual([
+			{
+				op: "write_file",
+				path: expect.stringMatching(/^breakdowns\/ux\/voice\/[0-9a-f]{8}\.wav$/),
+				file: { manifestSha256: "a".repeat(64), fileSha256: "b".repeat(64), bytes: 4, mediaType: "audio/wav" },
+			},
+			{
+				op: "write_text",
+				path: "breakdowns/ux/voice/clips.json",
+				content: expect.stringContaining('"seconds": 2.25'),
+			},
+		]);
 	});
 });

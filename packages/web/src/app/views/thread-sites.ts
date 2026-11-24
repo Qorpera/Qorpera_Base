@@ -2,23 +2,7 @@ import { type CompanySite, type CompanySiteTakedown, siteOfLink, type WebSites }
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import type { SiteAnswer } from "../company.ts";
-import { changeError, hasPassword, shownLink, siteEmblem, stateOf, toClipboard } from "./settings-sites.ts";
-
-/**
- * A site a message links, as a card under the message's words (Jonas, 15 Nov 2026: "chat widgets if there are UX
- * components we need to add"): when an agent's or a member's message links one of the company's own sites (its own
- * host, its old link on sites.qorpera.com, or an app link's host, matched against the company's list: never guessed
- * from the text), the site stands under the words as a row of its own, a sibling of an app's card (ui/markdown.ts
- * `appCard`, its frame, size and hover): the Sites globe, the site's title with its state, its address under it, and
- * a press anywhere on it opens the site in a new tab. A thread is calm, so the card is one row and shows each thing
- * once (the lead's review, 15 Nov 2026): no pills in it, and no password on screen. An owner or admin has one key on
- * it that copies the password, read with the Sites page's own call; the address line says so for a moment. A site
- * Qorpera took down is the same row, grey, "Taken down", with the operator's reason as its line; it leads to the
- * Sites page, where the whole sentence and the way to tell Qorpera are.
- *
- * The thread reads the company's sites once it opens (only while the company has any) and again when the window comes
- * back; every card of a site in the thread follows the last read that answered.
- */
+import { changeError, hasPassword, shownLink, siteEmblem, stateOf, toClipboard } from "./site-shared.ts";
 
 export type ThreadSitesClient = Pick<WebSites, "list" | "password"> & Partial<Pick<WebSites, "access">>;
 
@@ -30,7 +14,6 @@ export class ThreadSites {
 	readonly #canManage: () => boolean;
 	readonly #changed: () => void;
 	readonly #answer: (siteId: string) => SiteAnswer;
-	readonly #profileId: string;
 	readonly #lifetime = new AbortController();
 	#sites: readonly CompanySite[] = [];
 	#takenDown: ReadonlyMap<string, CompanySiteTakedown> = new Map();
@@ -46,19 +29,15 @@ export class ThreadSites {
 	readonly #cards = new Map<HTMLElement, string>();
 	#reading: Promise<void> | undefined;
 
-	/** `changed`: the list read changed what the thread's messages show (a link that is a site now, or no longer).
-	 * `profileId`: the company, for the way to its Sites page. */
 	constructor(
 		client: ThreadSitesClient,
 		canManage: () => boolean,
-		profileId: string,
 		signal: AbortSignal,
 		changed: () => void,
 		answer: (siteId: string) => SiteAnswer = () => "unknown",
 	) {
 		this.#client = client;
 		this.#canManage = canManage;
-		this.#profileId = profileId;
 		this.#changed = changed;
 		this.#answer = answer;
 		this.#manage = canManage();
@@ -166,16 +145,17 @@ export class ThreadSites {
 		const said = down ? undefined : this.#said.get(id);
 		const reason = down?.reason.replace(/[\s.]+$/, "") || down?.reason;
 		card.classList.toggle("is-down", Boolean(down));
-		// The whole row opens the site (or, taken down, the Sites page); the key stands above it, a control of its own.
 		const open = h(
-			"a",
-			{
-				class: "site-card-open",
-				...(down
-					? { href: `#/c/${this.#profileId}/sites` }
-					: { href: site.url, target: "_blank", rel: "noopener noreferrer" }),
-				"aria-label": down ? `${name}. ${t("Taken down")}. ${reason}` : t("Open {name}", { name }),
-			},
+			down ? "div" : "a",
+			down
+				? { class: "site-card-open" }
+				: {
+						class: "site-card-open",
+						href: site.url,
+						target: "_blank",
+						rel: "noopener noreferrer",
+						"aria-label": t("Open {name}", { name }),
+					},
 			h("span", { class: "app-card-emblem", "aria-hidden": "true" }, siteEmblem()),
 			h(
 				"span",
@@ -233,9 +213,6 @@ export class ThreadSites {
 		}, SAID_MS);
 	}
 
-	/** Copies a site's password, read for it there and then with the Sites page's call: it never shows in the thread. The
-	 * read is handed to the clipboard as it is read, where the browser takes that, so the copy keeps the press (Safari
-	 * copies only within it). A browser that will not copy it sends the member to Sites, where the password is. */
 	async #copyPassword(site: CompanySite): Promise<void> {
 		if (this.#copying || this.#lifetime.signal.aborted || !this.#canManage() || !hasPassword(site)) return;
 		this.#copying = site.id;
@@ -255,7 +232,7 @@ export class ThreadSites {
 		if (this.#lifetime.signal.aborted) return;
 		if (!answered)
 			this.#say(site.id, changeError(failure, phrase("The password could not be read. Try again.")), true);
-		else if (!copied) this.#say(site.id, t("The password is in Sites."), true);
+		else if (!copied) this.#say(site.id, t("The browser would not copy the password."), true);
 		else this.#say(site.id, t("The password is copied."), false);
 	}
 }

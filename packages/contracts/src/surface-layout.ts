@@ -49,7 +49,7 @@ export const SURFACE_BLOCK_TYPES = [
 	"cards",
 	"report",
 	"explainer",
-	"files",
+	"artifacts",
 	"module",
 ] as const;
 export type SurfaceBlockType = (typeof SURFACE_BLOCK_TYPES)[number];
@@ -191,8 +191,8 @@ export interface SurfaceExplainerMatchBlock extends SurfaceBlockBase {
 
 export type SurfaceExplainerBlock = SurfaceExplainerFileBlock | SurfaceExplainerMatchBlock;
 
-export interface SurfaceFilesBlock extends SurfaceBlockBase {
-	readonly type: "files";
+export interface SurfaceArtifactsBlock extends SurfaceBlockBase {
+	readonly type: "artifacts";
 	readonly match?: readonly string[];
 	readonly skip?: readonly string[];
 	readonly heading?: string;
@@ -218,7 +218,7 @@ export type SurfaceBlock =
 	| SurfaceCardsBlock
 	| SurfaceReportBlock
 	| SurfaceExplainerBlock
-	| SurfaceFilesBlock
+	| SurfaceArtifactsBlock
 	| SurfaceModuleBlock;
 
 export interface SurfaceUnknownBlock {
@@ -430,9 +430,10 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		],
 	},
 	{
-		type: "files",
-		family: "files",
-		summary: "working files no other block shows, .json too; its empty line only alone on a tab or with a heading",
+		type: "artifacts",
+		family: "artifacts",
+		summary:
+			"rendered artifacts (vector art, pictures, docs, pages, .json) no other block shows, expandable fullscreen; add to any tab",
 		fields: [
 			{ name: "match", kind: "globs", required: false, note: "default every file" },
 			{ name: "skip", kind: "globs", required: false, note: "files to leave out" },
@@ -1183,7 +1184,7 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 					],
 					heading: "Other details",
 				},
-				{ type: "files", match: ["**/*.json"] },
+				{ type: "artifacts", match: ["**/*.json"] },
 			],
 		},
 		{
@@ -1209,16 +1210,6 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 			id: "breakdowns",
 			title: "Breakdowns",
 			blocks: [{ type: "explainer", match: "breakdowns/**/scenes.js" }],
-		},
-		{
-			id: "files",
-			title: "Files",
-			blocks: [
-				{
-					type: "files",
-					match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm"],
-				},
-			],
 		},
 	],
 };
@@ -1305,7 +1296,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 			id: "voice",
 			title: "Voice",
 			blocks: [
-				{ type: "files", id: "voice", match: ["/identity/voice.md", "/identity/brief.md"], heading: "Voice" },
+				{ type: "artifacts", id: "voice", match: ["/identity/voice.md", "/identity/brief.md"], heading: "Voice" },
 			],
 		},
 		{
@@ -1336,7 +1327,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 					from: "/identity/design-system.json",
 					heading: "Design system",
 				},
-				{ type: "files", id: "data", match: ["/identity/**/*.json"] },
+				{ type: "artifacts", id: "data", match: ["/identity/**/*.json"] },
 			],
 		},
 		{
@@ -1346,32 +1337,13 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 				{ type: "explainer", id: "breakdowns", match: "/identity/breakdowns/**/scenes.js", heading: "Breakdowns" },
 			],
 		},
-		{
-			id: "files",
-			title: "Files",
-			blocks: [
-				{
-					type: "files",
-					id: "files",
-					match: [
-						"/identity/**/*.md",
-						"/identity/**/*.markdown",
-						"/identity/**/*.txt",
-						"/identity/**/*.svg",
-						"/identity/**/*.html",
-						"/identity/**/*.htm",
-					],
-					skip: ["/identity/voice.md", "/identity/brief.md"],
-				},
-			],
-		},
 	],
 };
 
 const CUSTOM_STARTER_LAYOUT: SurfaceLayout = {
 	schema: SURFACE_LAYOUT_SCHEMA,
 	tabs: [
-		{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files", heading: "Files" }] },
+		{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "artifacts", heading: "Artifacts" }] },
 		{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "**/*.report.json" }] },
 	],
 };
@@ -1384,4 +1356,34 @@ export const SURFACE_STARTER_LAYOUTS: Readonly<Record<SurfaceStarterKind, Surfac
 
 export function starterSurfaceLayout(kind: SurfaceStarterKind): SurfaceLayout {
 	return structuredClone(SURFACE_STARTER_LAYOUTS[kind]);
+}
+
+export const SURFACE_REPORT_FORMAT =
+	'A report file (*.report.json) is {"category","headline","subtitle","author","date","readingTime","keyMetrics":[{"label","value","delta"}],"sections":[{"id","kicker","heading","paragraphs":["..."],"blocks":[...]}]}. Section blocks: bar_chart {heading, subtitle, max, items:[{label, value, display, note, highlight}]}; line_chart {heading, subtitle, xLabels, series:[{name, color, values}]}; table {heading, caption, columns, rows, highlightRow}; callout {tone:"thesis"|"decision"|"tradeoff", heading, body, bullets}; quote {text, attribution}; figure {heading, caption, panels:[{label, heading, body, accent}]}.';
+
+const SURFACE_OBJECT_FORMAT = `A stage_3d model file (default ${SURFACE_STAGE_DEFAULT_MODEL}) is {"model":"<name>.glb","view":{"yaw","pitch"},"parts":[{"id","node","pull":[x,y,z]}],"tint":["<material>"]}, the .glb beside it. With no .glb in the folder, a top-level "model" object in a JSON file, {"kind":"headband"|"device","dimensions","layers":["..."]}, draws a stand-in tinted by the tab's swatch_row.`;
+
+const SURFACE_TOKENS_FORMAT =
+	'The company look is /identity/tokens.json: {"colors":{"<name>":"#rrggbb"},"typography":{"<role>":"<family>"},"radii":{"<name>":"<length>"},"spacing":{"<name>":"<length>"}}. /identity/tokens.css is compiled from it (--q-color-*, --q-font-*, --q-radius-*, --q-space-*); never write it by hand.';
+
+const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>> = {
+	stage_3d: SURFACE_OBJECT_FORMAT,
+	palette: SURFACE_TOKENS_FORMAT,
+	type_specimen: SURFACE_TOKENS_FORMAT,
+	report: SURFACE_REPORT_FORMAT,
+	module: SURFACE_TOKENS_FORMAT,
+};
+
+export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
+	const used = new Set(
+		layout.tabs
+			.flatMap((tab) => tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])))
+			.map((block) => block.type),
+	);
+	const notes: string[] = [];
+	for (const type of SURFACE_BLOCK_TYPES) {
+		const note = SURFACE_BLOCK_FORMATS[type];
+		if (note && used.has(type) && !notes.includes(note)) notes.push(note);
+	}
+	return notes;
 }
