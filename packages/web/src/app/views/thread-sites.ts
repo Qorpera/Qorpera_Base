@@ -1,7 +1,8 @@
 import { type CompanySite, type CompanySiteTakedown, siteOfLink, type WebSites } from "../../cloud/sites.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
-import { changeError, shownLink, siteEmblem, stateOf, toClipboard } from "./settings-sites.ts";
+import type { SiteAnswer } from "../company.ts";
+import { changeError, hasPassword, shownLink, siteEmblem, stateOf, toClipboard } from "./settings-sites.ts";
 
 /**
  * A site a message links, as a card under the message's words (Jonas, 15 Nov 2026: "chat widgets if there are UX
@@ -28,6 +29,7 @@ export class ThreadSites {
 	readonly #client: ThreadSitesClient;
 	readonly #canManage: () => boolean;
 	readonly #changed: () => void;
+	readonly #answer: (siteId: string) => SiteAnswer;
 	readonly #profileId: string;
 	readonly #lifetime = new AbortController();
 	#sites: readonly CompanySite[] = [];
@@ -35,6 +37,7 @@ export class ThreadSites {
 	/** What the list says that a card's matching follows: a change draws the thread's messages again. */
 	#key = "";
 	#manage: boolean;
+	#answers = "";
 	/** The site whose password is being read and copied: its key is off meanwhile. */
 	#copying: string | undefined;
 	/** What a press on a site's key did, said on its address line for a moment. */
@@ -51,11 +54,13 @@ export class ThreadSites {
 		profileId: string,
 		signal: AbortSignal,
 		changed: () => void,
+		answer: (siteId: string) => SiteAnswer = () => "unknown",
 	) {
 		this.#client = client;
 		this.#canManage = canManage;
 		this.#profileId = profileId;
 		this.#changed = changed;
+		this.#answer = answer;
 		this.#manage = canManage();
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
@@ -92,7 +97,8 @@ export class ThreadSites {
 	update(): void {
 		if (this.#lifetime.signal.aborted) return;
 		const manage = this.#canManage();
-		if (manage === this.#manage) return;
+		const answers = this.#answersKey();
+		if (manage === this.#manage && answers === this.#answers) return;
 		this.#manage = manage;
 		this.#drawAll();
 	}
@@ -122,11 +128,23 @@ export class ThreadSites {
 		return this.#reading;
 	}
 
+	#answersKey(): string {
+		return this.#sites.map((site) => (hasPassword(site) ? "" : this.#answer(site.id))).join(",");
+	}
+
+	#state(site: CompanySite, down: boolean): HTMLElement | null {
+		if (down || hasPassword(site) || site.state !== "live") return stateOf(site, down);
+		const answer = this.#answer(site.id);
+		if (answer === "live") return stateOf(site, false);
+		return answer === "private" ? h("span", { class: "site-state is-not-live" }, t("Not live yet")) : null;
+	}
+
 	/** Draws every card again; the keyboard stays on the key it was on. A card not in the page is let go: its message was
 	 * drawn again, or left the thread. Every redraw comes after the task that made a card and put it in its message (a
 	 * read, the window's focus, a change of role, a key's line), so a card that is not in the page by then never will be
 	 * (review r1 of #1848, F2). */
 	#drawAll(): void {
+		this.#answers = this.#answersKey();
 		for (const [card, id] of [...this.#cards]) {
 			if (!card.isConnected) this.#cards.delete(card);
 			else this.#draw(card, id);
@@ -166,7 +184,7 @@ export class ThreadSites {
 					"span",
 					{ class: "site-card-head" },
 					h("strong", { class: "app-card-title", title: name }, name),
-					stateOf(site, Boolean(down)),
+					this.#state(site, Boolean(down)),
 				),
 				h(
 					"small",
@@ -180,7 +198,7 @@ export class ThreadSites {
 			),
 		);
 		let key: HTMLButtonElement | null = null;
-		if (!down && this.#canManage()) {
+		if (!down && this.#canManage() && hasPassword(site)) {
 			key = h(
 				"button",
 				{
@@ -219,7 +237,7 @@ export class ThreadSites {
 	 * read is handed to the clipboard as it is read, where the browser takes that, so the copy keeps the press (Safari
 	 * copies only within it). A browser that will not copy it sends the member to Sites, where the password is. */
 	async #copyPassword(site: CompanySite): Promise<void> {
-		if (this.#copying || this.#lifetime.signal.aborted || !this.#canManage()) return;
+		if (this.#copying || this.#lifetime.signal.aborted || !this.#canManage() || !hasPassword(site)) return;
 		this.#copying = site.id;
 		this.#said.delete(site.id);
 		this.#drawAll();

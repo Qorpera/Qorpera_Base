@@ -332,6 +332,23 @@ function parseSingleStudioFile(
 	}
 }
 
+function reconcileChildren(parent: HTMLElement, next: readonly HTMLElement[]): void {
+	const keep = new Set<ChildNode>(next);
+	for (let child = parent.firstChild; child; ) {
+		const sibling = child.nextSibling;
+		if (!keep.has(child)) child.remove();
+		child = sibling;
+	}
+	let cursor = parent.firstChild;
+	for (const node of next) {
+		if (node === cursor) {
+			cursor = cursor.nextSibling;
+			continue;
+		}
+		parent.insertBefore(node, cursor);
+	}
+}
+
 export class SurfaceStudioView {
 	readonly el = h("div", { class: "surface-studio" });
 	readonly #options: SurfaceStudioOptions;
@@ -344,6 +361,8 @@ export class SurfaceStudioView {
 	#layout: SurfaceLayoutView | undefined;
 	readonly #htmlFrames: AppFrame[] = [];
 	#tab = "overview";
+	#renderedTab: string | null = null;
+	#renderedGrid: HTMLElement | null = null;
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
@@ -376,6 +395,8 @@ export class SurfaceStudioView {
 
 	deactivate(): void {
 		this.#renderSeq++;
+		this.#renderedTab = null;
+		this.#renderedGrid = null;
 		this.#layout?.deactivate();
 	}
 
@@ -579,6 +600,8 @@ export class SurfaceStudioView {
 		const sliced = this.#options.timeSlice ?? hasBrowserCompositor();
 		if (initialLoading && Object.keys(baseFiles).length === 0 && ordered.length === 0 && state.mode !== "compare") {
 			this.#disposeHtmlFrames();
+			this.#renderedTab = null;
+			this.#renderedGrid = null;
 			this.#showingSkeleton = true;
 			this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "studio"));
 			return;
@@ -680,12 +703,35 @@ export class SurfaceStudioView {
 		if (!this.#isRenderActive(params.seq)) return;
 		this.#disposeHtmlFrames();
 		if (!plan.gridTasks) {
+			this.#renderedTab = null;
+			this.#renderedGrid = null;
 			this.el.replaceChildren(...plan.children);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
-		const grid = h("div", { class: "studio-grid" });
+		const reuseGrid = this.#renderedTab === this.#tab && this.#renderedGrid?.parentElement === this.el;
+		const grid = reuseGrid ? this.#renderedGrid! : h("div", { class: "studio-grid" });
+		this.#renderedTab = this.#tab;
+		this.#renderedGrid = grid;
 		const tasks = plan.gridTasks;
+		if (reuseGrid) {
+			reconcileChildren(this.el, [...plan.children, grid]);
+			const built: HTMLElement[] = [];
+			budget.reset();
+			for (let i = 0; i < tasks.length; i++) {
+				const task = tasks[i]!;
+				if (task.heavy) {
+					await yieldToMain(signal);
+					if (!this.#isRenderActive(params.seq)) return;
+					budget.reset();
+				} else if (i > 0 && (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq))) {
+					return;
+				}
+				built.push(task.build());
+			}
+			reconcileChildren(grid, built);
+			return;
+		}
 		let start = 0;
 		if (tasks[0] && !tasks[0].heavy) {
 			grid.append(tasks[0].build());
@@ -761,11 +807,22 @@ export class SurfaceStudioView {
 		);
 		this.#disposeHtmlFrames();
 		if (!plan.gridTasks) {
+			this.#renderedTab = null;
+			this.#renderedGrid = null;
 			this.el.replaceChildren(...plan.children);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
-		const grid = h("div", { class: "studio-grid" });
+		const reuseGrid = this.#renderedTab === this.#tab && this.#renderedGrid?.parentElement === this.el;
+		const grid = reuseGrid ? this.#renderedGrid! : h("div", { class: "studio-grid" });
+		this.#renderedTab = this.#tab;
+		this.#renderedGrid = grid;
+		if (reuseGrid) {
+			const built = plan.gridTasks.map((task) => task.build());
+			reconcileChildren(this.el, [...plan.children, grid]);
+			reconcileChildren(grid, built);
+			return;
+		}
 		for (const task of plan.gridTasks) grid.append(task.build());
 		this.el.replaceChildren(...plan.children, grid);
 		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");

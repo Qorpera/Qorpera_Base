@@ -356,8 +356,15 @@ export function siteAnswer(
 	if (served === undefined) return "unknown";
 	if (!served || !state.siteList || !surface.siteSlug) return "private";
 	const site = servedSite(state.siteList, surface.siteSlug);
-	if (site && state.sitesTakenDown?.has(site.id)) return "private";
-	const isPublic = site ? state.sitesPublic?.get(site.id) : undefined;
+	return site ? sitePublicAnswer(state, site.id) : "unknown";
+}
+
+export function sitePublicAnswer(
+	state: Pick<CompanyState, "sitesPublic" | "sitesTakenDown">,
+	siteId: string,
+): SiteAnswer {
+	if (state.sitesTakenDown?.has(siteId)) return "private";
+	const isPublic = state.sitesPublic?.get(siteId);
 	return isPublic === undefined ? "unknown" : isPublic ? "live" : "private";
 }
 

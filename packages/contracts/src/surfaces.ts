@@ -196,7 +196,16 @@ export interface SurfaceSessionImages {
 	readonly messages: readonly SurfaceMessageImages[];
 }
 
-export const STUDIO_BINARY_MEDIA_TYPES = ["model/gltf-binary", "image/webp", "image/png", "image/jpeg"] as const;
+export const STUDIO_BINARY_MEDIA_TYPES = [
+	"model/gltf-binary",
+	"image/webp",
+	"image/png",
+	"image/jpeg",
+	"audio/wav",
+	"audio/mp4",
+	"audio/mpeg",
+	"audio/webm",
+] as const;
 export const STUDIO_BINARY_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface StudioBinaryRef {

@@ -39,7 +39,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-15",
 		title: "Websites at an address of their own",
-		text: "Every company website now has an address of its own, https://<name>.qorpera.com/, served at the top so links that start with / work. A static site published with publish_site gets its link there, behind its password. A repository kept in Qorpera that builds a website names its built site in its checks: each change that passes waits in What's new, where owners and admins can look at the next version first, and an owner or admin puts it live at the site's address. A product or a shop with a website can have a real home for it now.",
+		text: "Every company website now has an address of its own, served at the top so links that start with / work. A static site published with publish_site gets its link there. A repository kept in Qorpera that builds a website names its built site in its checks: each change that passes waits in What's new, where owners and admins can look at the next version first, and an owner or admin puts it live at the site's address. A product or a shop with a website can have a real home for it now.",
 	},
 	{
 		id: "company-databases",
@@ -376,6 +376,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-23",
 		title: "A Product Studio is one column with five fixed tabs",
 		text: "A Product Studio now always shows Overview, Specs, Vendors, Reports and Files, also before it holds anything. Overview is the product alone on its row, then its name, one line, colour dots and up to four short figures. When you start a Product Studio session, ask for a tagline (the one line under the name) and for the four figures that matter most first, each short, such as 14 h, 44 g or 1.995 kr. Every spec and the parts table show under Specs, vendors under Vendors, reports under Reports, the brief and other documents under Files. A Product Studio that holds only loose notes shows an empty Overview, so ask for structured specs, vendors and reports.",
+	},
+	{
+		id: "websites-without-password",
+		kind: "behaviour",
+		date: "2026-11-24",
+		title: "Websites have no password: Go live opens them",
+		text: "Websites no longer have a password. A website published with publish_site is closed to everyone outside the company until the founder or an admin presses Go live on the website's page in the app. You cannot make it live. Until then the company's members open it from the app. Never tell anyone to use a password for a website: send its link, and ask the founder to press Go live when it should open to everyone. App links shared with share_app are unchanged: they keep their password.",
 	},
 ]);
 

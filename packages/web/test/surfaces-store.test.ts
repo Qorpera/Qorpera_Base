@@ -1454,7 +1454,7 @@ describe("SurfacesStore", () => {
 		});
 	});
 
-	it("lists a studio's models and pictures beside its text files and scripts, two folders deep, by reference, without reading them", async () => {
+	it("lists a studio's models, pictures, and breakdown voice clips beside its text files and scripts, three folders deep, by reference, without reading them", async () => {
 		const file = (seed: string, bytes: number, mediaType: string) => ({
 			manifestSha256: seed.repeat(64).slice(0, 64),
 			fileSha256: `f${seed.repeat(63)}`,
@@ -1475,6 +1475,7 @@ describe("SurfacesStore", () => {
 				{ path: "product/odd.glb", kind: "file", file: file("5", 10, "text/plain") },
 				{ path: "product/firmware.bin", kind: "file", file: file("6", 10, "application/octet-stream") },
 				{ path: "product/renders", kind: "folder", file: null },
+				{ path: "product/breakdowns", kind: "folder", file: null },
 				{ path: "product/node_modules", kind: "folder", file: null },
 			],
 			"product/renders": [
@@ -1485,6 +1486,18 @@ describe("SurfacesStore", () => {
 				{ path: "product/renders/deep/app.js", kind: "file", file: file("8", 30, "text/javascript") },
 				{ path: "product/renders/deep/deeper", kind: "folder", file: null },
 			],
+			"product/renders/deep/deeper": [{ path: "product/renders/deep/deeper/deepest", kind: "folder", file: null }],
+			"product/breakdowns": [{ path: "product/breakdowns/intro", kind: "folder", file: null }],
+			"product/breakdowns/intro": [
+				{ path: "product/breakdowns/intro/scenes.js", kind: "file", file: file("9", 40, "text/javascript") },
+				{ path: "product/breakdowns/intro/voice", kind: "folder", file: null },
+			],
+			"product/breakdowns/intro/voice": [
+				{ path: "product/breakdowns/intro/voice/0123abcd.wav", kind: "file", file: file("a", 500, "audio/wav") },
+				{ path: "product/breakdowns/intro/voice/1123abcd.mp4", kind: "file", file: file("b", 400, "audio/mp4") },
+				{ path: "product/breakdowns/intro/voice/2123abcd.mp3", kind: "file", file: file("c", 350, "audio/mpeg") },
+				{ path: "product/breakdowns/intro/voice/3123abcd.webm", kind: "file", file: file("d", 320, "audio/webm") },
+			],
 		};
 		const folder = {
 			list: vi.fn(async (parent: string | null) => ({ entries: entries[parent ?? ""] ?? [] })),
@@ -1494,18 +1507,84 @@ describe("SurfacesStore", () => {
 		expect(read.files).toEqual({
 			"product/specs.json": '{"overview":{"weight":"44 g"}}',
 			"product/renders/deep/app.js": '{"overview":{"weight":"44 g"}}',
+			"product/breakdowns/intro/scenes.js": '{"overview":{"weight":"44 g"}}',
 		});
 		expect(read.binaries).toEqual({
 			"product/headband.glb": file("2", 4000, "model/gltf-binary"),
 			"product/scan.glb": file("3", 9000, "application/octet-stream"),
 			"product/renders/front.webp": file("7", 300, "image/webp"),
+			"product/breakdowns/intro/voice/0123abcd.wav": file("a", 500, "audio/wav"),
+			"product/breakdowns/intro/voice/1123abcd.mp4": file("b", 400, "audio/mp4"),
+			"product/breakdowns/intro/voice/2123abcd.mp3": file("c", 350, "audio/mpeg"),
+			"product/breakdowns/intro/voice/3123abcd.webm": file("d", 320, "audio/webm"),
 		});
-		expect(folder.readFile).toHaveBeenCalledTimes(2);
-		expect(folder.list.mock.calls.map(([parent]) => parent)).toEqual([
+		expect(folder.readFile).toHaveBeenCalledTimes(3);
+		const listed = folder.list.mock.calls.map(([parent]) => parent);
+		expect(listed).toEqual([
 			"product",
 			"product/renders",
+			"product/breakdowns",
 			"product/renders/deep",
+			"product/breakdowns/intro",
+			"product/renders/deep/deeper",
+			"product/breakdowns/intro/voice",
 		]);
+		expect(listed).not.toContain("product/renders/deep/deeper/deepest");
+	});
+
+	it("prioritizes breakdown scenes.js ahead of loose SVGs, notes, and large reports", async () => {
+		const bigReport = "r".repeat(240_000);
+		const entries: Record<
+			string,
+			{ path: string; kind: "file" | "folder"; file: { path: string; bytes: number } | null }[]
+		> = {
+			product: [
+				...Array.from({ length: 5 }, (_, idx) => ({
+					path: `product/a-report-${idx}.report.json`,
+					kind: "file" as const,
+					file: { path: `product/a-report-${idx}.report.json`, bytes: bigReport.length },
+				})),
+				...Array.from({ length: 35 }, (_, idx) => ({
+					path: `product/mark-${String(idx).padStart(2, "0")}.svg`,
+					kind: "file" as const,
+					file: { path: `product/mark-${String(idx).padStart(2, "0")}.svg`, bytes: 120 },
+				})),
+				{ path: "product/breakdowns", kind: "folder", file: null },
+			],
+			"product/breakdowns": [{ path: "product/breakdowns/intro", kind: "folder", file: null }],
+			"product/breakdowns/intro": [
+				{
+					path: "product/breakdowns/intro/scenes.js",
+					kind: "file",
+					file: { path: "product/breakdowns/intro/scenes.js", bytes: 4_000 },
+				},
+				{
+					path: "product/breakdowns/intro/explainer.json",
+					kind: "file",
+					file: { path: "product/breakdowns/intro/explainer.json", bytes: 48 },
+				},
+				{ path: "product/breakdowns/intro/voice", kind: "folder", file: null },
+			],
+			"product/breakdowns/intro/voice": [
+				{
+					path: "product/breakdowns/intro/voice/clips.json",
+					kind: "file",
+					file: { path: "product/breakdowns/intro/voice/clips.json", bytes: 96 },
+				},
+			],
+		};
+		const folder = {
+			list: vi.fn(async (parent: string | null) => ({ entries: entries[parent ?? ""] ?? [] })),
+			readFile: vi.fn(async (item: { readonly path: string; readonly bytes: number }) =>
+				new TextEncoder().encode(item.path.endsWith(".report.json") ? bigReport : `content:${item.path}`),
+			),
+		};
+		const { files } = await readSurfaceFolderFiles(folder, ["product"], new AbortController().signal);
+		expect(files["product/breakdowns/intro/scenes.js"]).toBe("content:product/breakdowns/intro/scenes.js");
+		expect(files["product/breakdowns/intro/explainer.json"]).toBe("content:product/breakdowns/intro/explainer.json");
+		expect(files["product/breakdowns/intro/voice/clips.json"]).toBe(
+			"content:product/breakdowns/intro/voice/clips.json",
+		);
 	});
 
 	it("keeps a studio's binaries beside its files and reads each one's bytes once", async () => {
@@ -2378,7 +2457,7 @@ describe("SurfacesStore", () => {
 								kind: "file" as const,
 								file: { path: `repo/${name}.txt`, bytes: chunk.length },
 							})),
-							...Array.from({ length: 16 }, (_, idx) => ({
+							...Array.from({ length: 36 }, (_, idx) => ({
 								path: `repo/sub-${String(idx + 1).padStart(2, "0")}`,
 								kind: "folder" as const,
 								file: null,
@@ -2398,7 +2477,7 @@ describe("SurfacesStore", () => {
 		expect(listedPaths).not.toContain("repo/node_modules");
 		expect(listedPaths).not.toContain("repo/.git");
 		expect(listedPaths).not.toContain("repo/dist");
-		expect(listedPaths.filter((path) => path.startsWith("repo/sub-"))).toHaveLength(12);
+		expect(listedPaths.filter((path) => path.startsWith("repo/sub-"))).toHaveLength(32);
 		expect(files["repo/tokens.json"]).toContain("#2563eb");
 		expect(readPaths[0]).toBe("repo/tokens.json");
 		const totalBytes = Object.values(files).reduce((sum, text) => sum + text.length, 0);

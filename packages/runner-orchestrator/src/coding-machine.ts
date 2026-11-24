@@ -404,6 +404,7 @@ export interface CodingMachineReconcileOptions {
 	/** Fresh SQL authority for this effect's intent (run, stop or delete; rebuild for a run's rebuild). */
 	authorize(intent: CodingMachineIntent, signal: AbortSignal): Promise<unknown>;
 	signal: AbortSignal;
+	cancel?: AbortSignal;
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
 	plug?: AgentPlug;
 	claimStandby?: (
@@ -1149,6 +1150,7 @@ export async function reconcileCodingMachine(
 		return result("pending");
 	}
 	if (current.events.length > MAX_RETAINED_EVENTS - 3) throw new Error("CODING_MACHINE_JOURNAL_FULL");
+	options.cancel?.throwIfAborted();
 	// An agent road machine is plugged in right before each create (the old instance, if any, is gone): the plug
 	// gives the MAC its card carries. Before the fresh authority, so the plug's time costs none of it. A plug that
 	// is never followed by a create (another process won the dispatch) is the same entry again for that winner.
@@ -1186,6 +1188,7 @@ export async function reconcileCodingMachine(
 			throw new Error("CODING_MACHINE_IMAGE_GONE");
 		options.signal.throwIfAborted();
 	}
+	options.cancel?.throwIfAborted();
 	// Fresh authority immediately before irreversible dispatch; journal CAS
 	// chooses one winner across processes. A crash after claiming is unknown.
 	signal = await authorize(action === "rebuild" ? "rebuild" : intent);
@@ -1248,4 +1251,58 @@ export async function reconcileCodingMachine(
 	await append({ action, kind: "accepted", operationId, state: null });
 	options.signal.throwIfAborted();
 	return result("pending");
+}
+
+export async function settleAcceptedCodingMachine(options: {
+	plan: CodingMachineJournalPlan;
+	journalRoot: string;
+	client: Pick<LxdTrackedClient, "inspectInstanceOperation">;
+	signal: AbortSignal;
+}): Promise<"settled" | "pending" | "none" | "unsettled"> {
+	options.signal.throwIfAborted();
+	if (resolve(options.journalRoot) !== options.journalRoot) throw new Error("CODING_MACHINE_JOURNAL_UNSAFE");
+	await checkDirectory(options.journalRoot);
+	const root = join(options.journalRoot, options.plan.journalName);
+	let current: Awaited<ReturnType<typeof readEvents>>;
+	try {
+		await checkDirectory(root);
+		current = await readEvents(
+			root,
+			options.plan.binding,
+			options.plan.disposable === true,
+			options.plan.selfStops === true,
+		);
+	} catch (error) {
+		if (code(error, "ENOENT")) return "none";
+		throw error;
+	}
+	const tail = current.events.at(-1) ?? current.prior;
+	if (tail?.kind !== "accepted") return "none";
+	let state: "pending" | "succeeded" | "failed";
+	try {
+		state = await options.client.inspectInstanceOperation(
+			{ project: options.plan.project, instanceName: options.plan.name, operationId: tail.operationId as string },
+			options.signal,
+		);
+	} catch (error) {
+		if (options.signal.aborted) throw error;
+		return "unsettled";
+	}
+	options.signal.throwIfAborted();
+	if (state === "pending") return "pending";
+	if (state !== "succeeded" && state !== "failed") return "unsettled";
+	if (current.events.length >= MAX_RETAINED_EVENTS) return "unsettled";
+	await publish(
+		current.root,
+		`${String(current.events.length).padStart(6, "0")}.json`,
+		encode({
+			sequence: current.events.length,
+			previousSha256: current.previousSha256,
+			action: tail.action,
+			kind: "settled",
+			operationId: tail.operationId,
+			state,
+		}),
+	);
+	return "settled";
 }

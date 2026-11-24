@@ -590,7 +590,11 @@ export const SETTINGS: Record<string, string> = {
 
 	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
 	Sites: "Hjemmesider",
-	"Share a site with its link and password.": "Del en hjemmeside med dens link og adgangskode.",
+	"Share a site with its link once it is live.": "Del en hjemmeside med dens link, når den er live.",
+	"Share a site with its link once it is live. An app link also needs its password.":
+		"Del en hjemmeside med dens link, når den er live. Et app-link skal også bruge sin adgangskode.",
+	"Only founders and admins can make a site live or take it offline.":
+		"Kun stiftere og administratorer kan sætte en hjemmeside live eller tage den offline.",
 	"Only founders and admins can see passwords or take sites offline.":
 		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
 	"No sites yet": "Ingen hjemmesider endnu",
@@ -622,8 +626,8 @@ export const SETTINGS: Record<string, string> = {
 	"The password is changed.": "Adgangskoden er skiftet.",
 	"The password could not be changed. Try again.": "Adgangskoden kunne ikke skiftes. Prøv igen.",
 	"Take offline": "Tag offline",
-	"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.":
-		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Filerne bliver i Virksomhedsfilen.",
+	"Take {name} offline? Its link stops working. The files stay in the Company File.":
+		"Tag {name} offline? Linket holder op med at virke. Filerne bliver i Virksomhedsfilen.",
 	"{name} is offline.": "{name} er offline.",
 	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
 	// An app link: one port of a company machine at a site's link (v195)
@@ -631,8 +635,8 @@ export const SETTINGS: Record<string, string> = {
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
 	// A project's site made from its code kept in Qorpera: its version goes live from What's new (own code storage step 4)
 	"Version {version}": "Version {version}",
-	"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.":
-		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder med en ny adgangskode, til du sætter den live.",
+	"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new until you put it live.":
+		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder, til du sætter den live.",
 	// A site Qorpera took down: why, in place of its link and password (own code storage step 5.1)
 	"Taken down": "Taget ned",
 	"Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.":
@@ -643,6 +647,7 @@ export const SETTINGS: Record<string, string> = {
 	"What's new could not be read.": "Nyheder kunne ikke hentes.",
 	"Live now": "Live nu",
 	"Not live yet": "Ikke live endnu",
+	"Current version": "Nuværende version",
 	"Version {version} · since {time}": "Version {version} · siden {time}",
 	"Version {version} · since {time} · {name} said go": "Version {version} · siden {time} · {name} sagde ja",
 	"Version {version} · since {time} · {name} went back":
@@ -655,6 +660,8 @@ export const SETTINGS: Record<string, string> = {
 	"Version {version} · since {time} · went back automatically (enabled by {name})":
 		"Version {version} · siden {time} · sat live igen automatisk (slået til af {name})",
 	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
+	"Only the company can open it. Go live on its page.": "Kun virksomheden kan åbne den. Gå live på dens side.",
+	"Only the company can open it.": "Kun virksomheden kan åbne den.",
 	"Open the site": "Åbn hjemmesiden",
 	"Go back to version {version}": "Gå tilbage til version {version}",
 	"Put version {version} back up? Version {current} comes off the site at once; its changes stay ready.":
@@ -834,6 +841,8 @@ export const SETTINGS: Record<string, string> = {
 	Public: "Offentlig",
 	"The site is now public.": "Siden er nu offentlig.",
 	"The site is now private.": "Siden er nu privat.",
+	"The site is live.": "Hjemmesiden er live.",
+	"The site is not live any more.": "Hjemmesiden er ikke live længere.",
 	"Site visibility could not be changed. Try again.": "Sidens synlighed kunne ikke ændres. Prøv igen.",
 	"Add a custom domain for {name}": "Tilføj et eget domæne til {name}",
 	"Enter your domain (for example example.dk or www.example.dk).":

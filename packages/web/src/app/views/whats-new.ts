@@ -1,7 +1,9 @@
 import type { CodeReleaseLive, CodeReleaseSite, CodeReleases } from "../../cloud/releases.ts";
 import { button, fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import type { CompanyController } from "../company.ts";
+import { type CompanyController, type SiteAnswer, sitePublicAnswer } from "../company.ts";
+import { surfaceHash } from "../router.ts";
+import { surfacesOf } from "../surfaces-store.ts";
 import {
 	keyOf,
 	quieted,
@@ -71,6 +73,7 @@ export class WhatsNewView {
 	readonly #desk: ReleaseDesk;
 	/** The change cards drawn, by what they show: a draw keeps them, and their pictures, as they are. */
 	#cards = new Map<string, HTMLElement>();
+	#publicDrawn = "";
 
 	constructor(company: CompanyController, client: ReleaseClient, signal: AbortSignal, options: WhatsNewOptions = {}) {
 		this.#company = company;
@@ -79,6 +82,12 @@ export class WhatsNewView {
 		this.#desk = new ReleaseDesk(company, client, this.#lifetime.signal, options, (focusKey) => this.#draw(focusKey));
 		this.#draw();
 		void this.#desk.refresh();
+		const unsubscribe = company.store.subscribe(() => this.update());
+		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
+	}
+
+	update(): void {
+		if (!this.#lifetime.signal.aborted && this.#publicKey() !== this.#publicDrawn) this.#draw();
 	}
 
 	dispose(): void {
@@ -116,12 +125,46 @@ export class WhatsNewView {
 			: t("Version {version} · since {time} · {name} said go", { version, time, name });
 	}
 
-	/** What is live, as a row of the Sites page (styles/sites.css): the Sites globe, the version and who said go, where
-	 * the password is, and the site's link and Go back as pill buttons. A site Qorpera took down (`down`) shows neither:
-	 * every address of it shows a "gone" page, and the kernel refuses going back until Qorpera restores it. */
+	#publicAnswer(site: CodeReleaseSite): SiteAnswer | undefined {
+		if (!site.site) return undefined;
+		const slug = site.site.slug;
+		const state = this.#company.store.get();
+		const listed = state.siteList?.find((item) => item.slug === slug);
+		if (!listed) return "unknown";
+		return listed.kind === "files" ? sitePublicAnswer(state, listed.id) : undefined;
+	}
+
+	#interfaceHref(slug: string): string | undefined {
+		const surface = surfacesOf(this.#company)?.state.surfaces.find(
+			(item) => item.status !== "archived" && item.siteSlug === slug,
+		);
+		return surface && surfaceHash(this.#company.profile.profileId, surface.slug);
+	}
+
+	#publicKey(): string {
+		return JSON.stringify(
+			(this.#desk.releases?.sites ?? []).map((site) => [
+				this.#publicAnswer(site) ?? "",
+				site.site ? (this.#interfaceHref(site.site.slug) ?? "") : "",
+			]),
+		);
+	}
+
+	#notLiveLine(slug: string): HTMLElement {
+		const href = this.#interfaceHref(slug);
+		return h(
+			"span",
+			{ class: "site-meta" },
+			href
+				? h("a", { href }, t("Only the company can open it. Go live on its page."))
+				: t("Only the company can open it."),
+		);
+	}
+
 	#live(site: CodeReleaseSite, can: boolean, busy: boolean, down: boolean): HTMLElement {
 		const live = site.live;
 		const shown = live && site.site && !down ? site.site : undefined;
+		const answer = this.#publicAnswer(site);
 		const key = keyOf(site);
 		let back: HTMLButtonElement | null = null;
 		if (live && site.back && can && !down) {
@@ -144,7 +187,15 @@ export class WhatsNewView {
 				h(
 					"div",
 					{ class: "site-head" },
-					h("strong", { class: "site-name" }, live ? t("Live now") : t("Not live yet")),
+					h(
+						"strong",
+						{ class: "site-name" },
+						!live || answer === "private"
+							? t("Not live yet")
+							: answer === "unknown"
+								? t("Current version")
+								: t("Live now"),
+					),
 					live ? h("span", { class: "site-meta" }, this.#liveLine(live)) : null,
 					down
 						? h(
@@ -153,18 +204,7 @@ export class WhatsNewView {
 								t("Qorpera took this site down, so it can't be opened. See why in Sites."),
 							)
 						: null,
-					// The password is read where it is kept: only owners and admins can see it there.
-					shown && can
-						? h(
-								"span",
-								{ class: "site-meta" },
-								h(
-									"a",
-									{ href: `#/c/${this.#company.profile.profileId}/sites` },
-									t("The password is in Sites."),
-								),
-							)
-						: null,
+					shown && can && answer === "private" ? this.#notLiveLine(shown.slug) : null,
 				),
 				// Not live yet, there is nothing to open or go back to: no row for it (a phone would keep it empty).
 				shown || back
@@ -282,6 +322,7 @@ export class WhatsNewView {
 
 	#draw(focusKey?: string): void {
 		if (this.#lifetime.signal.aborted) return;
+		this.#publicDrawn = this.#publicKey();
 		const active = document.activeElement as HTMLElement | null;
 		const key = focusKey ?? (this.el.contains(active) ? active?.dataset.focusKey : undefined);
 		const releases = this.#desk.releases;
