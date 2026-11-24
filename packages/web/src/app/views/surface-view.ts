@@ -935,6 +935,9 @@ export class SurfaceView {
 					presentHere.length > 3
 						? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
 						: null,
+					presentHere.length > 1
+						? h("span", { class: "surface-pill-presence-fold" }, `+${presentHere.length - 1}`)
+						: null,
 				),
 			);
 		}
@@ -998,7 +1001,14 @@ export class SurfaceView {
 						},
 						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
 						saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
-						publishBusy ? t("Publishing…") : saidNo ? t("{name} said no", { name: saidNo }) : t("Publish"),
+						publishBusy
+							? h("span", { class: "surface-publish-word" }, t("Publishing…"))
+							: saidNo
+								? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
+								: t("Publish"),
+						publishBusy || saidNo
+							? h("span", { class: "surface-publish-short" }, publishBusy ? t("Publish") : t("No"))
+							: null,
 						!publishBusy && !saidNo && count ? h("span", { class: "surface-notch-count" }, String(count)) : null,
 						askedUser && !saidNo
 							? h(

@@ -156,7 +156,9 @@ describe("asking a teammate to publish", () => {
 		document.body.append(view.el);
 		await flush();
 		view.update();
-		expect(view.el.querySelector(".surface-publish-main")?.textContent).toBe("SLSofie said no");
+		expect(view.el.querySelector(".surface-publish-main .surface-publish-word")?.textContent).toBe("Sofie said no");
+		expect(view.el.querySelector(".surface-publish-main .surface-publish-short")?.textContent).toBe("No");
+		expect(view.el.querySelector(".surface-publish-main .person-avatar")?.textContent).toBe("SL");
 
 		openPublishSheet(store, shown);
 		expect(sheetText()).toContain("Sofie said no.");

@@ -238,7 +238,7 @@ export class SurfaceAddress {
 				"data-act": "address",
 				...(title ? { title } : {}),
 			},
-			mark === "unknown" ? null : h("span", { class: "surface-address-dot", "aria-hidden": "true" }),
+			h("span", { class: "surface-address-dot", "aria-hidden": "true" }),
 			h("span", { class: "surface-address-host" }, this.name()),
 		);
 	}
