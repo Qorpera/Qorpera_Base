@@ -1061,7 +1061,14 @@ export async function runCloudGeminiToolSession(options: {
 					sessionSignal.throwIfAborted();
 					const batchResults =
 						functionCalls.length === 1
-							? [await options.boundary.invoke(assignedCallIds[0], "qorpera", functionCalls[0].name, functionCalls[0].args)]
+							? [
+									await options.boundary.invoke(
+										assignedCallIds[0],
+										"qorpera",
+										functionCalls[0].name,
+										functionCalls[0].args,
+									),
+								]
 							: await Promise.all(
 									functionCalls.map((call, index) =>
 										options.boundary.invoke(assignedCallIds[index], "qorpera", call.name, call.args),
