@@ -514,6 +514,7 @@ export class SurfaceView {
 		this.#panelsHidden = hidden;
 		this.#barOpen = false;
 		this.#barShown = "";
+		if (!hidden) this.#askShown = "";
 		const surface = this.surface;
 		if (surface) this.#drawBar(surface);
 		else this.#paintNotch();

@@ -234,6 +234,27 @@ describe("asking a teammate to publish", () => {
 		store.dispose();
 	});
 
+	it("opens the notch on an ask that came while the panels were hidden, once they are shown", async () => {
+		const { store } = await setUp(SOFIE, site());
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
+		await store.askToPublish(SURFACE, SOFIE);
+		view.update();
+		await flush();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		expect(store.state.surfaces[0]?.publishAsk?.askedUserId).toBe(SOFIE);
+		expect(view.el.querySelector(".surface-publish.is-asked")).not.toBeNull();
+		expect(notch.classList.contains("is-open")).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!.click();
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(view.el.querySelector(".surface-publish.is-asked")).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("publishes as the asked member on yes, through her own Publish", async () => {
 		const shown = site({ publishAsk: ask() });
 		const { store, calls } = await setUp(SOFIE, shown);
