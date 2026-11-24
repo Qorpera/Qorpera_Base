@@ -1,0 +1,151 @@
+import type { StudioBinaryRef, StudioPatchOp } from "@qorpera/contracts";
+import { describe, expect, it, vi } from "vitest";
+import { captionHash } from "../src/cloud-app-kit-explainer.ts";
+import { GeminiCapReachedError } from "../src/cloud-gemini-tool-session.ts";
+import type { CloudToolContext } from "../src/cloud-native-tool-boundary.ts";
+import {
+	createNarrateExplainerTool,
+	extractExplainerCaptionEntries,
+} from "../src/cloud-surface-narrate-tool.ts";
+
+function fakeContext(): CloudToolContext {
+	return {
+		callId: "call-1",
+		companyId: "11111111-1111-4111-8111-111111111111",
+		runId: "22222222-2222-4222-8222-222222222222",
+		signal: new AbortController().signal,
+	};
+}
+
+describe("cloud-surface-narrate-tool", () => {
+	it("extracts deduplicated single-language and bilingual captions", () => {
+		const scenes = [
+			'V.part({ en: "Start", da: "Start" });',
+			'V.scene((s) => {',
+			'  s.say({ en: "Buyer sets budget.", da: "Køber sætter budget." });',
+			'  s.say("Shared note.");',
+			'  s.say("Shared note.");',
+			'});',
+		].join("\n");
+		const entries = extractExplainerCaptionEntries(scenes);
+		expect(entries.map((entry) => entry.text)).toEqual([
+			"Buyer sets budget.",
+			"Køber sætter budget.",
+			"Shared note.",
+		]);
+		expect(entries[0]?.hash).toBe(captionHash("Buyer sets budget."));
+	});
+
+	it("synthesizes only missing captions with Gemini TTS and stages write_file ops plus clips.json", async () => {
+		const c1 = "Buyer describes what they want.";
+		const c2 = "Seller approves confidential match.";
+		const h1 = captionHash(c1);
+		const h2 = captionHash(c2);
+		const scenes = `V.scene((s) => { s.say("${c1}"); s.say("${c2}"); });`;
+		const existingClips = JSON.stringify([{ caption: h1, file: `${h1}.wav`, seconds: 2.1 }]);
+
+		const stagedCalls: { title: string; ops: readonly StudioPatchOp[] }[] = [];
+		const synthesized: { model: string; voiceName: string; text: string }[] = [];
+		const tool = createNarrateExplainerTool({
+			sessionId: "33333333-3333-4333-8333-333333333333",
+			folderRoot: "identity",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			readStudioText: async (path) => {
+				if (path === "breakdowns/ux/scenes.js") return scenes;
+				if (path === "breakdowns/ux/voice/clips.json") return existingClips;
+				return null;
+			},
+			stageBytes: async (bytes, mediaType): Promise<StudioBinaryRef> => ({
+				manifestSha256: "a".repeat(64),
+				fileSha256: "b".repeat(64),
+				bytes: bytes.byteLength,
+				mediaType,
+			}),
+			surfacePatch: {
+				stageSurfacePatch: async (_sessionId, req) => {
+					stagedCalls.push({ title: req.title, ops: req.ops });
+					return { changeId: "44444444-4444-4444-8444-444444444444", seq: 2, openChangeCount: 2 };
+				},
+			},
+			synthesizeGemini: async ({ model, voiceName, text }) => {
+				synthesized.push({ model, voiceName, text });
+				return {
+					audio: new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0]),
+					mediaType: "audio/wav",
+					fileExtension: "wav",
+					seconds: 3.4,
+					usage: { inputTokens: 8, cachedTokens: 0, outputTokens: 120 },
+				};
+			},
+		});
+
+		const result = await tool.execute({ scenesPath: "identity/breakdowns/ux/scenes.js" }, fakeContext());
+		expect(result.kind).toBe("text");
+		const body = JSON.parse(result.value) as Record<string, unknown>;
+		expect(body).toMatchObject({
+			ok: true,
+			state: "spoken",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			spokenNow: 1,
+			reused: 1,
+			left: 0,
+			total: 2,
+		});
+		expect(synthesized).toEqual([{ model: "gemini-3.8-flash-tts", voiceName: "Kore", text: c2 }]);
+		expect(stagedCalls).toHaveLength(1);
+		expect(stagedCalls[0]?.ops).toHaveLength(2);
+		expect(stagedCalls[0]?.ops[0]).toMatchObject({
+			op: "write_file",
+			path: `breakdowns/ux/voice/${h2}.wav`,
+			file: { mediaType: "audio/wav" },
+		});
+		const clipsOp = stagedCalls[0]?.ops[1];
+		expect(clipsOp?.op).toBe("write_text");
+		if (clipsOp?.op === "write_text") {
+			expect(clipsOp.path).toBe("breakdowns/ux/voice/clips.json");
+			expect(JSON.parse(clipsOp.content)).toEqual([
+				{ caption: h1, file: `${h1}.wav`, seconds: 2.1 },
+				{ caption: h2, file: `${h2}.wav`, seconds: 3.4 },
+			]);
+		}
+	});
+
+	it("returns a calm unsupported response when the member selected chatgpt-voice in a Studio session", async () => {
+		const tool = createNarrateExplainerTool({
+			sessionId: "33333333-3333-4333-8333-333333333333",
+			folderRoot: "identity",
+			voiceModel: "chatgpt-voice",
+			voiceName: "juniper",
+			readStudioText: async (path) => (path === "breakdowns/ux/scenes.js" ? 'V.scene((s) => { s.say("Hi."); });' : null),
+			stageBytes: vi.fn(),
+			surfacePatch: { stageSurfacePatch: vi.fn() },
+		});
+		const result = await tool.execute({ scenesPath: "breakdowns/ux/scenes.js" }, fakeContext());
+		const body = JSON.parse(result.value) as Record<string, unknown>;
+		expect(body.ok).toBe(false);
+		expect(body.state).toBe("unsupported_in_studio");
+		expect(body.voiceModel).toBe("chatgpt-voice");
+		expect(body.voiceName).toBe("juniper");
+	});
+
+	it("reports cap_reached gracefully without throwing", async () => {
+		const tool = createNarrateExplainerTool({
+			sessionId: "33333333-3333-4333-8333-333333333333",
+			folderRoot: "identity",
+			voiceModel: "gemini-3.8-flash-lite-tts",
+			voiceName: "Puck",
+			readStudioText: async (path) => (path === "breakdowns/ux/scenes.js" ? 'V.scene((s) => { s.say("Hi."); });' : null),
+			stageBytes: vi.fn(),
+			surfacePatch: { stageSurfacePatch: vi.fn() },
+			synthesizeGemini: async () => {
+				throw new GeminiCapReachedError(500, 5_000_000);
+			},
+		});
+		const result = await tool.execute({ scenesPath: "breakdowns/ux/scenes.js" }, fakeContext());
+		const body = JSON.parse(result.value) as Record<string, unknown>;
+		expect(body.ok).toBe(false);
+		expect(body.state).toBe("cap_reached");
+	});
+});
