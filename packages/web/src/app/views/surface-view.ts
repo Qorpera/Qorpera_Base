@@ -232,7 +232,7 @@ export class SurfaceView {
 	#phoneBarShown = "";
 	#sitePublic = true;
 	readonly #autoPublishAsked = new Set<string>();
-	readonly #publishedAtCount = new Map<string, number>();
+	readonly #publishedAt = new Map<string, string>();
 	readonly #autoPublishOffOwed = new Map<string, { tries: number; at: SurfaceSummary | undefined }>();
 	#viewportResizeObserver: ResizeObserver | undefined;
 	#notchResizeObserver: ResizeObserver | undefined;
@@ -1079,13 +1079,14 @@ export class SurfaceView {
 			void store.setAutoPublish(surface.id, true, { quiet: true });
 		}
 		const count = surface.unpublishedChangeCount;
-		if (count === 0) {
-			this.#publishedAtCount.delete(surface.id);
+		if (count === 0 && !surface.hasUnpublishedChanges) {
+			this.#publishedAt.delete(surface.id);
 			return;
 		}
 		const publishing = Boolean(store.state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
-		if (publishing || this.#publishedAtCount.get(surface.id) === count) return;
-		this.#publishedAtCount.set(surface.id, count);
+		const at = `${count}:${surface.liveHeadSha ?? ""}`;
+		if (publishing || this.#publishedAt.get(surface.id) === at) return;
+		this.#publishedAt.set(surface.id, at);
 		void store.publish(surface.id, { quiet: true });
 	}
 
@@ -1117,7 +1118,7 @@ export class SurfaceView {
 			if (!(await this.#until(settled, signal))) return false;
 			const surface = this.surface;
 			if (!surface) return false;
-			if (surface.unpublishedChangeCount === 0) return true;
+			if (surface.unpublishedChangeCount === 0 && !surface.hasUnpublishedChanges) return true;
 			if (!(await store.publish(surface.id, { quiet: true }))) return false;
 			if (!(await this.#until(settled, signal))) return false;
 			const after = this.surface;

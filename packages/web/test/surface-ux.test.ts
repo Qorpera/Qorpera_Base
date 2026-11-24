@@ -2017,6 +2017,65 @@ describe("a website that is not live", () => {
 		done();
 	});
 
+	it("publishes a website whose Base was never published, once per Base, silently, and never for a read-only member", async () => {
+		const base = "a".repeat(40);
+		const { store, view, client, raise, settle, done } = await website({
+			served: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
+			publishAnswer: { hasUnpublishedChanges: false },
+		});
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await settle();
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		noProblem(store, view);
+
+		await raise({ liveHeadSha: "b".repeat(40), hasUnpublishedChanges: true });
+		expect(client.publishSurface).toHaveBeenCalledTimes(2);
+		done();
+
+		const reader = await website({
+			served: false,
+			canWrite: false,
+			shown: { autoPublish: true, unpublishedChangeCount: 0, hasUnpublishedChanges: true, liveHeadSha: base },
+		});
+		expect(reader.client.publishSurface).not.toHaveBeenCalled();
+		reader.done();
+	});
+
+	it("publishes nothing when Base has nothing a publish would add", async () => {
+		const { client, done } = await website({
+			served: false,
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: false,
+				liveHeadSha: "a".repeat(40),
+			},
+		});
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("goes live by publishing a Base that moved since its last publish first", async () => {
+		const { store, view, order, settle, done } = await website({
+			shown: {
+				autoPublish: true,
+				unpublishedChangeCount: 0,
+				hasUnpublishedChanges: true,
+				liveHeadSha: "b".repeat(40),
+			},
+			publishFails: 1,
+			publishAnswer: { hasUnpublishedChanges: false },
+		});
+		expect(order).toEqual(["publish"]);
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish", "publish", "public:true", "auto:false"]);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-live");
+		noProblem(store, view);
+		done();
+	});
+
 	it("goes live by publishing what is approved first, then making the site public, then switching auto-publish off", async () => {
 		const { store, view, order, settle, done } = await website({
 			shown: { autoPublish: true, unpublishedChangeCount: 1 },

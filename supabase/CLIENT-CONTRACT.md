@@ -3199,3 +3199,8 @@ above.
   (owner or admin) does nothing while the founding table is open, and after Start invites each as a viewer through
   `qorpera_invite_profile_member`, an email the company already has or has invited counting as done, and takes each
   off the list. It answers the emails it invited. Any other refusal rolls the whole call back and keeps the list.
+
+#### The code site refusal and the Go live test site (20260930891000_site_texts_and_go_live_test_cleanup)
+
+- `qorpera_site_unpublish` refuses a site made from code with `SITE_FROM_CODE: this site is made from code kept in Qorpera; unpublish_site cannot take it offline` (it named the deleted Sites page).
+- The migration removes one throwaway site, `thetaband-go-live-test` (the 24 Nov 2026 Go live test, its interface already deleted), and only while it is not public, not taken down, has no custom domain and no interface that is not deleted points at it.
