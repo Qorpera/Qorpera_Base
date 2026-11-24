@@ -2334,4 +2334,57 @@ describe("the coding executor over a preview builder's turn", () => {
 			p_outcome: "none",
 		});
 	});
+
+	it("runs a preview build when the claim carries no sponsor and still honours no-hours refusal", async () => {
+		const { w, control } = builderWorld({ state: "build", build });
+		Object.assign(w.world.claim, {
+			sponsor: { bindingId: null, version: null },
+			todoId: null,
+			harness: "claude-code",
+		});
+		const parsed = parseCodingSessionClaim(w.world.claim);
+		expect(parsed.previewBuilder).toBe(true);
+		expect(parsed.harness).toBe("claude-code");
+		w.host.buildPreview = vi.fn(async () => ({ outcome: "built" as const, builtTreeSha: "d".repeat(40) }));
+		expect(
+			await new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 }).runOnce(
+				new AbortController().signal,
+			),
+		).toBe("completed");
+		expect(w.world.calls.some((call) => call.method === "qorpera_begin_coding_turn")).toBe(false);
+		expect(w.host.buildPreview).toHaveBeenCalledTimes(1);
+		expect(
+			w.world.calls.find((call) => call.method === "qorpera_complete_surface_preview_build")?.args,
+		).toMatchObject({
+			p_build_id: build.buildId,
+			p_outcome: "built",
+			p_built_tree_sha: "d".repeat(40),
+			p_error_detail: null,
+		});
+
+		const zero = builderWorld({ state: "build", build }, ["go", "none"]);
+		Object.assign(zero.w.world.claim, {
+			sponsor: { bindingId: null, version: null },
+			todoId: null,
+		});
+		zero.w.host.buildPreview = vi.fn();
+		vi.mocked(zero.w.host.prepareWorkspace).mockRejectedValueOnce(
+			new CodingMachineUnavailable("COMPUTER_HOURS_EXHAUSTED"),
+		);
+		expect(
+			await new CloudCodingExecutor({
+				control: zero.control,
+				host: zero.w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			}).runOnce(new AbortController().signal),
+		).toBe("completed");
+		expect(zero.w.host.buildPreview).not.toHaveBeenCalled();
+		expect(
+			zero.w.world.calls.find((call) => call.method === "qorpera_complete_surface_preview_build")?.args,
+		).toMatchObject({
+			p_build_id: null,
+			p_outcome: "none",
+		});
+	});
 });
