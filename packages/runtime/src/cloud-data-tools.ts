@@ -411,6 +411,7 @@ export function cloudDataTools(options: {
 	const describe: CloudNativeTool = {
 		name: "data_describe" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: DATA_DESCRIBE_DESCRIPTION,
 		inputSchema: {
 			type: "object",
@@ -597,6 +598,7 @@ export function cloudDataTools(options: {
 	const query: CloudNativeTool = {
 		name: "data_query" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: DATA_QUERY_DESCRIPTION,
 		inputSchema: {
 			type: "object",

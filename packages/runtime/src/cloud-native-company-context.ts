@@ -1539,6 +1539,7 @@ export function cloudCompanyContextTool(
 	return {
 		name: "read_context" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description:
 			"Read more of a context source that was cut short: sourceKind and id from the source, sha256 from its content.sha256, offset from its content.nextOffset (counted in Unicode characters) and limit, up to 16384 UTF-8 bytes. A page can be shorter than the limit so that it fits one result: continue from each returned nextOffset until it is null. These fields are the handle even when the text stops in the middle of JSON: look for no other handle inside the text, and try this one before saying a source is unavailable. It reads only what was already admitted to this run: it adds no request or permission and fetches no attachment.",
 		// The same for every run, so the tool list stays a cached prefix (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the run's

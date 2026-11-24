@@ -1280,6 +1280,7 @@ export function cloudFolderFileTools(options: {
 			name: "company_read" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
 			images: true,
+			parallelRead: true,
 			description: [
 				`Read the company folder by company paths: a file's UTF-8 text, or the target a link names (not followed), from offset (in bytes, 0 by default), up to limit bytes (at most ${MAX_READ_BYTES}, the default) a call, as much as fits one result: continue from nextOffset until it is null. A path that is a folder, or absent, says so. A file's version is what a change of it names.`,
 				`A PNG, JPEG, GIF or WebP image read from offset 0 is shown to you after the answer, at most ${SHOWN_MAX_WIDTH}×${SHOWN_MAX_HEIGHT} pixels.`,
@@ -1622,6 +1623,7 @@ export function cloudFolderFileTools(options: {
 		{
 			name: "company_list" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
+			parallelRead: true,
 			description: [
 				`List what you may read in the folder at path (empty for the top), down to depth levels (1 to ${MAX_DEPTH}; 1 by default, ${MAX_DEPTH} with a glob): use depth to see a folder's whole tree in one call. glob keeps only paths like it (* and ? within a name, ** across folders, not case-sensitive; without a / it matches names alone: *.md, specs/**/*.csv).`,
 				`Up to limit entries a call (1 to ${MAX_LIST}, ${MAX_LIST} by default), one a line: a file as its path, a tab and its size in bytes; a folder as its path and /; a link as its path, a tab and -> what it names (its first ${LIST_TARGET_BYTES} bytes; company_read shows all). When there is more, the answer says so and gives after to call again with.`,

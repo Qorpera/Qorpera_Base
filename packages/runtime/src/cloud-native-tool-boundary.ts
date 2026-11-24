@@ -83,6 +83,7 @@ const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = DEFAULT_TOOL_JSON_MAX_BYTES;
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
+const MAX_PARALLEL_READS = 6;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 /** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), also as text carries it
@@ -115,10 +116,12 @@ const SECRET_CUTS: readonly (readonly [RegExp, string])[] = [
 	[/([sr]k)(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:test|live)(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{24,}/g, "$1_[REDACTED]"],
 	[/re(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{6,16}(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{16,}/g, "re_[REDACTED]"],
 ];
+const SECRET_FAST_CHECK = /(?:whsec|npm|ghp|github|[sr]k|re)(?:_|%5[Ff]|\\{1,2}u005[Ff])/;
 /** Text with every webhook signing secret and coding value key cut out, as every text tool result has it (E3c-2,
  * 20260930695000), and as everything else the host sends Codex has it: the context message, the developer
  * instructions, every turn's input. */
 export function redactCloudWebhookSecrets(text: string): string {
+	if (!SECRET_FAST_CHECK.test(text)) return text;
 	let cut = text;
 	for (const [secret, replacement] of SECRET_CUTS) cut = cut.replace(secret, replacement);
 	return cut;
@@ -127,6 +130,7 @@ export function redactCloudWebhookSecrets(text: string): string {
  * ones as one span, in order. A tool that shows a file in windows ends and starts its windows outside them
  * (cloud-folder-file-tools.ts), so that each secret is in one window whole, where the cut finds it. */
 export function cloudSecretSpans(text: string): readonly { readonly start: number; readonly end: number }[] {
+	if (!SECRET_FAST_CHECK.test(text)) return [];
 	const found: { start: number; end: number }[] = [];
 	for (const [secret] of SECRET_CUTS)
 		for (const match of text.matchAll(secret)) found.push({ start: match.index, end: match.index + match[0].length });
@@ -263,6 +267,7 @@ export interface CloudNativeTool {
 	readonly inputSchema: { [key: string]: JsonValue };
 	/** Its answers may show the model an image (`CloudToolContent.image`): the native session must then carry images. */
 	readonly images?: true;
+	readonly parallelRead?: true;
 	/** Its arguments' bound as escaped JSON, when larger than every tool's 64 KiB, up to MAX_TOOL_ARGUMENT_BYTES: a file
 	 * write's text. */
 	readonly maxArgumentBytes?: number;
@@ -550,7 +555,10 @@ export class CloudNativeToolBoundary {
 		{ digest: string; output: string; outputBytes: number; imageSha256?: string }
 	>();
 	readonly #webSearches = new Map<string, string>();
-	#pending: Promise<void> = Promise.resolve();
+	#writerTail: Promise<void> = Promise.resolve();
+	readonly #activeReads = new Set<Promise<void>>();
+	#runningReads = 0;
+	readonly #readSlotWaiters: Array<() => void> = [];
 	/** The calls (by tool and arguments) that made the run's final send, or a card's: once there is one, what the run
 	 * calls next is its bookkeeping, or the same call again, which only replays it. */
 	readonly #answers = new Set<string>();
@@ -1006,33 +1014,56 @@ export class CloudNativeToolBoundary {
 		if (previous && previous.digest !== digest) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "CALL_ID_REUSED" });
 		}
-		const result =
-			previous?.result ??
-			this.#pending.then(async () => {
-				// After the answer only the run's bookkeeping runs, and the answer's own call again (its key replays it).
-				// Anything else runs nothing and ends the turn at the next model request, as a final send ended it before
-				// (the 2026-11-13 amendment). A use of a bookkeeping tool through more_tools runs as that tool; more_tools' own
-				// call passes only as a describe of bookkeeping tools alone, so that the run can open them (T3-6).
-				if (
-					this.#answers.size > 0 &&
-					!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name) &&
-					!(tool.name === CLOUD_MORE_TOOLS && describesBookkeepingOnly(argumentsText)) &&
-					!this.#answers.has(digest)
-				)
-					return {
-						...this.#result(callId, tool, digest, "denied", { kind: "text", value: AFTER_ANSWER }),
-						completesTurn: true as const,
-					};
-				const executed = await this.#execute(callId, tool, digest, argumentsText, observation, logged);
-				// Before the next call starts: calls run one after another.
-				if (executed.answered) this.#answers.add(digest);
-				return executed;
+		const runCall = async (): Promise<CloudDynamicToolResponse> => {
+			if (
+				this.#answers.size > 0 &&
+				!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name) &&
+				!(tool.name === CLOUD_MORE_TOOLS && describesBookkeepingOnly(argumentsText)) &&
+				!this.#answers.has(digest)
+			)
+				return {
+					...this.#result(callId, tool, digest, "denied", { kind: "text", value: AFTER_ANSWER }),
+					completesTurn: true as const,
+				};
+			const executed = await this.#execute(callId, tool, digest, argumentsText, observation, logged);
+			if (executed.answered) this.#answers.add(digest);
+			return executed;
+		};
+		const canParallelRead =
+			tool.parallelRead === true &&
+			!tool.prepare &&
+			!this.#folderReports &&
+			!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name);
+		let result: Promise<CloudDynamicToolResponse>;
+		if (previous) {
+			result = previous.result;
+		} else if (canParallelRead) {
+			const barrier = this.#writerTail;
+			result = barrier.then(async () => {
+				await this.#acquireReadSlot();
+				try {
+					return await runCall();
+				} finally {
+					this.#releaseReadSlot();
+				}
 			});
-		if (!previous) {
+			const done = result.then(
+				() => undefined,
+				() => undefined,
+			);
+			this.#activeReads.add(done);
+			void done.finally(() => this.#activeReads.delete(done));
 			this.#calls.set(callId, { digest, result, observation });
-			// Calls run one after another, so what this forgets has long settled.
 			remember(this.#calls, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
-			this.#pending = result.then(
+		} else {
+			const waitFor =
+				this.#activeReads.size > 0
+					? Promise.all([this.#writerTail, ...this.#activeReads]).then(() => undefined)
+					: this.#writerTail;
+			result = waitFor.then(runCall);
+			this.#calls.set(callId, { digest, result, observation });
+			remember(this.#calls, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
+			this.#writerTail = result.then(
 				() => undefined,
 				() => undefined,
 			);
@@ -1076,6 +1107,23 @@ export class CloudNativeToolBoundary {
 			logged?.resultPaths.splice(0);
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
+	}
+
+	async #acquireReadSlot(): Promise<void> {
+		if (this.#runningReads < MAX_PARALLEL_READS) {
+			this.#runningReads += 1;
+			return;
+		}
+		await new Promise<void>((resolve) => {
+			this.#readSlotWaiters.push(resolve);
+		});
+		this.#runningReads += 1;
+	}
+
+	#releaseReadSlot(): void {
+		this.#runningReads -= 1;
+		const next = this.#readSlotWaiters.shift();
+		if (next) next();
 	}
 
 	async #execute(

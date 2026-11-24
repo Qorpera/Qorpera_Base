@@ -1222,6 +1222,7 @@ export function cloudMachineTools(options: {
 	const read: CloudNativeTool = {
 		name: "machine_read" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: worker ? CLOUD_MACHINE_READ_WORKER_DESCRIPTION : CLOUD_MACHINE_READ_DESCRIPTION,
 		inputSchema: {
 			type: "object",
@@ -1402,6 +1403,7 @@ export function cloudMachineTools(options: {
 	const listTool: CloudNativeTool = {
 		name: "machine_list" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_MACHINE_LIST_DESCRIPTION,
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
 		parseArguments(value) {

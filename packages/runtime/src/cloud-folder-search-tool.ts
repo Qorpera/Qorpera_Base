@@ -1075,6 +1075,7 @@ export function cloudFolderSearchTool(options: {
 	const { search, folder, runId } = options;
 	return {
 		name: "company_search",
+		parallelRead: true,
 		description:
 			"Search the company folder like rg: the lines of its text files that contain query, as path:line: text. Only " +
 			"what you may read is searched.\n" +
