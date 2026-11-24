@@ -71,7 +71,7 @@ declare
 	v_key_id uuid;
 	v_surface uuid;
 	v_session uuid;
-	v_lease constant uuid := '13650000-0000-4000-8000-000000000101';
+	v_lease constant uuid := '13690000-0000-4000-8000-000000000101';
 	v_turn jsonb;
 	v_defaults jsonb;
 	v_enqueued jsonb;
@@ -227,7 +227,7 @@ begin
 	perform pg_temp.base_assert(
 		strpos(
 			pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-			$q$'surface_reply','surface_ask',/* 20260930883000 */'narrate_explainer',$q$
+			$q$'surface_reply','surface_ask',/* 20260930887000 */'narrate_explainer',$q$
 		) > 0,
 		'5: runtime observation vocabulary includes narrate_explainer'
 	);
@@ -236,7 +236,7 @@ begin
 		v_run.id,
 		jsonb_build_object(
 			'schema', 'qorpera.runtime-observation/v1',
-			'attemptId', '13650000-0000-4000-8000-000000000501',
+			'attemptId', '13690000-0000-4000-8000-000000000501',
 			'parentAttemptId', null,
 			'assignmentId', (v_binding ->> 'assignmentId')::uuid,
 			'phase', 'finish',

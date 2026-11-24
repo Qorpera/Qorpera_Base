@@ -45,7 +45,7 @@ describe("cloud-surface-narrate-tool", () => {
 		const h1 = captionHash(c1);
 		const h2 = captionHash(c2);
 		const scenes = `V.scene((s) => { s.say("${c1}"); s.say("${c2}"); });`;
-		const existingClips = JSON.stringify([{ caption: h1, file: `${h1}.wav`, seconds: 2.1 }]);
+		const existingClips = JSON.stringify({ clips: [{ caption: h1, file: `${h1}.wav`, seconds: 2.1 }] });
 
 		const stagedCalls: { title: string; ops: readonly StudioPatchOp[] }[] = [];
 		const synthesized: { model: string; voiceName: string; text: string }[] = [];
@@ -114,10 +114,12 @@ describe("cloud-surface-narrate-tool", () => {
 		expect(clipsOp?.op).toBe("write_text");
 		if (clipsOp?.op === "write_text") {
 			expect(clipsOp.path).toBe("breakdowns/ux/voice/clips.json");
-			expect(JSON.parse(clipsOp.content)).toEqual([
-				{ caption: h1, file: `${h1}.wav`, seconds: 2.1 },
-				{ caption: h2, file: `${h2}.wav`, seconds: 3.4 },
-			]);
+			expect(JSON.parse(clipsOp.content)).toEqual({
+				clips: [
+					{ caption: h1, file: `${h1}.wav`, seconds: 2.1 },
+					{ caption: h2, file: `${h2}.wav`, seconds: 3.4 },
+				],
+			});
 		}
 	});
 

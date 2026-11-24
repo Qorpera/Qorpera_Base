@@ -48,7 +48,7 @@ select pg_temp.mdv_activate() \g /dev/null
 
 do $$
 declare
-	v_profile_b uuid := '13640000-0000-4000-8000-000000000020';
+	v_profile_b uuid := '13680000-0000-4000-8000-000000000020';
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_defaults jsonb;
 	v_resolved jsonb;

@@ -1281,7 +1281,7 @@ describe("cloud surface session runner", () => {
 					{
 						op: "write_text",
 						path: "breakdowns/ux/voice/clips.json",
-						content: JSON.stringify([{ caption: "deadbeef", file: "deadbeef.wav", seconds: 1.5 }]),
+						content: JSON.stringify({ clips: [{ caption: "deadbeef", file: "deadbeef.wav", seconds: 1.5 }] }),
 					},
 				],
 			},

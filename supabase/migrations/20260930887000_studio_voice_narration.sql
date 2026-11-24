@@ -8,7 +8,7 @@ do $$ begin
 		or to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') is null
 		or to_regprocedure('public.qorpera_member_gemini_key_open(uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_native_tool_locked_run(jsonb)') is null then
-		raise exception '20260930883000: prerequisite voice, Gemini, or surface functions are missing';
+		raise exception '20260930887000: prerequisite voice, Gemini, or surface functions are missing';
 	end if;
 end $$;
 
@@ -28,12 +28,12 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930883000: invalid replacement pairs for %', p_target;
+		raise exception '20260930887000: invalid replacement pairs for %', p_target;
 	end if;
 	while v_i <= array_length(p_pairs, 1) loop
 		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
 		if v_hits <> 1 then
-			raise exception '20260930883000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
+			raise exception '20260930887000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
 		end if;
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
@@ -339,7 +339,7 @@ $new$		'briefSummary', v_surface.brief_summary,
 
 select pg_temp.svn_patch('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure, array[
 $old$'surface_reply','surface_ask',$old$,
-$new$'surface_reply','surface_ask',/* 20260930883000 */'narrate_explainer',$new$
+$new$'surface_reply','surface_ask',/* 20260930887000 */'narrate_explainer',$new$
 ]);
 
 drop function pg_temp.svn_patch(regprocedure, text[]);
@@ -372,6 +372,6 @@ do $$ begin
 			or patched.provolatile is distinct from prior.provolatile
 			or patched.proacl::text is distinct from prior.proacl::text
 	) or (select count(*) from pg_temp.studio_voice_narration_before) <> 3 then
-		raise exception '20260930883000: patched function attributes or grants drifted';
+		raise exception '20260930887000: patched function attributes or grants drifted';
 	end if;
 end $$;

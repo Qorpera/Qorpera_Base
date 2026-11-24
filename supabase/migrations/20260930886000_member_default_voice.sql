@@ -5,14 +5,19 @@ do $$ begin
 		or to_regprocedure('public.qorpera_get_member_default_models(uuid)') is null
 		or to_regprocedure('public.qorpera_set_member_default_models(uuid,text,text,text,text,bigint)') is null
 		or to_regprocedure('public.qorpera_member_gemini_default_available(uuid,uuid)') is null
-		or to_regprocedure('public.qorpera_revoke_gemini_key(uuid)') is null then
-		raise exception '20260930882000 requires 20260930858000_member_default_models_and_gemini_health';
+		or to_regprocedure('public.qorpera_revoke_gemini_key(uuid)') is null
+		or exists (
+			select 1 from pg_constraint
+			where conrelid = 'public.qorpera_member_default_models'::regclass
+				and conname = 'qorpera_member_default_models_conv_effort'
+		) then
+		raise exception '20260930886000 requires 20260930882000_conversational_default_no_claude';
 	end if;
 	if exists (
 		select 1 from information_schema.columns
 		where table_schema = 'public' and table_name = 'qorpera_member_default_models' and column_name = 'voice_model'
 	) then
-		raise exception '20260930882000 is already applied';
+		raise exception '20260930886000 is already applied';
 	end if;
 end $$;
 
@@ -24,7 +29,7 @@ declare
 begin
 	v_hits := (length(v_def) - length(replace(v_def, p_old, ''))) / length(p_old);
 	if v_hits <> 1 then
-		raise exception '20260930882000: anchor matched % time(s) in %', v_hits, p_target;
+		raise exception '20260930886000: anchor matched % time(s) in %', v_hits, p_target;
 	end if;
 	execute replace(v_def, p_old, p_new);
 end $$;
@@ -162,14 +167,13 @@ begin
 	end if;
 	v_conv_model := case
 		when v_row.conversation_model = 'gemini-4-neon' and v_gemini then 'gemini-4-neon'
-		when v_row.conversation_model in ('claude-fable-5-2', 'claude-opus-5-5') and v_claude then v_row.conversation_model
 		when v_row.conversation_model in ('gpt-6.2-sol', 'gpt-6-astra') then v_row.conversation_model
 		when v_row.conversation_model is null and v_gemini_legacy_default then 'gemini-4-neon'
 		else 'gpt-6.2-sol'
 	end;
 	v_conv_display_model := coalesce(v_row.conversation_model, v_conv_model);
 	v_conv_effort := coalesce(v_row.conversation_effort, v_policy ->> 'effort', 'low');
-	if v_conv_effort = 'max' and v_conv_display_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
+	if v_conv_effort = 'max' then
 		v_conv_effort := 'xhigh';
 	end if;
 	if v_conv_effort = 'xhigh'
@@ -192,7 +196,6 @@ begin
 	v_voice_model := v_voice ->> 'voiceModel';
 	v_voice_name := v_voice ->> 'voiceName';
 	v_conv_models := '["gpt-6.2-sol","gpt-6-astra"]'::jsonb
-		|| case when v_claude then '["claude-opus-5-5","claude-fable-5-2"]'::jsonb else '[]'::jsonb end
 		|| case when v_gemini then '["gemini-4-neon"]'::jsonb else '[]'::jsonb end;
 	v_coding_models := case when v_claude then '["claude-opus-5-5","claude-fable-5-2"]'::jsonb else '[]'::jsonb end
 		|| '["gpt-6.2-sol","gpt-6-astra"]'::jsonb;
@@ -200,12 +203,11 @@ begin
 		|| '["chatgpt-voice"]'::jsonb;
 	select jsonb_object_agg(model.id,
 		case
-			when model.id in ('claude-fable-5-2', 'claude-opus-5-5') then '["low","medium","high","xhigh","max"]'::jsonb
 			when model.id = 'gemini-4-neon' then '["low","medium","high","xhigh"]'::jsonb
 			else '["low","medium","high"]'::jsonb || public.qorpera_model_policy_thread_efforts(v_policy)
 		end)
 	into v_conv_efforts
-	from jsonb_array_elements_text('["gpt-6.2-sol","gpt-6-astra","claude-opus-5-5","claude-fable-5-2","gemini-4-neon"]'::jsonb) as model(id);
+	from jsonb_array_elements_text('["gpt-6.2-sol","gpt-6-astra","gemini-4-neon"]'::jsonb) as model(id);
 	select jsonb_object_agg(model.id,
 		case
 			when model.id in ('claude-fable-5-2', 'claude-opus-5-5') then '["low","medium","high","xhigh","max"]'::jsonb
@@ -272,8 +274,8 @@ begin
 			and p_coding_model is null and p_coding_effort is null
 			and p_voice_model is null and p_voice_name is null)
 		or (p_conversation_model is not null and p_conversation_model not in (
-			'gpt-6.2-sol', 'gpt-6-astra', 'claude-fable-5-2', 'claude-opus-5-5', 'gemini-4-neon'))
-		or (p_conversation_effort is not null and p_conversation_effort not in ('low', 'medium', 'high', 'xhigh', 'max'))
+			'gpt-6.2-sol', 'gpt-6-astra', 'gemini-4-neon'))
+		or (p_conversation_effort is not null and p_conversation_effort not in ('low', 'medium', 'high', 'xhigh'))
 		or (p_coding_model is not null and p_coding_model not in (
 			'gpt-6.2-sol', 'gpt-6-astra', 'claude-fable-5-2', 'claude-opus-5-5'))
 		or (p_coding_effort is not null and p_coding_effort not in ('low', 'medium', 'high', 'xhigh', 'max'))
@@ -296,7 +298,7 @@ begin
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01',
 			'message', 'Default model settings changed; refresh before retrying', 'details', null, 'hint', null)::text,
 			detail = '{"status":409,"headers":{}}'; end if;
-	if (p_conversation_model in ('claude-fable-5-2', 'claude-opus-5-5') or p_coding_model in ('claude-fable-5-2', 'claude-opus-5-5'))
+	if p_coding_model in ('claude-fable-5-2', 'claude-opus-5-5')
 		and not public.qorpera_member_claude_default_available(p_profile_id, v_user) then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC02',
 			'message', 'Sign in to Claude in Settings before choosing a Claude default model',
@@ -315,10 +317,6 @@ begin
 	v_coding_effort := coalesce(p_coding_effort, v_row.coding_effort);
 	v_voice_model := coalesce(p_voice_model, v_row.voice_model);
 	v_voice_name := coalesce(p_voice_name, v_row.voice_name);
-	if p_conversation_model is not null and p_conversation_effort is null
-		and v_conv_effort = 'max' and v_conv_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
-		v_conv_effort := 'xhigh';
-	end if;
 	if p_coding_model is not null and p_coding_effort is null
 		and v_coding_effort in ('xhigh', 'max') and v_coding_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
 		v_coding_effort := 'high';
@@ -338,8 +336,6 @@ begin
 	if v_voice_name is not null and (v_voice_model is null or not (public.qorpera_voice_model_profiles(v_voice_model) ? v_voice_name)) then
 		raise exception 'Voice profile % does not belong to %', v_voice_name, coalesce(v_voice_model, 'none') using errcode = '22023';
 	end if;
-	if v_conv_effort = 'max' and coalesce(v_conv_model not in ('claude-fable-5-2', 'claude-opus-5-5'), true) then
-		raise exception 'Conversational effort max needs a Claude model' using errcode = '22023'; end if;
 	if v_coding_effort in ('xhigh', 'max') and coalesce(v_coding_model not in ('claude-fable-5-2', 'claude-opus-5-5'), true) then
 		raise exception 'Coding effort % needs a Claude model', v_coding_effort using errcode = '22023'; end if;
 	if p_expected_version = 0 then

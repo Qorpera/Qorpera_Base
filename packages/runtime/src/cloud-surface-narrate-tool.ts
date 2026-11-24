@@ -22,7 +22,8 @@ const MAX_UNIQUE_CAPTIONS = 120;
 const MAX_CLIPS_PER_CALL = 48;
 const SYNTHESIS_CONCURRENCY = 3;
 const CAPTION_HASH_RE = /^[0-9a-f]{8}$/;
-const SAFE_CLIP_FILE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+const CLIP_AUDIO_EXTS = new Set(["wav", "mp4", "m4a", "mp3", "webm"]);
+const CLIP_MAX_SECONDS = 60;
 
 export interface StudioExplainerClipRecord {
 	readonly caption: string;
@@ -85,6 +86,12 @@ function joinRel(dir: string, rel: string): string {
 	return dir ? `${dir}/${rel}` : rel;
 }
 
+function isCaptionClipFile(caption: string, file: string): boolean {
+	const dot = file.lastIndexOf(".");
+	if (dot <= 0) return false;
+	return file.slice(0, dot) === caption && CLIP_AUDIO_EXTS.has(file.slice(dot + 1));
+}
+
 function parseExistingClips(text: string | null): Map<string, StudioExplainerClipRecord> {
 	const out = new Map<string, StudioExplainerClipRecord>();
 	if (!text) return out;
@@ -94,30 +101,29 @@ function parseExistingClips(text: string | null): Map<string, StudioExplainerCli
 	} catch {
 		return out;
 	}
-	const list = Array.isArray(parsed)
-		? parsed
-		: parsed &&
-				typeof parsed === "object" &&
-				!Array.isArray(parsed) &&
-				Array.isArray((parsed as { clips?: unknown }).clips)
+	const list =
+		parsed &&
+		typeof parsed === "object" &&
+		!Array.isArray(parsed) &&
+		Array.isArray((parsed as { clips?: unknown }).clips)
 			? (parsed as { clips: unknown[] }).clips
 			: [];
 	for (const entry of list) {
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
 		const rec = entry as Record<string, unknown>;
-		const caption = typeof rec.caption === "string" ? rec.caption.trim().toLowerCase() : "";
-		const file = typeof rec.file === "string" ? rec.file.trim() : "";
+		const caption = typeof rec.caption === "string" ? rec.caption : "";
+		const file = typeof rec.file === "string" ? rec.file : "";
 		const seconds = typeof rec.seconds === "number" ? rec.seconds : Number.NaN;
 		if (
 			!CAPTION_HASH_RE.test(caption) ||
-			!SAFE_CLIP_FILE_RE.test(file) ||
+			!isCaptionClipFile(caption, file) ||
 			!Number.isFinite(seconds) ||
 			seconds <= 0 ||
-			seconds > 3600
+			seconds > CLIP_MAX_SECONDS
 		) {
 			continue;
 		}
-		if (!out.has(caption)) out.set(caption, { caption, file, seconds });
+		if (!out.has(caption)) out.set(caption, { caption, file, seconds: Math.round(seconds * 100) / 100 });
 	}
 	return out;
 }
@@ -355,7 +361,11 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 						const file = `${caption.hash}.${speech.fileExtension}`;
 						const clipPath = joinRel(dir, `voice/${file}`);
 						recorded.set(caption.hash, {
-							clip: { caption: caption.hash, file, seconds: speech.seconds },
+							clip: {
+								caption: caption.hash,
+								file,
+								seconds: Math.min(CLIP_MAX_SECONDS, Math.max(0.01, Math.round(speech.seconds * 100) / 100)),
+							},
 							op: { op: "write_file", path: clipPath, file: closedRef },
 						});
 					} catch (error) {
@@ -409,7 +419,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 			ops.push({
 				op: "write_text",
 				path: clipsPath,
-				content: `${JSON.stringify(finalClips, null, 2)}\n`,
+				content: `${JSON.stringify({ clips: finalClips }, null, 2)}\n`,
 			});
 
 			const staged = await options.surfacePatch.stageSurfacePatch(
