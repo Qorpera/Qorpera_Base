@@ -61,6 +61,10 @@ create function pg_temp.pw_view() returns jsonb language sql as $$
 	select public.qorpera_coding_session_view(s, w) from public.qorpera_coding_sessions s
 	join public.qorpera_runtime_workers w on w.id = s.worker_id where s.worker_id = '92800000-0000-4000-8000-0000000000b1'
 $$;
+create function pg_temp.pw_names_machinery(p_result jsonb) returns boolean language sql as $$
+	select regexp_replace(p_result::text, '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', '', 'g')
+		~ '422|\[code=|bridge|PROVIDER_FAILED|durable'
+$$;
 
 -- The owner's coding machine is on exec-928, so the fleet picks it for the owner's sessions (as 928's §8).
 set local session_replication_role = replica;
@@ -88,7 +92,12 @@ begin
 	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1');
 	perform pg_temp.base_assert(w.state = 'failed' and w.result ->> 'summary' = v_words
 		and w.result ->> 'reason' = 'provider_outage', 'the worker''s result: ' || w.result::text);
-	perform pg_temp.base_assert(w.result::text !~ '422|\[code=|bridge|PROVIDER_FAILED|durable', 'no machinery reaches the agent: ' || w.result::text);
+	perform pg_temp.base_assert(not pg_temp.pw_names_machinery(w.result), 'no machinery reaches the agent: ' || w.result::text);
+	perform pg_temp.base_assert(not pg_temp.pw_names_machinery(w.result || '{"runId": "0596d368-c9c1-470f-9bdc-7f1d4224f671"}')
+		and (select bool_and(pg_temp.pw_names_machinery(w.result || jsonb_build_object(field, word)))
+			from unnest(array['summary', 'needs', 'outputs', 'reason']) as field,
+				unnest(array['failed (422)', '[code=X]', 'bridge', 'PROVIDER_FAILED', 'durable']) as word),
+		'a run id holding 422 is not machinery, and each of its words in a field is');
 	perform pg_temp.base_assert((select e.body ->> 'summary' from public.qorpera_runtime_worker_events e
 		where e.worker_id = w.id and e.sequence = w.sequence and e.kind = 'reported') = v_words, 'the reported event');
 	perform pg_temp.base_assert((select outcome ->> 'reason' = 'provider_outage' and outcome ->> 'summary' = v_words
