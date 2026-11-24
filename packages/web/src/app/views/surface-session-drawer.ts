@@ -13,7 +13,6 @@ import { leadingMentions, type MentionTarget, matchTargets, mentionQuery } from 
 import { t } from "../../ui/preferences.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
-import { surfaceHash } from "../router.ts";
 import type { SurfaceLook } from "../surface-kinds.ts";
 import {
 	formatConflictPaths,
@@ -263,47 +262,6 @@ function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 							? 4
 							: 5;
 	return [...sessions].sort((a, b) => score(a) - score(b));
-}
-
-function affectedFileChips(store: SurfacesStore, paths: readonly string[]): HTMLElement | null {
-	const files = paths.map((path) => path.trim()).filter((path) => path && !path.startsWith("mailto:"));
-	if (files.length === 0) return null;
-	const href = surfaceHash(store.companyId, "files");
-	const visible = files.slice(0, 3);
-	const extra = files.length - visible.length;
-	const goFiles = (event: MouseEvent) => {
-		if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0) store.navigateSurface("files");
-	};
-	return h(
-		"div",
-		{ class: "surface-file-chips" },
-		...visible.map((path) =>
-			h(
-				"a",
-				{
-					class: "surface-file-chip",
-					href,
-					title: path,
-					"data-file-chip": path,
-					onclick: goFiles,
-				},
-				path,
-			),
-		),
-		extra > 0
-			? h(
-					"a",
-					{
-						class: "surface-file-chip is-more",
-						href,
-						title: files.slice(3).join(", "),
-						"data-file-chip-more": String(extra),
-						onclick: goFiles,
-					},
-					`+${extra}`,
-				)
-			: null,
-	);
 }
 
 function drawerCap(): number {
@@ -1070,7 +1028,6 @@ export class SurfaceSessionDrawer {
 					{ class: "surface-overview-changes" },
 					...openChanges.map((change) => {
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
-						const chips = affectedFileChips(store, change.affectedPaths);
 						return h(
 							"div",
 							{ class: "surface-overview-change" },
@@ -1094,7 +1051,6 @@ export class SurfaceSessionDrawer {
 										)
 									: null,
 							),
-							chips,
 						);
 					}),
 				),
@@ -1108,7 +1064,6 @@ export class SurfaceSessionDrawer {
 						const conflicted = change.status === "conflicted";
 						const shown = store.isChangeShown(change.id);
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
-						const chips = affectedFileChips(store, change.affectedPaths);
 						return h(
 							"div",
 							{ class: `surface-overview-change${conflicted ? " is-conflicted" : ""}` },
@@ -1153,7 +1108,6 @@ export class SurfaceSessionDrawer {
 											)
 										: null,
 							),
-							chips ? h("div", { class: "surface-overview-change-files" }, chips) : null,
 						);
 					}),
 				),
@@ -1543,7 +1497,6 @@ export class SurfaceSessionDrawer {
 											t("Conflicts in {paths}", { paths: conflictPaths }),
 										)
 									: null,
-								open ? affectedFileChips(store, change.affectedPaths) : null,
 							),
 							!open ? changeTag(change) : null,
 						),
