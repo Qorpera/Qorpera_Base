@@ -746,6 +746,54 @@ describe("the coding executor over a session turn", () => {
 		expect(await stepOf("github.com")).toBe("Publishing the draft pull request");
 	});
 
+	it("completes zero-commit read-only coding_finish turns cleanly without landing, checks, PRs, or Needs you", async () => {
+		for (const host of ["qorpera", "github.com"] as const) {
+			const w = world();
+			w.world.claim.repository = (
+				host === "qorpera" ? { host, owner: "acme", name: "shop", baseBranch: "main" } : repository
+			) as never;
+			vi.mocked(w.host.publish).mockResolvedValueOnce({ pullRequest: null, noChange: true });
+			const autoRedeploy = vi.fn();
+			w.host.autoRedeploy = autoRedeploy;
+			const summary = "Inspected the repository root: index.html and README.md are present. No files were changed.";
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary,
+				headSha: baseSha,
+				operationKey: "readonly-done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({
+				control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			});
+			expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+			const publishing = w.world.calls.filter(
+				(c) => c.method === "qorpera_record_coding_progress" && c.args.p_phase === "publishing",
+			);
+			expect(publishing).toHaveLength(1);
+			expect(publishing[0]?.args.p_last_step).toBe("Finishing without changes");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			expect(completion).toMatchObject({
+				p_outcome: "succeeded",
+				p_summary: summary,
+				p_needs: null,
+				p_pull_request: null,
+				p_artifacts: null,
+				p_files_changed: null,
+			});
+			expect(w.world.phase).toBe("completed");
+			expect(w.world.calls.some((c) => c.method === "qorpera_emit_code_change_routine_wakes")).toBe(false);
+			expect(autoRedeploy).not.toHaveBeenCalled();
+		}
+	});
+
 	it("stages surface-backed Qorpera coding turns with staged artifact and staging step without landing main", async () => {
 		const w = world();
 		const surfaceSession = {

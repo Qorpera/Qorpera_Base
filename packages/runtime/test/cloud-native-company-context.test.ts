@@ -2945,3 +2945,21 @@ it("puts the senses next to open work when the run has them, null when their rea
 	expect(prompt()).not.toHaveProperty("senses");
 	expect(JSON.parse(composeCloudNativeCompanyPrompt(context, null))).not.toHaveProperty("senses");
 });
+
+it("explains read-only coding_finish handoffs and archiving unneeded blocked coding sessions", () => {
+	const f = nativeCompanyContextFixture();
+	const staff = compileCloudNativeCompanyInstructions(parseCloudNativeCompanyContext(f.context, f.binding));
+	expect(staff).toContain(
+		"On a read-only or inspection turn with zero new commits, coding_finish completes cleanly as a report-only handoff without running checks, landing on main, or opening a pull request.",
+	);
+	const completion = cloudCompanyRuntimeInstructions(
+		{
+			kind: "agent",
+			source: { kind: "worker-completion", id: randomUUID(), occurrenceKey: "worker-completion" },
+		} as never,
+		false,
+	);
+	expect(completion).toContain(
+		"If a blocked coding session no longer needs the member's answer (for example, you already resolved the work or are closing the todo), archive it with manage_worker action archive (or steer it with followup) so no stale prompt stays pinned for the member.",
+	);
+});
