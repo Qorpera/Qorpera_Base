@@ -1237,6 +1237,7 @@ describe("share_app", () => {
 			"A website has no password, so never tell anyone to use one. Until the founder or an admin presses Go live on the website's page in the app, nobody outside the company can open it. The company's members open it from the app. You cannot make it live: put the address in your message as a link, and ask the founder to press Go live when it should open to everyone.",
 		);
 		expect(publish.description).not.toContain("open with a password");
+		expect(share.description).not.toContain("as they open a website");
 		expect(publish.description).not.toContain("keeps its password");
 		const unpublish = tools.find((tool) => tool.name === "unpublish_site")!;
 		expect(unpublish.description).toContain(
