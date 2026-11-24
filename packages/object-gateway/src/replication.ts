@@ -1,7 +1,7 @@
 import { ObjectDependencyError } from "./dependency.ts";
 import type { ObjectGatewayJournal } from "./journal.ts";
 import { createSerialGate, type MaintenanceGate } from "./maintenance.ts";
-import type { LegacyObjectMigrationItem } from "./migration.ts";
+import type { LegacyObjectMigrationItem } from "./supabase-authority.ts";
 import {
 	type FileSystemObjectStore,
 	isVerifiedObjectBytes,

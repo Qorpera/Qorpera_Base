@@ -366,24 +366,6 @@ export interface TriggerSurfaceAutomationResult {
 	readonly sessionId?: string | null;
 }
 
-export interface UpdateSurfaceRebasedChangesInput {
-	readonly surfaceId: string;
-	readonly sessionId: string;
-	readonly branchHeadSha?: string | null;
-	readonly rebasedChanges?: readonly {
-		readonly changeId: string;
-		readonly parentSha: string;
-		readonly headSha: string;
-	}[];
-	readonly conflictedChangeId?: string | null;
-	readonly conflictPaths?: readonly string[] | null;
-}
-
-export interface UpdateSurfaceRebasedChangesResult {
-	readonly updated: number;
-	readonly sessionId: string;
-}
-
 export interface CompleteSurfacePreviewInput {
 	readonly previewId: string;
 	readonly status: "ready" | "conflicted" | "failed";
@@ -532,10 +514,6 @@ export interface CloudRunnerOrchestratorControlPlane {
 		signal?: AbortSignal,
 	): Promise<EnqueueSurfaceSessionRunResult>;
 	triggerSurfaceAutomation?(automationId: string, signal?: AbortSignal): Promise<TriggerSurfaceAutomationResult>;
-	updateSurfaceRebasedChanges?(
-		input: UpdateSurfaceRebasedChangesInput,
-		signal?: AbortSignal,
-	): Promise<UpdateSurfaceRebasedChangesResult>;
 	renewSurfaceLease?(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult>;
 	completeSurfacePreview?(
 		input: CompleteSurfacePreviewInput,
@@ -4576,50 +4554,6 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		throw new Error("Runner orchestrator returned invalid surface automation trigger status");
 	}
 
-	async updateSurfaceRebasedChanges(
-		input: UpdateSurfaceRebasedChangesInput,
-		signal?: AbortSignal,
-	): Promise<UpdateSurfaceRebasedChangesResult> {
-		requiredUuid(input.surfaceId, "Surface id");
-		requiredUuid(input.sessionId, "Surface session id");
-		const branchHeadSha =
-			input.branchHeadSha === null || input.branchHeadSha === undefined
-				? undefined
-				: validateSurfaceShortText(input.branchHeadSha, "Surface branch head sha", 64);
-		let conflictedChangeId: string | undefined;
-		if (input.conflictedChangeId !== null && input.conflictedChangeId !== undefined) {
-			requiredUuid(input.conflictedChangeId, "Conflicted change id");
-			conflictedChangeId = input.conflictedChangeId;
-		}
-		const conflictPaths =
-			input.conflictPaths === null || input.conflictPaths === undefined
-				? undefined
-				: validateSurfaceStringList(input.conflictPaths, "Rebase conflict paths", 256, 512);
-		const raw = record(
-			await this.#request(
-				{
-					action: "surface_update_rebased_changes",
-					orchestratorId: this.#orchestratorId,
-					surfaceId: input.surfaceId,
-					sessionId: input.sessionId,
-					...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
-					...(input.rebasedChanges !== undefined ? { rebasedChanges: [...input.rebasedChanges] } : {}),
-					...(conflictedChangeId !== undefined ? { conflictedChangeId } : {}),
-					...(conflictPaths !== undefined ? { conflictPaths } : {}),
-				},
-				signal,
-			),
-			"surface rebased changes update",
-		);
-		if (typeof raw.updated !== "number" || !Number.isSafeInteger(raw.updated) || raw.updated < 0) {
-			throw new Error("Runner orchestrator returned invalid rebased change count");
-		}
-		return {
-			updated: raw.updated,
-			sessionId: responseUuid(raw.sessionId, "surface session id"),
-		};
-	}
-
 	async renewSurfaceLease(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult> {
 		if (input.kind !== "session" && input.kind !== "preview" && input.kind !== "job") {
 			throw new Error("Surface lease kind is invalid");
@@ -4915,47 +4849,5 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		}
 		const envelope = record(value, "response envelope");
 		return envelope.value;
-	}
-}
-
-export interface LocalCloudRunnerLaunch {
-	reconcile(signal?: AbortSignal): Promise<void>;
-	acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance>;
-	deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void>;
-	stop(
-		runner: CloudRunnerInstance,
-		reason: "delivery_failed" | "idle" | "revoked",
-		signal?: AbortSignal,
-	): Promise<void>;
-}
-
-/** Temporary test/development adapter. It deliberately implements the same
- * out-of-band assignment contract as a future managed-computer provider. */
-export class LocalCloudRunnerProviderAdapter implements CloudRunnerProviderAdapter {
-	readonly adapterId = "local";
-	readonly #launch: LocalCloudRunnerLaunch;
-
-	constructor(launch: LocalCloudRunnerLaunch) {
-		this.#launch = launch;
-	}
-
-	reconcile(signal?: AbortSignal): Promise<void> {
-		return signal ? this.#launch.reconcile(signal) : this.#launch.reconcile();
-	}
-
-	acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
-		return this.#launch.acquire(work, signal);
-	}
-
-	deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void> {
-		return signal ? this.#launch.deliver(runner, delivery, signal) : this.#launch.deliver(runner, delivery);
-	}
-
-	stop(
-		runner: CloudRunnerInstance,
-		reason: "delivery_failed" | "idle" | "revoked",
-		signal?: AbortSignal,
-	): Promise<void> {
-		return signal ? this.#launch.stop(runner, reason, signal) : this.#launch.stop(runner, reason);
 	}
 }

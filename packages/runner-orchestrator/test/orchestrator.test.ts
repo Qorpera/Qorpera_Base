@@ -13,16 +13,60 @@ import {
 	CloudOrchestratorPassDue,
 	type CloudRoutineScheduleHead,
 	CloudRoutineScheduleReconciler,
+	type CloudRunnerAssignmentDelivery,
+	type CloudRunnerInstance,
 	type CloudRunnerOrchestrationClaim,
 	CloudRunnerOrchestrator,
 	type CloudRunnerOrchestratorControlPlane,
 	CloudRunnerOrchestratorRequestError,
+	type CloudRunnerProviderAdapter,
 	type CloudRunnerWork,
-	LocalCloudRunnerProviderAdapter,
 	SupabaseCloudRunnerOrchestratorControlPlane,
 	validateCloudRunnerWork,
 } from "../src/orchestrator.ts";
 import { CloudRunnerProviderRequestError } from "../src/provider-http.ts";
+
+class LocalCloudRunnerProviderAdapter implements CloudRunnerProviderAdapter {
+	readonly adapterId = "local";
+	readonly #launch: {
+		reconcile(signal?: AbortSignal): Promise<void>;
+		acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance>;
+		deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void>;
+		stop(
+			runner: CloudRunnerInstance,
+			reason: "delivery_failed" | "idle" | "revoked",
+			signal?: AbortSignal,
+		): Promise<void>;
+	};
+	constructor(launch: {
+		reconcile(signal?: AbortSignal): Promise<void>;
+		acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance>;
+		deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void>;
+		stop(
+			runner: CloudRunnerInstance,
+			reason: "delivery_failed" | "idle" | "revoked",
+			signal?: AbortSignal,
+		): Promise<void>;
+	}) {
+		this.#launch = launch;
+	}
+	reconcile(signal?: AbortSignal): Promise<void> {
+		return signal ? this.#launch.reconcile(signal) : this.#launch.reconcile();
+	}
+	acquire(work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
+		return this.#launch.acquire(work, signal);
+	}
+	deliver(runner: CloudRunnerInstance, delivery: CloudRunnerAssignmentDelivery, signal?: AbortSignal): Promise<void> {
+		return signal ? this.#launch.deliver(runner, delivery, signal) : this.#launch.deliver(runner, delivery);
+	}
+	stop(
+		runner: CloudRunnerInstance,
+		reason: "delivery_failed" | "idle" | "revoked",
+		signal?: AbortSignal,
+	): Promise<void> {
+		return signal ? this.#launch.stop(runner, reason, signal) : this.#launch.stop(runner, reason);
+	}
+}
 
 const orchestratorId = "11111111-1111-4111-8111-111111111111";
 const claimId = "22222222-2222-4222-8222-222222222222";

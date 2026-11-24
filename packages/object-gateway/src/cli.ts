@@ -16,7 +16,6 @@ import { createSerialGate, startGatewayMaintenance } from "./maintenance.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
 import { MemoryMessageEraser } from "./memory-message-eraser.ts";
-import { migrateLegacyObjects } from "./migration.ts";
 import { FileSystemObjectStore, resolveObjectStoreLanes } from "./object-store.ts";
 import { ObjectGatewayReplication } from "./replication.ts";
 import { createObjectGatewayHandler } from "./service.ts";
@@ -217,10 +216,7 @@ const handler = createObjectGatewayHandler({
 		? { internalObjectToken: required(process.env, "QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN") }
 		: {}),
 });
-if (process.argv[2] === "migrate") {
-	const migrated = await migrateLegacyObjects(authority, store);
-	process.stdout.write(`Migrated ${migrated} legacy object(s) to the NAS backend\n`);
-} else {
+{
 	const host = process.env.QORPERA_OBJECT_GATEWAY_HOST?.trim() || "127.0.0.1";
 	const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, handler);
 	const maintenance = startGatewayMaintenance({

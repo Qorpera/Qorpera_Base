@@ -462,11 +462,6 @@ export function relayControlRefusal(error: unknown): never {
 	throw error;
 }
 
-/** A request's `operationKey`, when it has one. */
-export function cloudOperationKeyOf(request: Record<string, unknown>): string | undefined {
-	return typeof request.operationKey === "string" ? request.operationKey : undefined;
-}
-
 /**
  * `relayControlRefusal` for one tool of one run, keeping what an earlier attempt left unknown: a call whose operation
  * key once ended without an answer (its effect may have committed) is never answered as refused later, because a

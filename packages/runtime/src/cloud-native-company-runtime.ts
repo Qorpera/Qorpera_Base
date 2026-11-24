@@ -135,7 +135,6 @@ import {
 	type CloudNativeCompanyContext,
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
-	cloudNativeStableInstructions,
 	cloudNativeTurnCorrection,
 	compileCloudNativeCompanyInstructions,
 	composeCloudContinuation,
@@ -252,16 +251,11 @@ import {
 	type CloudWakeControl,
 	type CloudWakeEnvelope,
 	cloudCoworkerMessageTool,
-	cloudWakeIsConversationPost,
 	cloudWakeIsOwnThread,
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
 import { MemoryCompactChannel, MemoryCompactLane, MemoryCompactStop } from "./memory-tree/compact.ts";
-import { memoryCacheKeyComposer, memoryCommitView, memoryComposeView } from "./memory-tree/compose.ts";
-import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/conversation-lines.ts";
-import { memoryPromptCacheKey } from "./memory-tree/view.ts";
-import { memoryZoomTool } from "./memory-tree/zoom.ts";
 
 const CLOUD_CLAUDE_USAGE_MS = 10_000;
 const CLOUD_CLAUDE_USAGE_EVERY_MS = 60_000;
@@ -742,35 +736,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				runId: binding.runId,
 				agentFolder: cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
 			});
-			// Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a, M4c): an agent's run on a post in a conversation,
-			// its own thread or a group chat it is in, may see the primary view of that conversation, with the branches
-			// (§5.5, its other conversations), instead of the history before it. The host call answers whether it does
-			// (only a run recorded in the Shared context beta has one, 20260930508000); a run that has the view has zoom
-			// and the conversation's prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
-			const memoryTree =
-				!isGeminiRun &&
-				context.identity.audienceKind === "company" &&
-				context.identity.sessionId !== null &&
-				cloudWakeIsConversationPost(wake) &&
-				!cloudWorkerToolFilter(wake).isWorker;
-			// Such a run writes its conversation's tree too (§5.4, §7.1, M1b-4b-3), through the compactor its Codex session
-			// answers: the writer reads the conversation and its tree now, alongside the reads below, so the catalog offers
-			// zoom to a run that has the view; it settles the tree at the opening and closes it after the agent's turn.
-			// The tree shares the run's compactor lane with the run's log (below).
 			const compactor = new MemoryCompactChannel();
 			const lane = new MemoryCompactLane();
-			const lines = memoryTree
-				? new CloudConversationLines({
-						control: this.#paths,
-						binding,
-						folder: folder.client,
-						call: compactor.call,
-						lane,
-						record: memoryCompactionRecorder(this.#paths, binding),
-					})
-				: undefined;
-			const viewedRequest = lines ? lines.open(signal) : Promise.resolve(false);
-			viewedRequest.catch(() => undefined);
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
 				// Only a typed, cloud-authorized file event selects an initial path.
@@ -908,7 +875,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				throw error;
 			});
 			const connectorDescriptors = await connectorTools();
-			const viewed = await viewedRequest;
 			signal.throwIfAborted();
 			// The run's work log (RUNTIME-AGENT-MEMORY-TREE.md §4.5, W1c-3), opened with its tools: its step lines build
 			// in the run's compactor lane, on threads this run's Codex session answers (§7.1), and its work composer
@@ -930,17 +896,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				stage = "prompt-composition";
 				let composed: CloudCodexOpening & { contextSha256: string; contextBytes: number };
 				try {
-					const wait = lines && viewed ? await lines.settle(openingSignal) : { waitMs: 0, waitedLines: 0 };
-					// A failed view keeps the history. Zoom stays: the catalog was admitted with it.
-					const view = viewed
-						? await memoryComposeView(this.#paths, binding, openingSignal).catch((error) => {
-								if (!openingSignal.aborted)
-									console.error(
-										`Memory view was not composed (${cloudRuntimeErrorCategory(error, openingSignal)})`,
-									);
-								return null;
-							})
-						: null;
 					openingSignal.throwIfAborted();
 					// The head (vision, job description, notebook facts) and the views hold text members and agents wrote: a
 					// webhook signing secret is cut out of them before they are hashed, recorded or shown, as the tool boundary
@@ -953,8 +908,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					requestSources = request.flatMap((entry) => [entry.input, ...(entry.question ? [entry.question] : [])]);
 					// The same source, shown further: read_context admits it by its id and hash, as before.
 					const continuation = await continuationShown;
-					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
-					const views = redactCloudWebhookSecrets(view?.views ?? "");
+					const views = "";
 					// What the instructions are composed for: the run's tools and whether the vision is agreed (T3-2).
 					if (!offeredTools) throw new Error("The run's tools were not made before its opening");
 					const parts = {
@@ -974,7 +928,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						skills,
 						proposals?.context,
 						head,
-						view?.tree,
+						undefined,
 						request,
 						updates,
 						senses,
@@ -985,58 +939,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const contextBytes = Buffer.byteLength(text);
 					composition.finish("succeeded", { outputBytes: contextBytes });
 					const contextSha256 = createHash("sha256").update(text).digest("hex");
-					// What composition read from the folder is released under the composed context before any model request,
-					// with the paths of the proposals it shows (P40b).
-					// So are the summary lines the view and the branches show, and the run's first request is recorded with
-					// the settle's wait (§13). A failed release fails the run. A failed record leaves it without the answer,
-					// the view reference (W4a-1), which is for the workers the run dispatches (W4b).
-					await Promise.all([
-						notebooks.releaseComposition(contextSha256, openingSignal, [
-							...(proposals?.reads ?? []),
-							...(updates ? (platformUpdates?.reads ?? []) : []),
-						]),
-						...(view
-							? [
-									memoryCommitView(
-										this.#paths,
-										binding,
-										view,
-										{
-											contextSha256,
-											headBytes: Buffer.byteLength(head.text),
-											stablePrefixSha256: createHash("sha256")
-												.update(
-													cloudNativeStableInstructions(
-														context,
-														parts,
-														cloudWorkerToolFilter(wake).isWorker,
-													),
-												)
-												.digest("hex"),
-										},
-										wait,
-										openingSignal,
-									),
-								]
-							: []),
+					await notebooks.releaseComposition(contextSha256, openingSignal, [
+						...(proposals?.reads ?? []),
+						...(updates ? (platformUpdates?.reads ?? []) : []),
 					]);
 					composed = {
 						prompt,
 						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, parts),
 						// The tool-result rules stand inside them, after the company's files (track 3, T3-3).
 						resultRulesInside: true,
-						// Every request of a run with the view shares its conversation's cache key (§6.2).
-						composeContext:
-							view && context.identity.sessionId !== null
-								? memoryCacheKeyComposer(
-										memoryPromptCacheKey({
-											payerLoginConnectionId: context.identity.providerConnectionId,
-											agentId: context.identity.staffAgentId,
-											conversationId: context.identity.sessionId,
-										}),
-										composeRun,
-									)
-								: composeRun,
+						composeContext: composeRun,
 						contextSha256,
 						contextBytes,
 					};
@@ -1340,7 +1252,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					compactor,
 					...(pictures ? { pictures } : {}),
 					...(voice ? { voice } : {}),
-					...(lines && viewed ? { closing: (closingSignal) => lines.close(closingSignal) } : {}),
 					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
 					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
 					// fails the run as before (mouth.finish below; the kernel, for a report or a decision).
@@ -1572,7 +1483,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									})
 								: []),
 							cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
-							...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
 							// A worker has no outbound effects: no mouth, no connectors.
 							...(this.#secretBroker && !work.isWorker
 								? cloudSecretTools({
