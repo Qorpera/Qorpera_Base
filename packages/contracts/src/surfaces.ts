@@ -267,6 +267,7 @@ export interface SurfaceSummary {
 	readonly publishStatus?: SurfacePublishStatus;
 	readonly lastPublishError?: string | null;
 	readonly liveHeadSha?: string | null;
+	readonly publishedHeadSha?: string | null;
 	readonly liveUrl: string | null;
 	readonly hasUnpublishedChanges: boolean;
 	readonly unpublishedChangeCount: number;
@@ -616,6 +617,10 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 			: parseOptionalText(raw.lastPublishError, `${label}.lastPublishError`, 1000);
 	const liveHeadSha =
 		raw.liveHeadSha === undefined ? undefined : parseOptionalText(raw.liveHeadSha, `${label}.liveHeadSha`, 64);
+	const publishedHeadSha =
+		raw.publishedHeadSha === undefined
+			? undefined
+			: parseOptionalText(raw.publishedHeadSha, `${label}.publishedHeadSha`, 64);
 	const publishAsk =
 		raw.publishAsk === undefined || raw.publishAsk === null
 			? raw.publishAsk
@@ -640,6 +645,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		...(publishStatus !== undefined ? { publishStatus } : {}),
 		...(lastPublishError !== undefined ? { lastPublishError } : {}),
 		...(liveHeadSha !== undefined ? { liveHeadSha } : {}),
+		...(publishedHeadSha !== undefined ? { publishedHeadSha } : {}),
 		liveUrl: parseOptionalText(raw.liveUrl, `${label}.liveUrl`, 512),
 		hasUnpublishedChanges: raw.hasUnpublishedChanges,
 		unpublishedChangeCount: parseInteger(

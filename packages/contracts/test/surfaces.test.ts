@@ -254,7 +254,7 @@ describe("surfaces contracts", () => {
 		expect(session.messages[0]?.authorUserId).toBe(userId);
 	});
 
-	it("parses optional lastPublishError, liveHeadSha, and branchHeadSha metadata", () => {
+	it("parses optional lastPublishError, liveHeadSha, publishedHeadSha, and branchHeadSha metadata", () => {
 		const surfaceId = randomUUID();
 		const sessionId = randomUUID();
 		const now = "2026-11-21T03:00:00Z";
@@ -275,6 +275,7 @@ describe("surfaces contracts", () => {
 			publishStatus: "failed",
 			lastPublishError: "Build failed on index.html",
 			liveHeadSha: "a".repeat(40),
+			publishedHeadSha: null,
 			liveUrl: "https://website.qorpera.com/",
 			hasUnpublishedChanges: true,
 			unpublishedChangeCount: 1,
@@ -286,6 +287,7 @@ describe("surfaces contracts", () => {
 		});
 		expect(summary.lastPublishError).toBe("Build failed on index.html");
 		expect(summary.liveHeadSha).toBe("a".repeat(40));
+		expect(summary.publishedHeadSha).toBeNull();
 
 		const session = parseSurfaceSession({
 			id: sessionId,
