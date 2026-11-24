@@ -5,7 +5,7 @@ import {
 	type MemberDefaultModels,
 	type WebDefaultModels,
 } from "../../cloud/default-models.ts";
-import { modelName, type SessionEffort } from "../../cloud/session-model.ts";
+import { modelName, modelProvider, type SessionEffort } from "../../cloud/session-model.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 
@@ -185,14 +185,23 @@ export class DefaultModelsView {
 		const state = this.#state;
 		if (!state) return;
 
+		const convModels = state.conversationModels.filter((id) => modelProvider(id) !== "anthropic");
 		const convUnavailable =
-			state.storedConversationModel !== null && !state.conversationModels.includes(state.storedConversationModel);
+			state.storedConversationModel !== null && !convModels.includes(state.storedConversationModel);
 		const codingUnavailable =
 			state.storedCodingModel !== null && !state.codingModels.includes(state.storedCodingModel);
-		const shownConvModel = convUnavailable ? state.storedConversationModel! : state.conversationModel;
+		const shownConvModel = convUnavailable
+			? state.storedConversationModel!
+			: modelProvider(state.conversationModel) === "anthropic"
+				? (convModels[0] ?? "gpt-6.2-sol")
+				: state.conversationModel;
 		const shownCodingModel = codingUnavailable ? state.storedCodingModel! : state.codingModel;
 
-		const convEfforts = defaultModelEfforts(state, "conversation", shownConvModel);
+		const convEfforts = defaultModelEfforts(
+			state,
+			"conversation",
+			modelProvider(shownConvModel) === "anthropic" ? (convModels[0] ?? "gpt-6.2-sol") : shownConvModel,
+		);
 		const codingEfforts = defaultModelEfforts(state, "coding", shownCodingModel);
 
 		const convModelOptions: { value: string; label: string; disabled?: boolean }[] = [
@@ -205,7 +214,7 @@ export class DefaultModelsView {
 						},
 					]
 				: []),
-			...state.conversationModels.map((id) => ({ value: id, label: modelName(id) })),
+			...convModels.map((id) => ({ value: id, label: modelName(id) })),
 		];
 		const codingModelOptions: { value: string; label: string; disabled?: boolean }[] = [
 			...(codingUnavailable
@@ -241,12 +250,7 @@ export class DefaultModelsView {
 			convEfforts.map((effort) => ({ value: effort, label: effortLabel(effort) })),
 			clampEffort(state.conversationEffort, convEfforts),
 			(value) => {
-				const effort = value as SessionEffort;
-				void this.#save(
-					effort === "max" && state.storedConversationModel === null
-						? { conversationModel: state.conversationModel, conversationEffort: effort }
-						: { conversationEffort: effort },
-				);
+				void this.#save({ conversationEffort: value as SessionEffort });
 			},
 		);
 		const codingModelSelect = this.#select(
@@ -278,7 +282,7 @@ export class DefaultModelsView {
 		);
 
 		const missingExtraProviders =
-			!state.conversationModels.includes("gemini-4-neon") || !state.codingModels.includes("claude-opus-5-5");
+			!convModels.includes("gemini-4-neon") || !state.codingModels.includes("claude-opus-5-5");
 
 		replace(
 			this.el,
