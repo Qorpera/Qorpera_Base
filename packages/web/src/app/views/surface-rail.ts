@@ -10,6 +10,7 @@ import {
 	surfaceFigureChoices,
 	surfaceFigureIcon,
 } from "../../ui/surface-figure.ts";
+import type { SiteAnswer } from "../company.ts";
 import { surfaceHash } from "../router.ts";
 import {
 	type SurfaceLook,
@@ -112,12 +113,14 @@ function crewRow(
 	);
 }
 
-function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook): string {
+function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook, site: SiteAnswer = "unknown"): string {
 	if (surface.needsAttentionCount > 0) return t("Needs you");
 	if (surface.activeSessionCount === 1) return t("1 session active");
 	if (surface.activeSessionCount > 1) return t("{count} sessions active", { count: surface.activeSessionCount });
-	if (surface.archetype === "live_build" && surface.liveUrl)
-		return t("Live · {host}", { host: hostOf(surface.liveUrl) });
+	if (surface.archetype === "live_build" && surface.liveUrl) {
+		const host = hostOf(surface.liveUrl);
+		return site === "live" ? t("Live · {host}", { host }) : site === "private" ? t("Not live yet") : host;
+	}
 	return surfaceKindSubtitle(look.kind);
 }
 
@@ -181,13 +184,14 @@ function createSurfaceRow(
 	active: boolean,
 	crew: HTMLElement | null,
 	notes: number,
+	site: SiteAnswer,
 ): SurfaceRowEntry {
 	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
 	const tint = surfaceTint(look);
 	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint, notes > 0]);
 	const tileEl = noteMark(surfaceTile(surface, look, "", state), notes);
 	const nameEl = h("span", { class: "rail-surface-name" }, surface.title);
-	const subEl = crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look));
+	const subEl = crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, site));
 	const noticeText = rowNotice(surface, notes);
 	const noticeEl = noticeText ? h("span", { class: "visually-hidden" }, noticeText) : null;
 	const el = h(
@@ -217,6 +221,7 @@ function syncSurfaceRow(
 	active: boolean,
 	crew: HTMLElement | null,
 	notes: number,
+	site: SiteAnswer,
 ): void {
 	const href = surfaceHash(profileId, surface.slug);
 	if (entry.el.getAttribute("href") !== href) entry.el.setAttribute("href", href);
@@ -232,7 +237,7 @@ function syncSurfaceRow(
 		entry.subEl.replaceWith(crew);
 		entry.subEl = crew;
 	} else {
-		const subtitle = surfaceSubtitle(surface, look);
+		const subtitle = surfaceSubtitle(surface, look, site);
 		if (entry.subEl.classList.contains("rail-surface-crew")) {
 			const nextSub = h("span", { class: "rail-surface-sub" }, subtitle);
 			entry.subEl.replaceWith(nextSub);
@@ -305,6 +310,7 @@ export class SurfaceRail {
 	readonly #signal: AbortSignal;
 	readonly #onAddSurface: (() => void) | undefined;
 	readonly #reportError: ((text: string) => void) | undefined;
+	readonly #siteAnswer: ((surface: SurfaceSummary) => SiteAnswer) | undefined;
 	readonly #crew = new CrewFigures();
 	readonly #groups = new Map<"products" | "operations", SurfaceGroupEntry>();
 	readonly #rows = new Map<string, SurfaceRowEntry>();
@@ -321,12 +327,14 @@ export class SurfaceRail {
 		signal: AbortSignal,
 		onAddSurface?: () => void,
 		reportError?: (text: string) => void,
+		siteAnswer?: (surface: SurfaceSummary) => SiteAnswer,
 	) {
 		this.#store = store;
 		this.#profileId = profileId;
 		this.#signal = signal;
 		this.#onAddSurface = onAddSurface;
 		this.#reportError = reportError;
+		this.#siteAnswer = siteAnswer;
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
 		this.el.addEventListener("contextmenu", (event) => this.#menu(event), { signal });
 		pressToOpenMenu(this.el, signal, (event) => this.#menu(event));
@@ -458,6 +466,7 @@ export class SurfaceRail {
 	update(activeSlug: string | undefined, canAddProgram = false): void {
 		const state = this.#store.state;
 		const deps: readonly unknown[] = [
+			state.surfaces.map((surface) => this.#siteAnswer?.(surface) ?? "unknown").join(),
 			canAddProgram,
 			presentationLocale(),
 			state.source,
@@ -556,12 +565,13 @@ export class SurfaceRail {
 					: crewRow(state, surface, this.#crew, (session) => this.#store.turnHolder(session));
 				const notes = this.#store.unseenNotesOn(surface.id);
 				const shown = this.#withShownFigure(surface);
+				const site = this.#siteAnswer?.(listed) ?? "unknown";
 				let entry = this.#rows.get(surface.id);
 				if (!entry) {
-					entry = createSurfaceRow(shown, look, this.#profileId, active, crew, notes);
+					entry = createSurfaceRow(shown, look, this.#profileId, active, crew, notes, site);
 					this.#rows.set(surface.id, entry);
 				} else {
-					syncSurfaceRow(entry, shown, look, this.#profileId, active, crew, notes);
+					syncSurfaceRow(entry, shown, look, this.#profileId, active, crew, notes, site);
 				}
 				groupChildren.push(entry.el);
 			}

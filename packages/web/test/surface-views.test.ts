@@ -778,6 +778,30 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("draws an agent's message in the drawer as Markdown", async () => {
+		const text = "**Brooks** afventer jeres aktivering.\n\n- Logo\n- Farver\n\nSe `src/hero.tsx`.";
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[1], "session", text)] })]),
+			),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+
+		const message = view.el.querySelector(".surface-drawer .surface-message.is-session")!;
+		expect(message.querySelector("strong")?.textContent).toBe("Brooks");
+		expect([...message.querySelectorAll("li")].map((item) => item.textContent)).toEqual(["Logo", "Farver"]);
+		expect(message.querySelector("code")?.textContent).toBe("src/hero.tsx");
+		expect(message.textContent).not.toContain("**");
+		view.dispose();
+		store.dispose();
+	});
+
 	it("shows no Send to bar on Brand Studio or on an ops surface like Inbox", async () => {
 		const brand = summary({
 			id: "22222222-2222-4222-8222-222222222229",

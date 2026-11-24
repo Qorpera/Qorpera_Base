@@ -119,6 +119,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"end_role",
 	"hire_team",
 	"narrate_app",
+	"narrate_explainer",
 	"coding_record_change",
 	"coding_view_attachment",
 	"propose_surface",

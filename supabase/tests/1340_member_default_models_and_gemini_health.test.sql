@@ -167,8 +167,8 @@ begin
 	update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture end', finished_at = clock_timestamp() where run_id = v_run.id;
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
-		format('select public.qorpera_set_member_default_models(%L, ''claude-opus-5-5'', ''medium'', ''gpt-6-astra'', ''medium'', 1)', pg_temp.md_profile()));
-	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'claude-opus-5-5'
+		format('select public.qorpera_set_member_default_models(%L, ''gpt-6.2-sol'', ''medium'', ''gpt-6-astra'', ''medium'', 1)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gpt-6.2-sol'
 		and v_defaults ->> 'conversationEffort' = 'medium'
 		and v_defaults ->> 'codingModel' = 'gpt-6-astra'
 		and v_defaults ->> 'codingEffort' = 'medium'
@@ -185,13 +185,13 @@ begin
 
 	v_menu := pg_temp.md_call(pg_temp.md_owner(),
 		format('select public.qorpera_get_session_model(%L)', pg_temp.md_session(v_bob)));
-	perform pg_temp.base_assert(v_menu ->> 'model_id' = 'claude-opus-5-5' and v_menu ->> 'reasoning_effort' = 'medium',
-		'3: session inherits Claude conversational default: ' || v_menu::text);
+	perform pg_temp.base_assert(v_menu ->> 'model_id' = 'gpt-6.2-sol' and v_menu ->> 'reasoning_effort' = 'medium',
+		'3: session inherits GPT conversational default: ' || v_menu::text);
 
-	v_run := pg_temp.md_turn(v_bob, 'Hello on Claude default');
-	perform pg_temp.base_assert(v_run.claude_model = 'claude-opus-5-5' and v_run.claude_effort = 'medium'
-		and v_run.gemini_model is null,
-		'3: run pins member Claude conversational default');
+	v_run := pg_temp.md_turn(v_bob, 'Hello on GPT default');
+	perform pg_temp.base_assert(v_run.model_id = 'gpt-6.2-sol' and v_run.model_selection = 'member_default'
+		and v_run.reasoning_effort = 'medium' and v_run.claude_model is null and v_run.gemini_model is null,
+		'3: run pins member GPT conversational default');
 	update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture end', finished_at = clock_timestamp() where run_id = v_run.id;
 
 	v_dispatch := pg_temp.c4_dispatch(v_alice, 'md-worker-codex', 'QorperaOS/agents/alice/todos/onboarding/md-codex',
@@ -309,10 +309,10 @@ begin
 		'5: successful Gemini usage clears last error: ' || v_key_state::text);
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
-		format('select public.qorpera_set_member_default_models(%L, ''claude-opus-5-5'', null, null, null, 5)', pg_temp.md_profile()));
-	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'claude-opus-5-5'
+		format('select public.qorpera_set_member_default_models(%L, ''gpt-6-astra'', null, null, null, 5)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gpt-6-astra'
 		and (v_defaults ->> 'version')::bigint = 6,
-		'5: switched conversational default from Gemini to Claude: ' || v_defaults::text);
+		'5: switched conversational default from Gemini to GPT: ' || v_defaults::text);
 
 	v_key_state := pg_temp.md_call(pg_temp.md_owner(),
 		format('select public.qorpera_update_gemini_key_settings(%L, null, 5000, 1)', pg_temp.md_profile()));
@@ -321,8 +321,8 @@ begin
 		'5: saving cap with null defaultForChats updates cap without reverting default model: ' || v_key_state::text);
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
 		format('select public.qorpera_get_member_default_models(%L)', pg_temp.md_profile()));
-	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'claude-opus-5-5',
-		'5: cap save preserved Claude conversational default: ' || v_defaults::text);
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gpt-6-astra',
+		'5: cap save preserved GPT conversational default: ' || v_defaults::text);
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
 		format('select public.qorpera_set_member_default_models(%L, ''gemini-4-neon'', null, null, null, 6)', pg_temp.md_profile()));

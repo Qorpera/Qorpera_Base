@@ -196,3 +196,30 @@ end
 $$;
 create event trigger qorpera_test_attach_agent_exit_healthy on ddl_command_end when tag in ('CREATE TABLE')
 	execute function qorpera_test_support.attach_agent_exit_healthy();
+
+-- WHY: A test that asserts a query can use an index plans it with that index alone: beside the table's other indexes
+-- the planner's pick on a small table follows the bloat and pg_class numbers earlier tests and autovacuum left.
+-- "plan" is the plan's root, "scan" its node that scans p_index (null when none does).
+create function qorpera_test_support.plan_with_index_alone(p_index regclass, p_query text) returns jsonb language plpgsql as $$
+declare
+	v_hidden oid[];
+	v_plan jsonb;
+begin
+	with hidden as (
+		update pg_catalog.pg_index other set indisvalid = false
+		from pg_catalog.pg_index wanted
+		where wanted.indexrelid = p_index
+			and other.indrelid = wanted.indrelid
+			and other.indexrelid <> wanted.indexrelid
+			and other.indisvalid
+		returning other.indexrelid
+	)
+	select array_agg(indexrelid) into v_hidden from hidden;
+	execute 'explain (format json) ' || p_query into v_plan;
+	update pg_catalog.pg_index set indisvalid = true where indexrelid = any (v_hidden);
+	return jsonb_build_object(
+		'plan', v_plan -> 0 -> 'Plan',
+		'scan', jsonb_path_query_first(v_plan, '$.** ? (@."Index Name" == $name)',
+			jsonb_build_object('name', (select relname from pg_catalog.pg_class where oid = p_index))));
+end
+$$;

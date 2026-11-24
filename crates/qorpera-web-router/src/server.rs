@@ -12,14 +12,14 @@ use crate::proxy::{
 use crate::ratelimit::RateLimiter;
 use crate::routes::{
     matching_custom_headers, normalize_host_cow, resolve_static_path, DeploymentKind, EdgeSnapshot,
-    HostScope, ResolvedHost, RouteTable, SharedRoutes, StaticResolution,
+    HostScope, ManifestFile, ResolvedHost, RouteTable, SharedRoutes, SiteRecord, StaticResolution,
 };
 use crate::security::{
     check_cross_site_write, constant_time_eq, extract_client_ip_cow, inject_preview_banner,
-    parse_cookie, render_app_unavailable_page, render_not_found_page, render_password_page,
-    render_takedown_page, sanitize_next_path, sanitize_redirect_location, sign_preview_cookie,
-    sign_session_cookie, verify_preview_cookie, verify_session_cookie, HSTS_HEADER,
-    SITE_SESSION_COOKIE,
+    parse_cookie, prefers_danish, render_app_unavailable_page, render_not_found_page,
+    render_not_live_page, render_password_page, render_takedown_page, sanitize_next_path,
+    sanitize_redirect_location, sign_preview_cookie, sign_session_cookie, verify_preview_cookie,
+    verify_session_cookie, HSTS_HEADER, SITE_SESSION_COOKIE,
 };
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
@@ -48,6 +48,9 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_DB_TIMEOUT: Duration = Duration::from_secs(5);
 const DB_RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
+const DB_FILE_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_DB_FILE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_CONCURRENT_DB_FILE_FETCHES: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct RedeemedTicket {
@@ -76,6 +79,15 @@ pub trait EdgeAuthBackend: Send + Sync {
         host: String,
         pass: String,
     ) -> Pin<Box<dyn Future<Output = Option<RedeemedMemberPass>> + Send>>;
+
+    fn fetch_site_file(
+        &self,
+        _site_id: String,
+        _version_id: String,
+        _path: String,
+    ) -> Pin<Box<dyn Future<Output = Option<Bytes>> + Send>> {
+        Box::pin(async { None })
+    }
 }
 
 struct DbClientState<T> {
@@ -158,6 +170,7 @@ impl<T> DbClientSlot<T> {
 pub struct PostgresAuthBackend {
     database_url: String,
     client: Arc<DbClientSlot<tokio_postgres::Client>>,
+    files_client: Arc<DbClientSlot<tokio_postgres::Client>>,
 }
 
 impl PostgresAuthBackend {
@@ -165,6 +178,7 @@ impl PostgresAuthBackend {
         Self {
             database_url,
             client: Arc::new(DbClientSlot::new(DB_RECONNECT_BACKOFF)),
+            files_client: Arc::new(DbClientSlot::new(DB_RECONNECT_BACKOFF)),
         }
     }
 
@@ -266,12 +280,52 @@ impl EdgeAuthBackend for PostgresAuthBackend {
             })
         })
     }
+
+    fn fetch_site_file(
+        &self,
+        site_id: String,
+        version_id: String,
+        path: String,
+    ) -> Pin<Box<dyn Future<Output = Option<Bytes>> + Send>> {
+        let db_url = self.database_url.clone();
+        let slot = Arc::clone(&self.files_client);
+        Box::pin(async move {
+            for attempt in 0..2 {
+                let client = Self::get_client(&db_url, &slot).await?;
+                let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] = [&site_id, &version_id, &path];
+                let query = client.query_one(
+                    "SELECT public.qorpera_web_edge_site_file($1::text::uuid, $2::text::uuid, $3::text)",
+                    &params,
+                );
+                match tokio::time::timeout(DB_FILE_TIMEOUT, query).await {
+                    Ok(Ok(row)) => {
+                        return row
+                            .try_get::<_, Option<Vec<u8>>>(0)
+                            .ok()
+                            .flatten()
+                            .map(Bytes::from);
+                    }
+                    Ok(Err(_)) if !client.is_closed() => return None,
+                    _ => {
+                        Self::clear_client_if_same(&slot, &client).await;
+                        if attempt == 1 {
+                            return None;
+                        }
+                    }
+                }
+            }
+            None
+        })
+    }
 }
 
 #[derive(Default)]
 pub struct MemoryAuthBackend {
     tickets: Mutex<HashMap<(String, String), RedeemedTicket>>,
     passes: Mutex<HashMap<(String, String), RedeemedMemberPass>>,
+    files: Mutex<HashMap<(String, String, String), Bytes>>,
+    file_fetches: AtomicUsize,
+    file_delay: Mutex<Duration>,
 }
 
 impl MemoryAuthBackend {
@@ -285,6 +339,22 @@ impl MemoryAuthBackend {
         if let Ok(mut map) = self.passes.lock() {
             map.insert((host.to_ascii_lowercase(), pass.to_string()), value);
         }
+    }
+
+    pub fn insert_site_file(&self, site_id: &str, version_id: &str, path: &str, bytes: Bytes) {
+        if let Ok(mut map) = self.files.lock() {
+            map.insert((site_id.to_string(), version_id.to_string(), path.to_string()), bytes);
+        }
+    }
+
+    pub fn set_file_delay(&self, delay: Duration) {
+        if let Ok(mut slot) = self.file_delay.lock() {
+            *slot = delay;
+        }
+    }
+
+    pub fn file_fetches(&self) -> usize {
+        self.file_fetches.load(Ordering::SeqCst)
     }
 }
 
@@ -313,6 +383,27 @@ impl EdgeAuthBackend for MemoryAuthBackend {
             .ok()
             .and_then(|mut map| map.remove(&(host.to_ascii_lowercase(), pass)));
         Box::pin(async move { result })
+    }
+
+    fn fetch_site_file(
+        &self,
+        site_id: String,
+        version_id: String,
+        path: String,
+    ) -> Pin<Box<dyn Future<Output = Option<Bytes>> + Send>> {
+        self.file_fetches.fetch_add(1, Ordering::SeqCst);
+        let result = self
+            .files
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&(site_id, version_id, path)).cloned());
+        let delay = self.file_delay.lock().map_or(Duration::ZERO, |d| *d);
+        Box::pin(async move {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            result
+        })
     }
 }
 
@@ -353,6 +444,8 @@ pub struct RouterState {
     ws_idle_timeout: Duration,
     body_read_timeout: Duration,
     db_slot: Arc<DbClientSlot<tokio_postgres::Client>>,
+    db_file_fetches: Arc<Semaphore>,
+    db_file_inflight: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl RouterState {
@@ -402,6 +495,8 @@ impl RouterState {
             ws_idle_timeout: DEFAULT_WS_IDLE_TIMEOUT,
             body_read_timeout: BODY_READ_TIMEOUT,
             db_slot: Arc::new(DbClientSlot::new(DB_RECONNECT_BACKOFF)),
+            db_file_fetches: Arc::new(Semaphore::new(MAX_CONCURRENT_DB_FILE_FETCHES)),
+            db_file_inflight: Mutex::new(HashMap::new()),
         }
     }
 
@@ -747,6 +842,33 @@ fn html_response(status: StatusCode, html: impl Into<Bytes>, noindex: bool) -> R
     builder.body(full_body(html)).unwrap()
 }
 
+fn accept_language(req: &Request<Incoming>) -> Option<String> {
+    req.headers()
+        .get("accept-language")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+fn not_live_response(status: StatusCode, accept_language: Option<&str>) -> Response<BoxBody> {
+    let mut res = html_response(status, render_not_live_page(prefers_danish(accept_language)), true);
+    res.headers_mut()
+        .insert(HeaderName::from_static("vary"), HeaderValue::from_static("Accept-Language"));
+    res
+}
+
+fn refusal_response(
+    site: &SiteRecord,
+    status: StatusCode,
+    accept_language: Option<&str>,
+    next_path: &str,
+    wrong_password: bool,
+) -> Response<BoxBody> {
+    if site.password_sha256.is_none() {
+        return not_live_response(status, accept_language);
+    }
+    html_response(status, render_password_page(next_path, wrong_password), true)
+}
+
 fn safe_redirect_response(
     status: StatusCode,
     location: &str,
@@ -1029,9 +1151,8 @@ async fn handle_public(
     };
 
     let (site, scope, canonical_redirect) = match resolved_host {
-        ResolvedHost::UnknownOwnHost { scope } => {
-            let path = req.uri().path();
-            if path == "/robots.txt" {
+        ResolvedHost::UnknownOwnHost { .. } => {
+            if req.uri().path() == "/robots.txt" {
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "text/plain; charset=utf-8")
@@ -1039,12 +1160,7 @@ async fn handle_public(
                     .body(full_body("User-agent: *\nDisallow: /\n"))
                     .unwrap();
             }
-            let body = if scope == HostScope::NextHost {
-                render_password_page("/", false)
-            } else {
-                render_password_page(path, false)
-            };
-            return html_response(StatusCode::UNAUTHORIZED, body, true);
+            return not_live_response(StatusCode::UNAUTHORIZED, accept_language(&req).as_deref());
         }
         ResolvedHost::Site {
             site,
@@ -1167,26 +1283,20 @@ async fn handle_public(
             }
         };
         if !authorized {
-            return html_response(
+            return refusal_response(
+                &site,
                 StatusCode::UNAUTHORIZED,
-                render_password_page(req.uri().path(), false),
-                true,
+                accept_language(&req).as_deref(),
+                req.uri().path(),
+                false,
             );
         }
     }
 
-    let deployment = match scope {
-        HostScope::NextHost => preview_version_id
-            .as_deref()
-            .and_then(|ver_id| site.preview_deployments.get(ver_id))
-            .or_else(|| site.preview_deployments.values().next())
-            .or(site.live_deployment.as_ref()),
-        HostScope::OwnHost | HostScope::CustomDomain => site.live_deployment.as_ref(),
-    };
-
-    let Some(deployment) = deployment else {
+    let Some(chosen) = site.deployment_for(scope, preview_version_id.as_deref()) else {
         return html_response(StatusCode::NOT_FOUND, render_not_found_page(), true);
     };
+    let deployment = chosen.deployment;
 
     if matches!(deployment.kind, DeploymentKind::Static | DeploymentKind::Hybrid) {
         let resolution = resolve_static_path(&deployment.manifest, req.uri().path());
@@ -1207,6 +1317,13 @@ async fn handle_public(
                     let ct_hdr = route_table.content_type_header(&file.content_type);
                     let etag_hdr = route_table.etag_header(&file.sha256);
                     drop(route_table);
+                    if let Some(version_id) = chosen.db_version_id {
+                        if matches!(*req.method(), Method::GET | Method::HEAD)
+                            && !ensure_db_blob(&state, &site.id, version_id, resolved_path.as_ref(), file).await
+                        {
+                            return text_response(StatusCode::SERVICE_UNAVAILABLE, "blob unavailable");
+                        }
+                    }
                     return serve_static_file(
                         &state.blobs,
                         &deployment.manifest,
@@ -1368,8 +1485,10 @@ async fn handle_preview_enter(
     host: &str,
     req: Request<Incoming>,
 ) -> Response<BoxBody> {
+    let language = accept_language(&req);
+    let refused = || refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), "/", false);
     let Some(backend) = state.auth_backend.as_ref() else {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+        return refused();
     };
     let ticket = req
         .uri()
@@ -1377,13 +1496,13 @@ async fn handle_preview_enter(
         .and_then(|q| query_param(q, "t"))
         .unwrap_or_default();
     if ticket.is_empty() {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+        return refused();
     }
     let Some(redeemed) = backend.redeem_preview_ticket(host.to_string(), ticket).await else {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+        return refused();
     };
     if redeemed.site_id != site.id {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+        return refused();
     }
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1408,8 +1527,9 @@ async fn handle_member_pass(
     host: &str,
     req: Request<Incoming>,
 ) -> Response<BoxBody> {
+    let language = accept_language(&req);
     let Some(backend) = state.auth_backend.as_ref() else {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", true), true);
+        return refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), "/", true);
     };
     let body_bytes = match read_limited_body(
         req.into_body(),
@@ -1426,20 +1546,21 @@ async fn handle_member_pass(
             return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
         }
         Err(BodyReadError::Failed) => {
-            return html_response(StatusCode::BAD_REQUEST, render_password_page("/", true), true);
+            return refusal_response(site, StatusCode::BAD_REQUEST, language.as_deref(), "/", true);
         }
     };
     let form = String::from_utf8_lossy(&body_bytes);
     let pass = query_param(&form, "pass").unwrap_or_default();
     let next_path = sanitize_next_path(&query_param(&form, "path").unwrap_or_else(|| "/".to_string()));
+    let refused = || refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), &next_path, true);
     if pass.is_empty() {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page(&next_path, true), true);
+        return refused();
     }
     let Some(redeemed) = backend.redeem_member_pass(host.to_string(), pass).await else {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page(&next_path, true), true);
+        return refused();
     };
     if redeemed.site_id != site.id {
-        return html_response(StatusCode::UNAUTHORIZED, render_password_page(&next_path, true), true);
+        return refused();
     }
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1476,6 +1597,7 @@ async fn handle_unlock(
             .unwrap();
     }
 
+    let language = accept_language(&req);
     let body_bytes = match read_limited_body(
         req.into_body(),
         MAX_FORM_BODY_BYTES,
@@ -1491,7 +1613,7 @@ async fn handle_unlock(
             return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
         }
         Err(BodyReadError::Failed) => {
-            return html_response(StatusCode::BAD_REQUEST, render_password_page("/", true), true);
+            return refusal_response(site, StatusCode::BAD_REQUEST, language.as_deref(), "/", true);
         }
     };
     let form = String::from_utf8_lossy(&body_bytes);
@@ -1508,11 +1630,7 @@ async fn handle_unlock(
         .map_or(false, |expected| constant_time_eq(candidate.as_bytes(), expected.as_bytes()));
 
     if !matches {
-        return html_response(
-            StatusCode::UNAUTHORIZED,
-            render_password_page(&next_path, true),
-            true,
-        );
+        return refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), &next_path, true);
     }
 
     let now_unix = SystemTime::now()
@@ -1530,6 +1648,56 @@ async fn handle_unlock(
         "{SITE_SESSION_COOKIE}={token}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
     );
     safe_redirect_response(StatusCode::SEE_OTHER, &next_path, Some(&set_cookie))
+}
+
+async fn ensure_db_blob(
+    state: &RouterState,
+    site_id: &str,
+    version_id: &str,
+    path: &str,
+    file: &ManifestFile,
+) -> bool {
+    if file.bytes > MAX_DB_FILE_BYTES || file.bytes > state.blobs.max_blob_bytes() {
+        return false;
+    }
+    match state.blobs.exists(&file.sha256).await {
+        Ok(true) => return true,
+        Ok(false) => {}
+        Err(_) => return false,
+    }
+    let Some(backend) = state.auth_backend.as_ref() else {
+        return false;
+    };
+    let gate = {
+        let mut inflight = state.db_file_inflight.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(inflight.entry(file.sha256.clone()).or_default())
+    };
+    let stored = tokio::time::timeout(DB_FILE_TIMEOUT, async {
+        let _turn = gate.lock().await;
+        if state.blobs.exists(&file.sha256).await.unwrap_or(false) {
+            return true;
+        }
+        let Ok(_permit) = state.db_file_fetches.acquire().await else {
+            return false;
+        };
+        let Some(bytes) = backend
+            .fetch_site_file(site_id.to_string(), version_id.to_string(), path.to_string())
+            .await
+        else {
+            return false;
+        };
+        bytes.len() == file.bytes && state.blobs.put(&file.sha256, bytes, true).await.is_ok()
+    })
+    .await
+    .unwrap_or(false);
+    let mut inflight = state.db_file_inflight.lock().unwrap_or_else(|e| e.into_inner());
+    if inflight
+        .get(&file.sha256)
+        .is_some_and(|held| Arc::ptr_eq(held, &gate) && Arc::strong_count(held) == 2)
+    {
+        inflight.remove(&file.sha256);
+    }
+    stored
 }
 
 #[allow(clippy::too_many_arguments)]

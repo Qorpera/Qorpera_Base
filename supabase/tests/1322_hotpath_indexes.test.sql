@@ -18,13 +18,29 @@ begin
 	end if;
 end $$;
 
-create function pg_temp.assert_plan_uses_index(p_sql text, p_index text) returns void language plpgsql as $$
+create function pg_temp.assert_plan_uses_index(p_sql text, p_index text, p_filter text default null) returns void language plpgsql as $$
 declare
+	v_index regclass := ('public.' || quote_ident(p_index))::regclass;
 	v_plan jsonb;
+	v_scan jsonb;
+	v_first_column text;
 begin
-	execute 'explain (format json) ' || p_sql into v_plan;
-	if position(p_index in v_plan::text) = 0 then
-		raise exception 'Expected plan for [%] to reference index %, got %', p_sql, p_index, v_plan::text;
+	-- WHY: Planned alone, the index is taken even for its order only, so its name in the plan says little. It must do
+	-- the query's work itself: every condition (but p_filter) in the index from its first column on, and the order.
+	v_plan := qorpera_test_support.plan_with_index_alone(v_index, p_sql);
+	v_scan := nullif(v_plan -> 'scan', 'null');
+	select a.attname into v_first_column
+	from pg_index i
+	join pg_attribute a on a.attrelid = i.indrelid and a.attnum = i.indkey[0]
+	where i.indexrelid = v_index;
+	if v_scan is null
+		or v_scan ->> 'Node Type' not in ('Index Scan', 'Index Only Scan')
+		or v_scan ->> 'Filter' is distinct from p_filter
+		or v_scan ->> 'Index Cond' !~ ('\m' || v_first_column || '\M')
+		or jsonb_path_exists(v_plan, '$.** ? (@."Node Type" like_regex "Sort")')
+	then
+		raise exception 'Expected plan for [%] to scan index % from its first column and in its order, filtering %, got %',
+			p_sql, p_index, coalesce(p_filter, 'nothing'), v_plan::text;
 	end if;
 end $$;
 
@@ -108,7 +124,8 @@ select pg_temp.assert_plan_uses_index(
 	  where profile_id = '00000000-0000-4000-8000-000000000001'
 	    and status = 'kept' and write_lease_until > clock_timestamp()
 	  order by write_lease_until limit 1$$,
-	'qorpera_digital_post_letters_kept_lease'
+	'qorpera_digital_post_letters_kept_lease',
+	'(write_lease_until > clock_timestamp())'
 );
 
 select pg_temp.assert_plan_uses_index(

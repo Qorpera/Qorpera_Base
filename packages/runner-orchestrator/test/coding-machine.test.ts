@@ -21,6 +21,7 @@ import {
 	lxdCodingSessionStorage,
 	reconcileCodingMachine,
 	recordCodingMachineDisk,
+	settleAcceptedCodingMachine,
 	undropCodingMachineStart,
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "../src/coding-vm.ts";
@@ -1600,5 +1601,135 @@ describe("a kept per-session VM from before", () => {
 			anySpy.mockRestore();
 			timeoutSpy.mockRestore();
 		}
+	});
+	it("cancel aborts before dispatch without leaving an unaccepted dispatch, and lets an in-flight dispatch settle cleanly", async () => {
+		const before = await fixture();
+		const preAborted = new AbortController();
+		preAborted.abort(new Error("SIBLING_FAILED"));
+		await expect(reconcileCodingMachine({ ...before.options, cancel: preAborted.signal })).rejects.toThrow(
+			"SIBLING_FAILED",
+		);
+		expect(before.plug).not.toHaveBeenCalled();
+		expect(before.client.submitInstanceOperation).not.toHaveBeenCalled();
+		expect(await readdir(join(before.journalRoot, before.value.machineId))).toEqual(["binding.json"]);
+
+		const duringCreate = await fixture();
+		const createCancel = new AbortController();
+		const submitCreate = duringCreate.client.submitInstanceOperation.getMockImplementation()!;
+		let signalAbortedDuringCreate = true;
+		duringCreate.client.submitInstanceOperation.mockImplementationOnce(async (project, action, signal) => {
+			createCancel.abort(new Error("REPO_FAILED"));
+			signalAbortedDuringCreate = signal.aborted;
+			return submitCreate(project, action, signal);
+		});
+		expect((await reconcileCodingMachine({ ...duringCreate.options, cancel: createCancel.signal })).state).toBe(
+			"pending",
+		);
+		expect(signalAbortedDuringCreate).toBe(false);
+		await expect(reconcileCodingMachine({ ...duringCreate.options, cancel: createCancel.signal })).rejects.toThrow(
+			"REPO_FAILED",
+		);
+		expect(duringCreate.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create"]);
+		const createTail = JSON.parse(
+			await readFile(join(duringCreate.journalRoot, duringCreate.value.machineId, "000002.json"), "utf8"),
+		);
+		expect(createTail).toMatchObject({ action: "create", kind: "settled", state: "succeeded" });
+		expect((await duringCreate.reconcile()).state).toBe("pending");
+		expect((await duringCreate.reconcile()).state).toBe("running");
+
+		const duringStart = await fixture();
+		expect((await duringStart.reconcile()).state).toBe("pending");
+		const startCancel = new AbortController();
+		const submitStart = duringStart.client.submitInstanceOperation.getMockImplementation()!;
+		let signalAbortedDuringStart = true;
+		duringStart.client.submitInstanceOperation.mockImplementationOnce(async (project, action, signal) => {
+			startCancel.abort(new Error("REPO_UNAVAILABLE"));
+			signalAbortedDuringStart = signal.aborted;
+			return submitStart(project, action, signal);
+		});
+		expect((await reconcileCodingMachine({ ...duringStart.options, cancel: startCancel.signal })).state).toBe(
+			"pending",
+		);
+		expect(signalAbortedDuringStart).toBe(false);
+		expect((await reconcileCodingMachine({ ...duringStart.options, cancel: startCancel.signal })).state).toBe(
+			"running",
+		);
+		const startTail = JSON.parse(
+			await readFile(join(duringStart.journalRoot, duringStart.value.machineId, "000005.json"), "utf8"),
+		);
+		expect(startTail).toMatchObject({ action: "start", kind: "settled", state: "succeeded" });
+
+		const duringStartingHook = await fixture();
+		expect((await duringStartingHook.reconcile()).state).toBe("pending");
+		const hookCancel = new AbortController();
+		await expect(
+			reconcileCodingMachine({
+				...duringStartingHook.options,
+				cancel: hookCancel.signal,
+				starting: async () => {
+					hookCancel.abort(new Error("REPO_FAILED_IN_HOOK"));
+					return undefined;
+				},
+			}),
+		).rejects.toThrow("REPO_FAILED_IN_HOOK");
+		expect(duringStartingHook.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+		]);
+	});
+	it("settleAcceptedCodingMachine records an accepted operation outcome without re-authorizing", async () => {
+		const f = await fixture();
+		expect(
+			await settleAcceptedCodingMachine({
+				plan: f.journal,
+				journalRoot: f.journalRoot,
+				client: f.client,
+				signal: f.controller.signal,
+			}),
+		).toBe("none");
+		expect((await f.reconcile()).state).toBe("pending");
+		expect((await f.reconcile()).state).toBe("pending");
+		f.client.inspectInstanceOperation.mockResolvedValueOnce("pending");
+		expect(
+			await settleAcceptedCodingMachine({
+				plan: f.journal,
+				journalRoot: f.journalRoot,
+				client: f.client,
+				signal: f.controller.signal,
+			}),
+		).toBe("pending");
+		expect(
+			await settleAcceptedCodingMachine({
+				plan: f.journal,
+				journalRoot: f.journalRoot,
+				client: f.client,
+				signal: f.controller.signal,
+			}),
+		).toBe("settled");
+		expect(
+			await settleAcceptedCodingMachine({
+				plan: f.journal,
+				journalRoot: f.journalRoot,
+				client: f.client,
+				signal: f.controller.signal,
+			}),
+		).toBe("none");
+		f.client.inspectInstanceOperation.mockRejectedValue(new Error("LXD_OPERATION_UNKNOWN"));
+		expect((await f.reconcile()).state).toBe("running");
+
+		const unknown = await fixture();
+		expect((await unknown.reconcile()).state).toBe("pending");
+		unknown.client.inspectInstanceOperation.mockRejectedValueOnce(new Error("LXD_OPERATION_UNKNOWN"));
+		expect(
+			await settleAcceptedCodingMachine({
+				plan: unknown.journal,
+				journalRoot: unknown.journalRoot,
+				client: unknown.client,
+				signal: unknown.controller.signal,
+			}),
+		).toBe("unsettled");
+		const entries = (await readdir(join(unknown.journalRoot, unknown.value.machineId)))
+			.filter((name) => /^\d{6}\.json$/.test(name))
+			.sort();
+		expect(entries).toEqual(["000000.json", "000001.json"]);
 	});
 });

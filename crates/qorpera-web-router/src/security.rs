@@ -295,6 +295,39 @@ pub fn render_password_page(next_path: &str, wrong_password: bool) -> String {
     )
 }
 
+pub fn prefers_danish(accept_language: Option<&str>) -> bool {
+    let mut best: Option<(f32, usize, bool)> = None;
+    for (index, part) in accept_language.unwrap_or("").split(',').enumerate() {
+        let mut pieces = part.trim().split(';');
+        let tag = pieces.next().unwrap_or("").trim().to_ascii_lowercase();
+        let danish = tag == "da" || tag.starts_with("da-");
+        if !danish && tag != "en" && !tag.starts_with("en-") {
+            continue;
+        }
+        let mut q = 1.0f32;
+        for param in pieces {
+            if let Some(value) = param.trim().strip_prefix("q=") {
+                q = value.trim().parse::<f32>().unwrap_or(0.0);
+            }
+        }
+        if q.is_nan() || q <= 0.0 {
+            continue;
+        }
+        if best.map_or(true, |(best_q, best_index, _)| q > best_q || (q == best_q && index < best_index)) {
+            best = Some((q, index, danish));
+        }
+    }
+    best.map_or(false, |(_, _, danish)| danish)
+}
+
+pub fn render_not_live_page(danish: bool) -> &'static str {
+    if danish {
+        "<!doctype html><html lang=\"da\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Ikke live endnu</title><style>body{font-family:system-ui,-apple-system,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}main{max-width:420px;padding:24px;text-align:center}h1{font-size:20px;margin:0 0 8px}p{color:#475569;margin:0}</style></head><body><main><h1>Ikke live endnu</h1><p>Hjemmesiden er ikke live endnu.</p></main></body></html>"
+    } else {
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Not live yet</title><style>body{font-family:system-ui,-apple-system,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}main{max-width:420px;padding:24px;text-align:center}h1{font-size:20px;margin:0 0 8px}p{color:#475569;margin:0}</style></head><body><main><h1>Not live yet</h1><p>This website isn't live yet.</p></main></body></html>"
+    }
+}
+
 pub fn render_takedown_page() -> &'static str {
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Site unavailable</title><style>body{font-family:system-ui,-apple-system,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}main{max-width:420px;padding:24px;text-align:center}h1{font-size:20px;margin:0 0 8px}p{color:#475569;margin:0}</style></head><body><main><h1>This site is not available</h1><p>This site has been taken offline.</p></main></body></html>"
 }
@@ -331,6 +364,26 @@ mod tests {
         assert!(!verify_session_cookie(&cookie, secret, "site-1", "site", 3, 1500));
         assert!(!verify_session_cookie(&cookie, secret, "site-1", "next", 2, 1500));
         assert!(!verify_session_cookie(&cookie, secret, "site-1", "site", 2, 2001));
+    }
+
+    #[test]
+    fn not_live_page_language_and_no_form() {
+        assert!(prefers_danish(Some("da")));
+        assert!(prefers_danish(Some("da-DK,da;q=0.9,en;q=0.8")));
+        assert!(prefers_danish(Some("fr, da;q=0.7, en;q=0.6")));
+        assert!(prefers_danish(Some("en;q=0.5, da;q=0.8")));
+        assert!(!prefers_danish(Some("en-US,en;q=0.9,da;q=0.8")));
+        assert!(!prefers_danish(Some("en, da")));
+        assert!(!prefers_danish(Some("da;q=0, en;q=0.1")));
+        assert!(!prefers_danish(Some("fr")));
+        assert!(!prefers_danish(None));
+        for danish in [false, true] {
+            let page = render_not_live_page(danish);
+            assert!(!page.contains("<form") && !page.contains("<input") && !page.contains("unlock"));
+            assert!(page.contains("noindex"));
+        }
+        assert!(render_not_live_page(false).contains("<h1>Not live yet</h1>"));
+        assert!(render_not_live_page(true).contains("<h1>Ikke live endnu</h1>"));
     }
 
     #[test]

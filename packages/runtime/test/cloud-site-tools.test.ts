@@ -25,6 +25,7 @@ const URL_OF = (slug: string) => `https://sites.qorpera.com/${slug}/`;
 const APP_URL_OF = (slug: string) => `https://${slug}-preview.qorpera.com/`;
 /** A one-time claim as the database issues it (base64url). */
 const CLAIM = "q7Zx_3kPmA9vB2nC4dE6fG8hJ0kL1mN3pQ5rS7tU9wY";
+const NO_SITES_PAGE = /\bSites\b|apps drawer|Settings/;
 const MACHINE_IDS: Record<string, string> = { "shop-server": randomUUID(), "old-server": randomUUID() };
 
 /** A company folder of files (path → text or bytes), as the run's own view lists and reads it. */
@@ -469,16 +470,11 @@ describe("publish_site", () => {
 		const logo = puts.flatMap((put) => put.p_files).find((file) => file.path === "img/logo.png");
 		expect(Buffer.from(logo?.content ?? "", "base64")).toEqual(Buffer.from([137, 80, 78, 71, 1, 2, 3]));
 		expect(f.calls("qorpera_site_publish_finish")).toHaveLength(1);
-		expect(result.answer).toMatchObject({ state: "live", url: URL_OF("wristband-shop"), mode: "new" });
+		expect(result.answer).toMatchObject({ state: "published", url: URL_OF("wristband-shop"), mode: "new" });
 		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.bak"]);
-		// One answer names one set of people: owners and admins (review r1 of #1851).
-		expect(result.answer.password).toBe(
-			"The site has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer.",
-		);
-		// Sites left Settings for the apps drawer (9 November 2026). Since site hosts (v247) a message that links the site
-		// shows its row, with the password's copy key for owners and admins (web #1848): the agent links the address.
+		expect(result.answer).not.toHaveProperty("password");
 		expect(result.answer.next).toBe(
-			"Put url in your message to the member as a link: the site's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password. Visitors open the address and enter the password.",
+			"Published, but not live yet: nobody outside the company can open the website, and it has no password. The company's members open it from the app. Only the founder or an admin can make it live, with Go live on the website's page in the app. You cannot. Put url in your message to the member as a link, and never tell anyone to use a password.",
 		);
 		expect(result.text).not.toMatch(/password":\s*"[a-z0-9]{4}-/);
 	});
@@ -505,10 +501,13 @@ describe("publish_site", () => {
 				source: "product/webshop",
 			}),
 		);
-		expect(result.answer).toMatchObject({ state: "live", unchanged: true, mode: "update" });
+		expect(result.answer).toMatchObject({ state: "published", unchanged: true, mode: "update" });
 		expect(f.calls("qorpera_site_publish_put")).toEqual([]);
 		expect(f.calls("qorpera_site_publish_finish")).toEqual([]);
-		expect(result.answer.password).toContain("unchanged");
+		expect(result.answer).not.toHaveProperty("password");
+		expect(result.answer.next).toBe(
+			"Published: the website shows this version now. If the founder or an admin made it live with Go live on the website's page in the app, everyone can open it. If not, it is still not live: nobody outside the company can open it, and the company's members open it from the app. You cannot make it live. The website has no password. Put url in your message to the member as a link, and never tell anyone to use a password.",
+		);
 	});
 
 	it("uploads in batches of at most 4 MiB, a larger file alone", async () => {
@@ -744,7 +743,7 @@ describe("publish_site", () => {
 			}),
 		);
 		expect(result.status).toBe("ok");
-		expect(result.answer).toMatchObject({ state: "not_live", slug: "wristband-shop" });
+		expect(result.answer).toMatchObject({ state: "not_published", slug: "wristband-shop" });
 		expect(result.answer.reason).toContain("SITE_FILE_CHANGED");
 		expect(f.calls("qorpera_site_publish_finish")).toEqual([]);
 	});
@@ -896,7 +895,7 @@ describe("share_app", () => {
 				"from machine": "shop-server",
 				port: "3000",
 				effect:
-					"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
+					"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins copy the password from the link's card under the message that links it",
 			},
 		});
 		expect(f.calls("qorpera_site_share_app")).toEqual([
@@ -934,11 +933,12 @@ describe("share_app", () => {
 			linkProgram: { commandId, state: "running" },
 			next: expect.stringContaining("The platform started the link program on shop-server"),
 			password:
-				"The link has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer.",
+				"The link has a new password. You never see it: owners and admins copy it from the link's card under the message that links it.",
 		});
 		expect(result.answer.next).toContain(
-			"Put url in your message to the member as a link: the link's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password.",
+			"Put url in your message to the member as a link: the link's card shows under it, where owners and admins copy the password. Never write a password.",
 		);
+		expect(result.text).not.toMatch(NO_SITES_PAGE);
 		// The tool's answer never holds the claim.
 		expect(result.text).not.toContain(CLAIM);
 		expect(result.text).not.toContain("curl");
@@ -972,7 +972,10 @@ describe("share_app", () => {
 		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
 		expect(f.reviewed).toHaveLength(1);
 		expect(result.answer).toMatchObject({ newPassword: false });
-		expect(result.answer.password).toContain("unchanged");
+		expect(result.answer.password).toBe(
+			"The password is unchanged. You never see it: owners and admins copy it from the link's card under the message that links it.",
+		);
+		expect(result.text).not.toMatch(NO_SITES_PAGE);
 	});
 
 	it("reviews a share of the live link on another port as an access check, naming the port it had", async () => {
@@ -1229,35 +1232,44 @@ describe("share_app", () => {
 		expect(share.description).toContain("SSE");
 		expect(share.description).toContain("manage_site");
 		expect(share.description).not.toContain("auth mode on the Sites page");
+		for (const tool of tools) expect(tool.description, tool.name).not.toMatch(NO_SITES_PAGE);
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
-		// Sites left Settings for the apps drawer (9 November 2026); since site hosts (v247) the row under a message that
-		// links a site copies its password too (web #1848).
 		const publish = tools.find((tool) => tool.name === "publish_site")!;
 		const password =
-			"You never see the password, so never write one: put the address in your message as a link, and members see the site's row under it, where owners and admins copy the password. They also see, copy and change it on the Sites page in the apps drawer.";
-		expect(publish.description).toContain(password);
+			"You never see the password, so never write one: put the address in your message as a link, and the link's card shows under the message, where owners and admins copy the password.";
 		expect(share.description).toContain(password);
+		expect(publish.description).not.toContain(password);
+		expect(publish.description).toContain(
+			"A website has no password, so never tell anyone to use one. Until the founder or an admin presses Go live on the website's page in the app, nobody outside the company can open it. The company's members open it from the app. You cannot make it live: put the address in your message as a link, and ask the founder to press Go live when it should open to everyone.",
+		);
+		expect(publish.description).not.toContain("open with a password");
+		expect(share.description).not.toContain("as they open a website");
+		expect(publish.description).not.toContain("keeps its password");
+		const unpublish = tools.find((tool) => tool.name === "unpublish_site")!;
+		expect(unpublish.description).toContain(
+			"A website's published copy is deleted (the files stay in the company folder)",
+		);
+		expect(unpublish.description).toContain("an app link keeps its name and password for its next share_app");
 	});
 
 	it("says what a site host serves since v247: its own address, links from / and its own origin (SITE-HOSTS.md)", async () => {
 		const { tools } = await fixture({});
 		const publish = tools.find((tool) => tool.name === "publish_site")!;
-		// site-serve serves a site at the top of https://<slug>.qorpera.com/ (the old link answers 308 to it).
 		expect(publish.description).toContain(
-			"Publish a static website from the company folder to a private address of its own, https://<slug>.qorpera.com/,",
+			"Publish a static website from the company folder to an address of its own; the result gives the address as url. It is not live at first: nobody outside the company can open it.",
 		);
 		expect(publish.description).toContain(
 			"Its files link each other from / (/img/logo.png) or relatively (img/logo.png): both work.",
 		);
 		// A site host's file: no sandbox, frame-ancestors 'self', CORP same-origin and Fetch Metadata, no service worker.
 		expect(publish.description).toContain(
-			"Each site is its own origin: browser storage, cookies (never one with Domain=qorpera.com) and frames of its own pages work; other sites cannot frame it or load its files, and it gets no service worker.",
+			"Each site is its own origin: browser storage, cookies (never one with a Domain attribute) and frames of its own pages work; other sites cannot frame it or load its files, and it gets no service worker.",
 		);
 		// The slug's pattern never reaches the model (Codex drops it): the field says the address and the kernel's rule.
 		const slug = (name: string) =>
 			(tools.find((tool) => tool.name === name)!.inputSchema as { properties: { slug: { description: string } } })
 				.properties.slug.description;
-		expect(slug("publish_site")).toBe(`The name in its address, https://<slug>.qorpera.com/. ${SITE_NAME_RULE}`);
+		expect(slug("publish_site")).toBe(`The name in its address, which the result gives as url. ${SITE_NAME_RULE}`);
 		expect(slug("share_app")).toBe(`The name in its address, https://<slug>-preview.qorpera.com/. ${SITE_NAME_RULE}`);
 	});
 });

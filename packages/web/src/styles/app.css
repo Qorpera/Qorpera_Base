@@ -542,8 +542,6 @@ label > input, label > select { font-weight: 400; }
 .sites-page-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .sites-page-heading > svg { flex: none; }
 .sites-page-heading h1 { margin: 0; }
-/* What's new: per project, what is live (a row of the Sites page, styles/sites.css), the changes ready to go live as a
- * picture with one line each (the look of a question's visual choices), and the buttons. */
 .whats-new-site { margin: 0 0 40px; }
 .whats-new-site > h2 { margin: 0 0 4px; overflow-wrap: anywhere; }
 .whats-new-site > h3 { margin: 22px 0 10px; }

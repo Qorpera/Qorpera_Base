@@ -225,6 +225,10 @@ As §2 "Errors that happen at once", decided in the program or the service befor
   [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md));
 - deleting or moving a seeded path, a lone `agent.md` or `group.md`, or an agent's or group's folder out of place
   (`EPERM`);
+- removing a code area's `repo.git/objects`, `objects/<2 hex>` or `objects/pack` folder that the folder holds, in
+  every view but the code host's (`EPERM`): the core never removes one for a session (`git_object_delete`), and git's
+  repack and prune go on without the `rmdir`. Removed in the view, the folder would come back at the next boundary,
+  and git's next object in it would first be a `mkdir` at a path a removed folder left (above);
 - `rename` with `RENAME_EXCHANGE` (`EINVAL`); a name that differs only in case from a sibling (`EEXIST`).
 
 What needs the core is decided at the boundary. A path the view may read but not write is refused there and

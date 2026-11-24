@@ -31,6 +31,12 @@ export function threeAsset({ root, serve = false }) {
 	return { bytes, name, file: serve ? name : `build/${name}`, license: join(vendor, "three.LICENSE.txt") };
 }
 
+export function explainerAsset({ root, serve = false }) {
+	const bytes = readFileSync(resolve(root, "../runtime/kits/explainer/engine.js"));
+	const name = `explainer-${createHash("sha256").update(bytes).digest("hex").slice(0, 12)}.js`;
+	return { bytes, name, file: serve ? name : `build/${name}` };
+}
+
 /** esbuild options for the app (main.js, its chunks, app.css) and the head script. */
 export function bundleOptions({ root, outdir, serve = false, define }) {
 	// Production files carry a content hash so a browser can never keep a
@@ -79,7 +85,11 @@ export function bundleOptions({ root, outdir, serve = false, define }) {
 			external: ["*.woff2", "*.png", "*.svg"],
 			minify: !serve,
 			logLevel: "info",
-			define: { ...define, __QORPERA_THREE_SRC__: JSON.stringify(threeAsset({ root, serve }).name) },
+			define: {
+				...define,
+				__QORPERA_THREE_SRC__: JSON.stringify(threeAsset({ root, serve }).name),
+				__QORPERA_EXPLAINER_SRC__: JSON.stringify(explainerAsset({ root, serve }).name),
+			},
 		},
 	};
 }
