@@ -30,7 +30,7 @@
 		"sha256Helpers": 3
 	},
 	"web": {
-		"uuidPatterns": 1,
+		"uuidPatterns": 2,
 		"recordHelpers": 7,
 		"uuidHelpers": 3,
 		"sha256Helpers": 0
