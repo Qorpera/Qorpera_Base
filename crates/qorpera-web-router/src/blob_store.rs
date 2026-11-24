@@ -56,6 +56,15 @@ impl ContentEncoding {
             ContentEncoding::Zstd => Some("zstd"),
         }
     }
+
+    fn bit(self) -> u8 {
+        match self {
+            ContentEncoding::Identity => 1 << 0,
+            ContentEncoding::Gzip => 1 << 1,
+            ContentEncoding::Brotli => 1 << 2,
+            ContentEncoding::Zstd => 1 << 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -286,67 +295,110 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+const BIT_RAW: u8 = 1 << 0;
+const BIT_GZIP: u8 = 1 << 1;
+const BIT_BROTLI: u8 = 1 << 2;
+const BIT_ZSTD: u8 = 1 << 3;
+const BIT_ALL: u8 = BIT_RAW | BIT_GZIP | BIT_BROTLI | BIT_ZSTD;
+
 #[derive(Clone)]
 struct CachedBlob {
-    raw: Bytes,
+    raw_len: usize,
+    raw: Option<Bytes>,
     gzip: Option<Bytes>,
     brotli: Option<Bytes>,
     zstd: Option<Bytes>,
+    probed_mask: u8,
     accounted_bytes: usize,
 }
 
 impl CachedBlob {
-    fn new(raw: Bytes, gzip: Option<Bytes>, brotli: Option<Bytes>, zstd: Option<Bytes>) -> Self {
+    fn from_parts(
+        raw_len: usize,
+        raw: Option<Bytes>,
+        gzip: Option<Bytes>,
+        brotli: Option<Bytes>,
+        zstd: Option<Bytes>,
+        probed_mask: u8,
+    ) -> Self {
         // WHY: Account for HashMap, Arc, and SIEVE node overhead so tiny blobs cannot bypass max_cache_bytes.
         let accounted_bytes = ENTRY_STRUCTURAL_OVERHEAD
-            + raw.len()
+            + raw.as_ref().map_or(0, Bytes::len)
             + gzip.as_ref().map_or(0, Bytes::len)
             + brotli.as_ref().map_or(0, Bytes::len)
             + zstd.as_ref().map_or(0, Bytes::len);
         Self {
+            raw_len,
             raw,
             gzip,
             brotli,
             zstd,
+            probed_mask,
             accounted_bytes,
         }
     }
 
-    fn to_payload(&self, accepted: AcceptedEncodings) -> BlobPayload {
-        let raw_len = self.raw.len();
-        let mut best_q = 0.0f32;
-        let mut best: Option<(ContentEncoding, &Bytes)> = None;
+    #[cfg(test)]
+    fn new(raw: Bytes, gzip: Option<Bytes>, brotli: Option<Bytes>, zstd: Option<Bytes>) -> Self {
+        let raw_len = raw.len();
+        Self::from_parts(raw_len, Some(raw), gzip, brotli, zstd, BIT_ALL)
+    }
 
-        if accepted.br_q > best_q {
-            if let Some(ref br) = self.brotli {
-                best_q = accepted.br_q;
-                best = Some((ContentEncoding::Brotli, br));
-            }
+    fn warm_after_put(raw: Bytes, brotli: Option<Bytes>) -> Self {
+        let raw_len = raw.len();
+        if let Some(br) = brotli {
+            Self::from_parts(raw_len, None, None, Some(br), None, BIT_BROTLI)
+        } else {
+            Self::from_parts(raw_len, Some(raw), None, None, None, BIT_ALL)
         }
-        if accepted.zstd_q > best_q {
-            if let Some(ref zs) = self.zstd {
-                best_q = accepted.zstd_q;
-                best = Some((ContentEncoding::Zstd, zs));
-            }
-        }
-        if accepted.gzip_q > best_q {
-            if let Some(ref gz) = self.gzip {
-                best = Some((ContentEncoding::Gzip, gz));
-            }
-        }
+    }
 
-        if let Some((encoding, bytes)) = best {
-            return BlobPayload {
-                bytes: bytes.clone(),
-                raw_len,
-                encoding,
-            };
+    fn variant(&self, encoding: ContentEncoding) -> Option<&Bytes> {
+        match encoding {
+            ContentEncoding::Identity => self.raw.as_ref(),
+            ContentEncoding::Gzip => self.gzip.as_ref(),
+            ContentEncoding::Brotli => self.brotli.as_ref(),
+            ContentEncoding::Zstd => self.zstd.as_ref(),
         }
-        BlobPayload {
-            bytes: self.raw.clone(),
-            raw_len,
+    }
+
+    fn set_variant(&mut self, encoding: ContentEncoding, bytes: Option<Bytes>) {
+        self.probed_mask |= encoding.bit();
+        match encoding {
+            ContentEncoding::Identity => self.raw = bytes,
+            ContentEncoding::Gzip => self.gzip = bytes,
+            ContentEncoding::Brotli => self.brotli = bytes,
+            ContentEncoding::Zstd => self.zstd = bytes,
+        }
+        self.accounted_bytes = ENTRY_STRUCTURAL_OVERHEAD
+            + self.raw.as_ref().map_or(0, Bytes::len)
+            + self.gzip.as_ref().map_or(0, Bytes::len)
+            + self.brotli.as_ref().map_or(0, Bytes::len)
+            + self.zstd.as_ref().map_or(0, Bytes::len);
+    }
+
+    fn try_payload(&self, accepted: AcceptedEncodings) -> Option<BlobPayload> {
+        for (enc, _) in accepted.ranked_sidecars().into_iter().flatten() {
+            if (self.probed_mask & enc.bit()) == 0 {
+                return None;
+            }
+            if let Some(bytes) = self.variant(enc) {
+                return Some(BlobPayload {
+                    bytes: bytes.clone(),
+                    raw_len: self.raw_len,
+                    encoding: enc,
+                });
+            }
+        }
+        self.raw.as_ref().map(|bytes| BlobPayload {
+            bytes: bytes.clone(),
+            raw_len: self.raw_len,
             encoding: ContentEncoding::Identity,
-        }
+        })
+    }
+
+    fn to_payload(&self, accepted: AcceptedEncodings) -> Option<BlobPayload> {
+        self.try_payload(accepted)
     }
 }
 
@@ -394,10 +446,17 @@ impl WaitFreeShard {
         let guard = self.inner.read().ok()?;
         let &idx = guard.index.get(key)?;
         let entry = &guard.nodes[idx].as_ref()?.entry;
+        let payload = entry.value.try_payload(accepted)?;
         if !entry.visited.load(Ordering::Relaxed) {
             entry.visited.store(true, Ordering::Relaxed);
         }
-        Some(entry.value.to_payload(accepted))
+        Some(payload)
+    }
+
+    fn get_cached_entry(&self, key: &str) -> Option<CachedBlob> {
+        let guard = self.inner.read().ok()?;
+        let &idx = guard.index.get(key)?;
+        Some(guard.nodes[idx].as_ref()?.entry.value.clone())
     }
 
     fn insert(&self, key: &str, blob: CachedBlob) {
@@ -835,9 +894,11 @@ impl BlobStore {
             let _ = write_atomic(&Self::sidecar_path(&path, ".zst"), zs, false).await;
         }
 
-        let cached = CachedBlob::new(bytes, variants.gzip, variants.brotli, variants.zstd);
-        if cached.accounted_bytes <= PUT_CACHE_WARM_MAX_BYTES {
-            self.shards[shard_idx].insert(sha256, cached);
+        if bytes.len() <= self.direct_cache_limit() {
+            let cached = CachedBlob::warm_after_put(bytes, variants.brotli);
+            if cached.accounted_bytes <= PUT_CACHE_WARM_MAX_BYTES {
+                self.shards[shard_idx].insert(sha256, cached);
+            }
         }
         Ok(PutOutcome::Stored)
     }
@@ -973,9 +1034,11 @@ impl BlobStore {
             if let Some(ref zs) = variants.zstd {
                 let _ = write_atomic(&Self::sidecar_path(&path, ".zst"), zs, false).await;
             }
-            let cached = CachedBlob::new(bytes, variants.gzip, variants.brotli, variants.zstd);
-            if cached.accounted_bytes <= PUT_CACHE_WARM_MAX_BYTES {
-                self.shards[shard_idx].insert(sha256, cached);
+            if bytes.len() <= self.direct_cache_limit() {
+                let cached = CachedBlob::warm_after_put(bytes, variants.brotli);
+                if cached.accounted_bytes <= PUT_CACHE_WARM_MAX_BYTES {
+                    self.shards[shard_idx].insert(sha256, cached);
+                }
             }
         }
         Ok(PutOutcome::Stored)
@@ -1082,6 +1145,35 @@ impl BlobStore {
             return Ok(hit);
         }
 
+        if let Some(mut entry) = self.shards[shard_idx].get_cached_entry(sha256) {
+            for (enc, ext) in accepted.ranked_sidecars().into_iter().flatten() {
+                if (entry.probed_mask & enc.bit()) == 0 {
+                    let loaded = tokio::fs::read(Self::sidecar_path(&path, ext))
+                        .await
+                        .ok()
+                        .map(Bytes::from);
+                    entry.set_variant(enc, loaded);
+                }
+                if let Some(bytes) = entry.variant(enc).cloned() {
+                    let raw_len = entry.raw_len;
+                    self.shards[shard_idx].insert(sha256, entry);
+                    return Ok(BlobPayload {
+                        bytes,
+                        raw_len,
+                        encoding: enc,
+                    });
+                }
+            }
+            if entry.raw.is_none() {
+                let raw = self.read_verified_raw(&path, sha256).await?;
+                entry.set_variant(ContentEncoding::Identity, Some(raw));
+            }
+            if let Some(payload) = entry.to_payload(accepted) {
+                self.shards[shard_idx].insert(sha256, entry);
+                return Ok(payload);
+            }
+        }
+
         let existing_rx = {
             let mut map = self
                 .inflight
@@ -1098,7 +1190,13 @@ impl BlobStore {
 
         if let Some(mut rx) = existing_rx {
             return match rx.recv().await {
-                Ok(ReadResult::Ok(blob)) => Ok(blob.to_payload(accepted)),
+                Ok(ReadResult::Ok(blob)) => {
+                    if let Some(payload) = blob.to_payload(accepted) {
+                        Ok(payload)
+                    } else {
+                        Box::pin(self.get_encoded(sha256, accepted)).await
+                    }
+                }
                 Ok(ReadResult::NotFound) => Err(BlobError::NotFound),
                 Ok(ReadResult::Corrupt) => Err(BlobError::CorruptOnDisk),
                 Ok(ReadResult::Io(msg)) => Err(BlobError::Io(std::io::Error::other(msg))),
@@ -1112,19 +1210,66 @@ impl BlobStore {
             completed: false,
         };
 
-        let raw_vec = match tokio::fs::read(&path).await {
-            Ok(v) => v,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+        let raw = match self.read_verified_raw(&path, sha256).await {
+            Ok(bytes) => bytes,
+            Err(BlobError::NotFound) => {
                 guard.finish(ReadResult::NotFound);
                 return Err(BlobError::NotFound);
             }
+            Err(BlobError::CorruptOnDisk) => {
+                guard.finish(ReadResult::Corrupt);
+                return Err(BlobError::CorruptOnDisk);
+            }
             Err(err) => {
-                let msg = err.to_string();
-                guard.finish(ReadResult::Io(msg));
-                return Err(BlobError::Io(err));
+                guard.finish(ReadResult::Io(err.to_string()));
+                return Err(err);
             }
         };
 
+        let raw_len = raw.len();
+        let can_sidecar = raw_len >= COMPRESS_MIN_BYTES
+            && raw_len <= PRECOMPRESS_MAX_BYTES
+            && !is_likely_incompressible(&raw);
+
+        let mut cached = if can_sidecar {
+            CachedBlob::from_parts(raw_len, None, None, None, None, 0)
+        } else {
+            CachedBlob::from_parts(raw_len, Some(raw.clone()), None, None, None, BIT_ALL)
+        };
+
+        let mut matched_sidecar = false;
+        if can_sidecar {
+            for (enc, ext) in accepted.ranked_sidecars().into_iter().flatten() {
+                let loaded = tokio::fs::read(Self::sidecar_path(&path, ext))
+                    .await
+                    .ok()
+                    .map(Bytes::from);
+                let found = loaded.is_some();
+                cached.set_variant(enc, loaded);
+                if found {
+                    matched_sidecar = true;
+                    break;
+                }
+            }
+            if !matched_sidecar {
+                cached.set_variant(ContentEncoding::Identity, Some(raw));
+            }
+        }
+
+        let payload = cached
+            .to_payload(accepted)
+            .expect("cached blob must satisfy requested encoding");
+        self.shards[shard_idx].insert(sha256, cached.clone());
+        guard.finish(ReadResult::Ok(cached));
+        Ok(payload)
+    }
+
+    async fn read_verified_raw(&self, path: &Path, sha256: &str) -> Result<Bytes, BlobError> {
+        let raw_vec = match tokio::fs::read(path).await {
+            Ok(v) => v,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(BlobError::NotFound),
+            Err(err) => return Err(BlobError::Io(err)),
+        };
         let expected = sha256.to_string();
         let (valid, raw) = if raw_vec.len() >= BLOCKING_OFFLOAD_THRESHOLD {
             tokio::task::spawn_blocking(move || {
@@ -1137,38 +1282,10 @@ impl BlobStore {
             let ok = sha256_hex(&raw_vec) == expected;
             (ok, Bytes::from(raw_vec))
         };
-
         if !valid {
-            guard.finish(ReadResult::Corrupt);
             return Err(BlobError::CorruptOnDisk);
         }
-
-        let (gzip, brotli, zstd) = if raw.len() >= COMPRESS_MIN_BYTES
-            && raw.len() <= PRECOMPRESS_MAX_BYTES
-            && !is_likely_incompressible(&raw)
-        {
-            let gz_path = Self::sidecar_path(&path, ".gz");
-            let br_path = Self::sidecar_path(&path, ".br");
-            let zs_path = Self::sidecar_path(&path, ".zst");
-            let (gz_res, br_res, zs_res) = tokio::join!(
-                tokio::fs::read(&gz_path),
-                tokio::fs::read(&br_path),
-                tokio::fs::read(&zs_path),
-            );
-            (
-                gz_res.ok().map(Bytes::from),
-                br_res.ok().map(Bytes::from),
-                zs_res.ok().map(Bytes::from),
-            )
-        } else {
-            (None, None, None)
-        };
-
-        let cached = CachedBlob::new(raw, gzip, brotli, zstd);
-        let payload = cached.to_payload(accepted);
-        self.shards[shard_idx].insert(sha256, cached.clone());
-        guard.finish(ReadResult::Ok(cached));
-        Ok(payload)
+        Ok(raw)
     }
 
     pub async fn get_range(
@@ -1717,5 +1834,46 @@ mod tests {
             assert!(variants.zstd.is_some());
         }
         assert_eq!(pool.queue_sem.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn lazy_single_variant_cache_warms_only_brotli_and_loads_others_on_demand() {
+        let dir = tempdir().unwrap();
+        let store = BlobStore::new(dir.path().to_path_buf(), 64 * 1024 * 1024, 1024 * 1024);
+        let text = Bytes::from("export const app = 'qorpera lazy cache variant test';\n".repeat(400));
+        let sha = sha256_hex(&text);
+
+        assert_eq!(
+            store.put(&sha, text.clone(), true).await.unwrap(),
+            PutOutcome::Stored
+        );
+
+        let shard = shard_for_sha(&sha);
+        let initial = store.shards[shard].get_cached_entry(&sha).expect("warmed in cache");
+        assert!(initial.brotli.is_some());
+        assert!(initial.raw.is_none());
+        assert!(initial.gzip.is_none());
+        assert!(initial.zstd.is_none());
+        assert!(initial.accounted_bytes < text.len() / 4);
+
+        let br = store
+            .get_encoded(&sha, AcceptedEncodings::from_header("gzip, br, zstd"))
+            .await
+            .unwrap();
+        assert_eq!(br.encoding, ContentEncoding::Brotli);
+        assert_eq!(br.raw_len, text.len());
+
+        let gz = store
+            .get_encoded(&sha, AcceptedEncodings::GZIP_ONLY)
+            .await
+            .unwrap();
+        assert_eq!(gz.encoding, ContentEncoding::Gzip);
+
+        let raw = store
+            .get_encoded(&sha, AcceptedEncodings::IDENTITY)
+            .await
+            .unwrap();
+        assert_eq!(raw.encoding, ContentEncoding::Identity);
+        assert_eq!(raw.bytes, text);
     }
 }

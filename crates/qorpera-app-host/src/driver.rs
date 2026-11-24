@@ -391,24 +391,29 @@ struct LxdOperationMetadata {
     err: String,
 }
 
+const MAX_IDLE_LXD_CONNS: usize = 8;
+
 #[derive(Clone)]
 struct LxdUnixClient {
     socket_path: PathBuf,
+    #[cfg(unix)]
+    pool: Arc<Mutex<Vec<hyper::client::conn::http1::SendRequest<Full<Bytes>>>>>,
 }
 
 impl LxdUnixClient {
     fn new(socket_path: PathBuf) -> Self {
-        Self { socket_path }
+        Self {
+            socket_path,
+            #[cfg(unix)]
+            pool: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     #[cfg(unix)]
-    async fn request_json(
+    async fn connect_sender(
         &self,
-        method: Method,
-        path_and_query: &str,
-        body: Option<serde_json::Value>,
         timeout: Duration,
-    ) -> Result<(StatusCode, LxdEnvelope), String> {
+    ) -> Result<hyper::client::conn::http1::SendRequest<Full<Bytes>>, String> {
         let stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(&self.socket_path))
             .await
             .map_err(|_| "lxd_connect_timeout".to_string())?
@@ -420,33 +425,92 @@ impl LxdUnixClient {
                 }
             })?;
         let io = TokioIo::new(stream);
-        let (mut sender, conn) = tokio::time::timeout(timeout, hyper::client::conn::http1::handshake(io))
+        let (sender, conn) = tokio::time::timeout(timeout, hyper::client::conn::http1::handshake(io))
             .await
             .map_err(|_| "lxd_handshake_timeout".to_string())?
             .map_err(|e| format!("lxd_handshake_failed: {e}"))?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
+        Ok(sender)
+    }
 
+    #[cfg(unix)]
+    fn take_idle_sender(&self) -> Option<hyper::client::conn::http1::SendRequest<Full<Bytes>>> {
+        let mut guard = self.pool.lock().ok()?;
+        while let Some(sender) = guard.pop() {
+            if !sender.is_closed() {
+                return Some(sender);
+            }
+        }
+        None
+    }
+
+    #[cfg(unix)]
+    fn return_idle_sender(&self, sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>) {
+        if sender.is_closed() {
+            return;
+        }
+        if let Ok(mut guard) = self.pool.lock() {
+            if guard.len() < MAX_IDLE_LXD_CONNS {
+                guard.push(sender);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn request_json(
+        &self,
+        method: Method,
+        path_and_query: &str,
+        body: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Result<(StatusCode, LxdEnvelope), String> {
         let payload = match body {
             Some(v) => Bytes::from(serde_json::to_vec(&v).map_err(|e| e.to_string())?),
             None => Bytes::new(),
         };
-        let mut builder = Request::builder()
-            .method(method)
-            .uri(path_and_query)
-            .header("host", "lxd");
-        if !payload.is_empty() {
-            builder = builder.header("content-type", "application/json");
-        }
-        let req = builder
-            .body(Full::new(payload))
-            .map_err(|e| format!("lxd_request_build_failed: {e}"))?;
+        let build_req = || {
+            let mut builder = Request::builder()
+                .method(method.clone())
+                .uri(path_and_query)
+                .header("host", "lxd");
+            if !payload.is_empty() {
+                builder = builder.header("content-type", "application/json");
+            }
+            builder
+                .body(Full::new(payload.clone()))
+                .map_err(|e| format!("lxd_request_build_failed: {e}"))
+        };
 
-        let res = tokio::time::timeout(timeout, sender.send_request(req))
-            .await
-            .map_err(|_| "lxd_request_timeout".to_string())?
-            .map_err(|e| format!("lxd_request_failed: {e}"))?;
+        let mut sender = None;
+        let mut reused = false;
+        while let Some(mut candidate) = self.take_idle_sender() {
+            if candidate.ready().await.is_ok() {
+                sender = Some(candidate);
+                reused = true;
+                break;
+            }
+        }
+        let mut sender = match sender {
+            Some(s) => s,
+            None => self.connect_sender(timeout).await?,
+        };
+
+        let req = build_req()?;
+        let res = match tokio::time::timeout(timeout, sender.send_request(req)).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(_)) if reused => {
+                sender = self.connect_sender(timeout).await?;
+                let retry_req = build_req()?;
+                tokio::time::timeout(timeout, sender.send_request(retry_req))
+                    .await
+                    .map_err(|_| "lxd_request_timeout".to_string())?
+                    .map_err(|e| format!("lxd_request_failed: {e}"))?
+            }
+            Ok(Err(e)) => return Err(format!("lxd_request_failed: {e}")),
+            Err(_) => return Err("lxd_request_timeout".to_string()),
+        };
         let status = res.status();
         let bytes = tokio::time::timeout(
             timeout,
@@ -456,6 +520,8 @@ impl LxdUnixClient {
         .map_err(|_| "lxd_body_timeout".to_string())?
         .map_err(|e| format!("lxd_body_failed: {e}"))?
         .to_bytes();
+
+        self.return_idle_sender(sender);
 
         let envelope: LxdEnvelope = serde_json::from_slice(&bytes)
             .map_err(|e| format!("lxd_invalid_json (status {}): {e}", status.as_u16()))?;
