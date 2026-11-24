@@ -1,10 +1,6 @@
-/** The largest file handed out in one piece, and the largest handed out as the pieces it was read in (a folder file
- * is at most 256 MiB: 64 pieces of 4 MiB). */
 const MAX_WHOLE_BYTES = 8 * 1024 * 1024;
 const MAX_PIECES_BYTES = 256 * 1024 * 1024;
 
-/** A browser download offers already verified bytes to the browser. It cannot
- * attest that the user saved them or choose a member filesystem path. */
 export class WebFileDownloads {
 	readonly #urls = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #current: () => void;
@@ -22,8 +18,6 @@ export class WebFileDownloads {
 			() => new Blob([bytes.slice()], { type: "application/octet-stream" }),
 		);
 	}
-	/** A large file, as the pieces it was read in, in order: one `Blob` of them, which copies none. `bytes` is the
-	 * file's size, and the pieces must add up to it. */
 	offerPieces(name: string, pieces: readonly Blob[], bytes: number): void {
 		this.#hand(
 			name,
@@ -34,7 +28,6 @@ export class WebFileDownloads {
 			() => new Blob([...pieces], { type: "application/octet-stream" }),
 		);
 	}
-	/** Hands the browser a file through a hidden link, under the name's last part; `sized`: it is within its limit. */
 	#hand(name: string, sized: boolean, file: () => Blob): void {
 		this.#current();
 		this.#signal.throwIfAborted();

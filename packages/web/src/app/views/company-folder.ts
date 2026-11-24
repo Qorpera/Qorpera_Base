@@ -10,12 +10,12 @@ import {
 	type CloudMemberFolderUnit,
 	type CloudMemberFolderVersion,
 } from "@qorpera/cloud-client/cloud-member-folder";
-import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import type { CodeDownloadCalls } from "../../cloud/code-downloads.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import { WebFileDownloads } from "../../ui/file-downloads.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { reducedMotion } from "../../ui/motion.ts";
 import { framePage } from "../../ui/page-frame.ts";

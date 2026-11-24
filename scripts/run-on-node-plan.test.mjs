@@ -71,9 +71,7 @@ test("a web-only change runs the always-on checks and the web client, including 
 });
 
 test("anything that is not web-only also runs runtime, cloud-client and every script test (the old release train)", () => {
-	// The web client's cloud code and member-web's viewer are read by runtime tests.
 	assert.deepEqual(names(["packages/web/src/cloud/email-drafts.ts"]), set([...BASELINE, "web", "hosted-db"]));
-	assert.deepEqual(names(["packages/member-web/ui/viewer.ts"]), set([...BASELINE, "web", "member-web"]));
 	// A migration reaches runtime tests that read the migrations directory, and the vocabulary script test.
 	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db", "folder-core-load"]));
 	// Installer pins: runner-orchestrator sources rebuild packages whose sha256 the deploy scripts pin.

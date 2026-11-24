@@ -7,10 +7,7 @@ import { transformSync } from "esbuild";
 import { readUiScale, scaleDesignPx } from "./design-px.mjs";
 
 const web = join(dirname(fileURLToPath(import.meta.url)), "..");
-const stylesheets = [
-	...readdirSync(join(web, "src/styles")).map((file) => join(web, "src/styles", file)),
-	join(web, "../member-web/ui/screens.css"),
-];
+const stylesheets = readdirSync(join(web, "src/styles")).map((file) => join(web, "src/styles", file));
 
 test("design pixels become calc() on --px; hairlines, SVG strokes and literals stay", () => {
 	const css = [

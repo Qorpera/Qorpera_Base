@@ -42,19 +42,18 @@ function inputsOf(layout, files) {
 }
 // The figures' motion sampler and its eye tracks (the recorded clips left with the drawn eyes, 13 Nov 2026).
 const MOTION_DATA = /status-2d-v1\/(?:motion|eye-tracks)\.mjs$/;
-const NOVNC = /member-web\/ui\/(?:screen-viewer|vendor\/novnc-rfb)\.js$/;
 const VENDOR = /node_modules\/(?:@supabase\/|marked\/)/;
 
-test("the first screen never downloads the figures' motion data or noVNC; main.js imports the motion data on demand", async () => {
+test("the first screen never downloads the figures' motion data; main.js imports the motion data on demand", async () => {
 	const { layout } = await built;
 	const first = [layout.script, ...layout.preload];
-	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path) || NOVNC.test(path)), []);
+	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path)), []);
 	const lazy = inputsOf(layout, layout.lazy);
 	assert.equal(lazy.filter((path) => MOTION_DATA.test(path)).length, 2);
 	const dynamic = layout.outputs[layout.script].imports.filter((item) => item.kind === "dynamic-import");
 	assert.equal(dynamic.length, 1);
 	assert.deepEqual(
-		layout.lazy.filter((file) => /^build\/(?:figure-motion-data|screen-viewer)-[A-Z0-9]+\.js$/.test(file)).length,
+		layout.lazy.filter((file) => /^build\/figure-motion-data-[A-Z0-9]+\.js$/.test(file)).length,
 		1,
 	);
 });

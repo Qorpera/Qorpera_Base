@@ -112,13 +112,11 @@ const WHOLE = [
 	/^tsconfig[^/]*\.json$/,
 	/^biome\.json$/,
 	/^test\.sh$/,
-	/^packages\/(contracts|company)\//,
+	/^packages\/contracts\//,
 ];
-/** runtime-release-train.yml's exclusion: web client files that no runtime or cloud-client test reads. */
 const WEB_ONLY = (file) =>
-	(/^packages\/web\//.test(file) &&
-		!/^packages\/web\/(src\/cloud\/|tsconfig\.json$|public\/assets\/avatars\/)/.test(file)) ||
-	(/^packages\/member-web\//.test(file) && !/^packages\/member-web\/ui\//.test(file));
+	/^packages\/web\//.test(file) &&
+	!/^packages\/web\/(src\/cloud\/|tsconfig\.json$|public\/assets\/avatars\/)/.test(file);
 const ANY = [/./];
 /** Starts on any path that is not web-only. */
 const NOT_WEB_ONLY = Symbol("not web-only");
@@ -141,10 +139,10 @@ export const STEPS = [
 	},
 	{
 		name: "typecheck",
-		why: "root and member-web tsgo (root-typecheck.yml ran on every PR)",
+		why: "root tsgo (root-typecheck.yml ran on every PR)",
 		paths: ANY,
 		commands: [],
-		alone: ["npx tsgo --noEmit", "npx tsgo -p packages/member-web/tsconfig.json"],
+		alone: ["npx tsgo --noEmit"],
 	},
 	{
 		name: "checks",
@@ -170,7 +168,6 @@ export const STEPS = [
 		seconds: 61,
 		paths: [
 			/^packages\/web\//,
-			/^packages\/member-web\/ui\//,
 			/^packages\/cloud-client\//,
 			/^supabase\/functions\//,
 			/^scripts\/web-deployment/,
@@ -191,18 +188,6 @@ export const STEPS = [
 			"git init -q && git add -A && git -c user.name=run-on-node -c user.email=run-on-node@invalid commit -qm snapshot",
 			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' npm run build:release --workspace packages/web; built=$?; rm -rf .git; exit $built`,
 		],
-	},
-	{
-		name: "member-web",
-		why: "packages/member-web",
-		paths: [/^packages\/member-web\//],
-		commands: ["npm test --workspace packages/member-web"],
-	},
-	{
-		name: "company",
-		why: "packages/company",
-		paths: [/^packages\/company\//],
-		commands: ["npm test --workspace packages/company"],
 	},
 	{
 		name: "contracts",
