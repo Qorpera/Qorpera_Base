@@ -1429,7 +1429,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("renders affected file chips and omits the folder source footer in the Changes drawer", async () => {
+	it("shows no file links and no folder source footer in the Changes drawer", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
 		const site = summary({
@@ -1484,23 +1484,21 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		const chips = [...view.el.querySelectorAll<HTMLAnchorElement>(".surface-overview-change .surface-file-chip")];
-		expect(chips.map((chip) => chip.textContent)).toEqual([
-			"identity/tokens.json",
-			"src/Hero.tsx",
-			"src/Footer.tsx",
-			"+1",
-		]);
-		expect(linkHref(chips[0]!)).toBe(`#/c/${COMPANY}/s/files`);
-		expect(store.state.drawer).toBeUndefined();
-		chips[0]!.click();
-		expect(navigated).toEqual(["files"]);
-		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
-		expect(store.state.drawer).toBeUndefined();
+		expect(view.el.querySelector(".surface-overview-change-title")?.textContent).toBe("Refine hero & tokens");
+		expect(view.el.querySelector(".surface-overview-change")?.textContent).not.toContain("src/Hero.tsx");
+		expect(view.el.querySelector(".surface-overview-change a")).toBeNull();
+		expect(navigated).toEqual([]);
 
 		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
 		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();
 		expect(view.el.querySelector(".surface-source-pill")).toBeNull();
+
+		store.openDrawer(site.id, SESSION);
+		view.update();
+		const drawerChange = view.el.querySelector<HTMLElement>(".surface-drawer-change");
+		expect(drawerChange?.querySelector(".surface-drawer-change-title")?.textContent).toBe("Refine hero & tokens");
+		expect(drawerChange?.textContent).not.toContain("src/Hero.tsx");
+		expect(drawerChange?.querySelector("a")).toBeNull();
 
 		view.dispose();
 
