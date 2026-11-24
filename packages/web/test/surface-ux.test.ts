@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { SurfaceSummary } from "@qorpera/contracts";
+import { inferSurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import {
@@ -13,7 +13,7 @@ import {
 	startPublicRead,
 } from "../src/app/company.ts";
 import { Store } from "../src/app/state.ts";
-import { inferSurfaceKind, opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
+import { opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
 import { recipientOf, renderLocalSitePreviewHtml } from "../src/app/surface-local-sandbox.ts";
 import {
 	activeTaskSessions,
