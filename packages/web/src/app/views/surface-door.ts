@@ -136,6 +136,8 @@ export class SurfaceDoorStage {
 	readonly el = h("div", { class: "surface-door-stage" });
 	readonly #lifetime = new AbortController();
 	readonly #waitingState = h("span", { class: "surface-state is-running" });
+	readonly #waitingFigure = h("div", { class: "surface-door-figure", hidden: true });
+	#figureKey = "";
 	readonly #waitingText = h("p");
 	readonly #retryBtn = h(
 		"button",
@@ -150,6 +152,7 @@ export class SurfaceDoorStage {
 	readonly #waiting = h(
 		"div",
 		{ class: "surface-frame is-waiting", hidden: true },
+		this.#waitingFigure,
 		this.#waitingState,
 		this.#waitingText,
 		this.#retryBtn,
@@ -305,6 +308,15 @@ export class SurfaceDoorStage {
 		);
 	}
 
+	setFigure(key: string, make: (() => HTMLElement) | null): void {
+		if (key === this.#figureKey) return;
+		this.#figureKey = key;
+		const figure = make?.();
+		if (figure) this.#waitingFigure.replaceChildren(h("span", { class: "surface-door-figure-shadow" }), figure);
+		else this.#waitingFigure.replaceChildren();
+		this.#syncWaitingFigure();
+	}
+
 	setInspectorMode(active: boolean): void {
 		this.#inspectorActive = active;
 		this.#postInspectorMode(active);
@@ -367,6 +379,13 @@ export class SurfaceDoorStage {
 		this.#waitingText.textContent = words;
 		this.#retryBtn.hidden = kind !== "failed" || !this.#options.onRetry;
 		this.#waiting.hidden = false;
+		this.#syncWaitingFigure();
+	}
+
+	#syncWaitingFigure(): void {
+		const show = this.#waitingState.classList.contains("is-running") && this.#waitingFigure.childElementCount > 0;
+		this.#waitingFigure.hidden = !show;
+		this.#waitingState.hidden = show;
 	}
 
 	#dropStaging(): void {
