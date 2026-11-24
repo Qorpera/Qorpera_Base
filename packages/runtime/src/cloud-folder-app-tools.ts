@@ -1389,6 +1389,7 @@ export function cloudAppTools(options: {
 	const appGuideTool: CloudNativeTool = {
 		name: "app_guide" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: APP_GUIDE_DESCRIPTION,
 		inputSchema: {
 			type: "object",

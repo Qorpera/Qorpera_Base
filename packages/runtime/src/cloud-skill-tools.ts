@@ -486,6 +486,7 @@ export function cloudSkillTools(
 	const read: CloudNativeTool = {
 		name: "read_skill" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_READ_SKILL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
@@ -665,6 +666,7 @@ export function cloudSkillTools(
 	const search: CloudNativeTool = {
 		name: "search_skills" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_SEARCH_SKILLS_DESCRIPTION,
 		inputSchema: {
 			type: "object",

@@ -1058,10 +1058,26 @@ export async function runCloudGeminiToolSession(options: {
 
 				if (functionCalls.length > 0) {
 					let stopAfterBatch = false;
+					sessionSignal.throwIfAborted();
+					const batchResults =
+						functionCalls.length === 1
+							? [
+									await options.boundary.invoke(
+										assignedCallIds[0],
+										"qorpera",
+										functionCalls[0].name,
+										functionCalls[0].args,
+									),
+								]
+							: await Promise.all(
+									functionCalls.map((call, index) =>
+										options.boundary.invoke(assignedCallIds[index], "qorpera", call.name, call.args),
+									),
+								);
+					sessionSignal.throwIfAborted();
 					for (const [index, call] of functionCalls.entries()) {
-						sessionSignal.throwIfAborted();
 						const callId = assignedCallIds[index];
-						const result = await options.boundary.invoke(callId, "qorpera", call.name, call.args);
+						const result = batchResults[index];
 						toolCalls += 1;
 						const envelopeText = result.contentItems[0].text;
 						const imageItem = result.contentItems.find(

@@ -1104,4 +1104,70 @@ describe("cloud-owned native tool boundary", () => {
 			boundary.close();
 		}
 	});
+
+	it("runs parallelRead tools concurrently while preserving exclusive barriers for writes", async () => {
+		const { tool } = fixture();
+		const events: string[] = [];
+		let inFlightReads = 0;
+		let peakReads = 0;
+		const resolvers: Array<() => void> = [];
+		const readTool: CloudNativeTool = {
+			...tool,
+			name: "parallel_read",
+			parallelRead: true,
+			execute: async (args) => {
+				const path = (args as { path: string }).path;
+				events.push(`read-start:${path}`);
+				inFlightReads += 1;
+				peakReads = Math.max(peakReads, inFlightReads);
+				await new Promise<void>((resolve) => {
+					resolvers.push(resolve);
+				});
+				inFlightReads -= 1;
+				events.push(`read-end:${path}`);
+				return { kind: "text", value: `content:${path}` };
+			},
+		};
+		const writeTool: CloudNativeTool = {
+			...tool,
+			name: "exclusive_write",
+			execute: async (args) => {
+				const path = (args as { path: string }).path;
+				events.push(`write:${path}`);
+				return { kind: "text", value: `wrote:${path}` };
+			},
+		};
+		const boundary = new CloudNativeToolBoundary({
+			companyId,
+			runId,
+			tools: [readTool, writeTool],
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+		});
+		try {
+			const r1 = boundary.invoke("c_r1", "qorpera", "parallel_read", { path: "a.md" });
+			const r2 = boundary.invoke("c_r2", "qorpera", "parallel_read", { path: "b.md" });
+			const r3 = boundary.invoke("c_r3", "qorpera", "parallel_read", { path: "c.md" });
+			const w1 = boundary.invoke("c_w1", "qorpera", "exclusive_write", { path: "mut.md" });
+			const r4 = boundary.invoke("c_r4", "qorpera", "parallel_read", { path: "after.md" });
+
+			await vi.waitFor(() => expect(resolvers.length).toBe(3));
+			expect(peakReads).toBe(3);
+			expect(events).not.toContain("write:mut.md");
+			expect(events).not.toContain("read-start:after.md");
+
+			for (const done of resolvers.splice(0)) done();
+			await vi.waitFor(() => expect(resolvers.length).toBe(1));
+			expect(events.indexOf("write:mut.md")).toBeGreaterThan(events.indexOf("read-end:a.md"));
+			expect(events.indexOf("write:mut.md")).toBeGreaterThan(events.indexOf("read-end:b.md"));
+			expect(events.indexOf("write:mut.md")).toBeGreaterThan(events.indexOf("read-end:c.md"));
+			expect(events.indexOf("read-start:after.md")).toBeGreaterThan(events.indexOf("write:mut.md"));
+
+			for (const done of resolvers.splice(0)) done();
+			const settled = await Promise.all([r1, r2, r3, w1, r4]);
+			expect(settled.every((item) => item.success)).toBe(true);
+		} finally {
+			boundary.close();
+		}
+	});
 });

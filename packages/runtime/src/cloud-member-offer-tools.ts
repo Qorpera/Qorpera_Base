@@ -67,6 +67,7 @@ export function cloudMemberOfferTools(
 	const crew: CloudNativeTool = {
 		name: "crew_and_members" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: true,
 		description: CLOUD_CREW_AND_MEMBERS_DESCRIPTION,
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
 		parseArguments(value) {
