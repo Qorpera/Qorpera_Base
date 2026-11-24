@@ -71,6 +71,16 @@ const app: CompanySite = {
 	machine: "shop-server",
 	port: 3000,
 };
+const booking: CompanySite = {
+	...app,
+	id: id(87),
+	slug: "booking",
+	title: null,
+	url: "https://booking-preview.qorpera.com/",
+	source: "booking-server",
+	machine: "booking-server",
+	port: 8080,
+};
 // A project's site made from its code (step 4): the plain row, its source the project's place under code/, no agent.
 const gift: CompanySite = {
 	...shop,
@@ -167,13 +177,13 @@ const choose = (label: string) =>
 const focusKey = () => (document.activeElement as HTMLElement | null)?.dataset.focusKey;
 
 describe("Sites: the rows", () => {
-	it("draws each site as one row: the globe, its title and state, its link to copy and open, its password hidden", async () => {
+	it("draws each site as one row: the globe, its title and state, its link to copy and open, no password", async () => {
 		setup([shop, draft]);
 		expect(view!.el.textContent).toContain("Checking…");
 		await settle();
 		expect(ids()).toEqual([shop.id, draft.id]);
 		expect(view!.el.querySelector("h1")?.textContent).toBe("Sites");
-		expect(view!.el.querySelector(".sites-head p")?.textContent).toBe("Share a site with its link and password.");
+		expect(view!.el.querySelector(".sites-head p")?.textContent).toBe("Share a site with its link once it is live.");
 
 		const row = rowOf(shop.id)!;
 		expect(row.getAttribute("aria-label")).toBe("Wristband shop");
@@ -192,14 +202,14 @@ describe("Sites: the rows", () => {
 		expect(open.target).toBe("_blank");
 		expect(open.rel).toBe("noopener noreferrer");
 		expect(open.getAttribute("aria-label")).toBe("Open the site");
-		// The password sits beside it as dots, with an eye; nothing is read until asked for.
-		expect(secretOf(shop.id)).toBe(DOTS);
-		expect(control(shop.id, "copy-password")?.getAttribute("aria-label")).toBe("Copy the password");
-		expect(control(shop.id, "eye")?.getAttribute("aria-label")).toBe("Show password");
+		expect(row.querySelector(".site-secret")).toBeNull();
+		expect(control(shop.id, "copy-password")).toBeNull();
+		expect(control(shop.id, "eye")).toBeNull();
+		expect(row.textContent).not.toMatch(/password/i);
 		expect(control(shop.id, "more")?.getAttribute("aria-label")).toBe("More options for Wristband shop");
 		expect(control(shop.id, "more")?.getAttribute("aria-haspopup")).toBe("menu");
 		// Every rare thing is in the menu: the row has no other button.
-		expect(buttonsIn(row)).toHaveLength(4);
+		expect(buttonsIn(row)).toHaveLength(2);
 
 		// A site still publishing goes by its name in the link.
 		const publishing = rowOf(draft.id)!;
@@ -208,10 +218,18 @@ describe("Sites: the rows", () => {
 		expect(publishing.querySelector<HTMLElement>(".site-state")?.title).toBe("");
 	});
 
-	it("shows an app link at its own host, and a site that is off", async () => {
+	it("shows an app link at its own host with its password hidden, and a site that is off", async () => {
 		setup([app, { ...app, id: id(84), slug: "old-shop", title: null, state: "off", machine: null, port: 8080 }]);
 		await settle();
+		expect(view!.el.querySelector(".sites-head p")?.textContent).toBe(
+			"Share a site with its link once it is live. An app link also needs its password.",
+		);
 		expect(control(app.id, "copy-link")?.textContent).toBe("saml-shop-preview.qorpera.com");
+		expect(secretOf(app.id)).toBe(DOTS);
+		expect(control(app.id, "copy-password")?.getAttribute("aria-label")).toBe("Copy the password");
+		expect(control(app.id, "eye")?.getAttribute("aria-label")).toBe("Show password");
+		expect(buttonsIn(rowOf(app.id)!)).toHaveLength(4);
+		expect(secretOf(id(84))).toBe(DOTS);
 		expect(rowOf(app.id)?.querySelector<HTMLAnchorElement>("a.site-link-open")?.href).toBe(app.url);
 		// No machine or port is named to a founder.
 		expect(rowOf(app.id)?.textContent).not.toMatch(/port|machine|shop-server/);
@@ -338,35 +356,35 @@ describe("Sites: copying", () => {
 
 	it("shows and hides a password with the eye", async () => {
 		const read = deferred<CompanySitePassword>();
-		const { client } = setup([shop, draft], admin, (client) => {
+		const { client } = setup([app, booking], admin, (client) => {
 			vi.mocked(client.password).mockImplementationOnce(() => read.promise);
 		});
 		await settle();
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		// While it is read, the password pills and menus are off; the link still copies.
-		expect(rowOf(shop.id)?.querySelector(".site-secret.is-reading")).not.toBeNull();
-		expect((control(draft.id, "eye") as HTMLButtonElement).disabled).toBe(true);
-		expect((control(draft.id, "more") as HTMLButtonElement).disabled).toBe(true);
-		expect((control(shop.id, "copy-link") as HTMLButtonElement).disabled).toBe(false);
-		read.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		expect(rowOf(app.id)?.querySelector(".site-secret.is-reading")).not.toBeNull();
+		expect((control(booking.id, "eye") as HTMLButtonElement).disabled).toBe(true);
+		expect((control(booking.id, "more") as HTMLButtonElement).disabled).toBe(true);
+		expect((control(app.id, "copy-link") as HTMLButtonElement).disabled).toBe(false);
+		read.resolve({ siteId: app.id, password: PASSWORD, changedAt: timestamp });
 		await settle();
-		expect(client.password).toHaveBeenCalledWith(shop.id, expect.any(AbortSignal));
-		expect(secretOf(shop.id)).toBe(PASSWORD);
-		expect(control(shop.id, "eye")?.getAttribute("aria-label")).toBe("Hide password");
+		expect(client.password).toHaveBeenCalledWith(app.id, expect.any(AbortSignal));
+		expect(secretOf(app.id)).toBe(PASSWORD);
+		expect(control(app.id, "eye")?.getAttribute("aria-label")).toBe("Hide password");
 		// Shown, the copy pill is named by the password itself.
-		expect(control(shop.id, "copy-password")?.hasAttribute("aria-label")).toBe(false);
-		expect(focusKey()).toBe(`site-eye:${shop.id}`);
-		expect(secretOf(draft.id)).toBe(DOTS);
+		expect(control(app.id, "copy-password")?.hasAttribute("aria-label")).toBe(false);
+		expect(focusKey()).toBe(`site-eye:${app.id}`);
+		expect(secretOf(booking.id)).toBe(DOTS);
 
-		press(shop.id, "eye");
-		expect(secretOf(shop.id)).toBe(DOTS);
-		expect(control(shop.id, "eye")?.getAttribute("aria-label")).toBe("Show password");
-		expect(focusKey()).toBe(`site-eye:${shop.id}`);
+		press(app.id, "eye");
+		expect(secretOf(app.id)).toBe(DOTS);
+		expect(control(app.id, "eye")?.getAttribute("aria-label")).toBe("Show password");
+		expect(focusKey()).toBe(`site-eye:${app.id}`);
 		expect(view!.el.textContent).not.toContain(PASSWORD);
 	});
 
 	it("says why a password could not be read, keeping the focus on the eye", async () => {
-		setup([shop], admin, (client) => {
+		setup([app], admin, (client) => {
 			vi.mocked(client.password)
 				.mockRejectedValueOnce(
 					new CloudRpcError("qorpera_company_site_password", { message: "denied", code: "42501" }),
@@ -374,32 +392,32 @@ describe("Sites: copying", () => {
 				.mockRejectedValueOnce(new Error("offline"));
 		});
 		await settle();
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		await settle();
 		expect(toast()).toBe("Only founders and admins can see passwords or take sites offline.");
-		expect(focusKey()).toBe(`site-eye:${shop.id}`);
-		press(shop.id, "eye");
+		expect(focusKey()).toBe(`site-eye:${app.id}`);
+		press(app.id, "eye");
 		await settle();
 		expect(toast()).toBe("The password could not be read. Try again.");
-		expect(secretOf(shop.id)).toBe(DOTS);
+		expect(secretOf(app.id)).toBe(DOTS);
 	});
 
 	it("copies a hidden password without showing it, and a shown one as it stands", async () => {
 		const write = clipboard();
-		const { client } = setup([shop]);
+		const { client } = setup([app]);
 		await settle();
-		press(shop.id, "copy-password");
+		press(app.id, "copy-password");
 		await settle();
 		expect(client.password).toHaveBeenCalledTimes(1);
 		expect(write).toHaveBeenCalledWith(PASSWORD);
 		expect(toast()).toBe("The password is copied.");
-		expect(secretOf(shop.id)).toBe(DOTS);
-		expect(focusKey()).toBe(`site-copy-password:${shop.id}`);
+		expect(secretOf(app.id)).toBe(DOTS);
+		expect(focusKey()).toBe(`site-copy-password:${app.id}`);
 
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		await settle();
 		write.mockClear();
-		press(shop.id, "copy-password");
+		press(app.id, "copy-password");
 		await settle();
 		expect(write).toHaveBeenCalledWith(PASSWORD);
 		// Shown already: nothing is read again.
@@ -422,14 +440,14 @@ describe("Sites: copying", () => {
 		const writeText = vi.fn(async () => {});
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write, writeText } });
 		const read = deferred<CompanySitePassword>();
-		setup([shop], admin, (client) => {
+		setup([app], admin, (client) => {
 			vi.mocked(client.password).mockImplementationOnce(() => read.promise);
 		});
 		await settle();
-		press(shop.id, "copy-password");
+		press(app.id, "copy-password");
 		// The press's own moment: the clipboard is asked before the read has come back.
 		expect(write).toHaveBeenCalledTimes(1);
-		read.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		read.resolve({ siteId: app.id, password: PASSWORD, changedAt: timestamp });
 		await settle();
 		const blob = await items[0]!.data["text/plain"];
 		expect([blob?.type, blob?.size]).toEqual(["text/plain", PASSWORD.length]);
@@ -439,30 +457,30 @@ describe("Sites: copying", () => {
 
 	it("shows a password selected to copy by hand when the browser will not copy it", async () => {
 		clipboard(refuse);
-		setup([shop]);
+		setup([app]);
 		await settle();
-		press(shop.id, "copy-password");
+		press(app.id, "copy-password");
 		await settle();
-		const field = view!.el.querySelector<HTMLInputElement>(`[data-focus-key="site-by-hand:password:${shop.id}"]`)!;
+		const field = view!.el.querySelector<HTMLInputElement>(`[data-focus-key="site-by-hand:password:${app.id}"]`)!;
 		expect(field.value).toBe(PASSWORD);
 		expect(document.activeElement).toBe(field);
 		expect([field.selectionStart, field.selectionEnd]).toEqual([0, PASSWORD.length]);
 		expect(toast()).toMatch(/^Press (⌘|Ctrl\+)C to copy\.$/);
 		// Hidden again, it leaves the page.
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
 		expect(view!.el.textContent).not.toContain(PASSWORD);
 	});
 });
 
 describe("Sites: the menu and its questions", () => {
-	it("keeps what is rare in one menu: Change password, and Take offline in red", async () => {
-		setup([shop]);
+	it("keeps what is rare in one menu: an app link's Change password, and Take offline in red", async () => {
+		setup([app, shop]);
 		await settle();
-		const more = control(shop.id, "more") as HTMLButtonElement;
+		const more = control(app.id, "more") as HTMLButtonElement;
 		more.click();
 		expect(more.getAttribute("aria-expanded")).toBe("true");
-		expect(openMenu()?.el.getAttribute("aria-label")).toBe("Wristband shop");
+		expect(openMenu()?.el.getAttribute("aria-label")).toBe("SAML shop");
 		expect(menuLabels()).toEqual([
 			{ label: "Change password", danger: false },
 			{ label: "Take offline", danger: true },
@@ -473,20 +491,23 @@ describe("Sites: the menu and its questions", () => {
 		expect(document.activeElement?.textContent).toBe("Take offline");
 		document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(openMenu()).toBeUndefined();
-		expect(focusKey()).toBe(`site-more:${shop.id}`);
-		expect(control(shop.id, "more")?.getAttribute("aria-expanded")).toBe("false");
+		expect(focusKey()).toBe(`site-more:${app.id}`);
+		expect(control(app.id, "more")?.getAttribute("aria-expanded")).toBe("false");
+		press(shop.id, "more");
+		expect(menuLabels()).toEqual([{ label: "Take offline", danger: true }]);
+		expect(document.activeElement?.textContent).toBe("Take offline");
 	});
 
 	it("changes a site's password to one the owner types, after checking it", async () => {
-		const { client } = setup([shop]);
+		const { client } = setup([app]);
 		await settle();
-		press(shop.id, "more");
+		press(app.id, "more");
 		choose("Change password");
 		const form = question()!;
 		const field = form.querySelector<HTMLInputElement>("input")!;
 		expect(document.activeElement).toBe(field);
-		expect(form.querySelector("h2")?.textContent).toBe("New password for Wristband shop");
-		expect(field.getAttribute("aria-label")).toBe("New password for Wristband shop");
+		expect(form.querySelector("h2")?.textContent).toBe("New password for SAML shop");
+		expect(field.getAttribute("aria-label")).toBe("New password for SAML shop");
 		expect(form.textContent).toContain("Every visitor enters the new password; the old one stops working at once.");
 		const problem = () => form.querySelector('[role="alert"]')?.textContent;
 		const type = (value: string) => {
@@ -505,17 +526,17 @@ describe("Sites: the menu and its questions", () => {
 		expect(buttonsIn(form).map((item) => item.textContent)).toContain("Working…");
 		expect(buttonsIn(form).every((item) => item.disabled)).toBe(true);
 		await settle();
-		expect(client.setPassword).toHaveBeenCalledWith(shop.id, "our friends only 2026", expect.any(AbortSignal));
+		expect(client.setPassword).toHaveBeenCalledWith(app.id, "our friends only 2026", expect.any(AbortSignal));
 		expect(question()).toBeNull();
 		// The new password is shown, ready to copy, and the toast says it changed.
-		expect(secretOf(shop.id)).toBe("our friends only 2026");
+		expect(secretOf(app.id)).toBe("our friends only 2026");
 		expect(toast()).toBe("The password is changed.");
-		expect(focusKey()).toBe(`site-copy-password:${shop.id}`);
+		expect(focusKey()).toBe(`site-copy-password:${app.id}`);
 		expect(client.list).toHaveBeenCalledTimes(2);
 	});
 
 	it("makes a new random password, says in the question why one was refused, and cancels with nothing sent", async () => {
-		const { client } = setup([shop], admin, (client) => {
+		const { client } = setup([app], admin, (client) => {
 			vi.mocked(client.setPassword)
 				.mockRejectedValueOnce(
 					new CloudRpcError("qorpera_set_company_site_password", {
@@ -526,7 +547,7 @@ describe("Sites: the menu and its questions", () => {
 				.mockRejectedValueOnce(new Error("offline"));
 		});
 		await settle();
-		press(shop.id, "more");
+		press(app.id, "more");
 		choose("Change password");
 		const form = question()!;
 		const field = form.querySelector<HTMLInputElement>("input")!;
@@ -542,22 +563,22 @@ describe("Sites: the menu and its questions", () => {
 
 		pressLabel(form, "Make a new password");
 		await settle();
-		expect(client.setPassword).toHaveBeenLastCalledWith(shop.id, null, expect.any(AbortSignal));
+		expect(client.setPassword).toHaveBeenLastCalledWith(app.id, null, expect.any(AbortSignal));
 		expect(form.querySelector('[role="alert"]')?.textContent).toBe("The password could not be changed. Try again.");
 
 		pressLabel(form, "Make a new password");
 		await settle();
 		expect(client.setPassword).toHaveBeenCalledTimes(3);
 		expect(question()).toBeNull();
-		expect(secretOf(shop.id)).toBe("n3wp-4ss-w0rd");
+		expect(secretOf(app.id)).toBe("n3wp-4ss-w0rd");
 
 		// Cancel, and Escape, close the question with nothing sent; the focus goes back to "⋯".
-		press(shop.id, "more");
+		press(app.id, "more");
 		choose("Change password");
 		pressLabel(question()!, "Cancel");
 		expect(question()).toBeNull();
-		expect(focusKey()).toBe(`site-more:${shop.id}`);
-		press(shop.id, "more");
+		expect(focusKey()).toBe(`site-more:${app.id}`);
+		press(app.id, "more");
 		choose("Change password");
 		question()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(question()).toBeNull();
@@ -570,7 +591,7 @@ describe("Sites: the menu and its questions", () => {
 		press(shop.id, "more");
 		choose("Take offline");
 		expect(dialog().textContent).toContain(
-			"Take Wristband shop offline? Its link stops working and its password is deleted. The files stay in the Company File.",
+			"Take Wristband shop offline? Its link stops working. The files stay in the Company File.",
 		);
 		pressLabel(dialog(), "Cancel");
 		await settle();
@@ -611,7 +632,7 @@ describe("Sites: the menu and its questions", () => {
 		press(gift.id, "more");
 		choose("Take offline");
 		expect(dialog().textContent).toContain(
-			"Take Gift message offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.",
+			"Take Gift message offline? Its earlier versions go with it. The newest one waits in What's new until you put it live.",
 		);
 		pressLabel(dialog(), "Take offline");
 		await settle();
@@ -646,12 +667,12 @@ describe("Sites: the menu and its questions", () => {
 	});
 
 	it("reads once more after a change made while a read was out, so the change shows", async () => {
-		const { client, state } = setup([shop, draft]);
+		const { client, state } = setup([app, draft]);
 		await settle();
 		const read = deferred<CompanySite[]>();
 		vi.mocked(client.list).mockImplementationOnce(() => read.promise);
 		// The password change's own read is still out when the owner takes the other site offline: it saw both sites.
-		press(shop.id, "more");
+		press(app.id, "more");
 		choose("Change password");
 		pressLabel(question()!, "Make a new password");
 		await settle();
@@ -666,7 +687,7 @@ describe("Sites: the menu and its questions", () => {
 		await settle();
 		await settle();
 		expect(client.list).toHaveBeenCalledTimes(3);
-		expect(ids()).toEqual([shop.id]);
+		expect(ids()).toEqual([app.id]);
 	});
 });
 
@@ -679,60 +700,60 @@ describe("Sites: answers that come back late", () => {
 	it("never brings back a password the member hid while its copy was out (review F1)", async () => {
 		const copy = deferred<void>();
 		clipboard(() => copy.promise);
-		setup([shop]);
+		setup([app]);
 		await settle();
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		await settle();
-		expect(secretOf(shop.id)).toBe(PASSWORD);
-		press(shop.id, "copy-password");
-		press(shop.id, "eye");
-		expect(secretOf(shop.id)).toBe(DOTS);
+		expect(secretOf(app.id)).toBe(PASSWORD);
+		press(app.id, "copy-password");
+		press(app.id, "eye");
+		expect(secretOf(app.id)).toBe(DOTS);
 		copy.reject(new Error("denied"));
 		await settle();
 		expect(view!.el.textContent).not.toContain(PASSWORD);
 		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
-		expect(control(shop.id, "eye")?.getAttribute("aria-label")).toBe("Show password");
+		expect(control(app.id, "eye")?.getAttribute("aria-label")).toBe("Show password");
 		expect(toast()).toBeUndefined();
 	});
 
 	it("never brings back the old password when it was changed while its copy was out (review F1)", async () => {
 		const copy = deferred<void>();
 		clipboard(() => copy.promise);
-		setup([shop]);
+		setup([app]);
 		await settle();
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		await settle();
-		press(shop.id, "copy-password");
-		press(shop.id, "more");
+		press(app.id, "copy-password");
+		press(app.id, "more");
 		choose("Change password");
 		const form = question()!;
 		form.querySelector<HTMLInputElement>("input")!.value = "our friends only 2026";
 		form.requestSubmit();
 		await settle();
-		expect(secretOf(shop.id)).toBe("our friends only 2026");
+		expect(secretOf(app.id)).toBe("our friends only 2026");
 		copy.reject(new Error("denied"));
 		await settle();
 		expect(view!.el.textContent).not.toContain(PASSWORD);
 		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
-		expect(secretOf(shop.id)).toBe("our friends only 2026");
+		expect(secretOf(app.id)).toBe("our friends only 2026");
 	});
 
 	it("never moves the focus behind a question when a read comes back (review F2)", async () => {
-		const { client, state } = setup([shop, draft]);
+		const { client, state } = setup([app, booking]);
 		await settle();
 		const read = deferred<CompanySite[]>();
 		vi.mocked(client.list).mockImplementationOnce(() => read.promise);
-		press(shop.id, "more");
+		press(app.id, "more");
 		choose("Change password");
 		pressLabel(question()!, "Make a new password");
 		await settle();
 		expect(question()).toBeNull();
 		// The change's own read is still out when the member opens the other site's question.
-		press(draft.id, "more");
+		press(booking.id, "more");
 		choose("Change password");
 		const field = question()!.querySelector("input")!;
 		expect(document.activeElement).toBe(field);
-		read.resolve([shop, draft]);
+		read.resolve([app, booking]);
 		await settle();
 		expect(document.activeElement).toBe(field);
 		// The same behind the take-offline question, for a read that comes back and for a version What's new tells.
@@ -741,13 +762,13 @@ describe("Sites: answers that come back late", () => {
 		vi.mocked(client.list).mockImplementationOnce(() => second.promise);
 		vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
 		// A read that fails reads the list again.
-		press(draft.id, "eye");
+		press(booking.id, "eye");
 		await settle();
-		press(shop.id, "more");
+		press(app.id, "more");
 		choose("Take offline");
 		const confirm = dialog().querySelector<HTMLButtonElement>("button.btn-danger")!;
 		expect(document.activeElement).toBe(confirm);
-		second.resolve([shop, draft, gift]);
+		second.resolve([app, booking, gift]);
 		await settle();
 		expect(document.activeElement).toBe(confirm);
 		state.versions = { "gift-message": 4 };
@@ -759,26 +780,26 @@ describe("Sites: answers that come back late", () => {
 	it("shows nothing a read answers after the member's authority went or the page was left", async () => {
 		const role = { manage: true };
 		const read = deferred<CompanySitePassword>();
-		const { client } = setup([shop], { canManage: () => role.manage }, (client) => {
+		const { client } = setup([app], { canManage: () => role.manage }, (client) => {
 			vi.mocked(client.password).mockImplementationOnce(() => read.promise);
 		});
 		await settle();
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		role.manage = false;
 		view!.update();
 		role.manage = true;
 		view!.update();
-		read.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		read.resolve({ siteId: app.id, password: PASSWORD, changedAt: timestamp });
 		await settle();
 		expect(view!.el.textContent).not.toContain(PASSWORD);
-		expect(secretOf(shop.id)).toBe(DOTS);
+		expect(secretOf(app.id)).toBe(DOTS);
 		// The page left while a read is out: its answer draws nothing.
 		const again = deferred<CompanySitePassword>();
 		vi.mocked(client.password).mockImplementationOnce(() => again.promise);
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		const el = view!.el;
 		view!.dispose();
-		again.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		again.resolve({ siteId: app.id, password: PASSWORD, changedAt: timestamp });
 		await settle();
 		expect(el.textContent).toBe("");
 		expect(document.body.textContent).not.toContain(PASSWORD);
@@ -788,16 +809,16 @@ describe("Sites: answers that come back late", () => {
 		const role = { manage: true };
 		clipboard(refusal);
 		const read = deferred<CompanySitePassword>();
-		setup([shop], { canManage: () => role.manage }, (client) => {
+		setup([app], { canManage: () => role.manage }, (client) => {
 			vi.mocked(client.password).mockImplementationOnce(() => read.promise);
 		});
 		await settle();
-		press(shop.id, "copy-password");
+		press(app.id, "copy-password");
 		role.manage = false;
 		view!.update();
 		role.manage = true;
 		view!.update();
-		read.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		read.resolve({ siteId: app.id, password: PASSWORD, changedAt: timestamp });
 		await settle();
 		expect(document.body.textContent).not.toContain(PASSWORD);
 		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
@@ -807,11 +828,11 @@ describe("Sites: answers that come back late", () => {
 	it("shows no new password when the member's authority went while it was being set", async () => {
 		const role = { manage: true };
 		const set = deferred<CompanySitePassword>();
-		setup([shop], { canManage: () => role.manage }, (client) => {
+		setup([app], { canManage: () => role.manage }, (client) => {
 			vi.mocked(client.setPassword).mockImplementationOnce(() => set.promise);
 		});
 		await settle();
-		press(shop.id, "more");
+		press(app.id, "more");
 		choose("Change password");
 		pressLabel(question()!, "Make a new password");
 		role.manage = false;
@@ -819,27 +840,27 @@ describe("Sites: answers that come back late", () => {
 		expect(question()).toBeNull();
 		role.manage = true;
 		view!.update();
-		set.resolve({ siteId: shop.id, password: "n3wp-4ss-w0rd", changedAt: later });
+		set.resolve({ siteId: app.id, password: "n3wp-4ss-w0rd", changedAt: later });
 		await settle();
 		expect(document.body.textContent).not.toContain("n3wp-4ss-w0rd");
-		expect(secretOf(shop.id)).toBe(DOTS);
+		expect(secretOf(app.id)).toBe(DOTS);
 	});
 
 	it("takes a password off the screen when the list says it was changed since (elsewhere)", async () => {
-		const { state } = setup([shop, draft]);
+		const { state } = setup([app, booking]);
 		await settle();
-		press(shop.id, "eye");
+		press(app.id, "eye");
 		await settle();
-		expect(secretOf(shop.id)).toBe(PASSWORD);
+		expect(secretOf(app.id)).toBe(PASSWORD);
 		// Another owner changed it; a read the page makes for its own reasons (here: the other site taken offline) says so.
-		state.sites = state.sites.map((site) => (site.id === shop.id ? { ...site, passwordChangedAt: later } : site));
-		press(draft.id, "more");
+		state.sites = state.sites.map((site) => (site.id === app.id ? { ...site, passwordChangedAt: later } : site));
+		press(booking.id, "more");
 		choose("Take offline");
 		pressLabel(dialog(), "Take offline");
 		await settle();
-		expect(ids()).toEqual([shop.id]);
+		expect(ids()).toEqual([app.id]);
 		expect(view!.el.textContent).not.toContain(PASSWORD);
-		expect(secretOf(shop.id)).toBe(DOTS);
+		expect(secretOf(app.id)).toBe(DOTS);
 	});
 
 	it("leaves a link's copy by hand out once its site went, and never pulls the focus off another field", async () => {
@@ -879,26 +900,30 @@ describe("Sites: answers that come back late", () => {
 describe("Sites: who may do what", () => {
 	it("shows other members the sites and their links, without passwords or a menu", async () => {
 		const role = { manage: false };
-		const { client } = setup([shop], { canManage: () => role.manage });
+		const { client } = setup([shop, app], { canManage: () => role.manage });
 		await settle();
 		expect(view!.el.querySelector(".sites-head p")?.textContent).toBe(
 			"Only founders and admins can see passwords or take sites offline.",
 		);
-		const row = rowOf(shop.id)!;
-		expect(row.querySelector(".site-secret")).toBeNull();
-		expect(control(shop.id, "more")).toBeNull();
-		expect(buttonsIn(row).map((item) => item.dataset.focusKey)).toEqual([`site-copy-link:${shop.id}`]);
-		expect(row.querySelector("a.site-link-open")).not.toBeNull();
+		for (const site of [shop, app]) {
+			const row = rowOf(site.id)!;
+			expect(row.querySelector(".site-secret")).toBeNull();
+			expect(control(site.id, "more")).toBeNull();
+			expect(buttonsIn(row).map((item) => item.dataset.focusKey)).toEqual([`site-copy-link:${site.id}`]);
+			expect(row.querySelector("a.site-link-open")).not.toBeNull();
+		}
 
-		// The role arrives (or changes) after the page: it redraws with the password and the menu.
 		role.manage = true;
 		view!.update();
-		expect(view!.el.querySelector(".sites-head p")?.textContent).toBe("Share a site with its link and password.");
-		expect(secretOf(shop.id)).toBe(DOTS);
-		press(shop.id, "eye");
+		expect(view!.el.querySelector(".sites-head p")?.textContent).toBe(
+			"Share a site with its link once it is live. An app link also needs its password.",
+		);
+		expect(rowOf(shop.id)?.querySelector(".site-secret")).toBeNull();
+		expect(secretOf(app.id)).toBe(DOTS);
+		press(app.id, "eye");
 		await settle();
-		expect(secretOf(shop.id)).toBe(PASSWORD);
-		press(shop.id, "more");
+		expect(secretOf(app.id)).toBe(PASSWORD);
+		press(app.id, "more");
 		choose("Change password");
 		expect(question()).not.toBeNull();
 
@@ -907,11 +932,20 @@ describe("Sites: who may do what", () => {
 		view!.update();
 		expect(question()).toBeNull();
 		expect(view!.el.textContent).not.toContain(PASSWORD);
-		expect(rowOf(shop.id)?.querySelector(".site-secret")).toBeNull();
+		expect(rowOf(app.id)?.querySelector(".site-secret")).toBeNull();
 		role.manage = true;
 		view!.update();
-		expect(secretOf(shop.id)).toBe(DOTS);
+		expect(secretOf(app.id)).toBe(DOTS);
 		expect(client.password).toHaveBeenCalledTimes(1);
+	});
+
+	it("tells other members of a company with websites only what founders and admins do, with no word of a password", async () => {
+		setup([shop, draft], { canManage: () => false });
+		await settle();
+		expect(view!.el.querySelector(".sites-head p")?.textContent).toBe(
+			"Only founders and admins can make a site live or take it offline.",
+		);
+		expect(view!.el.textContent).not.toMatch(/password/i);
 	});
 });
 
@@ -970,9 +1004,9 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		expect(other.querySelector(".site-state")?.textContent).toBe("Live");
 		expect(other.querySelector(".site-down")).toBeNull();
 		expect(control(gift.id, "copy-link")?.textContent).toBe("sites.qorpera.com/gift-message");
-		expect(secretOf(gift.id)).toBe(DOTS);
+		expect(rowOf(gift.id)?.querySelector(".site-secret")).toBeNull();
 		press(gift.id, "more");
-		expect(menuLabels().map((item) => item.label)).toEqual(["Change password", "Take offline"]);
+		expect(menuLabels().map((item) => item.label)).toEqual(["Take offline"]);
 	});
 
 	it("tells every member why, with no menu for those who may not take it offline", async () => {
@@ -1078,7 +1112,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 	it("sends nothing when Qorpera took the site down while its Take offline was on the way, and the focus skips its row", async () => {
 		let answer: unknown = accessOf({});
 		const { client } = setup(
-			[shop, gift, draft],
+			[shop, gift, booking],
 			admin,
 			withAccess(() => answer),
 		);
@@ -1089,10 +1123,10 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 			vi.mocked(client.list).mockImplementationOnce(() => read.promise);
 			vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
 			answer = accessOf(down);
-			press(draft.id, "eye");
+			press(booking.id, "eye");
 			await settle();
 			return async () => {
-				read.resolve([shop, gift, draft]);
+				read.resolve([shop, gift, booking]);
 				await settle();
 			};
 		};
@@ -1122,7 +1156,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		pressLabel(dialog(), "Take offline");
 		await settle();
 		expect(client.unpublish).toHaveBeenCalledExactlyOnceWith(shop.id, expect.any(AbortSignal));
-		expect(focusKey()).toBe(`site-more:${draft.id}`);
+		expect(focusKey()).toBe(`site-more:${booking.id}`);
 	});
 
 	it("draws the page exactly as before on a kernel without the read, or with an answer it cannot read", async () => {
@@ -1167,15 +1201,14 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 	it("keeps what the last read said when a read fails, forgets a password on screen, and gives the link back once up again", async () => {
 		let answer: unknown = accessOf({ [shop.id]: REASON });
 		const { client } = setup(
-			[shop, gift, draft],
+			[shop, app, booking],
 			admin,
 			withAccess(() => answer),
 		);
 		await settle();
 		expect(rowOf(shop.id)?.querySelector(".site-down")).not.toBeNull();
-		/** A new password for the project's site, which then stays on screen: the page reads the list again after it. */
 		const newPassword = async (password: string) => {
-			press(gift.id, "more");
+			press(app.id, "more");
 			choose("Change password");
 			question()!.querySelector("input")!.value = password;
 			question()!.requestSubmit();
@@ -1186,24 +1219,24 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		await newPassword("our friends only");
 		expect(client.list).toHaveBeenCalledTimes(2);
 		expect(rowOf(shop.id)?.querySelector(".site-down")).not.toBeNull();
-		expect(secretOf(gift.id)).toBe("our friends only");
+		expect(secretOf(app.id)).toBe("our friends only");
 		// Taken down while its new password is on screen: the password leaves with the link.
-		answer = accessOf({ [shop.id]: REASON, [gift.id]: REASON });
+		answer = accessOf({ [shop.id]: REASON, [app.id]: REASON });
 		await newPassword("our friends again");
 		expect(client.list).toHaveBeenCalledTimes(3);
-		expect(rowOf(gift.id)?.querySelector(".site-down")).not.toBeNull();
-		expect(rowOf(gift.id)?.querySelector(".site-secret")).toBeNull();
+		expect(rowOf(app.id)?.querySelector(".site-down")).not.toBeNull();
+		expect(rowOf(app.id)?.querySelector(".site-secret")).toBeNull();
 		expect(view!.el.textContent).not.toContain("our friends again");
 		// Up again (Qorpera restored both): the links are back, and the password hidden. A password read that fails (the
 		// other site's) reads the list again.
 		answer = accessOf({});
 		vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
-		press(draft.id, "eye");
+		press(booking.id, "eye");
 		await settle();
 		expect(client.list).toHaveBeenCalledTimes(4);
 		expect(rowOf(shop.id)?.querySelector(".site-down")).toBeNull();
-		expect(control(gift.id, "copy-link")?.textContent).toBe("sites.qorpera.com/gift-message");
-		expect(secretOf(gift.id)).toBe(DOTS);
+		expect(control(app.id, "copy-link")?.textContent).toBe("saml-shop-preview.qorpera.com");
+		expect(secretOf(app.id)).toBe(DOTS);
 	});
 
 	it("says the reason as Qorpera wrote it, without a full stop of its own, and in Danish", async () => {
@@ -1921,10 +1954,156 @@ describe("Sites: a website made private here", () => {
 		await settle();
 		expect(line()).toBe("Live · sites.qorpera.com");
 		press(shop.id, "more");
-		choose("Make private");
+		choose("Make it not live");
 		await settle();
 		expect(hosting.setPublic).toHaveBeenCalledWith(shop.id, false, expect.any(AbortSignal));
 		expect(line()).toBe("Not live yet");
 		surfaces.dispose();
+	});
+});
+
+describe("Sites: a website has no password, an app link keeps its own", () => {
+	const summer: CompanySite = {
+		...shop,
+		id: id(88),
+		slug: "summer-sale",
+		title: "Summer sale",
+		url: `${ORIGIN}/summer-sale/`,
+	};
+	const hostingOf = (shown: Record<string, boolean>, fail = false) => {
+		const known = { ...shown };
+		const state = (): CompanySiteHostingState => ({
+			hostsDomain: "qorpera.com",
+			hostsEnabled: true,
+			publicEnabled: true,
+			domainsEnabled: false,
+			edgeIpv4: null,
+			edgeIpv6: null,
+			edgeCnameTarget: null,
+			sites: new Map(
+				[shop, summer, app].map((site) => [
+					site.id,
+					{
+						siteId: site.id,
+						slug: site.slug,
+						isPublic: known[site.id] === true,
+						deploymentKind: "static" as const,
+						storageMode: "db" as const,
+						liveDeploymentId: null,
+						domains: [],
+					},
+				]),
+			),
+		});
+		const hosting: WebSiteHosting = {
+			read: vi.fn(async () => state()),
+			setPublic: vi.fn(async (siteId: string, next: boolean) => {
+				if (fail) throw new Error("offline");
+				known[siteId] = next;
+				return next;
+			}),
+			addDomain: vi.fn(),
+			removeDomain: vi.fn(),
+			setPrimaryDomain: vi.fn(),
+			recheckDomain: vi.fn(),
+		};
+		return hosting;
+	};
+	const badge = (siteId: string) => rowOf(siteId)?.querySelector(".site-public-badge")?.textContent ?? null;
+	const word = (siteId: string) => rowOf(siteId)?.querySelector(".site-state")?.textContent ?? null;
+
+	it("calls a website Live only when everyone can open it, and Not live yet otherwise; an app link Public", async () => {
+		const { client } = setup([shop, summer, app], admin, undefined, { hosting: hostingOf({ [shop.id]: true }) });
+		await settle();
+		expect([badge(shop.id), word(shop.id)]).toEqual(["Live", null]);
+		expect(rowOf(shop.id)?.querySelector<HTMLElement>(".site-public-badge")?.title).toMatch(
+			/^Published .+ by Co-Founder$/,
+		);
+		expect([badge(summer.id), word(summer.id)]).toEqual(["Not live yet", null]);
+		expect([badge(app.id), word(app.id)]).toEqual([null, "Live"]);
+		for (const site of [shop, summer]) {
+			expect(rowOf(site.id)?.querySelector(".site-secret")).toBeNull();
+			expect(rowOf(site.id)?.textContent).not.toMatch(/password|Public/i);
+		}
+		expect(secretOf(app.id)).toBe(DOTS);
+		press(shop.id, "more");
+		expect(menuLabels().map((item) => item.label)).toEqual(["Make it not live", "Take offline"]);
+		openMenu()?.close();
+		press(summer.id, "more");
+		expect(menuLabels().map((item) => item.label)).toEqual(["Go live", "Take offline"]);
+		openMenu()?.close();
+		press(app.id, "more");
+		expect(menuLabels().map((item) => item.label)).toEqual(["Change password", "Make public", "Take offline"]);
+		openMenu()?.close();
+		expect(client.password).not.toHaveBeenCalled();
+	});
+
+	it("puts a website live and takes it back in the owner's words, and an app link public as before", async () => {
+		const hosting = hostingOf({});
+		setup([summer, app], admin, undefined, { hosting });
+		await settle();
+		press(summer.id, "more");
+		choose("Go live");
+		await settle();
+		expect(hosting.setPublic).toHaveBeenLastCalledWith(summer.id, true, expect.any(AbortSignal));
+		expect(toast()).toBe("The site is live.");
+		expect(badge(summer.id)).toBe("Live");
+		press(summer.id, "more");
+		choose("Make it not live");
+		await settle();
+		expect(hosting.setPublic).toHaveBeenLastCalledWith(summer.id, false, expect.any(AbortSignal));
+		expect(toast()).toBe("The site is not live any more.");
+		expect(badge(summer.id)).toBe("Not live yet");
+		press(app.id, "more");
+		choose("Make public");
+		await settle();
+		expect(toast()).toBe("The site is now public.");
+		expect(badge(app.id)).toBe("Public");
+		press(app.id, "more");
+		choose("Make private");
+		await settle();
+		expect(toast()).toBe("The site is now private.");
+		expect(badge(app.id)).toBeNull();
+	});
+
+	it("says a website did not go live, or is still live, when the change fails", async () => {
+		setup([shop, summer, app], admin, undefined, { hosting: hostingOf({ [shop.id]: true }, true) });
+		await settle();
+		press(summer.id, "more");
+		choose("Go live");
+		await settle();
+		expect(toast()).toBe("The site did not go live. Try again.");
+		press(shop.id, "more");
+		choose("Make it not live");
+		await settle();
+		expect(toast()).toBe("The site is still live. Try again.");
+		press(app.id, "more");
+		choose("Make public");
+		await settle();
+		expect(toast()).toBe("Site visibility could not be changed. Try again.");
+	});
+
+	it("says it all in Danish", async () => {
+		setLanguagePreference("da");
+		try {
+			setup([shop, summer, app], admin, undefined, { hosting: hostingOf({ [shop.id]: true, [app.id]: true }) });
+			await settle();
+			expect([badge(shop.id), badge(summer.id), badge(app.id)]).toEqual(["Live", "Ikke live endnu", "Offentlig"]);
+			expect(view!.el.querySelector(".sites-head p")?.textContent).toBe(
+				"Del en hjemmeside med dens link, når den er live. Et app-link skal også bruge sin adgangskode.",
+			);
+			press(summer.id, "more");
+			expect(menuLabels().map((item) => item.label)).toEqual(["Gå live", "Tag offline"]);
+			openMenu()?.close();
+			press(shop.id, "more");
+			expect(menuLabels().map((item) => item.label)).toEqual(["Slå live fra", "Tag offline"]);
+			choose("Slå live fra");
+			await settle();
+			expect(toast()).toBe("Hjemmesiden er ikke live længere.");
+			press(app.id, "more");
+			expect(menuLabels().map((item) => item.label)).toEqual(["Skift adgangskode", "Gør privat", "Tag offline"]);
+		} finally {
+			setLanguagePreference("system");
+		}
 	});
 });

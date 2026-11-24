@@ -1,7 +1,7 @@
 import { type CompanySite, type CompanySiteTakedown, siteOfLink, type WebSites } from "../../cloud/sites.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
-import { changeError, shownLink, siteEmblem, stateOf, toClipboard } from "./settings-sites.ts";
+import { changeError, hasPassword, shownLink, siteEmblem, stateOf, toClipboard } from "./settings-sites.ts";
 
 /**
  * A site a message links, as a card under the message's words (Jonas, 15 Nov 2026: "chat widgets if there are UX
@@ -180,7 +180,7 @@ export class ThreadSites {
 			),
 		);
 		let key: HTMLButtonElement | null = null;
-		if (!down && this.#canManage()) {
+		if (!down && this.#canManage() && hasPassword(site)) {
 			key = h(
 				"button",
 				{
@@ -219,7 +219,7 @@ export class ThreadSites {
 	 * read is handed to the clipboard as it is read, where the browser takes that, so the copy keeps the press (Safari
 	 * copies only within it). A browser that will not copy it sends the member to Sites, where the password is. */
 	async #copyPassword(site: CompanySite): Promise<void> {
-		if (this.#copying || this.#lifetime.signal.aborted || !this.#canManage()) return;
+		if (this.#copying || this.#lifetime.signal.aborted || !this.#canManage() || !hasPassword(site)) return;
 		this.#copying = site.id;
 		this.#said.delete(site.id);
 		this.#drawAll();

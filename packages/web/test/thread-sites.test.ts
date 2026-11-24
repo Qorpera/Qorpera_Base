@@ -185,15 +185,10 @@ describe("A site a message links: the card under the words", () => {
 		expect(card.querySelector(".site-state")?.textContent).toBe("Live");
 		expect(note(card)).toBe("saml-gift-message.qorpera.com");
 		expect(card.querySelector<HTMLElement>(".app-card-note")?.title).toBe(gift.url);
-		// One key for an owner or admin, then the arrow; no pills, no dots, no eye, no menu.
-		expect([...card.children].map((child) => child.className)).toEqual([
-			"site-card-open",
-			"site-pill-icon site-card-key",
-			"app-card-go",
-		]);
-		expect(keyOf(card)?.getAttribute("aria-label")).toBe("Copy the password");
+		expect([...card.children].map((child) => child.className)).toEqual(["site-card-open", "app-card-go"]);
+		expect(keyOf(card)).toBeNull();
 		expect(card.querySelector(".site-pill, .site-secret, .site-eye, .site-more, .site-from")).toBeNull();
-		expect(card.textContent).not.toMatch(/••|code\/|qorpera\/|files|KiB/);
+		expect(card.textContent).not.toMatch(/••|code\/|qorpera\/|files|KiB|password/i);
 	});
 
 	it("shows each site once per message, and two sites as two rows", async () => {
@@ -241,6 +236,12 @@ describe("A site a message links: the card under the words", () => {
 		const [api, sale] = [...root.querySelectorAll<HTMLElement>(".site-card")];
 		expect(api?.querySelector(".app-card-title")?.textContent).toBe("Orders API");
 		expect(note(api!)).toBe("orders-api-preview.qorpera.com");
+		expect([...api!.children].map((child) => child.className)).toEqual([
+			"site-card-open",
+			"site-pill-icon site-card-key",
+			"app-card-go",
+		]);
+		expect(keyOf(api!)?.getAttribute("aria-label")).toBe("Copy the password");
 		expect(sale?.className).toBe("app-card site-card is-down");
 		expect(sale?.querySelector(".site-state")?.textContent).toBe("Taken down");
 		// The reason alone, whole on a hover; the sentence and the Feedback hint are on the Sites page.
@@ -257,15 +258,15 @@ describe("A site a message links: the card under the words", () => {
 		const writeText = vi.fn(async () => {});
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
 		const { sites, calls } = await cards();
-		const root = message(sites, "https://saml-gift-message.qorpera.com/");
+		const root = message(sites, "https://orders-api-preview.qorpera.com/");
 		keyOf(root)!.click();
 		await settle();
-		expect(calls.password).toHaveBeenCalledWith(gift.id, expect.any(AbortSignal));
+		expect(calls.password).toHaveBeenCalledWith(app.id, expect.any(AbortSignal));
 		expect(writeText).toHaveBeenCalledWith(PASSWORD);
 		expect(note(root)).toBe("The password is copied.");
 		expect(root.textContent).not.toContain(PASSWORD);
 		await vi.advanceTimersByTimeAsync(2100);
-		expect(note(root)).toBe("saml-gift-message.qorpera.com");
+		expect(note(root)).toBe("orders-api-preview.qorpera.com");
 		vi.useRealTimers();
 	});
 
@@ -276,7 +277,7 @@ describe("A site a message links: the card under the words", () => {
 			value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
 		});
 		const { sites } = await cards(true, calls);
-		const root = message(sites, "https://saml-gift-message.qorpera.com/");
+		const root = message(sites, "https://orders-api-preview.qorpera.com/");
 		keyOf(root)!.click();
 		await settle();
 		expect(note(root)).toBe("The password is in Sites.");
@@ -301,7 +302,7 @@ describe("A site a message links: the card under the words", () => {
 			() => {},
 		);
 		await settle();
-		const root = message(sites, "https://saml-gift-message.qorpera.com/");
+		const root = message(sites, "https://orders-api-preview.qorpera.com/");
 		expect(keyOf(root)).toBeNull();
 		expect(root.querySelector(".app-card-go")).not.toBeNull();
 		manage = true;
@@ -343,10 +344,14 @@ describe("A site a message links: the card under the words", () => {
 	it("says it in Danish", async () => {
 		setLanguagePreference("da");
 		const { sites } = await cards();
-		const root = message(sites, "https://saml-gift-message.qorpera.com/ https://spring-sale.qorpera.com/");
-		const [live, down] = [...root.querySelectorAll<HTMLElement>(".site-card")];
+		const root = message(
+			sites,
+			"https://saml-gift-message.qorpera.com/ https://orders-api-preview.qorpera.com/ https://spring-sale.qorpera.com/",
+		);
+		const [live, api, down] = [...root.querySelectorAll<HTMLElement>(".site-card")];
 		expect(live?.querySelector(".site-state")?.textContent).toBe("Live");
-		expect(keyOf(live!)?.getAttribute("aria-label")).toBe("Kopiér adgangskoden");
+		expect(keyOf(live!)).toBeNull();
+		expect(keyOf(api!)?.getAttribute("aria-label")).toBe("Kopiér adgangskoden");
 		expect(down?.querySelector(".site-state")?.textContent).toBe("Taget ned");
 	});
 

@@ -95,6 +95,10 @@ function nameOf(site: CompanySite): string {
 	return site.title ?? site.slug;
 }
 
+export function hasPassword(site: CompanySite): boolean {
+	return site.kind === "app";
+}
+
 /** The row of a site Qorpera took down that the list leaves out (a project's site that never went live), from what the
  * access read names: the row shows its name, that it was taken down and why, and nothing else (no link, password or
  * menu). */
@@ -197,17 +201,20 @@ interface Moment {
 /** The site's state as a dot and a word; when and by whom it was published as its tip. A site Qorpera took down is that,
  * whatever the list says of it. */
 export function stateOf(site: CompanySite, down: boolean): HTMLElement {
-	const published = site.publishedAt
-		? site.publishedBy
-			? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
-			: t("Published {time}", { time: fmtTime(site.publishedAt) })
-		: undefined;
+	const published = publishedTip(site);
 	return h(
 		"span",
 		{ class: `site-state is-${down ? "down" : site.state}`, ...(published ? { title: published } : {}) },
 		h("span", { class: "site-dot", "aria-hidden": "true" }),
 		down ? t("Taken down") : site.state === "live" ? t("Live") : site.state === "off" ? t("Off") : t("Publishing…"),
 	);
+}
+
+function publishedTip(site: CompanySite): string | undefined {
+	if (!site.publishedAt) return undefined;
+	return site.publishedBy
+		? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
+		: t("Published {time}", { time: fmtTime(site.publishedAt) });
 }
 
 /** Why Qorpera took a site down, in one plain sentence: the operator's reason, without a full stop of its own, and how
@@ -477,7 +484,7 @@ export class SitesView {
 
 	/** Copies a site's password: the one shown, or one read for it there and then (it stays hidden). */
 	async #copyPassword(site: CompanySite): Promise<void> {
-		if (this.#working || this.#lifetime.signal.aborted) return;
+		if (this.#working || this.#lifetime.signal.aborted || !hasPassword(site)) return;
 		const focusKey = `site-copy-password:${site.id}`;
 		const byHand = `site-by-hand:password:${site.id}`;
 		const moment = this.#moment(site.id);
@@ -523,7 +530,7 @@ export class SitesView {
 	}
 
 	async #showPassword(site: CompanySite): Promise<void> {
-		if (this.#working || this.#lifetime.signal.aborted) return;
+		if (this.#working || this.#lifetime.signal.aborted || !hasPassword(site)) return;
 		const focusKey = `site-eye:${site.id}`;
 		const moment = this.#moment(site.id);
 		const working = { site: site.id, action: "show" } as const;
@@ -565,13 +572,19 @@ export class SitesView {
 		};
 		const hostingState = this.#hostingState;
 		const hostingEntry = hostingState?.sites.get(site.id);
-		const menuItems: MenuEntry[] = [
-			{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) },
-		];
+		const menuItems: MenuEntry[] = hasPassword(site)
+			? [{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) }]
+			: [];
 		if (this.#hosting && hostingState?.publicEnabled) {
 			const isPublic = hostingEntry?.isPublic === true;
 			menuItems.push({
-				label: isPublic ? t("Make private") : t("Make public"),
+				label: hasPassword(site)
+					? isPublic
+						? t("Make private")
+						: t("Make public")
+					: isPublic
+						? t("Make it not live")
+						: t("Go live"),
 				icon: "globe",
 				select: () => void this.#togglePublic(site, !isPublic),
 			});
@@ -583,7 +596,8 @@ export class SitesView {
 				select: () => this.#askDomain(site),
 			});
 		}
-		menuItems.push({ kind: "separator" }, offline);
+		if (menuItems.length) menuItems.push({ kind: "separator" });
+		menuItems.push(offline);
 		const menu = openContextMenu({
 			label: nameOf(site),
 			x: box.left,
@@ -694,12 +708,24 @@ export class SitesView {
 		}
 		if (this.#working === working) this.#working = undefined;
 		if (this.#lifetime.signal.aborted) return;
+		const app = hasPassword(site);
 		this.#say(
 			ok
 				? nextPublic
-					? t("The site is now public.")
-					: t("The site is now private.")
-				: changeError(failure, phrase("Site visibility could not be changed. Try again.")),
+					? app
+						? t("The site is now public.")
+						: t("The site is live.")
+					: app
+						? t("The site is now private.")
+						: t("The site is not live any more.")
+				: changeError(
+						failure,
+						app
+							? phrase("Site visibility could not be changed. Try again.")
+							: nextPublic
+								? phrase("The site did not go live. Try again.")
+								: phrase("The site is still live. Try again."),
+					),
 		);
 		await this.#refresh(`site-more:${site.id}`);
 	}
@@ -901,7 +927,14 @@ export class SitesView {
 	/** Asks for a site's new password: one the member types, or a new random one. The question stays while the change
 	 * is on its way, and says there why one was refused, keeping what was typed. */
 	#askPassword(site: CompanySite): void {
-		if (this.#working || this.#asking || this.#lifetime.signal.aborted || !this.#access.canManage()) return;
+		if (
+			this.#working ||
+			this.#asking ||
+			this.#lifetime.signal.aborted ||
+			!this.#access.canManage() ||
+			!hasPassword(site)
+		)
+			return;
 		const signal = this.#lifetime.signal;
 		const name = nameOf(site);
 		const title = `site-password-title-${site.id}`;
@@ -1054,13 +1087,10 @@ export class SitesView {
 					)
 				: fromCode(site)
 					? t(
-							"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.",
+							"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new until you put it live.",
 							{ name },
 						)
-					: t(
-							"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
-							{ name },
-						),
+					: t("Take {name} offline? Its link stops working. The files stay in the Company File.", { name }),
 			t("Take offline"),
 			true,
 			undefined,
@@ -1174,7 +1204,7 @@ export class SitesView {
 			),
 		);
 		let secret: HTMLElement | null = null;
-		if (manage) {
+		if (manage && hasPassword(site)) {
 			const shown = this.#passwords.get(site.id);
 			const reading = this.#working?.site === site.id && this.#working.action !== "unpublish";
 			const byHandPassword = this.#byHand?.key === `password:${site.id}` ? this.#byHand.text : undefined;
@@ -1278,9 +1308,22 @@ export class SitesView {
 		const first = !this.#seen.has(site.id);
 		this.#seen.add(site.id);
 		const hostingEntry = this.#hostingState?.sites.get(site.id);
-		const publicBadge = hostingEntry?.isPublic
-			? h("span", { class: "site-public-badge", dataset: { sitePublic: site.id } }, t("Public"))
-			: null;
+		const website = !hasPassword(site);
+		const liveBadge = website && hostingEntry && !down;
+		const tip = site.state === "live" ? publishedTip(site) : undefined;
+		const publicBadge = liveBadge
+			? h(
+					"span",
+					{
+						class: "site-public-badge",
+						dataset: hostingEntry.isPublic ? { sitePublic: site.id } : {},
+						...(tip ? { title: tip } : {}),
+					},
+					hostingEntry.isPublic ? t("Live") : t("Not live yet"),
+				)
+			: hostingEntry?.isPublic && !website
+				? h("span", { class: "site-public-badge", dataset: { sitePublic: site.id } }, t("Public"))
+				: null;
 		const kindBadge =
 			hostingEntry && (hostingEntry.deploymentKind === "server" || hostingEntry.deploymentKind === "hybrid")
 				? h(
@@ -1312,7 +1355,7 @@ export class SitesView {
 				"div",
 				{ class: "site-head" },
 				h("strong", { class: "site-name" }, name),
-				stateOf(site, Boolean(down)),
+				liveBadge && site.state === "live" ? null : stateOf(site, Boolean(down)),
 				publicBadge,
 				kindBadge,
 				from,
@@ -1334,6 +1377,15 @@ export class SitesView {
 			h("h2", null, t("No sites yet")),
 			h("p", null, t("Ask an agent for a website and it shows up here.")),
 		);
+	}
+
+	#headLine(sites: readonly CompanySite[], manage: boolean): string {
+		const apps = sites.some(hasPassword);
+		if (!manage)
+			return apps ? t(MANAGERS_ONLY) : t("Only founders and admins can make a site live or take it offline.");
+		return apps
+			? t("Share a site with its link once it is live. An app link also needs its password.")
+			: t("Share a site with its link once it is live.");
 	}
 
 	#draw(focusKey?: string): void {
@@ -1373,9 +1425,7 @@ export class SitesView {
 					"header",
 					{ class: "sites-head" },
 					h("h1", null, t("Sites")),
-					sites.length
-						? h("p", null, manage ? t("Share a site with its link and password.") : t(MANAGERS_ONLY))
-						: null,
+					sites.length ? h("p", null, this.#headLine(sites, manage)) : null,
 				),
 				error,
 				// Without a first read there is nothing to show but the way to try again.

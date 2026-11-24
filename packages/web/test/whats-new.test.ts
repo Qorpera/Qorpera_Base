@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyController } from "../src/app/company.ts";
+import { CompanyController, type CompanyState } from "../src/app/company.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { CloudShapeError } from "../src/cloud/parse.ts";
@@ -14,6 +14,7 @@ import {
 	parseSitePreviewAnswer,
 	type SitePreviewAnswer,
 } from "../src/cloud/releases.ts";
+import type { CompanySite } from "../src/cloud/sites.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
@@ -150,6 +151,7 @@ interface Setup {
 	openPreview?: (shown: unknown) => Promise<SitePreviewAnswer>;
 	image?: (path: string) => Promise<Blob | null>;
 	takenDown?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
+	sites?: Pick<CompanyState, "siteList" | "sitesPublic">;
 }
 
 /** Look first's one-time ticket, as the kernel makes one (43 characters), and its link on the shop's next host. */
@@ -158,6 +160,7 @@ const NEXT = `https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET
 
 async function page(reads: CodeReleases[], options: Setup = {}) {
 	const controller = company(options.role, options.agents);
+	if (options.sites) controller.store.set(options.sites);
 	const queue = [...reads];
 	const client = {
 		list: vi.fn(async () => structuredClone(queue.length > 1 ? queue.shift()! : queue[0]!)),
@@ -324,10 +327,7 @@ describe("What's new: the page", () => {
 		)!;
 		expect(open.getAttribute("href")).toBe("https://sites.qorpera.com/wristband-shop/");
 		expect(open.target).toBe("_blank");
-		const password = [...live.querySelectorAll<HTMLAnchorElement>("a")].find(
-			(link) => link.textContent === "The password is in Sites.",
-		)!;
-		expect(password.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(text(live)).not.toMatch(/password/i);
 		expect(labels(live)).toEqual(["Go back to version 2"]);
 		expect(site.querySelector("h3")?.textContent).toBe("6 changes are ready");
 		expect(lines(site)).toEqual([
@@ -363,7 +363,6 @@ describe("What's new: the page", () => {
 		expect(row.querySelector(".site-name")?.textContent).toBe("Live now");
 		expect([...row.querySelectorAll(".site-meta")].map((line) => line.textContent)).toEqual([
 			expect.stringMatching(/^Version 3 · since .+ · Ann said go$/),
-			"The password is in Sites.",
 		]);
 		// Open the site and Go back, as the Sites page's quiet pills; no grey card around them.
 		const actions = row.querySelector(".site-actions")!;
@@ -375,6 +374,46 @@ describe("What's new: the page", () => {
 		// Before the first version, the globe is grey.
 		const first = await page([releasesOf([shop({ site: null, live: null, back: null })])]);
 		expect(block(first.view).querySelector(".site-row.is-whats-new.is-waiting .site-emblem")).not.toBeNull();
+	});
+
+	it("tells an owner a version live is still only the company's until the site goes live, never of a password", async () => {
+		const listed = {
+			id: id(81),
+			slug: "wristband-shop",
+			title: "Wristband shop",
+			kind: "files",
+			url: "https://sites.qorpera.com/wristband-shop/",
+			state: "live",
+		} as CompanySite;
+		const meta = (view: WhatsNewView) =>
+			[...block(view).querySelectorAll(".whats-new-live .site-meta")].map((line) => line.textContent);
+		const notLive = { siteList: [listed], sitesPublic: new Map([[listed.id, false]]) };
+		const { view } = await page([releasesOf([shop()])], { sites: notLive });
+		expect(meta(view)).toEqual([
+			expect.stringMatching(/^Version 3 · since .+ · Ann said go$/),
+			"Only the company can open it until you go live.",
+		]);
+		view.dispose();
+		for (const sites of [
+			{ siteList: [listed], sitesPublic: new Map([[listed.id, true]]) },
+			{ siteList: [listed] },
+			{ siteList: [{ ...listed, kind: "app" } as CompanySite], sitesPublic: new Map([[listed.id, false]]) },
+		]) {
+			const { view: other } = await page([releasesOf([shop()])], { sites });
+			expect(meta(other)).toHaveLength(1);
+			expect(text(block(other))).not.toMatch(/password/i);
+			other.dispose();
+		}
+		const { view: member } = await page([releasesOf([shop()], false)], { role: "contributor", sites: notLive });
+		expect(meta(member)).toHaveLength(1);
+		member.dispose();
+		setLanguagePreference("da");
+		try {
+			const { view: da } = await page([releasesOf([shop()])], { sites: notLive });
+			expect(meta(da)[1]).toBe("Kun virksomheden kan åbne den, indtil du går live.");
+		} finally {
+			setLanguagePreference("system");
+		}
 	});
 
 	it("tells the Sites page the version each site made from code has live", () => {
@@ -1668,7 +1707,7 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 			const { view } = await page([releasesOf([shop()])], takenDown ? { takenDown } : {});
 			expect(openLink(view)?.href).toBe("https://sites.qorpera.com/wristband-shop/");
 			expect(text(block(view))).not.toContain(DOWN);
-			expect(text(block(view))).toContain("The password is in Sites.");
+			expect(text(block(view))).not.toMatch(/password/i);
 			view.dispose();
 		}
 	});

@@ -116,6 +116,12 @@ export class WhatsNewView {
 			: t("Version {version} · since {time} · {name} said go", { version, time, name });
 	}
 
+	#notLive(slug: string): boolean {
+		const { siteList, sitesPublic } = this.#company.store.get();
+		const site = siteList?.find((item) => item.slug === slug && item.kind === "files");
+		return site !== undefined && sitesPublic?.get(site.id) === false;
+	}
+
 	/** What is live, as a row of the Sites page (styles/sites.css): the Sites globe, the version and who said go, where
 	 * the password is, and the site's link and Go back as pill buttons. A site Qorpera took down (`down`) shows neither:
 	 * every address of it shows a "gone" page, and the kernel refuses going back until Qorpera restores it. */
@@ -153,17 +159,8 @@ export class WhatsNewView {
 								t("Qorpera took this site down, so it can't be opened. See why in Sites."),
 							)
 						: null,
-					// The password is read where it is kept: only owners and admins can see it there.
-					shown && can
-						? h(
-								"span",
-								{ class: "site-meta" },
-								h(
-									"a",
-									{ href: `#/c/${this.#company.profile.profileId}/sites` },
-									t("The password is in Sites."),
-								),
-							)
+					shown && can && this.#notLive(shown.slug)
+						? h("span", { class: "site-meta" }, t("Only the company can open it until you go live."))
 						: null,
 				),
 				// Not live yet, there is nothing to open or go back to: no row for it (a phone would keep it empty).
