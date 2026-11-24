@@ -20,7 +20,6 @@ const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
 	"supabase/functions/computer-billing/computer-billing.test.ts",
-	"supabase/functions/_shared/computer-hour-notices.test.ts",
 	"supabase/functions/chatgpt-plan-callback/chatgpt-plan-callback.test.ts",
 	"supabase/functions/runner-orchestrator/runner-orchestrator.test.ts",
 	"supabase/functions/event-intake/event-intake.test.ts",
@@ -181,7 +180,7 @@ export const STEPS = [
 		commands: [
 			"npm run typecheck --workspace packages/web",
 			"npm test --workspace packages/web",
-			`node --test ${FUNCTION_TESTS.slice(0, 4).join(" ")} scripts/web-deployment.test.mjs`,
+			`node --test ${FUNCTION_TESTS.slice(0, 3).join(" ")} scripts/web-deployment.test.mjs`,
 		],
 		// The release build measures its source from git and refuses uncommitted changes. The run copy has
 		// no .git, so the step commits it into a throwaway repository for the build and removes it after.

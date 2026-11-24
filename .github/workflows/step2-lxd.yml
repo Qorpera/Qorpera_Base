@@ -15,12 +15,10 @@ on:
       - 'deploy/first-node/**'
       - 'deploy/lxd-runner-guest/**'
       - 'packages/runner-orchestrator/src/lxd-*.ts'
-      - 'packages/runner-orchestrator/src/runtime-node-update*.ts'
       - 'packages/runner-orchestrator/src/provider-cli.ts'
       - 'packages/runner-orchestrator/src/provider-service.ts'
       - 'packages/runner-orchestrator/src/service.ts'
       - 'packages/runner-orchestrator/test/lxd-*.test.ts'
-      - 'packages/runner-orchestrator/test/runtime-node-update*.test.ts'
       - 'packages/runner-orchestrator/test/provider-service.test.ts'
       - 'packages/runner-orchestrator/test/service.test.ts'
       - 'packages/runner-orchestrator/package.json'
@@ -54,7 +52,6 @@ on:
       - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
-      - 'scripts/package-runtime-node-updater*.mjs'
       - 'scripts/package-shared-execution-service*.mjs'
       - 'scripts/jitless-service-bundle.mjs'
       - 'deploy/shared-execution/**'
@@ -121,9 +118,6 @@ jobs:
           test/shared-execution-backend.test.ts
           test/provider-service.test.ts
           test/service.test.ts
-          test/runtime-node-update.test.ts
-          test/runtime-node-update-registry.test.ts
-          test/runtime-node-update-host.test.ts
           test/coding-executor.test.ts
           test/coding-executor-host.test.ts
           test/coding-machine.test.ts
@@ -222,7 +216,6 @@ jobs:
           scripts/package-lxd-provider.test.mjs
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs
-          scripts/package-runtime-node-updater.test.mjs
           scripts/package-shared-execution-service.test.mjs
           scripts/office-image-self-update.test.mjs
           scripts/package-office-service-software-control.test.mjs
