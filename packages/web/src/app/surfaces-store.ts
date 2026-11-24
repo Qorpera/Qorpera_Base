@@ -174,6 +174,13 @@ function sameBinaryMap(
 	);
 }
 
+export function normalizeSurfacePath(path: string, folderRoot: string | null | undefined): string {
+	const cleaned = path.trim().replace(/^\/+|\/+$/g, "");
+	const root = folderRoot?.trim().replace(/^\/+|\/+$/g, "") ?? "";
+	if (!root || !cleaned || cleaned === root || cleaned.startsWith(`${root}/`)) return cleaned;
+	return `${root}/${cleaned}`;
+}
+
 export function normalizeStudioPatchOps(
 	ops: readonly StudioPatchOp[],
 	folderRoot: string | null | undefined,
@@ -182,8 +189,7 @@ export function normalizeStudioPatchOps(
 	if (!root) return ops;
 	let changed = false;
 	const next = ops.map((op) => {
-		const cleaned = op.path.trim().replace(/^\/+|\/+$/g, "");
-		const target = !cleaned || cleaned === root || cleaned.startsWith(`${root}/`) ? cleaned : `${root}/${cleaned}`;
+		const target = normalizeSurfacePath(op.path, root);
 		if (target === op.path) return op;
 		changed = true;
 		return { ...op, path: target };
@@ -744,53 +750,281 @@ export interface SurfaceReportSummary {
 	readonly ownerTitle?: string;
 }
 
+export type SurfaceDeliverableKind = "report" | "html" | "pdf";
+
+export interface SurfaceChangeDeliverable {
+	readonly kind: SurfaceDeliverableKind;
+	readonly path: string;
+	readonly slug: string;
+	readonly title: string;
+	readonly category?: string;
+	readonly readingTime?: string;
+}
+
+export function surfaceDocSlug(path: string): string {
+	return `doc:${path.trim().replace(/^\/+|\/+$/g, "")}`;
+}
+
+const REPORT_FILE_RE = /\.report\.json$/i;
+const HTML_DELIVERABLE_RE = /\.html?$/i;
+const PDF_DELIVERABLE_RE = /\.pdf$/i;
+const MODULE_DELIVERABLE_RE = /(?:^|\/)modules\/[^/]+\//i;
+const HTML_TITLE_ENTITIES: Readonly<Record<string, string>> = {
+	amp: "&",
+	lt: "<",
+	gt: ">",
+	quot: '"',
+	apos: "'",
+	nbsp: " ",
+};
+
+export function isStandaloneHtmlDeliverablePath(path: string, folderRoot?: string | null): boolean {
+	if (!HTML_DELIVERABLE_RE.test(path)) return false;
+	const normalized = path.trim().replace(/^\/+|\/+$/g, "");
+	const root = folderRoot?.trim().replace(/^\/+|\/+$/g, "") ?? "";
+	const relative = root && normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized;
+	return !MODULE_DELIVERABLE_RE.test(relative);
+}
+
+function readableDeliverableTitle(path: string): string {
+	const base =
+		path
+			.split("/")
+			.at(-1)
+			?.replace(/\.report\.json$/i, "")
+			.replace(/\.[a-z0-9]+$/i, "") ?? path;
+	const spaced = base
+		.replace(/[-_]+/g, " ")
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
+		.trim();
+	if (!spaced) return path;
+	return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function extractHtmlDeliverableTitle(html: string, fallbackPath: string): string {
+	const match = html.match(/<title\b[^>]*>([\s\S]{1,200}?)<\/title>/i);
+	if (!match) return readableDeliverableTitle(fallbackPath);
+	const title = match[1]!
+		.replace(/&(?:#x([0-9a-f]+)|#([0-9]+)|([a-z]+));/gi, (full, hex, dec, named) => {
+			if (hex) {
+				const code = Number.parseInt(hex, 16);
+				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
+			}
+			if (dec) {
+				const code = Number.parseInt(dec, 10);
+				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
+			}
+			return HTML_TITLE_ENTITIES[String(named).toLowerCase()] ?? full;
+		})
+		.trim()
+		.replace(/\s+/g, " ");
+	return title && title.length <= 80 ? title : readableDeliverableTitle(fallbackPath);
+}
+
 const EMPTY_REPORTS: readonly SurfaceReportSummary[] = [];
+const EMPTY_DELIVERABLES: readonly SurfaceChangeDeliverable[] = [];
 const singleFileReportCache = new WeakMap<Readonly<Record<string, string>>, readonly SurfaceReportSummary[]>();
 const dualFileReportCache = new WeakMap<
 	Readonly<Record<string, string>>,
 	WeakMap<Readonly<Record<string, string>>, readonly SurfaceReportSummary[]>
 >();
 
+interface StagedReportsCacheEntry {
+	readonly cloudFiles: Readonly<Record<string, string>> | undefined;
+	readonly localFiles: Readonly<Record<string, string>> | undefined;
+	readonly pending: readonly PendingStudioPatch[] | undefined;
+	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>> | undefined;
+	readonly reports: readonly SurfaceReportSummary[];
+}
+
+const stagedReportsCache = new WeakMap<SurfaceWorkspace, StagedReportsCacheEntry>();
+
+function parseSingleReportSummary(path: string, content: string): SurfaceReportSummary | undefined {
+	if (!REPORT_FILE_RE.test(path) || !content) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(content);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		const rec = parsed as Record<string, unknown>;
+		const slug =
+			typeof rec.slug === "string" && rec.slug.trim()
+				? rec.slug.trim()
+				: path.replace(/^.*\//, "").replace(REPORT_FILE_RE, "");
+		const title =
+			(typeof rec.headline === "string" && rec.headline.trim()) ||
+			(typeof rec.title === "string" && rec.title.trim()) ||
+			slug;
+		const category = typeof rec.category === "string" ? rec.category.trim() : "";
+		const readingTime = typeof rec.readingTime === "string" ? rec.readingTime.trim() : "";
+		const ownerTitle =
+			typeof rec.ownerTitle === "string" && rec.ownerTitle.trim() ? rec.ownerTitle.trim() : undefined;
+		return { path, slug, title, category, readingTime, ...(ownerTitle ? { ownerTitle } : {}) };
+	} catch {
+		return undefined;
+	}
+}
+
 function parseReportsFromFiles(files: Readonly<Record<string, string>>): readonly SurfaceReportSummary[] {
 	const results: SurfaceReportSummary[] = [];
 	for (const path of Object.keys(files).sort()) {
-		if (!/\.report\.json$/i.test(path)) continue;
 		const content = files[path];
 		if (!content) continue;
-		try {
-			const parsed: unknown = JSON.parse(content);
-			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-			const rec = parsed as Record<string, unknown>;
-			const slug =
-				typeof rec.slug === "string" && rec.slug.trim()
-					? rec.slug.trim()
-					: path.replace(/^.*\//, "").replace(/\.report\.json$/i, "");
-			const title =
-				(typeof rec.headline === "string" && rec.headline.trim()) ||
-				(typeof rec.title === "string" && rec.title.trim()) ||
-				slug;
-			const category = typeof rec.category === "string" ? rec.category.trim() : "";
-			const readingTime = typeof rec.readingTime === "string" ? rec.readingTime.trim() : "";
-			const ownerTitle =
-				typeof rec.ownerTitle === "string" && rec.ownerTitle.trim() ? rec.ownerTitle.trim() : undefined;
-			results.push({ path, slug, title, category, readingTime, ...(ownerTitle ? { ownerTitle } : {}) });
-		} catch {}
+		const summary = parseSingleReportSummary(path, content);
+		if (summary) results.push(summary);
 	}
 	return results.length > 0 ? results : EMPTY_REPORTS;
 }
 
-export function surfaceReports(
-	state: Pick<SurfacesState, "localStudioBase"> &
-		Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches">>,
+type SurfaceReportReadState = Pick<SurfacesState, "localStudioBase"> &
+	Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches" | "workspaces" | "studioPatches">>;
+
+function folderRootForState(state: SurfaceReportReadState, surfaceId: string): string | null {
+	return state.workspaces?.[surfaceId]?.surface.folderRoot ?? null;
+}
+
+function composedFilesForSingleChange(
+	baseFiles: Readonly<Record<string, string>>,
+	changeId: string,
+	ops: readonly StudioPatchOp[],
+	folderRoot: string | null,
+): Readonly<Record<string, string>> {
+	const normalizedOps = normalizeStudioPatchOps(ops, folderRoot);
+	return composeStudioPreview(baseFiles, [{ changeId, ops: normalizedOps }], folderRoot).files;
+}
+
+export function changeDeliverables(
+	state: SurfaceReportReadState,
 	surfaceId: string,
-): readonly SurfaceReportSummary[] {
+	change: SurfaceChangeUnit,
+): readonly SurfaceChangeDeliverable[] {
+	const folderRoot = folderRootForState(state, surfaceId);
+	const baseFiles = effectiveStudioBaseFiles(state, surfaceId) ?? {};
+	const ops = state.studioPatches?.[change.id];
+	const touched = new Map<string, "deleted" | "present">();
+	let files: Readonly<Record<string, string>> = baseFiles;
+	if (ops && ops.length > 0) {
+		const normalizedOps = normalizeStudioPatchOps(ops, folderRoot);
+		for (const op of normalizedOps) {
+			touched.set(op.path, op.op === "delete" ? "deleted" : "present");
+		}
+		files = composeStudioPreview(baseFiles, [{ changeId: change.id, ops: normalizedOps }], folderRoot).files;
+	} else {
+		for (const rawPath of change.affectedPaths) {
+			const path = normalizeSurfacePath(rawPath, folderRoot);
+			if (path) touched.set(path, "present");
+		}
+	}
+	const results: SurfaceChangeDeliverable[] = [];
+	const seen = new Set<string>();
+	for (const [path, status] of touched) {
+		if (status === "deleted" || seen.has(path)) continue;
+		if (REPORT_FILE_RE.test(path)) {
+			const content = files[path];
+			const summary = content ? parseSingleReportSummary(path, content) : undefined;
+			if (!summary) continue;
+			seen.add(path);
+			results.push({
+				kind: "report",
+				path: summary.path,
+				slug: summary.slug,
+				title: summary.title,
+				...(summary.category ? { category: summary.category } : {}),
+				...(summary.readingTime ? { readingTime: summary.readingTime } : {}),
+			});
+			continue;
+		}
+		if (isStandaloneHtmlDeliverablePath(path, folderRoot)) {
+			const content = files[path];
+			if (content === undefined && ops && ops.length > 0) continue;
+			seen.add(path);
+			results.push({
+				kind: "html",
+				path,
+				slug: surfaceDocSlug(path),
+				title: content ? extractHtmlDeliverableTitle(content, path) : readableDeliverableTitle(path),
+			});
+			continue;
+		}
+		if (PDF_DELIVERABLE_RE.test(path)) {
+			seen.add(path);
+			results.push({
+				kind: "pdf",
+				path,
+				slug: surfaceDocSlug(path),
+				title: readableDeliverableTitle(path),
+			});
+		}
+	}
+	return results.length > 0 ? results : EMPTY_DELIVERABLES;
+}
+
+function collectOpenChangeOps(
+	workspace: SurfaceWorkspace | undefined,
+	studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>> | undefined,
+): { readonly changeId: string; readonly ops: readonly StudioPatchOp[] }[] {
+	if (!workspace || !studioPatches) return [];
+	const entries: { readonly changeId: string; readonly ops: readonly StudioPatchOp[] }[] = [];
+	for (const session of workspace.activeSessions) {
+		for (const change of session.changes) {
+			if (change.kind !== "folder_patch" || !isOpenChange(change)) continue;
+			const ops = studioPatches[change.id];
+			if (ops && ops.length > 0) entries.push({ changeId: change.id, ops });
+		}
+	}
+	return entries;
+}
+
+export function surfaceReports(state: SurfaceReportReadState, surfaceId: string): readonly SurfaceReportSummary[] {
+	const workspace = state.workspaces?.[surfaceId];
 	const pending = state.pendingStudioPatches?.[surfaceId];
+	const cloudFiles = state.cloudSurfaceFiles?.[surfaceId];
+	const localFiles = state.localStudioBase[surfaceId];
+	const openPatches = collectOpenChangeOps(workspace, state.studioPatches);
+	if (workspace && openPatches.length > 0) {
+		const cached = stagedReportsCache.get(workspace);
+		if (
+			cached &&
+			cached.cloudFiles === cloudFiles &&
+			cached.localFiles === localFiles &&
+			cached.pending === pending &&
+			cached.studioPatches === state.studioPatches
+		) {
+			return cached.reports;
+		}
+		const folderRoot = workspace.surface.folderRoot ?? null;
+		const baseFiles = effectiveStudioBaseFiles(state, surfaceId) ?? {};
+		const byPath = new Map<string, SurfaceReportSummary>();
+		for (const summary of parseReportsFromFiles(baseFiles)) byPath.set(summary.path, summary);
+		// WHY: Compose each open change independently against base so a conflict on an unrelated file cannot hide staged reports.
+		for (const entry of openPatches) {
+			const normalizedOps = normalizeStudioPatchOps(entry.ops, folderRoot);
+			const reportOps = normalizedOps.filter((op) => REPORT_FILE_RE.test(op.path));
+			if (reportOps.length === 0) continue;
+			const composed = composedFilesForSingleChange(baseFiles, entry.changeId, reportOps, folderRoot);
+			for (const op of reportOps) {
+				if (op.op === "delete") {
+					byPath.delete(op.path);
+					continue;
+				}
+				const content = composed[op.path];
+				const summary = content ? parseSingleReportSummary(op.path, content) : undefined;
+				if (summary) byPath.set(summary.path, summary);
+			}
+		}
+		const reports =
+			byPath.size > 0 ? [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path)) : EMPTY_REPORTS;
+		stagedReportsCache.set(workspace, {
+			cloudFiles,
+			localFiles,
+			pending,
+			studioPatches: state.studioPatches,
+			reports,
+		});
+		return reports;
+	}
 	if (pending && pending.length > 0) {
 		const effective = effectiveStudioBaseFiles(state, surfaceId);
 		return effective ? parseReportsFromFiles(effective) : EMPTY_REPORTS;
 	}
-	const cloudFiles = state.cloudSurfaceFiles?.[surfaceId];
-	const localFiles = state.localStudioBase[surfaceId];
 	if (!cloudFiles && !localFiles) return EMPTY_REPORTS;
 	if (cloudFiles && localFiles) {
 		let byLocal = dualFileReportCache.get(cloudFiles);
@@ -812,11 +1046,29 @@ export function surfaceReports(
 	return parsed;
 }
 
-export function surfaceHasReports(
-	state: Pick<SurfacesState, "localStudioBase"> & Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
-	surfaceId: string,
-): boolean {
+export function surfaceHasReports(state: SurfaceReportReadState, surfaceId: string): boolean {
 	return surfaceReports(state, surfaceId).length > 0;
+}
+
+export function surfaceHasDeliverables(state: SurfaceReportReadState, surfaceId: string): boolean {
+	if (surfaceReports(state, surfaceId).length > 0) return true;
+	const workspace = state.workspaces?.[surfaceId];
+	const folderRoot = workspace?.surface.folderRoot ?? null;
+	if (workspace) {
+		for (const session of workspace.activeSessions) {
+			for (const change of session.changes) {
+				if (change.kind !== "folder_patch" || !isOpenChange(change)) continue;
+				if (changeDeliverables(state, surfaceId, change).length > 0) return true;
+			}
+		}
+	}
+	const baseFiles = effectiveStudioBaseFiles(state, surfaceId);
+	if (baseFiles) {
+		for (const path of Object.keys(baseFiles)) {
+			if (isStandaloneHtmlDeliverablePath(path, folderRoot)) return true;
+		}
+	}
+	return false;
 }
 
 interface ReportsOwnerCacheEntry {
@@ -829,7 +1081,7 @@ const reportsOwnerCache = new WeakMap<SurfaceWorkspace, ReportsOwnerCacheEntry>(
 
 export function reportsOwnedBy(
 	state: Pick<SurfacesState, "localStudioBase" | "workspaces" | "studioPatches"> &
-		Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
+		Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches">>,
 	surfaceId: string,
 	owner: { readonly kind: "exploration"; readonly id: string } | { readonly kind: "session"; readonly id: string },
 ): readonly SurfaceReportSummary[] {
@@ -842,6 +1094,9 @@ export function reportsOwnedBy(
 	if (cached && cached.reports === reports && cached.studioPatches === state.studioPatches) {
 		return cached.byOwner.get(wantedKey) ?? EMPTY_REPORTS;
 	}
+	const folderRoot = workspace.surface.folderRoot ?? null;
+	const matchesReportPath = (candidate: string, reportPath: string): boolean =>
+		candidate === reportPath || normalizeSurfacePath(candidate, folderRoot) === reportPath;
 	const explorations = openExplorations(workspace);
 	const plainSessions = workspace.activeSessions.filter((session) => !isOpenVariant(session, workspace));
 	const variantsByExploration = new Map<string, SurfaceSession[]>();
@@ -856,13 +1111,13 @@ export function reportsOwnedBy(
 	);
 	const ownerKeyFor = (report: SurfaceReportSummary): string | undefined => {
 		for (const exp of explorations) {
-			if (exp.notePaths?.includes(report.path)) return `exploration:${exp.id}`;
+			if (exp.notePaths?.some((p) => matchesReportPath(p, report.path))) return `exploration:${exp.id}`;
 		}
 		for (const exp of chosen) {
-			if (exp.notePaths?.includes(report.path)) return `session:${exp.chosenSessionId}`;
+			if (exp.notePaths?.some((p) => matchesReportPath(p, report.path))) return `session:${exp.chosenSessionId}`;
 		}
 		for (const sess of plainSessions) {
-			if (sess.notePaths?.includes(report.path)) return `session:${sess.id}`;
+			if (sess.notePaths?.some((p) => matchesReportPath(p, report.path))) return `session:${sess.id}`;
 		}
 		if (report.ownerTitle) {
 			const wanted = report.ownerTitle.toLowerCase();
@@ -876,15 +1131,19 @@ export function reportsOwnedBy(
 		for (const sess of plainSessions) {
 			const touches = sess.changes.some(
 				(change) =>
-					change.affectedPaths.includes(report.path) ||
-					(state.studioPatches[change.id] ?? []).some((op) => op.path === report.path),
+					change.affectedPaths.some((p) => matchesReportPath(p, report.path)) ||
+					(state.studioPatches[change.id] ?? []).some((op) => matchesReportPath(op.path, report.path)),
 			);
 			if (touches) return `session:${sess.id}`;
 		}
 		for (const exp of explorations) {
 			const variants = variantsByExploration.get(exp.id) ?? [];
 			const touches = variants.some((variant) =>
-				variant.changes.some((change) => change.affectedPaths.includes(report.path)),
+				variant.changes.some(
+					(change) =>
+						change.affectedPaths.some((p) => matchesReportPath(p, report.path)) ||
+						(state.studioPatches[change.id] ?? []).some((op) => matchesReportPath(op.path, report.path)),
+				),
 			);
 			if (touches) return `exploration:${exp.id}`;
 		}
@@ -2746,10 +3005,25 @@ export class SurfacesStore {
 		}
 	}
 
+	selectReport(slug: string | undefined): void {
+		if (this.state.activeReportSlug === slug) return;
+		this.store.set({ activeReportSlug: slug });
+	}
+
 	openReport(surfaceId: string, slug?: string): void {
 		const state = this.state;
+		const surface = state.surfaces.find((item) => item.id === surfaceId);
+		const dedicatedReport = Boolean(surface && this.lookOf(surface).kind === "report");
 		const reports = surfaceReports(state, surfaceId);
 		const targetSlug = slug ?? reports[0]?.slug;
+		if (dedicatedReport) {
+			this.store.set({
+				mode: "preview",
+				activeReportSlug: targetSlug,
+				...(state.previewPanel === "closed" ? { previewPanel: "open" as const } : {}),
+			});
+			return;
+		}
 		if (state.mode === "report" && (!targetSlug || state.activeReportSlug === targetSlug || reports.length <= 1)) {
 			this.store.set({ mode: "preview", activeReportSlug: undefined });
 			return;
@@ -2759,6 +3033,34 @@ export class SurfacesStore {
 			activeReportSlug: targetSlug,
 			...(state.previewPanel === "closed" ? { previewPanel: "open" as const } : {}),
 		});
+	}
+
+	async openChangeDeliverable(surfaceId: string, changeId: string, slug: string): Promise<void> {
+		const state = this.state;
+		const surface = state.surfaces.find((item) => item.id === surfaceId);
+		const dedicatedReport = Boolean(surface && this.lookOf(surface).kind === "report");
+		const wasHidden = Boolean(state.hiddenChanges[changeId]);
+		if (!dedicatedReport && !wasHidden && state.mode === "report" && state.activeReportSlug === slug) {
+			this.store.set({ mode: "preview", activeReportSlug: undefined });
+			return;
+		}
+		this.store.set((current) => {
+			let hiddenChanges = current.hiddenChanges;
+			if (hiddenChanges[changeId]) {
+				const nextHidden = { ...hiddenChanges };
+				delete nextHidden[changeId];
+				hiddenChanges = nextHidden;
+			}
+			return {
+				hiddenChanges,
+				mode: dedicatedReport ? ("preview" as const) : ("report" as const),
+				activeReportSlug: slug,
+				...(current.previewPanel === "closed" ? { previewPanel: "open" as const } : {}),
+			};
+		});
+		if (wasHidden) {
+			await this.#syncPreview(surfaceId, { debounceMs: PREVIEW_TOGGLE_DEBOUNCE_MS });
+		}
 	}
 
 	openPreviewPanel(): void {

@@ -377,4 +377,9 @@ export const SURFACES: Record<string, string> = {
 	"Your own domain": "Dit eget domæne",
 	"Your own domain cannot be added yet.": "Dit eget domæne kan ikke tilføjes endnu.",
 	"yourdomain.com": "ditdomæne.dk",
+	Article: "Artikel",
+	HTML: "HTML",
+	PDF: "PDF",
+	Added: "Tilføjet",
+	"Open {title}": "Åbn {title}",
 };

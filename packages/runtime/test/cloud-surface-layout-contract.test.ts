@@ -20,10 +20,12 @@ import {
 	surfaceStudioPageView,
 } from "../src/cloud-surface-session-runner.ts";
 import {
+	checkStagedSurfaceDeliverables,
 	checkStagedSurfaceLayout,
 	createStageSurfacePatchTool,
 	LAYOUT_UNCHECKED_NOTE,
 } from "../src/cloud-surface-tools.ts";
+import { buildSurfaceTurnBrief } from "../src/cloud-surface-turn-context.ts";
 
 function toolContext(): CloudToolContext {
 	return {
@@ -603,5 +605,121 @@ describe("stage_surface_patch and the layout", () => {
 			expect(answer).toMatchObject({ staged: true, note: LAYOUT_UNCHECKED_NOTE });
 			expect(stageSurfacePatch).toHaveBeenCalledTimes(1);
 		}
+	});
+
+	it("validates staged *.report.json payloads and refuses bundling multiple reports or standalone HTML files", async () => {
+		const validReport = JSON.stringify({
+			category: "Analysis",
+			headline: "Q3 Retention Breakdown",
+			subtitle: "Cohort trends across Europe.",
+			sections: [
+				{
+					id: "cohorts",
+					heading: "Cohort retention",
+					paragraphs: ["Month-3 retention rose 6 points after onboarding changes."],
+					blocks: [
+						{
+							kind: "bar_chart",
+							heading: "Retention by cohort",
+							items: [
+								{ label: "Q2", value: 41 },
+								{ label: "Q3", value: 47 },
+							],
+						},
+					],
+				},
+			],
+		});
+		const validSecondReport = JSON.stringify({
+			headline: "Launch Post",
+			sections: [{ id: "intro", heading: "Why we built it", paragraphs: ["Built for quiet nights."] }],
+		});
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{ op: "write_text", path: "reports/q3.report.json", content: validReport },
+				{ op: "write_text", path: "layout.json", content: valid },
+			]),
+		).not.toThrow();
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{ op: "write_text", path: "reports/q3.report.json", content: validReport },
+				{ op: "write_text", path: "reports/launch.report.json", content: validSecondReport },
+			]),
+		).toThrow("Stage each report (*.report.json) or standalone HTML document in its own stage_surface_patch call");
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{ op: "write_text", path: "post-1.html", content: "<html><title>One</title></html>" },
+				{ op: "write_text", path: "post-2.html", content: "<html><title>Two</title></html>" },
+			]),
+		).toThrow("Stage each report (*.report.json) or standalone HTML document in its own stage_surface_patch call");
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{ op: "write_text", path: "modules/calc/index.html", content: "<html></html>" },
+				{ op: "write_text", path: "modules/calc/frame.html", content: "<html></html>" },
+			]),
+		).not.toThrow();
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{ op: "delete", path: "reports/old-1.report.json" },
+				{ op: "delete", path: "reports/old-2.report.json" },
+			]),
+		).not.toThrow();
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([{ op: "write_text", path: "bad.report.json", content: "{ not json" }]),
+		).toThrow("bad.report.json would not render as a report: content is not valid JSON.");
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{ op: "write_text", path: "bad.report.json", content: JSON.stringify({ headline: "Empty", sections: [] }) },
+			]),
+		).toThrow("bad.report.json would not render as a report: sections must be a non-empty array.");
+
+		expect(() =>
+			checkStagedSurfaceDeliverables([
+				{
+					op: "write_text",
+					path: "bad.report.json",
+					content: JSON.stringify({
+						headline: "Bad block",
+						sections: [{ id: "s1", heading: "One", blocks: [{ kind: "unknown_chart" }] }],
+					}),
+				},
+			]),
+		).toThrow("sections[0].blocks[0].kind must be one of quote, bar_chart, line_chart, table, callout, figure");
+
+		const stageSurfacePatch = vi.fn();
+		const deferredTool = createStageSurfacePatchTool(randomUUID(), { stageSurfacePatch }, undefined, {
+			deferSessionCompletion: true,
+		});
+		const props = (deferredTool.inputSchema as { properties: Record<string, unknown> }).properties;
+		expect(props).not.toHaveProperty("finishSession");
+		const parsedBad = deferredTool.parseArguments({
+			title: "Three posts",
+			summary: "Bundled.",
+			ops: [
+				{ op: "write_text", path: "a.report.json", content: validReport },
+				{ op: "write_text", path: "b.report.json", content: validSecondReport },
+			],
+		});
+		await expect(deferredTool.prepare!(parsedBad, toolContext())).rejects.toBeInstanceOf(CloudToolRefusal);
+		expect(stageSurfacePatch).not.toHaveBeenCalled();
+
+		const folderBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "editorial",
+			surfaceTitle: "Editorial",
+			briefMarkdown: null,
+			folderRoot: "surfaces/editorial",
+			repositoryKey: null,
+		});
+		expect(folderBrief).toContain("stage one `stage_surface_patch` call per independent deliverable");
+		expect(folderBrief).not.toContain(".qorpera/checks.json");
+		expect(folderBrief).not.toContain("coding_finish");
 	});
 });
