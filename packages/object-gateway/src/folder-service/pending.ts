@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { COMPANY_STATE_SEEDED_PATHS, osRelative } from "@qorpera/cloud-client/company-state-files";
 import { folderKey } from "@qorpera/contracts";
-import { gitRefused, gitSharedPath, gitUnpublished } from "./git.ts";
+import { gitObjectFolder, gitRefused, gitSharedPath, gitUnpublished } from "./git.ts";
 import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
 import { byteOrder, nameOf, parentOf, sortByteOrder, type TreeEntry, type ViewTree, wireEntry } from "./view-tree.ts";
 
@@ -1020,6 +1020,8 @@ export class PendingView {
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) !== "folder") fail(ErrorCode.notAFolder, "Not a folder");
 		checkRemovable(path);
 		if (this.#hasChildren(path)) fail(ErrorCode.notEmpty, "The folder is not empty");
+		if (r.kind === "live" && !this.#codeHost && gitObjectFolder(r.source))
+			fail(ErrorCode.notPermitted, "Git's object folders stay");
 		// What moved out of it publishes first: its removal must not be able to take them if their moves fail.
 		if (r.kind === "live" && this.#movesOutBelow(r.source))
 			throw new PublishFirst("removing a folder something was moved out of");
