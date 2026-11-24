@@ -413,7 +413,7 @@ describe("a surface's figure in the rail", () => {
 		);
 		await store.load();
 		await store.openSurface("mail");
-		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, undefined, () => "live");
 		document.body.append(rail.el);
 		rail.update("mail");
 		await vi.advanceTimersByTimeAsync(0);
