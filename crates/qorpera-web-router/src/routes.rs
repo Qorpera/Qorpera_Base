@@ -182,6 +182,59 @@ pub struct SiteRecord {
     pub preview_deployments: HashMap<String, DeploymentRecord>,
     #[serde(default)]
     pub primary_custom_domain: Option<String>,
+    #[serde(default)]
+    pub db_live: Option<DeploymentRecord>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub db_previews: HashMap<String, DeploymentRecord>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ChosenDeployment<'a> {
+    pub deployment: &'a DeploymentRecord,
+    pub db_version_id: Option<&'a str>,
+}
+
+impl SiteRecord {
+    pub fn deployment_for(&self, scope: HostScope, preview_version_id: Option<&str>) -> Option<ChosenDeployment<'_>> {
+        let live = || {
+            self.live_deployment
+                .as_ref()
+                .map(deployed)
+                .or_else(|| self.db_live.as_ref().and_then(database_stored))
+        };
+        match scope {
+            HostScope::NextHost => {
+                if let Some(version_id) = preview_version_id {
+                    if let Some(deployment) = self.preview_deployments.get(version_id) {
+                        return Some(deployed(deployment));
+                    }
+                    if let Some(chosen) = self.db_previews.get(version_id).and_then(database_stored) {
+                        return Some(chosen);
+                    }
+                }
+                self.preview_deployments.values().next().map(deployed).or_else(live)
+            }
+            HostScope::OwnHost | HostScope::CustomDomain => live(),
+        }
+    }
+}
+
+fn deployed(deployment: &DeploymentRecord) -> ChosenDeployment<'_> {
+    ChosenDeployment {
+        deployment,
+        db_version_id: None,
+    }
+}
+
+fn database_stored(deployment: &DeploymentRecord) -> Option<ChosenDeployment<'_>> {
+    if deployment.kind != DeploymentKind::Static {
+        return None;
+    }
+    let version_id = deployment.id.strip_prefix("db:").filter(|id| !id.is_empty())?;
+    Some(ChosenDeployment {
+        deployment,
+        db_version_id: Some(version_id),
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -307,6 +360,9 @@ impl RouteTable {
             for dep in site.preview_deployments.values() {
                 collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
                 deployment_snapshot_upstreams.insert(dep.id.clone(), dep.upstream_addr.clone());
+            }
+            for dep in site.db_live.iter().chain(site.db_previews.values()) {
+                collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
             }
             let arc = Arc::new(site);
             sites_by_slug.insert(arc.slug.clone(), Arc::clone(&arc));
@@ -1012,6 +1068,8 @@ mod tests {
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: Some("nordicbakery.dk".to_string()),
+                db_live: None,
+                db_previews: HashMap::new(),
             }],
             custom_domains: vec![
                 CustomDomainRecord {
@@ -1174,5 +1232,74 @@ mod tests {
         assert_eq!(dep.health_path, "/");
         assert_eq!(dep.idle_timeout_sec, 900);
         assert_eq!(dep.memory_mb, 512);
+    }
+
+    #[test]
+    fn snapshot_before_and_after_database_stored_sites() {
+        let before = r#"{"hosts_enabled": true, "public_enabled": true, "sites": [{
+            "id": "s1", "slug": "old-shape", "is_public": false, "taken_down": false,
+            "password_sha256": "aa", "password_version": 2, "live_deployment": null,
+            "preview_deployments": {}, "primary_custom_domain": null
+        }]}"#;
+        let parsed: EdgeSnapshot = serde_json::from_str(before).unwrap();
+        let site = &parsed.sites[0];
+        assert!(site.db_live.is_none() && site.db_previews.is_empty());
+        assert!(site.deployment_for(HostScope::OwnHost, None).is_none());
+        assert!(site.deployment_for(HostScope::NextHost, Some("v-2")).is_none());
+
+        let sha = "b".repeat(64);
+        let after = format!(
+            r#"{{"hosts_enabled": true, "public_enabled": true, "sites": [{{
+            "id": "s1", "slug": "new-shape", "is_public": false, "taken_down": false,
+            "password_sha256": null, "password_version": 3, "live_deployment": null,
+            "preview_deployments": {{}}, "primary_custom_domain": null,
+            "db_live": {{"id": "db:v-1", "kind": "static", "manifest": {{"files": {{
+                "index.html": {{"sha256": "{sha}", "bytes": 12, "content_type": "text/html; charset=utf-8"}}}}}}}},
+            "db_previews": {{
+                "v-2": {{"id": "db:v-2", "kind": "static", "manifest": {{"files": {{}}}}}},
+                "v-3": {{"id": "db:v-3", "kind": "server", "oci_image_ref": "x", "manifest": {{}}}},
+                "v-4": {{"id": "dep-4", "kind": "static", "manifest": {{}}}}
+            }},
+            "a_key_from_a_later_snapshot": {{"anything": [1, 2]}}
+        }}], "another_later_key": true}}"#
+        );
+        let parsed: EdgeSnapshot = serde_json::from_str(&after).unwrap();
+        let site = &parsed.sites[0];
+        let live = site.deployment_for(HostScope::OwnHost, None).unwrap();
+        assert_eq!(live.deployment.id, "db:v-1");
+        assert_eq!(live.db_version_id, Some("v-1"));
+        assert_eq!(live.deployment.manifest.files["index.html"].sha256, sha);
+        let custom = site.deployment_for(HostScope::CustomDomain, None).unwrap();
+        assert_eq!(custom.db_version_id, Some("v-1"));
+        let next = site.deployment_for(HostScope::NextHost, Some("v-2")).unwrap();
+        assert_eq!(next.db_version_id, Some("v-2"));
+        let not_static = site.deployment_for(HostScope::NextHost, Some("v-3")).unwrap();
+        assert_eq!(not_static.db_version_id, Some("v-1"));
+        let not_db = site.deployment_for(HostScope::NextHost, Some("v-4")).unwrap();
+        assert_eq!(not_db.db_version_id, Some("v-1"));
+        let unknown = site.deployment_for(HostScope::NextHost, Some("v-9")).unwrap();
+        assert_eq!(unknown.db_version_id, Some("v-1"));
+
+        let table = RouteTable::from_snapshot(parsed);
+        assert_eq!(
+            table.etag_header(&sha).unwrap(),
+            HeaderValue::from_str(&format!("\"{sha}\"")).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_deployment_wins_over_database_stored_versions() {
+        let mut snap = sample_snapshot();
+        let mut db = snap.sites[0].live_deployment.clone().unwrap();
+        db.id = "db:v-1".to_string();
+        snap.sites[0].db_live = Some(db.clone());
+        snap.sites[0].db_previews.insert("v-1".to_string(), db);
+        let site = &snap.sites[0];
+        let live = site.deployment_for(HostScope::OwnHost, None).unwrap();
+        assert_eq!(live.deployment.id, "dep-1");
+        assert!(live.db_version_id.is_none());
+        let next = site.deployment_for(HostScope::NextHost, None).unwrap();
+        assert_eq!(next.deployment.id, "dep-1");
+        assert!(next.db_version_id.is_none());
     }
 }
