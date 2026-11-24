@@ -213,23 +213,22 @@ end $$;
 
 -- 4c. The lookups can use the folder key indexes (seq scans off: the fixture's tables are tiny).
 do $$
-declare v_plan text := ''; v_line text;
+declare v_plan jsonb;
 begin
 	set local enable_seqscan = off;
-	for v_line in execute $q$explain (costs off) select 1 from public.qorpera_runtime_agent_todos t
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_runtime_agent_todos_folder_key',
+		$q$select 1 from public.qorpera_runtime_agent_todos t
 		where t.folder_environment_id = '63400000-0000-4000-8000-000000000020' and t.folder_path is not null
 			and t.folder_retired_at is null
-			and (public.qorpera_folder_key(t.folder_path)) collate "C" = 'qorperaos/agents/builder/todos/x.md' collate "C"$q$ loop
-		v_plan := v_plan || v_line || E'\n'; end loop;
-	if v_plan not like '%qorpera_runtime_agent_todos_folder_key%' then
+			and (public.qorpera_folder_key(t.folder_path)) collate "C" = 'qorperaos/agents/builder/todos/x.md' collate "C"$q$);
+	if (v_plan #>> '{scan,Index Cond}' ~ 'folder_environment_id = .* AND \(qorpera_folder_key\(folder_path\) = ') is not true then
 		raise exception 'The todo lookup uses its folder key index: %', v_plan; end if;
 	raise notice 'L1 todo lookup plan: %', v_plan;
-	v_plan := '';
-	for v_line in execute $q$explain (costs off) select 1 from public.qorpera_folder_human_task_index h
+	v_plan := qorpera_test_support.plan_with_index_alone('public.qorpera_folder_human_task_index_key',
+		$q$select 1 from public.qorpera_folder_human_task_index h
 		where h.environment_id = '63400000-0000-4000-8000-000000000020'
-			and h.folder_key = 'qorperaos/human-tasks/x.md' collate "C" and h.retired_at is null$q$ loop
-		v_plan := v_plan || v_line || E'\n'; end loop;
-	if v_plan not like '%qorpera_folder_human_task_index_key%' then
+			and h.folder_key = 'qorperaos/human-tasks/x.md' collate "C" and h.retired_at is null$q$);
+	if (v_plan #>> '{scan,Index Cond}' ~ '\(environment_id = .* AND \(folder_key = ') is not true then
 		raise exception 'The task lookup uses its folder key index: %', v_plan; end if;
 	raise notice 'L1 task lookup plan: %', v_plan;
 	reset enable_seqscan;
