@@ -739,7 +739,9 @@ describe("stage_surface_patch and the layout", () => {
 			{ op: "write_text" as const, path: "reports/q3.report.json", content: validReport },
 			{ op: "write_text" as const, path: "reports/launch.report.json", content: validSecondReport },
 		];
-		expect(() => checkStagedSurfaceDeliverables(multiDeliverableOps, { allowMultipleDeliverables: true })).not.toThrow();
+		expect(() =>
+			checkStagedSurfaceDeliverables(multiDeliverableOps, { allowMultipleDeliverables: true }),
+		).not.toThrow();
 		expect(() =>
 			checkStagedSurfaceDeliverables(
 				[

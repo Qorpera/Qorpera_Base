@@ -1677,7 +1677,9 @@ describe("cloud surface session runner", () => {
 							{ op: "write_text", path: "q4.report.json", content: q4Report },
 						],
 					});
-					await expect(patchTool.prepare!(parsed, toolContext(companyId))).rejects.toBeInstanceOf(CloudToolRefusal);
+					await expect(patchTool.prepare!(parsed, toolContext(companyId))).rejects.toBeInstanceOf(
+						CloudToolRefusal,
+					);
 					return { state: "ready", replyText: "Done" };
 				},
 				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
