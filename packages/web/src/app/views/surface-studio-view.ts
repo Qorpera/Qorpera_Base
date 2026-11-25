@@ -516,7 +516,7 @@ export class SurfaceStudioView {
 		const folderRoot = this.#options.surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
 		const readable = allFiles ?? files;
 		const frameOwner = Symbol(title);
-		const frame = new AppFrame(
+		const frame: AppFrame = new AppFrame(
 			{ html: live },
 			t("Page: {name}", { name: title }),
 			className,
