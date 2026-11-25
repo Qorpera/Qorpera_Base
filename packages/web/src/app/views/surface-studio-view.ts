@@ -276,13 +276,29 @@ export class SurfaceStudioView {
 	}
 
 	#revealDeliverable(path: string): boolean {
-		const tab = this.#layout?.tabFor(path);
-		if (!tab) return false;
-		this.#tab = tab;
+		const place = this.#layout?.placeOf(path);
+		if (!place) return false;
+		this.#tab = place.tab;
 		queueMicrotask(() => {
-			if (!this.#lifetime.signal.aborted) this.update();
+			if (this.#lifetime.signal.aborted) return;
+			this.update();
+			if (place.in === "files") this.#showFile(path, 40);
 		});
 		return true;
+	}
+
+	#showFile(path: string, triesLeft: number): void {
+		if (this.#lifetime.signal.aborted) return;
+		const card = [...this.el.querySelectorAll<HTMLElement>("[data-file]")].find((item) => item.dataset.file === path);
+		if (!card) {
+			if (triesLeft > 0) setTimeout(() => this.#showFile(path, triesLeft - 1), 50);
+			return;
+		}
+		card.scrollIntoView?.({ behavior: "smooth", block: "center" });
+		card.classList.remove("is-revealed");
+		void card.offsetWidth;
+		card.classList.add("is-revealed");
+		card.addEventListener("animationend", () => card.classList.remove("is-revealed"), { once: true });
 	}
 
 	#disposeHtmlFrames(): void {

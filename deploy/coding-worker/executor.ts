@@ -1093,7 +1093,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				let worked = false;
 				try {
 					const passed = await surfaceCodeHost.pass(stop.signal);
-					const total = passed.previews + passed.merges + passed.publishes;
+					const total = passed.previews + passed.merges + passed.publishes + passed.cleanups;
 					worked = total > 0;
 					if (total + passed.failed > 0) {
 						console.log(JSON.stringify({ event: "surface-code-host", step: "pass", ...passed }));

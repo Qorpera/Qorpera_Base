@@ -24,6 +24,7 @@ import type {
 	ClaimedSurfaceApprovedChange,
 	ClaimedSurfaceAutomationJob,
 	ClaimedSurfaceChangeRange,
+	ClaimedSurfaceCleanupJob,
 	ClaimedSurfaceJobs,
 	ClaimedSurfaceMergeJob,
 	ClaimedSurfacePeerSession,
@@ -1942,6 +1943,44 @@ function parseClaimedSurfaceAutomationJob(value: unknown): ClaimedSurfaceAutomat
 	};
 }
 
+function parseClaimedSurfaceCleanupJob(value: unknown): ClaimedSurfaceCleanupJob {
+	const input = record(value, "claimed surface cleanup");
+	const sessionId =
+		input.sessionId === null || input.sessionId === undefined
+			? null
+			: responseUuid(input.sessionId, "surface cleanup session id");
+	const leaseToken =
+		input.leaseToken === undefined
+			? undefined
+			: input.leaseToken === null
+				? null
+				: responseUuid(input.leaseToken, "surface cleanup lease token");
+	const environmentId =
+		input.environmentId === undefined
+			? undefined
+			: input.environmentId === null
+				? null
+				: responseUuid(input.environmentId, "surface cleanup environment id");
+	let sourceKind: SurfaceSourceKind | undefined;
+	if (input.sourceKind !== undefined && input.sourceKind !== null) {
+		if (typeof input.sourceKind !== "string" || !SURFACE_SOURCE_KIND_SET.has(input.sourceKind)) {
+			throw new Error("Runner orchestrator returned invalid surface source kind");
+		}
+		sourceKind = input.sourceKind as SurfaceSourceKind;
+	}
+	return {
+		jobId: responseUuid(input.jobId, "surface cleanup job id"),
+		surfaceId: responseUuid(input.surfaceId, "surface id"),
+		sessionId,
+		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(environmentId !== undefined ? { environmentId } : {}),
+		...(sourceKind !== undefined ? { sourceKind } : {}),
+		...(leaseToken !== undefined ? { leaseToken } : {}),
+		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		workerId: responseUuid(input.workerId, "surface cleanup worker id"),
+	};
+}
+
 export function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 	const input = record(value, "claimed surface jobs");
 	if (!Array.isArray(input.sessions) || !Array.isArray(input.previews)) {
@@ -1949,8 +1988,14 @@ export function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 	}
 	const rawMerges = input.merges === undefined || input.merges === null ? [] : input.merges;
 	const rawPublishes = input.publishes === undefined || input.publishes === null ? [] : input.publishes;
+	const rawCleanups = input.cleanups === undefined || input.cleanups === null ? [] : input.cleanups;
 	const rawAutomations = input.automations === undefined || input.automations === null ? [] : input.automations;
-	if (!Array.isArray(rawMerges) || !Array.isArray(rawPublishes) || !Array.isArray(rawAutomations)) {
+	if (
+		!Array.isArray(rawMerges) ||
+		!Array.isArray(rawPublishes) ||
+		!Array.isArray(rawCleanups) ||
+		!Array.isArray(rawAutomations)
+	) {
 		throw new Error("Runner orchestrator returned invalid claimed surface jobs");
 	}
 	return {
@@ -1958,6 +2003,7 @@ export function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 		previews: input.previews.map(parseClaimedSurfacePreviewJob),
 		merges: rawMerges.map(parseClaimedSurfaceMergeJob),
 		publishes: rawPublishes.map(parseClaimedSurfacePublishJob),
+		cleanups: rawCleanups.map(parseClaimedSurfaceCleanupJob),
 		automations: rawAutomations.map(parseClaimedSurfaceAutomationJob),
 	};
 }

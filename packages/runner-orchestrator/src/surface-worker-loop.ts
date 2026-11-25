@@ -139,6 +139,18 @@ export interface ClaimedSurfacePublishJob {
 	readonly payload: Readonly<Record<string, unknown>>;
 }
 
+export interface ClaimedSurfaceCleanupJob {
+	readonly jobId: string;
+	readonly surfaceId: string;
+	readonly sessionId: string | null;
+	readonly profileId: string;
+	readonly environmentId?: string | null;
+	readonly sourceKind?: SurfaceSourceKind;
+	readonly leaseToken?: string | null;
+	readonly repositoryKey: string | null;
+	readonly workerId: string;
+}
+
 export interface ClaimedSurfaceAutomationJob {
 	readonly automationId: string;
 	readonly profileId: string;
@@ -156,6 +168,7 @@ export interface ClaimedSurfaceJobs {
 	readonly previews: readonly ClaimedSurfacePreviewJob[];
 	readonly merges?: readonly ClaimedSurfaceMergeJob[];
 	readonly publishes?: readonly ClaimedSurfacePublishJob[];
+	readonly cleanups?: readonly ClaimedSurfaceCleanupJob[];
 	readonly automations?: readonly ClaimedSurfaceAutomationJob[];
 }
 

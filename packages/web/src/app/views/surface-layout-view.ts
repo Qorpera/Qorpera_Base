@@ -3,6 +3,7 @@ import {
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_LAYOUT_PATH,
+	type SurfaceArtifactsBlock,
 	type SurfaceLayoutRead,
 	type SurfaceReadBlock,
 	type SurfaceReadNode,
@@ -21,12 +22,14 @@ import { type ColorToken, prepareSwatchRow, readSwatches } from "./surface-block
 import {
 	cleanFolderRoot,
 	createBlockContext,
+	folderRelative,
 	isPlainRecord,
 	type StudioSectionTask,
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
 	type SurfaceFileLayer,
 	sourceFile,
+	surfaceGlobFinds,
 } from "./surface-blocks/context.ts";
 import { explainerClaimedPaths, SurfaceExplainers } from "./surface-blocks/explainer.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
@@ -102,7 +105,21 @@ function bindingsOf(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layoutPath: string): Set<string> {
+function moduleFolders(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext): string[] {
+	return layout.tabs
+		.flatMap((tab) => tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])))
+		.flatMap((block) => {
+			const folder = block.type === "module" ? moduleFolder(block, ctx) : undefined;
+			return folder ? [folder] : [];
+		});
+}
+
+function claimedFiles(
+	layout: SurfaceLayoutRead,
+	ctx: SurfaceBlockContext,
+	layoutPath: string,
+	apart: readonly string[],
+): Set<string> {
 	const claimed = new Set([layoutPath]);
 	const leaves = layout.tabs.flatMap((tab) =>
 		tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])),
@@ -110,8 +127,9 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 	for (const block of leaves) {
 		if (block.type === "unknown" || block.type === "artifacts") continue;
 		if (block.type === "report") {
-			const { include } = reportFiles(block, ctx);
+			const { include } = reportFiles(block, ctx, apart);
 			for (const path of Object.keys(ctx.files)) if (include(path)) claimed.add(path);
+			for (const path of Object.keys(ctx.binaries)) if (include(path)) claimed.add(path);
 			continue;
 		}
 		if (block.type === "explainer") {
@@ -140,6 +158,18 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 		}
 	}
 	return claimed;
+}
+
+type PathTest = (path: string) => boolean;
+
+function artifactsHold(block: SurfaceArtifactsBlock, ctx: SurfaceBlockContext): PathTest {
+	return (path) => {
+		const relative = folderRelative(ctx.folderRoot, path);
+		const file = relative === undefined ? { path } : { path, relative };
+		const listed =
+			block.match === undefined ? relative !== undefined : block.match.some((glob) => surfaceGlobFinds(glob, file));
+		return listed && !block.skip?.some((glob) => surfaceGlobFinds(glob, file));
+	};
 }
 
 function isRow(node: PreparedNode): node is PreparedRow {
@@ -189,7 +219,13 @@ export class SurfaceLayoutView {
 	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
-	#reportTabs: readonly { readonly id: string; readonly holds: (path: string) => boolean }[] = [];
+	#apart: readonly string[] = [];
+	#postTabs: readonly {
+		readonly id: string;
+		readonly posts: PathTest;
+		readonly modules: PathTest;
+		readonly files: PathTest;
+	}[] = [];
 
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
@@ -228,12 +264,24 @@ export class SurfaceLayoutView {
 		});
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
-		const claimed = claimedFiles(layout, ctx, layoutPath);
-		this.#reportTabs = layout.tabs.map((tab) => {
-			const includes = tab.blocks
-				.flatMap((node) => (node.type === "row" ? node.blocks : [node]))
-				.flatMap((block) => (block.type === "report" ? [reportFiles(block, ctx).include] : []));
-			return { id: tab.id, holds: (path: string) => includes.some((include) => include(path)) };
+		this.#apart = moduleFolders(layout, ctx);
+		const claimed = claimedFiles(layout, ctx, layoutPath, this.#apart);
+		this.#postTabs = layout.tabs.map((tab) => {
+			const blocks = tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node]));
+			const posts = blocks.flatMap((block) =>
+				block.type === "report" ? [reportFiles(block, ctx, this.#apart).include] : [],
+			);
+			const files = blocks.flatMap((block) => (block.type === "artifacts" ? [artifactsHold(block, ctx)] : []));
+			const folders = blocks.flatMap((block) => {
+				const folder = block.type === "module" ? moduleFolder(block, ctx) : undefined;
+				return folder ? [folder] : [];
+			});
+			return {
+				id: tab.id,
+				posts: (path: string) => posts.some((include) => include(path)),
+				modules: (path: string) => folders.some((folder) => path.startsWith(`${folder}/`)),
+				files: (path: string) => !claimed.has(path) && files.some((hold) => hold(path)),
+			};
 		});
 		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
 		this.#stages.keep(stageKeys);
@@ -356,7 +404,7 @@ export class SurfaceLayoutView {
 			case "cards":
 				return prepareCards(block, ctx);
 			case "report":
-				return this.#reports.prepare(block, ctx);
+				return this.#reports.prepare(block, ctx, this.#apart);
 			case "explainer":
 				return this.#explainers.prepare(key, block, ctx);
 			case "artifacts":
@@ -411,8 +459,13 @@ export class SurfaceLayoutView {
 		return tasks;
 	}
 
-	tabFor(path: string): string | undefined {
-		return this.#reportTabs.find((tab) => tab.holds(path))?.id;
+	placeOf(path: string): { readonly tab: string; readonly in: "posts" | "module" | "files" } | undefined {
+		const posts = this.#postTabs.find((tab) => tab.posts(path));
+		if (posts) return { tab: posts.id, in: "posts" };
+		const module = this.#postTabs.find((tab) => tab.modules(path));
+		if (module) return { tab: module.id, in: "module" };
+		const files = this.#postTabs.find((tab) => tab.files(path));
+		return files ? { tab: files.id, in: "files" } : undefined;
 	}
 
 	click(target: HTMLElement, root: HTMLElement): boolean {
