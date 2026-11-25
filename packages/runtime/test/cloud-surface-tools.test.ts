@@ -474,6 +474,9 @@ describe("cloud surface runtime tools", () => {
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("atomic, self-contained, and conflict-minimizing");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("surfaceGate");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("apps/<repo>*/index.html");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("scrolled viewport-sized slices");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("structural skeleton");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("qorpera-identity.css");
 		expect(text).toContain("surfaceGate");
 		expect(text).toContain("runChecks: true");
 	});

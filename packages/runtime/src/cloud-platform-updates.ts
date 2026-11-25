@@ -420,6 +420,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Studio and report sessions now stage each report, analysis, essay or blog post as its own staged change rather than bundling several pieces together, and malformed report payloads are refused at stage time. Write finished reports and posts as structured reports (or standalone HTML pages when bespoke presentation is requested) instead of raw Markdown, and members open each piece directly from its change row in Preview before approving it.",
 	},
 	{
+		id: "coding-picture-generation-and-reference-study",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Image generation and reference-site study in coding",
+		text: "Coding and Surface sessions on Codex logins can now generate bespoke PNG visuals directly into their repository worktree with make_picture, inspect each image inline, and iterate until it fits the layout. When given a reference website URL, sessions also study the full page through multiple scrolled viewport screenshots instead of a single above-the-fold or crushed full-page capture, using the reference as the structural skeleton and visual rhythm while keeping the company identity tokens.",
+	},
+	{
 		id: "studio-artifacts-block",
 		kind: "behaviour",
 		date: "2026-11-24",
