@@ -626,18 +626,31 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (!this.#coding)
 					throw new Error("Coding sessions run in the coding composition, which this node does not carry");
 				stage = "coding-session";
+				let folder: CloudCompanyFolderClient | undefined;
+				const getFolder = (): CloudCompanyFolderClient => {
+					folder ??= new CloudCompanyFolderClient({
+						binding,
+						identity: context.identity,
+						control: this.#paths,
+						bytes: this.#folderBytes(binding, context.identity),
+						...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
+					});
+					return folder;
+				};
 				const surfaceSession = await this.#loadSurfaceCodingBinding(
-					binding,
 					context.identity,
 					wake.payload,
+					getFolder,
 					signal,
 				);
+				if (this.#coding.supportsFolderWrites) getFolder();
 				composition.finish("succeeded", { outputBytes: 0 });
 				return await this.#coding.execute(request, identityRoot, signal, {
 					binding,
 					identity: context.identity,
 					wake,
 					observability,
+					...(folder ? { folder } : {}),
 					...(surfaceSession ? { surfaceSession } : {}),
 				});
 			}
@@ -1951,9 +1964,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	}
 
 	async #loadSurfaceCodingBinding(
-		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
 		payload: Record<string, unknown>,
+		getFolder: () => CloudCompanyFolderClient,
 		signal: AbortSignal,
 	): Promise<SurfaceCodingTurnBinding | undefined> {
 		const rawSurface = payload.surfaceSession;
@@ -1997,13 +2010,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const omittedBaseChanges = parseSurfaceOmittedBaseChanges(originRefRec?.omittedBaseChanges);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const branchHeadSha = typeof sessionTurnRaw.branchHeadSha === "string" ? sessionTurnRaw.branchHeadSha : null;
-		const folderClient = new CloudCompanyFolderClient({
-			binding,
-			identity,
-			control: this.#paths,
-			bytes: this.#folderBytes(binding, identity),
-			...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
-		});
+		const folderClient = getFolder();
 		const readBrief = async (): Promise<string | null> => {
 			try {
 				const found = await folderClient.readText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`, 16_384, signal);

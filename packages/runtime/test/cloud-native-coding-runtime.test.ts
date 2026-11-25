@@ -1,9 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudCodingCommandGateway } from "../src/cloud-coding-command-tools.ts";
 import { HttpCloudCodingControl } from "../src/cloud-coding-control.ts";
+import { CODING_MAKE_PICTURE_SCHEMA } from "../src/cloud-coding-picture-tool.ts";
 import { CloudControlRpcEnded } from "../src/cloud-control-errors.ts";
 import {
 	type CloudCodingNativeControl,
@@ -11,6 +15,7 @@ import {
 	type CloudNativeCodingTurnContext,
 	parseCloudCodingTurnContext,
 } from "../src/cloud-native-coding-runtime.ts";
+import { CHATGPT_PLAN_DIRECTORY } from "../src/cloud-native-isolation.ts";
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
 import { CLOUD_RUN_ROW_READ_MS, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
@@ -21,6 +26,7 @@ import {
 	cloudToolJsonText,
 } from "../src/cloud-native-tool-boundary.ts";
 import { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
+import { CloudPictureChannel } from "../src/cloud-picture-channel.ts";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
 import {
 	CloudRuntimeDiagnosticError,
@@ -29,6 +35,7 @@ import {
 } from "../src/cloud-runtime-observability.ts";
 import { SITE_NAME_RULE } from "../src/cloud-site-tools.ts";
 import type { CloudWakeEnvelope } from "../src/cloud-wake-bus.ts";
+import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 import { pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
 
@@ -2135,5 +2142,216 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 				recordChange: vi.fn(),
 			},
 		});
+	});
+
+	it("offers make_picture with a picture channel on Codex logins with folder commit support and fences its inline images", async () => {
+		const f = fixture();
+		f.coding.repository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
+		const worktree = `code/surfaces/website/worktrees/${f.coding.workerId}`;
+		const fw = await folderWriterFixture({
+			folders: ["code", "code/surfaces", "code/surfaces/website", "code/surfaces/website/worktrees", worktree],
+		});
+		const identityRoot = await mkdtemp(join(tmpdir(), "qorpera-coding-picture-"));
+		const png = pngFile(pngHeader(2, 1, 8, 2), pngRows([[255, 0, 0, 0, 0, 255]]));
+		const recordedViews: unknown[] = [];
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_context_view") {
+				recordedViews.push(args.p_view);
+				return {
+					schema: "qorpera.native-context-view-receipt/v1",
+					viewId: randomUUID(),
+					requestId: (args.p_view as { requestId: string }).requestId,
+					sha256: "e".repeat(64),
+					ordinal: recordedViews.length,
+				};
+			}
+			return original(method, args, signal);
+		});
+		const controlWithFolder: CloudCodingNativeControl = {
+			...f.control,
+			beginToolOperation: (binding, input, signal) => fw.operationControl.beginToolOperation(binding, input, signal),
+			completeToolOperation: (binding, input, signal) =>
+				fw.operationControl.completeToolOperation(binding, input, signal),
+			completeFolderToolOperation: (binding, input, signal) =>
+				fw.operationControl.completeFolderToolOperation!(binding, input, signal),
+		};
+		const runtime = new CloudNativeCodingRuntime({
+			control: controlWithFolder,
+			gateway: f.gatewayFactory,
+			command: ["codex"],
+			binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+		});
+		let offered: string[] = [];
+		let capturedInstructions = "";
+		let receivedPictures: CloudPictureChannel | undefined;
+		try {
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				receivedPictures = options.pictures;
+				capturedInstructions = options.runtimeInstructions ?? "";
+				options.pictures?.attach(async () => ({ png, revisedPrompt: "A calm studio hero." }));
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						f.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					offered = adapters.tools.map((tool) => tool.name);
+					const boundary = new CloudNativeToolBoundary({
+						companyId: f.authority.identity.companyId,
+						runId: f.authority.identity.runId,
+						identity: f.authority.identity,
+						tools: adapters.tools,
+						assertActive: async () => undefined,
+						signal: options.signal,
+					});
+					try {
+						const invoked = await boundary.invoke("pic-1", "qorpera", "make_picture", {
+							operationKey: "hero-1",
+							path: "assets/hero.png",
+							prompt: "A calm studio hero of a matte headband on warm stone.",
+						});
+						expect(invoked.success).toBe(true);
+						expect(invoked.contentItems).toHaveLength(2);
+						const envelopeText = invoked.contentItems[0].text;
+						const answer = JSON.parse(JSON.parse(envelopeText).content.text);
+						expect(answer).toMatchObject({
+							schema: CODING_MAKE_PICTURE_SCHEMA,
+							state: "applied",
+							kind: "image",
+							path: "assets/hero.png",
+						});
+						const fenced = await boundary.fenceNativeResults([
+							{
+								kind: "function_call_output",
+								callId: "pic-1",
+								output: [
+									{ type: "input_text", text: envelopeText },
+									{ type: "input_image", sha256: answer.imageSha256 },
+								],
+							},
+						]);
+						const frame = {
+							schema: "qorpera.native-result-fence/v1" as const,
+							requestId: "req-pic-1",
+							threadId: "thread",
+							turnId: "turn",
+							purpose: "turn" as const,
+							outputs: [],
+						};
+						await adapters.recordContextView(frame, fenced, options.signal);
+						expect(recordedViews).toHaveLength(1);
+						await expect(
+							adapters.recordContextView(
+								{ ...frame, requestId: "req-pic-bad-hash" },
+								[{ ...fenced[0]!, imageSha256: "f".repeat(64) }],
+								options.signal,
+							),
+						).rejects.toThrow("CODING_CONTEXT_RESOURCES_REFUSED");
+					} finally {
+						boundary.close();
+					}
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "pic-finish",
+							summary: "Generated assets/hero.png.",
+							headSha: "b".repeat(40),
+						}),
+						f.context,
+					);
+					return {
+						providerSessionId: "native-pic-thread",
+						toolCalls: 2,
+						codexVersion: "pinned",
+						fencedRequests: 2,
+					};
+				} finally {
+					run.close();
+				}
+			});
+
+			await runtime.execute(f.request, identityRoot, f.context.signal, {
+				...f.turn,
+				folder: fw.folder,
+				surfaceSession: {
+					sessionId: randomUUID(),
+					surfaceSlug: "website",
+					surfaceTitle: "Website",
+					repositoryKey: "surfaces/website",
+					folderRoot: null,
+					briefMarkdown: null,
+					recordChange: vi.fn(),
+				},
+			});
+
+			expect(receivedPictures).toBeInstanceOf(CloudPictureChannel);
+			expect(offered).toEqual([
+				"coding_run_command",
+				"coding_read_command",
+				"coding_cancel_command",
+				"coding_record_change",
+				"make_picture",
+				"coding_finish",
+				"coding_ask",
+			]);
+			expect(fw.files.has(`${worktree}/assets/hero.png`)).toBe(true);
+			expect(capturedInstructions).toContain("Use make_picture to generate bespoke PNG imagery");
+			expect(capturedInstructions).toContain("multiple scrolled viewport-sized slices");
+			expect(capturedInstructions).toContain("1920x1200");
+			expect(capturedInstructions).toContain("structural skeleton and visual vibe");
+			expect(capturedInstructions).toContain("qorpera-identity.css");
+
+			await mkdir(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
+			f.coding.submission = null;
+			let planOffered: string[] = [];
+			let planPictures: CloudPictureChannel | undefined;
+			let planInstructions = "";
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				planPictures = options.pictures;
+				planInstructions = options.runtimeInstructions ?? "";
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						f.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					planOffered = adapters.tools.map((tool) => tool.name);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "plan-finish",
+							summary: "Done without picture lane.",
+							headSha: "b".repeat(40),
+						}),
+						f.context,
+					);
+					return {
+						providerSessionId: "native-plan-thread",
+						toolCalls: 1,
+						codexVersion: "pinned",
+						fencedRequests: 1,
+					};
+				} finally {
+					run.close();
+				}
+			});
+
+			await runtime.execute(f.request, identityRoot, f.context.signal, {
+				...f.turn,
+				folder: fw.folder,
+			});
+
+			expect(planPictures).toBeUndefined();
+			expect(planOffered).not.toContain("make_picture");
+			expect(planInstructions).not.toContain("Use make_picture to generate bespoke PNG imagery");
+			expect(planInstructions).toContain("multiple scrolled viewport-sized slices");
+			expect(planInstructions).toContain("1920x1200");
+		} finally {
+			fw.run.close();
+			await rm(identityRoot, { recursive: true, force: true });
+		}
 	});
 });

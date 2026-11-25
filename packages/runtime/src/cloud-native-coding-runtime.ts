@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import {
 	type CloudCodingCommandScope,
@@ -11,13 +13,15 @@ import {
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
 import { CODING_INSPECT_IMAGE_SCHEMA } from "./cloud-coding-image-inspect.ts";
+import { CODING_MAKE_PICTURE_SCHEMA, createCodingPictureTool } from "./cloud-coding-picture-tool.ts";
+import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import {
 	cloudControlBackoffMs,
 	cloudControlEnded,
 	cloudControlPause,
 	cloudControlRetryable,
 } from "./cloud-control-errors.ts";
-import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { NativeCloudExecutionDriver, NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import {
@@ -39,6 +43,7 @@ import {
 	type CloudNativeToolOperationControlPlane,
 	observedCloudToolAuthority,
 } from "./cloud-native-tool-operations.ts";
+import { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
@@ -72,9 +77,11 @@ export interface CloudNativeCodingTurnContext {
 	identity: CloudNativeToolIdentity;
 	wake: CloudWakeEnvelope;
 	observability?: CloudRuntimeObservability;
+	folder?: CloudCompanyFolderClient;
 	surfaceSession?: SurfaceCodingTurnBinding;
 }
 export interface CloudNativeCodingDriver {
+	readonly supportsFolderWrites?: boolean;
 	execute(
 		request: NativeCompanyExecutionRequest,
 		identityRoot: string,
@@ -125,6 +132,7 @@ const INSTRUCTIONS =
 	// sentence and the picture are the session's to give; a hand-in without them lands the same.
 	"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it. Leave it out when a customer will notice nothing. When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium (chromium --headless --screenshot=<file> --window-size=1280,800 <address>), keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository. Neither is required: never hold work back for them. " +
 	"For UI or web changes, verify what you built visually before coding_finish: start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with the machine's headless Chromium or Playwright (for example at desktop 1280x800 and mobile 390x844 widths into a temporary file or docs/changes/), and call coding_run_command with inspectImage set to that relative workspace path (using a fresh operationKey for each new or re-captured screenshot) to view each screenshot directly in your context, fix layout, styling, or responsive issues, and stop any temporary server and remove temporary screenshots before committing. " +
+	"When the member shares a reference website URL as design inspiration, study the entire reference page visually before building: open it in headless Chromium or Playwright, dismiss cookie or promo banners, capture multiple scrolled viewport-sized slices (for example 1440x900 down the full page covering hero, mid-page product/app showcases, social proof/comparison, and pricing/footer, plus mobile 390x844), and inspect each slice with coding_run_command (inspectImage) — never rely on a single above-the-fold capture or one tall full-page screenshot (inspectImage scales images to fit within 1920x1200, crushing tall full-page shots into unreadable slivers). Use the reference site as the structural skeleton and visual vibe (section architecture, scroll cadence, typography scale, dark/light contrast rhythm, card and UI framing) adapted to the company's brand and product rather than copying its text or trademarks. " +
 	// Own code storage, slice 1 (8 Nov 2026): a repository kept in Qorpera starts empty, and its landing merges.
 	// Step 6 (12 Nov 2026): code brought in keeps its other branches under refs/qorpera/imported/heads/, for reading; the
 	// import's follow-ups (13 Nov 2026): one is brought into the default branch by merging it into the session's branch.
@@ -151,6 +159,7 @@ const SURFACE_BASE_INSTRUCTIONS =
 	'A .qorpera/checks.json file is optional for simple static Surface sites. For real multi-file or multi-session codebases, maintain fast, honest checks in .qorpera/checks.json, run them pre-flight with coding_run_command (runChecks: true) or on a clean checkout before coding_finish, and write tests for testable changes without weakening existing checks. By default ("surfaceGate": "none" or omitted), Surface staging skips automatic CI so Preview stays instant; set "surfaceGate": "stage" in .qorpera/checks.json when the repository should automatically run and enforce its checks before staging commits for Preview. Never commit temporary test logs or screenshots. ' +
 	"When reconciling merge or rebase conflicts across parallel Surface sessions, inspect both sides, preserve both intents cleanly, and re-verify your checks and visual preview before coding_finish. " +
 	"For UI or web changes, verify what you built visually before coding_finish: start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with the machine's headless Chromium or Playwright (for example at desktop 1280x800 and mobile 390x844 widths into a temporary file), and call coding_run_command with inspectImage set to that relative workspace path (using a fresh operationKey for each new or re-captured screenshot) to view each screenshot directly in your context, fix layout, styling, or responsive issues, and stop any temporary server and remove temporary screenshots before committing. " +
+	"When the founder shares a reference website URL as inspiration, visually study the entire reference page before writing code: open it with headless Chromium or Playwright, dismiss cookie or promo overlays, capture multiple scrolled viewport-sized slices (for example 1440x900 from top to bottom covering hero, mid-page product/app/feature showcases, social proof or comparison bands, and offer/footer, plus mobile 390x844), and inspect each slice individually with coding_run_command (inspectImage). Never stop at a single above-the-fold screenshot and never rely on one tall full-page screenshot (inspectImage fits images within 1920x1200, which shrinks tall full-page shots into unreadable strips). Use the reference website as the structural skeleton and visual vibe — matching its section depth, scroll cadence, typography scale, dark/light contrast rhythm, card and UI framing, and product/app showcase craft — while applying the company's qorpera-identity.css tokens (colors, fonts, radii) unless the founder explicitly asks to change colors. When the founder rejects earlier sketches and points to a reference site, rebuild cleanly around that reference instead of keeping a cramped earlier stub or multi-variant switcher unless they asked for multiple variants. " +
 	"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch. " +
 	"Every turn ends with coding_finish or coding_ask, never with a written answer alone: a turn that ends without one fails, and nothing of it is staged. For a read-only, inspection, or no-change turn where HEAD still equals the session's baseSha (no commits beyond the session base), call coding_finish with that headSha and your factual summary — no change is staged (commits from earlier turns beyond baseSha are verified and staged as usual). When something blocks you and nothing whole is ready to stage yet, call coding_ask with what blocks you and what you need from the founder. " +
 	"The context is this session's own record: earlierTurns says what started each earlier turn, what you submitted in it (a question with its choices, or a commit) and how it ended (a turn marked shortened had its long texts cut to fit); input is what started this turn (the dispatch, the agent's follow-up or the owner's reply). " +
@@ -161,6 +170,17 @@ const SURFACE_BASE_INSTRUCTIONS =
  * attached when the disk was replaced, so no command of it ended as MACHINE_NEW_DISK to say so. */
 const NEW_DISK =
 	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh.";
+const CODING_PICTURE_INSTRUCTIONS =
+	"Use make_picture to generate bespoke PNG imagery (hero scenes, product concept shots, lifestyle compositions, editorial visuals, or illustrations) directly into the repository worktree (for example assets/hero.png) when the design calls for original visuals beyond existing company files or SVGs. Inspect each returned image inline and iterate with expectedVersion if it does not match the quality, lighting, and framing of the layout; never present generated images as photos of real people, places, or competitors.";
+
+async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
+	try {
+		await lstat(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ENOENT";
+	}
+}
 
 // WHY: Trims UTF-8 text to a byte cap on codepoint boundaries so surface brief truncation never emits invalid surrogates.
 function trimUtf8ToBytes(text: string, maxBytes: number): string {
@@ -533,6 +553,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		this.#chatGptPlanAuth = options.chatGptPlanAuth;
 		this.#timeoutMs = options.timeoutMs;
 	}
+	get supportsFolderWrites(): boolean {
+		return this.#control.completeFolderToolOperation !== undefined;
+	}
 	async execute(
 		_request: NativeCompanyExecutionRequest,
 		identityRoot: string,
@@ -828,12 +851,25 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				};
 			},
 		};
-		const runtimeInstructions = surfaceSession
-			? `${SURFACE_BASE_INSTRUCTIONS}${turn.machine.newDisk ? ` ${NEW_DISK}` : ""} ${SURFACE_STAGED_CODING_INSTRUCTIONS}`
-			: turn.machine.newDisk
-				? `${INSTRUCTIONS} ${NEW_DISK}`
-				: INSTRUCTIONS;
+		const pictures =
+			context.folder && this.#control.completeFolderToolOperation && !(await chatGptPlanRun(identityRoot))
+				? new CloudPictureChannel()
+				: undefined;
+		const instructionParts = surfaceSession
+			? [
+					SURFACE_BASE_INSTRUCTIONS,
+					...(turn.machine.newDisk ? [NEW_DISK] : []),
+					...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
+					SURFACE_STAGED_CODING_INSTRUCTIONS,
+				]
+			: [
+					INSTRUCTIONS,
+					...(turn.machine.newDisk ? [NEW_DISK] : []),
+					...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
+				];
+		const runtimeInstructions = instructionParts.join(" ");
 		const gateway = this.#gateway(binding);
+		const completeFolderToolOperation = this.#control.completeFolderToolOperation;
 		const result = await runCloudNativeRunToolSession({
 			binding,
 			controlPlane: {
@@ -849,12 +885,19 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				beginToolOperation: (value, input, checked) => this.#control.beginToolOperation(value, input, checked),
 				completeToolOperation: (value, input, checked) =>
 					this.#control.completeToolOperation(value, input, checked),
+				...(completeFolderToolOperation
+					? {
+							completeFolderToolOperation: (value, input, checked) =>
+								completeFolderToolOperation(value, input, checked),
+						}
+					: {}),
 			},
 			command: this.#command,
 			binarySha256: this.#binarySha256,
 			identityRoot,
 			isolation: this.#isolation,
 			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
+			...(pictures ? { pictures } : {}),
 			prompt: effectivePrompt,
 			runtimeInstructions,
 			signal,
@@ -926,11 +969,23 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						? [createCodingViewAttachmentTool(attachments, surfaceSession.viewAttachment)]
 						: [];
 				const repositoryArea = `code/${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`;
+				const pictureTool =
+					pictures && context.folder && operations.completesFolderCommits
+						? [
+								createCodingPictureTool({
+									folder: context.folder,
+									worktreeArea: `${repositoryArea}/worktrees/${scope.workerId}`,
+									operations,
+									pictures,
+								}),
+							]
+						: [];
 				return {
 					tools: [
 						...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded, repositoryArea }),
 						...recordChangeTool,
 						...viewAttachmentTool,
+						...pictureTool,
 						finish,
 						...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
 					],
@@ -962,6 +1017,10 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 										(provenance.tool === "coding_view_attachment" &&
 											viewAttachmentTool.length > 0 &&
 											codingShownImageSha256(content?.text, CODING_ATTACHMENT_VIEW_SCHEMA) ===
+												output.imageSha256) ||
+										(provenance.tool === "make_picture" &&
+											pictureTool.length > 0 &&
+											codingShownImageSha256(content?.text, CODING_MAKE_PICTURE_SCHEMA) ===
 												output.imageSha256));
 								if (
 									output.capture ||
