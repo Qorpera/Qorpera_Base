@@ -146,14 +146,32 @@ export function cloudSecretSpans(text: string): readonly { readonly start: numbe
 /** A JSON value with the same cut in each of its texts, its keys included. */
 export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {
 	if (typeof value === "string") return redactCloudWebhookSecrets(value);
-	if (Array.isArray(value)) return value.map(redactCloudWebhookSecretsIn);
-	if (value && typeof value === "object")
-		return Object.fromEntries(
-			Object.entries(value).map(([key, item]) => [
-				redactCloudWebhookSecrets(key),
-				redactCloudWebhookSecretsIn(item),
-			]),
-		);
+	if (Array.isArray(value)) {
+		let next: JsonValue[] | undefined;
+		for (let i = 0; i < value.length; i += 1) {
+			const item = value[i]!;
+			const redacted = redactCloudWebhookSecretsIn(item);
+			if (redacted !== item && !next) next = value.slice(0, i);
+			if (next) next.push(redacted);
+		}
+		return next ?? value;
+	}
+	if (value && typeof value === "object") {
+		let next: { [key: string]: JsonValue } | undefined;
+		const keys = Object.keys(value);
+		for (let i = 0; i < keys.length; i += 1) {
+			const key = keys[i]!;
+			const item = value[key]!;
+			const redactedKey = redactCloudWebhookSecrets(key);
+			const redactedItem = redactCloudWebhookSecretsIn(item);
+			if ((redactedKey !== key || redactedItem !== item) && !next) {
+				next = {};
+				for (let j = 0; j < i; j += 1) next[keys[j]!] = value[keys[j]!]!;
+			}
+			if (next) next[redactedKey] = redactedItem;
+		}
+		return next ?? value;
+	}
 	return value;
 }
 /** The pinned fence's bound on one tool result's PNG, and on its size in pixels. */
@@ -550,6 +568,11 @@ export class CloudNativeToolBoundary {
 	 * pixels), kept as long as the issued results are. */
 	readonly #shownImages = new Map<string, string>();
 	readonly #shownImageCalls = new Map<string, number>();
+	readonly #responseMeta = new WeakMap<
+		CloudDynamicToolResponse,
+		{ readonly status: CloudToolResult["status"]; readonly errorCode?: string; readonly originalBytes: number }
+	>();
+	readonly #responseImages = new WeakMap<CloudDynamicToolResponse, string>();
 	readonly #nativeResults = new Map<
 		string,
 		{ digest: string; output: string; outputBytes: number; imageSha256?: string }
@@ -849,6 +872,10 @@ export class CloudNativeToolBoundary {
 		return outputs;
 	}
 
+	shownImageSha256(response: CloudDynamicToolResponse): string | undefined {
+		return this.#responseImages.get(response);
+	}
+
 	async invoke(
 		callId: string,
 		namespace: string | null,
@@ -877,8 +904,9 @@ export class CloudNativeToolBoundary {
 		try {
 			const response = await this.#invoke(callId, namespace, name, argumentsValue, observation);
 			// Only this host can construct the envelope. Do not collect its content.
-			const envelope = JSON.parse(response.contentItems[0].text) as CloudToolResult;
-			if (envelope.status === "ok") {
+			const meta = this.#responseMeta.get(response);
+			const status = meta ? meta.status : (JSON.parse(response.contentItems[0].text) as CloudToolResult).status;
+			if (status === "ok") {
 				// Execution normally finished its own span before the release guard.
 				observation?.finish("unconfirmed", { errorCategory: "unknown" });
 			} else {
@@ -901,10 +929,15 @@ export class CloudNativeToolBoundary {
 					WORK_LOG_UNAVAILABLE: "transport_unavailable",
 					WORK_LOG_GONE: "authority_unavailable",
 				} as const;
-				observation?.finish(envelope.status, {
+				const errorCode =
+					status === "denied"
+						? (meta?.errorCode ??
+							(JSON.parse(response.contentItems[0].text) as CloudToolResult).content.text.split(":", 1)[0])
+						: undefined;
+				observation?.finish(status, {
 					errorCategory:
-						envelope.status === "denied"
-							? (categories[envelope.content.text.split(":", 1)[0] as keyof typeof categories] ?? "unknown")
+						status === "denied"
+							? (categories[errorCode as keyof typeof categories] ?? "unknown")
 							: "ambiguous_effect",
 				});
 			}
@@ -1415,11 +1448,14 @@ export class CloudNativeToolBoundary {
 					type: "inputImage",
 					imageUrl: `data:image/png;base64,${png.toString("base64")}`,
 				});
+				this.#responseImages.set(response, sha256);
 			}
-			if (tool.source !== "company_file")
-				observation?.update({
-					outputBytes: (JSON.parse(response.contentItems[0].text) as CloudToolResult).content.originalBytes,
-				});
+			if (tool.source !== "company_file") {
+				const originalBytes =
+					this.#responseMeta.get(response)?.originalBytes ??
+					(JSON.parse(response.contentItems[0].text) as CloudToolResult).content.originalBytes;
+				observation?.update({ outputBytes: originalBytes });
+			}
 			// Classify the host adapter's complete value, never a truncated rendered
 			// envelope, and finish execution before testing permission to release it.
 			const proposed =
@@ -1602,6 +1638,11 @@ export class CloudNativeToolBoundary {
 			...(completesTurn ? { completesTurn } : {}),
 			...(answered ? { answered: true as const } : {}),
 		};
+		this.#responseMeta.set(response, {
+			status,
+			...(status === "denied" ? { errorCode: result.content.text.split(":", 1)[0] } : {}),
+			originalBytes: bytes.length,
+		});
 		if (folder && result.companyFolder) this.#folderIssued = { response, mark: folder.mark };
 		return response;
 	}

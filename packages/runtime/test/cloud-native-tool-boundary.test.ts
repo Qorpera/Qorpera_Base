@@ -556,6 +556,8 @@ describe("cloud-owned native tool boundary", () => {
 		expect(redactCloudWebhookSecretsIn({ [value.php]: [value.php, 1, null, { a: value.quoted }] })).toEqual({
 			"whsec_[REDACTED]": ["whsec_[REDACTED]", 1, null, { a: 'whsec_[REDACTED]"end' }],
 		});
+		const clean = { ok: true, items: ["alpha", { nested: "beta" }] };
+		expect(redactCloudWebhookSecretsIn(clean)).toBe(clean);
 		// A cut text never matches again, and never grows.
 		expect(redactCloudWebhookSecrets(cut)).toBe(cut);
 		expect(cut.length).toBeLessThanOrEqual(serialized.length);
