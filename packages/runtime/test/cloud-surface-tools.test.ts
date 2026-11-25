@@ -3389,13 +3389,17 @@ describe("cloud surface runtime tools", () => {
 				summary: "Updated.",
 				commitSha: head2,
 				parentSha: baseSha,
-				dependsOnChangeIds: [],
 				changeId: c1,
 			},
 			ctx,
 		);
 		expect(recUpdate).toEqual({ changeId: c1, seq: 1, openChangeCount: 1, updated: true });
-		expect(rpcCalls[0]?.args).toMatchObject({ p_change_id: c1, p_parent_sha: baseSha, p_head_sha: head2 });
+		expect(rpcCalls[0]?.args).toMatchObject({
+			p_change_id: c1,
+			p_parent_sha: baseSha,
+			p_head_sha: head2,
+			p_depends_on_change_ids: null,
+		});
 
 		const recRebase = await port.recordChange(
 			sessionId,
@@ -3415,6 +3419,7 @@ describe("cloud surface runtime tools", () => {
 			p_change_id: c2,
 			p_parent_sha: head2,
 			p_head_sha: head3,
+			p_depends_on_change_ids: [],
 			p_patch_manifest: { rebase: true },
 		});
 
@@ -3492,12 +3497,21 @@ describe("cloud surface runtime tools", () => {
 			parentSha: head1,
 			commitSha: head2,
 		});
+		expect(autoTargeted).not.toHaveProperty("dependsOnChangeIds");
 		const autoResult = await singleCodingTool.execute(autoTargeted, ctx);
 		expect(recordedCoding[0]).toMatchObject({ changeId: c1, parentSha: baseSha, commitSha: head2 });
 		expect(JSON.parse(autoResult.kind === "text" ? autoResult.value : "{}")).toMatchObject({
 			changeId: c1,
 			updated: true,
 		});
+		const clearDepsUpdate = singleCodingTool.parseArguments({
+			title: "Superpower-style hero",
+			summary: "Clear deps explicitly.",
+			commitSha: head2,
+			changeId: c1,
+			dependsOnChangeIds: [],
+		});
+		expect(clearDepsUpdate).toMatchObject({ changeId: c1, dependsOnChangeIds: [] });
 
 		let secondError = "";
 		try {

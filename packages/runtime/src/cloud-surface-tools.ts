@@ -144,7 +144,7 @@ export interface CodingRecordChangeRequest {
 	readonly summary: string;
 	readonly commitSha: string;
 	readonly parentSha?: string | null;
-	readonly dependsOnChangeIds: readonly string[];
+	readonly dependsOnChangeIds?: readonly string[] | null;
 	readonly changeId?: string | null;
 	readonly rebase?: boolean;
 }
@@ -628,7 +628,14 @@ export function createControlPlaneSurfaceToolsPort(
 					p_kind: "git_range",
 					p_parent_sha: request.parentSha ?? null,
 					p_head_sha: request.commitSha,
-					p_depends_on_change_ids: [...request.dependsOnChangeIds],
+					p_depends_on_change_ids:
+						request.dependsOnChangeIds === undefined
+							? request.changeId
+								? null
+								: []
+							: request.dependsOnChangeIds === null
+								? null
+								: [...request.dependsOnChangeIds],
 					p_affected_paths: [],
 					p_diff_stats: null,
 					p_patch_manifest: request.rebase === true ? { rebase: true } : null,
@@ -722,7 +729,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_kind: "folder_patch",
 					p_parent_sha: null,
 					p_head_sha: null,
-					p_depends_on_change_ids: [],
+					p_depends_on_change_ids: request.changeId ? null : [],
 					p_affected_paths: affectedPaths,
 					p_diff_stats: null,
 					p_patch_manifest: patchManifest,
@@ -749,7 +756,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_kind: "ops_action",
 					p_parent_sha: null,
 					p_head_sha: null,
-					p_depends_on_change_ids: [],
+					p_depends_on_change_ids: request.changeId ? null : [],
 					p_affected_paths: [],
 					p_diff_stats: null,
 					p_patch_manifest: {
@@ -877,7 +884,8 @@ export function createCodingRecordChangeTool(
 				}
 				parentSha = raw.parentSha;
 			}
-			const depsRaw = raw.dependsOnChangeIds ?? [];
+			const hasExplicitDeps = raw.dependsOnChangeIds !== undefined && raw.dependsOnChangeIds !== null;
+			const depsRaw = hasExplicitDeps ? raw.dependsOnChangeIds : [];
 			if (!Array.isArray(depsRaw) || depsRaw.length > 32 || depsRaw.some((item) => !isUuid(item))) {
 				throw new CloudToolArgumentRefusal("dependsOnChangeIds must be an array of change UUIDs");
 			}
@@ -934,7 +942,7 @@ export function createCodingRecordChangeTool(
 				summary,
 				commitSha: raw.commitSha,
 				...(parentSha !== undefined ? { parentSha } : {}),
-				dependsOnChangeIds: [...(depsRaw as string[])],
+				...(hasExplicitDeps || !targetChangeId ? { dependsOnChangeIds: [...(depsRaw as string[])] } : {}),
 				...(targetChangeId ? { changeId: targetChangeId } : {}),
 				...(rebase ? { rebase: true } : {}),
 			};

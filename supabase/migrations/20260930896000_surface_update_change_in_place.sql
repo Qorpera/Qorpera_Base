@@ -458,6 +458,8 @@ $new$	v_retry_enqueued boolean := false;
 	v_eff_head_sha text;
 	v_eff_paths text[];
 	v_eff_base_files jsonb;
+	v_affected_change_ids uuid[];
+	v_conflicted_downstream_ids uuid[];
 	v_now timestamptz := clock_timestamp();$new$,
 $old$	if coalesce(p_kind, 'git_range') = 'folder_patch'
 		and jsonb_typeof(p_patch_manifest) = 'object'
@@ -616,6 +618,11 @@ $new$	if p_change_id is not null then
 				v_eff_parent_sha := v_raw_parent_sha;
 			end if;
 
+			if v_eff_parent_sha is null or v_eff_parent_sha !~ '^[0-9a-f]{40}$'
+				or v_eff_head_sha is null or v_eff_head_sha !~ '^[0-9a-f]{40}$' then
+				raise exception 'Git range change requires valid 40-hex parent and head commit SHAs' using errcode = '22023';
+			end if;
+
 			v_eff_paths := case
 				when coalesce(cardinality(p_affected_paths), 0) > 0 then p_affected_paths
 				else coalesce(v_existing.affected_paths, '{}'::text[])
@@ -635,7 +642,7 @@ $new$	if p_change_id is not null then
 			parent_sha = v_eff_parent_sha,
 			head_sha = v_eff_head_sha,
 			depends_on_change_ids = case
-				when coalesce(cardinality(p_depends_on_change_ids), 0) > 0 then p_depends_on_change_ids
+				when p_depends_on_change_ids is not null then p_depends_on_change_ids
 				else coalesce(depends_on_change_ids, '{}'::uuid[])
 			end,
 			affected_paths = coalesce(v_eff_paths, '{}'::text[]),
@@ -654,6 +661,42 @@ $new$	if p_change_id is not null then
 		where id = v_existing.id
 		returning * into v_change;
 
+		v_conflicted_downstream_ids := '{}'::uuid[];
+		if v_existing.kind = 'git_range'
+			and v_existing.head_sha is not null
+			and v_eff_head_sha is distinct from v_existing.head_sha then
+			with recursive chained as (
+				select ch.id, ch.head_sha
+				from public.qorpera_surface_changes ch
+				where ch.session_id = p_session_id
+					and ch.profile_id = v_session.profile_id
+					and ch.kind = 'git_range'
+					and ch.status in ('staged', 'conflicted')
+					and ch.id <> v_existing.id
+					and ch.parent_sha = v_existing.head_sha
+				union
+				select next_ch.id, next_ch.head_sha
+				from public.qorpera_surface_changes next_ch
+				join chained on next_ch.parent_sha = chained.head_sha
+				where next_ch.session_id = p_session_id
+					and next_ch.profile_id = v_session.profile_id
+					and next_ch.kind = 'git_range'
+					and next_ch.status in ('staged', 'conflicted')
+					and next_ch.id <> v_existing.id
+					and chained.head_sha is not null
+			),
+			marked as (
+				update public.qorpera_surface_changes ch
+				set status = 'conflicted'
+				from chained
+				where ch.id = chained.id
+					and ch.status = 'staged'
+				returning ch.id
+			)
+			select coalesce(array_agg(id), '{}'::uuid[]) into v_conflicted_downstream_ids from marked;
+		end if;
+		v_affected_change_ids := array[v_change.id] || coalesce(v_conflicted_downstream_ids, '{}'::uuid[]);
+
 		update public.qorpera_surface_reconciliations
 		set
 			expires_at = v_now,
@@ -662,13 +705,13 @@ $new$	if p_change_id is not null then
 			auto_approve_after = false,
 			updated_at = v_now
 		where surface_id = v_session.surface_id
-			and v_change.id = any(selected_change_ids)
+			and selected_change_ids && v_affected_change_ids
 			and (expires_at > v_now or status in ('queued', 'running'));
 
 		update public.qorpera_surface_previews
 		set expires_at = v_now, updated_at = v_now
 		where surface_id = v_session.surface_id
-			and v_change.id = any(selected_change_ids)
+			and selected_change_ids && v_affected_change_ids
 			and status in ('composing', 'reconciling')
 			and expires_at > v_now;
 

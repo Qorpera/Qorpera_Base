@@ -380,20 +380,20 @@ begin
 
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Pricing section v2', 'Tightened pricing copy.', 'git_range',
-		null, repeat('1', 40), '{}'::uuid[], array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+		null, repeat('1', 40), null, array['pricing.html'], null, null, false, v_c_lease, v_c_c2
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
 	perform pg_temp.suci_assert(
 		v_c_change.parent_sha = repeat('e', 40)
 		and v_c_change.head_sha = repeat('1', 40)
 		and v_c_change.depends_on_change_ids = array[v_c_c1],
-		'updating a change with empty depends_on_change_ids preserves existing dependencies'
+		'updating a change with null depends_on_change_ids preserves existing dependencies'
 	);
 
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Non-tip omit parent', 'Should refuse.', 'git_range',
-			null, repeat('2', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, v_c_c1
+			null, repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, v_c_c1
 		);
 		perform pg_temp.suci_assert(false, 'updating non-tip git_range without explicit parent_sha must fail');
 	exception when others then
@@ -404,7 +404,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Non-tip wrong parent', 'Should refuse.', 'git_range',
-			repeat('1', 40), repeat('2', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, v_c_c1
+			repeat('1', 40), repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, v_c_c1
 		);
 		perform pg_temp.suci_assert(false, 'updating non-tip git_range with tip head_sha as parent_sha must fail');
 	exception when others then
@@ -415,7 +415,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Tip bogus parent', 'Should refuse.', 'git_range',
-			repeat('9', 40), repeat('2', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, v_c_c2
+			repeat('9', 40), repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, v_c_c2
 		);
 		perform pg_temp.suci_assert(false, 'updating tip git_range with unrelated parent_sha without rebase must fail');
 	exception when others then
@@ -425,20 +425,37 @@ begin
 
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Hero rebased', 'Rebased hero commit.', 'git_range',
-		repeat('a', 40), repeat('7', 40), '{}'::uuid[], array['index.html'], null, null, false, v_c_lease, v_c_c1
+		repeat('a', 40), repeat('7', 40), null, array['index.html'], null, null, false, v_c_lease, v_c_c1
 	);
+	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
+	perform pg_temp.suci_assert(
+		v_c_change.status = 'conflicted',
+		'updating non-tip git_range head_sha immediately marks chained downstream change conflicted until re-recorded'
+	);
+
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Pricing rebased', 'Rebased pricing on new hero.', 'git_range',
-		repeat('7', 40), repeat('8', 40), '{}'::uuid[], array['pricing.html'], null,
+		repeat('7', 40), repeat('8', 40), null, array['pricing.html'], null,
 		jsonb_build_object('rebase', true), false, v_c_lease, v_c_c2
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
 	perform pg_temp.suci_assert(
 		(select head_sha from public.qorpera_surface_changes where id = v_c_c1) = repeat('7', 40)
+		and v_c_change.status = 'staged'
 		and v_c_change.parent_sha = repeat('7', 40)
 		and v_c_change.head_sha = repeat('8', 40)
 		and v_c_change.depends_on_change_ids = array[v_c_c1],
-		'explicit rebase updates stacked git_range changes cleanly while preserving dependencies'
+		'explicit rebase restores downstream change to staged while preserving omitted dependencies'
+	);
+
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_c_session, 'Pricing independent', 'Cleared dependency after rebase.', 'git_range',
+		repeat('7', 40), repeat('8', 40), '{}'::uuid[], array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+	);
+	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
+	perform pg_temp.suci_assert(
+		v_c_change.depends_on_change_ids = '{}'::uuid[],
+		'explicit empty depends_on_change_ids array clears existing dependencies on update'
 	);
 
 	begin
