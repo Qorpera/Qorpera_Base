@@ -80,15 +80,52 @@ begin
 	on conflict (environment_id, owner) do nothing;
 end $$;
 
+create function public.qorpera_coding_claude_driver_ready()
+returns boolean language sql stable security definer set search_path = '' as $$
+	select exists (
+		select 1
+		from public.qorpera_active_runtime_bundle active
+		join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id
+		where active.singleton
+			and bundle.manifest -> 'implementation' ? 'packages/runtime/src/cloud-claude-mcp-bridge.ts'
+	)
+$$;
+
+create function public.qorpera_claude_worker_active_count(p_owner_user_id uuid, p_exclude_worker_id uuid default null)
+returns integer language sql stable security definer set search_path = '' as $$
+	select (
+		(select count(*)::integer
+		 from public.qorpera_claude_worker_leases lease
+		 where lease.owner_user_id = p_owner_user_id
+			and (p_exclude_worker_id is null or lease.worker_id is distinct from p_exclude_worker_id)
+			and public.qorpera_claude_worker_lease_live(lease))
+		+ (select count(*)::integer
+		   from public.qorpera_coding_sessions cs
+		   join public.qorpera_runtime_workers w on w.id = cs.worker_id
+		   where w.species = 'coding'
+			and w.harness = 'claude-code'
+			and w.claude_login_id is not null
+			and coalesce(w.requested_by_user_id, w.owner_user_id) = p_owner_user_id
+			and (p_exclude_worker_id is null or w.id is distinct from p_exclude_worker_id)
+			and cs.phase in ('preparing', 'running', 'publishing')
+			and cs.lease_until > clock_timestamp()
+			and not exists (
+				select 1 from public.qorpera_claude_worker_leases lease
+				where lease.owner_user_id = p_owner_user_id
+					and lease.worker_id = w.id
+					and public.qorpera_claude_worker_lease_live(lease)
+			))
+	)
+$$;
+
 create or replace function public.qorpera_claude_worker_waits(p_worker public.qorpera_runtime_workers)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select p_worker.harness is not distinct from 'claude-code'
 		and coalesce(p_worker.requested_by_user_id, p_worker.owner_user_id) is not null
-		and (select count(*)
-			from public.qorpera_claude_worker_leases lease
-			where lease.owner_user_id = coalesce(p_worker.requested_by_user_id, p_worker.owner_user_id)
-				and public.qorpera_claude_worker_lease_live(lease))
-			>= public.qorpera_claude_worker_run_cap(coalesce(p_worker.requested_by_user_id, p_worker.owner_user_id))
+		and public.qorpera_claude_worker_active_count(
+			coalesce(p_worker.requested_by_user_id, p_worker.owner_user_id),
+			p_worker.id
+		) >= public.qorpera_claude_worker_run_cap(coalesce(p_worker.requested_by_user_id, p_worker.owner_user_id))
 $$;
 
 create or replace function public.qorpera_claude_worker_lease_take(p_worker public.qorpera_runtime_workers, p_wake_id uuid)
@@ -104,9 +141,7 @@ begin
 	end if;
 	perform pg_advisory_xact_lock(hashtextextended('qorpera_claude_worker_lease:' || v_owner::text, 0));
 	v_cap := public.qorpera_claude_worker_run_cap(v_owner);
-	if (select count(*)
-		from public.qorpera_claude_worker_leases lease
-		where lease.owner_user_id = v_owner and public.qorpera_claude_worker_lease_live(lease)) >= v_cap then
+	if public.qorpera_claude_worker_active_count(v_owner, p_worker.id) >= v_cap then
 		return false;
 	end if;
 	for v_slot in 1..v_cap loop
@@ -267,7 +302,7 @@ begin
 			v_effort := 'high';
 		end if;
 		v_explicit := true;
-	elsif v_claude_login is not null then
+	elsif v_claude_login is not null and public.qorpera_coding_claude_driver_ready() then
 		v_harness := 'claude-code';
 		v_model := 'claude-opus-5-5';
 		v_effort := coalesce(v_row.coding_effort, v_policy ->> 'unattended', 'high');
@@ -485,6 +520,8 @@ create or replace function public.qorpera_surface_resolve_coding_sponsor(
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
 	v_enabled_harnesses text[];
+	v_driver_ready boolean := public.qorpera_coding_claude_driver_ready();
+	v_saw_unready_claude boolean := false;
 	v_default jsonb;
 	v_default_harness text;
 	v_explicit boolean;
@@ -536,7 +573,10 @@ begin
 		end if;
 		if not v_explicit then
 			foreach v_harness in array array[v_default_harness, 'codex', 'claude-code'] loop
-				if v_harness is not null and v_harness = any(v_enabled_harnesses) and not (v_harness = any(v_candidates)) then
+				if v_harness is not null
+					and v_harness = any(v_enabled_harnesses)
+					and (v_harness <> 'claude-code' or v_driver_ready)
+					and not (v_harness = any(v_candidates)) then
 					v_candidates := array_append(v_candidates, v_harness);
 				end if;
 			end loop;
@@ -549,10 +589,17 @@ begin
 		v_candidates := array[v_default_harness];
 	else
 		foreach v_harness in array array[v_default_harness, 'codex', 'claude-code'] loop
-			if v_harness is not null and v_harness = any(v_enabled_harnesses) and not (v_harness = any(v_candidates)) then
+			if v_harness is not null
+				and v_harness = any(v_enabled_harnesses)
+				and (v_harness <> 'claude-code' or v_driver_ready)
+				and not (v_harness = any(v_candidates)) then
 				v_candidates := array_append(v_candidates, v_harness);
 			end if;
 		end loop;
+	end if;
+
+	if coalesce(cardinality(v_candidates), 0) = 0 then
+		return jsonb_build_object('status', 'no_coding_executor');
 	end if;
 
 	v_claude_model := case when v_default_harness = 'claude-code' then v_default ->> 'model' else 'claude-opus-5-5' end;
@@ -568,6 +615,13 @@ begin
 					public.qorpera_surface_resolve_coding_provider_binding(p_profile_id, p_owner_user_id, p_member_initiated, 'claude-code')
 				);
 				if v_binding is not null then
+					if not v_driver_ready then
+						if p_require_preferred or v_explicit then
+							return jsonb_build_object('status', 'no_coding_executor');
+						end if;
+						v_saw_unready_claude := true;
+						continue;
+					end if;
 					return jsonb_build_object(
 						'status', 'ok',
 						'harness', 'claude-code',
@@ -584,6 +638,13 @@ begin
 					p_profile_id, p_owner_user_id, p_member_initiated, 'claude-code'
 				);
 				if v_binding is not null then
+					if not v_driver_ready then
+						if p_require_preferred or v_explicit then
+							return jsonb_build_object('status', 'no_coding_executor');
+						end if;
+						v_saw_unready_claude := true;
+						continue;
+					end if;
 					return jsonb_build_object(
 						'status', 'ok',
 						'harness', 'claude-code',
@@ -611,6 +672,9 @@ begin
 		end if;
 	end loop;
 
+	if v_saw_unready_claude then
+		return jsonb_build_object('status', 'no_coding_executor');
+	end if;
 	return jsonb_build_object('status', 'no_sponsor');
 end $$;
 
@@ -810,6 +874,7 @@ $old$				and (not public.qorpera_coding_session_waits_for_usage_limit(session.wo
 					or public.qorpera_surface_is_preview_builder(session.worker_id))$old$,
 $new$				and (not public.qorpera_coding_session_waits_for_usage_limit(session.worker_id)
 					or public.qorpera_surface_is_preview_builder(session.worker_id))
+				and (session.harness <> 'claude-code' or public.qorpera_coding_claude_driver_ready())
 				and (not exists (
 					select 1 from public.qorpera_runtime_workers cw
 					where cw.id = session.worker_id
@@ -817,26 +882,48 @@ $new$				and (not public.qorpera_coding_session_waits_for_usage_limit(session.wo
 						and cw.claude_login_id is not null
 						and public.qorpera_claude_worker_waits(cw)
 				) or public.qorpera_surface_is_preview_builder(session.worker_id))$new$,
-$old$			if v_worker.state <> 'active' or public.qorpera_coding_worker_retired(v_worker) then
-				raise exception 'Coding candidate skipped' using errcode = 'QSK01'; end if;$old$,
-$new$			if v_worker.state <> 'active' or public.qorpera_coding_worker_retired(v_worker)
-				or (v_worker.harness = 'claude-code' and v_worker.claude_login_id is not null
-					and public.qorpera_claude_worker_waits(v_worker)
-					and not public.qorpera_surface_is_preview_builder(v_worker.id)) then
-				raise exception 'Coding candidate skipped' using errcode = 'QSK01'; end if;$new$
+$old$			update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = p_owner,$old$,
+$new$			if v_session.harness = 'claude-code' and not public.qorpera_coding_claude_driver_ready() then
+				raise exception 'Coding candidate skipped' using errcode = 'QSK01';
+			end if;
+			if v_worker.harness = 'claude-code' and v_worker.claude_login_id is not null
+				and not public.qorpera_surface_is_preview_builder(v_worker.id) then
+				-- WHY: Serialize concurrent claims for the same owner under the Claude lease lock before marking preparing so cap-1 never over-claims.
+				perform pg_advisory_xact_lock(hashtextextended(
+					'qorpera_claude_worker_lease:' || coalesce(v_worker.requested_by_user_id, v_worker.owner_user_id)::text, 0
+				));
+				if public.qorpera_claude_worker_waits(v_worker) then
+					raise exception 'Coding candidate skipped' using errcode = 'QSK01';
+				end if;
+			end if;
+			update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = p_owner,$new$
 	]
 );
 
 select pg_temp.ccd_patch(
 	'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'::regprocedure,
 	array[
-$old$	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, wake_kind, source_kind, source_id, staff_agent_id,$old$,
+$old$	perform public.qorpera_folder_admit_wakes(v_worker.profile_id);
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, wake_kind, source_kind, source_id, staff_agent_id,$old$,
 $new$	if v_worker.harness = 'claude-code' and v_worker.claude_login_id is not null then
 		if not public.qorpera_claude_worker_lease_take(v_worker, v_occurrence) then
-			raise exception 'Claude Code parallel run limit reached' using errcode = '55000';
+			return '{"state":"refused","reason":"CLAUDE_PARALLEL_LIMIT_REACHED"}'::jsonb;
 		end if;
 	end if;
+	perform public.qorpera_folder_admit_wakes(v_worker.profile_id);
 	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, wake_kind, source_kind, source_id, staff_agent_id,$new$
+	]
+);
+
+select pg_temp.ccd_patch(
+	'public.qorpera_defer_coding_session(uuid,uuid,text)'::regprocedure,
+	array[
+$old$	v_step constant text := case when p_reason = 'COMPUTER_HOURS_EXHAUSTED' then 'Waiting for computer hours'
+		else 'Waiting for a coding machine' end; v_waiting boolean;$old$,
+$new$	v_step constant text := case
+		when p_reason = 'COMPUTER_HOURS_EXHAUSTED' then 'Waiting for computer hours'
+		when p_reason = 'CLAUDE_PARALLEL_LIMIT_REACHED' then 'Waiting for a Claude Code slot'
+		else 'Waiting for a coding machine' end; v_waiting boolean;$new$
 	]
 );
 
@@ -941,6 +1028,27 @@ $new$			update public.qorpera_coding_sessions
 select pg_temp.ccd_patch(
 	'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	array[
+$old$			elsif v_species = 'coding' and not exists (select 1 from public.qorpera_coding_executors executor
+				where executor.environment_id = p_environment_id and executor.enabled
+					and (v_request ->> 'harness') = any(executor.harnesses))$old$,
+$new$			elsif v_species = 'coding' and v_request ->> 'harness' = 'codex'
+				and coalesce((public.qorpera_member_coding_default(p_profile_id, (p_actor ->> 'requesterUserId')::uuid) ->> 'explicit')::boolean, false)
+				and public.qorpera_member_coding_default(p_profile_id, (p_actor ->> 'requesterUserId')::uuid) ->> 'harness' = 'claude-code' then
+				v_problem := 'The member chose Claude Code as their Coding & working default; dispatch with harness claude-code instead of codex';
+			elsif v_species = 'coding' and not exists (select 1 from public.qorpera_coding_executors executor
+				where executor.environment_id = p_environment_id and executor.enabled
+					and (v_request ->> 'harness') = any(executor.harnesses))$new$,
+$old$			elsif v_species = 'coding' and public.qorpera_coding_owner_problem(p_profile_id,
+					(p_actor ->> 'requesterUserId')::uuid, v_request ->> 'harness', v_run.sponsor_binding_id) is not null then
+				v_problem := public.qorpera_coding_owner_problem(p_profile_id, (p_actor ->> 'requesterUserId')::uuid,
+					v_request ->> 'harness', v_run.sponsor_binding_id);$old$,
+$new$			elsif v_species = 'coding' and public.qorpera_coding_owner_problem(p_profile_id,
+					(p_actor ->> 'requesterUserId')::uuid, v_request ->> 'harness', v_run.sponsor_binding_id) is not null then
+				v_problem := public.qorpera_coding_owner_problem(p_profile_id, (p_actor ->> 'requesterUserId')::uuid,
+					v_request ->> 'harness', v_run.sponsor_binding_id);
+			elsif v_species = 'coding' and v_request ->> 'harness' = 'claude-code'
+				and not public.qorpera_coding_claude_driver_ready() then
+				v_problem := 'Claude Code coding sessions are not active on this runtime bundle yet';$new$,
 $old$			elsif v_worker.harness = 'claude-code' and not v_worker.harness_default
 				and public.qorpera_claude_worker_problem(p_profile_id, v_staff, v_run.id) is not null then
 				v_problem := public.qorpera_claude_worker_problem(p_profile_id, v_staff, v_run.id);$old$,
@@ -1003,6 +1111,8 @@ drop function pg_temp.ccd_patch(regprocedure, text[]);
 
 revoke all on function
 	public.qorpera_coding_executor_enroll(uuid, text),
+	public.qorpera_coding_claude_driver_ready(),
+	public.qorpera_claude_worker_active_count(uuid, uuid),
 	public.qorpera_claude_worker_waits(public.qorpera_runtime_workers),
 	public.qorpera_claude_worker_lease_take(public.qorpera_runtime_workers, uuid),
 	public.qorpera_claude_login_run(uuid, text, jsonb, boolean, boolean),
@@ -1034,6 +1144,7 @@ begin
 			'public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)'::regprocedure,
 			'public.qorpera_claim_coding_session(text,integer)'::regprocedure,
 			'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'::regprocedure,
+			'public.qorpera_defer_coding_session(uuid,uuid,text)'::regprocedure,
 			'public.qorpera_coding_session_login_state(public.qorpera_runtime_workers)'::regprocedure
 		])
 	loop
@@ -1041,7 +1152,9 @@ begin
 			raise exception '20260930909000: patched function has an API owner: %', v_owner;
 		end if;
 		execute format(
-			'grant execute on function public.qorpera_coding_claude_login(uuid, uuid), '
+			'grant execute on function public.qorpera_coding_claude_driver_ready(), '
+			|| 'public.qorpera_claude_worker_active_count(uuid, uuid), '
+			|| 'public.qorpera_coding_claude_login(uuid, uuid), '
 			|| 'public.qorpera_member_coding_default(uuid, uuid), '
 			|| 'public.qorpera_surface_resolve_coding_provider_binding(uuid, uuid, boolean, text), '
 			|| 'public.qorpera_claude_worker_waits(public.qorpera_runtime_workers), '

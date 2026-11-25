@@ -75,6 +75,37 @@ returns jsonb language sql security definer set search_path = pg_catalog, public
 $$;
 grant execute on function pg_temp.ccd_open_claude(uuid, text, jsonb) to qorpera_secret_broker;
 
+create function pg_temp.ccd_set_claude_bundle(p_enabled boolean)
+returns void language plpgsql as $$
+declare
+	v_active public.qorpera_runtime_bundles%rowtype;
+	v_manifest jsonb;
+	v_bundle public.qorpera_runtime_bundles%rowtype;
+begin
+	select b.* into strict v_active
+	from public.qorpera_active_runtime_bundle a
+	join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id
+	where a.singleton;
+	v_manifest := v_active.manifest;
+	if p_enabled then
+		v_manifest := jsonb_set(
+			v_manifest,
+			'{implementation,packages/runtime/src/cloud-claude-mcp-bridge.ts}',
+			to_jsonb(repeat('b', 64))
+		);
+	else
+		v_manifest := v_manifest #- '{implementation,packages/runtime/src/cloud-claude-mcp-bridge.ts}';
+	end if;
+	insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
+	select v_active.bundle_key, max(version) + 1, v_manifest,
+		encode(extensions.digest(convert_to(v_manifest::text, 'utf8'), 'sha256'), 'hex')
+	from public.qorpera_runtime_bundles where bundle_key = v_active.bundle_key
+	returning * into strict v_bundle;
+	update public.qorpera_active_runtime_bundle
+	set runtime_bundle_id = v_bundle.id, runtime_bundle_sha256 = v_bundle.sha256
+	where singleton;
+end $$;
+
 do $$
 declare
 	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
@@ -111,6 +142,8 @@ declare
 	v_coding_claim_1 jsonb;
 	v_coding_claim_2 jsonb;
 	v_begin_1 jsonb;
+	v_begin_2 jsonb;
+	v_defer_2 jsonb;
 	v_wake_1 public.qorpera_wake_occurrences%rowtype;
 	v_binding_1 jsonb;
 	v_auth_1 jsonb;
@@ -118,6 +151,11 @@ declare
 	v_problem text;
 	v_payer record;
 	v_sponsor jsonb;
+	v_rules jsonb;
+	v_cofounder public.qorpera_profile_staff%rowtype;
+	v_seed_run uuid;
+	v_todo_id uuid := '13900000-0000-4000-8000-0000000000f1';
+	v_agent_folder text;
 	v_errcode text;
 	v_role text;
 	v_fn text;
@@ -172,9 +210,164 @@ begin
 	select * into v_payer from public.qorpera_coding_owner_payer(v_company_a, v_owner, 'claude-code', null);
 	perform pg_temp.ccd_assert(v_payer.binding_id is not null, 'Claude coding owner payer returns execution sponsor');
 
+	select * into strict v_cofounder
+	from public.qorpera_profile_staff
+	where profile_id = v_company_a and folder_environment_id = v_env_a and folder_retired_at is null and deleted_at is null
+	order by created_at asc
+	limit 1;
+	v_agent_folder := public.qorpera_folder_key(public.qorpera_folder_parent_path(v_cofounder.folder_path));
+	perform pg_temp.ccd_materialize(v_company_a, 16);
+	select r.id into strict v_seed_run
+	from public.qorpera_execution_runs r
+	where r.profile_id = v_company_a and r.staff_agent_id = v_cofounder.staff_agent_id
+	order by r.created_at asc
+	limit 1;
+	insert into public.qorpera_runtime_agent_todos(
+		id, profile_id, environment_id, staff_agent_id, todo_key, title, state,
+		folder_environment_id, folder_path, folder_path_version, folder_commit_id
+	)
+	values (
+		v_todo_id, v_company_a, v_env_a, v_cofounder.staff_agent_id, 'coding-check', 'Coding default check', 'open',
+		v_env_a, v_agent_folder || '/todos/coding-check.md', v_cofounder.folder_path_version, v_cofounder.folder_commit_id
+	);
+
+	perform pg_temp.ccd_set_claude_bundle(false);
+	perform pg_temp.ccd_assert(
+		not public.qorpera_coding_claude_driver_ready(),
+		'bundle without cloud-claude-mcp-bridge reports Claude coding driver not ready'
+	);
+	v_sponsor := public.qorpera_surface_resolve_coding_sponsor(v_company_a, v_env_a, v_owner, true, null, false);
+	perform pg_temp.ccd_assert(
+		v_sponsor ->> 'status' = 'ok' and v_sponsor ->> 'harness' = 'codex' and v_sponsor ->> 'model' = 'gpt-6.2-sol',
+		'before Claude coding bundle activates, implicit member with Claude login stays on codex: ' || v_sponsor::text
+	);
+
 	insert into public.qorpera_member_default_models(user_id, coding_model, coding_effort)
 	values (v_owner, 'claude-opus-5-5', 'high')
 	on conflict (user_id) do update set coding_model = excluded.coding_model, coding_effort = excluded.coding_effort;
+	v_sponsor := public.qorpera_surface_resolve_coding_sponsor(v_company_a, v_env_a, v_owner, true, null, false);
+	perform pg_temp.ccd_assert(
+		v_sponsor ->> 'status' = 'no_coding_executor',
+		'before Claude coding bundle activates, explicit Claude Coding & working fails closed with no_coding_executor: ' || v_sponsor::text
+	);
+
+	perform set_config(
+		'qorpera.folder_worker',
+		jsonb_build_object(
+			'action', 'dispatch',
+			'species', 'coding',
+			'harness', 'claude-code',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Try Claude before bundle',
+			'goal', 'Check driver readiness',
+			'doneWhen', 'Done',
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'app', 'name', 'web', 'baseBranch', 'main')
+		)::text,
+		true
+	);
+	v_rules := public.qorpera_company_state_worker_rules(
+		v_env_a,
+		v_company_a,
+		jsonb_build_object(
+			'staffAgentId', v_cofounder.staff_agent_id,
+			'runId', v_seed_run,
+			'requesterUserId', v_owner,
+			'audience', jsonb_build_object('kind', 'company')
+		),
+		null,
+		v_agent_folder || '/todos/coding-check/w-pre-bundle/brief.md',
+		jsonb_build_object(
+			'kind', 'worker-brief',
+			'id', '13900000-0000-4000-8000-0000000000f2',
+			'species', 'coding',
+			'harness', 'claude-code',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Try Claude before bundle',
+			'goal', 'Check driver readiness',
+			'doneWhen', 'Done',
+			'context', null,
+			'sources', '[]'::jsonb,
+			'followUps', '0',
+			'dispatchedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'app', 'name', 'web', 'baseBranch', 'main')
+		) || public.qorpera_company_state_worker_standing('coding', 'read', 'each'),
+		'{}'::jsonb
+	);
+	perform pg_temp.ccd_assert(
+		v_rules ->> 'ok' = 'false' and v_rules -> 'problems' -> 0 ->> 'message' like '%not active on this runtime bundle%',
+		'worker rules refuse claude-code coding dispatch before Claude coding bundle activates: ' || coalesce(v_rules::text, 'null')
+	);
+
+	perform pg_temp.ccd_set_claude_bundle(true);
+	perform pg_temp.ccd_assert(
+		public.qorpera_coding_claude_driver_ready(),
+		'bundle with cloud-claude-mcp-bridge activates Claude coding driver'
+	);
+
+	delete from public.qorpera_member_default_models where user_id = v_owner;
+	v_sponsor := public.qorpera_surface_resolve_coding_sponsor(v_company_a, v_env_a, v_owner, true, null, false);
+	perform pg_temp.ccd_assert(
+		v_sponsor ->> 'status' = 'ok'
+			and v_sponsor ->> 'harness' = 'claude-code'
+			and v_sponsor ->> 'claudeModel' = 'claude-opus-5-5',
+		'with Claude coding bundle active, implicit member with Claude login resolves to claude-code: ' || v_sponsor::text
+	);
+
+	insert into public.qorpera_member_default_models(user_id, coding_model, coding_effort)
+	values (v_owner, 'claude-opus-5-5', 'high')
+	on conflict (user_id) do update set coding_model = excluded.coding_model, coding_effort = excluded.coding_effort;
+
+	perform set_config(
+		'qorpera.folder_worker',
+		jsonb_build_object(
+			'action', 'dispatch',
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Try Codex over explicit Claude',
+			'goal', 'Must be refused',
+			'doneWhen', 'Done',
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'app', 'name', 'web', 'baseBranch', 'main')
+		)::text,
+		true
+	);
+	v_rules := public.qorpera_company_state_worker_rules(
+		v_env_a,
+		v_company_a,
+		jsonb_build_object(
+			'staffAgentId', v_cofounder.staff_agent_id,
+			'runId', v_seed_run,
+			'requesterUserId', v_owner,
+			'audience', jsonb_build_object('kind', 'company')
+		),
+		null,
+		v_agent_folder || '/todos/coding-check/w-codex-override/brief.md',
+		jsonb_build_object(
+			'kind', 'worker-brief',
+			'id', '13900000-0000-4000-8000-0000000000f3',
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Try Codex over explicit Claude',
+			'goal', 'Must be refused',
+			'doneWhen', 'Done',
+			'context', null,
+			'sources', '[]'::jsonb,
+			'followUps', '0',
+			'dispatchedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'app', 'name', 'web', 'baseBranch', 'main')
+		) || public.qorpera_company_state_worker_standing('coding', 'read', 'each'),
+		'{}'::jsonb
+	);
+	perform pg_temp.ccd_assert(
+		v_rules ->> 'ok' = 'false' and v_rules -> 'problems' -> 0 ->> 'message' like '%chose Claude Code%',
+		'worker rules refuse agent coding dispatch on codex when member explicitly chose Claude: ' || coalesce(v_rules::text, 'null')
+	);
+	perform set_config('qorpera.folder_worker', '', true);
 
 	perform pg_temp.ccd_as(v_owner);
 	set local role authenticated;
@@ -231,6 +424,7 @@ begin
 	set local role service_role;
 	perform public.qorpera_set_claude_parallel_cap(1::smallint, null);
 	v_coding_claim_1 := public.qorpera_claim_coding_session('exec-1390', 60);
+	v_coding_claim_2 := public.qorpera_claim_coding_session('exec-1390', 60);
 	reset role;
 
 	perform pg_temp.ccd_assert(
@@ -241,12 +435,35 @@ begin
 			and v_coding_claim_1 -> 'claude' = jsonb_build_object('model', 'claude-opus-5-5', 'effort', 'high'),
 		'claim JSON exposes claude choice: ' || coalesce(v_coding_claim_1::text, 'null')
 	);
+	perform pg_temp.ccd_assert(
+		v_coding_claim_2 is null,
+		'second Claude coding session cannot be claimed while first is preparing under cap 1: ' || coalesce(v_coding_claim_2::text, 'null')
+	);
 
 	perform pg_temp.as_service();
 	set local role service_role;
+	perform public.qorpera_set_claude_parallel_cap(2::smallint, null);
+	v_coding_claim_2 := public.qorpera_claim_coding_session('exec-1390', 60);
+	perform pg_temp.ccd_assert(
+		v_coding_claim_2 is not null and (v_coding_claim_2 ->> 'workerId')::uuid = v_worker_2.id,
+		'second Claude coding session claims when cap is raised to 2: ' || coalesce(v_coding_claim_2::text, 'null')
+	);
+	perform public.qorpera_set_claude_parallel_cap(1::smallint, null);
 	perform public.qorpera_record_coding_progress(
 		v_worker_1.id, (v_coding_claim_1 ->> 'leaseToken')::uuid, 'preparing', 'Preparing Claude repo', null, '[]'::jsonb,
 		null, repeat('a', 40), null, null, null
+	);
+	v_begin_2 := public.qorpera_begin_coding_turn(v_worker_2.id, (v_coding_claim_2 ->> 'leaseToken')::uuid, '{}'::jsonb);
+	perform pg_temp.ccd_assert(
+		v_begin_2 = '{"state":"refused","reason":"CLAUDE_PARALLEL_LIMIT_REACHED"}'::jsonb,
+		'begin returns deferrable refusal when cap was lowered while another session is preparing: ' || coalesce(v_begin_2::text, 'null')
+	);
+	v_defer_2 := public.qorpera_defer_coding_session(
+		v_worker_2.id, (v_coding_claim_2 ->> 'leaseToken')::uuid, 'CLAUDE_PARALLEL_LIMIT_REACHED'
+	);
+	perform pg_temp.ccd_assert(
+		v_defer_2 ->> 'phase' = 'queued' and v_defer_2 ->> 'lastStep' = 'Waiting for a Claude Code slot',
+		'deferred Claude session returns to queue with slot step: ' || coalesce(v_defer_2::text, 'null')
 	);
 	v_begin_1 := public.qorpera_begin_coding_turn(v_worker_1.id, (v_coding_claim_1 ->> 'leaseToken')::uuid, '{}'::jsonb);
 	v_coding_claim_2 := public.qorpera_claim_coding_session('exec-1390', 60);
@@ -373,6 +590,20 @@ declare
 begin
 	select * into strict v_worker_1 from public.qorpera_runtime_workers where id = (v_state ->> 'worker1')::uuid;
 
+	update public.qorpera_wake_occurrences set status = 'completed', finished_at = clock_timestamp() where id = v_wake_1_id;
+	update public.qorpera_coding_sessions
+	set phase = 'completed', lease_owner = null, lease_token = null, lease_until = null, finished_at = clock_timestamp()
+	where worker_id = v_worker_1.id;
+	update public.qorpera_coding_sessions set claim_after = null where worker_id = v_worker_2_id;
+	perform pg_temp.as_service();
+	set local role service_role;
+	v_coding_claim_2 := public.qorpera_claim_coding_session('exec-1390', 60);
+	reset role;
+	perform pg_temp.ccd_assert(
+		v_coding_claim_2 is not null and (v_coding_claim_2 ->> 'workerId')::uuid = v_worker_2_id,
+		'second Claude coding session claims once first finishes: ' || coalesce(v_coding_claim_2::text, 'null')
+	);
+
 	update public.qorpera_member_default_models
 	set coding_model = 'gpt-6-astra', coding_effort = 'medium', version = version + 1
 	where user_id = v_owner;
@@ -457,17 +688,9 @@ begin
 		're-signing in restores Claude Fable 5.2 / max: ' || v_sponsor::text
 	);
 
-	update public.qorpera_wake_occurrences set status = 'completed', finished_at = clock_timestamp() where id = v_wake_1_id;
-	perform pg_temp.as_service();
-	set local role service_role;
-	v_coding_claim_2 := public.qorpera_claim_coding_session('exec-1390', 60);
-	reset role;
-	perform pg_temp.ccd_assert(
-		v_coding_claim_2 is not null and (v_coding_claim_2 ->> 'workerId')::uuid = v_worker_2_id,
-		'second Claude coding session claims once first finishes: ' || coalesce(v_coding_claim_2::text, 'null')
-	);
-
 	foreach v_fn in array array[
+		'public.qorpera_coding_claude_driver_ready()',
+		'public.qorpera_claude_worker_active_count(uuid,uuid)',
 		'public.qorpera_coding_claude_login(uuid,uuid)',
 		'public.qorpera_member_coding_default(uuid,uuid)',
 		'public.qorpera_surface_resolve_coding_provider_binding(uuid,uuid,boolean,text)'
