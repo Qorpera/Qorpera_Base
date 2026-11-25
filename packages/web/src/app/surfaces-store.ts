@@ -4504,9 +4504,10 @@ export class SurfacesStore {
 		return this.reply(sessionId, t("Retry and complete the requested changes."));
 	}
 
-	async reply(sessionId: string, text: string, files: readonly File[] = []): Promise<boolean> {
+	async reply(sessionId: string, text: string, files: readonly File[] = [], changeId?: string): Promise<boolean> {
 		const message = text.trim();
 		if (!message || this.state.busy[`reply:${sessionId}`]) return false;
+		const targetChangeId = changeId?.trim() || undefined;
 		const existing = this.session(sessionId);
 		if (this.isLocalInteractive && existing && isLocalSurfaceId(existing.surfaceId)) {
 			const now = new Date().toISOString();
@@ -4526,7 +4527,7 @@ export class SurfacesStore {
 						sessionId,
 						authorKind: "member",
 						text: message,
-						changeId: null,
+						changeId: targetChangeId ?? null,
 						createdAt: now,
 					},
 					{
@@ -4559,9 +4560,11 @@ export class SurfacesStore {
 			const surfaceId = existing?.surfaceId;
 			if (files.length && !surfaceId) throw new Error(t("This session is not available."));
 			const attached = surfaceId ? await this.#uploadImages(client, surfaceId, files) : undefined;
-			return attached
-				? client.replySurfaceSession(sessionId, message, true, attached)
-				: client.replySurfaceSession(sessionId, message);
+			return targetChangeId
+				? client.replySurfaceSession(sessionId, message, true, attached, targetChangeId)
+				: attached
+					? client.replySurfaceSession(sessionId, message, true, attached)
+					: client.replySurfaceSession(sessionId, message);
 		});
 		if (!updated) {
 			this.store.set((state) => ({ notes: state.notes.filter((item) => item.id !== note.id) }));

@@ -31,6 +31,12 @@ export interface SurfacePreviewBaseChange {
 	readonly pathsTruncated?: boolean;
 }
 
+export interface SurfaceSessionOpenChange extends SurfacePreviewBaseChange {
+	readonly seq: number;
+	readonly status: string;
+	readonly actionKind: string | null;
+}
+
 export interface SurfaceOmittedBaseChange {
 	readonly changeId: string;
 	readonly title: string;
@@ -184,6 +190,146 @@ export function parseSurfaceOmittedBaseChanges(raw: unknown): SurfaceOmittedBase
 		});
 	}
 	return out;
+}
+
+export function parseSurfaceSessionOpenChanges(raw: unknown): SurfaceSessionOpenChange[] {
+	if (!Array.isArray(raw)) return [];
+	const out: SurfaceSessionOpenChange[] = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const item = entry as Record<string, unknown>;
+		const changeId = typeof item.changeId === "string" ? item.changeId.trim() : "";
+		if (!changeId) continue;
+		const seqRaw =
+			typeof item.seq === "number" && Number.isInteger(item.seq) && item.seq > 0 ? item.seq : out.length + 1;
+		out.push({
+			changeId,
+			seq: seqRaw,
+			title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : changeId,
+			summary: typeof item.summary === "string" ? item.summary.trim() : "",
+			kind: typeof item.kind === "string" ? item.kind : "folder_patch",
+			status: typeof item.status === "string" ? item.status : "staged",
+			parentSha: typeof item.parentSha === "string" ? item.parentSha : null,
+			headSha: typeof item.headSha === "string" ? item.headSha : null,
+			affectedPaths: parseNonEmptyStrings(item.affectedPaths, 200),
+			previewBaseChangeIds: parseNonEmptyStrings(item.previewBaseChangeIds, 64),
+			actionKind: typeof item.actionKind === "string" && item.actionKind.trim() ? item.actionKind.trim() : null,
+			patchManifest: parseOptionalManifest(item.patchManifest, "sessionOpenChange.patchManifest"),
+			baseFiles: parseOptionalBaseFileMap(item.baseFiles),
+			...(item.truncated === true ? { truncated: true } : {}),
+			...(item.pathsTruncated === true ? { pathsTruncated: true } : {}),
+		});
+	}
+	return out;
+}
+
+const DISALLOWED_PATCH_MERGE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function isPlainPatchRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMergePatchRecord(
+	base: Readonly<Record<string, unknown>>,
+	patch: Readonly<Record<string, unknown>>,
+	depth = 0,
+): Record<string, unknown> {
+	if (depth > 20) return structuredClone(patch) as Record<string, unknown>;
+	const out: Record<string, unknown> = { ...base };
+	for (const [key, value] of Object.entries(patch)) {
+		if (DISALLOWED_PATCH_MERGE_KEYS.has(key)) continue;
+		const prior = out[key];
+		if (isPlainPatchRecord(prior) && isPlainPatchRecord(value)) {
+			out[key] = deepMergePatchRecord(prior, value, depth + 1);
+		} else {
+			out[key] = structuredClone(value);
+		}
+	}
+	return out;
+}
+
+function normalizePatchPathKey(folderRoot: string | null | undefined, rawPath: string): string {
+	const prefix = (folderRoot ?? "")
+		.trim()
+		.replace(/^\/+|\/+$/g, "")
+		.toLowerCase();
+	const cleaned = rawPath
+		.trim()
+		.replace(/^\/+|\/+$/g, "")
+		.toLowerCase();
+	if (prefix && cleaned.startsWith(`${prefix}/`)) {
+		return cleaned.slice(prefix.length + 1);
+	}
+	return cleaned;
+}
+
+export function mergeFolderPatchOps(
+	folderRoot: string | null | undefined,
+	existingOps: readonly StudioPatchOp[],
+	newOps: readonly StudioPatchOp[],
+	existingBaseFiles?: Readonly<Record<string, string | null>> | null,
+): StudioPatchOp[] {
+	if (newOps.length === 0) return [...existingOps];
+	let combined: StudioPatchOp[];
+	if (existingOps.length === 0) {
+		combined = [...newOps];
+	} else {
+		const replacedPaths = new Set<string>();
+		const nonDeleteNewPaths = new Set<string>();
+		for (const op of newOps) {
+			const key = normalizePatchPathKey(folderRoot, op.path);
+			if (!key) continue;
+			if (op.op === "write_text" || op.op === "write_file" || op.op === "delete") {
+				replacedPaths.add(key);
+			}
+			if (op.op !== "delete") {
+				nonDeleteNewPaths.add(key);
+			}
+		}
+		const kept = existingOps.filter((op) => {
+			const key = normalizePatchPathKey(folderRoot, op.path);
+			return !key || !replacedPaths.has(key);
+		});
+		const createdPaths = new Set<string>();
+		if (existingBaseFiles) {
+			for (const [rawKey, value] of Object.entries(existingBaseFiles)) {
+				if (value !== null) continue;
+				const key = normalizePatchPathKey(folderRoot, rawKey);
+				if (key && !nonDeleteNewPaths.has(key)) createdPaths.add(key);
+			}
+		}
+		const appended = newOps.filter((op) => {
+			if (op.op !== "delete") return true;
+			const key = normalizePatchPathKey(folderRoot, op.path);
+			return !key || !createdPaths.has(key);
+		});
+		combined = [...kept, ...appended];
+	}
+
+	const out: StudioPatchOp[] = [];
+	const mergeIndexByKey = new Map<string, number>();
+	for (const op of combined) {
+		const key = normalizePatchPathKey(folderRoot, op.path);
+		if (op.op === "merge_json" && key && mergeIndexByKey.has(key)) {
+			const index = mergeIndexByKey.get(key)!;
+			const prev = out[index];
+			if (prev && prev.op === "merge_json") {
+				out[index] = {
+					op: "merge_json",
+					path: op.path,
+					patch: deepMergePatchRecord(prev.patch, op.patch),
+				};
+				continue;
+			}
+		}
+		out.push(op);
+		if (op.op === "merge_json" && key) {
+			mergeIndexByKey.set(key, out.length - 1);
+		} else if (key) {
+			mergeIndexByKey.delete(key);
+		}
+	}
+	return out.length > 0 ? out : [...newOps];
 }
 
 interface OverlaySnapshot {
@@ -511,4 +657,106 @@ export function createSurfaceFolderPreviewOverlay(options: {
 		},
 	};
 	return overlay;
+}
+
+export function createSurfaceSessionOwnOverlay(options: {
+	readonly folderRoot: string;
+	readonly sessionOpenChanges: readonly SurfaceSessionOpenChange[];
+	readonly baseReader: SurfaceFolderTextReader;
+}): CloudFolderPreviewOverlay | null {
+	const folderChanges = options.sessionOpenChanges.filter((change) => change.kind === "folder_patch");
+	if (folderChanges.length === 0) return null;
+	let coalescedOps: StudioPatchOp[] = [];
+	const syntheticChanges: SurfacePreviewBaseChange[] = [];
+	for (const change of folderChanges) {
+		if (change.patchManifest && change.patchManifest.length > 0) {
+			coalescedOps = mergeFolderPatchOps(options.folderRoot, coalescedOps, change.patchManifest, change.baseFiles);
+		} else if (change.truncated || change.pathsTruncated) {
+			syntheticChanges.push(change);
+		}
+	}
+	if (coalescedOps.length > 0) {
+		syntheticChanges.push({
+			changeId: "session-open-changes",
+			title: "Session open changes",
+			summary: "",
+			kind: "folder_patch",
+			parentSha: null,
+			headSha: null,
+			affectedPaths: [...new Set(coalescedOps.map((op) => op.path))],
+			previewBaseChangeIds: [],
+			patchManifest: coalescedOps,
+			baseFiles: null,
+		});
+	}
+	if (syntheticChanges.length === 0) return null;
+	return createSurfaceFolderPreviewOverlay({
+		folderRoot: options.folderRoot,
+		previewBaseChanges: syntheticChanges,
+		liveReader: options.baseReader,
+	});
+}
+
+export function chainFolderPreviewOverlays(
+	base: CloudFolderPreviewOverlay | null,
+	top: CloudFolderPreviewOverlay | null,
+): CloudFolderPreviewOverlay | null {
+	if (!base && !top) return null;
+	if (!top) return base;
+	if (!base) return top;
+	return {
+		folderRoot: top.folderRoot,
+		isUnderRoot(companyPath) {
+			return top.isUnderRoot(companyPath) || base.isUnderRoot(companyPath);
+		},
+		mayAffectList(parentPath, recursive) {
+			return top.mayAffectList(parentPath, recursive) || base.mayAffectList(parentPath, recursive);
+		},
+		async prepare(signal) {
+			const baseStatus = await base.prepare(signal);
+			const topStatus = await top.prepare(signal);
+			const skippedPaths = [...new Set([...baseStatus.skippedPaths, ...topStatus.skippedPaths])].sort();
+			const status =
+				topStatus.status !== "ready"
+					? topStatus.status
+					: baseStatus.status !== "ready"
+						? baseStatus.status
+						: "ready";
+			return { status, skippedPaths };
+		},
+		async lookup(companyPath, signal) {
+			const topFound = await top.lookup(companyPath, signal);
+			if (topFound) return topFound;
+			return base.lookup(companyPath, signal);
+		},
+		async listUnder(parentPath, recursive, signal) {
+			const [baseList, topList] = await Promise.all([
+				base.listUnder(parentPath, recursive, signal),
+				top.listUnder(parentPath, recursive, signal),
+			]);
+			const filesByKey = new Map<string, { readonly path: string; readonly bytes: number }>();
+			for (const file of baseList.files) {
+				const key = folderKey(file.path);
+				if (topList.deletedKeys.has(key)) continue;
+				filesByKey.set(key, file);
+			}
+			for (const file of topList.files) {
+				filesByKey.set(folderKey(file.path), file);
+			}
+			const foldersByKey = new Map<string, string>();
+			for (const dir of baseList.folders) foldersByKey.set(folderKey(dir), dir);
+			for (const dir of topList.folders) foldersByKey.set(folderKey(dir), dir);
+			const deletedKeys = new Set<string>(baseList.deletedKeys);
+			for (const key of topList.deletedKeys) deletedKeys.add(key);
+			for (const key of filesByKey.keys()) deletedKeys.delete(key);
+			return {
+				files: [...filesByKey.values()],
+				folders: [...foldersByKey.values()],
+				deletedKeys,
+			};
+		},
+		wrapTextReader(liveReader) {
+			return top.wrapTextReader(base.wrapTextReader(liveReader));
+		},
+	};
 }

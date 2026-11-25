@@ -708,7 +708,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,
 			source: "worker",
 			description: surfaceSession
-				? "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of what you inspected, built, and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. For a read-only or no-change turn where HEAD still equals the session's baseSha, call coding_finish with that headSha and your summary (no change is staged; commits from earlier turns beyond baseSha are verified and staged as usual). When you committed user-visible deliverables, call coding_record_change for each one before calling coding_finish. Stop modifying the repository after submitting."
+				? "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of what you inspected, built, and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. For a read-only or no-change turn where HEAD still equals the session's baseSha, call coding_finish with that headSha and your summary (no change is staged; commits from earlier turns beyond baseSha are verified and staged as usual). When you committed user-visible deliverables, call coding_record_change for each one (passing an existing changeId when revising an open change in place) before calling coding_finish. Stop modifying the repository after submitting."
 				: "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of the findings, changes, and check results. For a read-only, inspection, or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), calling coding_finish with that headSha (omitting notice and picture) completes cleanly as a report-only handoff without running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual. When you committed changes, notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform then validates that commit and hands it in (in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated). This is a durable submission, not proof that a new commit landed. Stop modifying the repository after submitting.",
 			inputSchema: {
 				type: "object",
@@ -870,7 +870,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					: surfaceSession?.isInternalReconciliation
 						? "Your automatic reconciliation turn ended without coding_finish. Commit the clean combined resolution on this branch, call coding_record_change with the resolved range, and call coding_finish with the final headSha and a brief summary. This is the last turn of this run."
 						: surfaceSession
-							? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (if not already recorded) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
+							? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (passing its existing changeId if revising an open change in place, if not already updated) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
 							: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. For a read-only or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — nothing will be landed or pushed. When you have a commit beyond baseSha to hand in (including an unlanded commit from an earlier turn), call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution: async (specification, checked) => {
 				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
@@ -918,7 +918,17 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					cancel: (...input) => gateway.cancel(...input),
 				};
 				const recordChangeTool = surfaceSession
-					? [createCodingRecordChangeTool(surfaceSession.sessionId, { recordChange: surfaceSession.recordChange })]
+					? [
+							createCodingRecordChangeTool(
+								surfaceSession.sessionId,
+								{ recordChange: surfaceSession.recordChange },
+								{
+									openChanges: surfaceSession.sessionOpenChanges ?? [],
+									replyChangeId: surfaceSession.replyChangeId ?? null,
+									isInternalReconciliation: surfaceSession.isInternalReconciliation === true,
+								},
+							),
+						]
 					: [];
 				const attachments = surfaceSession?.memberImages ?? [];
 				const viewAttachmentTool =

@@ -3358,4 +3358,326 @@ describe("cloud surface runtime tools", () => {
 			await rm(tempRoot, { recursive: true, force: true });
 		}
 	});
+
+	it("updates existing open changes in place across coding, folder_patch, and ops_action tools with follow-up targeting guards", async () => {
+		const sessionId = randomUUID();
+		const c1 = randomUUID();
+		const c2 = randomUUID();
+		const unknownId = randomUUID();
+		const baseSha = "a".repeat(40);
+		const head1 = "b".repeat(40);
+		const head2 = "c".repeat(40);
+		const head3 = "d".repeat(40);
+
+		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				rpcCalls.push({ method, args });
+				return {
+					changeId: (args.p_change_id as string | undefined) ?? c2,
+					seq: 1,
+					openChangeCount: 1,
+					updated: Boolean(args.p_change_id),
+				};
+			},
+		});
+		const ctx = toolContext();
+		const recUpdate = await port.recordChange(
+			sessionId,
+			{
+				title: "Revised hero",
+				summary: "Updated.",
+				commitSha: head2,
+				parentSha: baseSha,
+				dependsOnChangeIds: [],
+				changeId: c1,
+			},
+			ctx,
+		);
+		expect(recUpdate).toEqual({ changeId: c1, seq: 1, openChangeCount: 1, updated: true });
+		expect(rpcCalls[0]?.args).toMatchObject({ p_change_id: c1, p_parent_sha: baseSha, p_head_sha: head2 });
+
+		const patchUpdate = await port.stageSurfacePatch(
+			sessionId,
+			{
+				title: "Full redo",
+				summary: "Replaced manifest.",
+				ops: [{ op: "write_text", path: "brief.md", content: "New" }],
+				notePaths: [],
+				finishSession: false,
+				changeId: c1,
+				replaceAll: true,
+			},
+			ctx,
+		);
+		expect(patchUpdate.updated).toBe(true);
+		expect(rpcCalls[1]?.args).toMatchObject({
+			p_change_id: c1,
+			p_patch_manifest: { ops: [{ op: "write_text", path: "brief.md", content: "New" }], replaceAll: true },
+		});
+
+		const opsUpdate = await port.stageSurfaceOpsAction(
+			sessionId,
+			{
+				title: "Updated email",
+				summary: "Shorter copy.",
+				actionKind: "inbox.draft_email",
+				actionPayload: { body: "Updated" },
+				finishSession: false,
+				changeId: c1,
+			},
+			ctx,
+		);
+		expect(opsUpdate.updated).toBe(true);
+		expect(rpcCalls[2]?.args).toMatchObject({ p_change_id: c1 });
+
+		const recordedCoding: unknown[] = [];
+		const singleCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => {
+					recordedCoding.push(req);
+					return {
+						changeId: req.changeId ?? c2,
+						seq: req.changeId ? 1 : 2,
+						openChangeCount: req.changeId ? 1 : 2,
+						updated: Boolean(req.changeId),
+					};
+				}),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Gør heroen roligere",
+						summary: "Initial sketch.",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+			},
+		);
+		const autoTargeted = singleCodingTool.parseArguments({
+			title: "Superpower-style hero",
+			summary: "Revised direction.",
+			parentSha: head1,
+			commitSha: head2,
+		});
+		const autoResult = await singleCodingTool.execute(autoTargeted, ctx);
+		expect(recordedCoding[0]).toMatchObject({ changeId: c1, parentSha: baseSha, commitSha: head2 });
+		expect(JSON.parse(autoResult.kind === "text" ? autoResult.value : "{}")).toMatchObject({
+			changeId: c1,
+			updated: true,
+		});
+
+		let secondError = "";
+		try {
+			singleCodingTool.parseArguments({ title: "Another pass", summary: "Ambiguous.", commitSha: head3 });
+		} catch (error) {
+			secondError = error instanceof Error ? error.message : String(error);
+		}
+		expect(secondError).toContain(c1);
+		expect(secondError).toContain("createNew: true");
+		expect(/^[\u0020-\u007e]+$/.test(secondError)).toBe(true);
+
+		const createdSecond = singleCodingTool.parseArguments({
+			title: "Footer links",
+			summary: "Separate deliverable.",
+			parentSha: head2,
+			commitSha: head3,
+			createNew: true,
+		});
+		await singleCodingTool.execute(createdSecond, ctx);
+		expect(recordedCoding[1]).not.toHaveProperty("changeId");
+
+		const multiCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? c2,
+					seq: 2,
+					openChangeCount: 2,
+					updated: true,
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Hero",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: c2,
+						seq: 2,
+						title: "Pricing",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: head1,
+						headSha: head2,
+						affectedPaths: ["pricing.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: c2,
+			},
+		);
+		expect(
+			multiCodingTool.parseArguments({ title: "Tighter pricing", summary: "Adjusted.", commitSha: head3 }),
+		).toMatchObject({ changeId: c2, parentSha: head1 });
+		expect(() =>
+			multiCodingTool.parseArguments({
+				title: "Bad",
+				summary: "Both.",
+				commitSha: head3,
+				changeId: c1,
+				createNew: true,
+			}),
+		).toThrow(/not both/);
+		expect(() =>
+			multiCodingTool.parseArguments({ title: "Bad", summary: "Unknown.", commitSha: head3, changeId: unknownId }),
+		).toThrow(/not an open change/);
+
+		const validReportA = JSON.stringify({
+			headline: "Report A",
+			sections: [{ heading: "Overview", paragraphs: ["Body A"] }],
+		});
+		const validReportB = JSON.stringify({
+			headline: "Report B",
+			sections: [{ heading: "Overview", paragraphs: ["Body B"] }],
+		});
+		const stagedPatches: unknown[] = [];
+		const patchTool = createStageSurfacePatchTool(
+			sessionId,
+			{
+				stageSurfacePatch: vi.fn(async (_sid, req) => {
+					stagedPatches.push(req);
+					return { changeId: req.changeId ?? c2, seq: 1, openChangeCount: 1, updated: Boolean(req.changeId) };
+				}),
+			},
+			undefined,
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Report A",
+						summary: "Draft report.",
+						kind: "folder_patch",
+						status: "staged",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["reports/a.report.json"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: [{ op: "write_text", path: "reports/a.report.json", content: validReportA }],
+						baseFiles: { "reports/a.report.json": null },
+					},
+				],
+			},
+		);
+		const badAddSecondReport = patchTool.parseArguments({
+			title: "Add Report B into C1",
+			summary: "Should fail single-deliverable check on merged ops.",
+			ops: [{ op: "write_text", path: "reports/b.report.json", content: validReportB }],
+		});
+		await expect(patchTool.prepare!(badAddSecondReport, ctx)).rejects.toThrow(CloudToolRefusal);
+
+		const goodReplaceReport = patchTool.parseArguments({
+			title: "Replace with Report B",
+			summary: "Replaces whole change.",
+			ops: [{ op: "write_text", path: "reports/b.report.json", content: validReportB }],
+			replaceAll: true,
+		});
+		const preparedReplace = await patchTool.prepare!(goodReplaceReport, ctx);
+		await patchTool.execute(preparedReplace, ctx);
+		expect(stagedPatches[0]).toMatchObject({ changeId: c1, replaceAll: true });
+
+		expect(() =>
+			patchTool.parseArguments({
+				title: "Invalid",
+				summary: "replaceAll with createNew",
+				ops: [{ op: "write_text", path: "notes.md", content: "x" }],
+				createNew: true,
+				replaceAll: true,
+			}),
+		).toThrow(/replaceAll/);
+
+		const opsTool = createStageSurfaceOpsActionTool(
+			sessionId,
+			{
+				stageSurfaceOpsAction: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? c2,
+					seq: 1,
+					openChangeCount: 2,
+					updated: Boolean(req.changeId),
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Email Ada",
+						summary: "",
+						kind: "ops_action",
+						status: "staged",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: [],
+						previewBaseChangeIds: [],
+						actionKind: "inbox.draft_email",
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: c2,
+						seq: 2,
+						title: "Email Bo",
+						summary: "",
+						kind: "ops_action",
+						status: "staged",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: [],
+						previewBaseChangeIds: [],
+						actionKind: "inbox.draft_email",
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: c1,
+			},
+		);
+		expect(
+			opsTool.parseArguments({
+				title: "Email Ada (short)",
+				summary: "Tighter note.",
+				actionKind: "inbox.draft_email",
+				actionPayload: { body: "Hi Ada" },
+			}),
+		).toMatchObject({ changeId: c1 });
+	});
 });

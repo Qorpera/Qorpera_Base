@@ -47,6 +47,7 @@ import {
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
+import { mergeFolderPatchOps, type SurfaceSessionOpenChange } from "./cloud-surface-preview-overlay.ts";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const OPS_ACTION_KIND_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
@@ -144,6 +145,7 @@ export interface CodingRecordChangeRequest {
 	readonly commitSha: string;
 	readonly parentSha?: string | null;
 	readonly dependsOnChangeIds: readonly string[];
+	readonly changeId?: string | null;
 }
 
 export interface ProposeSurfaceRequest {
@@ -179,6 +181,8 @@ export interface StageSurfacePatchRequest {
 	readonly baseFiles?: Readonly<Record<string, string | null>>;
 	readonly notePaths: readonly string[];
 	readonly finishSession: boolean;
+	readonly changeId?: string | null;
+	readonly replaceAll?: boolean;
 }
 
 export interface StageSurfaceOpsActionRequest {
@@ -187,12 +191,20 @@ export interface StageSurfaceOpsActionRequest {
 	readonly actionKind: string;
 	readonly actionPayload: Readonly<Record<string, JsonValue>>;
 	readonly finishSession: boolean;
+	readonly changeId?: string | null;
 }
 
 export interface SurfaceChangeStagedResult {
 	readonly changeId: string;
 	readonly seq: number;
 	readonly openChangeCount: number;
+	readonly updated?: boolean;
+}
+
+export interface SurfaceFollowUpChangeOptions {
+	readonly openChanges?: readonly SurfaceSessionOpenChange[];
+	readonly replyChangeId?: string | null;
+	readonly isInternalReconciliation?: boolean;
 }
 
 export interface SurfacePatchToolPort {
@@ -347,7 +359,79 @@ function parseRecordChangeResult(value: unknown, label: string): SurfaceChangeSt
 		changeId: parseUuid(row.changeId, `${label}.changeId`),
 		seq: parseInteger(row.seq, `${label}.seq`, 1, 10_000),
 		openChangeCount: parseInteger(openRaw, `${label}.openChangeCount`, 0, 10_000),
+		...(row.updated === true ? { updated: true } : {}),
 	};
+}
+
+function sanitizeAsciiRefusal(text: string, maxChars: number): string {
+	const clean = text
+		.replace(/[^\u0020-\u007e]/g, "?")
+		.replace(/\s+/g, " ")
+		.trim();
+	return clean.length > maxChars ? `${clean.slice(0, maxChars - 3)}...` : clean;
+}
+
+function formatOpenChangesRefusalList(openChanges: readonly SurfaceSessionOpenChange[]): string {
+	const shown = openChanges.slice(0, 5).map((item) => `${item.changeId} ("${sanitizeAsciiRefusal(item.title, 48)}")`);
+	const overflow = openChanges.length - shown.length;
+	return overflow > 0 ? `${shown.join(", ")}, +${overflow} more` : shown.join(", ");
+}
+
+function resolveFollowUpTargetChangeId(input: {
+	readonly explicitChangeId: string | null;
+	readonly createNew: boolean;
+	readonly openChanges: readonly SurfaceSessionOpenChange[];
+	readonly replyChangeId: string | null;
+	readonly updatedInTurn: ReadonlySet<string>;
+	readonly isInternalReconciliation: boolean;
+	readonly explicitParentSha?: string | null;
+}): string | null {
+	const {
+		explicitChangeId,
+		createNew,
+		openChanges,
+		replyChangeId,
+		updatedInTurn,
+		isInternalReconciliation,
+		explicitParentSha,
+	} = input;
+	if (explicitChangeId && createNew) {
+		throw new CloudToolArgumentRefusal(
+			"Pass either changeId to update an existing change in place or createNew: true to add a separate new change, not both.",
+		);
+	}
+	if (explicitChangeId) {
+		if (openChanges.length > 0 && !openChanges.some((item) => item.changeId === explicitChangeId)) {
+			throw new CloudToolArgumentRefusal(
+				`changeId ${explicitChangeId} is not an open change in this session. Open changes: ${formatOpenChangesRefusalList(openChanges)}. Pass one of those IDs to update it in place, or omit changeId and pass createNew: true to stage a new change.`,
+			);
+		}
+		return explicitChangeId;
+	}
+	if (createNew || isInternalReconciliation || openChanges.length === 0) {
+		return null;
+	}
+	if (
+		replyChangeId &&
+		!updatedInTurn.has(replyChangeId) &&
+		openChanges.some((item) => item.changeId === replyChangeId)
+	) {
+		return replyChangeId;
+	}
+	if (openChanges.length === 1 && !updatedInTurn.has(openChanges[0]!.changeId)) {
+		return openChanges[0]!.changeId;
+	}
+	if (explicitParentSha) {
+		const parentMatches = openChanges.filter(
+			(item) => item.parentSha === explicitParentSha && !updatedInTurn.has(item.changeId),
+		);
+		if (parentMatches.length === 1) {
+			return parentMatches[0]!.changeId;
+		}
+	}
+	throw new CloudToolArgumentRefusal(
+		`This session already has open staged changes (${formatOpenChangesRefusalList(openChanges)}). Pass changeId to update an existing change in place, or pass createNew: true to stage a separate new change.`,
+	);
 }
 
 function parseWireEnum<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
@@ -523,6 +607,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_patch_manifest: null,
 					p_finish_session: false,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
+					...(request.changeId ? { p_change_id: request.changeId } : {}),
 				},
 				context.signal,
 			);
@@ -591,9 +676,15 @@ export function createControlPlaneSurfaceToolsPort(
 		async stageSurfacePatch(sessionId, request, context) {
 			const affectedPaths = [...new Set(request.ops.map((op) => op.path))];
 			const hasBaseFiles = request.baseFiles !== undefined && Object.keys(request.baseFiles).length > 0;
-			const patchManifest = hasBaseFiles
-				? { ops: [...request.ops], baseFiles: request.baseFiles }
-				: [...request.ops];
+			const replaceAll = request.replaceAll === true;
+			const patchManifest =
+				hasBaseFiles || replaceAll
+					? {
+							ops: [...request.ops],
+							...(hasBaseFiles ? { baseFiles: request.baseFiles } : {}),
+							...(replaceAll ? { replaceAll: true } : {}),
+						}
+					: [...request.ops];
 			const response = await rpc(
 				"qorpera_native_surface_record_change",
 				{
@@ -610,6 +701,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_patch_manifest: patchManifest,
 					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
+					...(request.changeId ? { p_change_id: request.changeId } : {}),
 				},
 				context.signal,
 			);
@@ -639,6 +731,7 @@ export function createControlPlaneSurfaceToolsPort(
 					},
 					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
+					...(request.changeId ? { p_change_id: request.changeId } : {}),
 				},
 				context.signal,
 			);
@@ -677,12 +770,18 @@ export function createControlPlaneSurfaceToolsPort(
 export function createCodingRecordChangeTool(
 	sessionId: string,
 	port: Pick<CloudSurfaceToolsPort, "recordChange">,
+	options: SurfaceFollowUpChangeOptions = {},
 ): CloudNativeTool {
+	const openChanges = (options.openChanges ?? []).filter((item) => item.kind === "git_range");
+	const openById = new Map(openChanges.map((item) => [item.changeId, item]));
+	const replyChangeId = options.replyChangeId?.trim() || null;
+	const isInternalReconciliation = options.isInternalReconciliation === true;
+	const updatedInTurn = new Set<string>();
 	return {
 		name: "coding_record_change",
 		source: "worker",
 		description:
-			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before coding_finish.",
+			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main, or update an existing open ChangeUnit in place by passing its changeId. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit) and commitSha, calling once per distinct deliverable before coding_finish. When revising an existing open change on a follow-up turn, pass its changeId (keeping its original parentSha and passing the new commitSha); pass createNew: true only when adding a separate new deliverable alongside existing open changes.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -693,13 +792,23 @@ export function createCodingRecordChangeTool(
 				parentSha: {
 					type: "string",
 					description:
-						"Optional 40-hex Git parent commit SHA before this change unit (e.g. git rev-parse <commitSha>~1); defaults to the previous recorded change head or session base SHA.",
+						"Optional 40-hex Git parent commit SHA before this change unit; defaults to the target change's original parentSha on updates, or the previous recorded change head / session base SHA on new changes.",
 				},
 				commitSha: { type: "string", description: "40-hex Git commit SHA on the session branch." },
 				dependsOnChangeIds: {
 					type: "array",
 					items: { type: "string" },
 					description: "Optional IDs of earlier ChangeUnits in this session that must merge before this one.",
+				},
+				changeId: {
+					type: "string",
+					description:
+						"Optional UUID of an existing open ChangeUnit in this session to update in place instead of creating a new change.",
+				},
+				createNew: {
+					type: "boolean",
+					description:
+						"Set true when intentionally staging an additional separate ChangeUnit alongside existing open changes in this session.",
 				},
 			},
 		},
@@ -710,7 +819,7 @@ export function createCodingRecordChangeTool(
 					value,
 					"coding_record_change",
 					["title", "summary", "commitSha"],
-					["parentSha", "dependsOnChangeIds"],
+					["parentSha", "dependsOnChangeIds", "changeId", "createNew"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -737,17 +846,48 @@ export function createCodingRecordChangeTool(
 			if (!Array.isArray(depsRaw) || depsRaw.length > 32 || depsRaw.some((item) => !isUuid(item))) {
 				throw new CloudToolArgumentRefusal("dependsOnChangeIds must be an array of change UUIDs");
 			}
+			let explicitChangeId: string | null = null;
+			if (raw.changeId !== undefined && raw.changeId !== null) {
+				if (!isUuid(raw.changeId)) {
+					throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
+				}
+				explicitChangeId = raw.changeId;
+			}
+			const createNew = parseBooleanArg(raw.createNew, "createNew", false);
+			const targetChangeId = resolveFollowUpTargetChangeId({
+				explicitChangeId,
+				createNew,
+				openChanges,
+				replyChangeId,
+				updatedInTurn,
+				isInternalReconciliation,
+				explicitParentSha: parentSha ?? null,
+			});
+			if (targetChangeId) {
+				const target = openById.get(targetChangeId);
+				if (target?.parentSha) {
+					if (parentSha === undefined) {
+						parentSha = target.parentSha;
+					} else if (target.headSha && parentSha === target.headSha && raw.commitSha !== target.headSha) {
+						parentSha = target.parentSha;
+					}
+				}
+			}
 			return {
 				title,
 				summary,
 				commitSha: raw.commitSha,
 				...(parentSha !== undefined ? { parentSha } : {}),
 				dependsOnChangeIds: [...(depsRaw as string[])],
+				...(targetChangeId ? { changeId: targetChangeId } : {}),
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as CodingRecordChangeRequest;
 			const result = await port.recordChange(sessionId, parsed, context);
+			if (parsed.changeId) {
+				updatedInTurn.add(parsed.changeId);
+			}
 			return {
 				kind: "text",
 				value: cloudToolJsonText({
@@ -757,6 +897,7 @@ export function createCodingRecordChangeTool(
 					seq: result.seq,
 					openChangeCount: result.openChangeCount,
 					staged: true,
+					...(result.updated === true ? { updated: true } : {}),
 				}),
 			};
 		},
@@ -1263,7 +1404,7 @@ export async function checkStagedSurfaceLayout(
 	return "checked";
 }
 
-export interface StageSurfacePatchToolOptions {
+export interface StageSurfacePatchToolOptions extends SurfaceFollowUpChangeOptions {
 	readonly deferSessionCompletion?: boolean;
 	readonly allowMultipleDeliverables?: boolean;
 }
@@ -1274,7 +1415,18 @@ export function createStageSurfacePatchTool(
 	layout?: SurfaceLayoutStaging,
 	options: StageSurfacePatchToolOptions = {},
 ): CloudNativeTool {
-	const stagedThisTurn: StudioPatchOp[] = [];
+	const openChanges = (options.openChanges ?? []).filter((item) => item.kind === "folder_patch");
+	const openById = new Map(openChanges.map((item) => [item.changeId, item]));
+	const replyChangeId = options.replyChangeId?.trim() || null;
+	const isInternalReconciliation = options.isInternalReconciliation === true;
+	const updatedInTurn = new Set<string>();
+	const currentOpsByChangeId = new Map<string, readonly StudioPatchOp[]>();
+	for (const item of openChanges) {
+		if (item.patchManifest && item.patchManifest.length > 0) {
+			currentOpsByChangeId.set(item.changeId, item.patchManifest);
+		}
+	}
+	const stagedEntries: Array<{ readonly changeId: string | null; readonly ops: readonly StudioPatchOp[] }> = [];
 	const schemaProperties: Record<string, JsonValue> = {
 		title: {
 			type: "string",
@@ -1312,6 +1464,21 @@ export function createStageSurfacePatchTool(
 			items: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
 			description: "Optional supporting rationale note paths under the surface notes folder.",
 		},
+		changeId: {
+			type: "string",
+			description:
+				"Optional UUID of an existing open ChangeUnit in this session to update in place instead of creating a new change.",
+		},
+		createNew: {
+			type: "boolean",
+			description:
+				"Set true when intentionally staging a separate new ChangeUnit alongside existing open changes in this session.",
+		},
+		replaceAll: {
+			type: "boolean",
+			description:
+				"Only when updating an existing change via changeId: set true to replace its entire patch manifest from scratch instead of merging with untouched paths from the prior version.",
+		},
 	};
 	if (!options.deferSessionCompletion) {
 		schemaProperties.finishSession = {
@@ -1324,7 +1491,7 @@ export function createStageSurfacePatchTool(
 		source: "worker",
 		description: options.allowMultipleDeliverables
 			? "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session covering all requested paths in a single call. Write reports as valid *.report.json articles when updating report deliverables."
-			: "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session. Call this tool once per independent deliverable (for example, one call per report, article, blog post, or page section) so members can toggle, preview, and approve each piece individually; never bundle multiple reports or standalone HTML documents into one call. Write reports and blog posts as *.report.json articles (or self-contained .html when bespoke layout is needed) rather than raw .md files.",
+			: "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session, or update an existing open ChangeUnit in place by passing its changeId. Call this tool once per independent deliverable (for example, one call per report, article, blog post, or page section) so members can toggle, preview, and approve each piece individually; never bundle multiple reports or standalone HTML documents into one call. When a follow-up revises an existing open change, pass its changeId to update it in place (ops merge by path unless replaceAll: true); pass createNew: true only when adding a separate new deliverable. Write reports and blog posts as *.report.json articles (or self-contained .html when bespoke layout is needed) rather than raw .md files.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1338,7 +1505,7 @@ export function createStageSurfacePatchTool(
 					value,
 					"stage_surface_patch",
 					["title", "summary", "ops"],
-					["notePaths", "finishSession"],
+					["notePaths", "finishSession", "changeId", "createNew", "replaceAll"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -1380,23 +1547,75 @@ export function createStageSurfacePatchTool(
 			const notePaths = parseOptionalNotePathsArg(raw.notePaths);
 			const parsedFinishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
 			const finishSession = options.deferSessionCompletion ? false : parsedFinishSession;
+			let explicitChangeId: string | null = null;
+			if (raw.changeId !== undefined && raw.changeId !== null) {
+				if (!isUuid(raw.changeId)) {
+					throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
+				}
+				explicitChangeId = raw.changeId;
+			}
+			const createNew = parseBooleanArg(raw.createNew, "createNew", false);
+			const replaceAll = parseBooleanArg(raw.replaceAll, "replaceAll", false);
+			const targetChangeId = resolveFollowUpTargetChangeId({
+				explicitChangeId,
+				createNew,
+				openChanges,
+				replyChangeId,
+				updatedInTurn,
+				isInternalReconciliation,
+			});
+			if (replaceAll && !targetChangeId) {
+				throw new CloudToolArgumentRefusal("replaceAll can only be used when updating an existing open change");
+			}
 			return {
 				title,
 				summary,
 				ops: normalizedOps as unknown as JsonValue,
 				notePaths,
 				finishSession,
+				...(targetChangeId ? { changeId: targetChangeId } : {}),
+				...(replaceAll ? { replaceAll: true } : {}),
 			};
 		},
 		async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
-			const ops = (parsed as unknown as StageSurfacePatchRequest).ops;
-			checkStagedSurfaceDeliverables(ops, { allowMultipleDeliverables: options.allowMultipleDeliverables });
+			const req = parsed as unknown as StageSurfacePatchRequest;
+			const targetId = req.changeId ?? null;
+			const existingOps = targetId && !req.replaceAll ? currentOpsByChangeId.get(targetId) : undefined;
+			const existingBaseFiles = targetId ? (openById.get(targetId)?.baseFiles ?? null) : null;
+			const deliverableOps = existingOps
+				? mergeFolderPatchOps(layout?.folderRoot, existingOps, req.ops, existingBaseFiles)
+				: req.ops;
+			checkStagedSurfaceDeliverables(deliverableOps, {
+				allowMultipleDeliverables: options.allowMultipleDeliverables,
+			});
 			if (!layout) return parsed;
+			let waitingOps: readonly StudioPatchOp[] | null;
+			if (targetId && req.replaceAll) {
+				const allOtherKnown = openChanges.every(
+					(item) => item.changeId === targetId || (item.patchManifest !== null && !item.truncated),
+				);
+				if (allOtherKnown) {
+					const otherOpenOps = openChanges.flatMap((item) =>
+						item.changeId === targetId
+							? []
+							: [...(currentOpsByChangeId.get(item.changeId) ?? item.patchManifest ?? [])],
+					);
+					const otherTurnOps = stagedEntries.flatMap((entry) =>
+						entry.changeId === targetId ? [] : [...entry.ops],
+					);
+					waitingOps = [...otherOpenOps, ...otherTurnOps];
+				} else {
+					waitingOps = null;
+				}
+			} else {
+				const turnOps = stagedEntries.flatMap((entry) => [...entry.ops]);
+				waitingOps = layout.waitingOps === null ? null : [...layout.waitingOps, ...turnOps];
+			}
 			const check = await checkStagedSurfaceLayout(
-				ops,
+				req.ops,
 				{
 					...layout,
-					waitingOps: layout.waitingOps === null ? null : [...layout.waitingOps, ...stagedThisTurn],
+					waitingOps,
 				},
 				context.signal,
 			);
@@ -1405,7 +1624,25 @@ export function createStageSurfacePatchTool(
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as StageSurfacePatchRequest & { readonly layoutUnchecked?: boolean };
 			const result = await port.stageSurfacePatch(sessionId, parsed, context);
-			stagedThisTurn.push(...parsed.ops);
+			if (parsed.changeId) {
+				updatedInTurn.add(parsed.changeId);
+				const prevOps = parsed.replaceAll ? [] : (currentOpsByChangeId.get(parsed.changeId) ?? []);
+				const nextOps = parsed.replaceAll
+					? parsed.ops
+					: mergeFolderPatchOps(
+							layout?.folderRoot,
+							prevOps,
+							parsed.ops,
+							openById.get(parsed.changeId)?.baseFiles ?? null,
+						);
+				currentOpsByChangeId.set(parsed.changeId, nextOps);
+				if (parsed.replaceAll) {
+					for (let i = stagedEntries.length - 1; i >= 0; i -= 1) {
+						if (stagedEntries[i]?.changeId === parsed.changeId) stagedEntries.splice(i, 1);
+					}
+				}
+			}
+			stagedEntries.push({ changeId: result.changeId, ops: parsed.ops });
 			return {
 				kind: "text",
 				value: cloudToolJsonText({
@@ -1418,6 +1655,7 @@ export function createStageSurfacePatchTool(
 					notePaths: [...parsed.notePaths],
 					...(options.deferSessionCompletion ? {} : { finishSession: parsed.finishSession }),
 					staged: true,
+					...(result.updated === true ? { updated: true } : {}),
 					...(parsed.layoutUnchecked === true ? { note: LAYOUT_UNCHECKED_NOTE } : {}),
 				}),
 			};
@@ -1425,12 +1663,20 @@ export function createStageSurfacePatchTool(
 	};
 }
 
-export function createStageSurfaceOpsActionTool(sessionId: string, port: SurfaceOpsActionToolPort): CloudNativeTool {
+export function createStageSurfaceOpsActionTool(
+	sessionId: string,
+	port: SurfaceOpsActionToolPort,
+	options: SurfaceFollowUpChangeOptions = {},
+): CloudNativeTool {
+	const openChanges = (options.openChanges ?? []).filter((item) => item.kind === "ops_action");
+	const replyChangeId = options.replyChangeId?.trim() || null;
+	const isInternalReconciliation = options.isInternalReconciliation === true;
+	const updatedInTurn = new Set<string>();
 	return {
 		name: "stage_surface_ops_action",
 		source: "worker",
 		description:
-			"Stage a structured ops_action ChangeUnit on an operational Surface session (inbox, money, data, files, members) so members can review and approve or send it cleanly from the Action card.",
+			"Stage a structured ops_action ChangeUnit on an operational Surface session (inbox, money, data, files, members), or update an existing open Action card in place by passing its changeId. Pass createNew: true only when staging an additional separate action alongside existing open actions.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1463,6 +1709,16 @@ export function createStageSurfaceOpsActionTool(sessionId: string, port: Surface
 					type: "boolean",
 					description: "Set true when this action completes the turn and marks the session ready for approval.",
 				},
+				changeId: {
+					type: "string",
+					description:
+						"Optional UUID of an existing open ops_action ChangeUnit in this session to update in place instead of creating a duplicate Action card.",
+				},
+				createNew: {
+					type: "boolean",
+					description:
+						"Set true when intentionally staging an additional separate action alongside existing open actions in this session.",
+				},
 			},
 		},
 		parseArguments(value: JsonValue): JsonValue {
@@ -1472,7 +1728,7 @@ export function createStageSurfaceOpsActionTool(sessionId: string, port: Surface
 					value,
 					"stage_surface_ops_action",
 					["title", "summary", "actionKind", "actionPayload"],
-					["finishSession"],
+					["finishSession", "changeId", "createNew"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -1502,17 +1758,37 @@ export function createStageSurfaceOpsActionTool(sessionId: string, port: Surface
 				throw new CloudToolArgumentRefusal("actionPayload exceeds maximum size");
 			}
 			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			let explicitChangeId: string | null = null;
+			if (raw.changeId !== undefined && raw.changeId !== null) {
+				if (!isUuid(raw.changeId)) {
+					throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
+				}
+				explicitChangeId = raw.changeId;
+			}
+			const createNew = parseBooleanArg(raw.createNew, "createNew", false);
+			const targetChangeId = resolveFollowUpTargetChangeId({
+				explicitChangeId,
+				createNew,
+				openChanges,
+				replyChangeId,
+				updatedInTurn,
+				isInternalReconciliation,
+			});
 			return {
 				title,
 				summary,
 				actionKind,
 				actionPayload: actionPayload as JsonValue,
 				finishSession,
+				...(targetChangeId ? { changeId: targetChangeId } : {}),
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as StageSurfaceOpsActionRequest;
 			const result = await port.stageSurfaceOpsAction(sessionId, parsed, context);
+			if (parsed.changeId) {
+				updatedInTurn.add(parsed.changeId);
+			}
 			return {
 				kind: "text",
 				value: cloudToolJsonText({
@@ -1524,6 +1800,7 @@ export function createStageSurfaceOpsActionTool(sessionId: string, port: Surface
 					actionKind: parsed.actionKind,
 					finishSession: parsed.finishSession,
 					staged: true,
+					...(result.updated === true ? { updated: true } : {}),
 				}),
 			};
 		},

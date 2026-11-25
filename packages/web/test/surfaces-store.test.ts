@@ -663,6 +663,40 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("forwards an explicit changeId when replying to adjust a specific change", async () => {
+		const replySurfaceSession = vi.fn(async () =>
+			session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[0], "member", "Justér heroen")] }),
+		);
+		const uploadImage = vi.fn(async () => ({ sha256: "e".repeat(64), bytes: 3, mediaType: "image/webp" }));
+		const store = storeWith(
+			fakeClient({
+				replySurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			}),
+			{ uploadImage },
+		);
+		await store.load();
+		await store.openSurface("website");
+		expect(await store.reply(SESSION, "Justér heroen", [], CHANGES[0])).toBe(true);
+		expect(replySurfaceSession).toHaveBeenNthCalledWith(1, SESSION, "Justér heroen", true, undefined, CHANGES[0]);
+
+		const file = new File(["zzz"], "ref.webp", { type: "image/webp" });
+		expect(await store.reply(SESSION, "Som på billedet", [file], CHANGES[0])).toBe(true);
+		const inputId = (uploadImage.mock.calls[0] as unknown[] | undefined)?.[1];
+		expect(replySurfaceSession).toHaveBeenNthCalledWith(
+			2,
+			SESSION,
+			"Som på billedet",
+			true,
+			{
+				clientInputId: inputId,
+				images: [{ sha256: "e".repeat(64), bytes: 3, mediaType: "image/webp" }],
+			},
+			CHANGES[0],
+		);
+		store.dispose();
+	});
+
 	it("reads a session's images once per new member message", async () => {
 		const surfaceSessionImages = vi.fn(async () => ({
 			sessionId: SESSION,

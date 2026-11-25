@@ -5,8 +5,10 @@ import { CloudCompanyPathNotText } from "../src/cloud-company-path-gateway.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
 import {
 	createSurfaceFolderPreviewOverlay,
+	mergeFolderPatchOps,
 	parseSurfaceOmittedBaseChanges,
 	parseSurfacePreviewContext,
+	parseSurfaceSessionOpenChanges,
 } from "../src/cloud-surface-preview-overlay.ts";
 import { runSurfaceSessionTurn } from "../src/cloud-surface-session-runner.ts";
 import { buildSurfaceTurnBrief } from "../src/cloud-surface-turn-context.ts";
@@ -679,5 +681,187 @@ describe("surface preview overlay and lineage turn context", () => {
 		});
 		expect(brief).toContain("exceeded the turn context budget");
 		expect(brief).toContain("reading the current published live files instead");
+	});
+
+	it("overlays own session open changes on follow-up reads while capturing baseFiles from external preview state only", async () => {
+		const sessionId = randomUUID();
+		const externalChangeId = randomUUID();
+		const ownChangeId = randomUUID();
+		const liveFiles: Record<string, string> = {
+			"identity/brief.md": "Live brief\n",
+			"identity/tokens.json": JSON.stringify({ colors: { accent: "#111111", paper: "#ffffff" } }),
+		};
+
+		const coalesced = mergeFolderPatchOps(
+			"identity",
+			[
+				{ op: "write_text", path: "brief.md", content: "Turn 1 brief\n" },
+				{ op: "write_text", path: "scratch.md", content: "Temp\n" },
+				{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#222222", paper: "#fafafa" } } },
+			],
+			[
+				{ op: "delete", path: "scratch.md" },
+				{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#333333" }, radius: "8px" } },
+			],
+			{ "brief.md": "Live brief\n", "scratch.md": null },
+		);
+		expect(coalesced).toEqual([
+			{ op: "write_text", path: "brief.md", content: "Turn 1 brief\n" },
+			{
+				op: "merge_json",
+				path: "tokens.json",
+				patch: { colors: { accent: "#333333", paper: "#fafafa" }, radius: "8px" },
+			},
+		]);
+
+		const parsedOpen = parseSurfaceSessionOpenChanges([
+			{
+				changeId: ownChangeId,
+				seq: 1,
+				title: "Initial brand brief",
+				summary: "Drafted brief and new intro.",
+				kind: "folder_patch",
+				status: "staged",
+				affectedPaths: ["brief.md", "intro.md"],
+				previewBaseChangeIds: [externalChangeId],
+				patchManifest: [
+					{ op: "write_text", path: "brief.md", content: "Turn 1 brief\n" },
+					{ op: "write_text", path: "intro.md", content: "Turn 1 intro\n" },
+				],
+				baseFiles: { "brief.md": "Live brief\n", "intro.md": null },
+			},
+		]);
+
+		const stagedRequests: Array<{
+			readonly changeId?: string | null;
+			readonly baseFiles?: Readonly<Record<string, string | null>>;
+		}> = [];
+		let readBriefInTurn = "";
+		let readIntroInTurn = "";
+		let readTokensInTurn = "";
+		let seenBrief = "";
+
+		const liveReader = {
+			async readText(path: string) {
+				const text = liveFiles[path];
+				return text === undefined ? null : { text };
+			},
+		};
+		const fakeFolder = {
+			read: vi.fn(async (path: string) => {
+				if (path === "identity") return { entry: makeLiveEntry("identity", null) };
+				const content = liveFiles[path];
+				return { entry: content === undefined ? null : makeLiveEntry(path, content) };
+			}),
+			readRange: vi.fn(async (entry: CloudCompanyFolderEntry) => Buffer.from(liveFiles[entry.path] ?? "", "utf8")),
+			readText: vi.fn(liveReader.readText),
+			list: vi.fn(async () => ({ entries: [], asOfSeq: 1, next: null })),
+			release: vi.fn(async () => undefined),
+		} as unknown as CloudCompanyFolderClient;
+		const companyId = randomUUID();
+		const runId = randomUUID();
+		const identity = {
+			companyId,
+			environmentId: randomUUID(),
+			runId,
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			staffAgentId: "cofounder",
+		} as unknown as Parameters<typeof cloudFolderFileTools>[0]["identity"];
+		const operations = {
+			completesFolderCommits: false,
+			execute: vi.fn(),
+		} as unknown as Parameters<typeof cloudFolderFileTools>[0]["operations"];
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId: randomUUID(),
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Tighten the brief and intro",
+				previewBaseChanges: [
+					{
+						changeId: externalChangeId,
+						title: "External accent tweak",
+						summary: "Updates accent token.",
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["tokens.json"],
+						previewBaseChangeIds: [],
+						patchManifest: [
+							{ op: "write_text", path: "tokens.json", content: '{"colors":{"accent":"#0070f3"}}\n' },
+						],
+						baseFiles: { "tokens.json": liveFiles["identity/tokens.json"]! },
+					},
+				],
+				sessionOpenChanges: parsedOpen,
+				replyChangeId: ownChangeId,
+			},
+			{
+				folder: liveReader,
+				folderToolsContext: { folder: fakeFolder, operations, identity },
+				surfaceTools: {
+					stageSurfacePatch: async (_sid, request) => {
+						stagedRequests.push({ changeId: request.changeId, baseFiles: request.baseFiles });
+						return { changeId: request.changeId ?? randomUUID(), seq: 1, openChangeCount: 1, updated: true };
+					},
+				},
+				executeTurn: async ({ tools, turnBrief, signal }) => {
+					seenBrief = turnBrief;
+					const readTool = tools.find((tool) => tool.name === "company_read")!;
+					const stageTool = tools.find((tool) => tool.name === "stage_surface_patch")!;
+					const toolCtx = {
+						companyId,
+						runId,
+						callId: "call_1",
+						argumentSha256: "c".repeat(64),
+						signal,
+					};
+					const briefRes = await readTool.execute(readTool.parseArguments({ path: "identity/brief.md" }), toolCtx);
+					const introRes = await readTool.execute(readTool.parseArguments({ path: "identity/intro.md" }), toolCtx);
+					const tokensRes = await readTool.execute(
+						readTool.parseArguments({ path: "identity/tokens.json" }),
+						toolCtx,
+					);
+					readBriefInTurn = briefRes.kind === "text" ? briefRes.value : "";
+					readIntroInTurn = introRes.kind === "text" ? introRes.value : "";
+					readTokensInTurn = tokensRes.kind === "text" ? tokensRes.value : "";
+
+					const parsedStage = stageTool.parseArguments({
+						title: "Tighter brand brief",
+						summary: "Updated brief and intro.",
+						ops: [
+							{ op: "write_text", path: "brief.md", content: "Turn 2 brief\n" },
+							{ op: "write_text", path: "intro.md", content: "Turn 2 intro\n" },
+						],
+					});
+					const preparedStage = stageTool.prepare ? await stageTool.prepare(parsedStage, toolCtx) : parsedStage;
+					await stageTool.execute(preparedStage, toolCtx);
+					return { state: "ready", replyText: "Updated in place." };
+				},
+				completeSessionTurn: vi.fn(async () => undefined),
+			},
+		);
+
+		expect(seenBrief).toContain("## Open Changes in This Session");
+		expect(seenBrief).toContain(ownChangeId);
+		expect(seenBrief).toContain("(targeted by follow-up)");
+		expect(readBriefInTurn).toContain("Turn 1 brief");
+		expect(readIntroInTurn).toContain("Turn 1 intro");
+		expect(readTokensInTurn).toContain("#0070f3");
+		expect(stagedRequests).toHaveLength(1);
+		expect(stagedRequests[0]).toEqual({
+			changeId: ownChangeId,
+			baseFiles: {
+				"brief.md": "Live brief\n",
+				"intro.md": null,
+			},
+		});
 	});
 });

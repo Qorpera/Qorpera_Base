@@ -17,7 +17,11 @@ import {
 	type SurfaceMemberImage,
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
-import type { SurfaceOmittedBaseChange, SurfacePreviewBaseChange } from "./cloud-surface-preview-overlay.ts";
+import type {
+	SurfaceOmittedBaseChange,
+	SurfacePreviewBaseChange,
+	SurfaceSessionOpenChange,
+} from "./cloud-surface-preview-overlay.ts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
@@ -131,6 +135,10 @@ export interface SurfaceTurnBriefInput {
 	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
 	readonly previewOverlayStatus?: "ready" | "conflicted" | "truncated" | null;
 	readonly previewSkippedPaths?: readonly string[] | null;
+	readonly sessionOpenChanges?: readonly SurfaceSessionOpenChange[] | null;
+	readonly replyChangeId?: string | null;
+	readonly sessionOverlayStatus?: "ready" | "conflicted" | "truncated" | null;
+	readonly sessionOverlaySkippedPaths?: readonly string[] | null;
 	readonly chainMode?: boolean;
 	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
 	readonly mainSha?: string | null;
@@ -152,6 +160,7 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 	'A .qorpera/checks.json file is optional for simple static Surfaces; for multi-file codebases, run .qorpera/checks.json pre-flight via coding_run_command (runChecks: true) before coding_finish, and optionally set "surfaceGate": "stage" in .qorpera/checks.json to enforce checks automatically before staging (default "none" keeps Preview staging instant). ' +
 	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, parentSha, and commitSha before moving to the next change. " +
+	"When this session already has an open staged change and the member's follow-up revises, adjusts, or fixes it, update that existing change in place by passing its changeId to coding_record_change (keeping its original parentSha and passing the new commitSha) instead of creating a duplicate change; pass createNew: true only when adding a distinct new deliverable alongside existing open changes. " +
 	"When all requested deliverables are committed and verified, call coding_finish with the final headSha to stage the session as ready for review.";
 
 // WHY: Injects global company Identity assets, Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
@@ -283,6 +292,78 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		];
 		if (target.textSnippet.trim()) lines.push(`- Text snippet: "${target.textSnippet.trim()}"`);
 		lines.push(`- Viewport: ${target.viewport.width}x${target.viewport.height}`);
+		sections.push(lines.join("\n"));
+	}
+
+	const sessionOpenChanges = binding.sessionOpenChanges ?? [];
+	const replyChangeId = binding.replyChangeId?.trim() || null;
+	if (!binding.isInternalReconciliation && sessionOpenChanges.length > 0) {
+		const isFolderSurface = binding.sourceKind === "folder" || isFolderOnly;
+		const isOpsSurface = binding.sourceKind === "native_ops";
+		const folderRootLabel = folderRoot || binding.surfaceSlug;
+		const ownSkipped = (binding.sessionOverlaySkippedPaths ?? []).filter((p) => p.trim().length > 0);
+		const anyTruncated = sessionOpenChanges.some((item) => item.truncated === true || item.pathsTruncated === true);
+		const lines: string[] = ["## Open Changes in This Session"];
+		if (isFolderSurface) {
+			if (binding.sessionOverlayStatus === "truncated" || (binding.sessionOverlayStatus == null && anyTruncated)) {
+				lines.push(
+					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. Part of the prior patch manifest exceeded the inline context budget, so \`company_read\` under \`${folderRootLabel}/\` may show live files for omitted paths.`,
+				);
+			} else {
+				lines.push(
+					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` already reflect this session's staged files above.${
+						ownSkipped.length > 0
+							? ` (${ownSkipped.length} path${ownSkipped.length === 1 ? "" : "s"} exceeded overlay limits: ${ownSkipped.slice(0, 10).join(", ")}${ownSkipped.length > 10 ? `, +${ownSkipped.length - 10} more` : ""}.)`
+							: ""
+					}`,
+				);
+			}
+			lines.push(
+				"When the member's follow-up revises, adjusts, or fixes an existing change below, update it in place by passing its `changeId` to `stage_surface_patch` instead of creating a duplicate change. By default your new ops merge into that change by path (preserving untouched files from the prior version); pass `replaceAll: true` alongside `changeId` only if replacing the entire change from scratch. Only pass `createNew: true` when adding a separate new deliverable alongside the existing open change(s).",
+			);
+		} else if (isOpsSurface) {
+			lines.push(
+				`This session already has ${sessionOpenChanges.length} open staged action${sessionOpenChanges.length === 1 ? "" : "s"}. When revising an existing action below, call \`stage_surface_ops_action\` with its \`changeId\` to update that Action card in place. Only pass \`createNew: true\` when staging an additional separate action.`,
+			);
+		} else {
+			lines.push(
+				`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"} on this branch. When the member's follow-up revises, adjusts, or fixes an existing change below, commit on the branch and call \`coding_record_change\` with its \`changeId\` (keeping that change's original \`parentSha\` and passing the new \`commitSha\`) to update it in place instead of creating a duplicate change.${
+					sessionOpenChanges.length > 1
+						? " If revising an earlier non-tip change, rebase or update any subsequent commits cleanly and update each shifted change via its `changeId`."
+						: ""
+				} Only pass \`createNew: true\` when adding a separate new deliverable alongside the existing open change(s).`,
+			);
+		}
+		const maxOpenShown = 20;
+		for (let i = 0; i < Math.min(sessionOpenChanges.length, maxOpenShown); i += 1) {
+			const item = sessionOpenChanges[i]!;
+			const isTargeted = Boolean(replyChangeId && item.changeId === replyChangeId);
+			const parts: string[] = [
+				`#${item.seq} \`${item.changeId}\` — ${item.title.slice(0, 160)}${isTargeted ? " **(targeted by follow-up)**" : ""}`,
+			];
+			if (item.status && item.status !== "staged") {
+				parts.push(`status: ${item.status}`);
+			}
+			if (item.kind === "git_range") {
+				if (item.parentSha && item.headSha) {
+					parts.push(`range \`${item.parentSha.slice(0, 40)}..${item.headSha.slice(0, 40)}\``);
+				} else if (item.headSha) {
+					parts.push(`commit \`${item.headSha.slice(0, 40)}\``);
+				}
+			} else if (item.kind === "ops_action" && item.actionKind) {
+				parts.push(`action: \`${item.actionKind}\``);
+			}
+			if (item.affectedPaths.length > 0) {
+				parts.push(`paths: ${item.affectedPaths.slice(0, 16).join(", ")}`);
+			}
+			if (item.summary) {
+				parts.push(`summary: ${item.summary.slice(0, 240)}`);
+			}
+			lines.push(`- ${parts.join(" · ")}`);
+		}
+		if (sessionOpenChanges.length > maxOpenShown) {
+			lines.push(`- ...and ${sessionOpenChanges.length - maxOpenShown} more open changes`);
+		}
 		sections.push(lines.join("\n"));
 	}
 
