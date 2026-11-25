@@ -400,6 +400,77 @@ describe("a member's questions to the company's databases", () => {
 			asOf: "2026-11-15T10:00:00.000Z",
 		};
 
+		it("reads the store's fuller description of a table, and keeps where its columns point", async () => {
+			const full = {
+				...described,
+				databases: [
+					{
+						...described.databases[0],
+						tables: [
+							{
+								...table,
+								columns: [
+									{ name: "id", type: "integer", settable: false, nullable: false, default: null },
+									{ name: "customer", type: "text", settable: true, nullable: true, default: "''::text" },
+								],
+								constraints: [
+									{ name: "orders_pkey", type: "primary_key", columns: ["id"] },
+									{
+										name: "orders_customer_fkey",
+										type: "foreign_key",
+										columns: ["customer"],
+										references: { table: "customers", columns: ["name"] },
+										onDelete: "no_action",
+									},
+									{
+										name: "orders_elsewhere_fkey",
+										type: "foreign_key",
+										columns: ["id"],
+										references: { table: "ledger", schema: "other", columns: ["id"] },
+										onDelete: "cascade",
+									},
+									{
+										name: "orders_lost_fkey",
+										type: "foreign_key",
+										columns: ["gone"],
+										references: { table: "customers", columns: ["name"] },
+									},
+									{ name: "orders_check", type: "check", definition: "CHECK (id > 0)" },
+								],
+								indexes: [{ name: "orders_pkey", columns: ["id"], unique: true, method: "btree" }],
+							},
+							{
+								name: "totals",
+								kind: "view",
+								key: [],
+								columns: [{ name: "n", type: "bigint", settable: false, nullable: true, default: null }],
+								viewDefinition: "SELECT count(*) AS n FROM orders",
+							},
+						],
+						enums: [{ name: "state", labels: ["new", "done"] }],
+						extensions: [{ name: "plpgsql", version: "1.0" }],
+						ddlTruncated: true,
+					},
+				],
+			};
+			const { fetch } = fakeFetch([[200, full]]);
+			const read = await client(fetch).data.describe("shop", signal());
+			expect(read.databases[0]?.tables).toEqual([
+				{ ...table, references: [{ columns: ["customer"], table: "customers", to: ["name"] }] },
+				{ name: "totals", kind: "view", key: [], columns: [{ name: "n", type: "bigint", settable: false }] },
+			]);
+			for (const odd of [
+				{ ...table, surprise: true },
+				{ ...table, constraints: "none" },
+				{ ...table, columns: [{ ...table.columns[0], surprise: true }] },
+			]) {
+				const refused = fakeFetch([
+					[200, { ...described, databases: [{ ...described.databases[0], tables: [odd] }] }],
+				]);
+				await expect(client(refused.fetch).data.describe("shop", signal())).rejects.toThrow();
+			}
+		});
+
 		it("describes every database the member may read, sending the texts it asks for in rounds that fit", async () => {
 			const files: Record<string, string> = { "data/shop/database.toml": toml };
 			const need = [{ path: "data/shop/database.toml", sha256: sha(toml) }];
