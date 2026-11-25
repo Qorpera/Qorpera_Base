@@ -3296,6 +3296,11 @@ describe("cloud surface runtime tools", () => {
 			);
 
 			expect(codingExecute).toHaveBeenCalledTimes(1);
+			for (const identityPath of ["identity/brief.md", "identity/voice.md", "identity/tokens.json"]) {
+				expect(
+					recordedRpcs.filter((rpc) => rpc.method === "qorpera_folder_read" && rpc.args.p_path === identityPath),
+				).toHaveLength(1);
+			}
 			expect(recordedRpcs).toContainEqual({
 				method: "qorpera_native_surface_record_change",
 				args: expect.objectContaining({

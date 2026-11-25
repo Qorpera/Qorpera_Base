@@ -638,6 +638,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (acquisitionKey !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
 		const acquisitionId = runAttemptAcquisitionId(work.runId, work.attempt);
 		const digest = workSha256(work);
+		const custody: { loginInVault?: boolean } = {};
 		const journal = await this.#withRunLock(work.runId, async (): Promise<SharedExecutionJournal> => {
 			const existing = await this.#exclusive(async (): Promise<SharedExecutionJournal | undefined> => {
 				await this.#ensureRoots();
@@ -679,21 +680,24 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				!mountInfoHasMountPoint(
 					await readFile(this.#mountInfoPath, "utf-8"),
 					join(this.#config.identityRoot, work.computeIdentityId),
-				) &&
-				!(await this.#loginCustody(work.computeIdentityId, signal, work.runId))
+				)
 			) {
-				const firstSeen = this.#identityWaits.get(acquisitionId) ?? this.#now();
-				this.#identityWaits.delete(acquisitionId);
-				if (this.#now() - firstSeen >= IDENTITY_WAIT_MS)
-					throw new Error("The run's Compute Identity volume was not attached to this execution host in time");
-				this.#identityWaits.set(acquisitionId, firstSeen);
-				if (this.#identityWaits.size > TRACKED_IDENTITY_WAITS)
-					this.#identityWaits.delete(this.#identityWaits.keys().next().value as string);
-				throw new ProviderAdmissionRefused(
-					"deferred",
-					REFUSAL_IDENTITY_ABSENT,
-					"The run's Compute Identity volume is not attached to this execution host",
-				);
+				// WHY: reuse the custody RPC result later in #validateWarmSlot/#writeMaterial instead of calling it twice per acquire().
+				custody.loginInVault = await this.#loginCustody(work.computeIdentityId, signal, work.runId);
+				if (!custody.loginInVault) {
+					const firstSeen = this.#identityWaits.get(acquisitionId) ?? this.#now();
+					this.#identityWaits.delete(acquisitionId);
+					if (this.#now() - firstSeen >= IDENTITY_WAIT_MS)
+						throw new Error("The run's Compute Identity volume was not attached to this execution host in time");
+					this.#identityWaits.set(acquisitionId, firstSeen);
+					if (this.#identityWaits.size > TRACKED_IDENTITY_WAITS)
+						this.#identityWaits.delete(this.#identityWaits.keys().next().value as string);
+					throw new ProviderAdmissionRefused(
+						"deferred",
+						REFUSAL_IDENTITY_ABSENT,
+						"The run's Compute Identity volume is not attached to this execution host",
+					);
+				}
 			}
 			this.#identityWaits.delete(acquisitionId);
 			const warmKey = this.#config.warmIdleMs === undefined ? undefined : warmConversationKey(work);
@@ -760,7 +764,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					if (failed) throw failed.reason;
 				}
 				if (claimed.warmCandidate) {
-					warm = await this.#validateWarmSlot(claimed.warmCandidate, work, signal);
+					warm = await this.#validateWarmSlot(claimed.warmCandidate, work, signal, custody);
 				} else if (claimed.evictSelected) {
 					await this.#evict(slot, signal);
 				}
@@ -854,7 +858,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				for (const ownedSlot of owned) this.#claimingSlots.delete(ownedSlot);
 			}
 		});
-		return this.#ensureReady(journal, work, signal);
+		return this.#ensureReady(journal, work, signal, custody);
 	}
 
 	async deliver(
@@ -928,6 +932,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		journal: SharedExecutionJournal,
 		work: CloudRunnerWork,
 		signal: AbortSignal,
+		custody?: { loginInVault?: boolean },
 	): Promise<CloudRunnerInstance> {
 		if (journal.physicalState === "registered" || journal.physicalState === "assigned") return journal.runner;
 		const readyTimeout = timedSignal(this.#config.startTimeoutMs ?? 30_000, signal);
@@ -944,7 +949,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				if (reserved.physicalState === "reserving") {
 					if (!reserved.reusedHost && (await this.#units.active(this.#unit("host", reserved.slot), timeout)))
 						await this.#units.kill(this.#unit("host", reserved.slot), timeout);
-					const hostIdentity = await this.#writeMaterial(reserved, work, timeout);
+					const hostIdentity = await this.#writeMaterial(reserved, work, timeout, custody);
 					current = await this.#exclusive(async () => {
 						const latest = await this.#readJournal(current.acquisitionId);
 						if (!latest || latest.physicalState !== "reserving")
@@ -1434,6 +1439,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		current: SharedExecutionJournal,
 		work: CloudRunnerWork,
 		signal: AbortSignal,
+		custody?: { loginInVault?: boolean },
 	): Promise<{ epoch: number; masterKeySha256: string } | undefined> {
 		const runtime = this.#config.nativeCompanyRuntime;
 		const credentials = await this.#slotCredentials(current.slot, false);
@@ -1470,7 +1476,10 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		// login kept by the vault has no volume: its host gets empty key and epoch files and asks
 		// the vault for the run's login.
 		const vaultLogin =
-			!current.reusedHost && (await this.#loginCustody(current.computeIdentityId, signal, current.runId));
+			!current.reusedHost &&
+			(custody?.loginInVault !== undefined
+				? custody.loginInVault
+				: await this.#loginCustody(current.computeIdentityId, signal, current.runId));
 		const vaultState = vaultLogin
 			? await this.#identityAuthority(current.computeIdentityId, signal, current.runId)
 			: undefined;
@@ -1702,6 +1711,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		warm: SharedExecutionWarmSlot,
 		work: CloudRunnerWork & { computeIdentityId: string },
 		signal: AbortSignal,
+		custody?: { loginInVault?: boolean },
 	): Promise<SharedExecutionWarmSlot | undefined> {
 		try {
 			if (
@@ -1712,13 +1722,16 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				throw new Error("Warm slot expired");
 			if (warm.masterKeySha256 === VAULT_LOGIN_MARKER) {
 				// A host that holds no key: the identity must still be at that epoch and in the vault.
-				const state = await this.#identityAuthority(work.computeIdentityId, signal, work.runId);
-				if (
-					state.blocked ||
-					state.epoch !== warm.epoch ||
-					!(await this.#loginCustody(work.computeIdentityId, signal, work.runId))
-				)
-					throw new Error("Warm slot identity changed");
+				const [state, inVault] = await Promise.all([
+					this.#identityAuthority(work.computeIdentityId, signal, work.runId),
+					custody?.loginInVault !== undefined
+						? Promise.resolve(custody.loginInVault)
+						: this.#loginCustody(work.computeIdentityId, signal, work.runId).then((value) => {
+								if (custody) custody.loginInVault = value;
+								return value;
+							}),
+				]);
+				if (state.blocked || state.epoch !== warm.epoch || !inVault) throw new Error("Warm slot identity changed");
 			} else {
 				const identity = await readSharedExecutionIdentity({
 					identityRoot: this.#config.identityRoot,

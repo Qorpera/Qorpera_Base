@@ -110,6 +110,7 @@ export interface CloudNativeRunToolAdapters {
  */
 export async function runCloudNativeRunToolSession(options: {
 	binding: CloudNativeToolBinding;
+	prefetchedRun?: Promise<CloudNativeToolRun>;
 	/** The run's admitted tier, from its company context; absent runs at standard speed. */
 	serviceTier?: CloudRuntimeServiceTier;
 	controlPlane: CloudNativeToolAuthorityReader & CloudNativeToolOperationControlPlane;
@@ -183,12 +184,14 @@ export async function runCloudNativeRunToolSession(options: {
 	try {
 		// A short control-plane outage does not close the run (WB-001, 28 Oct 2026): it holds for the native lease's
 		// length. The run's worker renews that lease and stops the run when the lease ends.
-		run = await CloudNativeToolRun.open(
-			options.binding,
-			options.controlPlane,
-			options.signal,
-			NATIVE_AUTHORITY_LEASE_SECONDS * 1000,
-		);
+		run = options.prefetchedRun
+			? await options.prefetchedRun
+			: await CloudNativeToolRun.open(
+					options.binding,
+					options.controlPlane,
+					options.signal,
+					NATIVE_AUTHORITY_LEASE_SECONDS * 1000,
+				);
 		admission?.finish("succeeded");
 	} catch (error) {
 		admission?.finish("denied", {
@@ -313,13 +316,13 @@ export async function runCloudNativeRunToolSession(options: {
 		});
 		const runLog = adapters.runLog;
 		const beforeModelStart = async (startSignal: AbortSignal) => {
-			await assertActive(startSignal);
+			// WHY: assertActive ran right before harness launch and beginExecution re-checks run+context atomically in SQL.
+			await run.assertFresh(startSignal, 5_000, CLOUD_RUN_ROW_READ_MS);
 			await cloudToolRequest(
 				(requestSignal) => options.beginExecution(boundary!.specification, requestSignal),
 				startSignal,
 				CLOUD_RUN_ROW_READ_MS,
 			);
-			await assertActive(startSignal);
 		};
 		const recordContextView = async (
 			frame: CloudNativeFenceRequest,

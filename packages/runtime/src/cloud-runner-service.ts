@@ -417,11 +417,21 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 		await options.runWorker(worker, signal);
 		return;
 	}
-	await nativeProviderBridge?.waitUntilListening(signal);
 	// Activate before the inbox answers: a provider reports a runner ready once its
 	// inbox is healthy, and the control plane assigns only to an active runner.
 	const activated = !runner.snapshot().active;
-	if (activated) await runner.activate(config.platform, config.runnerVersion);
+	const ready = new AbortController();
+	const readySignal = AbortSignal.any([signal, ready.signal]);
+	try {
+		// WHY: overlap bridge readiness polling with runner activation; inbox starts only after both succeed.
+		await Promise.all([
+			nativeProviderBridge?.waitUntilListening(readySignal),
+			activated ? runner.activate(config.platform, config.runnerVersion) : undefined,
+		]);
+	} catch (error) {
+		ready.abort(error);
+		throw error;
+	}
 	let inbox: HttpCloudRunnerAssignmentInbox | undefined;
 	let assignmentSource = options.assignmentSource;
 	if (!assignmentSource && config.assignmentHost && config.assignmentPort && assignmentToken) {

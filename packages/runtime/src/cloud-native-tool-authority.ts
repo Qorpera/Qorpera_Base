@@ -344,6 +344,7 @@ export class CloudNativeToolRun {
 	#identity?: CloudNativeToolIdentity;
 	#identityText?: string;
 	#deadline = 0;
+	#validForMs = 0;
 	/** When the read whose authority is applied started: answers apply in the order their reads started. */
 	#readAt = Number.NEGATIVE_INFINITY;
 	#watchdog?: ReturnType<typeof setTimeout>;
@@ -428,6 +429,21 @@ export class CloudNativeToolRun {
 			// As long as the database may run it, as the turn check's attempts: a slow answer lands, not cut and asked again.
 			runRowMs === undefined ? timeoutMs : Math.max(timeoutMs ?? REQUEST_TIMEOUT_MS, runRowMs),
 		);
+	}
+
+	async assertFresh(signal: AbortSignal, maxAgeMs: number, timeoutMs?: number): Promise<void> {
+		if (this.signal.aborted) {
+			this.close();
+			throw new Error("Cloud tool authority unavailable", { cause: this.signal.reason });
+		}
+		if (signal !== this.signal && signal.aborted) {
+			throw new Error("Cloud tool authority unavailable", { cause: signal.reason });
+		}
+		const now = performance.now();
+		const boundedMs = Math.min(maxAgeMs, this.#validForMs);
+		// WHY: honor server validForMs within a short bounded window after a live check without weakening lease expiry or hold fences.
+		if (this.#identity && now < this.#deadline && now - this.#readAt < boundedMs) return;
+		await this.assertActive(signal, timeoutMs);
 	}
 
 	/**
@@ -656,6 +672,7 @@ export class CloudNativeToolRun {
 				: authority.validForMs);
 		if (deadline <= performance.now()) throw new Error("Cloud tool authority expired");
 		this.#readAt = started;
+		this.#validForMs = authority.validForMs;
 		this.#identity = authority.identity;
 		this.#identityText = identityText;
 		this.#deadline = deadline;

@@ -769,7 +769,7 @@ export class SurfaceFolderWorker {
 		const bytes = await raceSignal(
 			this.#folder.read(
 				environmentId,
-				{
+				meta.fileRef ?? {
 					manifestSha256: meta.manifestSha256 as string,
 					fileSha256: meta.fileSha256 as string,
 					bytes: meta.bytes,

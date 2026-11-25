@@ -3450,14 +3450,16 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	// tools are built, and before and after the execution's start) asked for the run's admission and then
 	// its read set, one after the other, not together: 12 before that. Since 20260930618000 each of the three is one
 	// call again, with both reads in it (qorpera_check_native_run): 15 before that.
-	expect(wave("qorpera_memory_run_log_place")).toBe(6);
-	expect(wave("qorpera_memory_run_resume_receipts")).toBe(6);
+	// WHY: Authority open overlaps Wave 4 reads, run-log open follows in Wave 5, and beforeModelStart skips redundant check_native_run calls around begin_v3.
+	expect(wave("describeToolAuthority")).toBe(4);
+	expect(wave("qorpera_memory_run_log_place")).toBe(5);
+	expect(wave("qorpera_memory_run_resume_receipts")).toBe(5);
 	expect(wave("qorpera_bind_native_company_context")).toBeGreaterThan(
 		wave("qorpera_begin_native_company_execution_v3"),
 	);
 	expect(wave("qorpera_fence_native_context")).toBeGreaterThan(wave("qorpera_bind_native_company_context"));
 	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
-	expect(wave("qorpera_record_native_context_view")).toBe(12);
+	expect(wave("qorpera_record_native_context_view")).toBe(9);
 });
 
 it("lists a company run's tool catalog, and the tools more_tools opens, in their order", async () => {
@@ -4353,5 +4355,97 @@ describe("Gemini 4 Neon conversation runs", () => {
 		expect(rpcCalls(result.f, "qorpera_record_gemini_voice_usage").length).toBeGreaterThanOrEqual(1);
 		expect(result.outputs[1]).toMatchObject({ ok: true, state: "partly_spoken", spokenNow: 1, left: 1 });
 		expect(result.outputs[3]).toMatchObject({ ok: true, state: "spoken", spokenNow: 2, reused: 1, left: 0 });
+	});
+
+	it("overlaps openGeminiKeyForRun with Wave 2 context reads", async () => {
+		let releaseVault!: () => void;
+		const vaultGate = new Promise<void>((resolve) => {
+			releaseVault = resolve;
+		});
+		let vaultStarted = false;
+		let overlapped = false;
+		let geminiCalls = 0;
+		const geminiFetch = vi.fn<typeof fetch>(async () => {
+			geminiCalls += 1;
+			if (geminiCalls === 1) {
+				return Response.json({
+					candidates: [
+						{
+							content: {
+								role: "model",
+								parts: [
+									{
+										functionCall: {
+											id: "send_1",
+											name: "send_message",
+											args: { idempotencyKey: "overlap-final", text: "Done.", phase: "final" },
+										},
+									},
+								],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
+				});
+			}
+			return Response.json({
+				candidates: [{ content: { role: "model", parts: [{ text: "Done." }] } }],
+				usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
+			});
+		});
+		const vaultFetch = vi.fn<typeof fetch>(async () => {
+			vaultStarted = true;
+			await vaultGate;
+			return Response.json({
+				schema: "qorpera.gemini-key-for-run/v1",
+				state: "open",
+				geminiKeyId: GEMINI_KEY_ID,
+				apiKey: GEMINI_API_KEY,
+				spendMonth: "2026-11",
+				monthSpendMicrodollars: 0,
+				monthlyCapCents: 10_000,
+			});
+		});
+		const f = await fixture(
+			"company-runtime",
+			false,
+			undefined,
+			false,
+			false,
+			15_000,
+			false,
+			{},
+			{
+				geminiKeys: {
+					origin: "https://vault.example",
+					runtimeToken: VAULT_TOKEN,
+					companyId: "22222222-2222-4222-8222-222222222222",
+					holder: () => "H".repeat(43),
+					fetch: vaultFetch,
+				},
+				geminiFetch,
+			},
+		);
+		f.context.gemini = { model: "gemini-4-neon", effort: "low", keyId: GEMINI_KEY_ID };
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_folder_read" && vaultStarted && !overlapped) {
+				overlapped = true;
+				releaseVault();
+			}
+			if (method === "qorpera_record_gemini_run_usage") {
+				return {
+					schema: "qorpera.gemini-run-usage/v1",
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: 1_000,
+					monthlyCapCents: 10_000,
+					capReached: false,
+				};
+			}
+			return original(method, args, signal);
+		});
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(vaultFetch).toHaveBeenCalledTimes(1);
+		expect(overlapped).toBe(true);
 	});
 });

@@ -439,7 +439,8 @@ export class CloudNativeToolOperations {
 					begun.folder_commit_id != null
 				)
 					throw new Error("Cloud tool operation requires recovery review");
-				await this.#run.assertActive(signal);
+				// WHY: beginToolOperation just verified live run authority in SQL milliseconds after the pre-receipt check; avoid a duplicate RPC within 2 s.
+				await this.#run.assertFresh(signal, 2_000);
 				await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
 				signal.throwIfAborted();
 				const output = await cloudToolRequest(
