@@ -119,10 +119,10 @@ export function squarify(weights: readonly number[], box: DataBox): DataBox[] {
 }
 
 const place = (el: HTMLElement, box: DataBox, within: DataBox) => {
-	el.style.left = `${((box.x - within.x) / within.w) * 100}%`;
-	el.style.top = `${((box.y - within.y) / within.h) * 100}%`;
-	el.style.width = `${(box.w / within.w) * 100}%`;
-	el.style.height = `${(box.h / within.h) * 100}%`;
+	el.style.setProperty("--plot-x", `${((box.x - within.x) / within.w) * 100}%`);
+	el.style.setProperty("--plot-y", `${((box.y - within.y) / within.h) * 100}%`);
+	el.style.setProperty("--plot-w", `${(box.w / within.w) * 100}%`);
+	el.style.setProperty("--plot-h", `${(box.h / within.h) * 100}%`);
 };
 
 export class DataHome {
