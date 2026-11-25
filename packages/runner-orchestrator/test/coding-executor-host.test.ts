@@ -60,6 +60,7 @@ import {
 	CODING_BOOT_READY_COMMAND,
 	CODING_FOLDER_GIT_ENVIRONMENT,
 	CODING_HOST_RPCS,
+	CODING_MACHINE_CHANNEL,
 	codingFolderGitEnvironment,
 	codingHostId,
 	LxdCodingExecutorHost,
@@ -97,7 +98,13 @@ import {
 } from "../src/coding-machine.ts";
 import type { CodingSecretMask } from "../src/coding-secret-mask.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
-import type { LxdInstanceExecStreamClient, LxdInstanceProgramClient, LxdInstanceRecord } from "../src/lxd-client.ts";
+import {
+	type LxdExecPipeRequest,
+	type LxdInstanceExecStreamClient,
+	type LxdInstanceProgramClient,
+	type LxdInstanceRecord,
+	validExecPipe,
+} from "../src/lxd-client.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
@@ -11027,5 +11034,147 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 				"utf8",
 			);
 		});
+	});
+
+	it("opens pinned exec and sftp coding channels with vault secret masking, folder release gating, and endTurn cleanup", async () => {
+		const secretValue = "vault-secret-coding-channel-98765";
+		const f = await folderFixture();
+		const host = new LxdCodingExecutorHost({
+			...f.options,
+			folder: f.folder,
+			commandEnvironment: {
+				environment: vi.fn(async () => ({
+					environment: { APP_API_SECRET: secretValue },
+					mask: [],
+				})),
+			},
+		});
+		let codexHash = `${CODING_MACHINE_CHANNEL.codexSha256}  ${CODING_MACHINE_CHANNEL.codex}\n`;
+		let sftpExit = 0;
+		let codexChecks = 0;
+		let sftpChecks = 0;
+		let lastChannelRequest: LxdExecPipeRequest | undefined;
+		let lastChannelSignal: AbortSignal | undefined;
+		const stdinWritten: string[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (!validExecPipe(request)) throw new Error("LXD instance command is invalid");
+			if (
+				request.command.includes(CODING_MACHINE_CHANNEL.sftpServer) &&
+				!request.command.includes("/usr/bin/systemd-run")
+			) {
+				sftpChecks += 1;
+				return { exitCode: sftpExit, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
+			if (request.command.includes(CODING_MACHINE_CHANNEL.codex) && !request.command.includes("exec-server")) {
+				codexChecks += 1;
+				return { exitCode: 0, stdout: Buffer.from(codexHash), stderrTail: Buffer.alloc(0) };
+			}
+			lastChannelRequest = request;
+			lastChannelSignal = signal;
+			const drain = (async () => {
+				if (!request.stdin) return;
+				if (request.stdin instanceof Uint8Array) {
+					stdinWritten.push(Buffer.from(request.stdin).toString("utf8"));
+					return;
+				}
+				for await (const chunk of request.stdin) stdinWritten.push(Buffer.from(chunk).toString("utf8"));
+			})();
+			return await new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((resolve) => {
+				const finish = () => {
+					void drain.finally(() => resolve({ exitCode: 0, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) }));
+				};
+				if (signal.aborted) finish();
+				else signal.addEventListener("abort", finish, { once: true });
+			});
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+
+		const prepared = await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const scope = {
+			workerId: f.claim.workerId,
+			vmId: prepared.vmId,
+			requestId: codingHostId("turn", `${f.claim.workerId}:${f.claim.sequence}`),
+			turn: f.claim.sequence,
+		};
+
+		const execChannel = await host.openCodingChannel(scope, "exec", f.signal);
+		expect(codexChecks).toBe(1);
+		expect(lastChannelRequest?.command).toContain(CODING_MACHINE_CHANNEL.codex);
+		expect(lastChannelRequest?.command.join(" ")).not.toContain(secretValue);
+
+		execChannel.write(
+			JSON.stringify({
+				id: 1,
+				method: "process/start",
+				params: { processId: "p1", argv: ["/bin/bash", "-c", "echo hi"], env: { HOME: "/evil", CLAUDECODE: "1" } },
+			}),
+		);
+		await vi.waitFor(() => expect(stdinWritten.join("")).toContain('"process/start"'));
+		const forwarded = JSON.parse(stdinWritten.join("").trim()) as { params: { env: Record<string, string> } };
+		expect(forwarded.params.env.APP_API_SECRET).toBe(secretValue);
+		expect(forwarded.params.env.HOME).toMatch(/^\/home\/qorpera-2\d{5}$/);
+		expect(forwarded.params.env.CLAUDECODE).toBe("1");
+		expect(forwarded.params.env.GIT_CONFIG_COUNT).toBeDefined();
+		expect(forwarded.params.env.GIT_AUTHOR_EMAIL).toBe(`${f.claim.workerId}@coding.qorpera.com`);
+		expect(lastChannelRequest?.command.length).toBeLessThanOrEqual(64);
+
+		const received: string[] = [];
+		const reading = (async () => {
+			for await (const line of execChannel.lines) received.push(line);
+		})();
+		lastChannelRequest?.stdout?.(
+			Buffer.from(
+				`${JSON.stringify({
+					method: "process/output",
+					params: {
+						processId: "p1",
+						stream: "stdout",
+						chunk: Buffer.from(`val=${secretValue}`).toString("base64"),
+					},
+				})}\n${JSON.stringify({ method: "process/exited", params: { processId: "p1", exitCode: 0 } })}\n`,
+				"utf8",
+			),
+		);
+		await vi.waitFor(() => expect(received.length).toBeGreaterThanOrEqual(2));
+		const decoded = received
+			.map((l) => JSON.parse(l) as { method?: string; params?: { chunk?: string } })
+			.filter((m) => m.method === "process/output")
+			.map((m) => Buffer.from(m.params?.chunk ?? "", "base64").toString("utf8"))
+			.join("");
+		expect(decoded).toBe("val=***");
+
+		await execChannel.close();
+		await reading;
+		expect(f.boundary).toHaveBeenCalled();
+
+		const secondExec = await host.openCodingChannel(scope, "exec", f.signal);
+		expect(codexChecks).toBe(1);
+		const secondSignal = lastChannelSignal;
+		host.endTurn(f.claim);
+		expect(secondSignal?.aborted).toBe(true);
+		await secondExec.close();
+
+		const g = await folderFixture();
+		Object.assign(g.client, { execInstancePipe: pipe });
+		const gPrepared = await g.host.prepareWorkspace(g.claim, g.turn(), g.signal);
+		const gScope = {
+			workerId: g.claim.workerId,
+			vmId: gPrepared.vmId,
+			requestId: codingHostId("turn", `${g.claim.workerId}:${g.claim.sequence}`),
+			turn: g.claim.sequence,
+		};
+		codexHash = `${"0".repeat(64)}  ${CODING_MACHINE_CHANNEL.codex}\n`;
+		await expect(g.host.openCodingChannel(gScope, "exec", g.signal)).rejects.toThrow("CODING_CODEX_NOT_PINNED");
+
+		sftpExit = 98;
+		await expect(g.host.openCodingChannel(gScope, "sftp", g.signal)).rejects.toThrow("CODING_SFTP_MISSING");
+
+		sftpExit = 0;
+		const sftpChannel = await g.host.openCodingChannel(gScope, "sftp", g.signal);
+		expect(sftpChecks).toBe(2);
+		await sftpChannel.close();
+		const sftpAgain = await g.host.openCodingChannel(gScope, "sftp", g.signal);
+		expect(sftpChecks).toBe(2);
+		await sftpAgain.close();
 	});
 });

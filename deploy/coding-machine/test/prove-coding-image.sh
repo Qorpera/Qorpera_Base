@@ -36,6 +36,7 @@ lx() { lxc --project "$CODING" "$@" </dev/null; }
 
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
+[[ -f ${QORPERA_CODING_CODEX:-} ]] || fail "set QORPERA_CODING_CODEX to the pinned Codex (deploy/first-node/native-codex/linux-x64-artifact.json)"
 export PATH=$PATH:/snap/bin
 for tool in lxc jq nft python3 sysctl setpriv node; do command -v "$tool" >/dev/null || fail "no $tool here"; done
 SOURCE=$(lxc storage get "$POOL" source </dev/null) || fail "no storage pool $POOL"
@@ -112,7 +113,8 @@ set +e
 	echo "--- the image build"
 	start=$SECONDS
 	# /tmp is small on a test machine; the export between the two stores goes to /var/tmp.
-	TMPDIR=/var/tmp QORPERA_BUILDER_NIC=plain QORPERA_BUILD_PROXY=$PROXY timeout 5400 bash "$HERE/build-coding-image.sh" \
+	TMPDIR=/var/tmp QORPERA_BUILDER_NIC=plain QORPERA_BUILD_PROXY=$PROXY QORPERA_CODING_CODEX="$QORPERA_CODING_CODEX" \
+		timeout 5400 bash "$HERE/build-coding-image.sh" \
 		"$BUILD" "$NETWORK" "$POOL" "$CODING" >"$WORK/image-build.json" 2>"$WORK/build.log" </dev/null ||
 		{ tail -n 150 "$WORK/build.log"; fail "the image build failed"; }
 	tail -n 60 "$WORK/build.log"
@@ -152,6 +154,7 @@ set +e
 		QORPERA_PROOF_TYPESCRIPT="$(jq -r .typescript "$WORK/image-build.json")" \
 		QORPERA_PROOF_TSX="$(jq -r .tsx "$WORK/image-build.json")" QORPERA_PROOF_UV="$(jq -r .uv "$WORK/image-build.json")" \
 		QORPERA_PROOF_MISE="$(jq -r .mise "$WORK/image-build.json")" QORPERA_PROOF_PROXY="$PROXY" \
+		QORPERA_PROOF_CODEX_SHA256="$(jq -r .codexSha256 "$WORK/image-build.json")" \
 		QORPERA_PROOF_SCRIPTS=/root/code-checks QORPERA_PROOF_GUEST=/root/guest bash /root/prove-in-coding-machine.sh \
 		</dev/null | tee "$WORK/inner.out"
 	grep -qx "ALL PASSED" "$WORK/inner.out" || fail "the proof inside the machine did not finish"
