@@ -1,3 +1,4 @@
+import type { CodingHarness } from "../cloud/coding-session.ts";
 import { button, fmtTime, h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { phrase, t } from "./preferences.ts";
@@ -390,10 +391,59 @@ const CODING_REASONS_FOR_OTHERS: Partial<Record<RunFailureKind, string>> = {
 	),
 };
 
-/** A coding turn whose run ChatGPT could not serve (its own overload or server error, 20260930560000). */
 const CODING_PROVIDER_OUTAGE = phrase(
 	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
 );
+
+const CLAUDE_CODING_PROVIDER_OUTAGE = phrase(
+	"Claude was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
+);
+
+const CLAUDE_CODING_REASONS: Partial<Record<RunFailureKind, string>> = {
+	rate_limited: phrase(
+		"Claude turned the session's request away because too many requests came at once. The login is fine. The workspace is kept; a follow-up continues it.",
+	),
+	sign_in_refused: phrase(
+		"Claude no longer accepts the sign-in of the login that pays for this session. Sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+	provider_refused: phrase(
+		"Claude refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+};
+
+const CLAUDE_CODING_REASONS_FOR_OTHERS: Partial<Record<RunFailureKind, string>> = {
+	sign_in_refused: phrase(
+		"Claude no longer accepts the sign-in of the login that pays for this session. The member whose login it is can sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+	provider_refused: phrase(
+		"Claude refused or could not answer the session's request. The member whose login pays for it can check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+};
+
+const CLAUDE_CODING_NOT_OPEN = phrase(
+	"Claude is not enabled for your account in this company. Ask an owner or admin to enable it, or choose another default model in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+);
+
+const CLAUDE_CODING_NOT_OPEN_FOR_OTHERS = phrase(
+	"Claude is not enabled for the session owner in this company. An owner or admin can enable it, or they can choose another default model in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+);
+
+function codingClaudeReason(code: string | undefined, mine: boolean): string | undefined {
+	switch (code) {
+		case "CODING_CLAUDE_SIGNED_OUT":
+			return (
+				(mine ? undefined : CLAUDE_CODING_REASONS_FOR_OTHERS.sign_in_refused) ??
+				CLAUDE_CODING_REASONS.sign_in_refused
+			);
+		case "CODING_CLAUDE_RATE_LIMITED":
+			return CODING_REASONS.usage_limit;
+		case "CODING_CLAUDE_LOGIN_UNAVAILABLE":
+			return (mine ? undefined : CODING_REASONS_FOR_OTHERS.login_unavailable) ?? CODING_REASONS.login_unavailable;
+		case "CODING_CLAUDE_NOT_OPEN":
+			return mine ? CLAUDE_CODING_NOT_OPEN : CLAUDE_CODING_NOT_OPEN_FOR_OTHERS;
+	}
+	return undefined;
+}
 
 /** A change to code kept in Qorpera that did not go in for its checks (own code storage, step 3): the executor's codes,
  * which the cloud keeps as the failed turn's code. The executor's own words name the check, its command and the end of
@@ -462,6 +512,7 @@ export interface CodingUsageLimit {
 	paidByChatgptPlan?: boolean;
 	/** The member reading it owns the session, so the plan (the login that pays) is theirs. */
 	mine?: boolean;
+	harness?: CodingHarness;
 }
 
 /** Why a coding session's turn failed, in the member's words, and that its
@@ -473,28 +524,24 @@ export interface CodingUsageLimit {
  * session whose workspace was refused for its files only that it could not start,
  * and a landing refused for them only that the change was not saved. */
 export function codingFailureReason(reason: string | undefined, limit: CodingUsageLimit = {}, code?: string): string {
+	const isClaude = limit.harness === "claude-code";
+	const mine = limit.mine === true;
 	if (limit.usageLimit === true)
-		return limit.paidByChatgptPlan === true && limit.mine === true
+		return limit.paidByChatgptPlan === true && mine
 			? `${planUsageLimitReason()} ${t("The workspace is kept; a follow-up continues it.")}`
 			: t(CODING_REASONS.usage_limit);
-	// The run failed with the model provider's outage (20260930560000): ChatGPT's, usually brief; the login is fine.
-	if (code === "provider_outage") return t(CODING_PROVIDER_OUTAGE);
-	// The change's checks failed or could not run (step 3): the code decides, before any word of the summary is read,
-	// since the summary holds the check's output. A summary that still ends with its code reads the same (the code read
-	// as 20260930721000's qorpera_coding_turn_failure reads it).
+	if (code === "provider_outage") return t(isClaude ? CLAUDE_CODING_PROVIDER_OUTAGE : CODING_PROVIDER_OUTAGE);
+	const claudeCode =
+		codingClaudeReason(code, mine) ??
+		codingClaudeReason(reason?.match(/\[code=(CODING_CLAUDE_[A-Z_]{1,40})\]\s*$/)?.[1], mine);
+	if (claudeCode) return t(claudeCode);
 	const checks =
 		codingChecksReason(code) ?? codingChecksReason(reason?.match(/\[code=(CODING_CHECKS_[A-Z_]{1,40})\]\s*$/)?.[1]);
 	if (checks) return t(checks);
-	// The session's workspace was refused for its files' names or a file's size (part N's codes), or a landing was
-	// (20260930743000's codes): the same way.
 	const names =
 		codingNamesReason(code) ??
 		codingNamesReason(reason?.match(/\[code=((?:CODE_HOST|CODING_LAND)_[A-Z0-9_]{1,40})\]\s*$/)?.[1]);
 	if (names) return t(names);
-	// Since 20260930560000 a failed run's summary is plain words and its code travels apart (the failed event's `code`,
-	// 20260930551000): the code alone decides, as it did inside the executor's summary, and a code no class names is a
-	// step refused on Qorpera's side, as the bridge's text said. Lower-case reasons (turn_failed, stopped, ...) name no
-	// code, and a summary that still carries its own code (from before 20260930560000) keeps it.
 	const byCode =
 		code !== undefined && /^[A-Z0-9_]{1,42}(?::[A-Z0-9_]{1,42})?$/.test(code) && !reason?.includes("[code=");
 	if (byCode) reason = ` [code=${code}]`;
@@ -503,7 +550,11 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 		return t(CODING_REASONS.no_submission);
 	const classified = classifyRunFailure(reason, reason === CODING_TURN_STOPPED ? "cancelled" : "failed");
 	const kind = byCode && classified === "other" ? "bridge" : classified;
-	return t((limit.mine === true ? undefined : CODING_REASONS_FOR_OTHERS[kind]) ?? CODING_REASONS[kind]);
+	if (isClaude) {
+		const claudeMessage = (mine ? undefined : CLAUDE_CODING_REASONS_FOR_OTHERS[kind]) ?? CLAUDE_CODING_REASONS[kind];
+		if (claudeMessage) return t(claudeMessage);
+	}
+	return t((mine ? undefined : CODING_REASONS_FOR_OTHERS[kind]) ?? CODING_REASONS[kind]);
 }
 
 /** Whether the run was interrupted rather than refused: Qorpera lost contact with

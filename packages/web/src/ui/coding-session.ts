@@ -25,6 +25,7 @@ import {
 	codingSessionTakesInput,
 	compareCodingSessions,
 } from "../cloud/coding-session.ts";
+import { modelName } from "../cloud/session-model.ts";
 import type { HostedStaffAgent, JsonValue } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
 import {
@@ -188,7 +189,7 @@ export function codingSessionStatus(
 				text: [
 					session.lastStep === NO_CHANGE_STEP
 						? t("Finishing")
-						: session.repository.host !== "qorpera"
+						: session.repository && session.repository.host !== "qorpera"
 							? t("Opening the pull request")
 							: session.lastStep === CHECKS_STEP
 								? t("Checking the change before saving it")
@@ -854,8 +855,9 @@ export class CodingSessionElement {
 		const introKey = JSON.stringify([
 			session.title,
 			session.harness,
-			session.repository.host,
-			session.repository.name,
+			session.workspaceKind,
+			session.repository?.host,
+			session.repository?.name,
 			session.branch,
 			session.model,
 		]);
@@ -1127,6 +1129,7 @@ export class CodingSessionElement {
 						usageLimit: flag(event.body, "usageLimit"),
 						paidByChatgptPlan: flag(event.body, "paidByChatgptPlan"),
 						mine: this.#options.viewerOwns(this.#session),
+						harness: this.#session.harness,
 					};
 					note(
 						h(
@@ -1271,9 +1274,18 @@ export class CodingSessionElement {
 	/** The top of the transcript: the harness, the task and where it works. */
 	#renderIntro(): HTMLElement {
 		const session = this.#session;
-		// The branch is a GitHub pull request's; for code kept in Qorpera it is the session's own, and says nothing here.
-		const branch = session.repository.host === "qorpera" ? undefined : shortBranch(session.branch);
-		const meta = [session.repository.name, branch, session.model].filter(Boolean) as string[];
+		const branch =
+			session.repository && session.repository.host !== "qorpera" ? shortBranch(session.branch) : undefined;
+		const workspace =
+			session.repository?.name ??
+			(session.workspaceKind === "surface_folder"
+				? t("Studio")
+				: session.workspaceKind === "surface_ops"
+					? t("Ops")
+					: undefined);
+		const meta = [workspace, branch, session.model ? modelName(session.model) : undefined].filter(
+			Boolean,
+		) as string[];
 		const mark = harnessBadge(session.harness);
 		mark.removeAttribute("title");
 		return h(
@@ -1286,7 +1298,7 @@ export class CodingSessionElement {
 				{ class: "coding-meta" },
 				...meta.flatMap((part, index) => [
 					index ? h("span", { "aria-hidden": "true" }, "·") : null,
-					h("span", { class: branch !== undefined && index === 1 ? "coding-mono" : undefined }, part),
+					h("span", { class: branch !== undefined && part === branch ? "coding-mono" : undefined }, part),
 				]),
 			),
 		);
@@ -1307,8 +1319,8 @@ export class CodingSessionElement {
 				: t("{count} artifacts", { count: session.artifacts.length })
 			: undefined;
 		const meta = [
-			`${session.repository.owner}/${session.repository.name}`,
-			`${shortBranch(session.branch)} → ${session.repository.baseBranch}`,
+			session.repository ? `${session.repository.owner}/${session.repository.name}` : undefined,
+			session.repository ? `${shortBranch(session.branch)} → ${session.repository.baseBranch}` : undefined,
 			files,
 			artifacts,
 		].filter(Boolean) as string[];

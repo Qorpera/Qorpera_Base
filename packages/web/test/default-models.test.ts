@@ -335,6 +335,9 @@ describe("DefaultModelsView", () => {
 		expect(view.el.textContent).toContain("Default models");
 		expect(view.el.textContent).toContain("Conversational");
 		expect(view.el.textContent).toContain("Coding & working");
+		expect(view.el.textContent).toContain(
+			"Default for background workers, coding sessions, Studio, and Ops. Routines keep using your ChatGPT login.",
+		);
 		expect(view.el.textContent).toContain("Voice");
 		expect(view.el.textContent).toContain("Image generation");
 

@@ -382,6 +382,25 @@ describe("the kernel's shapes", () => {
 		expect(read.events[0]).toMatchObject({ id: 3, kind: "needs_input", body: { needs: "Keep?" } });
 		expect(() => parseCodingSession({ ...wire, phase: "sleeping" })).toThrow();
 		expect(() => parseCodingSession({ ...wire, harness: "cursor" })).toThrow();
+		expect(() => parseCodingSession({ ...wire, workspaceKind: "invalid" })).toThrow();
+		expect(() => parseCodingSession({ ...wire, workspaceKind: "git_repo", repository: null })).toThrow();
+		const surfaceFolder = parseCodingSession({
+			...wire,
+			harness: "claude-code",
+			model: "claude-opus-5-5",
+			workspaceKind: "surface_folder",
+			repository: null,
+		});
+		expect(surfaceFolder.workspaceKind).toBe("surface_folder");
+		expect(surfaceFolder.repository).toBeUndefined();
+		const surfaceOps = parseCodingSession({
+			...wire,
+			workspaceKind: "surface_ops",
+			repository: null,
+		});
+		expect(surfaceOps.workspaceKind).toBe("surface_ops");
+		expect(surfaceOps.repository).toBeUndefined();
+		expect(parseCodingSession({ ...wire, repository: null }).repository).toBeUndefined();
 	});
 
 	it("reads whether the session's login can pay, the last turn's reason and the owner's logins", () => {
@@ -550,6 +569,30 @@ describe("the element in the thread", () => {
 		await settle();
 		expect(kept.element.el.querySelector(".coding-meta")?.textContent).toBe("shop·claude-sonnet-5");
 		expect(kept.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
+		const studio = mount(
+			codingSession({
+				harness: "claude-code",
+				model: "claude-opus-5-5",
+				workspaceKind: "surface_folder",
+				repository: undefined,
+			}),
+			{ events },
+		);
+		await settle();
+		expect(studio.element.el.querySelector(".coding-meta")?.textContent).toBe("Studio·Opus 5.5");
+		expect(studio.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
+		const ops = mount(
+			codingSession({
+				harness: "claude-code",
+				model: "claude-fable-5-2",
+				workspaceKind: "surface_ops",
+				repository: undefined,
+			}),
+			{ events },
+		);
+		await settle();
+		expect(ops.element.el.querySelector(".coding-meta")?.textContent).toBe("Ops·Fable 5.2");
+		expect(ops.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
 		// One turn for the harness, behind its mark: its steps, then what it said, a bubble a paragraph, then a step.
 		const turns = [...element.el.querySelectorAll<HTMLElement>(".coding-body .coding-turn")];
 		expect(turns.map((turn) => turn.className)).toEqual(["coding-turn coding-turn-harness"]);
@@ -1366,6 +1409,22 @@ describe("the element in the thread", () => {
 			"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.",
 			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
 			"Qorpera lost contact with this session. The workspace is kept; a follow-up starts it again.",
+		]);
+
+		const claudeFailed = mount(
+			codingSession({ harness: "claude-code", model: "claude-opus-5-5", phase: "failed", workerState: "failed" }),
+			{
+				events: [
+					event(1, "failed", { code: "CODING_CLAUDE_SIGNED_OUT", summary: "Signed out" }, "executor"),
+					event(2, "failed", { code: "provider_outage", summary: "Overloaded" }, "executor"),
+				],
+			},
+		);
+		await settle();
+		const claudeNotes = [...claudeFailed.element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+		expect(claudeNotes).toEqual([
+			"Claude no longer accepts the sign-in of the login that pays for this session. Sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+			"Claude was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
 		]);
 	});
 

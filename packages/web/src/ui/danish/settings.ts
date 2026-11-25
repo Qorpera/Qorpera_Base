@@ -351,8 +351,8 @@ export const SETTINGS: Record<string, string> = {
 	"Coding & working": "Kodning og arbejde",
 	"Coding and working model": "Model til kodning og arbejde",
 	"Coding and working effort": "Indsats til kodning og arbejde",
-	"Default for background workers and coding sessions. Routines keep using your ChatGPT login.":
-		"Standard til baggrundsmedarbejdere og kodesessioner. Rutiner bruger fortsat dit ChatGPT-login.",
+	"Default for background workers, coding sessions, Studio, and Ops. Routines keep using your ChatGPT login.":
+		"Standard til baggrundsmedarbejdere, kodesessioner, Studio og Ops. Rutiner bruger fortsat dit ChatGPT-login.",
 	"Voice model": "Stemmemodel",
 	"Voice profile": "Stemmeprofil",
 	"Default model and voice profile for narrated Studio breakdowns.":
