@@ -49,6 +49,7 @@ import {
 	type CloudToolContext,
 	CloudToolRefusal,
 	cloudToolJsonText,
+	relayControlRefusal,
 } from "./cloud-native-tool-boundary.ts";
 import { mergeFolderPatchOps, type SurfaceSessionOpenChange } from "./cloud-surface-preview-overlay.ts";
 
@@ -1043,7 +1044,12 @@ export function createCodingRecordChangeTool(
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as CodingRecordChangeRequest;
-			const result = await port.recordChange(sessionId, parsed, context);
+			let result: SurfaceChangeStagedResult;
+			try {
+				result = await port.recordChange(sessionId, parsed, context);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
 			if (parsed.changeId) {
 				updatedInTurn.add(parsed.changeId);
 			}
@@ -1807,7 +1813,12 @@ export function createStageSurfacePatchTool(
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as StageSurfacePatchRequest & { readonly layoutUnchecked?: boolean };
-			const result = await port.stageSurfacePatch(sessionId, parsed, context);
+			let result: SurfaceChangeStagedResult;
+			try {
+				result = await port.stageSurfacePatch(sessionId, parsed, context);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
 			const targetOpen = parsed.changeId ? openById.get(parsed.changeId) : undefined;
 			if (parsed.changeId) {
 				updatedInTurn.add(parsed.changeId);
@@ -1967,7 +1978,12 @@ export function createStageSurfaceOpsActionTool(
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as StageSurfaceOpsActionRequest;
-			const result = await port.stageSurfaceOpsAction(sessionId, parsed, context);
+			let result: SurfaceChangeStagedResult;
+			try {
+				result = await port.stageSurfaceOpsAction(sessionId, parsed, context);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
 			if (parsed.changeId) {
 				updatedInTurn.add(parsed.changeId);
 			}

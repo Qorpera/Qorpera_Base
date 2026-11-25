@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { cloudActionEffect, cloudActionReviewMandate } from "../src/cloud-action-review.ts";
 import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
+import { CloudControlRpcRefused } from "../src/cloud-control-errors.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
 import {
 	cloudCompanyRuntimeInstructions,
@@ -36,7 +37,12 @@ import {
 	createStageSurfacePatchTool,
 	createStartSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
-import { buildSurfaceTurnBrief, SURFACE_STAGED_CODING_INSTRUCTIONS } from "../src/cloud-surface-turn-context.ts";
+import {
+	buildSurfaceTurnBrief,
+	parseSurfaceTurnOpenChanges,
+	parseSurfaceTurnResolvedChanges,
+	SURFACE_STAGED_CODING_INSTRUCTIONS,
+} from "../src/cloud-surface-turn-context.ts";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -4091,5 +4097,232 @@ describe("cloud surface runtime tools", () => {
 			openChanges: [],
 		});
 		expect(syncedBrief).not.toContain("## Session Branch Sync");
+	});
+
+	it("surfaces discarded changes across code_repo and folder turns and relays discarded-parent refusals", async () => {
+		const mainSha = "1".repeat(40);
+		const c1Head = "2".repeat(40);
+		const c2Head = "3".repeat(40);
+		const c1Id = randomUUID();
+		const c2Id = randomUUID();
+
+		const parsedOpen = parseSurfaceTurnOpenChanges([
+			{
+				id: c1Id,
+				seq: 1,
+				title: "Tre retninger for Thetabands hjemmeside",
+				summary: "Three calm homepage directions.",
+				status: "staged",
+				parentSha: mainSha,
+				headSha: c1Head,
+				affectedPaths: ["index.html", "styles.css"],
+				optionGroupKey: null,
+				optionGroupTitle: null,
+			},
+		]);
+		const parsedResolved = parseSurfaceTurnResolvedChanges([
+			{
+				id: c2Id,
+				seq: 2,
+				title: "Superpower-inspired sketches",
+				summary: "Three bold dark-hero variations.",
+				status: "discarded",
+				parentSha: c1Head,
+				headSha: c2Head,
+				affectedPaths: ["index.html", "hero.css"],
+				optionGroupKey: null,
+				optionGroupTitle: null,
+				discardedByExploration: false,
+				resolvedAt: "2026-11-25T03:30:00Z",
+			},
+			{
+				id: randomUUID(),
+				title: "Ignored status",
+				status: "staged",
+				parentSha: null,
+				headSha: null,
+				optionGroupKey: null,
+				optionGroupTitle: null,
+			},
+		]);
+		expect(parsedOpen).toHaveLength(1);
+		expect(parsedOpen[0]?.seq).toBe(1);
+		expect(parsedOpen[0]?.affectedPaths).toEqual(["index.html", "styles.css"]);
+		expect(parsedResolved).toHaveLength(1);
+		expect(parsedResolved[0]?.status).toBe("discarded");
+
+		const briefAfterTipDiscard = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: parsedOpen,
+			resolvedChanges: parsedResolved,
+		});
+		expect(briefAfterTipDiscard).toContain("## Active Staged Changes on This Session");
+		expect(briefAfterTipDiscard).toContain(`#1 \`${c1Id}\` — Tre retninger for Thetabands hjemmeside`);
+		expect(briefAfterTipDiscard).toContain("IMPORTANT — Worktree Out of Sync");
+		expect(briefAfterTipDiscard).toContain('"Superpower-inspired sketches"');
+		expect(briefAfterTipDiscard).toContain(`git read-tree --reset -u ${c1Head}`);
+		expect(briefAfterTipDiscard).toContain("(or its `changeId` to update it in place)");
+		expect(briefAfterTipDiscard).toContain("## Resolved Changes on This Session");
+		expect(briefAfterTipDiscard).toContain("#2 Superpower-inspired sketches — discarded by member");
+		expect(briefAfterTipDiscard).toContain("removed by the member and are no longer staged or shown in Preview");
+
+		const briefAfterOptionDiscard = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: [
+				{
+					id: c1Id,
+					seq: 1,
+					title: "Editorial direction",
+					parentSha: mainSha,
+					headSha: c1Head,
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Homepage direction",
+				},
+			],
+			resolvedChanges: [
+				{
+					id: c2Id,
+					seq: 2,
+					title: "Bold direction",
+					status: "discarded",
+					parentSha: mainSha,
+					headSha: c2Head,
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Homepage direction",
+					discardedByExploration: false,
+				},
+			],
+		});
+		expect(briefAfterOptionDiscard).toContain("IMPORTANT — Worktree Out of Sync");
+		expect(briefAfterOptionDiscard).toContain(`git read-tree --reset -u ${mainSha}`);
+		expect(briefAfterOptionDiscard).toContain(`optionGroup: "homepage-direction"`);
+		expect(briefAfterOptionDiscard).toContain(`parentSha: "${mainSha}"`);
+		expect(briefAfterOptionDiscard).not.toContain(`git read-tree --reset -u ${c1Head}`);
+
+		const briefAfterBaseDiscard = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: [
+				{
+					id: c2Id,
+					seq: 2,
+					title: "Superpower-inspired sketches",
+					parentSha: c1Head,
+					headSha: c2Head,
+					optionGroupKey: null,
+					optionGroupTitle: null,
+				},
+			],
+			resolvedChanges: [
+				{
+					id: c1Id,
+					seq: 1,
+					title: "Tre retninger for Thetabands hjemmeside",
+					status: "discarded",
+					parentSha: mainSha,
+					headSha: c1Head,
+					optionGroupKey: null,
+					optionGroupTitle: null,
+					discardedByExploration: false,
+				},
+			],
+		});
+		expect(briefAfterBaseDiscard).toContain("was originally branched from discarded change");
+		expect(briefAfterBaseDiscard).toContain("Tre retninger for Thetabands hjemmeside");
+
+		const briefAllDiscarded = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: [],
+			resolvedChanges: parsedResolved,
+		});
+		expect(briefAllDiscarded).toContain("## Resolved Changes on This Session");
+		expect(briefAllDiscarded).toContain("## Session Branch Sync");
+		expect(briefAllDiscarded).toContain("prior changes on this session were discarded by the member");
+		expect(briefAllDiscarded).toContain(`git reset --hard ${mainSha}`);
+
+		const folderBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "identity",
+			surfaceTitle: "Identity",
+			sourceKind: "folder",
+			folderRoot: "identity",
+			briefMarkdown: "Brand identity.",
+			openChanges: [
+				{
+					id: c1Id,
+					seq: 1,
+					title: "Updated brief",
+					summary: "Sharper positioning.",
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["brief.md"],
+					optionGroupKey: null,
+					optionGroupTitle: null,
+				},
+			],
+			resolvedChanges: [
+				{
+					id: c2Id,
+					seq: 2,
+					title: "Experimental voice",
+					summary: "Playful draft.",
+					status: "discarded",
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["voice.md"],
+					optionGroupKey: null,
+					optionGroupTitle: null,
+					discardedByExploration: false,
+				},
+			],
+		});
+		expect(folderBrief).toContain("## Active Staged Changes on This Session");
+		expect(folderBrief).toContain(`#1 \`${c1Id}\` — Updated brief`);
+		expect(folderBrief).toContain("## Resolved Changes on This Session");
+		expect(folderBrief).toContain("#2 Experimental voice — discarded by member");
+		expect(folderBrief).not.toContain("git read-tree");
+
+		const refusalTool = createCodingRecordChangeTool(randomUUID(), {
+			recordChange: async () => {
+				throw new CloudControlRpcRefused(
+					"22023",
+					`parentSha ${c2Head} belongs to discarded change "Superpower-inspired sketches".`,
+				);
+			},
+		});
+		await expect(
+			refusalTool.execute(
+				refusalTool.parseArguments({
+					title: "Hero tweak",
+					summary: "Adjusted spacing.",
+					parentSha: c2Head,
+					commitSha: "4".repeat(40),
+				}),
+				toolContext(),
+			),
+		).rejects.toThrow(CloudToolRefusal);
 	});
 });

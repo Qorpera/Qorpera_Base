@@ -77,6 +77,7 @@ import {
 	type SurfaceIdentityContext,
 	type SurfaceSharedAssetsContext,
 	type SurfaceTurnOpenChange,
+	type SurfaceTurnResolvedChange,
 } from "./cloud-surface-turn-context.ts";
 
 const MAX_IDENTITY_BRIEF_BYTES = 16_384;
@@ -150,6 +151,7 @@ export interface SurfaceSessionTurnInput {
 	readonly mainSha?: string | null;
 	readonly branchHeadSha?: string | null;
 	readonly openChanges?: readonly SurfaceTurnOpenChange[] | null;
+	readonly resolvedChanges?: readonly SurfaceTurnResolvedChange[] | null;
 	readonly leaseToken?: string | null;
 	readonly voiceModel?: string | null;
 	readonly voiceName?: string | null;
@@ -1108,6 +1110,7 @@ export async function runSurfaceSessionTurn(
 			mainSha: input.mainSha ?? null,
 			branchHeadSha: input.branchHeadSha ?? null,
 			openChanges: input.openChanges ?? null,
+			resolvedChanges: input.resolvedChanges ?? null,
 		});
 
 		let outcome: SurfaceSessionTurnExecutionOutcome;
@@ -1330,6 +1333,7 @@ export async function runSurfaceSessionTurn(
 				mainSha: input.mainSha ?? null,
 				branchHeadSha: input.branchHeadSha ?? null,
 				openChanges: input.openChanges ?? null,
+				resolvedChanges: input.resolvedChanges ?? null,
 				recordChange: recordChange.bind(ports.surfaceTools),
 			};
 			const codeRequest: SurfaceCodeRepoTurnRequest = {

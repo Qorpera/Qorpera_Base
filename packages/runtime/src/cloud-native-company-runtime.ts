@@ -245,6 +245,7 @@ import {
 import {
 	parseSurfaceConflictDetails,
 	parseSurfaceTurnOpenChanges,
+	parseSurfaceTurnResolvedChanges,
 	type SurfaceCodingTurnBinding,
 } from "./cloud-surface-turn-context.ts";
 import {
@@ -2044,6 +2045,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
+		const resolvedChanges = parseSurfaceTurnResolvedChanges(sessionTurnRaw.resolvedChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
 		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
 		const replyChangeId =
@@ -2119,6 +2121,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			mainSha,
 			branchHeadSha,
 			openChanges,
+			resolvedChanges,
 			recordChange: surfaceTools.recordChange,
 			memberImages,
 			viewAttachment: (image, readSignal) => readSurfaceMemberImage(folderClient, image, readSignal),
@@ -2205,6 +2208,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
+		const resolvedChanges = parseSurfaceTurnResolvedChanges(sessionTurnRaw.resolvedChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
 		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
 		const replyChangeId =
@@ -2285,6 +2289,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(mainSha ? { mainSha } : {}),
 			...(branchHeadSha ? { branchHeadSha } : {}),
 			...(openChanges.length > 0 ? { openChanges } : {}),
+			...(resolvedChanges.length > 0 ? { resolvedChanges } : {}),
 			...(voiceModel ? { voiceModel } : {}),
 			...(voiceName ? { voiceName } : {}),
 			...(openScenesOps.length > 0 ? { openScenesOps } : {}),
