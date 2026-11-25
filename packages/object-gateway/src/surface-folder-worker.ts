@@ -143,6 +143,27 @@ interface FolderEntryMeta {
 	readonly fileRef: PlatformFileReference | null;
 }
 
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function jsonPatchOverlapsChange(prev: unknown, fresh: unknown, patch: unknown): boolean {
+	if (!isPlainJsonObject(patch)) {
+		return JSON.stringify(prev) !== JSON.stringify(fresh);
+	}
+	if (!isPlainJsonObject(prev) || !isPlainJsonObject(fresh)) {
+		return JSON.stringify(prev) !== JSON.stringify(fresh);
+	}
+	for (const [key, patchValue] of Object.entries(patch)) {
+		const hadPrev = Object.hasOwn(prev, key);
+		const hadFresh = Object.hasOwn(fresh, key);
+		if (!hadPrev && !hadFresh) continue;
+		if (hadPrev !== hadFresh) return true;
+		if (jsonPatchOverlapsChange(prev[key], fresh[key], patchValue)) return true;
+	}
+	return false;
+}
+
 function knownExistingDirs(entries: ReadonlyMap<string, FolderFileState>): Set<string> {
 	const dirs = new Set<string>();
 	for (const [path, state] of entries) {
@@ -1049,155 +1070,273 @@ export class SurfaceFolderWorker {
 			return;
 		}
 
-		const working = new Map<string, FolderValue>();
-		const filesBefore: Record<string, FolderValue> = {};
-		for (const [path, state] of currentByPath) {
-			if (state.isDirectory) {
-				throw new Error(`Cannot patch folder path as a file: ${path}`);
+		const applyResolvedOps = (
+			liveByPath: ReadonlyMap<string, FolderFileState>,
+		):
+			| {
+					readonly ok: false;
+					readonly conflictPaths: string[];
+					readonly errorDetail: string;
+			  }
+			| {
+					readonly ok: true;
+					readonly working: Map<string, FolderValue>;
+					readonly filesBefore: Record<string, FolderValue>;
+			  } => {
+			const working = new Map<string, FolderValue>();
+			const filesBefore: Record<string, FolderValue> = {};
+			for (const [path, state] of liveByPath) {
+				if (state.isDirectory) {
+					throw new Error(`Cannot patch folder path as a file: ${path}`);
+				}
+				working.set(path, stateValue(state));
+				filesBefore[path] = stateValue(state);
 			}
-			working.set(path, stateValue(state));
-			filesBefore[path] = stateValue(state);
-		}
 
-		const storedMergePaths: string[] = [];
-		const textConflictPaths: string[] = [];
-		for (const { path, rawPath, op, baseFiles } of resolvedOps) {
-			if (op.op === "write_text") {
-				const baseEntry = lookupBaseFileEntry(baseFiles, rawPath, path);
-				const currentVal = working.get(path) ?? null;
-				if (baseEntry.hasBase && (currentVal === null || typeof currentVal === "string")) {
-					if (currentVal === baseEntry.content) {
-						working.set(path, op.content);
-					} else if (baseEntry.content === null) {
-						if (currentVal !== op.content) {
+			const storedMergePaths: string[] = [];
+			const textConflictPaths: string[] = [];
+			for (const { path, rawPath, op, baseFiles } of resolvedOps) {
+				if (op.op === "write_text") {
+					const baseEntry = lookupBaseFileEntry(baseFiles, rawPath, path);
+					const currentVal = working.get(path) ?? null;
+					if (baseEntry.hasBase && (currentVal === null || typeof currentVal === "string")) {
+						if (currentVal === baseEntry.content) {
+							working.set(path, op.content);
+						} else if (baseEntry.content === null) {
+							if (currentVal !== op.content) {
+								textConflictPaths.push(path);
+							}
+						} else if (currentVal === null) {
 							textConflictPaths.push(path);
+						} else {
+							const merged = mergeStudioTextContent(path, baseEntry.content, currentVal, op.content);
+							if (merged.ok) {
+								working.set(path, merged.content);
+							} else {
+								textConflictPaths.push(path);
+							}
 						}
-					} else if (currentVal === null) {
+					} else {
+						working.set(path, op.content);
+					}
+				} else if (op.op === "delete") {
+					const baseEntry = lookupBaseFileEntry(baseFiles, rawPath, path);
+					const currentVal = working.get(path) ?? null;
+					if (baseEntry.hasBase && currentVal !== null && currentVal !== baseEntry.content) {
 						textConflictPaths.push(path);
 					} else {
-						const merged = mergeStudioTextContent(path, baseEntry.content, currentVal, op.content);
-						if (merged.ok) {
-							working.set(path, merged.content);
-						} else {
-							textConflictPaths.push(path);
+						working.set(path, null);
+					}
+				} else if (op.op === "write_file") {
+					working.set(path, { file: { ...op.file, executable: false } });
+				} else if (op.op === "merge_json") {
+					const prior = working.get(path);
+					if (prior !== null && typeof prior === "object") {
+						storedMergePaths.push(path);
+						continue;
+					}
+					let parsed: unknown = {};
+					if (prior !== null && prior !== undefined && prior.trim().length > 0) {
+						try {
+							parsed = JSON.parse(prior);
+						} catch {
+							throw new Error(`Existing file is not valid JSON for merge_json: ${path}`);
 						}
 					}
-				} else {
-					working.set(path, op.content);
+					const merged = deepMergeJson(parsed, op.patch);
+					working.set(path, `${JSON.stringify(merged, null, 2)}\n`);
 				}
-			} else if (op.op === "delete") {
-				const baseEntry = lookupBaseFileEntry(baseFiles, rawPath, path);
-				const currentVal = working.get(path) ?? null;
-				if (baseEntry.hasBase && currentVal !== null && currentVal !== baseEntry.content) {
-					textConflictPaths.push(path);
-				} else {
-					working.set(path, null);
-				}
-			} else if (op.op === "write_file") {
-				working.set(path, { file: { ...op.file, executable: false } });
-			} else if (op.op === "merge_json") {
-				const prior = working.get(path);
-				if (prior !== null && typeof prior === "object") {
-					storedMergePaths.push(path);
-					continue;
-				}
-				let parsed: unknown = {};
-				if (prior !== null && prior !== undefined && prior.trim().length > 0) {
-					try {
-						parsed = JSON.parse(prior);
-					} catch {
-						throw new Error(`Existing file is not valid JSON for merge_json: ${path}`);
-					}
-				}
-				const merged = deepMergeJson(parsed, op.patch);
-				working.set(path, `${JSON.stringify(merged, null, 2)}\n`);
 			}
-		}
-		if (storedMergePaths.length > 0 || textConflictPaths.length > 0) {
-			const conflictPaths = [...new Set([...storedMergePaths, ...textConflictPaths])];
-			await this.#completeMerge(
-				job,
-				{
-					status: "conflicted",
+			if (storedMergePaths.length > 0 || textConflictPaths.length > 0) {
+				const conflictPaths = [...new Set([...storedMergePaths, ...textConflictPaths])];
+				return {
+					ok: false,
 					conflictPaths,
 					errorDetail:
 						storedMergePaths.length > 0
 							? `merge_json cannot change a stored file: ${conflictPaths.join(", ")}`
 							: `Overlapping edits require reconciliation on: ${conflictPaths.join(", ")}`,
-				},
-				signal,
-			);
-			return;
-		}
+				};
+			}
 
-		if (touchedPaths.has(IDENTITY_TOKENS_JSON_PATH)) {
-			const nextTokens = working.get(IDENTITY_TOKENS_JSON_PATH);
-			if (typeof nextTokens === "string") {
-				const compiledCss = compileIdentityTokensCss(nextTokens);
-				if (compiledCss.trim().length > 0) {
-					working.set(IDENTITY_TOKENS_CSS_PATH, compiledCss);
+			if (touchedPaths.has(IDENTITY_TOKENS_JSON_PATH)) {
+				const nextTokens = working.get(IDENTITY_TOKENS_JSON_PATH);
+				if (typeof nextTokens === "string") {
+					const compiledCss = compileIdentityTokensCss(nextTokens);
+					if (compiledCss.trim().length > 0) {
+						working.set(IDENTITY_TOKENS_CSS_PATH, compiledCss);
+					}
 				}
 			}
-		}
+			return { ok: true, working, filesBefore };
+		};
 
-		const newStoredFiles: { readonly path: string; readonly file: PlatformFileReference }[] = [];
-		for (const [path, value] of working) {
-			if (value !== null && typeof value === "object") newStoredFiles.push({ path, file: value.file });
-		}
-		const storedProblem = await this.#storedFilesProblem(environmentId, newStoredFiles, signal);
-		if (storedProblem) {
-			await this.#completeMerge(job, { status: "failed", errorDetail: storedProblem }, signal);
-			return;
-		}
+		const canRetryChangedPaths = (
+			prevByPath: ReadonlyMap<string, FolderFileState>,
+			freshByPath: ReadonlyMap<string, FolderFileState>,
+		): boolean => {
+			for (const path of orderedTouchedPaths) {
+				const prev = prevByPath.get(path);
+				const fresh = freshByPath.get(path);
+				if (!prev || !fresh || fresh.isDirectory) return false;
+				const prevVal = stateValue(prev);
+				const freshVal = stateValue(fresh);
+				if (valueDigest(prevVal) === valueDigest(freshVal)) continue;
+				const opsForPath = resolvedOps.filter((entry) => entry.path === path);
+				if (opsForPath.length === 0) {
+					if (path === IDENTITY_TOKENS_CSS_PATH) continue;
+					return false;
+				}
+				for (const entry of opsForPath) {
+					if (entry.op.op === "write_text") {
+						if (!lookupBaseFileEntry(entry.baseFiles, entry.rawPath, path).hasBase) return false;
+						continue;
+					}
+					if (entry.op.op === "merge_json") {
+						if (typeof prevVal !== "string" && prevVal !== null) return false;
+						if (typeof freshVal !== "string" && freshVal !== null) return false;
+						let prevObj: unknown = {};
+						let freshObj: unknown = {};
+						try {
+							if (prevVal !== null && prevVal.trim().length > 0) prevObj = JSON.parse(prevVal);
+							if (freshVal !== null && freshVal.trim().length > 0) freshObj = JSON.parse(freshVal);
+						} catch {
+							return false;
+						}
+						if (jsonPatchOverlapsChange(prevObj, freshObj, entry.op.patch)) return false;
+						continue;
+					}
+					return false;
+				}
+			}
+			return true;
+		};
 
-		const { units, unitPaths } = await this.#planUnits(environmentId, job.profileId, working, currentByPath, signal);
+		let activeByPath: Map<string, FolderFileState> = currentByPath;
+		let working: Map<string, FolderValue>;
+		let filesBefore: Record<string, FolderValue>;
+		let afterContentSha256: Record<string, string | null>;
+		let commitResult:
+			| { readonly status: "saved"; readonly versionsAfter: Record<string, string | null> }
+			| {
+					readonly status: "conflict";
+					readonly conflictPaths: string[];
+					readonly savedPaths: string[];
+					readonly failureDetail: string | null;
+			  }
+			| { readonly status: "failed"; readonly errorDetail: string; readonly savedPaths: string[] };
 
-		if (units.length === 0) {
-			await this.#completeMerge(job, { status: "landed", preMergeSnapshot: null }, signal);
-			return;
-		}
+		for (let casAttempt = 0; ; casAttempt += 1) {
+			const applied = applyResolvedOps(activeByPath);
+			if (!applied.ok) {
+				await this.#completeMerge(
+					job,
+					{
+						status: "conflicted",
+						conflictPaths: applied.conflictPaths,
+						errorDetail: applied.errorDetail,
+					},
+					signal,
+				);
+				return;
+			}
+			working = applied.working;
+			filesBefore = applied.filesBefore;
 
-		const afterContentSha256: Record<string, string | null> = {};
-		for (const [path, value] of working) {
-			afterContentSha256[path] = valueDigest(value);
-		}
+			if (casAttempt === 0) {
+				const newStoredFiles: { readonly path: string; readonly file: PlatformFileReference }[] = [];
+				for (const [path, value] of working) {
+					if (value !== null && typeof value === "object") newStoredFiles.push({ path, file: value.file });
+				}
+				const storedProblem = await this.#storedFilesProblem(environmentId, newStoredFiles, signal);
+				if (storedProblem) {
+					await this.#completeMerge(job, { status: "failed", errorDetail: storedProblem }, signal);
+					return;
+				}
+			}
 
-		// WHY: Persist filesBefore durably before qorpera_folder_commit so crash retries never capture post-merge contents as filesBefore.
-		try {
-			await retryCommittedRpc(
-				(attemptSignal) =>
-					this.#options.authority.publisher(
-						"qorpera_surface_save_folder_snapshot",
-						{
-							p_profile_id: job.profileId,
-							p_surface_id: job.surfaceId,
-							p_snapshot_id: snapshotId,
-							p_folder_root: folderRoot,
-							p_change_ids: changeIds,
-							p_files_before: filesBefore,
-							p_versions_after: null,
-							p_after_content_sha256: afterContentSha256,
-						},
-						attemptSignal,
-					),
+			const { units, unitPaths } = await this.#planUnits(
+				environmentId,
+				job.profileId,
+				working,
+				activeByPath,
 				signal,
-				this.#completionRetryDelaysMs,
 			);
-		} catch (error) {
-			markPreserveRetryable();
-			throw error;
-		}
 
-		// WHY: Refuse to start qorpera_folder_commit if the job deadline already fired, then decouple the in-flight commit and operation-key replays from jobSignal so an abort never marks a committed write failed.
-		signal.throwIfAborted();
-		const commitResult = await this.#commitUnits(
-			environmentId,
-			`surface-merge:${job.jobId}`,
-			units,
-			unitPaths,
-			shutdownSignal,
-			markCommitted,
-		);
+			if (units.length === 0) {
+				await this.#completeMerge(job, { status: "landed", preMergeSnapshot: null }, signal);
+				return;
+			}
+
+			afterContentSha256 = {};
+			for (const [path, value] of working) {
+				afterContentSha256[path] = valueDigest(value);
+			}
+
+			// WHY: Persist filesBefore durably before qorpera_folder_commit so crash retries never capture post-merge contents as filesBefore.
+			try {
+				await retryCommittedRpc(
+					(attemptSignal) =>
+						this.#options.authority.publisher(
+							"qorpera_surface_save_folder_snapshot",
+							{
+								p_profile_id: job.profileId,
+								p_surface_id: job.surfaceId,
+								p_snapshot_id: snapshotId,
+								p_folder_root: folderRoot,
+								p_change_ids: changeIds,
+								p_files_before: filesBefore,
+								p_versions_after: null,
+								p_after_content_sha256: afterContentSha256,
+							},
+							attemptSignal,
+						),
+					signal,
+					this.#completionRetryDelaysMs,
+				);
+			} catch (error) {
+				markPreserveRetryable();
+				throw error;
+			}
+
+			// WHY: Refuse to start qorpera_folder_commit if the job deadline already fired, then decouple the in-flight commit and operation-key replays from jobSignal so an abort never marks a committed write failed.
+			signal.throwIfAborted();
+			const operationKey =
+				casAttempt === 0 ? `surface-merge:${job.jobId}` : `surface-merge:${job.jobId}:r${casAttempt}`;
+			commitResult = await this.#commitUnits(
+				environmentId,
+				operationKey,
+				units,
+				unitPaths,
+				shutdownSignal,
+				markCommitted,
+			);
+			// WHY: On a benign CAS race with zero saved units, re-read and 3-way merge once before escalating to AI reconciliation.
+			if (
+				casAttempt === 0 &&
+				commitResult.status === "conflict" &&
+				commitResult.savedPaths.length === 0 &&
+				commitResult.failureDetail === null &&
+				!signal.aborted &&
+				!shutdownSignal?.aborted
+			) {
+				const freshStates = await mapBounded(
+					orderedTouchedPaths,
+					PLATFORM_STAGE_CONCURRENCY,
+					(path, _idx, readSignal) => this.#readFolderEntry(environmentId, path, readSignal),
+					signal,
+				);
+				const freshByPath = new Map<string, FolderFileState>();
+				for (let i = 0; i < orderedTouchedPaths.length; i += 1) {
+					freshByPath.set(orderedTouchedPaths[i] as string, freshStates[i] as FolderFileState);
+				}
+				if (canRetryChangedPaths(activeByPath, freshByPath)) {
+					activeByPath = freshByPath;
+					continue;
+				}
+			}
+			break;
+		}
 		if (commitResult.status === "conflict") {
 			await withAbortScopes(
 				shutdownSignal ? [shutdownSignal] : [],

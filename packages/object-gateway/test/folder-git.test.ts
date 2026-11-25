@@ -1130,4 +1130,22 @@ describe("the lock protocol in the folder service", () => {
 		await service.settled();
 		expect(await file(first)).toMatchObject({ version: live?.version, mtimeMs: Date.parse(live?.updatedAt ?? "") });
 	});
+
+	it("nudges sibling views of the same environment immediately on settle and git publish without waiting for poll", async () => {
+		const { core, service, open } = await repo();
+		const first = await open("first");
+		const second = await open("second");
+
+		await write(first, "code/acme/app/fresh.txt", "settled-now\n");
+		await first.publish();
+		await service.settled();
+		const fresh = (await second.list("code/acme/app", undefined)).entries.find((e) => e.name === "fresh.txt");
+		expect(fresh?.version).toBe(core.entries.get("code/acme/app/fresh.txt")?.version);
+
+		await write(first, `${MAIN}.lock`, "9999\n", true);
+		await first.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false });
+		await service.settled();
+		const mainEntry = (await second.list(`${R}/refs/heads`, undefined)).entries.find((e) => e.name === "main");
+		expect(mainEntry?.version).toBe(core.entries.get(MAIN)?.version);
+	});
 });

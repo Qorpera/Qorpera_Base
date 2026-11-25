@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
+	CODING_CHECK_CACHES,
 	CODING_GUEST,
 	CODING_GUEST_HELPER_MAX_BYTES,
 	CODING_PACKAGE_CACHE_ENVIRONMENT,
@@ -9475,6 +9476,39 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(builds[0]?.environment.QORPERA_CHECK_CWD).toBe("web");
 			expect(builds[0]?.environment.SHOP_KEY).toBeUndefined();
 			expect(Object.values(builds[0]?.environment ?? {})).not.toContain("secret-shop-333333");
+			const copyRun = f.ran().find((run) => run.environment.QORPERA_CHECKS_COMMIT === COMMIT);
+			expect(copyRun?.environment.QORPERA_CHECKS_BLESSED_CACHES_BRANCH).toBe(f.claim.repository.baseBranch);
+			expect(copyRun?.environment.QORPERA_CHECKS_CACHE_ROOT).toContain(CODING_CHECK_CACHES.root);
+			expect(copyRun?.environment.QORPERA_CHECKS_CACHES).toBeUndefined();
+			expect(f.folderExecStream).not.toHaveBeenCalled();
+		});
+
+		it("never saves shared check caches even when buildPreview succeeds", async () => {
+			const f = await checksFixture();
+			const builtTree = "e".repeat(40);
+			f.ending((run) => {
+				if (run.environment.QORPERA_SITE_FOLDER) {
+					return { code: 0, printed: `tree ${builtTree}\nfiles 1\nbytes 12\n` };
+				}
+				return { code: 0 };
+			});
+			const result = await f.host.buildPreview(
+				f.claim,
+				{
+					buildId: randomUUID(),
+					commitSha: COMMIT,
+					treeSha: "d".repeat(40),
+					recipe: { run: "npm run build", cwd: ".", folder: "dist", timeoutSeconds: 120 },
+					attempt: 1,
+				},
+				f.signal,
+			);
+			expect(result).toEqual({ outcome: "built", builtTreeSha: builtTree });
+			const copyRun = f.ran().find((run) => run.environment.QORPERA_CHECKS_COMMIT === COMMIT);
+			expect(copyRun?.environment.QORPERA_CHECKS_BLESSED_CACHES_BRANCH).toBe(f.claim.repository.baseBranch);
+			expect(copyRun?.environment.QORPERA_CHECKS_CACHE_ROOT).toContain(CODING_CHECK_CACHES.root);
+			expect(copyRun?.environment.QORPERA_CHECKS_CACHES).toBeUndefined();
+			expect(f.folderExecStream).not.toHaveBeenCalled();
 		});
 
 		it("applies incremental path filters, runs downstream checks whose needs were skipped, and bypasses when checks file changed", async () => {

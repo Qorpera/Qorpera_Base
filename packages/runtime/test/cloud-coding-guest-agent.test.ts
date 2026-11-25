@@ -29,6 +29,7 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	ageAndTrimCodingPackageCaches,
 	ageCodingPackageTrees,
 	type CodingGuestAgentPorts,
 	codingPackageCachesTmpfiles,
@@ -83,8 +84,10 @@ const LINES = Array.from({ length: 10 }, (_, i) => `line ${String(i + 1).padStar
 const EXIT_0 = JSON.stringify({ code: 0, signal: null });
 
 const roots: string[] = [];
+const activeSweeps: Promise<void>[] = [];
 afterEach(async () => {
 	vi.restoreAllMocks();
+	await Promise.allSettled(activeSweeps.splice(0));
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -133,6 +136,7 @@ async function machine() {
 	const passwd = new Map<number, string>();
 	const groups = new Map<number, string>();
 	const relays: (() => Promise<void>)[] = [];
+	const sweeps: Promise<void>[] = [];
 	const state: MachineState = {
 		boot: randomUUID(),
 		uptimeMs: 600000,
@@ -295,6 +299,11 @@ async function machine() {
 		chown: async (path, uid, gid) => {
 			chowns.push([path, uid, gid]);
 		},
+		sweepCaches: (task) => {
+			const pending = task().catch(() => undefined);
+			sweeps.push(pending);
+			activeSweeps.push(pending);
+		},
 		lockWaitSeconds: 1,
 		ring: { segmentBytes: 16, segments: 3 },
 		requireRoot: false,
@@ -332,6 +341,9 @@ async function machine() {
 		/** Runs the relays the command units started, to their ends. */
 		settle: async () => {
 			while (relays.length > 0) await Promise.all(relays.splice(0).map((start) => start()));
+		},
+		flushSweeps: async () => {
+			while (sweeps.length > 0) await Promise.all(sweeps.splice(0));
 		},
 	};
 }
@@ -1261,26 +1273,58 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 		expect((await lstat(join(m.runRoot, "packages.ready"))).isFile()).toBe(true);
 	});
 
-	it("say no when their file or their trim fails, keeping no record of the boot", async () => {
-		// The tmpfiles file's folder is a file.
+	it("say no when their file fails, and keep packages.swept absent when background sweep fails", async () => {
 		const m = await machine();
 		await writeFile(dirname(m.tmpfiles), "");
 		const request = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
 		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: false });
 		expect(m.calls.some(([tool]) => tool === "systemd-tmpfiles")).toBe(false);
 		await gone(join(m.runRoot, "packages.ready"));
-		// A folder in a tool folder that its walk cannot read (this test's user is not root).
 		const t = await machine();
 		const locked = join(t.packages, "npm", "locked");
 		await mkdir(locked, { recursive: true });
 		await chmod(locked, 0);
 		try {
 			const asked = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
-			expect((await call(t, "mount", asked)).line).toMatchObject({ mount: "mounted", packageCaches: false });
-			await gone(join(t.runRoot, "packages.ready"));
+			expect((await call(t, "mount", asked)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+			await t.flushSweeps();
+			expect((await lstat(join(t.runRoot, "packages.ready"))).isFile()).toBe(true);
+			await gone(join(t.runRoot, "packages.swept"));
 		} finally {
 			await chmod(locked, 0o700);
 		}
+	});
+
+	it("runs cache aging and trimming asynchronously outside machineLock so mounts never block on cache walks", async () => {
+		const m = await machine();
+		let releaseSweep!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			releaseSweep = resolve;
+		});
+		let sweepStarted = 0;
+		const deferredSweeps: Promise<void>[] = [];
+		m.ports.sweepCaches = (task) => {
+			sweepStarted += 1;
+			const p = (async () => {
+				await gate;
+				await task();
+			})();
+			deferredSweeps.push(p);
+			activeSweeps.push(p);
+		};
+		const first = randomUUID();
+		const second = randomUUID();
+		expect(
+			(await call(m, "mount", { ...mountRequest(first), schema: "qorpera.coding-guest-mount/v2" })).line,
+		).toMatchObject({ mount: "mounted", packageCaches: true });
+		expect(sweepStarted).toBe(1);
+		expect(
+			(await call(m, "mount", { ...mountRequest(second, VIEW, 200002), schema: "qorpera.coding-guest-mount/v2" }))
+				.line,
+		).toMatchObject({ mount: "mounted", packageCaches: true });
+		releaseSweep();
+		await Promise.all(deferredSweeps);
+		expect((await lstat(join(m.runRoot, "packages.swept"))).isFile()).toBe(true);
 	});
 
 	it("have their trees not used for the age removed whole at the first mount of a boot, before the trim", async () => {
@@ -1291,6 +1335,7 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 		m.state.skewMs = 31 * 86_400_000;
 		const request = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
 		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+		await m.flushSweeps();
 		await gone(dirname(browser));
 		expect(await readdir(join(m.packages, "npm", "_cacache", "index-v5"))).toEqual(["a"]);
 		// 29 days on, the age (30 days) has not passed.
@@ -1298,6 +1343,7 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 		const kept = await planted(join(young.packages, "ms-playwright", "chromium_headless_shell-1243", "chrome"), 1024);
 		young.state.skewMs = 29 * 86_400_000;
 		expect((await call(young, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+		await young.flushSweeps();
 		expect((await lstat(kept)).isFile()).toBe(true);
 	});
 
@@ -1308,11 +1354,13 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 		await utimes(old, new Date("2020-01-01"), new Date("2020-01-01"));
 		await planted(join(m.packages, "pip", "http-v2", "b"));
 		expect((await call(m, "mount", mountRequest(randomUUID()))).line.mount).toBe("mounted");
+		await m.flushSweeps();
 		expect(await readdir(join(m.packages, "npm"))).toEqual([]);
 		expect(await readdir(join(m.packages, "pip"))).toEqual(["http-v2"]);
 		// Once a boot: over the limit again, the next mount leaves it.
 		await planted(join(m.packages, "npm", "_cacache", "content-v2", "c"));
 		expect((await call(m, "mount", mountRequest(randomUUID(), VIEW, 200002))).line.mount).toBe("mounted");
+		await m.flushSweeps();
 		expect(await readdir(join(m.packages, "npm"))).toEqual(["_cacache"]);
 	});
 });
@@ -1374,6 +1422,23 @@ describe("the package caches' trim", () => {
 		await utimes(newer, ahead(1), ahead(1));
 		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual(["npm/_cacache/content-v2/old-entry"]);
 		expect(await readdir(join(root, "npm", "_cacache", "content-v2"))).toEqual(["new-entry"]);
+	});
+
+	it("ages expired subtrees and LRU-trims remaining caches in a single walk", async () => {
+		const root = await caches();
+		const day = 86_400_000;
+		const agedBrowser = await planted(join(root, "ms-playwright", "chromium-old", "chrome"));
+		const oldNpm = await planted(join(root, "npm", "_cacache", "content-v2", "old-blob"));
+		await utimes(oldNpm, past, past);
+		await delay(20);
+		const freshPip = await planted(join(root, "pip", "http-v2", "fresh-wheel"));
+		await utimes(freshPip, ahead(32), ahead(32));
+		const result = await ageAndTrimCodingPackageCaches(root, 1.5 * MIB, Date.now() + 31 * day, 30 * day);
+		expect(result.aged).toEqual(["ms-playwright/chromium-old"]);
+		expect(result.evicted).toEqual(["npm/_cacache/content-v2/old-blob"]);
+		await gone(dirname(agedBrowser));
+		expect(await readdir(join(root, "npm"))).toEqual([]);
+		expect(await readdir(join(root, "pip", "http-v2"))).toEqual(["fresh-wheel"]);
 	});
 
 	it("counts the blocks a folder holds: a file linked twice once, a sparse file as what it holds", async () => {
@@ -1718,6 +1783,21 @@ describe("running a command", () => {
 			gap: 17,
 		});
 	});
+	it("throttles pruneEnded scans within PRUNE_INTERVAL_MS and prunes once the interval elapses", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		await ran(m, workerId, "true");
+		const inputs = join(m.runRoot, "inputs");
+		const stale = join(inputs, `${s.w}-${"e".repeat(32)}.json`);
+		await writeFile(stale, "{}");
+		await utimes(stale, new Date("2020-01-01"), new Date("2020-01-01"));
+		await ran(m, workerId, "true");
+		expect((await lstat(stale)).isFile()).toBe(true);
+		m.state.skewMs = 61_000;
+		await ran(m, workerId, "true");
+		await gone(stale);
+	});
 });
 
 describe("the relay inside a command's unit", () => {
@@ -2012,7 +2092,7 @@ describe("reading a command's output", () => {
 		});
 		expect(m.sleeps).toEqual([]);
 		await call(m, "output", outputRequest(workerId, commandId, 0, 4096, 1000));
-		expect(m.sleeps).toEqual([200, 200, 200, 200]);
+		expect(m.sleeps).toEqual([15, 30, 60, 150, 150, 150, 150, 150, 145]);
 	});
 	it("answers as soon as new bytes come", async () => {
 		const m = await machine();
@@ -2036,6 +2116,41 @@ describe("reading a command's output", () => {
 			bytes: 7,
 		});
 		expect(rest.bytes.toString()).toBe("second\n");
+	});
+	it("wakes immediately via fs.watch when new ring bytes arrive without polling backoff lag", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		m.state.command = "hold";
+		const commandId = randomUUID();
+		await call(m, "run", runRequest(m, workerId, commandId, "true"));
+		const x = commandAt(m, workerId, commandId);
+		const portsWithoutCustomSleep: CodingGuestAgentPorts = { ...m.ports, sleep: undefined };
+		const startedAt = Date.now();
+		const writer = (async () => {
+			await delay(25);
+			await writeFile(join(x.output, `${"0".repeat(16)}.out`), "fast-wake\n");
+		})();
+		const sink = collector();
+		const [code] = await Promise.all([
+			runCodingGuestAgent(
+				["output"],
+				Readable.from([Buffer.from(JSON.stringify(outputRequest(workerId, commandId, 0, 4096, 2000)))]),
+				sink.stream,
+				portsWithoutCustomSleep,
+			),
+			writer,
+		]);
+		const elapsedMs = Date.now() - startedAt;
+		expect(code).toBe(0);
+		const raw = sink.bytes();
+		const nl = raw.indexOf("\n");
+		expect(JSON.parse(raw.subarray(0, nl).toString("utf8"))).toMatchObject({
+			state: "running",
+			end: 10,
+			bytes: 10,
+		});
+		expect(raw.subarray(nl + 1).toString("utf8")).toBe("fast-wake\n");
+		expect(elapsedMs).toBeLessThan(500);
 	});
 });
 
