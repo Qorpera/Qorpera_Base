@@ -7,11 +7,11 @@ begin
 	if to_regprocedure('public.qorpera_list_staff_execution_activity(uuid)') is null
 		or to_regprocedure('public.qorpera_live_hint_send(text,text[],text)') is null
 		or to_regprocedure('public.qorpera_live_hint_profile_topics(uuid)') is null then
-		raise exception '20260930902000 requires staff execution activity and live hints';
+		raise exception '20260930904500 requires staff execution activity and live hints';
 	end if;
-	if position('20260930902000' in pg_get_functiondef(
+	if position('20260930904500' in pg_get_functiondef(
 		'public.qorpera_list_staff_execution_activity(uuid)'::regprocedure)) > 0 then
-		raise exception '20260930902000 is already applied';
+		raise exception '20260930904500 is already applied';
 	end if;
 end $$;
 
@@ -27,7 +27,7 @@ declare
 	v_profile_id uuid;
 	v_class text;
 begin
-	-- WHY: 20260930902000 marker for deploy guards; short-circuit once hinting failed in this transaction.
+	-- WHY: 20260930904500 marker for deploy guards; short-circuit once hinting failed in this transaction.
 	if current_setting('qorpera.live_hints_failed', true) = 'on' then return null; end if;
 	begin
 		if tg_table_name = 'qorpera_runtime_observations' then
@@ -102,7 +102,7 @@ begin
 		v_old := p_pairs[v_idx];
 		v_new := p_pairs[v_idx + 1];
 		if v_old = '' or (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
-			raise exception '20260930902000 anchor differs in %: %', p_target, left(v_old, 96);
+			raise exception '20260930904500 anchor differs in %: %', p_target, left(v_old, 96);
 		end if;
 		v_def := replace(v_def, v_old, v_new);
 		v_idx := v_idx + 2;
@@ -171,7 +171,7 @@ $old$			)
 		), earlier_failure as ($old$,
 $new$			)
 			union all
-			-- WHY: 20260930902000 reflects recently queued wakes as waiting immediately before run materialization.
+			-- WHY: 20260930904500 reflects recently queued wakes as waiting immediately before run materialization.
 			select wake.id as run_id, wake.staff_agent_id,
 				case when wake.wake_kind = 'room' then 'room_delivery' else 'wake' end as source_kind,
 				'queued'::text as job_status,
@@ -212,14 +212,14 @@ declare
 	v_activity text := pg_get_functiondef('public.qorpera_list_staff_execution_activity(uuid)'::regprocedure);
 	v_hint text := pg_get_functiondef('public.qorpera_activity_hint()'::regprocedure);
 begin
-	if strpos(v_activity, '20260930902000') = 0
+	if strpos(v_activity, '20260930904500') = 0
 		or strpos(v_activity, '20260930855000') = 0
 		or strpos(v_activity, '20260930751000') = 0
 		or strpos(v_activity, '20260930542000') = 0
 		or strpos(v_activity, 'when job.cancelled_by_user_id is not null then 0') = 0 then
-		raise exception '20260930902000 guard failed for qorpera_list_staff_execution_activity';
+		raise exception '20260930904500 guard failed for qorpera_list_staff_execution_activity';
 	end if;
-	if strpos(v_hint, '20260930902000') = 0 then
-		raise exception '20260930902000 guard failed for qorpera_activity_hint';
+	if strpos(v_hint, '20260930904500') = 0 then
+		raise exception '20260930904500 guard failed for qorpera_activity_hint';
 	end if;
 end $guard$;
