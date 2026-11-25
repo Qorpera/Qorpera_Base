@@ -159,19 +159,6 @@ function readingDurationMs(text: string): number {
 	return Math.max(MIN_BEAT_MS, Math.round((words / WORDS_PER_SEC) * 1000) + BEAT_BREATH_MS);
 }
 
-function pickBrowserVoice(locale: string): SpeechSynthesisVoice | null {
-	if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
-	const voices = window.speechSynthesis.getVoices();
-	if (voices.length === 0) return null;
-	const prefix = locale.toLowerCase().slice(0, 2);
-	const matching = voices.filter((voice) => voice.lang.toLowerCase().startsWith(prefix));
-	return (
-		matching.find((voice) => /natural|neural|samantha|sara|magnus|google|enhanced/i.test(voice.name)) ??
-		matching[0] ??
-		null
-	);
-}
-
 export class StudioTourController {
 	readonly el = h("aside", { class: "studio-tour", hidden: true, "aria-label": t("Guided walkthrough") });
 	readonly #options: StudioTourOptions;
@@ -314,11 +301,6 @@ export class StudioTourController {
 			URL.revokeObjectURL(this.#audioUrl);
 			this.#audioUrl = null;
 		}
-		if (typeof window !== "undefined" && "speechSynthesis" in window) {
-			try {
-				window.speechSynthesis.cancel();
-			} catch {}
-		}
 	}
 
 	#clearFocus(): void {
@@ -379,10 +361,10 @@ export class StudioTourController {
 		if (!this.#playing) return;
 		const locale = presentationLocale();
 		const spoken = resolveTourSay(beat.say, locale);
-		await this.#speakOrWait(spoken, locale, seq);
+		await this.#speakOrWait(spoken, seq);
 	}
 
-	async #speakOrWait(text: string, locale: string, seq: number): Promise<void> {
+	async #speakOrWait(text: string, seq: number): Promise<void> {
 		const advance = () => {
 			if (seq !== this.#beatSeq || !this.#playing || this.#options.signal.aborted) return;
 			if (!this.#doc || this.#index + 1 >= this.#doc.beats.length) {
@@ -418,36 +400,6 @@ export class StudioTourController {
 				} catch {
 					if (seq !== this.#beatSeq || !this.#playing) return;
 				}
-			}
-
-			if (
-				typeof window !== "undefined" &&
-				"speechSynthesis" in window &&
-				typeof SpeechSynthesisUtterance === "function"
-			) {
-				try {
-					window.speechSynthesis.cancel();
-					const utterance = new SpeechSynthesisUtterance(text);
-					utterance.lang = locale === "da" ? "da-DK" : "en-US";
-					utterance.rate = 1.02;
-					const voice = pickBrowserVoice(locale);
-					if (voice) utterance.voice = voice;
-					let settled = false;
-					const finish = () => {
-						if (settled) return;
-						settled = true;
-						this.#timer = setTimeout(advance, 650);
-					};
-					utterance.onend = finish;
-					utterance.onerror = () => {
-						if (settled) return;
-						settled = true;
-						this.#timer = setTimeout(advance, readingDurationMs(text));
-					};
-					this.#timer = setTimeout(finish, Math.max(readingDurationMs(text) + 4000, 14000));
-					window.speechSynthesis.speak(utterance);
-					return;
-				} catch {}
 			}
 		}
 
@@ -528,22 +480,25 @@ export class StudioTourController {
 			},
 			"›",
 		);
-		const muteBtn = h(
-			"button",
-			{
-				type: "button",
-				class: `studio-tour-btn${this.#muted ? " is-muted" : ""}`,
-				"aria-label": this.#muted ? t("Unmute voice") : t("Mute voice"),
-				"aria-pressed": String(this.#muted),
-				title: this.#muted ? t("Unmute voice") : t("Mute voice"),
-				onclick: () => {
-					this.#muted = !this.#muted;
-					if (this.#playing) void this.#enterBeat(this.#index);
-					else this.#render();
-				},
-			},
-			this.#muted ? t("Silent") : t("Voice"),
-		);
+		const hasVoiceClips = this.#clips.size > 0;
+		const muteBtn = hasVoiceClips
+			? h(
+					"button",
+					{
+						type: "button",
+						class: `studio-tour-btn${this.#muted ? " is-muted" : ""}`,
+						"aria-label": this.#muted ? t("Unmute voice") : t("Mute voice"),
+						"aria-pressed": String(this.#muted),
+						title: this.#muted ? t("Unmute voice") : t("Mute voice"),
+						onclick: () => {
+							this.#muted = !this.#muted;
+							if (this.#playing) void this.#enterBeat(this.#index);
+							else this.#render();
+						},
+					},
+					this.#muted ? t("Silent") : t("Voice"),
+				)
+			: h("span", { class: "studio-tour-step" }, t("Captions"));
 		const closeBtn = h(
 			"button",
 			{

@@ -51,6 +51,7 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkill, type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
+import type { StudioChatGptVoiceBatchResult } from "./cloud-studio-voice-recorder.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import {
 	createSurfaceFolderPreviewOverlay,
@@ -75,6 +76,7 @@ import {
 	type SurfaceIdentityContext,
 	type SurfaceSharedAssetsContext,
 } from "./cloud-surface-turn-context.ts";
+import type { CloudVoiceName } from "./cloud-voice-channel.ts";
 
 const MAX_IDENTITY_BRIEF_BYTES = 16_384;
 const MAX_IDENTITY_VOICE_BYTES = 8_192;
@@ -235,6 +237,11 @@ export interface SurfaceSessionNarratePort {
 		readonly text: string;
 		readonly signal: AbortSignal;
 	}) => Promise<GeminiTtsSpeechResult>;
+	readonly synthesizeChatGptVoice?: (input: {
+		readonly voiceName?: CloudVoiceName;
+		readonly captions: readonly { readonly hash: string; readonly text: string }[];
+		readonly signal: AbortSignal;
+	}) => Promise<StudioChatGptVoiceBatchResult>;
 }
 
 export interface SurfaceSessionRunnerPorts {
@@ -1173,6 +1180,9 @@ export async function runSurfaceSessionTurn(
 								surfacePatch: trackedSurfacePatch,
 								...(ports.narrateExplainer.synthesizeGemini
 									? { synthesizeGemini: ports.narrateExplainer.synthesizeGemini }
+									: {}),
+								...(ports.narrateExplainer.synthesizeChatGptVoice
+									? { synthesizeChatGptVoice: ports.narrateExplainer.synthesizeChatGptVoice }
 									: {}),
 								onStagedOps: (ops) => applyStudioTextOps(stagedText, ops, folderRoot),
 							}),

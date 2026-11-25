@@ -209,6 +209,7 @@ import {
 	composeCloudAgentSkills,
 	unavailableCloudAgentSkills,
 } from "./cloud-skill-tools.ts";
+import { recordStudioChatGptVoiceClips } from "./cloud-studio-voice-recorder.ts";
 import {
 	parseNativeSurfaceSessionImages,
 	readSurfaceMemberImage,
@@ -2303,6 +2304,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 		}
 
+		const studioVoice = isGeminiRun || (await chatGptPlanRun(identityRoot)) ? undefined : new CloudVoiceChannel();
 		let lastProviderSessionId = `surface-session:${sessionId}`;
 		const runModelTurn = async (spec: {
 			instructions: string;
@@ -2470,6 +2472,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				serviceTier,
 				controlPlane: this.#control,
 				...(geminiSession ? { gemini: geminiSession } : {}),
+				...(studioVoice ? { voice: studioVoice } : {}),
 				beginExecution: async (specification, requestSignal) => {
 					const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 					const answer = await this.#paths.call(
@@ -2699,6 +2702,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						}
 						return speech;
 					},
+					...(studioVoice
+						? {
+								synthesizeChatGptVoice: ({ voiceName: chatVoice, captions, signal: reqSignal }) =>
+									recordStudioChatGptVoiceClips({
+										voice: studioVoice,
+										...(chatVoice ? { voiceName: chatVoice } : {}),
+										captions,
+										signal: reqSignal,
+									}),
+							}
+						: {}),
 				},
 				executeTurn: async (turnReq) =>
 					runModelTurn({

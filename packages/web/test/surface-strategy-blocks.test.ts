@@ -1339,7 +1339,7 @@ describe("The studio voice tour", () => {
 		done();
 	});
 
-	it("jumps from a progress dot, speaks Danish and stops from the close button", async () => {
+	it("jumps from a progress dot, renders Danish captions without voice clips and stops from the close button", async () => {
 		setLanguagePreference("da");
 		const { view, tour, control, focused, done } = await studio({ ...strategyFiles(), ...file("tour.json", TOUR) });
 		const launch = tour().querySelector<HTMLButtonElement>(".studio-tour-launch")!;
@@ -1348,11 +1348,8 @@ describe("The studio voice tour", () => {
 		control("Sæt gennemgangen på pause").click();
 		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("plays:verdict"));
 		expect(text(tour().querySelector(".studio-tour-caption"))).toBe("Vi sælger til forhandlere, ikke bilister.");
-		const silent = control("Slå stemmen fra");
-		expect(text(silent)).toBe("Stemme");
-		silent.click();
-		expect(text(control("Slå stemmen til"))).toBe("Lydløs");
-		expect(control("Slå stemmen til").getAttribute("aria-pressed")).toBe("true");
+		expect(control("Slå stemmen fra")).toBeNull();
+		expect(text(tour().querySelector(".studio-tour-controls .studio-tour-step"))).toBe("Undertekster");
 
 		tour().querySelectorAll<HTMLButtonElement>(".studio-tour-dot")[2]!.click();
 		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("rival:leadly"));
@@ -1362,6 +1359,26 @@ describe("The studio voice tour", () => {
 		expect(tour().classList.contains("is-open")).toBe(false);
 		expect(view.el.querySelector(".is-tour-focus")).toBeNull();
 		expect(view.el.classList.contains("is-tour-active")).toBe(false);
+		done();
+	});
+
+	it("shows the voice toggle only when recorded voice clips are present", async () => {
+		setLanguagePreference("da");
+		const { tour, control, focused, done } = await studio({
+			...strategyFiles(),
+			...file("tour.json", TOUR),
+			...file("voice/clips.json", {
+				clips: [{ caption: "12345678", file: "12345678.webm", seconds: 2.4 }],
+			}),
+		});
+		tour().querySelector<HTMLButtonElement>(".studio-tour-launch")!.click();
+		control("Sæt gennemgangen på pause").click();
+		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("plays:verdict"));
+		const silent = control("Slå stemmen fra");
+		expect(text(silent)).toBe("Stemme");
+		silent.click();
+		expect(text(control("Slå stemmen til"))).toBe("Lydløs");
+		expect(control("Slå stemmen til").getAttribute("aria-pressed")).toBe("true");
 		done();
 	});
 });

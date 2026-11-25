@@ -527,5 +527,6 @@ export const SURFACES: Record<string, string> = {
 	"Mute voice": "Slå stemmen fra",
 	"Unmute voice": "Slå stemmen til",
 	Silent: "Lydløs",
+	Captions: "Undertekster",
 	"Close walkthrough": "Luk gennemgangen",
 };

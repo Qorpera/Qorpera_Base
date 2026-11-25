@@ -215,4 +215,58 @@ describe("strategy surface and custom studio runtime integration", () => {
 		expect(parsed.clipsPath).toBe("voice/clips.json");
 		expect(stagedOps.length).toBeGreaterThanOrEqual(3);
 	});
+
+	it("synthesizes spoken ChatGPT subscription voice clips for studio tour.json beats via narrate_explainer", async () => {
+		const stagedOps: unknown[] = [];
+		const tool = createNarrateExplainerTool({
+			sessionId: randomUUID(),
+			folderRoot: "surfaces/strategy",
+			voiceModel: "chatgpt-voice",
+			voiceName: "cove",
+			readStudioText: async (path) =>
+				path === "tour.json"
+					? JSON.stringify({
+							title: "Walkthrough",
+							beats: [{ id: "intro", tab: "plan", say: "Start with dealers." }],
+						})
+					: null,
+			stageBytes: async () => ({
+				manifestSha256: "c".repeat(64),
+				fileSha256: "d".repeat(64),
+				bytes: 2400,
+				mediaType: "audio/webm",
+			}),
+			surfacePatch: {
+				stageSurfacePatch: async (_sessionId, input) => {
+					stagedOps.push(...input.ops);
+					return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+				},
+			},
+			synthesizeChatGptVoice: async ({ voiceName, captions }) => {
+				expect(voiceName).toBe("cove");
+				return {
+					clips: captions.map((caption) => ({
+						hash: caption.hash,
+						audio: new Uint8Array([1, 2, 3]),
+						mediaType: "audio/webm" as const,
+						fileExtension: "webm" as const,
+						seconds: 1.8,
+					})),
+					stopReason: null,
+				};
+			},
+		});
+
+		const result = await tool.execute(
+			tool.parseArguments({ scenesPath: "tour.json", title: "Narrate strategy tour" }),
+			fakeToolContext(),
+		);
+		const parsed = JSON.parse(String(result.value)) as Record<string, unknown>;
+		expect(parsed.ok).toBe(true);
+		expect(parsed.voiceModel).toBe("chatgpt-voice");
+		expect(parsed.voiceName).toBe("cove");
+		expect(parsed.spokenNow).toBe(1);
+		expect(parsed.clipsPath).toBe("voice/clips.json");
+		expect(stagedOps.length).toBeGreaterThanOrEqual(2);
+	});
 });
