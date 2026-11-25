@@ -2714,8 +2714,6 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 					{
 						sessionId: session2,
 						workerId: s2.workerId,
-						sessionState: "ready",
-						sessionHasActiveChat: false,
 						remainingChanges: [{ changeId: change2, parentSha: f.baseSha, headSha: sha2, title: "Footer" }],
 					},
 				],

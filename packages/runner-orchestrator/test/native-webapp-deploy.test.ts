@@ -241,7 +241,14 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 		});
 
 		const storedBlobs = new Map<string, Uint8Array>();
-		const blobFetch = vi.fn(async (url: string, init: { method: "HEAD" | "PUT"; body?: Uint8Array }) => {
+		const blobFetch = vi.fn(async (url: string, init: { method: "HEAD" | "PUT" | "POST"; body?: Uint8Array }) => {
+			if (init.method === "POST" && url.endsWith("/_internal/blobs/exists")) {
+				const parsed = JSON.parse(new TextDecoder().decode(init.body)) as { hashes: string[] };
+				return {
+					status: 200,
+					json: async () => ({ existing: parsed.hashes.filter((h) => storedBlobs.has(h)) }),
+				};
+			}
 			const sha = url.split("/").at(-1) as string;
 			if (init.method === "HEAD") return { status: storedBlobs.has(sha) ? 200 : 404 };
 			if (init.body) storedBlobs.set(sha, init.body);

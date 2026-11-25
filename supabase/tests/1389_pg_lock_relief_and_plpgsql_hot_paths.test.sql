@@ -199,14 +199,28 @@ begin
 			= '42501 Company folder is unavailable',
 		'non-member fence must fail');
 
-	-- WHY: Access revoked between authorize and fence (authoritySeq advances) must fail closed on the fence call.
+	-- WHY: Advancing authoritySeq forces fence recheck; narrowing notes to member 2 private must fail closed for member 3.
 	perform pg_temp.t1389_as_member(3);
 	v_auth := public.qorpera_member_folder_object_authorize(v_env, v_secret_sha);
 	perform pg_temp.claims('service_role');
 	perform public.qorpera_folder_set_resource(
-		v_env, '{"kind":"member","userId":"63000000-0000-4000-8000-000000000002"}'::jsonb,
-		'notes', 'subtree', 'member_private', 'normal', '63000000-0000-4000-8000-000000000002'
+		v_env, '{"kind":"member","userId":"63000000-0000-4000-8000-000000000001"}'::jsonb,
+		'notes', 'subtree', 'company_shared', 'normal'
 	);
+	perform pg_temp.t1389_as_member(3);
+	v_fence := public.qorpera_member_folder_object_fence(
+		v_env, v_secret_sha,
+		(v_auth ->> 'authoritySeq')::bigint,
+		(v_auth ->> 'checkedAt')::timestamptz,
+		true
+	);
+	perform pg_temp.t1389_ok((v_fence ->> 'rechecked')::boolean = true,
+		'advanced authoritySeq must force fence recheck');
+
+	perform pg_temp.claims('service_role');
+	update public.qorpera_company_path_resources
+	set scope = 'member_private', owner_user_id = '63000000-0000-4000-8000-000000000002'
+	where environment_id = v_env and path = 'notes';
 	perform pg_temp.t1389_as_member(3);
 	perform pg_temp.t1389_ok(
 		pg_temp.t1389_state_of(format(

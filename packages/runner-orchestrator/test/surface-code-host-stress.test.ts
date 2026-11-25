@@ -559,6 +559,7 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 		});
 		const pass = await worker.pass(new AbortController().signal);
 		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, cleanups: 0, failed: 0 });
+		await worker.drainBackgroundPeerSyncs();
 		expect(rebaseRpcs).toHaveLength(1);
 		expect(rebaseRpcs[0]).toMatchObject({
 			p_branch_head_sha: null,

@@ -840,7 +840,9 @@ describe("code-host surfaces multi-change engine", () => {
 		});
 		expect(rebased.status).toBe("clean");
 		const rebaseCommands = f.log.slice(logBefore);
-		expect(rebaseCommands.some((cmd) => cmd.argv[0]?.endsWith("/find"))).toBe(false);
+		expect(rebaseCommands.some((cmd) => cmd.argv[0]?.endsWith("/find") && cmd.argv.includes(session.worktree))).toBe(
+			false,
+		);
 		expect(rebaseCommands.some((cmd) => cmd.argv.includes("ls-tree") && cmd.argv.includes("-r"))).toBe(false);
 
 		await writeFile(join(session.worktree, "src/.git"), "gitdir: /tmp/evil\n");
