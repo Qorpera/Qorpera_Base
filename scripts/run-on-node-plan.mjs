@@ -97,7 +97,7 @@ export const RUNTIME_WAITING = [
 const RUNTIME_GUEST = "test/cloud-coding-command-guest.test.ts";
 
 /** Paths that never need a test: prose, and the switched-off workflows. */
-const QUIET = [/\.md$/, /^docs-audit\//, /^LICENSE$/, /^\.github\//];
+const QUIET = [/^(?!packages\/runtime\/(?:skills|kits)\/).*\.md$/, /^docs-audit\//, /^LICENSE$/, /^\.github\//];
 /** Paths every package reads: every step. */
 const WHOLE = [
 	/^package(-lock)?\.json$/,

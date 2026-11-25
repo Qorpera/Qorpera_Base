@@ -55,6 +55,10 @@ test("documentation and the switched-off workflows run nothing", () => {
 	const plan = planChanged(["README.md", "deploy/test-machine/README.md", "docs-audit/x.txt", ".github/workflows/web-client.yml"]);
 	assert.deepEqual([plan.full, plan.steps.length], [false, 0]);
 	assert.match(describePlan(plan, "origin/master").join("\n"), /nothing to run/);
+	for (const embedded of ["packages/runtime/skills/identity-studio/SKILL.md", "packages/runtime/kits/model/KIT.md"]) {
+		const embeddedPlan = planChanged([embedded]);
+		assert.ok(embeddedPlan.steps.some((step) => step.name === "runtime-2"), embedded);
+	}
 });
 
 test("a web-only change runs the always-on checks and the web client, including its release build", () => {
