@@ -30,9 +30,13 @@ update auth.users set raw_user_meta_data = jsonb_build_object('display_name', ca
 		when '92400000-0000-4000-8000-000000000003' then 'Viewer Three' else 'Admin Four' end)
 where id in ('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000002',
 	'92400000-0000-4000-8000-000000000003', '92400000-0000-4000-8000-000000000004');
-update public.qorpera_profile_members set display_name = case user_id
+update public.qorpera_profile_members set
+	display_name = case user_id
 		when '92400000-0000-4000-8000-000000000001' then 'Owner One' when '92400000-0000-4000-8000-000000000002' then 'Member Two'
-		when '92400000-0000-4000-8000-000000000003' then 'Viewer Three' else 'Admin Four' end
+		when '92400000-0000-4000-8000-000000000003' then 'Viewer Three' else 'Admin Four' end,
+	joined_at = joined_at + case user_id
+		when '92400000-0000-4000-8000-000000000001' then interval '0 seconds' when '92400000-0000-4000-8000-000000000002' then interval '1 second'
+		when '92400000-0000-4000-8000-000000000003' then interval '2 seconds' else interval '3 seconds' end
 where profile_id = '92400000-0000-4000-8000-000000000010';
 
 create function pg_temp.offer(p_request jsonb) returns jsonb language sql as $$
