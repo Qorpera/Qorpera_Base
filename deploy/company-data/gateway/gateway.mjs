@@ -81,7 +81,6 @@ const VOLATILE_SQL =
 const TICKET = /^([0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*)\.([0-9a-f]{64})\.([0-9a-f]{64})$/;
 /** How long a call waits for a connection of a login's own before the pool gives up. */
 const CONNECT_MS = 5_000;
-const LISTEN_IDLE_GRACE_MS = 45_000;
 /** A file of a database's API: a question is a named read in queries/, a change a named write in actions/. */
 const NAMED = { question: { folder: "queries", may: "read" }, change: { folder: "actions", may: "run" } };
 /** The rows this session added or changed, in every table (a catalog's and a large object's too) but Qorpera's own
@@ -154,6 +153,7 @@ export const LIMITS = Object.freeze({
 	/** A watch call: how long it is held, and how often its questions are asked again. */
 	watchMs: 20_000,
 	watchAgainMs: 500,
+	listenIdleMs: 45_000,
 	/** How long a member's folder read is kept. */
 	proofMs: 10_000,
 	/** A request's body. */
@@ -1286,7 +1286,6 @@ export class Gateway {
 	#schemaEpoch = new Map();
 	#schemaEpochSeq = 0;
 	#storedCache = new Map();
-	#listenIdleGraceMs = LISTEN_IDLE_GRACE_MS;
 	#relations = new Map();
 	#prepared = new WeakMap();
 	#askPlans = new Map();
@@ -1370,7 +1369,6 @@ export class Gateway {
 		testSchemas = null,
 		publicReader = null,
 		workers = 1,
-		listenIdleGraceMs = LISTEN_IDLE_GRACE_MS,
 		onProvision = () => undefined,
 		beforeCancel = async () => undefined,
 		onAgentRead = () => undefined,
@@ -1384,10 +1382,6 @@ export class Gateway {
 		this.#platform = platform;
 		this.#limits = limits === LIMITS ? LIMITS : { ...LIMITS, ...limits };
 		this.#workers = Math.max(1, Number.isInteger(workers) ? workers : 1);
-		this.#listenIdleGraceMs =
-			typeof listenIdleGraceMs === "number" && Number.isFinite(listenIdleGraceMs) && listenIdleGraceMs >= 0
-				? listenIdleGraceMs
-				: LISTEN_IDLE_GRACE_MS;
 		this.#runToken = typeof runs?.token === "string" && runs.token.length >= 32 ? runs.token : null;
 		this.#hookToken = typeof hooks?.token === "string" && hooks.token.length >= 32 ? hooks.token : null;
 		this.#hookReader = typeof hooks?.reader === "function" ? hooks.reader : null;
@@ -1553,7 +1547,8 @@ export class Gateway {
 						: door === "qorpera_data_admin"
 							? { query_timeout: ADMIN_QUERY_TIMEOUT_MS, statement_timeout: ADMIN_QUERY_TIMEOUT_MS }
 							: {}),
-					idleTimeoutMillis: kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : 45_000,
+					// WHY: Keep steady-state read pools warm for 45s so prepared statements stay cached while write pools drain in 5s.
+					idleTimeoutMillis: kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : kind === "r" ? 45_000 : 5_000,
 					connectionTimeoutMillis: CONNECT_MS,
 					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
 				});
@@ -3381,7 +3376,11 @@ export class Gateway {
 				listener.heard.delete(heard);
 				if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
 					// WHY: Hold LISTEN client and watch caches across 20s browser /watch polls instead of tearing down on every gap.
-					if (this.#closed || this.#listenIdleGraceMs <= 0) {
+					const listenIdleMs =
+						typeof this.#limits.listenIdleMs === "number" && Number.isFinite(this.#limits.listenIdleMs) && this.#limits.listenIdleMs > 0
+							? this.#limits.listenIdleMs
+							: 0;
+					if (this.#closed || listenIdleMs <= 0) {
 						this.#teardownListener(database, listener)?.end().catch(() => undefined);
 					} else if (!listener.idleTimer) {
 						listener.idleTimer = setTimeout(() => {
@@ -3389,7 +3388,7 @@ export class Gateway {
 							if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
 								this.#teardownListener(database, listener)?.end().catch(() => undefined);
 							}
-						}, this.#listenIdleGraceMs);
+						}, listenIdleMs);
 						listener.idleTimer.unref?.();
 					}
 				}
