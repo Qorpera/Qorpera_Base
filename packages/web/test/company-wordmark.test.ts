@@ -5,14 +5,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import { resolveCompanyWordmarks, wordmarkForTheme } from "../src/app/company-wordmark.ts";
+import {
+	CompanyWordmarkCache,
+	resolveCompanyWordmarks,
+	setCompanyWordmarks,
+	wordmarkForTheme,
+} from "../src/app/company-wordmark.ts";
 import type { Route } from "../src/app/router.ts";
 import { attachSurfaces, type CompanyIdentityFiles } from "../src/app/surfaces-store.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
-import { deferred, fixture, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	profileA,
+	profileB,
+	session,
+	settle,
+	staff,
+	stubFigureMotion,
+	team,
+	userA,
+	userB,
+} from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 import {
 	CHANGES,
@@ -30,8 +47,58 @@ const LIGHT_SVG =
 	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><rect fill="#0e2a47" width="240" height="60"/></svg>';
 const DARK_SVG =
 	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><rect fill="#ffffff" width="240" height="60"/></svg>';
+const LIGHT_SVG_B =
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><rect fill="#114422" width="240" height="60"/></svg>';
+const DARK_SVG_B =
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><rect fill="#e8f5ee" width="240" height="60"/></svg>';
 const LOGO_SVG =
 	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60"><circle fill="#0e2a47" cx="30" cy="30" r="24"/></svg>';
+
+function clearWordmarkStorage(): void {
+	for (let index = localStorage.length - 1; index >= 0; index--) {
+		const key = localStorage.key(index);
+		if (key?.startsWith("qorpera.web.company-wordmarks.")) localStorage.removeItem(key);
+	}
+}
+
+function svgUrl(svg: string): string {
+	return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function spyFoldersByProfile(
+	folders: Readonly<Record<string, ReturnType<typeof folderFake>["folder"]>>,
+	fallback: ReturnType<typeof folderFake>["folder"],
+): void {
+	const origPrefetch = CompanyWordmarkCache.prototype.prefetch;
+	let prefetchProfileId: string | undefined;
+	vi.spyOn(CompanyWordmarkCache.prototype, "prefetch").mockImplementation(function (
+		this: CompanyWordmarkCache,
+		profileId,
+		createFolder,
+		signal,
+	) {
+		return origPrefetch.call(
+			this,
+			profileId,
+			(reqSignal) => {
+				prefetchProfileId = profileId;
+				try {
+					return createFolder(reqSignal);
+				} finally {
+					prefetchProfileId = undefined;
+				}
+			},
+			signal,
+		);
+	});
+	vi.spyOn(WebCompanyFiles.prototype, "folder").mockImplementation(() => {
+		if (prefetchProfileId && folders[prefetchProfileId]) return folders[prefetchProfileId] as never;
+		for (const [profileId, folder] of Object.entries(folders)) {
+			if (location.hash.includes(profileId)) return folder as never;
+		}
+		return fallback as never;
+	});
+}
 
 function identityFiles(
 	files: Readonly<Record<string, string>>,
@@ -266,6 +333,8 @@ describe("sidepanel company selector wordmark", () => {
 	const cleanup: (() => void)[] = [];
 
 	beforeEach(() => {
+		clearWordmarkStorage();
+		setCompanyWordmarks(undefined);
 		stubFigureMotion();
 		document.documentElement.dataset.theme = "light";
 		vi.stubGlobal("innerWidth", 1280);
@@ -274,6 +343,8 @@ describe("sidepanel company selector wordmark", () => {
 
 	afterEach(() => {
 		for (const dispose of cleanup.splice(0).reverse()) dispose();
+		setCompanyWordmarks(undefined);
+		clearWordmarkStorage();
 		openMenu()?.close();
 		delete document.documentElement.dataset.theme;
 		document.body.replaceChildren();
@@ -540,11 +611,11 @@ describe("sidepanel company selector wordmark", () => {
 
 	it("loads identity wordmarks on company open when team resolves before cloud surfaces", async () => {
 		vi.useFakeTimers();
-		const identitySurface = identitySummary();
+		const identitySurface = identitySummary({ folderRoot: "brand" });
 		const surfacesReady = deferred<SurfaceSummary[]>();
 		const fake = folderFake();
-		fake.put("identity/wordmark.svg", LIGHT_SVG);
-		fake.put("identity/wordmark-dark.svg", DARK_SVG);
+		fake.put("brand/wordmark.svg", LIGHT_SVG);
+		fake.put("brand/wordmark-dark.svg", DARK_SVG);
 		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
 		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(() => surfacesReady.promise);
 		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
@@ -567,10 +638,436 @@ describe("sidepanel company selector wordmark", () => {
 
 		const img = root.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
 		expect(img.hidden).toBe(false);
-		expect(img.getAttribute("src")).toBe(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(LIGHT_SVG)}`);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
 
 		setTheme("dark");
-		expect(img.getAttribute("src")).toBe(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(DARK_SVG)}`);
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+	});
+
+	it("loads cold identity wordmarks immediately via fast readMany before team and surfaces resolve", async () => {
+		vi.useFakeTimers();
+		const teamReady = deferred<typeof team>();
+		const surfacesReady = deferred<SurfaceSummary[]>();
+		const fake = folderFake();
+		fake.put("identity/wordmark.svg", LIGHT_SVG);
+		fake.put("identity/wordmark-dark.svg", DARK_SVG);
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(() => surfacesReady.promise);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder as never);
+
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		vi.mocked(f.api.getTeam).mockImplementation(() => teamReady.promise);
+		const root = document.createElement("div");
+		document.body.append(root);
+		cleanup.push(mountApplication(root, f.cloud, f.api));
+
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+
+		const img = root.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
+		expect(fake.folder.readMany).toHaveBeenCalledTimes(1);
+
+		setTheme("dark");
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+
+		teamReady.resolve(team);
+		surfacesReady.resolve([identitySummary()]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+	});
+
+	it("renders cached wordmark immediately on company switch without flashing plain text while identity reloads", async () => {
+		vi.useFakeTimers();
+		const identityA = identitySummary({ id: "22222222-2222-4222-8222-222222222201" });
+		const identityB = identitySummary({ id: "22222222-2222-4222-8222-222222222202" });
+		const fakeA = folderFake();
+		fakeA.put("identity/wordmark.svg", LIGHT_SVG);
+		fakeA.put("identity/wordmark-dark.svg", DARK_SVG);
+		const fakeB = folderFake();
+		fakeB.put("identity/wordmark.svg", LIGHT_SVG_B);
+		fakeB.put("identity/wordmark-dark.svg", DARK_SVG_B);
+
+		let holdSurfacesA: ReturnType<typeof deferred<SurfaceSummary[]>> | undefined;
+		let holdListA: ReturnType<typeof deferred<void>> | undefined;
+		const rawListA = fakeA.folder.list;
+		fakeA.folder.list = vi.fn(async (...args: Parameters<typeof rawListA>) => {
+			if (holdListA) await holdListA.promise;
+			return rawListA(...args);
+		});
+
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(async (companyId) => {
+			if (companyId === profileA.profileId) {
+				if (holdSurfacesA) return holdSurfacesA.promise;
+				return [identityA];
+			}
+			return [identityB];
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
+		spyFoldersByProfile({ [profileA.profileId]: fakeA.folder, [profileB.profileId]: fakeB.folder }, fakeA.folder);
+
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		const root = document.createElement("div");
+		document.body.append(root);
+		cleanup.push(mountApplication(root, f.cloud, f.api));
+
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(root.querySelector<HTMLImageElement>(".rail-company-wordmark")?.getAttribute("src")).toBe(
+			svgUrl(LIGHT_SVG),
+		);
+
+		location.hash = `#/c/${profileB.profileId}`;
+		window.dispatchEvent(new HashChangeEvent("hashchange"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(root.querySelector<HTMLImageElement>(".rail-company-wordmark")?.getAttribute("src")).toBe(
+			svgUrl(LIGHT_SVG_B),
+		);
+
+		holdSurfacesA = deferred<SurfaceSummary[]>();
+		holdListA = deferred<void>();
+		location.hash = `#/c/${profileA.profileId}`;
+		window.dispatchEvent(new HashChangeEvent("hashchange"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+
+		const button = root.querySelector<HTMLButtonElement>(".rail-company")!;
+		const img = button.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		const name = button.querySelector<HTMLElement>(".rail-company-name")!;
+		expect(button.classList.contains("has-wordmark")).toBe(true);
+		expect(img.hidden).toBe(false);
+		expect(name.hidden).toBe(true);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
+
+		holdSurfacesA.resolve([identityA]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(img.hidden).toBe(false);
+		expect(name.hidden).toBe(true);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
+
+		setTheme("dark");
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+
+		holdListA.resolve();
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+	});
+
+	it("prefetches sibling company wordmarks when hovering or opening the company switcher", async () => {
+		vi.useFakeTimers();
+		const identityA = identitySummary({ id: "22222222-2222-4222-8222-222222222211" });
+		const identityB = identitySummary({ id: "22222222-2222-4222-8222-222222222212" });
+		const fakeA = folderFake();
+		fakeA.put("identity/wordmark.svg", LIGHT_SVG);
+		const fakeB = folderFake();
+		fakeB.put("identity/wordmark.svg", LIGHT_SVG_B);
+		fakeB.put("identity/wordmark-dark.svg", DARK_SVG_B);
+
+		const holdSurfacesB = deferred<SurfaceSummary[]>();
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(async (companyId) =>
+			companyId === profileB.profileId ? holdSurfacesB.promise : [identityA],
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
+		spyFoldersByProfile({ [profileA.profileId]: fakeA.folder, [profileB.profileId]: fakeB.folder }, fakeA.folder);
+
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		const root = document.createElement("div");
+		document.body.append(root);
+		cleanup.push(mountApplication(root, f.cloud, f.api));
+
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(fakeB.folder.readMany).not.toHaveBeenCalled();
+
+		const companyButton = root.querySelector<HTMLButtonElement>(".rail-company")!;
+		companyButton.dispatchEvent(new Event("pointerenter"));
+		await settle();
+		expect(fakeB.folder.readMany).toHaveBeenCalledTimes(1);
+
+		companyButton.click();
+		await settle();
+		expect(fakeB.folder.readMany).toHaveBeenCalledTimes(1);
+		const items = [...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")];
+		items.find((item) => item.textContent === profileB.profileName)!.click();
+		window.dispatchEvent(new HashChangeEvent("hashchange"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+
+		const img = root.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG_B));
+
+		holdSurfacesB.resolve([identityB]);
+		await settle();
+	});
+
+	it("restores cached wordmarks from localStorage on reload and wipes previous account storage on switch or sign-out", async () => {
+		vi.useFakeTimers();
+		const fakeA = folderFake();
+		fakeA.put("identity/wordmark.svg", LIGHT_SVG);
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([identitySummary()]);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fakeA.folder as never);
+
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const first = fixture();
+		const root1 = document.createElement("div");
+		document.body.append(root1);
+		const dispose1 = mountApplication(root1, first.cloud, first.api);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(root1.querySelector<HTMLImageElement>(".rail-company-wordmark")?.getAttribute("src")).toBe(
+			svgUrl(LIGHT_SVG),
+		);
+		dispose1();
+		root1.remove();
+
+		const holdSurfaces = deferred<SurfaceSummary[]>();
+		const blockedReadMany = deferred<never[]>();
+		vi.mocked(CloudSurfacesClient.prototype.listSurfaces).mockImplementation(() => holdSurfaces.promise);
+		fakeA.folder.readMany = vi.fn(() => blockedReadMany.promise as never);
+
+		const second = fixture();
+		const root2 = document.createElement("div");
+		document.body.append(root2);
+		cleanup.push(mountApplication(root2, second.cloud, second.api));
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+
+		const img = root2.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
+		expect(fakeA.folder.readMany).not.toHaveBeenCalled();
+
+		const storageKeyA = `qorpera.web.company-wordmarks.v1:${second.cloud.config.projectUrl}:${userA.id}`;
+		expect(localStorage.getItem(storageKeyA)).not.toBeNull();
+
+		second.auth(userB);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(localStorage.getItem(storageKeyA)).toBeNull();
+		expect(root2.querySelector<HTMLImageElement>(".rail-company-wordmark")?.hidden).toBe(true);
+	});
+
+	it("clears stale cached wordmarks once live Identity settles without a wordmark or Surfaces are disabled", async () => {
+		const cache = new CompanyWordmarkCache("test-clear");
+		cache.setAccount(userA.id);
+		cache.set(profileA.profileId, { light: svgUrl(LIGHT_SVG), dark: svgUrl(DARK_SVG) }, "live");
+		setCompanyWordmarks(cache);
+		cleanup.push(() => cache.dispose());
+
+		const { store, rail, identitySurface } = mountRail({ files: {} });
+		const button = rail.querySelector<HTMLButtonElement>(".rail-company")!;
+		const img = button.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		const name = button.querySelector<HTMLElement>(".rail-company-name")!;
+
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
+
+		await store.load();
+		expect(img.hidden).toBe(false);
+
+		await store.refreshCloudFiles(identitySurface);
+		expect(button.classList.contains("has-wordmark")).toBe(false);
+		expect(img.hidden).toBe(true);
+		expect(name.hidden).toBe(false);
+		expect(cache.get(profileA.profileId)).toBeUndefined();
+
+		cache.set(profileA.profileId, { light: svgUrl(LIGHT_SVG) }, "live");
+		const f = fixture();
+		const company2 = new CompanyController(f.api, profileA, userA.id);
+		company2.store.set({ loading: false, staff: [staff], sessions: [session], team });
+		const disabledStore = storeWith(fakeClient({ isSurfacesEnabled: vi.fn(async () => false) }));
+		attachSurfaces(company2, disabledStore);
+		cleanup.push(() => {
+			disabledStore.dispose();
+			company2.stop();
+		});
+		const rail2 = h("aside", { class: "rail" });
+		document.body.append(rail2);
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const draw2 = () =>
+			renderRail(rail2, company2, {
+				profiles: [profileA],
+				user: userA,
+				route: { name: "company", profileId: profileA.profileId, section: "home" },
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+			});
+		draw2();
+		expect(rail2.querySelector<HTMLImageElement>(".rail-company-wordmark")?.hidden).toBe(false);
+		await disabledStore.load();
+		draw2();
+		expect(rail2.querySelector<HTMLImageElement>(".rail-company-wordmark")?.hidden).toBe(true);
+		expect(cache.get(profileA.profileId)).toBeUndefined();
+	});
+
+	it("keeps cached staged dark wordmark while workspace hydrates and hydrates Identity in parallel", async () => {
+		setTheme("dark");
+		const cache = new CompanyWordmarkCache("test-staged");
+		cache.setAccount(userA.id);
+		cache.set(profileA.profileId, { light: svgUrl(LIGHT_SVG), dark: svgUrl(DARK_SVG) }, "live");
+		setCompanyWordmarks(cache);
+		cleanup.push(() => cache.dispose());
+
+		const identitySurface = identitySummary({ activeSessionCount: 1 });
+		const wsReady = deferred<ReturnType<typeof workspace>>();
+		const getSurfaceWorkspace = vi.fn(() => wsReady.promise);
+		const loadCloudFiles = vi.fn(async () => folderContents({ "identity/wordmark.svg": LIGHT_SVG }));
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [identitySurface]),
+				getSurfaceWorkspace,
+			}),
+			{ loadCloudFiles },
+		);
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ loading: false, staff: [staff], sessions: [session], team });
+		attachSurfaces(company, store);
+		cleanup.push(() => {
+			store.dispose();
+			company.stop();
+		});
+		const rail = h("aside", { class: "rail" });
+		document.body.append(rail);
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const draw = () =>
+			renderRail(rail, company, {
+				profiles: [profileA],
+				user: userA,
+				route: { name: "company", profileId: profileA.profileId, section: "home" },
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+			});
+		cleanup.push(store.store.subscribe(draw));
+		draw();
+
+		const img = rail.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+
+		await store.load();
+		store.refreshPendingCloudFiles();
+		await settle();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(identitySurface.id);
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+
+		wsReady.resolve(
+			workspace(
+				[
+					surfaceSession(["staged"], {
+						id: SESSION,
+						surfaceId: identitySurface.id,
+						changes: [
+							{
+								id: CHANGES[0],
+								sessionId: SESSION,
+								surfaceId: identitySurface.id,
+								seq: 1,
+								title: "Add dark wordmark",
+								summary: "",
+								kind: "folder_patch",
+								status: "staged",
+								parentSha: null,
+								headSha: null,
+								dependsOnChangeIds: [],
+								diffStats: null,
+								affectedPaths: ["identity/wordmark-dark.svg"],
+								conflictPaths: null,
+								landedChangeNumber: null,
+								canUndo: false,
+								createdAt: "2026-11-25T05:00:00.000Z",
+								resolvedAt: null,
+								patchManifest: [
+									{
+										op: "write_text",
+										path: "identity/wordmark-dark.svg",
+										content: DARK_SVG,
+									},
+								],
+							},
+						],
+					}),
+				],
+				{ surface: identitySurface },
+			),
+		);
+		await settle();
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
+	});
+
+	it("caches decoded binary wordmarks across visits without flashing plain text while re-reading binary", async () => {
+		const cache = new CompanyWordmarkCache("test-binary");
+		cache.setAccount(userA.id);
+		setCompanyWordmarks(cache);
+		cleanup.push(() => cache.dispose());
+
+		let blobCount = 0;
+		vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:cached-bin-${++blobCount}`);
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+		const lightPng = pngRef("e".repeat(64));
+		const first = mountRail({
+			binaries: { "identity/wordmark.png": lightPng },
+			readCloudBinary: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
+		});
+		await first.store.load();
+		await first.store.refreshCloudFiles(first.identitySurface);
+		await settle();
+		expect(cache.get(profileA.profileId)?.light).toMatch(/^data:image\/png;base64,/);
+
+		const secondRead = deferred<Uint8Array>();
+		const second = mountRail({
+			binaries: { "identity/wordmark.png": lightPng },
+			readCloudBinary: vi.fn(() => secondRead.promise),
+		});
+		const img2 = second.rail.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		expect(img2.hidden).toBe(false);
+		expect(img2.getAttribute("src")).toBe(cache.get(profileA.profileId)?.light);
+
+		await second.store.load();
+		await second.store.refreshCloudFiles(second.identitySurface);
+		await settle();
+		expect(img2.hidden).toBe(false);
+		expect(img2.getAttribute("src")).toBe(cache.get(profileA.profileId)?.light);
+
+		secondRead.resolve(new Uint8Array([137, 80, 78, 71]));
+		await settle();
+		expect(img2.hidden).toBe(false);
+		expect(img2.getAttribute("src")).toBe("blob:cached-bin-2");
 	});
 
 	it("loads identity files once when refreshSurfaces activates a proposed identity surface", async () => {

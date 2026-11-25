@@ -60,6 +60,7 @@ import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
+import { CompanyWordmarkCache, companyWordmarks, setCompanyWordmarks } from "./company-wordmark.ts";
 import { DATA_PAGE, wantDataList } from "./data-page.ts";
 import { folderImageReader } from "./folder-images.ts";
 import type { FoundingController } from "./founding.ts";
@@ -322,6 +323,8 @@ export function mountApplication(
 	// Every company figure shows the company's own logo through this store, once it has one.
 	const logos = new CompanyLogos(api);
 	setCompanyLogos(logos);
+	const wordmarks = new CompanyWordmarkCache(cloud.config.projectUrl);
+	setCompanyWordmarks(wordmarks);
 
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": t("Company navigation") });
@@ -841,11 +844,12 @@ export function mountApplication(
 	auth.store.subscribe(() => {
 		const userId = auth.userId;
 		if (userId !== accountUserId) {
+			const switchingAccount = accountUserId !== undefined;
 			// A return from Stripe belongs to the member who paid, not to whoever signs in next;
 			// the first sign-in of the page (back from Stripe) keeps it.
-			if (accountUserId !== undefined) checkoutReturn = undefined;
+			if (switchingAccount) checkoutReturn = undefined;
 			// So does a ChatGPT plan sign-in: it is finished only for the member who started it.
-			if (accountUserId !== undefined && planReturn) {
+			if (switchingAccount && planReturn) {
 				planReturn = undefined;
 				forgetChatGptPlanSignIn();
 			}
@@ -856,6 +860,7 @@ export function mountApplication(
 			online.mark();
 			pictures.reset();
 			logos.reset();
+			wordmarks.setAccount(userId, switchingAccount);
 			accountRevision++;
 			routeRevision++;
 			teardownCompany();
@@ -882,6 +887,19 @@ export function mountApplication(
 	});
 	window.addEventListener("hashchange", onRouteChange);
 
+	const wordmarkFolder = (profile: HostedProfile, userId: string, signal: AbortSignal) =>
+		new WebCompanyFiles(
+			cloud,
+			profile,
+			userId,
+			"viewer",
+			signal,
+			() => {
+				if (disposed || auth.userId !== userId) throw new Error(t("Company access changed."));
+			},
+			false,
+		).folder();
+
 	function shellContext(user: User | null, route: Route): ShellContext {
 		return {
 			profiles,
@@ -893,6 +911,18 @@ export function mountApplication(
 			openFriends,
 			invites: api,
 			invitations: hub.store.get().invitations.length,
+			prefetchCompanyWordmarks: (list) => {
+				const userId = auth.userId;
+				if (!userId || disposed) return;
+				const currentProfileId = company?.profile.profileId;
+				const targets = list
+					.filter((profile) => profile.profileId !== currentProfileId)
+					.map((profile) => ({
+						profileId: profile.profileId,
+						createFolder: (signal: AbortSignal) => wordmarkFolder(profile, userId, signal),
+					}));
+				if (targets.length > 0) void wordmarks.prefetchMany(targets);
+			},
 			...(route.name === "company" && company && !company.store.get().accessLost
 				? {
 						navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) },
@@ -1040,6 +1070,7 @@ export function mountApplication(
 		const currentHub = hub;
 		return (profileId) => {
 			if (disposed || hub !== currentHub) return;
+			wordmarks.forget(profileId);
 			void currentHub.companyRemoved(profileId);
 			const route = currentRoute();
 			if (route.name === "company" && route.profileId === profileId) {
@@ -1296,6 +1327,11 @@ export function mountApplication(
 				});
 				controller.signal.addEventListener("abort", stopSurfaceHints, { once: true });
 				void surfaces.load();
+				void wordmarks.prefetch(
+					profile.profileId,
+					(signal) => wordmarkFolder(profile, userId, signal),
+					controller.signal,
+				);
 				const syncIdentityFiles = () => {
 					if (
 						controller.signal.aborted ||
@@ -3589,6 +3625,8 @@ export function mountApplication(
 		if (personPictures() === pictures) setPersonPictures(undefined);
 		logos.reset();
 		if (companyLogos() === logos) setCompanyLogos(undefined);
+		wordmarks.dispose();
+		if (companyWordmarks() === wordmarks) setCompanyWordmarks(undefined);
 		window.removeEventListener("hashchange", onRouteChange);
 		root.removeEventListener("click", onFolderLink);
 		window.removeEventListener("keydown", onEscape);

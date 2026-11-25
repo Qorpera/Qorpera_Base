@@ -913,6 +913,25 @@ export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles
 	return result;
 }
 
+export type IdentityWordmarkStatus = "loading" | "preview-loading" | "settled";
+
+export function identityWordmarkStatus(store: SurfacesStore | undefined, disabled = false): IdentityWordmarkStatus {
+	if (disabled) return "settled";
+	if (!store) return "loading";
+	const state = store.state;
+	if (state.source === "loading") return "loading";
+	if (state.source !== "cloud") return "settled";
+	const identity = findIdentitySurface(state);
+	if (!identity) return "settled";
+	if (state.cloudSurfaceFiles[identity.id] === undefined && state.localStudioBase[identity.id] === undefined) {
+		return "loading";
+	}
+	if (state.mode !== "live" && identity.activeSessionCount > 0 && !state.workspaces[identity.id]) {
+		return "preview-loading";
+	}
+	return "settled";
+}
+
 export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityTokens | null {
 	const identity = companyIdentityFiles(state);
 	if (!identity) return null;
@@ -3113,13 +3132,13 @@ export class SurfacesStore {
 			}
 		}
 		const identity = findIdentitySurface(this.state);
-		if (
-			identity &&
-			!seen.has(identity.id) &&
-			!isLocalSurfaceId(identity.id) &&
-			!this.state.cloudSurfaceFiles[identity.id]
-		) {
-			void this.refreshCloudFiles(identity);
+		if (identity && !isLocalSurfaceId(identity.id)) {
+			if (!seen.has(identity.id) && !this.state.cloudSurfaceFiles[identity.id]) {
+				void this.refreshCloudFiles(identity);
+			}
+			if (identity.activeSessionCount > 0 && !this.state.workspaces[identity.id]) {
+				this.hydrateWorkspace(identity.id);
+			}
 		}
 	}
 
@@ -5849,13 +5868,11 @@ export class SurfacesStore {
 					this.store.set({ surfaces: next });
 				}
 				const identity = findIdentitySurface(this.state);
-				if (
-					identity &&
-					prevById.get(identity.id)?.status !== "active" &&
-					!isLocalSurfaceId(identity.id) &&
-					!this.state.cloudSurfaceFiles[identity.id]
-				) {
-					void this.refreshCloudFiles(identity);
+				if (identity && prevById.get(identity.id)?.status !== "active" && !isLocalSurfaceId(identity.id)) {
+					if (!this.state.cloudSurfaceFiles[identity.id]) void this.refreshCloudFiles(identity);
+					if (identity.activeSessionCount > 0 && !this.state.workspaces[identity.id]) {
+						this.hydrateWorkspace(identity.id);
+					}
 				}
 				for (const surface of next) {
 					if (surface.status !== "active" || isLocalSurfaceId(surface.id)) continue;
