@@ -1737,7 +1737,7 @@ export async function* maskCodingChannelExecLines(
 		) {
 			const procKey = String(parsed.params.processId);
 			for (const [key, entry] of [...streams.entries()]) {
-				if (String(entry.processId) !== procKey) continue;
+				if (entry.kind !== "output" || String(entry.processId) !== procKey) continue;
 				streams.delete(key);
 				const flushed = flushTracked(entry);
 				if (flushed) yield flushed;
@@ -1753,6 +1753,7 @@ export async function* maskCodingChannelExecLines(
 			const maskedMessage = maskJsonStrings(parsed, createMask) as Record<string, unknown>;
 			const maskedResult = isRecord(maskedMessage.result) ? maskedMessage.result : {};
 			const touchedKeys = new Set<string>();
+			const lastChunkIndexByStream = new Map<string, number>();
 			const chunks: unknown[] = [];
 			for (const entry of parsed.result.chunks) {
 				if (isRecord(entry) && typeof entry.chunk === "string") {
@@ -1763,6 +1764,7 @@ export async function* maskCodingChannelExecLines(
 					touchedKeys.add(streamKey);
 					const maskedEntry = maskJsonStrings(entry, createMask) as Record<string, unknown>;
 					const maskedChunk = taken.mask.push(Buffer.from(entry.chunk, "base64"));
+					lastChunkIndexByStream.set(streamName, chunks.length);
 					chunks.push({ ...maskedEntry, chunk: Buffer.from(maskedChunk).toString("base64") });
 				} else {
 					chunks.push(maskJsonStrings(entry, createMask));
@@ -1775,7 +1777,14 @@ export async function* maskCodingChannelExecLines(
 					streams.delete(key);
 					const tail = entry.mask.end();
 					if (tail.byteLength > 0) {
-						chunks.push({ stream: entry.stream, chunk: Buffer.from(tail).toString("base64") });
+						const lastIdx = lastChunkIndexByStream.get(entry.stream);
+						const lastChunk = lastIdx !== undefined ? chunks[lastIdx] : undefined;
+						if (isRecord(lastChunk) && typeof lastChunk.chunk === "string") {
+							const merged = Buffer.concat([Buffer.from(lastChunk.chunk, "base64"), Buffer.from(tail)]);
+							chunks[lastIdx!] = { ...lastChunk, chunk: merged.toString("base64") };
+						} else {
+							chunks.push({ stream: entry.stream, chunk: Buffer.from(tail).toString("base64") });
+						}
 					}
 				}
 			}
