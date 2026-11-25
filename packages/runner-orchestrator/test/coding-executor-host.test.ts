@@ -2673,7 +2673,7 @@ describe("housekeeping of a member's machines", () => {
 			environmentId: f.machine.environmentId,
 			providerId: "coding",
 			providerPolicySha256: "a".repeat(64),
-			repository: f.claim.repository,
+			repository: f.claim.repository!,
 			storage: lxdCodingSessionStorage(f.machine, f.placement, workerId),
 			project: "coding",
 			imageFingerprint: "b".repeat(64),
@@ -9484,7 +9484,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(builds[0]?.environment.SHOP_KEY).toBeUndefined();
 			expect(Object.values(builds[0]?.environment ?? {})).not.toContain("secret-shop-333333");
 			const copyRun = f.ran().find((run) => run.environment.QORPERA_CHECKS_COMMIT === COMMIT);
-			expect(copyRun?.environment.QORPERA_CHECKS_BLESSED_CACHES_BRANCH).toBe(f.claim.repository.baseBranch);
+			expect(copyRun?.environment.QORPERA_CHECKS_BLESSED_CACHES_BRANCH).toBe(f.claim.repository!.baseBranch);
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHE_ROOT).toContain(CODING_CHECK_CACHES.root);
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHES).toBeUndefined();
 			expect(f.folderExecStream).not.toHaveBeenCalled();
@@ -9512,7 +9512,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			);
 			expect(result).toEqual({ outcome: "built", builtTreeSha: builtTree });
 			const copyRun = f.ran().find((run) => run.environment.QORPERA_CHECKS_COMMIT === COMMIT);
-			expect(copyRun?.environment.QORPERA_CHECKS_BLESSED_CACHES_BRANCH).toBe(f.claim.repository.baseBranch);
+			expect(copyRun?.environment.QORPERA_CHECKS_BLESSED_CACHES_BRANCH).toBe(f.claim.repository!.baseBranch);
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHE_ROOT).toContain(CODING_CHECK_CACHES.root);
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHES).toBeUndefined();
 			expect(f.folderExecStream).not.toHaveBeenCalled();

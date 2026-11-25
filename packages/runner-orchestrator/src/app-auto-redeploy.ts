@@ -602,7 +602,8 @@ export function createNativeEdgeAutoRedeploy(
 	signal: AbortSignal,
 ) => Promise<CodingAutoRedeployContext | null> {
 	return async (claim, landed, signal) => {
-		if (claim.repository.host !== "qorpera" || landed.state === "unchanged") return null;
+		const repository = claim.repository;
+		if (!repository || repository.host !== "qorpera" || landed.state === "unchanged") return null;
 		const change = landed.change;
 		if (change === null || !Number.isSafeInteger(change) || change < 1) return null;
 		const appHostInternalUrl = options.nativeEdge.appHostInternalUrl;
@@ -613,7 +614,7 @@ export function createNativeEdgeAutoRedeploy(
 			claim.profileId,
 			claim.environmentId,
 			signal,
-			(job) => options.readDeployConfig(job, { repository: claim.repository, commitSha: landed.mainSha }),
+			(job) => options.readDeployConfig(job, { repository, commitSha: landed.mainSha }),
 			{ yields: true },
 		);
 		if (!configResult) return null;
@@ -621,7 +622,7 @@ export function createNativeEdgeAutoRedeploy(
 		const parsedConfig = parseAppDeployConfig(JSON.parse(configResult.rawConfig));
 		const match = shouldAutoRedeployOnCodeChange(parsedConfig, {
 			kind: "landed",
-			repo: `${claim.repository.owner}/${claim.repository.name}`,
+			repo: `${repository.owner}/${repository.name}`,
 			change: String(change),
 			mainBefore: landed.mainBefore ?? null,
 			mainAfter: landed.mainSha,
@@ -636,8 +637,8 @@ export function createNativeEdgeAutoRedeploy(
 					p_owner: options.owner,
 					p_machine_id_sha256: options.machineIdSha256,
 					p_environment_id: claim.environmentId,
-					p_repository_owner: claim.repository.owner,
-					p_name: claim.repository.name,
+					p_repository_owner: repository.owner,
+					p_name: repository.name,
 					p_change: change,
 				},
 				hookSignal,
@@ -682,12 +683,12 @@ export function createNativeEdgeAutoRedeploy(
 		let promotedNewInDb = false;
 		const envSpec = buildNativeAppEnvSpec({
 			port: appPort,
-			repositoryOwner: claim.repository.owner,
-			repositoryName: claim.repository.name,
+			repositoryOwner: repository.owner,
+			repositoryName: repository.name,
 			companyDataUrl: options.nativeEdge.companyDataUrl,
 			objectStorageUrl: options.nativeEdge.objectStorageUrl,
 		});
-		const repoKey = `${claim.environmentId}:${claim.repository.owner.toLowerCase()}/${claim.repository.name.toLowerCase()}`;
+		const repoKey = `${claim.environmentId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}`;
 		const changeKey = `${repoKey}:${change}`;
 
 		const switchLiveDeployment = async (
@@ -748,7 +749,7 @@ export function createNativeEdgeAutoRedeploy(
 							hookSignal,
 							(job) =>
 								options.exportSource(job, {
-									repository: claim.repository,
+									repository,
 									tree,
 									kind: "server",
 								}),
@@ -769,8 +770,8 @@ export function createNativeEdgeAutoRedeploy(
 									target: {
 										companyId: claim.profileId,
 										environmentId: claim.environmentId,
-										owner: claim.repository.owner,
-										name: claim.repository.name,
+										owner: repository.owner,
+										name: repository.name,
 									},
 									change,
 									tree,
@@ -791,8 +792,8 @@ export function createNativeEdgeAutoRedeploy(
 									p_owner: options.owner,
 									p_machine_id_sha256: options.machineIdSha256,
 									p_environment_id: claim.environmentId,
-									p_repository_owner: claim.repository.owner,
-									p_name: claim.repository.name,
+									p_repository_owner: repository.owner,
+									p_name: repository.name,
 									p_change: change,
 									p_kind: "server",
 									p_manifest_sha256: manifestSha256,

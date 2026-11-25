@@ -326,6 +326,8 @@ export interface CodingExecutorControl {
 	): Promise<unknown>;
 }
 
+export type CodingWorkspaceKind = "git_repo" | "surface_folder" | "surface_ops";
+
 export interface CodingSurfaceSessionClaim {
 	readonly sessionId: string;
 	readonly surfaceId: string;
@@ -345,7 +347,8 @@ export interface CodingSessionClaim {
 	ownerUserId: string;
 	harness: "codex" | "claude-code";
 	model: string | null;
-	repository: CloudCodingRepository;
+	workspaceKind?: CodingWorkspaceKind;
+	repository: CloudCodingRepository | null;
 	branch: string;
 	baseSha: string | null;
 	worktreeCreatedAt?: string | null;
@@ -408,7 +411,7 @@ export function parseCodingPreviewBuild(value: unknown): CodingPreviewBuild {
  * session committed to show its change, by its path in the repository (own code storage, step 2b). The sentence on
  * what a customer will notice stays in the kernel: the executor never needs it. */
 export type CodingSubmission =
-	| { kind: "finish"; summary: string; headSha: string; operationKey: string; picture?: string }
+	| { kind: "finish"; summary: string; headSha: string | null; operationKey: string; picture?: string }
 	| { kind: "ask"; summary: string; question: string; options: string[]; operationKey: string };
 
 /** The turn as qorpera_describe_coding_turn reports it. */
@@ -432,7 +435,7 @@ export interface CodingTurnState {
 
 export interface CodingWorkspace {
 	vmId: string;
-	baseSha: string;
+	baseSha: string | null;
 }
 export interface CodingExecutorPublication {
 	readonly pullRequest: CloudCodingPullRequest | null;
@@ -538,6 +541,16 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		!dispatch.goal.trim()
 	)
 		throw new Error("Invalid coding claim");
+	const workspaceKind: CodingWorkspaceKind =
+		item.workspaceKind === undefined
+			? "git_repo"
+			: item.workspaceKind === "git_repo" ||
+					item.workspaceKind === "surface_folder" ||
+					item.workspaceKind === "surface_ops"
+				? item.workspaceKind
+				: (() => {
+						throw new Error("Invalid coding claim");
+					})();
 	let surfaceSession: CodingSurfaceSessionClaim | undefined;
 	if (item.surfaceSession !== undefined && item.surfaceSession !== null) {
 		const rawSurface = codingRecord(item.surfaceSession, "Invalid coding claim");
@@ -560,6 +573,9 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 			title: rawSurface.title.trim(),
 		};
 	}
+	if (workspaceKind !== "git_repo" && (item.repository !== null || !surfaceSession || item.pullRequest != null))
+		throw new Error("Invalid coding claim");
+	const repository = workspaceKind === "git_repo" ? parseCloudCodingRepository(item.repository) : null;
 	return {
 		workerId: String(item.workerId),
 		leaseToken: String(item.leaseToken),
@@ -571,7 +587,8 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		ownerUserId: String(item.ownerUserId),
 		harness: item.harness,
 		model: optionalText(item.model, 96),
-		repository: parseCloudCodingRepository(item.repository),
+		...(workspaceKind !== "git_repo" ? { workspaceKind } : {}),
+		repository,
 		branch: item.branch,
 		baseSha: item.baseSha === undefined ? null : (item.baseSha as string | null),
 		...(item.worktreeCreatedAt === undefined ? {} : { worktreeCreatedAt: optionalText(item.worktreeCreatedAt, 64) }),
@@ -579,7 +596,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		pullRequest:
 			item.pullRequest === null || item.pullRequest === undefined
 				? null
-				: parseCloudCodingPullRequest(item.pullRequest, parseCloudCodingRepository(item.repository)),
+				: parseCloudCodingPullRequest(item.pullRequest, repository!),
 		title: text(item.title, 400),
 		goal: text(dispatch.goal),
 		definitionOfDone: text(dispatch.definitionOfDone ?? "", 4000),
@@ -595,7 +612,10 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 const PICTURE_PATH =
 	/^[A-Za-z0-9._-][A-Za-z0-9._ -]*(?:\/[A-Za-z0-9._-][A-Za-z0-9._ -]*)*\.(?:png|jpg|jpeg|webp|PNG|JPG|JPEG|WEBP)$/;
 
-export function parseCodingSubmission(value: unknown): CodingSubmission | null {
+export function parseCodingSubmission(
+	value: unknown,
+	workspaceKind: CodingWorkspaceKind = "git_repo",
+): CodingSubmission | null {
 	if (value === null || value === undefined) return null;
 	const item = codingRecord(value, "Invalid coding submission");
 	if (
@@ -606,9 +626,15 @@ export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 	)
 		throw new Error("Invalid coding submission");
 	if (item.kind === "finish") {
-		if (typeof item.headSha !== "string" || !SHA40.test(item.headSha)) throw new Error("Invalid coding submission");
+		if (workspaceKind === "git_repo") {
+			if (typeof item.headSha !== "string" || !SHA40.test(item.headSha))
+				throw new Error("Invalid coding submission");
+		} else if (item.headSha !== null && item.headSha !== undefined) {
+			throw new Error("Invalid coding submission");
+		}
 		// A picture that is not a path the kernel takes is dropped: the work is handed in without one.
 		const picture =
+			workspaceKind === "git_repo" &&
 			typeof item.picture === "string" &&
 			Buffer.byteLength(item.picture) <= 300 &&
 			PICTURE_PATH.test(item.picture) &&
@@ -618,7 +644,7 @@ export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 		return {
 			kind: "finish",
 			summary: item.summary,
-			headSha: item.headSha,
+			headSha: workspaceKind === "git_repo" ? (item.headSha as string) : null,
 			operationKey: item.operationKey,
 			...picture,
 		};
@@ -633,7 +659,7 @@ export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 
 export function parseCodingTurnState(
 	value: unknown,
-	claim: Pick<CodingSessionClaim, "workerId" | "sequence" | "repository">,
+	claim: Pick<CodingSessionClaim, "workerId" | "sequence" | "repository" | "workspaceKind">,
 ): CodingTurnState {
 	const item = codingRecord(value, "Invalid coding turn state");
 	const optionalUuid = (v: unknown) =>
@@ -651,7 +677,8 @@ export function parseCodingTurnState(
 		typeof item.phase !== "string" ||
 		typeof item.workerState !== "string" ||
 		[vmAllocationId, storageVolumeId, occurrenceId, runId].includes(undefined) ||
-		(item.baseSha !== null && item.baseSha !== undefined && !SHA40.test(String(item.baseSha)))
+		(item.baseSha !== null && item.baseSha !== undefined && !SHA40.test(String(item.baseSha))) ||
+		(item.pullRequest !== null && item.pullRequest !== undefined && claim.repository === null)
 	)
 		throw new Error("Invalid coding turn state");
 	return {
@@ -668,11 +695,11 @@ export function parseCodingTurnState(
 		runId: runId ?? null,
 		jobStatus: optionalText(item.jobStatus, 64),
 		jobError: optionalText(item.jobError, 4000),
-		submission: parseCodingSubmission(item.submission),
+		submission: parseCodingSubmission(item.submission, claim.workspaceKind ?? "git_repo"),
 		pullRequest:
 			item.pullRequest === null || item.pullRequest === undefined
 				? null
-				: parseCloudCodingPullRequest(item.pullRequest, claim.repository),
+				: parseCloudCodingPullRequest(item.pullRequest, claim.repository!),
 	};
 }
 
@@ -1117,7 +1144,11 @@ export class CloudCodingExecutor {
 							{
 								kind: "step",
 								actor: "executor",
-								body: { text: `Prepared the repository at ${workspace.baseSha.slice(0, 7)}` },
+								body: {
+									text: workspace.baseSha
+										? `Prepared the repository at ${workspace.baseSha.slice(0, 7)}`
+										: "Prepared the surface workspace",
+								},
 							},
 						],
 					});
@@ -1205,6 +1236,17 @@ export class CloudCodingExecutor {
 				// 3. What the harness left behind decides the outcome; prose never does.
 				const submission = turn.submission;
 				if (submission?.kind === "finish" && turn.jobStatus === "completed") {
+					const isSurfaceWorkspace =
+						claimed.workspaceKind === "surface_folder" || claimed.workspaceKind === "surface_ops";
+					if (isSurfaceWorkspace) {
+						end();
+						await complete("succeeded", submission.summary, {
+							p_harness_session_ref: claimed.harnessSessionRef,
+						});
+						return "completed";
+					}
+					const repository = claimed.repository;
+					if (!repository) throw new Error("Coding repository missing");
 					const noChanges =
 						submission.headSha === workspace.baseSha && !claimed.pullRequest && !claimed.surfaceSession;
 					await progress({
@@ -1215,7 +1257,7 @@ export class CloudCodingExecutor {
 							? CODING_STAGING_STEP
 							: noChanges
 								? CODING_NO_CHANGE_STEP
-								: claimed.repository.host === "qorpera"
+								: repository.host === "qorpera"
 									? CODING_LANDING_STEP
 									: "Publishing the draft pull request",
 					});
@@ -1228,8 +1270,8 @@ export class CloudCodingExecutor {
 								"qorpera_emit_code_change_routine_wakes",
 								{
 									p_environment_id: claimed.environmentId,
-									p_owner: claimed.repository.owner,
-									p_name: claimed.repository.name,
+									p_owner: repository.owner,
+									p_name: repository.name,
 									p_kind: kind,
 									p_event: event,
 								},
@@ -1247,7 +1289,7 @@ export class CloudCodingExecutor {
 						if (active.aborted) throw error;
 						end();
 						if (error instanceof CodingLandConflict) {
-							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths, error.messages));
+							await complete("failed", landConflict(repository.baseBranch, error.paths, error.messages));
 							await emitCodeChange("conflict", {
 								workerId: claimed.workerId,
 								...(turn.runId ? { parentRunId: turn.runId } : {}),
@@ -1331,7 +1373,7 @@ export class CloudCodingExecutor {
 											{
 												kind: "landed",
 												state: landed.state,
-												branch: claimed.repository.baseBranch,
+												branch: repository.baseBranch,
 												headSha: submission.headSha,
 												mainSha: landed.mainSha,
 											},
@@ -1358,7 +1400,7 @@ export class CloudCodingExecutor {
 										config,
 										event: {
 											kind: "landed",
-											repo: `${claimed.repository.owner}/${claimed.repository.name}`,
+											repo: `${repository.owner}/${repository.name}`,
 											change: landed.change !== null ? String(landed.change) : landed.mainSha,
 											mainBefore: landed.mainBefore ?? null,
 											mainAfter: landed.mainSha,
