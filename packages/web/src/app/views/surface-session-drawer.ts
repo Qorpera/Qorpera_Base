@@ -1988,10 +1988,10 @@ export class SurfaceSessionDrawer {
 		switch (act) {
 			case "close":
 			case "close-panel":
-				store.closePanel();
+				store.closePanel(surfaceId);
 				return;
 			case "back-overview":
-				store.openPreviewPanel();
+				store.returnToOverview(surfaceId);
 				return;
 			case "open-report":
 				store.openReport(surfaceId, report);
