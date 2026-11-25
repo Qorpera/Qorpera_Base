@@ -230,6 +230,14 @@ export class SurfaceStudioView {
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
+		const dropHost = options.store.hostDeliverables(options.surface.id, (path) => this.#revealDeliverable(path));
+		this.#lifetime.signal.addEventListener("abort", dropHost, { once: true });
+		queueMicrotask(() => {
+			const { mode, activeReportSlug } = options.store.state;
+			if (!this.#lifetime.signal.aborted && mode === "preview" && activeReportSlug) {
+				options.store.selectReport(undefined);
+			}
+		});
 		if (!options.baseFiles) {
 			const cloudManaged =
 				options.store.canLoadCloudFiles &&
@@ -265,6 +273,16 @@ export class SurfaceStudioView {
 		}
 		this.#layout?.dispose();
 		this.#lifetime.abort();
+	}
+
+	#revealDeliverable(path: string): boolean {
+		const tab = this.#layout?.tabFor(path);
+		if (!tab) return false;
+		this.#tab = tab;
+		queueMicrotask(() => {
+			if (!this.#lifetime.signal.aborted) this.update();
+		});
+		return true;
 	}
 
 	#disposeHtmlFrames(): void {
@@ -1125,6 +1143,7 @@ export class SurfaceStudioView {
 			const next = target.dataset.tab;
 			if (next && next !== this.#tab) {
 				this.#tab = next;
+				this.#options.store.selectReport(undefined);
 				this.update();
 			}
 			return;

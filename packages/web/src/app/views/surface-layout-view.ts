@@ -189,6 +189,7 @@ export class SurfaceLayoutView {
 	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
+	#reportTabs: readonly { readonly id: string; readonly holds: (path: string) => boolean }[] = [];
 
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
@@ -228,6 +229,12 @@ export class SurfaceLayoutView {
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
 		const claimed = claimedFiles(layout, ctx, layoutPath);
+		this.#reportTabs = layout.tabs.map((tab) => {
+			const includes = tab.blocks
+				.flatMap((node) => (node.type === "row" ? node.blocks : [node]))
+				.flatMap((block) => (block.type === "report" ? [reportFiles(block, ctx).include] : []));
+			return { id: tab.id, holds: (path: string) => includes.some((include) => include(path)) };
+		});
 		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
 		this.#stages.keep(stageKeys);
 		const current = tabs.find((item) => item.tab.id === input.tab) ?? tabs[0]!;
@@ -402,6 +409,10 @@ export class SurfaceLayoutView {
 		}
 		flush();
 		return tasks;
+	}
+
+	tabFor(path: string): string | undefined {
+		return this.#reportTabs.find((tab) => tab.holds(path))?.id;
 	}
 
 	click(target: HTMLElement, root: HTMLElement): boolean {

@@ -1417,6 +1417,7 @@ export class SurfacesStore {
 	readonly #cloudFilesDirty = new Set<string>();
 	readonly #cloudFilesDirtyVisible = new Set<string>();
 	readonly #cloudFilesRev = new Map<string, number>();
+	readonly #deliverableHosts = new Map<string, (path: string) => boolean>();
 	readonly #mintingPreviewPasses = new Map<string, Promise<boolean>>();
 	readonly #previewPassMeta = new Map<
 		string,
@@ -3234,12 +3235,21 @@ export class SurfacesStore {
 		});
 	}
 
-	async openChangeDeliverable(surfaceId: string, changeId: string, slug: string): Promise<void> {
+	hostDeliverables(surfaceId: string, reveal: (path: string) => boolean): () => void {
+		this.#deliverableHosts.set(surfaceId, reveal);
+		return () => {
+			if (this.#deliverableHosts.get(surfaceId) === reveal) this.#deliverableHosts.delete(surfaceId);
+		};
+	}
+
+	async openChangeDeliverable(surfaceId: string, changeId: string, slug: string, path?: string): Promise<void> {
 		const state = this.state;
 		const surface = state.surfaces.find((item) => item.id === surfaceId);
 		const dedicatedReport = Boolean(surface && this.lookOf(surface).kind === "report");
 		const wasHidden = Boolean(state.hiddenChanges[changeId]);
-		if (!dedicatedReport && !wasHidden && state.mode === "report" && state.activeReportSlug === slug) {
+		const inTab = Boolean(!dedicatedReport && path && this.#deliverableHosts.get(surfaceId)?.(path));
+		if (inTab && state.mode === "compare") this.setMode("preview");
+		if (!inTab && !dedicatedReport && !wasHidden && state.mode === "report" && state.activeReportSlug === slug) {
 			this.store.set({ mode: "preview", activeReportSlug: undefined });
 			return;
 		}
@@ -3252,7 +3262,7 @@ export class SurfacesStore {
 			}
 			return {
 				hiddenChanges,
-				mode: dedicatedReport ? ("preview" as const) : ("report" as const),
+				mode: dedicatedReport || inTab ? ("preview" as const) : ("report" as const),
 				activeReportSlug: slug,
 				...(current.previewPanel === "closed" ? { previewPanel: "open" as const } : {}),
 			};

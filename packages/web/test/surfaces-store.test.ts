@@ -3149,6 +3149,32 @@ describe("SurfacesStore", () => {
 		await store.openChangeDeliverable(dedicatedReport.id, CHANGES[2], "launch-essay");
 		expect(store.state.mode).toBe("preview");
 		expect(store.state.activeReportSlug).toBe("launch-essay");
+
+		const q3Path = "surfaces/marketing/reports/q3.report.json";
+		const revealed: string[] = [];
+		const dropHost = store.hostDeliverables(studio.id, (path) => {
+			revealed.push(path);
+			return path === q3Path;
+		});
+		store.setMode("report");
+		await store.openChangeDeliverable(studio.id, c1.id, "q3-retention", q3Path);
+		expect(revealed).toEqual([q3Path]);
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.activeReportSlug).toBe("q3-retention");
+		await store.openChangeDeliverable(studio.id, c1.id, "q3-retention", q3Path);
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.activeReportSlug).toBe("q3-retention");
+
+		const launchPath = "surfaces/marketing/posts/launch.html";
+		await store.openChangeDeliverable(studio.id, c2.id, surfaceDocSlug(launchPath), launchPath);
+		expect(store.state.mode).toBe("report");
+		expect(store.state.activeReportSlug).toBe(surfaceDocSlug(launchPath));
+
+		dropHost();
+		store.setMode("preview");
+		await store.openChangeDeliverable(studio.id, c1.id, "q3-retention", q3Path);
+		expect(store.state.mode).toBe("report");
+		expect(revealed).toEqual([q3Path, q3Path, launchPath]);
 		store.dispose();
 	});
 
