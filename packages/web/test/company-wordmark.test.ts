@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
-import { type StudioBinaryRef, SURFACE_LAYOUT_SCHEMA } from "@qorpera/contracts";
+import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
+import { type StudioBinaryRef, SURFACE_LAYOUT_SCHEMA, type SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { resolveCompanyWordmarks, wordmarkForTheme } from "../src/app/company-wordmark.ts";
 import type { Route } from "../src/app/router.ts";
 import { attachSurfaces, type CompanyIdentityFiles } from "../src/app/surfaces-store.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
-import { fixture, profileA, session, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import { deferred, fixture, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import { folderFake } from "./folder-fake.ts";
 import {
 	CHANGES,
 	fakeClient,
@@ -51,6 +55,26 @@ function pngRef(sha: string): StudioBinaryRef {
 		bytes: 16,
 		mediaType: "image/png",
 	};
+}
+
+function identitySummary(overrides: Partial<SurfaceSummary> = {}): SurfaceSummary {
+	return summary({
+		id: "22222222-2222-4222-8222-222222222299",
+		slug: "identity",
+		title: "Identity",
+		group: "products",
+		archetype: "studio",
+		kind: "identity",
+		isGlobal: true,
+		icon: "palette",
+		sourceKind: "folder",
+		repositoryKey: null,
+		folderRoot: "identity",
+		siteSlug: null,
+		liveUrl: null,
+		activeSessionCount: 0,
+		...overrides,
+	});
 }
 
 function setTheme(theme: "light" | "dark"): void {
@@ -173,7 +197,7 @@ describe("resolveCompanyWordmarks", () => {
 		expect(lightMissingDark.dark).toBeUndefined();
 	});
 
-	it("supports a brand_mark block with an explicit dark binding and falls back when dark is absent", () => {
+	it("uses canonical wordmark-dark alongside a dual-ground brand_mark block and falls back to from when absent", () => {
 		const layout = JSON.stringify({
 			schema: SURFACE_LAYOUT_SCHEMA,
 			tabs: [
@@ -185,7 +209,6 @@ describe("resolveCompanyWordmarks", () => {
 							type: "brand_mark",
 							id: "wordmark",
 							from: "/identity/custom-wordmark.svg",
-							dark: "/identity/custom-wordmark-dark.svg",
 							grounds: ["light", "dark"],
 							heading: "Wordmark",
 						},
@@ -193,18 +216,18 @@ describe("resolveCompanyWordmarks", () => {
 				},
 			],
 		});
-		const both = resolveCompanyWordmarks(
+		const withDark = resolveCompanyWordmarks(
 			identityFiles({
 				"identity/layout.json": layout,
 				"identity/custom-wordmark.svg": LIGHT_SVG,
-				"identity/custom-wordmark-dark.svg": DARK_SVG,
+				"identity/wordmark-dark.svg": DARK_SVG,
 			}),
 		);
-		expect(both.light).toEqual({
+		expect(withDark.light).toEqual({
 			kind: "svg",
 			src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(LIGHT_SVG)}`,
 		});
-		expect(both.dark).toEqual({
+		expect(withDark.dark).toEqual({
 			kind: "svg",
 			src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(DARK_SVG)}`,
 		});
@@ -218,17 +241,13 @@ describe("resolveCompanyWordmarks", () => {
 		expect(fallback.light).toEqual(fallback.dark);
 	});
 
-	it("resolves binary wordmarks, extended starter layouts, and skips invalid SVG files", () => {
+	it("falls back to canonical binary wordmarks when layout.json is invalid and skips invalid SVG files", () => {
 		const lightPng = pngRef("a".repeat(64));
 		const darkPng = pngRef("b".repeat(64));
 		const binaryMarks = resolveCompanyWordmarks(
 			identityFiles(
 				{
-					"brand/layout.json": JSON.stringify({
-						schema: SURFACE_LAYOUT_SCHEMA,
-						extends: "starter",
-						tabs: [{ id: "extra", title: "Extra", blocks: [{ type: "artifacts" }] }],
-					}),
+					"brand/layout.json": "{not-json",
 					"brand/wordmark.svg": "not valid svg",
 				},
 				{
@@ -258,6 +277,7 @@ describe("sidepanel company selector wordmark", () => {
 		openMenu()?.close();
 		delete document.documentElement.dataset.theme;
 		document.body.replaceChildren();
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 	});
@@ -276,20 +296,7 @@ describe("sidepanel company selector wordmark", () => {
 			sessions: [session],
 			team,
 		});
-		const identitySurface = summary({
-			id: "22222222-2222-4222-8222-222222222299",
-			slug: "identity",
-			title: "Identity",
-			group: "products",
-			archetype: "studio",
-			kind: "identity",
-			isGlobal: true,
-			icon: "palette",
-			sourceKind: "folder",
-			repositoryKey: null,
-			folderRoot: "identity",
-			siteSlug: null,
-			liveUrl: null,
+		const identitySurface = identitySummary({
 			activeSessionCount: options.stagedDarkSvg ? 1 : 0,
 		});
 		const client = fakeClient({
@@ -474,7 +481,8 @@ describe("sidepanel company selector wordmark", () => {
 		expect(img.getAttribute("src")).toBe(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(LIGHT_SVG)}`);
 	});
 
-	it("loads binary wordmarks, swaps by theme, and revokes blob URLs on dispose", async () => {
+	it("loads binary wordmarks, retries after transient read failure, and revokes blob URLs on dispose", async () => {
+		vi.useFakeTimers();
 		const created: string[] = [];
 		const revoked: string[] = [];
 		const createUrl = vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
@@ -487,14 +495,21 @@ describe("sidepanel company selector wordmark", () => {
 		});
 		const lightPng = pngRef("c".repeat(64));
 		const darkPng = pngRef("d".repeat(64));
-		const { company, store, rail, identitySurface } = mountRail({
+		let lightAttempts = 0;
+		const readCloudBinary = vi.fn(async (ref: StudioBinaryRef) => {
+			if (ref.fileSha256 === lightPng.fileSha256) {
+				lightAttempts += 1;
+				if (lightAttempts === 1) throw new Error("transient");
+				return new Uint8Array([1, 2]);
+			}
+			return new Uint8Array([3, 4]);
+		});
+		const { company, store, rail, identitySurface, draw } = mountRail({
 			binaries: {
 				"identity/wordmark.png": lightPng,
 				"identity/wordmark-dark.png": darkPng,
 			},
-			readCloudBinary: vi.fn(
-				async (ref) => new Uint8Array(ref.fileSha256 === lightPng.fileSha256 ? [1, 2] : [3, 4]),
-			),
+			readCloudBinary,
 		});
 		await store.load();
 		await store.refreshCloudFiles(identitySurface);
@@ -502,15 +517,86 @@ describe("sidepanel company selector wordmark", () => {
 		await Promise.resolve();
 
 		const img = rail.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
-		expect(createUrl).toHaveBeenCalledTimes(2);
+		expect(img.hidden).toBe(true);
+		expect(lightAttempts).toBe(1);
+
+		setTheme("dark");
 		expect(img.hidden).toBe(false);
 		expect(img.getAttribute("src")).toBe("blob:wordmark-1");
 
-		setTheme("dark");
+		draw();
+		expect(lightAttempts).toBe(1);
+
+		vi.advanceTimersByTime(60_000);
+		setTheme("light");
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(lightAttempts).toBe(2);
+		expect(createUrl).toHaveBeenCalledTimes(2);
+		expect(img.hidden).toBe(false);
 		expect(img.getAttribute("src")).toBe("blob:wordmark-2");
 
 		company.stop();
 		expect(revokeUrl).toHaveBeenCalledTimes(2);
 		expect(revoked).toEqual(["blob:wordmark-1", "blob:wordmark-2"]);
+	});
+
+	it("loads identity wordmarks on company open when team resolves before cloud surfaces", async () => {
+		vi.useFakeTimers();
+		const identitySurface = identitySummary();
+		const surfacesReady = deferred<SurfaceSummary[]>();
+		const fake = folderFake();
+		fake.put("identity/wordmark.svg", LIGHT_SVG);
+		fake.put("identity/wordmark-dark.svg", DARK_SVG);
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(() => surfacesReady.promise);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder);
+
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		cleanup.push(mountApplication(root, f.cloud, f.api));
+
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(root.querySelector<HTMLImageElement>(".rail-company-wordmark")?.hidden).toBe(true);
+
+		surfacesReady.resolve([identitySurface]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+
+		const img = root.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(LIGHT_SVG)}`);
+
+		setTheme("dark");
+		expect(img.getAttribute("src")).toBe(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(DARK_SVG)}`);
+	});
+
+	it("loads identity files once when refreshSurfaces activates a proposed identity surface", async () => {
+		const proposed = identitySummary({ status: "proposed" });
+		const active = identitySummary({ status: "active" });
+		const listSurfaces = vi
+			.fn<() => Promise<SurfaceSummary[]>>()
+			.mockResolvedValueOnce([proposed])
+			.mockResolvedValue([active]);
+		const loadCloudFiles = vi.fn(async () => folderContents({ "identity/wordmark.svg": LIGHT_SVG }));
+		const store = storeWith(fakeClient({ listSurfaces }), { loadCloudFiles });
+		cleanup.push(() => store.dispose());
+
+		await store.load();
+		expect(loadCloudFiles).not.toHaveBeenCalled();
+
+		await store.refreshSurfaces();
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(loadCloudFiles).toHaveBeenCalledWith(active, expect.any(AbortSignal));
+
+		await store.refreshSurfaces();
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
 	});
 });

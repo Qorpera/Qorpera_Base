@@ -1,7 +1,9 @@
 import {
+	readSurfaceLayout,
 	type StudioBinaryRef,
 	SURFACE_LAYOUT_PATH,
-	SURFACE_LAYOUT_SCHEMA,
+	type SurfaceBrandMarkBlock,
+	type SurfaceReadNode,
 	surfaceCompanyPath,
 } from "@qorpera/contracts";
 import { presentationTheme } from "../ui/appearance.ts";
@@ -17,23 +19,12 @@ export interface CompanyWordmarks {
 	readonly dark?: CompanyWordmarkAsset;
 }
 
-interface LayoutBrandMark {
-	readonly id: string;
-	readonly heading: string;
-	readonly from: string;
-	readonly dark?: string;
-	readonly grounds: readonly ("light" | "dark")[];
-}
-
 const SVG_FILE_RE = /\.svg$/i;
 const WORDMARK_RE = /wordmark|\bordmærke\b/i;
 const PICTURE_EXTENSIONS = [".svg", ".png", ".webp", ".jpg", ".jpeg"] as const;
+const BINARY_RETRY_MS = 60_000;
 const EMPTY_WORDMARKS: CompanyWordmarks = {};
 const resolvedByIdentity = new WeakMap<CompanyIdentityFiles, CompanyWordmarks>();
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function resolveIdentityPath(folderRoot: string, bindingPath: string): string | undefined {
 	const cleaned = bindingPath.trim();
@@ -47,55 +38,30 @@ function resolveIdentityPath(folderRoot: string, bindingPath: string): string | 
 	}
 }
 
-function parseGrounds(value: unknown): readonly ("light" | "dark")[] {
-	if (!Array.isArray(value)) return ["light", "dark"];
-	const grounds: ("light" | "dark")[] = [];
-	for (const entry of value) {
-		if ((entry === "light" || entry === "dark") && !grounds.includes(entry)) grounds.push(entry);
-	}
-	return grounds.length > 0 ? grounds : ["light", "dark"];
-}
-
-function collectBrandMarks(nodes: readonly unknown[], out: LayoutBrandMark[]): void {
+function collectBrandMarks(nodes: readonly SurfaceReadNode[], out: SurfaceBrandMarkBlock[]): void {
 	for (const node of nodes) {
-		if (!isPlainRecord(node)) continue;
-		if (node.type === "row" && Array.isArray(node.blocks)) {
+		if (node.type === "row") {
 			collectBrandMarks(node.blocks, out);
 			continue;
 		}
-		if (node.type !== "brand_mark" || typeof node.from !== "string") continue;
-		out.push({
-			id: typeof node.id === "string" ? node.id : "",
-			heading: typeof node.heading === "string" ? node.heading : "",
-			from: node.from,
-			...(typeof node.dark === "string" ? { dark: node.dark } : {}),
-			grounds: parseGrounds(node.grounds),
-		});
+		if (node.type === "brand_mark") out.push(node);
 	}
 }
 
-function layoutWordmarkBlocks(identity: CompanyIdentityFiles, folderRoot: string): readonly LayoutBrandMark[] {
+function layoutWordmarkBlocks(identity: CompanyIdentityFiles, folderRoot: string): readonly SurfaceBrandMarkBlock[] {
 	const layoutText =
 		identity.files[folderRoot ? `${folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH] ??
 		(!folderRoot ? identity.files[`identity/${SURFACE_LAYOUT_PATH}`] : undefined);
 	if (!layoutText) return [];
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(layoutText);
-	} catch {
-		return [];
-	}
-	if (!isPlainRecord(parsed) || parsed.schema !== SURFACE_LAYOUT_SCHEMA || !Array.isArray(parsed.tabs)) return [];
-	const marks: LayoutBrandMark[] = [];
-	for (const tab of parsed.tabs) {
-		if (isPlainRecord(tab) && Array.isArray(tab.blocks)) collectBrandMarks(tab.blocks, marks);
-	}
+	const read = readSurfaceLayout(layoutText);
+	if (!("layout" in read)) return [];
+	const marks: SurfaceBrandMarkBlock[] = [];
+	for (const tab of read.layout.tabs) collectBrandMarks(tab.blocks, marks);
 	return marks.filter(
 		(block) =>
-			WORDMARK_RE.test(block.id) ||
-			WORDMARK_RE.test(block.heading) ||
-			WORDMARK_RE.test(block.from) ||
-			(block.dark !== undefined && WORDMARK_RE.test(block.dark)),
+			(block.id !== undefined && WORDMARK_RE.test(block.id)) ||
+			(block.heading !== undefined && WORDMARK_RE.test(block.heading)) ||
+			WORDMARK_RE.test(block.from),
 	);
 }
 
@@ -143,12 +109,10 @@ export function resolveCompanyWordmarks(identity: CompanyIdentityFiles | null): 
 		const hasLight = block.grounds.includes("light");
 		const hasDark = block.grounds.includes("dark");
 		const fromPath = resolveIdentityPath(folderRoot, block.from);
-		const darkPath = block.dark ? resolveIdentityPath(folderRoot, block.dark) : undefined;
 		if (hasLight && fromPath) lightPaths.push(fromPath);
-		if (hasDark) {
-			if (darkPath) darkDedicatedPaths.push(darkPath);
-			if (!hasLight && fromPath) darkDedicatedPaths.push(fromPath);
-			else if (fromPath) darkFallbackPaths.push(fromPath);
+		if (hasDark && fromPath) {
+			if (!hasLight) darkDedicatedPaths.push(fromPath);
+			else darkFallbackPaths.push(fromPath);
 		}
 	}
 	if (darkDedicatedPaths.length === 0) darkDedicatedPaths.push(...canonicalPaths(roots, "wordmark-dark"));
@@ -192,7 +156,7 @@ export class CompanyWordmarkSlot {
 	readonly #signal: AbortSignal;
 	readonly #blobUrls = new Map<string, string>();
 	readonly #pendingReads = new Set<string>();
-	readonly #failedReads = new Set<string>();
+	readonly #failedReads = new Map<string, number>();
 	readonly #failedUrls = new Set<string>();
 	#wordmarks: CompanyWordmarks = EMPTY_WORDMARKS;
 	#store: SurfacesStore | undefined;
@@ -225,17 +189,27 @@ export class CompanyWordmarkSlot {
 		if (next !== this.#wordmarks) {
 			this.#wordmarks = next;
 			this.#failedUrls.clear();
+			this.#failedReads.clear();
 			this.#pruneBinaries(next);
-			if (next.light?.kind === "binary") this.#ensureBinary(next.light.ref);
-			if (next.dark?.kind === "binary") this.#ensureBinary(next.dark.ref);
 		}
+		if (next.light?.kind === "binary") this.#ensureBinary(next.light.ref);
+		if (next.dark?.kind === "binary") this.#ensureBinary(next.dark.ref);
 		this.#paint();
 	}
 
 	#ensureBinary(ref: StudioBinaryRef): void {
 		const store = this.#store;
 		const sha = ref.fileSha256;
-		if (!store || this.#blobUrls.has(sha) || this.#pendingReads.has(sha) || this.#failedReads.has(sha)) return;
+		const retryAt = this.#failedReads.get(sha);
+		if (
+			!store ||
+			this.#blobUrls.has(sha) ||
+			this.#pendingReads.has(sha) ||
+			(retryAt !== undefined && Date.now() < retryAt)
+		) {
+			return;
+		}
+		this.#failedReads.delete(sha);
 		this.#pendingReads.add(sha);
 		store
 			.readStudioBinary(ref, this.#signal)
@@ -248,7 +222,7 @@ export class CompanyWordmarkSlot {
 					this.#paint();
 				},
 				() => {
-					if (!this.#signal.aborted) this.#failedReads.add(sha);
+					if (!this.#signal.aborted) this.#failedReads.set(sha, Date.now() + BINARY_RETRY_MS);
 				},
 			)
 			.finally(() => {
@@ -263,13 +237,13 @@ export class CompanyWordmarkSlot {
 			URL.revokeObjectURL(url);
 			this.#blobUrls.delete(sha);
 		}
-		for (const sha of this.#failedReads) {
-			if (!keep.has(sha)) this.#failedReads.delete(sha);
-		}
 	}
 
 	#paint(): void {
 		const asset = wordmarkForTheme(this.#wordmarks, activeTheme());
+		if (asset?.kind === "binary" && !this.#blobUrls.has(asset.ref.fileSha256)) {
+			this.#ensureBinary(asset.ref);
+		}
 		const candidate =
 			asset?.kind === "svg"
 				? asset.src
