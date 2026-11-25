@@ -757,18 +757,18 @@ describe("interaction cards in the transcript", () => {
 	});
 
 	it("preserves TranscriptItem object identity for unchanged messages and cards across streaming projections", () => {
+		const input1 = "55555555-5555-4555-8555-000000000001";
+		const input2 = "55555555-5555-4555-8555-000000000002";
 		const msg1 = event(1, {
-			body: {
-				schema: RUNNER_ENTRY_SCHEMA,
-				entry: { type: "message", message: { role: "user", content: "First" } },
-			},
+			eventId: input1,
+			sessionInputId: input1,
+			body: runnerEntry("user", "First", { id: input1 }),
 		});
 		const card1 = event(2, { eventId: CARD, eventType: "interaction_request", body: request });
 		const msg2 = event(3, {
-			body: {
-				schema: RUNNER_ENTRY_SCHEMA,
-				entry: { type: "message", message: { role: "user", content: "Second" } },
-			},
+			eventId: input2,
+			sessionInputId: input2,
+			body: runnerEntry("user", "Second", { id: input2 }),
 		});
 		const first = projectTranscript([msg1, card1]);
 		const second = projectTranscript([msg1, card1, msg2], [], first);

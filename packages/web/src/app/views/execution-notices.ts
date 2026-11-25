@@ -264,12 +264,12 @@ export class ExecutionNotices {
 			return;
 		}
 		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
-		let lastFrontAt: number | undefined;
-		const onFront = () => {
+		let lastFront: { type: string; at: number } | undefined;
+		const onFront = (event: Event) => {
 			if (document.visibilityState === "hidden") return;
 			const now = Date.now();
-			if (lastFrontAt !== undefined && now - lastFrontAt < 250) return;
-			lastFrontAt = now;
+			if (lastFront && lastFront.type !== event.type && now - lastFront.at < 250) return;
+			lastFront = { type: event.type, at: now };
 			void this.refresh();
 		};
 		window.addEventListener("focus", onFront, { signal: this.#lifetime.signal });

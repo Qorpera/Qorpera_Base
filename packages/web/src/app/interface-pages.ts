@@ -42,12 +42,12 @@ export class CompanyInterfacePages {
 		if (this.#stop.signal.aborted || this.#poll) return;
 		const listen = { signal: this.#stop.signal };
 		const shows = () => document.visibilityState === "visible";
-		let lastFrontAt: number | undefined;
-		const onFront = () => {
+		let lastFront: { type: string; at: number } | undefined;
+		const onFront = (event: Event) => {
 			if (!shows()) return;
 			const now = Date.now();
-			if (lastFrontAt !== undefined && now - lastFrontAt < 250) return;
-			lastFrontAt = now;
+			if (lastFront && lastFront.type !== event.type && now - lastFront.at < 250) return;
+			lastFront = { type: event.type, at: now };
 			void this.refresh();
 		};
 		window.addEventListener("focus", onFront, listen);
