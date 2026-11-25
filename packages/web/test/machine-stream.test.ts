@@ -210,7 +210,10 @@ describe("one stream on a ticket (20260930745000)", () => {
 });
 
 describe("the ticket on the member's pointer pass (20260930745000)", () => {
-	function screens(answer: () => Response, streamUrl: string | null = "wss://screens.example.invalid") {
+	function screens(
+		answer: (body: Record<string, unknown>) => Response,
+		streamUrl: string | null = "wss://screens.example.invalid",
+	) {
 		const sent: { url: string; body: unknown }[] = [];
 		const value = createWebMachineScreens({
 			companyId: company,
@@ -218,8 +221,9 @@ describe("the ticket on the member's pointer pass (20260930745000)", () => {
 			route: (url) => url.replace("https://gateway.example.invalid", "https://bridge.example.invalid"),
 			accessToken: async () => "member-token",
 			fetch: (async (url: string, init: RequestInit) => {
-				sent.push({ url, body: JSON.parse(String(init.body)) });
-				return answer();
+				const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+				sent.push({ url, body });
+				return answer(body);
 			}) as typeof fetch,
 			...(streamUrl ? { streamUrl } : {}),
 			WebSocket: FakeSocket as unknown as typeof WebSocket,
@@ -288,5 +292,62 @@ describe("the ticket on the member's pointer pass (20260930745000)", () => {
 				new AbortController().signal,
 			),
 		).rejects.toThrow("Invalid machine pointer");
+	});
+
+	it("supports combined begin+withStreamTicket with HTTP 400 fallback and opens stream directly with a pre-fetched ticket", async () => {
+		const combined = screens((body) => {
+			if ("begin" in body && body.withStreamTicket === true)
+				return Response.json({
+					schema: "qorpera.member-machine-pointer/v1",
+					pass,
+					milliseconds: 10_000,
+					ticket: TICKET,
+					seconds: 30,
+				});
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", pass, milliseconds: 10_000 });
+		});
+		const begun = await combined.value.pointer(
+			machineId,
+			{ begin: { generation: 2 }, withStreamTicket: true },
+			new AbortController().signal,
+		);
+		expect(begun).toEqual({ kind: "pass", pass, milliseconds: 10_000, ticket: TICKET, seconds: 30 });
+		expect(combined.sent).toHaveLength(1);
+		const stop = new AbortController();
+		const ended = combined.value.stream!(
+			machineId,
+			{ pass, hold: { generation: 2 }, ticket: TICKET },
+			vi.fn(),
+			stop.signal,
+		);
+		await vi.waitFor(() => expect(FakeSocket.made).toHaveLength(1));
+		expect(combined.sent).toHaveLength(1);
+		expect(FakeSocket.made[0]!.url).toContain(TICKET);
+		stop.abort();
+		await ended;
+		const legacy = screens((body) => {
+			if ("begin" in body && body.withStreamTicket === true)
+				return Response.json({ error: "member_pointer_invalid" }, { status: 400 });
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", pass, milliseconds: 9_500 });
+		});
+		expect(
+			await legacy.value.pointer(
+				machineId,
+				{ begin: { generation: 2 }, withStreamTicket: true },
+				new AbortController().signal,
+			),
+		).toEqual({ kind: "pass", pass, milliseconds: 9_500 });
+		expect(legacy.sent.map((one) => one.body)).toEqual([
+			{ begin: { generation: 2 }, withStreamTicket: true },
+			{ begin: { generation: 2 } },
+		]);
+		expect(
+			await legacy.value.pointer(
+				machineId,
+				{ begin: { generation: 2 }, withStreamTicket: true },
+				new AbortController().signal,
+			),
+		).toEqual({ kind: "pass", pass, milliseconds: 9_500 });
+		expect(legacy.sent).toHaveLength(3);
 	});
 });

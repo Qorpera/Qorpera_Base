@@ -4,11 +4,11 @@ import { h } from "./dom.ts";
 import { t } from "./preferences.ts";
 
 /** Printable keys typed within this of each other go as one text (a member's typing is many keys, one action). */
-export const TYPE_BATCH_MS = 150;
+export const TYPE_BATCH_MS = 40;
 /** A second press within this, near the first, makes a double click; a single click waits this long for it. */
 export const DOUBLE_CLICK_MS = 250;
 /** Wheel turns within this go as one scroll. */
-const WHEEL_BATCH_MS = 100;
+const WHEEL_BATCH_MS = 35;
 /** A press that moves more than this (CSS pixels) is a drag. */
 const DRAG_PX = 4;
 /** At most this many characters a text action carries (machine_screen's own bound). */
@@ -243,16 +243,13 @@ export class MachineScreenView {
 	#text = "";
 	#textAt: InputSpan | undefined;
 	#textTimer: ReturnType<typeof setTimeout> | undefined;
-	/** A single click waiting to see whether a second makes it a double. */
-	#click: {
+	#lastClick: {
 		x: number;
 		y: number;
 		at: number;
-		/** When its press and its release were made. */
 		made: InputSpan;
 		clientX: number;
 		clientY: number;
-		timer: ReturnType<typeof setTimeout>;
 	} | null = null;
 	/** A press on its way: where it began, with which button, and when. */
 	#press: {
@@ -505,7 +502,7 @@ export class MachineScreenView {
 	/** Where the member's pointer is goes to the input, after any action still gathered here (#heldPoint). */
 	#point(at: { readonly x: number; readonly y: number } | null): void {
 		if (!this.#input?.point) return;
-		if (this.#click || this.#wheel || this.#textAt) {
+		if (this.#wheel || this.#textAt) {
 			this.#heldPoint = at;
 			return;
 		}
@@ -515,7 +512,7 @@ export class MachineScreenView {
 
 	/** An action gathered here went: the position that waited behind it goes now, once nothing else is gathered. */
 	#pointAfter(): void {
-		if (this.#heldPoint === undefined || this.#click || this.#wheel || this.#textAt) return;
+		if (this.#heldPoint === undefined || this.#wheel || this.#textAt) return;
 		const at = this.#heldPoint;
 		this.#heldPoint = undefined;
 		this.#input?.point?.(at);
@@ -532,50 +529,41 @@ export class MachineScreenView {
 			// A drag holds the left button from where it began to where it ends (only within the picture).
 			const to = this.#at(event.clientX, event.clientY);
 			if (press.button === 0 && to) {
+				this.#lastClick = null;
 				this.#flush();
 				this.#act({ type: "drag", x: press.x, y: press.y, toX: to.x, toY: to.y }, made);
 			}
 			return;
 		}
 		if (press.button !== 0) {
+			this.#lastClick = null;
 			this.#flush();
 			this.#act({ type: "click", x: press.x, y: press.y, button: press.button === 2 ? "right" : "middle" }, made);
 			return;
 		}
 		const now = Date.now();
-		const click = this.#click;
+		const lastClick = this.#lastClick;
 		if (
-			click &&
-			now - click.at <= DOUBLE_CLICK_MS &&
-			Math.hypot(event.clientX - click.clientX, event.clientY - click.clientY) <= DRAG_PX * 2
+			lastClick &&
+			now - lastClick.at <= DOUBLE_CLICK_MS &&
+			Math.hypot(event.clientX - lastClick.clientX, event.clientY - lastClick.clientY) <= DRAG_PX * 2
 		) {
-			clearTimeout(click.timer);
-			this.#click = null;
-			// A double click is both clicks.
-			this.#act({ type: "double", x: click.x, y: click.y }, joinInputs(click.made, made));
+			this.#lastClick = null;
+			// WHY: Single clicks dispatch immediately without waiting DOUBLE_CLICK_MS; a close second press sends double cleanly.
+			this.#act({ type: "double", x: lastClick.x, y: lastClick.y }, joinInputs(lastClick.made, made));
 			this.#pointAfter();
 			return;
 		}
 		this.#flush();
-		const single = {
+		this.#lastClick = {
 			x: press.x,
 			y: press.y,
 			at: now,
 			made,
 			clientX: event.clientX,
 			clientY: event.clientY,
-			timer: setTimeout(() => this.#flushClick(), DOUBLE_CLICK_MS),
 		};
-		this.#click = single;
-	}
-
-	/** A single click waiting for a second goes now. */
-	#flushClick(): void {
-		const click = this.#click;
-		if (!click) return;
-		clearTimeout(click.timer);
-		this.#click = null;
-		this.#act({ type: "click", x: click.x, y: click.y }, click.made);
+		this.#act({ type: "click", x: press.x, y: press.y }, made);
 		this.#pointAfter();
 	}
 
@@ -696,7 +684,7 @@ export class MachineScreenView {
 
 	/** Whatever input is still gathered goes now: a click waiting for its second, text, a wheel turn. */
 	#flush(): void {
-		this.#flushClick();
+		this.#lastClick = null;
 		this.#flushWheel();
 		this.#flushText();
 	}
@@ -705,7 +693,7 @@ export class MachineScreenView {
 	 * the actions leave in the order the member made them (v233 release review r1, F31). Each kind's start does this, so
 	 * at most one kind is ever gathered at a time, and #flush's order never matters. */
 	#flushBesides(kind: "click" | "wheel" | "text"): void {
-		if (kind !== "click") this.#flushClick();
+		if (kind !== "click") this.#lastClick = null;
 		if (kind !== "wheel") this.#flushWheel();
 		if (kind !== "text") this.#flushText();
 	}

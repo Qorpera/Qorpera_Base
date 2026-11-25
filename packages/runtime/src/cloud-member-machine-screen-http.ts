@@ -117,7 +117,11 @@ export type CloudMemberMachinePointerRequest = {
 	/** The member's bearer token, passed on to the database (a begin) or compared with the pass's (a move), nowhere else. */
 	readonly token: string;
 } & (
-	| { readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number } }
+	| {
+			readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number };
+			readonly withStreamTicket?: true;
+			readonly origin?: string;
+	  }
 	| { readonly pass: string; readonly x: number; readonly y: number }
 	| {
 			/** A ticket for the desktop's live picture on that pass, under that hold (20260930745000), for the browser
@@ -132,7 +136,12 @@ export type CloudMemberMachinePointerRequest = {
 /** A pointer pass (its id and what is left of it), a move's end, or a live picture's ticket (single use, for its
  * seconds). */
 export type CloudMemberMachinePointerAnswer =
-	| { readonly pass: string; readonly milliseconds: number }
+	| {
+			readonly pass: string;
+			readonly milliseconds: number;
+			readonly ticket?: string;
+			readonly seconds?: number;
+	  }
 	| CloudMemberMachinePointerMove
 	| { readonly ticket: string; readonly seconds: number };
 /** One start of the desktop, as the listener read it from the member's request. */
@@ -247,7 +256,7 @@ async function readPointer(
 	request: IncomingMessage,
 	signal: AbortSignal,
 ): Promise<
-	| { begin: { generation: number } | { epoch: number; seat: number } }
+	| { begin: { generation: number } | { epoch: number; seat: number }; withStreamTicket?: true }
 	| { pass: string; x: number; y: number }
 	| { stream: { pass: string; hold: { generation: number } | { epoch: number; seat: number } } }
 	| undefined
@@ -282,9 +291,11 @@ async function readPointer(
 			if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !held) return undefined;
 			return { stream: { pass: pass.toLowerCase(), hold: held } };
 		}
-		if (keys !== "begin") return undefined;
+		if (keys !== "begin" && keys !== "begin,withStreamTicket") return undefined;
+		const withStreamTicket = (body as { withStreamTicket?: unknown }).withStreamTicket;
+		if (keys === "begin,withStreamTicket" && withStreamTicket !== true) return undefined;
 		const begin = holdOf((body as { begin: unknown }).begin);
-		return begin ? { begin } : undefined;
+		return begin ? (withStreamTicket === true ? { begin, withStreamTicket: true } : { begin }) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -441,26 +452,36 @@ export class HttpCloudMemberMachineScreenService {
 				const asked = await readPointer(request, controller.signal);
 				// A live picture's ticket is for the browser that asked: its Origin, as the member bridge passed it on.
 				const origin = request.headers.origin;
-				if (
-					asked === undefined ||
-					("stream" in asked && (typeof origin !== "string" || !STREAM_ORIGIN.test(origin)))
-				) {
+				const needsOrigin =
+					asked !== undefined && ("stream" in asked || ("begin" in asked && asked.withStreamTicket === true));
+				if (asked === undefined || (needsOrigin && (typeof origin !== "string" || !STREAM_ORIGIN.test(origin)))) {
 					replyJson(reply, 400, { error: "member_pointer_invalid" });
 					return;
 				}
 				const base = { companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string };
 				const done = await this.#options.pointer(
-					"stream" in asked ? { ...base, stream: asked.stream, origin: origin as string } : { ...base, ...asked },
+					"stream" in asked
+						? { ...base, stream: asked.stream, origin: origin as string }
+						: "begin" in asked && asked.withStreamTicket === true
+							? { ...base, begin: asked.begin, withStreamTicket: true, origin: origin as string }
+							: { ...base, ...asked },
 					controller.signal,
 				);
 				controller.signal.throwIfAborted();
 				replyJson(
 					reply,
 					200,
-					"ticket" in done
-						? { schema: "qorpera.member-machine-pointer/v1", ticket: done.ticket, seconds: done.seconds }
-						: "pass" in done
-							? { schema: "qorpera.member-machine-pointer/v1", pass: done.pass, milliseconds: done.milliseconds }
+					"pass" in done
+						? {
+								schema: "qorpera.member-machine-pointer/v1",
+								pass: done.pass,
+								milliseconds: done.milliseconds,
+								...(done.ticket !== undefined && done.seconds !== undefined
+									? { ticket: done.ticket, seconds: done.seconds }
+									: {}),
+							}
+						: "ticket" in done
+							? { schema: "qorpera.member-machine-pointer/v1", ticket: done.ticket, seconds: done.seconds }
 							: { schema: "qorpera.member-machine-pointer/v1", moved: done.moved },
 				);
 				return;

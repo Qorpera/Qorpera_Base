@@ -471,6 +471,8 @@ export const MAX_WATCHED_DESKTOPS = 8;
  * one every NODE_START_GAP_MS, so at most 5 in any 2 s. A member's start waits its turn; it is never refused for it. */
 const DESKTOP_START_GAP_MS = 2000;
 const NODE_START_GAP_MS = 500;
+// WHY: Reuse an ok stream release check across frame cycles within a short heartbeat window so 30 fps frames do not block on SQL per frame.
+export const STREAM_RELEASE_CACHE_MS = 1000;
 
 /** Waits `ms`, or until `signal` aborts; leaves no timer or listener behind. */
 function waitOrAbort(ms: number, signal: AbortSignal): Promise<void> {
@@ -610,7 +612,7 @@ export const COMPANY_MACHINE_MEMBER_TYPE = [
 	"\txdotool key --clearmodifiers shift+Insert || exit 1",
 	"\tsleep 0.2",
 	"else",
-	'\tprintf %s "$text" | xdotool type --delay 12 --file - || exit 1',
+	'\tprintf %s "$text" | xdotool type --delay 2 --file - || exit 1',
 	"fi",
 ].join("\n");
 /** A member's typed text runs at most this long in the machine (its unit's RuntimeMaxSec): 500 characters at 12 ms a
@@ -1033,6 +1035,7 @@ export interface CompanyMachineHostOptions {
 	 * tests' own. */
 	desktopStartGapMs?: number;
 	nodeStartGapMs?: number;
+	streamReleaseCacheMs?: number;
 	/** The clock a desktop's busy grace and the disk report's 30 s are counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
@@ -1262,6 +1265,7 @@ export interface CompanyMachineMemberAct {
 	/** A shared action (20260930734000): begun with no hold of the member's, at the lease generation `seat` (0 or more).
 	 * The fence then names no member: a private hold by anyone since, the member's own too, stops it. */
 	shared?: boolean;
+	passVerified?: boolean;
 }
 /** The action ran (`exitCode`: `desktop`'s, null when it was killed at its deadline), or why it did not: the desktop is
  * busy with another action (DESKTOP_BUSY), off, or the machine changed. Nothing of the screen comes back. */
@@ -3800,11 +3804,16 @@ export class LxdCompanyMachineHost {
 		// an agent's action is, with no member: the generation it was begun at must stand and no one may hold the desktop
 		// privately, so a take-over since stops it here. Nothing ran: the desktop is free again.
 		let seated: boolean;
-		try {
-			seated = await this.#pictureAllowed(act.placementId, act.seat, shared ? null : act.userId, signal);
-		} catch (error) {
-			this.#releaseDesktop(act.placementId, true);
-			throw error;
+		if (act.passVerified === true) {
+			// WHY: A live 10s desktop pass already verified authority in SQL; check the host's monotonic generation fence synchronously.
+			seated = (this.#generations.get(act.placementId) ?? 0) <= act.seat;
+		} else {
+			try {
+				seated = await this.#pictureAllowed(act.placementId, act.seat, shared ? null : act.userId, signal);
+			} catch (error) {
+				this.#releaseDesktop(act.placementId, true);
+				throw error;
+			}
 		}
 		if (!seated) {
 			this.#releaseDesktop(act.placementId, true);
@@ -3919,12 +3928,29 @@ export class LxdCompanyMachineHost {
 		if (!desktops) return "STREAM_UNAVAILABLE";
 		// Paced on a monotonic clock: a wall clock stepped back must not hold a start for the hour it went back.
 		const now = () => performance.now();
+		const releaseState = {
+			cycles: 0,
+			verifiedAt: Number.NEGATIVE_INFINITY,
+			generation: -1,
+			hasFolder: false,
+		};
 		let kept = this.#streams.get(stream.placementId);
 		while (!kept || kept.bootId !== stream.bootId || kept.stream.ended) {
 			// A desktop not watched yet, past the node's cap of watched desktops: refused, the window keeps its pictures.
 			let live = 0;
 			for (const [placementId, entry] of this.#streams)
 				if (placementId !== stream.placementId && !entry.stream.ended) live++;
+			if (live >= MAX_WATCHED_DESKTOPS) {
+				// WHY: Evict idle-grace streams before refusing STREAM_BUSY so warm idle grace never reduces active stream capacity.
+				for (const [placementId, entry] of [...this.#streams]) {
+					if (live < MAX_WATCHED_DESKTOPS) break;
+					if (placementId !== stream.placementId && !entry.stream.ended && entry.stream.idle === true) {
+						entry.stream.close?.();
+						this.#streams.delete(placementId);
+						live--;
+					}
+				}
+			}
 			if (live >= MAX_WATCHED_DESKTOPS) return "STREAM_BUSY";
 			// Its start waits its turn (DESKTOP_START_GAP_MS, NODE_START_GAP_MS), then everything is looked at again.
 			const at = Math.max(this.#streamStarts.get(stream.placementId) ?? 0, this.#nodeStreamStart);
@@ -3958,7 +3984,7 @@ export class LxdCompanyMachineHost {
 					// WHY: A stale-boot reconnect must not displace or close the live relay for the current boot.
 					try {
 						return await desktop.watch(
-							(cycleSignal) => this.#streamCycle(pipe, stream, cycleSignal),
+							(cycleSignal) => this.#streamCycle(pipe, stream, releaseState, cycleSignal),
 							sink,
 							signal,
 						);
@@ -3971,17 +3997,41 @@ export class LxdCompanyMachineHost {
 			kept = { bootId, stream: desktop };
 			this.#streams.set(placementId, kept);
 		}
-		return kept.stream.watch((cycleSignal) => this.#streamCycle(pipe, stream, cycleSignal), sink, signal);
+		return kept.stream.watch(
+			(cycleSignal) => this.#streamCycle(pipe, stream, releaseState, cycleSignal),
+			sink,
+			signal,
+		);
 	}
 	/** One release cycle of a member's live picture (memberStream). */
 	async #streamCycle(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		stream: CompanyMachineMemberStream,
+		cache: { cycles: number; verifiedAt: number; generation: number; hasFolder: boolean },
 		signal: AbortSignal,
 	): ReturnType<DesktopStreamRelease> {
 		// No picture while an older move could still run (as a look: review r2 and r3 of #1733).
 		await this.#confirmFence(pipe, stream.placementId, stream.bootId, signal);
+		const folder = this.#options.folder;
+		const f = this.#folders.get(stream.placementId);
+		const boot = f?.bootId === stream.bootId ? f : undefined;
+		const hasFolder = folder !== undefined && boot?.state !== "none";
 		const asked = async (): Promise<"ok" | { readonly end: string }> => {
+			const currentGeneration = this.#generations.get(stream.placementId) ?? 0;
+			const knownBoot =
+				this.#guests.get(stream.placementId)?.bootId ?? this.#folders.get(stream.placementId)?.bootId;
+			const bootMatches = knownBoot === undefined || knownBoot === stream.bootId;
+			const nowMs = (this.#options.now ?? Date.now)();
+			const cacheMs = this.#options.streamReleaseCacheMs ?? STREAM_RELEASE_CACHE_MS;
+			if (
+				cache.cycles >= 2 &&
+				cacheMs > 0 &&
+				bootMatches &&
+				nowMs - cache.verifiedAt < cacheMs &&
+				cache.generation === currentGeneration &&
+				cache.hasFolder === hasFolder
+			)
+				return "ok";
 			try {
 				const answer = machineRecord(
 					await this.#call(
@@ -3999,22 +4049,27 @@ export class LxdCompanyMachineHost {
 				);
 				if (answer.schema !== "qorpera.member-machine-stream-release/v1")
 					throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
-				if (answer.state === "ok") return "ok";
+				if (answer.state === "ok") {
+					cache.cycles++;
+					cache.verifiedAt = nowMs;
+					cache.generation = currentGeneration;
+					cache.hasFolder = hasFolder;
+					return "ok";
+				}
+				cache.verifiedAt = Number.NEGATIVE_INFINITY;
 				if (answer.state === "refused" && typeof answer.reason === "string" && /^[A-Z_]{1,64}$/.test(answer.reason))
 					return { end: answer.reason };
 				throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
 			} catch (error) {
+				cache.verifiedAt = Number.NEGATIVE_INFINITY;
 				// A read of the machine's the member may not read: this member's stream ends, nothing else.
 				if (error instanceof CodingControlRefused && error.detail === MEMBER_UNREADABLE)
 					return { end: "MEMBER_CANNOT_READ" };
 				throw error;
 			}
 		};
-		const folder = this.#options.folder;
 		if (!folder) return asked();
 		const at: FolderRelease = { placementId: stream.placementId, bootId: stream.bootId };
-		const f = this.#folders.get(stream.placementId);
-		const boot = f?.bootId === stream.bootId ? f : undefined;
 		// A boot whose folder ended, or that read something no longer readable, shows nothing more.
 		if (this.#heldAlready(at, boot) !== undefined) return { end: "DESKTOP_NOT_SHOWN" };
 		let verdict: "ok" | { readonly end: string } = "ok";

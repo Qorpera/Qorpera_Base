@@ -52,7 +52,8 @@ import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-
 import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
 import { desktopRelay, LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
-	DESKTOP_STREAM_ROLE, type DesktopRelaySpec, desktopStreamProgramVersion, InstanceDesktop, runDesktopStreamInstance,
+	DESKTOP_STREAM_IDLE_GRACE_MS, DESKTOP_STREAM_ROLE, type DesktopRelaySpec, desktopStreamProgramVersion,
+	InstanceDesktop, runDesktopStreamInstance,
 } from "../../packages/runner-orchestrator/src/company-machine-stream-process.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
@@ -754,7 +755,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		// the configuration, members' live pictures are refused here.
 		...(config.desktopStreams ? {
 			desktopStreams: (spec: DesktopRelaySpec, ended: () => void) => new InstanceDesktop(
-				(config.desktopStreams as { socket: string }).socket, spec, ended, { version: programVersion }),
+				(config.desktopStreams as { socket: string }).socket, spec, ended,
+				{ version: programVersion, idleGraceMs: DESKTOP_STREAM_IDLE_GRACE_MS }),
 		} : {}),
 	}) : undefined;
 	const accountFills = config.broker && machineHost ? new BrokerMachineAccountFill({ origin: config.broker.origin,

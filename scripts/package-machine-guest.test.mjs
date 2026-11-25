@@ -842,6 +842,8 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 		);
 		// Where the pointer is cannot be read: the move is waited for, as it always was.
 		assert.equal(desktop("", "click", "640", "400"), "mousemove --sync 640 400 click 1");
+		assert.equal(desktop("100 100", "scroll", "down", "4", "640", "400"), "mousemove --sync 640 400 click --repeat 4 --delay 30 5");
+		assert.equal(desktop("640 400", "scroll", "up", "2", "640", "400"), "mousemove 640 400 click --repeat 2 --delay 30 4");
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}
@@ -851,7 +853,10 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 	assert.match(command, /then move=\(mousemove "\$3" "\$4"\); else move=\(mousemove --sync "\$3" "\$4"\); fi\n/);
 	// One xdotool call tells where the pointer is and how large the screen is: every call is a program started.
 	assert.match(command, /< <\(xdotool getmouselocation getdisplaygeometry 2>\/dev\/null\) \|\| true\n/);
-	assert.equal(command.match(/getmouselocation|getdisplaygeometry/g).length, 2);
+	assert.equal(
+		command.split("\n").filter((line) => /xdotool.*\b(getmouselocation|getdisplaygeometry)\b/.test(line)).length,
+		1,
+	);
 	for (const line of [
 		"\tdesktop click 800 500\n\tdesktop double 800 500\n\tdesktop move 800 500\n\tdesktop drag 800 500 800 500\n",
 		"\t(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||\n",

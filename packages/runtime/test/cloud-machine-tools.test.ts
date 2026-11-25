@@ -2787,6 +2787,30 @@ describe("machine tools", () => {
 			}
 		});
 
+		it("caches the resolved running machine ID per run across machine_screen calls and invalidates on stop or refusal", async () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				const listCalls = () =>
+					f.control.call.mock.calls.filter(
+						([method, args]) =>
+							method === "qorpera_native_machine_manage" &&
+							(args as { p_request?: { action?: string } }).p_request?.action === "list",
+					).length;
+				await f.boundary.invoke("look-1", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(listCalls()).toBe(1);
+				await f.boundary.invoke("look-2", "qorpera", "machine_screen", { machine: "build-a" });
+				await f.boundary.invoke("look-3", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(listCalls()).toBe(1);
+				f.screen.mockRejectedValueOnce(new CloudMachineScreenRefusal("MACHINE_NOT_RUNNING"));
+				const refused = await f.boundary.invoke("look-4", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f0(f, refused).refused.reason).toBe("MACHINE_NOT_RUNNING");
+				await f.boundary.invoke("look-5", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(listCalls()).toBe(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
 		/** A refusal's answer. */
 		function f0(f: ReturnType<typeof fixture>, result: unknown) {
 			return f.content(result as never) as { refused: { reason: string; message: string } };
