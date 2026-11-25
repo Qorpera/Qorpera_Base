@@ -19,6 +19,7 @@ import type { DataAskPlace, DataAskSend } from "../data-ask.ts";
 import { takeWantedDataList } from "../data-page.ts";
 import { DataAskBox } from "./data-ask.ts";
 import { DataChanges } from "./data-changes.ts";
+import { type DataField, DataHome, dataGroups } from "./data-home.ts";
 import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
@@ -59,17 +60,18 @@ function dateFormat(locale: string): Intl.DateTimeFormat {
 	return fmt;
 }
 
-function dateTimeFormat(locale: string): Intl.DateTimeFormat {
-	let fmt = dateTimeFormats.get(locale);
+function dateTimeFormat(locale: string, year: boolean): Intl.DateTimeFormat {
+	const cached = `${locale}/${year}`;
+	let fmt = dateTimeFormats.get(cached);
 	if (!fmt) {
 		fmt = new Intl.DateTimeFormat(locale, {
 			day: "numeric",
 			month: "short",
-			year: "numeric",
+			...(year ? { year: "numeric" as const } : {}),
 			hour: "2-digit",
 			minute: "2-digit",
 		});
-		dateTimeFormats.set(locale, fmt);
+		dateTimeFormats.set(cached, fmt);
 	}
 	return fmt;
 }
@@ -79,6 +81,12 @@ type Kind = "boolean" | "number" | "date" | "time" | "json" | "text";
 interface Tab {
 	readonly kind: "table" | "question";
 	readonly name: string;
+}
+
+interface TabGroup {
+	readonly title: string;
+	readonly question: boolean;
+	readonly tabs: readonly { readonly tab: Tab; readonly short: string }[];
 }
 
 interface Row {
@@ -154,7 +162,8 @@ export function shownValue(value: unknown, kind: Kind): string {
 	}
 	if (kind === "time" && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(value)) {
 		const at = new Date(value.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"));
-		if (Number.isFinite(at.getTime())) return dateTimeFormat(locale).format(at);
+		if (Number.isFinite(at.getTime()))
+			return dateTimeFormat(locale, at.getFullYear() !== new Date().getFullYear()).format(at);
 	}
 	return value;
 }
@@ -259,6 +268,57 @@ function shownColumns(columns: readonly string[], key: readonly string[]): strin
 	return [...columns.filter((name) => !key.includes(name)), ...columns.filter((name) => key.includes(name))];
 }
 
+const LEAD_WORDS = ["name", "title", "label", "headline", "subject", "email"] as const;
+const MADE_AT = /^(created|inserted|added)(_(at|on))?$/;
+
+const waitsInTheRow = (name: string, type: string | undefined) => type?.toLowerCase() === "uuid" || MADE_AT.test(name);
+
+export function listedColumns(
+	columns: readonly string[],
+	key: readonly string[],
+	typeOf: (name: string) => string | undefined,
+): string[] {
+	const ordered = shownColumns(columns, key);
+	const words = (name: string) => {
+		const type = typeOf(name);
+		return type === undefined || (columnKind(type) === "text" && type.toLowerCase() !== "uuid");
+	};
+	const named = LEAD_WORDS.map((word) =>
+		ordered.find((name) => words(name) && (name === word || name.endsWith(`_${word}`))),
+	).find((name) => name !== undefined);
+	const lead = named ?? ordered.find((name) => !waitsInTheRow(name, typeOf(name))) ?? ordered[0];
+	if (lead === undefined) return ordered;
+	const kept = ordered.filter((name) => name !== lead && !waitsInTheRow(name, typeOf(name)));
+	return [lead, ...(kept.length > 0 ? kept : ordered.filter((name) => name !== lead))];
+}
+
+export function columnLabel(name: string, kind: Kind): string {
+	if (kind === "boolean") return humanName(name.replace(/^is_(?=.)/, ""));
+	if (kind === "time") return humanName(name.replace(/(?<=.)_at$/, ""));
+	return humanName(name);
+}
+
+const sameTab = (a: Tab | undefined, b: Tab | undefined) => a?.kind === b?.kind && a?.name === b?.name;
+
+const hasHome = (database: CloudMemberDatabase) => database.list && (database.tables?.length ?? 0) >= 2;
+
+function tabGroups(database: CloudMemberDatabase): TabGroup[] {
+	const tables = dataGroups(
+		(database.tables ?? []).map((table) => table.name),
+		humanName,
+	).map(
+		(group): TabGroup => ({
+			title: group.title,
+			question: false,
+			tabs: group.members.map((member) => ({ tab: { kind: "table", name: member.name }, short: member.short })),
+		}),
+	);
+	const questions = questionTabs(database).map((tab) => ({ tab, short: humanName(tab.name) }));
+	const [only] = questions;
+	if (!only) return tables;
+	return [...tables, { title: questions.length === 1 ? only.short : t("Questions"), question: true, tabs: questions }];
+}
+
 const sleep = (ms: number, signal: AbortSignal) =>
 	new Promise<void>((resolve) => {
 		if (signal.aborted) return resolve();
@@ -310,6 +370,8 @@ class DataListView {
 	readonly #counted = new Map<string, number>();
 	readonly #changes: DataChanges;
 	#changing = false;
+	readonly #home = new DataHome();
+	#atHome = true;
 
 	constructor(company: CompanyController, databases: CompanyDatabases, send: DataAskSend | undefined) {
 		this.company = company;
@@ -339,6 +401,7 @@ class DataListView {
 	dispose(): void {
 		this.#lifetime.abort();
 		this.#changes.dispose();
+		this.#home.dispose();
 		this.#list?.stop.abort();
 		this.#observer?.disconnect();
 	}
@@ -355,10 +418,14 @@ class DataListView {
 		const databases = described?.databases ?? [];
 		const wanted = described ? takeWantedDataList(this.company.profile.profileId) : undefined;
 		if (wanted !== undefined) this.#want(databases, wanted);
-		if (!databases.some((one) => one.database === this.#database)) this.#database = databases[0]?.database;
+		if (!databases.some((one) => one.database === this.#database)) {
+			this.#database = databases[0]?.database;
+			this.#atHome = true;
+		}
 		const database = this.#current();
 		const tabs = database ? tabsOf(database) : [];
 		if (!tabs.some((tab) => tab.kind === this.#tab?.kind && tab.name === this.#tab?.name)) this.#tab = tabs[0];
+		this.#leaveSkippedHome();
 		this.#ensureList();
 		this.#draw();
 	}
@@ -368,12 +435,30 @@ class DataListView {
 		const database = databases.find((one) => one.database === (cut < 0 ? at : at.slice(0, cut)));
 		if (!database) return;
 		this.#database = database.database;
+		this.#atHome = true;
 		this.#close();
 		if (cut < 0) return;
 		const kind = at[cut] === "." ? "table" : "question";
 		const name = at.slice(cut + 1);
 		const tab = tabsOf(database).find((one) => one.kind === kind && one.name === name);
-		if (tab) this.#tab = tab;
+		if (!tab) return;
+		this.#tab = tab;
+		this.#atHome = false;
+	}
+
+	#leaveSkippedHome(): void {
+		const database = this.#current();
+		if (database && this.#tab && !hasHome(database)) this.#atHome = false;
+	}
+
+	#showsHome(): boolean {
+		const database = this.#current();
+		return this.#atHome && database !== undefined && hasHome(database);
+	}
+
+	#rowCount(database: string, table: CloudMemberDataTable): number | undefined {
+		if (table.rows === undefined) return table.rowsAbout;
+		return Math.max(0, table.rows + (this.#counted.get(`${database}/${table.name}`) ?? 0));
 	}
 
 	#question(): CloudMemberDataNamed | undefined {
@@ -413,6 +498,12 @@ class DataListView {
 		const tab = this.#tab;
 		if (!database || !tab || this.#open || this.#changing) return undefined;
 		if (database.questions.some((question) => question.parameters?.includes("viewer"))) return undefined;
+		if (this.#showsHome())
+			return {
+				database: database.database,
+				databaseName: database.name ?? humanName(database.database),
+				values: [],
+			};
 		return {
 			database: database.database,
 			databaseName: database.name ?? humanName(database.database),
@@ -453,7 +544,7 @@ class DataListView {
 	}
 
 	#listId(): string | undefined {
-		if (!this.#database || !this.#tab) return undefined;
+		if (!this.#database || !this.#tab || this.#showsHome()) return undefined;
 		if (!this.#filled()) return undefined;
 		const order = this.#orders.get(`${this.#database}/${this.#tab.name}`);
 		return JSON.stringify([
@@ -728,8 +819,9 @@ class DataListView {
 	}
 
 	#choose(tab: Tab): void {
-		if (this.#tab?.kind === tab.kind && this.#tab.name === tab.name && !this.#open && !this.#changing) return;
+		if (sameTab(this.#tab, tab) && !this.#open && !this.#changing && !this.#showsHome()) return;
 		this.#changing = false;
+		this.#atHome = false;
 		this.#tab = tab;
 		this.#close();
 		this.#ensureList();
@@ -739,9 +831,11 @@ class DataListView {
 	#chooseDatabase(database: string): void {
 		if (database === this.#database) return;
 		this.#database = database;
+		this.#atHome = true;
 		const current = this.#current();
 		if (!current?.list) this.#changing = false;
 		this.#tab = current ? tabsOf(current)[0] : undefined;
+		this.#leaveSkippedHome();
 		this.#close();
 		this.#ensureList();
 		this.#draw();
@@ -782,7 +876,7 @@ class DataListView {
 		const database = this.#current();
 		const question = this.#question();
 		this.#params.show(
-			this.#open || this.#changing || !this.#database || !question
+			this.#open || this.#changing || !this.#database || !question || this.#showsHome()
 				? undefined
 				: `${this.#database}/${question.name}`,
 			this.#asks(),
@@ -797,27 +891,45 @@ class DataListView {
 			return;
 		}
 		this.#top.hidden = false;
-		const tables = (database.tables ?? []).map((table): Tab => ({ kind: "table", name: table.name }));
-		const questions = questionTabs(database);
-		const tab = (one: Tab) =>
-			h(
+		const home = this.#showsHome();
+		const groups = tabGroups(database);
+		const current = groups.find((group) => group.tabs.some((one) => sameTab(one.tab, this.#tab)));
+		const counts = countFormat(presentationLocale());
+		const subTab = (one: TabGroup["tabs"][number]) => {
+			const table = one.tab.kind === "table" ? tableOf(database, one.tab.name) : undefined;
+			const rows = table ? this.#rowCount(database.database, table) : undefined;
+			return h(
 				"button",
 				{
 					type: "button",
 					role: "tab",
-					class: one.kind === "question" ? "data-tab is-question" : "data-tab",
-					"aria-selected": String(!this.#changing && this.#tab?.kind === one.kind && this.#tab.name === one.name),
-					dataset: { focusKey: `tab:${one.kind}:${one.name}` },
-					onclick: () => this.#choose(one),
+					class: "data-subtab",
+					"aria-selected": String(!home && !this.#changing && sameTab(one.tab, this.#tab)),
+					dataset: { focusKey: `sub:${one.tab.kind}:${one.tab.name}` },
+					onclick: () => this.#choose(one.tab),
 				},
-				humanName(one.name),
+				one.short,
+				rows === undefined ? null : h("span", { class: "data-subtab-count" }, counts.format(rows)),
 			);
-		const add =
-			!this.#changing && this.#writable() && this.#tab?.kind === "table"
-				? button(t("New row"), () => this.#startDraft(), { primary: true })
+		};
+		const groupTab = (group: TabGroup) => {
+			const [first] = group.tabs;
+			return first
+				? h(
+						"button",
+						{
+							type: "button",
+							role: "tab",
+							class: group.question ? "data-tab is-question" : "data-tab",
+							"aria-selected": String(!this.#changing && group === current),
+							dataset: { focusKey: `tab:${first.tab.kind}:${first.tab.name}` },
+							onclick: () => this.#choose(group === current && this.#tab ? this.#tab : first.tab),
+						},
+						group.title,
+					)
 				: null;
-		replace(
-			this.#top,
+		};
+		const pills =
 			databases.length > 1
 				? h(
 						"div",
@@ -835,22 +947,91 @@ class DataListView {
 							),
 						),
 					)
-				: null,
+				: null;
+		const changes = database.list ? this.#changesButton(database) : null;
+		const name = database.name ?? humanName(database.database);
+		if (home) {
+			const questions = groups.filter((group) => group.question).flatMap((group) => group.tabs);
+			replace(
+				this.#top,
+				pills,
+				h(
+					"div",
+					{ class: "data-head" },
+					h(
+						"h1",
+						{ class: "data-home-title" },
+						name,
+						described && described.limitBytes > 0
+							? h(
+									"small",
+									null,
+									t("{used} of {limit}", {
+										used: bytesText(described.companyBytes),
+										limit: bytesText(described.limitBytes),
+									}),
+								)
+							: null,
+					),
+					changes,
+				),
+				questions.length > 0
+					? h(
+							"div",
+							{ class: "data-sub", role: "tablist", "aria-label": t("Questions") },
+							...questions.map(subTab),
+						)
+					: null,
+			);
+			return;
+		}
+		const tables = groups.filter((group) => !group.question);
+		const questions = groups.filter((group) => group.question);
+		const add =
+			!this.#changing && this.#writable() && this.#tab?.kind === "table"
+				? button(t("New row"), () => this.#startDraft(), { primary: true })
+				: null;
+		replace(
+			this.#top,
+			pills,
 			h(
 				"div",
 				{ class: "data-head" },
+				hasHome(database)
+					? h(
+							"button",
+							{
+								type: "button",
+								class: "data-home-open",
+								"aria-label": t("All of {database}", { database: name }),
+								title: t("All of {database}", { database: name }),
+								dataset: { focusKey: "home" },
+								onclick: () => this.#goHome(),
+							},
+							h("i"),
+							h("i"),
+							h("i"),
+						)
+					: null,
 				h(
 					"div",
-					{ class: "data-tabs", role: "tablist", "aria-label": database.name ?? humanName(database.database) },
-					...tables.map(tab),
+					{ class: "data-tabs", role: "tablist", "aria-label": name },
+					...tables.map(groupTab),
 					tables.length > 0 && questions.length > 0
 						? h("span", { class: "data-tabs-rule", "aria-hidden": "true" })
 						: null,
-					...questions.map(tab),
+					...questions.map(groupTab),
 				),
-				database.list ? this.#changesButton(database) : null,
+				changes,
 				add,
 			),
+			groups.some((group) => group.tabs.length > 1)
+				? h(
+						"div",
+						{ class: "data-sub", role: "tablist", "aria-label": current?.title ?? name },
+						...(current && current.tabs.length > 1 ? current.tabs.map(subTab) : []),
+					)
+				: null,
 		);
 		const strip = this.#top.querySelector<HTMLElement>(".data-tabs");
 		if (!strip) return;
@@ -873,8 +1054,49 @@ class DataListView {
 			return undefined;
 		const wanted = JSON.stringify(read.key.map((name) => key[name] ?? null));
 		const row = read.rows.find((one) => keyOf(read.columns, read.key, one.values) === wanted);
-		const [lead] = shownColumns(read.columns, read.key);
+		const types = tableOf(this.#current(), table)?.columns;
+		const [lead] = listedColumns(
+			read.columns,
+			read.key,
+			(name) => types?.find((column) => column.name === name)?.type,
+		);
 		return row && lead !== undefined ? row.values[read.columns.indexOf(lead)] : undefined;
+	}
+
+	#goHome(): void {
+		this.#changing = false;
+		this.#atHome = true;
+		this.#close();
+		this.#ensureList();
+		this.#draw();
+	}
+
+	#homeEl(database: CloudMemberDatabase): HTMLElement {
+		const tables = database.tables ?? [];
+		const counts = countFormat(presentationLocale());
+		const fields = new Map(
+			tables.map((table): [string, DataField] => {
+				const rows = this.#rowCount(database.database, table);
+				return [
+					table.name,
+					{
+						name: table.name,
+						title: humanName(table.name),
+						rows,
+						count: rows === undefined ? undefined : rows === 0 ? t("Empty") : counts.format(rows),
+					},
+				];
+			}),
+		);
+		this.#home.show(
+			dataGroups(
+				tables.map((table) => table.name),
+				humanName,
+			),
+			fields,
+			(name) => this.#choose({ kind: "table", name }),
+		);
+		return h("div", { class: "data-home" }, this.#home.el);
 	}
 
 	#changesButton(database: CloudMemberDatabase): HTMLElement {
@@ -888,8 +1110,8 @@ class DataListView {
 				title: t("What changed"),
 				dataset: { focusKey: "changes" },
 				onclick: () => {
-					this.#changing = true;
-					this.#changes.open(database);
+					this.#changing = !this.#changing;
+					if (this.#changing) this.#changes.open(database);
 					this.#draw();
 				},
 			},
@@ -932,6 +1154,7 @@ class DataListView {
 				database.name ?? humanName(database.database),
 				t("Only those who may change this database see its tables."),
 			);
+		if (this.#showsHome()) return this.#homeEl(database);
 		if (!this.#tab) return this.#empty(t("No tables yet"), t("Its tables show here once an agent makes them."));
 		if (!this.#filled())
 			return this.#empty(
@@ -980,7 +1203,10 @@ class DataListView {
 		readonly indices: readonly number[];
 		readonly kinds: readonly Kind[];
 	} {
-		const columns = shownColumns(read.columns, read.key);
+		const columns =
+			read.tab.kind === "table"
+				? listedColumns(read.columns, read.key, (name) => this.#columnOf(name)?.type)
+				: shownColumns(read.columns, read.key);
 		const indices = columns.map((name) => read.columns.indexOf(name));
 		const kinds = columns.map(
 			(name, index) =>
@@ -1004,7 +1230,7 @@ class DataListView {
 			return h(
 				"span",
 				{
-					class: `data-cell${index === 0 ? " is-lead" : ""}${kinds[index] === "number" ? " is-number" : ""}`,
+					class: `data-cell${index === 0 ? " is-lead" : kinds[index] === "number" ? " is-number" : ""}`,
 				},
 				text,
 			);
@@ -1118,10 +1344,10 @@ class DataListView {
 			{ class: "data-row data-row-head" },
 			...columns.map((name, index) => {
 				const on = read.order === name;
-				const label = humanName(name);
+				const label = columnLabel(name, kinds[index] ?? "text");
 				return h(
 					"span",
-					{ class: `data-cell${kinds[index] === "number" ? " is-number" : ""}` },
+					{ class: `data-cell${index > 0 && kinds[index] === "number" ? " is-number" : ""}` },
 					sorted
 						? h(
 								"button",
@@ -1267,7 +1493,7 @@ class DataListView {
 
 	#title(open: OpenRow): string {
 		if (!open.row) return t("New row");
-		const lead = shownColumns(open.columns, open.key)[0];
+		const lead = listedColumns(open.columns, open.key, (name) => this.#columnOf(name)?.type)[0];
 		const value = lead === undefined ? null : open.row.values[open.columns.indexOf(lead)];
 		const text = lead === undefined ? "" : shownValue(value, this.#kindOf(lead));
 		return text || humanName(open.table);

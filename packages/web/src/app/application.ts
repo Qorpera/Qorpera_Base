@@ -73,7 +73,7 @@ import {
 	companyConcepts,
 	sharedFolderHints,
 } from "./interface-apps.ts";
-import type { InterfaceWrites } from "./interface-claims.ts";
+import { type InterfaceWrites, writesUnderSurfaceBar } from "./interface-claims.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { companyInterfaces, pagesOn } from "./interfaces.ts";
@@ -3044,7 +3044,7 @@ export function mountApplication(
 						});
 						return;
 					}
-					mod.renderInterface(el, controller, page, interfaceWrites());
+					mod.renderInterface(el, controller, page, writesUnderSurfaceBar(interfaceWrites()));
 				};
 				return {
 					el,

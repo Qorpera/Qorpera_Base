@@ -880,6 +880,8 @@ export const WORKSPACE: Record<string, string> = {
 	"You have a seat at {company}.": "Du har en plads ved {company}.",
 	"You are invited to {company} as {role}.": "Du er inviteret til {company} som {role}.",
 	"What changed": "Hvad er ændret",
+	Questions: "Spørgsmål",
+	"All of {database}": "Hele {database}",
 	"Last two weeks": "De sidste to uger",
 	"Who changed what": "Hvem ændrede hvad",
 	"Your agents": "Dine agenter",

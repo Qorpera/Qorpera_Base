@@ -354,7 +354,7 @@ design canvas "Company data view".
 
 ### What a member may do there
 
-- **See.** A member who may read `data/<name>/database.toml` sees that database: its tables as tabs, every row of a
+- **See.** A member who may read `data/<name>/database.toml` sees that database: its tables, every row of a
   table, and each question they may read as a list of its own beside the tables.
 - **Change.** A member who may write `data/<name>/` may add a row, change a row and remove a row. Removing asks
   first, on the bar above the list. A member who may only read sees the list and no way to change it.
@@ -440,10 +440,17 @@ member or the agent from the lists it already holds.
 
 - An interface page `data` (the cloud's list of pages and its checks gain it; one migration), shown in the apps row
   when `describe` lists a database. Its emblem is a chest of drawers.
-- The list: tabs for the tables and the kept questions, column heads that sort, a row that opens with its fields.
+- The home: a database with two or more tables opens as fields, one a table, each as large as the root of its row
+  count allows and an empty one outlined; a field opens its table's list, and no rows are read while the home shows.
+  A database with one table opens on its list.
+- The list: titles for the tables and the kept questions, column heads that sort, a row that opens with its fields.
+  Tables whose names start with the same word share one title and stand in a second line under it with their row
+  counts; two or more kept questions share the title Questions. The list leads with the column that names the row,
+  and `uuid` columns and created times show only in the opened row.
   A new row and a changed field are written as the member makes them: the member's own typing is the ask. Only a
   removal asks first, on the bar above the page, as `qorpera.act` will ask (§5, §8).
-- **Ask.** The box under the list sends the question to an agent with the list it was asked on. The answer comes as
+- **Ask.** The box under the list sends the question to an agent with the list it was asked on; from the home it
+  sends it with the database alone. Inside a surface the page draws no box: the surface's bar is the one place to ask. The answer comes as
   that agent's message. "Keep as a list" has the agent write the question as a file (`queries/`), and it then shows
   beside the tables.
 - Not in this slice: safe copies (going back a night and taking a copy home need slice 6's snapshot, a restore and
@@ -482,7 +489,7 @@ member or the agent from the lists it already holds.
   A thread whose draft already answers another page's or app's note takes nothing, and the words stay in the line
   with a link to it. The member presses once; the line is held while the thread opens and has no spinner.
 - **What travels.** The message opens with `> page:data#<database>.<table> · <about>` (`#<database>:<question>` for a
-  kept question; `#<database>` alone when the name is no id), `about` being the database's and the list's names in
+  kept question; `#<database>` alone when the name is no id or the member asked from the home), `about` being the database's and the list's names in
   words and the values filled in, at most 60 characters. The conversation draws that line as the Data page's card
   (its drawers, "Data", `about`), which opens that list; the composer shows it above the field while it waits. The
   sort and the page in view do not travel: the agent reads the database itself, and the question is about rows, not
