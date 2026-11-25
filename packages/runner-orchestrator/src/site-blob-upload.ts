@@ -7,6 +7,7 @@ export const NATIVE_SITE_MAX_FILES = 10_000;
 export const NATIVE_SITE_MAX_BYTES = 512 * 1024 * 1024;
 export const NATIVE_SITE_MAX_FILE_BYTES = 100 * 1024 * 1024;
 export const DEFAULT_BLOB_UPLOAD_CONCURRENCY = 8;
+export const BLOB_EXISTS_BATCH_SIZE = 512;
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const INPUT_TAG_PATTERN = /<input\b[^>]*>/gi;
@@ -103,12 +104,13 @@ export interface SiteBlobUploadResult {
 
 export interface BlobUploadFetchResponse {
 	readonly status: number;
+	json?(): Promise<unknown>;
 }
 
 export type BlobUploadFetch = (
 	url: string,
 	init: {
-		method: "HEAD" | "PUT";
+		method: "HEAD" | "PUT" | "POST";
 		headers: Record<string, string>;
 		body?: Uint8Array;
 		signal?: AbortSignal;
@@ -239,6 +241,10 @@ const defaultFetch: BlobUploadFetch = async (url, init) =>
 					: Buffer.from(init.body.buffer, init.body.byteOffset, init.body.byteLength),
 			signal: bounded,
 		});
+		if (init.method === "POST" && res.status === 200) {
+			const data: unknown = await res.json();
+			return { status: res.status, json: async () => data };
+		}
 		await res.body?.cancel().catch(() => undefined);
 		return { status: res.status };
 	});
@@ -353,25 +359,85 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 		throw lastErr instanceof Error ? lastErr : new Error("Blob upload failed");
 	};
 
+	const authHeader = { authorization: `Bearer ${options.controlToken}` };
+	const knownMissing = new Set<string>();
+	let uploadQueue: [string, Uint8Array][] = queue;
+
+	// WHY: Batch existence checks via POST /_internal/blobs/exists to collapse N HEADs into 1 call, falling back to HEAD on 404/405 for rolling deploys.
+	if (queue.length > 1) {
+		const nextQueue: [string, Uint8Array][] = [];
+		let fallbackFromIndex: number | null = null;
+		for (let offset = 0; offset < queue.length; offset += BLOB_EXISTS_BATCH_SIZE) {
+			options.signal?.throwIfAborted();
+			const chunk = queue.slice(offset, offset + BLOB_EXISTS_BATCH_SIZE);
+			const chunkHashes = chunk.map(([sha]) => sha);
+			const existsRes = await fetchWithRetry(`${base}/_internal/blobs/exists`, {
+				method: "POST",
+				headers: { ...authHeader, "content-type": "application/json" },
+				body: Buffer.from(JSON.stringify({ hashes: chunkHashes }), "utf8"),
+				signal: options.signal,
+			});
+			if (existsRes.status === 404 || existsRes.status === 405) {
+				fallbackFromIndex = offset;
+				break;
+			}
+			if (existsRes.status !== 200) {
+				throw new Error(`Blob exists batch check failed with HTTP ${existsRes.status}`);
+			}
+			if (!existsRes.json) {
+				fallbackFromIndex = offset;
+				break;
+			}
+			const parsed = await existsRes.json();
+			if (
+				!parsed ||
+				typeof parsed !== "object" ||
+				!("existing" in parsed) ||
+				!Array.isArray((parsed as { existing: unknown }).existing)
+			) {
+				throw new Error("Blob exists batch check returned invalid JSON");
+			}
+			const existingSet = new Set<string>();
+			for (const entry of (parsed as { existing: unknown[] }).existing) {
+				if (typeof entry === "string" && uniqueBlobs.has(entry)) existingSet.add(entry);
+			}
+			for (const item of chunk) {
+				if (existingSet.has(item[0])) {
+					deduplicatedBlobs++;
+				} else {
+					knownMissing.add(item[0]);
+					nextQueue.push(item);
+				}
+			}
+		}
+		if (fallbackFromIndex !== null) {
+			for (let i = fallbackFromIndex; i < queue.length; i += 1) {
+				nextQueue.push(queue[i]!);
+			}
+		}
+		uploadQueue = nextQueue;
+	}
+
 	const worker = async (): Promise<void> => {
-		while (!failed && cursor < queue.length) {
+		while (!failed && cursor < uploadQueue.length) {
 			options.signal?.throwIfAborted();
 			const idx = cursor++;
-			const [sha256, content] = queue[idx];
+			const [sha256, content] = uploadQueue[idx]!;
 			const url = `${base}/_internal/blobs/${sha256}`;
-			const authHeader = { authorization: `Bearer ${options.controlToken}` };
 			try {
-				const headRes = await fetchWithRetry(url, {
-					method: "HEAD",
-					headers: authHeader,
-					signal: options.signal,
-				});
-				if (headRes.status === 200) {
-					deduplicatedBlobs++;
-					continue;
-				}
-				if (headRes.status !== 404) {
-					throw new Error(`Blob HEAD failed for ${sha256} with HTTP ${headRes.status}`);
+				if (!knownMissing.has(sha256)) {
+					const headRes = await fetchWithRetry(url, {
+						method: "HEAD",
+						headers: authHeader,
+						signal: options.signal,
+					});
+					if (headRes.status === 200) {
+						deduplicatedBlobs++;
+						continue;
+					}
+					if (headRes.status !== 404) {
+						throw new Error(`Blob HEAD failed for ${sha256} with HTTP ${headRes.status}`);
+					}
 				}
 				const putRes = await fetchWithRetry(url, {
 					method: "PUT",
@@ -393,7 +459,7 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 		}
 	};
 
-	const workers = Array.from({ length: Math.min(concurrency, queue.length) }, () => worker());
+	const workers = Array.from({ length: Math.min(concurrency, uploadQueue.length) }, () => worker());
 	await Promise.all(workers);
 
 	return {

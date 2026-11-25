@@ -114,7 +114,7 @@ async function keptFixture() {
 		return { workerId, worktree, commit };
 	};
 
-	return { job, repository, baseSha: started.baseSha, code, repo, git, startSession };
+	return { job, log, repository, baseSha: started.baseSha, code, repo, git, startSession };
 }
 
 describe("code-host surfaces multi-change engine", () => {
@@ -801,5 +801,75 @@ describe("code-host surfaces multi-change engine", () => {
 				phase: "files",
 			}),
 		).rejects.toSatisfy((error: unknown) => error instanceof CodeHostRefusal && error.code === "CODE_HOST_LINK");
+	}, 20_000);
+
+	it("inspects rebase worktrees without /usr/bin/find or full ls-tree -r while still blocking nested .git", async () => {
+		const f = await keptFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit(
+			{ ".gitignore": "node_modules/\n", "src/app.ts": "export const v = 1;\n" },
+			"Seed src",
+		);
+		const m1 = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed src" }],
+		});
+
+		const session = await f.startSession(m1.mainAfter);
+		const changeId = randomUUID();
+		const sessionHead = await session.commit({ "src/feature.ts": "export const f = 1;\n" }, "Feature");
+		// WHY: Add a gitignored node_modules tree to prove rebase inspection avoids walking ignored FUSE trees with find.
+		await mkdir(join(session.worktree, "node_modules/pkg"), { recursive: true });
+		await writeFile(join(session.worktree, "node_modules/pkg/index.js"), "module.exports = 1;\n");
+
+		const peer = await f.startSession(m1.mainAfter);
+		const peerHead = await peer.commit({ "README.md": "hello\n" }, "Peer");
+		const m2 = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: m1.mainAfter,
+			changes: [{ changeId: randomUUID(), parentSha: m1.mainAfter, headSha: peerHead, title: "Peer" }],
+		});
+
+		const logBefore = f.log.length;
+		const rebased = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: session.workerId,
+			ontoSha: m2.mainAfter,
+			updateBranchRef: true,
+			remainingChanges: [{ changeId, parentSha: m1.mainAfter, headSha: sessionHead, title: "Feature" }],
+		});
+		expect(rebased.status).toBe("clean");
+		const rebaseCommands = f.log.slice(logBefore);
+		expect(rebaseCommands.some((cmd) => cmd.argv[0]?.endsWith("/find"))).toBe(false);
+		expect(rebaseCommands.some((cmd) => cmd.argv.includes("ls-tree") && cmd.argv.includes("-r"))).toBe(false);
+
+		await writeFile(join(session.worktree, "src/.git"), "gitdir: /tmp/evil\n");
+		const peer2 = await f.startSession(m2.mainAfter);
+		const peer2Head = await peer2.commit({ "NOTES.md": "notes\n" }, "Peer 2");
+		const m3 = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: m2.mainAfter,
+			changes: [{ changeId: randomUUID(), parentSha: m2.mainAfter, headSha: peer2Head, title: "Peer 2" }],
+		});
+		const unsafe = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: session.workerId,
+			ontoSha: m3.mainAfter,
+			updateBranchRef: true,
+			remainingChanges:
+				rebased.status === "clean" ? rebased.rebasedChanges.map((c) => ({ ...c, title: "Feature" })) : [],
+		});
+		expect(unsafe).toMatchObject({ status: "deferred", reason: "worktree_unsafe" });
+		await rm(join(session.worktree, "src/.git"));
+		await mkdir(join(session.worktree, "src/.GIT"));
+		const unsafeUpper = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: session.workerId,
+			ontoSha: m3.mainAfter,
+			updateBranchRef: true,
+			remainingChanges:
+				rebased.status === "clean" ? rebased.rebasedChanges.map((c) => ({ ...c, title: "Feature" })) : [],
+		});
+		expect(unsafeUpper).toMatchObject({ status: "deferred", reason: "worktree_unsafe" });
 	}, 20_000);
 });

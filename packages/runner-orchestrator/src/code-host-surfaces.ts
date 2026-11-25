@@ -270,6 +270,36 @@ async function assertOrderedRange(run: Run, parentSha: string, headSha: string, 
 	}
 }
 
+// WHY: Batch multiple merge-base ancestry checks into one code-host shell exec to avoid M serial LXD exec round trips.
+async function assertOrderedRanges(
+	run: Run,
+	changes: readonly Pick<CodeHostChangeRange, "parentSha" | "headSha">[],
+	errorCode: string,
+): Promise<void> {
+	const pairs = changes.filter((change) => change.parentSha !== change.headSha);
+	if (pairs.length === 0) return;
+	if (pairs.length === 1) {
+		await assertOrderedRange(run, pairs[0]!.parentSha, pairs[0]!.headSha, errorCode);
+		return;
+	}
+	for (let start = 0; start < pairs.length; start += 28) {
+		const chunk = pairs.slice(start, start + 28);
+		const args: string[] = [run.layout.git, run.repo];
+		for (const pair of chunk) args.push(pair.parentSha, pair.headSha);
+		const res = await run.sh(
+			'git=$1; repo=$2; shift 2; while [ "$#" -ge 2 ]; do p=$1; h=$2; shift 2; "$git" --no-replace-objects --git-dir="$repo" merge-base --is-ancestor "$p" "$h"; rc=$?; if [ "$rc" -eq 1 ]; then printf "%s %s\\n" "$p" "$h"; exit 1; fi; if [ "$rc" -ne 0 ]; then exit 2; fi; done',
+			args,
+		);
+		if (res.status === 1) {
+			const [badParent = "", badHead = ""] = res.stdout.toString("latin1").trim().split(" ");
+			throw new CodeHostRefusal("CODE_HOST_INVALID_CHANGE_RANGE", [badParent, badHead]);
+		}
+		if (res.status !== 0) {
+			throw new CodeHostJobFailure(errorCode, tail(res.stderr));
+		}
+	}
+}
+
 async function assertAllCommits(run: Run, shas: readonly string[]): Promise<void> {
 	const unique = [...new Set(shas)];
 	if (unique.length === 0) return;
@@ -364,9 +394,7 @@ export async function cherryPickChangeUnits(
 				run,
 				input.changes.flatMap((change) => [change.parentSha, change.headSha]),
 			);
-			for (const change of input.changes) {
-				await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_CHERRY_PICK_FAILED");
-			}
+			await assertOrderedRanges(run, input.changes, "CODE_HOST_CHERRY_PICK_FAILED");
 
 			for (const change of input.changes) {
 				if (change.parentSha === change.headSha) {
@@ -429,6 +457,7 @@ async function inspectWorktreeForRebase(
 	workerId: string,
 	branchRef: string,
 	oldTip: string | null,
+	ontoSha: string,
 ): Promise<{ readonly exists: false } | { readonly exists: true; readonly defer: RebaseDeferReason | null }> {
 	const wtTree = `${run.code}/worktrees/${workerId}`;
 	const wtAdmin = `${run.repo}/worktrees/${workerId}`;
@@ -485,35 +514,27 @@ async function inspectWorktreeForRebase(
 		if (own.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(own.stderr));
 		if (own.stdout.length) return { exists: true, defer: "worktree_dirty" };
 	}
-	// WHY: A session controls its worktree; reject gitlinks and nested .git before any git status/reset touches disk so submodule configs cannot execute filter drivers on the code host.
-	const headRecords = await run.checkNames(run.repo, oldTip).catch((error: unknown) => {
-		if (error instanceof CodeHostRefusal) return null;
-		throw error;
-	});
-	if (
-		!headRecords ||
-		codeFolderRefuses(run.area, headRecords, `worktrees/${workerId}`).length > 0 ||
-		headRecords.some((record) => record.type === "commit")
-	) {
-		return { exists: true, defer: "worktree_unsafe" };
+	// WHY: Check only paths differing between ontoSha and oldTip via checkNamesIncremental instead of a full ls-tree -r -l scan, catching session-added gitlinks and invalid names before touching disk.
+	if (oldTip !== ontoSha) {
+		const headChecked = await run.checkNamesIncremental(run.repo, ontoSha, oldTip).catch((error: unknown) => {
+			if (error instanceof CodeHostRefusal) return null;
+			throw error;
+		});
+		if (
+			!headChecked ||
+			codeFolderRefuses(run.area, headChecked.records, `worktrees/${workerId}`).length > 0 ||
+			headChecked.records.some((record) => record.type === "commit")
+		) {
+			return { exists: true, defer: "worktree_unsafe" };
+		}
 	}
-	const nested = await run.command(["/usr/bin/find", wtTree, "-mindepth", "2", "-iname", ".git", "-print", "-quit"]);
-	if (nested.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(nested.stderr));
-	if (nested.stdout.length) return { exists: true, defer: "worktree_unsafe" };
-	// WHY: Edits flagged assume-unchanged or skip-worktree are hidden from porcelain status and would be overwritten by reset --hard.
-	const plain = await run.sh(
-		'out=$1; shift; "$@" >"$out" || exit 2; grep -q -v "^H " "$out"; case $? in 1) exit 0 ;; 0) exit 1 ;; *) exit 2 ;; esac',
-		[
-			`${run.directory}/rebase-index.out`,
-			run.layout.git,
-			"--no-replace-objects",
-			`--git-dir=${wtAdmin}`,
-			`--work-tree=${wtTree}`,
-			"ls-files",
-			"-v",
-		],
+	// WHY: Combine index gitlink check, assume-unchanged/skip-worktree check, and tracked-dir nested .git check in one shell exec to avoid walking node_modules or untracked FUSE trees with find.
+	const indexCheck = await run.sh(
+		'out=$1; git=$2; adm=$3; wt=$4; "$git" --no-replace-objects --git-dir="$adm" --work-tree="$wt" ls-files -s >"$out" || exit 2; grep -q "^160000 " "$out"; case $? in 0) exit 3 ;; 1) ;; *) exit 2 ;; esac; "$git" -c core.quotepath=false --no-replace-objects --git-dir="$adm" --work-tree="$wt" ls-files -v >"$out" || exit 2; grep -q -v "^H " "$out"; case $? in 0) exit 1 ;; 1) ;; *) exit 2 ;; esac; awk \'{p=substr($0,3); while (sub("[/][^/]*$", "", p)) if (!seen[p]++) print p}\' "$out" >"$out.dirs" || exit 2; while IFS= read -r d; do for g in "$wt/$d"/.[gG][iI][tT]; do if [ -e "$g" ] || [ -L "$g" ]; then exit 3; fi; done; done <"$out.dirs"',
+		[`${run.directory}/rebase-index.out`, run.layout.git, wtAdmin, wtTree],
 	);
-	if (plain.status !== 0) return { exists: true, defer: "worktree_dirty" };
+	if (indexCheck.status === 3) return { exists: true, defer: "worktree_unsafe" };
+	if (indexCheck.status !== 0) return { exists: true, defer: "worktree_dirty" };
 	const clean = await run.clean([
 		`--git-dir=${wtAdmin}`,
 		`--work-tree=${wtTree}`,
@@ -546,9 +567,7 @@ export async function rebaseSessionChanges(
 			ontoSha,
 			...input.remainingChanges.flatMap((change) => [change.parentSha, change.headSha]),
 		]);
-		for (const change of input.remainingChanges) {
-			await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
-		}
+		await assertOrderedRanges(run, input.remainingChanges, "CODE_HOST_REBASE_FAILED");
 
 		const branchRef = `refs/heads/qorpera/coding/${input.workerId}`;
 		const wtAdmin = `${run.repo}/worktrees/${input.workerId}`;
@@ -567,7 +586,7 @@ export async function rebaseSessionChanges(
 			if (oldTip !== null && expectedTips.size > 0 && !expectedTips.has(oldTip)) {
 				return { status: "deferred" as const, ontoSha, reason: "branch_advanced" as const, restored: run.restored };
 			}
-			const inspected = await inspectWorktreeForRebase(run, input.workerId, branchRef, oldTip);
+			const inspected = await inspectWorktreeForRebase(run, input.workerId, branchRef, oldTip, ontoSha);
 			if (inspected.exists) {
 				if (inspected.defer !== null) {
 					return { status: "deferred" as const, ontoSha, reason: inspected.defer, restored: run.restored };
@@ -631,17 +650,20 @@ export async function rebaseSessionChanges(
 		let worktreeSynced = true;
 		if (input.updateBranchRef) {
 			if (hasWorktree) {
-				const cursorRecords = await run.checkNames(run.repo, cursor);
-				if (cursorRecords.some((record) => record.type === "commit")) {
-					return {
-						status: "deferred" as const,
-						ontoSha,
-						reason: "worktree_unsafe" as const,
-						restored: run.restored,
-					};
+				// WHY: oldTip was already validated before rebasing; incrementally verify only paths changed between oldTip and cursor instead of a second full ls-tree -r scan.
+				if (oldTip && cursor !== oldTip) {
+					const { records: cursorRecords } = await run.checkNamesIncremental(run.repo, oldTip, cursor);
+					if (cursorRecords.some((record) => record.type === "commit")) {
+						return {
+							status: "deferred" as const,
+							ontoSha,
+							reason: "worktree_unsafe" as const,
+							restored: run.restored,
+						};
+					}
+					const refused = codeFolderRefuses(run.area, cursorRecords, `worktrees/${input.workerId}`);
+					if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 				}
-				const refused = codeFolderRefuses(run.area, cursorRecords, `worktrees/${input.workerId}`);
-				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 			} else if (cursor !== ontoSha) {
 				const { records } = await run.checkNamesIncremental(run.repo, ontoSha, cursor);
 				const refused = codeFolderRefuses(run.area, records, `worktrees/${input.workerId}`);
