@@ -5726,6 +5726,15 @@ export class SurfacesStore {
 				) {
 					this.store.set({ surfaces: next });
 				}
+				const identity = findIdentitySurface(this.state);
+				if (
+					identity &&
+					prevById.get(identity.id)?.status !== "active" &&
+					!isLocalSurfaceId(identity.id) &&
+					!this.state.cloudSurfaceFiles[identity.id]
+				) {
+					void this.refreshCloudFiles(identity);
+				}
 				for (const surface of next) {
 					if (surface.status !== "active" || isLocalSurfaceId(surface.id)) continue;
 					const prev = prevById.get(surface.id);

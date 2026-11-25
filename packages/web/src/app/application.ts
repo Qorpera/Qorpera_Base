@@ -1293,13 +1293,31 @@ export function mountApplication(
 				});
 				controller.signal.addEventListener("abort", stopSurfaceHints, { once: true });
 				void surfaces.load();
+				const syncIdentityFiles = () => {
+					if (
+						controller.signal.aborted ||
+						controller.store.get().accessLost ||
+						!controller.store.get().team ||
+						surfaces.state.source !== "cloud"
+					) {
+						return;
+					}
+					stopIdentitySync();
+					surfaces.refreshPendingCloudFiles();
+				};
+				const stopIdentitySurfaces = surfaces.store.subscribe(syncIdentityFiles);
+				const stopIdentityTeam = controller.store.subscribe(syncIdentityFiles);
+				const stopIdentitySync = () => {
+					stopIdentitySurfaces();
+					stopIdentityTeam();
+				};
+				controller.signal.addEventListener("abort", stopIdentitySync, { once: true });
 				// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
 				// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
 				const syncLogo = controller.store.subscribe(() => {
 					const team = controller.store.get().team;
 					if (!team || controller.store.get().accessLost) return;
 					syncLogo();
-					surfaces.refreshPendingCloudFiles();
 					if (!team.capabilities.write) return;
 					const current = () => {
 						if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
