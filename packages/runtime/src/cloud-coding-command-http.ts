@@ -21,6 +21,10 @@ import {
 	CLOUD_HOME_CHANNEL_PATH,
 	CLOUD_HOME_CHANNEL_PROTOCOL,
 	CLOUD_HOME_CHANNEL_REASON,
+	type CloudCodingChannelAnswer,
+	type CloudCodingChannelAuthorized,
+	type CloudCodingChannelRequest,
+	type CloudHomeChannelKind,
 	CloudHomeChannelRefused,
 	type CloudHomeChannelRequest,
 	type CloudHomeChannelSide,
@@ -29,6 +33,7 @@ import {
 	cloudHomeChannelKeepAlive,
 	cloudHomeChannelLines,
 	cloudHomeChannelWithoutKeepAlive,
+	parseCloudCodingChannelHandshake,
 	parseCloudHomeChannelHandshake,
 } from "./cloud-home-channel.ts";
 import {
@@ -368,6 +373,17 @@ export interface CloudCodingCommandServiceOptions {
 			signal: AbortSignal,
 		): Promise<CloudHomeChannelSide>;
 	};
+	codingChannel?: {
+		authorize(
+			request: { binding: CloudNativeToolBinding; scope: CloudCodingCommandScope; kind: CloudHomeChannelKind },
+			signal: AbortSignal,
+		): Promise<CloudCodingChannelAnswer>;
+		open(
+			authority: CloudCodingChannelAuthorized,
+			request: CloudCodingChannelRequest,
+			signal: AbortSignal,
+		): Promise<CloudHomeChannelSide>;
+	};
 	host?: "127.0.0.1" | "::1";
 	port?: number;
 	/** How often an open home channel says it is still there (CLOUD_HOME_CHANNEL_KEEPALIVE): the tests' own shorter one. */
@@ -446,6 +462,7 @@ export class HttpCloudCodingCommandService {
 	 */
 	async #home(request: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
 		const home = this.#options.home;
+		const codingChannel = this.#options.codingChannel;
 		const prove = this.#options.proveBinding;
 		const controller = new AbortController();
 		this.#controllers.add(controller);
@@ -457,11 +474,8 @@ export class HttpCloudCodingCommandService {
 		controller.signal.addEventListener("abort", onAbort, { once: true });
 		const bearer = Buffer.from(String(request.headers.authorization ?? ""));
 		const header = request.headers["x-qorpera-identity"];
-		// The run's ingress proves the run's holder; a peer listener takes none, as for a machine command: only
-		// executors hold its token, and the forwarding one proved the holder at its own ingress.
 		const holder = typeof header === "string" && isNativeJobHolder(header) ? header : undefined;
 		socket.on("error", () => undefined);
-		// Bytes that came in behind the request's own head belong to the channel.
 		if (head.byteLength > 0) socket.unshift(head);
 		let endedGracefully = false;
 		const endGracefully = (payload: string): void => {
@@ -469,7 +483,6 @@ export class HttpCloudCodingCommandService {
 			socket.end(payload);
 		};
 		const refuse = (reason: string): void => {
-			// Before the upgrade is completed there is no channel to answer on, so the socket simply ends.
 			endGracefully(
 				`HTTP/1.1 403 Forbidden\r\nconnection: close\r\ncontent-length: 0\r\nx-qorpera-home: ${reason}\r\n\r\n`,
 			);
@@ -478,7 +491,7 @@ export class HttpCloudCodingCommandService {
 		let stopKeepAlive = (): void => undefined;
 		try {
 			if (
-				!home ||
+				(!home && !codingChannel) ||
 				request.method !== "GET" ||
 				request.url !== CLOUD_HOME_CHANNEL_PATH ||
 				String(request.headers.upgrade ?? "").toLowerCase() !== CLOUD_HOME_CHANNEL_PROTOCOL ||
@@ -506,8 +519,10 @@ export class HttpCloudCodingCommandService {
 			} finally {
 				clearTimeout(handshakeTimer);
 			}
-			const handshake = first.done ? undefined : parseCloudHomeChannelHandshake(first.value);
-			if (!handshake) {
+			const homeHandshake = !first.done && home ? parseCloudHomeChannelHandshake(first.value) : undefined;
+			const codingHandshake =
+				!first.done && !homeHandshake && codingChannel ? parseCloudCodingChannelHandshake(first.value) : undefined;
+			if (!homeHandshake && !codingHandshake) {
 				endGracefully(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
 				return;
 			}
@@ -519,19 +534,53 @@ export class HttpCloudCodingCommandService {
 				},
 				() => controller.abort(),
 			);
-			const binding = parseCloudNativeToolBinding(handshake.binding);
-			if (prove && holder !== undefined) await prove(binding, holder, controller.signal);
-			const authority = await home.authorize(
-				{ binding, machineId: handshake.machineId, sessionId: handshake.sessionId },
-				controller.signal,
-			);
-			if (authority.state !== "authorized") {
-				endGracefully(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
+			if (homeHandshake && home) {
+				const binding = parseCloudNativeToolBinding(homeHandshake.binding);
+				if (prove) {
+					if (holder === undefined) throw new Error("HOME_CHANNEL_UNPROVEN");
+					await prove(binding, holder, controller.signal);
+				}
+				const authority = await home.authorize(
+					{ binding, machineId: homeHandshake.machineId, sessionId: homeHandshake.sessionId },
+					controller.signal,
+				);
+				if (authority.state !== "authorized") {
+					endGracefully(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
+					return;
+				}
+				side = await home.open(
+					authority,
+					{ binding, holder, kind: homeHandshake.kind ?? "exec" },
+					controller.signal,
+				);
+				socket.write(
+					`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`,
+				);
+			} else if (codingHandshake && codingChannel) {
+				const binding = parseCloudNativeToolBinding(codingHandshake.binding);
+				if (prove) {
+					if (holder === undefined) throw new Error("CODING_CHANNEL_UNPROVEN");
+					await prove(binding, holder, controller.signal);
+				}
+				const kind = codingHandshake.kind ?? "exec";
+				const authority = await codingChannel.authorize(
+					{ binding, scope: codingHandshake.scope, kind },
+					controller.signal,
+				);
+				if (authority.state !== "authorized") {
+					endGracefully(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
+					return;
+				}
+				side = await codingChannel.open(
+					authority,
+					{ binding, scope: codingHandshake.scope, holder, kind },
+					controller.signal,
+				);
+				socket.write(`${JSON.stringify({ ok: true, workerId: authority.workerId, vmId: authority.vmId })}\n`);
+			} else {
+				endGracefully(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
 				return;
 			}
-			// One session's authority for every kind of channel (slice C1): the kind only says what runs on the machine.
-			side = await home.open(authority, { binding, holder, kind: handshake.kind ?? "exec" }, controller.signal);
-			socket.write(`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`);
 			// A front ends an upgraded connection that is quiet for its read timeout: while the channel is open this end
 			// says it is there, and the run's own such lines go no further than here.
 			stopKeepAlive = cloudHomeChannelKeepAlive(
@@ -596,7 +645,7 @@ export class HttpCloudCodingCommandService {
 		});
 		// The home's channel (slice 1). An upgraded socket leaves the per-request bounds below behind, which a channel
 		// that lives as long as a model's turn cannot keep; every other route stays exactly as it is.
-		if (this.#options.home)
+		if (this.#options.home || this.#options.codingChannel)
 			server.on("upgrade", (request, socket, head) => void this.#home(request, socket as Socket, head));
 		this.#server = server;
 		server.requestTimeout = 15000;

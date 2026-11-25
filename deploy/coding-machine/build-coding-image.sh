@@ -33,8 +33,17 @@ CODING=("$@")
 exec 3>&1 1>&2
 HERE=$(cd "$(dirname "$0")" && pwd)
 PINS=$HERE/coding-image.json
+CODEX_PIN=$HERE/../first-node/native-codex/linux-x64-artifact.json
 pin() { jq -er "$1" "$PINS"; }
 [[ $(pin .schema) == qorpera.coding-image-pins/v1 && $(pin .base) == ubuntu:26.04 ]] || { echo "unexpected $PINS" >&2; exit 1; }
+EXPECTED_CODEX_SHA256=$(jq -er .artifact.sha256 "$CODEX_PIN")
+EXPECTED_CODEX_BYTES=$(jq -er .artifact.bytes "$CODEX_PIN")
+[[ $EXPECTED_CODEX_SHA256 =~ ^[0-9a-f]{64}$ && $EXPECTED_CODEX_BYTES =~ ^[1-9][0-9]*$ ]] ||
+	{ echo "no pinned Codex in $CODEX_PIN" >&2; exit 1; }
+CODEX=${QORPERA_CODING_CODEX:?set QORPERA_CODING_CODEX to the pinned Codex (deploy/first-node/native-codex/linux-x64-artifact.json)}
+[[ -f $CODEX ]] || { echo "QORPERA_CODING_CODEX is not a file: $CODEX" >&2; exit 1; }
+[[ $(stat -Lc %s "$CODEX") == "$EXPECTED_CODEX_BYTES" && $(sha256sum <"$CODEX" | cut -d' ' -f1) == "$EXPECTED_CODEX_SHA256" ]] ||
+	{ echo "QORPERA_CODING_CODEX is not the pinned build ($EXPECTED_CODEX_SHA256, $EXPECTED_CODEX_BYTES bytes)" >&2; exit 1; }
 for tool in node git chromium uv mise; do
 	[[ $(pin ".$tool.version") =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "invalid $tool version" >&2; exit 1; }
 	[[ $(pin ".$tool.url") =~ ^https://[A-Za-z0-9./_~%+-]+$ ]] || { echo "invalid $tool url" >&2; exit 1; }
@@ -126,7 +135,7 @@ lx exec "$BUILDER" -- env \
 	# git is not among them: the pinned git, built below, is the only one. Its build libraries stay for agents.
 	apt-get "${APT[@]}" install -y --no-install-recommends \
 		ca-certificates curl gnupg jq unzip zip xz-utils zstd rsync less file patch procps psmisc lsof strace \
-		iproute2 nftables iputils-ping bind9-dnsutils netcat-openbsd openssh-client tmux ripgrep fd-find tree sqlite3 \
+		iproute2 nftables iputils-ping bind9-dnsutils netcat-openbsd openssh-client openssh-sftp-server tmux ripgrep fd-find tree sqlite3 \
 		make cmake pkg-config build-essential clang autoconf automake libtool \
 		python3 python3-venv python3-pip python3-dev python-is-python3 pipx golang-go rustc cargo default-jdk-headless \
 		ruby ruby-dev ruby-bundler libreoffice-nogui \
@@ -172,18 +181,20 @@ lx exec "$BUILDER" -- env \
 	ln -sf /usr/bin/fdfind /usr/local/bin/fd
 	rm -rf /tmp/node.tar.xz /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu /tmp/mise /tmp/git.tar.xz "/tmp/git-$GIT_VERSION" \
 		/tmp/git-build.log /tmp/chromium.zip /tmp/chromium
-	install -d -o root -g root -m 0755 /company /opt/qorpera-guest /usr/local/libexec/qorpera-coding \
+	install -d -o root -g root -m 0755 /company /opt/qorpera-coding /opt/qorpera-guest /usr/local/libexec/qorpera-coding \
 		/etc/systemd/system/user@.service.d /etc/systemd/system/user-.slice.d /etc/systemd/system/lxd-agent.service.d /etc/docker
 	printf "%s\n" "#!/bin/sh" "[ \"\$(id -u)\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \"\$@\"" \
 		"exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
 	chmod 0555 /usr/local/bin/data
 '
+lx file push "$CODEX" "$BUILDER/opt/qorpera-coding/codex" --uid 0 --gid 0 --mode 0555
 for entry in "${FILES[@]}"; do
 	read -r source destination mode <<<"$entry"
 	lx file push "$HERE/$source" "$BUILDER$destination" --uid 0 --gid 0 --mode "$mode"
 done
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION" CHROMIUM_VERSION="$CHROMIUM_VERSION" \
 	UV_VERSION="$UV_VERSION" MISE_VERSION="$MISE_VERSION" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" \
+	EXPECTED_CODEX_SHA256="$EXPECTED_CODEX_SHA256" \
 	bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	refuse() { echo "check failed: $*" >&2; exit 1; }
@@ -283,6 +294,15 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	echo "lxd-agent.service: $(systemctl is-enabled lxd-agent.service 2>&1 || true)"
 	if installed openssh-server || installed snapd; then refuse "openssh-server or snapd is installed"; fi
 	if getent passwd ubuntu >/dev/null; then refuse "the ubuntu account is there"; fi
+	[[ $(stat -c "%U:%G %a" /opt/qorpera-coding/codex) == "root:root 555" &&
+		$(sha256sum </opt/qorpera-coding/codex | cut -d" " -f1) == "$EXPECTED_CODEX_SHA256" ]] ||
+		refuse "/opt/qorpera-coding/codex is not the pinned Codex ($EXPECTED_CODEX_SHA256)"
+	[[ -x /usr/lib/openssh/sftp-server ]] || refuse "openssh-sftp-server is missing"
+	{ printf "\000\000\000\005\001\000\000\000\003"; sleep 1; } |
+		setpriv --reuid=65534 --regid=65534 --clear-groups /usr/lib/openssh/sftp-server >/tmp/sftp-check.out
+	[[ $(head -c 9 /tmp/sftp-check.out | od -An -tx1 | tr -d " \n") == ????????0200000003 ]] ||
+		refuse "sftp-server failed SFTP v3 handshake"
+	rm -f /tmp/sftp-check.out
 	# Nothing of this build stays: logs, keys, caches (LibreOffice'"'"'s and mise'"'"'s too), the machine id.
 	apt-get clean
 	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm /root/.cargo /root/.config/libreoffice \
@@ -344,10 +364,11 @@ done
 # The bootstrap digest pins exactly what was installed: this script, the pins and every file pushed.
 SOURCES=()
 for entry in "${FILES[@]}"; do read -r source _ _ <<<"$entry"; SOURCES+=("$HERE/$source"); done
-BOOTSTRAP=$(cat "$0" "$PINS" "${SOURCES[@]}" | sha256sum | cut -d' ' -f1)
+BOOTSTRAP=$(cat "$0" "$PINS" "$CODEX_PIN" "${SOURCES[@]}" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \
 	--arg git "$GIT_VERSION" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" --arg uv "$UV_VERSION" \
 	--arg mise "$MISE_VERSION" --arg typescript "$TYPESCRIPT_VERSION" --arg tsx "$TSX_VERSION" \
+	--arg codexSha256 "$EXPECTED_CODEX_SHA256" \
 	--args '{schema: "qorpera.coding-image-build/v1", alias: $alias, imageFingerprint: $imageFingerprint,
-	  bootstrapSha256: $bootstrapSha256, projects: $ARGS.positional, git: $git, node: $node, chromium: $chromium,
-	  uv: $uv, mise: $mise, typescript: $typescript, tsx: $tsx, rootDiskBytes: 17179869184}' "${CODING[@]}" >&3
+	  bootstrapSha256: $bootstrapSha256, codexSha256: $codexSha256, projects: $ARGS.positional, git: $git, node: $node,
+	  chromium: $chromium, uv: $uv, mise: $mise, typescript: $typescript, tsx: $tsx, rootDiskBytes: 17179869184}' "${CODING[@]}" >&3

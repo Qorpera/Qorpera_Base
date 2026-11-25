@@ -47,6 +47,7 @@ lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
+[[ -f ${QORPERA_CODING_CODEX:-} ]] || fail "set QORPERA_CODING_CODEX to the pinned Codex (deploy/first-node/native-codex/linux-x64-artifact.json)"
 [[ ${P3_CUSTODY:-0} == 1 && ${P3_CODE_HOST:-0} != 1 ]] && fail "P3_CUSTODY=1 needs P3_CODE_HOST=1"
 [[ ${P3_CUSTODY:-0} == 1 && ${P3_C1V:-0} == 1 ]] && fail "P3_CUSTODY=1 runs in place of C1-V: leave P3_C1V unset"
 [[ ${P3_CUSTODY:-0} == 1 && ${P3_UNTIL_ARCHIVE:-0} == 1 ]] && fail "P3_CUSTODY=1 runs in place of the archive: leave P3_UNTIL_ARCHIVE unset"
@@ -214,7 +215,7 @@ for _ in $(seq 1 50); do [[ -s $WORK/proxy.port ]] && break; sleep 0.2; done
 PORT=$(head -n 1 "$WORK/proxy.port")
 [[ $PORT =~ ^[0-9]+$ ]] || fail "the proxy did not start: $(cat "$WORK/proxy.log")"
 # /tmp is small on a test machine; the export between the two stores goes to /var/tmp.
-TMPDIR=/var/tmp QORPERA_BUILDER_NIC=plain QORPERA_BUILD_PROXY="http://${BRIDGE%/*}:$PORT" timeout 5400 \
+TMPDIR=/var/tmp QORPERA_BUILDER_NIC=plain QORPERA_BUILD_PROXY="http://${BRIDGE%/*}:$PORT" QORPERA_CODING_CODEX="$QORPERA_CODING_CODEX" timeout 5400 \
 	bash "$REPO/deploy/coding-machine/build-coding-image.sh" "$BUILD" "$NETWORK" "$POOL" "$PROJECT" \
 	>"$WORK/image-build.json" 2>"$WORK/image-build.log" </dev/null ||
 	{ tail -n 150 "$WORK/image-build.log"; tail -n 40 "$WORK/proxy.log"; fail "the coding image build failed"; }

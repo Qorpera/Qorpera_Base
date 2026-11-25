@@ -7,6 +7,13 @@ import {
 	createHttpCloudCodingCommandGateway,
 } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
+import {
+	type CloudCodingChannelAuthorized,
+	type CloudCodingChannelRequest,
+	CloudHomeChannelRefused,
+	type CloudHomeChannelSide,
+} from "../../packages/runtime/src/cloud-home-channel.ts";
+import { createCloudCodingChannel } from "../../packages/runtime/src/cloud-home-channel-client.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
 
 export interface CodingCommandPeer {
@@ -29,8 +36,22 @@ interface CodingCommandRouterOptions {
 		signal: AbortSignal,
 		authority?: CloudCodingCommandAuthority,
 	): Promise<CloudCodingCommandExecution>;
+	openChannelLocal?(
+		authority: CloudCodingChannelAuthorized,
+		request: CloudCodingChannelRequest,
+		signal: AbortSignal,
+	): Promise<CloudHomeChannelSide>;
 	fetch?: typeof fetch;
 }
+
+const CHANNEL_REFUSALS = new Map<string, string>([
+	["CODING_CODEX_NOT_PINNED", "CODING_CODEX_NOT_PINNED"],
+	["CODING_SFTP_MISSING", "CODING_SFTP_MISSING"],
+	["CODING_BOOT_CHANGED", "CODING_BOOT_CHANGED"],
+	["CODING_CHANNEL_UNSUPPORTED", "CODING_CHANNEL_UNSUPPORTED"],
+	["CODING_HOST_TURN_NOT_PREPARED", "MACHINE_NOT_RUNNING"],
+	["CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK", "MACHINE_NEW_DISK"],
+]);
 export class CodingCommandRouter {
 	readonly #options: CodingCommandRouterOptions;
 	/** What each peer said it takes for a page of a command's log (keyholes S1), learned from its answers. */
@@ -92,5 +113,34 @@ export class CodingCommandRouter {
 		// F3 5g-5: the peer's own service decided what of the command its receipt shows, after its final authorization, on
 		// the node that holds the machine and its disk. This executor's checks after it can only refuse the receipt.
 		return { receipt, hidden: async () => undefined };
+	}
+	async openChannel(
+		authority: CloudCodingChannelAuthorized,
+		request: CloudCodingChannelRequest,
+		signal: AbortSignal,
+		localOnly = false,
+	): Promise<CloudHomeChannelSide> {
+		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (!this.#options.openChannelLocal) throw new Error("CODING_COMMAND_WRONG_EXECUTOR");
+			try {
+				return await this.#options.openChannelLocal(authority, request, signal);
+			} catch (error) {
+				const mapped = error instanceof Error ? CHANNEL_REFUSALS.get(error.message) : undefined;
+				if (mapped) throw new CloudHomeChannelRefused(mapped);
+				throw error;
+			}
+		}
+		if (localOnly) throw new Error("CODING_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find(
+			(entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId,
+		);
+		if (!peer) throw new Error("CODING_COMMAND_ROUTE_UNAVAILABLE");
+		const channel = createCloudCodingChannel({
+			url: peer.origin,
+			token: await this.#options.credential(peer.tokenCredential),
+			binding: request.binding,
+			holder: null,
+		});
+		return await channel.open({ scope: request.scope, kind: request.kind }, signal);
 	}
 }

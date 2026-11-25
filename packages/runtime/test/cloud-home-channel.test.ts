@@ -4,21 +4,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLOUD_HOME_OUTDATED, CLOUD_HOME_UNAVAILABLE, cloudHomeRefusalWords } from "../src/cloud-codex-home.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
+	CLOUD_CODING_CHANNEL_PROTOCOL,
 	CLOUD_HOME_CHANNEL_KEEPALIVE,
 	CLOUD_HOME_CHANNEL_LINE_BYTES,
 	CLOUD_HOME_SFTP_PIECE_BYTES,
+	type CloudCodingChannelRequest,
 	type CloudHomeChannelKind,
 	CloudHomeChannelRefused,
 	type CloudHomeChannelRequest,
 	type CloudHomeChannelSide,
+	cloudCodingChannelHandshake,
 	cloudHomeChannelHandshake,
 	cloudHomeChannelKeepAlive,
 	cloudHomeChannelLines,
 	cloudHomeSftpBytes,
 	cloudHomeSftpLines,
+	parseCloudCodingChannelHandshake,
 	parseCloudHomeChannelHandshake,
 } from "../src/cloud-home-channel.ts";
-import { createCloudHomeChannel } from "../src/cloud-home-channel-client.ts";
+import { createCloudCodingChannel, createCloudHomeChannel } from "../src/cloud-home-channel-client.ts";
 
 // The home's channel end to end on loopback: the run's client, the ingress's upgrade route, and a machine side that
 // records what reaches it (lanes/agent-box-20261113, home-lxd: a front ends an upgraded connection that is quiet for
@@ -557,5 +561,227 @@ describe("home channel framing bounds and keep-alive teardown", () => {
 		expect(yielded).toBeLessThan(totalLines);
 		socket.destroy();
 		await vi.waitFor(() => expect(sideClosed).toBe(true));
+	});
+});
+
+describe("coding machine channels share /v1/home-session with qorpera-coding-session/1 handshake", () => {
+	it("serializes and strictly validates coding channel handshakes", () => {
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 2 };
+		const execLine = cloudCodingChannelHandshake({ binding, scope });
+		expect(parseCloudCodingChannelHandshake(execLine)).toEqual({
+			schema: CLOUD_CODING_CHANNEL_PROTOCOL,
+			binding,
+			scope,
+			kind: "exec",
+		});
+		expect(parseCloudHomeChannelHandshake(execLine)).toBeUndefined();
+
+		const sftpLine = cloudCodingChannelHandshake({ binding, scope, kind: "sftp" });
+		expect(parseCloudCodingChannelHandshake(sftpLine)).toEqual({
+			schema: CLOUD_CODING_CHANNEL_PROTOCOL,
+			binding,
+			scope,
+			kind: "sftp",
+		});
+
+		expect(
+			parseCloudCodingChannelHandshake(
+				JSON.stringify({ schema: CLOUD_CODING_CHANNEL_PROTOCOL, binding, scope: { ...scope, turn: 0 } }),
+			),
+		).toBeUndefined();
+		expect(
+			parseCloudCodingChannelHandshake(
+				JSON.stringify({ schema: CLOUD_CODING_CHANNEL_PROTOCOL, binding, scope, kind: "ssh" }),
+			),
+		).toBeUndefined();
+		expect(
+			parseCloudCodingChannelHandshake(
+				JSON.stringify({ schema: CLOUD_CODING_CHANNEL_PROTOCOL, binding, scope, extra: 1 }),
+			),
+		).toBeUndefined();
+	});
+
+	it("opens exec and sftp coding channels alongside home channels and propagates refusal codes", async () => {
+		const token = randomBytes(32).toString("base64url");
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
+		const openedKinds: CloudHomeChannelKind[] = [];
+		const m = machine();
+		let refuseWith: string | undefined;
+		const service = new HttpCloudCodingCommandService({
+			token,
+			port: 0,
+			homeKeepAliveMs: 40,
+			proveBinding: async () => undefined,
+			authorize: async () => {
+				throw new Error("not here");
+			},
+			execute: async () => {
+				throw new Error("not here");
+			},
+			home: {
+				authorize: async (request) => ({
+					state: "authorized",
+					sessionId: request.sessionId,
+					machineId: request.machineId,
+					machine: "home-box",
+					placementId: randomUUID(),
+					bootId: randomUUID(),
+					executorOwner: "node-a",
+					providerId: "machine-node",
+				}),
+				open: async () => m.side,
+			},
+			codingChannel: {
+				authorize: async (request) => {
+					if (refuseWith) return { state: "refused", reason: refuseWith };
+					return {
+						state: "authorized",
+						workerId: request.scope.workerId,
+						vmId: request.scope.vmId,
+						requestId: request.scope.requestId,
+						turn: request.scope.turn,
+						executorOwner: "node-a",
+						providerId: "lxd",
+					};
+				},
+				open: async (_authority, request: CloudCodingChannelRequest) => {
+					openedKinds.push(request.kind);
+					if (request.kind === "sftp" && openedKinds.length === 2) {
+						throw new CloudHomeChannelRefused("CODING_SFTP_MISSING");
+					}
+					return m.side;
+				},
+			},
+		});
+		const port = await service.start();
+		cleanups.push(async () => await service.close());
+
+		const coding = createCloudCodingChannel({
+			url: `http://127.0.0.1:${port}`,
+			token,
+			binding,
+			holder: () => `job.${binding.jobId}.${randomBytes(32).toString("base64url")}`,
+			allowLoopback: true,
+			keepAliveMs: 40,
+		});
+		const stream = await coding.open({ scope }, AbortSignal.timeout(5000));
+		const seen: string[] = [];
+		void (async () => {
+			for await (const line of stream.lines) seen.push(line);
+		})().catch(() => undefined);
+		stream.write('{"id":1,"method":"initialize","params":{}}');
+		m.push('{"id":1,"result":{"ok":true}}');
+		await until(() => seen.length === 1 && m.given.length === 1);
+		expect(seen).toEqual(['{"id":1,"result":{"ok":true}}']);
+		expect(m.given).toEqual(['{"id":1,"method":"initialize","params":{}}']);
+		await stream.close();
+
+		await expect(coding.open({ scope, kind: "sftp" }, AbortSignal.timeout(5000))).rejects.toMatchObject({
+			reason: "CODING_SFTP_MISSING",
+		});
+
+		refuseWith = "MACHINE_NEW_DISK";
+		await expect(coding.open({ scope, kind: "exec" }, AbortSignal.timeout(5000))).rejects.toMatchObject({
+			reason: "MACHINE_NEW_DISK",
+		});
+		expect(openedKinds).toEqual(["exec", "sftp"]);
+	});
+
+	it("refuses coding and home channel handshakes missing or carrying a malformed holder header when proveBinding is set", async () => {
+		const token = randomBytes(32).toString("base64url");
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
+		const codingAuthorize = vi.fn();
+		const homeAuthorize = vi.fn();
+		const proveBinding = vi.fn(async () => undefined);
+		const service = new HttpCloudCodingCommandService({
+			token,
+			port: 0,
+			proveBinding,
+			authorize: async () => {
+				throw new Error("not here");
+			},
+			execute: async () => {
+				throw new Error("not here");
+			},
+			home: {
+				authorize: homeAuthorize,
+				open: async () => {
+					throw new Error("should not open");
+				},
+			},
+			codingChannel: {
+				authorize: codingAuthorize,
+				open: async () => {
+					throw new Error("should not open");
+				},
+			},
+		});
+		const port = await service.start();
+		cleanups.push(async () => await service.close());
+
+		const sendHandshake = async (header: string | undefined, line: string): Promise<string> => {
+			const socket = connect({ host: "127.0.0.1", port });
+			await new Promise<void>((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", reject);
+			});
+			const reply = new Promise<string>((resolve) => {
+				const chunks: Buffer[] = [];
+				socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+				socket.once("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
+			});
+			const identityHeader = header === undefined ? "" : `x-qorpera-identity: ${header}\r\n`;
+			socket.write(
+				`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer ${token}\r\n${identityHeader}\r\n${line}\n`,
+			);
+			return await reply;
+		};
+
+		const codingLine = cloudCodingChannelHandshake({ binding, scope, kind: "exec" });
+		const homeLine = cloudHomeChannelHandshake({ binding, machineId: randomUUID(), sessionId: randomUUID() });
+
+		expect(await sendHandshake(undefined, codingLine)).toContain("HTTP/1.1 403 Forbidden");
+		expect(await sendHandshake("malformed-header", codingLine)).toContain("HTTP/1.1 403 Forbidden");
+		expect(await sendHandshake(undefined, homeLine)).toContain("HTTP/1.1 403 Forbidden");
+		expect(await sendHandshake("malformed-header", homeLine)).toContain("HTTP/1.1 403 Forbidden");
+		expect(proveBinding).not.toHaveBeenCalled();
+		expect(codingAuthorize).not.toHaveBeenCalled();
+		expect(homeAuthorize).not.toHaveBeenCalled();
 	});
 });
