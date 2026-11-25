@@ -357,6 +357,10 @@ export const SETTINGS: Record<string, string> = {
 	"Voice profile": "Stemmeprofil",
 	"Default model and voice profile for narrated Studio breakdowns.":
 		"Standardmodel og stemmeprofil til indtalte Studio-gennemgange.",
+	"Image generation": "Billedgenerering",
+	"Image generation model": "Model til billedgenerering",
+	"Default model for generated images across chats, coding, workers, and Studio.":
+		"Standardmodel til genererede billeder i chats, kodning, baggrundsarbejde og Studio.",
 	Test: "Test",
 	"Test {voice} voice": "Test stemmen {voice}",
 	"Stop voice sample": "Stop stemmeprøve",

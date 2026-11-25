@@ -199,4 +199,41 @@ it("gives a Claude worker pictures only when the run's facts say its Codex login
 	expect(proof.pictures.make).toBe(given);
 	expect(lane).toHaveBeenCalledOnce();
 	await own.lane?.close();
+
+	const gemini = vi.fn(async () => ({ png: PNG }));
+	const chatGptPlan = vi.fn(async () => ({ png: PNG }));
+	const preferredGemini = await claudeWorkerPictures({
+		facts: { member: "Ada", ownCodexLogin: false },
+		home: true,
+		preferredModel: "gemini-3-pro-image",
+		gemini,
+		chatGptPlan,
+		lane,
+		foreignOwner,
+	});
+	expect(preferredGemini.pictures.make).toBe(gemini);
+	expect(lane).toHaveBeenCalledOnce();
+
+	const planOwned = await claudeWorkerPictures({
+		facts: { member: "Ada", ownCodexLogin: true },
+		home: true,
+		preferredModel: "chatgpt-image",
+		gemini,
+		chatGptPlan,
+		lane,
+		foreignOwner,
+	});
+	expect(planOwned.pictures.make).toBe(chatGptPlan);
+	expect(lane).toHaveBeenCalledOnce();
+
+	const nonGeminiNotOwn = await claudeWorkerPictures({
+		facts: { member: "Ada", ownCodexLogin: false },
+		home: true,
+		preferredModel: "chatgpt-image",
+		gemini,
+		lane,
+		foreignOwner,
+	});
+	expect(nonGeminiNotOwn.pictures.make).toBeUndefined();
+	expect(nonGeminiNotOwn.pictures.none).toContain("own ChatGPT sign-in isn't what this run uses");
 });

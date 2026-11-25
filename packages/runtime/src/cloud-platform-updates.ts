@@ -440,6 +440,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Multiple real options inside a single interface change",
 		text: "A single interface session can now stage 2 to 4 mutually exclusive real options inside one choice block in the Changes sidebar instead of embedding an in-page concept switcher into a website or spinning up separate sessions. Members flick through real standalone previews, can unselect all options to inspect Base, and click Use this one to discard the other options and keep the picked one as a normal toggleable change ready to approve. When a member asks for design ideas or a multiple choice to flick through, start a single session on that interface and ask for grouped options rather than an in-page concept picker.",
 	},
+	{
+		id: "image-generation-gemini-and-gpt",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Image generation with Gemini and ChatGPT plans",
+		text: "Members can now pick their default image generation model under Settings, AI subscriptions, Default models: Gemini 3 Pro Image (using their Gemini API key and monthly spend cap) or ChatGPT Image (using either a Codex sign-in or a Sign in with ChatGPT subscription). Image generation now works across company chats, Gemini 4 Neon conversations, coding sessions, Claude Code workers, and Studio interface sessions, where make_picture stages PNG assets directly for Preview.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

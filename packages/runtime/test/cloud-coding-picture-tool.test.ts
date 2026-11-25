@@ -259,6 +259,8 @@ describe("cloud-coding-picture-tool", () => {
 		const reasons: ReadonlyArray<[CloudPictureFailure, string]> = [
 			[new CloudPictureFailure("picture_limit", 1_800_000_000), "PICTURE_LIMIT_REACHED"],
 			[new CloudPictureFailure("usage_limit"), "USAGE_LIMIT_REACHED"],
+			[new CloudPictureFailure("spend_cap"), "GEMINI_SPEND_CAP_REACHED"],
+			[new CloudPictureFailure("billing_required"), "GEMINI_BILLING_REQUIRED"],
 			[new CloudPictureFailure("refused"), "PICTURE_REFUSED"],
 			[new CloudPictureFailure("free_plan"), "NO_PICTURE_FREE_PLAN"],
 			[new CloudPictureFailure("no_picture"), "NO_PICTURE"],

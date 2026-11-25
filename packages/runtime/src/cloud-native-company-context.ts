@@ -42,8 +42,10 @@ import {
 	CLOUD_RUNTIME_GEMINI_MODELS,
 	type CloudRuntimeClaudeChoice,
 	type CloudRuntimeGeminiChoice,
+	type CloudRuntimeImageModel,
 	type CloudRuntimeServiceTier,
 	isCloudRuntimeClaudeChoice,
+	isCloudRuntimeImageModel,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
 import { type CloudAgentSkillsBlock, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
@@ -625,6 +627,7 @@ export interface CloudNativeCompanyContext {
 	serviceTier?: CloudRuntimeServiceTier;
 	claude?: CloudRuntimeClaudeChoice;
 	gemini?: CloudRuntimeGeminiChoice;
+	imageModel?: CloudRuntimeImageModel;
 	/** Every company run is on the company folder (folder-v2, workstream F2), whose agents' folders are
 	 * named: this agent's folder name, and its listed coworkers' by id. */
 	folder: CloudCompanyContextFolders;
@@ -822,10 +825,19 @@ export function parseCloudNativeCompanyContext(
 	const originated = record !== null && Object.hasOwn(record, "origin");
 	const picked = record !== null && Object.hasOwn(record, "claude");
 	const geminiPicked = record !== null && Object.hasOwn(record, "gemini");
-	const { serviceTier, origin: originValue, claude: claudeValue, gemini: geminiValue, ...always } = record ?? {};
+	const imagePicked = record !== null && Object.hasOwn(record, "imageModel");
+	const {
+		serviceTier,
+		origin: originValue,
+		claude: claudeValue,
+		gemini: geminiValue,
+		imageModel: imageModelValue,
+		...always
+	} = record ?? {};
 	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
 	if (picked && !isCloudRuntimeClaudeChoice(claudeValue)) throw new Error("Invalid cloud company context");
 	if (geminiPicked && !isGeminiChoice(geminiValue)) throw new Error("Invalid cloud company context");
+	if (imagePicked && !isCloudRuntimeImageModel(imageModelValue)) throw new Error("Invalid cloud company context");
 	const data = closed(record ? always : value, [
 		"schema",
 		"identity",
@@ -947,6 +959,7 @@ export function parseCloudNativeCompanyContext(
 		...(isGeminiChoice(geminiValue)
 			? { gemini: { model: geminiValue.model, effort: geminiValue.effort, keyId: geminiValue.keyId.toLowerCase() } }
 			: {}),
+		...(imagePicked ? { imageModel: imageModelValue as CloudRuntimeImageModel } : {}),
 		folder,
 		...(origin ? { origin } : {}),
 	};

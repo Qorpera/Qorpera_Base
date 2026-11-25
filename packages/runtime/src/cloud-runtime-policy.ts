@@ -99,3 +99,11 @@ export interface CloudRuntimeGeminiChoice {
 	readonly effort: CloudRuntimeGeminiEffort;
 	readonly keyId: string;
 }
+
+export const CLOUD_RUNTIME_IMAGE_MODELS = Object.freeze(["gemini-3-pro-image", "chatgpt-image"] as const);
+
+export type CloudRuntimeImageModel = (typeof CLOUD_RUNTIME_IMAGE_MODELS)[number];
+
+export function isCloudRuntimeImageModel(value: unknown): value is CloudRuntimeImageModel {
+	return typeof value === "string" && (CLOUD_RUNTIME_IMAGE_MODELS as readonly string[]).includes(value);
+}

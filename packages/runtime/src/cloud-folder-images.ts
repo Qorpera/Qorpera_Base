@@ -175,6 +175,27 @@ export function folderImageView(bytes: Uint8Array): FolderImageView {
 	}
 }
 
+export function convertImageBytesToPng(bytes: Uint8Array): Buffer {
+	const format = folderImageFormat(bytes);
+	if (format === undefined) {
+		throw new FolderImageRefusal("unreadable", "the file is not a PNG, JPEG, GIF or WebP image");
+	}
+	if (bytes.byteLength > MAX_FOLDER_IMAGE_BYTES) {
+		throw new FolderImageRefusal("too_large", `the file is larger than ${MAX_FOLDER_IMAGE_BYTES / 1024 / 1024} MiB`);
+	}
+	try {
+		const raster = RASTERS[format](bytes);
+		if (format === "png") {
+			return Buffer.from(bytes);
+		}
+		const rgba = resample(raster, raster.width, raster.height);
+		return encodePng(rgba, raster.width, raster.height);
+	} catch (error) {
+		if (error instanceof FolderImageRefusal) throw error;
+		throw new FolderImageRefusal("unreadable", `the ${format.toUpperCase()} image could not be read here`);
+	}
+}
+
 /** An upright image as rows of 8-bit RGBA, top to bottom, delivered once. */
 interface Raster {
 	width: number;

@@ -30,13 +30,16 @@ function sampleDefaults(patch: Partial<MemberDefaultModels> = {}): MemberDefault
 		codingEffort: "high",
 		voiceModel: "gemini-3.8-flash-tts",
 		voiceName: "Charon",
+		imageModel: "gemini-3-pro-image",
 		storedConversationModel: null,
 		storedCodingModel: null,
 		storedVoiceModel: null,
 		storedVoiceName: null,
+		storedImageModel: null,
 		conversationModels: ["gpt-6.2-sol", "gpt-6-astra", "gemini-4-neon"],
 		codingModels: ["claude-opus-5-5", "claude-fable-5-2", "gpt-6.2-sol", "gpt-6-astra"],
 		voiceModels: ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "chatgpt-voice"],
+		imageModels: ["gemini-3-pro-image", "chatgpt-image"],
 		conversationEfforts: {
 			"gpt-6.2-sol": ["low", "medium", "high", "xhigh"],
 			"gpt-6-astra": ["low", "medium", "high", "xhigh"],
@@ -100,6 +103,16 @@ describe("default models transport", () => {
 					});
 				}
 				if (step === 3) {
+					return Response.json({
+						schema: "qorpera.member-default-models/v1",
+						...sampleDefaults({
+							imageModel: "chatgpt-image",
+							storedImageModel: "chatgpt-image",
+							version: 4,
+						}),
+					});
+				}
+				if (step === 4) {
 					return Response.json({ code: "QRC01", message: "stale" }, { status: 409 });
 				}
 				return Response.json({ code: "QRC02", message: "missing provider" }, { status: 403 });
@@ -120,6 +133,8 @@ describe("default models transport", () => {
 		expect(initial.codingModel).toBe("claude-opus-5-5");
 		expect(initial.voiceModel).toBe("gemini-3.8-flash-tts");
 		expect(initial.voiceName).toBe("Charon");
+		expect(initial.imageModel).toBe("gemini-3-pro-image");
+		expect(initial.imageModels).toEqual(["gemini-3-pro-image", "chatgpt-image"]);
 		expect(initial.codingEfforts["gpt-6-astra"]).toEqual(["low", "medium", "high"]);
 
 		const updated = await client.set({
@@ -158,6 +173,23 @@ describe("default models transport", () => {
 		expect(voiceUpdated.voiceName).toBe("Kore");
 		expect(voiceUpdated.version).toBe(3);
 
+		const imageUpdated = await client.set({
+			imageModel: "chatgpt-image",
+			expectedVersion: 3,
+		});
+		expect(sentBodies[2]).toEqual({
+			p_profile_id: profileA.profileId.toLowerCase(),
+			p_conversation_model: null,
+			p_conversation_effort: null,
+			p_coding_model: null,
+			p_coding_effort: null,
+			p_expected_version: 3,
+			p_image_model: "chatgpt-image",
+		});
+		expect(imageUpdated.imageModel).toBe("chatgpt-image");
+		expect(imageUpdated.storedImageModel).toBe("chatgpt-image");
+		expect(imageUpdated.version).toBe(4);
+
 		await expect(
 			client.set({
 				conversationModel: "gpt-6.2-sol",
@@ -168,12 +200,12 @@ describe("default models transport", () => {
 		await expect(
 			client.set({
 				conversationModel: "gemini-4-neon",
-				expectedVersion: 3,
+				expectedVersion: 4,
 			}),
 		).rejects.toBeInstanceOf(DefaultModelsUnavailableError);
 	});
 
-	it("rejects payloads missing voice fields", () => {
+	it("rejects payloads missing voice or partial image fields, and defaults gracefully when image fields are absent pre-migration", async () => {
 		expect(() =>
 			parseMemberDefaultModels({
 				schema: "qorpera.member-default-models/v1",
@@ -190,6 +222,69 @@ describe("default models transport", () => {
 				version: 0,
 			}),
 		).toThrow();
+		expect(() =>
+			parseMemberDefaultModels({
+				schema: "qorpera.member-default-models/v1",
+				conversationModel: "gpt-6.2-sol",
+				conversationEffort: "low",
+				codingModel: "gpt-6.2-sol",
+				codingEffort: "high",
+				voiceModel: "chatgpt-voice",
+				voiceName: "cove",
+				imageModel: "chatgpt-image",
+				storedConversationModel: null,
+				storedCodingModel: null,
+				storedVoiceModel: null,
+				storedVoiceName: null,
+				conversationModels: ["gpt-6.2-sol"],
+				codingModels: ["gpt-6.2-sol"],
+				voiceModels: ["chatgpt-voice"],
+				conversationEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+				codingEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+				voiceProfiles: { "chatgpt-voice": ["cove"] },
+				version: 0,
+			}),
+		).toThrow();
+
+		const preMigration = parseMemberDefaultModels({
+			schema: "qorpera.member-default-models/v1",
+			conversationModel: "gpt-6.2-sol",
+			conversationEffort: "low",
+			codingModel: "gpt-6.2-sol",
+			codingEffort: "high",
+			voiceModel: "chatgpt-voice",
+			voiceName: "cove",
+			storedConversationModel: null,
+			storedCodingModel: null,
+			storedVoiceModel: null,
+			storedVoiceName: null,
+			conversationModels: ["gpt-6.2-sol"],
+			codingModels: ["gpt-6.2-sol"],
+			voiceModels: ["chatgpt-voice"],
+			conversationEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+			codingEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+			voiceProfiles: { "chatgpt-voice": ["cove"] },
+			version: 0,
+		});
+		expect(preMigration.imageModel).toBe("chatgpt-image");
+		expect(preMigration.storedImageModel).toBeNull();
+		expect(preMigration.imageModels).toEqual(["chatgpt-image"]);
+		expect(preMigration.imageModelSupported).toBe(false);
+
+		const controller = new AbortController();
+		const view = new DefaultModelsView(
+			{
+				read: vi.fn(async () => preMigration),
+				set: vi.fn(async () => preMigration),
+			},
+			controller.signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		const rows = [...view.el.querySelectorAll(".default-model-row strong")].map((node) => node.textContent);
+		expect(rows).toEqual(["Conversational", "Coding & working", "Voice"]);
+		expect(view.el.querySelector('[data-role="image-model"]')).toBeNull();
+		controller.abort();
 	});
 });
 
@@ -213,6 +308,7 @@ describe("DefaultModelsView", () => {
 				const codingModel = update.codingModel ?? state.codingModel;
 				const voiceModel = update.voiceModel ?? state.voiceModel;
 				const voiceName = update.voiceName ?? state.voiceName;
+				const imageModel = update.imageModel ?? state.imageModel;
 				state = sampleDefaults({
 					conversationModel,
 					storedConversationModel: update.conversationModel ?? state.storedConversationModel,
@@ -222,8 +318,10 @@ describe("DefaultModelsView", () => {
 					codingEffort: update.codingEffort ?? state.codingEffort,
 					voiceModel,
 					voiceName,
+					imageModel,
 					storedVoiceModel: update.voiceModel ?? state.storedVoiceModel,
 					storedVoiceName: update.voiceName ?? state.storedVoiceName,
+					storedImageModel: update.imageModel ?? state.storedImageModel,
 					version: update.expectedVersion + 1,
 				});
 				return state;
@@ -238,14 +336,16 @@ describe("DefaultModelsView", () => {
 		expect(view.el.textContent).toContain("Conversational");
 		expect(view.el.textContent).toContain("Coding & working");
 		expect(view.el.textContent).toContain("Voice");
+		expect(view.el.textContent).toContain("Image generation");
 
 		const rows = [...view.el.querySelectorAll(".default-model-row strong")].map((node) => node.textContent);
-		expect(rows).toEqual(["Conversational", "Coding & working", "Voice"]);
+		expect(rows).toEqual(["Conversational", "Coding & working", "Voice", "Image generation"]);
 
 		const convModel = view.el.querySelector<HTMLSelectElement>('[data-role="conversation-model"]')!;
 		const codingModel = view.el.querySelector<HTMLSelectElement>('[data-role="coding-model"]')!;
 		const voiceModel = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
 		const voiceName = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		const imageModel = view.el.querySelector<HTMLSelectElement>('[data-role="image-model"]')!;
 		expect([...convModel.options].map((opt) => opt.value)).toEqual(["gpt-6.2-sol", "gpt-6-astra", "gemini-4-neon"]);
 		expect([...codingModel.options].map((opt) => opt.value)).toEqual([
 			"claude-opus-5-5",
@@ -254,10 +354,12 @@ describe("DefaultModelsView", () => {
 			"gpt-6-astra",
 		]);
 		expect([...voiceModel.options].map((opt) => opt.value)).toEqual(["chatgpt-voice"]);
+		expect([...imageModel.options].map((opt) => opt.value)).toEqual(["gemini-3-pro-image", "chatgpt-image"]);
 		expect(convModel.value).toBe("gpt-6.2-sol");
 		expect(codingModel.value).toBe("claude-opus-5-5");
 		expect(voiceModel.value).toBe("chatgpt-voice");
 		expect(voiceName.value).toBe("cove");
+		expect(imageModel.value).toBe("gemini-3-pro-image");
 		expect([...voiceName.options].map((opt) => opt.value)).toEqual([...CHATGPT_VOICE_PROFILES]);
 
 		convModel.value = "gemini-4-neon";
@@ -319,6 +421,18 @@ describe("DefaultModelsView", () => {
 			{
 				voiceName: "maple",
 				expectedVersion: 5,
+			},
+			expect.any(AbortSignal),
+		);
+
+		const imageModelAfter = view.el.querySelector<HTMLSelectElement>('[data-role="image-model"]')!;
+		imageModelAfter.value = "chatgpt-image";
+		imageModelAfter.dispatchEvent(new Event("change"));
+		await settle();
+		expect(client.set).toHaveBeenLastCalledWith(
+			{
+				imageModel: "chatgpt-image",
+				expectedVersion: 6,
 			},
 			expect.any(AbortSignal),
 		);
@@ -385,6 +499,9 @@ describe("DefaultModelsView", () => {
 			storedVoiceModel: "gemini-3.8-flash-tts",
 			storedVoiceName: "Kore",
 			voiceModels: ["chatgpt-voice"],
+			imageModel: "chatgpt-image",
+			storedImageModel: "gemini-3-pro-image",
+			imageModels: ["chatgpt-image"],
 			version: 4,
 		});
 		const client: WebDefaultModels = {
@@ -405,6 +522,11 @@ describe("DefaultModelsView", () => {
 		expect(voiceModel.value).toBe("gemini-3.8-flash-tts");
 		expect(voiceModel.selectedOptions[0]?.disabled).toBe(true);
 		expect(voiceModel.selectedOptions[0]?.textContent).toBe("Gemini 3.8 Flash TTS (unavailable here)");
+
+		const imageModel = view.el.querySelector<HTMLSelectElement>('[data-role="image-model"]')!;
+		expect(imageModel.value).toBe("gemini-3-pro-image");
+		expect(imageModel.selectedOptions[0]?.disabled).toBe(true);
+		expect(imageModel.selectedOptions[0]?.textContent).toBe("Gemini 3 Pro Image (unavailable here)");
 
 		const voiceName = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
 		expect(voiceName.value).toBe("Kore");

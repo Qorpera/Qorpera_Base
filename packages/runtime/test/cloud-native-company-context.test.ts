@@ -2918,3 +2918,17 @@ it("explains read-only coding_finish handoffs and archiving unneeded blocked cod
 		"If a blocked coding session no longer needs the member's answer (for example, you already resolved the work or are closing the todo), archive it with manage_worker action archive (or steer it with followup) so no stale prompt stays pinned for the member.",
 	);
 });
+
+it("parses optional imageModel preference on company context and rejects unknown values", () => {
+	const f = nativeCompanyContextFixture();
+	expect(parseCloudNativeCompanyContext(f.context, f.binding).imageModel).toBeUndefined();
+	expect(
+		parseCloudNativeCompanyContext({ ...f.context, imageModel: "gemini-3-pro-image" }, f.binding).imageModel,
+	).toBe("gemini-3-pro-image");
+	expect(parseCloudNativeCompanyContext({ ...f.context, imageModel: "chatgpt-image" }, f.binding).imageModel).toBe(
+		"chatgpt-image",
+	);
+	expect(() => parseCloudNativeCompanyContext({ ...f.context, imageModel: "dall-e-2" }, f.binding)).toThrow(
+		"Invalid cloud company context",
+	);
+});
