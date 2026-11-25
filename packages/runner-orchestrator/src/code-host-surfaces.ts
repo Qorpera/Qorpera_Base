@@ -1141,3 +1141,73 @@ export async function verifyStagedSurfaceBranch(
 		};
 	});
 }
+
+export interface DiscardSurfaceSessionWorktreeInput {
+	readonly repository: CloudCodingRepository;
+	readonly workerId: string;
+	readonly phase: "files" | "git-folder";
+}
+
+export type DiscardSurfaceSessionWorktreeResult =
+	| { readonly status: "unseeded" }
+	| { readonly status: "files_still_there" }
+	| {
+			readonly status: "cleaned";
+			readonly removedWorktree: boolean;
+			readonly removedAdmin: boolean;
+			readonly deletedBranch: boolean;
+	  };
+
+export async function discardSurfaceSessionWorktree(
+	job: CodeHostJob,
+	input: DiscardSurfaceSessionWorktreeInput,
+): Promise<DiscardSurfaceSessionWorktreeResult> {
+	const repository = keptRepositoryOf(input.repository);
+	if (!isUuid(input.workerId) || (input.phase !== "files" && input.phase !== "git-folder")) {
+		throw new Error("INVALID_CODE_HOST_JOB");
+	}
+	return await withJob(job, repository, async (run) => {
+		const area = await run.prepare(input.workerId);
+		if (!area.seeded) return { status: "unseeded" };
+		const tree = `${run.code}/worktrees/${input.workerId}`;
+		const admin = `${run.repo}/worktrees/${input.workerId}`;
+		const ref = `refs/heads/qorpera/coding/${input.workerId}`;
+
+		if (input.phase === "files") {
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+			}
+			if (area.worktree?.tree !== "directory") {
+				return { status: "cleaned", removedWorktree: false, removedAdmin: false, deletedBranch: false };
+			}
+			const removed = await run.command(["/usr/bin/rm", "-rf", "--", tree]);
+			if (removed.status !== 0) {
+				throw new CodeHostJobFailure("CODE_HOST_CLEANUP_FAILED", tail(removed.stderr));
+			}
+			return { status: "cleaned", removedWorktree: true, removedAdmin: false, deletedBranch: false };
+		}
+
+		const refs = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, ref]);
+		if (refs(CODE_AREA_IN_QORPERA_REF) === null) {
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
+		if (area.worktree?.tree !== "none") {
+			return { status: "files_still_there" };
+		}
+		let removedAdmin = false;
+		if (area.worktree.admin === "directory") {
+			const removed = await run.command(["/usr/bin/rm", "-rf", "--", admin]);
+			if (removed.status !== 0) {
+				throw new CodeHostJobFailure("CODE_HOST_CLEANUP_FAILED", tail(removed.stderr));
+			}
+			removedAdmin = true;
+		}
+		let deletedBranch = false;
+		const branchSha = refs(ref);
+		if (branchSha !== null) {
+			await run.gitOk(run.repo, ["update-ref", "-d", ref, branchSha], "CODE_HOST_CLEANUP_FAILED");
+			deletedBranch = true;
+		}
+		return { status: "cleaned", removedWorktree: false, removedAdmin, deletedBranch };
+	});
+}

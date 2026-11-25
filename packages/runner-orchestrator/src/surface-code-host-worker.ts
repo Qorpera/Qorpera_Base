@@ -27,7 +27,11 @@ import {
 	readSurfacePreviewPlan,
 	readSurfaceSiteTree,
 } from "./code-host-sites.ts";
-import { composePreviewTree, type RebaseSessionChangesResult } from "./code-host-surfaces.ts";
+import {
+	composePreviewTree,
+	discardSurfaceSessionWorktree,
+	type RebaseSessionChangesResult,
+} from "./code-host-surfaces.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CODE_SITE_EXTENSIONS, CODE_SITE_PATH, codeSiteManifest, codeSiteTreeProblem } from "./code-site.ts";
 import { CODE_SITE_LIST_BYTES, CODE_SITE_LIST_FILES, type CodeSiteTreeRead } from "./code-site-uploads.ts";
@@ -50,6 +54,7 @@ import {
 	type SurfacePreviewRecipe,
 } from "./surface-preview-runner.ts";
 import type {
+	ClaimedSurfaceCleanupJob,
 	ClaimedSurfaceMergeJob,
 	ClaimedSurfacePreviewJob,
 	ClaimedSurfacePublishJob,
@@ -60,6 +65,7 @@ export const SURFACE_CODE_HOST_RPCS = [
 	"qorpera_surface_complete_preview",
 	"qorpera_surface_complete_merge",
 	"qorpera_surface_complete_publish",
+	"qorpera_surface_complete_cleanup",
 	"qorpera_surface_renew_lease",
 	"qorpera_surface_update_rebased_changes",
 	"qorpera_surface_site_version_begin",
@@ -111,6 +117,7 @@ export interface SurfaceCodeHostPassResult {
 	readonly previews: number;
 	readonly merges: number;
 	readonly publishes: number;
+	readonly cleanups: number;
 	readonly failed: number;
 }
 
@@ -740,6 +747,7 @@ export class SurfaceCodeHostWorker {
 		const merges = claimed.merges ?? [];
 		const publishes = claimed.publishes ?? [];
 		const previews = claimed.previews ?? [];
+		const cleanups = claimed.cleanups ?? [];
 
 		// WHY: Start lease renewal for every claimed item immediately so items queued behind long merges never silently expire before execution.
 		const leases = new Map<string, ActiveLease>();
@@ -759,19 +767,26 @@ export class SurfaceCodeHostWorker {
 				this.#startLease("preview", preview.previewId, preview.leaseToken ?? null, signal),
 			);
 		}
+		for (const cleanup of cleanups) {
+			leases.set(
+				leaseKey("job", cleanup.jobId),
+				this.#startLease("job", cleanup.jobId, cleanup.leaseToken ?? null, signal),
+			);
+		}
 
-		// WHY: Serialize merges, publishes, and previews within each company while running distinct companies concurrently.
+		// WHY: Serialize merges, publishes, previews, and cleanups within each company while running distinct companies concurrently.
 		type CompanyWork = {
 			readonly profileId: string;
 			readonly merges: ClaimedSurfaceMergeJob[];
 			readonly publishes: ClaimedSurfacePublishJob[];
 			readonly previews: ClaimedSurfacePreviewJob[];
+			readonly cleanups: ClaimedSurfaceCleanupJob[];
 		};
 		const byCompany = new Map<string, CompanyWork>();
 		const bucketOf = (profileId: string): CompanyWork => {
 			let bucket = byCompany.get(profileId);
 			if (!bucket) {
-				bucket = { profileId, merges: [], publishes: [], previews: [] };
+				bucket = { profileId, merges: [], publishes: [], previews: [], cleanups: [] };
 				byCompany.set(profileId, bucket);
 			}
 			return bucket;
@@ -779,10 +794,12 @@ export class SurfaceCodeHostWorker {
 		for (const merge of merges) bucketOf(merge.profileId).merges.push(merge);
 		for (const pub of publishes) bucketOf(pub.profileId).publishes.push(pub);
 		for (const preview of previews) bucketOf(preview.profileId).previews.push(preview);
+		for (const cleanup of cleanups) bucketOf(cleanup.profileId).cleanups.push(cleanup);
 
 		let previewsDone = 0;
 		let mergesDone = 0;
 		let publishesDone = 0;
+		let cleanupsDone = 0;
 		let failed = 0;
 
 		const runCompany = async (work: CompanyWork): Promise<void> => {
@@ -842,6 +859,25 @@ export class SurfaceCodeHostWorker {
 					lease.stop();
 				}
 			}
+
+			for (const cleanup of work.cleanups) {
+				if (signal.aborted) break;
+				const lease = leases.get(leaseKey("job", cleanup.jobId))!;
+				try {
+					const completed = await this.#runCleanup(cleanup, lease.signal);
+					if (completed) cleanupsDone += 1;
+				} catch (error) {
+					failed += 1;
+					this.#emit({
+						event: "surface-code-host-error",
+						kind: "cleanup",
+						jobId: cleanup.jobId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				} finally {
+					lease.stop();
+				}
+			}
 		};
 
 		try {
@@ -851,7 +887,13 @@ export class SurfaceCodeHostWorker {
 			for (const lease of leases.values()) lease.stop();
 		}
 
-		return { previews: previewsDone, merges: mergesDone, publishes: publishesDone, failed };
+		return {
+			previews: previewsDone,
+			merges: mergesDone,
+			publishes: publishesDone,
+			cleanups: cleanupsDone,
+			failed,
+		};
 	}
 
 	async #runYieldable<T>(
@@ -1528,6 +1570,99 @@ export class SurfaceCodeHostWorker {
 					"Surface publish upload failed",
 				),
 			);
+		}
+	}
+
+	async #runCleanup(cleanup: ClaimedSurfaceCleanupJob, signal: AbortSignal): Promise<boolean> {
+		const completeCleanup = async (status: "completed" | "failed", errorDetail: string | null): Promise<true> => {
+			await retryCommittedCompletion(
+				(attemptSignal) =>
+					this.#control.call(
+						"qorpera_surface_complete_cleanup",
+						{
+							p_job_id: cleanup.jobId,
+							p_status: status,
+							p_error_detail: errorDetail,
+							p_lease_token: cleanup.leaseToken ?? null,
+						},
+						attemptSignal,
+					),
+				signal,
+				this.#completionRetryDelaysMs,
+				{ treatNotRunningAsDoneOnRetry: true },
+			);
+			return true;
+		};
+
+		if (!cleanup.environmentId) {
+			return await completeCleanup("failed", "Code cleanup job is missing environmentId");
+		}
+		const repository = parseSurfaceRepositoryKey(cleanup.repositoryKey);
+		if (!repository) {
+			return await completeCleanup(
+				"failed",
+				cleanup.repositoryKey
+					? `Invalid surface repositoryKey "${cleanup.repositoryKey}"`
+					: "Code repository surface cleanup is missing repository metadata",
+			);
+		}
+		if (!isUuid(cleanup.workerId)) {
+			return await completeCleanup("failed", "Code cleanup job has invalid workerId");
+		}
+
+		const environmentId = cleanup.environmentId;
+		try {
+			// WHY: Remove worktree files in one published code-host job before deleting repo.git/worktrees and the branch ref in a second job.
+			const filesRan = await this.#runYieldable(cleanup.profileId, environmentId, signal, async (codeHostJob) =>
+				discardSurfaceSessionWorktree(codeHostJob, {
+					repository,
+					workerId: cleanup.workerId,
+					phase: "files",
+				}),
+			);
+			if (filesRan.yielded) {
+				this.#emit({
+					event: "surface-code-host-yielded",
+					kind: "cleanup",
+					jobId: cleanup.jobId,
+					surfaceId: cleanup.surfaceId,
+				});
+				return false;
+			}
+			if (filesRan.value.status === "unseeded") {
+				return await completeCleanup("completed", null);
+			}
+
+			const gitRan = await this.#runYieldable(cleanup.profileId, environmentId, signal, async (codeHostJob) =>
+				discardSurfaceSessionWorktree(codeHostJob, {
+					repository,
+					workerId: cleanup.workerId,
+					phase: "git-folder",
+				}),
+			);
+			if (gitRan.yielded) {
+				this.#emit({
+					event: "surface-code-host-yielded",
+					kind: "cleanup",
+					jobId: cleanup.jobId,
+					surfaceId: cleanup.surfaceId,
+				});
+				return false;
+			}
+			if (gitRan.value.status === "files_still_there") {
+				this.#emit({
+					event: "surface-code-host-cleanup-deferred",
+					jobId: cleanup.jobId,
+					surfaceId: cleanup.surfaceId,
+					workerId: cleanup.workerId,
+				});
+				return false;
+			}
+
+			return await completeCleanup("completed", null);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return await completeCleanup("failed", surfaceFailureDetail(error, null, "Surface worktree cleanup failed"));
 		}
 	}
 }

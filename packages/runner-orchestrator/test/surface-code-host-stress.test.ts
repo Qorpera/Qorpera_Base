@@ -558,7 +558,7 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 			},
 		});
 		const pass = await worker.pass(new AbortController().signal);
-		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
+		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, cleanups: 0, failed: 0 });
 		expect(rebaseRpcs).toHaveLength(1);
 		expect(rebaseRpcs[0]).toMatchObject({
 			p_branch_head_sha: null,
@@ -705,7 +705,7 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 		const res = await worker.pass(new AbortController().signal);
 		const elapsedMs = performance.now() - startedAt;
 
-		expect(res).toEqual({ previews: 20, merges: 0, publishes: 0, failed: 0 });
+		expect(res).toEqual({ previews: 20, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
 		expect(completedStatuses.every((s) => s === "ready")).toBe(true);
 		expect(uploadWhileLocked).toBe(false);
 		expect(maxConcurrentPuts).toBeGreaterThanOrEqual(2);
@@ -744,7 +744,7 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 			},
 		});
 		const yieldPass = await yieldWorker.pass(new AbortController().signal);
-		expect(yieldPass).toEqual({ previews: 0, merges: 0, publishes: 0, failed: 0 });
+		expect(yieldPass).toEqual({ previews: 0, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
 		expect(completeOnYield).toEqual([]);
 		expect(yieldedEvents.some((ev) => ev.event === "surface-code-host-yielded")).toBe(true);
 	}, 25_000);
@@ -820,7 +820,7 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 		});
 
 		const res = await worker.pass(new AbortController().signal);
-		expect(res).toEqual({ previews: 4, merges: 0, publishes: 0, failed: 0 });
+		expect(res).toEqual({ previews: 4, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
 		expect(peakCompanies).toBe(4);
 	}, 20_000);
 
