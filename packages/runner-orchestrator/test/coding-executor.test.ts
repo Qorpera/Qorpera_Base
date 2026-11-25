@@ -2529,4 +2529,78 @@ describe("the coding executor over a preview builder's turn", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("parses and completes surface_folder and surface_ops claims with null repository and null baseSha without calling publish", async () => {
+		for (const workspaceKind of ["surface_folder", "surface_ops"] as const) {
+			const w = world();
+			const surfaceSession = {
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				slug: workspaceKind === "surface_folder" ? "brand" : "ops",
+				title: workspaceKind === "surface_folder" ? "Brand Studio" : "Operations",
+			};
+			Object.assign(w.world.claim, {
+				workspaceKind,
+				repository: null,
+				baseSha: null,
+				pullRequest: null,
+				surfaceSession,
+			});
+			const parsed = parseCodingSessionClaim(w.world.claim);
+			expect(parsed.workspaceKind).toBe(workspaceKind);
+			expect(parsed.repository).toBeNull();
+			expect(parsed.surfaceSession).toEqual(surfaceSession);
+
+			vi.mocked(w.host.prepareWorkspace).mockResolvedValueOnce({ vmId: randomUUID(), baseSha: null });
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: `Staged ${workspaceKind} deliverable`,
+				headSha: null,
+				operationKey: `done-${workspaceKind}`,
+			};
+			const exec = new CloudCodingExecutor({
+				control: withHook(w.control, endTurnOnPoll(w.world, "completed", finish)),
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			});
+			expect(await exec.runOnce(new AbortController().signal)).toBe("completed");
+			expect(w.host.publish).not.toHaveBeenCalled();
+			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+			expect(w.world.calls).toContainEqual({
+				method: "qorpera_record_coding_progress",
+				args: expect.objectContaining({
+					p_base_sha: null,
+					p_events: [
+						{
+							kind: "step",
+							actor: "executor",
+							body: { text: "Prepared the surface workspace" },
+						},
+					],
+				}),
+			});
+			expect(w.world.calls).toContainEqual({
+				method: "qorpera_complete_coding_turn",
+				args: expect.objectContaining({
+					p_outcome: "succeeded",
+					p_summary: `Staged ${workspaceKind} deliverable`,
+					p_artifacts: null,
+					p_pull_request: null,
+				}),
+			});
+		}
+
+		const badSurface = world();
+		Object.assign(badSurface.world.claim, {
+			workspaceKind: "surface_folder",
+			repository: null,
+			surfaceSession: null,
+		});
+		expect(() => parseCodingSessionClaim(badSurface.world.claim)).toThrow("Invalid coding claim");
+	});
 });

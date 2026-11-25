@@ -91,7 +91,14 @@ import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./clo
 import { isCloudRuntimeClaudeChoice } from "./cloud-runtime-policy.ts";
 import type { ClaudeLoginRunClient } from "./cloud-secret-broker-http.ts";
 import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
+import {
+	type CodingWorkspaceKind,
+	isCodingWorkspaceKind,
+	isSurfaceWorkspaceKind,
+	prepareSurfaceCodingWorkspace,
+} from "./cloud-surface-coding-tools.ts";
 import { CODING_ATTACHMENT_VIEW_SCHEMA, createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
+import { STUDIO_MAKE_PICTURE_SCHEMA } from "./cloud-surface-picture-tool.ts";
 import { createCodingRecordChangeTool } from "./cloud-surface-tools.ts";
 import {
 	buildSurfaceTurnBrief,
@@ -292,7 +299,11 @@ function trimUtf8ToBytes(text: string, maxBytes: number): string {
 	return maxBytes > suffixBytes ? `${out}${suffix}` : out;
 }
 
-function codingShownImageSha256(text: unknown, wanted: string = CODING_INSPECT_IMAGE_SCHEMA): string | undefined {
+function codingShownImageSha256(
+	text: unknown,
+	wanted: string | null = CODING_INSPECT_IMAGE_SCHEMA,
+	wantedKind: "image" | "picture" = "image",
+): string | undefined {
 	if (typeof text !== "string") return undefined;
 	let answer: unknown;
 	try {
@@ -302,9 +313,40 @@ function codingShownImageSha256(text: unknown, wanted: string = CODING_INSPECT_I
 	}
 	if (!answer || typeof answer !== "object" || Array.isArray(answer)) return undefined;
 	const { schema, kind, imageSha256 } = answer as { schema?: unknown; kind?: unknown; imageSha256?: unknown };
-	return schema === wanted && kind === "image" && typeof imageSha256 === "string" && SHA.test(imageSha256)
+	return (wanted === null || schema === wanted) &&
+		kind === wantedKind &&
+		typeof imageSha256 === "string" &&
+		SHA.test(imageSha256)
 		? imageSha256
 		: undefined;
+}
+
+function parseSurfaceFinishNotePaths(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || value.length > 64) {
+		throw new CloudToolArgumentRefusal("notePaths must be an array of at most 64 safe relative paths");
+	}
+	const out: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== "string") {
+			throw new CloudToolArgumentRefusal("notePaths entries must be non-empty relative paths");
+		}
+		const trimmed = entry.trim();
+		if (
+			!trimmed ||
+			Buffer.byteLength(trimmed) > 512 ||
+			trimmed.startsWith("/") ||
+			trimmed.endsWith("/") ||
+			trimmed.includes("\\") ||
+			trimmed.includes("\0") ||
+			trimmed.includes(":") ||
+			trimmed.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+		) {
+			throw new CloudToolArgumentRefusal("notePaths entries must be safe relative paths");
+		}
+		out.push(trimmed);
+	}
+	return out;
 }
 
 function codingObject(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
@@ -479,7 +521,8 @@ const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 export function parseCloudCodingTurnContext(
 	value: unknown,
 	scope: { workerId: string; sequence: number },
-	repository: CloudCodingRepository,
+	repository: CloudCodingRepository | null,
+	workspaceKind: CodingWorkspaceKind = "git_repo",
 ): CloudCodingTurnContext {
 	const item = closedRecord(
 		value,
@@ -513,9 +556,12 @@ export function parseCloudCodingTurnContext(
 		let submitted: CloudCodingEarlierTurn["submitted"] = null;
 		if (turn.submitted !== null) {
 			const s = closedRecord(turn.submitted, ["kind", "summary", "question", "options", "headSha"]);
+			const validFinishSha =
+				workspaceKind === "git_repo"
+					? typeof s.headSha === "string" && /^[0-9a-f]{40}$/.test(s.headSha)
+					: s.headSha === null || (typeof s.headSha === "string" && /^[0-9a-f]{40}$/.test(s.headSha));
 			if (
-				(s.kind === "finish" &&
-					(typeof s.headSha !== "string" || !/^[0-9a-f]{40}$/.test(s.headSha) || s.question !== null)) ||
+				(s.kind === "finish" && (!validFinishSha || s.question !== null)) ||
 				(s.kind === "ask" && s.headSha !== null) ||
 				(s.kind !== "finish" && s.kind !== "ask")
 			)
@@ -525,7 +571,7 @@ export function parseCloudCodingTurnContext(
 				summary: boundedText(s.summary, 4000, false) as string,
 				question: s.kind === "ask" ? (boundedText(s.question, 1000, false) as string) : null,
 				options: choices(s.options),
-				headSha: s.kind === "finish" ? (s.headSha as string) : null,
+				headSha: s.kind === "finish" ? ((s.headSha as string | null) ?? null) : null,
 			};
 		}
 		let outcome: CloudCodingEarlierTurn["outcome"] = null;
@@ -533,13 +579,14 @@ export function parseCloudCodingTurnContext(
 			const o = closedRecord(turn.outcome, ["state", "summary", "reason", "needs", "options", "pullRequest"]);
 			if (o.state !== "succeeded" && o.state !== "blocked" && o.state !== "failed" && o.state !== "cancelled")
 				throw new Error("CODING_TURN_CONTEXT_INVALID");
+			if (o.pullRequest !== null && repository === null) throw new Error("CODING_TURN_CONTEXT_INVALID");
 			outcome = {
 				state: o.state,
 				summary: boundedText(o.summary, 8192, true),
 				reason: boundedText(o.reason, 200, true),
 				needs: boundedText(o.needs, 1000, true),
 				options: choices(o.options),
-				pullRequest: o.pullRequest === null ? null : contextPullRequest(o.pullRequest, repository),
+				pullRequest: o.pullRequest === null ? null : contextPullRequest(o.pullRequest, repository!),
 			};
 		}
 		return { sequence: first + index, input: { from: input.from, text: input.text }, submitted, outcome };
@@ -703,7 +750,30 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				throw new Error("CODING_TURN_SCOPE_DIFFERS");
 			const wakeHarness = isRecord(wake.payload.coding) ? wake.payload.coding.harness : undefined;
 			if (wakeHarness !== undefined && coding.harness !== wakeHarness) throw new Error("CODING_TURN_SCOPE_DIFFERS");
-			const repository = parseCloudCodingRepository(coding.repository);
+			const workspaceKind: CodingWorkspaceKind =
+				coding.workspaceKind === undefined
+					? "git_repo"
+					: isCodingWorkspaceKind(coding.workspaceKind)
+						? coding.workspaceKind
+						: (() => {
+								throw new Error("CODING_TURN_SCOPE_DIFFERS");
+							})();
+			const wakeWorkspaceKind = isRecord(wake.payload.coding) ? wake.payload.coding.workspaceKind : undefined;
+			if (wakeWorkspaceKind !== undefined && workspaceKind !== wakeWorkspaceKind)
+				throw new Error("CODING_TURN_SCOPE_DIFFERS");
+			if (
+				isSurfaceWorkspaceKind(workspaceKind) &&
+				(typeof coding.surfaceSessionId !== "string" || !UUID.test(coding.surfaceSessionId))
+			)
+				throw new Error("CODING_TURN_SCOPE_DIFFERS");
+			const repository =
+				workspaceKind === "git_repo"
+					? parseCloudCodingRepository(coding.repository)
+					: coding.repository === null
+						? null
+						: (() => {
+								throw new Error("CODING_TURN_SCOPE_DIFFERS");
+							})();
 			assertCloudRuntimeBundle(native.identity, this.#binarySha256);
 			const scope: CloudCodingCommandScope = Object.freeze({
 				workerId: coding.workerId,
@@ -711,7 +781,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				requestId: coding.turnId,
 				turn: Number(coding.sequence),
 			});
-			return { authority: native, identity: native.identity, coding, repository, scope };
+			return { authority: native, identity: native.identity, coding, workspaceKind, repository, scope };
 		};
 		const initial = await codingTurnRead(authorize, signal);
 		if (initial.coding.submission !== null && initial.coding.submission !== undefined)
@@ -719,6 +789,11 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		const isClaudeTurn = initial.coding.harness === "claude-code";
 		// WHY: Fail closed before touching turn context or Codex when Claude Code coding is unconfigured.
 		if (isClaudeTurn && !this.#claude) throw new Error("CODING_CLAUDE_DRIVER_UNAVAILABLE");
+		const isSurfaceWorkspace = isSurfaceWorkspaceKind(initial.workspaceKind);
+		const surfaceSession = context.surfaceSession;
+		if (isSurfaceWorkspace && !surfaceSession) throw new Error("CODING_SURFACE_SESSION_REQUIRED");
+		if (!isSurfaceWorkspace && surfaceSession && !surfaceSession.recordChange)
+			throw new Error("CODING_SURFACE_RECORD_CHANGE_REQUIRED");
 		const scope = initial.scope;
 		// The session's own record of its turns, read once: earlier turns never change.
 		const turn = parseCloudCodingTurnContext(
@@ -728,7 +803,45 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			),
 			{ workerId: scope.workerId, sequence: scope.turn },
 			initial.repository,
+			initial.workspaceKind,
 		);
+		let pictures = context.pictures;
+		let attachPicturesToCodex = context.attachPicturesToCodex ?? (pictures !== undefined && !pictures.attached);
+		if (
+			!pictures &&
+			context.folder &&
+			initial.workspaceKind !== "surface_ops" &&
+			(this.#control.completeFolderToolOperation || initial.workspaceKind === "surface_folder")
+		) {
+			if (await hasChatGptPlanToken(identityRoot)) {
+				pictures = new CloudPictureChannel();
+				pictures.attach(
+					createChatGptPlanImageLane({
+						identityRoot,
+						model: binding.model,
+						...(this.#chatGptPlanApiBaseUrl ? { apiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
+						...(this.#chatGptPlanAllowLoopback ? { allowLoopback: true } : {}),
+						...(this.#chatGptPlanFetch ? { fetcher: this.#chatGptPlanFetch } : {}),
+					}),
+				);
+				attachPicturesToCodex = false;
+			} else if (!isClaudeTurn && !(await hasChatGptPlanDirectory(identityRoot))) {
+				pictures = new CloudPictureChannel();
+				attachPicturesToCodex = true;
+			}
+		}
+		const preparedSurface =
+			isSurfaceWorkspace && surfaceSession
+				? await prepareSurfaceCodingWorkspace({
+						workspaceKind: initial.workspaceKind as "surface_folder" | "surface_ops",
+						surfaceSession,
+						...(context.folder ? { folder: context.folder } : {}),
+						...(pictures ? { pictures } : {}),
+						isClaudeTurn,
+						newDisk: turn.machine.newDisk,
+						signal,
+					})
+				: undefined;
 		// The newest earlier turns that fit; the ones left out are counted, never silently dropped.
 		const compose = (kept: CloudCodingEarlierTurn[]) =>
 			cloudToolJsonText(
@@ -737,6 +850,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					workerId: scope.workerId,
 					sequence: scope.turn,
 					harness: initial.coding.harness,
+					...(isSurfaceWorkspace ? { workspaceKind: initial.workspaceKind } : {}),
 					repository: initial.repository,
 					branch: initial.coding.branch,
 					baseSha: initial.coding.baseSha ?? null,
@@ -755,8 +869,11 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				// Measured before trimming: the whole reply fits the control's 256 KiB response bound.
 				16 * PROMPT_BYTES,
 			);
-		const surfaceSession = context.surfaceSession;
-		const surfaceBrief = surfaceSession ? buildSurfaceTurnBrief(surfaceSession) : null;
+		const surfaceBrief = preparedSurface
+			? preparedSurface.turnBrief
+			: surfaceSession
+				? buildSurfaceTurnBrief(surfaceSession)
+				: null;
 		const assemblePrompt = (kept: CloudCodingEarlierTurn[], brief: string | null) =>
 			brief ? `${compose(kept)}\n\n${brief}` : compose(kept);
 		const newest = (count: number) => turn.earlierTurns.slice(turn.earlierTurns.length - count);
@@ -839,111 +956,198 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		let finishPreflight:
 			| ((input: Record<string, JsonValue>, toolContext: CloudToolContext) => Promise<string | null>)
 			| undefined;
-		const finish: CloudNativeTool = {
-			name: "coding_finish" satisfies CloudRuntimeToolOperation,
-			source: "worker",
-			description: surfaceSession
-				? "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of what you inspected, built, and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. For a read-only or no-change turn where HEAD still equals the session's baseSha, call coding_finish with that headSha and your summary (no change is staged; commits from earlier turns beyond baseSha are verified and staged as usual). When you committed user-visible deliverables, call coding_record_change for each one (passing an existing changeId when revising an open change in place) before calling coding_finish. Stop modifying the repository after submitting."
-				: "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of the findings, changes, and check results. For a read-only, inspection, or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), calling coding_finish with that headSha (omitting notice and picture) completes cleanly as a report-only handoff without running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual. When you committed changes, notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform then validates that commit and hands it in (in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated). This is a durable submission, not proof that a new commit landed. Stop modifying the repository after submitting.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					operationKey: { type: "string", pattern: OPERATION_KEY.source },
-					summary: { type: "string", minLength: 1, maxLength: 4000 },
-					headSha: {
-						type: "string",
-						pattern: "^[0-9a-f]{40}$",
-						description:
-							"Current HEAD commit SHA on the session branch (git rev-parse HEAD). Equals the session's baseSha when no commits exist beyond the session base.",
+		const finish: CloudNativeTool = isSurfaceWorkspace
+			? {
+					name: "coding_finish" satisfies CloudRuntimeToolOperation,
+					source: "worker",
+					description:
+						initial.workspaceKind === "surface_folder"
+							? "End this Studio session turn and deliver a concise founder-facing summary of what you staged or verified. Stage any file changes under the interface folder via stage_surface_patch first; optionally pass notePaths for notes written under the interface's notes folder."
+							: "End this Ops session turn and deliver a concise founder-facing summary of what you inspected or staged via stage_surface_ops_action.",
+					inputSchema: {
+						type: "object",
+						properties: {
+							operationKey: { type: "string", pattern: OPERATION_KEY.source },
+							summary: { type: "string", minLength: 1, maxLength: 4000 },
+							...(initial.workspaceKind === "surface_folder"
+								? {
+										notePaths: {
+											type: "array",
+											items: { type: "string", minLength: 1, maxLength: 512 },
+											maxItems: 64,
+										},
+									}
+								: {}),
+						},
+						required: ["operationKey", "summary"],
+						additionalProperties: false,
 					},
-					notice: { type: "string", minLength: 1, maxLength: 200 },
-					picture: {
-						type: "string",
-						minLength: 1,
-						maxLength: 300,
-						description: "Its path from the top of the repository, such as docs/changes/new-price.png.",
+					parseArguments(value) {
+						const input = codingObject(value, "Invalid coding submission");
+						const allowedKeys =
+							initial.workspaceKind === "surface_folder"
+								? ["operationKey", "summary", "notePaths"]
+								: ["operationKey", "summary"];
+						if (
+							Object.keys(input).some((key) => !allowedKeys.includes(key)) ||
+							typeof input.operationKey !== "string" ||
+							!OPERATION_KEY.test(input.operationKey) ||
+							typeof input.summary !== "string" ||
+							!input.summary.trim() ||
+							Buffer.byteLength(input.summary) > 4000
+						)
+							throw new Error("Invalid coding submission");
+						const notePaths =
+							initial.workspaceKind === "surface_folder"
+								? parseSurfaceFinishNotePaths(input.notePaths)
+								: undefined;
+						return {
+							operationKey: input.operationKey,
+							summary: input.summary,
+							...(notePaths && notePaths.length > 0 ? { notePaths } : {}),
+						};
 					},
-				},
-				required: ["operationKey", "summary", "headSha"],
-				additionalProperties: false,
-			},
-			parseArguments(value) {
-				const input = codingObject(value, "Invalid coding submission");
-				if (
-					Object.keys(input).some(
-						(key) => !["operationKey", "summary", "headSha", "notice", "picture"].includes(key),
-					) ||
-					typeof input.operationKey !== "string" ||
-					!OPERATION_KEY.test(input.operationKey) ||
-					typeof input.summary !== "string" ||
-					!input.summary.trim() ||
-					Buffer.byteLength(input.summary) > 4000 ||
-					typeof input.headSha !== "string" ||
-					!/^[0-9a-f]{40}$/.test(input.headSha)
-				)
-					throw new Error("Invalid coding submission");
-				// The two the change's record is made of (20260930720000): each is passed on only when given, and an empty
-				// one is one left out. A wrong shape is refused with what to change, so the same turn can hand in again.
-				const given = (field: unknown): unknown => (typeof field === "string" ? field.trim() || undefined : field);
-				const notice = given(input.notice);
-				const picture = given(input.picture);
-				if (
-					notice !== undefined &&
-					(typeof notice !== "string" ||
-						Array.from(notice).length > 200 ||
-						/[\u0000-\u001f\u007f]/.test(notice) ||
-						Buffer.from(notice).toString("utf8") !== notice)
-				)
-					throw new CloudToolArgumentRefusal(NOTICE_REFUSAL);
-				if (
-					picture !== undefined &&
-					(typeof picture !== "string" ||
-						Buffer.byteLength(picture) > 300 ||
-						!PICTURE_PATH.test(picture) ||
-						picture.split("/").some((part) => part === "." || part === ".."))
-				)
-					throw new CloudToolArgumentRefusal(PICTURE_REFUSAL);
-				return {
-					operationKey: input.operationKey,
-					summary: input.summary,
-					headSha: input.headSha,
-					...(notice === undefined ? {} : { notice }),
-					...(picture === undefined ? {} : { picture }),
-				};
-			},
-			refused(content) {
-				if (content.kind !== "text") return undefined;
-				try {
-					const parsed = JSON.parse(content.value) as { schema?: unknown };
-					return parsed?.schema === CODING_FINISH_CONFLICT_SCHEMA ? "stale_version" : undefined;
-				} catch {
-					return undefined;
+					execute: async (value, toolContext) => {
+						const input = finish.parseArguments(value) as {
+							operationKey: string;
+							summary: string;
+							notePaths?: string[];
+						};
+						if (
+							!toolContext.identity ||
+							cloudToolJsonText(toolContext.identity) !== cloudToolJsonText(initial.identity)
+						)
+							throw new Error("CODING_SUBMISSION_IDENTITY_DIFFERS");
+						const mergedNotes =
+							initial.workspaceKind === "surface_folder"
+								? [
+										...new Set([
+											...(surfaceSession?.getStagedNotePaths?.() ?? []),
+											...(input.notePaths ?? []),
+										]),
+									].slice(0, 64)
+								: [];
+						return {
+							kind: "text",
+							value: await submit(
+								{
+									kind: "finish",
+									operationKey: input.operationKey,
+									summary: input.summary,
+									...(mergedNotes.length > 0 ? { notePaths: mergedNotes } : {}),
+								},
+								toolContext,
+							),
+						};
+					},
 				}
-			},
-			execute: async (value, toolContext) => {
-				const input = finish.parseArguments(value) as Record<string, JsonValue>;
-				if (
-					!toolContext.identity ||
-					cloudToolJsonText(toolContext.identity) !== cloudToolJsonText(initial.identity)
-				)
-					throw new Error("CODING_SUBMISSION_IDENTITY_DIFFERS");
-				if (finishPreflight) {
-					const conflictFeedback = await finishPreflight(input, toolContext);
-					if (conflictFeedback !== null) {
-						return { kind: "text", value: conflictFeedback };
-					}
-				}
-				return {
-					kind: "text",
-					value: await submit({ kind: "finish", ...input }, toolContext),
+			: {
+					name: "coding_finish" satisfies CloudRuntimeToolOperation,
+					source: "worker",
+					description: surfaceSession
+						? "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of what you inspected, built, and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. For a read-only or no-change turn where HEAD still equals the session's baseSha, call coding_finish with that headSha and your summary (no change is staged; commits from earlier turns beyond baseSha are verified and staged as usual). When you committed user-visible deliverables, call coding_record_change for each one (passing an existing changeId when revising an open change in place) before calling coding_finish. Stop modifying the repository after submitting."
+						: "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of the findings, changes, and check results. For a read-only, inspection, or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), calling coding_finish with that headSha (omitting notice and picture) completes cleanly as a report-only handoff without running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual. When you committed changes, notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform then validates that commit and hands it in (in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated). This is a durable submission, not proof that a new commit landed. Stop modifying the repository after submitting.",
+					inputSchema: {
+						type: "object",
+						properties: {
+							operationKey: { type: "string", pattern: OPERATION_KEY.source },
+							summary: { type: "string", minLength: 1, maxLength: 4000 },
+							headSha: {
+								type: "string",
+								pattern: "^[0-9a-f]{40}$",
+								description:
+									"Current HEAD commit SHA on the session branch (git rev-parse HEAD). Equals the session's baseSha when no commits exist beyond the session base.",
+							},
+							notice: { type: "string", minLength: 1, maxLength: 200 },
+							picture: {
+								type: "string",
+								minLength: 1,
+								maxLength: 300,
+								description: "Its path from the top of the repository, such as docs/changes/new-price.png.",
+							},
+						},
+						required: ["operationKey", "summary", "headSha"],
+						additionalProperties: false,
+					},
+					parseArguments(value) {
+						const input = codingObject(value, "Invalid coding submission");
+						if (
+							Object.keys(input).some(
+								(key) => !["operationKey", "summary", "headSha", "notice", "picture"].includes(key),
+							) ||
+							typeof input.operationKey !== "string" ||
+							!OPERATION_KEY.test(input.operationKey) ||
+							typeof input.summary !== "string" ||
+							!input.summary.trim() ||
+							Buffer.byteLength(input.summary) > 4000 ||
+							typeof input.headSha !== "string" ||
+							!/^[0-9a-f]{40}$/.test(input.headSha)
+						)
+							throw new Error("Invalid coding submission");
+						// The two the change's record is made of (20260930720000): each is passed on only when given, and an empty
+						// one is one left out. A wrong shape is refused with what to change, so the same turn can hand in again.
+						const given = (field: unknown): unknown =>
+							typeof field === "string" ? field.trim() || undefined : field;
+						const notice = given(input.notice);
+						const picture = given(input.picture);
+						if (
+							notice !== undefined &&
+							(typeof notice !== "string" ||
+								Array.from(notice).length > 200 ||
+								/[\u0000-\u001f\u007f]/.test(notice) ||
+								Buffer.from(notice).toString("utf8") !== notice)
+						)
+							throw new CloudToolArgumentRefusal(NOTICE_REFUSAL);
+						if (
+							picture !== undefined &&
+							(typeof picture !== "string" ||
+								Buffer.byteLength(picture) > 300 ||
+								!PICTURE_PATH.test(picture) ||
+								picture.split("/").some((part) => part === "." || part === ".."))
+						)
+							throw new CloudToolArgumentRefusal(PICTURE_REFUSAL);
+						return {
+							operationKey: input.operationKey,
+							summary: input.summary,
+							headSha: input.headSha,
+							...(notice === undefined ? {} : { notice }),
+							...(picture === undefined ? {} : { picture }),
+						};
+					},
+					refused(content) {
+						if (content.kind !== "text") return undefined;
+						try {
+							const parsed = JSON.parse(content.value) as { schema?: unknown };
+							return parsed?.schema === CODING_FINISH_CONFLICT_SCHEMA ? "stale_version" : undefined;
+						} catch {
+							return undefined;
+						}
+					},
+					execute: async (value, toolContext) => {
+						const input = finish.parseArguments(value) as Record<string, JsonValue>;
+						if (
+							!toolContext.identity ||
+							cloudToolJsonText(toolContext.identity) !== cloudToolJsonText(initial.identity)
+						)
+							throw new Error("CODING_SUBMISSION_IDENTITY_DIFFERS");
+						if (finishPreflight) {
+							const conflictFeedback = await finishPreflight(input, toolContext);
+							if (conflictFeedback !== null) {
+								return { kind: "text", value: conflictFeedback };
+							}
+						}
+						return {
+							kind: "text",
+							value: await submit({ kind: "finish", ...input }, toolContext),
+						};
+					},
 				};
-			},
-		};
 		const ask: CloudNativeTool = {
 			name: "coding_ask" satisfies CloudRuntimeToolOperation,
 			source: "worker",
-			description:
-				"End the turn with a question only the member who owns this session can answer. Give the exact question and, when there are natural choices, up to six short options. The session pauses until they answer; your next turn continues from their answer. Use it only for genuine blockers or decisions that change scope or behaviour — never for things you can find out in the repository, never to hand off a read-only or no-change report (when HEAD still equals the session's baseSha, use coding_finish with that headSha instead), and never mention internal Qorpera tools, harnesses, or landing mechanics in the question.",
+			description: isSurfaceWorkspace
+				? "End the turn with a concrete clarifying question only the founder can answer. Give the exact question and, when there are natural choices, up to six short options. The session pauses until they answer; your next turn continues from their answer. Never use coding_ask for a completed report or no-change answer (call coding_finish instead), and never mention internal Qorpera tools, harnesses, or staging mechanics in the question."
+				: "End the turn with a question only the member who owns this session can answer. Give the exact question and, when there are natural choices, up to six short options. The session pauses until they answer; your next turn continues from their answer. Use it only for genuine blockers or decisions that change scope or behaviour — never for things you can find out in the repository, never to hand off a read-only or no-change report (when HEAD still equals the session's baseSha, use coding_finish with that headSha instead), and never mention internal Qorpera tools, harnesses, or landing mechanics in the question.",
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -983,38 +1187,20 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				};
 			},
 		};
-		let pictures = context.pictures;
-		let attachPicturesToCodex = context.attachPicturesToCodex ?? (pictures !== undefined && !pictures.attached);
-		if (!pictures && context.folder && this.#control.completeFolderToolOperation) {
-			if (await hasChatGptPlanToken(identityRoot)) {
-				pictures = new CloudPictureChannel();
-				pictures.attach(
-					createChatGptPlanImageLane({
-						identityRoot,
-						model: binding.model,
-						...(this.#chatGptPlanApiBaseUrl ? { apiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
-						...(this.#chatGptPlanAllowLoopback ? { allowLoopback: true } : {}),
-						...(this.#chatGptPlanFetch ? { fetcher: this.#chatGptPlanFetch } : {}),
-					}),
-				);
-				attachPicturesToCodex = false;
-			} else if (!isClaudeTurn && !(await hasChatGptPlanDirectory(identityRoot))) {
-				pictures = new CloudPictureChannel();
-				attachPicturesToCodex = true;
-			}
-		}
-		const instructionParts = surfaceSession
-			? [
-					SURFACE_BASE_INSTRUCTIONS,
-					...(turn.machine.newDisk ? [NEW_DISK] : []),
-					...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
-					SURFACE_STAGED_CODING_INSTRUCTIONS,
-				]
-			: [
-					INSTRUCTIONS,
-					...(turn.machine.newDisk ? [NEW_DISK] : []),
-					...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
-				];
+		const instructionParts = preparedSurface
+			? [preparedSurface.instructions]
+			: surfaceSession
+				? [
+						SURFACE_BASE_INSTRUCTIONS,
+						...(turn.machine.newDisk ? [NEW_DISK] : []),
+						...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
+						SURFACE_STAGED_CODING_INSTRUCTIONS,
+					]
+				: [
+						INSTRUCTIONS,
+						...(turn.machine.newDisk ? [NEW_DISK] : []),
+						...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
+					];
 		const runtimeInstructions = instructionParts.join(" ");
 		const gateway = this.#gateway(binding);
 		const completeFolderToolOperation = this.#control.completeFolderToolOperation;
@@ -1076,11 +1262,23 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			if (cloudToolJsonText(started) !== cloudToolJsonText(expected))
 				throw new Error("CODING_EXECUTION_ADMISSION_UNCONFIRMED");
 		};
-		const repositoryArea = `code/${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`;
+		const repositoryArea = initial.repository
+			? `code/${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`
+			: undefined;
 		const buildPlatformTools = (operations: CloudNativeToolOperations, guarded: CloudCodingCommandGateway) => {
+			if (preparedSurface) {
+				const surfaceTools = preparedSurface.buildTools(initial.identity, operations);
+				return {
+					surfaceTools,
+					recordChangeTool: [] as CloudNativeTool[],
+					viewAttachmentTool: [] as CloudNativeTool[],
+					pictureTool: [] as CloudNativeTool[],
+				};
+			}
+			const repository = initial.repository!;
 			// WHY: Dry-run merge-tree in coding_finish on direct Qorpera-hosted repos so merge conflicts return to the warm coding agent instead of tearing down the turn.
 			finishPreflight =
-				!surfaceSession && initial.repository.host === "qorpera"
+				!surfaceSession && repository.host === "qorpera"
 					? async (input, toolContext) => {
 							const headSha = typeof input.headSha === "string" ? input.headSha : "";
 							if (!headSha || headSha === initial.coding.baseSha) return null;
@@ -1090,7 +1288,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								gateway: guarded,
 								checkAuthority: (ctx) =>
 									observedCloudToolAuthority(ctx.observation, () => assertContext(ctx.signal), ctx.signal),
-								baseBranch: initial.repository.baseBranch,
+								baseBranch: repository.baseBranch,
 								headSha,
 								operationKey: String(input.operationKey),
 								context: toolContext,
@@ -1098,7 +1296,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							return checked.conflicted ? formatCodingFinishConflictFeedback(checked) : null;
 						}
 					: undefined;
-			const recordChangeTool = surfaceSession
+			const recordChangeTool = surfaceSession?.recordChange
 				? [
 						createCodingRecordChangeTool(
 							surfaceSession.sessionId,
@@ -1121,13 +1319,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					? [
 							createCodingPictureTool({
 								folder: context.folder,
-								worktreeArea: `${repositoryArea}/worktrees/${scope.workerId}`,
+								worktreeArea: `${repositoryArea!}/worktrees/${scope.workerId}`,
 								operations,
 								pictures,
 							}),
 						]
 					: [];
-			return { recordChangeTool, viewAttachmentTool, pictureTool };
+			return { surfaceTools: [] as readonly CloudNativeTool[], recordChangeTool, viewAttachmentTool, pictureTool };
 		};
 		const makeGuardedGateway = (): CloudCodingCommandGateway => ({
 			authorize: async (target, admitted, checked) => {
@@ -1166,14 +1364,19 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					async (turnSignal) => {
 						const operations = new CloudNativeToolOperations(run, codingControlPlane);
 						const guarded = makeGuardedGateway();
-						const { recordChangeTool, viewAttachmentTool, pictureTool } = buildPlatformTools(operations, guarded);
-						const tools: CloudNativeTool[] = [
-							...recordChangeTool,
-							...viewAttachmentTool,
-							...pictureTool,
-							finish,
-							...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
-						];
+						const { surfaceTools, recordChangeTool, viewAttachmentTool, pictureTool } = buildPlatformTools(
+							operations,
+							guarded,
+						);
+						const tools: CloudNativeTool[] = preparedSurface
+							? [...surfaceTools, finish, ...(surfaceSession?.isInternalReconciliation ? [] : [ask])]
+							: [
+									...recordChangeTool,
+									...viewAttachmentTool,
+									...pictureTool,
+									finish,
+									...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
+								];
 						const boundary = new CloudNativeToolBoundary({
 							companyId: initial.identity.companyId,
 							runId: binding.runId,
@@ -1260,11 +1463,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									return codingChannel.open({ scope, ...(kind ? { kind } : {}) }, channelSignal);
 								},
 							};
-							const systemNote = [
-								surfaceSession ? CLAUDE_SURFACE_CODING_SYSTEM_NOTE : CLAUDE_CODING_SYSTEM_NOTE,
-								...(turn.machine.newDisk ? [NEW_DISK] : []),
-								...(pictureTool.length > 0 ? [CODING_PICTURE_INSTRUCTIONS] : []),
-							].join("\n");
+							const systemNote = preparedSurface
+								? preparedSurface.claudeSystemNote
+								: [
+										surfaceSession ? CLAUDE_SURFACE_CODING_SYSTEM_NOTE : CLAUDE_CODING_SYSTEM_NOTE,
+										...(turn.machine.newDisk ? [NEW_DISK] : []),
+										...(pictureTool.length > 0 ? [CODING_PICTURE_INSTRUCTIONS] : []),
+									].join("\n");
 							const launcher = claudeHost.launch ?? launchClaudeCodeBox;
 							try {
 								box = await launcher({
@@ -1274,7 +1479,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									sessionId: scope.requestId,
 									machineId: scope.vmId,
 									homeFolders: CLAUDE_BOX_CODING_FOLDERS,
-									cwd: `/company/${repositoryArea}/worktrees/${scope.workerId}`,
+									cwd: isSurfaceWorkspace
+										? "/company"
+										: `/company/${repositoryArea!}/worktrees/${scope.workerId}`,
 									shellBaseEnv: CODING_CLAUDE_SHELL_BASE_ENV,
 									mcp: { socketPath: mcpBridge.socketPath, serverName: CLOUD_CLAUDE_MCP_SERVER_NAME },
 									prompt: effectivePrompt,
@@ -1414,7 +1621,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						"coding",
 						initial.identity.companyId,
 						initial.identity.staffAgentId,
-						`${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`,
+						initial.repository
+							? `${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`
+							: `surface:${initial.workspaceKind}`,
 						surfaceSession ? `surface:${surfaceSession.surfaceSlug}` : "standard",
 						request.model,
 					),
@@ -1429,24 +1638,44 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			turnCorrection: async () =>
 				submitted
 					? undefined
-					: surfaceSession?.isInternalReconciliation
-						? "Your automatic reconciliation turn ended without coding_finish. Commit the clean combined resolution on this branch, call coding_record_change with the resolved range, and call coding_finish with the final headSha and a brief summary. This is the last turn of this run."
-						: surfaceSession
-							? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (passing its existing changeId if revising an open change in place, if not already updated) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
-							: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. For a read-only or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — nothing will be landed or pushed. When you have a commit beyond baseSha to hand in (including an unlanded commit from an earlier turn), call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without one of them, the turn fails.",
+					: preparedSurface
+						? preparedSurface.turnCorrection
+						: surfaceSession?.isInternalReconciliation
+							? "Your automatic reconciliation turn ended without coding_finish. Commit the clean combined resolution on this branch, call coding_record_change with the resolved range, and call coding_finish with the final headSha and a brief summary. This is the last turn of this run."
+							: surfaceSession
+								? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (passing its existing changeId if revising an open change in place, if not already updated) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
+								: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. For a read-only or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — nothing will be landed or pushed. When you have a commit beyond baseSha to hand in (including an unlanded commit from an earlier turn), call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution,
 			tools: (identity, operations) => {
 				const guarded = makeGuardedGateway();
-				const { recordChangeTool, viewAttachmentTool, pictureTool } = buildPlatformTools(operations, guarded);
+				const { surfaceTools, recordChangeTool, viewAttachmentTool, pictureTool } = buildPlatformTools(
+					operations,
+					guarded,
+				);
+				const sessionTools: CloudNativeTool[] = preparedSurface
+					? [
+							...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded }),
+							...surfaceTools,
+							finish,
+							...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
+						]
+					: [
+							...cloudCodingCommandTools({
+								scope,
+								identity,
+								operations,
+								gateway: guarded,
+								...(repositoryArea ? { repositoryArea } : {}),
+							}),
+							...recordChangeTool,
+							...viewAttachmentTool,
+							...pictureTool,
+							finish,
+							...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
+						];
+				const offeredNames = new Set(sessionTools.map((tool) => tool.name));
 				return {
-					tools: [
-						...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded, repositoryArea }),
-						...recordChangeTool,
-						...viewAttachmentTool,
-						...pictureTool,
-						finish,
-						...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
-					],
+					tools: sessionTools,
 					assertContext,
 					recordContextView: async (frame, outputs, checked) => {
 						const view = {
@@ -1462,39 +1691,68 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									envelope.content && typeof envelope.content === "object" && !Array.isArray(envelope.content)
 										? (envelope.content as Record<string, unknown>)
 										: undefined;
+								const readId = provenance.companyReadId;
+								if (readId !== undefined && !isSurfaceWorkspace) {
+									throw new Error("CODING_CONTEXT_RESOURCES_REFUSED");
+								}
+								if (
+									readId !== undefined &&
+									(typeof readId !== "string" ||
+										!UUID.test(readId) ||
+										provenance.companyId !== initial.identity.companyId ||
+										provenance.runId !== initial.identity.runId ||
+										typeof content?.sha256 !== "string" ||
+										!SHA.test(content.sha256) ||
+										typeof content?.text !== "string" ||
+										content.includedBytes !== Buffer.byteLength(content.text))
+								) {
+									throw new Error("CODING_CONTEXT_RESOURCES_REFUSED");
+								}
 								const shownImage =
 									!output.capture &&
 									output.imageSha256 !== undefined &&
 									envelope.status === "ok" &&
-									provenance.source === "worker" &&
-									provenance.companyReadId === undefined &&
 									provenance.companyId === initial.identity.companyId &&
 									provenance.runId === initial.identity.runId &&
-									((provenance.tool === "coding_run_command" &&
-										codingShownImageSha256(content?.text) === output.imageSha256) ||
-										(provenance.tool === "coding_view_attachment" &&
-											viewAttachmentTool.length > 0 &&
-											codingShownImageSha256(content?.text, CODING_ATTACHMENT_VIEW_SCHEMA) ===
-												output.imageSha256) ||
-										(provenance.tool === "make_picture" &&
-											pictureTool.length > 0 &&
-											codingShownImageSha256(content?.text, CODING_MAKE_PICTURE_SCHEMA) ===
+									((provenance.source === "worker" &&
+										readId === undefined &&
+										((provenance.tool === "coding_run_command" &&
+											codingShownImageSha256(content?.text) === output.imageSha256) ||
+											(provenance.tool === "coding_view_attachment" &&
+												offeredNames.has("coding_view_attachment") &&
+												codingShownImageSha256(content?.text, CODING_ATTACHMENT_VIEW_SCHEMA) ===
+													output.imageSha256) ||
+											(provenance.tool === "make_picture" &&
+												pictureTool.length > 0 &&
+												codingShownImageSha256(content?.text, CODING_MAKE_PICTURE_SCHEMA) ===
+													output.imageSha256))) ||
+										(isSurfaceWorkspace &&
+											provenance.tool === "company_read" &&
+											typeof readId === "string" &&
+											codingShownImageSha256(content?.text, null, "image") === output.imageSha256) ||
+										(isSurfaceWorkspace &&
+											provenance.tool === "make_picture" &&
+											provenance.source === "runtime" &&
+											readId === undefined &&
+											offeredNames.has("make_picture") &&
+											codingShownImageSha256(content?.text, STUDIO_MAKE_PICTURE_SCHEMA, "picture") ===
 												output.imageSha256));
-								if (
-									output.capture ||
-									(output.imageSha256 !== undefined && !shownImage) ||
-									provenance.companyReadId !== undefined
-								)
+								if (output.capture || (output.imageSha256 !== undefined && !shownImage))
 									throw new Error("CODING_CONTEXT_RESOURCES_REFUSED");
 								return {
 									callId: output.callId,
 									kind: output.kind,
 									sha256: createHash("sha256").update(output.output).digest("hex"),
 									bytes: Buffer.byteLength(output.output),
-									readId: null,
-									readSha256: null,
-									includedBytes: null,
-									includedSha256: null,
+									readId: typeof readId === "string" ? readId : null,
+									readSha256: typeof readId === "string" ? (content!.sha256 as string) : null,
+									includedBytes: typeof readId === "string" ? (content!.includedBytes as number) : null,
+									includedSha256:
+										typeof readId === "string"
+											? createHash("sha256")
+													.update(content!.text as string)
+													.digest("hex")
+											: null,
 								};
 							}),
 						};

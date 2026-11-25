@@ -170,7 +170,12 @@ own repository's machine. Jonas's "one machine per member" (24 September 2026) s
 member who uses one coding agent on one repository has one machine. The machine's row keeps today's shape
 (`qorpera_coding_machines`, kind `member`); 5a adds `staff_agent_id`, `repository` (the code area's `<owner>/<name>`),
 `setup_digest` and `number` to it and widens the unique index `qorpera_coding_machines_current` from `(profile_id,
-environment_id, member_user_id)` to those seven columns (still where `kind = 'member' and removed_at is null`). `number`
+environment_id, member_user_id)` to those seven columns (still where `kind = 'member' and removed_at is null`).
+Non-git Studio (`surface_folder`) and Ops (`surface_ops`) surface coding sessions (migration `20260930910000`) store
+`repository = null` on `qorpera_coding_sessions` and map to the reserved machine repository key
+`qorpera/surface-workspace` (refused for real git repositories by `qorpera_coding_repository_valid`, so no git
+repository can share that machine), attaching at `/company` with direct `/company` commits and company-data passes
+refused so changes flow through surface staging. `number`
 is the machine's place when one is full (5k). The LXD name stays `qorpera-coding-machine-<machine_id hex>`
 (`lxdCodingMachineName`, `coding-machine.ts:78`).
 

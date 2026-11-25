@@ -15,9 +15,11 @@ import type { ParsedCodingSetup } from "./coding-setup.ts";
 // publishes the bundle itself, as on the NAS model. A later turn of the same attachment keeps the session's view: what
 // its `prepare` puts back in a worktree that is already there reaches that view when the view's feed brings the change.
 
+export type GitCodingSessionClaim = CodingSessionClaim & { readonly repository: CloudCodingRepository };
+
 /** The session as the executor prepared it for this turn, with the authority each repository step needs. */
 export interface CodingFolderRepositorySession {
-	readonly claim: CodingSessionClaim;
+	readonly claim: GitCodingSessionClaim;
 	readonly machine: Readonly<LxdCodingMachineBinding>;
 	/** The session's own user in the machine; its group has the same id. */
 	readonly uid: number;
@@ -107,7 +109,7 @@ export interface CodingFolderRepositories {
 
 /** What a start needs: the claim, and its run authority (no base yet, no worktree, no token). */
 export interface CodingFolderStart {
-	readonly claim: CodingSessionClaim;
+	readonly claim: GitCodingSessionClaim;
 	assertAuthorized(signal: AbortSignal): Promise<void>;
 }
 

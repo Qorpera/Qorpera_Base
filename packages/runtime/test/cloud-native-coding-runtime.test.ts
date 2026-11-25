@@ -3253,4 +3253,349 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			await rm(parent, { recursive: true, force: true });
 		}
 	});
+
+	it("runs a Studio surface_folder turn on Claude Code over MCP with stage_surface_patch and coding_finish without headSha", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "qcc-studio-"));
+		const identityRoot = join(parent, "id");
+		await mkdir(identityRoot, { mode: 0o700 });
+		const sendMcp = async (socketPath: string, requests: Record<string, unknown>[]) => {
+			const socket = connect(socketPath);
+			await new Promise<void>((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", reject);
+			});
+			const responses: Record<string, unknown>[] = [];
+			let pending = "";
+			const nextResponse = () =>
+				new Promise<Record<string, unknown>>((resolve, reject) => {
+					const drain = () => {
+						const nl = pending.indexOf("\n");
+						if (nl >= 0) {
+							const line = pending.slice(0, nl);
+							pending = pending.slice(nl + 1);
+							socket.off("data", onData);
+							socket.off("error", reject);
+							resolve(JSON.parse(line) as Record<string, unknown>);
+							return true;
+						}
+						return false;
+					};
+					const onData = (chunk: Buffer) => {
+						pending += chunk.toString("utf8");
+						drain();
+					};
+					if (!drain()) {
+						socket.on("data", onData);
+						socket.once("error", reject);
+					}
+				});
+			try {
+				for (const req of requests) {
+					socket.write(`${JSON.stringify(req)}\n`);
+					if (Object.hasOwn(req, "id")) responses.push(await nextResponse());
+				}
+			} finally {
+				socket.destroy();
+			}
+			return responses;
+		};
+		try {
+			const f = fixture();
+			const surfaceSessionId = randomUUID();
+			f.coding.harness = "claude-code";
+			f.coding.model = "claude-opus-5-5";
+			f.coding.repository = null as unknown as typeof f.coding.repository;
+			(f.coding as Record<string, unknown>).workspaceKind = "surface_folder";
+			(f.coding as Record<string, unknown>).surfaceSessionId = surfaceSessionId;
+			(f.coding as Record<string, unknown>).claude = { model: "claude-opus-5-5", effort: "high" };
+			(f.turn.wake.payload as Record<string, unknown>).harness = "claude-code";
+			(f.turn.wake.payload as Record<string, unknown>).claude = { model: "claude-opus-5-5", effort: "high" };
+			(f.turn.wake.payload as Record<string, unknown>).coding = {
+				harness: "claude-code",
+				workspaceKind: "surface_folder",
+			};
+			const stageSurfacePatch = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+			f.turn.surfaceSession = {
+				sessionId: surfaceSessionId,
+				surfaceSlug: "brand",
+				surfaceTitle: "Brand Studio",
+				sourceKind: "folder",
+				briefMarkdown: "Keep brand crisp.",
+				repositoryKey: null,
+				folderRoot: "surfaces/brand",
+				explorationVariantLabel: null,
+				identityContext: null,
+				sharedAssets: null,
+				pointToChangeTarget: null,
+				conflictPaths: [],
+				conflictDetails: [],
+				previewBaseChanges: [],
+				openChanges: [],
+				resolvedChanges: [],
+				stageSurfacePatch,
+				getStagedNotePaths: () => ["QorperaOS/surfaces/brand/notes/research.md"],
+			};
+			const logins: ClaudeWorkerLogins = {
+				open: vi.fn().mockResolvedValue({
+					claudeLoginId: randomUUID(),
+					version: 1,
+					envelopeSha256: "f".repeat(64),
+					files: new Map([[".credentials.json", Buffer.from('{"claudeAiOauth":{"accessToken":"secret"}}')]]),
+					fileSha256: {},
+				}),
+			};
+			const launch = vi.fn(async (options) => {
+				expect(options.cwd).toBe("/company");
+				expect(options.homeFolders).toEqual(CLAUDE_BOX_CODING_FOLDERS);
+				expect(options.systemNote).toContain("mcp__qorpera__stage_surface_patch");
+				expect(options.systemNote).toContain("mcp__qorpera__coding_finish");
+				const mcpSocket = options.mcp?.socketPath ?? "";
+				let finishExit!: (code: number) => void;
+				const exited = new Promise<number>((resolve) => {
+					finishExit = resolve;
+				});
+				const close = vi.fn(async () => {
+					finishExit(0);
+				});
+				return {
+					lines: (async function* () {
+						yield JSON.stringify({
+							type: "system",
+							subtype: "init",
+							session_id: "claude-studio-1",
+							model: "claude-opus-5-5",
+							tools: [
+								...CLAUDE_BOX_TOOLS,
+								"mcp__qorpera__stage_surface_patch",
+								"mcp__qorpera__coding_finish",
+								"mcp__qorpera__coding_ask",
+							],
+						});
+						const mcpAnswers = await sendMcp(mcpSocket, [
+							{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+							{ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+							{
+								jsonrpc: "2.0",
+								id: 3,
+								method: "tools/call",
+								params: {
+									name: "stage_surface_patch",
+									arguments: {
+										title: "Update brand brief",
+										summary: "Drafted positioning copy",
+										ops: [{ op: "write_text", path: "brief.md", content: "# Brand\n" }],
+									},
+								},
+							},
+							{
+								jsonrpc: "2.0",
+								id: 4,
+								method: "tools/call",
+								params: {
+									name: "coding_finish",
+									arguments: {
+										operationKey: "fin-studio-1",
+										summary: "Staged brand brief update.",
+										notePaths: ["QorperaOS/surfaces/brand/notes/extra.md"],
+									},
+								},
+							},
+						]);
+						expect((mcpAnswers[1]?.result as { tools: { name: string }[] }).tools.map((t) => t.name)).toEqual([
+							"stage_surface_patch",
+							"coding_finish",
+							"coding_ask",
+						]);
+						expect((mcpAnswers[2]?.result as { isError: boolean }).isError).toBe(false);
+						expect((mcpAnswers[3]?.result as { isError: boolean }).isError).toBe(false);
+						yield JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Done." });
+					})(),
+					exited,
+					stderr: () => "",
+					overflowed: () => false,
+					shell: {} as ClaudeCodeBox["shell"],
+					close,
+				} satisfies ClaudeCodeBox;
+			});
+			const runtime = new CloudNativeCodingRuntime({
+				control: f.control,
+				gateway: f.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins,
+					launch,
+				},
+			});
+			const out = await runtime.execute(f.request, identityRoot, f.context.signal, f.turn);
+			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+			expect(out.providerSessionId).toContain("claude-studio-1");
+			expect(stageSurfacePatch).toHaveBeenCalledTimes(1);
+			const submitCall = f.call.mock.calls.find(([method]) => method === "qorpera_submit_coding_turn");
+			expect(submitCall?.[1]?.p_submission).toEqual({
+				kind: "finish",
+				operationKey: "fin-studio-1",
+				summary: "Staged brand brief update.",
+				notePaths: ["QorperaOS/surfaces/brand/notes/research.md", "QorperaOS/surfaces/brand/notes/extra.md"],
+			});
+		} finally {
+			await rm(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("runs an Ops surface_ops turn on Codex with stage_surface_ops_action, companyReadId provenance, and coding_finish without headSha", async () => {
+		const identityRoot = await mkdtemp(join(tmpdir(), "qcc-ops-"));
+		try {
+			const f = fixture();
+			const surfaceSessionId = randomUUID();
+			f.coding.repository = null as unknown as typeof f.coding.repository;
+			(f.coding as Record<string, unknown>).workspaceKind = "surface_ops";
+			(f.coding as Record<string, unknown>).surfaceSessionId = surfaceSessionId;
+			(f.turn.wake.payload as Record<string, unknown>).coding = {
+				harness: "codex",
+				workspaceKind: "surface_ops",
+			};
+			const stageSurfaceOpsAction = vi
+				.fn()
+				.mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+			f.turn.surfaceSession = {
+				sessionId: surfaceSessionId,
+				surfaceSlug: "ops",
+				surfaceTitle: "Operations",
+				sourceKind: "native_ops",
+				briefMarkdown: null,
+				repositoryKey: null,
+				folderRoot: null,
+				explorationVariantLabel: null,
+				identityContext: null,
+				sharedAssets: null,
+				pointToChangeTarget: null,
+				conflictPaths: [],
+				conflictDetails: [],
+				previewBaseChanges: [],
+				openChanges: [],
+				resolvedChanges: [],
+				stageSurfaceOpsAction,
+			};
+			const readId = randomUUID();
+			const readText = JSON.stringify({ path: "ops/vendors.json", text: "{}" });
+			const readSha = createHash("sha256").update(readText).digest("hex");
+			const baseCall = f.call.getMockImplementation()!;
+			f.call.mockImplementation(async (method, args, sig) => {
+				if (method === "qorpera_record_coding_context_view") {
+					const view = args.p_view as { requestId: string };
+					return {
+						schema: "qorpera.native-context-view-receipt/v1",
+						viewId: randomUUID(),
+						requestId: view.requestId,
+						sha256: createHash("sha256").update(JSON.stringify(view)).digest("hex"),
+						ordinal: 1,
+					};
+				}
+				return baseCall(method, args, sig);
+			});
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						f.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					expect(adapters.tools.map((tool) => tool.name)).toEqual([
+						"coding_run_command",
+						"coding_read_command",
+						"coding_cancel_command",
+						"stage_surface_ops_action",
+						"coding_finish",
+						"coding_ask",
+					]);
+					const opsTool = adapters.tools.find((tool) => tool.name === "stage_surface_ops_action")!;
+					await opsTool.execute(
+						opsTool.parseArguments({
+							title: "Draft vendor email",
+							summary: "Prepared follow-up email",
+							actionKind: "draft_email",
+							actionPayload: { to: "ops@example.com" },
+						}),
+						f.context,
+					);
+					await adapters.recordContextView(
+						{
+							schema: "qorpera.native-result-fence/v1",
+							requestId: "req-1",
+							threadId: "thr-1",
+							turnId: "turn-1",
+							purpose: "turn",
+							outputs: [],
+						},
+						[
+							{
+								callId: "call-read-1",
+								kind: "function_call_output",
+								output: JSON.stringify({
+									status: "ok",
+									provenance: {
+										tool: "company_read",
+										source: "company_file",
+										companyId: f.authority.identity.companyId,
+										runId: f.authority.identity.runId,
+										companyReadId: readId,
+									},
+									content: {
+										sha256: readSha,
+										text: readText,
+										includedBytes: Buffer.byteLength(readText),
+									},
+								}),
+							},
+						],
+						options.signal,
+					);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "fin-ops-1",
+							summary: "Staged vendor follow-up action.",
+						}),
+						f.context,
+					);
+					return { providerSessionId: "ops-thread", toolCalls: 2, codexVersion: "pinned", fencedRequests: 1 };
+				} finally {
+					run.close();
+				}
+			});
+			const out = await f.runtime.execute(f.request, identityRoot, f.context.signal, f.turn);
+			expect(out.providerSessionId).toBe("ops-thread");
+			expect(stageSurfaceOpsAction).toHaveBeenCalledTimes(1);
+			expect(f.coding.submission).toMatchObject({
+				kind: "finish",
+				summary: "Staged vendor follow-up action.",
+				headSha: null,
+			});
+			const viewCall = f.call.mock.calls.find(([method]) => method === "qorpera_record_coding_context_view");
+			const recordedView = viewCall?.[1]?.p_view as Record<string, unknown> | undefined;
+			expect((recordedView?.outputs as Record<string, unknown>[])[0]).toMatchObject({
+				readId,
+				readSha256: readSha,
+				includedBytes: Buffer.byteLength(readText),
+			});
+
+			const missingSurface = fixture();
+			missingSurface.coding.repository = null as unknown as typeof missingSurface.coding.repository;
+			(missingSurface.coding as Record<string, unknown>).workspaceKind = "surface_folder";
+			(missingSurface.coding as Record<string, unknown>).surfaceSessionId = randomUUID();
+			await expect(
+				missingSurface.runtime.execute(
+					missingSurface.request,
+					identityRoot,
+					missingSurface.context.signal,
+					missingSurface.turn,
+				),
+			).rejects.toThrow("CODING_SURFACE_SESSION_REQUIRED");
+		} finally {
+			await rm(identityRoot, { recursive: true, force: true });
+		}
+	});
 });

@@ -181,7 +181,7 @@ async function fixture() {
 	});
 	const lent = vi.fn();
 	const workerId = randomUUID();
-	const claim: CodingSessionClaim = {
+	const claim = {
 		workerId,
 		leaseToken: "lease-token",
 		leaseUntil: "2026-10-16T12:00:00.000Z",
@@ -202,7 +202,7 @@ async function fixture() {
 		definitionOfDone: "CI is green.",
 		context: "",
 		followUp: null,
-	};
+	} satisfies CodingSessionClaim;
 	const session: CodingFolderRepositorySession = {
 		claim,
 		machine: { machineId: "machine" } as LxdCodingMachineBinding,
@@ -2515,13 +2515,13 @@ describe("per-repository landing queue and inline record batching", () => {
 		hooks: Pick<CodingFolderRepositorySession, "checksSwitch" | "runChecks" | "recordChange">,
 	) {
 		const workerId = randomUUID();
-		const claim: CodingSessionClaim = {
+		const claim = {
 			...f.session.claim,
 			workerId,
 			repository,
 			branch: `qorpera/coding/${workerId}`,
 			baseSha,
-		};
+		} satisfies CodingSessionClaim;
 		const session: CodingFolderRepositorySession = {
 			...f.session,
 			claim,
@@ -3346,7 +3346,7 @@ describe("per-repository landing queue and inline record batching", () => {
 	it("starts a surface-backed Qorpera repository with starter files and verifies staged commits without moving main", async () => {
 		const f = await fixture();
 		const kept: CloudCodingRepository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
-		const claim: CodingSessionClaim = {
+		const claim = {
 			...f.session.claim,
 			repository: kept,
 			baseSha: null,
@@ -3356,7 +3356,7 @@ describe("per-repository landing queue and inline record batching", () => {
 				slug: "website",
 				title: "Hjemmeside",
 			},
-		};
+		} satisfies CodingSessionClaim;
 		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
 		expect(baseSha).toMatch(/^[0-9a-f]{40}$/);
 		const repo = join(f.companyRoot, "code/surfaces/website/repo.git");
@@ -3391,7 +3391,7 @@ describe("per-repository landing queue and inline record batching", () => {
 	it("enforces opt-in surfaceGate stage checks on verifyStaged while skipping default or none repos", async () => {
 		const f = await fixture();
 		const kept: CloudCodingRepository = { host: "qorpera", owner: "surfaces", name: "app", baseBranch: "main" };
-		const claim: CodingSessionClaim = {
+		const claim = {
 			...f.session.claim,
 			repository: kept,
 			baseSha: null,
@@ -3401,7 +3401,7 @@ describe("per-repository landing queue and inline record batching", () => {
 				slug: "app",
 				title: "App",
 			},
-		};
+		} satisfies CodingSessionClaim;
 		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
 		const runChecks = vi.fn<NonNullable<typeof f.session.runChecks>>();
 		const checksSwitch = vi.fn<NonNullable<typeof f.session.checksSwitch>>(async () => ({

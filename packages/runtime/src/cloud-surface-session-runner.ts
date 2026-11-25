@@ -399,7 +399,7 @@ function resolveFolderPatchReadPath(folderRoot: string, opPath: string): string 
 	return `${folderRoot}/${cleaned}`;
 }
 
-async function collectFolderPatchBaseFiles(
+export async function collectFolderPatchBaseFiles(
 	folder: SurfaceFolderTextReader,
 	folderRoot: string,
 	ops: readonly StudioPatchOp[],
@@ -427,7 +427,7 @@ async function collectFolderPatchBaseFiles(
 	return Object.keys(out).length > 0 ? out : undefined;
 }
 
-async function folderText(
+export async function folderText(
 	folder: SurfaceFolderTextReader,
 	path: string,
 	maxBytes: number,
@@ -437,7 +437,7 @@ async function folderText(
 	return found === null || found === undefined ? null : typeof found === "string" ? found : found.text;
 }
 
-async function readRawOptionalFolderText(
+export async function readRawOptionalFolderText(
 	folder: SurfaceFolderTextReader,
 	path: string,
 	maxBytes: number,
@@ -451,7 +451,7 @@ async function readRawOptionalFolderText(
 	}
 }
 
-function normalizeStudioRelativePath(raw: string, folderRoot: string): string | null {
+export function normalizeStudioRelativePath(raw: string, folderRoot: string): string | null {
 	let trimmed = raw.trim().replace(/^\/+/, "");
 	const prefix = `${folderRoot.replace(/^\/+|\/+$/g, "")}/`;
 	if (prefix.length > 1 && trimmed.startsWith(prefix)) {
@@ -463,7 +463,7 @@ function normalizeStudioRelativePath(raw: string, folderRoot: string): string | 
 	return trimmed;
 }
 
-function applyStudioTextOps(
+export function applyStudioTextOps(
 	overlay: Map<string, string | null>,
 	ops: readonly StudioPatchOp[],
 	folderRoot: string,
@@ -700,7 +700,7 @@ function describeStudioSkill(view: SurfaceStudioPageView, skill: CloudStudioSkil
 	return `\n\n## Skill: ${skill.name}\n${source}: how this page is worked on and what good looks like. The rules above still hold.\n\n${skill.body}`;
 }
 
-function buildFolderSurfaceInstructions(
+export function buildFolderSurfaceInstructions(
 	input: SurfaceSessionTurnInput,
 	folderRoot: string,
 	notesRoot: string,
@@ -794,7 +794,7 @@ async function readStudioContents(
 	}
 }
 
-function buildOpsSurfaceInstructions(input: SurfaceSessionTurnInput): string {
+export function buildOpsSurfaceInstructions(input: SurfaceSessionTurnInput): string {
 	return (
 		`This session is scoped to the operational Surface "${input.surfaceTitle}" (${input.surfaceSlug}). ` +
 		"Inspect Company Files read-only when helpful, and use stage_surface_ops_action to stage a clear, structured action (draft email, payment preparation, record update, or file organization) that founders can review and approve directly from the Action card. " +
