@@ -17,7 +17,11 @@ import {
 	type SurfaceMemberImage,
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
-import type { SurfaceOmittedBaseChange, SurfacePreviewBaseChange } from "./cloud-surface-preview-overlay.ts";
+import type {
+	SurfaceOmittedBaseChange,
+	SurfacePreviewBaseChange,
+	SurfaceSessionOpenChange,
+} from "./cloud-surface-preview-overlay.ts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
@@ -159,6 +163,10 @@ export interface SurfaceTurnBriefInput {
 	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
 	readonly previewOverlayStatus?: "ready" | "conflicted" | "truncated" | null;
 	readonly previewSkippedPaths?: readonly string[] | null;
+	readonly sessionOpenChanges?: readonly SurfaceSessionOpenChange[] | null;
+	readonly replyChangeId?: string | null;
+	readonly sessionOverlayStatus?: "ready" | "conflicted" | "truncated" | null;
+	readonly sessionOverlaySkippedPaths?: readonly string[] | null;
 	readonly chainMode?: boolean;
 	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
 	readonly mainSha?: string | null;
@@ -185,6 +193,7 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
 	"When the founder shares a reference website URL as inspiration, visually study the entire reference page before writing code: open it with headless Chromium or Playwright, dismiss cookie or promo overlays, capture multiple scrolled viewport-sized slices (for example 1440x900 from top to bottom covering hero, mid-page product/app/feature showcases, social proof or comparison bands, and offer/footer, plus mobile 390x844), and inspect each slice individually with coding_run_command (inspectImage). Never stop at a single above-the-fold screenshot and never rely on one tall full-page screenshot (inspectImage fits images within 1920x1200, which shrinks tall full-page shots into unreadable strips). Use the reference website as the structural skeleton and visual vibe — matching its section depth, scroll cadence, typography scale, dark/light contrast rhythm, card and UI framing, and product/app showcase craft — while applying the company's qorpera-identity.css tokens (colors, fonts, radii) unless the founder explicitly asks to change colors. When the founder rejects earlier sketches and points to a reference site, rebuild cleanly around that reference instead of keeping a cramped earlier stub or multi-variant switcher unless they asked for multiple variants. " +
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, parentSha, and commitSha before moving to the next change. " +
+	"When this session already has an open staged change and the member's follow-up revises, adjusts, or fixes it, update that existing change in place by passing its changeId to coding_record_change (keeping its original parentSha and passing the new commitSha) instead of creating a duplicate change; pass createNew: true only when adding a distinct new deliverable alongside existing open changes. " +
 	"When all requested deliverables are committed and verified, call coding_finish with the final headSha to stage the session as ready for review.";
 
 // WHY: Injects global company Identity assets, Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
@@ -221,32 +230,6 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		sections.push(
 			`## Exploration Direction: ${explorationVariantLabel}\nDeliver ONLY this single direction as a real, publishable page so founders can compare side-by-side variants cleanly in Preview. Never embed an in-page concept switcher, A/B/C bar, or option picker even if the prompt mentions comparing multiple ideas.`,
 		);
-	}
-
-	const openChanges = binding.openChanges ?? [];
-	const branchHeadSha = binding.branchHeadSha?.trim() || null;
-	const mainSha = binding.mainSha?.trim() || null;
-	if (binding.repositoryKey && !binding.isInternalReconciliation) {
-		if (openChanges.length > 0) {
-			const latestOpen = openChanges[openChanges.length - 1];
-			const lines = [
-				"## Active Staged Changes on This Session",
-				...openChanges.map(
-					(ch) =>
-						`- ${ch.title}${ch.optionGroupKey ? ` (optionGroup: ${ch.optionGroupKey})` : ""}${ch.headSha ? ` · commit \`${ch.headSha}\`` : ""}`,
-				),
-			];
-			if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
-				lines.push(
-					`Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the chosen option, and pass \`parentSha: "${latestOpen.headSha}"\` to \`coding_record_change\`.`,
-				);
-			}
-			sections.push(lines.join("\n"));
-		} else if (branchHeadSha && mainSha && branchHeadSha !== mainSha) {
-			sections.push(
-				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. First check \`git log ${mainSha}..HEAD\` (and \`git status\`) for any unrecorded commits you still need — record them or save their SHAs to cherry-pick after resetting. Once clear, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
-			);
-		}
 	}
 
 	const fullPrompt = binding.fullPrompt?.trim();
@@ -343,6 +326,116 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		if (target.textSnippet.trim()) lines.push(`- Text snippet: "${target.textSnippet.trim()}"`);
 		lines.push(`- Viewport: ${target.viewport.width}x${target.viewport.height}`);
 		sections.push(lines.join("\n"));
+	}
+
+	const fallbackOpenChanges: SurfaceSessionOpenChange[] = (binding.openChanges ?? []).map((ch, idx) => ({
+		changeId: ch.id,
+		seq: idx + 1,
+		title: ch.title,
+		summary: "",
+		kind: binding.repositoryKey ? "git_range" : binding.sourceKind === "native_ops" ? "ops_action" : "folder_patch",
+		status: "staged",
+		parentSha: ch.parentSha,
+		headSha: ch.headSha,
+		optionGroupKey: ch.optionGroupKey,
+		optionGroupTitle: ch.optionGroupTitle,
+		affectedPaths: [],
+		previewBaseChangeIds: [],
+		actionKind: null,
+		patchManifest: null,
+		baseFiles: null,
+	}));
+	const sessionOpenChanges =
+		(binding.sessionOpenChanges ?? []).length > 0 ? (binding.sessionOpenChanges ?? []) : fallbackOpenChanges;
+	const branchHeadSha = binding.branchHeadSha?.trim() || null;
+	const mainSha = binding.mainSha?.trim() || null;
+	const replyChangeId = binding.replyChangeId?.trim() || null;
+	if (!binding.isInternalReconciliation && sessionOpenChanges.length > 0) {
+		const isFolderSurface = binding.sourceKind === "folder" || isFolderOnly;
+		const isOpsSurface = binding.sourceKind === "native_ops";
+		const folderRootLabel = folderRoot || binding.surfaceSlug;
+		const ownSkipped = (binding.sessionOverlaySkippedPaths ?? []).filter((p) => p.trim().length > 0);
+		const anyTruncated = sessionOpenChanges.some((item) => item.truncated === true || item.pathsTruncated === true);
+		const lines: string[] = ["## Active Staged Changes on This Session"];
+		if (isFolderSurface) {
+			if (binding.sessionOverlayStatus === "truncated" || (binding.sessionOverlayStatus == null && anyTruncated)) {
+				lines.push(
+					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. Part of the prior patch manifest exceeded the inline context budget, so \`company_read\` under \`${folderRootLabel}/\` may show live files for omitted paths.`,
+				);
+			} else {
+				lines.push(
+					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` already reflect this session's staged files above.${
+						ownSkipped.length > 0
+							? ` (${ownSkipped.length} path${ownSkipped.length === 1 ? "" : "s"} exceeded overlay limits: ${ownSkipped.slice(0, 10).join(", ")}${ownSkipped.length > 10 ? `, +${ownSkipped.length - 10} more` : ""}.)`
+							: ""
+					}`,
+				);
+			}
+			lines.push(
+				"When the member's follow-up revises, adjusts, or fixes an existing change below, update it in place by passing its `changeId` to `stage_surface_patch` instead of creating a duplicate change. By default your new ops merge into that change by path (preserving untouched files from the prior version); pass `replaceAll: true` alongside `changeId` only if replacing the entire change from scratch. Only pass `createNew: true` when adding a separate new deliverable alongside the existing open change(s).",
+			);
+		} else if (isOpsSurface) {
+			lines.push(
+				`This session already has ${sessionOpenChanges.length} open staged action${sessionOpenChanges.length === 1 ? "" : "s"}. When revising an existing action below, call \`stage_surface_ops_action\` with its \`changeId\` to update that Action card in place. Only pass \`createNew: true\` when staging an additional separate action.`,
+			);
+		} else {
+			lines.push(
+				`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"} on this branch. When the member's follow-up revises, adjusts, or fixes an existing change below, commit on the branch and call \`coding_record_change\` with its \`changeId\` (keeping that change's original \`parentSha\` and passing the new \`commitSha\`) to update it in place instead of creating a duplicate change.${
+					sessionOpenChanges.length > 1
+						? " If revising an earlier non-tip change or option, run `git read-tree --reset -u <headSha>` first so your edit starts from that change's tree, commit on the branch, and pass its `changeId` and original `parentSha` (for stacked chains, rebase any subsequent commits cleanly and update each shifted change with explicit `parentSha`, `commitSha`, and `rebase: true`)."
+						: ""
+				} Only pass \`createNew: true\` when adding a separate new deliverable alongside the existing open change(s).`,
+			);
+		}
+		const maxOpenShown = 20;
+		for (let i = 0; i < Math.min(sessionOpenChanges.length, maxOpenShown); i += 1) {
+			const item = sessionOpenChanges[i]!;
+			const isTargeted = Boolean(replyChangeId && item.changeId === replyChangeId);
+			const parts: string[] = [
+				`#${item.seq} \`${item.changeId}\` — ${item.title.slice(0, 160)}${item.optionGroupKey ? ` (optionGroup: ${item.optionGroupKey})` : ""}${isTargeted ? " **(targeted by follow-up)**" : ""}`,
+			];
+			if (item.status && item.status !== "staged") {
+				parts.push(`status: ${item.status}`);
+			}
+			if (item.kind === "git_range") {
+				if (item.parentSha && item.headSha) {
+					parts.push(`range \`${item.parentSha.slice(0, 40)}..${item.headSha.slice(0, 40)}\``);
+				} else if (item.headSha) {
+					parts.push(`commit \`${item.headSha.slice(0, 40)}\``);
+				}
+			} else if (item.kind === "ops_action" && item.actionKind) {
+				parts.push(`action: \`${item.actionKind}\``);
+			}
+			if (item.affectedPaths.length > 0) {
+				parts.push(`paths: ${item.affectedPaths.slice(0, 16).join(", ")}`);
+			}
+			if (item.summary) {
+				parts.push(`summary: ${item.summary.slice(0, 240)}`);
+			}
+			lines.push(`- ${parts.join(" · ")}`);
+		}
+		if (sessionOpenChanges.length > maxOpenShown) {
+			lines.push(`- ...and ${sessionOpenChanges.length - maxOpenShown} more open changes`);
+		}
+		if (binding.repositoryKey) {
+			const latestOpen = sessionOpenChanges[sessionOpenChanges.length - 1];
+			if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
+				lines.push(
+					`Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the chosen option, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`,
+				);
+			}
+		}
+		sections.push(lines.join("\n"));
+	} else if (
+		!binding.isInternalReconciliation &&
+		binding.repositoryKey &&
+		branchHeadSha &&
+		mainSha &&
+		branchHeadSha !== mainSha
+	) {
+		sections.push(
+			`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. First check \`git log ${mainSha}..HEAD\` (and \`git status\`) for any unrecorded commits you still need — record them or save their SHAs to cherry-pick after resetting. Once clear, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
+		);
 	}
 
 	const previewBaseChanges = binding.previewBaseChanges ?? [];

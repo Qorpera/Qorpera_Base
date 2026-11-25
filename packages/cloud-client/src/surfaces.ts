@@ -273,16 +273,27 @@ export class CloudSurfacesClient {
 		message: string,
 		keepOpen = true,
 		attach?: { clientInputId: string; images: readonly SurfaceImageRef[] },
+		changeId?: string | null,
 	): Promise<SurfaceSession> {
-		const args = { p_session_id: sessionId, p_message: message, p_keep_open: keepOpen };
-		const data =
+		const normalizedChangeId = changeId?.trim() || null;
+		const baseArgs = { p_session_id: sessionId, p_message: message, p_keep_open: keepOpen };
+		const rpcName =
 			attach && attach.images.length > 0
-				? await this.#rpc("qorpera_reply_surface_session_with_images", {
-						...args,
+				? "qorpera_reply_surface_session_with_images"
+				: "qorpera_reply_surface_session";
+		const args =
+			attach && attach.images.length > 0
+				? {
+						...baseArgs,
 						p_client_input_id: attach.clientInputId,
 						p_images: surfaceImageRows(attach.images),
-					})
-				: await this.#rpc("qorpera_reply_surface_session", args);
+						...(normalizedChangeId ? { p_change_id: normalizedChangeId } : {}),
+					}
+				: {
+						...baseArgs,
+						...(normalizedChangeId ? { p_change_id: normalizedChangeId } : {}),
+					};
+		const data = await this.#rpc(rpcName, args);
 		return parseSurfaceSession(data, "session");
 	}
 

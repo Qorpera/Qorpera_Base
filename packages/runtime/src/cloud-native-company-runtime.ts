@@ -215,7 +215,11 @@ import {
 	type SurfaceMemberImage,
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
-import { parseSurfaceOmittedBaseChanges, parseSurfacePreviewContext } from "./cloud-surface-preview-overlay.ts";
+import {
+	parseSurfaceOmittedBaseChanges,
+	parseSurfacePreviewContext,
+	parseSurfaceSessionOpenChanges,
+} from "./cloud-surface-preview-overlay.ts";
 import {
 	cloudStudioFileReader,
 	createControlPlaneSessionCompletionPort,
@@ -2000,6 +2004,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
+		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
+		const replyChangeId =
+			typeof sessionTurnRaw.replyChangeId === "string" && sessionTurnRaw.replyChangeId.trim()
+				? sessionTurnRaw.replyChangeId.trim()
+				: null;
 		const originRefRec =
 			sessionTurnRaw.originRef &&
 			typeof sessionTurnRaw.originRef === "object" &&
@@ -2057,6 +2066,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			conflictPaths,
 			conflictDetails,
 			previewBaseChanges: previewContext.previewBaseChanges,
+			...(sessionOpenChanges.length > 0 ? { sessionOpenChanges } : {}),
+			...(replyChangeId ? { replyChangeId } : {}),
 			chainMode,
 			omittedBaseChanges,
 			mainSha,
@@ -2129,6 +2140,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
+		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
+		const replyChangeId =
+			typeof sessionTurnRaw.replyChangeId === "string" && sessionTurnRaw.replyChangeId.trim()
+				? sessionTurnRaw.replyChangeId.trim()
+				: null;
 		const originRefRec =
 			sessionTurnRaw.originRef &&
 			typeof sessionTurnRaw.originRef === "object" &&
@@ -2199,6 +2215,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(previewContext.previewReconciliations.length > 0
 				? { previewReconciliations: previewContext.previewReconciliations }
 				: {}),
+			...(sessionOpenChanges.length > 0 ? { sessionOpenChanges } : {}),
+			...(replyChangeId ? { replyChangeId } : {}),
 			...(chainMode ? { chainMode: true } : {}),
 			...(omittedBaseChanges.length > 0 ? { omittedBaseChanges } : {}),
 			...(mainSha ? { mainSha } : {}),

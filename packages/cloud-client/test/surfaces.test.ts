@@ -70,6 +70,40 @@ describe("cloud-client surface session images", () => {
 		);
 	});
 
+	it("forwards target changeId on replySurfaceSession with and without images", async () => {
+		const changeId = "29600000-0000-4000-8000-000000000099";
+		const { rpc, client } = fixture();
+		await client.replySurfaceSession(sessionId, "Re: [Hero]\nMake it warmer", true, undefined, changeId);
+		await client.replySurfaceSession(
+			sessionId,
+			"Re: [Hero]\nMatch this",
+			true,
+			{ clientInputId, images: [image] },
+			changeId,
+		);
+		const row = { objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType };
+		expect(rpc.mock.calls[0]).toEqual([
+			"qorpera_reply_surface_session",
+			{
+				p_session_id: sessionId,
+				p_message: "Re: [Hero]\nMake it warmer",
+				p_keep_open: true,
+				p_change_id: changeId,
+			},
+		]);
+		expect(rpc.mock.calls[1]).toEqual([
+			"qorpera_reply_surface_session_with_images",
+			{
+				p_session_id: sessionId,
+				p_message: "Re: [Hero]\nMatch this",
+				p_keep_open: true,
+				p_client_input_id: clientInputId,
+				p_images: [row],
+				p_change_id: changeId,
+			},
+		]);
+	});
+
 	it("reads a session's images and refuses a malformed answer", async () => {
 		const answer = {
 			schema: "qorpera.surface-session-images/v1",
