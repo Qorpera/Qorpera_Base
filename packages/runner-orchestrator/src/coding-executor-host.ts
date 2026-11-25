@@ -2131,19 +2131,27 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const bootId = boot.content.toString("utf8").trim();
 		if (boot.uid !== 0 || boot.gid !== 0 || boot.mode !== 0o444 || !UUID.test(bootId))
 			throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
-		for (const [file, hash] of [
+		// WHY: Read and verify all four immutable guest helpers concurrently to cut cold boot LXD RTTs from 4 to 1.
+		const helperFiles = [
 			["cloud-coding-command-guest.mjs", this.#options.guest.commandHelperSha256],
 			["cloud-coding-git-guest.mjs", this.#options.guest.gitHelperSha256],
 			["cloud-coding-watchdog.mjs", this.#options.guest.watchdogHelperSha256],
 			["cloud-coding-storage-guest.mjs", this.#options.guest.storageHelperSha256],
-		]) {
-			const content = await client.readInstanceFile(
-				machine.project,
-				name,
-				`/opt/qorpera-coding/${file}`,
-				CODING_GUEST_HELPER_MAX_BYTES,
-				signal,
-			);
+		] as const;
+		const verified = await Promise.all(
+			helperFiles.map(([file]) =>
+				client.readInstanceFile(
+					machine.project,
+					name,
+					`/opt/qorpera-coding/${file}`,
+					CODING_GUEST_HELPER_MAX_BYTES,
+					signal,
+				),
+			),
+		);
+		for (let i = 0; i < helperFiles.length; i++) {
+			const content = verified[i]!;
+			const [, hash] = helperFiles[i]!;
 			if (content.uid !== 0 || content.gid !== 0 || content.mode !== 0o444 || digest(content.content) !== hash)
 				throw new Error("CODING_HOST_GUEST_ARTIFACT_CHANGED");
 		}

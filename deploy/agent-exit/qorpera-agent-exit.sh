@@ -413,31 +413,44 @@ verify() {
 			problems+=("$BRIDGE learns MACs from link-local frames")
 		[[ $(cat "/sys/class/net/$BRIDGE/bridge/stp_state" 2>/dev/null || true) == 0 ]] || problems+=("$BRIDGE runs STP")
 	fi
+	if queue_loaded; then
+		check_sni=1
+	fi
 	if has_ns; then
-		# Each listing is read whole before it is searched: piped into grep -q, a command still writing after the match
-		# dies of SIGPIPE, and pipefail would report the line missing (ss lists every company's resolver too).
-		listing=$(in_exit ip -o -4 addr show dev br0 2>/dev/null || true)
-		[[ $listing == *" $GATEWAY/16 "* ]] || problems+=("br0 lacks $GATEWAY/16")
-		listing=$(in_exit ip -o -4 addr show dev up0 2>/dev/null || true)
-		[[ $listing == *" $UP_EXIT/30 "* ]] || problems+=("up0 lacks $UP_EXIT/30")
-		listing=$(in_exit ip route show default 2>/dev/null || true)
-		[[ $listing == *"via $UP_NODE "* ]] || problems+=("no default route via $UP_NODE")
-		in_exit nft list table $EXIT_TABLE >/dev/null 2>&1 || problems+=("exit rules not loaded")
-		listing=$(in_exit ss -lnu 2>/dev/null || true)
-		[[ $listing == *"$GATEWAY:53 "* ]] || problems+=("no DNS on $GATEWAY:53")
+		# WHY: Batch all exit-netns checks into one ip netns exec call per 10s health tick instead of 7 separate netns forks.
+		local exit_checks
+		exit_checks=$(in_exit sh -c '
+			listing=$(ip -o -4 addr show dev br0 2>/dev/null) || true
+			case "$listing" in *" $1/16 "*) ;; *) echo "br0 lacks $1/16" ;; esac
+			listing=$(ip -o -4 addr show dev up0 2>/dev/null) || true
+			case "$listing" in *" $2/30 "*) ;; *) echo "up0 lacks $2/30" ;; esac
+			listing=$(ip route show default 2>/dev/null) || true
+			case "$listing" in *"via $3 "*) ;; *) echo "no default route via $3" ;; esac
+			if ! rules=$(nft list table "$4" "$5" 2>/dev/null); then
+				echo "exit rules not loaded"
+				rules=""
+			fi
+			listing=$(ss -lnu 2>/dev/null) || true
+			case "$listing" in *"$1:53 "*) ;; *) echo "no DNS on $1:53" ;; esac
+			if [ "$6" = 1 ]; then
+				case "$rules" in *"chain sni {"*) ;; *)
+					echo "the sni chain is not in the rules (the queue modules came after the rules: reload the exit)" ;; esac
+				awk "\$1 == 0 { found = 1 } END { exit !found }" /proc/net/netfilter/nfnetlink_queue 2>/dev/null ||
+					echo "no server name checker on queue 0: only-listed port 443 flows are refused"
+			fi
+		' _ "$GATEWAY" "$UP_EXIT" "$UP_NODE" $EXIT_TABLE "$check_sni" || echo "cannot inspect exit netns")
+		while IFS= read -r problem; do
+			[[ -z $problem ]] || problems+=("$problem")
+		done <<< "$exit_checks"
 		ns=$(stat -L -c %i "/run/netns/$NS" 2>/dev/null || true)
 		[[ -z $ns || -z $(unit_netns qorpera-agent-exit-dns.service) || $(unit_netns qorpera-agent-exit-dns.service) == "$ns" ]] ||
 			problems+=("the name service runs in an old namespace")
+	elif [[ $check_sni == 1 ]]; then
+		problems+=("the sni chain is not in the rules (the queue modules came after the rules: reload the exit)")
+		problems+=("no server name checker on queue 0: only-listed port 443 flows are refused")
 	fi
 	nft list table $HOST_TABLE >/dev/null 2>&1 || problems+=("node rules not loaded")
 	nft list table $BRIDGE_TABLE >/dev/null 2>&1 || problems+=("bridge rules not loaded")
-	if queue_loaded; then
-		check_sni=1
-		in_exit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 ||
-			problems+=("the sni chain is not in the rules (the queue modules came after the rules: reload the exit)")
-		in_exit awk '$1 == 0 { found = 1 } END { exit !found }' /proc/net/netfilter/nfnetlink_queue 2>/dev/null ||
-			problems+=("no server name checker on queue 0: only-listed port 443 flows are refused")
-	fi
 	# WHY: Inspect all status/heartbeat/flag files in one python3 process to avoid TOCTOU stat/open aborts and 6+ forks per health check.
 	while IFS= read -r problem; do
 		[[ -z $problem ]] || problems+=("$problem")
