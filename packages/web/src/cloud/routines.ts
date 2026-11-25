@@ -24,6 +24,7 @@ import {
 	setCompanyStateSettings,
 	writeRoutineFile,
 } from "@qorpera/cloud-client/company-state-files";
+import { isRecord } from "@qorpera/contracts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import {
 	folderNames,
@@ -202,7 +203,7 @@ const ROUTINE_PAYER_WAITS: ReadonlySet<string> = new Set(["login", "usage_limit"
 /** A `qorpera.routine-payer/v1` answer for `routineId`. Anything else is not read: a payer that names no member
  * for a member's login, or one for a company account, is as wrong as a missing field. */
 export function parseRoutinePayer(value: unknown, routineId: string): WebRoutinePayer {
-	const v = record(value);
+	const v = routineRecord(value);
 	const id = (item: unknown): item is string => typeof item === "string" && UUID_PATTERN.test(item);
 	const optionalId = (item: unknown) => item === null || id(item);
 	const since = v.since;
@@ -306,9 +307,9 @@ export function latestVersions(accounts: readonly WebMemberConnection[]): WebMem
 	return [...newest.values()];
 }
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud response");
-	return value as Record<string, unknown>;
+function routineRecord(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("Invalid cloud response");
+	return value;
 }
 
 /** One sponsor per account version: saving again reuses it instead of piling up. */
@@ -485,7 +486,7 @@ export function createWebRoutines(
 				throw new Error("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
 			version = account.connectionVersion;
 		} else {
-			const consent = record(
+			const consent = routineRecord(
 				await rpc("qorpera_consent_provider_connection_autonomous", {
 					p_profile_id: profile.profileId,
 					p_connection_id: account.connectionId,
@@ -500,7 +501,7 @@ export function createWebRoutines(
 				throw new Error("Invalid cloud response");
 			version = consent.version as number;
 		}
-		const bound = record(
+		const bound = routineRecord(
 			await rpc("qorpera_create_member_execution_sponsor", {
 				p_profile_id: profile.profileId,
 				p_client_binding_id: await sponsorKey(account.connectionId, version),

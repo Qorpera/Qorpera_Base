@@ -1,9 +1,9 @@
+import { UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import { withCloudDeadline } from "./cloud-request.ts";
 import type { HostedPresenceIdentity } from "./hosted-primary.ts";
 import { PresenceSignatures } from "./presence-signatures.ts";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** A tab's identity is looked up again after this long: a member who left the company
  * stops resolving within it, and routine syncs (every agent's file presence re-tracks
  * every 10 s on this topic) cost no lookup. */

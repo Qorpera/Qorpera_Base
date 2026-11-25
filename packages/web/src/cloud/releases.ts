@@ -4,12 +4,12 @@ import {
 	array,
 	boundedInteger,
 	CloudShapeError,
+	cloudRecord,
+	cloudUuid,
 	nonEmptyString,
 	oneOf,
-	record,
 	SHA256_PATTERN,
 	timestamp,
-	uuid,
 } from "./parse.ts";
 import { NATIVE_SITE_HOST } from "./site-hosting.ts";
 import { SITE_HOST } from "./sites.ts";
@@ -173,7 +173,7 @@ function folderPath(value: unknown): string {
 }
 
 function parseChange(value: unknown): CodeReleaseChange {
-	const input = record(value, "ready change");
+	const input = cloudRecord(value, "ready change");
 	if (typeof input.wasLive !== "boolean") throw new CloudShapeError("ready change");
 	return {
 		key: boundedInteger(input.key, "ready change", 1, MAX),
@@ -185,12 +185,12 @@ function parseChange(value: unknown): CodeReleaseChange {
 }
 
 function parseSite(value: unknown): CodeReleaseSite {
-	const input = record(value, "release site");
+	const input = cloudRecord(value, "release site");
 	return {
 		owner: nonEmptyString(input.owner, "release owner", 256),
 		name: nonEmptyString(input.name, "release name", 256),
 		site: nullable(input.site, (site) => {
-			const item = record(site, "release site link");
+			const item = cloudRecord(site, "release site link");
 			return {
 				slug: nonEmptyString(item.slug, "site name", 64),
 				url: siteUrl(item.url),
@@ -198,26 +198,26 @@ function parseSite(value: unknown): CodeReleaseSite {
 			};
 		}),
 		live: nullable(input.live, (live) => {
-			const item = record(live, "live version");
+			const item = cloudRecord(live, "live version");
 			return {
 				version: boundedInteger(item.version, "live version", 1, MAX),
 				kind: oneOf(item.kind, ["release", "back"], "live version kind"),
 				since: timestamp(item.since, "live since"),
-				by: nullable(item.by, (by) => uuid(by, "live by")),
+				by: nullable(item.by, (by) => cloudUuid(by, "live by")),
 				...parseLiveAuto(item),
 			};
 		}),
 		back: nullable(input.back, (back) => ({
-			version: boundedInteger(record(back, "back version").version, "back version", 1, MAX),
+			version: boundedInteger(cloudRecord(back, "back version").version, "back version", 1, MAX),
 		})),
 		ready: nullable(input.ready, (ready) => {
-			const item = record(ready, "ready version");
+			const item = cloudRecord(ready, "ready version");
 			if (typeof item.token !== "string" || !SHA256_PATTERN.test(item.token))
 				throw new CloudShapeError("ready token");
 			return {
 				change: boundedInteger(item.change, "ready change", 1, MAX),
 				token: item.token,
-				agent: nullable(item.agent, (agent) => uuid(agent, "ready agent")),
+				agent: nullable(item.agent, (agent) => cloudUuid(agent, "ready agent")),
 				changes: array(item.changes, "ready changes").map(parseChange),
 				quiet: boundedInteger(item.quiet, "ready quiet", 0, MAX),
 			};
@@ -231,7 +231,7 @@ function parseSite(value: unknown): CodeReleaseSite {
 
 /** The `qorpera.code-releases/v1` read. A key it does not know is left alone; every value it reads is checked. */
 export function parseCodeReleases(value: unknown): CodeReleases {
-	const input = record(value, "releases");
+	const input = cloudRecord(value, "releases");
 	if (input.schema !== "qorpera.code-releases/v1" || typeof input.canRelease !== "boolean")
 		throw new CloudShapeError("releases");
 	return {
@@ -244,7 +244,7 @@ export function parseCodeReleases(value: unknown): CodeReleases {
 
 /** The `qorpera.code-release/v1` answer of both writes. */
 export function parseCodeReleaseAnswer(value: unknown): CodeReleaseAnswer {
-	const input = record(value, "release answer");
+	const input = cloudRecord(value, "release answer");
 	if (input.schema !== "qorpera.code-release/v1") throw new CloudShapeError("release answer");
 	const state = oneOf(input.state, ["live", "moved", "refused"], "release answer");
 	if (state === "refused") return { state, code: nonEmptyString(input.code, "release refusal", 64) };
@@ -258,7 +258,7 @@ const TICKET = /^\?t=[A-Za-z0-9_-]{43}$/;
  * and a ticket, for the site the page drew (by the one host rule SQL, site-serve and the web share): the web never sends
  * a tab anywhere else. Nothing of the link goes into an error. */
 export function parseSitePreviewAnswer(value: unknown, slug: string): SitePreviewAnswer {
-	const input = record(value, "look first answer");
+	const input = cloudRecord(value, "look first answer");
 	if (input.schema !== "qorpera.site-preview/v1") throw new CloudShapeError("look first answer");
 	const state = oneOf(input.state, ["open", "moved", "gone", "off"], "look first answer");
 	if (state !== "open") return { state };

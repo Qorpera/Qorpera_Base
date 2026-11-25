@@ -11,6 +11,7 @@ import {
 	parseNativeAccountRefreshRequest,
 	parseNativeAccountRefreshResult,
 } from "@qorpera/cloud-client/native-account-refresh";
+import { isUuidAnyCase, parseRecord } from "@qorpera/contracts";
 import {
 	Headers as NodeHttpHeaders,
 	Request as NodeHttpRequest,
@@ -30,14 +31,13 @@ import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { LxdLoginJournal } from "./lxd-login-journal.ts";
 import { LOGIN_UUID, type LxdLoginBinding, lxdLoginNodePolicy, lxdLoginPlan } from "./lxd-login-plan.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
-import { nativeIdentityCredentialFile } from "./provider-shared.ts";
+import { nativeIdentityCredentialFile, sha256Hex } from "./provider-shared.ts";
 import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
 const IDENTITY_VOLUME_SCHEMA = "qorpera.compute-identity-volume/v1";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
@@ -142,15 +142,15 @@ function recoveryRuntimeState(value: unknown): {
 	epoch: number | null;
 	recoveryConfiguration: { authorityId: string; serviceOrigin: string; signingPublicKey: string } | null;
 } {
-	const r = record(value, "Identity recovery state");
+	const r = parseRecord(value, "Identity recovery state");
 	if (typeof r.canInitialize !== "boolean" || typeof r.blocked !== "boolean")
 		throw new Error("Identity recovery state is invalid");
 	const epoch = Number.isSafeInteger(r.epoch) ? (r.epoch as number) : null;
 	let recoveryConfiguration: { authorityId: string; serviceOrigin: string; signingPublicKey: string } | null = null;
 	if (r.recoveryConfiguration !== null && r.recoveryConfiguration !== undefined) {
-		const c = record(r.recoveryConfiguration, "Identity recovery configuration");
+		const c = parseRecord(r.recoveryConfiguration, "Identity recovery configuration");
 		recoveryConfiguration = {
-			authorityId: uuid(c.authorityId, "Identity recovery authority"),
+			authorityId: loginUuid(c.authorityId, "Identity recovery authority"),
 			serviceOrigin: text(c.serviceOrigin, "Identity recovery service origin"),
 			signingPublicKey: text(c.signingPublicKey, "Identity recovery signing key", 1024),
 		};
@@ -160,12 +160,12 @@ function recoveryRuntimeState(value: unknown): {
 	return { canInitialize: r.canInitialize, blocked: r.blocked, epoch, recoveryConfiguration };
 }
 function loginRecoveryRequest(value: unknown, targetId: string) {
-	const r = record(value, "Login recovery");
+	const r = parseRecord(value, "Login recovery");
 	const epoch = r.epoch;
 	if (!Number.isSafeInteger(epoch) || (epoch as number) < 1) throw new Error("Login recovery epoch is invalid");
 	if (r.targetId !== targetId) throw new Error("Login recovery target differs");
 	return {
-		recoveryId: uuid(r.recoveryId, "Login recovery id"),
+		recoveryId: loginUuid(r.recoveryId, "Login recovery id"),
 		status: text(r.status, "Login recovery status", 32),
 		epoch: epoch as number,
 		notBefore:
@@ -173,7 +173,7 @@ function loginRecoveryRequest(value: unknown, targetId: string) {
 				? null
 				: text(r.notBefore, "Login recovery quiet period", 64),
 		backupSha256: text(r.backupSha256, "Login recovery backup", 64),
-		authorityId: uuid(r.authorityId, "Login recovery authority"),
+		authorityId: loginUuid(r.authorityId, "Login recovery authority"),
 		serviceOrigin: text(r.serviceOrigin, "Login recovery service origin"),
 		signingPublicKey: text(r.signingPublicKey, "Login recovery signing key", 1024),
 	};
@@ -222,7 +222,7 @@ export interface LxdNativeLoginGatewayConfig {
 
 /** This node and the ids SQL names for its retirement: canonical, distinct, at most 64. */
 function parseRetirementsDue(value: unknown): { nodeId: string; computeIdentityIds: string[] } {
-	const answer = record(value, "Identity retirements");
+	const answer = parseRecord(value, "Identity retirements");
 	const ids = answer.computeIdentityIds;
 	if (
 		Object.keys(answer).sort().join() !== "computeIdentityIds,nodeId,schema" ||
@@ -236,11 +236,6 @@ function parseRetirementsDue(value: unknown): { nodeId: string; computeIdentityI
 	)
 		throw new Error("Identity retirements are invalid");
 	return { nodeId: answer.nodeId as string, computeIdentityIds: ids as string[] };
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
 }
 
 async function present(path: string): Promise<boolean> {
@@ -258,8 +253,8 @@ function exactKeys(input: Record<string, unknown>, allowed: readonly string[], l
 	if (Object.keys(input).some((key) => !expected.has(key))) throw new Error(`${label} has unknown fields`);
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
+function loginUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
@@ -271,7 +266,7 @@ function text(value: unknown, label: string, maximum = 512): string {
 }
 
 function nullableUuid(value: unknown, label: string): string | undefined {
-	return value === null || value === undefined ? undefined : uuid(value, label);
+	return value === null || value === undefined ? undefined : loginUuid(value, label);
 }
 
 function nullableText(value: unknown, label: string, maximum = 512): string | undefined {
@@ -330,7 +325,7 @@ function bearer(request: ServiceHttpRequest): string {
 }
 
 function parseLogin(encoded: string, capability: string): NativeLoginRequest {
-	const input = record(JSON.parse(encoded) as unknown, "Native login request");
+	const input = parseRecord(JSON.parse(encoded) as unknown, "Native login request");
 	exactKeys(
 		input,
 		[
@@ -357,9 +352,9 @@ function parseLogin(encoded: string, capability: string): NativeLoginRequest {
 	const expiresAt = new Date(text(input.expires_at, "Native login expiry", 64)).toISOString();
 	if (Date.parse(expiresAt) <= Date.now()) throw new Error("Native login capability is expired");
 	return {
-		loginId: uuid(input.login_id, "Native login id"),
-		clientConnectionId: uuid(input.client_connection_id, "Native login client connection id"),
-		computeIdentityId: uuid(input.compute_identity_id, "Native login Compute Identity id"),
+		loginId: loginUuid(input.login_id, "Native login id"),
+		clientConnectionId: loginUuid(input.client_connection_id, "Native login client connection id"),
+		computeIdentityId: loginUuid(input.compute_identity_id, "Native login Compute Identity id"),
 		...ownership(
 			input.compute_identity_ownership_kind,
 			input.compute_identity_owner_user_id,
@@ -374,7 +369,7 @@ function parseLogin(encoded: string, capability: string): NativeLoginRequest {
 }
 
 function description(value: unknown): NativeLoginDescription {
-	const input = record(value, "Native login description");
+	const input = parseRecord(value, "Native login description");
 	exactKeys(
 		input,
 		[
@@ -396,10 +391,10 @@ function description(value: unknown): NativeLoginDescription {
 		throw new Error("Native login status is invalid");
 	}
 	return {
-		loginId: uuid(input.login_id, "Native login id"),
-		profileId: uuid(input.profile_id, "Native login profile id"),
-		clientConnectionId: uuid(input.client_connection_id, "Native login client connection id"),
-		computeIdentityId: uuid(input.compute_identity_id, "Native login Compute Identity id"),
+		loginId: loginUuid(input.login_id, "Native login id"),
+		profileId: loginUuid(input.profile_id, "Native login profile id"),
+		clientConnectionId: loginUuid(input.client_connection_id, "Native login client connection id"),
+		computeIdentityId: loginUuid(input.compute_identity_id, "Native login Compute Identity id"),
 		...ownership(
 			input.compute_identity_ownership_kind,
 			input.compute_identity_owner_user_id,
@@ -438,20 +433,22 @@ function json(value: unknown, status: number): ServiceHttpResponse {
 	return NodeHttpResponse.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
-function sha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
-}
-
 function bootstrapSha256(files: readonly LoginBootstrapFile[]): string {
-	return sha256(
+	return sha256Hex(
 		JSON.stringify(
-			files.map((file) => ({ path: file.path, contentSha256: sha256(file.content), mode: "0600", uid: 0, gid: 0 })),
+			files.map((file) => ({
+				path: file.path,
+				contentSha256: sha256Hex(file.content),
+				mode: "0600",
+				uid: 0,
+				gid: 0,
+			})),
 		),
 	);
 }
 
 function parseResult(value: unknown, loginId: string): NativeLoginResult {
-	const input = record(value, "Native login result");
+	const input = parseRecord(value, "Native login result");
 	exactKeys(input, ["schema", "login_id", "status", "interaction_url", "user_code"], "Native login result");
 	if (
 		input.schema !== LOGIN_RESULT_SCHEMA ||
@@ -544,7 +541,7 @@ function validateConfig(config: LxdNativeLoginGatewayConfig): void {
 		!SHA256_PATTERN.test(config.identityRecoveryCaSha256) ||
 		Buffer.byteLength(config.identityRecoveryCaCertificate) < 1 ||
 		Buffer.byteLength(config.identityRecoveryCaCertificate) > 16 * 1024 ||
-		sha256(config.identityRecoveryCaCertificate) !== config.identityRecoveryCaSha256
+		sha256Hex(config.identityRecoveryCaCertificate) !== config.identityRecoveryCaSha256
 	) {
 		throw new Error("LXD login recovery-authority CA is invalid");
 	}
@@ -725,7 +722,7 @@ export class LxdNativeLoginGateway {
 					"qorpera_describe_native_account_refresh_route",
 					{
 						p_request_id: login.loginId,
-						p_capability_sha256: sha256(login.capability),
+						p_capability_sha256: sha256Hex(login.capability),
 					},
 					checked,
 				);
@@ -751,7 +748,7 @@ export class LxdNativeLoginGateway {
 				"qorpera_describe_native_provider_login_route",
 				{
 					p_login_id: login.loginId,
-					p_capability_sha256: sha256(login.capability),
+					p_capability_sha256: sha256Hex(login.capability),
 				},
 				signal ?? new AbortController().signal,
 			),
@@ -793,7 +790,7 @@ export class LxdNativeLoginGateway {
 				loginId: login.loginId,
 				profileId: authority.profileId,
 				computeIdentityId: login.computeIdentityId,
-				capabilitySha256: sha256(login.capability),
+				capabilitySha256: sha256Hex(login.capability),
 				bootstrapSha256: bootstrapSha256(this.#bootstrapFiles(login.computeIdentityId, tokens, login.purpose)),
 				policy: lxdLoginNodePolicy(this.#config, host.machineIdSha256).policy,
 			});
@@ -805,7 +802,7 @@ export class LxdNativeLoginGateway {
 			binding.loginId !== login.loginId ||
 			binding.profileId !== authority.profileId ||
 			binding.computeIdentityId !== login.computeIdentityId ||
-			binding.capabilitySha256 !== sha256(login.capability)
+			binding.capabilitySha256 !== sha256Hex(login.capability)
 		)
 			throw new Error("LOGIN_JOURNAL_BINDING_CONFLICT");
 		if (authority.status === "completed" || (await journal.state()).closing) {
@@ -984,7 +981,7 @@ export class LxdNativeLoginGateway {
 		if (result.state !== "succeeded") throw new Error("LOGIN_PHYSICAL_OPERATION_UNCONFIRMED");
 	}
 	async #machineDescription(binding: LxdLoginBinding, signal: AbortSignal) {
-		const value = record(
+		const value = parseRecord(
 			await this.#allocationRpc(
 				binding,
 				"qorpera_describe_runtime_login_machine",
@@ -1265,7 +1262,7 @@ export class LxdNativeLoginGateway {
 			},
 			signal,
 		);
-		const confirmed = record(receipt, "Identity retirement");
+		const confirmed = parseRecord(receipt, "Identity retirement");
 		if (
 			Object.keys(confirmed).sort().join() !== "computeIdentityId,device,nodeId,retiredAt,schema,volume" ||
 			confirmed.schema !== "qorpera.identity-retirement/v1" ||
@@ -1691,7 +1688,7 @@ export class LxdNativeLoginGateway {
 	 * the session was pinned to; the backend re-pins it so the login's backup
 	 * stage and completion run on the restored generation. */
 	async #repinLogin(binding: LxdLoginBinding, signal: AbortSignal): Promise<void> {
-		const r = record(
+		const r = parseRecord(
 			await this.#allocationRpc(
 				binding,
 				"qorpera_repin_login_recovery_epoch",
@@ -1724,7 +1721,7 @@ export class LxdNativeLoginGateway {
 			return undefined;
 		}
 		try {
-			const r = record(JSON.parse(text), "Pending restore");
+			const r = parseRecord(JSON.parse(text), "Pending restore");
 			if (
 				r.schema !== "qorpera.identity-recovery-restore/v1" ||
 				r.computeIdentityId !== binding.computeIdentityId ||
@@ -1733,7 +1730,7 @@ export class LxdNativeLoginGateway {
 				(epoch !== null && r.epoch !== epoch)
 			)
 				return undefined;
-			return { recoveryId: uuid(r.recoveryId, "Pending restore recovery"), epoch: r.epoch as number };
+			return { recoveryId: loginUuid(r.recoveryId, "Pending restore recovery"), epoch: r.epoch as number };
 		} catch {
 			return undefined;
 		}
@@ -1990,7 +1987,7 @@ export class LxdNativeLoginGateway {
 				),
 			);
 		const { value } = await readRecord(join(root, "bridge.json"));
-		const input = record(value, "Login bridge token");
+		const input = parseRecord(value, "Login bridge token");
 		if (
 			Object.keys(input).sort().join() !== "identity,token" ||
 			typeof input.token !== "string" ||
@@ -2012,7 +2009,7 @@ export class LxdNativeLoginGateway {
 			signal,
 		);
 		recoveryRuntimeState(state);
-		if (record(state, "Identity recovery state").computeIdentityId !== binding.computeIdentityId)
+		if (parseRecord(state, "Identity recovery state").computeIdentityId !== binding.computeIdentityId)
 			throw new Error("LOGIN_IDENTITY_STATE_INVALID");
 		// A new identity's guest has had no recovery step that waited for its agent.
 		await this.#waitForGuestAgent(instanceName, signal);

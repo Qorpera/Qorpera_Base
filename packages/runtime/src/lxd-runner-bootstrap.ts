@@ -5,7 +5,7 @@ import { chmod, chown, link, lstat, mkdir, open, readdir, readFile, rename, unli
 import { isIP } from "node:net";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
+import { isRecord, parseCompanyComputerNativeRoute, UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import { recoveryBase64, recoveryDigest } from "./cloud-identity-recovery-crypto.ts";
 import {
 	assertIdentityRecoveryMarker,
@@ -23,7 +23,6 @@ const COMPANY_BOOTSTRAP_SCHEMA = "qorpera.lxd-company-runner-bootstrap/v1";
 const LOGIN_BOOTSTRAP_SCHEMA = "qorpera.lxd-native-login-bootstrap/v1";
 const IDENTITY_SCHEMA = "qorpera.compute-identity-volume/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TEMPLATE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const MAX_BOOTSTRAP_BYTES = 64 * 1024;
@@ -158,9 +157,9 @@ const PRODUCTION_LOGIN_PATHS: LxdNativeLoginBootstrapPaths = {
 	systemUnitDirectory: "/etc/systemd/system",
 };
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
-	return value as Record<string, unknown>;
+function bootstrapObject(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(`${label} must be an object`);
+	return value;
 }
 
 /** The coding command gateway as the provider service parses it: an exact HTTPS
@@ -183,7 +182,7 @@ function text(value: unknown, label: string, pattern: RegExp): string {
 }
 
 export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstrapConfig {
-	const input = record(value, "LXD runner bootstrap configuration");
+	const input = bootstrapObject(value, "LXD runner bootstrap configuration");
 	exactKeys(
 		input,
 		[
@@ -213,7 +212,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 	}
 	let companyRuntime: LxdRunnerBootstrapConfig["companyRuntime"];
 	if (input.schema === COMPANY_BOOTSTRAP_SCHEMA) {
-		const company = record(input.company_runtime, "Governed native bootstrap");
+		const company = bootstrapObject(input.company_runtime, "Governed native bootstrap");
 		exactKeys(
 			company,
 			[
@@ -262,7 +261,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 		}
 		let office: NonNullable<LxdRunnerBootstrapConfig["companyRuntime"]>["office"];
 		if (company.office !== undefined) {
-			const route = record(company.office, "Governed office endpoint");
+			const route = bootstrapObject(company.office, "Governed office endpoint");
 			exactKeys(route, ["environment_id", "url", "token_sha256"], "Governed office endpoint");
 			office = {
 				environmentId: text(route.environment_id, "Office environment", UUID_PATTERN),
@@ -272,7 +271,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 		}
 		let codingCommand: NonNullable<LxdRunnerBootstrapConfig["companyRuntime"]>["codingCommand"];
 		if (company.coding_command !== undefined) {
-			const gateway = record(company.coding_command, "Governed coding command gateway");
+			const gateway = bootstrapObject(company.coding_command, "Governed coding command gateway");
 			exactKeys(gateway, ["url", "token_sha256"], "Governed coding command gateway");
 			codingCommand = {
 				url: codingCommandOrigin(text(gateway.url, "Coding command URL", /^https:\/\//)),
@@ -310,7 +309,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 }
 
 export function parseLxdNativeLoginBootstrapConfig(value: unknown): LxdNativeLoginBootstrapConfig {
-	const input = record(value, "LXD native login bootstrap configuration");
+	const input = bootstrapObject(value, "LXD native login bootstrap configuration");
 	exactKeys(
 		input,
 		[
@@ -414,7 +413,7 @@ function verifyMountedIdentityVolume(mountInfo: string, expectedPath: string): v
 }
 
 function parseIdentityMarker(value: unknown, computeIdentityId: string): void {
-	const input = record(value, "Compute Identity volume marker");
+	const input = bootstrapObject(value, "Compute Identity volume marker");
 	exactKeys(input, ["schema", "compute_identity_id"], "Compute Identity volume marker");
 	if (input.schema !== IDENTITY_SCHEMA || input.compute_identity_id !== computeIdentityId) {
 		throw new Error("Compute Identity volume marker does not match bootstrap authority");
@@ -968,7 +967,7 @@ async function verifyCompanyGuest(
 		compute_identity_id: bootstrap.computeIdentityId,
 	};
 	try {
-		const saved = record(
+		const saved = bootstrapObject(
 			parseJson(
 				await readOwnedFile(marker, MAX_BOOTSTRAP_BYTES, "Native recovery marker", expectedUid, true),
 				"Native recovery marker",

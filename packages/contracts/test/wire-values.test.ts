@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	isRecord,
 	isUuid,
+	isUuidAnyCase,
 	normalizeUuid,
+	POSTGRES_UUID_ANY_CASE_PATTERN,
 	POSTGRES_UUID_PATTERN,
 	parseBoundedText,
 	parseClosedRecord,
@@ -10,6 +13,7 @@ import {
 	parseSha256Hex,
 	parseTimestamp,
 	parseUuid,
+	UUID_ANY_CASE_PATTERN,
 	UUID_PATTERN,
 	WireValueError,
 } from "../src/index.ts";
@@ -81,6 +85,11 @@ describe("wire values", () => {
 	});
 
 	it("checks plain and closed objects", () => {
+		expect(isRecord({ a: 1 })).toBe(true);
+		for (const value of [null, [], "x", 1, undefined]) expect(isRecord(value)).toBe(false);
+		expect(isUuidAnyCase(lower.toUpperCase())).toBe(true);
+		expect(UUID_ANY_CASE_PATTERN.test(lower.toUpperCase())).toBe(true);
+		expect(POSTGRES_UUID_ANY_CASE_PATTERN.test("00000000-0000-0000-0000-000000000000")).toBe(true);
 		expect(parseRecord({ a: 1 }, "body")).toEqual({ a: 1 });
 		for (const value of [null, [], "x", 1, undefined])
 			expect(() => parseRecord(value, "body")).toThrow("body is invalid");

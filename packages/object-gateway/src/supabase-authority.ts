@@ -1,6 +1,6 @@
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
-import { SHA256_HEX_PATTERN as SHA256_PATTERN, UUID_PATTERN } from "@qorpera/contracts";
+import { isRecord, SHA256_HEX_PATTERN as SHA256_PATTERN, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	companyStateFailure,
 	ObjectDependency,
@@ -172,13 +172,13 @@ function folderStateFailure(code: unknown, status: number): ObjectDependencyErro
 	return failure.status === 500 ? new ObjectDependencyError(status) : failure;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
-	return value as Record<string, unknown>;
+function authorityRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(`Invalid ${label}`);
+	return value;
 }
 
 function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
-	const authorization = record(value, "object deletion authorization");
+	const authorization = authorityRecord(value, "object deletion authorization");
 	if (authorization.state === "completed") return { state: "completed" };
 	if (
 		authorization.state !== "authorized" ||
@@ -475,7 +475,7 @@ export class SupabaseObjectAuthority
 			if (error instanceof ObjectDependencyError && error.status === 423) return "stale";
 			throw error;
 		}
-		const answer = record(value, "folder GC unlink");
+		const answer = authorityRecord(value, "folder GC unlink");
 		if (
 			answer.schema !== "qorpera.folder-object-gc-unlink/v1" ||
 			!Number.isSafeInteger(answer.bytes) ||
@@ -724,7 +724,7 @@ export class SupabaseObjectAuthority
 		);
 		if (!Array.isArray(value) || value.length > limit) throw new Error("Invalid legacy object migration list");
 		return value.map((entry) => {
-			const object = record(entry, "legacy object migration item");
+			const object = authorityRecord(entry, "legacy object migration item");
 			if (
 				typeof object.profile_id !== "string" ||
 				!UUID_PATTERN.test(object.profile_id) ||

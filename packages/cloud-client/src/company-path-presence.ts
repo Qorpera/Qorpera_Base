@@ -1,9 +1,8 @@
+import { isRecord, isUuidAnyCase, SHA256_HEX_PATTERN as SHA } from "@qorpera/contracts";
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
 
 export const COMPANY_PATH_PRESENCE_SCHEMA = "qorpera.company-path-presence/v1";
 export const COMPANY_PATH_PRESENCE_TTL_MS = 30_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SHA = /^[a-f0-9]{64}$/;
 export type CompanyPathActivity = "reading" | "writing";
 export type CompanyPathExtent = "object" | "subtree";
 export interface CompanyPresenceRoute {
@@ -55,12 +54,11 @@ export type CompanyPathPresenceView = {
 	}>;
 };
 function closed(value: unknown, keys: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
-		throw new Error("INVALID_COMPANY_PRESENCE");
-	return value as Record<string, unknown>;
+	if (!isRecord(value) || Object.keys(value).sort().join() !== keys) throw new Error("INVALID_COMPANY_PRESENCE");
+	return value;
 }
 export function presenceUuid(value: unknown): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error("INVALID_COMPANY_PRESENCE_ID");
+	if (!isUuidAnyCase(value)) throw new Error("INVALID_COMPANY_PRESENCE_ID");
 	return value;
 }
 function integer(value: unknown, minimum: number): number {

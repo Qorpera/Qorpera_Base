@@ -1,4 +1,4 @@
-import { UUID_PATTERN as CONTRACTS_UUID_PATTERN, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import { isRecord, normalizeUuid, SHA256_HEX_PATTERN, UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import type {
 	HostedAccountEntitlement,
 	HostedAccountMatch,
@@ -37,7 +37,7 @@ import {
  * always validated; presentational fields tolerate absence where an older
  * deployed schema could legitimately omit them. */
 
-export const UUID_PATTERN = new RegExp(CONTRACTS_UUID_PATTERN.source, "i");
+export const UUID_PATTERN = UUID_ANY_CASE_PATTERN;
 export const SHA256_PATTERN = SHA256_HEX_PATTERN;
 
 export class CloudShapeError extends Error {
@@ -47,9 +47,9 @@ export class CloudShapeError extends Error {
 	}
 }
 
-export function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new CloudShapeError(label);
-	return value as Record<string, unknown>;
+export function cloudRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new CloudShapeError(label);
+	return value;
 }
 
 export function array(value: unknown, label: string): unknown[] {
@@ -57,13 +57,14 @@ export function array(value: unknown, label: string): unknown[] {
 	return value;
 }
 
-export function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new CloudShapeError(label);
-	return value.toLowerCase();
+export function cloudUuid(value: unknown, label: string): string {
+	const id = normalizeUuid(value);
+	if (id === null) throw new CloudShapeError(label);
+	return id;
 }
 
 function optionalUuid(value: unknown, label: string): string | undefined {
-	return value === null || value === undefined ? undefined : uuid(value, label);
+	return value === null || value === undefined ? undefined : cloudUuid(value, label);
 }
 
 export function nonEmptyString(value: unknown, label: string, maximum = 32 * 1024): string {
@@ -112,10 +113,10 @@ function role(value: unknown): HostedProfileRole {
 }
 
 export function parseProfile(value: unknown): HostedProfile {
-	const input = record(value, "profile");
+	const input = cloudRecord(value, "profile");
 	return {
-		profileId: uuid(input.profile_id, "profile id"),
-		environmentId: uuid(input.environment_id, "environment id"),
+		profileId: cloudUuid(input.profile_id, "profile id"),
+		environmentId: cloudUuid(input.environment_id, "environment id"),
 		profileName: nonEmptyString(input.profile_name, "profile name", 512),
 		environmentName: nonEmptyString(input.environment_name, "environment name", 512),
 		role: role(input.role),
@@ -129,7 +130,7 @@ export function parseProfiles(value: unknown): HostedProfile[] {
 }
 
 function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
-	const input = record(value, "account entitlement");
+	const input = cloudRecord(value, "account entitlement");
 	const storageAllocationBytes = input.storage_allocation_bytes;
 	return {
 		planKey: nonEmptyString(input.plan_key, "account plan", 64),
@@ -145,7 +146,7 @@ function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
 }
 
 function parseInvitationDelivery(value: unknown): HostedProfileInvitation["delivery"] {
-	const input = record(value, "invitation delivery");
+	const input = cloudRecord(value, "invitation delivery");
 	return {
 		status: nonEmptyString(input.status, "invitation delivery status", 64),
 		attemptCount: boundedInteger(input.attempt_count, "invitation delivery attempts", 0, 1_000_000),
@@ -157,17 +158,17 @@ function parseInvitationDelivery(value: unknown): HostedProfileInvitation["deliv
 }
 
 export function parseInvitation(value: unknown): HostedProfileInvitation {
-	const input = record(value, "profile invitation");
+	const input = cloudRecord(value, "profile invitation");
 	const invitationRole = role(input.role);
 	if (invitationRole === "owner") throw new CloudShapeError("invitation role");
 	const delivery =
 		input.delivery === null || input.delivery === undefined ? undefined : parseInvitationDelivery(input.delivery);
 	return {
-		id: uuid(input.id, "invitation id"),
-		profileId: uuid(input.profile_id, "invitation profile id"),
+		id: cloudUuid(input.id, "invitation id"),
+		profileId: cloudUuid(input.profile_id, "invitation profile id"),
 		email: nonEmptyString(input.email, "invitation email", 320),
 		role: invitationRole,
-		invitedByUserId: uuid(input.invited_by_user_id, "invitation actor id"),
+		invitedByUserId: cloudUuid(input.invited_by_user_id, "invitation actor id"),
 		createdAt: timestamp(input.created_at, "invitation creation time"),
 		expiresAt: timestamp(input.expires_at, "invitation expiry"),
 		...(delivery ? { delivery } : {}),
@@ -177,10 +178,10 @@ export function parseInvitation(value: unknown): HostedProfileInvitation {
 export function parseIncomingInvitations(value: unknown): HostedIncomingProfileInvitation[] {
 	return array(value, "incoming invitation list").map((item) => {
 		const invitation = parseInvitation(item);
-		const input = record(item, "incoming invitation");
+		const input = cloudRecord(item, "incoming invitation");
 		return {
 			...invitation,
-			environmentId: uuid(input.environment_id, "invitation environment id"),
+			environmentId: cloudUuid(input.environment_id, "invitation environment id"),
 			profileName: nonEmptyString(input.profile_name, "invitation profile name", 512),
 			environmentName: nonEmptyString(input.environment_name, "invitation environment name", 512),
 		};
@@ -188,10 +189,10 @@ export function parseIncomingInvitations(value: unknown): HostedIncomingProfileI
 }
 
 function parseFriend(value: unknown): HostedFriend {
-	const input = record(value, "friend");
+	const input = cloudRecord(value, "friend");
 	const status = input.status === "accepted" ? "accepted" : "pending";
 	return {
-		userId: uuid(input.user_id, "friend user id"),
+		userId: cloudUuid(input.user_id, "friend user id"),
 		email: nonEmptyString(input.email, "friend email", 320),
 		displayName: nonEmptyString(input.display_name, "friend display name", 256),
 		status,
@@ -210,10 +211,10 @@ export function parseFriends(value: unknown): HostedFriend[] {
 /** Null when no account holds the address. */
 export function parseAccountMatch(value: unknown): HostedAccountMatch | null {
 	if (value === null || value === undefined) return null;
-	const input = record(value, "account");
+	const input = cloudRecord(value, "account");
 	if (typeof input.self !== "boolean") throw new CloudShapeError("account self flag");
 	return {
-		userId: uuid(input.user_id, "account user id"),
+		userId: cloudUuid(input.user_id, "account user id"),
 		email: nonEmptyString(input.email, "account email", 320),
 		displayName: nonEmptyString(input.display_name, "account display name", 256),
 		self: input.self,
@@ -221,10 +222,10 @@ export function parseAccountMatch(value: unknown): HostedAccountMatch | null {
 }
 
 function parseMember(value: unknown): HostedProfileMember {
-	const input = record(value, "profile member");
+	const input = cloudRecord(value, "profile member");
 	const avatarUrl = optionalString(input.avatar_url, "member avatar", 2048);
 	return {
-		userId: uuid(input.user_id, "member user id"),
+		userId: cloudUuid(input.user_id, "member user id"),
 		email: nonEmptyString(input.email, "member email", 320),
 		displayName: nonEmptyString(input.display_name, "member display name", 256),
 		...(avatarUrl ? { avatarUrl } : {}),
@@ -234,9 +235,9 @@ function parseMember(value: unknown): HostedProfileMember {
 }
 
 export function parseTeam(value: unknown): HostedProfileTeam {
-	const input = record(value, "profile team");
+	const input = cloudRecord(value, "profile team");
 	const teamRole = role(input.role);
-	const capabilities = record(input.capabilities, "profile capabilities");
+	const capabilities = cloudRecord(input.capabilities, "profile capabilities");
 	if (
 		capabilities.read !== true ||
 		typeof capabilities.write !== "boolean" ||
@@ -252,7 +253,7 @@ export function parseTeam(value: unknown): HostedProfileTeam {
 	const deleteCompany = flag(capabilities.delete_company);
 	const timeZone = input.time_zone;
 	return {
-		profileId: uuid(input.profile_id, "team profile id"),
+		profileId: cloudUuid(input.profile_id, "team profile id"),
 		role: teamRole,
 		capabilities: {
 			read: true,
@@ -272,7 +273,7 @@ export function parseTeam(value: unknown): HostedProfileTeam {
 /** The company's time zone as `qorpera_ensure_company_time_zone` answers it (migration 20260930739000): the one the
  * company has now, whether this call's was taken or an earlier one stands. */
 export function parseCompanyTimeZone(value: unknown): string {
-	const timeZone = record(value, "company time zone").timeZone;
+	const timeZone = cloudRecord(value, "company time zone").timeZone;
 	if (typeof timeZone !== "string" || timeZone === "") throw new CloudShapeError("company time zone");
 	return timeZone;
 }
@@ -283,13 +284,13 @@ function parseSessionAudience(input: Record<string, unknown>): HostedSessionAudi
 	if ((kind === "company" || kind === undefined) && (userId === null || userId === undefined))
 		return { kind: "company" };
 	if (kind === "member_private" && typeof userId === "string") {
-		return { kind: "member_private", userId: uuid(userId, "session audience user id") };
+		return { kind: "member_private", userId: cloudUuid(userId, "session audience user id") };
 	}
 	throw new CloudShapeError("session audience");
 }
 
 export function parseSession(value: unknown): HostedSession {
-	const input = record(value, "session");
+	const input = cloudRecord(value, "session");
 	const status = oneOf(input.status, ["open", "closed"], "session status");
 	const scope = input.execution_scope;
 	const executionScope =
@@ -298,10 +299,10 @@ export function parseSession(value: unknown): HostedSession {
 	const parentSessionId = optionalUuid(input.parent_session_id, "parent session id");
 	const staffVersion = optionalInteger(input.staff_version, "session staff version", 1);
 	return {
-		sessionId: uuid(input.session_id, "session id"),
-		clientSessionId: uuid(input.client_session_id, "client session id"),
-		profileId: uuid(input.profile_id, "session profile id"),
-		environmentId: uuid(input.environment_id, "session environment id"),
+		sessionId: cloudUuid(input.session_id, "session id"),
+		clientSessionId: cloudUuid(input.client_session_id, "client session id"),
+		profileId: cloudUuid(input.profile_id, "session profile id"),
+		environmentId: cloudUuid(input.environment_id, "session environment id"),
 		title: typeof input.title === "string" && input.title.trim() ? input.title : "Conversation",
 		...(staffAgentId ? { staffAgentId } : {}),
 		...(parentSessionId ? { parentSessionId } : {}),
@@ -309,7 +310,7 @@ export function parseSession(value: unknown): HostedSession {
 		...(staffVersion ? { staffVersion } : {}),
 		audience: parseSessionAudience(input),
 		status,
-		createdByUserId: uuid(input.created_by_user_id, "session creator id"),
+		createdByUserId: cloudUuid(input.created_by_user_id, "session creator id"),
 		createdAt: timestamp(input.created_at, "session creation time"),
 		updatedAt: timestamp(input.updated_at, "session update time"),
 	};
@@ -326,51 +327,51 @@ export interface AgentThreadHandle {
 	status: "active" | "archived";
 }
 export function parseAgentThreadHandle(value: unknown): AgentThreadHandle {
-	const input = record(value, "agent thread");
+	const input = cloudRecord(value, "agent thread");
 	if (input.schema !== "qorpera.agent-thread/v1" || (input.status !== "active" && input.status !== "archived"))
 		throw new Error("Invalid agent thread.");
 	return {
-		sessionId: uuid(input.session_id, "agent thread session id"),
-		roomId: uuid(input.room_id, "agent thread room id"),
-		staffAgentId: uuid(input.staff_agent_id, "agent thread staff id"),
+		sessionId: cloudUuid(input.session_id, "agent thread session id"),
+		roomId: cloudUuid(input.room_id, "agent thread room id"),
+		staffAgentId: cloudUuid(input.staff_agent_id, "agent thread staff id"),
 		status: input.status,
 	};
 }
 export function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
-	const input = record(value, "staff session");
+	const input = cloudRecord(value, "staff session");
 	const staffVersion = optionalInteger(input.staff_version, "session staff version", 1);
 	return {
-		sessionId: uuid(input.session_id, "session id"),
-		clientSessionId: uuid(input.client_session_id, "client session id"),
-		environmentId: uuid(input.environment_id, "environment id"),
+		sessionId: cloudUuid(input.session_id, "session id"),
+		clientSessionId: cloudUuid(input.client_session_id, "client session id"),
+		environmentId: cloudUuid(input.environment_id, "environment id"),
 		title: String(input.title ?? ""),
 		...(staffVersion ? { staffVersion } : {}),
 		audience: parseSessionAudience(input),
 		created: input.created === true,
-		createdByUserId: uuid(input.created_by_user_id, "session creator"),
+		createdByUserId: cloudUuid(input.created_by_user_id, "session creator"),
 		createdAt: timestamp(input.created_at, "session creation time"),
 	};
 }
 
 export function parseSessionInputReceipt(value: unknown): SessionInputReceipt {
-	const input = record(value, "session input receipt");
+	const input = cloudRecord(value, "session input receipt");
 	return {
-		inputId: uuid(input.input_id, "session input id"),
+		inputId: cloudUuid(input.input_id, "session input id"),
 		position: boundedInteger(input.position, "session input position", 1, Number.MAX_SAFE_INTEGER),
 	};
 }
 
 export function parsePendingSessionInputs(value: unknown): PendingSessionInputPage {
-	const page = record(value, "pending session input page");
+	const page = cloudRecord(value, "pending session input page");
 	const items = array(page.items, "pending session inputs").map((entry): PendingSessionInput => {
-		const input = record(entry, "pending session input");
+		const input = cloudRecord(entry, "pending session input");
 		const status = input.status === "processing" ? "processing" : input.status === "failed" ? "failed" : "queued";
 		const failureReason = optionalString(input.failure_reason, "input failure reason", 4096);
 		return {
-			inputId: uuid(input.input_id, "input id"),
+			inputId: cloudUuid(input.input_id, "input id"),
 			position: boundedInteger(input.position, "input position", 1, Number.MAX_SAFE_INTEGER),
 			kind: input.kind === "kickoff" ? "kickoff" : "user_message",
-			authorUserId: uuid(input.author_user_id, "input author"),
+			authorUserId: cloudUuid(input.author_user_id, "input author"),
 			authorDisplayName:
 				typeof input.author_display_name === "string" && input.author_display_name.trim()
 					? input.author_display_name
@@ -389,7 +390,7 @@ export function parsePendingSessionInputs(value: unknown): PendingSessionInputPa
 }
 
 export function parseStaff(value: unknown): HostedStaffAgent {
-	const input = record(value, "staff agent");
+	const input = cloudRecord(value, "staff agent");
 	const appearance =
 		input.appearance && typeof input.appearance === "object" ? (input.appearance as Record<string, unknown>) : {};
 	const color = optionalString(input.appearance_color ?? appearance.color, "staff appearance color", 64);
@@ -401,8 +402,8 @@ export function parseStaff(value: unknown): HostedStaffAgent {
 	// Carried so a write can hand it straight back; the client never reads it.
 	const departmentId = optionalString(input.department_id, "staff department id", 256);
 	return {
-		profileId: uuid(input.profile_id, "staff profile id"),
-		id: uuid(input.staff_agent_id ?? input.id, "staff agent id"),
+		profileId: cloudUuid(input.profile_id, "staff profile id"),
+		id: cloudUuid(input.staff_agent_id ?? input.id, "staff agent id"),
 		displayName: nonEmptyString(input.display_name, "staff display name", 160),
 		role: typeof input.role === "string" && input.role.trim() ? input.role : "Staff",
 		charter: typeof input.charter === "string" ? input.charter : "",
@@ -415,12 +416,12 @@ export function parseStaff(value: unknown): HostedStaffAgent {
 		version: boundedInteger(input.version ?? 1, "staff version", 1, Number.MAX_SAFE_INTEGER),
 		createdAt: timestamp(input.created_at, "staff creation time"),
 		updatedAt: timestamp(input.updated_at, "staff update time"),
-		updatedByUserId: uuid(input.updated_by_user_id, "staff updating user id"),
+		updatedByUserId: cloudUuid(input.updated_by_user_id, "staff updating user id"),
 	};
 }
 
 export function parseStaffList(value: unknown): HostedStaffAgent[] {
-	const raw = Array.isArray(value) ? value : record(value, "staff list").items;
+	const raw = Array.isArray(value) ? value : cloudRecord(value, "staff list").items;
 	return array(raw, "staff list").map(parseStaff);
 }
 
@@ -444,11 +445,11 @@ function supersededFailure(row: HostedStaffExecutionActivity, superseded: unknow
 
 export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivity[] {
 	return array(value, "staff execution activity").map((entry) => {
-		const activity = record(entry, "staff execution activity");
+		const activity = cloudRecord(entry, "staff execution activity");
 		return supersededFailure(
 			{
-				runId: uuid(activity.run_id, "activity run id"),
-				staffAgentId: uuid(activity.staff_agent_id, "activity staff id"),
+				runId: cloudUuid(activity.run_id, "activity run id"),
+				staffAgentId: cloudUuid(activity.staff_agent_id, "activity staff id"),
 				sourceKind: oneOf(activity.source_kind, EXECUTION_SOURCE_KINDS, "activity source"),
 				jobStatus: oneOf(
 					activity.job_status,
@@ -483,10 +484,10 @@ function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 	return {
 		paused: {
 			until: timestamp(activity.paused_until, "activity pause time"),
-			sponsorBindingId: uuid(activity.sponsor_binding_id, "paused run login"),
+			sponsorBindingId: cloudUuid(activity.sponsor_binding_id, "paused run login"),
 			...(activity.requested_by_user_id === undefined || activity.requested_by_user_id === null
 				? {}
-				: { requestedByUserId: uuid(activity.requested_by_user_id, "paused run member") }),
+				: { requestedByUserId: cloudUuid(activity.requested_by_user_id, "paused run member") }),
 			paidByChatgptPlan: activity.paid_by_chatgpt_plan,
 			paidWhileAway: activity.paid_while_away,
 			movable: activity.movable,
@@ -498,19 +499,19 @@ function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 
 /** The move of a waiting run to another login (20260930703000): the cloud must answer for that run and that login. */
 export function parsePausedRunMove(value: unknown, runId: string, connectionId: string): void {
-	const answer = record(value, "paused run move");
+	const answer = cloudRecord(value, "paused run move");
 	if (
 		answer.schema !== "qorpera.paused-run-move/v1" ||
-		uuid(answer.runId, "moved run id") !== runId.toLowerCase() ||
-		uuid(answer.connectionId, "moved run login") !== connectionId.toLowerCase()
+		cloudUuid(answer.runId, "moved run id") !== runId.toLowerCase() ||
+		cloudUuid(answer.connectionId, "moved run login") !== connectionId.toLowerCase()
 	)
 		throw new CloudShapeError("the cloud moved another run");
 }
 
 /** The control of the worker run asked for: the cloud must answer for that run. */
 export function parseWorkerRunControl(value: unknown, runId: string): WorkerRunControl {
-	const control = record(value, "worker run control");
-	if (uuid(control.run_id, "worker run id") !== runId) throw new Error("Cloud returned another worker run");
+	const control = cloudRecord(value, "worker run control");
+	if (cloudUuid(control.run_id, "worker run id") !== runId) throw new Error("Cloud returned another worker run");
 	if (typeof control.can_cancel !== "boolean") throw new Error("Cloud returned an invalid worker run control");
 	return {
 		runId,
@@ -520,20 +521,20 @@ export function parseWorkerRunControl(value: unknown, runId: string): WorkerRunC
 }
 
 export function parseRunRecovery(value: unknown): HostedRunRecovery {
-	const recovery = record(value, "run recovery");
-	const run = record(recovery.run, "recovery run");
-	const job = record(recovery.job, "recovery job");
+	const recovery = cloudRecord(value, "run recovery");
+	const run = cloudRecord(recovery.run, "recovery run");
+	const job = cloudRecord(recovery.job, "recovery job");
 	const operations = array(recovery.operations ?? [], "recovery operations").map((entry) =>
-		record(entry, "recovery operation"),
+		cloudRecord(entry, "recovery operation"),
 	);
 	// The error is shown to the member as found; a missing or odd one is not a reason to hide the run.
 	const lastError = typeof job.last_error === "string" ? job.last_error.trim().slice(0, 500) : "";
 	return {
-		runId: uuid(run.run_id, "recovery run id"),
+		runId: cloudUuid(run.run_id, "recovery run id"),
 		sourceKind: oneOf(run.source_kind, EXECUTION_SOURCE_KINDS, "recovery source"),
 		jobStatus: oneOf(job.status, ["failed", "cancelled"], "recovery job status"),
 		...(lastError ? { lastError } : {}),
-		...(recovery.proposal_id ? { proposalId: uuid(recovery.proposal_id, "recovery proposal id") } : {}),
+		...(recovery.proposal_id ? { proposalId: cloudUuid(recovery.proposal_id, "recovery proposal id") } : {}),
 		// Absent before 20260929910000: then only the error text can tell.
 		...(typeof recovery.usage_limit === "boolean" ? { usageLimit: recovery.usage_limit } : {}),
 		...(typeof recovery.rate_limited === "boolean" ? { rateLimited: recovery.rate_limited } : {}),
@@ -559,9 +560,9 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 
 /** qorpera_resolve_failed_execution_run answers with the run it resolved and the action taken. */
 export function parseRunResolution(value: unknown, runId: string, action: "discard" | "retry" | "acknowledge"): void {
-	const result = record(value, `run ${action}`);
+	const result = cloudRecord(value, `run ${action}`);
 	if (
-		uuid(result.run_id, `${action} run id`) !== runId.toLowerCase() ||
+		cloudUuid(result.run_id, `${action} run id`) !== runId.toLowerCase() ||
 		result.action !== action ||
 		result.resolved !== true
 	) {
@@ -571,13 +572,13 @@ export function parseRunResolution(value: unknown, runId: string, action: "disca
 
 /** qorpera_retry_room_delivery: the same post wakes the same agent once more. */
 export function parseRoomDeliveryRetry(value: unknown, runId: string): void {
-	const result = record(value, "room delivery retry");
+	const result = cloudRecord(value, "room delivery retry");
 	if (
 		result.schema !== "qorpera.company-room-retry/v1" ||
-		uuid(result.runId, "retried run id") !== runId.toLowerCase()
+		cloudUuid(result.runId, "retried run id") !== runId.toLowerCase()
 	)
 		throw new CloudShapeError("room delivery retry");
-	uuid(result.occurrenceId, "retry occurrence id");
+	cloudUuid(result.occurrenceId, "retry occurrence id");
 }
 
 function sessionEventType(value: unknown): HostedSessionEventType {
@@ -585,7 +586,7 @@ function sessionEventType(value: unknown): HostedSessionEventType {
 }
 
 export function parseEvent(value: unknown): HostedSessionEvent {
-	const input = record(value, "session event");
+	const input = cloudRecord(value, "session event");
 	const previousHash = input.previous_hash;
 	if (typeof input.event_hash !== "string" || !SHA256_PATTERN.test(input.event_hash)) {
 		throw new CloudShapeError("event hash");
@@ -596,21 +597,21 @@ export function parseEvent(value: unknown): HostedSessionEvent {
 	if (executionKind === "run") {
 		execution = {
 			kind: "run",
-			id: uuid(input.execution_id, "event execution id"),
-			claimantId: uuid(input.execution_claimant_id, "event claimant id"),
-			runnerAssignmentId: uuid(input.runner_assignment_id, "event runner assignment id"),
+			id: cloudUuid(input.execution_id, "event execution id"),
+			claimantId: cloudUuid(input.execution_claimant_id, "event claimant id"),
+			runnerAssignmentId: cloudUuid(input.runner_assignment_id, "event runner assignment id"),
 		};
 	} else if (executionKind === "turn" || executionKind === "wake") {
 		execution = {
 			kind: executionKind,
-			id: uuid(input.execution_id, "event execution id"),
-			claimantId: uuid(input.execution_claimant_id, "event claimant id"),
+			id: cloudUuid(input.execution_id, "event execution id"),
+			claimantId: cloudUuid(input.execution_claimant_id, "event claimant id"),
 		};
 	}
 	let staffSpeaker: HostedSessionEvent["staffSpeaker"];
 	if (input.staff_speaker !== undefined && input.staff_speaker !== null) {
-		const speaker = record(input.staff_speaker, "staff speaker");
-		const runId = uuid(speaker.run_id, "speaker run id");
+		const speaker = cloudRecord(input.staff_speaker, "staff speaker");
+		const runId = cloudUuid(speaker.run_id, "speaker run id");
 		if (
 			Object.keys(speaker).some(
 				(key) => !["run_id", "staff_agent_id", "staff_version", "display_name"].includes(key),
@@ -626,17 +627,17 @@ export function parseEvent(value: unknown): HostedSessionEvent {
 			throw new CloudShapeError("staff speaker");
 		staffSpeaker = {
 			runId,
-			staffAgentId: uuid(speaker.staff_agent_id, "speaker staff id"),
+			staffAgentId: cloudUuid(speaker.staff_agent_id, "speaker staff id"),
 			staffVersion: boundedInteger(speaker.staff_version, "speaker staff version", 1, Number.MAX_SAFE_INTEGER),
 			...(typeof speaker.display_name === "string" ? { displayName: speaker.display_name } : {}),
 		};
 	}
 	return {
-		sessionId: uuid(input.session_id, "event session id"),
+		sessionId: cloudUuid(input.session_id, "event session id"),
 		sequence: boundedInteger(input.sequence, "event sequence", 1, Number.MAX_SAFE_INTEGER),
-		eventId: uuid(input.event_id, "event id"),
+		eventId: cloudUuid(input.event_id, "event id"),
 		eventType: sessionEventType(input.event_type),
-		actorUserId: uuid(input.actor_user_id, "event actor id"),
+		actorUserId: cloudUuid(input.actor_user_id, "event actor id"),
 		body: jsonValue(input.body),
 		...(typeof previousHash === "string" && SHA256_PATTERN.test(previousHash) ? { previousHash } : {}),
 		eventHash: input.event_hash,
@@ -655,14 +656,14 @@ export function parseEvents(value: unknown): HostedSessionEvent[] {
 }
 
 export function parseCompanyFile(value: unknown): HostedCompanyFile {
-	const input = record(value, "company file");
+	const input = cloudRecord(value, "company file");
 	const entitlement =
 		input.entitlement && typeof input.entitlement === "object"
 			? parseAccountEntitlement(input.entitlement)
 			: undefined;
 	return {
-		profileId: uuid(input.profile_id, "company file profile id"),
-		environmentId: uuid(input.environment_id, "company file environment id"),
+		profileId: cloudUuid(input.profile_id, "company file profile id"),
+		environmentId: cloudUuid(input.environment_id, "company file environment id"),
 		storageUsedBytes: boundedInteger(
 			input.storage_used_bytes ?? 0,
 			"company file storage",
@@ -682,7 +683,7 @@ export function parseCompanyFile(value: unknown): HostedCompanyFile {
 }
 
 export function parseSessionPage(value: unknown) {
-	const page = record(value, "session page");
+	const page = cloudRecord(value, "session page");
 	return {
 		items: parseSessions(page.items),
 		hasMore: page.has_more === true,

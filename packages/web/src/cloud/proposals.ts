@@ -1,4 +1,13 @@
-import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, timestamp, uuid } from "./parse.ts";
+import {
+	array,
+	boundedInteger,
+	CloudShapeError,
+	cloudRecord,
+	cloudUuid,
+	nonEmptyString,
+	oneOf,
+	timestamp,
+} from "./parse.ts";
 
 /* A member's open proposals (P40c, migration 20260930102000): changes an agent saved through a view (a computer, a
  * command, a coding session, a test machine, a run's own folder) that need review. Each waits for the member whose
@@ -57,8 +66,8 @@ export type FolderProposalStatus = "applied" | "not_applied" | "declined" | "dis
 const PARSED = ["name", "title", "role", "status"] as const;
 
 function parseFile(value: unknown): FolderProposalFile {
-	const file = record(value, "proposal file");
-	const parse = record(file.parse, "proposal file parse");
+	const file = cloudRecord(value, "proposal file");
+	const parse = cloudRecord(file.parse, "proposal file parse");
 	const parsed: FolderProposalFile = {
 		path: nonEmptyString(file.path, "proposal file path"),
 		kind: nonEmptyString(file.kind, "proposal file kind", 64),
@@ -68,7 +77,7 @@ function parseFile(value: unknown): FolderProposalFile {
 }
 
 function parseUnit(value: unknown, index: number): FolderProposalUnit {
-	const unit = record(value, "proposal unit");
+	const unit = cloudRecord(value, "proposal unit");
 	if (unit.unit !== index + 1) throw new CloudShapeError("proposal unit number");
 	return {
 		unit: index + 1,
@@ -80,7 +89,7 @@ function parseUnit(value: unknown, index: number): FolderProposalUnit {
 }
 
 function parseProposal(value: unknown): FolderProposal {
-	const proposal = record(value, "proposal");
+	const proposal = cloudRecord(value, "proposal");
 	if (typeof proposal.createsAgent !== "boolean") throw new CloudShapeError("proposal createsAgent");
 	const unitCount = boundedInteger(proposal.unitCount, "proposal unit count", 1, Number.MAX_SAFE_INTEGER);
 	const units = array(proposal.units, "proposal units").map(parseUnit);
@@ -88,7 +97,7 @@ function parseProposal(value: unknown): FolderProposal {
 	if (units.length !== Math.min(unitCount, UNITS) || moreUnits !== unitCount - units.length)
 		throw new CloudShapeError("proposal units");
 	return {
-		proposalId: uuid(proposal.proposalId, "proposal id"),
+		proposalId: cloudUuid(proposal.proposalId, "proposal id"),
 		createdAt: timestamp(proposal.createdAt, "proposal time"),
 		viewKind: nonEmptyString(proposal.viewKind, "proposal view kind", 64),
 		createsAgent: proposal.createsAgent,
@@ -100,11 +109,11 @@ function parseProposal(value: unknown): FolderProposal {
 
 /** One page of the caller's open proposals of one agent. The next page starts after its last proposal. */
 export function parseFolderProposalPage(value: unknown): FolderProposalPage {
-	const page = record(value, "proposals");
+	const page = cloudRecord(value, "proposals");
 	if (page.schema !== MEMBER_FOLDER_PROPOSALS_SCHEMA) throw new CloudShapeError("proposals schema");
 	const proposals = array(page.proposals, "proposals").map(parseProposal);
 	const moreProposals = boundedInteger(page.moreProposals, "more proposals", 0, Number.MAX_SAFE_INTEGER);
-	const nextCursor = page.nextCursor === null ? undefined : uuid(page.nextCursor, "proposal cursor");
+	const nextCursor = page.nextCursor === null ? undefined : cloudUuid(page.nextCursor, "proposal cursor");
 	if (
 		proposals.length > PAGE ||
 		new Set(proposals.map((proposal) => proposal.proposalId)).size !== proposals.length ||
@@ -117,8 +126,11 @@ export function parseFolderProposalPage(value: unknown): FolderProposalPage {
 
 /** A discard's answer: the proposal as it stands now, which no longer waits. */
 export function parseFolderProposalDiscard(value: unknown, proposalId: string): FolderProposalStatus {
-	const answer = record(value, "proposal discard");
-	if (answer.schema !== FOLDER_PROPOSAL_SCHEMA || uuid(answer.proposalId, "proposal id") !== proposalId.toLowerCase())
+	const answer = cloudRecord(value, "proposal discard");
+	if (
+		answer.schema !== FOLDER_PROPOSAL_SCHEMA ||
+		cloudUuid(answer.proposalId, "proposal id") !== proposalId.toLowerCase()
+	)
 		throw new CloudShapeError("proposal discard");
 	return oneOf(answer.status, ["applied", "not_applied", "declined", "discarded"], "proposal status");
 }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { JsonValue } from "@qorpera/contracts";
+import { isRecord, type JsonValue, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { cloudConnectorOperationReads } from "./cloud-connector-catalog.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
@@ -9,7 +9,6 @@ import { CloudToolArgumentRefusal, cloudToolJsonText } from "./cloud-native-tool
 import type { CloudNativeToolOperation, CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import type { CloudSecretOperationRequest } from "./cloud-secret-broker.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
 const IDENTIFIER = /^[a-z][a-z0-9_-]{0,63}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -77,16 +76,11 @@ export interface CloudSecretOperationClient {
 	execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent>;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.getPrototypeOf(value) !== Object.prototype
-	) {
+function plainRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value) || Object.getPrototypeOf(value) !== Object.prototype) {
 		throw new Error(`${label} is invalid`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function exact(
@@ -189,7 +183,7 @@ function matchesStringPattern(value: string, pattern: string): boolean {
 
 function parseSchemaNode(value: unknown, depth: number, budget: { remaining: number }): CloudConnectorSchemaNode {
 	if (depth > 6 || --budget.remaining < 0) throw new Error("Connector schema is too complex");
-	const input = record(value, "Connector schema");
+	const input = plainRecord(value, "Connector schema");
 	const common = { ...(description(input.description) ? { description: input.description as string } : {}) };
 	if (input.type === "string") {
 		exact(
@@ -286,7 +280,7 @@ function parseSchemaNode(value: unknown, depth: number, budget: { remaining: num
 			"Connector object schema",
 		);
 		if (input.additionalProperties !== false) throw new Error("Connector schema must be closed");
-		const properties = record(input.properties, "Connector schema properties");
+		const properties = plainRecord(input.properties, "Connector schema properties");
 		const names = Object.keys(properties);
 		if (names.length > 64 || names.some((name) => !IDENTIFIER.test(name))) {
 			throw new Error("Connector schema properties are invalid");
@@ -460,7 +454,7 @@ export function validateCloudConnectorInput(value: JsonValue, schema: CloudConne
 }
 
 function parseDescriptor(value: unknown): CloudNativeConnectorToolDescriptor {
-	const input = record(value, "Native connector tool");
+	const input = plainRecord(value, "Native connector tool");
 	exact(
 		input,
 		[

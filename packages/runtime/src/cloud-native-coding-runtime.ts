@@ -6,9 +6,11 @@ import {
 	type CloudCodingCommandScope,
 	type CloudCodingPullRequest,
 	type CloudCodingRepository,
+	isRecord,
 	type JsonValue,
 	parseCloudCodingPullRequest,
 	parseCloudCodingRepository,
+	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
@@ -90,7 +92,6 @@ export interface CloudNativeCodingDriver {
 	): ReturnType<NativeCloudExecutionDriver["execute"]>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 /** A finish's picture, as the submit call takes it (20260930720000): a path from the top of the repository to a .png,
@@ -214,9 +215,9 @@ function codingShownImageSha256(text: unknown, wanted: string = CODING_INSPECT_I
 		: undefined;
 }
 
-function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
-	return value as Record<string, unknown>;
+function codingObject(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(label);
+	return value;
 }
 
 /** How long a turn's two first reads (its authority, then its context) are each asked again, from their first attempt. */
@@ -320,7 +321,7 @@ function closedRecord(
 	keys: readonly string[],
 	optional: readonly string[] = [],
 ): Record<string, unknown> {
-	const item = record(value, "CODING_TURN_CONTEXT_INVALID");
+	const item = codingObject(value, "CODING_TURN_CONTEXT_INVALID");
 	const expected = [...keys, ...optional.filter((key) => Object.hasOwn(item, key))];
 	if (Object.keys(item).sort().join() !== expected.sort().join()) throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return item;
@@ -565,7 +566,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		if (wake.kind !== "agent" || wake.source.kind !== "worker-dispatch" || wake.payload.species !== "coding")
 			throw new Error("CODING_TURN_WAKE_DIFFERS");
 		const authorize = async (checked: AbortSignal) => {
-			const authority = record(
+			const authority = codingObject(
 				await this.#control.call("qorpera_authorize_coding_turn", { p_binding: binding }, checked),
 			);
 			if (Object.keys(authority).sort().join() !== "coding,identity,schema,validForMs")
@@ -574,7 +575,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				{ schema: authority.schema, identity: authority.identity, validForMs: authority.validForMs },
 				binding,
 			);
-			const coding = record(authority.coding);
+			const coding = codingObject(authority.coding);
 			if (
 				typeof coding.workerId !== "string" ||
 				!UUID.test(coding.workerId) ||
@@ -697,7 +698,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			// The turn check is its own observation: a refusal or timeout there is
 			// told apart from the submission itself.
 			await observedCloudToolAuthority(context.observation, () => assertContext(checked), checked);
-			const receipt = record(
+			const receipt = codingObject(
 				await this.#control.call(
 					"qorpera_submit_coding_turn",
 					{ p_binding: binding, p_submission: input },
@@ -755,7 +756,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				additionalProperties: false,
 			},
 			parseArguments(value) {
-				const input = record(value, "Invalid coding submission");
+				const input = codingObject(value, "Invalid coding submission");
 				if (
 					Object.keys(input).some(
 						(key) => !["operationKey", "summary", "headSha", "notice", "picture"].includes(key),
@@ -823,7 +824,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				additionalProperties: false,
 			},
 			parseArguments(value) {
-				const input = record(value, "Invalid coding question");
+				const input = codingObject(value, "Invalid coding question");
 				const options = input.options === undefined ? [] : input.options;
 				if (
 					Object.keys(input).some((key) => !["operationKey", "summary", "question", "options"].includes(key)) ||
@@ -1007,8 +1008,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							turnId: frame.turnId || null,
 							purpose: frame.purpose,
 							outputs: outputs.map((output) => {
-								const envelope = record(JSON.parse(output.output), "Invalid coding context output");
-								const provenance = record(envelope.provenance, "Invalid coding context output");
+								const envelope = codingObject(JSON.parse(output.output), "Invalid coding context output");
+								const provenance = codingObject(envelope.provenance, "Invalid coding context output");
 								const content =
 									envelope.content && typeof envelope.content === "object" && !Array.isArray(envelope.content)
 										? (envelope.content as Record<string, unknown>)
@@ -1049,7 +1050,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								};
 							}),
 						};
-						const receipt = record(
+						const receipt = codingObject(
 							await this.#control.call(
 								"qorpera_record_coding_context_view",
 								{ p_binding: binding, p_view: view },

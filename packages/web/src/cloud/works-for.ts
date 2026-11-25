@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, oneOf, timestamp } from "./parse.ts";
 
 export type LoginState = "ready" | "full" | "sign_in" | "none";
 
@@ -40,12 +40,12 @@ const LOGIN_STATES: readonly LoginState[] = ["ready", "full", "sign_in", "none"]
 const ASK_STATUSES = ["yes", "no", "withdrawn", "void", "open"] as const;
 
 const nullableUuid = (value: unknown, label: string) =>
-	value === null || value === undefined ? null : uuid(value, label);
+	value === null || value === undefined ? null : cloudUuid(value, label);
 const nullableTimestamp = (value: unknown, label: string) =>
 	value === null || value === undefined ? null : timestamp(value, label);
 
 export function parseWorksFor(value: unknown): WorksFor {
-	const input = record(value, "works for");
+	const input = cloudRecord(value, "works for");
 	if (input.schema !== "qorpera.works-for/v1" || typeof input.may_ask !== "boolean")
 		throw new CloudShapeError("works for");
 	if (typeof input.may_ask_for_others !== "boolean") throw new CloudShapeError("works for");
@@ -53,13 +53,13 @@ export function parseWorksFor(value: unknown): WorksFor {
 		mayAsk: input.may_ask,
 		mayAskForOthers: input.may_ask_for_others,
 		agents: array(input.agents, "agents").map((entry) => {
-			const item = record(entry, "agent");
-			return { agentId: uuid(item.staff_agent_id, "agent"), userId: nullableUuid(item.user_id, "member") };
+			const item = cloudRecord(entry, "agent");
+			return { agentId: cloudUuid(item.staff_agent_id, "agent"), userId: nullableUuid(item.user_id, "member") };
 		}),
 		logins: array(input.logins, "logins").map((entry) => {
-			const item = record(entry, "login");
+			const item = cloudRecord(entry, "login");
 			return {
-				userId: uuid(item.user_id, "member"),
+				userId: cloudUuid(item.user_id, "member"),
 				state: oneOf(item.state, LOGIN_STATES, "login state"),
 				usedPercent:
 					item.used_percent === null || item.used_percent === undefined
@@ -69,15 +69,15 @@ export function parseWorksFor(value: unknown): WorksFor {
 			};
 		}),
 		asks: array(input.asks, "asks").map((entry) => {
-			const item = record(entry, "ask");
+			const item = cloudRecord(entry, "ask");
 			return {
-				id: uuid(item.id, "ask"),
-				agentId: uuid(item.staff_agent_id, "agent"),
+				id: cloudUuid(item.id, "ask"),
+				agentId: cloudUuid(item.staff_agent_id, "agent"),
 				fromUserId: nullableUuid(item.from_user_id, "member"),
-				toUserId: uuid(item.to_user_id, "member"),
+				toUserId: cloudUuid(item.to_user_id, "member"),
 				askedByUserId: nullableUuid(item.asked_by_user_id, "member"),
 				askedByAgentId: nullableUuid(item.asked_by_staff_agent_id, "agent"),
-				answerByUserId: uuid(item.answer_by_user_id, "member"),
+				answerByUserId: cloudUuid(item.answer_by_user_id, "member"),
 				createdAt: timestamp(item.created_at, "asked at"),
 				why: typeof item.why === "string" && item.why.trim() ? item.why.trim().slice(0, 280) : null,
 				batch: nullableUuid(item.batch, "offer"),
@@ -98,7 +98,7 @@ export function worksForCalls(cloud: Cloud, profileId: string): WorksForCalls {
 	return {
 		read: async () => parseWorksFor(await cloud.rpc("qorpera_read_works_for", { p_profile_id: profileId })),
 		ask: async (agentId, toUserId) => {
-			const value = record(
+			const value = cloudRecord(
 				await cloud.rpc("qorpera_ask_works_for", {
 					p_profile_id: profileId,
 					p_staff_agent_id: agentId,
@@ -110,7 +110,10 @@ export function worksForCalls(cloud: Cloud, profileId: string): WorksForCalls {
 			return { moved: value.moved, askId: nullableUuid(value.ask_id, "ask") };
 		},
 		answer: async (askId, yes) => {
-			const value = record(await cloud.rpc("qorpera_answer_works_for", { p_ask_id: askId, p_yes: yes }), "answer");
+			const value = cloudRecord(
+				await cloud.rpc("qorpera_answer_works_for", { p_ask_id: askId, p_yes: yes }),
+				"answer",
+			);
 			if (typeof value.moved !== "boolean") throw new CloudShapeError("answer");
 			return { status: oneOf(value.status, ASK_STATUSES, "answer"), moved: value.moved };
 		},

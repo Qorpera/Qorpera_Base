@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { UUID_ANY_CASE_PATTERN as UUID, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudConnectorDefinition,
 	type CloudConnectorOAuthProvider,
@@ -150,12 +151,10 @@ export const CLOUD_CONNECTOR_OAUTH_PROVIDERS: Readonly<Record<CloudConnectorOAut
 	},
 };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
 /** `<company profile id>.<32 random bytes, base64url>`. The router's nginx map
  * matches the same prefix (deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md). */
-export const CLOUD_CONNECTOR_OAUTH_STATE =
-	/^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/;
+export const CLOUD_CONNECTOR_OAUTH_STATE = new RegExp(`^(${UUID_PATTERN.source.slice(1, -1)})\\.([A-Za-z0-9_-]{43})$`);
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 const TOKEN = /^[A-Za-z0-9_./-]{20,4096}$/;
 const STATE_TTL_MS = 10 * 60_000;
@@ -209,7 +208,7 @@ interface PendingConfirmation {
 	readonly ticketExpiresAt?: number;
 }
 
-function sha256(value: string | Uint8Array): string {
+function sha256Hex(value: string | Uint8Array): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
@@ -398,8 +397,8 @@ export class CloudConnectorOAuthFlows {
 			url.searchParams.set("code_challenge", createHash("sha256").update(codeVerifier).digest("base64url"));
 			url.searchParams.set("code_challenge_method", "S256");
 		}
-		this.#pending.set(sha256(state), {
-			stateSha256: sha256(state),
+		this.#pending.set(sha256Hex(state), {
+			stateSha256: sha256Hex(state),
 			ticketId: input.ticketId.toLowerCase(),
 			captureCapability: input.captureCapability,
 			companyId,
@@ -459,8 +458,8 @@ export class CloudConnectorOAuthFlows {
 		// The room is counted again: other starts may have come in while Enable Banking answered.
 		const returnTo = this.#admit(input, companyId);
 		const expiresAt = Math.min(this.#now() + BANK_STATE_TTL_MS, ticketExpiresAt);
-		this.#pending.set(sha256(state), {
-			stateSha256: sha256(state),
+		this.#pending.set(sha256Hex(state), {
+			stateSha256: sha256Hex(state),
 			ticketId: input.ticketId.toLowerCase(),
 			captureCapability: input.captureCapability,
 			companyId,
@@ -487,7 +486,7 @@ export class CloudConnectorOAuthFlows {
 	}): CloudConnectorOAuthReceipt {
 		const state = typeof query.state === "string" ? CLOUD_CONNECTOR_OAUTH_STATE.exec(query.state) : null;
 		if (!state) throw new CloudConnectorOAuthError("state_unknown");
-		const key = sha256(state[0]);
+		const key = sha256Hex(state[0]);
 		const pending = this.#pending.get(key);
 		// The prefix only routes; the whole state must be one this broker issued
 		// for that same company.
@@ -508,8 +507,8 @@ export class CloudConnectorOAuthFlows {
 		if (this.#confirmations.size >= MAX_PENDING)
 			throw new CloudConnectorOAuthError("provider_error", pending.returnTo, pending.connectorId);
 		const confirmation = Buffer.from(this.#random(32)).toString("base64url");
-		this.#confirmations.set(sha256(confirmation), {
-			confirmationSha256: sha256(confirmation),
+		this.#confirmations.set(sha256Hex(confirmation), {
+			confirmationSha256: sha256Hex(confirmation),
 			ticketId: pending.ticketId,
 			captureCapability: pending.captureCapability,
 			companyId: pending.companyId,
@@ -536,7 +535,7 @@ export class CloudConnectorOAuthFlows {
 			!UUID.test(input.ticketId)
 		)
 			throw new CloudConnectorOAuthError("state_unknown");
-		const key = sha256(input.confirmation);
+		const key = sha256Hex(input.confirmation);
 		const parked = this.#confirmations.get(key);
 		if (!parked || !digestsMatch(parked.confirmationSha256, key)) throw new CloudConnectorOAuthError("state_unknown");
 		// Any confirm naming this confirmation id burns it, a wrong ticket included.
@@ -548,7 +547,7 @@ export class CloudConnectorOAuthFlows {
 		if (
 			typeof input.browserProof !== "string" ||
 			!PROOF.test(input.browserProof) ||
-			!digestsMatch(parked.browserProofSha256, sha256(input.browserProof))
+			!digestsMatch(parked.browserProofSha256, sha256Hex(input.browserProof))
 		)
 			throw new CloudConnectorOAuthError("browser_mismatch", parked.returnTo, parked.connectorId);
 		if (parked.expiresAt <= this.#now())

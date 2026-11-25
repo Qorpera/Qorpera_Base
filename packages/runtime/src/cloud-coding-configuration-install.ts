@@ -3,7 +3,7 @@ import { type BigIntStats, constants } from "node:fs";
 import { type FileHandle, link, lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { cloudCodingSessionLayout, parseCloudCodingStorageBinding } from "@qorpera/contracts";
+import { cloudCodingSessionLayout, isUuid, parseCloudCodingStorageBinding } from "@qorpera/contracts";
 import { parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
 
 const O_PATH = 0x200000;
@@ -99,10 +99,11 @@ export async function installCloudCodingGuestConfiguration(
 			const names = await readdir(`/proc/self/fd/${directory.fd}`);
 			if (names.length > 4096) throw new Error("CODING_CONFIGURATION_DIRECTORY_TOO_LARGE");
 			for (const name of names) {
-				if (
-					!/^\.configuration-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/.test(name)
-				)
-					continue;
+				const tempId =
+					name.startsWith(".configuration-") && name.endsWith(".tmp")
+						? name.slice(".configuration-".length, -".tmp".length)
+						: "";
+				if (!isUuid(tempId) || tempId[14] !== "4") continue;
 				let candidate: BigIntStats;
 				try {
 					candidate = await lstat(path(name), { bigint: true });

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type JsonValue, parseUuid } from "@qorpera/contracts";
+import { isRecord, type JsonValue, parseUuid, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import {
 	CLOUD_RUN_ROW_WRITE_MS,
@@ -113,7 +113,6 @@ function authorityTimedOut(error: unknown, signal: AbortSignal): boolean {
 
 const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v2";
 const RESULT_SCHEMA = "qorpera.cloud-tool-operation-result/v1";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** Operations remembered for in-process replay; the oldest are forgotten, never refused. */
 export const CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS = 65_536;
 
@@ -200,9 +199,9 @@ interface ConfirmedOperationResult {
 	parked?: true;
 }
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid tool operation receipt");
-	return value as Record<string, unknown>;
+function receiptObject(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("Invalid tool operation receipt");
+	return value;
 }
 
 function freeze(value: JsonValue): void {
@@ -279,7 +278,7 @@ export class CloudNativeToolOperations {
 		const signal = AbortSignal.any([options.signal, this.#run.signal]);
 		const { authorize, perform } = options;
 		const serialized = cloudToolJsonText(options.operation);
-		const operation = record(JSON.parse(serialized)) as unknown as CloudNativeToolOperation;
+		const operation = receiptObject(JSON.parse(serialized)) as unknown as CloudNativeToolOperation;
 		if (
 			Object.keys(operation).sort().join() !==
 				"arguments,logicalOperationKey,requiresCompanyRevision,target,tool,toolVersion" ||
@@ -290,7 +289,7 @@ export class CloudNativeToolOperations {
 			typeof operation.logicalOperationKey !== "string" ||
 			!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(operation.logicalOperationKey) ||
 			typeof operation.requiresCompanyRevision !== "boolean" ||
-			Object.keys(record(operation.target)).length === 0
+			Object.keys(receiptObject(operation.target)).length === 0
 		)
 			throw new Error("Invalid cloud tool operation");
 		freeze(operation as unknown as JsonValue);
@@ -336,7 +335,7 @@ export class CloudNativeToolOperations {
 				// only its own copy changed nothing, and a copy asked again may be refused before the first one runs, so
 				// only a refusal of the one copy sent, after its key lookup, is the call's (30 Oct 2026).
 				let sent = 0;
-				const begun = record(
+				const begun = receiptObject(
 					(
 						await this.#run
 							.retry(
@@ -396,14 +395,14 @@ export class CloudNativeToolOperations {
 						(operation.requiresCompanyRevision && revisions.length === 0)
 					)
 						throw new Error("Cloud tool receipt revision differs");
-					const stored = record(begun.result);
+					const stored = receiptObject(begun.result);
 					if (
 						stored.schema !== RESULT_SCHEMA ||
 						stored.inputSha256 !== digest ||
 						Object.keys(stored).sort().join() !== "content,inputSha256,schema"
 					)
 						throw new Error("Cloud tool receipt result differs");
-					const content = record(stored.content);
+					const content = receiptObject(stored.content);
 					if (
 						Object.keys(content).sort().join() !== "kind,value" ||
 						(content.kind !== "text" && content.kind !== "json") ||
@@ -457,7 +456,7 @@ export class CloudNativeToolOperations {
 				);
 				// An effect may have happened even if this or completion fails. Its executing receipt remains a fence.
 				signal.throwIfAborted();
-				const content = record(output.content);
+				const content = receiptObject(output.content);
 				if (
 					Object.keys(content).sort().join() !== "kind,value" ||
 					(content.kind !== "text" && content.kind !== "json") ||
@@ -479,7 +478,7 @@ export class CloudNativeToolOperations {
 				await this.#run.assertActive(signal);
 				// The completion waits for the run's row as the begin does: asked again with the same result, which a copy
 				// that did complete answers again (item 7).
-				const completed = record(
+				const completed = receiptObject(
 					(
 						await this.#run.retry(
 							(requestSignal) =>
@@ -516,7 +515,7 @@ export class CloudNativeToolOperations {
 				)
 					throw new Error("Cloud tool completion was not confirmed");
 				return {
-					content: structuredClone(record(storedResult).content) as CloudToolContent,
+					content: structuredClone(receiptObject(storedResult).content) as CloudToolContent,
 					receiptId: completed.receipt_id,
 					// The canonical completion confirms the submitted, run-owned revision/proposal link.
 					outcome: output.proposed ? "proposed" : "succeeded",

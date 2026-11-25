@@ -5,6 +5,7 @@ import {
 	type JsonValue,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
+	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
 
 export { type CloudCodingCommandScope, parseCloudCodingCommandReceipt } from "@qorpera/contracts";
@@ -27,7 +28,6 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A trusted gateway to the fixed helper in the admitted repository VM. It
  * must recheck the request lease, VM identity and protected guest receipt at
  * effect time. No implementation may execute this command on the host or in

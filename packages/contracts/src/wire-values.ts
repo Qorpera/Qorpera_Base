@@ -33,14 +33,22 @@ export class WireValueError extends Error {
  */
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+export const UUID_ANY_CASE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 /** PostgreSQL's canonical lower-case UUID text, including nil and otherwise reserved version/variant bits. Use only
  * for a storage grammar that explicitly accepts every PostgreSQL UUID (for example memory run files). This does not
  * relax the runtime identifier rule above: admission and authority bindings still use isUuid/parseUuid. */
 export const POSTGRES_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+export const POSTGRES_UUID_ANY_CASE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** A UUID already in the lower case the database prints (see `UUID_PATTERN`); upper case is refused. */
 export function isUuid(value: unknown): value is string {
 	return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+export function isUuidAnyCase(value: unknown): value is string {
+	return typeof value === "string" && UUID_ANY_CASE_PATTERN.test(value);
 }
 
 /** A UUID in either letter case, returned lower-cased, or `null` (see `UUID_PATTERN`). */
@@ -69,10 +77,14 @@ export function parseSha256Hex(value: unknown, label: string): string {
 	return value;
 }
 
+export function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /** A plain JSON object: not null, not an array. */
 export function parseRecord(value: unknown, label: string): Record<string, unknown> {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new WireValueError(label);
-	return value as Record<string, unknown>;
+	if (!isRecord(value)) throw new WireValueError(label);
+	return value;
 }
 
 /** A plain JSON object with every `required` field and no field outside `required` and `optional`. */

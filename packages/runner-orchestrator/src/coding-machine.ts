@@ -8,6 +8,7 @@ import {
 	type CloudCodingStorageBinding,
 	cloudCodingSessionLayout,
 	createCloudCodingStorageBinding,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import { withTimeoutScope } from "./abort-scope.ts";
 import {
@@ -29,7 +30,6 @@ import {
 } from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;
 const MAX_EVENTS = 384;
@@ -90,7 +90,7 @@ const MACHINE_KEYS = [
 ] as const;
 
 export function lxdCodingMachineName(machineId: string): string {
-	if (!UUID.test(machineId)) throw new Error("INVALID_CODING_MACHINE_BINDING");
+	if (!UUID_PATTERN.test(machineId)) throw new Error("INVALID_CODING_MACHINE_BINDING");
 	return `qorpera-coding-machine-${machineId.replaceAll("-", "")}`;
 }
 
@@ -116,7 +116,7 @@ export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 		Object.keys(value).sort().join() !== [...MACHINE_KEYS].sort().join() ||
 		value.schema !== "qorpera.lxd-coding-machine/v1" ||
 		![value.machineId, value.companyId, value.environmentId, value.memberUserId].every(
-			(id) => typeof id === "string" && UUID.test(id),
+			(id) => typeof id === "string" && UUID_PATTERN.test(id),
 		) ||
 		typeof value.providerId !== "string" ||
 		!/^[a-z][a-z0-9_-]{0,63}$/.test(value.providerId) ||
@@ -249,7 +249,7 @@ export function assertLxdCodingMachineInstance(
 		}
 		const match = SESSION_DEVICE.exec(name);
 		const workerId = match ? workerOf(match[2]) : "";
-		if (!UUID.test(workerId)) throw new Error("CODING_MACHINE_DRIFTED");
+		if (!UUID_PATTERN.test(workerId)) throw new Error("CODING_MACHINE_DRIFTED");
 		sessions.add(workerId);
 	}
 	for (const name of Object.keys(request.devices))
@@ -295,7 +295,7 @@ export function checkCodingMachineReceipt(
 		receipt.instanceSha256 !== expected.instanceSha256 ||
 		receipt.intent !== expected.intent ||
 		(expected.workerId !== undefined && receipt.workerId !== expected.workerId) ||
-		(receipt.workerId !== null && (typeof receipt.workerId !== "string" || !UUID.test(receipt.workerId))) ||
+		(receipt.workerId !== null && (typeof receipt.workerId !== "string" || !UUID_PATTERN.test(receipt.workerId))) ||
 		(receipt.guestUid !== null &&
 			(!Number.isSafeInteger(receipt.guestUid) ||
 				Number(receipt.guestUid) < 1000 ||
@@ -304,7 +304,7 @@ export function checkCodingMachineReceipt(
 		Number(receipt.validForMs) < 1 ||
 		Number(receipt.validForMs) > 5000 ||
 		typeof receipt.nodeId !== "string" ||
-		!UUID.test(receipt.nodeId) ||
+		!UUID_PATTERN.test(receipt.nodeId) ||
 		!Number.isSafeInteger(receipt.nodeVersion) ||
 		Number(receipt.nodeVersion) < 1
 	)
@@ -704,7 +704,7 @@ async function readEvents(
 				!(selfStops && prior.action === "start" && prior.state === "succeeded")) ||
 			prior.kind !== "settled" ||
 			(prior.state !== "succeeded" && prior.state !== "failed") ||
-			!UUID.test(prior.operationId ?? "")
+			!UUID_PATTERN.test(prior.operationId ?? "")
 		)
 			throw new Error("CODING_MACHINE_CHECKPOINT_INVALID");
 		activeRoot = nextRoot;
@@ -737,7 +737,7 @@ async function readEvents(
 			event.kind !== ["dispatch", "accepted", "settled"][phase] ||
 			(phase === 0
 				? event.operationId !== null
-				: typeof event.operationId !== "string" || !UUID.test(event.operationId)) ||
+				: typeof event.operationId !== "string" || !UUID_PATTERN.test(event.operationId)) ||
 			(phase !== 2 ? event.state !== null : !["succeeded", "failed"].includes(event.state as string)) ||
 			(phase === 2 && event.operationId !== previous?.operationId)
 		)
@@ -794,7 +794,7 @@ export async function codingMachineLastStart(
 		if (!event || sha(record.bytes) !== after.previousSha256 || event.sequence !== after.sequence - 1)
 			throw new Error("CODING_MACHINE_JOURNAL_INVALID");
 		if (started(event)) {
-			if (!UUID.test(event.operationId ?? "")) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+			if (!UUID_PATTERN.test(event.operationId ?? "")) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
 			return event.operationId as string;
 		}
 		after = event;
@@ -805,7 +805,7 @@ export async function codingMachineLastStart(
 
 const DROPPED_START_SCHEMA = "qorpera.coding-machine-dropped-start/v1";
 const droppedStart = (startOperationId: string) => {
-	if (!UUID.test(startOperationId)) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+	if (!UUID_PATTERN.test(startOperationId)) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
 	return `dropped-start-${startOperationId}.json`;
 };
 
@@ -869,7 +869,7 @@ export async function recordCodingMachineDisk(
 	plan: CodingMachineJournalPlan,
 	operationId: string,
 ): Promise<void> {
-	if (!UUID.test(operationId)) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+	if (!UUID_PATTERN.test(operationId)) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
 	const root = join(journalRoot, plan.journalName);
 	await checkDirectory(root);
 	const temporary = join(root, `.write-${randomUUID()}`);
@@ -909,7 +909,7 @@ export async function codingMachineDisk(journalRoot: string, plan: CodingMachine
 	const operationId = (value as { operationId?: unknown } | null)?.operationId;
 	if (
 		typeof operationId !== "string" ||
-		!UUID.test(operationId) ||
+		!UUID_PATTERN.test(operationId) ||
 		!isDeepStrictEqual(value, { schema: DISK_SCHEMA, operationId })
 	)
 		throw new Error("CODING_MACHINE_JOURNAL_INVALID");
@@ -1223,7 +1223,7 @@ export async function reconcileCodingMachine(
 		if (action === "create" && options.claimStandby && request) {
 			const claimed = await options.claimStandby(plan.project, request, signal);
 			if (claimed) {
-				if (!UUID.test(claimed.operationId)) throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
+				if (!UUID_PATTERN.test(claimed.operationId)) throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
 				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
 				tail = current.events.at(-1);
 				if (tail?.kind !== "dispatch" || tail.action !== "create")
@@ -1254,7 +1254,7 @@ export async function reconcileCodingMachine(
 		if (
 			reference.project !== plan.project ||
 			reference.instanceName !== plan.name ||
-			!UUID.test(reference.operationId)
+			!UUID_PATTERN.test(reference.operationId)
 		)
 			throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
 		operationId = reference.operationId;

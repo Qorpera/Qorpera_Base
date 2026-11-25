@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, timestamp } from "./parse.ts";
 
 /* Members of a company message each other (supabase/CLIENT-CONTRACT.md "Member chats", migration
  * 20260930715000_member_messages): one chat per pair of members per company. The list says, per other member, what
@@ -92,15 +92,15 @@ export interface MemberChatPage {
 const SEQ_MAX = Number.MAX_SAFE_INTEGER;
 
 function parseMessage(value: unknown): MemberMessage {
-	const input = record(value, "member message");
+	const input = cloudRecord(value, "member message");
 	const base = {
-		id: uuid(input.id, "member message id"),
+		id: cloudUuid(input.id, "member message id"),
 		seq: boundedInteger(input.seq, "member message order", 1, SEQ_MAX),
-		authorUserId: uuid(input.authorUserId, "member message author"),
+		authorUserId: cloudUuid(input.authorUserId, "member message author"),
 		createdAt: timestamp(input.createdAt, "member message time"),
 		...(input.clientMessageId === undefined || input.clientMessageId === null
 			? {}
-			: { clientMessageId: uuid(input.clientMessageId, "member message client id") }),
+			: { clientMessageId: cloudUuid(input.clientMessageId, "member message client id") }),
 	};
 	if (input.deleted === true) return { ...base, deleted: true };
 	if (typeof input.text !== "string" || !input.text.trim()) throw new CloudShapeError("member message words");
@@ -108,7 +108,7 @@ function parseMessage(value: unknown): MemberMessage {
 }
 
 function parsePlace(value: unknown): MemberContactPlace {
-	const input = record(value, "member contact place");
+	const input = cloudRecord(value, "member contact place");
 	const zone = input.zone;
 	if (zone !== "members" && zone !== "pinned" && zone !== "unassigned" && zone !== "section")
 		throw new CloudShapeError("member contact place");
@@ -118,20 +118,20 @@ function parsePlace(value: unknown): MemberContactPlace {
 		throw new CloudShapeError("member contact place");
 	return {
 		zone,
-		...(given(input.sectionId) ? { sectionId: uuid(input.sectionId, "member contact section") } : {}),
-		...(given(input.after) ? { after: uuid(input.after, "member contact anchor") } : {}),
+		...(given(input.sectionId) ? { sectionId: cloudUuid(input.sectionId, "member contact section") } : {}),
+		...(given(input.after) ? { after: cloudUuid(input.after, "member contact anchor") } : {}),
 		rank: boundedInteger(input.rank, "member contact rank", 0, MEMBER_CONTACT_RANK_MAX),
 	};
 }
 
 export function parseMemberChats(value: unknown): MemberChatSummary[] {
-	const input = record(value, "member chats");
+	const input = cloudRecord(value, "member chats");
 	if (input.schema !== "qorpera.member-chats/v1") throw new CloudShapeError("member chats");
 	const chats = array(input.chats, "member chats").map((entry): MemberChatSummary => {
-		const item = record(entry, "member chat");
+		const item = cloudRecord(entry, "member chat");
 		if (item.hidden !== undefined && typeof item.hidden !== "boolean") throw new CloudShapeError("member chat");
 		return {
-			userId: uuid(item.userId, "member chat member"),
+			userId: cloudUuid(item.userId, "member chat member"),
 			lastSeenAt:
 				item.lastSeenAt === null || item.lastSeenAt === undefined
 					? null
@@ -151,12 +151,15 @@ export function parseMemberChats(value: unknown): MemberChatSummary[] {
 /** The list as the cloud answers it, from the read and from a place alike. */
 export function parseMemberChatList(value: unknown): MemberChatList {
 	const chats = parseMemberChats(value);
-	return { chats, placing: record(value, "member chats").placing === true };
+	return { chats, placing: cloudRecord(value, "member chats").placing === true };
 }
 
 export function parseMemberChatPage(value: unknown, userId: string): MemberChatPage {
-	const input = record(value, "member chat");
-	if (input.schema !== "qorpera.member-chat/v1" || uuid(input.userId, "member chat member") !== userId.toLowerCase())
+	const input = cloudRecord(value, "member chat");
+	if (
+		input.schema !== "qorpera.member-chat/v1" ||
+		cloudUuid(input.userId, "member chat member") !== userId.toLowerCase()
+	)
 		throw new CloudShapeError("member chat");
 	if (typeof input.hasMore !== "boolean") throw new CloudShapeError("member chat");
 	const messages = array(input.messages, "member chat messages").map(parseMessage);
@@ -172,9 +175,9 @@ export function parseMemberChatPage(value: unknown, userId: string): MemberChatP
 }
 
 function parseSent(value: unknown, userId?: string): MemberMessage {
-	const input = record(value, "member message");
+	const input = cloudRecord(value, "member message");
 	if (input.schema !== "qorpera.member-message/v1") throw new CloudShapeError("member message");
-	if (userId && uuid(input.userId, "member chat member") !== userId.toLowerCase())
+	if (userId && cloudUuid(input.userId, "member chat member") !== userId.toLowerCase())
 		throw new CloudShapeError("member message");
 	return parseMessage(input.message);
 }
@@ -231,7 +234,7 @@ export function memberChatCalls(cloud: Pick<Cloud, "rpc">, profileId: string): M
 				userId,
 			),
 		markRead: async (userId, seq) => {
-			const input = record(
+			const input = cloudRecord(
 				await cloud.rpc("qorpera_mark_member_chat_read", {
 					p_profile_id: profileId,
 					p_user_id: userId,

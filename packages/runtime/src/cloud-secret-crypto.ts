@@ -8,6 +8,7 @@ import {
 	type KeyObject,
 	randomBytes,
 } from "node:crypto";
+import { UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import {
 	type CodingValueCapture,
 	type CodingValueCaptureIdentity,
@@ -24,7 +25,6 @@ import {
 
 const ENVELOPE_SCHEMA = "qorpera.cloud-secret-envelope/v1";
 const PAYLOAD_SCHEMA = "qorpera.cloud-secret-payload/v1";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const FIELD = /^[a-z][a-z0-9_]{0,63}$/;
 const SHA256 = /^[0-9a-f]{64}$/;

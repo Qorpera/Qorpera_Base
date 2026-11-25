@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { array, CloudShapeError, oneOf, record, UUID_PATTERN } from "./parse.ts";
+import { array, CloudShapeError, cloudRecord, oneOf, UUID_PATTERN } from "./parse.ts";
 
 /**
  * Member surface for the company's event hooks: webhooks other services post
@@ -92,7 +92,7 @@ export interface MailHandles {
 }
 
 export function parseMailHandles(value: unknown): MailHandles {
-	const input = record(value, "mail handles");
+	const input = cloudRecord(value, "mail handles");
 	const domain = input.domain;
 	if (domain !== null && (typeof domain !== "string" || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)))
 		throw new CloudShapeError("mail domain");

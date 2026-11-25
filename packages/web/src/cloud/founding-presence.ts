@@ -1,7 +1,7 @@
 import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel } from "@supabase/supabase-js";
 import { type Cloud, CloudRpcError } from "./client.ts";
-import { array, record, UUID_PATTERN, uuid } from "./parse.ts";
+import { array, cloudRecord, cloudUuid, UUID_PATTERN } from "./parse.ts";
 
 /* Who is at a founding table now, who is writing, and where (migration 20260930531000, topic
  * qorpera-founding-{profileId}). The lossy lane: nothing is stored, and the table's rules never read it. Each tab
@@ -151,12 +151,12 @@ interface Identity {
 }
 
 function identity(value: unknown): Identity {
-	const input = record(value, "table presence device");
+	const input = cloudRecord(value, "table presence device");
 	if (typeof input.public_key !== "string" || !SIGNATURE.test(input.public_key))
 		throw new Error("Invalid table presence key");
 	return {
-		clientId: uuid(input.client_id, "table presence device"),
-		userId: uuid(input.user_id, "table presence person"),
+		clientId: cloudUuid(input.client_id, "table presence device"),
+		userId: cloudUuid(input.user_id, "table presence person"),
 		publicKey: input.public_key,
 	};
 }

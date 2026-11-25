@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { cloudCodingSessionLayout } from "@qorpera/contracts";
+import { cloudCodingSessionLayout, UUID_PATTERN } from "@qorpera/contracts";
 import { agentPlugCard, isAgentPlugCard } from "./agent-plug.ts";
 import {
 	CODE_HOST_PROJECT,
@@ -22,11 +22,10 @@ import { lxdResourceBytes } from "./lxd-native-node-policy.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAX_CPU = 1024000,
 	MAX_MEMORY = 1125899906842624;
-const record = (value: unknown, keys: string) => officeRecord(value, keys.split(","));
+const officeFields = (value: unknown, keys: string) => officeRecord(value, keys.split(","));
 function text(value: unknown, pattern: RegExp): string {
 	if (typeof value !== "string" || !pattern.test(value)) throw new Error("INVALID_NODE_INVENTORY_POLICY");
 	return value;
@@ -90,7 +89,7 @@ const CODING_AUXILIARY_KEYS = [
 ] as const;
 const GIB = 1024 ** 3;
 export function parseCodingAuxiliaryPolicy(value: unknown): Readonly<CodingAuxiliaryPolicy> {
-	const input = record(value, CODING_AUXILIARY_KEYS.join(","));
+	const input = officeFields(value, CODING_AUXILIARY_KEYS.join(","));
 	const whole = (n: unknown, min: number, max: number, unit = 1) =>
 		Number.isSafeInteger(n) && (n as number) >= min && (n as number) <= max && (n as number) % unit === 0;
 	const project = text(input.project, NAME);
@@ -168,11 +167,11 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 	const building = !!value && typeof value === "object" && Object.hasOwn(value, "buildSpace");
 	const coding = !!value && typeof value === "object" && Object.hasOwn(value, "codeHosts");
 	const auxiliary = !!value && typeof value === "object" && Object.hasOwn(value, "codingAuxiliary");
-	const p = record(
+	const p = officeFields(
 		value,
 		`schema,nodeId,host,operatingCpuMillis,operatingMemoryBytes,infrastructure${building ? ",buildSpace" : ""}${coding ? ",codeHosts" : ""}${auxiliary ? ",codingAuxiliary" : ""}`,
 	);
-	const h = record(
+	const h = officeFields(
 		p.host,
 		"machineIdSha256,socketPath,socketGid,certificateSha256,serverName,serverVersion,architecture",
 	);
@@ -186,7 +185,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 	const infrastructure = p.infrastructure.map((value): RuntimeNodeInfrastructure => {
 		const hosting = !!value && typeof value === "object" && Object.hasOwn(value, "identityVolumes");
 		const byRole = !!value && typeof value === "object" && Object.hasOwn(value, "role");
-		const i = record(
+		const i = officeFields(
 			value,
 			`project,name,physicalId,type,configurationSha256,cpuMillis,memoryBytes${hosting ? ",identityVolumes" : ""}${byRole ? ",role" : ""}`,
 		);
@@ -205,7 +204,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 		return {
 			project: text(i.project, NAME),
 			name: text(i.name, NAME),
-			physicalId: text(i.physicalId, UUID),
+			physicalId: text(i.physicalId, UUID_PATTERN),
 			type: i.type,
 			configurationSha256: officeSha(i.configurationSha256),
 			cpuMillis: integer(i.cpuMillis, MAX_CPU),
@@ -216,7 +215,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 	});
 	let buildSpace: RuntimeNodeBuildSpace | undefined;
 	if (building) {
-		const b = record(p.buildSpace, "project,network,cpuMillis,memoryBytes");
+		const b = officeFields(p.buildSpace, "project,network,cpuMillis,memoryBytes");
 		buildSpace = {
 			project: text(b.project, NAME),
 			network: text(b.network, NAME),
@@ -244,7 +243,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 		throw new Error("INVALID_NODE_INVENTORY_POLICY");
 	return {
 		schema: p.schema,
-		nodeId: text(p.nodeId, UUID),
+		nodeId: text(p.nodeId, UUID_PATTERN),
 		host: {
 			machineIdSha256: officeSha(h.machineIdSha256),
 			socketPath: officePhysicalPath(h.socketPath),
@@ -286,29 +285,30 @@ export interface RuntimeNodeInventoryContext {
 }
 export function parseRuntimeNodeInventoryContext(value: unknown): RuntimeNodeInventoryContext {
 	const hosting = !!value && typeof value === "object" && Object.hasOwn(value, "acceptedIdentities");
-	const c = record(
+	const c = officeFields(
 		value,
 		`policy,nodeVersion,contextSha256,headroomCpuMillis,headroomMemoryBytes,allocations${hosting ? ",acceptedIdentities" : ""}`,
 	);
 	if (
 		hosting &&
 		(!Array.isArray(c.acceptedIdentities) ||
-			c.acceptedIdentities.some((id) => typeof id !== "string" || !UUID.test(id)))
+			c.acceptedIdentities.some((id) => typeof id !== "string" || !UUID_PATTERN.test(id)))
 	)
 		throw new Error("INVALID_NODE_INVENTORY_CONTEXT");
 	if (!Array.isArray(c.allocations) || c.allocations.length > 4096) throw new Error("INVALID_NODE_INVENTORY_CONTEXT");
 	const allocations = c.allocations.map((value) => {
-		const a = record(
+		const a = officeFields(
 			value,
 			"allocationId,providerKind,providerId,policySha256,instanceSha256,cpuMillis,memoryBytes,physical",
 		);
-		const physical = a.physical === null ? null : record(a.physical, "project,name,physicalId,configurationSha256");
+		const physical =
+			a.physical === null ? null : officeFields(a.physical, "project,name,physicalId,configurationSha256");
 		if (!["native", "office", "login", "coding", "machine"].includes(a.providerKind as string))
 			throw new Error("INVALID_NODE_INVENTORY_CONTEXT");
 		return {
-			allocationId: text(a.allocationId, UUID),
+			allocationId: text(a.allocationId, UUID_PATTERN),
 			providerKind: a.providerKind as RuntimeNodeInventoryAllocation["providerKind"],
-			providerId: text(a.providerId, a.providerKind === "office" ? UUID : /^[a-z][a-z0-9_-]{0,63}$/),
+			providerId: text(a.providerId, a.providerKind === "office" ? UUID_PATTERN : /^[a-z][a-z0-9_-]{0,63}$/),
 			policySha256: officeSha(a.policySha256),
 			instanceSha256: officeSha(a.instanceSha256),
 			cpuMillis: integer(a.cpuMillis, MAX_CPU),
@@ -319,7 +319,7 @@ export function parseRuntimeNodeInventoryContext(value: unknown): RuntimeNodeInv
 					: {
 							project: text(physical.project, NAME),
 							name: text(physical.name, NAME),
-							physicalId: text(physical.physicalId, UUID),
+							physicalId: text(physical.physicalId, UUID_PATTERN),
 							configurationSha256: officeSha(physical.configurationSha256),
 						},
 		};
@@ -645,10 +645,10 @@ export function codingSnapshotBuilderInstanceMatches(
 		}
 		if (
 			config["user.qorpera.schema"] !== CODING_SNAPSHOT_BUILDER_SCHEMA ||
-			!UUID.test(config["user.qorpera.company_id"] ?? "") ||
-			!UUID.test(config["user.qorpera.machine_id"] ?? "") ||
-			!UUID.test(config["user.qorpera.member_user_id"] ?? "") ||
-			!UUID.test(config["user.qorpera.build_id"] ?? "") ||
+			!UUID_PATTERN.test(config["user.qorpera.company_id"] ?? "") ||
+			!UUID_PATTERN.test(config["user.qorpera.machine_id"] ?? "") ||
+			!UUID_PATTERN.test(config["user.qorpera.member_user_id"] ?? "") ||
+			!UUID_PATTERN.test(config["user.qorpera.build_id"] ?? "") ||
 			config["user.qorpera.machine_id"] !== config["user.qorpera.build_id"] ||
 			!AUXILIARY_SHA256.test(config["user.qorpera.setup_digest"] ?? "") ||
 			!AUXILIARY_OWNER.test(config["user.qorpera.owner"] ?? "")
@@ -731,7 +731,8 @@ export function reconcileRuntimeNodeInventory(
 		if (seen.has(key)) throw new Error("NODE_INVENTORY_DUPLICATE_INSTANCE");
 		seen.add(key);
 		const physicalId =
-			UUID.test(i.config["volatile.uuid"] ?? "") && i.config["volatile.uuid"] === i.expandedConfig["volatile.uuid"]
+			UUID_PATTERN.test(i.config["volatile.uuid"] ?? "") &&
+			i.config["volatile.uuid"] === i.expandedConfig["volatile.uuid"]
 				? i.config["volatile.uuid"]
 				: null;
 		if (physicalId && physical.has(physicalId)) throw new Error("NODE_INVENTORY_DUPLICATE_INSTANCE");

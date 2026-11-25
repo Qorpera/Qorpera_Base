@@ -1,3 +1,4 @@
+import { isRecord } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
@@ -50,12 +51,12 @@ interface PendingAction {
 	sponsor?: { sponsorBindingId: string; sponsorVersion: number };
 }
 
-function record(value: unknown): Record<string, unknown> {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+function draftRecord(value: unknown): Record<string, unknown> {
+	return isRecord(value) ? value : {};
 }
 
 function content(value: unknown): EmailDraftContent {
-	const input = record(value);
+	const input = draftRecord(value);
 	const addresses = (value: unknown): value is string[] =>
 		Array.isArray(value) &&
 		value.length <= 20 &&
@@ -71,7 +72,7 @@ function content(value: unknown): EmailDraftContent {
 }
 
 export function parseEmailDraftState(value: unknown): DraftReceipt {
-	const input = record(value);
+	const input = draftRecord(value);
 	if (
 		input.schema !== "qorpera.email-draft-state/v1" ||
 		typeof input.from !== "string" ||
@@ -143,7 +144,7 @@ export class EmailDraftClient {
 		const memory = this.#pending.get(key);
 		if (memory) return memory;
 		try {
-			const input = record(JSON.parse(sessionStorage.getItem(key) ?? "null"));
+			const input = draftRecord(JSON.parse(sessionStorage.getItem(key) ?? "null"));
 			if (
 				typeof input.clientActionId !== "string" ||
 				!UUID_PATTERN.test(input.clientActionId) ||
@@ -152,7 +153,7 @@ export class EmailDraftClient {
 				!["save", "send", "discard"].includes(String(input.action))
 			)
 				return undefined;
-			const sponsor = record(input.sponsor);
+			const sponsor = draftRecord(input.sponsor);
 			return {
 				clientActionId: input.clientActionId,
 				capability: input.capability,

@@ -1,7 +1,7 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
-import { boundedInteger, CloudShapeError, nonEmptyString, record, UUID_PATTERN } from "./parse.ts";
+import { boundedInteger, CloudShapeError, cloudRecord, nonEmptyString, UUID_PATTERN } from "./parse.ts";
 import {
 	EFFORTS_BEFORE_LIST,
 	modelProvider,
@@ -152,7 +152,7 @@ function parseModelList(value: unknown, label: string): readonly string[] {
 }
 
 function parseEffortMap(value: unknown, label: string): Readonly<Record<string, readonly SessionEffort[]>> {
-	const input = record(value, label);
+	const input = cloudRecord(value, label);
 	const entries = Object.entries(input);
 	if (entries.length > 32) throw new CloudShapeError(label);
 	const out: Record<string, readonly SessionEffort[]> = {};
@@ -172,7 +172,7 @@ function parseEffortMap(value: unknown, label: string): Readonly<Record<string, 
 }
 
 function parseVoiceProfileMap(value: unknown, label: string): Readonly<Record<string, readonly string[]>> {
-	const input = record(value, label);
+	const input = cloudRecord(value, label);
 	const entries = Object.entries(input);
 	if (entries.length > 32) throw new CloudShapeError(label);
 	const out: Record<string, readonly string[]> = {};
@@ -224,7 +224,7 @@ export function defaultVoiceProfiles(state: MemberDefaultModels | undefined, mod
 }
 
 export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
-	const input = record(value, "default models");
+	const input = cloudRecord(value, "default models");
 	if (input.schema !== "qorpera.member-default-models/v1") {
 		throw new CloudShapeError("default models");
 	}

@@ -8,7 +8,7 @@ import {
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderFileEntry,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -167,7 +167,7 @@ export class CloudFolderSidebar {
 			await this.#folder.release(
 				releaseId,
 				[{ path: PATH, version: entry.version, authority: entry.authority, fileSha256: entry.file.fileSha256 }],
-				sha256(new TextEncoder().encode(shown)),
+				sha256Hex(new TextEncoder().encode(shown)),
 				releaseSignal,
 			);
 		};

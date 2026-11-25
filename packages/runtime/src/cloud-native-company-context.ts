@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type CloudAgentFolderPlace, cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
 import { osPath, osRelative } from "@qorpera/cloud-client/company-state-files";
-import { isUuid, type JsonValue } from "@qorpera/contracts";
+import { isUuid, isUuidAnyCase, type JsonValue } from "@qorpera/contracts";
 import type { CloudAgentHead } from "./cloud-agent-head.ts";
 import { CLOUD_FOLDER_LINK_EXAMPLE } from "./cloud-agent-mouth.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
@@ -50,7 +50,6 @@ import { type CloudAgentSkillsBlock, unavailableCloudAgentSkills } from "./cloud
 import { type CloudWakeEnvelope, cloudWakeIsOwnThread } from "./cloud-wake-bus.ts";
 import type { CloudAgentOpenWork } from "./cloud-worker-tools.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 /** A member's chat image in the company folder: under its conversation's summary-tree root (an agent's thread, or a
  * group chat), <root>/images/<client input id>/<sha256>.<ext>, below QorperaOS/. */
@@ -675,8 +674,8 @@ function closed(value: unknown, keys: readonly string[]): Record<string, unknown
 	return value as Record<string, unknown>;
 }
 
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error("Invalid cloud context identity");
+function contextUuid(value: unknown): string {
+	if (!isUuidAnyCase(value)) throw new Error("Invalid cloud context identity");
 	return value;
 }
 
@@ -696,7 +695,7 @@ function contextAgent(value: unknown): ContextAgent {
 	if (!Number.isSafeInteger(item.version) || (item.version as number) < 1)
 		throw new Error("Invalid cloud agent version");
 	return {
-		id: uuid(item.id),
+		id: contextUuid(item.id),
 		version: item.version as number,
 		name: shortText(item.name),
 		role: shortText(item.role),
@@ -758,7 +757,7 @@ function contextSource(value: unknown): CloudCompanyContextSource {
 				createHash("sha256").update(content.text).digest("hex") !== content.sha256))
 	)
 		throw new Error("Invalid cloud context source");
-	const authorUserId = source.authorUserId === null ? null : uuid(source.authorUserId);
+	const authorUserId = source.authorUserId === null ? null : contextUuid(source.authorUserId);
 	const actorKinds: Record<CloudCompanyContextSource["kind"], CloudCompanyContextSource["actorKind"]> = {
 		current_human_request: "human",
 		private_startup: "control_plane",
@@ -780,7 +779,7 @@ function contextSource(value: unknown): CloudCompanyContextSource {
 	return {
 		kind: source.kind as CloudCompanyContextSource["kind"],
 		sourceKind: source.sourceKind as CloudCompanyContextSource["sourceKind"],
-		id: uuid(source.id),
+		id: contextUuid(source.id),
 		actorKind: source.actorKind as CloudCompanyContextSource["actorKind"],
 		authorUserId,
 		sequence: source.sequence as number | null,
@@ -883,10 +882,10 @@ export function parseCloudNativeCompanyContext(
 	const jobSpecification = contextSource(data.jobSpecification);
 	const continuation = data.continuation === null ? null : contextSource(data.continuation);
 	if (
-		uuid(company.id) !== identity.companyId ||
+		contextUuid(company.id) !== identity.companyId ||
 		audience.kind !== identity.audienceKind ||
-		(audience.userId === null ? null : uuid(audience.userId)) !== identity.audienceUserId ||
-		uuid(runtimeBundle.id) !== identity.runtimeBundleId ||
+		(audience.userId === null ? null : contextUuid(audience.userId)) !== identity.audienceUserId ||
+		contextUuid(runtimeBundle.id) !== identity.runtimeBundleId ||
 		typeof runtimeBundle.sha256 !== "string" ||
 		!SHA256.test(runtimeBundle.sha256) ||
 		runtimeBundle.sha256 !== identity.runtimeBundleSha256 ||
@@ -932,7 +931,7 @@ export function parseCloudNativeCompanyContext(
 		audience: { kind: identity.audienceKind, userId: identity.audienceUserId },
 		runtimeBundle: { id: identity.runtimeBundleId, sha256: identity.runtimeBundleSha256 },
 		sourceKind: data.sourceKind as CloudNativeCompanyContext["sourceKind"],
-		sourceId: uuid(data.sourceId),
+		sourceId: contextUuid(data.sourceId),
 		currentInputs: inputs,
 		history,
 		historyTruncated: data.historyTruncated,
@@ -965,7 +964,7 @@ function contextOrigin(value: unknown, identity: CloudNativeToolIdentity): Cloud
 			!item.includes("\0"));
 	if (!Array.isArray(origin.inputs) || origin.inputs.length > 32 || !text(origin.routineIntent))
 		throw new Error("Invalid cloud context origin");
-	const runId = uuid(origin.runId);
+	const runId = contextUuid(origin.runId);
 	const inputs = origin.inputs.map(contextSource);
 	if (
 		runId === identity.runId ||

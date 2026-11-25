@@ -1,3 +1,4 @@
+import { isRecord, UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type {
@@ -15,7 +16,6 @@ const PROVIDER_RESPONSE_LIMIT_BYTES = 64 * 1024;
 // above that backend contract so the orchestrator can renew its durable claim
 // instead of releasing a healthy but still-booting machine.
 const PROVIDER_REQUEST_TIMEOUT_MS = 10 * 60_000;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ADAPTER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 type CloudRunnerProviderRequest =
@@ -49,11 +49,11 @@ type CloudRunnerProviderRequest =
 			session: ClaimedSurfaceSessionJob;
 	  };
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+function providerRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) {
 		throw new Error(`Runner provider returned invalid ${label}`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function exactKeys(input: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -64,7 +64,7 @@ function exactKeys(input: Record<string, unknown>, allowed: readonly string[], l
 }
 
 function parseRunnerInstance(value: unknown, adapterId: string): CloudRunnerInstance {
-	const input = record(value, "runner instance");
+	const input = providerRecord(value, "runner instance");
 	exactKeys(
 		input,
 		[
@@ -82,13 +82,13 @@ function parseRunnerInstance(value: unknown, adapterId: string): CloudRunnerInst
 	);
 	if (
 		typeof input.runner_id !== "string" ||
-		!UUID_PATTERN.test(input.runner_id) ||
+		!UUID_ANY_CASE_PATTERN.test(input.runner_id) ||
 		(input.logical_computer_id !== null &&
 			input.logical_computer_id !== undefined &&
-			(typeof input.logical_computer_id !== "string" || !UUID_PATTERN.test(input.logical_computer_id))) ||
+			(typeof input.logical_computer_id !== "string" || !UUID_ANY_CASE_PATTERN.test(input.logical_computer_id))) ||
 		(input.compute_identity_id !== null &&
 			input.compute_identity_id !== undefined &&
-			(typeof input.compute_identity_id !== "string" || !UUID_PATTERN.test(input.compute_identity_id))) ||
+			(typeof input.compute_identity_id !== "string" || !UUID_ANY_CASE_PATTERN.test(input.compute_identity_id))) ||
 		(input.worker_class !== "managed_sandbox" && input.worker_class !== "company_computer") ||
 		input.provider_adapter !== adapterId ||
 		!Array.isArray(input.capabilities) ||
@@ -269,8 +269,8 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 	}
 
 	async deliverSurfaceSession(job: ClaimedSurfaceSessionJob, machineId: string, signal?: AbortSignal): Promise<void> {
-		if (!UUID_PATTERN.test(machineId)) throw new Error("Runner provider machine id is invalid");
-		if (!UUID_PATTERN.test(job.sessionId)) throw new Error("Runner provider surface session id is invalid");
+		if (!UUID_ANY_CASE_PATTERN.test(machineId)) throw new Error("Runner provider machine id is invalid");
+		if (!UUID_ANY_CASE_PATTERN.test(job.sessionId)) throw new Error("Runner provider surface session id is invalid");
 		await this.#request(
 			{
 				schema: "qorpera.runner-provider/v1",
@@ -311,7 +311,7 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 			} catch (error) {
 				throw new Error("Runner provider returned invalid JSON", { cause: error });
 			}
-			const envelope = record(value, "response envelope");
+			const envelope = providerRecord(value, "response envelope");
 			if (body.action === "surface_session" && envelope.ok === true && Object.keys(envelope).length === 1) {
 				return undefined;
 			}

@@ -1,3 +1,5 @@
+import { isRecord, POSTGRES_UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
+
 /** Member-authenticated controls for one exact cloud conversation/run. No
  * runner credentials, provider output, or local execution enter this lane. */
 export interface CloudSessionRun {
@@ -20,15 +22,15 @@ export type CloudSessionRunRpc = (
 	signal: AbortSignal,
 ) => Promise<{ data: unknown; error: { code?: string } | null }>;
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+function runControlRecord(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) {
 		throw new Error("Cloud run control returned an invalid response.");
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
-function uuid(value: unknown): value is string {
-	return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+function isRunControlUuid(value: unknown): value is string {
+	return typeof value === "string" && POSTGRES_UUID_ANY_CASE_PATTERN.test(value);
 }
 
 export class CloudSessionRunControl {
@@ -70,22 +72,23 @@ export class CloudSessionRunControl {
 					result.error.code === "42501" ? "You do not have permission to control this cloud run." : message,
 				);
 			}
-			return record(result.data);
+			return runControlRecord(result.data);
 		} finally {
 			if (timer) clearTimeout(timer);
 		}
 	}
 
 	async read(sessionId: string, staffAgentId: string): Promise<CloudSessionRunState> {
-		if (!uuid(sessionId) || !uuid(staffAgentId)) throw new Error("Cloud conversation identity is invalid.");
+		if (!isRunControlUuid(sessionId) || !isRunControlUuid(staffAgentId))
+			throw new Error("Cloud conversation identity is invalid.");
 		const data = await this.request("qorpera_get_session_run_control", { p_session_id: sessionId });
 		if (data.session_id !== sessionId || data.staff_agent_id !== staffAgentId) {
 			throw new Error("Cloud run status belongs to a different conversation.");
 		}
 		if (data.run === null) return { sessionId, staffAgentId, run: null };
-		const run = record(data.run);
+		const run = runControlRecord(data.run);
 		if (
-			!uuid(run.run_id) ||
+			!isRunControlUuid(run.run_id) ||
 			(run.status !== "queued" && run.status !== "leased") ||
 			typeof run.can_cancel !== "boolean"
 		) {
@@ -95,7 +98,8 @@ export class CloudSessionRunControl {
 	}
 
 	async cancel(sessionId: string, runId: string): Promise<CloudSessionRunTerminalStatus> {
-		if (!uuid(sessionId) || !uuid(runId)) throw new Error("Select an exact cloud run to stop.");
+		if (!isRunControlUuid(sessionId) || !isRunControlUuid(runId))
+			throw new Error("Select an exact cloud run to stop.");
 		const data = await this.request("qorpera_cancel_session_run", { p_session_id: sessionId, p_run_id: runId });
 		if (
 			data.session_id !== sessionId ||

@@ -10,7 +10,7 @@ import {
 	parseNativeAccountRefreshDescription,
 	parseNativeAccountRefreshRequest,
 } from "@qorpera/cloud-client/native-account-refresh";
-import type { JsonValue } from "@qorpera/contracts";
+import { isUuidAnyCase, type JsonValue, parseRecord, UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import {
 	CLOUD_AGENT_NO_FINAL_SEND_CODE,
 	CloudAgentNoFinalSend,
@@ -73,7 +73,6 @@ const EXECUTION_SCHEMA = "qorpera.native-company-execution/v1";
 const CANCEL_SCHEMA = "qorpera.native-provider-cancel/v1";
 const EXECUTE_KEEPALIVE_MS = 60_000;
 const RESULT_SCHEMA = "qorpera.native-provider-result/v1";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_CAPSULE_BYTES = 64 * 1024 * 1024 + 1024 * 1024;
@@ -93,13 +92,8 @@ function nativeCloudBaseUrl(value: string): URL {
 	return url;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
+function serviceUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
@@ -111,7 +105,7 @@ function text(value: unknown, label: string, maximum = 512): string {
 }
 
 function nullableUuid(value: unknown, label: string): string | undefined {
-	return value === null || value === undefined ? undefined : uuid(value, label);
+	return value === null || value === undefined ? undefined : serviceUuid(value, label);
 }
 
 function nullableText(value: unknown, label: string, maximum = 512): string | undefined {
@@ -255,14 +249,14 @@ function parseProvider(value: unknown): "openai" | "anthropic" {
 }
 
 function parseLogin(value: unknown): NativeProviderLoginRequest {
-	const input = record(value, "Native login request");
+	const input = parseRecord(value, "Native login request");
 	if (input.schema !== LOGIN_SCHEMA || !TOKEN_PATTERN.test(String(input.login_capability))) {
 		throw new Error("Native login request is invalid");
 	}
 	return {
-		loginId: uuid(input.login_id, "Native login id"),
-		clientConnectionId: uuid(input.client_connection_id, "Native client connection id"),
-		computeIdentityId: uuid(input.compute_identity_id, "Native compute identity id"),
+		loginId: serviceUuid(input.login_id, "Native login id"),
+		clientConnectionId: serviceUuid(input.client_connection_id, "Native client connection id"),
+		computeIdentityId: serviceUuid(input.compute_identity_id, "Native compute identity id"),
 		...ownership(
 			input.compute_identity_ownership_kind,
 			input.compute_identity_owner_user_id,
@@ -276,10 +270,10 @@ function parseLogin(value: unknown): NativeProviderLoginRequest {
 }
 
 function parseExecution(value: unknown): NativeCompanyExecutionRequest {
-	const input = record(value, "Native execution request");
+	const input = parseRecord(value, "Native execution request");
 	if (input.schema !== EXECUTION_SCHEMA) throw new Error("Native execution schema is invalid");
-	const authority = record(input.authority, "Native execution authority");
-	const job = record(input.job, "Native execution job");
+	const authority = parseRecord(input.authority, "Native execution authority");
+	const job = parseRecord(input.job, "Native execution job");
 	if (
 		authority.authentication_mode !== "native_subscription" ||
 		Object.keys(input).some((key) => !["schema", "authority", "job", "native_host"].includes(key)) ||
@@ -292,21 +286,21 @@ function parseExecution(value: unknown): NativeCompanyExecutionRequest {
 	const model = text(authority.model, "Native execution model", 160);
 	return {
 		authority: {
-			leaseId: uuid(authority.lease_id, "Native lease id"),
-			runId: uuid(authority.run_id, "Native run id"),
-			credentialCapsuleId: uuid(authority.credential_capsule_id, "Native capsule id"),
+			leaseId: serviceUuid(authority.lease_id, "Native lease id"),
+			runId: serviceUuid(authority.run_id, "Native run id"),
+			credentialCapsuleId: serviceUuid(authority.credential_capsule_id, "Native capsule id"),
 			encryptedCapsuleReference: text(authority.encrypted_capsule_reference, "Native capsule reference"),
 			attestationPolicySha256: text(authority.attestation_policy_sha256, "Native attestation hash", 64),
-			computeIdentityId: uuid(authority.compute_identity_id, "Native compute identity id"),
-			runnerId: uuid(authority.runner_id, "Native runner id"),
-			assignmentId: uuid(authority.assignment_id, "Native assignment id"),
+			computeIdentityId: serviceUuid(authority.compute_identity_id, "Native compute identity id"),
+			runnerId: serviceUuid(authority.runner_id, "Native runner id"),
+			assignmentId: serviceUuid(authority.assignment_id, "Native assignment id"),
 			provider: parseProvider(authority.provider),
 			nativeHarness: parseHarness(authority.native_harness),
 			model,
 			expiresAt: new Date(text(authority.expires_at, "Native authority expiry", 64)).toISOString(),
 		},
 		job: {
-			jobId: uuid(job.job_id, "Native job id"),
+			jobId: serviceUuid(job.job_id, "Native job id"),
 			jobType: "agent_turn" as const,
 			requiredCapability: "agent_turn" as const,
 			attemptCount: job.attempt_count as number,
@@ -320,11 +314,11 @@ function parseExecution(value: unknown): NativeCompanyExecutionRequest {
  * lease token and the publishable key). Kept apart from the request, which the host, the runtime and its tool sessions
  * pass on; read only by the dispatch, never logged. */
 function parseNativeHostCredential(value: unknown): NativeHostJobCredential | undefined {
-	const input = record(value, "Native execution request");
+	const input = parseRecord(value, "Native execution request");
 	if (input.schema !== "qorpera.native-company-execution/v1") return undefined;
-	const job = record(input.job, "Native execution job");
+	const job = parseRecord(input.job, "Native execution job");
 	if (job.lease_token === undefined && input.native_host === undefined) return undefined;
-	const nativeHost = record(input.native_host, "Native host credential");
+	const nativeHost = parseRecord(input.native_host, "Native host credential");
 	if (
 		typeof job.lease_token !== "string" ||
 		!TOKEN_PATTERN.test(job.lease_token) ||
@@ -392,7 +386,7 @@ export class SupabaseNativeProviderControlPlane
 			throw new Error("Native identity generation is invalid");
 		this.#identityEpoch = identityEpoch
 			? {
-					computeIdentityId: uuid(identityEpoch.computeIdentityId, "Native local identity id"),
+					computeIdentityId: serviceUuid(identityEpoch.computeIdentityId, "Native local identity id"),
 					epoch: identityEpoch.epoch,
 				}
 			: undefined;
@@ -414,10 +408,10 @@ export class SupabaseNativeProviderControlPlane
 		);
 		if (!Array.isArray(result) || result.length > 64) throw new Error("Native account refresh list is invalid");
 		return result.map((entry) => {
-			const value = record(entry, "Native account refresh");
+			const value = parseRecord(entry, "Native account refresh");
 			if (!Number.isSafeInteger(value.connection_version) || (value.connection_version as number) < 1)
 				throw new Error("Native account connection version is invalid");
-			const capsuleId = uuid(value.credential_capsule_id, "Native account capsule id");
+			const capsuleId = serviceUuid(value.credential_capsule_id, "Native account capsule id");
 			// A login kept by the vault (`model-login/<login id>`, Stateless Compute step 1) is listed
 			// too; the host leaves its usage check to the vault.
 			const reference = value.encrypted_capsule_reference;
@@ -428,7 +422,7 @@ export class SupabaseNativeProviderControlPlane
 			)
 				throw new Error("Native account capsule reference is invalid");
 			return {
-				connectionId: uuid(value.connection_id, "Native account connection id"),
+				connectionId: serviceUuid(value.connection_id, "Native account connection id"),
 				connectionVersion: value.connection_version as number,
 				capsuleId,
 				encryptedCapsuleReference: reference,
@@ -501,7 +495,7 @@ export class SupabaseNativeProviderControlPlane
 		capability: string,
 		signal?: AbortSignal,
 	): Promise<NativeProviderLoginDescription> {
-		const value = record(
+		const value = parseRecord(
 			await this.#rpc(
 				"qorpera_describe_native_provider_login",
 				{
@@ -513,10 +507,10 @@ export class SupabaseNativeProviderControlPlane
 			"Native login description",
 		);
 		return {
-			loginId: uuid(value.login_id, "Native login id"),
-			profileId: uuid(value.profile_id, "Native login profile id"),
-			clientConnectionId: uuid(value.client_connection_id, "Native client connection id"),
-			computeIdentityId: uuid(value.compute_identity_id, "Native compute identity id"),
+			loginId: serviceUuid(value.login_id, "Native login id"),
+			profileId: serviceUuid(value.profile_id, "Native login profile id"),
+			clientConnectionId: serviceUuid(value.client_connection_id, "Native client connection id"),
+			computeIdentityId: serviceUuid(value.compute_identity_id, "Native compute identity id"),
 			...ownership(
 				value.compute_identity_ownership_kind,
 				value.compute_identity_owner_user_id,
@@ -557,7 +551,7 @@ export class SupabaseNativeProviderControlPlane
 	async validateExecution(request: NativeCompanyExecutionRequest, signal?: AbortSignal): Promise<void> {
 		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== request.authority.computeIdentityId)
 			throw new Error("Native host has no matching local identity generation");
-		const result = record(
+		const result = parseRecord(
 			await this.#rpc(
 				"qorpera_validate_native_provider_execution_lease",
 				{
@@ -1006,7 +1000,7 @@ export class HttpNativeProviderHostService {
 					releaseCredential();
 				}
 			} else {
-				const cancel = record(body, "Native provider cancellation");
+				const cancel = parseRecord(body, "Native provider cancellation");
 				if (
 					cancel.schema !== CANCEL_SCHEMA ||
 					Object.keys(cancel).some(
@@ -1015,9 +1009,9 @@ export class HttpNativeProviderHostService {
 					(cancel.reason !== "cancelled" && cancel.reason !== "deadline_exceeded")
 				)
 					throw new Error("Native provider cancellation is invalid");
-				const leaseId = uuid(cancel.lease_id, "Native cancellation lease id");
-				const runId = uuid(cancel.run_id, "Native cancellation run id");
-				const assignmentId = uuid(cancel.assignment_id, "Native cancellation assignment id");
+				const leaseId = serviceUuid(cancel.lease_id, "Native cancellation lease id");
+				const runId = serviceUuid(cancel.run_id, "Native cancellation run id");
+				const assignmentId = serviceUuid(cancel.assignment_id, "Native cancellation assignment id");
 				const active = this.#executions.get(leaseId);
 				if (active && (active.runId !== runId || active.assignmentId !== assignmentId))
 					throw new Error("Native cancellation scope differs");

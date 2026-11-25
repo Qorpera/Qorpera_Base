@@ -1,3 +1,4 @@
+import { POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { CLOUD_MEMBER_DATA_DATABASE, CLOUD_MEMBER_DATA_QUESTION } from "./cloud-member-data.ts";
 import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
 import { INTERFACE_EMBLEMS, type InterfaceEmblem, isInterfaceName } from "./interfaces.ts";
@@ -268,7 +269,6 @@ const KEYS = [
 ];
 /** The kinds a cover may be. */
 export const APP_COVER_KINDS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "webp"]);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** A file's kind: its extension, lowercase, or "" for none. */
 export function appFileKind(path: string): string {

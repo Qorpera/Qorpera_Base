@@ -1,8 +1,7 @@
+import { SHA256_HEX_PATTERN as SHA, UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
 const MEDIA = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 export interface CloudSessionAttachment {
 	sha256: string;

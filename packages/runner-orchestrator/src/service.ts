@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
+import { UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import { FileRunnerOrchestratorControlTokenStore } from "./control-token-store.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
@@ -8,7 +9,6 @@ import { CloudRunnerProviderRequestError, HttpCloudRunnerProviderAdapter } from 
 import { createSurfaceExecutionHandlers, type SurfaceExecutionBridgePorts } from "./surface-execution-bridge.ts";
 import { type SurfaceClaimLane, SurfaceWorkerLoop, type SurfaceWorkerLoopPorts } from "./surface-worker-loop.ts";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const ADAPTER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
@@ -352,7 +352,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 	const pollIntervalMs = Number(pollValue);
 	const reconcileIntervalMs = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS?.trim() || "2000");
 	const dispatchConcurrency = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY?.trim() || "8");
-	if (!UUID_PATTERN.test(orchestratorId)) throw new Error("QORPERA_RUNNER_ORCHESTRATOR_ID is invalid");
+	if (!UUID_ANY_CASE_PATTERN.test(orchestratorId)) throw new Error("QORPERA_RUNNER_ORCHESTRATOR_ID is invalid");
 	if (!TOKEN_PATTERN.test(orchestratorControlToken)) {
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN is invalid");
 	}

@@ -20,6 +20,7 @@ import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
+	closedFolderRecord,
 	commitUnitOutcome,
 	drainPlatformClaims,
 	PlatformFolderProblem,
@@ -27,7 +28,6 @@ import {
 	type PlatformFolderWriterOptions,
 	platformFolderProblem,
 	platformFolderProblemCode,
-	record,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -133,7 +133,11 @@ const text = (value: unknown, max: number): string =>
 /** The claim's settings, by the allow-list: a field outside it, or a value of the wrong shape, refuses the claim. */
 export function parseConnectionSettings(value: unknown): ConnectionSettings {
 	const website = (value as Record<string, unknown> | null)?.service === "website";
-	const input = record(value, website ? [...SETTINGS_KEYS, ...WEBSITE_KEYS] : SETTINGS_KEYS, "claim_invalid");
+	const input = closedFolderRecord(
+		value,
+		website ? [...SETTINGS_KEYS, ...WEBSITE_KEYS] : SETTINGS_KEYS,
+		"claim_invalid",
+	);
 	const actions = input.actions;
 	if (!Array.isArray(actions) || actions.some((action) => typeof action !== "string" || !OPERATION.test(action)))
 		problem("claim_invalid");
@@ -172,7 +176,7 @@ const WHOLE = (value: unknown, min: number, max: number): number =>
 
 /** A hook's claimed settings, by E1's allow-list. */
 export function parseHookSettings(value: unknown): HookSettings {
-	const input = record(value, HOOK_KEYS, "claim_invalid");
+	const input = closedFolderRecord(value, HOOK_KEYS, "claim_invalid");
 	const name = text(input.name, 64);
 	if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) problem("claim_invalid");
 	if (!(HOOK_PROOFS as readonly unknown[]).includes(input.proof)) problem("claim_invalid");
@@ -191,7 +195,7 @@ export function parseHookSettings(value: unknown): HookSettings {
 
 /** A mailbox's claimed settings, by E1's allow-list. */
 export function parseMailboxSettings(value: unknown): MailboxSettings {
-	const input = record(value, MAILBOX_KEYS, "claim_invalid");
+	const input = closedFolderRecord(value, MAILBOX_KEYS, "claim_invalid");
 	const address = text(input.address, 254);
 	if (!/^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?@[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(address))
 		problem("claim_invalid");
@@ -226,7 +230,7 @@ export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | 
 		...(Object.hasOwn(value as object, "subjectKind") ? ["subjectKind"] : []),
 		...(kind === "vault" ? [] : ["body"]),
 	];
-	const input = record(value, keys, "claim_invalid");
+	const input = closedFolderRecord(value, keys, "claim_invalid");
 	if (
 		input.schema !== "qorpera.connection-file-claim/v1" ||
 		typeof input.secretId !== "string" ||
@@ -241,7 +245,7 @@ export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | 
 		problem("claim_invalid");
 	let current: CurrentFile | null = null;
 	if (input.current !== null) {
-		const file = record(input.current, CURRENT_KEYS, "claim_invalid");
+		const file = closedFolderRecord(input.current, CURRENT_KEYS, "claim_invalid");
 		if (
 			typeof file.path !== "string" ||
 			!osRelative(file.path)?.startsWith("connections/") ||

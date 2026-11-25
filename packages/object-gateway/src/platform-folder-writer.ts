@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isRecord } from "@qorpera/contracts";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority, MemberCompanyPublisherRpc } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
@@ -172,16 +173,11 @@ export type PlatformFolderRpc = Extract<
 /** The hex SHA-256 of content the writer stages or reads. */
 export const contentHash = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 
-/**
- * An answer with exactly these keys, or the problem `code`. The gateway has no `@qorpera/contracts` dependency (its
- * `parseClosedRecord`), so the platform's workers share this one copy.
- */
-export function record(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return platformFolderProblem(code);
-	const input = value as Record<string, unknown>;
-	if (Object.keys(input).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(input, key)))
+export function closedFolderRecord(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {
+	if (!isRecord(value)) return platformFolderProblem(code);
+	if (Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key)))
 		platformFolderProblem(code);
-	return input;
+	return value;
 }
 
 /** A one-unit commit's outcome (`qorpera.folder-commit/v1`): `saved`, or the outcome and its reason. */
@@ -199,7 +195,11 @@ export function commitUnitOutcome(value: unknown): { readonly outcome: string; r
 }
 
 function sealedFile(value: unknown): PlatformFileReference {
-	const file = record(value, ["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"], "stage_invalid");
+	const file = closedFolderRecord(
+		value,
+		["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"],
+		"stage_invalid",
+	);
 	if (
 		typeof file.manifestSha256 !== "string" ||
 		typeof file.fileSha256 !== "string" ||

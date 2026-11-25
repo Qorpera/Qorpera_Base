@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import type { NativeHarnessDriver } from "./cloud-native-provider-host.ts";
 
 /**
@@ -22,7 +23,6 @@ import type { NativeHarnessDriver } from "./cloud-native-provider-host.ts";
  * (`CLAUDE_LOGIN_FILES`), for the vault to seal.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_AUTH_JSON_BYTES = 32 * 1024;
 /** Claude Code's login files in its config directory: its credentials, and its account settings (which name the

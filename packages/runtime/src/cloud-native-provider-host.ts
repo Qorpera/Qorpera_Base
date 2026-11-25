@@ -10,7 +10,7 @@ import {
 	NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
 	type NativeAccountRefreshRequest,
 } from "@qorpera/cloud-client/native-account-refresh";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudAgentSendInput, CloudAgentSendReceipt } from "./cloud-agent-mouth.ts";
 import { claudeStatusLoggedIn } from "./cloud-claude-login-renewal.ts";
@@ -32,7 +32,6 @@ import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
 const HARNESS_RESULT_SCHEMA = "qorpera.native-harness-result/v2";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_CAPSULE_PLAINTEXT_BYTES = 64 * 1024 * 1024;

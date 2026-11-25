@@ -6,6 +6,7 @@ import {
 	type RoutineCodeChangeEvent,
 	type RoutineDataChangeOperation,
 } from "@qorpera/cloud-client/company-state-files";
+import { UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
 import {
 	CLOUD_FOLDER_ROUTINE_NAME,
@@ -36,7 +37,6 @@ const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "frida
 const BUSINESS_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"] as const;
 const REPLY = ["optional", "required", "silent"] as const;
 const ACTIONS = ["list", "upsert", "pause", "resume", "remove", "conclude"] as const;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** An event type as a sender names it: printable ASCII without spaces, at most 128 characters. */
 const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 const REPO_OWNER = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;

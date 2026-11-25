@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
-import { type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
+import {
+	isRecord,
+	type JsonValue,
+	POSTGRES_UUID_PATTERN,
+	UUID_ANY_CASE_PATTERN as UUID_PATTERN,
+} from "@qorpera/contracts";
 import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
 import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
 
@@ -22,7 +27,6 @@ export type CloudInteractionSurface = (typeof CLOUD_INTERACTION_SURFACES)[number
 /** Surfaces with an implemented member workflow. Stored events retain the full protocol. */
 export const CLOUD_ASK_MEMBER_SURFACES = ["question", "secret", "takeover", "draft"] as const;
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** Names in the cloud secret custody start with a letter. */
 const VAULT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -276,10 +280,6 @@ export interface CloudInteractionRequestReceipt {
 	sequence: number;
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-}
-
 function text(value: unknown, min: number, max: number): value is string {
 	return (
 		typeof value === "string" &&
@@ -311,7 +311,7 @@ function closedKeys(container: Record<string, unknown>, keys: readonly string[])
 
 function questionInputIssue(payload: Record<string, unknown>): string | undefined {
 	if (!("input" in payload)) return undefined;
-	const input = record(payload.input);
+	const input = isRecord(payload.input) ? payload.input : undefined;
 	if (!input || !closedKeys(input, ["kind"]) || input.kind !== "mail_address")
 		return "a question's input is {kind: mail_address}, the address card, and nothing else";
 	if (payload.allowCustom !== true)
@@ -338,7 +338,7 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 			)
 				return false;
 			return payload.options.every((candidate) => {
-				const option = record(candidate);
+				const option = isRecord(candidate) ? candidate : undefined;
 				return (
 					option !== undefined &&
 					closedKeys(option, ["label", "value", "description", "style", "preview"]) &&
@@ -384,11 +384,11 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 			const ids = new Set<string>();
 			let targets = 0;
 			for (const candidate of payload.fields) {
-				const field = record(candidate);
+				const field = isRecord(candidate) ? candidate : undefined;
 				if (!field) return false;
 				const secret =
 					field.secret === true || (typeof field.type === "string" && ["password", "otp"].includes(field.type));
-				const target = record(field.target);
+				const target = isRecord(field.target) ? field.target : undefined;
 				if (
 					!closedKeys(field, [
 						"id",
@@ -427,7 +427,7 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 							field.options.length < 1 ||
 							field.options.length > 32 ||
 							!field.options.every((choice) => {
-								const option = record(choice);
+								const option = isRecord(choice) ? choice : undefined;
 								return (
 									option !== undefined &&
 									closedKeys(option, ["label", "value"]) &&
@@ -521,7 +521,7 @@ function interactionRequestIssue(data: Record<string, unknown>): string | undefi
 	)
 		return "expiresAt must be a UTC time such as 2026-09-25T12:00:00Z";
 	const surface = data.surface as CloudInteractionSurface;
-	const payload = record(data.payload);
+	const payload = isRecord(data.payload) ? data.payload : undefined;
 	const input = surface === "question" && payload ? questionInputIssue(payload) : undefined;
 	if (input) return input;
 	return payload && payloadValid(surface, payload) ? undefined : payloadRefusal(surface);
@@ -565,12 +565,13 @@ function cardReadabilityIssue(card: Record<string, unknown>): string | undefined
 		)
 			return `body must be at most ${CLOUD_ASK_MEMBER_BODY_MAX_LINES} short lines of at most ${CLOUD_ASK_MEMBER_LINE_MAX_BYTES} UTF-8 bytes each, ${CLOUD_ASK_MEMBER_BODY_MAX_BYTES} in all: say what is being chosen and the one or two things that matter, and link the full draft or file, such as [Read the draft](folder:path/to/file.md)`;
 	}
-	const options = card.surface === "question" ? record(card.payload)?.options : undefined;
+	const cardPayload = isRecord(card.payload) ? card.payload : undefined;
+	const options = card.surface === "question" ? cardPayload?.options : undefined;
 	if (
 		Array.isArray(options) &&
-		record(card.payload)?.input !== undefined &&
+		cardPayload?.input !== undefined &&
 		options.some((candidate) => {
-			const option = record(candidate);
+			const option = isRecord(candidate) ? candidate : undefined;
 			return (
 				typeof option?.label !== "string" ||
 				!MAIL_HANDLE_PATTERN.test(option.label) ||
@@ -582,14 +583,16 @@ function cardReadabilityIssue(card: Record<string, unknown>): string | undefined
 	if (
 		Array.isArray(options) &&
 		options.some(
-			(option) => Buffer.byteLength(String(record(option)?.label ?? "")) > CLOUD_ASK_MEMBER_LABEL_MAX_BYTES,
+			(option) =>
+				Buffer.byteLength(String((isRecord(option) ? option.label : undefined) ?? "")) >
+				CLOUD_ASK_MEMBER_LABEL_MAX_BYTES,
 		)
 	)
 		return `an option's label is a button: 1 to 3 words, at most ${CLOUD_ASK_MEMBER_LABEL_MAX_BYTES} UTF-8 bytes; say anything more in the body`;
 	if (
 		Array.isArray(options) &&
 		options.some((option) => {
-			const preview = record(option)?.preview;
+			const preview = isRecord(option) ? option.preview : undefined;
 			return typeof preview === "string" && !optionPreviewValid(preview);
 		})
 	)
@@ -613,7 +616,7 @@ export function optionPreviewValid(preview: string): boolean {
 
 /** The closed request data, exactly as the kernel validates it. */
 export function parseCloudInteractionRequestData(value: unknown): CloudInteractionRequestData {
-	const data = record(value);
+	const data = isRecord(value) ? value : undefined;
 	const issue = data ? interactionRequestIssue(data) : "the card must be an object";
 	if (!data || issue) throw new Error(`Invalid interaction request: ${issue}`);
 	return {
@@ -628,8 +631,8 @@ export function parseCloudInteractionRequestData(value: unknown): CloudInteracti
 
 /** Tool arguments: the idempotency key, the sentence above the card, and the card. */
 export function parseCloudAskMemberInput(value: unknown): CloudAskMemberInput {
-	const input = record(value);
-	if (!input) throw new CloudToolArgumentRefusal("the arguments must be an object");
+	if (!isRecord(value)) throw new CloudToolArgumentRefusal("the arguments must be an object");
+	const input = value;
 	const { idempotencyKey, text: sentence, ...card } = input;
 	if (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(idempotencyKey))
 		throw new CloudToolArgumentRefusal(
@@ -669,7 +672,7 @@ export function cloudAskMemberFinalKey(idempotencyKey: string): string {
 }
 
 export function parseCloudInteractionRequestReceipt(value: unknown, eventId: string): CloudInteractionRequestReceipt {
-	const receipt = record(value);
+	const receipt = isRecord(value) ? value : undefined;
 	if (
 		!receipt ||
 		typeof receipt.session_id !== "string" ||

@@ -3,7 +3,7 @@ import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } f
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
+import { parseCompanyComputerNativeRoute, parseRecord, UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import { withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import {
@@ -32,9 +32,8 @@ import {
 	ProviderStepFailed,
 	providerRpcErrorCode,
 	providerStepFailure,
-	record,
 	runAttemptAcquisitionId,
-	sha256,
+	sha256Hex,
 	supabaseServiceHeaders,
 	token,
 	workSha256,
@@ -43,7 +42,6 @@ import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const NAME_PATTERN = /^[a-z][a-z0-9-]{0,62}$/;
 const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
@@ -269,7 +267,7 @@ const RUNTIME_CONFIG_SHA256 = new WeakMap<LxdNativeCompanyRuntimeConfig, string>
 function runtimeConfigurationSha256(runtime: LxdNativeCompanyRuntimeConfig): string {
 	let digest = RUNTIME_CONFIG_SHA256.get(runtime);
 	if (digest === undefined) {
-		digest = sha256(JSON.stringify(canonical(runtime)));
+		digest = sha256Hex(JSON.stringify(canonical(runtime)));
 		RUNTIME_CONFIG_SHA256.set(runtime, digest);
 	}
 	return digest;
@@ -283,7 +281,8 @@ function companyRuntimeAuthority(
 ): LxdProviderJournal["lxd"]["companyRuntime"] {
 	const runtime = config.nativeCompanyRuntime;
 	if (!runtime) return undefined;
-	if (!profileId || !UUID_PATTERN.test(profileId)) throw new Error("Governed runtime company authority is missing");
+	if (!profileId || !UUID_ANY_CASE_PATTERN.test(profileId))
+		throw new Error("Governed runtime company authority is missing");
 	const office = runtime.offices?.find(
 		(route) => route.companyId === profileId && route.environmentId === environmentId,
 	);
@@ -294,31 +293,37 @@ function companyRuntimeAuthority(
 		recoveryVolumeSize: runtime.recoveryVolumeSize,
 		configurationSha256: runtimeConfigurationSha256(runtime),
 		...(office
-			? { office: { environmentId: office.environmentId, url: office.url, tokenSha256: sha256(office.token) } }
+			? { office: { environmentId: office.environmentId, url: office.url, tokenSha256: sha256Hex(office.token) } }
 			: {}),
 		...(runtime.codingCommand
-			? { codingCommand: { url: runtime.codingCommand.origin, tokenSha256: sha256(runtime.codingCommand.token) } }
+			? { codingCommand: { url: runtime.codingCommand.origin, tokenSha256: sha256Hex(runtime.codingCommand.token) } }
 			: {}),
 	};
 }
 
 function bootstrapSha256(files: readonly LxdGuestBootstrapFile[]): string {
-	return sha256(
+	return sha256Hex(
 		JSON.stringify(
-			files.map((file) => ({ path: file.path, contentSha256: sha256(file.content), mode: "0600", uid: 0, gid: 0 })),
+			files.map((file) => ({
+				path: file.path,
+				contentSha256: sha256Hex(file.content),
+				mode: "0600",
+				uid: 0,
+				gid: 0,
+			})),
 		),
 	);
 }
 
 function runnerFromJournal(value: unknown): CloudRunnerInstance {
-	const input = record(value, "LXD provider journal runner");
+	const input = parseRecord(value, "LXD provider journal runner");
 	if (
 		typeof input.runnerId !== "string" ||
-		!UUID_PATTERN.test(input.runnerId) ||
+		!UUID_ANY_CASE_PATTERN.test(input.runnerId) ||
 		(input.logicalComputerId !== undefined &&
-			(typeof input.logicalComputerId !== "string" || !UUID_PATTERN.test(input.logicalComputerId))) ||
+			(typeof input.logicalComputerId !== "string" || !UUID_ANY_CASE_PATTERN.test(input.logicalComputerId))) ||
 		(input.computeIdentityId !== undefined &&
-			(typeof input.computeIdentityId !== "string" || !UUID_PATTERN.test(input.computeIdentityId))) ||
+			(typeof input.computeIdentityId !== "string" || !UUID_ANY_CASE_PATTERN.test(input.computeIdentityId))) ||
 		(input.workerClass !== "managed_sandbox" && input.workerClass !== "company_computer") ||
 		typeof input.providerAdapter !== "string" ||
 		!Array.isArray(input.capabilities) ||
@@ -371,11 +376,11 @@ interface NativeNodePlacement {
 	memoryBytes: number;
 }
 function nodePlacement(value: unknown): NativeNodePlacement {
-	const p = record(value, "LXD node placement");
+	const p = parseRecord(value, "LXD node placement");
 	if (
 		Object.keys(p).sort().join() !== "cpuMillis,machineIdSha256,memoryBytes,nodeId,policySha256" ||
 		typeof p.nodeId !== "string" ||
-		!UUID_PATTERN.test(p.nodeId) ||
+		!UUID_ANY_CASE_PATTERN.test(p.nodeId) ||
 		typeof p.policySha256 !== "string" ||
 		!SHA256_PATTERN.test(p.policySha256) ||
 		typeof p.machineIdSha256 !== "string" ||
@@ -391,13 +396,13 @@ function nodePlacement(value: unknown): NativeNodePlacement {
 	return p as unknown as NativeNodePlacement;
 }
 function journalFromJson(value: unknown): LxdProviderJournal {
-	const input = record(value, "LXD provider journal");
-	const lxd = record(input.lxd, "LXD provider journal identity");
-	const credentials = record(input.credentials, "LXD provider journal credentials");
+	const input = parseRecord(value, "LXD provider journal");
+	const lxd = parseRecord(input.lxd, "LXD provider journal identity");
+	const credentials = parseRecord(input.credentials, "LXD provider journal credentials");
 	if (
 		(input.schema !== JOURNAL_SCHEMA && input.schema !== COMPANY_JOURNAL_SCHEMA) ||
 		typeof input.acquisitionId !== "string" ||
-		!UUID_PATTERN.test(input.acquisitionId) ||
+		!UUID_ANY_CASE_PATTERN.test(input.acquisitionId) ||
 		typeof input.workSha256 !== "string" ||
 		!SHA256_PATTERN.test(input.workSha256) ||
 		typeof input.jobType !== "string" ||
@@ -406,7 +411,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		!NAME_PATTERN.test(input.instanceName) ||
 		(input.guestAddress !== undefined && typeof input.guestAddress !== "string") ||
 		(input.assignmentId !== undefined &&
-			(typeof input.assignmentId !== "string" || !UUID_PATTERN.test(input.assignmentId))) ||
+			(typeof input.assignmentId !== "string" || !UUID_ANY_CASE_PATTERN.test(input.assignmentId))) ||
 		(input.stopReason !== undefined &&
 			input.stopReason !== "delivery_failed" &&
 			input.stopReason !== "idle" &&
@@ -457,7 +462,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		(input.runId !== undefined &&
 			(input.schema !== COMPANY_JOURNAL_SCHEMA ||
 				typeof input.runId !== "string" ||
-				!UUID_PATTERN.test(input.runId) ||
+				!UUID_ANY_CASE_PATTERN.test(input.runId) ||
 				!Number.isSafeInteger(input.attempt) ||
 				(input.attempt as number) < 1 ||
 				(input.attempt as number) > 1_000_000 ||
@@ -467,7 +472,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 	}
 	let companyRuntime: LxdProviderJournal["lxd"]["companyRuntime"];
 	if (input.schema === COMPANY_JOURNAL_SCHEMA) {
-		const company = record(lxd.companyRuntime, "Governed runtime journal");
+		const company = parseRecord(lxd.companyRuntime, "Governed runtime journal");
 		if (
 			Object.keys(company).sort().join() !==
 				[
@@ -483,7 +488,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 					.join() ||
 			company.mode !== "company-path-v1" ||
 			typeof company.profileId !== "string" ||
-			!UUID_PATTERN.test(company.profileId) ||
+			!UUID_ANY_CASE_PATTERN.test(company.profileId) ||
 			typeof company.recoveryVolume !== "string" ||
 			!NAME_PATTERN.test(company.recoveryVolume) ||
 			typeof company.recoveryVolumeSize !== "string" ||
@@ -495,11 +500,11 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		}
 		let office: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>["office"];
 		if (company.office !== undefined) {
-			const route = record(company.office, "Governed office route");
+			const route = parseRecord(company.office, "Governed office route");
 			if (
 				Object.keys(route).sort().join() !== "environmentId,tokenSha256,url" ||
 				typeof route.environmentId !== "string" ||
-				!UUID_PATTERN.test(route.environmentId) ||
+				!UUID_ANY_CASE_PATTERN.test(route.environmentId) ||
 				typeof route.url !== "string" ||
 				typeof route.tokenSha256 !== "string" ||
 				!SHA256_PATTERN.test(route.tokenSha256)
@@ -513,7 +518,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		}
 		let codingCommand: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>["codingCommand"];
 		if (company.codingCommand !== undefined) {
-			const gateway = record(company.codingCommand, "Governed coding command route");
+			const gateway = parseRecord(company.codingCommand, "Governed coding command route");
 			if (
 				Object.keys(gateway).sort().join() !== "tokenSha256,url" ||
 				typeof gateway.url !== "string" ||
@@ -662,7 +667,7 @@ function validateConfig(config: LxdCloudRunnerProviderConfig): void {
 		(config.liveCompanyRoot === undefined) !== (config.liveCompanyProfileId === undefined) ||
 		(config.liveCompanyRoot !== undefined &&
 			(!isAbsolute(config.liveCompanyRoot) || /[\0\r\n]/.test(config.liveCompanyRoot))) ||
-		(config.liveCompanyProfileId !== undefined && !UUID_PATTERN.test(config.liveCompanyProfileId))
+		(config.liveCompanyProfileId !== undefined && !UUID_ANY_CASE_PATTERN.test(config.liveCompanyProfileId))
 	) {
 		throw new Error("Live Company File root and profile must be configured together");
 	}
@@ -1033,7 +1038,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		await chmod(this.#config.stateRoot, 0o700);
 		const names = (await readdir(this.#config.stateRoot, { withFileTypes: true }))
-			.filter((entry) => entry.isDirectory() && UUID_PATTERN.test(entry.name))
+			.filter((entry) => entry.isDirectory() && UUID_ANY_CASE_PATTERN.test(entry.name))
 			.map((entry) => entry.name);
 		const failures: unknown[] = [];
 		const busy: string[] = [];
@@ -1154,11 +1159,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * is. Any doubt (an unreadable file, a field out of shape, an LXD that does not answer) answers no. */
 	async #deadJournal(acquisitionId: string, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
 		try {
-			const journal = record(
+			const journal = parseRecord(
 				JSON.parse(await readFile(this.#journalPath(acquisitionId), "utf-8")) as unknown,
 				"LXD provider journal",
 			);
-			const lxd = record(journal.lxd, "LXD provider journal identity");
+			const lxd = parseRecord(journal.lxd, "LXD provider journal identity");
 			const instanceName = this.#instanceName(acquisitionId);
 			if (
 				journal.acquisitionId !== acquisitionId ||
@@ -1232,7 +1237,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				await withAbortScopes([signal, AbortSignal.timeout(120_000)], async (retirementSignal) => {
 					await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 					for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
-						if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
+						if (!entry.isDirectory() || !UUID_ANY_CASE_PATTERN.test(entry.name) || entry.name === acquisitionId)
+							continue;
 						const settled = this.#settled.get(entry.name);
 						if (settled && settled.runId !== work.runId) continue;
 						let prior: LxdProviderJournal | undefined;
@@ -1316,7 +1322,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						p_run_id: work.runId,
 						p_client_runner_id: acquisitionId,
 						p_provider_adapter: this.adapterId,
-						p_activation_token_sha256: sha256(credentials.activationToken),
+						p_activation_token_sha256: sha256Hex(credentials.activationToken),
 					},
 					signal,
 				),
@@ -1380,10 +1386,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						: {}),
 				},
 				credentials: {
-					activationSha256: sha256(credentials.activationToken),
-					assignmentSha256: sha256(credentials.assignmentToken),
-					nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
-					nativeIdentitySha256: sha256(credentials.nativeIdentityToken),
+					activationSha256: sha256Hex(credentials.activationToken),
+					assignmentSha256: sha256Hex(credentials.assignmentToken),
+					nativeBridgeSha256: sha256Hex(credentials.nativeBridgeToken),
+					nativeIdentitySha256: sha256Hex(credentials.nativeIdentityToken),
 				},
 				createdAt: now,
 				updatedAt: now,
@@ -1487,7 +1493,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (Date.now() - this.#endedRunnersCheckedAt < ENDED_RUNNER_CHECK_MS) return;
 		const waiting: LxdProviderJournal[] = [];
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
-			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
+			if (!entry.isDirectory() || !UUID_ANY_CASE_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
 			// An unreadable journal is the pass's own failure, already reported; it must not stop this check.
 			const current = await this.#readJournal(entry.name).catch(() => undefined);
 			if (
@@ -1927,12 +1933,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 											office: {
 												environment_id: office.environmentId,
 												url: office.url,
-												token_sha256: sha256(office.token),
+												token_sha256: sha256Hex(office.token),
 											},
 										}
 									: {}),
 								...(coding
-									? { coding_command: { url: coding.origin, token_sha256: sha256(coding.token) } }
+									? { coding_command: { url: coding.origin, token_sha256: sha256Hex(coding.token) } }
 									: {}),
 								...(authority.loginCustody === "vault" ? { login_custody: "vault" } : {}),
 								...(runtime.surfaceFirst ? { surface_first: true } : {}),
@@ -2467,10 +2473,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	#validateCredentialHashes(journal: LxdProviderJournal, credentials: ProviderCredentials): void {
 		if (
-			sha256(credentials.activationToken) !== journal.credentials.activationSha256 ||
-			sha256(credentials.assignmentToken) !== journal.credentials.assignmentSha256 ||
-			sha256(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256 ||
-			sha256(credentials.nativeIdentityToken) !== journal.credentials.nativeIdentitySha256
+			sha256Hex(credentials.activationToken) !== journal.credentials.activationSha256 ||
+			sha256Hex(credentials.assignmentToken) !== journal.credentials.assignmentSha256 ||
+			sha256Hex(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256 ||
+			sha256Hex(credentials.nativeIdentityToken) !== journal.credentials.nativeIdentitySha256
 		) {
 			throw new Error("LXD provider credentials do not match their durable journal");
 		}
@@ -2593,7 +2599,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		const settledIds: string[] = [];
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
-			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
+			if (!entry.isDirectory() || !UUID_ANY_CASE_PATTERN.test(entry.name)) continue;
 			if (this.#settled.has(entry.name)) {
 				settledIds.push(entry.name);
 				continue;
@@ -2624,7 +2630,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 			// WHY: Settled journals already have no guest and confirmed capacity release, so acquire() need not re-read them.
-			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
+			if (!entry.isDirectory() || !UUID_ANY_CASE_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
 			const journal = await this.#scanJournal(entry.name, signal);
 			if (!journal || (journal.capacityRegistered && journal.nodeCapacity) || journal.physicalState === "reserving")
 				continue;
@@ -2645,7 +2651,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return {
 			p_allocation_id: current.acquisitionId,
 			p_provider_adapter: this.adapterId,
-			p_instance_sha256: sha256(
+			p_instance_sha256: sha256Hex(
 				JSON.stringify(
 					canonical({
 						project: current.lxd.project,
@@ -2663,7 +2669,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		// A confirmed release is final: it is never sent again, so nothing may charge this allocation anew.
 		if (this.#capacityReleased(current)) throw new Error("Released machine capacity cannot be reserved again");
 		const identity = this.#machineIdentity(current);
-		const result = record(
+		const result = parseRecord(
 			await this.#rpc(
 				"qorpera_reserve_runtime_machine",
 				{
@@ -2759,7 +2765,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		// journals sent eight release calls a second). A confirmed release is sent exactly once.
 		if (this.#capacityReleased(current)) return;
 		const identity = this.#machineIdentity(current);
-		const result = record(await this.#rpc("qorpera_release_runtime_machine", identity, signal), "Machine release");
+		const result = parseRecord(
+			await this.#rpc("qorpera_release_runtime_machine", identity, signal),
+			"Machine release",
+		);
 		if (
 			Object.keys(result).sort().join() !== "allocationId,instanceSha256,state" ||
 			result.state !== "released" ||

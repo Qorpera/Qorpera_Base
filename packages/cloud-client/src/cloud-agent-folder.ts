@@ -5,9 +5,9 @@
  * Every company is a folder-v2 company (the storage core's, workstream F2): it keeps an agent's
  * folder at `QorperaOS/agents/<handle>/`, beside its `agent.md`, and a rename moves the folder with the agent.
  * The run's context gives the handle. Browser-safe. */
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { osPath, osRelative } from "./company-state-shared.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A folder name the company folder accepts (lowercase words joined by single hyphens, at most 64
  * characters); `groups` holds the group chats. */
 const HANDLE = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -16,7 +16,7 @@ const HANDLE = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export type CloudAgentFolderPlace = { readonly core: "folder-v2"; readonly handle: string };
 
 export function cloudAgentFolder(companyId: string, staffAgentId: string, place: CloudAgentFolderPlace): string {
-	if (!UUID.test(companyId) || !UUID.test(staffAgentId)) throw new Error("Invalid agent folder owner");
+	if (!UUID_PATTERN.test(companyId) || !UUID_PATTERN.test(staffAgentId)) throw new Error("Invalid agent folder owner");
 	if (place.core !== "folder-v2" || !HANDLE.test(place.handle) || place.handle === "groups")
 		throw new Error("Invalid agent folder name");
 	return osPath(`agents/${place.handle}`);
