@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { dataAskLine } from "../src/app/data-ask.ts";
-import { columnLabel, humanName, listedColumns } from "../src/app/views/data.ts";
+import { columnLabel, humanName, listedColumns, shownValue } from "../src/app/views/data.ts";
 import { dataGroups, fieldWeights, squarify } from "../src/app/views/data-home.ts";
 
 describe("names in two lines (app/views/data-home.ts)", () => {
@@ -106,6 +106,17 @@ describe("the list's columns (app/views/data.ts)", () => {
 		expect(columnLabel("updated_at", "time")).toBe("Updated");
 		expect(columnLabel("is_synthetic", "text")).toBe("Is synthetic");
 		expect(columnLabel("at", "time")).toBe("At");
+	});
+});
+
+describe("a time in the list (app/views/data.ts)", () => {
+	afterEach(() => vi.useRealTimers());
+
+	it("shows without its year in the running year, and with it in any other", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-11-25T12:00:00Z"));
+		expect(shownValue("2026-06-15T12:00:00+00:00", "time")).toMatch(/^15 Jun, \d{2}:\d{2}$/);
+		expect(shownValue("2025-06-15T12:00:00+00:00", "time")).toMatch(/^15 Jun 2025, \d{2}:\d{2}$/);
 	});
 });
 

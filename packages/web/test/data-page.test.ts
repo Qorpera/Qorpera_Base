@@ -10,6 +10,7 @@ import { CloudMemberDataError } from "@qorpera/cloud-client/cloud-member-data";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyDatabases, type CompanyDataCalls } from "../src/app/company-data.ts";
+import { writesUnderSurfaceBar } from "../src/app/interface-claims.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces, hiddenInterfaces } from "../src/app/interfaces.ts";
 import { columnKind, disposeData, humanName, refusalWords, renderData, shownValue } from "../src/app/views/data.ts";
@@ -346,6 +347,44 @@ describe("the home and the two lines of names (app/views/data.ts)", () => {
 		expect(container.querySelector(".data-home-open")).toBeNull();
 		expect(container.querySelector(".data-tab[aria-selected='true']")?.textContent).toBe("Repairs");
 		expect(calls.rows).toHaveBeenCalledTimes(1);
+	});
+
+	it("stays on a lone table's list when a second table arrives", async () => {
+		const { container, calls, controller } = await open(
+			describedWith(true, { tables: [table("repairs", 3)] }),
+			true,
+			false,
+		);
+		expect(container.querySelector("button.data-row")).not.toBeNull();
+		controller.store.set({
+			companyData: describedWith(true, { tables: [table("repairs", 3), table("notes", 1)] }),
+		});
+		await settle();
+		expect(container.querySelector(".data-plot")).toBeNull();
+		expect(container.querySelector("button.data-row")).not.toBeNull();
+		expect(container.querySelector(".data-tab[aria-selected='true']")?.textContent).toBe("Repairs");
+		expect(container.querySelector(".data-home-open")).not.toBeNull();
+		expect(calls.rows).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves asking to the surface's bar inside a surface, and keeps its own box on the page's own route", async () => {
+		const described = describedWith();
+		const { calls } = fakeCalls(described);
+		const controller = company(described);
+		const databases = new CompanyDatabases(
+			() => calls,
+			(next) => controller.store.set({ companyData: next }),
+			controller.signal,
+		);
+		const writes = { data: () => databases, dataAsk: vi.fn() };
+		const [route, surface] = [document.createElement("main"), document.createElement("div")];
+		document.body.append(route, surface);
+		renderInterface(route, controller, "data", writes);
+		renderInterface(surface, controller, "data", writesUnderSurfaceBar(writes));
+		await settle();
+		expect(route.querySelector<HTMLElement>(".data-ask-box")?.hidden).toBe(false);
+		expect(surface.querySelector(".data-plot")).not.toBeNull();
+		expect(surface.querySelector<HTMLElement>(".data-ask-box")?.hidden).toBe(true);
 	});
 
 	it("keeps kept questions in reach from the home, and What changed opens and closes there", async () => {

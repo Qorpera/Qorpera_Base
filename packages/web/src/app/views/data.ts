@@ -418,10 +418,14 @@ class DataListView {
 		const databases = described?.databases ?? [];
 		const wanted = described ? takeWantedDataList(this.company.profile.profileId) : undefined;
 		if (wanted !== undefined) this.#want(databases, wanted);
-		if (!databases.some((one) => one.database === this.#database)) this.#database = databases[0]?.database;
+		if (!databases.some((one) => one.database === this.#database)) {
+			this.#database = databases[0]?.database;
+			this.#atHome = true;
+		}
 		const database = this.#current();
 		const tabs = database ? tabsOf(database) : [];
 		if (!tabs.some((tab) => tab.kind === this.#tab?.kind && tab.name === this.#tab?.name)) this.#tab = tabs[0];
+		this.#leaveSkippedHome();
 		this.#ensureList();
 		this.#draw();
 	}
@@ -440,6 +444,11 @@ class DataListView {
 		if (!tab) return;
 		this.#tab = tab;
 		this.#atHome = false;
+	}
+
+	#leaveSkippedHome(): void {
+		const database = this.#current();
+		if (database && this.#tab && !hasHome(database)) this.#atHome = false;
 	}
 
 	#showsHome(): boolean {
@@ -826,6 +835,7 @@ class DataListView {
 		const current = this.#current();
 		if (!current?.list) this.#changing = false;
 		this.#tab = current ? tabsOf(current)[0] : undefined;
+		this.#leaveSkippedHome();
 		this.#close();
 		this.#ensureList();
 		this.#draw();
