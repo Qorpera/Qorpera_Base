@@ -2646,4 +2646,84 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		);
 		expect(memIncomplete.commitCalls).toHaveLength(0);
 	});
+
+	it("completes surface merge before scheduling or running peer session rebases", async () => {
+		const f = await createGitSurfaceFixture();
+		const s1 = await f.startSession(f.baseSha);
+		const s2 = await f.startSession(f.baseSha);
+		const change1 = randomUUID();
+		const change2 = randomUUID();
+		const sha1 = await s1.commit({ "hero.html": "<h1>One</h1>\n" }, "Hero");
+		const sha2 = await s2.commit({ "footer.html": "<footer>Two</footer>\n" }, "Footer");
+		const profileId = randomUUID();
+		const surfaceId = randomUUID();
+		const session1 = randomUUID();
+		const session2 = randomUUID();
+
+		const events: string[] = [];
+		const scheduled: unknown[] = [];
+		const rebasedEvents: unknown[] = [];
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: vi.fn().mockImplementation(async () => {
+					events.push("completeMerge");
+				}),
+				completeSurfacePublish: vi.fn(),
+			},
+			resolveCodeHostJob: async () => f.job,
+			onSessionChangesRebased: async (ev) => {
+				events.push("onSessionChangesRebased");
+				rebasedEvents.push(ev);
+			},
+			schedulePeerSessionSync: (req) => {
+				events.push("schedulePeerSessionSync");
+				scheduled.push(req);
+			},
+		});
+
+		await handlers.runMergeJob(
+			{
+				jobId: randomUUID(),
+				kind: "land_change",
+				surfaceId,
+				sessionId: session1,
+				profileId,
+				sourceKind: "code_repo",
+				repositoryKey: "thetaband/website",
+				folderRoot: null,
+				expectMainSha: f.baseSha,
+				sessionWorkerId: s1.workerId,
+				sessionState: "ready",
+				sessionHasActiveChat: false,
+				payload: { changeIds: [change1] },
+				approvedChanges: [
+					{
+						changeId: change1,
+						kind: "git_range",
+						parentSha: f.baseSha,
+						headSha: sha1,
+						title: "Hero",
+						summary: "",
+						patchManifest: null,
+						affectedPaths: ["hero.html"],
+					},
+				],
+				siblingRemainingChanges: [],
+				peerSessions: [
+					{
+						sessionId: session2,
+						workerId: s2.workerId,
+						remainingChanges: [{ changeId: change2, parentSha: f.baseSha, headSha: sha2, title: "Footer" }],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+
+		expect(events).toEqual(["completeMerge", "onSessionChangesRebased", "schedulePeerSessionSync"]);
+		expect(scheduled).toHaveLength(1);
+		expect(rebasedEvents).toHaveLength(1);
+		expect(rebasedEvents[0]).toMatchObject({ peerSync: [] });
+	}, 20_000);
 });

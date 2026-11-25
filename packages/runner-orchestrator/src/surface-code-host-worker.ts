@@ -43,6 +43,7 @@ import {
 	type CompleteSurfacePublishInput,
 	parseClaimedSurfaceJobs,
 } from "./orchestrator.ts";
+import { type PeerOpenSessionInput, syncPeerSurfaceSessions } from "./surface-change-dispatcher.ts";
 import {
 	createSurfaceExecutionHandlers,
 	parseSurfaceRepositoryKey,
@@ -655,6 +656,17 @@ interface ActiveLease {
 
 const PREVIEW_BUILD_PLAN_TTL_MS = 5 * 60_000;
 const PREVIEW_BUILD_PLAN_MAX = 256;
+const MAX_PENDING_PEER_SYNCS_PER_COMPANY = 16;
+
+interface PendingPeerSyncTask {
+	readonly jobId: string;
+	readonly surfaceId: string;
+	readonly profileId: string;
+	readonly environmentId: string;
+	readonly repository: CloudCodingRepository;
+	readonly mainAfter: string;
+	readonly peerSessions: readonly PeerOpenSessionInput[];
+}
 
 function isUnseededAreaRefusal(error: unknown): boolean {
 	return (
@@ -688,6 +700,11 @@ export class SurfaceCodeHostWorker {
 	readonly #completionRetryDelaysMs: readonly number[];
 	readonly #yieldRetryDelaysMs: readonly number[];
 	readonly #report: ((event: Record<string, unknown>) => void) | undefined;
+	readonly #peerSyncQueues = new Map<string, PendingPeerSyncTask[]>();
+	readonly #peerSyncRunners = new Map<string, Promise<void>>();
+	readonly #peerSyncWaitingCompanies: string[] = [];
+	readonly #peerSyncActiveCompanies = new Set<string>();
+	readonly #peerSyncSignals = new Map<string, AbortSignal>();
 
 	constructor(options: SurfaceCodeHostWorkerOptions) {
 		this.#control = options.control;
@@ -836,7 +853,7 @@ export class SurfaceCodeHostWorker {
 				if (signal.aborted) break;
 				const lease = leases.get(leaseKey("job", merge.jobId))!;
 				try {
-					await this.#runMerge(merge, lease.signal);
+					await this.#runMerge(merge, lease.signal, signal);
 					mergesDone += 1;
 				} catch (error) {
 					failed += 1;
@@ -1009,6 +1026,7 @@ export class SurfaceCodeHostWorker {
 		overrides: {
 			readonly controlPlane: SurfaceExecutionControlPlane;
 			readonly deferRebase: (update: (rebaseSignal: AbortSignal) => Promise<void>) => void;
+			readonly schedulePeerSync: (task: PendingPeerSyncTask) => void;
 		},
 	) {
 		return createSurfaceExecutionHandlers({
@@ -1026,6 +1044,18 @@ export class SurfaceCodeHostWorker {
 				};
 				overrides.deferRebase(applyRebases);
 			},
+			schedulePeerSessionSync: (input) => {
+				if (!input.environmentId || input.peerSessions.length === 0) return;
+				overrides.schedulePeerSync({
+					jobId: input.jobId,
+					surfaceId: input.surfaceId,
+					profileId: input.profileId,
+					environmentId: input.environmentId,
+					repository: input.repository,
+					mainAfter: input.mainAfter,
+					peerSessions: input.peerSessions,
+				});
+			},
 			undoCodeRepoChange: async (input) =>
 				await undoSurfaceCodeRepoChange(codeHostJob, {
 					jobId: input.jobId,
@@ -1035,6 +1065,120 @@ export class SurfaceCodeHostWorker {
 					landedMainAfter: input.landedMainAfter,
 				}),
 		});
+	}
+
+	async drainBackgroundPeerSyncs(): Promise<void> {
+		while (this.#peerSyncRunners.size > 0 || this.#peerSyncWaitingCompanies.length > 0) {
+			const running = [...this.#peerSyncRunners.values()];
+			if (running.length === 0) break;
+			await Promise.allSettled(running);
+		}
+	}
+
+	// WHY: Run peer session rebases as yieldable, bounded background work after Approve completes so user merges never wait on peer worktrees.
+	#enqueueBackgroundPeerSync(task: PendingPeerSyncTask, signal: AbortSignal): void {
+		if (signal.aborted || task.peerSessions.length === 0) return;
+		let queue = this.#peerSyncQueues.get(task.profileId);
+		if (!queue) {
+			queue = [];
+			this.#peerSyncQueues.set(task.profileId, queue);
+		}
+		if (queue.length >= MAX_PENDING_PEER_SYNCS_PER_COMPANY) {
+			queue.shift();
+		}
+		queue.push(task);
+		this.#peerSyncSignals.set(task.profileId, signal);
+		this.#schedulePeerSyncCompany(task.profileId);
+	}
+
+	#schedulePeerSyncCompany(profileId: string): void {
+		if (this.#peerSyncActiveCompanies.has(profileId)) return;
+		if (this.#peerSyncActiveCompanies.size >= this.#companyConcurrency) {
+			if (!this.#peerSyncWaitingCompanies.includes(profileId)) {
+				this.#peerSyncWaitingCompanies.push(profileId);
+			}
+			return;
+		}
+		this.#peerSyncActiveCompanies.add(profileId);
+		const runner = this.#drainCompanyPeerSyncQueue(profileId).finally(() => {
+			this.#peerSyncActiveCompanies.delete(profileId);
+			this.#peerSyncRunners.delete(profileId);
+			const remaining = this.#peerSyncQueues.get(profileId);
+			if (remaining && remaining.length > 0 && !this.#peerSyncSignals.get(profileId)?.aborted) {
+				this.#schedulePeerSyncCompany(profileId);
+			} else {
+				this.#peerSyncQueues.delete(profileId);
+				this.#peerSyncSignals.delete(profileId);
+			}
+			while (
+				this.#peerSyncActiveCompanies.size < this.#companyConcurrency &&
+				this.#peerSyncWaitingCompanies.length > 0
+			) {
+				const nextProfileId = this.#peerSyncWaitingCompanies.shift()!;
+				const nextQueue = this.#peerSyncQueues.get(nextProfileId);
+				if (nextQueue && nextQueue.length > 0 && !this.#peerSyncSignals.get(nextProfileId)?.aborted) {
+					this.#schedulePeerSyncCompany(nextProfileId);
+				} else {
+					this.#peerSyncQueues.delete(nextProfileId);
+					this.#peerSyncSignals.delete(nextProfileId);
+				}
+			}
+		});
+		this.#peerSyncRunners.set(profileId, runner);
+	}
+
+	async #drainCompanyPeerSyncQueue(profileId: string): Promise<void> {
+		while (true) {
+			const signal = this.#peerSyncSignals.get(profileId);
+			if (!signal || signal.aborted) return;
+			const queue = this.#peerSyncQueues.get(profileId);
+			const task = queue?.shift();
+			if (!task) return;
+			for (const peer of task.peerSessions) {
+				if (signal.aborted) return;
+				try {
+					const ran = await this.#runYieldable(task.profileId, task.environmentId, signal, async (codeHostJob) => {
+						const synced = await syncPeerSurfaceSessions(codeHostJob, {
+							repository: task.repository,
+							ontoSha: task.mainAfter,
+							peerSessions: [peer],
+						});
+						return synced[0] ?? null;
+					});
+					if (ran.yielded) {
+						this.#emit({
+							event: "surface-code-host-peer-sync-yielded",
+							jobId: task.jobId,
+							surfaceId: task.surfaceId,
+							sessionId: peer.sessionId,
+						});
+						continue;
+					}
+					if (!ran.value) continue;
+					const peerOutcome = ran.value;
+					await retryCommittedCompletion(
+						(attemptSignal) =>
+							this.#persistRebaseOutcome(
+								task.surfaceId,
+								peerOutcome.sessionId,
+								peerOutcome.result,
+								attemptSignal,
+							),
+						signal,
+						this.#completionRetryDelaysMs,
+					);
+				} catch (error) {
+					if (signal.aborted) return;
+					this.#emit({
+						event: "surface-code-host-rebase-persist-failed",
+						jobId: task.jobId,
+						surfaceId: task.surfaceId,
+						sessionId: peer.sessionId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+		}
 	}
 
 	async #persistRebaseOutcome(
@@ -1491,7 +1635,7 @@ export class SurfaceCodeHostWorker {
 		}
 	}
 
-	async #runMerge(merge: ClaimedSurfaceMergeJob, signal: AbortSignal): Promise<void> {
+	async #runMerge(merge: ClaimedSurfaceMergeJob, signal: AbortSignal, backgroundSignal: AbortSignal): Promise<void> {
 		const controlPlane = createControlPlaneBridge(this.#control);
 		if (!merge.environmentId) {
 			await controlPlane.completeSurfaceMerge(
@@ -1508,6 +1652,7 @@ export class SurfaceCodeHostWorker {
 		// WHY: Defer rebase and merge completion RPCs until hosts.run publishes the code host view durably so Postgres never marks a merge landed before git refs persist.
 		let deferredMergeCompletion: CompleteSurfaceMergeInput | null = null;
 		const deferredRebases: ((rebaseSignal: AbortSignal) => Promise<void>)[] = [];
+		const scheduledPeerSyncs: PendingPeerSyncTask[] = [];
 		const bufferedControlPlane: SurfaceExecutionControlPlane = {
 			completeSurfacePreview: controlPlane.completeSurfacePreview,
 			completeSurfacePublish: controlPlane.completeSurfacePublish,
@@ -1521,6 +1666,7 @@ export class SurfaceCodeHostWorker {
 				await this.#handlersForMergeJob(codeHostJob, {
 					controlPlane: bufferedControlPlane,
 					deferRebase: (update) => deferredRebases.push(update),
+					schedulePeerSync: (task) => scheduledPeerSyncs.push(task),
 				}).runMergeJob(merge, codeHostJob.signal);
 			});
 		} catch (error) {
@@ -1547,7 +1693,7 @@ export class SurfaceCodeHostWorker {
 				);
 			}
 		} finally {
-			// WHY: Always attempt best-effort persistence of rebased sibling/peer SHAs regardless of completion outcome so git worktrees and database SHAs stay aligned.
+			// WHY: Always attempt best-effort persistence of rebased sibling SHAs and enqueue background peer rebases so worktrees and database SHAs converge.
 			for (const applyRebase of deferredRebases) {
 				try {
 					await retryCommittedCompletion(
@@ -1563,6 +1709,9 @@ export class SurfaceCodeHostWorker {
 						error: error instanceof Error ? error.message : String(error),
 					});
 				}
+			}
+			for (const task of scheduledPeerSyncs) {
+				this.#enqueueBackgroundPeerSync(task, backgroundSignal);
 			}
 		}
 	}

@@ -19,7 +19,8 @@ function allowedOrigins(): readonly string[] | undefined {
 
 let cachedAuthBase: string | undefined;
 let cachedAuthUserUrl: URL | undefined;
-const AUTH_CACHE_TTL_MS = 5_000;
+// WHY: Exceeds data-gateway watchMs (20 s) so live /watch reconnect cycles reuse cached GoTrue verification instead of double-missing every 20 s.
+const AUTH_CACHE_TTL_MS = 30_000;
 const AUTH_CACHE_MAX = 2_048;
 const verifiedMemberTokens = new Map<string, number>();
 const inFlightMemberChecks = new Map<string, Promise<boolean>>();

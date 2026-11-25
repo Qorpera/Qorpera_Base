@@ -3156,15 +3156,24 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 			if (backoff.until + FOLDER_DRAIN_BACKOFF_MAX_MS < now) this.#companyBackoff.delete(key);
 		}
 		const failures: unknown[] = [];
-		for (const drain of this.#drains) {
-			if (now < (this.#drainBackoff.get(drain.name)?.until ?? 0)) continue;
+		// WHY: Preserve listen -> human_tasks ordering while running independent drains concurrently per wave to avoid head-of-line blocking.
+		const listenIndex = this.#drains.findIndex((drain) => drain.name === "listen");
+		const humanTasksIndex = this.#drains.findIndex((drain) => drain.name === "human_tasks");
+		const waves: (readonly CloudFolderDrainSpec[])[] =
+			listenIndex >= 0 && humanTasksIndex > listenIndex
+				? [this.#drains.slice(0, listenIndex + 1), this.#drains.slice(listenIndex + 1)]
+				: [this.#drains];
+
+		const listFolderDrainDue = controlPlane.listFolderDrainDue.bind(controlPlane);
+		const runDrain = async (drain: CloudFolderDrainSpec): Promise<unknown[]> => {
+			if (now < (this.#drainBackoff.get(drain.name)?.until ?? 0)) return [];
 			if (due?.quiet(drain.name)) {
-				// Its list was read, in the one call, and was empty: as good as a list that answered.
 				this.#drainBackoff.delete(drain.name);
-				continue;
+				return [];
 			}
+			const drainFailures: unknown[] = [];
 			const failed = (error: unknown, wait?: number) => {
-				failures.push(error);
+				drainFailures.push(error);
 				this.#drainBackoff.set(
 					drain.name,
 					folderDrainBackoff(this.#drainBackoff.get(drain.name), this.#now().getTime(), wait),
@@ -3176,8 +3185,8 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 				let page: CloudFolderDrainPage;
 				try {
 					page = signal
-						? await controlPlane.listFolderDrainDue(drain.name, afterEnvironmentId, this.#pageSize, signal)
-						: await controlPlane.listFolderDrainDue(drain.name, afterEnvironmentId, this.#pageSize);
+						? await listFolderDrainDue(drain.name, afterEnvironmentId, this.#pageSize, signal)
+						: await listFolderDrainDue(drain.name, afterEnvironmentId, this.#pageSize);
 				} catch (error) {
 					if (signal?.aborted) throw error;
 					failed(
@@ -3212,7 +3221,7 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 						);
 					}
 				});
-				for (let i = 0; i < runnable.length; i++) if (hasFailure[i]) failures.push(pageFailures[i]);
+				for (let i = 0; i < runnable.length; i++) if (hasFailure[i]) drainFailures.push(pageFailures[i]);
 				const next = page.hasMore ? page.nextAfterEnvironmentId : undefined;
 				if (page.hasMore && !next) {
 					failed(new Error(`Folder drain ${drain.name} pagination lost its cursor`));
@@ -3227,6 +3236,21 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 				afterEnvironmentId = next;
 			} while (afterEnvironmentId);
 			if (listed) this.#drainBackoff.delete(drain.name);
+			return drainFailures;
+		};
+
+		for (const wave of waves) {
+			signal?.throwIfAborted();
+			const settled = await Promise.allSettled(wave.map((drain) => runDrain(drain)));
+			let abortRejection: { readonly error: unknown } | undefined;
+			for (const entry of settled) {
+				if (entry.status === "rejected") {
+					if (!abortRejection) abortRejection = { error: entry.reason };
+				} else {
+					failures.push(...entry.value);
+				}
+			}
+			if (abortRejection) throw abortRejection.error;
 		}
 		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
 	}

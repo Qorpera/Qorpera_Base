@@ -2206,6 +2206,33 @@ describe("cloud runner orchestrator", () => {
 			expect(f.listed()).toEqual(["events"]);
 		});
 
+		it("runs post-listen folder drains concurrently while keeping listen before human_tasks", async () => {
+			const f = folderControl({
+				...quiet,
+				listen: true,
+				human_tasks: true,
+				machine_events: true,
+				office_wakes: true,
+				events: true,
+			});
+			let listenFinished = false;
+			let humanTasksSawListenFinished = false;
+			let inFlight = 0;
+			let maxInFlight = 0;
+			f.listDrain.mockImplementation(async (drain) => {
+				if (drain === "human_tasks") humanTasksSawListenFinished = listenFinished;
+				inFlight += 1;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				inFlight -= 1;
+				if (drain === "listen") listenFinished = true;
+				return { items: [], hasMore: false };
+			});
+			await f.orchestrator.runOnce();
+			expect(humanTasksSawListenFinished).toBe(true);
+			expect(maxInFlight).toBeGreaterThanOrEqual(2);
+		});
+
 		it("asks every list itself when the call fails, and reports the failure once per wait", async () => {
 			const outage = new CloudRunnerOrchestratorRequestError(503);
 			const f = folderControl();

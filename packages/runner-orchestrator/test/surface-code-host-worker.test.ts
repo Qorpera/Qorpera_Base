@@ -1502,4 +1502,135 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 			p_status: "failed",
 		});
 	});
+
+	it("decouples peer session rebases off Approve into yieldable background work", async () => {
+		const f = await createCodeHostFixture();
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionA = randomUUID();
+		const sessionB = randomUUID();
+		const workerA = randomUUID();
+		const workerB = randomUUID();
+		const changeA = randomUUID();
+		const changeB = randomUUID();
+
+		await addCodeWorktree(f.job, { repository: f.repository, workerId: workerA, baseSha: f.baseSha });
+		await addCodeWorktree(f.job, { repository: f.repository, workerId: workerB, baseSha: f.baseSha });
+		const wtA = join(f.code, "worktrees", workerA);
+		const wtB = join(f.code, "worktrees", workerB);
+		await writeFile(join(wtA, "hero.html"), "<h1>Hero</h1>\n");
+		await f.git(wtA, "add", "hero.html");
+		await f.git(wtA, "commit", "-m", "Add hero");
+		const shaA = await f.git(wtA, "rev-parse", "HEAD");
+
+		await writeFile(join(wtB, "footer.html"), "<footer>Footer</footer>\n");
+		await f.git(wtB, "add", "footer.html");
+		await f.git(wtB, "commit", "-m", "Add footer");
+		const shaB = await f.git(wtB, "rev-parse", "HEAD");
+
+		const timeline: string[] = [];
+		const hostRuns: Array<{ yields?: boolean }> = [];
+		const rpcCalls: { method: SurfaceCodeHostRpc; args: Record<string, unknown> }[] = [];
+		let claimed = false;
+		const worker = new SurfaceCodeHostWorker({
+			control: {
+				async call(method: SurfaceCodeHostRpc, args: Record<string, unknown>): Promise<unknown> {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						if (claimed) return { sessions: [], previews: [], merges: [], publishes: [], cleanups: [] };
+						claimed = true;
+						return {
+							sessions: [],
+							previews: [],
+							publishes: [],
+							cleanups: [],
+							merges: [
+								{
+									jobId: randomUUID(),
+									kind: "land_change",
+									surfaceId,
+									sessionId: sessionA,
+									profileId,
+									environmentId,
+									leaseToken: randomUUID(),
+									sourceKind: "code_repo",
+									repositoryKey: "thetaband/website",
+									folderRoot: null,
+									expectMainSha: f.baseSha,
+									sessionWorkerId: workerA,
+									sessionState: "ready",
+									sessionHasActiveChat: false,
+									payload: { changeIds: [changeA] },
+									approvedChanges: [
+										{
+											changeId: changeA,
+											kind: "git_range",
+											parentSha: f.baseSha,
+											headSha: shaA,
+											title: "Add hero",
+											summary: "",
+											patchManifest: null,
+											affectedPaths: ["hero.html"],
+										},
+									],
+									siblingRemainingChanges: [],
+									peerSessions: [
+										{
+											sessionId: sessionB,
+											workerId: workerB,
+											sessionState: "ready",
+											sessionHasActiveChat: false,
+											remainingChanges: [
+												{ changeId: changeB, parentSha: f.baseSha, headSha: shaB, title: "Add footer" },
+											],
+										},
+									],
+								},
+							],
+						};
+					}
+					if (method === "qorpera_surface_complete_merge") {
+						timeline.push("complete_merge");
+						return { jobId: args.p_job_id, status: args.p_status };
+					}
+					if (method === "qorpera_surface_update_rebased_changes") {
+						timeline.push(`rebased:${String(args.p_session_id)}`);
+						return { updated: 1, sessionId: args.p_session_id };
+					}
+					return { renewed: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn, options) {
+					hostRuns.push({ yields: options?.yields });
+					timeline.push(options?.yields ? "host:yieldable" : "host:urgent");
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const pass = await worker.pass(new AbortController().signal);
+		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, cleanups: 0, failed: 0 });
+		await worker.drainBackgroundPeerSyncs();
+
+		expect(hostRuns).toEqual([{ yields: undefined }, { yields: true }]);
+		expect(timeline.indexOf("complete_merge")).toBeGreaterThan(-1);
+		expect(timeline.indexOf("host:yieldable")).toBeGreaterThan(timeline.indexOf("complete_merge"));
+		expect(timeline.indexOf(`rebased:${sessionB}`)).toBeGreaterThan(timeline.indexOf("host:yieldable"));
+
+		const peerUpdate = rpcCalls.find(
+			(c) => c.method === "qorpera_surface_update_rebased_changes" && c.args.p_session_id === sessionB,
+		);
+		expect(peerUpdate).toBeTruthy();
+		const landedMain = String(rpcCalls.find((c) => c.method === "qorpera_surface_complete_merge")?.args.p_main_after);
+		expect(await f.git(join(f.code, "repo.git"), "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(landedMain);
+		const peerHead = await f.git(
+			join(f.code, "repo.git"),
+			"--git-dir=.",
+			"rev-parse",
+			`refs/heads/qorpera/coding/${workerB}`,
+		);
+		expect(peerHead).not.toBe(shaB);
+	}, 20_000);
 });

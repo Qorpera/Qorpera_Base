@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ObjectDependencyError } from "./dependency.ts";
+import type { FolderDownloadFence } from "./folder-objects.ts";
 import type { MemberRequestObservationSpan } from "./member-observability.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -13,6 +14,13 @@ export interface MemberFolderObjectAuthority {
 		userToken: string,
 		environmentId: string,
 		sha256: string,
+		signal?: AbortSignal,
+	): Promise<{ profileId: string; bytes: number; fence?: FolderDownloadFence }>;
+	recheckMemberFolderObjectFence?(
+		userToken: string,
+		environmentId: string,
+		sha256: string,
+		fence: FolderDownloadFence,
 		signal?: AbortSignal,
 	): Promise<{ profileId: string; bytes: number }>;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
@@ -76,7 +84,11 @@ export async function serveMemberFolderObject(
 		}
 		if (stop.signal.aborted) return;
 		observation?.update({ logicalObjectReadBytes: bytes.byteLength });
-		const current = await authority.authorizeMemberFolderObject(token, environmentId, sha256, stop.signal);
+		// WHY: Re-validate with the lightweight download fence after NAS I/O instead of repeating a full readability scan when authoritySeq is unchanged.
+		const current =
+			admitted.fence && authority.recheckMemberFolderObjectFence
+				? await authority.recheckMemberFolderObjectFence(token, environmentId, sha256, admitted.fence, stop.signal)
+				: await authority.authorizeMemberFolderObject(token, environmentId, sha256, stop.signal);
 		if (stop.signal.aborted) return;
 		if (current.profileId !== admitted.profileId || current.bytes !== admitted.bytes)
 			throw new ObjectDependencyError(503);

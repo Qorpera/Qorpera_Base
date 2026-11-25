@@ -64,6 +64,48 @@ function rebaseErrorCode(error: unknown): string {
 	return error instanceof Error && error.name ? error.name : "UNKNOWN";
 }
 
+// WHY: Isolate peer-session rebasing into a reusable step so Surface Approve can complete before background peer syncs run.
+export async function syncPeerSurfaceSessions(
+	job: CodeHostJob,
+	input: {
+		readonly repository: CloudCodingRepository;
+		readonly ontoSha: string;
+		readonly peerSessions: readonly PeerOpenSessionInput[];
+	},
+): Promise<{ readonly sessionId: string; readonly result: RebaseSessionChangesResult }[]> {
+	const peerSync: { sessionId: string; result: RebaseSessionChangesResult }[] = [];
+	for (const peer of input.peerSessions) {
+		if (peer.remainingChanges.length === 0) continue;
+		let result: RebaseSessionChangesResult;
+		try {
+			result = await rebaseSessionChanges(job, {
+				repository: input.repository,
+				workerId: peer.workerId,
+				ontoSha: input.ontoSha,
+				remainingChanges: peer.remainingChanges,
+				updateBranchRef: true,
+				allowedBranchTips: [
+					...new Set([
+						peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha,
+						...(peer.recordedChangeHeadShas ?? []),
+					]),
+				],
+			});
+		} catch (error) {
+			if (job.signal.aborted) throw error;
+			result = {
+				status: "deferred",
+				ontoSha: input.ontoSha,
+				reason: "rebase_failed",
+				errorCode: rebaseErrorCode(error),
+				restored: [],
+			};
+		}
+		peerSync.push({ sessionId: peer.sessionId, result });
+	}
+	return peerSync;
+}
+
 // WHY: Runs selective cherry-pick landing, sibling/peer rebasing, lifecycle evaluation, and optional auto-publish in one deterministic workflow.
 export async function approveAndSyncSurfaceChanges(
 	job: CodeHostJob,
@@ -124,36 +166,14 @@ export async function approveAndSyncSurfaceChanges(
 		}
 	}
 
-	const peerSync: { sessionId: string; result: RebaseSessionChangesResult }[] = [];
-	for (const peer of request.peerSessions) {
-		if (peer.remainingChanges.length === 0) continue;
-		let result: RebaseSessionChangesResult;
-		try {
-			result = await rebaseSessionChanges(job, {
-				repository: request.repository,
-				workerId: peer.workerId,
-				ontoSha: landed.mainAfter,
-				remainingChanges: peer.remainingChanges,
-				updateBranchRef: true,
-				allowedBranchTips: [
-					...new Set([
-						peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha,
-						...(peer.recordedChangeHeadShas ?? []),
-					]),
-				],
-			});
-		} catch (error) {
-			if (job.signal.aborted) throw error;
-			result = {
-				status: "deferred",
-				ontoSha: landed.mainAfter,
-				reason: "rebase_failed",
-				errorCode: rebaseErrorCode(error),
-				restored: [],
-			};
-		}
-		peerSync.push({ sessionId: peer.sessionId, result });
-	}
+	const peerSync =
+		request.peerSessions.length > 0
+			? await syncPeerSurfaceSessions(job, {
+					repository: request.repository,
+					ontoSha: landed.mainAfter,
+					peerSessions: request.peerSessions,
+				})
+			: [];
 
 	const approvedSet = new Set(request.approvedChanges.map((item) => item.changeId));
 	const updatedStatuses = request.allSessionChangeStatuses.map((item) => {

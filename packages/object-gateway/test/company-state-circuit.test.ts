@@ -140,11 +140,19 @@ async function gateway() {
 			if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(name))
 				return Response.json(true);
 			if (name === "qorpera_list_profile_objects_for_migration") return Response.json([]);
-			if (name === "qorpera_member_folder_object")
+			if (name === "qorpera_member_folder_object" || name === "qorpera_member_folder_object_authorize")
 				return Response.json({
 					schema: "qorpera.folder-object-download/v1",
 					profileId: companies[company!].companyId,
 					bytes: bytes.length,
+				});
+			if (name === "qorpera_member_folder_object_fence")
+				return Response.json({
+					schema: "qorpera.folder-object-download/v1",
+					profileId: companies[company!].companyId,
+					bytes: bytes.length,
+					authoritySeq: 1,
+					rechecked: false,
 				});
 			return Response.json({}, { status: 403 });
 		},
