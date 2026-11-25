@@ -739,13 +739,14 @@ it("reports a full company before any byte is written", async () => {
 it("keeps any other refusal's 400, which never opens the gateway's circuit", async () => {
 	const { bytes, sql, authority } = await fixture();
 	const signal = new AbortController().signal;
-	for (const body of [JSON.stringify({ code: "22023", message: "invalid" }), "not json"]) {
+	for (const [mediaType, body] of [
+		["text/plain", JSON.stringify({ code: "22023", message: "invalid" })],
+		["text/markdown", "not json"],
+	] as const) {
 		sql.badRequest = body;
-		await expect(bytes.put(Buffer.from(`refused ${body.length}`), "text/plain", false, signal)).rejects.toMatchObject(
-			{
-				category: "transport_unavailable",
-			},
-		);
+		await expect(bytes.put(new Uint8Array(0), mediaType, false, signal)).rejects.toMatchObject({
+			category: "transport_unavailable",
+		});
 		expect(authority.health().api.status).toBe("healthy");
 	}
 });

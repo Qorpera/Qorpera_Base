@@ -1245,11 +1245,12 @@ it("reads retired.md and app.toml once across prepare and execute for own apps a
 	const pathsRead = () => readText.mock.calls.map(([path]) => path);
 	const tool = f.tool("save_app");
 
+	const { actionReviewId: _ignoredReviewId, ...unreviewedContext } = f.context;
 	const ownParsed = tool.parseArguments(
 		save("mine", "own-1", null, [{ path: "index.html", text: `${PAGE}<!--1-->` }]),
 	);
-	const ownPrepared = (await tool.prepare?.(ownParsed, { ...f.context, callId: "call_own_1" })) ?? ownParsed;
-	expect(read(await tool.execute(ownPrepared, { ...f.context, callId: "call_own_1" })).state).toBe("applied");
+	const ownPrepared = (await tool.prepare?.(ownParsed, { ...unreviewedContext, callId: "call_own_1" })) ?? ownParsed;
+	expect(read(await tool.execute(ownPrepared, { ...unreviewedContext, callId: "call_own_1" })).state).toBe("applied");
 	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(1);
 	expect(pathsRead().filter((path) => path === "apps/mine/app.toml")).toHaveLength(1);
 
@@ -1258,8 +1259,10 @@ it("reads retired.md and app.toml once across prepare and execute for own apps a
 		save("theirs", "foreign-1", null, [{ path: "index.html", text: `${PAGE}<!--2-->` }]),
 	);
 	const foreignPrepared =
-		(await tool.prepare?.(foreignParsed, { ...f.context, callId: "call_foreign_1" })) ?? foreignParsed;
-	expect(read(await tool.execute(foreignPrepared, { ...f.context, callId: "call_foreign_1" })).state).toBe("applied");
+		(await tool.prepare?.(foreignParsed, { ...unreviewedContext, callId: "call_foreign_1" })) ?? foreignParsed;
+	expect(read(await tool.execute(foreignPrepared, { ...unreviewedContext, callId: "call_foreign_1" })).state).toBe(
+		"applied",
+	);
 	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(2);
 	expect(pathsRead().filter((path) => path === "apps/theirs/app.toml")).toHaveLength(2);
 
@@ -1268,10 +1271,15 @@ it("reads retired.md and app.toml once across prepare and execute for own apps a
 		save("mine", "own-reviewed", null, [{ path: "index.html", text: `${PAGE}<!--3-->` }]),
 	);
 	const reviewedPrepared =
-		(await tool.prepare?.(reviewedParsed, { ...f.context, callId: "call_reviewed_1" })) ?? reviewedParsed;
+		(await tool.prepare?.(reviewedParsed, { ...unreviewedContext, callId: "call_reviewed_1" })) ?? reviewedParsed;
 	expect(
-		read(await tool.execute(reviewedPrepared, { ...f.context, callId: "call_reviewed_1", actionReviewId: "rev_1" }))
-			.state,
+		read(
+			await tool.execute(reviewedPrepared, {
+				...unreviewedContext,
+				callId: "call_reviewed_1",
+				actionReviewId: "rev_1",
+			}),
+		).state,
 	).toBe("applied");
 	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(2);
 	expect(pathsRead().filter((path) => path === "apps/mine/app.toml")).toHaveLength(2);

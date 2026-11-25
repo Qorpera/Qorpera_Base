@@ -977,6 +977,6 @@ it("assertFresh skips cloud RPC within min(maxAgeMs, validForMs), rechecks on ex
 	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(2);
 
 	clock.now += 500;
-	await run.assertFresh(run.signal, 5_000);
-	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(3);
+	await expect(run.assertFresh(run.signal, 5_000)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(true);
 });
