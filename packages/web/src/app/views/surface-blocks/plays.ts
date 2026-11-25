@@ -116,14 +116,19 @@ function playCard(play: StrategyPlay, ctx: SurfaceBlockContext): HTMLElement {
 	const toggle = details
 		? h(
 				"button",
-				{ type: "button", class: "studio-play-more", "aria-expanded": "false", "aria-controls": details.id },
+				{
+					type: "button",
+					class: "studio-play-more studio-play-toggle",
+					"aria-expanded": "false",
+					"aria-controls": details.id,
+				},
 				h("span", null, t("Details")),
 				icon("chevron-down"),
 			)
 		: null;
 	const card = h(
 		"article",
-		{ class: `studio-play is-${play.status}`, "data-play": play.id },
+		{ class: `studio-play is-${play.status}`, "data-play": play.id, "data-tour-id": `play:${play.id}` },
 		h(
 			"header",
 			{ class: "studio-play-top" },
@@ -202,7 +207,7 @@ export function preparePlays(block: SurfacePlaysBlock, ctx: SurfaceBlockContext)
 						"section",
 						{ class: "studio-section studio-plays", "data-block": "plays" },
 						sectionHead(heading, read.changed),
-						lead ? h("p", { class: "studio-plays-verdict" }, lead) : null,
+						lead ? h("p", { class: "studio-plays-verdict", "data-tour-id": "plays:verdict" }, lead) : null,
 						h(
 							"div",
 							{ class: "studio-plays-grid" },

@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 import type { SurfaceSummary } from "@qorpera/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { getInstanceByDom } from "echarts/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SurfaceLayoutView } from "../src/app/views/surface-layout-view.ts";
+import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fakeClient, storeWith, summary } from "./surface-fixtures.ts";
+import { fakeClient, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
 const ROOT = "surfaces/strategy";
+
+beforeEach(() => {
+	vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
+});
 
 afterEach(() => {
 	setLanguagePreference("en");
@@ -51,15 +57,17 @@ function layoutInput(files: Readonly<Record<string, string>>, tab: string) {
 
 function layoutView(files: Readonly<Record<string, string>>, askSurface?: Ask) {
 	const store = storeWith(fakeClient());
+	const lifetime = new AbortController();
 	const view = new SurfaceLayoutView({
 		store,
 		surface: strategySurface(),
-		signal: new AbortController().signal,
+		signal: lifetime.signal,
 		baseFiles: () => files,
 		timeSlice: false,
 		...(askSurface ? { askSurface } : {}),
 	});
 	const done = () => {
+		lifetime.abort();
 		view.dispose();
 		store.dispose();
 	};
@@ -81,6 +89,30 @@ const texts = (els: Iterable<Element>) => [...els].map(text);
 const file = (name: string, value: unknown) => ({ [`${ROOT}/${name}`]: JSON.stringify(value) });
 const hover = (el: Element, kind: "mouseenter" | "mouseleave") => el.dispatchEvent(new MouseEvent(kind));
 const click = (el: Element) => el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+function at(value: unknown, ...path: readonly (string | number)[]): unknown {
+	let cursor = value;
+	for (const key of path) {
+		cursor =
+			cursor !== null && typeof cursor === "object" ? (cursor as Record<string | number, unknown>)[key] : undefined;
+	}
+	return cursor;
+}
+const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+async function chartOn(host: Element, kind: string) {
+	await vi.waitFor(() => expect((host as HTMLElement).dataset.chart).toBe(kind));
+	const chart = getInstanceByDom(host as HTMLElement);
+	expect(chart).toBeDefined();
+	return chart!;
+}
+const chartOption = (host: Element): unknown => getInstanceByDom(host as HTMLElement)?.getOption();
+const seriesOf = (host: Element, index = 0) => at(chartOption(host), "series", index);
+const fire = (host: Element, event: string, params?: unknown) =>
+	(getInstanceByDom(host as HTMLElement) as unknown as { trigger: (name: string, value?: unknown) => void }).trigger(
+		event,
+		params,
+	);
 
 const PLAYS = {
 	verdict: "Sell to dealers, not drivers.",
@@ -243,6 +275,7 @@ const ECONOMICS = {
 			thesis: "Fewer dealers at the rival's price.",
 			values: { price: 1495, customers: 30 },
 		},
+		{ id: "volume", name: "Volume push", values: { customers: 70 } },
 	],
 };
 
@@ -367,7 +400,7 @@ describe("The strategy starter on the layout renderer", () => {
 		expect(text(economy.root.querySelector('[data-block="economics"] .studio-section-head h2'))).toBe(
 			"Enhedsøkonomi",
 		);
-		expect(texts(economy.root.querySelectorAll(".studio-econ-view"))).toEqual(["Pengestrøm", "Nulpunkt"]);
+		expect(texts(economy.root.querySelectorAll(".studio-econ-view"))).toEqual(["Pengestrøm", "Vandfald", "Nulpunkt"]);
 		economy.done();
 	});
 });
@@ -382,6 +415,12 @@ describe("The plays block", () => {
 		const { root, done } = draw(file("plays.json", PLAYS), "plan", ask);
 		const block = root.querySelector('[data-block="plays"]')!;
 		expect(text(block.querySelector(".studio-plays-verdict"))).toBe("Sell to dealers, not drivers.");
+		expect(block.querySelector('[data-tour-id="plays:verdict"]')).toBe(block.querySelector(".studio-plays-verdict"));
+		expect([...block.querySelectorAll<HTMLElement>(".studio-play")].map((card) => card.dataset.tourId)).toEqual([
+			"play:dealers",
+			"play:fleet",
+			"play:drivers",
+		]);
 		expect(block.querySelector(".studio-play-facts")).not.toBeNull();
 		const names = texts(block.querySelectorAll(".studio-play-name"));
 		expect(names).toEqual(["Dealer lead engine", "Fleet software", "Driver subscription"]);
@@ -406,6 +445,7 @@ describe("The plays block", () => {
 
 		const details = lead.querySelector<HTMLElement>(".studio-play-details")!;
 		const more = lead.querySelector<HTMLButtonElement>(".studio-play-more")!;
+		expect(more.classList.contains("studio-play-toggle")).toBe(true);
 		expect(details.hidden).toBe(true);
 		expect(more.getAttribute("aria-expanded")).toBe("false");
 		expect(block.querySelectorAll(".studio-play-details:not([hidden])")).toHaveLength(0);
@@ -463,18 +503,47 @@ function economics(ask?: Ask, doc: unknown = ECONOMICS) {
 	};
 	const hero = () => text(block.querySelector(".studio-econ-hero-value"));
 	const metric = (id: string) => text(block.querySelector(`[data-headline="${id}"] .studio-econ-metric-value`));
-	const band = (id: string) => block.querySelector<SVGPathElement>(`.studio-econ-band[data-stream="${id}"]`)!;
 	const flag = (id: string) => block.querySelector<HTMLButtonElement>(`.studio-econ-flag[data-constraint="${id}"]`)!;
-	return { ...drawn, block, range, slide, hero, metric, band, flag };
+	const host = block.querySelector<HTMLElement>(".studio-econ-chart-host")!;
+	const card = (id: string | null) =>
+		block.querySelector<HTMLButtonElement>(
+			id === null ? ".studio-econ-scenario.is-base" : `.studio-econ-scenario[data-scenario="${id}"]`,
+		)!;
+	const pickView = (key: string) =>
+		block.querySelector<HTMLButtonElement>(`.studio-econ-view[data-econ-view="${key}"]`)!;
+	return { ...drawn, block, range, slide, hero, metric, flag, host, card, pickView };
 }
 
+const nodeNames = (host: Element) => list(at(seriesOf(host), "data")).map((node) => at(node, "name"));
+const nodeLabel = (host: Element, name: string) =>
+	at(
+		list(at(seriesOf(host), "data")).find((node) => at(node, "name") === name),
+		"label",
+		"formatter",
+	);
+const linksOf = (host: Element) =>
+	list(at(seriesOf(host), "links")).map((link) => [at(link, "source"), at(link, "target"), at(link, "value")]);
+
 describe("The economics block", () => {
-	it("leads with one hero number, inline metrics, the money river and three levers", () => {
-		const { block, hero, metric, done } = economics();
+	it("leads with scenario cards, one hero number, the ECharts money flow and three levers", async () => {
+		const { block, hero, metric, host, card, done } = economics();
 		expect(text(block.querySelector(".studio-econ-title h3"))).toBe("Dealer lead engine");
-		expect(texts(block.querySelectorAll(".studio-econ-scenario"))).toEqual(["Base", "Premium"]);
-		expect(block.querySelector(".studio-econ-scenario.is-base.is-on")).not.toBeNull();
+		const strip = block.querySelector<HTMLElement>(".studio-econ-scenarios")!;
+		expect(strip.dataset.tourId).toBe("econ:scenarios");
+		expect(texts(strip.querySelectorAll(".studio-econ-scenario-name"))).toEqual(["Base", "Premium", "Volume push"]);
+		expect(texts(strip.querySelectorAll(".studio-econ-scenario-value"))).toEqual([
+			"DKK 0",
+			"+DKK 6,850",
+			"+DKK 8,000",
+		]);
+		expect(card(null).classList.contains("is-on")).toBe(true);
+		expect(card(null).getAttribute("aria-pressed")).toBe("true");
+		expect(card(null).querySelector(".studio-econ-scenario-dot.is-good")).not.toBeNull();
+		expect(card("premium").querySelector(".studio-econ-scenario-dot.is-good")).not.toBeNull();
+		expect(card("volume").querySelector(".studio-econ-scenario-dot.is-bad")).not.toBeNull();
+		expect(card("volume").dataset.tone).toBe("bad");
 		expect(block.querySelector<HTMLElement>(".studio-econ-thesis")!.hidden).toBe(true);
+		expect(block.querySelector<HTMLElement>(".studio-econ-hero")!.dataset.tourId).toBe("econ:hero");
 
 		const readout = block.querySelector<HTMLElement>(".studio-econ-readout")!;
 		expect(readout.dataset.headline).toBe("contribution");
@@ -491,31 +560,42 @@ describe("The economics block", () => {
 		expect(block.querySelector<HTMLElement>(".studio-econ-verdict")!.hidden).toBe(false);
 		expect(text(block.querySelector(".studio-econ-verdict"))).toBe(ECONOMICS.verdict);
 
-		expect(texts(block.querySelectorAll(".studio-econ-view"))).toEqual(["Money flow", "Break-even"]);
-		expect(block.querySelector('.studio-econ-view[data-view="flow"]')?.getAttribute("aria-pressed")).toBe("true");
-		const flow = block.querySelector(".studio-econ-flow svg.studio-econ-svg.is-flow")!;
-		expect(flow.querySelectorAll(".studio-econ-band")).toHaveLength(4);
-		expect(flow.querySelectorAll(".studio-econ-band.is-income")).toHaveLength(1);
-		expect(flow.querySelectorAll(".studio-econ-band.is-cost")).toHaveLength(2);
-		expect(flow.querySelectorAll(".studio-econ-band.is-total")).toHaveLength(1);
-		expect(flow.querySelector(".studio-econ-band.is-shortfall")).toBeNull();
-		expect(flow.querySelector(".studio-econ-spine")).not.toBeNull();
-		for (const path of flow.querySelectorAll(".studio-econ-band"))
-			expect(path.getAttribute("d")).toMatch(/^M.* C.* Z$/);
-		expect(texts(flow.querySelectorAll(".studio-econ-flow-name"))).toEqual([
-			"Revenue",
-			"Delivery",
-			"Fixed",
-			"Contribution",
+		expect(texts(block.querySelectorAll(".studio-econ-view"))).toEqual(["Money flow", "Waterfall", "Break-even"]);
+		expect(block.querySelector('.studio-econ-view[data-econ-view="flow"]')?.getAttribute("aria-pressed")).toBe(
+			"true",
+		);
+		expect(block.querySelector<HTMLElement>(".studio-econ-board")!.dataset.tourId).toBe("econ:visual");
+		expect(host.getAttribute("aria-label")).toBe("Where the money goes");
+		await chartOn(host, "flow");
+		expect(host.classList.contains("is-loading")).toBe(false);
+		expect(host.querySelector("svg")).not.toBeNull();
+		const sankey = seriesOf(host);
+		expect(at(sankey, "type")).toBe("sankey");
+		expect(at(sankey, "nodeAlign")).toBe("justify");
+		expect(at(sankey, "emphasis", "focus")).toBe("adjacency");
+		expect(at(sankey, "lineStyle", "curveness")).toBe(0.48);
+		expect(at(sankey, "lineStyle", "color")).toBe("gradient");
+		expect(at(sankey, "lineStyle", "opacity")).toBe(0.42);
+		expect(nodeNames(host)).toEqual(["revenue", "labor_cost", "fixed_costs", "contribution"]);
+		expect(linksOf(host)).toEqual([
+			["revenue", "labor_cost", 30000],
+			["revenue", "fixed_costs", 20000],
+			["revenue", "contribution", 0],
 		]);
-		expect(texts(flow.querySelectorAll(".studio-econ-flow-amount"))).toEqual([
-			"DKK 50K",
-			"DKK 30K · 60%",
-			"DKK 20K · 40%",
-			"DKK 0 · 0%",
-		]);
-		expect(block.querySelector(".studio-econ-svg.is-curve")).toBeNull();
+		const clean = (value: unknown) => String(value).replace(/\u00a0/g, " ");
+		expect(clean(nodeLabel(host, "revenue"))).toBe("{name|Revenue}\n{amount|DKK 50K}");
+		expect(clean(nodeLabel(host, "labor_cost"))).toBe("{name|Delivery}\n{amount|DKK 30K · 60%}");
+		expect(clean(nodeLabel(host, "contribution"))).toBe("{name|Contribution}\n{amount|DKK 0 · 0%}");
+		const total = list(at(sankey, "data")).find((node) => at(node, "name") === "contribution");
+		const rent = list(at(sankey, "data")).find((node) => at(node, "name") === "fixed_costs");
+		expect(at(total, "itemStyle", "color")).not.toBe(at(rent, "itemStyle", "color"));
+		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => string;
+		const delivery = list(at(sankey, "links"))[0];
+		expect(clean(tip({ data: delivery }))).toContain("60% of revenue");
+		expect(clean(tip({ data: delivery }))).toContain("DKK 30K");
 
+		const leverStrip = block.querySelector<HTMLElement>(".studio-econ-levers")!;
+		expect(leverStrip.dataset.tourId).toBe("econ:levers");
 		const levers = [...block.querySelectorAll<HTMLElement>(".studio-econ-levers > .studio-econ-lever")];
 		expect(levers.map((lever) => lever.dataset.input)).toEqual(["customers", "price", "hours_per_customer"]);
 		expect(block.querySelector(".studio-econ-levers .studio-tier")).toBeNull();
@@ -527,35 +607,36 @@ describe("The economics block", () => {
 		done();
 	});
 
-	it("dims every other band and swaps the hero to a stream while it is pointed at", () => {
-		const { block, hero, band, done } = economics();
-		const flow = block.querySelector(".studio-econ-flow")!;
-		hover(band("labor_cost"), "mouseenter");
-		expect(flow.classList.contains("is-picking")).toBe(true);
-		expect(band("labor_cost").classList.contains("is-on")).toBe(true);
-		expect(band("revenue").classList.contains("is-on")).toBe(false);
-		expect(
-			block.querySelector('.studio-econ-flow-label[data-stream="labor_cost"]')!.classList.contains("is-on"),
-		).toBe(true);
+	it("swaps the hero to the stream ECharts points at and pins it on click", async () => {
+		const { block, hero, host, done } = economics();
+		await chartOn(host, "flow");
+		const streams = list(at(seriesOf(host), "links")).map((link) => at(link, "stream"));
+		const delivery = streams.find((stream) => at(stream, "id") === "labor_cost");
+		const fixed = streams.find((stream) => at(stream, "id") === "fixed_costs");
+		fire(host, "mouseover", { dataType: "edge", data: { stream: delivery } });
 		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Delivery");
 		expect(hero()).toBe("DKK 30K");
 		expect(text(block.querySelector(".studio-econ-hero-sub"))).toBe("60% of revenue");
 		expect(block.querySelector(".studio-econ-readout.is-peek")).not.toBeNull();
-		hover(band("labor_cost"), "mouseleave");
-		expect(flow.classList.contains("is-picking")).toBe(false);
+		fire(host, "mouseout", {});
 		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Contribution");
 		expect(hero()).toBe("DKK 0");
+		expect(block.querySelector(".studio-econ-readout.is-peek")).toBeNull();
 
-		click(band("fixed_costs"));
-		expect(band("fixed_costs").getAttribute("aria-pressed")).toBe("true");
+		fire(host, "click", { dataType: "edge", data: { stream: fixed } });
 		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Fixed");
-		click(band("fixed_costs"));
+		fire(host, "mouseout", {});
+		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Fixed");
+		fire(host, "click", { dataType: "edge", data: { stream: fixed } });
+		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Contribution");
+		fire(host, "mouseover", { dataType: "node", data: { name: "__hub__" } });
 		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Contribution");
 		done();
 	});
 
-	it("shows a loss as a hatched shortfall and a breach as one pill with one line", () => {
-		const { root, block, slide, hero, band, flag, range, done } = economics();
+	it("routes a loss through a red shortfall node and shows a breach as one pill with one line", async () => {
+		const { root, block, slide, hero, flag, range, host, card, done } = economics();
+		const chart = await chartOn(host, "flow");
 		slide("customers", 70);
 		expect(root.querySelector('[data-block="economics"]')).toBe(block);
 		expect(hero()).toBe("DKK 8,000");
@@ -585,13 +666,22 @@ describe("The economics block", () => {
 		flag("loss").click();
 		expect(line.hidden).toBe(false);
 		expect(text(line)).toBe("Losing money Each month burns cash.");
-		const shortfall = band("shortfall");
-		expect(shortfall.classList.contains("is-shortfall")).toBe(true);
-		expect(shortfall.getAttribute("fill")).toMatch(/^url\(#studio-econ-hatch-\d+\)$/);
-		expect(block.querySelector(".studio-econ-band.is-total")).toBeNull();
-		expect(text(block.querySelector(".studio-econ-flow-label.is-shortfall .studio-econ-flow-amount"))).toBe(
-			"-DKK 12K · 60%",
+		expect(getInstanceByDom(host)).toBe(chart);
+		expect(nodeNames(host)).toEqual(["revenue", "shortfall", "__hub__", "labor_cost", "fixed_costs"]);
+		expect(linksOf(host)).toEqual([
+			["revenue", "__hub__", 20000],
+			["shortfall", "__hub__", 12000],
+			["__hub__", "labor_cost", 12000],
+			["__hub__", "fixed_costs", 20000],
+		]);
+		expect(String(nodeLabel(host, "shortfall")).replace(/\u00a0/g, " ")).toBe(
+			"{name|Shortfall}\n{amount|-DKK 12K · 60%}",
 		);
+		const fixedNode = list(at(seriesOf(host), "data")).find((node) => at(node, "name") === "fixed_costs");
+		const gapNode = list(at(seriesOf(host), "data")).find((node) => at(node, "name") === "shortfall");
+		expect(at(gapNode, "itemStyle", "color")).not.toBe(at(fixedNode, "itemStyle", "color"));
+		expect(card(null).querySelector(".studio-econ-scenario-dot.is-bad")).not.toBeNull();
+		expect(text(card(null).querySelector(".studio-econ-scenario-value"))).toBe("-DKK 12K");
 
 		reset.click();
 		expect(range("customers").value).toBe("50");
@@ -601,32 +691,82 @@ describe("The economics block", () => {
 		done();
 	});
 
-	it("switches the stage to the break-even curve with its capacity wall", () => {
-		const { block, slide, done } = economics();
-		const curveButton = block.querySelector<HTMLButtonElement>('.studio-econ-view[data-view="curve"]')!;
-		curveButton.click();
-		expect(curveButton.getAttribute("aria-pressed")).toBe("true");
-		expect(block.querySelector(".studio-econ-flow")).toBeNull();
-		const curve = block.querySelector(".studio-econ-svg.is-curve")!;
-		expect(curve.querySelector(".studio-econ-line")).not.toBeNull();
-		expect(curve.querySelector(".studio-econ-area.is-profit")).not.toBeNull();
-		expect(curve.querySelector(".studio-econ-area.is-loss")).not.toBeNull();
-		expect(curve.querySelector(".studio-econ-capacity")).not.toBeNull();
-		expect(text(curve.querySelector(".studio-econ-capacity-label"))).toBe("Team capacity · 60");
-		expect(text(curve.querySelector(".studio-econ-breakeven-label"))).toBe("Break-even 50");
-		expect(curve.querySelector(".studio-econ-breakeven-dot")).not.toBeNull();
-		expect(curve.querySelector(".studio-econ-breakeven.is-impossible")).toBeNull();
-		expect(curve.querySelector(".studio-econ-now")).not.toBeNull();
+	it("bridges revenue to contribution as an ECharts waterfall", async () => {
+		const { block, slide, host, pickView, done } = economics();
+		await chartOn(host, "flow");
+		pickView("waterfall").click();
+		expect(pickView("waterfall").getAttribute("aria-pressed")).toBe("true");
+		expect(pickView("flow").getAttribute("aria-pressed")).toBe("false");
+		const chart = await chartOn(host, "waterfall");
+		expect(host.getAttribute("aria-label")).toBe("Waterfall");
+		expect([0, 1, 2].map((index) => at(seriesOf(host, index), "type"))).toEqual(["bar", "bar", "bar"]);
+		expect(list(at(chartOption(host), "xAxis", 0, "data"))).toEqual(["Revenue", "Delivery", "Fixed", "Contribution"]);
+		expect(list(at(seriesOf(host, 0), "data"))).toEqual(["-", 20000, "-", "-"]);
+		const up = list(at(seriesOf(host, 1), "data"));
+		expect(up.map((item) => at(item, "value"))).toEqual([50000, 30000, 20000, 0]);
+		expect(up.map((item) => String(at(item, "label", "formatter")).replace(/\u00a0/g, " "))).toEqual([
+			"+DKK 50K",
+			"-DKK 30K",
+			"-DKK 20K",
+			"DKK 0",
+		]);
+		expect(at(up[0], "itemStyle", "borderRadius")).toEqual([6, 6, 0, 0]);
+		expect(list(at(seriesOf(host, 1), "markLine", "data")).map((line) => at(line, "yAxis"))).toEqual([0]);
+
+		slide("customers", 20);
+		expect(getInstanceByDom(host)).toBe(chart);
+		const down = list(at(seriesOf(host, 2), "data"));
+		expect(at(down[3], "value")).toBe(-12000);
+		expect(String(at(down[3], "label", "formatter")).replace(/\u00a0/g, " ")).toBe("-DKK 12K");
+		expect(at(down[3], "itemStyle", "borderRadius")).toEqual([0, 0, 6, 6]);
+		expect(at(down[2], "value")).toBe(-12000);
+		expect(at(list(at(seriesOf(host, 1), "data"))[2], "value")).toBe(8000);
+
+		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => string;
+		expect(tip([{ dataIndex: 1 }])).toContain("60% of revenue");
+		expect(block.querySelector(".studio-econ-chart-foot")?.childElementCount).toBe(0);
+		done();
+	});
+
+	it("draws the break-even curve with its red capacity danger zone and pin", async () => {
+		const { block, slide, host, pickView, done } = economics();
+		pickView("curve").click();
+		expect(pickView("curve").getAttribute("aria-pressed")).toBe("true");
+		const chart = await chartOn(host, "curve");
+		expect(host.getAttribute("aria-label")).toBe("Dealers");
+		const line = seriesOf(host);
+		expect(at(line, "type")).toBe("line");
+		expect(at(chartOption(host), "tooltip", 0, "trigger")).toBe("axis");
+		expect(list(at(line, "data")).length).toBeGreaterThan(10);
+		expect(at(line, "areaStyle", "color")).toBeDefined();
+		const area = list(at(line, "markArea", "data"));
+		expect(area).toHaveLength(1);
+		expect(at(area[0], 0, "xAxis")).toBe(60);
+		expect(at(area[0], 0, "label", "formatter")).toBe("Team capacity · 60");
+		expect(at(area[0], 1, "xAxis")).toBe(120);
+		const lines = list(at(line, "markLine", "data"));
+		expect(lines.map((item) => [at(item, "xAxis"), at(item, "yAxis")])).toEqual([
+			[undefined, 0],
+			[60, undefined],
+		]);
+		expect(at(lines[1], "lineStyle", "type")).toEqual([5, 4]);
+		const pins = list(at(line, "markPoint", "data"));
+		expect(pins.map((pin) => at(pin, "name"))).toEqual(["Break-even 50", "now"]);
+		expect(at(pins[0], "symbol")).toBe("pin");
+		expect(at(pins[0], "coord")).toEqual([50, 0]);
 		expect(text(block.querySelector(".studio-econ-chart-note"))).toBe("Break-even at 50.");
 
 		block.querySelector<HTMLButtonElement>(".studio-econ-assumptions")!.click();
 		slide("hours_per_customer", 1.75);
-		expect(block.querySelector(".studio-econ-breakeven.is-impossible")).not.toBeNull();
+		expect(getInstanceByDom(host)).toBe(chart);
 		expect(text(block.querySelector(".studio-econ-chart-note.is-danger"))).toContain("past the capacity ceiling");
+		const moved = list(at(seriesOf(host), "markArea", "data"));
+		expect(Number(at(moved[0], 0, "xAxis"))).toBeCloseTo(90 / 1.75, 5);
 
-		block.querySelector<HTMLButtonElement>('.studio-econ-view[data-view="flow"]')!.click();
-		expect(block.querySelector(".studio-econ-flow")).not.toBeNull();
-		expect(block.querySelector(".studio-econ-svg.is-curve")).toBeNull();
+		pickView("flow").click();
+		await chartOn(host, "flow");
+		expect(at(seriesOf(host), "type")).toBe("sankey");
+		expect(block.querySelector(".studio-econ-chart-note")).toBeNull();
 		done();
 	});
 
@@ -682,11 +822,23 @@ describe("The economics block", () => {
 		done();
 	});
 
-	it("switches scenarios, snaps to a market mark and goes back to base", () => {
-		const { block, hero, range, done } = economics();
-		const premium = block.querySelector<HTMLButtonElement>('.studio-econ-scenario[data-scenario="premium"]')!;
+	it("switches scenarios from the comparison cards, snaps to a market mark and goes back to base", async () => {
+		const { block, hero, range, host, card, done } = economics();
+		const chart = await chartOn(host, "flow");
+		const premium = card("premium");
 		premium.click();
 		expect(premium.classList.contains("is-on")).toBe(true);
+		expect(premium.getAttribute("aria-pressed")).toBe("true");
+		expect(card(null).classList.contains("is-on")).toBe(false);
+		expect(getInstanceByDom(host)).toBe(chart);
+		expect(linksOf(host)[0]).toEqual(["revenue", "labor_cost", 18000]);
+		expect(text(premium.querySelector(".studio-econ-scenario-value"))).toBe("+DKK 6,850");
+		card("volume").click();
+		expect(hero()).toBe("DKK 8,000");
+		expect(block.querySelector<HTMLButtonElement>('.studio-econ-flag[data-constraint="capacity"]')!.hidden).toBe(
+			false,
+		);
+		premium.click();
 		expect(text(block.querySelector(".studio-econ-thesis"))).toBe("Fewer dealers at the rival's price.");
 		expect(range("price").value).toBe("1495");
 		expect(range("customers").value).toBe("30");
@@ -705,6 +857,8 @@ describe("The economics block", () => {
 		expect(range("price").value).toBe("1495");
 		expect(block.querySelector(".studio-econ-mark.is-on")).not.toBeNull();
 		expect(block.querySelector<HTMLButtonElement>(".studio-econ-reset")!.hidden).toBe(false);
+		expect(text(card(null).querySelector(".studio-econ-scenario-value"))).toBe("+DKK 24.8K");
+		expect(text(premium.querySelector(".studio-econ-scenario-value"))).toBe("+DKK 6,850");
 		done();
 	});
 
@@ -725,12 +879,13 @@ describe("The economics block", () => {
 		done();
 	});
 
-	it("keeps the founder's levers and view when the tab is drawn again", () => {
+	it("keeps the founder's scenario, levers and chart when the tab is drawn again", async () => {
 		const files = file("economics.json", ECONOMICS);
 		const { view, done } = layoutView(files);
 		const first = view.plan(layoutInput(files, "economics")).tasks.map((task) => task.build());
 		const block = first.find((el) => el.matches('[data-block="economics"]'))!;
-		block.querySelector<HTMLButtonElement>('.studio-econ-view[data-view="curve"]')!.click();
+		block.querySelector<HTMLButtonElement>('.studio-econ-scenario[data-scenario="premium"]')!.click();
+		block.querySelector<HTMLButtonElement>('.studio-econ-view[data-econ-view="waterfall"]')!.click();
 		const range = block.querySelector<HTMLInputElement>('[data-input="customers"] input')!;
 		range.value = "70";
 		range.dispatchEvent(new Event("input"));
@@ -738,12 +893,19 @@ describe("The economics block", () => {
 			.plan(layoutInput(files, "economics"))
 			.tasks.map((task) => task.build())
 			.find((el) => el.matches('[data-block="economics"]'))!;
+		document.body.append(again);
 		expect(again.querySelector<HTMLInputElement>('[data-input="customers"] input')!.value).toBe("70");
+		expect(again.querySelector<HTMLInputElement>('[data-input="price"] input')!.value).toBe("1495");
+		expect(again.querySelector('.studio-econ-scenario[data-scenario="premium"]')?.classList.contains("is-on")).toBe(
+			true,
+		);
 		expect(again.querySelector<HTMLButtonElement>('.studio-econ-flag[data-constraint="capacity"]')!.hidden).toBe(
 			false,
 		);
-		expect(again.querySelector('.studio-econ-view[data-view="curve"]')?.getAttribute("aria-pressed")).toBe("true");
-		expect(again.querySelector(".studio-econ-svg.is-curve")).not.toBeNull();
+		expect(again.querySelector('.studio-econ-view[data-econ-view="waterfall"]')?.getAttribute("aria-pressed")).toBe(
+			"true",
+		);
+		await chartOn(again.querySelector(".studio-econ-chart-host")!, "waterfall");
 		done();
 	});
 });
@@ -764,6 +926,16 @@ describe("The hypotheses block", () => {
 	it("draws the proof track in bet order with each node's status and impact", () => {
 		const { block, node, done } = hypotheses();
 		expect(text(block.querySelector(".studio-hyp-summary"))).toBe("Four bets carry the plan.");
+		expect(block.querySelector('[data-tour-id="hypotheses:track"]')).toBe(block.querySelector(".studio-hyp-track"));
+		expect([...block.querySelectorAll<HTMLElement>(".studio-hyp")].map((item) => item.dataset.tourId)).toEqual([
+			"hypothesis:h2",
+			"hypothesis:h1",
+			"hypothesis:h4",
+			"hypothesis:h3",
+		]);
+		expect(
+			[...block.querySelectorAll<HTMLElement>(".studio-hyp-head")].map((head) => head.dataset.hypothesisToggle),
+		).toEqual(["h2", "h1", "h4", "h3"]);
 		const track = block.querySelector(".studio-hyp-track svg")!;
 		expect(track.getAttribute("viewBox")).toBe("0 0 760 130");
 		const nodes = [...track.querySelectorAll<SVGGElement>(".studio-hyp-node")];
@@ -859,63 +1031,103 @@ describe("The hypotheses block", () => {
 });
 
 describe("The landscape block", () => {
-	it("maps every player with whole names placed clear of the edges and points", () => {
+	it("maps every player on the ECharts quadrant map with our position pulsing", async () => {
 		const { root, done } = draw(file("landscape.json", LANDSCAPE), "market");
 		const block = root.querySelector<HTMLElement>('[data-block="landscape"]')!;
 		expect(text(block.querySelector(".studio-land-wedge"))).toBe("Our wedge Bookings, not leads.");
+		expect(block.querySelector<HTMLElement>(".studio-land-wedge")!.dataset.tourId).toBe("landscape:wedge");
 		expect(text(block.querySelector(".studio-land-summary"))).toBe(LANDSCAPE.summary);
-		const map = block.querySelector(".studio-land-map svg")!;
-		expect(map.getAttribute("viewBox")).toBe("0 0 680 420");
-		expect(map.querySelectorAll(".studio-land-quad")).toHaveLength(2);
-		expect(texts(map.querySelectorAll(".studio-land-axis"))).toEqual(["Price", "Depth"]);
-		expect(texts(map.querySelectorAll(".studio-land-end"))).toEqual([
-			"← Cheap",
-			"Premium →",
-			"↑ Bookings",
-			"↓ Leads",
+		const map = block.querySelector<HTMLElement>(".studio-land-map")!;
+		expect(map.dataset.tourId).toBe("landscape:map");
+		const host = map.querySelector<HTMLElement>(".studio-land-chart-host")!;
+		expect(host.getAttribute("aria-label")).toBe("Positioning map: Price against Depth");
+		await chartOn(host, "landscape");
+		expect(host.querySelector("svg")).not.toBeNull();
+		const option = chartOption(host);
+		expect(at(option, "xAxis", 0, "name")).toBe("Price");
+		expect(at(option, "yAxis", 0, "name")).toBe("Depth");
+		const xEnds = at(option, "xAxis", 0, "axisLabel", "formatter") as (value: number) => string;
+		const yEnds = at(option, "yAxis", 0, "axisLabel", "formatter") as (value: number) => string;
+		expect([xEnds(0), xEnds(50), xEnds(100)]).toEqual(["← Cheap", "", "Premium →"]);
+		expect([yEnds(0), yEnds(100)]).toEqual(["↓ Leads", "↑ Bookings"]);
+		const rivals = seriesOf(host, 0);
+		const ours = seriesOf(host, 1);
+		expect(at(rivals, "type")).toBe("scatter");
+		expect(at(ours, "type")).toBe("effectScatter");
+		expect(list(at(rivals, "data")).map((item) => at(item, "name"))).toEqual(["Leadly", "Spreadsheets"]);
+		expect(list(at(ours, "data")).map((item) => at(item, "name"))).toEqual(["Qorpera Auto"]);
+		expect(at(ours, "rippleEffect", "scale")).toBe(3.4);
+		expect(at(ours, "rippleEffect", "brushType")).toBe("stroke");
+		expect(at(list(at(ours, "data"))[0], "symbolSize")).toBe(22);
+		expect(at(list(at(rivals, "data"))[0], "symbolSize")).toBe(16);
+		expect(list(at(rivals, "data")).map((item) => at(item, "label", "position"))).toEqual(["left", "right"]);
+		expect(at(rivals, "labelLayout")).toEqual({ moveOverlap: "shiftY", hideOverlap: false });
+		expect(list(at(rivals, "markLine", "data"))).toMatchObject([{ xAxis: 50 }, { yAxis: 50 }]);
+		expect(list(at(rivals, "markArea", "data"))).toMatchObject([
+			[
+				{ xAxis: 50, yAxis: 50 },
+				{ xAxis: 100, yAxis: 100 },
+			],
 		]);
-		expect(map.querySelectorAll(".studio-land-point")).toHaveLength(3);
-		expect(map.querySelector('.studio-land-point.is-us[data-player="us"] .studio-land-halo')).not.toBeNull();
-		const names = [...map.querySelectorAll<SVGTextElement>(".studio-land-name")];
-		expect(texts(names)).toEqual(["Leadly", "Spreadsheets", "Qorpera Auto"]);
-		expect(names.some((name) => text(name).includes("…"))).toBe(false);
-		expect(names.map((name) => name.getAttribute("text-anchor"))).toEqual(["end", "start", "start"]);
+		const tip = at(option, "tooltip", 0, "formatter") as (params: unknown) => string;
+		const leadly = tip({ data: list(at(rivals, "data"))[0] });
+		expect(leadly).toContain("Leadly");
+		expect(leadly).toContain("Incumbent");
+		expect(leadly).toContain("1,495 DKK / month");
+		expect(leadly).toContain("We charge per booking");
 		done();
 	});
 
-	it("lifts one of two close labels so they never collide", () => {
+	it("keeps every long rival name whole and escapes it in the tooltip", async () => {
 		const crowded = {
 			axes: LANDSCAPE.axes,
 			players: [
 				{ id: "a", name: "Private Dealer B2B Network", x: 30, y: 50 },
-				{ id: "b", name: "Biltorvet", x: 35, y: 55 },
+				{ id: "b", name: "Biltorvet <b>Pro</b>", x: 35, y: 55 },
 				{ id: "c", name: "Bilbasen Pro Dealer Suite", x: 96, y: 52 },
 			],
 		};
 		const { root, done } = draw(file("landscape.json", crowded), "market");
-		const label = (id: string) =>
-			root.querySelector<SVGTextElement>(`.studio-land-point[data-player="${id}"] .studio-land-name`)!;
-		const y = (id: string) => Number(label(id).getAttribute("y"));
-		expect(Math.abs(y("a") - y("b"))).toBeGreaterThanOrEqual(26);
-		expect(text(label("a"))).toBe("Private Dealer B2B Network");
-		expect(label("c").getAttribute("text-anchor")).toBe("end");
-		expect(Number(label("c").getAttribute("x"))).toBeLessThan(680);
+		const host = root.querySelector<HTMLElement>(".studio-land-chart-host")!;
+		await chartOn(host, "landscape");
+		const data = list(at(seriesOf(host, 0), "data"));
+		expect(data.map((item) => at(item, "name"))).toEqual([
+			"Private Dealer B2B Network",
+			"Biltorvet <b>Pro</b>",
+			"Bilbasen Pro Dealer Suite",
+		]);
+		expect(data.map((item) => at(item, "label", "formatter"))).toEqual(["{b}", "{b}", "{b}"]);
+		expect(data.map((item) => at(item, "label", "position"))).toEqual(["right", "right", "left"]);
+		expect(list(at(seriesOf(host, 1), "data"))).toEqual([]);
+		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => string;
+		const html = tip({ data: data[1] });
+		expect(html).toContain("Biltorvet &#60;b&#62;Pro&#60;/b&#62;");
+		expect(html).not.toContain("<b>Pro</b>");
 		done();
 	});
 
-	it("focuses one player at a time from the map and the strip, starting with us", () => {
+	it("focuses one player at a time from the ECharts map and the strip, starting with us", async () => {
 		const ask = vi.fn<Ask>(async () => undefined);
 		const { root, done } = draw(file("landscape.json", LANDSCAPE), "market", ask);
 		const block = root.querySelector<HTMLElement>('[data-block="landscape"]')!;
 		const card = block.querySelector<HTMLElement>(".studio-land-focus")!;
-		const point = (id: string) => block.querySelector<SVGGElement>(`.studio-land-point[data-player="${id}"]`)!;
+		const host = block.querySelector<HTMLElement>(".studio-land-chart-host")!;
 		const chip = (id: string) => block.querySelector<HTMLButtonElement>(`.studio-land-chip[data-player="${id}"]`)!;
+		const pointSize = (id: string) => {
+			const all = [...list(at(seriesOf(host, 0), "data")), ...list(at(seriesOf(host, 1), "data"))];
+			return at(
+				all.find((item) => at(item, "key") === id),
+				"symbolSize",
+			);
+		};
+		await chartOn(host, "landscape");
 		expect(block.querySelector(".studio-land-table")).toBeNull();
 		expect(card.dataset.player).toBe("us");
+		expect(card.dataset.tourId).toBe("rival:us");
 		expect(text(card.querySelector(".studio-land-focus-name"))).toBe("Qorpera Auto");
 		expect(text(card.querySelector(".studio-land-us"))).toBe("Us");
 		expect(text(card.querySelector(".studio-land-beat.is-edge p"))).toBe("Booked, not promised");
-		expect(point("us").classList.contains("is-active")).toBe(true);
+		expect(pointSize("us")).toBe(22);
 		expect(texts(block.querySelectorAll(".studio-land-chip-name"))).toEqual([
 			"Qorpera Auto",
 			"Leadly",
@@ -925,8 +1137,10 @@ describe("The landscape block", () => {
 		expect(text(chip("leadly").querySelector(".studio-land-chip-price"))).toBe("1,495 DKK / month");
 		expect(chip("us").getAttribute("aria-pressed")).toBe("true");
 
-		hover(point("leadly"), "mouseenter");
+		fire(host, "mouseover", { data: { key: "leadly" } });
 		expect(card.dataset.player).toBe("leadly");
+		expect(pointSize("leadly")).toBe(21);
+		expect(pointSize("us")).toBe(18);
 		const link = card.querySelector("a")!;
 		expect(link.getAttribute("href")).toBe("https://leadly.example");
 		expect(link.getAttribute("rel")).toBe("noopener noreferrer");
@@ -942,22 +1156,25 @@ describe("The landscape block", () => {
 		]);
 		expect(text(card.querySelector(".studio-land-beat.is-edge p"))).toBe("We charge per booking");
 		expect(chip("leadly").classList.contains("is-active")).toBe(true);
-		hover(point("leadly"), "mouseleave");
+		fire(host, "mouseout", {});
 		expect(card.dataset.player).toBe("us");
 
 		chip("sheet").click();
 		expect(card.dataset.player).toBe("sheet");
+		expect(card.dataset.tourId).toBe("rival:sheet");
 		expect(card.querySelector("a")).toBeNull();
-		expect(point("sheet").classList.contains("is-active")).toBe(true);
-		expect(point("us").classList.contains("is-active")).toBe(false);
+		expect(pointSize("sheet")).toBe(21);
+		expect(pointSize("us")).toBe(18);
 		expect(chip("sheet").getAttribute("aria-pressed")).toBe("true");
 		hover(chip("agency"), "mouseenter");
 		expect(text(card.querySelector(".studio-land-beat.is-position p"))).toBe("Full service");
 		hover(chip("agency"), "mouseleave");
 		expect(card.dataset.player).toBe("sheet");
-		click(point("leadly"));
+		fire(host, "click", { data: { key: "leadly" } });
 		expect(card.dataset.player).toBe("leadly");
-		expect(point("leadly").getAttribute("aria-pressed")).toBe("true");
+		expect(chip("leadly").getAttribute("aria-pressed")).toBe("true");
+		expect(chip("sheet").getAttribute("aria-pressed")).toBe("false");
+		expect(pointSize("leadly")).toBe(21);
 
 		card.querySelector<HTMLButtonElement>(".studio-land-focus-foot .studio-ask-btn")!.click();
 		const [prompt, title] = ask.mock.calls[0]!;
@@ -971,6 +1188,180 @@ describe("The landscape block", () => {
 		expect(root.querySelector(".studio-land-map")).toBeNull();
 		expect(root.querySelector(".studio-land-split.is-single .studio-land-focus")).not.toBeNull();
 		expect(root.querySelectorAll(".studio-land-chip")).toHaveLength(4);
+		done();
+	});
+});
+
+const TOUR = {
+	title: "Walk the plan",
+	beats: [
+		{
+			id: "verdict",
+			label: "The call",
+			tab: "plan",
+			focus: "plays:verdict",
+			effect: "spotlight",
+			say: { en: "We sell to dealers, not drivers.", da: "Vi sælger til forhandlere, ikke bilister." },
+		},
+		{
+			id: "money",
+			label: "The money",
+			tab: "economics",
+			focus: "econ:visual",
+			effect: "pulse",
+			action: { scenario: "premium", view: "waterfall" },
+			say: "At the rival's price, fewer dealers still pay the bills.",
+		},
+		{
+			id: "rival",
+			tab: "market",
+			focus: "rival:leadly",
+			effect: "glow",
+			action: { select: "leadly" },
+			say: "Leadly sells leads; we sell bookings.",
+		},
+		{
+			id: "bet",
+			tab: "hypotheses",
+			focus: "hypothesis:h1",
+			effect: "spotlight",
+			action: { expand: "h1" },
+			say: "Test this bet first.",
+		},
+	],
+};
+
+async function studio(files: Readonly<Record<string, string>>) {
+	const surface = strategySurface();
+	const store = storeWith(
+		fakeClient({
+			listSurfaces: vi.fn(async () => [surface]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+		}),
+	);
+	await store.load();
+	await store.openSurface(surface.slug);
+	const lifetime = new AbortController();
+	const view = new SurfaceStudioView({ store, surface, signal: lifetime.signal, baseFiles: files, timeSlice: false });
+	document.body.append(view.el);
+	const tour = () => view.el.querySelector<HTMLElement>(".studio-tour")!;
+	const control = (label: string) =>
+		tour().querySelector<HTMLButtonElement>(`.studio-tour-btn[aria-label="${label}"]`)!;
+	const focused = () => view.el.querySelector<HTMLElement>(".is-tour-focus");
+	const done = () => {
+		lifetime.abort();
+		store.dispose();
+	};
+	return { view, tour, control, focused, done };
+}
+
+describe("The studio voice tour", () => {
+	it("stays out of the way without a tour.json", async () => {
+		const { view, done } = await studio(strategyFiles());
+		expect(view.el.querySelector(".studio-tour")).toBeNull();
+		done();
+	});
+
+	it("walks the founder across tabs, runs each beat's action and spotlights its target", async () => {
+		const { view, tour, control, focused, done } = await studio({ ...strategyFiles(), ...file("tour.json", TOUR) });
+		expect(tour().hidden).toBe(false);
+		expect(tour().getAttribute("aria-label")).toBe("Guided walkthrough");
+		const launch = tour().querySelector<HTMLButtonElement>(".studio-tour-launch")!;
+		expect(text(launch.querySelector(".studio-tour-launch-label"))).toBe("Walk the plan");
+		expect(text(launch.querySelector(".studio-tour-launch-meta"))).toBe("4 steps");
+		expect(launch.querySelectorAll(".studio-tour-wave i")).toHaveLength(3);
+		launch.click();
+		expect(tour().classList.contains("is-open")).toBe(true);
+		expect(tour().classList.contains("is-playing")).toBe(true);
+		control("Pause walkthrough").click();
+		expect(tour().classList.contains("is-playing")).toBe(false);
+		expect(control("Play walkthrough")).not.toBeNull();
+
+		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("plays:verdict"));
+		expect(view.el.classList.contains("is-tour-active")).toBe(true);
+		expect(view.el.classList.contains("is-tour-spotlight")).toBe(true);
+		expect(focused()!.classList.contains("is-tour-effect-spotlight")).toBe(true);
+		expect(view.el.querySelector('[data-block="plays"]')!.classList.contains("has-tour-focus")).toBe(true);
+		expect(view.el.querySelector(".studio-grid")!.classList.contains("has-tour-focus")).toBe(true);
+		expect(text(tour().querySelector(".studio-tour-caption"))).toBe("We sell to dealers, not drivers.");
+		expect(text(tour().querySelector(".studio-tour-step"))).toBe("1/4 · The call");
+		const dots = () => [...tour().querySelectorAll<HTMLElement>(".studio-tour-dot")];
+		expect(dots()).toHaveLength(4);
+		expect(dots()[0]!.classList.contains("is-on")).toBe(true);
+		expect(control("Previous step").disabled).toBe(true);
+
+		control("Next step").click();
+		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("econ:visual"));
+		const econ = view.el.querySelector<HTMLElement>('[data-block="economics"]')!;
+		expect(econ.querySelector('.studio-econ-scenario[data-scenario="premium"]')!.classList.contains("is-on")).toBe(
+			true,
+		);
+		expect(econ.querySelector('.studio-econ-view[data-econ-view="waterfall"]')!.getAttribute("aria-pressed")).toBe(
+			"true",
+		);
+		expect(view.el.querySelector('[data-block="plays"]')).toBeNull();
+		expect(view.el.classList.contains("is-tour-pulse")).toBe(true);
+		expect(view.el.classList.contains("is-tour-spotlight")).toBe(false);
+		expect(focused()!.classList.contains("is-tour-effect-pulse")).toBe(true);
+		expect(econ.classList.contains("has-tour-focus")).toBe(true);
+		expect(view.el.querySelectorAll(".is-tour-focus")).toHaveLength(1);
+		expect(dots()[0]!.classList.contains("is-done")).toBe(true);
+		expect(dots()[1]!.classList.contains("is-on")).toBe(true);
+		await chartOn(econ.querySelector(".studio-econ-chart-host")!, "waterfall");
+
+		control("Next step").click();
+		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("rival:leadly"));
+		const land = view.el.querySelector<HTMLElement>('[data-block="landscape"]')!;
+		const card = land.querySelector<HTMLElement>(".studio-land-focus")!;
+		expect(focused()).toBe(card);
+		expect(card.dataset.player).toBe("leadly");
+		expect(land.querySelector('.studio-land-chip[data-player="leadly"]')!.getAttribute("aria-pressed")).toBe("true");
+		expect(focused()!.classList.contains("is-tour-effect-glow")).toBe(true);
+		expect(view.el.classList.contains("is-tour-glow")).toBe(true);
+
+		control("Next step").click();
+		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("hypothesis:h1"));
+		const bet = view.el.querySelector<HTMLElement>('.studio-hyp[data-hypothesis="h1"]')!;
+		expect(focused()).toBe(bet);
+		expect(bet.querySelector(".studio-hyp-head")!.getAttribute("aria-expanded")).toBe("true");
+		expect(bet.querySelector<HTMLElement>(".studio-hyp-body")!.hidden).toBe(false);
+		expect(view.el.classList.contains("is-tour-spotlight")).toBe(true);
+		expect(text(tour().querySelector(".studio-tour-caption"))).toBe("Test this bet first.");
+		expect(control("Finish walkthrough")).not.toBeNull();
+
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		expect(tour().classList.contains("is-open")).toBe(false);
+		expect(tour().querySelector(".studio-tour-launch")).not.toBeNull();
+		expect(view.el.querySelector(".is-tour-focus, .has-tour-focus")).toBeNull();
+		for (const name of ["is-tour-active", "is-tour-spotlight", "is-tour-pulse", "is-tour-glow"]) {
+			expect(view.el.classList.contains(name)).toBe(false);
+		}
+		done();
+	});
+
+	it("jumps from a progress dot, speaks Danish and stops from the close button", async () => {
+		setLanguagePreference("da");
+		const { view, tour, control, focused, done } = await studio({ ...strategyFiles(), ...file("tour.json", TOUR) });
+		const launch = tour().querySelector<HTMLButtonElement>(".studio-tour-launch")!;
+		expect(text(launch.querySelector(".studio-tour-launch-meta"))).toBe("4 trin");
+		launch.click();
+		control("Sæt gennemgangen på pause").click();
+		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("plays:verdict"));
+		expect(text(tour().querySelector(".studio-tour-caption"))).toBe("Vi sælger til forhandlere, ikke bilister.");
+		const silent = control("Slå stemmen fra");
+		expect(text(silent)).toBe("Stemme");
+		silent.click();
+		expect(text(control("Slå stemmen til"))).toBe("Lydløs");
+		expect(control("Slå stemmen til").getAttribute("aria-pressed")).toBe("true");
+
+		tour().querySelectorAll<HTMLButtonElement>(".studio-tour-dot")[2]!.click();
+		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("rival:leadly"));
+		expect(view.el.querySelector('[data-block="landscape"]')).not.toBeNull();
+
+		control("Luk gennemgangen").click();
+		expect(tour().classList.contains("is-open")).toBe(false);
+		expect(view.el.querySelector(".is-tour-focus")).toBeNull();
+		expect(view.el.classList.contains("is-tour-active")).toBe(false);
 		done();
 	});
 });

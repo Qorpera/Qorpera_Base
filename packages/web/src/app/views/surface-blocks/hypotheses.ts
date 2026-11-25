@@ -217,7 +217,13 @@ function betRow(item: StrategyHypothesis, index: number, ctx: SurfaceBlockContex
 	);
 	const head = h(
 		"button",
-		{ type: "button", class: "studio-hyp-row", "aria-expanded": "false", "aria-controls": body.id },
+		{
+			type: "button",
+			class: "studio-hyp-row studio-hyp-head",
+			"aria-expanded": "false",
+			"aria-controls": body.id,
+			"data-hypothesis-toggle": item.id,
+		},
 		h("i", { class: `studio-hyp-dot is-${item.status}`, "aria-hidden": "true" }),
 		h("span", { class: "studio-hyp-index" }, betTag(index)),
 		h("span", { class: `studio-hyp-impact is-${item.impact}` }, impactLabel(item.impact)),
@@ -230,6 +236,7 @@ function betRow(item: StrategyHypothesis, index: number, ctx: SurfaceBlockContex
 		{
 			class: `studio-hyp is-${item.impact} is-${item.status}`,
 			"data-hypothesis": item.id,
+			"data-tour-id": `hypothesis:${item.id}`,
 			"data-impact": item.impact,
 			"data-status": item.status,
 		},
@@ -300,7 +307,7 @@ function ledger(items: readonly StrategyHypothesis[], ctx: SurfaceBlockContext):
 	);
 	paint();
 	return [
-		h("figure", { class: "studio-hyp-track" }, track.svg),
+		h("figure", { class: "studio-hyp-track", "data-tour-id": "hypotheses:track" }, track.svg),
 		h("div", { class: "studio-hyp-filters", role: "group", "aria-label": t("Filter bets") }, pills),
 		h(
 			"ol",

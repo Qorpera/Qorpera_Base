@@ -8,7 +8,9 @@ import {
 import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import { type SurfaceBlockContext, type SurfaceBlockPrepared, sectionHead } from "./context.ts";
-import { askButton, kicker, strategyEmpty, svgEl, tierMark } from "./strategy-kit.ts";
+import type * as StrategyCharts from "./strategy-charts.ts";
+import type { LandscapeData, LandscapeMount } from "./strategy-charts.ts";
+import { askButton, kicker, strategyEmpty, tierMark } from "./strategy-kit.ts";
 
 interface KeyedRival extends StrategyRival {
 	readonly key: string;
@@ -19,21 +21,20 @@ interface PlacedRival extends KeyedRival {
 	readonly y: number;
 }
 
-interface LabelSpot {
-	readonly x: number;
-	readonly y: number;
-	readonly anchor: "start" | "end";
-}
-
 interface Focus {
 	readonly hover: (key: string | null) => void;
 	readonly pick: (key: string) => void;
 }
 
-const MAP = { width: 680, height: 420, left: 56, right: 648, top: 24, bottom: 368, dot: 14, char: 6.9 } as const;
-const FLIP_AT = 64;
-const NEAR_Y = 26;
-const NEAR_X = 120;
+let chartsLoading: Promise<typeof StrategyCharts> | undefined;
+
+function loadCharts(): Promise<typeof StrategyCharts> {
+	chartsLoading ??= import("./strategy-charts.ts").catch((error: unknown) => {
+		chartsLoading = undefined;
+		throw error;
+	});
+	return chartsLoading;
+}
 
 function safeUrl(url: string | undefined): string | undefined {
 	if (!url) return undefined;
@@ -51,119 +52,56 @@ function research(players: readonly StrategyRival[]) {
 	return { prompt: lines.filter(Boolean).join("\n"), title: t("Research rivals") };
 }
 
-const px = (x: number) => MAP.left + (x / 100) * (MAP.right - MAP.left);
-const py = (y: number) => MAP.bottom - (y / 100) * (MAP.bottom - MAP.top);
-
-function labelSpots(placed: readonly PlacedRival[]): Map<string, LabelSpot> {
-	const spots = new Map<string, LabelSpot>();
-	const lift = new Map<string, number>();
-	const byHeight = [...placed].sort((a, b) => py(a.y) - py(b.y));
-	for (let i = 0; i < byHeight.length; i += 1) {
-		for (let j = i + 1; j < byHeight.length; j += 1) {
-			const upper = byHeight[i]!;
-			const lower = byHeight[j]!;
-			const dy = py(lower.y) - py(upper.y);
-			if (dy >= NEAR_Y || Math.abs(px(lower.x) - px(upper.x)) >= NEAR_X) continue;
-			if (!lift.has(upper.key)) lift.set(upper.key, -1);
-			if (!lift.has(lower.key) || lift.get(lower.key) === -1) lift.set(lower.key, 1);
-		}
-	}
-	for (const player of placed) {
-		const cx = px(player.x);
-		const cy = py(player.y);
-		const wide = player.name.length * MAP.char;
-		const roomRight = MAP.width - (cx + MAP.dot) - 6;
-		const roomLeft = cx - MAP.dot - 6;
-		let left = player.x > FLIP_AT;
-		if (left && wide > roomLeft && roomRight > roomLeft) left = false;
-		if (!left && wide > roomRight && roomLeft > roomRight) left = true;
-		const shift = lift.get(player.key) ?? 0;
-		const y = shift < 0 ? cy - 12 : shift > 0 ? cy + 20 : cy + 4;
-		spots.set(player.key, {
-			x: left ? cx - MAP.dot : cx + MAP.dot,
-			y: Math.min(MAP.height - 6, Math.max(14, y)),
-			anchor: left ? "end" : "start",
-		});
-	}
-	return spots;
+function mapData(axes: StrategyLandscapeAxes, placed: readonly PlacedRival[]): LandscapeData {
+	return {
+		axes,
+		points: placed.map((player) => ({
+			key: player.key,
+			name: player.name,
+			x: Math.min(100, Math.max(0, player.x)),
+			y: Math.min(100, Math.max(0, player.y)),
+			isUs: player.isUs === true,
+			...(player.category ? { category: player.category } : {}),
+			...(player.pricing ? { pricing: player.pricing } : {}),
+			...(player.ourEdge ? { ourEdge: player.ourEdge } : {}),
+		})),
+	};
 }
 
-function positioningMap(axes: StrategyLandscapeAxes, placed: readonly PlacedRival[], steer: Focus): SVGSVGElement {
-	const midX = px(50);
-	const midY = py(50);
-	const svg = svgEl("svg", {
-		class: "studio-land-svg",
-		viewBox: `0 0 ${MAP.width} ${MAP.height}`,
-		role: "group",
+function positioningMap(
+	axes: StrategyLandscapeAxes,
+	placed: readonly PlacedRival[],
+	steer: Focus,
+	ctx: SurfaceBlockContext,
+	active: () => string,
+): { readonly el: HTMLElement; readonly setActive: (key: string) => void } {
+	const host = h("div", {
+		class: "studio-land-chart-host is-loading",
+		role: "img",
 		"aria-label": t("Positioning map: {x} against {y}", { x: axes.xLabel, y: axes.yLabel }),
 	});
-	svg.append(
-		svgEl("rect", {
-			class: "studio-land-plot",
-			x: MAP.left,
-			y: MAP.top,
-			width: MAP.right - MAP.left,
-			height: MAP.bottom - MAP.top,
-			rx: 14,
-		}),
-		svgEl("line", { class: "studio-land-quad", x1: midX, x2: midX, y1: MAP.top + 10, y2: MAP.bottom - 10 }),
-		svgEl("line", { class: "studio-land-quad", x1: MAP.left + 10, x2: MAP.right - 10, y1: midY, y2: midY }),
-		svgEl("text", { class: "studio-land-axis", x: midX, y: MAP.height - 10, "text-anchor": "middle" }, axes.xLabel),
-		svgEl(
-			"text",
-			{
-				class: "studio-land-axis",
-				x: 0,
-				y: 0,
-				"text-anchor": "middle",
-				transform: `translate(22 ${midY}) rotate(-90)`,
-			},
-			axes.yLabel,
-		),
+	let mount: LandscapeMount | null = null;
+	loadCharts().then(
+		(lib) => {
+			if (ctx.signal.aborted) return;
+			host.classList.remove("is-loading");
+			mount = lib.mountLandscapeChart(host, ctx.signal, mapData(axes, placed), {
+				active: active(),
+				labels: { category: t("Category"), pricing: t("Pricing"), ourEdge: t("Our edge"), us: t("Us") },
+				onHover: (key) => steer.hover(key),
+				onPick: (key) => steer.pick(key),
+			});
+			host.dataset.chart = "landscape";
+		},
+		() => {
+			host.classList.remove("is-loading");
+			host.replaceChildren(h("p", { class: "studio-land-chart-note" }, t("The chart couldn't load.")));
+		},
 	);
-	const ends: [string | undefined, number, number, "start" | "end"][] = [
-		[axes.xLow ? `← ${axes.xLow}` : undefined, MAP.left + 2, MAP.bottom + 22, "start"],
-		[axes.xHigh ? `${axes.xHigh} →` : undefined, MAP.right - 2, MAP.bottom + 22, "end"],
-		[axes.yHigh ? `↑ ${axes.yHigh}` : undefined, MAP.left + 14, MAP.top + 20, "start"],
-		[axes.yLow ? `↓ ${axes.yLow}` : undefined, MAP.left + 14, MAP.bottom - 12, "start"],
-	];
-	for (const [label, x, y, anchor] of ends) {
-		if (label) svg.append(svgEl("text", { class: "studio-land-end", x, y, "text-anchor": anchor }, label));
-	}
-	const spots = labelSpots(placed);
-	const ordered = [...placed].sort((a, b) => Number(a.isUs === true) - Number(b.isUs === true));
-	for (const player of ordered) {
-		const cx = px(player.x);
-		const cy = py(player.y);
-		const spot = spots.get(player.key)!;
-		const point = svgEl(
-			"g",
-			{
-				class: `studio-land-point${player.isUs ? " is-us" : ""}`,
-				"data-player": player.key,
-				tabindex: 0,
-				role: "button",
-				"aria-label": player.name,
-			},
-			svgEl("title", {}, player.name),
-			player.isUs ? svgEl("circle", { class: "studio-land-halo", cx, cy, r: 26 }) : null,
-			svgEl("circle", { class: "studio-land-ring", cx, cy, r: player.isUs ? 13 : 11 }),
-			svgEl("circle", { class: "studio-land-dot", cx, cy, r: player.isUs ? 8 : 6.5 }),
-			svgEl("text", { class: "studio-land-name", x: spot.x, y: spot.y, "text-anchor": spot.anchor }, player.name),
-		);
-		point.addEventListener("mouseenter", () => steer.hover(player.key));
-		point.addEventListener("mouseleave", () => steer.hover(null));
-		point.addEventListener("focus", () => steer.hover(player.key));
-		point.addEventListener("blur", () => steer.hover(null));
-		point.addEventListener("click", () => steer.pick(player.key));
-		point.addEventListener("keydown", (event) => {
-			if (event.key !== "Enter" && event.key !== " ") return;
-			event.preventDefault();
-			steer.pick(player.key);
-		});
-		svg.append(point);
-	}
-	return svg;
+	return {
+		el: h("figure", { class: "studio-land-map", "data-tour-id": "landscape:map" }, host),
+		setActive: (key) => mount?.setActive(key),
+	};
 }
 
 function beat(kind: string, label: string, body: HTMLElement | string, extra: HTMLElement | null = null): HTMLElement {
@@ -278,13 +216,11 @@ function filledLandscape(
 		if (player && shownKey !== active) {
 			shownKey = active;
 			card.dataset.player = active;
+			card.dataset.tourId = `rival:${active}`;
 			card.classList.toggle("is-us", player.isUs === true);
 			view.replaceChildren(...inspector(player));
 		}
-		for (const point of section.querySelectorAll<SVGGElement>(".studio-land-point")) {
-			point.classList.toggle("is-active", point.dataset.player === active);
-			point.setAttribute("aria-pressed", String(point.dataset.player === picked));
-		}
+		map?.setActive(active);
 		for (const chip of chips) {
 			chip.classList.toggle("is-active", chip.dataset.player === active);
 			chip.setAttribute("aria-pressed", String(chip.dataset.player === picked));
@@ -302,16 +238,20 @@ function filledLandscape(
 		},
 	};
 	const map =
-		doc.axes && placed.length >= 2
-			? h("figure", { class: "studio-land-map" }, positioningMap(doc.axes, placed, steer))
-			: null;
+		doc.axes && placed.length >= 2 ? positioningMap(doc.axes, placed, steer, ctx, () => hovered ?? picked) : null;
 	const lead =
 		doc.wedge || doc.summary
 			? h(
 					"div",
 					{ class: "studio-land-lead" },
 					doc.wedge
-						? h("p", { class: "studio-land-wedge" }, kicker(t("Our wedge")), " ", h("span", null, doc.wedge))
+						? h(
+								"p",
+								{ class: "studio-land-wedge", "data-tour-id": "landscape:wedge" },
+								kicker(t("Our wedge")),
+								" ",
+								h("span", null, doc.wedge),
+							)
 						: null,
 					doc.summary ? h("p", { class: "studio-land-summary" }, doc.summary) : null,
 				)
@@ -321,7 +261,7 @@ function filledLandscape(
 		{ class: "studio-section studio-land", "data-block": "landscape" },
 		sectionHead(heading, changed),
 		lead,
-		h("div", { class: `studio-land-split${map ? "" : " is-single"}` }, map, card),
+		h("div", { class: `studio-land-split${map ? "" : " is-single"}` }, map?.el ?? null, card),
 		h("div", { class: "studio-land-strip", role: "group", "aria-label": t("Players") }, chips),
 	);
 	paint();

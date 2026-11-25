@@ -14,6 +14,15 @@ import {
 import { h, icon } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import { type SurfaceBlockContext, type SurfaceBlockPrepared, sectionHead } from "./context.ts";
+import type * as StrategyCharts from "./strategy-charts.ts";
+import type {
+	BreakEvenData,
+	ChartMount,
+	FlowStream,
+	MoneyFlowData,
+	WaterfallData,
+	WaterfallStep,
+} from "./strategy-charts.ts";
 import {
 	askButton,
 	currencyAmount,
@@ -22,11 +31,10 @@ import {
 	percentAmount,
 	plainNumber,
 	strategyEmpty,
-	svgEl,
 	tierBadge,
 } from "./strategy-kit.ts";
 
-export type EconomicsView = "flow" | "curve";
+export type EconomicsView = "flow" | "waterfall" | "curve";
 
 export interface EconomicsPick {
 	readonly scenario: string | null;
@@ -45,29 +53,14 @@ interface Shape {
 	readonly digits: number;
 }
 
-type StreamKind = "income" | "cost" | "total" | "shortfall";
+type Stream = FlowStream;
 
-interface Stream {
-	readonly id: string;
-	readonly label: string;
-	readonly kind: StreamKind;
-	readonly size: number;
-	readonly signed: number;
-}
+type Tone = "good" | "warn" | "bad";
 
-interface River {
-	readonly left: readonly Stream[];
-	readonly right: readonly Stream[];
-	readonly revenue: number;
-}
-
-interface CurveLook {
-	readonly xText: (value: number) => string;
-	readonly yText: (value: number) => string;
-	readonly xTitle: string;
-	readonly capacityLabel: string;
-	readonly zeroLine: boolean;
-}
+type Drawn =
+	| { readonly view: "flow"; readonly mount: ChartMount<MoneyFlowData> }
+	| { readonly view: "waterfall"; readonly mount: ChartMount<WaterfallData> }
+	| { readonly view: "curve"; readonly mount: ChartMount<BreakEvenData> };
 
 interface Lever {
 	readonly range: HTMLInputElement;
@@ -90,26 +83,27 @@ interface Flag {
 	readonly button: HTMLButtonElement;
 }
 
-const FLOW = {
-	width: 800,
-	pad: 18,
-	labelIn: 168,
-	inBar: 178,
-	barW: 10,
-	spineX: 380,
-	spineW: 16,
-	outX: 600,
-	labelOut: 622,
-	spineH: 210,
-	slot: 38,
-	gap: 12,
-	chars: 26,
-} as const;
-const CURVE = { width: 720, height: 300, left: 66, right: 24, top: 40, bottom: 46 } as const;
+interface ScenarioCard {
+	readonly scenario: EconomicsScenario | undefined;
+	readonly el: HTMLButtonElement;
+	readonly value: HTMLElement;
+	readonly dot: HTMLElement;
+}
+
 const PRIMARY_LEVERS = 3;
 const MARK_LABELS = 2;
+const VIEW_ORDER: readonly EconomicsView[] = ["flow", "waterfall", "curve"];
 
 let boardSeq = 0;
+let chartsLoading: Promise<typeof StrategyCharts> | undefined;
+
+function loadCharts(): Promise<typeof StrategyCharts> {
+	chartsLoading ??= import("./strategy-charts.ts").catch((error: unknown) => {
+		chartsLoading = undefined;
+		throw error;
+	});
+	return chartsLoading;
+}
 
 function stepDigits(step: number | undefined): number {
 	if (step === undefined || Number.isInteger(step)) return 0;
@@ -149,14 +143,6 @@ function share(input: EconomicsInput, value: number): string {
 	return String(span > 0 ? (clampTo(input, value) - input.min) / span : 0);
 }
 
-function short(text: string, chars: number): string {
-	return text.length > chars ? `${text.slice(0, chars - 1)}…` : text;
-}
-
-function fixed(value: number): string {
-	return value.toFixed(1);
-}
-
 function primaryInputs(doc: EconomicsDocument): readonly EconomicsInput[] {
 	const flagged = doc.inputs.filter((input) => input.primary === true).slice(0, PRIMARY_LEVERS);
 	if (flagged.length > 0) return flagged;
@@ -165,7 +151,7 @@ function primaryInputs(doc: EconomicsDocument): readonly EconomicsInput[] {
 	return [...(lead ? [lead] : []), ...rest].slice(0, PRIMARY_LEVERS);
 }
 
-function river(doc: EconomicsDocument, values: EconomicsEvaluation["values"]): River | null {
+function river(doc: EconomicsDocument, values: EconomicsEvaluation["values"]): MoneyFlowData | null {
 	const income: Stream[] = [];
 	const cost: Stream[] = [];
 	let total: { id: string; label: string } | undefined;
@@ -199,319 +185,39 @@ function river(doc: EconomicsDocument, values: EconomicsEvaluation["values"]): R
 	return { left: [...income, gap], right: cost, revenue };
 }
 
-function ribbon(x0: number, a0: number, x1: number, b0: number, size: number): string {
-	const xm = (x0 + x1) / 2;
-	const a1 = a0 + size;
-	const b1 = b0 + size;
-	return [
-		`M${fixed(x0)} ${fixed(a0)}`,
-		`C${fixed(xm)} ${fixed(a0)} ${fixed(xm)} ${fixed(b0)} ${fixed(x1)} ${fixed(b0)}`,
-		`L${fixed(x1)} ${fixed(b1)}`,
-		`C${fixed(xm)} ${fixed(b1)} ${fixed(xm)} ${fixed(a1)} ${fixed(x0)} ${fixed(a1)}`,
-		"Z",
-	].join(" ");
-}
-
-interface FlowHooks {
-	readonly money: (value: number) => string;
-	readonly peek: (stream: Stream | null) => void;
-	readonly pin: (stream: Stream) => void;
-}
-
-function flowSvg(flow: River, hooks: FlowHooks): SVGSVGElement {
-	const { width, pad, spineH, slot, gap } = FLOW;
-	const largest = Math.max(
-		flow.left.reduce((sum, item) => sum + item.size, 0),
-		flow.right.reduce((sum, item) => sum + item.size, 0),
-	);
-	const scale = largest > 0 ? spineH / largest : 0;
-	const thick = (stream: Stream) => Math.max(2, stream.size * scale);
-	const sideHeight = (side: readonly Stream[]) =>
-		side.reduce((sum, item) => sum + Math.max(thick(item), slot), 0) + gap * Math.max(0, side.length - 1);
-	const span = (side: readonly Stream[]) => side.reduce((sum, item) => sum + thick(item), 0);
-	const inner = Math.max(spineH, sideHeight(flow.left), sideHeight(flow.right));
-	const height = inner + pad * 2;
-	const spineSpan = Math.max(span(flow.left), span(flow.right));
-	const spineTop = pad + (inner - spineSpan) / 2;
-	const hatch = `studio-econ-hatch-${++boardSeq}`;
-	const svg = svgEl("svg", {
-		class: "studio-econ-svg is-flow",
-		viewBox: `0 0 ${width} ${fixed(height)}`,
-		role: "group",
-		"aria-label": t("Where the money goes"),
-	});
-	svg.append(
-		svgEl(
-			"defs",
-			{},
-			svgEl(
-				"pattern",
-				{ id: hatch, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" },
-				svgEl("rect", { class: "studio-econ-hatch-ground", width: 7, height: 7 }),
-				svgEl("line", { class: "studio-econ-hatch", x1: 0, y1: 0, x2: 0, y2: 7 }),
-			),
-		),
-	);
-	const bands = svgEl("g", { class: "studio-econ-bands" });
-	const nodes = svgEl("g", { class: "studio-econ-nodes" });
-	const labels = svgEl("g", { class: "studio-econ-labels" });
-	const wire = (el: SVGElement, stream: Stream) => {
-		el.addEventListener("mouseenter", () => hooks.peek(stream));
-		el.addEventListener("mouseleave", () => hooks.peek(null));
-		el.addEventListener("focus", () => hooks.peek(stream));
-		el.addEventListener("blur", () => hooks.peek(null));
-		el.addEventListener("click", () => hooks.pin(stream));
-		el.addEventListener("keydown", (event) => {
-			if (event.key !== "Enter" && event.key !== " ") return;
-			event.preventDefault();
-			hooks.pin(stream);
+function bridge(doc: EconomicsDocument, values: EconomicsEvaluation["values"]): WaterfallData | null {
+	const steps: WaterfallStep[] = [];
+	let run = 0;
+	let revenue = 0;
+	let closed = false;
+	for (const step of doc.waterfall ?? []) {
+		if (step.kind === "total") {
+			const net = values[step.id] ?? run;
+			steps.push({ id: step.id, label: step.label, kind: "total", size: Math.abs(net), signed: net });
+			closed = true;
+			continue;
+		}
+		const raw = values[step.id] ?? null;
+		if (raw === null) continue;
+		const size = Math.abs(raw);
+		const income = (step.kind ?? (raw < 0 ? "cost" : "income")) === "income" && raw >= 0;
+		run += income ? size : -size;
+		if (income) revenue += size;
+		steps.push({
+			id: step.id,
+			label: step.label,
+			kind: income ? "income" : "cost",
+			size,
+			signed: income ? size : -size,
 		});
-	};
-	const figure = (stream: Stream) => {
-		const money = hooks.money(stream.signed);
-		if (stream.kind === "income" || flow.revenue <= 0) return money;
-		return `${money} · ${percentAmount((stream.size / flow.revenue) * 100)}`;
-	};
-	const lay = (side: readonly Stream[], isLeft: boolean) => {
-		let slotTop = pad + (inner - sideHeight(side)) / 2;
-		let cursor = spineTop;
-		for (const stream of side) {
-			const size = thick(stream);
-			const room = Math.max(size, slot);
-			const endTop = slotTop + (room - size) / 2;
-			const mid = slotTop + room / 2;
-			const d = isLeft
-				? ribbon(FLOW.inBar + FLOW.barW, endTop, FLOW.spineX, cursor, size)
-				: ribbon(FLOW.spineX + FLOW.spineW, cursor, FLOW.outX, endTop, size);
-			const words = `${stream.label} ${figure(stream)}`;
-			const band = svgEl("path", {
-				class: `studio-econ-band is-${stream.kind}`,
-				"data-stream": stream.id,
-				d,
-				tabindex: 0,
-				role: "button",
-				"aria-label": words,
-				...(stream.kind === "shortfall" ? { fill: `url(#${hatch})` } : {}),
-			});
-			wire(band, stream);
-			bands.append(band);
-			nodes.append(
-				svgEl("rect", {
-					class: `studio-econ-node is-${stream.kind}`,
-					"data-stream": stream.id,
-					x: isLeft ? FLOW.inBar : FLOW.outX,
-					y: fixed(endTop),
-					width: FLOW.barW,
-					height: fixed(size),
-					rx: 2,
-				}),
-			);
-			const x = isLeft ? FLOW.labelIn : FLOW.labelOut;
-			const anchor = isLeft ? "end" : "start";
-			const label = svgEl(
-				"g",
-				{ class: `studio-econ-flow-label is-${stream.kind}`, "data-stream": stream.id },
-				svgEl("title", {}, stream.label),
-				svgEl(
-					"text",
-					{ class: "studio-econ-flow-name", x, y: fixed(mid - 3), "text-anchor": anchor },
-					short(stream.label, FLOW.chars),
-				),
-				svgEl(
-					"text",
-					{ class: "studio-econ-flow-amount", x, y: fixed(mid + 13), "text-anchor": anchor },
-					figure(stream),
-				),
-			);
-			wire(label, stream);
-			labels.append(label);
-			slotTop += room + gap;
-			cursor += size;
-		}
-	};
-	lay(flow.left, true);
-	lay(flow.right, false);
-	const spine = svgEl("rect", {
-		class: "studio-econ-spine",
-		x: FLOW.spineX,
-		y: fixed(spineTop),
-		width: FLOW.spineW,
-		height: fixed(Math.max(2, spineSpan)),
-		rx: 3,
-	});
-	svg.append(bands, nodes, spine, labels);
-	return svg;
+	}
+	if (!steps.some((step) => step.kind !== "total")) return null;
+	if (!closed) steps.push({ id: "net", label: t("Net"), kind: "total", size: Math.abs(run), signed: run });
+	return { steps, revenue };
 }
 
-function segments(points: EconomicsCurveEvaluation["points"]): { x: number; y: number }[][] {
-	const runs: { x: number; y: number }[][] = [];
-	let run: { x: number; y: number }[] = [];
-	for (const point of points) {
-		if (point.y === null) {
-			if (run.length) runs.push(run);
-			run = [];
-		} else {
-			run.push({ x: point.x, y: point.y });
-		}
-	}
-	if (run.length) runs.push(run);
-	return runs;
-}
-
-function edgeAnchor(x: number, lo: number, hi: number): { anchor: "start" | "middle" | "end"; dx: number } {
-	const at = (x - lo) / (hi - lo || 1);
-	if (at > 0.72) return { anchor: "end", dx: -10 };
-	if (at < 0.28) return { anchor: "start", dx: 10 };
-	return { anchor: "middle", dx: 0 };
-}
-
-function curveSvg(curve: EconomicsCurveEvaluation, look: CurveLook): SVGSVGElement | null {
-	const { width, height, left, right, top, bottom } = CURVE;
-	const ys = curve.points.flatMap((point) => (point.y === null ? [] : [point.y]));
-	if (ys.length < 2) return null;
-	const xMin = curve.points[0]!.x;
-	const xMax = curve.points.at(-1)!.x;
-	const plotRight = width - right;
-	const plotBottom = height - bottom;
-	const rawLo = Math.min(0, ...ys, curve.currentY ?? 0);
-	const rawHi = Math.max(0, ...ys, curve.currentY ?? 0);
-	const pad = (rawHi - rawLo) * 0.1 || 1;
-	const lo = rawLo - pad;
-	const hi = rawHi + pad;
-	const sx = (x: number) => left + ((x - xMin) / (xMax - xMin || 1)) * (plotRight - left);
-	const sy = (y: number) => plotBottom - ((y - lo) / (hi - lo)) * (plotBottom - top);
-	const at = (x: number, y: number) => `${fixed(sx(x))} ${fixed(sy(y))}`;
-	const seq = ++boardSeq;
-	const zeroY = Math.min(plotBottom, Math.max(top, sy(0)));
-	const above = `studio-econ-above-${seq}`;
-	const below = `studio-econ-below-${seq}`;
-	const svg = svgEl("svg", {
-		class: "studio-econ-svg is-curve",
-		viewBox: `0 0 ${width} ${height}`,
-		role: "img",
-		"aria-label": look.xTitle,
-	});
-	svg.append(
-		svgEl(
-			"defs",
-			{},
-			svgEl(
-				"clipPath",
-				{ id: above },
-				svgEl("rect", { x: left, y: top, width: plotRight - left, height: fixed(zeroY - top) }),
-			),
-			svgEl(
-				"clipPath",
-				{ id: below },
-				svgEl("rect", { x: left, y: fixed(zeroY), width: plotRight - left, height: fixed(plotBottom - zeroY) }),
-			),
-		),
-	);
-	for (let tick = 0; tick <= 4; tick += 1) {
-		const value = lo + ((hi - lo) * tick) / 4;
-		const y = sy(value);
-		svg.append(
-			svgEl("line", { class: "studio-econ-grid", x1: left, x2: plotRight, y1: fixed(y), y2: fixed(y) }),
-			svgEl(
-				"text",
-				{ class: "studio-econ-tick", x: left - 10, y: fixed(y + 4), "text-anchor": "end" },
-				look.yText(value),
-			),
-		);
-	}
-	const capacityX = curve.capacityX;
-	if (capacityX !== null && capacityX < xMax) {
-		const cx = sx(Math.max(capacityX, xMin));
-		const place = edgeAnchor(cx, left, plotRight);
-		svg.append(
-			svgEl("rect", {
-				class: "studio-econ-capacity",
-				x: fixed(cx),
-				y: top,
-				width: fixed(plotRight - cx),
-				height: plotBottom - top,
-			}),
-			svgEl("line", {
-				class: "studio-econ-capacity-edge",
-				x1: fixed(cx),
-				x2: fixed(cx),
-				y1: top - 6,
-				y2: plotBottom,
-			}),
-			svgEl(
-				"text",
-				{
-					class: "studio-econ-capacity-label",
-					x: fixed(cx + (place.anchor === "middle" ? 0 : place.dx)),
-					y: top - 14,
-					"text-anchor": place.anchor === "middle" ? "middle" : place.anchor,
-				},
-				`${look.capacityLabel} · ${look.xText(capacityX)}`,
-			),
-		);
-	}
-	for (const run of segments(curve.points)) {
-		const first = run[0]!;
-		const last = run.at(-1)!;
-		const line = run.map((point, index) => `${index ? "L" : "M"}${at(point.x, point.y)}`).join(" ");
-		const area = `M${at(first.x, 0)} L${line.slice(1)} L${at(last.x, 0)} Z`;
-		svg.append(
-			svgEl("path", { class: "studio-econ-area is-profit", d: area, "clip-path": `url(#${above})` }),
-			svgEl("path", { class: "studio-econ-area is-loss", d: area, "clip-path": `url(#${below})` }),
-			svgEl("path", { class: "studio-econ-line", d: line }),
-		);
-	}
-	if (look.zeroLine) {
-		svg.append(
-			svgEl("line", { class: "studio-econ-zero", x1: left, x2: plotRight, y1: fixed(zeroY), y2: fixed(zeroY) }),
-		);
-	}
-	const breakEven = curve.breakEvenX;
-	if (breakEven !== null) {
-		const bx = sx(breakEven);
-		const beyond = capacityX !== null && breakEven > capacityX;
-		const place = edgeAnchor(bx, left, plotRight);
-		const labelY = zeroY + 22 > plotBottom - 4 ? zeroY - 12 : zeroY + 22;
-		svg.append(
-			svgEl(
-				"g",
-				{ class: `studio-econ-breakeven${beyond ? " is-impossible" : ""}` },
-				svgEl("circle", { class: "studio-econ-breakeven-ring", cx: fixed(bx), cy: fixed(zeroY), r: 9 }),
-				svgEl("circle", { class: "studio-econ-breakeven-dot", cx: fixed(bx), cy: fixed(zeroY), r: 4.5 }),
-				svgEl(
-					"text",
-					{
-						class: "studio-econ-breakeven-label",
-						x: fixed(bx + place.dx),
-						y: fixed(labelY),
-						"text-anchor": place.anchor,
-					},
-					t("Break-even {value}", { value: look.xText(breakEven) }),
-				),
-			),
-		);
-	}
-	if (curve.currentY !== null) {
-		const nx = sx(Math.min(xMax, Math.max(xMin, curve.currentX)));
-		const ny = sy(curve.currentY);
-		const tone = curve.currentY < 0 ? " is-negative" : "";
-		svg.append(
-			svgEl("line", { class: "studio-econ-now-guide", x1: fixed(nx), x2: fixed(nx), y1: fixed(ny), y2: plotBottom }),
-			svgEl("circle", { class: `studio-econ-now-halo${tone}`, cx: fixed(nx), cy: fixed(ny), r: 11 }),
-			svgEl("circle", { class: `studio-econ-now${tone}`, cx: fixed(nx), cy: fixed(ny), r: 5.5 }),
-		);
-	}
-	const tickY = plotBottom + 20;
-	svg.append(
-		svgEl("text", { class: "studio-econ-tick", x: left, y: tickY }, look.xText(xMin)),
-		svgEl("text", { class: "studio-econ-tick", x: plotRight, y: tickY, "text-anchor": "end" }, look.xText(xMax)),
-		svgEl(
-			"text",
-			{ class: "studio-econ-axis", x: (left + plotRight) / 2, y: height - 8, "text-anchor": "middle" },
-			look.xTitle,
-		),
-	);
-	return svg;
+function drawable(curve: EconomicsCurveEvaluation | null): curve is EconomicsCurveEvaluation {
+	return curve !== null && curve.points.filter((point) => point.y !== null).length >= 2;
 }
 
 function curveNote(curve: EconomicsCurveEvaluation, xText: (value: number) => string): HTMLElement | null {
@@ -536,8 +242,10 @@ function curveNote(curve: EconomicsCurveEvaluation, xText: (value: number) => st
 	return null;
 }
 
-function curveMissing(): HTMLElement {
-	return h("p", { class: "studio-econ-chart-note" }, t("The curve can't be drawn from these numbers yet."));
+function viewLabel(view: EconomicsView): string {
+	if (view === "flow") return t("Money flow");
+	if (view === "waterfall") return t("Waterfall");
+	return t("Break-even");
 }
 
 function economicsBoard(
@@ -560,17 +268,23 @@ function economicsBoard(
 	const hasFlow = Boolean(doc.waterfall?.length);
 	const xInput = doc.curve ? inputs.get(doc.curve.xInput) : undefined;
 	const hasCurve = Boolean(doc.curve && xInput);
-	let view: EconomicsView = hasFlow ? "flow" : "curve";
-	if (remembered?.view === "curve" && hasCurve) view = "curve";
-	if (remembered?.view === "flow" && hasFlow) view = "flow";
+	const available = VIEW_ORDER.filter((key) => (key === "curve" ? hasCurve : hasFlow));
+	let view: EconomicsView = available[0] ?? "flow";
+	if (remembered?.view && available.includes(remembered.view)) view = remembered.view;
 	let hovered: Stream | null = null;
 	let pinned: string | null = null;
 	let opened: string | null = null;
 	let dismissed = false;
 	let fatalSeen = "";
-	let latest: River | null = null;
+	let latest: MoneyFlowData | null = null;
+	let charts: typeof StrategyCharts | null = null;
+	let chartsFailed = false;
+	let waiting = false;
+	let drawn: Drawn | null = null;
 
-	const presetOf = (input: EconomicsInput) => clampTo(input, scenario?.values[input.id] ?? input.value);
+	const presetFor = (input: EconomicsInput, pick: EconomicsScenario | undefined) =>
+		clampTo(input, pick?.values[input.id] ?? input.value);
+	const presetOf = (input: EconomicsInput) => presetFor(input, scenario);
 	const levelOf = (input: EconomicsInput) => overrides.get(input.id) ?? presetOf(input);
 	const current = () => Object.fromEntries(doc.inputs.map((input) => [input.id, levelOf(input)]));
 	const inputShape = (input: EconomicsInput) => shapeFor(input.unit, currency, undefined, stepDigits(input.step));
@@ -675,7 +389,7 @@ function economicsBoard(
 	const grounded = primaries.filter((input) => input.source || input.note);
 	const primaryStrip = h(
 		"div",
-		{ class: "studio-econ-levers", role: "group", "aria-label": t("Key levers") },
+		{ class: "studio-econ-levers", role: "group", "aria-label": t("Key levers"), "data-tour-id": "econ:levers" },
 		primaries.map((input) => leverOf(input, true)),
 	);
 	const drawerCount = secondaries.length + grounded.length;
@@ -730,23 +444,47 @@ function economicsBoard(
 		drawerToggle.addEventListener("click", () => disclosure(drawerToggle, drawer, drawer.hidden));
 	}
 
-	const basePill = h(
-		"button",
-		{ type: "button", class: "studio-econ-scenario is-base", onclick: () => pickScenario(undefined) },
-		t("Base"),
-	);
-	const scenarioPills = (doc.scenarios ?? []).map((item) =>
-		h(
+	const headlines = doc.headlines ?? [];
+	const lead = headlines.find((item) => item.emphasis === "primary") ?? headlines[0];
+
+	const cardOf = (item: EconomicsScenario | undefined): ScenarioCard => {
+		const value = h("strong", { class: "studio-econ-scenario-value" });
+		const dot = h("i", { class: "studio-econ-scenario-dot", "aria-hidden": "true" });
+		const el = h(
 			"button",
 			{
 				type: "button",
-				class: "studio-econ-scenario",
-				"data-scenario": item.id,
+				class: `studio-econ-scenario${item ? "" : " is-base"}`,
+				...(item ? { "data-scenario": item.id } : {}),
 				onclick: () => pickScenario(item),
 			},
-			item.name,
-		),
-	);
+			h(
+				"span",
+				{ class: "studio-econ-scenario-top" },
+				dot,
+				h("span", { class: "studio-econ-scenario-name" }, item?.name ?? t("Base")),
+			),
+			value,
+		);
+		return { scenario: item, el, value, dot };
+	};
+	const cards: ScenarioCard[] = doc.scenarios?.length ? [cardOf(undefined), ...doc.scenarios.map(cardOf)] : [];
+	const toneOf = (result: EconomicsEvaluation): Tone => {
+		const fired = result.constraints.filter((status) => status.triggered);
+		const value = lead ? (result.values[lead.id] ?? null) : null;
+		if (fired.some((status) => status.constraint.severity === "fatal")) return "bad";
+		if (value !== null && value < 0 && lead?.toneWhenNegative === "danger") return "bad";
+		if (fired.length > 0) return "warn";
+		if (value !== null && lead?.target !== undefined && value < lead.target) return "warn";
+		return "good";
+	};
+	const signedHeadline = (result: EconomicsEvaluation): string => {
+		if (!lead) return "";
+		const value = result.values[lead.id] ?? null;
+		const text = amount(value, headlineShape(lead), currency, true);
+		return value !== null && value > 0 ? `+${text}` : text;
+	};
+
 	const reset = h(
 		"button",
 		{
@@ -762,8 +500,6 @@ function economicsBoard(
 	);
 	const thesis = h("p", { class: "studio-econ-thesis", hidden: true });
 
-	const headlines = doc.headlines ?? [];
-	const lead = headlines.find((item) => item.emphasis === "primary") ?? headlines[0];
 	const heroLabel = h("span", { class: "studio-econ-hero-label" });
 	const heroValue = h("strong", { class: "studio-econ-hero-value" });
 	const heroUnit = h("span", { class: "studio-econ-hero-unit" });
@@ -834,7 +570,7 @@ function economicsBoard(
 	const verdict = doc.verdict ? h("p", { class: "studio-econ-verdict", hidden: true }, doc.verdict) : null;
 	const hero = h(
 		"div",
-		{ class: "studio-econ-hero" },
+		{ class: "studio-econ-hero", "data-tour-id": "econ:hero" },
 		readout,
 		metrics.length
 			? h(
@@ -869,39 +605,33 @@ function economicsBoard(
 	}
 
 	const views: HTMLButtonElement[] =
-		hasFlow && hasCurve
-			? (["flow", "curve"] as const).map((key) =>
+		available.length > 1
+			? available.map((key) =>
 					h(
 						"button",
 						{
 							type: "button",
 							class: "studio-econ-view",
-							"data-view": key,
+							"data-econ-view": key,
 							onclick: () => {
+								if (view === key) return;
 								view = key;
 								hovered = null;
 								pinned = null;
 								refresh();
 							},
 						},
-						key === "flow" ? t("Money flow") : t("Break-even"),
+						viewLabel(key),
 					),
 				)
 			: [];
-	const stage = h("div", { class: "studio-econ-stage" });
-	const look: CurveLook = {
-		xText: (value) => amount(value, xInput ? inputShape(xInput) : shapeFor(), currency, true),
-		yText: (value) =>
-			amount(
-				value,
-				doc.curve ? shapeFor(unitOf(doc.curve.yOutput) ?? currency, currency) : moneyShape,
-				currency,
-				true,
-			),
-		xTitle: xInput?.label ?? "",
-		capacityLabel: doc.curve?.capacityLabel ?? t("Capacity ceiling"),
-		zeroLine: doc.curve?.zeroLine !== false,
-	};
+	const chartHost = h("div", { class: "studio-econ-chart-host is-loading", role: "img" });
+	const chartFoot = h("div", { class: "studio-econ-chart-foot" });
+	const stage = h("div", { class: "studio-econ-stage" }, chartHost, chartFoot);
+	const xText = (value: number) => amount(value, xInput ? inputShape(xInput) : shapeFor(), currency, true);
+	const yText = (value: number) =>
+		amount(value, doc.curve ? shapeFor(unitOf(doc.curve.yOutput) ?? currency, currency) : moneyShape, currency, true);
+	const capacityLabel = doc.curve?.capacityLabel ?? t("Capacity ceiling");
 
 	let values: Record<string, number> = current();
 	let evaluation = evaluateEconomicsModel(doc, values);
@@ -912,14 +642,6 @@ function economicsBoard(
 	};
 	function paintHero(): void {
 		const peek = peekStream();
-		const flowEl = stage.querySelector(".studio-econ-flow");
-		flowEl?.classList.toggle("is-picking", peek !== null);
-		for (const el of stage.querySelectorAll<SVGElement>("[data-stream]")) {
-			el.classList.toggle("is-on", el.dataset.stream === peek?.id);
-		}
-		for (const el of stage.querySelectorAll<SVGElement>(".studio-econ-band")) {
-			el.setAttribute("aria-pressed", String(el.dataset.stream === pinned));
-		}
 		readout.classList.toggle("is-peek", peek !== null);
 		const fatal = triggered.some((flag) => flag.severity === "fatal");
 		if (peek) {
@@ -947,17 +669,6 @@ function economicsBoard(
 		readout.classList.toggle("is-bad", negative || fatal);
 		readout.classList.toggle("is-good", !negative && !fatal && value !== null && value > 0);
 	}
-	const hooks: FlowHooks = {
-		money,
-		peek: (stream) => {
-			hovered = stream;
-			paintHero();
-		},
-		pin: (stream) => {
-			pinned = pinned === stream.id ? null : stream.id;
-			paintHero();
-		},
-	};
 
 	const compose = () => {
 		const result = evaluateEconomicsModel(doc, current());
@@ -981,26 +692,157 @@ function economicsBoard(
 	};
 	const challenge = askButton(ctx, t("Challenge these numbers"), compose);
 
+	const unmount = () => {
+		drawn?.mount.dispose();
+		drawn = null;
+		chartHost.removeAttribute("data-chart");
+	};
+	const blank = (...notes: HTMLElement[]) => {
+		unmount();
+		chartHost.hidden = true;
+		chartFoot.replaceChildren(...notes);
+	};
+	const note = (text: string) => h("p", { class: "studio-econ-chart-note" }, text);
+	const live = <V extends EconomicsView>(key: V): Extract<Drawn, { view: V }> | null => {
+		if (!drawn || drawn.view !== key || drawn.mount.disposed()) return null;
+		return drawn as Extract<Drawn, { view: V }>;
+	};
+	const reveal = (next: Drawn) => {
+		drawn = next;
+		chartHost.hidden = false;
+		chartHost.classList.remove("is-loading");
+		chartHost.dataset.chart = next.view;
+	};
+	const ready = (): typeof StrategyCharts | null => {
+		if (charts) return charts;
+		unmount();
+		chartHost.hidden = false;
+		chartHost.classList.add("is-loading");
+		if (waiting) return null;
+		waiting = true;
+		loadCharts().then(
+			(lib) => {
+				if (ctx.signal.aborted) return;
+				charts = lib;
+				paintStage();
+			},
+			() => {
+				if (ctx.signal.aborted) return;
+				chartsFailed = true;
+				paintStage();
+			},
+		);
+		return null;
+	};
+
 	function paintStage(): void {
 		for (const button of views) {
-			const on = button.dataset.view === view;
+			const on = button.dataset.econView === view;
 			button.classList.toggle("is-on", on);
 			button.setAttribute("aria-pressed", String(on));
 		}
-		if (view === "flow") {
+		const flowLabel = view === "flow" ? t("Where the money goes") : viewLabel(view);
+		chartHost.setAttribute("aria-label", view === "curve" ? (xInput?.label ?? flowLabel) : flowLabel);
+		const shareOf = (ratio: number) => t("{share} of revenue", { share: percentAmount(ratio * 100) });
+		if (view === "flow" || view === "waterfall") {
 			latest = river(doc, evaluation.values);
-			stage.replaceChildren(
-				latest
-					? h("div", { class: "studio-econ-flow" }, flowSvg(latest, hooks))
-					: h("p", { class: "studio-econ-chart-note" }, t("The flow can't be drawn from these numbers yet.")),
-			);
+			const steps = bridge(doc, evaluation.values);
+			if (!latest || !steps) {
+				blank(note(t("The flow can't be drawn from these numbers yet.")));
+				return;
+			}
+			if (chartsFailed) {
+				blank(note(t("The chart couldn't load.")));
+				return;
+			}
+			chartFoot.replaceChildren();
+			const lib = ready();
+			if (!lib) return;
+			if (view === "flow") {
+				const onStage = live("flow");
+				if (onStage) {
+					onStage.mount.update(latest);
+					return;
+				}
+				unmount();
+				reveal({
+					view: "flow",
+					mount: lib.mountMoneyFlowChart(chartHost, ctx.signal, latest, {
+						hub: t("Money in"),
+						money,
+						percent: (ratio) => percentAmount(ratio * 100),
+						share: shareOf,
+						onHover: (stream) => {
+							hovered = stream;
+							paintHero();
+						},
+						onPick: (stream) => {
+							pinned = pinned === stream.id ? null : stream.id;
+							paintHero();
+						},
+					}),
+				});
+				return;
+			}
+			const onStage = live("waterfall");
+			if (onStage) {
+				onStage.mount.update(steps);
+				return;
+			}
+			unmount();
+			reveal({
+				view: "waterfall",
+				mount: lib.mountWaterfallChart(chartHost, ctx.signal, steps, { money, axisMoney: money, share: shareOf }),
+			});
 			return;
 		}
 		latest = null;
 		const curve = evaluateEconomicsCurve(doc, values);
-		const svg = curve ? curveSvg(curve, look) : null;
-		const note = curve ? curveNote(curve, look.xText) : null;
-		stage.replaceChildren(h("div", { class: "studio-econ-curve" }, svg ?? curveMissing(), note));
+		if (!drawable(curve)) {
+			blank(note(t("The curve can't be drawn from these numbers yet.")));
+			return;
+		}
+		const verdictNote = curveNote(curve, xText);
+		if (chartsFailed) {
+			blank(note(t("The chart couldn't load.")), ...(verdictNote ? [verdictNote] : []));
+			return;
+		}
+		chartFoot.replaceChildren(...(verdictNote ? [verdictNote] : []));
+		const lib = ready();
+		if (!lib) return;
+		const data: BreakEvenData = { ...curve, zeroLine: doc.curve?.zeroLine !== false };
+		const onStage = live("curve");
+		if (onStage) {
+			onStage.mount.update(data);
+			return;
+		}
+		unmount();
+		reveal({
+			view: "curve",
+			mount: lib.mountBreakEvenChart(chartHost, ctx.signal, data, {
+				xText,
+				yText,
+				xTitle: xInput?.label ?? "",
+				capacityLabel,
+				breakEvenLabel: (x) => t("Break-even {value}", { value: xText(x) }),
+			}),
+		});
+	}
+
+	function paintCards(): void {
+		for (const card of cards) {
+			const on = card.scenario?.id === scenario?.id;
+			const preset = () =>
+				Object.fromEntries(doc.inputs.map((input) => [input.id, presetFor(input, card.scenario)]));
+			const result = on ? evaluation : evaluateEconomicsModel(doc, preset());
+			card.el.classList.toggle("is-on", on);
+			card.el.setAttribute("aria-pressed", String(on));
+			card.value.textContent = signedHeadline(result);
+			card.value.hidden = !lead;
+			const tone = toneOf(result);
+			card.dot.className = `studio-econ-scenario-dot is-${tone}`;
+			card.el.dataset.tone = tone;
+		}
 	}
 
 	function refresh(): void {
@@ -1017,13 +859,7 @@ function economicsBoard(
 			lever.range.setAttribute("aria-valuetext", text);
 			for (const snap of lever.snaps) snap.classList.toggle("is-on", Number(snap.dataset.value) === value);
 		}
-		basePill.classList.toggle("is-on", scenario === undefined);
-		basePill.setAttribute("aria-pressed", String(scenario === undefined));
-		for (const pill of scenarioPills) {
-			const on = pill.dataset.scenario === scenario?.id;
-			pill.classList.toggle("is-on", on);
-			pill.setAttribute("aria-pressed", String(on));
-		}
+		paintCards();
 		thesis.textContent = scenario?.thesis ?? "";
 		thesis.hidden = !scenario?.thesis;
 		reset.hidden = overrides.size === 0;
@@ -1055,7 +891,7 @@ function economicsBoard(
 				metric.el.title = t("Target {value}", { value: amount(target, shape, currency, true) });
 			}
 		}
-		paintStage();
+		if (available.length) paintStage();
 		paintHero();
 		memory?.set({ scenario: scenario?.id ?? null, overrides: Object.fromEntries(overrides), view });
 	}
@@ -1069,12 +905,16 @@ function economicsBoard(
 					doc.subtitle ? h("p", null, doc.subtitle) : null,
 				)
 			: null;
-	const scenarioGroup = scenarioPills.length
+	const scenarioStrip = cards.length
 		? h(
 				"div",
-				{ class: "studio-econ-scenarios", role: "group", "aria-label": t("Scenarios") },
-				basePill,
-				scenarioPills,
+				{
+					class: "studio-econ-scenarios",
+					role: "group",
+					"aria-label": t("Scenarios"),
+					"data-tour-id": "econ:scenarios",
+				},
+				cards.map((card) => card.el),
 			)
 		: null;
 	const viewSwitch = views.length
@@ -1091,12 +931,15 @@ function economicsBoard(
 		"section",
 		{ class: "studio-section studio-econ", "data-block": "economics" },
 		sectionHead(heading, changed),
-		title || scenarioGroup ? h("div", { class: "studio-econ-head" }, title, scenarioGroup) : null,
+		title ? h("div", { class: "studio-econ-head" }, title) : null,
+		scenarioStrip,
 		thesis,
 		hero,
 		flagLine,
 		verdict,
-		hasFlow || hasCurve ? h("div", { class: "studio-econ-board" }, viewSwitch, stage) : null,
+		available.length
+			? h("div", { class: "studio-econ-board", "data-tour-id": "econ:visual" }, viewSwitch, stage)
+			: null,
 		primaryStrip,
 		foot,
 		drawer,

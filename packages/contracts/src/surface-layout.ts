@@ -1423,10 +1423,22 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 					from: "plays.json",
 					heading: "Competing plays",
 				},
+				{ type: "report", id: "plan-posts", match: "plan/**/*.report.json", heading: "Briefings & posts" },
 				{
 					type: "artifacts",
 					id: "sketches",
-					match: ["sketches/**", "*.svg", "*.png", "*.webp", "*.html"],
+					match: [
+						"sketches/**",
+						"images/**",
+						"*.svg",
+						"*.png",
+						"*.webp",
+						"*.jpg",
+						"*.jpeg",
+						"*.gif",
+						"*.html",
+						"*.pdf",
+					],
 					heading: "Sketches & visuals",
 				},
 			],
@@ -1442,6 +1454,7 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 					heading: "How the money works",
 				},
 				{ type: "economics", id: "model", from: "economics.json", heading: "Unit economics" },
+				{ type: "report", id: "economics-posts", match: "economics/**/*.report.json", heading: "Financial memos" },
 			],
 		},
 		{
@@ -1456,6 +1469,12 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 					heading: "Competitive landscape",
 				},
 				{ type: "report", id: "market-reports", match: "market/**/*.report.json", heading: "Market research" },
+				{
+					type: "artifacts",
+					id: "market-visuals",
+					match: ["market/**/*.svg", "market/**/*.png", "market/**/*.webp", "market/**/*.jpg", "market/**/*.html"],
+					heading: "Market visuals",
+				},
 			],
 		},
 		{
@@ -1474,7 +1493,15 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 		{
 			id: "breakdowns",
 			title: "Breakdowns",
-			blocks: [{ type: "explainer", id: "breakdowns", match: "breakdowns/**/scenes.js" }],
+			blocks: [
+				{ type: "explainer", id: "breakdowns", match: "breakdowns/**/scenes.js", heading: "Video breakdowns" },
+				{
+					type: "report",
+					id: "breakdown-posts",
+					match: "breakdowns/**/*.report.json",
+					heading: "Written breakdowns",
+				},
+			],
 		},
 		{
 			id: "reports",

@@ -50,6 +50,7 @@ import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { compiledTokensCssFrom, prepareStudioHtmlPreview, studioHtmlDependencyChanged } from "./surface-studio-html.ts";
+import { StudioTourController } from "./surface-tour.ts";
 
 export { prepareStudioHtmlPreview };
 
@@ -216,6 +217,7 @@ export class SurfaceStudioView {
 	#renderSeq = 0;
 	#pendingRetryTarget: { readonly changeIds: readonly string[]; readonly paths: readonly string[] } | null = null;
 	#layout: SurfaceLayoutView | undefined;
+	readonly #tour: StudioTourController;
 	readonly #htmlFrames: AppFrame[] = [];
 	#tab = "overview";
 	#renderedTab: string | null = null;
@@ -229,6 +231,18 @@ export class SurfaceStudioView {
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
+		this.#tour = new StudioTourController({
+			root: this.el,
+			signal: this.#lifetime.signal,
+			readBinary: (file, signal) => options.store.readStudioBinary(file, signal),
+			switchTab: (tab) => {
+				if (tab && tab !== this.#tab) {
+					this.#tab = tab;
+					this.update();
+				}
+			},
+			currentTab: () => this.#tab,
+		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		if (!options.baseFiles) {
@@ -254,6 +268,7 @@ export class SurfaceStudioView {
 		this.#renderSeq++;
 		this.#renderedTab = null;
 		this.#renderedGrid = null;
+		this.#tour.deactivate();
 		this.#layout?.deactivate();
 	}
 
@@ -264,6 +279,7 @@ export class SurfaceStudioView {
 			clearTimeout(this.#settleTimer);
 			this.#settleTimer = undefined;
 		}
+		this.#tour.dispose();
 		this.#layout?.dispose();
 		this.#lifetime.abort();
 	}
@@ -605,7 +621,7 @@ export class SurfaceStudioView {
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
 			this.#renderedGrid = null;
-			this.el.replaceChildren(...plan.children);
+			this.el.replaceChildren(...plan.children, ...(this.#tour.el.hidden ? [] : [this.#tour.el]));
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
@@ -614,8 +630,9 @@ export class SurfaceStudioView {
 		this.#renderedTab = this.#tab;
 		this.#renderedGrid = grid;
 		const tasks = plan.gridTasks;
+		const tail = this.#tour.el.hidden ? [] : [this.#tour.el];
 		if (reuseGrid) {
-			reconcileChildren(this.el, [...plan.children, grid]);
+			reconcileChildren(this.el, [...plan.children, grid, ...tail]);
 			const built: HTMLElement[] = [];
 			budget.reset();
 			for (let i = 0; i < tasks.length; i++) {
@@ -637,7 +654,7 @@ export class SurfaceStudioView {
 			grid.append(tasks[0].build());
 			start = 1;
 		}
-		this.el.replaceChildren(...plan.children, grid);
+		this.el.replaceChildren(...plan.children, grid, ...tail);
 		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 		budget.reset();
 		for (let i = start; i < tasks.length; i++) {
@@ -704,10 +721,11 @@ export class SurfaceStudioView {
 			parsed,
 		);
 		this.#disposeHtmlFrames();
+		const tail = this.#tour.el.hidden ? [] : [this.#tour.el];
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
 			this.#renderedGrid = null;
-			this.el.replaceChildren(...plan.children);
+			this.el.replaceChildren(...plan.children, ...tail);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
@@ -717,12 +735,12 @@ export class SurfaceStudioView {
 		this.#renderedGrid = grid;
 		if (reuseGrid) {
 			const built = plan.gridTasks.map((task) => task.build());
-			reconcileChildren(this.el, [...plan.children, grid]);
+			reconcileChildren(this.el, [...plan.children, grid, ...tail]);
 			reconcileChildren(grid, built);
 			return;
 		}
 		for (const task of plan.gridTasks) grid.append(task.build());
-		this.el.replaceChildren(...plan.children, grid);
+		this.el.replaceChildren(...plan.children, grid, ...tail);
 		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 	}
 
@@ -1170,6 +1188,7 @@ export class SurfaceStudioView {
 			},
 		});
 		this.#tab = plan.tab;
+		this.#tour.sync(files, binaries, params.surface.folderRoot);
 		if (plan.tabBar) children.push(plan.tabBar);
 		const leavingSkeleton = this.#showingSkeleton;
 		this.#showingSkeleton = false;

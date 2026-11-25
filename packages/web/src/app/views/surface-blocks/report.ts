@@ -53,9 +53,10 @@ export class SurfaceReports {
 		this.#options = options;
 	}
 
-	prepare(block: SurfaceReportBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
+	prepare(block: SurfaceReportBlock, ctx: SurfaceBlockContext, alone = true): SurfaceBlockPrepared {
 		const { signature, include } = reportFiles(block, ctx);
 		const filled = Object.keys(ctx.files).some(include);
+		if (!filled && !alone) return { filled: false, pieces: [] };
 		const pieces: StudioSectionTask[] = [];
 		if (block.heading) {
 			const heading = ctx.words(block.heading);

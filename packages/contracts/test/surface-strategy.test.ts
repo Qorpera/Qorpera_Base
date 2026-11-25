@@ -9,13 +9,16 @@ import {
 	parseStrategyHypothesesDocument,
 	parseStrategyLandscapeDocument,
 	parseStrategyPlaysDocument,
+	parseStudioTourDocument,
 	parseSurfaceLayout,
+	resolveTourSay,
 	SURFACE_ECONOMICS_FORMAT,
 	SURFACE_HYPOTHESES_FORMAT,
 	SURFACE_LANDSCAPE_FORMAT,
 	SURFACE_PLAYS_FORMAT,
 	SURFACE_REPORT_FORMAT,
 	starterSurfaceLayout,
+	studioTourCaptionTexts,
 	surfaceLinkTarget,
 	surfaceStarterKind,
 } from "../src/index.ts";
@@ -203,5 +206,39 @@ describe("strategy plays, hypotheses, and landscape parsers", () => {
 		expect(landscape?.players).toHaveLength(2);
 		expect(landscape?.players[1]?.isUs).toBe(true);
 		expect(landscape?.axes?.xLabel).toBe("Inventory Exclusivity");
+	});
+
+	it("parses bilingual tour.json beats with tab, focus, effect and action", () => {
+		const tour = parseStudioTourDocument({
+			title: "Walk through Brooks",
+			beats: [
+				{
+					id: "wedge",
+					label: "Wedge",
+					tab: "plan",
+					focus: "play:dealer-fee",
+					effect: "spotlight",
+					say: { en: "Flip to dealers.", da: "Skift til forhandlere." },
+				},
+				{
+					id: "stress",
+					tab: "economics",
+					focus: "econ:hero",
+					effect: "pulse",
+					action: { scenario: "high-load", view: "curve" },
+					say: "At two hours per buyer the ceiling snaps.",
+				},
+			],
+		});
+		expect(tour?.title).toBe("Walk through Brooks");
+		expect(tour?.beats).toHaveLength(2);
+		expect(resolveTourSay(tour!.beats[0]!.say, "da")).toBe("Skift til forhandlere.");
+		expect(resolveTourSay(tour!.beats[0]!.say, "en")).toBe("Flip to dealers.");
+		expect(tour?.beats[1]?.action).toEqual({ scenario: "high-load", view: "curve" });
+		expect(studioTourCaptionTexts(tour!)).toEqual([
+			"Flip to dealers.",
+			"Skift til forhandlere.",
+			"At two hours per buyer the ceiling snaps.",
+		]);
 	});
 });

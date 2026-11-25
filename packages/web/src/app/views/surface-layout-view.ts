@@ -1,5 +1,6 @@
 import {
 	readSurfaceLayout,
+	STUDIO_TOUR_PATH,
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_LAYOUT_PATH,
@@ -109,6 +110,11 @@ function bindingsOf(value: unknown): string[] {
 
 function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layoutPath: string): Set<string> {
 	const claimed = new Set([layoutPath]);
+	const tourPath = ctx.companyPath(STUDIO_TOUR_PATH);
+	if (tourPath) claimed.add(tourPath);
+	const tourVoicePrefix = ctx.companyPath("voice") ? `${ctx.companyPath("voice")}/` : "voice/";
+	for (const path of Object.keys(ctx.files)) if (path.startsWith(tourVoicePrefix)) claimed.add(path);
+	for (const path of Object.keys(ctx.binaries)) if (path.startsWith(tourVoicePrefix)) claimed.add(path);
 	const leaves = layout.tabs.flatMap((tab) =>
 		tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])),
 	);
@@ -320,6 +326,23 @@ export class SurfaceLayoutView {
 	}
 
 	#prepareBlock(block: SurfaceReadBlock, key: string, scope: TabScope, alone: boolean): SurfaceBlockPrepared {
+		const prepared = this.#prepareBlockInner(block, key, scope, alone);
+		if (block.type === "unknown" || !block.id || prepared.pieces.length === 0) return prepared;
+		const blockId = block.id;
+		return {
+			...prepared,
+			pieces: prepared.pieces.map((piece) => ({
+				...piece,
+				build: () => {
+					const el = piece.build();
+					if (!el.hasAttribute("data-block-id")) el.dataset.blockId = blockId;
+					return el;
+				},
+			})),
+		};
+	}
+
+	#prepareBlockInner(block: SurfaceReadBlock, key: string, scope: TabScope, alone: boolean): SurfaceBlockPrepared {
 		const { ctx } = scope;
 		switch (block.type) {
 			case "stage_3d": {
@@ -356,7 +379,7 @@ export class SurfaceLayoutView {
 			case "cards":
 				return prepareCards(block, ctx);
 			case "report":
-				return this.#reports.prepare(block, ctx);
+				return this.#reports.prepare(block, ctx, alone);
 			case "explainer":
 				return this.#explainers.prepare(key, block, ctx, alone);
 			case "artifacts":

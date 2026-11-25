@@ -6,6 +6,7 @@ import { cloudCompanyRuntimeInstructions } from "../src/cloud-native-company-con
 import { CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_PLATFORM_SKILLS, MAX_STUDIO_SKILL_BYTES } from "../src/cloud-platform-skills.ts";
+import { createNarrateExplainerTool } from "../src/cloud-surface-narrate-tool.ts";
 import { runSurfaceSessionTurn } from "../src/cloud-surface-session-runner.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -160,5 +161,58 @@ describe("strategy surface and custom studio runtime integration", () => {
 		expect(text).toContain("Strategy Studio surface");
 		expect(text).toContain("Custom Studio Surfaces");
 		expect(text).not.toContain("apps as [Title](app:<name>)");
+	});
+
+	it("synthesizes spoken Gemini TTS clips for studio tour.json beats via narrate_explainer", async () => {
+		const stagedOps: unknown[] = [];
+		const tool = createNarrateExplainerTool({
+			sessionId: randomUUID(),
+			folderRoot: "surfaces/strategy",
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			readStudioText: async (path) =>
+				path === "tour.json"
+					? JSON.stringify({
+							title: "Walkthrough",
+							beats: [
+								{
+									id: "intro",
+									tab: "plan",
+									focus: "play:dealer-fee",
+									say: { en: "Start with dealers.", da: "Start med forhandlere." },
+								},
+							],
+						})
+					: null,
+			stageBytes: async () => ({
+				manifestSha256: "a".repeat(64),
+				fileSha256: "b".repeat(64),
+				bytes: 1200,
+				mediaType: "audio/wav",
+			}),
+			surfacePatch: {
+				stageSurfacePatch: async (_sessionId, input) => {
+					stagedOps.push(...input.ops);
+					return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+				},
+			},
+			synthesizeGemini: async () => ({
+				audio: new Uint8Array([1, 2, 3, 4]),
+				mediaType: "audio/wav",
+				fileExtension: "wav",
+				seconds: 2.1,
+				usage: { inputTokens: 10, cachedTokens: 0, outputTokens: 20 },
+			}),
+		});
+
+		const result = await tool.execute(
+			tool.parseArguments({ scenesPath: "tour.json", title: "Narrate strategy tour" }),
+			fakeToolContext(),
+		);
+		const parsed = JSON.parse(String(result.value)) as Record<string, unknown>;
+		expect(parsed.ok).toBe(true);
+		expect(parsed.spokenNow).toBe(2);
+		expect(parsed.clipsPath).toBe("voice/clips.json");
+		expect(stagedOps.length).toBeGreaterThanOrEqual(3);
 	});
 });

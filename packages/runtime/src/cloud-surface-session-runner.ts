@@ -20,6 +20,7 @@ import {
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
 	readSurfaceLayout,
+	STUDIO_TOUR_FORMAT,
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
@@ -654,7 +655,7 @@ function describeStudioPage(
 	}
 	if (view.page === "unknown") {
 		const explainerBlock = voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA;
-		return `${rules}\n\n${blocks}\n\n## This page\nIts layout is not known for this turn; read ${layoutFile} if it exists before you change the page's shape.\n\n## File formats\n${explainerBlock}`;
+		return `${rules}\n\n${blocks}\n\n## This page\nIts layout is not known for this turn; read ${layoutFile} if it exists before you change the page's shape.\n\n## File formats\n${explainerBlock}\n${STUDIO_TOUR_FORMAT}`;
 	}
 	const source = view.own
 		? `Drawn from ${layoutFile}:`
@@ -664,6 +665,7 @@ function describeStudioPage(
 	const formats = [
 		...describeSurfaceFormats(view.layout),
 		voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA,
+		STUDIO_TOUR_FORMAT,
 	];
 	return (
 		`${rules}\n\n${blocks}\n\n## This page\n${source}\n${JSON.stringify(view.layout)}` +

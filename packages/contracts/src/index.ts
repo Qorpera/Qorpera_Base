@@ -17,5 +17,6 @@ export * from "./surface-layout.ts";
 export * from "./surface-merge.ts";
 export * from "./surface-shared-assets.ts";
 export * from "./surface-strategy.ts";
+export * from "./surface-tour.ts";
 export * from "./surfaces.ts";
 export * from "./wire-values.ts";

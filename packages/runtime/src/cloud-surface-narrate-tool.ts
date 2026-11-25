@@ -1,4 +1,9 @@
-import type { StudioBinaryRef, StudioPatchOp } from "@qorpera/contracts";
+import {
+	parseStudioTourDocument,
+	type StudioBinaryRef,
+	type StudioPatchOp,
+	studioTourCaptionTexts,
+} from "@qorpera/contracts";
 import { captionHash, explainerSaid } from "./cloud-app-kit-explainer.ts";
 import { GeminiCapReachedError, GeminiKeyRevokedError } from "./cloud-gemini-tool-session.ts";
 import {
@@ -69,9 +74,11 @@ function normalizeRelativeScenesPath(raw: unknown, folderRoot: string): string {
 	if (parts.some((part) => !part || part === "." || part === "..")) {
 		throw new CloudToolArgumentRefusal("scenesPath must be a clean relative path inside the interface folder");
 	}
-	if (!trimmed.toLowerCase().endsWith(".js")) {
+	const lower = trimmed.toLowerCase();
+	const isTour = lower === "tour.json" || lower.endsWith("/tour.json");
+	if (!lower.endsWith(".js") && !isTour) {
 		throw new CloudToolArgumentRefusal(
-			"scenesPath must point to a .js scenes file (for example breakdowns/ux/scenes.js)",
+			"scenesPath must point to a .js scenes file or tour.json (for example breakdowns/ux/scenes.js or tour.json)",
 		);
 	}
 	return trimmed;
@@ -191,7 +198,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 		name: "narrate_explainer",
 		source: "runtime",
 		description:
-			"Synthesize spoken narration clips for an animated breakdown's scenes.js using the member's configured Voice model and voice profile, and stage the audio clips plus voice/clips.json into the interface's Preview. Only captions missing clips are synthesized; existing clips are reused by caption hash.",
+			"Synthesize spoken narration clips for an animated breakdown (scenes.js) or guided Studio voice tour (tour.json) using the member's configured Voice model and voice profile, and stage the audio clips plus voice/clips.json into the interface's Preview. Only captions missing clips are synthesized; existing clips are reused by caption hash.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -202,7 +209,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					minLength: 4,
 					maxLength: 256,
 					description:
-						"Relative path to scenes.js inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js).",
+						"Relative path to scenes.js or tour.json inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js or tour.json).",
 				},
 				title: {
 					type: "string",
@@ -243,10 +250,23 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					`SCENES_NOT_FOUND: ${args.scenesPath} was not found; stage it with stage_surface_patch before calling narrate_explainer`,
 				);
 			}
-			const captions = extractExplainerCaptionEntries(scenesJs);
+			const isTour = args.scenesPath.toLowerCase().endsWith(".json");
+			const captions = isTour
+				? (() => {
+						const doc = parseStudioTourDocument(scenesJs);
+						if (!doc) {
+							throw new CloudToolRefusal(
+								`INVALID_TOUR: ${args.scenesPath} is not a valid tour.json document with spoken beats`,
+							);
+						}
+						return studioTourCaptionTexts(doc).map((text) => ({ hash: captionHash(text), text }));
+					})()
+				: extractExplainerCaptionEntries(scenesJs);
 			if (captions.length === 0) {
 				throw new CloudToolRefusal(
-					'NO_CAPTIONS: no s.say("...") captions were found in scenes.js; add spoken captions and stage scenes.js first',
+					isTour
+						? 'NO_CAPTIONS: no spoken "say" beats were found in tour.json; add beats and stage tour.json first'
+						: 'NO_CAPTIONS: no s.say("...") captions were found in scenes.js; add spoken captions and stage scenes.js first',
 				);
 			}
 			if (captions.length > MAX_UNIQUE_CAPTIONS) {
