@@ -197,6 +197,8 @@
 :root[data-theme="dark"] .connection-resets.is-ready { border-top-color: transparent; background: #262625; }
 :root[data-theme="dark"] .reset-done { color: #81b29c; }
 :root[data-theme="dark"] :is(.default-model-select, .default-effort-select) { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
+:root[data-theme="dark"] .settings-content .default-voice-test.is-playing { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+:root[data-theme="dark"] .settings-content .default-voice-test.is-playing:hover:not(:disabled) { background: var(--primary-hover); }
 :root[data-theme="dark"] .gemini-cap-input { border-color: rgba(255, 255, 255, 0.14); background: #262625; }
 :root[data-theme="dark"] .gemini-key-form { border-top-color: rgba(255, 255, 255, 0.1); }
 :root[data-theme="dark"] .gemini-credits-note { color: #a3a29d; }

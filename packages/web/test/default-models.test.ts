@@ -12,6 +12,7 @@ import {
 	type WebDefaultModels,
 } from "../src/cloud/default-models.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
+import type { VoiceSampleAudio } from "../src/ui/voice-preview.ts";
 import { fixture, profileA, settle, userA } from "./fixtures.ts";
 
 afterEach(() => {
@@ -193,7 +194,7 @@ describe("default models transport", () => {
 });
 
 describe("DefaultModelsView", () => {
-	it("excludes Claude from conversational options, clamps max coding effort off Claude, sends only changed fields, and switches voice model and profile", async () => {
+	it("excludes Claude from conversational options and unpreviewable Gemini models from voice options, clamps max coding effort off Claude, and sends only changed fields", async () => {
 		let state = sampleDefaults({
 			conversationModel: "gpt-6.2-sol",
 			storedConversationModel: null,
@@ -252,11 +253,12 @@ describe("DefaultModelsView", () => {
 			"gpt-6.2-sol",
 			"gpt-6-astra",
 		]);
+		expect([...voiceModel.options].map((opt) => opt.value)).toEqual(["chatgpt-voice"]);
 		expect(convModel.value).toBe("gpt-6.2-sol");
 		expect(codingModel.value).toBe("claude-opus-5-5");
-		expect(voiceModel.value).toBe("gemini-3.8-flash-tts");
-		expect(voiceName.value).toBe("Charon");
-		expect(voiceName.options.length).toBe(30);
+		expect(voiceModel.value).toBe("chatgpt-voice");
+		expect(voiceName.value).toBe("cove");
+		expect([...voiceName.options].map((opt) => opt.value)).toEqual([...CHATGPT_VOICE_PROFILES]);
 
 		convModel.value = "gemini-4-neon";
 		convModel.dispatchEvent(new Event("change"));
@@ -297,33 +299,29 @@ describe("DefaultModelsView", () => {
 		);
 
 		const voiceNameAfter = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
-		voiceNameAfter.value = "Kore";
+		voiceNameAfter.value = "juniper";
 		voiceNameAfter.dispatchEvent(new Event("change"));
 		await settle();
 		expect(client.set).toHaveBeenLastCalledWith(
 			{
-				voiceModel: "gemini-3.8-flash-tts",
-				voiceName: "Kore",
+				voiceModel: "chatgpt-voice",
+				voiceName: "juniper",
 				expectedVersion: 4,
 			},
 			expect.any(AbortSignal),
 		);
 
-		const voiceModelAfter = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
-		voiceModelAfter.value = "chatgpt-voice";
-		voiceModelAfter.dispatchEvent(new Event("change"));
+		const voiceNameAgain = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		voiceNameAgain.value = "maple";
+		voiceNameAgain.dispatchEvent(new Event("change"));
 		await settle();
 		expect(client.set).toHaveBeenLastCalledWith(
 			{
-				voiceModel: "chatgpt-voice",
-				voiceName: "cove",
+				voiceName: "maple",
 				expectedVersion: 5,
 			},
 			expect.any(AbortSignal),
 		);
-
-		const chatgptVoices = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
-		expect([...chatgptVoices.options].map((opt) => opt.value)).toEqual([...CHATGPT_VOICE_PROFILES]);
 
 		controller.abort();
 	});
@@ -410,6 +408,10 @@ describe("DefaultModelsView", () => {
 
 		const voiceName = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
 		expect(voiceName.value).toBe("Kore");
+		expect(voiceName.disabled).toBe(true);
+
+		const voiceTest = view.el.querySelector<HTMLButtonElement>('[data-role="voice-test"]')!;
+		expect(voiceTest.disabled).toBe(true);
 
 		const codingEffort = view.el.querySelector<HTMLSelectElement>('[data-role="coding-effort"]')!;
 		codingEffort.value = "medium";
@@ -419,6 +421,19 @@ describe("DefaultModelsView", () => {
 			{
 				codingEffort: "medium",
 				expectedVersion: 4,
+			},
+			expect.any(AbortSignal),
+		);
+
+		const voiceModelAfter = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
+		voiceModelAfter.value = "chatgpt-voice";
+		voiceModelAfter.dispatchEvent(new Event("change"));
+		await settle();
+		expect(client.set).toHaveBeenLastCalledWith(
+			{
+				voiceModel: "chatgpt-voice",
+				voiceName: "cove",
+				expectedVersion: 5,
 			},
 			expect.any(AbortSignal),
 		);
@@ -456,9 +471,39 @@ describe("DefaultModelsView", () => {
 		controller.abort();
 	});
 
-	it("translates Gemini voice profile tone descriptors in Danish", async () => {
+	it("labels an active stored Gemini voice model as having no preview rather than unavailable", async () => {
+		const state = sampleDefaults({
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			storedVoiceModel: "gemini-3.8-flash-tts",
+			storedVoiceName: "Kore",
+			voiceModels: ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "chatgpt-voice"],
+		});
+		const client: WebDefaultModels = {
+			read: vi.fn(async () => state),
+			set: vi.fn(async () => state),
+		};
+		const controller = new AbortController();
+		const view = new DefaultModelsView(client, controller.signal);
+		document.body.append(view.el);
+		await settle();
+
+		const voiceModel = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
+		expect(voiceModel.value).toBe("gemini-3.8-flash-tts");
+		expect(voiceModel.selectedOptions[0]?.disabled).toBe(true);
+		expect(voiceModel.selectedOptions[0]?.textContent).toBe("Gemini 3.8 Flash TTS (no preview)");
+		expect([...voiceModel.options].map((option) => option.value)).toEqual(["gemini-3.8-flash-tts", "chatgpt-voice"]);
+		expect(view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!.disabled).toBe(true);
+		expect(view.el.querySelector<HTMLButtonElement>('[data-role="voice-test"]')!.disabled).toBe(true);
+		controller.abort();
+	});
+
+	it("translates legacy stored Gemini voice profile tone descriptors in Danish", async () => {
 		setLanguagePreference("da");
-		const state = sampleDefaults();
+		const state = sampleDefaults({
+			storedVoiceModel: "gemini-3.8-flash-tts",
+			storedVoiceName: "Charon",
+		});
 		const client: WebDefaultModels = {
 			read: vi.fn(async () => state),
 			set: vi.fn(async () => state),
@@ -474,5 +519,182 @@ describe("DefaultModelsView", () => {
 		expect(labels).toContain("Kore — Bestemt");
 		expect(labels).toContain("Sulafat — Varm");
 		controller.abort();
+	});
+
+	it("plays and stops a voice sample in the active language, stops on selection change or dispose, and handles errors", async () => {
+		interface FakeAudio extends VoiceSampleAudio {
+			readonly url: string;
+			paused: boolean;
+			emit(type: "ended" | "error"): void;
+		}
+		const created: FakeAudio[] = [];
+		let nextPlayResult: (() => Promise<void>) | undefined;
+		const createAudio = (url: string): VoiceSampleAudio => {
+			const listeners: Record<"ended" | "error", Set<() => void>> = {
+				ended: new Set(),
+				error: new Set(),
+			};
+			const fake: FakeAudio = {
+				url,
+				currentTime: 0,
+				preload: "",
+				paused: false,
+				play: vi.fn(() => (nextPlayResult ? nextPlayResult() : Promise.resolve())),
+				pause: vi.fn(() => {
+					fake.paused = true;
+				}),
+				addEventListener: (type, listener) => {
+					listeners[type].add(listener);
+				},
+				removeEventListener: (type, listener) => {
+					listeners[type].delete(listener);
+				},
+				emit: (type) => {
+					for (const listener of [...listeners[type]]) listener();
+				},
+			};
+			created.push(fake);
+			return fake;
+		};
+
+		let state = sampleDefaults({
+			voiceModel: "chatgpt-voice",
+			voiceName: "cove",
+			storedVoiceModel: "chatgpt-voice",
+			storedVoiceName: "cove",
+		});
+		let holdSave: (() => void) | undefined;
+		const client: WebDefaultModels = {
+			read: vi.fn(async () => state),
+			set: vi.fn(async (update) => {
+				if (holdSave) {
+					await new Promise<void>((resolve) => {
+						const release = holdSave!;
+						holdSave = () => {
+							release();
+							resolve();
+						};
+					});
+				}
+				state = sampleDefaults({
+					...state,
+					conversationEffort: update.conversationEffort ?? state.conversationEffort,
+					voiceModel: update.voiceModel ?? state.voiceModel,
+					voiceName: update.voiceName ?? state.voiceName,
+					storedVoiceModel: update.voiceModel ?? state.storedVoiceModel,
+					storedVoiceName: update.voiceName ?? state.storedVoiceName,
+					version: update.expectedVersion + 1,
+				});
+				return state;
+			}),
+		};
+		const controller = new AbortController();
+		const view = new DefaultModelsView(client, controller.signal, createAudio);
+		document.body.append(view.el);
+		await settle();
+
+		const testBtn = () => view.el.querySelector<HTMLButtonElement>('[data-role="voice-test"]')!;
+		expect(testBtn().textContent).toBe("Test");
+		expect(testBtn().getAttribute("aria-pressed")).toBe("false");
+		expect(testBtn().getAttribute("aria-label")).toBe("Test Cove voice");
+
+		testBtn().click();
+		await settle();
+		expect(created).toHaveLength(1);
+		expect(created[0]!.url).toContain("/assets/voice-samples/chatgpt-voice/en/cove.mp3");
+		expect(testBtn().textContent).toBe("Stop");
+		expect(testBtn().getAttribute("aria-pressed")).toBe("true");
+		expect(testBtn().getAttribute("aria-label")).toBe("Stop voice sample");
+
+		testBtn().click();
+		await settle();
+		expect(created[0]!.paused).toBe(true);
+		expect(created[0]!.currentTime).toBe(0);
+		expect(testBtn().textContent).toBe("Test");
+		expect(testBtn().getAttribute("aria-pressed")).toBe("false");
+
+		testBtn().click();
+		await settle();
+		expect(created).toHaveLength(2);
+		expect(testBtn().textContent).toBe("Stop");
+		created[1]!.emit("ended");
+		await settle();
+		expect(testBtn().textContent).toBe("Test");
+
+		testBtn().click();
+		await settle();
+		expect(created).toHaveLength(3);
+		const voiceName = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		voiceName.value = "juniper";
+		voiceName.dispatchEvent(new Event("change"));
+		await settle();
+		expect(created[2]!.paused).toBe(true);
+		expect(testBtn().textContent).toBe("Test");
+
+		setLanguagePreference("da");
+		const voiceNameDa = view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!;
+		voiceNameDa.value = "maple";
+		voiceNameDa.dispatchEvent(new Event("change"));
+		await settle();
+		testBtn().click();
+		await settle();
+		expect(created).toHaveLength(4);
+		expect(created[3]!.url).toContain("/assets/voice-samples/chatgpt-voice/da/maple.mp3");
+		expect(testBtn().textContent).toBe("Stop");
+
+		created[3]!.emit("error");
+		await settle();
+		expect(testBtn().textContent).toBe("Test");
+		expect(view.el.textContent).toContain("Stemmeprøven kunne ikke afspilles. Prøv igen.");
+
+		setLanguagePreference("en");
+		nextPlayResult = () => Promise.reject(new Error("blocked"));
+		testBtn().click();
+		await settle();
+		expect(testBtn().textContent).toBe("Test");
+		expect(view.el.textContent).toContain("Voice sample could not be played. Try again.");
+
+		let rejectPending!: (err: Error) => void;
+		nextPlayResult = () =>
+			new Promise<void>((_resolve, reject) => {
+				rejectPending = reject;
+			});
+		testBtn().click();
+		await settle();
+		expect(testBtn().textContent).toBe("Stop");
+		testBtn().click();
+		rejectPending(new Error("AbortError"));
+		await settle();
+		expect(testBtn().textContent).toBe("Test");
+		expect(view.el.textContent).not.toContain("Voice sample could not be played. Try again.");
+
+		nextPlayResult = undefined;
+		testBtn().click();
+		await settle();
+		expect(testBtn().textContent).toBe("Stop");
+		const playingDuringSave = created[created.length - 1]!;
+		holdSave = () => {};
+		const convEffort = view.el.querySelector<HTMLSelectElement>('[data-role="conversation-effort"]')!;
+		convEffort.value = "medium";
+		convEffort.dispatchEvent(new Event("change"));
+		await settle();
+		expect(testBtn().textContent).toBe("Stop");
+		expect(testBtn().disabled).toBe(false);
+		testBtn().click();
+		await settle();
+		expect(playingDuringSave.paused).toBe(true);
+		expect(testBtn().textContent).toBe("Test");
+		expect(testBtn().disabled).toBe(true);
+		holdSave();
+		holdSave = undefined;
+		await settle();
+		expect(testBtn().disabled).toBe(false);
+
+		testBtn().click();
+		await settle();
+		expect(testBtn().textContent).toBe("Stop");
+		const activeAudio = created[created.length - 1]!;
+		controller.abort();
+		expect(activeAudio.paused).toBe(true);
 	});
 });
