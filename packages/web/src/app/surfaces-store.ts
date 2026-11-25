@@ -1874,6 +1874,43 @@ export class SurfacesStore {
 			this.#hydratedAttempted.clear();
 			for (const id of retryHydrate) this.hydrateWorkspace(id);
 			void this.refreshSurfaces();
+			const dirty = [...this.#cloudFilesDirty].map((id) => ({
+				id,
+				visible: this.#cloudFilesDirtyVisible.has(id),
+			}));
+			this.#cloudFilesDirty.clear();
+			this.#cloudFilesDirtyVisible.clear();
+			const missingDirty: string[] = [];
+			for (const entry of dirty) {
+				const surface =
+					this.state.surfaces.find((item) => item.id === entry.id) ?? this.state.workspaces[entry.id]?.surface;
+				if (surface && !isLocalSurfaceId(surface.id)) {
+					void this.refreshCloudFiles(surface, { visible: entry.visible });
+				} else {
+					missingDirty.push(entry.id);
+				}
+			}
+			if (missingDirty.length > 0) {
+				this.store.set((state) => {
+					let nextLoading: Record<string, true> | undefined;
+					let nextUpdating: Record<string, true> | undefined;
+					for (const id of missingDirty) {
+						if (state.loadingCloudFiles[id]) {
+							nextLoading ??= { ...state.loadingCloudFiles };
+							delete nextLoading[id];
+						}
+						if (state.updatingCloudFiles[id]) {
+							nextUpdating ??= { ...state.updatingCloudFiles };
+							delete nextUpdating[id];
+						}
+					}
+					if (!nextLoading && !nextUpdating) return {};
+					return {
+						...(nextLoading ? { loadingCloudFiles: nextLoading } : {}),
+						...(nextUpdating ? { updatingCloudFiles: nextUpdating } : {}),
+					};
+				});
+			}
 			this.refreshPendingCloudFiles();
 			for (const workspace of Object.values(this.state.workspaces)) {
 				if (isLocalSurfaceId(workspace.surface.id)) continue;
@@ -3145,9 +3182,14 @@ export class SurfacesStore {
 			}
 		} finally {
 			this.#cloudFilesLoading.delete(surface.id);
-			if (!this.#options.signal.aborted && this.#cloudFilesDirty.delete(surface.id)) {
-				shouldRerun = true;
-				rerunVisible = this.#cloudFilesDirtyVisible.delete(surface.id) || visible;
+			if (!this.#options.signal.aborted && this.#cloudFilesDirty.has(surface.id)) {
+				if (this.#suspended) {
+					if (visible) this.#cloudFilesDirtyVisible.add(surface.id);
+				} else {
+					this.#cloudFilesDirty.delete(surface.id);
+					shouldRerun = true;
+					rerunVisible = this.#cloudFilesDirtyVisible.delete(surface.id) || visible;
+				}
 			} else {
 				this.#cloudFilesDirtyVisible.delete(surface.id);
 				if (!this.#options.signal.aborted) {

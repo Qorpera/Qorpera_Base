@@ -1112,10 +1112,6 @@ export class CompanyController {
 		if (this.store.get().team?.capabilities.read) this.#atComputers.resume();
 		if (this.#presenceWatching) this.#syncPresence();
 		if (Object.keys(this.store.get().appIconsDrawing ?? {}).length > 0) this.#watchIcons();
-		if (this.#openSessionId) {
-			this.#staleConversations.delete(this.#openSessionId);
-			void this.loadConversation(this.#openSessionId);
-		}
 		// WHY: Quietly revalidate state in the background after instant restore without flashing loading skeletons.
 		void this.refreshTeam();
 		void this.#sessionsChanged();

@@ -3770,4 +3770,50 @@ describe("SurfacesStore", () => {
 		});
 		store.dispose();
 	});
+
+	it("preserves dirty cloud-file reruns across suspend() and clears surfaceUpdatePhase after resume()", async () => {
+		const studioSurface = summary({
+			id: "99999999-9999-4999-8999-999999999992",
+			slug: "brand-studio",
+			title: "Brand Studio",
+			archetype: "studio",
+			folderRoot: "surfaces/brand-studio",
+			activeSessionCount: 0,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const firstRead = deferred<ReturnType<typeof folderContents>>();
+		const secondRead = deferred<ReturnType<typeof folderContents>>();
+		const loadCloudFiles = vi.fn().mockReturnValueOnce(firstRead.promise).mockReturnValueOnce(secondRead.promise);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studioSurface]),
+			}),
+			{ loadCloudFiles },
+		);
+		await store.load();
+
+		const initial = store.refreshCloudFiles(studioSurface, { visible: true });
+		await store.refreshCloudFiles(studioSurface, { visible: true });
+		expect(store.surfaceUpdatePhase(studioSurface.id)).toBe("updating");
+
+		store.suspend();
+		firstRead.resolve(folderContents({ "surfaces/brand-studio/tokens.json": '{"v":1}' }));
+		await initial;
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(store.state.cloudSurfaceFiles[studioSurface.id]).toEqual({
+			"surfaces/brand-studio/tokens.json": '{"v":1}',
+		});
+
+		store.resume();
+		await vi.waitFor(() => expect(loadCloudFiles).toHaveBeenCalledTimes(2));
+		secondRead.resolve(folderContents({ "surfaces/brand-studio/tokens.json": '{"v":2}' }));
+		await vi.waitFor(() => {
+			expect(store.state.cloudSurfaceFiles[studioSurface.id]).toEqual({
+				"surfaces/brand-studio/tokens.json": '{"v":2}',
+			});
+			expect(store.surfaceUpdatePhase(studioSurface.id)).toBeNull();
+		});
+		store.dispose();
+	});
 });
