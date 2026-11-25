@@ -7,8 +7,10 @@ import {
 	type SurfaceSummary,
 	surfacePageKind,
 } from "@qorpera/contracts";
+import { reviveFigures } from "../../ui/avatar.ts";
 import { openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon, personAvatar } from "../../ui/dom.ts";
+import { reviveGroupAvatars } from "../../ui/group-avatar.ts";
 import { playOnce } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 import { type SurfaceSkeletonKind, surfaceSkeleton } from "../../ui/skeleton.ts";
@@ -228,6 +230,7 @@ export class SurfaceView {
 	#contentReady = false;
 	#deactivated = false;
 	#parked = false;
+	#needsRevive = false;
 	#disposed = false;
 	#cancelReady: (() => void) | undefined;
 	#mountedFor = "";
@@ -599,6 +602,7 @@ export class SurfaceView {
 	park(): void {
 		if (this.#deactivated || this.#disposed || this.#parked) return;
 		this.#parked = true;
+		this.#needsRevive = true;
 		this.#cancelReady?.();
 		this.#cancelReady = undefined;
 		this.#address.close();
@@ -668,6 +672,11 @@ export class SurfaceView {
 
 	update(): void {
 		if (this.#deactivated || this.#parked || this.#disposed) return;
+		if (this.#needsRevive && this.el.isConnected) {
+			this.#needsRevive = false;
+			reviveFigures(this.el);
+			reviveGroupAvatars(this.el);
+		}
 		const store = this.#host.store;
 		const state = store.state;
 		const surface = this.surface;

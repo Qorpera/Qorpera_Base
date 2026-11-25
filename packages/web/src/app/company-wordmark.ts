@@ -748,6 +748,7 @@ export class CompanyWordmarkSlot {
 		const retryAt = this.#failedReads.get(sha);
 		if (
 			!store ||
+			store.suspended ||
 			this.#blobUrls.has(sha) ||
 			this.#pendingReads.has(sha) ||
 			(retryAt !== undefined && Date.now() < retryAt)
@@ -760,7 +761,7 @@ export class CompanyWordmarkSlot {
 			.readStudioBinary(ref, this.#signal)
 			.then(
 				(bytes) => {
-					if (this.#signal.aborted) return;
+					if (this.#signal.aborted || store.suspended) return;
 					if (!activeBinaryShas(this.#wordmarks).has(sha)) return;
 					const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: ref.mediaType }));
 					this.#blobUrls.set(sha, url);
@@ -772,7 +773,7 @@ export class CompanyWordmarkSlot {
 					this.#paint();
 				},
 				() => {
-					if (this.#signal.aborted) return;
+					if (this.#signal.aborted || store.suspended) return;
 					this.#pendingReads.delete(sha);
 					this.#failedReads.set(sha, Date.now() + BINARY_RETRY_MS);
 					if (activeBinaryShas(this.#wordmarks).has(sha)) this.#scheduleRetry(ref);

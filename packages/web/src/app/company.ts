@@ -831,6 +831,7 @@ export class CompanyController {
 	#connectedHeartbeatTick = 0;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean; full: boolean }>();
+	readonly #staleConversations = new Set<string>();
 	/** The newest conversation read (updated_at, id): a sessions hint reads only what changed since. */
 	#sessionsCursor: PageCursor | undefined;
 	/** When the conversations were last read whole (Date.now()), and that read while on its way. */
@@ -1093,6 +1094,7 @@ export class CompanyController {
 		this.#reconnect.pause();
 		this.#atComputers.pause();
 		this.memberChats.pause();
+		for (const id of this.conversations.keys()) this.#staleConversations.add(id);
 		this.setOpenSession(undefined);
 		this.#openPlace = undefined;
 	}
@@ -1167,6 +1169,7 @@ export class CompanyController {
 		clearTimeout(this.#watching);
 		clearTimeout(this.#openFullTimer);
 		this.#invalidations.clear();
+		this.#staleConversations.clear();
 		// Deliver a final access-loss update before dropping observers.
 		queueMicrotask(() => {
 			this.store.dispose();
@@ -2738,6 +2741,16 @@ export class CompanyController {
 		if (store) {
 			this.conversations.delete(sessionId);
 			this.conversations.set(sessionId, store);
+			if (load && !this.#stopped && !this.#suspended) {
+				const state = store.get();
+				const stale = this.#staleConversations.delete(sessionId);
+				if (
+					stale ||
+					(!this.#conversationLoads.has(sessionId) && state.loading && !state.complete && !state.error)
+				) {
+					void this.loadConversation(sessionId);
+				}
+			}
 		} else {
 			store = new Store<ConversationState>({
 				sessionId,
@@ -2751,7 +2764,7 @@ export class CompanyController {
 			});
 			this.conversations.set(sessionId, store);
 			this.#pruneConversations(sessionId);
-			if (load) void this.loadConversation(sessionId);
+			if (load && !this.#suspended) void this.loadConversation(sessionId);
 		}
 		return store;
 	}
@@ -2763,6 +2776,18 @@ export class CompanyController {
 			if (existing) {
 				this.conversations.delete(sessionId);
 				this.conversations.set(sessionId, existing);
+				if (!this.#stopped && !this.#suspended) {
+					const stale = this.#staleConversations.delete(sessionId);
+					const state = existing.get();
+					if (
+						stale ||
+						(!this.#conversationLoads.has(sessionId) &&
+							!state.complete &&
+							(state.loading || state.error !== undefined))
+					) {
+						void this.loadConversation(sessionId);
+					}
+				}
 			}
 		}
 		this.#pruneConversations(sessionId);
@@ -2800,6 +2825,7 @@ export class CompanyController {
 				continue;
 			store.dispose();
 			this.conversations.delete(id);
+			this.#staleConversations.delete(id);
 			this.#conversationReadAt.delete(id);
 			this.#readBackFor.delete(id);
 		}
@@ -3170,6 +3196,7 @@ export class CompanyController {
 					any: now,
 					full: full ? now : (this.#conversationReadAt.get(sessionId)?.full ?? 0),
 				});
+				if (!this.#suspended) this.#staleConversations.delete(sessionId);
 				// A "Show earlier" that landed meanwhile may hold copies from before an erase: unless it reached no
 				// further back than the events read again, and left the generation as this read found it, the generation
 				// stays unknown and the next full read reads the events again.

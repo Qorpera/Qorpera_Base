@@ -185,12 +185,18 @@ export function agentColor(
 
 /* Views build and insert figures synchronously. Sweep after DOM changes so
  * removed rigs are disposed even if no later figure is mounted. */
-interface LiveFigure {
+interface ParkedFigure {
+	figure: FigureId;
+	color: string | undefined;
+	options: FigureOptions;
+}
+interface LiveFigure extends ParkedFigure {
 	host: HTMLElement;
 	rig: FigureMotion;
 }
 const live = new Set<LiveFigure>();
 const liveByHost = new Map<Element, LiveFigure>();
+const parked = new WeakMap<HTMLElement, ParkedFigure>();
 let observer: MutationObserver | undefined;
 let sweepQueued = false;
 
@@ -201,6 +207,8 @@ function sweep(): void {
 		entry.rig.dispose();
 		live.delete(entry);
 		liveByHost.delete(entry.host);
+		parked.set(entry.host, { figure: entry.figure, color: entry.color, options: entry.options });
+		entry.host.dataset.figureDisposed = "true";
 	}
 	if (!live.size) {
 		observer?.disconnect();
@@ -237,15 +245,12 @@ export function playFigure(host: Element | null | undefined, kind: Moment): void
 	liveByHost.get(host)?.rig.play(kind);
 }
 
-/** One built figure, ready to place. Returns an empty span when the vendored
- * scripts are absent, so a missing asset never takes a view down with it. */
-export function figureElement(figure: FigureId, color?: string, options: FigureOptions = {}): HTMLElement {
+function mountFigure(host: HTMLElement, figure: FigureId, color: string | undefined, options: FigureOptions): void {
 	const scope = globals();
-	const host = document.createElement("span");
-	host.className = ["figure", options.className].filter(Boolean).join(" ");
-	host.setAttribute("aria-hidden", "true");
-	if (options.size) host.style.setProperty("--figure-size", designPx(options.size));
-	if (!scope) return host;
+	if (!scope) return;
+	delete host.dataset.figureDisposed;
+	delete host.dataset.motionUnavailable;
+	host.replaceChildren();
 	const rig = mountFigureMotion(
 		host,
 		figure,
@@ -254,17 +259,14 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 			faces: scope.QORPERA_MOTION_MODEL.faces,
 			prepare: scope.QORPERA_AVATAR_APPEARANCE.prepare,
 			drawable: scope.QORPERA_AVATAR_APPEARANCE.drawable,
-			// The model accepts lower-case hex only; anything else keeps its colour.
 			colorOnDark: (id, shade) =>
 				/^#[\da-f]{6}$/.test(shade) ? scope.QORPERA_MOTION_MODEL.avatarColor(id, "dark", shade) : shade,
 		},
 		options,
 	);
-	const entry: LiveFigure = { host, rig };
+	const entry: LiveFigure = { host, rig, figure, color, options };
 	live.add(entry);
 	liveByHost.set(host, entry);
-	// Views insert their newly built figures synchronously. Sweep after the
-	// DOM commit, never halfway through constructing another view.
 	if (!observer) {
 		observer = new MutationObserver((records) => {
 			if (records.some((record) => record.removedNodes.length > 0)) scheduleSweep();
@@ -272,6 +274,26 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 		observer.observe(document.documentElement, { childList: true, subtree: true });
 	}
 	scheduleSweep();
+}
+
+export function reviveFigures(root: ParentNode): void {
+	const reviveOne = (host: HTMLElement) => {
+		if (!host.isConnected) return;
+		const spec = parked.get(host);
+		if (!spec) return;
+		parked.delete(host);
+		mountFigure(host, spec.figure, spec.color, spec.options);
+	};
+	if (root instanceof HTMLElement && root.dataset.figureDisposed === "true") reviveOne(root);
+	for (const host of root.querySelectorAll<HTMLElement>("[data-figure-disposed]")) reviveOne(host);
+}
+
+export function figureElement(figure: FigureId, color?: string, options: FigureOptions = {}): HTMLElement {
+	const host = document.createElement("span");
+	host.className = ["figure", options.className].filter(Boolean).join(" ");
+	host.setAttribute("aria-hidden", "true");
+	if (options.size) host.style.setProperty("--figure-size", designPx(options.size));
+	mountFigure(host, figure, color, options);
 	return host;
 }
 

@@ -1826,6 +1826,10 @@ export class SurfacesStore {
 		return this.surfaceUpdatePhase(surfaceId) !== null;
 	}
 
+	get suspended(): boolean {
+		return this.#suspended;
+	}
+
 	// WHY: Parked company controllers hibernate surface timers without discarding warm workspace state.
 	suspend(): void {
 		if (this.#options.signal.aborted || this.#suspended) return;
@@ -1853,13 +1857,68 @@ export class SurfacesStore {
 	resume(): void {
 		if (this.#options.signal.aborted || !this.#suspended) return;
 		this.#suspended = false;
-		if (this.state.source === "loading" && !this.#loaded) {
+		if ((this.state.source === "loading" && !this.#loaded) || this.#fallbackAfterLoadError) {
+			this.#loaded = undefined;
 			void this.load();
 			return;
 		}
 		this.#syncPolling();
 		if (this.state.source === "cloud") {
+			const retryHydrate = [...this.#hydratedAttempted].filter(
+				(id) =>
+					!this.state.workspaces[id] &&
+					this.state.surfaces.some(
+						(surface) => surface.id === id && surface.status === "active" && surface.activeSessionCount > 0,
+					),
+			);
+			this.#hydratedAttempted.clear();
+			for (const id of retryHydrate) this.hydrateWorkspace(id);
 			void this.refreshSurfaces();
+			const dirty = [...this.#cloudFilesDirty].map((id) => ({
+				id,
+				visible: this.#cloudFilesDirtyVisible.has(id),
+			}));
+			this.#cloudFilesDirty.clear();
+			this.#cloudFilesDirtyVisible.clear();
+			const missingDirty: string[] = [];
+			for (const entry of dirty) {
+				const surface =
+					this.state.surfaces.find((item) => item.id === entry.id) ?? this.state.workspaces[entry.id]?.surface;
+				if (surface && !isLocalSurfaceId(surface.id)) {
+					void this.refreshCloudFiles(surface, { visible: entry.visible });
+				} else {
+					missingDirty.push(entry.id);
+				}
+			}
+			if (missingDirty.length > 0) {
+				this.store.set((state) => {
+					let nextLoading: Record<string, true> | undefined;
+					let nextUpdating: Record<string, true> | undefined;
+					for (const id of missingDirty) {
+						if (state.loadingCloudFiles[id]) {
+							nextLoading ??= { ...state.loadingCloudFiles };
+							delete nextLoading[id];
+						}
+						if (state.updatingCloudFiles[id]) {
+							nextUpdating ??= { ...state.updatingCloudFiles };
+							delete nextUpdating[id];
+						}
+					}
+					if (!nextLoading && !nextUpdating) return {};
+					return {
+						...(nextLoading ? { loadingCloudFiles: nextLoading } : {}),
+						...(nextUpdating ? { updatingCloudFiles: nextUpdating } : {}),
+					};
+				});
+			}
+			this.refreshPendingCloudFiles();
+			for (const workspace of Object.values(this.state.workspaces)) {
+				if (isLocalSurfaceId(workspace.surface.id)) continue;
+				const hasCrew = workspace.activeSessions.length > 0 || openExplorations(workspace).length > 0;
+				if (hasCrew || this.#workspaceNeedsPoll(workspace)) {
+					void this.refreshWorkspace(workspace.surface.id, 0, { background: true });
+				}
+			}
 			const client = this.#options.client;
 			if (client) {
 				void this.#loadAutomations(client);
@@ -1963,10 +2022,10 @@ export class SurfacesStore {
 				// WHY: Keep loading on transient network errors so Surfaces do not stay hidden or redirect home for the rest of the session.
 				this.#loaded = undefined;
 				this.store.set({ source: "loading", error: describe(error) });
-				if (!this.#retryLoadTimer) {
+				if (!this.#retryLoadTimer && !this.#suspended) {
 					this.#retryLoadTimer = setTimeout(() => {
 						this.#retryLoadTimer = undefined;
-						if (!this.#options.signal.aborted && this.state.source === "loading") {
+						if (!this.#options.signal.aborted && !this.#suspended && this.state.source === "loading") {
 							void this.load();
 						}
 					}, POLL_MS);
@@ -3025,7 +3084,7 @@ export class SurfacesStore {
 
 	async refreshCloudFiles(surface: SurfaceSummary, options?: { readonly visible?: boolean }): Promise<void> {
 		const loadFiles = this.#options.loadCloudFiles;
-		if (!loadFiles || isLocalSurfaceId(surface.id)) return;
+		if (!loadFiles || this.#suspended || isLocalSurfaceId(surface.id)) return;
 		const visible = options?.visible === true;
 		if (this.#cloudFilesLoading.has(surface.id)) {
 			this.#cloudFilesDirty.add(surface.id);
@@ -3123,9 +3182,14 @@ export class SurfacesStore {
 			}
 		} finally {
 			this.#cloudFilesLoading.delete(surface.id);
-			if (!this.#options.signal.aborted && this.#cloudFilesDirty.delete(surface.id)) {
-				shouldRerun = true;
-				rerunVisible = this.#cloudFilesDirtyVisible.delete(surface.id) || visible;
+			if (!this.#options.signal.aborted && this.#cloudFilesDirty.has(surface.id)) {
+				if (this.#suspended) {
+					if (visible) this.#cloudFilesDirtyVisible.add(surface.id);
+				} else {
+					this.#cloudFilesDirty.delete(surface.id);
+					shouldRerun = true;
+					rerunVisible = this.#cloudFilesDirtyVisible.delete(surface.id) || visible;
+				}
 			} else {
 				this.#cloudFilesDirtyVisible.delete(surface.id);
 				if (!this.#options.signal.aborted) {
@@ -3145,7 +3209,7 @@ export class SurfacesStore {
 				}
 			}
 		}
-		if (shouldRerun && !this.#options.signal.aborted) {
+		if (shouldRerun && !this.#options.signal.aborted && !this.#suspended) {
 			const latestSurface = this.state.surfaces.find((item) => item.id === surface.id) ?? surface;
 			await this.refreshCloudFiles(latestSurface, { visible: rerunVisible });
 		}
@@ -3179,7 +3243,7 @@ export class SurfacesStore {
 	}
 
 	refreshPendingCloudFiles(): void {
-		if (this.state.source !== "cloud" || !this.#options.loadCloudFiles) return;
+		if (this.state.source !== "cloud" || this.#suspended || !this.#options.loadCloudFiles) return;
 		const seen = new Set<string>();
 		for (const workspace of Object.values(this.state.workspaces)) {
 			seen.add(workspace.surface.id);
