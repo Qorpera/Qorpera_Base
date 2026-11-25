@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
@@ -67,6 +67,7 @@ import {
 	GeminiKeyInvalidError,
 	isGeminiApiKeyFormat,
 } from "./cloud-gemini-key-vault.ts";
+import { bearerTokenMatches, readBoundedJsonBody, writeJsonResponse } from "./cloud-http-server-kit.ts";
 import { CLAUDE_LOGIN_FILES } from "./cloud-model-login-sign-in.ts";
 import {
 	type CloudModelLoginVault,
@@ -142,15 +143,7 @@ function exact(value: Record<string, unknown>, keys: readonly string[], label: s
 export type NativeBindingProof = (binding: object, holder: string) => Promise<void>;
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
-	if (!authorization?.startsWith("Bearer ")) return false;
-	const left = Buffer.from(expected, "utf8");
-	const right = Buffer.from(authorization.slice("Bearer ".length), "utf8");
-	try {
-		return left.byteLength === right.byteLength && timingSafeEqual(left, right);
-	} finally {
-		left.fill(0);
-		right.fill(0);
-	}
+	return bearerTokenMatches(expected, authorization);
 }
 
 function parseFields(value: unknown): Record<string, string> {
@@ -612,44 +605,17 @@ function parseOAuthConfirm(value: unknown): { confirmation: string; browserProof
 }
 
 async function readRequest(request: IncomingMessage): Promise<unknown> {
-	const chunks: Buffer[] = [];
-	let bytes = 0;
-	const timeout = setTimeout(() => request.destroy(new Error("Cloud secret broker request timed out")), 10_000);
-	let body: Buffer | undefined;
-	try {
-		for await (const chunkValue of request) {
-			const chunk = Buffer.isBuffer(chunkValue) ? chunkValue : Buffer.from(chunkValue);
-			bytes += chunk.byteLength;
-			if (bytes > MAX_REQUEST_BYTES) {
-				chunk.fill(0);
-				throw new Error("Cloud secret broker request is too large");
-			}
-			chunks.push(chunk);
-		}
-		body = Buffer.concat(chunks);
-		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown;
-	} finally {
-		clearTimeout(timeout);
-		body?.fill(0);
-		for (const chunk of chunks) chunk.fill(0);
-	}
+	return readBoundedJsonBody(request, {
+		maxBytes: MAX_REQUEST_BYTES,
+		timeoutMs: 10_000,
+		timeoutError: "Cloud secret broker request timed out",
+		tooLargeError: "Cloud secret broker request is too large",
+		zeroize: true,
+	});
 }
 
 function response(reply: ServerResponse, status: number, value: JsonValue, headers: Record<string, string> = {}): void {
-	const body = JSON.stringify(value);
-	const contentLength = reply.req.headers["content-length"];
-	const hasBody =
-		(contentLength !== undefined && contentLength !== "0") || reply.req.headers["transfer-encoding"] !== undefined;
-	const closeUnread = hasBody && !reply.req.complete;
-	reply.writeHead(status, {
-		"content-type": "application/json",
-		"content-length": Buffer.byteLength(body),
-		"cache-control": "no-store",
-		"x-content-type-options": "nosniff",
-		...(closeUnread ? { connection: "close" } : {}),
-		...headers,
-	});
-	reply.end(body);
+	writeJsonResponse(reply, status, value, { headers, closeUnread: true });
 }
 
 function redirect(reply: ServerResponse, location: string): void {

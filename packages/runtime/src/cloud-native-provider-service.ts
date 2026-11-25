@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import {
@@ -30,6 +30,7 @@ import {
 	cloudPostgrestError,
 } from "./cloud-control-errors.ts";
 import { geminiProviderDiagnostic, geminiProviderFailureCode } from "./cloud-gemini-tool-session.ts";
+import { bearerTokenMatches, readBoundedJsonBody } from "./cloud-http-server-kit.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import {
 	isNativeHostPublishableKey,
@@ -338,10 +339,7 @@ function parseNativeHostCredential(value: unknown): NativeHostJobCredential | un
 }
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
-	if (!authorization?.startsWith("Bearer ")) return false;
-	const left = Buffer.from(expected, "utf-8");
-	const right = Buffer.from(authorization.slice("Bearer ".length), "utf-8");
-	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+	return bearerTokenMatches(expected, authorization);
 }
 
 // Uncapped by default (founder decision 2026-09-02): the schema maximum per
@@ -898,20 +896,12 @@ export class HttpNativeProviderHostService {
 	}
 
 	async #readBody(request: IncomingMessage): Promise<unknown> {
-		const deadline = setTimeout(() => request.destroy(new Error("Native request body deadline exceeded")), 10_000);
-		const chunks: Buffer[] = [];
-		let length = 0;
-		try {
-			for await (const chunk of request) {
-				const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-				length += bytes.length;
-				if (length > MAX_REQUEST_BYTES) throw new Error("Native provider request is too large");
-				chunks.push(bytes);
-			}
-			return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		} finally {
-			clearTimeout(deadline);
-		}
+		return readBoundedJsonBody(request, {
+			maxBytes: MAX_REQUEST_BYTES,
+			timeoutMs: 10_000,
+			timeoutError: "Native request body deadline exceeded",
+			tooLargeError: "Native provider request is too large",
+		});
 	}
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
