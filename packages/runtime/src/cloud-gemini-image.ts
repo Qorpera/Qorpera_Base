@@ -59,6 +59,7 @@ export interface GenerateGeminiImageInput {
 	readonly allowLoopback?: boolean;
 	readonly fetcher?: typeof fetch;
 	readonly timeoutMs?: number;
+	readonly onUsage?: (usage: GeminiImageUsage, signal: AbortSignal) => Promise<void> | void;
 	readonly signal: AbortSignal;
 }
 
@@ -267,6 +268,10 @@ export async function generateGeminiImage(input: GenerateGeminiImageInput): Prom
 			throw new CloudPictureFailure("invalid");
 		}
 		if (!isPlainObject(parsed)) throw new CloudPictureFailure("invalid");
+		const usage = parseUsage(parsed.usageMetadata);
+		if (input.onUsage) {
+			await input.onUsage(usage, input.signal);
+		}
 		const promptFeedback = isPlainObject(parsed.promptFeedback) ? parsed.promptFeedback : undefined;
 		if (typeof promptFeedback?.blockReason === "string" && promptFeedback.blockReason.length > 0) {
 			throw new CloudPictureFailure("refused");
@@ -319,7 +324,7 @@ export async function generateGeminiImage(input: GenerateGeminiImageInput): Prom
 		}
 		return {
 			png,
-			usage: parseUsage(parsed.usageMetadata),
+			usage,
 		};
 	}
 }

@@ -208,21 +208,17 @@ export async function claudeWorkerPictures(input: {
 	const lane = input.home && login.own && input.given === undefined && !usePlan ? await input.lane() : undefined;
 	const made = lane;
 	const make = !login.own
-		? input.home
-			? input.gemini
-			: undefined
+		? undefined
 		: (input.given ??
 			(usePlan
 				? input.chatGptPlan
 				: made
 					? (picture: CloudPictureInput, signal: AbortSignal) => made.make(picture, signal)
-					: input.home
-						? input.gemini
-						: undefined));
+					: undefined));
 	return {
 		pictures: {
 			make,
-			...(make !== undefined || login.none === undefined ? {} : { none: login.none }),
+			...(login.none === undefined ? {} : { none: login.none }),
 			foreignOwner: input.foreignOwner,
 		},
 		...(lane ? { lane } : {}),

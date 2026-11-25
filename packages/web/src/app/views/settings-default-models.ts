@@ -483,6 +483,7 @@ export class DefaultModelsView {
 			h("div", { class: "default-model-controls" }, voiceModelSelect, voiceNameSelect, voiceTestButton),
 		);
 
+		const showImageRow = state.imageModelSupported !== false;
 		const imageUnavailable = state.storedImageModel !== null && !state.imageModels.includes(state.storedImageModel);
 		const shownImageModel = imageUnavailable ? state.storedImageModel! : state.imageModel;
 		const imageModelOptions: { value: string; label: string; disabled?: boolean }[] = [
@@ -506,21 +507,23 @@ export class DefaultModelsView {
 				void this.#save({ imageModel: value });
 			},
 		);
-		const imageRow = h(
-			"div",
-			{ class: "settings-preference-row default-model-row" },
-			h(
-				"div",
-				{ class: "settings-copy" },
-				h("strong", null, t("Image generation")),
-				h("small", null, t("Default model for generated images across chats, coding, workers, and Studio.")),
-			),
-			h("div", { class: "default-model-controls" }, imageModelSelect),
-		);
+		const imageRow = showImageRow
+			? h(
+					"div",
+					{ class: "settings-preference-row default-model-row" },
+					h(
+						"div",
+						{ class: "settings-copy" },
+						h("strong", null, t("Image generation")),
+						h("small", null, t("Default model for generated images across chats, coding, workers, and Studio.")),
+					),
+					h("div", { class: "default-model-controls" }, imageModelSelect),
+				)
+			: null;
 
 		const missingExtraProviders =
 			!convModels.includes("gemini-4-neon") ||
-			!state.imageModels.includes("gemini-3-pro-image") ||
+			(showImageRow && !state.imageModels.includes("gemini-3-pro-image")) ||
 			!state.codingModels.includes("claude-opus-5-5");
 
 		const refocusRole =

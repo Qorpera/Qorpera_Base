@@ -105,6 +105,7 @@ export interface MemberDefaultModels {
 	codingModels: readonly string[];
 	voiceModels: readonly string[];
 	imageModels: readonly string[];
+	imageModelSupported?: boolean;
 	conversationEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
 	codingEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
 	voiceProfiles: Readonly<Record<string, readonly string[]>>;
@@ -241,6 +242,8 @@ export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
 	if (input.schema !== "qorpera.member-default-models/v1") {
 		throw new CloudShapeError("default models");
 	}
+	const hasImageFields =
+		input.imageModel !== undefined || input.storedImageModel !== undefined || input.imageModels !== undefined;
 	return {
 		conversationModel: nonEmptyString(input.conversationModel, "conversation default model", 128),
 		conversationEffort: parseEffort(input.conversationEffort, "conversation default effort"),
@@ -248,16 +251,17 @@ export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
 		codingEffort: parseEffort(input.codingEffort, "coding default effort"),
 		voiceModel: nonEmptyString(input.voiceModel, "voice default model", 128),
 		voiceName: nonEmptyString(input.voiceName, "voice default profile", 128),
-		imageModel: nonEmptyString(input.imageModel, "image default model", 128),
+		imageModel: hasImageFields ? nonEmptyString(input.imageModel, "image default model", 128) : "chatgpt-image",
 		storedConversationModel: parseOptionalModel(input.storedConversationModel, "stored conversation model"),
 		storedCodingModel: parseOptionalModel(input.storedCodingModel, "stored coding model"),
 		storedVoiceModel: parseOptionalModel(input.storedVoiceModel, "stored voice model"),
 		storedVoiceName: parseOptionalModel(input.storedVoiceName, "stored voice profile"),
-		storedImageModel: parseOptionalModel(input.storedImageModel, "stored image model"),
+		storedImageModel: hasImageFields ? parseOptionalModel(input.storedImageModel, "stored image model") : null,
 		conversationModels: parseModelList(input.conversationModels, "conversation models"),
 		codingModels: parseModelList(input.codingModels, "coding models"),
 		voiceModels: parseModelList(input.voiceModels, "voice models"),
-		imageModels: parseModelList(input.imageModels, "image models"),
+		imageModels: hasImageFields ? parseModelList(input.imageModels, "image models") : ["chatgpt-image"],
+		imageModelSupported: hasImageFields,
 		conversationEfforts: parseEffortMap(input.conversationEfforts, "conversation model efforts"),
 		codingEfforts: parseEffortMap(input.codingEfforts, "coding model efforts"),
 		voiceProfiles: parseVoiceProfileMap(input.voiceProfiles, "voice model profiles"),

@@ -58,6 +58,7 @@ export function createGeminiImageLane(options: GeminiImageRunnerOptions): CloudP
 	const { binding, paths, geminiKeys } = options;
 	let cachedKey: Promise<string> | null = null;
 	let capReached: { readonly monthlyCapCents: number | null; readonly monthSpendMicrodollars: number } | null = null;
+	let usageRecorderFailed = false;
 
 	const recordCapReached = async (): Promise<void> => {
 		try {
@@ -135,6 +136,7 @@ export function createGeminiImageLane(options: GeminiImageRunnerOptions): CloudP
 
 	return serializePictureLane(async (input, callSignal) => {
 		try {
+			if (usageRecorderFailed) throw new CloudPictureUnavailable();
 			const apiKey = await openApiKey();
 			callSignal.throwIfAborted();
 			const result = await generateGeminiImage({
@@ -145,32 +147,46 @@ export function createGeminiImageLane(options: GeminiImageRunnerOptions): CloudP
 				...(options.allowLoopback ? { allowLoopback: true } : {}),
 				...(options.fetcher ? { fetcher: options.fetcher } : {}),
 				...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+				onUsage: async (usage) => {
+					let recorded: {
+						monthSpendMicrodollars?: unknown;
+						monthlyCapCents?: unknown;
+						capReached?: unknown;
+					} | null;
+					try {
+						recorded = (await withAbortScopes(
+							[],
+							(recordSignal) =>
+								paths.call(
+									"qorpera_record_gemini_image_usage",
+									{ p_binding: binding, p_model: DEFAULT_GEMINI_IMAGE_MODEL, p_usage: usage },
+									recordSignal,
+									RECORD_TIMEOUT_MS,
+								),
+							RECORD_TIMEOUT_MS,
+						)) as {
+							monthSpendMicrodollars?: unknown;
+							monthlyCapCents?: unknown;
+							capReached?: unknown;
+						} | null;
+					} catch {
+						usageRecorderFailed = true;
+						throw new CloudPictureUnavailable();
+					}
+					if (!recorded || typeof recorded !== "object" || typeof recorded.capReached !== "boolean") {
+						usageRecorderFailed = true;
+						throw new CloudPictureUnavailable();
+					}
+					if (recorded.capReached) {
+						capReached = {
+							monthlyCapCents: typeof recorded.monthlyCapCents === "number" ? recorded.monthlyCapCents : null,
+							monthSpendMicrodollars:
+								typeof recorded.monthSpendMicrodollars === "number" ? recorded.monthSpendMicrodollars : 0,
+						};
+					}
+				},
 				signal: callSignal,
 			});
-			try {
-				const recorded = (await withAbortScopes(
-					[],
-					(recordSignal) =>
-						paths.call(
-							"qorpera_record_gemini_image_usage",
-							{ p_binding: binding, p_model: DEFAULT_GEMINI_IMAGE_MODEL, p_usage: result.usage },
-							recordSignal,
-							RECORD_TIMEOUT_MS,
-						),
-					RECORD_TIMEOUT_MS,
-				)) as {
-					monthSpendMicrodollars?: unknown;
-					monthlyCapCents?: unknown;
-					capReached?: unknown;
-				} | null;
-				if (recorded?.capReached === true) {
-					capReached = {
-						monthlyCapCents: typeof recorded.monthlyCapCents === "number" ? recorded.monthlyCapCents : null,
-						monthSpendMicrodollars:
-							typeof recorded.monthSpendMicrodollars === "number" ? recorded.monthSpendMicrodollars : 0,
-					};
-				}
-			} catch {}
 			return { png: result.png };
 		} catch (error) {
 			if (callSignal.aborted) throw error;

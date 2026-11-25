@@ -226,12 +226,14 @@ it("gives a Claude worker pictures only when the run's facts say its Codex login
 	expect(planOwned.pictures.make).toBe(chatGptPlan);
 	expect(lane).toHaveBeenCalledOnce();
 
-	const fallbackGemini = await claudeWorkerPictures({
+	const nonGeminiNotOwn = await claudeWorkerPictures({
 		facts: { member: "Ada", ownCodexLogin: false },
 		home: true,
+		preferredModel: "chatgpt-image",
 		gemini,
 		lane,
 		foreignOwner,
 	});
-	expect(fallbackGemini.pictures.make).toBe(gemini);
+	expect(nonGeminiNotOwn.pictures.make).toBeUndefined();
+	expect(nonGeminiNotOwn.pictures.none).toContain("own ChatGPT sign-in isn't what this run uses");
 });

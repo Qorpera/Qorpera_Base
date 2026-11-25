@@ -260,5 +260,70 @@ describe("cloud-run-picture-lane", () => {
 		expect((busyErr as CloudPictureFailure).reason).toBe("busy");
 		release();
 		await inFlight;
+
+		const refusedUsageCalls: unknown[] = [];
+		const refusedLane = createGeminiImageLane({
+			binding,
+			paths: {
+				call: vi.fn(async (method, args) => {
+					refusedUsageCalls.push({ method, args });
+					return {
+						schema: "qorpera.gemini-image-usage/v1",
+						spendMonth: "2026-11",
+						monthSpendMicrodollars: 240,
+						monthlyCapCents: 10_000,
+						capReached: false,
+					};
+				}),
+			},
+			existingApiKey: `AIza${"B".repeat(35)}`,
+			fetcher: vi.fn<typeof fetch>(async () =>
+				Response.json({
+					candidates: [{ finishReason: "IMAGE_SAFETY", content: { parts: [] } }],
+					usageMetadata: { promptTokenCount: 60, thoughtsTokenCount: 10 },
+				}),
+			),
+			signal: new AbortController().signal,
+		})!;
+		await expect(refusedLane({ prompt: "Refused image" }, new AbortController().signal)).rejects.toMatchObject({
+			reason: "refused",
+		});
+		expect(refusedUsageCalls).toHaveLength(1);
+		expect(refusedUsageCalls[0]).toMatchObject({
+			method: "qorpera_record_gemini_image_usage",
+			args: {
+				p_usage: { inputTokens: 60, cachedTokens: 0, textOutputTokens: 10, imageOutputTokens: 0 },
+			},
+		});
+
+		const failingFetch = vi.fn<typeof fetch>(async () =>
+			Response.json({
+				candidates: [
+					{
+						finishReason: "STOP",
+						content: { parts: [{ inlineData: { mimeType: "image/png", data: png.toString("base64") } }] },
+					},
+				],
+				usageMetadata: { promptTokenCount: 30, candidatesTokensDetails: [{ modality: "IMAGE", tokenCount: 1120 }] },
+			}),
+		);
+		const failClosedLane = createGeminiImageLane({
+			binding,
+			paths: {
+				call: vi.fn(async () => {
+					throw new Error("usage RPC failed");
+				}),
+			},
+			existingApiKey: `AIza${"C".repeat(35)}`,
+			fetcher: failingFetch,
+			signal: new AbortController().signal,
+		})!;
+		await expect(
+			failClosedLane({ prompt: "First uncapped attempt" }, new AbortController().signal),
+		).rejects.toBeInstanceOf(CloudPictureUnavailable);
+		await expect(
+			failClosedLane({ prompt: "Second blocked attempt" }, new AbortController().signal),
+		).rejects.toBeInstanceOf(CloudPictureUnavailable);
+		expect(failingFetch).toHaveBeenCalledTimes(1);
 	});
 });

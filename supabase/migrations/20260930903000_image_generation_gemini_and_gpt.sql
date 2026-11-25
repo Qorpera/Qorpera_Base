@@ -22,13 +22,13 @@ do $$ begin
 			select 1 from information_schema.columns
 			where table_schema = 'public' and table_name = 'qorpera_member_default_models' and column_name = 'voice_model'
 		) then
-		raise exception '20260930902000: prerequisite voice, Gemini, worker, or surface functions are missing';
+		raise exception '20260930903000: prerequisite voice, Gemini, worker, or surface functions are missing';
 	end if;
 	if exists (
 		select 1 from information_schema.columns
 		where table_schema = 'public' and table_name = 'qorpera_member_default_models' and column_name = 'image_model'
 	) then
-		raise exception '20260930902000 is already applied';
+		raise exception '20260930903000 is already applied';
 	end if;
 end $$;
 
@@ -51,12 +51,12 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930902000: invalid replacement pairs for %', p_target;
+		raise exception '20260930903000: invalid replacement pairs for %', p_target;
 	end if;
 	while v_i <= array_length(p_pairs, 1) loop
 		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
 		if v_hits <> 1 then
-			raise exception '20260930902000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
+			raise exception '20260930903000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
 		end if;
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
@@ -104,6 +104,35 @@ returns bigint language sql immutable set search_path = '' as $$
 	end
 $$;
 
+create function public.qorpera_bundle_supports_image_model(p_bundle_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select exists (
+		select 1 from public.qorpera_runtime_bundles as bundle
+		where bundle.id = p_bundle_id
+			and (
+				bundle.manifest -> 'implementation' ? 'packages/runtime/src/cloud-run-picture-lane.ts'
+				or bundle.manifest #>> '{modelPolicy,imageChoice}' = 'member'
+			)
+	)
+$$;
+
+create function public.qorpera_run_is_gemini_conversation(p_run public.qorpera_execution_runs)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select p_run.id is not null
+		and p_run.gemini_model is not null
+		and p_run.gemini_key_id is not null
+		and (
+			p_run.source_kind in ('session_turn', 'room_delivery')
+			or (p_run.source_kind = 'wake' and exists (
+				select 1 from public.qorpera_wake_occurrences as wake
+				where wake.id = p_run.source_id
+					and wake.profile_id = p_run.profile_id
+					and wake.wake_kind <> 'routine'
+					and wake.source_kind in ('worker-completion', 'machine-event', 'machine-checkin', 'office-activation')
+			))
+		)
+$$;
+
 create function public.qorpera_run_image_gemini_key(p_run public.qorpera_execution_runs)
 returns public.qorpera_gemini_keys language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -116,17 +145,7 @@ begin
 	if p_run.id is null or v_user is null then
 		return null;
 	end if;
-	if p_run.gemini_model is not null and p_run.gemini_key_id is not null
-		and (
-			p_run.source_kind in ('session_turn', 'room_delivery')
-			or (p_run.source_kind = 'wake' and exists (
-				select 1 from public.qorpera_wake_occurrences as wake
-				where wake.id = p_run.source_id
-					and wake.profile_id = p_run.profile_id
-					and wake.wake_kind <> 'routine'
-					and wake.source_kind in ('worker-completion', 'machine-event', 'machine-checkin', 'office-activation')
-			))
-		) then
+	if public.qorpera_run_is_gemini_conversation(p_run) then
 		select key.* into v_key from public.qorpera_gemini_keys as key
 		where key.id = p_run.gemini_key_id
 			and key.status = 'active'
@@ -203,6 +222,8 @@ end $$;
 revoke all on function
 	public.qorpera_resolve_member_image_preference(uuid, uuid),
 	public.qorpera_gemini_image_microdollars(text, bigint, bigint, bigint, bigint),
+	public.qorpera_bundle_supports_image_model(uuid),
+	public.qorpera_run_is_gemini_conversation(public.qorpera_execution_runs),
 	public.qorpera_run_image_gemini_key(public.qorpera_execution_runs)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
@@ -539,15 +560,7 @@ begin
 	select run.* into v_run from public.qorpera_execution_runs as run where run.id = v_lease.run_id;
 	select principal.* into v_principal from public.qorpera_cloud_secret_broker_principals as principal
 	where principal.id = v_authority.principal_id and principal.status = 'active';
-	if v_run.id is not null and v_run.gemini_model is not null and v_run.gemini_key_id is not null
-		and (
-			v_run.source_kind in ('session_turn', 'room_delivery')
-			or (v_run.source_kind = 'wake' and exists (
-				select 1 from public.qorpera_wake_occurrences as wake
-				where wake.id = v_run.source_id
-					and wake.source_kind in ('worker-completion', 'machine-event', 'machine-checkin', 'office-activation')
-			))
-		) then
+	if public.qorpera_run_is_gemini_conversation(v_run) then
 		select key.* into v_key from public.qorpera_gemini_keys as key where key.id = v_run.gemini_key_id;
 		v_run_authorized := true;
 	elsif v_run.id is not null then
@@ -613,7 +626,7 @@ begin
 		raise exception 'Gemini cap notice is the runtime''s' using errcode = '42501'; end if;
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	v_key_id := coalesce(
-		case when v_run.gemini_model is not null then v_run.gemini_key_id end,
+		case when public.qorpera_run_is_gemini_conversation(v_run) then v_run.gemini_key_id end,
 		(public.qorpera_run_image_gemini_key(v_run)).id,
 		(public.qorpera_run_voice_gemini_key(v_run)).id
 	);
@@ -662,7 +675,7 @@ begin
 		raise exception 'Gemini key error code is invalid' using errcode = '22023'; end if;
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	v_key_id := coalesce(
-		case when v_run.gemini_model is not null then v_run.gemini_key_id end,
+		case when public.qorpera_run_is_gemini_conversation(v_run) then v_run.gemini_key_id end,
 		(public.qorpera_run_image_gemini_key(v_run)).id,
 		(public.qorpera_run_voice_gemini_key(v_run)).id
 	);
@@ -796,7 +809,9 @@ $old$		|| case when v_run.gemini_model is null then '{}'::jsonb
 			else jsonb_build_object('gemini',jsonb_build_object('model',v_run.gemini_model,'effort',v_run.gemini_effort,'keyId',v_run.gemini_key_id)) end$old$,
 $new$		|| case when v_run.gemini_model is null then '{}'::jsonb
 			else jsonb_build_object('gemini',jsonb_build_object('model',v_run.gemini_model,'effort',v_run.gemini_effort,'keyId',v_run.gemini_key_id)) end
-		|| case when coalesce(v_run.requested_by_user_id, v_run.created_by_user_id) is null then '{}'::jsonb
+		|| case when coalesce(v_run.requested_by_user_id, v_run.created_by_user_id) is null
+				or not public.qorpera_bundle_supports_image_model(v_run.runtime_bundle_id)
+			then '{}'::jsonb
 			else jsonb_build_object('imageModel', case
 				when public.qorpera_resolve_member_image_preference(
 						v_run.profile_id, coalesce(v_run.requested_by_user_id, v_run.created_by_user_id)) = 'gemini-3-pro-image'
@@ -850,7 +865,7 @@ begin
 		)
 	loop
 		execute format(
-			'grant execute on function public.qorpera_resolve_member_image_preference(uuid,uuid), public.qorpera_gemini_image_microdollars(text,bigint,bigint,bigint,bigint), public.qorpera_run_image_gemini_key(public.qorpera_execution_runs), public.qorpera_run_voice_gemini_key(public.qorpera_execution_runs) to %I',
+			'grant execute on function public.qorpera_resolve_member_image_preference(uuid,uuid), public.qorpera_gemini_image_microdollars(text,bigint,bigint,bigint,bigint), public.qorpera_bundle_supports_image_model(uuid), public.qorpera_run_is_gemini_conversation(public.qorpera_execution_runs), public.qorpera_run_image_gemini_key(public.qorpera_execution_runs), public.qorpera_run_voice_gemini_key(public.qorpera_execution_runs) to %I',
 			v_owner
 		);
 	end loop;
@@ -865,6 +880,6 @@ do $$ begin
 			or patched.provolatile is distinct from prior.provolatile
 			or patched.proacl::text is distinct from prior.proacl::text
 	) or (select count(*) from pg_temp.image_gen_before) <> 6 then
-		raise exception '20260930902000: patched function attributes or grants drifted';
+		raise exception '20260930903000: patched function attributes or grants drifted';
 	end if;
 end $$;

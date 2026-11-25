@@ -205,7 +205,7 @@ describe("default models transport", () => {
 		).rejects.toBeInstanceOf(DefaultModelsUnavailableError);
 	});
 
-	it("rejects payloads missing voice or image fields", () => {
+	it("rejects payloads missing voice or partial image fields, and defaults gracefully when image fields are absent pre-migration", async () => {
 		expect(() =>
 			parseMemberDefaultModels({
 				schema: "qorpera.member-default-models/v1",
@@ -231,6 +231,7 @@ describe("default models transport", () => {
 				codingEffort: "high",
 				voiceModel: "chatgpt-voice",
 				voiceName: "cove",
+				imageModel: "chatgpt-image",
 				storedConversationModel: null,
 				storedCodingModel: null,
 				storedVoiceModel: null,
@@ -244,6 +245,46 @@ describe("default models transport", () => {
 				version: 0,
 			}),
 		).toThrow();
+
+		const preMigration = parseMemberDefaultModels({
+			schema: "qorpera.member-default-models/v1",
+			conversationModel: "gpt-6.2-sol",
+			conversationEffort: "low",
+			codingModel: "gpt-6.2-sol",
+			codingEffort: "high",
+			voiceModel: "chatgpt-voice",
+			voiceName: "cove",
+			storedConversationModel: null,
+			storedCodingModel: null,
+			storedVoiceModel: null,
+			storedVoiceName: null,
+			conversationModels: ["gpt-6.2-sol"],
+			codingModels: ["gpt-6.2-sol"],
+			voiceModels: ["chatgpt-voice"],
+			conversationEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+			codingEfforts: { "gpt-6.2-sol": ["low", "medium", "high"] },
+			voiceProfiles: { "chatgpt-voice": ["cove"] },
+			version: 0,
+		});
+		expect(preMigration.imageModel).toBe("chatgpt-image");
+		expect(preMigration.storedImageModel).toBeNull();
+		expect(preMigration.imageModels).toEqual(["chatgpt-image"]);
+		expect(preMigration.imageModelSupported).toBe(false);
+
+		const controller = new AbortController();
+		const view = new DefaultModelsView(
+			{
+				read: vi.fn(async () => preMigration),
+				set: vi.fn(async () => preMigration),
+			},
+			controller.signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		const rows = [...view.el.querySelectorAll(".default-model-row strong")].map((node) => node.textContent);
+		expect(rows).toEqual(["Conversational", "Coding & working", "Voice"]);
+		expect(view.el.querySelector('[data-role="image-model"]')).toBeNull();
+		controller.abort();
 	});
 });
 

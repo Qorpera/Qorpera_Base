@@ -153,20 +153,31 @@ describe("cloud-gemini-image", () => {
 		});
 	});
 
-	it("maps blocked or empty responses to CloudPictureFailure reasons", async () => {
-		const blocked = vi.fn<typeof fetch>(async () => Response.json({ promptFeedback: { blockReason: "SAFETY" } }));
+	it("maps blocked or empty responses to CloudPictureFailure reasons while still reporting billed usage", async () => {
+		const recordedUsages: unknown[] = [];
+		const blocked = vi.fn<typeof fetch>(async () =>
+			Response.json({
+				promptFeedback: { blockReason: "SAFETY" },
+				usageMetadata: { promptTokenCount: 42 },
+			}),
+		);
 		await expect(
 			generateGeminiImage({
 				apiKey: "AIzaSyExampleKey",
 				prompt: "Blocked prompt.",
 				fetcher: blocked,
+				onUsage: (usage) => {
+					recordedUsages.push(usage);
+				},
 				signal: new AbortController().signal,
 			}),
 		).rejects.toMatchObject({ reason: "refused" });
+		expect(recordedUsages).toEqual([{ inputTokens: 42, cachedTokens: 0, textOutputTokens: 0, imageOutputTokens: 0 }]);
 
 		const imageSafety = vi.fn<typeof fetch>(async () =>
 			Response.json({
 				candidates: [{ finishReason: "IMAGE_SAFETY", content: { parts: [] } }],
+				usageMetadata: { promptTokenCount: 60, thoughtsTokenCount: 15 },
 			}),
 		);
 		await expect(
@@ -174,9 +185,19 @@ describe("cloud-gemini-image", () => {
 				apiKey: "AIzaSyExampleKey",
 				prompt: "Blocked candidate.",
 				fetcher: imageSafety,
+				onUsage: (usage) => {
+					recordedUsages.push(usage);
+				},
 				signal: new AbortController().signal,
 			}),
 		).rejects.toMatchObject({ reason: "refused" });
+		expect(recordedUsages).toHaveLength(2);
+		expect(recordedUsages[1]).toEqual({
+			inputTokens: 60,
+			cachedTokens: 0,
+			textOutputTokens: 15,
+			imageOutputTokens: 0,
+		});
 
 		const empty = vi.fn<typeof fetch>(async () =>
 			Response.json({
