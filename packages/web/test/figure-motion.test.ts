@@ -142,6 +142,19 @@ function mount(
 }
 
 describe("before the recorded motion arrives", () => {
+	it("paints still avatars immediately without waiting for the recorded motion chunk", async () => {
+		const host = document.createElement("span");
+		document.body.append(host);
+		mounted.push(
+			mountFigureMotion(host, "crown", "#fcb51b", artwork, { activity: "Idle", identity: "static", still: true }),
+		);
+		await settle();
+		show([host]);
+		expect(host.querySelector("canvas")!.hidden).toBe(false);
+		expect(host.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(true);
+		expect(frames.size).toBe(0);
+	});
+
 	it("leaves its place empty, never in the still artwork's old colour, then fades in and plays from the first frame, under reduced motion too", async () => {
 		const idle = mount("Idle", "late"),
 			still = mount("Working", "late-still");

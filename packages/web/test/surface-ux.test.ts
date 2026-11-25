@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { inferSurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
+import { inferSurfaceKind, type SurfaceSession, type SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import {
@@ -2963,6 +2963,236 @@ describe("the rail's empty-space menu with interfaces (20260930892000)", () => {
 		openMenu()?.close();
 		await flush();
 		company.stop();
+		store.dispose();
+	});
+});
+
+describe("seeded ops surface sidepanel", () => {
+	const FILES_ID = "22222222-2222-4222-8222-222222222261";
+	const INBOX_ID = "22222222-2222-4222-8222-222222222262";
+	const INBOX_SESSION = "33333333-3333-4333-8333-333333333361";
+	const HISTORY_SESSION = "33333333-3333-4333-8333-333333333362";
+
+	it("never jumps out on seeded ops surfaces when another surface opened the panel, and always lets an open panel toggle off", async () => {
+		stubFigureMotion();
+		const website = summary();
+		const files = summary({
+			id: FILES_ID,
+			slug: "files",
+			title: "Files",
+			group: "operations",
+			archetype: "ops",
+			kind: "files",
+			icon: "drawers",
+			sourceKind: "native_ops",
+			previewMode: "none",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const inbox = summary({
+			id: INBOX_ID,
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			kind: "inbox",
+			icon: "mail",
+			sourceKind: "native_ops",
+			previewMode: "none",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const websiteSession = session(["staged"], { id: SESSION, surfaceId: website.id });
+		const inboxChange = change(CHANGES[1], 1, "staged", { kind: "ops_action", title: "Send follow-up" });
+		const inboxSession = session(["staged"], {
+			id: INBOX_SESSION,
+			surfaceId: inbox.id,
+			title: "Draft follow-up",
+			changes: [inboxChange],
+		});
+		const filesHistory = session([], {
+			id: HISTORY_SESSION,
+			surfaceId: files.id,
+			state: "completed",
+			title: "Sorted Q3 folder",
+			changes: [],
+		});
+		let inboxActive: SurfaceSession[] = [inboxSession];
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [website, inbox, files]),
+			getSurfaceWorkspace: vi.fn(async (surfaceId: string) => {
+				if (surfaceId === files.id) return workspace([], { surface: files, recentHistory: [filesHistory] });
+				if (surfaceId === inbox.id) return workspace(inboxActive, { surface: inbox });
+				return workspace([websiteSession], { surface: website });
+			}),
+			discardSurfaceChange: vi.fn(async () => {
+				inboxActive = [];
+				const discarded: SurfaceSession = {
+					...inboxSession,
+					state: "discarded",
+					changes: [{ ...inboxChange, status: "discarded" }],
+					openChangeCount: 0,
+					closedAt: "2026-11-25T01:00:00Z",
+				};
+				return discarded;
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+
+		const websiteView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(websiteView.el);
+		await flush();
+		websiteView.update();
+
+		store.openDrawer(website.id, websiteSession.id);
+		websiteView.update();
+		websiteView.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="back-overview"]')!.click();
+		websiteView.update();
+		expect(store.state.previewPanel).toBe("auto");
+		expect(websiteView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+
+		websiteView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		websiteView.update();
+		websiteView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		websiteView.update();
+		expect(store.state.previewPanel).toBe("open");
+		websiteView.dispose();
+
+		const filesView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "files");
+		document.body.append(filesView.el);
+		await flush();
+		filesView.update();
+		const filesToggle = filesView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!;
+		expect(filesView.el.classList.contains("has-drawer")).toBe(false);
+		expect(filesView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(filesToggle.hidden).toBe(true);
+
+		store.openDrawer(files.id, filesHistory.id);
+		filesView.update();
+		expect(filesView.el.classList.contains("has-drawer")).toBe(true);
+		expect(filesView.el.querySelector(".surface-drawer.is-open")).not.toBeNull();
+		expect(filesToggle.hidden).toBe(false);
+
+		filesToggle.click();
+		filesView.update();
+		expect(filesView.el.classList.contains("has-drawer")).toBe(false);
+		expect(filesView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(filesToggle.hidden).toBe(true);
+		expect(store.state.previewPanel).toBe("open");
+		filesView.dispose();
+
+		const inboxView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(inboxView.el);
+		await flush();
+		inboxView.update();
+		const inboxToggle = inboxView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!;
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(false);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(inboxToggle.hidden).toBe(false);
+
+		inboxToggle.click();
+		inboxView.update();
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(true);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(inboxToggle.hidden).toBe(false);
+
+		inboxToggle.click();
+		inboxView.update();
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(false);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(store.state.previewPanel).toBe("open");
+
+		inboxToggle.click();
+		inboxView.update();
+		expect(inboxView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		await store.discardChange(inboxSession.id, inboxChange.id);
+		await flush();
+		inboxView.update();
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(false);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(store.state.opsPanelSurfaceId).toBeUndefined();
+		expect(inboxToggle.hidden).toBe(true);
+
+		inboxView.dispose();
+		store.dispose();
+	});
+
+	it("handles back-to-overview and leaving on an ops surface without sticking an empty panel open", async () => {
+		stubFigureMotion();
+		const inbox = summary({
+			id: INBOX_ID,
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			kind: "inbox",
+			icon: "mail",
+			sourceKind: "native_ops",
+			previewMode: "none",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+		});
+		const heldSession = session([], {
+			id: INBOX_SESSION,
+			surfaceId: inbox.id,
+			state: "ready",
+			hasActiveChat: true,
+			title: "Held follow-up",
+			changes: [change(CHANGES[1], 1, "merged", { kind: "ops_action", title: "Sent follow-up" })],
+		});
+		const secondSession = session(["staged"], {
+			id: HISTORY_SESSION,
+			surfaceId: inbox.id,
+			title: "Second follow-up",
+			changes: [change(CHANGES[2], 1, "staged", { kind: "ops_action", title: "Draft reply" })],
+		});
+		let active: SurfaceSession[] = [heldSession, secondSession];
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [inbox]),
+				getSurfaceWorkspace: vi.fn(async () => workspace(active, { surface: inbox })),
+				setSessionChatOpen: vi.fn(async (_id: string, open: boolean) => ({ ...heldSession, hasActiveChat: open })),
+			}),
+		);
+		await store.load();
+
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		store.openDrawer(inbox.id, heldSession.id);
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="back-overview"]')!.click();
+		view.update();
+		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(store.state.previewPanel).toBe("auto");
+		expect(store.state.opsPanelSurfaceId).toBe(inbox.id);
+
+		view.deactivate();
+		expect(store.state.opsPanelSurfaceId).toBeUndefined();
+		view.dispose();
+
+		active = [heldSession];
+		const secondView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(secondView.el);
+		await flush();
+		secondView.update();
+		expect(secondView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+
+		store.openDrawer(inbox.id, heldSession.id);
+		secondView.update();
+		expect(secondView.el.querySelector(".surface-drawer.is-open")).not.toBeNull();
+		secondView.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="back-overview"]')!.click();
+		secondView.update();
+		expect(secondView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(secondView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.hidden).toBe(true);
+
+		secondView.dispose();
 		store.dispose();
 	});
 });

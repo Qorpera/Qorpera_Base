@@ -66,6 +66,7 @@ export function bundleOptions({ root, outdir, serve = false, define }) {
 				// Never loaded itself: it gives the vendor code a chunk of its own (src/vendor.ts).
 				{ in: join(root, "src/vendor.ts"), out: "vendor" },
 				{ in: join(root, "src/styles/app.css"), out: "app" },
+				{ in: join(root, "src/styles/deferred.css"), out: "deferred" },
 			],
 			bundle: true,
 			format: "esm",
@@ -103,8 +104,10 @@ export function bundleLayout(metafile, { root, outdir }) {
 	const script = entry("src/entry.mjs", ".js");
 	const vendor = entry("src/vendor.ts", ".js");
 	const style = entry("src/styles/app.css", ".css");
+	const deferredStyle = entry("src/styles/deferred.css", ".css");
 	const theme = entry("src/theme.ts", ".js");
-	if (!script || !vendor || !style || !theme) throw new Error("The bundle's entry files were not produced");
+	if (!script || !vendor || !style || !deferredStyle || !theme)
+		throw new Error("The bundle's entry files were not produced");
 	/** Every chunk a file imports statically, and theirs: fetched before it runs. */
 	const imported = (file, found = new Set()) => {
 		for (const item of outputs.get(file)?.imports ?? []) {
@@ -122,6 +125,7 @@ export function bundleLayout(metafile, { root, outdir }) {
 		outputs: Object.fromEntries(outputs),
 		script,
 		style,
+		deferredStyle,
 		theme,
 		/** What main.js imports before it runs; index.html preloads it beside main.js. */
 		preload: [...preload].sort(),
@@ -169,6 +173,7 @@ export function rewriteIndex(html, layout, versions, apiOrigin) {
 		result = once(result, `src="./${file}"`, `src="./${file}?v=${versions[file]}"`);
 	}
 	result = once(result, 'href="./app.css"', `href="./${layout.style}"`);
+	result = once(result, 'content="./deferred.css"', `content="./${layout.deferredStyle}"`);
 	result = once(result, 'src="./main.js"', `src="./${layout.script}"`);
 	return once(result, "</head>", `${preload}</head>`);
 }

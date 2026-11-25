@@ -266,7 +266,9 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 	// Views insert their newly built figures synchronously. Sweep after the
 	// DOM commit, never halfway through constructing another view.
 	if (!observer) {
-		observer = new MutationObserver(scheduleSweep);
+		observer = new MutationObserver((records) => {
+			if (records.some((record) => record.removedNodes.length > 0)) scheduleSweep();
+		});
 		observer.observe(document.documentElement, { childList: true, subtree: true });
 	}
 	scheduleSweep();

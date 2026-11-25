@@ -1,4 +1,4 @@
-import { preferredServiceKey } from "../_shared/http-guards.ts";
+import { preferredServiceKey, sha256Hex } from "../_shared/http-guards.ts";
 import { createPostgrestClient } from "../_shared/postgrest-rpc.ts";
 import {
 	type BillingStore,
@@ -61,10 +61,41 @@ const goodWill: BillingStore = {
 	},
 };
 
+const MEMBER_AUTH_CACHE_TTL_MS = 5_000;
+const MEMBER_AUTH_CACHE_MAX = 256;
+const memberAuthCache = new Map<string, { readonly id: string; readonly email: string; readonly expiresAt: number }>();
+
+function jwtExpiryMs(token: string): number | null {
+	const parts = token.split(".");
+	if (parts.length !== 3) return null;
+	try {
+		const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))) as { exp?: unknown };
+		return typeof payload.exp === "number" && Number.isFinite(payload.exp) ? payload.exp * 1000 : null;
+	} catch {
+		return null;
+	}
+}
+
 const auth: MemberAuth = {
 	async member(token) {
+		const now = Date.now();
+		const key = await sha256Hex(token);
+		const cached = memberAuthCache.get(key);
+		if (cached) {
+			if (cached.expiresAt > now) return { id: cached.id, email: cached.email };
+			memberAuthCache.delete(key);
+		}
 		const { data, error } = await supabase.auth.getUser(token);
 		if (error || !data.user?.id || !data.user.email) return null;
+		const expMs = jwtExpiryMs(token);
+		const expiresAt = expMs === null ? now + MEMBER_AUTH_CACHE_TTL_MS : Math.min(now + MEMBER_AUTH_CACHE_TTL_MS, expMs);
+		if (expiresAt > now) {
+			if (memberAuthCache.size >= MEMBER_AUTH_CACHE_MAX) {
+				const oldest = memberAuthCache.keys().next().value;
+				if (oldest !== undefined) memberAuthCache.delete(oldest);
+			}
+			memberAuthCache.set(key, { id: data.user.id, email: data.user.email, expiresAt });
+		}
 		return { id: data.user.id, email: data.user.email };
 	},
 };

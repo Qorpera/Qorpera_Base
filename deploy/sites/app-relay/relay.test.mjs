@@ -2539,14 +2539,16 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			...RELAY,
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
-			responseTimeoutMs: 500,
-			pausedMs: 2_000,
-			sharedPausedMs: 60,
+			responseTimeoutMs: 2_000,
+			pausedMs: 4_000,
+			sharedPausedMs: 200,
 			log: () => {},
 		});
 		const relayPort = await listen(relay);
 		let progSocket = null;
+		let drainTimer = null;
 		t.after(async () => {
+			if (drainTimer) clearInterval(drainTimer);
 			progSocket?.destroy();
 			relay.closeAllConnections();
 			await new Promise((r) => relay.close(r));
@@ -2579,7 +2581,11 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		slowRes.destroyed = false;
 		slowRes.writeHead = () => {};
 		slowRes.flushHeaders = () => {};
-		slowRes.write = () => false;
+		let slowBodyWritten = false;
+		slowRes.write = () => {
+			slowBodyWritten = true;
+			return false;
+		};
 		slowRes.end = () => {};
 		slowRes.destroy = () => {
 			slowRes.destroyed = true;
@@ -2603,7 +2609,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		prog.socket.write(
 			encodeFrame(0x2, encodeMessage(TYPE.body, head1.stream, Buffer.alloc(64 * 1024, 0x41)), { mask: mask() }),
 		);
-		await sleep(15);
+		await until(() => slowBodyWritten, "body chunk delivered to slowRes", 1_000);
 		assert.equal(relay.pauseCount("shop"), 0);
 
 		const fastRes = new EventEmitter();
@@ -2625,16 +2631,25 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		};
 		relay.emit("request", makeReq("/second"), fastRes);
 
-		for (let i = 0; i < 6; i++) {
-			await sleep(25);
-			slowRes.socket._handle.writeQueueSize -= 8192;
+		drainTimer = setInterval(() => {
+			if (slowRes.socket._handle.writeQueueSize >= 4096) slowRes.socket._handle.writeQueueSize -= 4096;
+		}, 25);
+		try {
+			await until(
+				() => relay.sharedProgressChecks("shop") >= 2 || slowRes.destroyed,
+				"tightened progress checks while writeQueueSize keeps moving",
+				2_000,
+			);
+		} finally {
+			clearInterval(drainTimer);
+			drainTimer = null;
 		}
 		assert.equal(slowRes.destroyed, false);
 		assert.ok(
 			relay.sharedProgressChecks("shop") >= 2,
 			`expected >= 2 tightened progress checks, got ${relay.sharedProgressChecks("shop")}`,
 		);
-		await until(() => slowRes.destroyed, "stalled shared stream to be destroyed once writeQueueSize stops moving", 1_000);
+		await until(() => slowRes.destroyed, "stalled shared stream to be destroyed once writeQueueSize stops moving", 2_000);
 		assert.equal(fastRes.destroyed, false);
 	});
 
