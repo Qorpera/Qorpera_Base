@@ -143,6 +143,9 @@ export async function cloudRuntimeBundle(root = repository) {
 		return sha(runtimeManifestText(selected));
 	};
 	const runtime = (names) => names.map((name) => `packages/runtime/src/${name}.ts`);
+	const authorization = component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/")));
+	const implementation = [...files].filter(([path]) => !path.startsWith("supabase/migrations/"));
+	implementation.push(["supabase/migrations", authorization]);
 	const manifest = {
 		schema: "qorpera.runtime-bundle/v2",
 		modelPolicy,
@@ -154,18 +157,24 @@ export async function cloudRuntimeBundle(root = repository) {
 			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus"])),
 			contextComposer: component(runtime(["cloud-native-company-context", "cloud-runtime-hire-overlays", "cloud-company-path-gateway"])),
 			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-runtime-constitution", "cloud-runtime-hire-overlays", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
-			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),
+			authorization,
 			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-context-composition", "cloud-native-tool-boundary"])),
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
 			interactionSurfaces: component(runtime(["cloud-agent-mouth", "cloud-native-company-runtime"])),
 			workerLifecycle: component([...runtime(["cloud-runner-worker", "cloud-native-provider-host", "cloud-worker-tools"]), ...[...files.keys()].filter((path) => path.startsWith("packages/runtime/src/cloud-coding-") || path.startsWith("packages/runner-orchestrator/src/coding-") || path.startsWith("packages/contracts/src/cloud-coding"))]),
 			memoryAndSkills: component([...runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-memory-tools", "cloud-skill-tools", "cloud-company-path-gateway"]), "packages/cloud-client/src/cloud-skill-file.ts", "packages/cloud-client/src/cloud-agent-folder.ts"]),
 		},
-		implementation: Object.fromEntries([...files].sort(([a], [b]) => a.localeCompare(b, "en"))),
+		implementation: Object.fromEntries(implementation.sort(([a], [b]) => a.localeCompare(b, "en"))),
 	};
 	const text = runtimeManifestText(manifest);
 	if (Buffer.byteLength(text) > 512 * 1024) throw new Error("Runtime manifest exceeds its SQL bound (20260929023450)");
-	return { manifest, text, sha256: sha(text), modelPolicySha256: sha(runtimeManifestText(modelPolicy)) };
+	return {
+		manifest,
+		text,
+		sha256: sha(text),
+		modelPolicySha256: sha(runtimeManifestText(modelPolicy)),
+		sourceFiles: [...files.keys()].sort((a, b) => a.localeCompare(b, "en")),
+	};
 }
 
 export async function generateCloudRuntimeBundle(check = false, root = repository) {

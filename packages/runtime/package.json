@@ -20,7 +20,7 @@
 		"CHANGELOG.md"
 	],
 	"scripts": {
-		"clean": "shx rm -rf dist",
+		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		"build": "tsgo -p tsconfig.build.json",
 		"test": "vitest --run"
 	},
@@ -35,7 +35,6 @@
 	"devDependencies": {
 		"@supabase/supabase-js": "2.112.3",
 		"@types/pg": "8.23.1",
-		"shx": "0.4.0",
 		"vitest": "4.1.11"
 	},
 	"engines": {

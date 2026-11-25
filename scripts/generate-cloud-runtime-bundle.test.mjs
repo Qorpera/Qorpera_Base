@@ -51,7 +51,7 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 	const fixture = await mkdtemp(join(tmpdir(), "qorpera-runtime-bundle-test-"));
 	try {
 		const current = await cloudRuntimeBundle();
-		const files = new Set(Object.keys(current.manifest.implementation));
+		const files = new Set(current.sourceFiles);
 		for (const path of files) {
 			await mkdir(dirname(join(fixture, path)), { recursive: true });
 			await copyFile(join(repository, path), join(fixture, path));
@@ -59,6 +59,7 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		const initial = await generateCloudRuntimeBundle(false, fixture);
 		assert.equal(initial.sha256, current.sha256);
 		assert.equal(initial.sha256, createHash("sha256").update(initial.text).digest("hex"));
+		assert.ok(Buffer.byteLength(initial.text) < 96 * 1024, `Runtime manifest must stay well below the 512 KiB SQL bound: ${Buffer.byteLength(initial.text)} B`);
 		assert.deepEqual(initial.manifest.modelPolicy, {
 			schema: "qorpera.model-reasoning/v1",
 			effort: "low",
@@ -71,7 +72,9 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 			geminiChoice: "thread",
 		});
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
-		assert.match(initial.manifest.implementation["supabase/migrations/20260828020000_runtime_wake_bus.sql"], /^[0-9a-f]{64}$/);
+		assert.equal(initial.manifest.implementation["supabase/migrations"], initial.manifest.components.authorization);
+		assert.match(initial.manifest.implementation["supabase/migrations"], /^[0-9a-f]{64}$/);
+		assert.equal(Object.keys(initial.manifest.implementation).filter((path) => path.startsWith("supabase/migrations/")).length, 0);
 		assert.equal((await generateCloudRuntimeBundle(true, fixture)).sha256, initial.sha256);
 		// Behavioral law and hire defaults have explicit, independently reviewable pins.
 		for (const [name, component] of [["cloud-runtime-constitution", "constitution"], ["cloud-runtime-hire-overlays", "contextComposer"]]) {

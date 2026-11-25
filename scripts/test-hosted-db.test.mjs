@@ -14,6 +14,7 @@ import {
 	POSTGRES_IMAGE,
 	POSTGRES_LOCALE,
 	parseArguments,
+	planSqlTestBatches,
 	SQL_TEST_DATABASES,
 	selectTests,
 	sortMigrationNames,
@@ -96,6 +97,38 @@ test("a test can run after another test's fixture section", () => {
 	assert.throws(() => expandTestFixture("390_missing.test.sql", read), /fixture is unavailable/);
 	assert.equal(expandTestFixture("395_chained.test.sql", read), "begin;\nselect 1;\nselect 3;\nselect 4;\nrollback;\n");
 	assert.throws(() => expandTestFixture("396_cycle_a.test.sql", read), /fixture is unavailable/);
+});
+
+test("rolled-back @fixture tests sharing a prefix batch with SAVEPOINT and respect barriers", () => {
+	const files = {
+		"150_early.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 10;\nrollback;\n',
+		"300_base.test.sql": "begin;\nselect 'commit';\n-- END FIXTURE\nselect 2;\nrollback;\n",
+		"310_a.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 11;\nrollback;\n',
+		"320_b.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nsavepoint inner_sp;\nselect 12;\nrollback to savepoint inner_sp;\n',
+		"330_locks.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect * from pg_locks;\nrollback;\n',
+		"340_c.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 14;\nrollback;\n',
+		"350_commits.test.sql": "begin;\nselect 15;\ncommit;\n",
+		"360_d.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 16;\nrollback;\n',
+		"370_e.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 17;\nrollback;\n',
+	};
+	const read = (name) => files[name];
+	const plan = planSqlTestBatches(Object.keys(files), read, 2);
+	assert.deepEqual(
+		plan.map((entry) => (entry.type === "single" ? ["single", entry.name] : ["batch", entry.items.map((item) => item.name)])),
+		[
+			["single", "150_early.test.sql"],
+			["single", "300_base.test.sql"],
+			["batch", ["310_a.test.sql", "320_b.test.sql"]],
+			["single", "330_locks.test.sql"],
+			["single", "340_c.test.sql"],
+			["single", "350_commits.test.sql"],
+			["batch", ["360_d.test.sql", "370_e.test.sql"]],
+		],
+	);
+	const firstBatch = plan[2];
+	assert.equal(firstBatch.prefix, "begin;\nselect 'commit';\n");
+	assert.equal(firstBatch.items[0].body, "--\nselect 11;\n");
+	assert.equal(firstBatch.items[1].body, "--\nsavepoint inner_sp;\nselect 12;\nrollback to savepoint inner_sp;\n");
 });
 
 test("one psql process opens a fresh session for every file", () => {
