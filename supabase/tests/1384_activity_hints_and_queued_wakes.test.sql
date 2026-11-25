@@ -116,8 +116,13 @@ begin
 		'Alice phase flips to writing after message_composition start: ' || v_rows::text
 	);
 
-	-- WHY: Job status transition emits an activity hint.
+	-- WHY: Deliver required progress/final messages before marking the conversation job completed.
+	perform pg_temp.base_public_send(v_binding, 'progress');
+	perform pg_temp.base_public_send(v_binding, 'final');
+	perform pg_temp.ah_flush_hints();
 	perform pg_temp.ah_clear_hints();
+
+	-- WHY: Job status transition emits an activity hint.
 	update public.qorpera_runner_jobs
 	set status = 'completed', result = '{}'::jsonb, finished_at = clock_timestamp(),
 		lease_token_sha256 = null, lease_expires_at = null
