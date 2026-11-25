@@ -6,6 +6,7 @@ import {
 	type SurfaceExplorationSet,
 	type SurfaceSession,
 	type SurfaceSummary,
+	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SurfacesClient } from "../src/app/surfaces-store.ts";
@@ -2232,6 +2233,83 @@ describe("removing an agent from the Changes list", () => {
 		expect(discardSurfaceSession).toHaveBeenLastCalledWith(working.id);
 		expect(card(working.id)).toBeNull();
 		expect(card(kept.id)).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("shows the primary preview door instead of the live mount when mode stayed on report or compare from another surface", async () => {
+		const ready = previewFrame({
+			previewId: PREVIEW_IDS[0],
+			toggledChangeIds: [CHANGES[0], CHANGES[1]],
+		});
+		const ws = workspace([session(["staged", "staged"])], {
+			previewState: { surfaceId: SURFACE, mode: "single", primary: ready, compareFrames: [] },
+		});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws) }));
+		await store.load();
+		store.setMode("report");
+		const mounted = document.createElement("div");
+		mounted.className = "real-site-view";
+		const mount = vi.fn(() => ({ el: mounted, update: () => undefined, dispose: () => undefined }));
+		const view = new SurfaceView({ store, mount, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelectorAll("iframe.surface-frame")).toHaveLength(1);
+		expect(view.el.querySelector(".surface-notch-label")?.textContent).toBe("Preview");
+
+		store.setMode("compare");
+		view.update();
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelectorAll("iframe.surface-frame")).toHaveLength(1);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("holds the loading skeleton instead of flashing the live mount while auto-syncing a live_baseline workspace with staged changes", async () => {
+		let resolvePreview!: (value: SurfaceWorkspace["previewState"]) => void;
+		const setPreviewSelection = vi.fn(
+			() =>
+				new Promise<SurfaceWorkspace["previewState"]>((resolve) => {
+					resolvePreview = resolve;
+				}),
+		);
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"])])),
+				setPreviewSelection,
+			}),
+		);
+		await store.load();
+		const mounted = document.createElement("div");
+		mounted.className = "real-site-view";
+		const mount = vi.fn(() => ({ el: mounted, update: () => undefined, dispose: () => undefined }));
+		const view = new SurfaceView({ store, mount, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelector(".skeleton-surface")).not.toBeNull();
+
+		resolvePreview({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: PREVIEW_IDS[0],
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			}),
+			compareFrames: [],
+		});
+		await flush();
+		view.update();
+
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelector(".skeleton-surface")).toBeNull();
+		expect(view.el.querySelectorAll("iframe.surface-frame")).toHaveLength(1);
 		view.dispose();
 		store.dispose();
 	});

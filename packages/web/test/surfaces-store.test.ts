@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readSurfaceFolderFiles } from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
-import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef } from "@qorpera/contracts";
+import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef, type SurfaceWorkspace } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import { Store } from "../src/app/state.ts";
@@ -1348,6 +1348,7 @@ describe("SurfacesStore", () => {
 
 	it("auto-composes preview selection once for cloud code_repo surfaces with newly staged changes and retries after transient failure without setting state.error", async () => {
 		let attempts = 0;
+		let serverPreview: SurfaceWorkspace["previewState"] | undefined;
 		const readyPreview = {
 			surfaceId: SURFACE,
 			mode: "single" as const,
@@ -1360,10 +1361,13 @@ describe("SurfacesStore", () => {
 		const setPreviewSelection = vi.fn(async () => {
 			attempts += 1;
 			if (attempts === 1) throw new Error("transient offline");
+			serverPreview = readyPreview;
 			return readyPreview;
 		});
 		const client = fakeClient({
-			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged"])])),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"])], serverPreview ? { previewState: serverPreview } : {}),
+			),
 			setPreviewSelection,
 		});
 		const store = storeWith(client);
@@ -3047,6 +3051,212 @@ describe("SurfacesStore", () => {
 
 		await store.discardSession(s1Id);
 		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(callsAfterOpen + 1);
+		store.dispose();
+	});
+
+	it("re-syncs the preview when a previously ready selection falls back to live_baseline or drops a toggled change", async () => {
+		const readyBoth: SurfaceWorkspace["previewState"] = {
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: PREVIEW_IDS[0],
+				status: "ready",
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			}),
+			compareFrames: [],
+		};
+		const expiredBaseline: SurfaceWorkspace["previewState"] = {
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: null,
+				status: "live_baseline",
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+				doorActionUrl: null,
+				memberPass: null,
+			}),
+			compareFrames: [],
+		};
+		const partialSelection: SurfaceWorkspace["previewState"] = {
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: PREVIEW_IDS[1],
+				status: "ready",
+				toggledChangeIds: [CHANGES[0]],
+			}),
+			compareFrames: [],
+		};
+		let serverPreview: SurfaceWorkspace["previewState"] = readyBoth;
+		const setPreviewSelection = vi.fn(async () => {
+			serverPreview = readyBoth;
+			return readyBoth;
+		});
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged", "staged"])], { previewState: serverPreview }),
+			),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(0);
+
+		serverPreview = expiredBaseline;
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			explorationSessionId: null,
+		});
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("ready");
+
+		serverPreview = partialSelection;
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+		expect(store.workspace(SURFACE)?.previewState.primary.toggledChangeIds).toEqual([CHANGES[0], CHANGES[1]]);
+		store.dispose();
+	});
+
+	it("re-syncs the preview when the server reports stale compare mode with live_baseline while the client is in preview mode", async () => {
+		const readyBoth: SurfaceWorkspace["previewState"] = {
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: PREVIEW_IDS[0],
+				status: "ready",
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			}),
+			compareFrames: [],
+		};
+		const setPreviewSelection = vi.fn(async () => readyBoth);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged", "staged"])], {
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "compare",
+						primary: previewFrame({
+							previewId: null,
+							status: "live_baseline",
+							toggledChangeIds: [],
+							doorActionUrl: null,
+							memberPass: null,
+						}),
+						compareFrames: [],
+					},
+				}),
+			),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(setPreviewSelection).toHaveBeenCalledWith(SURFACE, {
+			toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			explorationSessionId: null,
+		});
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("ready");
+		store.dispose();
+	});
+
+	it("retries transient background preview sync failures with bounded backoff without user toggling", async () => {
+		vi.useFakeTimers();
+		const readyBoth: SurfaceWorkspace["previewState"] = {
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: PREVIEW_IDS[0],
+				status: "ready",
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			}),
+			compareFrames: [],
+		};
+		let calls = 0;
+		const setPreviewSelection = vi.fn(async () => {
+			calls += 1;
+			if (calls === 1) throw new Error("transient gateway timeout");
+			return readyBoth;
+		});
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"])])),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await vi.advanceTimersByTimeAsync(10);
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("live_baseline");
+		expect(store.state.error).toBeUndefined();
+
+		await vi.advanceTimersByTimeAsync(1_600);
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("ready");
+		expect(store.state.error).toBeUndefined();
+		store.dispose();
+
+		const alwaysFail = vi.fn(async () => Promise.reject(new Error("still offline")));
+		const failStore = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"])])),
+				setPreviewSelection: alwaysFail,
+			}),
+		);
+		await failStore.load();
+		await failStore.openSurface("website");
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(alwaysFail).toHaveBeenCalledTimes(4);
+		expect(failStore.state.error).toBeUndefined();
+		failStore.dispose();
+	});
+
+	it("syncs a background-hydrated live_baseline workspace as soon as it becomes active or returns to preview mode", async () => {
+		const readyBoth: SurfaceWorkspace["previewState"] = {
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: PREVIEW_IDS[0],
+				status: "ready",
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			}),
+			compareFrames: [],
+		};
+		const setPreviewSelection = vi.fn(async () => readyBoth);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"])])),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		store.hydrateWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("live_baseline");
+		expect(setPreviewSelection).toHaveBeenCalledTimes(0);
+
+		store.setActiveSurface(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("ready");
+
+		store.setMode("live");
+		store.store.set((state) => ({
+			workspaces: {
+				...state.workspaces,
+				[SURFACE]: workspace([session(["staged", "staged"])]),
+			},
+		}));
+		store.setMode("preview");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("ready");
 		store.dispose();
 	});
 });
