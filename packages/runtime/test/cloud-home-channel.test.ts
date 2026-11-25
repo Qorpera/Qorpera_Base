@@ -710,4 +710,78 @@ describe("coding machine channels share /v1/home-session with qorpera-coding-ses
 		});
 		expect(openedKinds).toEqual(["exec", "sftp"]);
 	});
+
+	it("refuses coding and home channel handshakes missing or carrying a malformed holder header when proveBinding is set", async () => {
+		const token = randomBytes(32).toString("base64url");
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
+		const codingAuthorize = vi.fn();
+		const homeAuthorize = vi.fn();
+		const proveBinding = vi.fn(async () => undefined);
+		const service = new HttpCloudCodingCommandService({
+			token,
+			port: 0,
+			proveBinding,
+			authorize: async () => {
+				throw new Error("not here");
+			},
+			execute: async () => {
+				throw new Error("not here");
+			},
+			home: {
+				authorize: homeAuthorize,
+				open: async () => {
+					throw new Error("should not open");
+				},
+			},
+			codingChannel: {
+				authorize: codingAuthorize,
+				open: async () => {
+					throw new Error("should not open");
+				},
+			},
+		});
+		const port = await service.start();
+		cleanups.push(async () => await service.close());
+
+		const sendHandshake = async (header: string | undefined, line: string): Promise<string> => {
+			const socket = connect({ host: "127.0.0.1", port });
+			await new Promise<void>((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", reject);
+			});
+			const reply = new Promise<string>((resolve) => {
+				const chunks: Buffer[] = [];
+				socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+				socket.once("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
+			});
+			const identityHeader = header === undefined ? "" : `x-qorpera-identity: ${header}\r\n`;
+			socket.write(
+				`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer ${token}\r\n${identityHeader}\r\n${line}\n`,
+			);
+			return await reply;
+		};
+
+		const codingLine = cloudCodingChannelHandshake({ binding, scope, kind: "exec" });
+		const homeLine = cloudHomeChannelHandshake({ binding, machineId: randomUUID(), sessionId: randomUUID() });
+
+		expect(await sendHandshake(undefined, codingLine)).toContain('{"ok":false,"reason":"unavailable"}');
+		expect(await sendHandshake("malformed-header", codingLine)).toContain('{"ok":false,"reason":"unavailable"}');
+		expect(await sendHandshake(undefined, homeLine)).toContain('{"ok":false,"reason":"unavailable"}');
+		expect(await sendHandshake("malformed-header", homeLine)).toContain('{"ok":false,"reason":"unavailable"}');
+		expect(proveBinding).not.toHaveBeenCalled();
+		expect(codingAuthorize).not.toHaveBeenCalled();
+		expect(homeAuthorize).not.toHaveBeenCalled();
+	});
 });

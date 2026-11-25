@@ -536,7 +536,10 @@ export class HttpCloudCodingCommandService {
 			);
 			if (homeHandshake && home) {
 				const binding = parseCloudNativeToolBinding(homeHandshake.binding);
-				if (prove && holder !== undefined) await prove(binding, holder, controller.signal);
+				if (prove) {
+					if (holder === undefined) throw new Error("HOME_CHANNEL_UNPROVEN");
+					await prove(binding, holder, controller.signal);
+				}
 				const authority = await home.authorize(
 					{ binding, machineId: homeHandshake.machineId, sessionId: homeHandshake.sessionId },
 					controller.signal,
@@ -555,7 +558,10 @@ export class HttpCloudCodingCommandService {
 				);
 			} else if (codingHandshake && codingChannel) {
 				const binding = parseCloudNativeToolBinding(codingHandshake.binding);
-				if (prove && holder !== undefined) await prove(binding, holder, controller.signal);
+				if (prove) {
+					if (holder === undefined) throw new Error("CODING_CHANNEL_UNPROVEN");
+					await prove(binding, holder, controller.signal);
+				}
 				const kind = codingHandshake.kind ?? "exec";
 				const authority = await codingChannel.authorize(
 					{ binding, scope: codingHandshake.scope, kind },

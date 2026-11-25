@@ -1470,6 +1470,13 @@ export const CODING_MACHINE_CHANNEL = Object.freeze({
 
 const CODING_CHANNEL_ON_BOOT =
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; ' +
+	'worker=$1; uid=$2; make_codex=$3; shift 3; ' +
+	`user_file="${CODING_GUEST.state}/sessions/$worker/user.json"; ` +
+	'[ -f "$user_file" ] || exit 94; ' +
+	'awk -v u="$uid" \'BEGIN { all = "" } { gsub(/[[:space:]]/, ""); all = all $0 } END { ok = (index(all, "\\"uid\\":" u ",") || index(all, "\\"uid\\":" u "}")) && (index(all, "\\"gid\\":" u ",") || index(all, "\\"gid\\":" u "}")); exit(ok ? 0 : 1) }\' "$user_file" || exit 94; ' +
+	'/usr/bin/systemctl is-active --quiet "qorpera-folder-$worker.service" || exit 96; ' +
+	`awk -v m="${CODING_GUEST.folder}/mounts/$worker" 'BEGIN { ok = 0 } { sep = 0; for (i = 1; i <= NF; i++) if ($i == "-") { sep = i; break } if ($5 == m) ok = (sep > 0 && ($(sep+1) == "fuse" || $(sep+1) == "fuse.qorpera") && $(sep+2) == "qorpera-company") ? 1 : 0 } END { exit(ok ? 0 : 1) }' /proc/self/mountinfo || exit 96; ` +
+	'if [ "$make_codex" = 1 ]; then /usr/bin/install -d -m 0700 -o "$uid" -g "$uid" "/home/qorpera-$uid/.codex" || exit 95; fi; ' +
 	'if [ -e /run/systemd/resolve/resolv.conf ]; then cmd=$1; shift; exec "$cmd" --property=BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf "$@"; fi; ' +
 	'exec "$@"';
 const CODING_CHANNEL_CODEX_ON_BOOT =
@@ -1522,7 +1529,6 @@ export function codingMachineChannelCommand(input: {
 	readonly cwd: string;
 	readonly channel: string;
 	readonly kind?: "exec" | "sftp";
-	readonly environment?: Readonly<Record<string, string>>;
 }): string[] {
 	const kind = input.kind ?? "exec";
 	if (
@@ -1546,16 +1552,19 @@ export function codingMachineChannelCommand(input: {
 					LANG: baseEnv.LANG!,
 					TZ: baseEnv.TZ!,
 				}
-			: { ...(input.environment ?? {}), ...baseEnv };
+			: baseEnv;
 	for (const [key, value] of Object.entries(env)) {
 		if (!CODING_CHANNEL_ENV_NAME.test(key) || value.includes("\0") || value.includes("\n"))
 			throw new Error("CODING_CHANNEL_COMMAND_INVALID");
 	}
-	return [
+	const command = [
 		"/bin/sh",
 		"-c",
 		CODING_CHANNEL_ON_BOOT,
 		input.bootId,
+		worker,
+		String(input.uid),
+		kind === "exec" ? "1" : "0",
 		"/usr/bin/systemd-run",
 		"--quiet",
 		"--pipe",
@@ -1581,16 +1590,36 @@ export function codingMachineChannelCommand(input: {
 			? [CODING_MACHINE_CHANNEL.sftpServer]
 			: [CODING_MACHINE_CHANNEL.codex, "exec-server", "--listen", "stdio"]),
 	];
+	if (command.length > 64) throw new Error("CODING_CHANNEL_COMMAND_INVALID");
+	return command;
 }
 
-export function injectCodingChannelExecEnv(line: string, authoritativeEnv: Readonly<Record<string, string>>): string {
+export function injectCodingChannelExecEnv(
+	line: string,
+	authoritativeEnv: Readonly<Record<string, string>>,
+	readProcessById?: Map<string, string>,
+): string {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(line);
 	} catch {
 		return line;
 	}
-	if (!isRecord(parsed) || parsed.method !== "process/start" || !isRecord(parsed.params)) return line;
+	if (!isRecord(parsed) || !isRecord(parsed.params)) return line;
+	if (
+		parsed.method === "process/read" &&
+		readProcessById &&
+		(typeof parsed.id === "string" || typeof parsed.id === "number") &&
+		typeof parsed.params.processId === "string"
+	) {
+		if (readProcessById.size >= 1024) {
+			const oldest = readProcessById.keys().next().value;
+			if (oldest !== undefined) readProcessById.delete(oldest);
+		}
+		readProcessById.set(String(parsed.id), parsed.params.processId);
+		return line;
+	}
+	if (parsed.method !== "process/start") return line;
 	const rawEnv = isRecord(parsed.params.env) ? parsed.params.env : {};
 	const merged: Record<string, string> = { ...authoritativeEnv };
 	for (const [name, value] of Object.entries(rawEnv)) {
@@ -1631,8 +1660,47 @@ function maskJsonStrings(value: unknown, createMask: () => CodingCommandSecretMa
 export async function* maskCodingChannelExecLines(
 	lines: AsyncIterable<string>,
 	createMask: () => CodingCommandSecretMask,
+	readProcessById?: Map<string, string>,
 ): AsyncGenerator<string> {
-	const streams = new Map<string, CodingCommandSecretMask>();
+	interface TrackedStream {
+		readonly kind: "output" | "read";
+		readonly processId: string | number;
+		readonly stream: string;
+		readonly mask: CodingCommandSecretMask;
+	}
+	const streams = new Map<string, TrackedStream>();
+	const flushTracked = (entry: TrackedStream): string | undefined => {
+		const tail = entry.mask.end();
+		if (tail.byteLength === 0) return undefined;
+		return JSON.stringify({
+			method: "process/output",
+			params: {
+				processId: entry.processId,
+				stream: entry.stream,
+				chunk: Buffer.from(tail).toString("base64"),
+			},
+		});
+	};
+	const takeStream = (
+		key: string,
+		kind: "output" | "read",
+		processId: string | number,
+		stream: string,
+	): { mask: CodingCommandSecretMask; evicted?: string } => {
+		const existing = streams.get(key);
+		if (existing) return { mask: existing.mask };
+		let evicted: string | undefined;
+		if (streams.size >= 1024) {
+			const oldest = streams.entries().next().value;
+			if (oldest) {
+				streams.delete(oldest[0]);
+				evicted = flushTracked(oldest[1]);
+			}
+		}
+		const mask = createMask();
+		streams.set(key, { kind, processId, stream, mask });
+		return evicted ? { mask, evicted } : { mask };
+	};
 	for await (const line of lines) {
 		let parsed: unknown;
 		try {
@@ -1646,15 +1714,14 @@ export async function* maskCodingChannelExecLines(
 			continue;
 		}
 		if (parsed.method === "process/output" && isRecord(parsed.params) && typeof parsed.params.chunk === "string") {
-			const processId = String(parsed.params.processId ?? "");
+			const processId =
+				typeof parsed.params.processId === "string" || typeof parsed.params.processId === "number"
+					? parsed.params.processId
+					: String(parsed.params.processId ?? "");
 			const streamName = String(parsed.params.stream ?? "stdout");
-			const key = `${processId}\0${streamName}`;
-			let mask = streams.get(key);
-			if (!mask) {
-				mask = createMask();
-				if (streams.size < 1024) streams.set(key, mask);
-			}
-			const maskedChunk = mask.push(Buffer.from(parsed.params.chunk, "base64"));
+			const taken = takeStream(`out\0${String(processId)}\0${streamName}`, "output", processId, streamName);
+			if (taken.evicted) yield taken.evicted;
+			const maskedChunk = taken.mask.push(Buffer.from(parsed.params.chunk, "base64"));
 			const maskedMessage = maskJsonStrings(parsed, createMask) as Record<string, unknown>;
 			const maskedParams = isRecord(maskedMessage.params) ? maskedMessage.params : {};
 			yield JSON.stringify({
@@ -1668,40 +1735,69 @@ export async function* maskCodingChannelExecLines(
 			isRecord(parsed.params) &&
 			parsed.params.processId !== undefined
 		) {
-			const prefix = `${String(parsed.params.processId)}\0`;
-			for (const [key, mask] of [...streams.entries()]) {
-				if (!key.startsWith(prefix)) continue;
+			const procKey = String(parsed.params.processId);
+			for (const [key, entry] of [...streams.entries()]) {
+				if (String(entry.processId) !== procKey) continue;
 				streams.delete(key);
-				const tail = mask.end();
-				if (tail.byteLength > 0) {
-					yield JSON.stringify({
-						method: "process/output",
-						params: {
-							processId: parsed.params.processId,
-							stream: key.slice(prefix.length),
-							chunk: Buffer.from(tail).toString("base64"),
-						},
-					});
-				}
+				const flushed = flushTracked(entry);
+				if (flushed) yield flushed;
 			}
 			yield JSON.stringify(maskJsonStrings(parsed, createMask));
 			continue;
 		}
 		if (isRecord(parsed.result) && Array.isArray(parsed.result.chunks)) {
+			const reqKey = typeof parsed.id === "string" || typeof parsed.id === "number" ? String(parsed.id) : undefined;
+			const readProc = reqKey !== undefined ? readProcessById?.get(reqKey) : undefined;
+			if (reqKey !== undefined) readProcessById?.delete(reqKey);
+			const procId = readProc ?? (reqKey !== undefined ? `read:${reqKey}` : "read");
 			const maskedMessage = maskJsonStrings(parsed, createMask) as Record<string, unknown>;
 			const maskedResult = isRecord(maskedMessage.result) ? maskedMessage.result : {};
-			const chunks = parsed.result.chunks.map((entry) => {
+			const touchedKeys = new Set<string>();
+			const chunks: unknown[] = [];
+			for (const entry of parsed.result.chunks) {
 				if (isRecord(entry) && typeof entry.chunk === "string") {
+					const streamName = String(entry.stream ?? "stdout");
+					const streamKey = `read\0${procId}\0${streamName}`;
+					const taken = takeStream(streamKey, "read", procId, streamName);
+					if (taken.evicted) yield taken.evicted;
+					touchedKeys.add(streamKey);
 					const maskedEntry = maskJsonStrings(entry, createMask) as Record<string, unknown>;
-					const maskedChunk = maskBytesOnce(Buffer.from(entry.chunk, "base64"), createMask);
-					return { ...maskedEntry, chunk: maskedChunk.toString("base64") };
+					const maskedChunk = taken.mask.push(Buffer.from(entry.chunk, "base64"));
+					chunks.push({ ...maskedEntry, chunk: Buffer.from(maskedChunk).toString("base64") });
+				} else {
+					chunks.push(maskJsonStrings(entry, createMask));
 				}
-				return maskJsonStrings(entry, createMask);
-			});
+			}
+			if (parsed.result.closed === true) {
+				const readPrefix = `read\0${procId}\0`;
+				for (const [key, entry] of [...streams.entries()]) {
+					if (!key.startsWith(readPrefix) && !touchedKeys.has(key)) continue;
+					streams.delete(key);
+					const tail = entry.mask.end();
+					if (tail.byteLength > 0) {
+						chunks.push({ stream: entry.stream, chunk: Buffer.from(tail).toString("base64") });
+					}
+				}
+			}
 			yield JSON.stringify({ ...maskedMessage, result: { ...maskedResult, chunks } });
 			continue;
 		}
+		if (isRecord(parsed.result) && typeof parsed.result.dataBase64 === "string") {
+			const maskedMessage = maskJsonStrings(parsed, createMask) as Record<string, unknown>;
+			const maskedResult = isRecord(maskedMessage.result) ? maskedMessage.result : {};
+			const maskedData = maskBytesOnce(Buffer.from(parsed.result.dataBase64, "base64"), createMask);
+			yield JSON.stringify({
+				...maskedMessage,
+				result: { ...maskedResult, dataBase64: maskedData.toString("base64") },
+			});
+			continue;
+		}
 		yield JSON.stringify(maskJsonStrings(parsed, createMask));
+	}
+	for (const [key, entry] of [...streams.entries()]) {
+		streams.delete(key);
+		const flushed = flushTracked(entry);
+		if (flushed) yield flushed;
 	}
 }
 function receiptRecord(value: unknown): Record<string, unknown> {
@@ -6772,7 +6868,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						cwd: readyFolder.cwd,
 						channel: randomBytes(8).toString("hex"),
 						kind,
-						...(kind === "exec" ? { environment: nonSecretEnv } : {}),
 					}),
 					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
 					cwd: "/",
@@ -6807,11 +6902,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			run.abort();
 		};
 		const maskFactory = resolvedSecrets?.mask;
+		const readProcessById = new Map<string, string>();
 		const lines =
 			kind === "sftp"
 				? sftpLines(fromMachine.read())
 				: maskFactory
-					? maskCodingChannelExecLines(fromMachine.lines(), maskFactory)
+					? maskCodingChannelExecLines(fromMachine.lines(), maskFactory, readProcessById)
 					: fromMachine.lines();
 		return {
 			write:
@@ -6821,7 +6917,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 							if (bytes) toMachine.push(bytes);
 							else ended();
 						}
-					: (line) => toMachine.push(Buffer.from(`${injectCodingChannelExecEnv(line, execEnv)}\n`, "utf8")),
+					: (line) =>
+							toMachine.push(Buffer.from(`${injectCodingChannelExecEnv(line, execEnv, readProcessById)}\n`, "utf8")),
 			lines,
 			close: async () => {
 				ended();

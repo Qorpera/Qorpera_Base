@@ -98,11 +98,12 @@ import {
 } from "../src/coding-machine.ts";
 import type { CodingSecretMask } from "../src/coding-secret-mask.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
-import type {
-	LxdExecPipeRequest,
-	LxdInstanceExecStreamClient,
-	LxdInstanceProgramClient,
-	LxdInstanceRecord,
+import {
+	type LxdExecPipeRequest,
+	type LxdInstanceExecStreamClient,
+	type LxdInstanceProgramClient,
+	type LxdInstanceRecord,
+	validExecPipe,
 } from "../src/lxd-client.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
@@ -11056,6 +11057,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		let lastChannelSignal: AbortSignal | undefined;
 		const stdinWritten: string[] = [];
 		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (!validExecPipe(request)) throw new Error("LXD instance command is invalid");
 			if (
 				request.command.includes(CODING_MACHINE_CHANNEL.sftpServer) &&
 				!request.command.includes("/usr/bin/systemd-run")
@@ -11112,6 +11114,9 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(forwarded.params.env.APP_API_SECRET).toBe(secretValue);
 		expect(forwarded.params.env.HOME).toMatch(/^\/home\/qorpera-2\d{5}$/);
 		expect(forwarded.params.env.CLAUDECODE).toBe("1");
+		expect(forwarded.params.env.GIT_CONFIG_COUNT).toBeDefined();
+		expect(forwarded.params.env.NPM_CONFIG_CACHE).toBeDefined();
+		expect(lastChannelRequest?.command.length).toBeLessThanOrEqual(64);
 
 		const received: string[] = [];
 		const reading = (async () => {
