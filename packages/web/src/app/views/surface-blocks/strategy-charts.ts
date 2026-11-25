@@ -224,7 +224,7 @@ export function createChartHost(
 			? new MutationObserver(() => {
 					if (!alive()) return;
 					theme = readTheme(container);
-					if (build) chart.setOption(build(theme));
+					if (build) chart.setOption(build(theme), true);
 				})
 			: null;
 	const sizeWatch =
@@ -234,7 +234,9 @@ export function createChartHost(
 					const next = size();
 					if (next.width === last.width && next.height === last.height) return;
 					last = next;
+					theme = readTheme(container);
 					chart.resize(next);
+					if (build) chart.setOption(build(theme), true);
 				})
 			: null;
 	function dispose(): void {
@@ -265,7 +267,7 @@ export function createChartHost(
 			build = next;
 			if (gone) return;
 			theme = readTheme(container);
-			chart.setOption(next(theme));
+			chart.setOption(next(theme), true);
 		},
 		disposed: () => gone,
 		dispose,
@@ -407,8 +409,9 @@ export function mountMoneyFlowChart(
 			series: [
 				{
 					type: "sankey",
-					left: "21%",
-					right: "21%",
+					animation: false,
+					left: "22%",
+					right: "22%",
 					top: 18,
 					bottom: 18,
 					nodeWidth: 12,
@@ -420,6 +423,7 @@ export function mountMoneyFlowChart(
 					blur: { lineStyle: { opacity: 0.08 }, itemStyle: { opacity: 0.35 }, label: { opacity: 0.45 } },
 					lineStyle: { color: "gradient", opacity: 0.42, curveness: 0.48 },
 					label: { show: true, distance: 10, fontFamily: theme.font },
+					labelLayout: { moveOverlap: "shiftY" },
 					data: nodes,
 					links,
 				},

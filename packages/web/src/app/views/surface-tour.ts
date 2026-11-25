@@ -224,6 +224,7 @@ export class StudioTourController {
 
 	start(at = 0): void {
 		if (!this.#doc || this.#doc.beats.length === 0) return;
+		this.#primeAudio();
 		this.#open = true;
 		this.#playing = true;
 		this.#index = Math.max(0, Math.min(this.#doc.beats.length - 1, at));
@@ -239,6 +240,7 @@ export class StudioTourController {
 
 	resume(): void {
 		if (!this.#doc) return;
+		this.#primeAudio();
 		this.#open = true;
 		this.#playing = true;
 		this.#render();
@@ -256,6 +258,7 @@ export class StudioTourController {
 		} else {
 			this.#index = next;
 		}
+		if (this.#playing) this.#primeAudio();
 		this.#open = true;
 		this.#render();
 		void this.#enterBeat(this.#index);
@@ -263,6 +266,7 @@ export class StudioTourController {
 
 	jump(index: number): void {
 		if (!this.#doc) return;
+		if (this.#playing) this.#primeAudio();
 		this.#open = true;
 		this.#index = Math.max(0, Math.min(this.#doc.beats.length - 1, index));
 		this.#render();
@@ -284,7 +288,14 @@ export class StudioTourController {
 
 	dispose(): void {
 		this.stop();
+		this.#audio = null;
 		this.el.remove();
+	}
+
+	#primeAudio(): void {
+		if (this.#clips.size === 0 || this.#muted || typeof Audio !== "function") return;
+		if (!this.#audio) this.#audio = new Audio();
+		this.#audio.preload = "auto";
 	}
 
 	#stopMedia(): void {
@@ -293,9 +304,10 @@ export class StudioTourController {
 			this.#timer = undefined;
 		}
 		if (this.#audio) {
+			this.#audio.onended = null;
+			this.#audio.onerror = null;
 			this.#audio.pause();
-			this.#audio.src = "";
-			this.#audio = null;
+			this.#audio.removeAttribute("src");
 		}
 		if (this.#audioUrl) {
 			URL.revokeObjectURL(this.#audioUrl);
@@ -338,7 +350,8 @@ export class StudioTourController {
 			parent = parent.parentElement;
 		}
 		if (typeof target.scrollIntoView === "function") {
-			target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+			const tall = target.getBoundingClientRect().height > window.innerHeight * 0.48;
+			target.scrollIntoView({ behavior: "smooth", block: tall ? "start" : "center", inline: "nearest" });
 		}
 	}
 
@@ -386,15 +399,16 @@ export class StudioTourController {
 					if (seq !== this.#beatSeq || !this.#playing || this.#options.signal.aborted) return;
 					const blob = new Blob([bytes.slice()], { type: audioMime(clip.file, ref.mediaType) });
 					const url = URL.createObjectURL(blob);
-					const audio = new Audio(url);
+					const audio = this.#audio ?? new Audio();
 					this.#audioUrl = url;
 					this.#audio = audio;
-					audio.addEventListener("ended", () => {
+					audio.src = url;
+					audio.onended = () => {
 						this.#timer = setTimeout(advance, 500);
-					});
-					audio.addEventListener("error", () => {
+					};
+					audio.onerror = () => {
 						this.#timer = setTimeout(advance, readingDurationMs(text));
-					});
+					};
 					await audio.play();
 					return;
 				} catch {
@@ -498,7 +512,7 @@ export class StudioTourController {
 					},
 					this.#muted ? t("Silent") : t("Voice"),
 				)
-			: h("span", { class: "studio-tour-step" }, t("Captions"));
+			: h("span", { class: "studio-tour-mode" }, t("Captions"));
 		const closeBtn = h(
 			"button",
 			{
@@ -507,7 +521,7 @@ export class StudioTourController {
 				"aria-label": t("Close walkthrough"),
 				onclick: () => this.stop(),
 			},
-			icon("x"),
+			icon("close"),
 		);
 		const stepTag = h(
 			"span",

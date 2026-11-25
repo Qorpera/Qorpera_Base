@@ -50,6 +50,7 @@ import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { compiledTokensCssFrom, prepareStudioHtmlPreview, studioHtmlDependencyChanged } from "./surface-studio-html.ts";
+import type { StudioBinaryReader } from "./surface-studio-stage.ts";
 import { StudioTourController } from "./surface-tour.ts";
 
 export { prepareStudioHtmlPreview };
@@ -59,6 +60,8 @@ export interface SurfaceStudioOptions {
 	readonly surface: SurfaceSummary;
 	readonly signal: AbortSignal;
 	readonly baseFiles?: Readonly<Record<string, string>>;
+	readonly baseBinaries?: Readonly<Record<string, StudioBinaryRef>>;
+	readonly readBinary?: StudioBinaryReader;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
 	readonly timeSlice?: boolean;
@@ -234,7 +237,7 @@ export class SurfaceStudioView {
 		this.#tour = new StudioTourController({
 			root: this.el,
 			signal: this.#lifetime.signal,
-			readBinary: (file, signal) => options.store.readStudioBinary(file, signal),
+			readBinary: options.readBinary ?? ((file, signal) => options.store.readStudioBinary(file, signal)),
 			switchTab: (tab) => {
 				if (tab && tab !== this.#tab) {
 					this.#tab = tab;
@@ -427,6 +430,11 @@ export class SurfaceStudioView {
 		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
+	#effectiveBaseBinaries(surfaceId: string): Readonly<Record<string, StudioBinaryRef>> {
+		const storeBase = effectiveStudioBaseBinaries(this.#options.store.state, surfaceId);
+		return this.#options.baseBinaries ? { ...this.#options.baseBinaries, ...storeBase } : storeBase;
+	}
+
 	#applyIdentityVars(isIdentity: boolean, tokens: CompiledIdentityTokens | null): void {
 		const nextVars = !isIdentity && tokens ? tokens.vars : {};
 		const nextKeys = Object.keys(nextVars);
@@ -536,7 +544,7 @@ export class SurfaceStudioView {
 			identityTokens,
 			workspace,
 			baseFiles,
-			baseBinaries: effectiveStudioBaseBinaries(state, surface.id),
+			baseBinaries: this.#effectiveBaseBinaries(surface.id),
 			ordered,
 			initialLoading,
 			updatingPhase,
@@ -1149,6 +1157,7 @@ export class SurfaceStudioView {
 			signal: this.#lifetime.signal,
 			baseFiles: () => this.#baseFiles,
 			askSurface: (prompt, title) => this.#askSurface(prompt, title),
+			...(this.#options.readBinary ? { readBinary: this.#options.readBinary } : {}),
 			...(this.#options.patches ? { patches: this.#options.patches } : {}),
 			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
 		});

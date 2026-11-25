@@ -171,6 +171,10 @@ function river(doc: EconomicsDocument, values: EconomicsEvaluation["values"]): M
 	const revenue = income.reduce((sum, item) => sum + item.size, 0);
 	const spent = cost.reduce((sum, item) => sum + item.size, 0);
 	const net = (total ? values[total.id] : null) ?? revenue - spent;
+	const trimZero = (items: Stream[]): Stream[] => {
+		const active = items.filter((item) => item.size > 0);
+		return active.length > 0 ? active : items;
+	};
 	if (net >= 0) {
 		const kept: Stream = {
 			id: total?.id ?? "net",
@@ -179,10 +183,10 @@ function river(doc: EconomicsDocument, values: EconomicsEvaluation["values"]): M
 			size: net,
 			signed: net,
 		};
-		return { left: income, right: [...cost, kept], revenue };
+		return { left: trimZero(income), right: [...trimZero(cost), kept], revenue };
 	}
 	const gap: Stream = { id: "shortfall", label: t("Shortfall"), kind: "shortfall", size: -net, signed: net };
-	return { left: [...income, gap], right: cost, revenue };
+	return { left: trimZero([...income, gap]), right: trimZero(cost), revenue };
 }
 
 function bridge(doc: EconomicsDocument, values: EconomicsEvaluation["values"]): WaterfallData | null {
@@ -875,7 +879,7 @@ function economicsBoard(
 		}
 		holds.hidden = triggered.length > 0;
 		paintFlags();
-		if (verdict) verdict.hidden = triggered.some((flag) => flag.severity === "fatal");
+		if (verdict) verdict.hidden = Boolean(scenario?.thesis) || triggered.some((flag) => flag.severity === "fatal");
 
 		for (const metric of metrics) {
 			const value = evaluation.values[metric.headline.id] ?? null;

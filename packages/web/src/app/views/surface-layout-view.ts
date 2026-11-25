@@ -45,6 +45,7 @@ import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts
 import { prepareTitle } from "./surface-blocks/title.ts";
 import { prepareTypeSpecimen } from "./surface-blocks/type-specimen.ts";
 import { prepareUnknown } from "./surface-blocks/unknown.ts";
+import type { StudioBinaryReader } from "./surface-studio-stage.ts";
 
 export interface SurfaceLayoutOptions {
 	readonly store: SurfacesStore;
@@ -52,6 +53,7 @@ export interface SurfaceLayoutOptions {
 	readonly signal: AbortSignal;
 	readonly baseFiles: () => Readonly<Record<string, string>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
+	readonly readBinary?: StudioBinaryReader;
 	readonly timeSlice?: boolean;
 	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
@@ -204,7 +206,9 @@ export class SurfaceLayoutView {
 
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
-		const read = (file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal);
+		const read =
+			options.readBinary ??
+			((file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal));
 		this.#fullscreen = new StudioFullscreen(options.signal);
 		this.#stages = new SurfaceStages(read, options.signal, this.#fullscreen);
 		this.#pictures = new SurfacePictures(read, options.signal);

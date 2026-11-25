@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { SurfaceSummary } from "@qorpera/contracts";
+import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
 import { getInstanceByDom } from "echarts/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SurfaceLayoutView } from "../src/app/views/surface-layout-view.ts";
@@ -1231,7 +1231,13 @@ const TOUR = {
 	],
 };
 
-async function studio(files: Readonly<Record<string, string>>) {
+async function studio(
+	files: Readonly<Record<string, string>>,
+	options?: {
+		readonly baseBinaries?: Readonly<Record<string, StudioBinaryRef>>;
+		readonly readBinary?: (file: StudioBinaryRef, signal: AbortSignal) => Promise<Uint8Array>;
+	},
+) {
 	const surface = strategySurface();
 	const store = storeWith(
 		fakeClient({
@@ -1242,7 +1248,15 @@ async function studio(files: Readonly<Record<string, string>>) {
 	await store.load();
 	await store.openSurface(surface.slug);
 	const lifetime = new AbortController();
-	const view = new SurfaceStudioView({ store, surface, signal: lifetime.signal, baseFiles: files, timeSlice: false });
+	const view = new SurfaceStudioView({
+		store,
+		surface,
+		signal: lifetime.signal,
+		baseFiles: files,
+		...(options?.baseBinaries ? { baseBinaries: options.baseBinaries } : {}),
+		...(options?.readBinary ? { readBinary: options.readBinary } : {}),
+		timeSlice: false,
+	});
 	document.body.append(view.el);
 	const tour = () => view.el.querySelector<HTMLElement>(".studio-tour")!;
 	const control = (label: string) =>
@@ -1349,7 +1363,8 @@ describe("The studio voice tour", () => {
 		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("plays:verdict"));
 		expect(text(tour().querySelector(".studio-tour-caption"))).toBe("Vi sælger til forhandlere, ikke bilister.");
 		expect(control("Slå stemmen fra")).toBeNull();
-		expect(text(tour().querySelector(".studio-tour-controls .studio-tour-step"))).toBe("Undertekster");
+		expect(text(tour().querySelector(".studio-tour-mode"))).toBe("Undertekster");
+		expect(control("Luk gennemgangen").querySelectorAll("svg path").length).toBeGreaterThan(0);
 
 		tour().querySelectorAll<HTMLButtonElement>(".studio-tour-dot")[2]!.click();
 		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("rival:leadly"));
@@ -1362,23 +1377,61 @@ describe("The studio voice tour", () => {
 		done();
 	});
 
-	it("shows the voice toggle only when recorded voice clips are present", async () => {
+	it("shows the voice toggle and plays recorded voice clips when present", async () => {
 		setLanguagePreference("da");
-		const { tour, control, focused, done } = await studio({
-			...strategyFiles(),
-			...file("tour.json", TOUR),
-			...file("voice/clips.json", {
-				clips: [{ caption: "12345678", file: "12345678.webm", seconds: 2.4 }],
-			}),
-		});
+		const caption = "Vi sælger til forhandlere, ikke bilister.";
+		let hash = 0x811c9dc5;
+		for (const byte of new TextEncoder().encode(caption)) {
+			hash ^= byte;
+			hash = Math.imul(hash, 0x01000193) >>> 0;
+		}
+		const clipHash = hash.toString(16).padStart(8, "0");
+		const clipPath = `${ROOT}/voice/${clipHash}.webm`;
+		const clipRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 16,
+			mediaType: "audio/webm",
+		};
+		const readBinary = vi.fn(async () => new Uint8Array([1, 2, 3, 4]));
+		const play = vi.fn(async () => undefined);
+		const pause = vi.fn();
+		const createObjectURL = vi.fn(() => "blob:tour-voice");
+		const revokeObjectURL = vi.fn();
+		vi.stubGlobal("URL", Object.assign(URL, { createObjectURL, revokeObjectURL }));
+		vi.stubGlobal(
+			"Audio",
+			class {
+				preload = "";
+				src = "";
+				onended: (() => void) | null = null;
+				onerror: (() => void) | null = null;
+				play = play;
+				pause = pause;
+				removeAttribute = vi.fn();
+			},
+		);
+		const { tour, control, focused, done } = await studio(
+			{
+				...strategyFiles(),
+				...file("tour.json", TOUR),
+				...file("voice/clips.json", {
+					clips: [{ caption: clipHash, file: `${clipHash}.webm`, seconds: 2.4 }],
+				}),
+			},
+			{ baseBinaries: { [clipPath]: clipRef }, readBinary },
+		);
 		tour().querySelector<HTMLButtonElement>(".studio-tour-launch")!.click();
-		control("Sæt gennemgangen på pause").click();
 		await vi.waitFor(() => expect(focused()?.dataset.tourId).toBe("plays:verdict"));
+		await vi.waitFor(() => expect(readBinary).toHaveBeenCalledWith(clipRef, expect.any(AbortSignal)));
+		await vi.waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+		control("Sæt gennemgangen på pause").click();
 		const silent = control("Slå stemmen fra");
 		expect(text(silent)).toBe("Stemme");
 		silent.click();
 		expect(text(control("Slå stemmen til"))).toBe("Lydløs");
 		expect(control("Slå stemmen til").getAttribute("aria-pressed")).toBe("true");
+		vi.unstubAllGlobals();
 		done();
 	});
 });
