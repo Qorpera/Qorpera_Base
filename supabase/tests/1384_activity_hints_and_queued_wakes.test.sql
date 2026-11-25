@@ -1,5 +1,5 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- WHY: Verify 20260930902000 activity live hints on job status changes, message_composition inserts, and queued wake
+-- WHY: Verify 20260930904500 activity live hints on job status changes, message_composition inserts, and queued wake
 -- visibility in qorpera_list_staff_execution_activity before materialization.
 
 create function pg_temp.ah_clear_hints() returns void language sql as $$
