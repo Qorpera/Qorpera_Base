@@ -48,13 +48,13 @@ declare
 	v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
 	v_run_id uuid := (v_binding ->> 'runId')::uuid;
 	v_job_id uuid := (v_binding ->> 'jobId')::uuid;
-	v_assignment_id uuid := (v_binding ->> 'assignmentId')::uuid;
+	v_client_lease_id uuid;
 	v_members integer;
+	v_alice uuid := '92400000-0000-4000-8000-000000000030';
 	v_bob uuid := '92400000-0000-4000-8000-000000000031';
-	v_post jsonb;
+	v_occurrences jsonb;
 	v_wake_id uuid;
 	v_rows jsonb;
-	v_pass jsonb;
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		perform pg_temp.base_assert(
@@ -73,6 +73,10 @@ begin
 	where profile_id = '92400000-0000-4000-8000-000000000010';
 	perform pg_temp.base_assert(v_members >= 3, 'fixture has company members');
 
+	select client_lease_id into strict v_client_lease_id
+	from public.qorpera_runner_jobs
+	where id = v_job_id;
+
 	-- WHY: Flush setup triggers before asserting per-event activity hint behavior.
 	perform pg_temp.ah_flush_hints();
 	perform pg_temp.ah_clear_hints();
@@ -88,7 +92,7 @@ begin
 	insert into public.qorpera_runtime_observations (
 		run_id, attempt_id, phase, assignment_id, operation, observed_at, observation
 	) values (
-		v_run_id, extensions.gen_random_uuid(), 'start', v_assignment_id, 'company_read',
+		v_run_id, extensions.gen_random_uuid(), 'start', v_client_lease_id, 'company_read',
 		clock_timestamp(), '{"schema":"qorpera.runtime-observation/v1"}'::jsonb
 	);
 	perform pg_temp.ah_flush_hints();
@@ -98,13 +102,18 @@ begin
 	insert into public.qorpera_runtime_observations (
 		run_id, attempt_id, phase, assignment_id, operation, observed_at, observation
 	) values (
-		v_run_id, extensions.gen_random_uuid(), 'start', v_assignment_id, 'message_composition',
+		v_run_id, extensions.gen_random_uuid(), 'start', v_client_lease_id, 'message_composition',
 		clock_timestamp(), '{"schema":"qorpera.runtime-observation/v1"}'::jsonb
 	);
 	perform pg_temp.ah_flush_hints();
 	perform pg_temp.base_assert(
 		pg_temp.ah_activity_hints() = v_members,
 		'message_composition start emits activity hint to all company members: ' || pg_temp.ah_activity_hints()
+	);
+	v_rows := pg_temp.ah_agent_rows(v_alice);
+	perform pg_temp.base_assert(
+		v_rows -> 0 ->> 'phase' = 'writing',
+		'Alice phase flips to writing after message_composition start: ' || v_rows::text
 	);
 
 	-- WHY: Job status transition emits an activity hint.
@@ -122,8 +131,10 @@ begin
 	-- WHY: Posting to Bob's thread queues a wake that immediately appears in activity before materialization.
 	perform pg_temp.ah_clear_hints();
 	perform pg_temp.base_assert(pg_temp.ah_agent_rows(v_bob) = '[]'::jsonb, 'Bob starts idle');
-	v_post := pg_temp.base_post('92400000-0000-4000-8000-000000000001', v_bob, 'Draft the summary.');
-	v_wake_id := (v_post -> 'occurrenceIds' ->> 0)::uuid;
+	v_occurrences := pg_temp.base_post('92400000-0000-4000-8000-000000000001', v_bob, 'Draft the summary.');
+	v_wake_id := (v_occurrences ->> 0)::uuid;
+	perform set_config('qorpera_test.ah_wake_id', v_wake_id::text, true);
+	perform set_config('qorpera_test.ah_members', v_members::text, true);
 	perform pg_temp.ah_flush_hints();
 	perform pg_temp.base_assert(
 		pg_temp.ah_activity_hints() = v_members,
@@ -140,28 +151,51 @@ begin
 		and not (v_rows -> 0 ? 'paused_until'),
 		'queued wake immediately surfaces as waiting in activity: ' || v_rows::text
 	);
+end $$;
 
-	-- WHY: Blocked or expired wakes must not stay stuck showing working.
-	savepoint ah_blocked_wake;
-	update public.qorpera_wake_occurrences set blocked_reason = 'Waiting for computer hours' where id = v_wake_id;
-	perform pg_temp.base_assert(pg_temp.ah_agent_rows(v_bob) = '[]'::jsonb, 'blocked wake does not surface as active');
-	rollback to savepoint ah_blocked_wake;
+-- WHY: Blocked, stale, or future-scheduled wakes must not stay stuck showing working.
+savepoint ah_blocked_wake;
+update public.qorpera_wake_occurrences
+set blocked_reason = 'Waiting for computer hours'
+where id = current_setting('qorpera_test.ah_wake_id')::uuid;
+select pg_temp.base_assert(
+	pg_temp.ah_agent_rows('92400000-0000-4000-8000-000000000031') = '[]'::jsonb,
+	'blocked wake does not surface as active'
+) \g /dev/null
+rollback to savepoint ah_blocked_wake;
 
-	savepoint ah_stale_wake;
-	set local session_replication_role = replica;
-	update public.qorpera_wake_occurrences set created_at = statement_timestamp() - interval '10 minutes' where id = v_wake_id;
-	set local session_replication_role = origin;
-	perform pg_temp.base_assert(pg_temp.ah_agent_rows(v_bob) = '[]'::jsonb, 'stale queued wake expires from activity');
-	rollback to savepoint ah_stale_wake;
+savepoint ah_stale_wake;
+set local session_replication_role = replica;
+update public.qorpera_wake_occurrences
+set created_at = statement_timestamp() - interval '10 minutes'
+where id = current_setting('qorpera_test.ah_wake_id')::uuid;
+set local session_replication_role = origin;
+select pg_temp.base_assert(
+	pg_temp.ah_agent_rows('92400000-0000-4000-8000-000000000031') = '[]'::jsonb,
+	'stale queued wake expires from activity'
+) \g /dev/null
+rollback to savepoint ah_stale_wake;
 
-	savepoint ah_future_wake;
-	set local session_replication_role = replica;
-	update public.qorpera_wake_occurrences set not_before = statement_timestamp() + interval '5 minutes' where id = v_wake_id;
-	set local session_replication_role = origin;
-	perform pg_temp.base_assert(pg_temp.ah_agent_rows(v_bob) = '[]'::jsonb, 'future-scheduled wake does not surface yet');
-	rollback to savepoint ah_future_wake;
+savepoint ah_future_wake;
+set local session_replication_role = replica;
+update public.qorpera_wake_occurrences
+set not_before = statement_timestamp() + interval '5 minutes'
+where id = current_setting('qorpera_test.ah_wake_id')::uuid;
+set local session_replication_role = origin;
+select pg_temp.base_assert(
+	pg_temp.ah_agent_rows('92400000-0000-4000-8000-000000000031') = '[]'::jsonb,
+	'future-scheduled wake does not surface yet'
+) \g /dev/null
+rollback to savepoint ah_future_wake;
 
-	-- WHY: Once materialized, the real execution run cleanly replaces the queued wake entry.
+-- WHY: Once materialized, the real execution run cleanly replaces the queued wake entry.
+do $$
+declare
+	v_bob uuid := '92400000-0000-4000-8000-000000000031';
+	v_members integer := current_setting('qorpera_test.ah_members')::integer;
+	v_pass jsonb;
+	v_rows jsonb;
+begin
 	perform pg_temp.ah_clear_hints();
 	v_pass := pg_temp.base_materialize();
 	perform pg_temp.ah_flush_hints();
