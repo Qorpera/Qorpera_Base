@@ -302,6 +302,18 @@ begin
 			and public.qorpera_coding_session_machine_repository(v_cs_ops) = 'qorpera/surface-workspace',
 		'Studio and Ops share one machine repository key'
 	);
+	perform pg_temp.ssoc_assert(
+		not public.qorpera_coding_repository_valid(
+			jsonb_build_object('host', 'github.com', 'owner', 'Qorpera', 'name', 'surface-workspace', 'baseBranch', 'main')
+		)
+			and not public.qorpera_coding_repository_valid(
+				jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'surface-workspace', 'baseBranch', 'main')
+			)
+			and public.qorpera_coding_repository_valid(
+				jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'other-repo', 'baseBranch', 'main')
+			),
+		'qorpera/surface-workspace sentinel is reserved in qorpera_coding_repository_valid'
+	);
 
 	v_errcode := null;
 	begin
@@ -371,11 +383,11 @@ begin
 
 	insert into public.qorpera_folder_views(
 		id, environment_id, profile_id, kind, staff_agent_id, member_user_id,
-		worker_id, attachment_token, node_id, pass_sha256, lease_until
+		worker_id, attachment_token, node_id, machine_id, pass_sha256, lease_until
 	)
 	values (
 		v_view_id, v_env_a, v_company_a, 'coding_session', v_worker_studio.staff_agent_id, v_owner,
-		v_worker_studio.id, v_cs_studio.attachment_token, 'node-1392',
+		v_worker_studio.id, v_cs_studio.attachment_token, 'node-1392', v_machine_id,
 		extensions.digest(repeat('A', 43), 'sha256'),
 		clock_timestamp() + interval '10 minutes'
 	);
@@ -394,6 +406,37 @@ begin
 		v_commit_res #>> '{units,0,outcome}' = 'denied' and v_commit_res #>> '{units,0,reason}' = 'denied'
 			and (v_commit_res -> 'seq') = 'null'::jsonb,
 		'VM FUSE coding_session view writes are denied on surface_folder: ' || coalesce(v_commit_res::text, 'null')
+	);
+
+	v_errcode := null;
+	perform pg_temp.as_service();
+	set local role service_role;
+	begin
+		perform public.qorpera_machine_data_pass(
+			v_env_a,
+			jsonb_build_object('kind', 'view', 'viewId', v_view_id, 'pass', repeat('A', 43)),
+			null
+		);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.ssoc_assert(
+		v_errcode = '42501',
+		'non-git surface coding view cannot obtain a company-data machine pass: ' || coalesce(v_errcode, 'none')
+	);
+
+	insert into public.qorpera_data_passes(
+		pass_sha256, kind, environment_id, view_id, machine_id, staff_agent_id,
+		requester_user_id, database, files, expires_at
+	)
+	values (
+		extensions.digest(repeat('B', 43), 'sha256'), 'machine', v_env_a, v_view_id, v_machine_id,
+		v_worker_studio.staff_agent_id, v_owner, null, '[]'::jsonb, clock_timestamp() + interval '60 seconds'
+	);
+	perform pg_temp.ssoc_assert(
+		public.qorpera_data_pass_redeem(repeat('B', 43)) is null,
+		'non-git surface coding view data pass cannot be redeemed'
 	);
 
 	perform pg_temp.as_service();

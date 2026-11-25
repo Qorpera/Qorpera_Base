@@ -11177,4 +11177,94 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(sftpChecks).toBe(2);
 		await sftpAgain.close();
 	});
+
+	it("prepares surface_folder and surface_ops workspaces on the folder model at /company without git setup, worktree, or snapshots, and refuses on the NAS model", async () => {
+		const f = await folderFixture();
+		const readSetup = vi.fn<NonNullable<CodingFolderRepositories["readSetup"]>>();
+		const snapshotEnqueue = vi.fn();
+		const host = new LxdCodingExecutorHost({
+			...f.options,
+			folder: {
+				...f.folder,
+				repositories: { ...f.repositories, readSetup },
+			},
+			snapshotBuilder: { enqueue: snapshotEnqueue } as unknown as NonNullable<
+				LxdCodingExecutorHostOptions["snapshotBuilder"]
+			>,
+		});
+
+		const surfaceFolderClaim: CodingSessionClaim = {
+			...f.claim,
+			harness: "claude-code",
+			model: "claude-opus-5-5",
+			workspaceKind: "surface_folder",
+			repository: null,
+			surfaceSession: {
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				slug: "brand-studio",
+				title: "Brand Studio",
+			},
+		};
+		const preparedFolder = await host.prepareWorkspace(surfaceFolderClaim, f.turnOf(surfaceFolderClaim), f.signal);
+		expect(preparedFolder).toEqual({ vmId: f.machine.machineId, baseSha: null });
+		expect(readSetup).not.toHaveBeenCalled();
+		expect(f.repositories.prepare).not.toHaveBeenCalled();
+		expect(mocked.resolveBase).not.toHaveBeenCalled();
+		expect(f.calls("qorpera_record_coding_worktree_created")).toHaveLength(0);
+		expect(snapshotEnqueue).not.toHaveBeenCalled();
+		expect(f.views.attach).toHaveBeenCalledTimes(1);
+		await host.commandTransport(f.scope(surfaceFolderClaim), async () => undefined, f.signal);
+		expect((mocked.folderTransports.at(-1)?.session as { cwd?: string } | undefined)?.cwd).toBe("/company");
+		host.endTurn(surfaceFolderClaim);
+
+		const ops = await folderFixture();
+		const opsReadSetup = vi.fn<NonNullable<CodingFolderRepositories["readSetup"]>>();
+		const opsSnapshotEnqueue = vi.fn();
+		const opsHost = new LxdCodingExecutorHost({
+			...ops.options,
+			folder: {
+				...ops.folder,
+				repositories: { ...ops.repositories, readSetup: opsReadSetup },
+			},
+			snapshotBuilder: { enqueue: opsSnapshotEnqueue } as unknown as NonNullable<
+				LxdCodingExecutorHostOptions["snapshotBuilder"]
+			>,
+		});
+		const opsClaim: CodingSessionClaim = {
+			...ops.claim,
+			harness: "codex",
+			workspaceKind: "surface_ops",
+			repository: null,
+			surfaceSession: {
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				slug: "ops-desk",
+				title: "Operations",
+			},
+		};
+		const preparedOps = await opsHost.prepareWorkspace(opsClaim, ops.turnOf(opsClaim), ops.signal);
+		expect(preparedOps).toEqual({ vmId: ops.machine.machineId, baseSha: null });
+		expect(opsReadSetup).not.toHaveBeenCalled();
+		expect(ops.repositories.prepare).not.toHaveBeenCalled();
+		expect(ops.calls("qorpera_record_coding_worktree_created")).toHaveLength(0);
+		expect(opsSnapshotEnqueue).not.toHaveBeenCalled();
+		await opsHost.commandTransport(ops.scope(opsClaim), async () => undefined, ops.signal);
+		expect((mocked.folderTransports.at(-1)?.session as { cwd?: string } | undefined)?.cwd).toBe("/company");
+		opsHost.endTurn(opsClaim);
+
+		const nas = await fixture();
+		const nasHost = new LxdCodingExecutorHost(nas.options);
+		const nasSurfaceClaim: CodingSessionClaim = {
+			...nas.claim,
+			workspaceKind: "surface_folder",
+			repository: null,
+		};
+		await expect(
+			nasHost.prepareWorkspace(nasSurfaceClaim, nas.turnOf(nasSurfaceClaim), nas.signal),
+		).rejects.toMatchObject({
+			name: "CodingWorkspaceFailed",
+			message: "CODING_SURFACE_FOLDER_MODEL_REQUIRED",
+		});
+	});
 });

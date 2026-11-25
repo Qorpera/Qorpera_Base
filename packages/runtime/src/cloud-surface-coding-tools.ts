@@ -134,14 +134,14 @@ export async function prepareSurfaceCodingWorkspace(options: {
 		);
 		const codexInstructions = [
 			baseInstructions,
-			"This session runs on a coding machine where /company is mounted read-only and /tmp is writable for scripts, data analysis, and the data CLI (data describe, data query, data change, data apply under /company/data/).",
+			"This session runs on a coding machine where /company is mounted read-only and /tmp is writable for scripts and analysis.",
 			"Never try to mutate published Company Files under /company directly; inspect them read-only via company_read/company_list or shell commands and stage every proposed action via stage_surface_ops_action.",
 			"Every turn MUST end with coding_finish (omitting headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 		].join(" ");
 		const claudeSystemNote = [
 			baseInstructions,
-			"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with /company mounted read-only and /tmp writable for scripts, analysis, and the data CLI under /company/data/.",
+			"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with /company mounted read-only and /tmp writable for scripts and analysis.",
 			"Never try to mutate /company directly from Bash, Edit, or Write; stage every proposed action through mcp__qorpera__stage_surface_ops_action (and inspect company files via Read or mcp__qorpera__company_read/company_list).",
 			"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey and summary) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
@@ -322,7 +322,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	);
 	const codexInstructions = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "coding_finish"),
-		"This session runs on a coding machine where /company is mounted read-only and /tmp is writable for scripts, Node/Python tooling, Chromium/Playwright visual verification, and the data CLI under /company/data/.",
+		"This session runs on a coding machine where /company is mounted read-only and /tmp is writable for scripts, Node/Python tooling, and Chromium/Playwright visual verification.",
 		`Never try to write directly into /company/${folderRoot}/ from shell commands (the mount refuses direct writes); use company_read and company_list to read files with active Preview overlays, stage every change under ${folderRoot}/ via stage_surface_patch, and write working notes under ${notesRoot}/ via company_write.`,
 		isInternalReconciliation
 			? "When finished staging the combined resolution via stage_surface_patch, call coding_finish with a concise summary (omitting headSha). Never call coding_ask."
@@ -331,7 +331,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	].join("\n\n");
 	const claudeSystemNote = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "mcp__qorpera__coding_finish"),
-		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with /company mounted read-only and /tmp writable for scripts, Node/Python, Blender, Chromium/Playwright visual verification, and the data CLI under /company/data/.",
+		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with /company mounted read-only and /tmp writable for scripts, Node/Python, Blender, and Chromium/Playwright visual verification.",
 		`Never try to modify /company directly with Bash, Edit, or Write (the mount refuses direct writes). Use mcp__qorpera__company_read and mcp__qorpera__company_list when you need active Preview overlay contents, stage every file change under ${folderRoot}/ through mcp__qorpera__stage_surface_patch, and write working notes under ${notesRoot}/ through mcp__qorpera__company_write.`,
 		isInternalReconciliation
 			? "When finished staging the combined resolution via mcp__qorpera__stage_surface_patch, call mcp__qorpera__coding_finish with operationKey and a concise summary. Never call coding_ask."

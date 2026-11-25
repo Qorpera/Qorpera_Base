@@ -7,8 +7,10 @@ do $$ begin
 	if to_regprocedure('public.qorpera_coding_claude_driver_ready()') is null
 		or to_regprocedure('public.qorpera_reply_surface_session(uuid,text,boolean,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_enqueue_session_run(uuid,uuid)') is null
-		or to_regprocedure('public.qorpera_plan_coding_machine(uuid,uuid,text,text)') is null then
-		raise exception '20260930910000 requires Claude coding defaults, surface reply in-place, and coding machine planning';
+		or to_regprocedure('public.qorpera_plan_coding_machine(uuid,uuid,text,text)') is null
+		or to_regprocedure('public.qorpera_machine_data_pass(uuid,jsonb,text)') is null
+		or to_regprocedure('public.qorpera_data_pass_redeem(text)') is null then
+		raise exception '20260930910000 requires Claude coding defaults, surface reply in-place, coding machine planning, and coding data passes';
 	end if;
 end $$;
 
@@ -84,6 +86,18 @@ returns text language sql immutable set search_path = '' as $$
 	end
 $$;
 
+-- WHY: Reserve qorpera/surface-workspace for non-git Studio/Ops coding machines so no real git repo can collide on machine identity.
+select pg_temp.ssoc_patch(
+	'public.qorpera_coding_repository_valid(jsonb)'::regprocedure,
+	array[
+$old$		and not exists (select 1 from unnest(string_to_array(p_repository ->> 'baseBranch','/')) part
+			where part = '' or left(part,1) = '.' or right(part,1) = '.' or right(part,5) = '.lock'), false)$old$,
+$new$		and not (lower(p_repository ->> 'owner') = 'qorpera' and lower(p_repository ->> 'name') = 'surface-workspace')
+		and not exists (select 1 from unnest(string_to_array(p_repository ->> 'baseBranch','/')) part
+			where part = '' or left(part,1) = '.' or right(part,1) = '.' or right(part,5) = '.lock'), false)$new$
+	]
+);
+
 select pg_temp.ssoc_patch(
 	'public.qorpera_plan_coding_machine(uuid,uuid,text,text)'::regprocedure,
 	array[
@@ -148,6 +162,29 @@ $new$		if v_ok and v_actor_kind = 'view' and v_view.kind = 'coding_session' and 
 		end if;
 		if v_ok and v_actor_kind in ('member','run','view') and not (v_actor_kind = 'run'
 			and public.qorpera_memory_run_log_admits(p_environment_id, p_operation_key, v_auth_actor, v_op, v_path, v_unit)) then$new$
+	]
+);
+
+-- WHY: Prevent Studio and Ops coding VMs from bypassing staging/approval via the company-data machine pass (data change/apply).
+select pg_temp.ssoc_patch(
+	'public.qorpera_machine_data_pass(uuid,jsonb,text)'::regprocedure,
+	array[
+$old$			where cs.worker_id = v_view.worker_id and cs.attachment_token = v_view.attachment_token
+				and cs.archived_at is null and m.id = v_view.machine_id$old$,
+$new$			where cs.worker_id = v_view.worker_id and cs.attachment_token = v_view.attachment_token
+				and cs.workspace_kind = 'git_repo'
+				and cs.archived_at is null and m.id = v_view.machine_id$new$
+	]
+);
+
+select pg_temp.ssoc_patch(
+	'public.qorpera_data_pass_redeem(text)'::regprocedure,
+	array[
+$old$					where cs.worker_id = view.worker_id and cs.attachment_token = view.attachment_token
+						and cs.archived_at is null and m.id = view.machine_id$old$,
+$new$					where cs.worker_id = view.worker_id and cs.attachment_token = view.attachment_token
+						and cs.workspace_kind = 'git_repo'
+						and cs.archived_at is null and m.id = view.machine_id$new$
 	]
 );
 
