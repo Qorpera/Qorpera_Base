@@ -1,4 +1,4 @@
-import { parseCloudCodingRepository } from "@qorpera/contracts";
+import { POSTGRES_UUID_PATTERN, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderTodoChange, CloudFolderTodoListing, CloudFolderTodos } from "./cloud-folder-todos.ts";
 import type {
@@ -32,7 +32,7 @@ const OUTCOMES = ["succeeded", "blocked", "failed"] as const;
 const TODO_STATES = ["open", "blocked", "done", "cancelled"] as const;
 const WORKER_STATES = ["active", "blocked", "succeeded", "failed", "cancelled"] as const;
 /** A listing cursor: the id of the last item shown before (keyset on creation order). */
-export const CURSOR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const CURSOR = POSTGRES_UUID_PATTERN;
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value))
@@ -290,6 +290,8 @@ export function cloudWorkerTools(
 	const todo: CloudNativeTool = {
 		name: "manage_todo" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "list",
 		description: CLOUD_TODO_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
@@ -378,6 +380,8 @@ export function cloudWorkerTools(
 	const worker: CloudNativeTool = {
 		name: "manage_worker" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "status",
 		description: options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
 		inputSchema: {
 			type: "object",

@@ -63,6 +63,10 @@ export function claudePictureFailureWords(error: CloudPictureFailure): string {
 		}; nothing was saved. Do not try again before then: render it in Blender on this machine, or go on without it.`,
 		usage_limit:
 			"USAGE_LIMIT_REACHED: the member's ChatGPT usage limit stopped the picture; nothing was saved. Try again later, render it in Blender on this machine, or go on without it.",
+		spend_cap:
+			"GEMINI_SPEND_CAP_REACHED: the member's monthly Gemini API spend cap was reached; nothing was saved. Render it in Blender on this machine instead, or go on without it.",
+		billing_required:
+			"GEMINI_BILLING_REQUIRED: the member's Gemini API key does not have billing or credits enabled for image generation; nothing was saved. Render it in Blender on this machine instead, or go on without it.",
 		refused:
 			"PICTURE_REFUSED: the picture generator refused these words or could not draw them; nothing was saved. Change the words (leave out real people, brands and anything unsafe) and run it once more; if it fails again, go on without it.",
 		free_plan:

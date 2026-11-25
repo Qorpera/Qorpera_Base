@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
 	CLOUD_ACTION_REVIEW_TOOL,
@@ -34,7 +35,11 @@ import {
 	type CloudNativeToolBoundary,
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
-import type { CloudRuntimeObservability } from "./cloud-runtime-observability.ts";
+import type {
+	CloudRuntimeObservability,
+	CloudRuntimeObservationSpan,
+	CloudRuntimeOutcome,
+} from "./cloud-runtime-observability.ts";
 import type { CloudRuntimeGeminiEffort, CloudRuntimeGeminiModel } from "./cloud-runtime-policy.ts";
 
 export const GEMINI_DEFAULT_API_BASE = "https://generativelanguage.googleapis.com";
@@ -42,6 +47,7 @@ export const GEMINI_ACTION_REVIEW_MODEL = "gemini-4-neon";
 
 const MAX_GEMINI_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_GEMINI_REQUEST_MS = 5 * 60_000;
+const GEMINI_COMPOSITION_RENEW_MS = 5_000;
 const RETRY_DELAYS_MS = [1_000, 3_000] as const;
 const MAX_GEMINI_RETRY_WAIT_MS = 15_000;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
@@ -212,6 +218,237 @@ interface GeminiFunctionCall {
 interface GeminiApiResponse {
 	readonly parts: GeminiPart[];
 	readonly usage: GeminiToolSessionUsage;
+	readonly finishReason?: string;
+	readonly groundingMetadata?: Record<string, unknown>;
+}
+
+class GeminiMalformedResponseError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "GeminiMalformedResponseError";
+	}
+}
+
+class GeminiStreamError extends Error {
+	readonly status: number;
+	readonly bodyText: string;
+
+	constructor(status: number, bodyText: string) {
+		super(`Gemini stream returned error (${status})`);
+		this.name = "GeminiStreamError";
+		this.status = status;
+		this.bodyText = bodyText;
+	}
+}
+
+function isSseContentType(header: string | null): boolean {
+	return header !== null && header.split(";")[0]?.trim().toLowerCase() === "text/event-stream";
+}
+
+function isMergeableTextPart(part: GeminiPart): boolean {
+	if (typeof part.text !== "string") return false;
+	for (const key of Object.keys(part)) {
+		if (key !== "text" && key !== "thought" && key !== "thoughtSignature") return false;
+	}
+	return true;
+}
+
+function appendStreamPart(target: GeminiPart[], part: GeminiPart): void {
+	if (isMergeableTextPart(part)) {
+		const previous = target.at(-1);
+		if (
+			previous &&
+			isMergeableTextPart(previous) &&
+			(previous.thought === true) === (part.thought === true) &&
+			previous.thoughtSignature === undefined
+		) {
+			previous.text = `${previous.text as string}${part.text as string}`;
+			if (part.thoughtSignature !== undefined) previous.thoughtSignature = part.thoughtSignature;
+			return;
+		}
+	}
+	target.push({ ...part });
+}
+
+function createGeminiCompositionTracker(
+	observability: CloudRuntimeObservability | undefined,
+	context: { readonly threadId: string; readonly turnId: string; readonly parentAttemptId?: string } | undefined,
+): { onVisibleText: () => void; finish: (outcome: CloudRuntimeOutcome) => void } {
+	let started = false;
+	let finished = false;
+	let span: CloudRuntimeObservationSpan | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const logicalOperationSha256 =
+		observability && context
+			? createHash("sha256")
+					.update(JSON.stringify([context.threadId, context.turnId, "text"]))
+					.digest("hex")
+			: undefined;
+
+	const onVisibleText = (): void => {
+		if (started || finished || !observability || !context || !logicalOperationSha256) return;
+		started = true;
+		const renew = (): void => {
+			if (finished) return;
+			try {
+				const previous = span;
+				span = observability.start("message_composition", {
+					logicalOperationSha256,
+					...(context.parentAttemptId ? { parentAttemptId: context.parentAttemptId } : {}),
+				});
+				// WHY: Start the next expiring pulse before finishing the previous one so long replies have no writing gap.
+				previous?.finish("succeeded");
+			} catch {
+				// WHY: Optional presentation telemetry must never fail a Gemini turn.
+			}
+			timer = setTimeout(renew, GEMINI_COMPOSITION_RENEW_MS);
+			timer.unref?.();
+		};
+		renew();
+	};
+
+	const finish = (outcome: CloudRuntimeOutcome): void => {
+		if (finished) return;
+		finished = true;
+		if (timer) clearTimeout(timer);
+		timer = undefined;
+		try {
+			span?.finish(outcome);
+		} catch {
+			// WHY: Optional presentation telemetry must never fail a Gemini turn.
+		}
+	};
+
+	return { onVisibleText, finish };
+}
+
+async function readGeminiSseResponse(options: {
+	reply: Response;
+	maxBytes: number;
+	signal: AbortSignal;
+	onVisibleText?: () => void;
+}): Promise<GeminiApiResponse> {
+	if (!options.reply.body) throw new GeminiMalformedResponseError("Gemini API returned an empty response");
+	const reader = options.reply.body.getReader();
+	const decoder = new TextDecoder("utf-8", { fatal: true });
+	let totalBytes = 0;
+	let pendingLine = "";
+	let eventDataLines: string[] = [];
+	const parts: GeminiPart[] = [];
+	let rawUsageMetadata: Record<string, unknown> = {};
+	let finishReason: string | undefined;
+	let groundingMetadata: Record<string, unknown> | undefined;
+	let sawFrame = false;
+
+	const processFrame = (payloadText: string): void => {
+		const trimmed = payloadText.trim();
+		if (!trimmed || trimmed === "[DONE]") return;
+		let frame: unknown;
+		try {
+			frame = JSON.parse(trimmed);
+		} catch (error) {
+			throw new GeminiMalformedResponseError("Gemini API returned malformed JSON", { cause: error });
+		}
+		if (!isPlainObject(frame)) throw new GeminiMalformedResponseError("Gemini API response is invalid");
+		if (isPlainObject(frame.error)) {
+			const code =
+				typeof frame.error.code === "number" && Number.isSafeInteger(frame.error.code) ? frame.error.code : 500;
+			throw new GeminiStreamError(code, trimmed);
+		}
+		sawFrame = true;
+		const candidates = Array.isArray(frame.candidates) ? frame.candidates : [];
+		const first = isPlainObject(candidates[0]) ? candidates[0] : undefined;
+		const content = first && isPlainObject(first.content) ? first.content : undefined;
+		const rawParts = content && Array.isArray(content.parts) ? content.parts : [];
+		for (const part of rawParts) {
+			if (!isPlainObject(part)) continue;
+			appendStreamPart(parts, part);
+			if (part.thought !== true && typeof part.text === "string" && part.text.length > 0) {
+				options.onVisibleText?.();
+			}
+		}
+		if (first && typeof first.finishReason === "string") finishReason = first.finishReason;
+		if (first && isPlainObject(first.groundingMetadata)) groundingMetadata = first.groundingMetadata;
+		if (isPlainObject(frame.usageMetadata)) rawUsageMetadata = { ...rawUsageMetadata, ...frame.usageMetadata };
+	};
+
+	const flushEvent = (): void => {
+		if (eventDataLines.length === 0) return;
+		const payloadText = eventDataLines.join("\n");
+		eventDataLines = [];
+		processFrame(payloadText);
+	};
+
+	const consumeLine = (rawLine: string): void => {
+		const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+		if (line === "") {
+			flushEvent();
+			return;
+		}
+		if (line.startsWith(":")) return;
+		if (line.startsWith("data:")) {
+			const rest = line.slice(5);
+			eventDataLines.push(rest.startsWith(" ") ? rest.slice(1) : rest);
+		}
+	};
+
+	let onAbort: (() => void) | undefined;
+	const abortPromise = new Promise<never>((_resolve, reject) => {
+		if (options.signal.aborted) {
+			reject(options.signal.reason);
+			return;
+		}
+		onAbort = () => {
+			void reader.cancel(options.signal.reason).catch(() => undefined);
+			reject(options.signal.reason);
+		};
+		options.signal.addEventListener("abort", onAbort, { once: true });
+	});
+	// WHY: Suppress unhandled rejection if stream finishes cleanly before signal aborts.
+	abortPromise.catch(() => undefined);
+
+	try {
+		while (true) {
+			options.signal.throwIfAborted();
+			const { done, value } = await Promise.race([reader.read(), abortPromise]);
+			options.signal.throwIfAborted();
+			if (done) break;
+			if (!value || value.byteLength === 0) continue;
+			totalBytes += value.byteLength;
+			if (totalBytes > options.maxBytes) {
+				void reader.cancel().catch(() => undefined);
+				throw new Error("Cloud response exceeds its byte limit");
+			}
+			let decoded: string;
+			try {
+				decoded = decoder.decode(value, { stream: true });
+			} catch (error) {
+				throw new GeminiMalformedResponseError("Gemini API returned malformed JSON", { cause: error });
+			}
+			const combined = pendingLine + decoded;
+			const lines = combined.split("\n");
+			pendingLine = lines.pop() ?? "";
+			for (const line of lines) consumeLine(line);
+		}
+		let tail: string;
+		try {
+			tail = decoder.decode();
+		} catch (error) {
+			throw new GeminiMalformedResponseError("Gemini API returned malformed JSON", { cause: error });
+		}
+		if (pendingLine || tail) consumeLine(pendingLine + tail);
+		flushEvent();
+		if (!sawFrame) throw new GeminiMalformedResponseError("Gemini API returned an empty response");
+		return {
+			parts,
+			usage: parseUsageMetadata(rawUsageMetadata),
+			...(finishReason !== undefined ? { finishReason } : {}),
+			...(groundingMetadata !== undefined ? { groundingMetadata } : {}),
+		};
+	} finally {
+		if (onAbort) options.signal.removeEventListener("abort", onAbort);
+		reader.releaseLock();
+	}
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -405,36 +642,6 @@ function pauseAbortable(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-async function withScopedSignal<T>(
-	parents: readonly AbortSignal[],
-	timeoutMs: number | undefined,
-	use: (signal: AbortSignal) => Promise<T>,
-	timeoutMessage = "Operation timed out",
-): Promise<T> {
-	const controller = new AbortController();
-	const listeners: Array<readonly [AbortSignal, () => void]> = [];
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	for (const parent of parents) {
-		if (parent.aborted) {
-			controller.abort(parent.reason);
-			break;
-		}
-		const onAbort = (): void => controller.abort(parent.reason);
-		parent.addEventListener("abort", onAbort, { once: true });
-		listeners.push([parent, onAbort]);
-	}
-	if (!controller.signal.aborted && timeoutMs !== undefined) {
-		timer = setTimeout(() => controller.abort(new DOMException(timeoutMessage, "TimeoutError")), timeoutMs);
-		timer.unref?.();
-	}
-	try {
-		return await use(controller.signal);
-	} finally {
-		if (timer !== undefined) clearTimeout(timer);
-		for (const [parent, onAbort] of listeners) parent.removeEventListener("abort", onAbort);
-	}
-}
-
 async function generateGeminiContent(options: {
 	baseUrl: string;
 	model: string;
@@ -444,8 +651,9 @@ async function generateGeminiContent(options: {
 	signal: AbortSignal;
 	retryOnBusy: boolean;
 	observability?: CloudRuntimeObservability;
+	compositionContext?: { readonly threadId: string; readonly turnId: string };
 }): Promise<GeminiApiResponse> {
-	const url = `${options.baseUrl}/v1beta/models/${encodeURIComponent(options.model)}:generateContent`;
+	const url = `${options.baseUrl}/v1beta/models/${encodeURIComponent(options.model)}:streamGenerateContent?alt=sse`;
 	const payload = JSON.stringify(options.body);
 	const observation = options.observability?.start("model_request");
 	let recorded = false;
@@ -462,6 +670,82 @@ async function generateGeminiContent(options: {
 		recorded = true;
 		observation?.finish(errorCategory === "cancelled" ? "cancelled" : "failed", { errorCategory });
 	};
+	const throwClassifiedHttpError = (
+		status: number,
+		snippet: Uint8Array | undefined,
+		retryAfterHeader: string | null,
+		attempt: number,
+	): number => {
+		const classified = classifyGeminiHttpError(status, snippet, retryAfterHeader);
+		if (classified.code === "billing_required") {
+			failObservation("budget_exhausted");
+			throw tagNativeRuntimeFailure(
+				new GeminiProviderError(
+					"billing_required",
+					status,
+					classified.providerStatus,
+					`Gemini API billing or credits required (${status})`,
+					undefined,
+					classified.detailCode,
+				),
+				"native-tools",
+				"budget_exhausted",
+			);
+		}
+		if (classified.code === "key_rejected") {
+			failObservation("authority_unavailable");
+			throw tagNativeRuntimeFailure(
+				new GeminiKeyRevokedError(
+					"Google rejected your Gemini API key.",
+					status,
+					classified.providerStatus,
+					classified.detailCode,
+				),
+				"native-tools",
+				"authority_unavailable",
+			);
+		}
+		if (classified.code === "quota_exhausted" || classified.code === "provider_outage") {
+			const nonTransientQuota =
+				classified.code === "quota_exhausted" &&
+				(classified.detailCode === "daily_quota_exhausted" ||
+					classified.detailCode === "spend_limit_reached" ||
+					(classified.retryAfterMs !== null && classified.retryAfterMs > MAX_GEMINI_RETRY_WAIT_MS));
+			const baseWait = options.retryOnBusy && !nonTransientQuota ? RETRY_DELAYS_MS[attempt] : undefined;
+			if (baseWait !== undefined) {
+				return classified.retryAfterMs !== null
+					? Math.min(MAX_GEMINI_RETRY_WAIT_MS, Math.max(baseWait, classified.retryAfterMs))
+					: baseWait;
+			}
+			failObservation("provider_failed");
+			if (!options.retryOnBusy) throw new CloudActionReviewBusy();
+			throw tagNativeRuntimeFailure(
+				new GeminiProviderError(
+					classified.code,
+					status,
+					classified.providerStatus,
+					`Gemini API is temporarily busy (${status})`,
+					undefined,
+					classified.detailCode,
+				),
+				"native-tools",
+				"provider_failed",
+			);
+		}
+		failObservation("provider_failed");
+		throw tagNativeRuntimeFailure(
+			new GeminiProviderError(
+				classified.code,
+				status,
+				classified.providerStatus,
+				`Gemini API rejected the request (${status})`,
+				undefined,
+				classified.detailCode,
+			),
+			"native-tools",
+			"provider_failed",
+		);
+	};
 	try {
 		for (let attempt = 0; ; attempt++) {
 			options.signal.throwIfAborted();
@@ -474,7 +758,15 @@ async function generateGeminiContent(options: {
 			);
 			requestTimer.unref?.();
 			const requestSignal = scoped.signal;
+			const composition = createGeminiCompositionTracker(
+				options.observability,
+				options.compositionContext
+					? { ...options.compositionContext, parentAttemptId: observation?.attemptId }
+					: undefined,
+			);
+			let compositionOutcome: CloudRuntimeOutcome = "failed";
 			let bytes: Uint8Array | undefined;
+			let streamed: GeminiApiResponse | undefined;
 			let retryWait: number | undefined;
 			try {
 				let reply: Response;
@@ -484,13 +776,17 @@ async function generateGeminiContent(options: {
 						redirect: "error",
 						headers: {
 							"content-type": "application/json",
+							accept: "text/event-stream",
 							"x-goog-api-key": options.apiKey,
 						},
 						body: payload,
 						signal: requestSignal,
 					});
 				} catch (error) {
-					if (options.signal.aborted) throw error;
+					if (options.signal.aborted) {
+						compositionOutcome = "cancelled";
+						throw error;
+					}
 					const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
 					if (wait !== undefined) {
 						retryWait = wait;
@@ -509,83 +805,70 @@ async function generateGeminiContent(options: {
 				if (retryWait === undefined) {
 					if (!reply.ok) {
 						const snippet = await readGeminiErrorSnippet(reply);
-						const classified = classifyGeminiHttpError(reply.status, snippet, reply.headers.get("retry-after"));
-						if (classified.code === "billing_required") {
-							failObservation("budget_exhausted");
-							throw tagNativeRuntimeFailure(
-								new GeminiProviderError(
-									"billing_required",
-									reply.status,
-									classified.providerStatus,
-									`Gemini API billing or credits required (${reply.status})`,
-									undefined,
-									classified.detailCode,
-								),
-								"native-tools",
-								"budget_exhausted",
-							);
-						}
-						if (classified.code === "key_rejected") {
-							failObservation("authority_unavailable");
-							throw tagNativeRuntimeFailure(
-								new GeminiKeyRevokedError(
-									"Google rejected your Gemini API key.",
-									reply.status,
-									classified.providerStatus,
-									classified.detailCode,
-								),
-								"native-tools",
-								"authority_unavailable",
-							);
-						}
-						if (classified.code === "quota_exhausted" || classified.code === "provider_outage") {
-							const nonTransientQuota =
-								classified.code === "quota_exhausted" &&
-								(classified.detailCode === "daily_quota_exhausted" ||
-									classified.detailCode === "spend_limit_reached" ||
-									(classified.retryAfterMs !== null && classified.retryAfterMs > MAX_GEMINI_RETRY_WAIT_MS));
-							const baseWait = options.retryOnBusy && !nonTransientQuota ? RETRY_DELAYS_MS[attempt] : undefined;
-							if (baseWait !== undefined) {
-								retryWait =
-									classified.retryAfterMs !== null
-										? Math.min(MAX_GEMINI_RETRY_WAIT_MS, Math.max(baseWait, classified.retryAfterMs))
-										: baseWait;
-							} else {
-								failObservation("provider_failed");
-								if (!options.retryOnBusy) throw new CloudActionReviewBusy();
-								throw tagNativeRuntimeFailure(
-									new GeminiProviderError(
-										classified.code,
-										reply.status,
-										classified.providerStatus,
-										`Gemini API is temporarily busy (${reply.status})`,
-										undefined,
-										classified.detailCode,
-									),
-									"native-tools",
-									"provider_failed",
-								);
+						retryWait = throwClassifiedHttpError(
+							reply.status,
+							snippet,
+							reply.headers.get("retry-after"),
+							attempt,
+						);
+					} else if (isSseContentType(reply.headers.get("content-type"))) {
+						try {
+							streamed = await readGeminiSseResponse({
+								reply,
+								maxBytes: MAX_GEMINI_RESPONSE_BYTES,
+								signal: requestSignal,
+								onVisibleText: composition.onVisibleText,
+							});
+							compositionOutcome = "succeeded";
+						} catch (error) {
+							if (options.signal.aborted) {
+								compositionOutcome = "cancelled";
+								throw error;
 							}
-						} else {
-							failObservation("provider_failed");
-							throw tagNativeRuntimeFailure(
-								new GeminiProviderError(
-									classified.code,
-									reply.status,
-									classified.providerStatus,
-									`Gemini API rejected the request (${reply.status})`,
-									undefined,
-									classified.detailCode,
-								),
-								"native-tools",
-								"provider_failed",
-							);
+							if (error instanceof GeminiStreamError) {
+								retryWait = throwClassifiedHttpError(
+									error.status,
+									new TextEncoder().encode(error.bodyText),
+									null,
+									attempt,
+								);
+							} else if (error instanceof GeminiMalformedResponseError) {
+								failObservation("provider_failed");
+								throw tagNativeRuntimeFailure(error, "native-tools", "provider_failed");
+							} else if (error instanceof Error && error.message === "Cloud response exceeds its byte limit") {
+								failObservation("provider_failed");
+								throw tagNativeRuntimeFailure(error, "native-tools", "provider_failed");
+							} else {
+								const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
+								if (wait !== undefined) {
+									retryWait = wait;
+								} else {
+									failObservation("transport_unavailable");
+									throw tagNativeRuntimeFailure(
+										new GeminiProviderError(
+											"transport_unavailable",
+											null,
+											null,
+											"Could not reach the Gemini API",
+											{
+												cause: error,
+											},
+										),
+										"native-tools",
+										"transport_unavailable",
+									);
+								}
+							}
 						}
 					} else {
 						try {
 							bytes = await readBoundedCloudResponse(reply, MAX_GEMINI_RESPONSE_BYTES, requestSignal);
+							compositionOutcome = "succeeded";
 						} catch (error) {
-							if (options.signal.aborted) throw error;
+							if (options.signal.aborted) {
+								compositionOutcome = "cancelled";
+								throw error;
+							}
 							if (error instanceof Error && error.message === "Cloud response exceeds its byte limit") {
 								failObservation("provider_failed");
 								throw tagNativeRuntimeFailure(error, "native-tools", "provider_failed");
@@ -613,12 +896,23 @@ async function generateGeminiContent(options: {
 					}
 				}
 			} finally {
+				composition.finish(compositionOutcome);
 				clearTimeout(requestTimer);
 				options.signal.removeEventListener("abort", onCallerAbort);
 			}
 			if (retryWait !== undefined) {
 				await pauseAbortable(retryWait, options.signal);
 				continue;
+			}
+			if (streamed) {
+				recorded = true;
+				observation?.finish("succeeded", {
+					inputTokens: streamed.usage.inputTokens,
+					cachedInputTokens: streamed.usage.cachedTokens,
+					outputTokens: streamed.usage.outputTokens,
+					totalTokens: streamed.usage.inputTokens + streamed.usage.outputTokens,
+				});
+				return streamed;
 			}
 			if (!bytes) {
 				failObservation("provider_failed");
@@ -648,6 +942,9 @@ async function generateGeminiContent(options: {
 			const content = first && isPlainObject(first.content) ? first.content : undefined;
 			const rawParts = content && Array.isArray(content.parts) ? content.parts : [];
 			const parts = rawParts.filter(isPlainObject);
+			const finishReason = first && typeof first.finishReason === "string" ? first.finishReason : undefined;
+			const groundingMetadata =
+				first && isPlainObject(first.groundingMetadata) ? first.groundingMetadata : undefined;
 			const usage = parseUsageMetadata(parsed.usageMetadata);
 			recorded = true;
 			observation?.finish("succeeded", {
@@ -656,7 +953,12 @@ async function generateGeminiContent(options: {
 				outputTokens: usage.outputTokens,
 				totalTokens: usage.inputTokens + usage.outputTokens,
 			});
-			return { parts, usage };
+			return {
+				parts,
+				usage,
+				...(finishReason !== undefined ? { finishReason } : {}),
+				...(groundingMetadata !== undefined ? { groundingMetadata } : {}),
+			};
 		}
 	} catch (error) {
 		if (!recorded) {
@@ -819,11 +1121,10 @@ export async function runCloudGeminiToolSession(options: {
 				outputTokens: totalOutputTokens,
 			};
 			try {
-				const receipt = await withScopedSignal(
+				const receipt = await withAbortScopes(
 					flushSignal ? [flushSignal] : [],
-					10_000,
 					(signal) => onUsage(snapshot, signal),
-					"Gemini usage flush timed out",
+					10_000,
 				);
 				if (!receipt) return false;
 				monthSpendMicrodollars = receipt.monthSpendMicrodollars;
@@ -885,7 +1186,7 @@ export async function runCloudGeminiToolSession(options: {
 			options.reviewer.attach({
 				review: async (input, reviewSignal) => {
 					assertWithinCap();
-					const response = await withScopedSignal([sessionSignal, reviewSignal], undefined, (combinedSignal) =>
+					const response = await withAbortScopes([sessionSignal, reviewSignal], (combinedSignal) =>
 						generateGeminiContent({
 							baseUrl,
 							model: options.model,
@@ -989,6 +1290,7 @@ export async function runCloudGeminiToolSession(options: {
 					signal: sessionSignal,
 					retryOnBusy: true,
 					observability: options.observability,
+					compositionContext: { threadId, turnId },
 					body: {
 						...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
 						contents: requestContents,
@@ -999,12 +1301,13 @@ export async function runCloudGeminiToolSession(options: {
 						},
 					},
 				});
-				await recordUsage(response.usage);
-
 				const visibleText = extractVisibleText(response.parts);
 				if (visibleText) options.boundary.runLog?.agentText(visibleText);
 
 				const functionCalls = extractFunctionCalls(response.parts);
+				// WHY: overlap cumulative usage flush with tool batch execution; total spend updates synchronously first.
+				const usageFlush = functionCalls.length > 0 ? recordUsage(response.usage) : null;
+				if (!usageFlush) await recordUsage(response.usage);
 				const assignedCallIds = functionCalls.map((call, index) =>
 					call.id !== undefined && CALL_ID.test(call.id) ? call.id : `gemini-${fencedRequests}-${index + 1}`,
 				);
@@ -1058,22 +1361,27 @@ export async function runCloudGeminiToolSession(options: {
 
 				if (functionCalls.length > 0) {
 					let stopAfterBatch = false;
-					sessionSignal.throwIfAborted();
-					const batchResults =
-						functionCalls.length === 1
-							? [
-									await options.boundary.invoke(
-										assignedCallIds[0],
-										"qorpera",
-										functionCalls[0].name,
-										functionCalls[0].args,
-									),
-								]
-							: await Promise.all(
-									functionCalls.map((call, index) =>
-										options.boundary.invoke(assignedCallIds[index], "qorpera", call.name, call.args),
-									),
-								);
+					let batchResults: Awaited<ReturnType<typeof options.boundary.invoke>>[];
+					try {
+						sessionSignal.throwIfAborted();
+						batchResults =
+							functionCalls.length === 1
+								? [
+										await options.boundary.invoke(
+											assignedCallIds[0],
+											"qorpera",
+											functionCalls[0].name,
+											functionCalls[0].args,
+										),
+									]
+								: await Promise.all(
+										functionCalls.map((call, index) =>
+											options.boundary.invoke(assignedCallIds[index], "qorpera", call.name, call.args),
+										),
+									);
+					} finally {
+						await usageFlush;
+					}
 					sessionSignal.throwIfAborted();
 					for (const [index, call] of functionCalls.entries()) {
 						const callId = assignedCallIds[index];
@@ -1087,7 +1395,9 @@ export async function runCloudGeminiToolSession(options: {
 						const callParts: GeminiPart[] = [];
 						if (imageItem) {
 							const base64 = imageItem.imageUrl.slice(PNG_DATA_URL_PREFIX.length);
-							const imageSha256 = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
+							const imageSha256 =
+								options.boundary.shownImageSha256(result) ??
+								createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
 							pendingFenceInputs.push({
 								kind: "function_call_output",
 								callId,
@@ -1191,6 +1501,6 @@ export async function runCloudGeminiToolSession(options: {
 		}
 	};
 	return options.timeoutMs !== undefined
-		? withScopedSignal([options.signal], options.timeoutMs, runWithSession, "Gemini session timed out")
+		? withAbortScopes([options.signal], runWithSession, options.timeoutMs)
 		: runWithSession(options.signal);
 }

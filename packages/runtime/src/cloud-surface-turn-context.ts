@@ -17,7 +17,11 @@ import {
 	type SurfaceMemberImage,
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
-import type { SurfaceOmittedBaseChange, SurfacePreviewBaseChange } from "./cloud-surface-preview-overlay.ts";
+import type {
+	SurfaceOmittedBaseChange,
+	SurfacePreviewBaseChange,
+	SurfaceSessionOpenChange,
+} from "./cloud-surface-preview-overlay.ts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
@@ -112,6 +116,95 @@ export function parseSurfaceConflictDetails(raw: unknown): SurfaceConflictDetail
 	return out;
 }
 
+export interface SurfaceTurnOpenChange {
+	readonly id: string;
+	readonly seq?: number | null;
+	readonly title: string;
+	readonly summary?: string | null;
+	readonly status?: string | null;
+	readonly parentSha: string | null;
+	readonly headSha: string | null;
+	readonly affectedPaths?: readonly string[];
+	readonly optionGroupKey: string | null;
+	readonly optionGroupTitle: string | null;
+}
+
+export interface SurfaceTurnResolvedChange {
+	readonly id: string;
+	readonly seq?: number | null;
+	readonly title: string;
+	readonly summary?: string | null;
+	readonly status: "discarded" | "merged" | "reverted";
+	readonly parentSha: string | null;
+	readonly headSha: string | null;
+	readonly affectedPaths?: readonly string[];
+	readonly optionGroupKey: string | null;
+	readonly optionGroupTitle: string | null;
+	readonly discardedByExploration?: boolean;
+	readonly resolvedAt?: string | null;
+}
+
+function parseOptionalPaths(raw: unknown): readonly string[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const paths = raw.filter((p): p is string => typeof p === "string" && p.trim().length > 0);
+	return paths.length > 0 ? paths : undefined;
+}
+
+export function parseSurfaceTurnOpenChanges(raw: unknown): SurfaceTurnOpenChange[] {
+	if (!Array.isArray(raw)) return [];
+	const out: SurfaceTurnOpenChange[] = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const item = entry as Record<string, unknown>;
+		if (typeof item.id !== "string" || typeof item.title !== "string") continue;
+		const affectedPaths = parseOptionalPaths(item.affectedPaths);
+		out.push({
+			id: item.id,
+			...(typeof item.seq === "number" && Number.isInteger(item.seq) ? { seq: item.seq } : {}),
+			title: item.title,
+			...(typeof item.summary === "string" && item.summary.trim() ? { summary: item.summary.trim() } : {}),
+			...(typeof item.status === "string" && item.status.trim() ? { status: item.status.trim() } : {}),
+			parentSha: typeof item.parentSha === "string" ? item.parentSha : null,
+			headSha: typeof item.headSha === "string" ? item.headSha : null,
+			...(affectedPaths ? { affectedPaths } : {}),
+			optionGroupKey: typeof item.optionGroupKey === "string" ? item.optionGroupKey : null,
+			optionGroupTitle: typeof item.optionGroupTitle === "string" ? item.optionGroupTitle : null,
+		});
+	}
+	return out;
+}
+
+export function parseSurfaceTurnResolvedChanges(raw: unknown): SurfaceTurnResolvedChange[] {
+	if (!Array.isArray(raw)) return [];
+	const out: SurfaceTurnResolvedChange[] = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const item = entry as Record<string, unknown>;
+		if (typeof item.id !== "string" || typeof item.title !== "string") continue;
+		if (item.status !== "discarded" && item.status !== "merged" && item.status !== "reverted") continue;
+		const affectedPaths = parseOptionalPaths(item.affectedPaths);
+		out.push({
+			id: item.id,
+			...(typeof item.seq === "number" && Number.isInteger(item.seq) ? { seq: item.seq } : {}),
+			title: item.title,
+			...(typeof item.summary === "string" && item.summary.trim() ? { summary: item.summary.trim() } : {}),
+			status: item.status,
+			parentSha: typeof item.parentSha === "string" ? item.parentSha : null,
+			headSha: typeof item.headSha === "string" ? item.headSha : null,
+			...(affectedPaths ? { affectedPaths } : {}),
+			optionGroupKey: typeof item.optionGroupKey === "string" ? item.optionGroupKey : null,
+			optionGroupTitle: typeof item.optionGroupTitle === "string" ? item.optionGroupTitle : null,
+			...(typeof item.discardedByExploration === "boolean"
+				? { discardedByExploration: item.discardedByExploration }
+				: {}),
+			...(typeof item.resolvedAt === "string" && item.resolvedAt.trim()
+				? { resolvedAt: item.resolvedAt.trim() }
+				: {}),
+		});
+	}
+	return out;
+}
+
 export interface SurfaceTurnBriefInput {
 	readonly sessionId: string;
 	readonly surfaceSlug: string;
@@ -133,9 +226,16 @@ export interface SurfaceTurnBriefInput {
 	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
 	readonly previewOverlayStatus?: "ready" | "conflicted" | "truncated" | null;
 	readonly previewSkippedPaths?: readonly string[] | null;
+	readonly sessionOpenChanges?: readonly SurfaceSessionOpenChange[] | null;
+	readonly replyChangeId?: string | null;
+	readonly sessionOverlayStatus?: "ready" | "conflicted" | "truncated" | null;
+	readonly sessionOverlaySkippedPaths?: readonly string[] | null;
 	readonly chainMode?: boolean;
 	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
 	readonly mainSha?: string | null;
+	readonly branchHeadSha?: string | null;
+	readonly openChanges?: readonly SurfaceTurnOpenChange[] | null;
+	readonly resolvedChanges?: readonly SurfaceTurnResolvedChange[] | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
 	readonly memberImages?: readonly SurfaceMemberImage[] | null;
 	readonly viewAttachment?: SurfaceAttachmentReader;
@@ -151,23 +251,23 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 	"Commits you make on this session branch stay STAGED for founder Preview and approval and do NOT land on main until the founder approves them. " +
 	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or publishing any of them. " +
 	"Preview renders static web assets from site.folder in .qorpera/checks.json, from index.html at the repository root, from dist/build/out/public, or from apps/<repo>*/index.html — make sure a clean servable index.html and its assets are committed on the session branch (commit the built output folder if you use a bundler, and set site.folder to it when needed). " +
+	"Every staged commit MUST be a real, publishable website or app — NEVER embed a concept switcher, A/B/C option bar, comparison view, or design-question UI into the page itself. " +
+	"When the founder asks for multiple design ideas, website directions, or a multiple choice to flick through, build each direction as its own real, standalone publishable version and stage each commit with coding_record_change using the same optionGroup slug (and optional optionGroupTitle) and the same shared parentSha (capture BASE=$(git rev-parse HEAD) before option 1). Between options, reset the working tree and index cleanly to $BASE with `git read-tree --reset -u $BASE` (and remove any untracked scratch files) without moving HEAD, then build and commit the next option so HEAD advances linearly on the session branch with zero file bleed between options; each option then appears in the Changes sidebar as a multiple-choice picker where the founder can flick through real previews, unselect all, and keep one before approving. " +
 	'A .qorpera/checks.json file is optional for simple static Surfaces; for multi-file codebases, run .qorpera/checks.json pre-flight via coding_run_command (runChecks: true) before coding_finish, and optionally set "surfaceGate": "stage" in .qorpera/checks.json to enforce checks automatically before staging (default "none" keeps Preview staging instant). ' +
 	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
+	"When the founder shares a reference website URL as inspiration, visually study the entire reference page before writing code: open it with headless Chromium or Playwright, dismiss cookie or promo overlays, capture multiple scrolled viewport-sized slices (for example 1440x900 from top to bottom covering hero, mid-page product/app/feature showcases, social proof or comparison bands, and offer/footer, plus mobile 390x844), and inspect each slice individually with coding_run_command (inspectImage). Never stop at a single above-the-fold screenshot and never rely on one tall full-page screenshot (inspectImage fits images within 1920x1200, which shrinks tall full-page shots into unreadable strips). Use the reference website as the structural skeleton and visual vibe — matching its section depth, scroll cadence, typography scale, dark/light contrast rhythm, card and UI framing, and product/app showcase craft — while applying the company's qorpera-identity.css tokens (colors, fonts, radii) unless the founder explicitly asks to change colors. When the founder rejects earlier sketches and points to a reference site, rebuild cleanly around that reference instead of keeping a cramped earlier stub or multi-variant switcher unless they asked for multiple variants. " +
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, parentSha, and commitSha before moving to the next change. " +
+	"When this session already has an open staged change and the member's follow-up revises, adjusts, or fixes it, update that existing change in place by passing its changeId to coding_record_change (keeping its original parentSha and passing the new commitSha) instead of creating a duplicate change; pass createNew: true only when adding a distinct new deliverable alongside existing open changes. " +
 	"When all requested deliverables are committed and verified, call coding_finish with the final headSha to stage the session as ready for review.";
 
 // WHY: Injects global company Identity assets, Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
 export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
-	const headerLines = [
-		`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`,
-		`Session ID: ${binding.sessionId}`,
-	];
+	const headerLines = [`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`];
 	const repositoryKey = binding.repositoryKey?.trim();
 	const folderRoot = binding.folderRoot?.trim();
 	const explorationVariantLabel = binding.explorationVariantLabel?.trim();
 	if (repositoryKey) headerLines.push(`Repository: code/${repositoryKey}`);
 	if (folderRoot) headerLines.push(`Folder root: ${folderRoot}`);
-	if (explorationVariantLabel) headerLines.push(`Exploration direction: ${explorationVariantLabel}`);
 
 	const isFolderOnly = Boolean(folderRoot && !repositoryKey);
 	const sections: string[] = [
@@ -186,17 +286,6 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
-	if (explorationVariantLabel) {
-		sections.push(
-			`## Exploration Direction: ${explorationVariantLabel}\nDeliver a distinct, cohesive take matching this direction so founders can compare side-by-side variants cleanly in Preview.`,
-		);
-	}
-
-	const fullPrompt = binding.fullPrompt?.trim();
-	if (fullPrompt && fullPrompt.length > 1400) {
-		sections.push(`## Full Surface Request\n${fullPrompt.slice(0, 16000)}`);
-	}
-
 	const vision = binding.visionMarkdown?.trim();
 	if (vision) {
 		sections.push(`## Company Vision (QorperaOS/vision/vision.md)\n${vision.slice(0, 6000)}`);
@@ -206,7 +295,6 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	if (reading) {
 		sections.push(`## Company Reading (QorperaOS/vision/reading.md)\n${reading.slice(0, 4096)}`);
 	}
-
 	const identity = binding.identityContext;
 	if (identity) {
 		const identityParts: string[] = [];
@@ -285,6 +373,18 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		sections.push(`## Surface Brief (QorperaOS/surfaces/${binding.surfaceSlug}/brief.md)\n${brief.slice(0, 8000)}`);
 	}
 
+	// WHY: Place per-turn request and session metadata after static identity/shared/brief sections for KV cache hits.
+	if (explorationVariantLabel) {
+		sections.push(
+			`## Exploration Direction: ${explorationVariantLabel}\nExploration direction: ${explorationVariantLabel}\nDeliver ONLY this single direction as a real, publishable page so founders can compare side-by-side variants cleanly in Preview. Never embed an in-page concept switcher, A/B/C bar, or option picker even if the prompt mentions comparing multiple ideas.`,
+		);
+	}
+
+	const fullPrompt = binding.fullPrompt?.trim();
+	if (fullPrompt && fullPrompt.length > 1400) {
+		sections.push(`## Full Surface Request\n${fullPrompt.slice(0, 16000)}`);
+	}
+
 	const target = binding.pointToChangeTarget;
 	if (target) {
 		const lines = [
@@ -296,6 +396,212 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		if (target.textSnippet.trim()) lines.push(`- Text snippet: "${target.textSnippet.trim()}"`);
 		lines.push(`- Viewport: ${target.viewport.width}x${target.viewport.height}`);
 		sections.push(lines.join("\n"));
+	}
+
+	const fallbackOpenChanges: SurfaceSessionOpenChange[] = (binding.openChanges ?? []).map((ch, idx) => ({
+		changeId: ch.id,
+		seq: ch.seq ?? idx + 1,
+		title: ch.title,
+		summary: ch.summary ?? "",
+		kind: binding.repositoryKey ? "git_range" : binding.sourceKind === "native_ops" ? "ops_action" : "folder_patch",
+		status: ch.status === "conflicted" ? "conflicted" : "staged",
+		parentSha: ch.parentSha,
+		headSha: ch.headSha,
+		optionGroupKey: ch.optionGroupKey,
+		optionGroupTitle: ch.optionGroupTitle,
+		affectedPaths: ch.affectedPaths ?? [],
+		previewBaseChangeIds: [],
+		actionKind: null,
+		patchManifest: null,
+		baseFiles: null,
+	}));
+	const sessionOpenChanges =
+		(binding.sessionOpenChanges ?? []).length > 0 ? (binding.sessionOpenChanges ?? []) : fallbackOpenChanges;
+	const resolvedChanges = binding.resolvedChanges ?? [];
+	const discardedChanges = resolvedChanges.filter((ch) => ch.status === "discarded");
+	const branchHeadSha = binding.branchHeadSha?.trim() || null;
+	const mainSha = binding.mainSha?.trim() || null;
+	const replyChangeId = binding.replyChangeId?.trim() || null;
+	if (!binding.isInternalReconciliation) {
+		if (sessionOpenChanges.length > 0) {
+			const isFolderSurface = binding.sourceKind === "folder" || isFolderOnly;
+			const isOpsSurface = binding.sourceKind === "native_ops";
+			const folderRootLabel = folderRoot || binding.surfaceSlug;
+			const ownSkipped = (binding.sessionOverlaySkippedPaths ?? []).filter((p) => p.trim().length > 0);
+			const anyTruncated = sessionOpenChanges.some(
+				(item) => item.truncated === true || item.pathsTruncated === true,
+			);
+			const lines: string[] = ["## Active Staged Changes on This Session"];
+			if (isFolderSurface) {
+				if (
+					binding.sessionOverlayStatus === "truncated" ||
+					(binding.sessionOverlayStatus == null && anyTruncated)
+				) {
+					lines.push(
+						`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. Part of the prior patch manifest exceeded the inline context budget, so \`company_read\` under \`${folderRootLabel}/\` may show live files for omitted paths.`,
+					);
+				} else {
+					lines.push(
+						`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` already reflect this session's staged files above.${
+							ownSkipped.length > 0
+								? ` (${ownSkipped.length} path${ownSkipped.length === 1 ? "" : "s"} exceeded overlay limits: ${ownSkipped.slice(0, 10).join(", ")}${ownSkipped.length > 10 ? `, +${ownSkipped.length - 10} more` : ""}.)`
+								: ""
+						}`,
+					);
+				}
+				lines.push(
+					"When the member's follow-up revises, adjusts, or fixes an existing change below, update it in place by passing its `changeId` to `stage_surface_patch` instead of creating a duplicate change. By default your new ops merge into that change by path (preserving untouched files from the prior version); pass `replaceAll: true` alongside `changeId` only if replacing the entire change from scratch. Only pass `createNew: true` when adding a separate new deliverable alongside the existing open change(s).",
+				);
+			} else if (isOpsSurface) {
+				lines.push(
+					`This session already has ${sessionOpenChanges.length} open staged action${sessionOpenChanges.length === 1 ? "" : "s"}. When revising an existing action below, call \`stage_surface_ops_action\` with its \`changeId\` to update that Action card in place. Only pass \`createNew: true\` when staging an additional separate action.`,
+				);
+			} else {
+				lines.push(
+					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"} on this branch. When the member's follow-up revises, adjusts, or fixes an existing change below, commit on the branch and call \`coding_record_change\` with its \`changeId\` (keeping that change's original \`parentSha\` and passing the new \`commitSha\`) to update it in place instead of creating a duplicate change.${
+						sessionOpenChanges.length > 1
+							? " If revising an earlier non-tip change or option, run `git read-tree --reset -u <headSha>` first so your edit starts from that change's tree, commit on the branch, and pass its `changeId` and original `parentSha` (for stacked chains, rebase any subsequent commits cleanly and update each shifted change with explicit `parentSha`, `commitSha`, and `rebase: true`)."
+							: ""
+					} Only pass \`createNew: true\` when adding a separate new deliverable alongside the existing open change(s).`,
+				);
+			}
+			const maxOpenShown = 20;
+			for (let i = 0; i < Math.min(sessionOpenChanges.length, maxOpenShown); i += 1) {
+				const item = sessionOpenChanges[i]!;
+				const isTargeted = Boolean(replyChangeId && item.changeId === replyChangeId);
+				const parts: string[] = [
+					`#${item.seq} \`${item.changeId}\` — ${item.title.slice(0, 160)}${item.optionGroupKey ? ` (optionGroup: ${item.optionGroupKey})` : ""}${isTargeted ? " **(targeted by follow-up)**" : ""}`,
+				];
+				if (item.status && item.status !== "staged") {
+					parts.push(`status: ${item.status}`);
+				}
+				if (item.kind === "git_range") {
+					if (item.parentSha && item.headSha) {
+						parts.push(`range \`${item.parentSha.slice(0, 40)}..${item.headSha.slice(0, 40)}\``);
+					} else if (item.headSha) {
+						parts.push(`commit \`${item.headSha.slice(0, 40)}\``);
+					}
+				} else if (item.kind === "ops_action" && item.actionKind) {
+					parts.push(`action: \`${item.actionKind}\``);
+				}
+				if (item.affectedPaths.length > 0) {
+					parts.push(`paths: ${item.affectedPaths.slice(0, 16).join(", ")}`);
+				}
+				if (item.summary) {
+					parts.push(`summary: ${item.summary.slice(0, 240)}`);
+				}
+				lines.push(`- ${parts.join(" · ")}`);
+			}
+			if (sessionOpenChanges.length > maxOpenShown) {
+				lines.push(`- ...and ${sessionOpenChanges.length - maxOpenShown} more open changes`);
+			}
+			if (binding.repositoryKey) {
+				const latestOpen = sessionOpenChanges[sessionOpenChanges.length - 1];
+				if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
+					const discardedAtTip = discardedChanges.filter(
+						(ch) => ch.headSha === branchHeadSha || (typeof ch.seq === "number" && ch.seq > latestOpen.seq),
+					);
+					const discardedNames = discardedAtTip.map((ch) => `"${ch.title.slice(0, 120)}"`).join(", ");
+					if (latestOpen.optionGroupKey && latestOpen.parentSha) {
+						const groupKey = latestOpen.optionGroupKey;
+						const groupBase = latestOpen.parentSha;
+						lines.push(
+							discardedNames
+								? `IMPORTANT — Worktree Out of Sync: the session branch tip (\`${branchHeadSha}\`) still holds discarded change(s) (${discardedNames}), which are past the latest active option (\`${latestOpen.headSha}\` in optionGroup \`${groupKey}\`, shared base \`${groupBase}\`). The files currently checked out in your worktree reflect \`${branchHeadSha}\`, NOT the active staged state. Before reading or editing files: to add another option in \`${groupKey}\`, run \`git read-tree --reset -u ${groupBase}\` (keeping HEAD on the branch tip and removing any untracked scratch files) and pass \`optionGroup: "${groupKey}"\` with \`parentSha: "${groupBase}"\`; to revise an existing open option in place, run \`git read-tree --reset -u <option headSha>\` and pass its \`changeId\` with \`parentSha: "${groupBase}"\`.`
+								: `Note: the session branch tip (\`${branchHeadSha}\`) is past the latest active option (\`${latestOpen.headSha}\` in optionGroup \`${groupKey}\`, shared base \`${groupBase}\`), likely because a later option was discarded. Before making follow-up edits: to add another option in \`${groupKey}\`, run \`git read-tree --reset -u ${groupBase}\` (keeping HEAD on the branch tip) and pass \`optionGroup: "${groupKey}"\` with \`parentSha: "${groupBase}"\`; to revise an existing open option in place, run \`git read-tree --reset -u <option headSha>\` and pass its \`changeId\` with \`parentSha: "${groupBase}"\`.`,
+						);
+					} else {
+						lines.push(
+							discardedNames
+								? `IMPORTANT — Worktree Out of Sync: the session branch tip (\`${branchHeadSha}\`) still holds discarded change(s) (${discardedNames}), which are past the latest active staged commit (\`${latestOpen.headSha}\`). The files currently checked out in your worktree reflect \`${branchHeadSha}\`, NOT the active staged state. Before reading or editing files, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip and removing any untracked scratch files) so your new commit builds cleanly on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`
+								: `Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option or change was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`,
+						);
+					}
+				}
+				const activeOrMergedHeads = new Set(
+					[
+						...sessionOpenChanges.map((ch) => ch.headSha),
+						...resolvedChanges.filter((ch) => ch.status === "merged").map((ch) => ch.headSha),
+					].filter((sha): sha is string => Boolean(sha)),
+				);
+				const discardedByHead = new Map<string, SurfaceTurnResolvedChange>();
+				for (const ch of discardedChanges) {
+					if (ch.headSha && !activeOrMergedHeads.has(ch.headSha)) {
+						discardedByHead.set(ch.headSha, ch);
+					}
+				}
+				for (const item of sessionOpenChanges) {
+					if (!item.parentSha) continue;
+					const discardedParent = discardedByHead.get(item.parentSha);
+					if (!discardedParent) continue;
+					lines.push(
+						`Note: active staged change "${item.title.slice(0, 120)}" was originally branched from discarded change "${discardedParent.title.slice(0, 120)}" (\`${item.parentSha}\`), so your local worktree may still contain files from that discarded change even though Preview only applies \`${item.parentSha}..${item.headSha ?? "HEAD"}\` onto \`main\`. Do not rely on code introduced only by the discarded change.`,
+					);
+				}
+			}
+			sections.push(lines.join("\n"));
+		}
+
+		if (resolvedChanges.length > 0) {
+			const lines = [
+				"## Resolved Changes on This Session",
+				...resolvedChanges.map((ch) => {
+					const statusLabel =
+						ch.status === "discarded"
+							? ch.discardedByExploration
+								? "discarded (another option was chosen)"
+								: "discarded by member"
+							: ch.status === "merged"
+								? "approved and merged"
+								: "reverted";
+					const parts: string[] = [
+						`${typeof ch.seq === "number" ? `#${ch.seq} ` : ""}${ch.title.slice(0, 160)} — ${statusLabel}${ch.optionGroupKey ? ` (optionGroup: ${ch.optionGroupKey})` : ""}`,
+					];
+					if (binding.repositoryKey) {
+						if (ch.parentSha && ch.headSha) {
+							parts.push(`range \`${ch.parentSha.slice(0, 40)}..${ch.headSha.slice(0, 40)}\``);
+						} else if (ch.headSha) {
+							parts.push(`commit \`${ch.headSha.slice(0, 40)}\``);
+						}
+					}
+					if (ch.affectedPaths && ch.affectedPaths.length > 0) {
+						parts.push(`paths: ${ch.affectedPaths.slice(0, 12).join(", ")}`);
+					}
+					if (ch.summary) {
+						parts.push(`summary: ${ch.summary.slice(0, 200)}`);
+					}
+					return `- ${parts.join(" · ")}`;
+				}),
+			];
+			if (discardedChanges.length > 0) {
+				lines.push(
+					"Discarded changes above were removed by the member and are no longer staged or shown in Preview. Do not assume they are active, do not build on them, and do not re-introduce their edits unless the member explicitly asks for them again.",
+				);
+			}
+			sections.push(lines.join("\n"));
+		}
+
+		if (
+			sessionOpenChanges.length === 0 &&
+			binding.repositoryKey &&
+			branchHeadSha &&
+			mainSha &&
+			branchHeadSha !== mainSha
+		) {
+			const hasDiscarded = discardedChanges.length > 0;
+			const hasMerged = resolvedChanges.some((ch) => ch.status === "merged");
+			const reason =
+				hasDiscarded && hasMerged
+					? "prior changes on this session were approved or discarded"
+					: hasDiscarded
+						? "prior changes on this session were discarded by the member"
+						: hasMerged
+							? "prior changes on this session were approved and merged"
+							: "prior changes or options were approved or discarded";
+			sections.push(
+				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), because ${reason}. First check \`git log ${mainSha}..HEAD\` (and \`git status\`) for any unrecorded commits you still need — record them or save their SHAs to cherry-pick after resetting. Once clear, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
+			);
+		}
 	}
 
 	const previewBaseChanges = binding.previewBaseChanges ?? [];
@@ -580,6 +886,8 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		binding.viewAttachment ? "coding_view_attachment" : "company_read",
 	);
 	if (images) sections.push(images);
+
+	sections.push(`Session ID: ${binding.sessionId}`);
 
 	return sections.join("\n\n");
 }

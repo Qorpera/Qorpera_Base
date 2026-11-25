@@ -1145,35 +1145,6 @@ impl BlobStore {
             return Ok(hit);
         }
 
-        if let Some(mut entry) = self.shards[shard_idx].get_cached_entry(sha256) {
-            for (enc, ext) in accepted.ranked_sidecars().into_iter().flatten() {
-                if (entry.probed_mask & enc.bit()) == 0 {
-                    let loaded = tokio::fs::read(Self::sidecar_path(&path, ext))
-                        .await
-                        .ok()
-                        .map(Bytes::from);
-                    entry.set_variant(enc, loaded);
-                }
-                if let Some(bytes) = entry.variant(enc).cloned() {
-                    let raw_len = entry.raw_len;
-                    self.shards[shard_idx].insert(sha256, entry);
-                    return Ok(BlobPayload {
-                        bytes,
-                        raw_len,
-                        encoding: enc,
-                    });
-                }
-            }
-            if entry.raw.is_none() {
-                let raw = self.read_verified_raw(&path, sha256).await?;
-                entry.set_variant(ContentEncoding::Identity, Some(raw));
-            }
-            if let Some(payload) = entry.to_payload(accepted) {
-                self.shards[shard_idx].insert(sha256, entry);
-                return Ok(payload);
-            }
-        }
-
         let existing_rx = {
             let mut map = self
                 .inflight
@@ -1209,6 +1180,56 @@ impl BlobStore {
             key: sha256.to_string(),
             completed: false,
         };
+
+        // WHY: Re-check cache and probe missing sidecars under the single-flight guard to avoid concurrent sidecar read stampedes.
+        if let Some(mut entry) = self.shards[shard_idx].get_cached_entry(sha256) {
+            if let Some(payload) = entry.to_payload(accepted) {
+                guard.finish(ReadResult::Ok(entry));
+                return Ok(payload);
+            }
+            for (enc, ext) in accepted.ranked_sidecars().into_iter().flatten() {
+                if (entry.probed_mask & enc.bit()) == 0 {
+                    let loaded = tokio::fs::read(Self::sidecar_path(&path, ext))
+                        .await
+                        .ok()
+                        .map(Bytes::from);
+                    entry.set_variant(enc, loaded);
+                }
+                if let Some(bytes) = entry.variant(enc).cloned() {
+                    let raw_len = entry.raw_len;
+                    self.shards[shard_idx].insert(sha256, entry.clone());
+                    guard.finish(ReadResult::Ok(entry));
+                    return Ok(BlobPayload {
+                        bytes,
+                        raw_len,
+                        encoding: enc,
+                    });
+                }
+            }
+            if entry.raw.is_none() {
+                let raw = match self.read_verified_raw(&path, sha256).await {
+                    Ok(bytes) => bytes,
+                    Err(BlobError::NotFound) => {
+                        guard.finish(ReadResult::NotFound);
+                        return Err(BlobError::NotFound);
+                    }
+                    Err(BlobError::CorruptOnDisk) => {
+                        guard.finish(ReadResult::Corrupt);
+                        return Err(BlobError::CorruptOnDisk);
+                    }
+                    Err(err) => {
+                        guard.finish(ReadResult::Io(err.to_string()));
+                        return Err(err);
+                    }
+                };
+                entry.set_variant(ContentEncoding::Identity, Some(raw));
+            }
+            if let Some(payload) = entry.to_payload(accepted) {
+                self.shards[shard_idx].insert(sha256, entry.clone());
+                guard.finish(ReadResult::Ok(entry));
+                return Ok(payload);
+            }
+        }
 
         let raw = match self.read_verified_raw(&path, sha256).await {
             Ok(bytes) => bytes,

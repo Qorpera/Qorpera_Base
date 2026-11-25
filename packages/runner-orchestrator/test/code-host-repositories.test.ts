@@ -1141,11 +1141,13 @@ describe("the change record of a landing (own code storage, step 2b)", () => {
 		const t = await kept();
 		const head = await t.f.commit(t.f.tree, "cart.js");
 		const paths = Array.from({ length: 30 }, (_, at) => `src/${at}.js`);
-		vi.mocked(landCodeBranch).mockRejectedValueOnce(new CodeHostRefusal("CODE_HOST_LAND_CONFLICT", paths));
+		const messages = ["Auto-merging src/0.js", "CONFLICT (content): Merge conflict in src/0.js"];
+		vi.mocked(landCodeBranch).mockRejectedValueOnce(new CodeHostRefusal("CODE_HOST_LAND_CONFLICT", paths, messages));
 		t.f.events.length = 0;
 		const conflict = await t.land(head).catch((e) => e);
 		expect(conflict).toBeInstanceOf(CodingLandConflict);
 		expect(conflict.paths).toEqual(paths);
+		expect(conflict.messages).toEqual(messages);
 		// Nothing landed, so nothing of main is named; at most twenty of the paths.
 		const never = {
 			schema: SCHEMA,

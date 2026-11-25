@@ -5,6 +5,7 @@ import {
 	parseNativeAccountRefreshDescription,
 	parseNativeAccountRefreshRequest,
 } from "@qorpera/cloud-client/native-account-refresh";
+import { isUuid, parseRecord } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import type { ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import {
@@ -36,7 +37,6 @@ import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from 
  * the login's wall, and the refresh's completion brings the runs paused on it back.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -118,10 +118,10 @@ function parseClaudeRead(value: unknown): ClaudeReadDescription {
 	if (!input || typeof input !== "object" || input.schema !== CLAUDE_READ_SCHEMA)
 		throw new Error("Vault Claude read is invalid");
 	if (input.state === "none" || input.state === "completed") {
-		record(input, ["schema", "state"], "Vault Claude read");
+		closedObject(input, ["schema", "state"], "Vault Claude read");
 		return { state: input.state };
 	}
-	record(
+	closedObject(
 		input,
 		[
 			"schema",
@@ -154,8 +154,8 @@ function parseClaudeRead(value: unknown): ClaudeReadDescription {
 		(input.reset === null) !== (input.resetState === null)
 	)
 		throw new Error("Vault Claude read is invalid");
-	const claudeLoginId = uuid(input.claudeLoginId, "Vault Claude read login");
-	const ownerUserId = uuid(input.ownerUserId, "Vault Claude read member");
+	const claudeLoginId = strictUuid(input.claudeLoginId, "Vault Claude read login");
+	const ownerUserId = strictUuid(input.ownerUserId, "Vault Claude read member");
 	const version = positive(input.version, "Vault Claude read version");
 	const envelope = Buffer.from(input.encryptedEnvelopeBase64, "base64");
 	if (
@@ -209,15 +209,14 @@ interface RefreshDescription {
 	logins: RefreshLogin[];
 }
 
-function record(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	const input = value as Record<string, unknown>;
+function closedObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+	const input = parseRecord(value, label);
 	if (Object.keys(input).sort().join() !== [...keys].sort().join()) throw new Error(`${label} is invalid`);
 	return input;
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error(`${label} is invalid`);
+function strictUuid(value: unknown, label: string): string {
+	if (!isUuid(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
@@ -240,7 +239,11 @@ const LOGIN_KEYS = [
 function parseLogin(item: unknown): RefreshLogin {
 	const account =
 		Boolean(item) && typeof item === "object" && !Array.isArray(item) && Object.hasOwn(item as object, "ownerUserId");
-	const login = record(item, account ? [...LOGIN_KEYS, "ownerUserId"] : LOGIN_KEYS, "Vault account refresh login");
+	const login = closedObject(
+		item,
+		account ? [...LOGIN_KEYS, "ownerUserId"] : LOGIN_KEYS,
+		"Vault account refresh login",
+	);
 	if (
 		typeof login.keyId !== "string" ||
 		!KEY_ID.test(login.keyId) ||
@@ -250,11 +253,11 @@ function parseLogin(item: unknown): RefreshLogin {
 	)
 		throw new Error("Vault account refresh login is invalid");
 	// Every other field first: an envelope is decoded only for an otherwise valid login.
-	uuid(login.credentialCapsuleId, "Vault account refresh capsule");
-	const loginId = uuid(login.loginId, "Vault account refresh login id");
-	const ownerUserId = account ? uuid(login.ownerUserId, "Vault account refresh login member") : undefined;
+	strictUuid(login.credentialCapsuleId, "Vault account refresh capsule");
+	const loginId = strictUuid(login.loginId, "Vault account refresh login id");
+	const ownerUserId = account ? strictUuid(login.ownerUserId, "Vault account refresh login member") : undefined;
 	const version = positive(login.version, "Vault account refresh login version");
-	const connectionId = uuid(login.connectionId, "Vault account refresh connection");
+	const connectionId = strictUuid(login.connectionId, "Vault account refresh connection");
 	const connectionVersion = positive(login.connectionVersion, "Vault account refresh connection version");
 	const envelope = Buffer.from(login.encryptedEnvelopeBase64, "base64");
 	if (
@@ -277,7 +280,7 @@ function parseLogin(item: unknown): RefreshLogin {
 }
 
 function parseDescription(value: unknown): RefreshDescription {
-	const input = record(
+	const input = closedObject(
 		value,
 		["schema", "requestId", "profileId", "computeIdentityId", "requestedByUserId", "status", "expiresAt", "logins"],
 		"Vault account refresh",
@@ -291,10 +294,10 @@ function parseDescription(value: unknown): RefreshDescription {
 	)
 		throw new Error("Vault account refresh is invalid");
 	// The header first: no envelope is decoded for an answer that fails it.
-	const requestId = uuid(input.requestId, "Vault account refresh id");
-	const companyId = uuid(input.profileId, "Vault account refresh company");
-	const computeIdentityId = uuid(input.computeIdentityId, "Vault account refresh identity");
-	const requestedByUserId = uuid(input.requestedByUserId, "Vault account refresh member");
+	const requestId = strictUuid(input.requestId, "Vault account refresh id");
+	const companyId = strictUuid(input.profileId, "Vault account refresh company");
+	const computeIdentityId = strictUuid(input.computeIdentityId, "Vault account refresh identity");
+	const requestedByUserId = strictUuid(input.requestedByUserId, "Vault account refresh member");
 	// Every envelope read so far is wiped if a later login is unreadable.
 	const read: RefreshLogin[] = [];
 	try {
@@ -527,7 +530,7 @@ export class CloudModelLoginUsage {
 		// A capability for this one refresh; only its digest reaches the database.
 		const capability = randomBytes(32).toString("base64url");
 		const capabilitySha256 = createHash("sha256").update(capability).digest("hex");
-		const answer = record(
+		const answer = closedObject(
 			await this.#authority.beginModelLoginUsageRecheck({ capabilitySha256 }, signal),
 			["schema", "request"],
 			"Vault usage recheck",

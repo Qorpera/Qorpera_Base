@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { type CloudCodingRepository, parseGitHubCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, parseGitHubCodingRepository, UUID_PATTERN } from "@qorpera/contracts";
 import { type CodingBrokerGitRunner, runCodingBrokerGit } from "./coding-git.ts";
 import { checkDirectory } from "./lxd-office-journal-files.ts";
 
@@ -141,7 +141,7 @@ export async function fetchCloudCodingSeed(
 		Array.isArray(value) ||
 		Object.keys(value).sort().join() !== "baseSha,repository,workerId" ||
 		typeof value.workerId !== "string" ||
-		!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.workerId) ||
+		!UUID_PATTERN.test(value.workerId) ||
 		typeof value.baseSha !== "string" ||
 		!/^[0-9a-f]{40}$/.test(value.baseSha)
 	)

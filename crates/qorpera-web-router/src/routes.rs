@@ -315,7 +315,6 @@ pub struct RouteTable {
     deployment_snapshot_upstreams: Arc<HashMap<String, Option<String>>>,
     upstream_overrides: HashMap<String, UpstreamOverride>,
     content_type_headers: Arc<HashMap<String, HeaderValue>>,
-    etag_headers: Arc<HashMap<String, HeaderValue>>,
 }
 
 pub struct SharedRoutes {
@@ -351,18 +350,17 @@ impl RouteTable {
         let mut sites_by_id = HashMap::with_capacity(snapshot.sites.len());
         let mut deployment_snapshot_upstreams = HashMap::with_capacity(snapshot.sites.len());
         let mut content_type_headers = HashMap::new();
-        let mut etag_headers = HashMap::new();
         for site in snapshot.sites {
             if let Some(ref dep) = site.live_deployment {
-                collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
+                collect_precomputed_headers(&dep.manifest, &mut content_type_headers);
                 deployment_snapshot_upstreams.insert(dep.id.clone(), dep.upstream_addr.clone());
             }
             for dep in site.preview_deployments.values() {
-                collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
+                collect_precomputed_headers(&dep.manifest, &mut content_type_headers);
                 deployment_snapshot_upstreams.insert(dep.id.clone(), dep.upstream_addr.clone());
             }
             for dep in site.db_live.iter().chain(site.db_previews.values()) {
-                collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
+                collect_precomputed_headers(&dep.manifest, &mut content_type_headers);
             }
             let arc = Arc::new(site);
             sites_by_slug.insert(arc.slug.clone(), Arc::clone(&arc));
@@ -393,7 +391,6 @@ impl RouteTable {
             deployment_snapshot_upstreams: Arc::new(deployment_snapshot_upstreams),
             upstream_overrides: HashMap::new(),
             content_type_headers: Arc::new(content_type_headers),
-            etag_headers: Arc::new(etag_headers),
         }
     }
 
@@ -408,8 +405,14 @@ impl RouteTable {
 
     #[inline]
     pub fn etag_header(&self, sha256: &str) -> Option<HeaderValue> {
-        if let Some(val) = self.etag_headers.get(sha256) {
-            return Some(val.clone());
+        // WHY: Format 64-byte SHA-256 ETags on the stack instead of duplicating every manifest digest into a RouteTable HashMap.
+        let bytes = sha256.as_bytes();
+        if bytes.len() == 64 {
+            let mut buf = [0u8; 66];
+            buf[0] = b'"';
+            buf[1..65].copy_from_slice(bytes);
+            buf[65] = b'"';
+            return HeaderValue::from_bytes(&buf).ok();
         }
         HeaderValue::from_str(&format!("\"{sha256}\"")).ok()
     }
@@ -683,18 +686,12 @@ impl RouteTable {
 fn collect_precomputed_headers(
     manifest: &SiteManifest,
     content_types: &mut HashMap<String, HeaderValue>,
-    etags: &mut HashMap<String, HeaderValue>,
 ) {
     for file in manifest.files.values() {
         if !content_types.contains_key(&file.content_type) {
             let hv = HeaderValue::from_str(&file.content_type)
                 .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
             content_types.insert(file.content_type.clone(), hv);
-        }
-        if !etags.contains_key(&file.sha256) {
-            if let Ok(ev) = HeaderValue::from_str(&format!("\"{}\"", file.sha256)) {
-                etags.insert(file.sha256.clone(), ev);
-            }
         }
     }
 }

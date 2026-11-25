@@ -57,6 +57,7 @@ export interface ClaimedSurfaceChangeRange {
 	readonly parentSha: string;
 	readonly headSha: string;
 	readonly title: string;
+	readonly optionGroupKey?: string | null;
 }
 
 export interface ClaimedSurfacePreviewJob {
@@ -89,6 +90,7 @@ export interface ClaimedSurfaceApprovedChange {
 export interface ClaimedSurfacePeerSession {
 	readonly sessionId: string;
 	readonly workerId: string;
+	readonly recordedChangeHeadShas?: readonly string[];
 	readonly remainingChanges: readonly ClaimedSurfaceChangeRange[];
 }
 
@@ -106,6 +108,8 @@ export interface ClaimedSurfaceMergeJob {
 	readonly autoPublish?: boolean;
 	readonly expectMainSha?: string | null;
 	readonly sessionWorkerId?: string | null;
+	readonly sessionBranchHeadSha?: string | null;
+	readonly sessionRecordedChangeHeadShas?: readonly string[];
 	readonly sessionState?: SurfaceSessionState | null;
 	readonly sessionHasActiveChat?: boolean;
 	readonly payload: Readonly<Record<string, unknown>>;
@@ -135,6 +139,18 @@ export interface ClaimedSurfacePublishJob {
 	readonly payload: Readonly<Record<string, unknown>>;
 }
 
+export interface ClaimedSurfaceCleanupJob {
+	readonly jobId: string;
+	readonly surfaceId: string;
+	readonly sessionId: string | null;
+	readonly profileId: string;
+	readonly environmentId?: string | null;
+	readonly sourceKind?: SurfaceSourceKind;
+	readonly leaseToken?: string | null;
+	readonly repositoryKey: string | null;
+	readonly workerId: string;
+}
+
 export interface ClaimedSurfaceAutomationJob {
 	readonly automationId: string;
 	readonly profileId: string;
@@ -152,6 +168,7 @@ export interface ClaimedSurfaceJobs {
 	readonly previews: readonly ClaimedSurfacePreviewJob[];
 	readonly merges?: readonly ClaimedSurfaceMergeJob[];
 	readonly publishes?: readonly ClaimedSurfacePublishJob[];
+	readonly cleanups?: readonly ClaimedSurfaceCleanupJob[];
 	readonly automations?: readonly ClaimedSurfaceAutomationJob[];
 }
 
@@ -198,6 +215,7 @@ export interface SurfaceWorkerLoopPorts {
 
 export interface SurfaceWorkerLoopOptions {
 	readonly pollIntervalMs?: number;
+	readonly backstopPollIntervalMs?: number;
 	readonly batchLimit?: number;
 	readonly leaseRenewIntervalMs?: number;
 	readonly leaseExtendSeconds?: number;
@@ -208,6 +226,7 @@ export interface SurfaceWorkerLoopOptions {
 export class SurfaceWorkerLoop {
 	readonly #ports: SurfaceWorkerLoopPorts;
 	readonly #pollIntervalMs: number;
+	readonly #backstopPollIntervalMs: number;
 	readonly #batchLimit: number;
 	readonly #leaseRenewIntervalMs: number;
 	readonly #leaseExtendSeconds: number;
@@ -223,6 +242,10 @@ export class SurfaceWorkerLoop {
 	constructor(ports: SurfaceWorkerLoopPorts, options: SurfaceWorkerLoopOptions = {}) {
 		this.#ports = ports;
 		this.#pollIntervalMs = Math.max(50, options.pollIntervalMs ?? 1500);
+		this.#backstopPollIntervalMs = Math.max(
+			this.#pollIntervalMs,
+			options.backstopPollIntervalMs ?? this.#pollIntervalMs,
+		);
 		this.#batchLimit = Math.min(Math.max(1, options.batchLimit ?? 16), 64);
 		this.#leaseRenewIntervalMs = Math.max(20, options.leaseRenewIntervalMs ?? 60_000);
 		this.#leaseExtendSeconds = Math.min(Math.max(30, options.leaseExtendSeconds ?? 300), 900);
@@ -573,7 +596,9 @@ export class SurfaceWorkerLoop {
 				const backoffRemaining = this.#capacityBackoffUntil - Date.now();
 				const inBackoff = backoffRemaining > 0;
 				if (!tickFailed && !inBackoff && woken) continue;
-				const waitMs = inBackoff ? Math.max(backoffRemaining, this.#pollIntervalMs) : this.#pollIntervalMs;
+				// WHY: Only lengthen idle polling to the backstop interval while Realtime wakes are actively listening.
+				const idlePollMs = wake?.listening ? this.#backstopPollIntervalMs : this.#pollIntervalMs;
+				const waitMs = inBackoff ? Math.max(backoffRemaining, this.#pollIntervalMs) : idlePollMs;
 				await new Promise<void>((resolve) => {
 					if (signal.aborted || (!tickFailed && !inBackoff && woken)) {
 						resolve();

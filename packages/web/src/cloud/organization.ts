@@ -2,11 +2,11 @@ import {
 	array,
 	boundedInteger,
 	CloudShapeError,
+	cloudRecord,
+	cloudUuid,
 	nonEmptyString,
 	oneOf,
-	record,
 	SHA256_PATTERN,
-	uuid,
 } from "./parse.ts";
 import type { HostedStaffAgent } from "./types.ts";
 
@@ -95,21 +95,21 @@ function textOr(value: unknown, fallback: string): string {
 }
 
 function membership(value: unknown): HostedOrganizationMembership {
-	const input = record(value, "organization staff membership");
+	const input = cloudRecord(value, "organization staff membership");
 	return {
-		staffAgentId: uuid(input.staff_agent_id, "organization staff id"),
+		staffAgentId: cloudUuid(input.staff_agent_id, "organization staff id"),
 		role: textOr(input.role, "Member"),
 		status: input.status === "ended" ? "ended" : "active",
 	};
 }
 
 function measure(value: unknown): HostedOrganizationMeasure {
-	const input = record(value, "responsibility measure");
+	const input = cloudRecord(value, "responsibility measure");
 	const definition = optionalText(input.definition);
 	const target = optionalText(input.target);
 	const cadence = optionalText(input.cadence);
 	return {
-		measureId: uuid(input.measure_id, "responsibility measure id"),
+		measureId: cloudUuid(input.measure_id, "responsibility measure id"),
 		key: textOr(input.key, "measure"),
 		label: textOr(input.label, "Measure"),
 		status: oneOf(input.status ?? "active", ["active", "paused", "retired"], "responsibility measure status"),
@@ -127,19 +127,19 @@ function measure(value: unknown): HostedOrganizationMeasure {
 }
 
 function responsibility(value: unknown): HostedOrganizationResponsibility {
-	const input = record(value, "company responsibility");
+	const input = cloudRecord(value, "company responsibility");
 	const accountableUserId = input.accountable_user_id;
 	const outcome = optionalText(input.outcome);
 	const escalationThreshold = optionalText(input.escalation_threshold);
 	return {
-		responsibilityId: uuid(input.responsibility_id, "responsibility id"),
+		responsibilityId: cloudUuid(input.responsibility_id, "responsibility id"),
 		slug: textOr(input.slug, "responsibility"),
 		name: nonEmptyString(input.name, "responsibility name", 160),
 		...(outcome ? { outcome } : {}),
 		status: oneOf(input.status, ["proposed", "active", "degraded", "paused", "retired"], "responsibility status"),
-		accountableStaffAgentId: uuid(input.accountable_staff_agent_id, "responsibility accountable agent"),
+		accountableStaffAgentId: cloudUuid(input.accountable_staff_agent_id, "responsibility accountable agent"),
 		...(typeof accountableUserId === "string"
-			? { accountableUserId: uuid(accountableUserId, "accountable member") }
+			? { accountableUserId: cloudUuid(accountableUserId, "accountable member") }
 			: {}),
 		attentionCadence: textOr(input.attention_cadence, "as needed"),
 		...(escalationThreshold ? { escalationThreshold } : {}),
@@ -150,21 +150,21 @@ function responsibility(value: unknown): HostedOrganizationResponsibility {
 }
 
 function project(value: unknown): HostedOrganizationProject {
-	const input = record(value, "company project");
+	const input = cloudRecord(value, "company project");
 	const sponsoring = input.sponsoring_responsibility_id;
 	const roomId = input.room_id;
 	const objective = optionalText(input.objective);
 	return {
-		projectId: uuid(input.project_id, "project id"),
+		projectId: cloudUuid(input.project_id, "project id"),
 		key: textOr(input.key, "project"),
 		name: nonEmptyString(input.name, "project name", 256),
 		...(objective ? { objective } : {}),
 		status: oneOf(input.status, ["proposed", "active", "blocked", "completed", "cancelled"], "project status"),
 		...(typeof sponsoring === "string"
-			? { sponsoringResponsibilityId: uuid(sponsoring, "project responsibility") }
+			? { sponsoringResponsibilityId: cloudUuid(sponsoring, "project responsibility") }
 			: {}),
-		leadStaffAgentId: uuid(input.lead_staff_agent_id, "project lead"),
-		...(typeof roomId === "string" ? { roomId: uuid(roomId, "project room") } : {}),
+		leadStaffAgentId: cloudUuid(input.lead_staff_agent_id, "project lead"),
+		...(typeof roomId === "string" ? { roomId: cloudUuid(roomId, "project room") } : {}),
 		staff: array(input.staff ?? [], "project staff").map(membership),
 		version: boundedInteger(input.version ?? 1, "project version", 1, Number.MAX_SAFE_INTEGER),
 		sourcePath: textOr(input.source_path, ""),
@@ -175,9 +175,9 @@ function project(value: unknown): HostedOrganizationProject {
  * yet (no Co-Founder row). The caller renders that as canonical state, not
  * as an error and not as a fake Co-Founder. */
 export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrganization | undefined {
-	const input = record(value, "company organization");
+	const input = cloudRecord(value, "company organization");
 	if (input.schema !== "qorpera.company-organization/v1") throw new CloudShapeError("company organization schema");
-	const profileId = uuid(input.profile_id, "company organization profile id");
+	const profileId = cloudUuid(input.profile_id, "company organization profile id");
 	if (
 		input.cofounder === null ||
 		input.cofounder === undefined ||
@@ -186,10 +186,10 @@ export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrg
 	) {
 		return undefined;
 	}
-	const cofounder = record(input.cofounder, "company organization Co-Founder");
-	const formation = record(input.formation, "company organization formation");
-	const formationId = uuid(formation.formation_id, "company formation id");
-	if (uuid(cofounder.formation_id, "Co-Founder formation id") !== formationId) {
+	const cofounder = cloudRecord(input.cofounder, "company organization Co-Founder");
+	const formation = cloudRecord(input.formation, "company organization formation");
+	const formationId = cloudUuid(formation.formation_id, "company formation id");
+	if (cloudUuid(cofounder.formation_id, "Co-Founder formation id") !== formationId) {
 		throw new CloudShapeError("company formation identity");
 	}
 	const memberSessionId = cofounder.member_session_id;
@@ -202,10 +202,10 @@ export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrg
 		schema: "qorpera.company-organization/v1",
 		profileId,
 		cofounder: {
-			staffAgentId: uuid(cofounder.staff_agent_id, "Co-Founder staff id"),
+			staffAgentId: cloudUuid(cofounder.staff_agent_id, "Co-Founder staff id"),
 			formationId,
 			...(typeof memberSessionId === "string"
-				? { memberSessionId: uuid(memberSessionId, "Co-Founder member session") }
+				? { memberSessionId: cloudUuid(memberSessionId, "Co-Founder member session") }
 				: {}),
 		},
 		formation: {

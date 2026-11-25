@@ -304,7 +304,7 @@ describe("ephemeral cloud runner service", () => {
 		await service.catch(() => undefined);
 	});
 
-	it("activates only once its native bridge answers, so no job reaches a bridge that is still starting", async () => {
+	it("overlaps bridge polling with activation and starts the inbox only once both complete", async () => {
 		const root = await serviceRoot();
 		const credentialsDirectory = join(root, "credentials");
 		await mkdir(credentialsDirectory, { mode: 0o700 });
@@ -323,6 +323,15 @@ describe("ephemeral cloud runner service", () => {
 			native_bridge_boundary: "virtual_machine",
 		});
 		const events: string[] = [];
+		let releaseBridge!: () => void;
+		const bridgeReady = new Promise<void>((resolve) => {
+			releaseBridge = resolve;
+		});
+		let activateStarted!: () => void;
+		const sawActivate = new Promise<void>((resolve) => {
+			activateStarted = resolve;
+		});
+		let inboxListeningBeforeBridge = false;
 		vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
 			if (String(url) === "http://127.0.0.1:8082/healthz") {
 				if (!events.includes("bridge refused")) {
@@ -331,6 +340,7 @@ describe("ephemeral cloud runner service", () => {
 						cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
 					});
 				}
+				await bridgeReady;
 				events.push("bridge answered");
 				return Response.json({ ok: true });
 			}
@@ -340,6 +350,7 @@ describe("ephemeral cloud runner service", () => {
 				return new Promise<Response>((_resolve, reject) =>
 					init.signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true }),
 				);
+			activateStarted();
 			const now = Date.now();
 			return Response.json({
 				value: {
@@ -368,11 +379,19 @@ describe("ephemeral cloud runner service", () => {
 		service.catch((error: unknown) => {
 			failure = error;
 		});
+		await sawActivate;
+		await delay(25);
+		inboxListeningBeforeBridge = await listening(port);
+		releaseBridge();
 		while (!(await listening(port))) {
 			if (failure) throw failure;
 			await delay(10);
 		}
-		expect(events).toEqual(["bridge refused", "bridge answered", "activate"]);
+		expect(inboxListeningBeforeBridge).toBe(false);
+		expect(events).toContain("bridge refused");
+		expect(events).toContain("bridge answered");
+		expect(events).toContain("activate");
+		expect(events.indexOf("activate")).toBeLessThan(events.indexOf("bridge answered"));
 		controller.abort();
 		await service.catch(() => undefined);
 	});

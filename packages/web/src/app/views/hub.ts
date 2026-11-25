@@ -103,6 +103,7 @@ export class HubController {
 		return !this.store.get().connectionLost;
 	}, this.#abort.signal);
 	#refresh: Promise<void> | undefined;
+	#profilesRefresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
 	readonly #renames = new Map<string, { name: string; stale: Set<string>; staleKnown: boolean }>();
@@ -150,6 +151,7 @@ export class HubController {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#profilesRefresh = undefined;
 		this.#abort.abort();
 		this.store.dispose();
 	}
@@ -162,11 +164,42 @@ export class HubController {
 		return this.#refresh;
 	}
 
+	// WHY: Company boot only needs the member's profile list, not incoming invitations or founding tables.
+	ensureProfiles(): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
+		if (this.#profilesRefresh) return this.#profilesRefresh;
+		if (this.#refresh) return Promise.resolve();
+		void this.refresh();
+		return this.#profilesRefresh ?? Promise.resolve();
+	}
+
 	/** A read that starts after any read already out, so it sees what changed meanwhile (a company just made). */
 	async refreshAfter(): Promise<void> {
 		if (this.#disposed) return;
 		await this.#refresh;
 		await this.refresh();
+	}
+
+	// WHY: Navigating into a freshly ready company only needs an authoritative listProfiles read after any in-flight profile read, without blocking on invitations or founding tables.
+	async refreshProfilesAfter(): Promise<void> {
+		if (this.#disposed) return;
+		await this.#profilesRefresh;
+		if (this.#disposed) return;
+		const revision = this.#membershipRevision;
+		const fresh = this.#api
+			.listProfiles(this.#abort.signal)
+			.then(
+				(profiles) => {
+					if (this.#disposed || revision !== this.#membershipRevision) return;
+					this.store.set({ profiles: this.#withRenames(profiles), connectionLost: undefined });
+				},
+				() => undefined,
+			)
+			.finally(() => {
+				if (this.#profilesRefresh === fresh) this.#profilesRefresh = undefined;
+			});
+		this.#profilesRefresh = fresh;
+		await fresh;
 	}
 
 	renamed(profileId: string, name: string): void {
@@ -252,9 +285,33 @@ export class HubController {
 	async #load(): Promise<void> {
 		this.store.set({ loading: true, error: undefined });
 		const revision = this.#membershipRevision;
+		let profilesFailed = false;
+		const profilesTask = this.#api.listProfiles(this.#abort.signal);
+		// WHY: Publish profiles as soon as listProfiles resolves so company routes do not wait on invitations or founding.
+		const profilesSettled = profilesTask
+			.then(
+				(profiles) => {
+					if (this.#disposed || revision !== this.#membershipRevision) return;
+					this.store.set({ profiles: this.#withRenames(profiles), connectionLost: undefined });
+				},
+				(error) => {
+					profilesFailed = true;
+					if (this.#disposed || revision !== this.#membershipRevision) return;
+					if (!connectionLost(error)) {
+						this.store.set({ connectionLost: undefined, error: describeError(error) });
+						return;
+					}
+					this.store.set({ connectionLost: true });
+					this.#reconnect.lost();
+				},
+			)
+			.finally(() => {
+				if (this.#profilesRefresh === profilesSettled) this.#profilesRefresh = undefined;
+			});
+		this.#profilesRefresh = profilesSettled;
 		try {
 			const [profiles, invitations, founding] = await Promise.all([
-				this.#api.listProfiles(this.#abort.signal),
+				profilesTask,
 				this.#api.listIncomingInvitations(),
 				this.#readFounding(),
 			]);
@@ -269,6 +326,10 @@ export class HubController {
 				});
 		} catch (error) {
 			if (this.#disposed || revision !== this.#membershipRevision) return;
+			if (profilesFailed) {
+				this.store.set({ loading: false });
+				return;
+			}
 			if (!connectionLost(error)) {
 				this.store.set({ loading: false, connectionLost: undefined, error: describeError(error) });
 				return;
@@ -405,12 +466,12 @@ export class HubController {
 	/** The table is the company being founded: open it with the idea, then the founders go on there. */
 	async #openTable(creation: Creation, route: string): Promise<boolean> {
 		try {
-			const table = await this.#founding.open(creation.clientCreationId, creation.name);
+			let table = await this.#founding.open(creation.clientCreationId, creation.name, creation.vision);
 			if (this.#disposed) return false;
 			let pending: string | undefined;
 			if (creation.vision && !table.vision) {
 				try {
-					await this.#founding.update(table.profileId, table.revision, table.companyName, creation.vision);
+					table = await this.#founding.update(table.profileId, table.revision, table.companyName, creation.vision);
 				} catch {
 					// The table's page saves it on its first read.
 					pending = creation.vision;
@@ -433,6 +494,7 @@ export class HubController {
 				...(pending ? { vision: pending } : {}),
 				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
 				...(creation.spectators?.length ? { spectators: [...creation.spectators] } : {}),
+				table,
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;

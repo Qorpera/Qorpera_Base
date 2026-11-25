@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
 import type { CompanyPresenceIdentity } from "@qorpera/cloud-client/company-path-presence";
 import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
-import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
+import type { RealtimeChannel, RealtimeClient } from "@supabase/realtime-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "../src/cloud-company-path-gateway.ts";
 import { CloudNativeCompanyPresence } from "../src/cloud-company-path-presence.ts";
@@ -141,7 +141,7 @@ function fixture() {
 			for (const c of channels) if (!c.removed) c.listener();
 			return "ok" as const;
 		},
-	} as Pick<SupabaseClient, "channel" | "removeChannel">;
+	} as Pick<RealtimeClient, "channel" | "removeChannel">;
 	const controller = new AbortController();
 	const agents = identities.map(
 		(source) =>
@@ -365,5 +365,40 @@ describe("native Company File presence", () => {
 			await f.close();
 		}
 		expect(getEventListeners(f.controller.signal, "abort")).toHaveLength(0);
+	});
+	it("defers registration, realtime client creation, and forget RPC until first observe when lazy", async () => {
+		const id = nativeToolAuthorityFixture();
+		const call = vi.fn(async (method: CloudCompanyPathRpc) => {
+			if (method === "qorpera_native_presence_register") {
+				return {
+					schema: "qorpera.native-presence-identity/v1",
+					companyId: id.authority.identity.companyId,
+					environmentId: id.authority.identity.environmentId,
+					runId: id.binding.runId,
+					staffAgentId: id.authority.identity.staffAgentId,
+					clientId: "unused",
+					publicKey: "unused",
+					expiresAt: Date.now() + 30_000,
+				};
+			}
+			return null;
+		});
+		const clientFactory = vi.fn(() => {
+			throw new Error("should not instantiate realtime client without observe");
+		});
+		const controller = new AbortController();
+		const presence = new CloudNativeCompanyPresence({
+			binding: id.binding,
+			identity: id.authority.identity,
+			control: { call },
+			client: clientFactory,
+			signal: controller.signal,
+			lazy: true,
+		});
+		await Promise.resolve();
+		await presence.close();
+		expect(call).not.toHaveBeenCalled();
+		expect(clientFactory).not.toHaveBeenCalled();
+		expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
 	});
 });

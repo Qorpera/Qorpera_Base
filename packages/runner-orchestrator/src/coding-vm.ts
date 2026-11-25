@@ -5,11 +5,11 @@ import {
 	type CloudCodingStorageBinding,
 	parseCloudCodingRepository,
 	parseCloudCodingStorageBinding,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import type { CodingMachineJournalPlan } from "./coding-machine.ts";
 import type { LxdCreateInstanceRequest, LxdInstanceRecord } from "./lxd-client.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;
 
@@ -72,7 +72,7 @@ export function lxdCodingVmPlan(value: LxdCodingVmBinding): {
 	if (
 		value.schema !== "qorpera.lxd-coding-vm/v2" ||
 		![value.workerId, value.allocationId, value.companyId, value.environmentId].every(
-			(id) => typeof id === "string" && UUID.test(id),
+			(id) => typeof id === "string" && UUID_PATTERN.test(id),
 		) ||
 		typeof value.providerId !== "string" ||
 		!/^[a-z][a-z0-9_-]{0,63}$/.test(value.providerId) ||

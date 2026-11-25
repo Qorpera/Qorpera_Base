@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { UUID_PATTERN } from "@qorpera/contracts";
+import { isRecord, UUID_ANY_CASE_PATTERN as UUID, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	cloudControlBackoffMs,
 	cloudControlEnded,
@@ -16,7 +16,6 @@ const REQUEST_TIMEOUT_MS = 5_000;
  * this long, so the run's retry decides how long each attempt is (6 Oct 2026). */
 export const CLOUD_TOOL_REQUEST_MAX_MS = 300_000;
 const REFRESH_MS = 10_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /** Host-only binding. No field in this object is a model-selectable tool argument. */
@@ -82,13 +81,13 @@ export interface CloudNativeToolAuthorityReader {
 	readonly runRowMs?: number;
 }
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud tool authority");
-	return value as Record<string, unknown>;
+function authorityObject(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("Invalid cloud tool authority");
+	return value;
 }
 
 export function parseCloudNativeToolBinding(value: unknown): CloudNativeToolBinding {
-	const input = record(value);
+	const input = authorityObject(value);
 	const keys = ["leaseId", "runId", "jobId", "runnerId", "assignmentId", "credentialCapsuleId", "computeIdentityId"];
 	if (
 		keys.some((key) => typeof input[key] !== "string" || !UUID.test(input[key] as string)) ||
@@ -127,8 +126,8 @@ export function parseCloudNativeToolAuthority(
 	value: unknown,
 	binding: CloudNativeToolBinding,
 ): CloudNativeToolAuthority {
-	const input = record(value);
-	const identity = record(input.identity);
+	const input = authorityObject(value);
+	const identity = authorityObject(input.identity);
 	const uuidKeys = [
 		"companyId",
 		"environmentId",
@@ -318,6 +317,20 @@ async function withCombinedAbort<T>(
 	}
 }
 
+interface CheckWaiter {
+	readonly signal: AbortSignal;
+	readonly resolve: () => void;
+	readonly reject: (error: unknown) => void;
+	onAbort?: () => void;
+}
+
+interface CheckBatch {
+	readonly waiters: Set<CheckWaiter>;
+	readonly abort: AbortController;
+	timeoutMs: number | undefined;
+	started: boolean;
+}
+
 /** Live authority, not a path grant. Each effect gateway must still check its exact target atomically. */
 export class CloudNativeToolRun {
 	readonly binding: CloudNativeToolBinding;
@@ -331,11 +344,14 @@ export class CloudNativeToolRun {
 	#identity?: CloudNativeToolIdentity;
 	#identityText?: string;
 	#deadline = 0;
+	#validForMs = 0;
 	/** When the read whose authority is applied started: answers apply in the order their reads started. */
 	#readAt = Number.NEGATIVE_INFINITY;
 	#watchdog?: ReturnType<typeof setTimeout>;
 	#refresh?: ReturnType<typeof setTimeout>;
-	#checking: Promise<void> = Promise.resolve();
+	#activeBatch: CheckBatch | null = null;
+	#queuedBatch: CheckBatch | null = null;
+	#flushScheduled = false;
 
 	private constructor(
 		binding: CloudNativeToolBinding,
@@ -409,12 +425,25 @@ export class CloudNativeToolRun {
 	async assertActive(signal: AbortSignal, timeoutMs?: number): Promise<void> {
 		const runRowMs = this.#runRowMs;
 		await this.#check(
-			(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
 			signal,
 			// As long as the database may run it, as the turn check's attempts: a slow answer lands, not cut and asked again.
 			runRowMs === undefined ? timeoutMs : Math.max(timeoutMs ?? REQUEST_TIMEOUT_MS, runRowMs),
-			runRowMs,
 		);
+	}
+
+	async assertFresh(signal: AbortSignal, maxAgeMs: number, timeoutMs?: number): Promise<void> {
+		if (this.signal.aborted) {
+			this.close();
+			throw new Error("Cloud tool authority unavailable", { cause: this.signal.reason });
+		}
+		if (signal !== this.signal && signal.aborted) {
+			throw new Error("Cloud tool authority unavailable", { cause: signal.reason });
+		}
+		const now = performance.now();
+		const boundedMs = Math.min(maxAgeMs, this.#validForMs);
+		// WHY: honor server validForMs within a short bounded window after a live check without weakening lease expiry or hold fences.
+		if (this.#identity && now < this.#deadline && now - this.#readAt < boundedMs) return;
+		await this.assertActive(signal, timeoutMs);
 	}
 
 	/**
@@ -522,61 +551,108 @@ export class CloudNativeToolRun {
 		);
 	}
 
-	async #check(
-		read: (signal: AbortSignal) => Promise<unknown>,
-		signal: AbortSignal,
-		timeoutMs: number | undefined,
-		runRowMs: number | undefined,
-	): Promise<void> {
+	#check(signal: AbortSignal, timeoutMs: number | undefined): Promise<void> {
 		if (this.signal.aborted) {
 			this.close();
-			throw new Error("Cloud tool authority unavailable", { cause: this.signal.reason });
+			return Promise.reject(new Error("Cloud tool authority unavailable", { cause: this.signal.reason }));
 		}
 		if (signal !== this.signal && signal.aborted) {
-			throw new Error("Cloud tool authority unavailable", { cause: signal.reason });
+			return Promise.reject(new Error("Cloud tool authority unavailable", { cause: signal.reason }));
 		}
-		const check = this.#checking.then(() =>
-			withCombinedAbort(signal, this.signal, async (combined) => {
+		const effectiveTimeout = timeoutMs ?? REQUEST_TIMEOUT_MS;
+		let batch = this.#queuedBatch;
+		if (!batch) {
+			batch = {
+				waiters: new Set(),
+				abort: new AbortController(),
+				timeoutMs: effectiveTimeout,
+				started: false,
+			};
+			this.#queuedBatch = batch;
+		} else {
+			batch.timeoutMs = Math.max(batch.timeoutMs ?? REQUEST_TIMEOUT_MS, effectiveTimeout);
+		}
+		const target = batch;
+		return new Promise<void>((resolve, reject) => {
+			const waiter: CheckWaiter = { signal, resolve, reject };
+			if (signal !== this.signal) {
+				const onAbort = (): void => {
+					// WHY: a caller signal derived from this.signal aborts when check closes the run; let check's cause win.
+					if (this.signal.aborted) return;
+					target.waiters.delete(waiter);
+					reject(new Error("Cloud tool authority unavailable", { cause: signal.reason }));
+					if (target.waiters.size === 0) {
+						if (target.started) target.abort.abort(signal.reason);
+						else if (this.#queuedBatch === target) this.#queuedBatch = null;
+					}
+				};
+				waiter.onAbort = onAbort;
+				signal.addEventListener("abort", onAbort, { once: true });
+			}
+			target.waiters.add(waiter);
+			this.#scheduleFlush();
+		});
+	}
+
+	#scheduleFlush(): void {
+		if (this.#activeBatch || this.#flushScheduled || !this.#queuedBatch) return;
+		this.#flushScheduled = true;
+		queueMicrotask(() => {
+			this.#flushScheduled = false;
+			if (this.#activeBatch || !this.#queuedBatch) return;
+			const batch = this.#queuedBatch;
+			this.#queuedBatch = null;
+			if (batch.waiters.size === 0) return;
+			this.#activeBatch = batch;
+			void this.#runBatch(batch);
+		});
+	}
+
+	async #runBatch(batch: CheckBatch): Promise<void> {
+		batch.started = true;
+		const read = (requestSignal: AbortSignal): Promise<unknown> =>
+			this.#reader.describeToolAuthority(this.binding, requestSignal);
+		try {
+			await withCombinedAbort(batch.abort.signal, this.signal, async (combined) => {
 				combined.throwIfAborted();
 				if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
-				// The attempt that answered dates the authority it read.
-				const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
+				// WHY: one RPC serves every caller queued before it started, preserving post-arrival freshness.
+				const { value, started } = await this.retry(read, combined, batch.timeoutMs, this.#runRowMs);
 				this.#apply(value, started, combined);
-			}),
-		);
-		const wait =
-			signal === this.signal
-				? check
-				: new Promise<void>((resolve, reject) => {
-						const onAbort = () => {
-							// WHY: a caller signal derived from this.signal aborts when check closes the run; let check's cause win.
-							if (!this.signal.aborted) reject(signal.reason);
-						};
-						if (signal.aborted && !this.signal.aborted) {
-							onAbort();
-							return;
-						}
-						signal.addEventListener("abort", onAbort, { once: true });
-						check.then(
-							() => {
-								signal.removeEventListener("abort", onAbort);
-								resolve();
-							},
-							(error) => {
-								signal.removeEventListener("abort", onAbort);
-								reject(error);
-							},
-						);
-					});
-		this.#checking = check.catch((error) => {
-			if (!this.#isCallerOnlyAbort(signal, error)) this.close();
-		});
-		try {
-			await wait;
+			});
+			const waiters = [...batch.waiters];
+			batch.waiters.clear();
+			for (const waiter of waiters) {
+				if (waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+				waiter.resolve();
+			}
 		} catch (error) {
-			if (!this.#isCallerOnlyAbort(signal, error)) this.close();
-			// The cause only tells a timed-out check apart in observations.
-			throw new Error("Cloud tool authority unavailable", { cause: error });
+			const callerOnlyAbort =
+				batch.waiters.size === 0 &&
+				batch.abort.signal.aborted &&
+				!this.signal.aborted &&
+				!(this.#identity && performance.now() >= this.#deadline) &&
+				(error === batch.abort.signal.reason ||
+					(error instanceof CloudRuntimeDiagnosticError && error.category === "cancelled") ||
+					(error instanceof Error && error.name === "AbortError"));
+			if (!callerOnlyAbort) this.close();
+			const waiters = [...batch.waiters];
+			batch.waiters.clear();
+			const failure = new Error("Cloud tool authority unavailable", { cause: error });
+			for (const waiter of waiters) {
+				if (waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+				waiter.reject(failure);
+			}
+		} finally {
+			this.#activeBatch = null;
+			if (this.#queuedBatch) {
+				const next = this.#queuedBatch;
+				this.#queuedBatch = null;
+				if (next.waiters.size > 0) {
+					this.#activeBatch = next;
+					void this.#runBatch(next);
+				}
+			}
 		}
 	}
 
@@ -596,6 +672,7 @@ export class CloudNativeToolRun {
 				: authority.validForMs);
 		if (deadline <= performance.now()) throw new Error("Cloud tool authority expired");
 		this.#readAt = started;
+		this.#validForMs = authority.validForMs;
 		this.#identity = authority.identity;
 		this.#identityText = identityText;
 		this.#deadline = deadline;

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parseRecord, parseUuid, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CHATGPT_PLAN_LOGIN_FIELD,
@@ -33,7 +34,6 @@ import { chatGptPlanAccountIdentity, nativeProviderAccountIdentity } from "./nat
  * member's key, and only the shared vault's own calls (its principal) save or give back its renewal.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const JWT = /^[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*$/;
@@ -212,16 +212,6 @@ function loginKind(value: unknown): "codex" | "chatgpt_plan" {
 	throw new Error("Model login kind is invalid");
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error(`${label} is invalid`);
-	return value.toLowerCase();
-}
-
 function version(value: unknown, label: string): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new Error(`${label} is invalid`);
 	return value;
@@ -233,24 +223,27 @@ function timestamp(value: unknown, label: string): string {
 }
 
 export function parseModelLoginRunBinding(value: unknown): ModelLoginRunBinding {
-	const input = record(value, "Model login run binding");
+	const input = parseRecord(value, "Model login run binding");
 	if (Object.keys(input).sort().join() !== [...BINDING_KEYS].join())
 		throw new Error("Model login run binding is invalid");
 	return Object.freeze({
-		leaseId: uuid(input.leaseId, "Model login lease"),
-		runId: uuid(input.runId, "Model login run"),
-		jobId: uuid(input.jobId, "Model login job"),
-		runnerId: uuid(input.runnerId, "Model login runner"),
-		assignmentId: uuid(input.assignmentId, "Model login assignment"),
-		credentialCapsuleId: uuid(input.credentialCapsuleId, "Model login capsule"),
-		computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
+		leaseId: parseUuid(input.leaseId, "Model login lease"),
+		runId: parseUuid(input.runId, "Model login run"),
+		jobId: parseUuid(input.jobId, "Model login job"),
+		runnerId: parseUuid(input.runnerId, "Model login runner"),
+		assignmentId: parseUuid(input.assignmentId, "Model login assignment"),
+		credentialCapsuleId: parseUuid(input.credentialCapsuleId, "Model login capsule"),
+		computeIdentityId: parseUuid(input.computeIdentityId, "Model login compute identity"),
 	});
 }
 
 function jwtClaims(token: string): Record<string, unknown> {
 	const matched = JWT.exec(token);
 	if (!matched) throw new Error("Codex access token is invalid");
-	return record(JSON.parse(Buffer.from(matched[1] as string, "base64url").toString("utf8")), "Codex access token");
+	return parseRecord(
+		JSON.parse(Buffer.from(matched[1] as string, "base64url").toString("utf8")),
+		"Codex access token",
+	);
 }
 
 /** The only fields a stored login may carry (Codex 0.155.1 `auth.json` for a ChatGPT login);
@@ -261,8 +254,8 @@ const TOKEN_FIELDS = new Set(["id_token", "access_token", "refresh_token", "acco
 /** Reads a stored Codex ChatGPT login. Its pass times come from the access token itself. */
 export function parseCodexLogin(text: string): CodexLogin {
 	if (Buffer.byteLength(text, "utf8") > MAX_AUTH_JSON_BYTES) throw new Error("Codex login is too large");
-	const login = record(JSON.parse(text), "Codex login");
-	const tokens = record(login.tokens, "Codex login tokens");
+	const login = parseRecord(JSON.parse(text), "Codex login");
+	const tokens = parseRecord(login.tokens, "Codex login tokens");
 	if (
 		Object.keys(login).some((key) => !LOGIN_FIELDS.has(key)) ||
 		Object.keys(tokens).some((key) => !TOKEN_FIELDS.has(key)) ||
@@ -340,11 +333,11 @@ function parseEnvelope(input: Record<string, unknown>): { keyId: string; bytes: 
 
 /** The renewal lock a caller was handed, taken on exactly the version it names. */
 function parseRenewal(value: unknown, versionNumber: number): NonNullable<IssueResult["renewal"]> {
-	const renewal = record(value, "Model login renewal");
+	const renewal = parseRecord(value, "Model login renewal");
 	if (typeof renewal.keyId !== "string" || !KEY_ID.test(renewal.keyId))
 		throw new Error("Model login renewal is invalid");
 	const result = {
-		token: uuid(renewal.token, "Model login renewal"),
+		token: parseUuid(renewal.token, "Model login renewal"),
 		baseVersion: version(renewal.baseVersion, "Model login renewal base"),
 		keyId: renewal.keyId,
 	};
@@ -353,14 +346,14 @@ function parseRenewal(value: unknown, versionNumber: number): NonNullable<IssueR
 }
 
 function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion: number | null): IssueResult {
-	const input = record(value, "Model login issue");
+	const input = parseRecord(value, "Model login issue");
 	if (input.schema !== "qorpera.model-login-issue/v1" || typeof input.renewing !== "boolean")
 		throw new Error("Model login issue is invalid");
 	const result: IssueResult = {
-		loginId: uuid(input.loginId, "Model login"),
+		loginId: parseUuid(input.loginId, "Model login"),
 		loginKind: loginKind(input.loginKind),
-		companyId: uuid(input.companyId, "Model login company"),
-		computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
+		companyId: parseUuid(input.companyId, "Model login company"),
+		computeIdentityId: parseUuid(input.computeIdentityId, "Model login compute identity"),
 		version: version(input.version, "Model login version"),
 		accessExpiresAt: timestamp(input.accessExpiresAt, "Model login pass end"),
 		renewing: input.renewing,
@@ -369,7 +362,7 @@ function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion:
 	if (input.scope !== undefined) {
 		// An account login (20260930548000): a Codex login of one member, opened with that member's key.
 		if (input.scope !== "account" || result.loginKind !== "codex") throw new Error("Model login issue is invalid");
-		result.ownerUserId = uuid(input.ownerUserId, "Model login member");
+		result.ownerUserId = parseUuid(input.ownerUserId, "Model login member");
 	} else if (input.ownerUserId !== undefined) throw new Error("Model login issue is invalid");
 	if (input.unchanged === true) {
 		if (knownVersion !== result.version || input.renewal !== undefined)
@@ -385,17 +378,17 @@ function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion:
 
 /** An idle login the vault took to renew, or null when none is due. */
 function parseIdleRenewal(value: unknown): IssueResult | null {
-	const input = record(value, "Model login idle renewal");
+	const input = parseRecord(value, "Model login idle renewal");
 	if (input.schema !== "qorpera.model-login-idle-renewal/v1") throw new Error("Model login idle renewal is invalid");
 	if (input.renewal === null) {
 		if (Object.keys(input).length !== 2) throw new Error("Model login idle renewal is invalid");
 		return null;
 	}
 	const result: IssueResult = {
-		loginId: uuid(input.loginId, "Model login"),
+		loginId: parseUuid(input.loginId, "Model login"),
 		loginKind: loginKind(input.loginKind),
-		companyId: uuid(input.companyId, "Model login company"),
-		computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
+		companyId: parseUuid(input.companyId, "Model login company"),
+		computeIdentityId: parseUuid(input.computeIdentityId, "Model login compute identity"),
 		version: version(input.version, "Model login version"),
 		accessExpiresAt: timestamp(input.accessExpiresAt, "Model login pass end"),
 		renewing: false,
@@ -407,7 +400,7 @@ function parseIdleRenewal(value: unknown): IssueResult | null {
 
 /** The shared vault's idle account login, or null when none is due. */
 function parseIdleAccountRenewal(value: unknown): IssueResult | null {
-	const input = record(value, "Account model login idle renewal");
+	const input = parseRecord(value, "Account model login idle renewal");
 	if (input.schema !== "qorpera.account-model-login-idle-renewal/v1")
 		throw new Error("Account model login idle renewal is invalid");
 	if (input.renewal === null) {
@@ -415,9 +408,9 @@ function parseIdleAccountRenewal(value: unknown): IssueResult | null {
 		return null;
 	}
 	const result: IssueResult = {
-		loginId: uuid(input.loginId, "Model login"),
+		loginId: parseUuid(input.loginId, "Model login"),
 		loginKind: loginKind(input.loginKind),
-		ownerUserId: uuid(input.ownerUserId, "Model login member"),
+		ownerUserId: parseUuid(input.ownerUserId, "Model login member"),
 		version: version(input.version, "Model login version"),
 		accessExpiresAt: timestamp(input.accessExpiresAt, "Model login pass end"),
 		renewing: false,
@@ -598,17 +591,17 @@ export class CloudModelLoginVault {
 	async revokeUnused(signal: AbortSignal): Promise<"revoked" | "failed" | "none"> {
 		const plan = this.#plan;
 		if (!plan) return "none";
-		const input = record(await this.#company.takeChatGptPlanRevocation(signal), "ChatGPT plan revocation");
+		const input = parseRecord(await this.#company.takeChatGptPlanRevocation(signal), "ChatGPT plan revocation");
 		if (input.schema !== "qorpera.chatgpt-plan-revocation/v1") throw new Error("ChatGPT plan revocation is invalid");
 		if (input.revocation === null) return "none";
-		const revocation = record(input.revocation, "ChatGPT plan revocation");
+		const revocation = parseRecord(input.revocation, "ChatGPT plan revocation");
 		const owner: LoginOwner = {
-			loginId: uuid(input.loginId, "Model login"),
-			companyId: uuid(input.companyId, "Model login company"),
-			computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
+			loginId: parseUuid(input.loginId, "Model login"),
+			companyId: parseUuid(input.companyId, "Model login company"),
+			computeIdentityId: parseUuid(input.computeIdentityId, "Model login compute identity"),
 		};
 		const baseVersion = version(input.version, "Model login version");
-		const token = uuid(revocation.token, "ChatGPT plan revocation");
+		const token = parseUuid(revocation.token, "ChatGPT plan revocation");
 		if (version(revocation.baseVersion, "ChatGPT plan revocation base") !== baseVersion)
 			throw new Error("ChatGPT plan revocation is invalid");
 		let opened: OpenedLogin;
@@ -626,7 +619,7 @@ export class CloudModelLoginVault {
 			)) !== "revoked"
 		)
 			return "failed";
-		const finished = record(
+		const finished = parseRecord(
 			await withAbortScopes(
 				[],
 				(deadline) =>
@@ -646,17 +639,17 @@ export class CloudModelLoginVault {
 	 * keeps what they started. Returns how many it recorded; a login it cannot read is tried again at the
 	 * next pass. */
 	async recordAccounts(signal: AbortSignal): Promise<number> {
-		const input = record(await this.#company.listModelLoginsWithoutAccount(signal), "Model login accounts");
+		const input = parseRecord(await this.#company.listModelLoginsWithoutAccount(signal), "Model login accounts");
 		if (input.schema !== "qorpera.model-login-accounts/v1" || !Array.isArray(input.logins) || input.logins.length > 8)
 			throw new Error("Model login accounts are invalid");
 		let recorded = 0;
 		for (const item of input.logins) {
 			try {
-				const entry = record(item, "Model login account");
+				const entry = parseRecord(item, "Model login account");
 				const login: LoginOwner = {
-					loginId: uuid(entry.loginId, "Model login"),
-					companyId: uuid(entry.companyId, "Model login company"),
-					computeIdentityId: uuid(entry.computeIdentityId, "Model login compute identity"),
+					loginId: parseUuid(entry.loginId, "Model login"),
+					companyId: parseUuid(entry.companyId, "Model login company"),
+					computeIdentityId: parseUuid(entry.computeIdentityId, "Model login compute identity"),
 				};
 				const opened = await this.#open(login, version(entry.version, "Model login version"), parseEnvelope(entry));
 				const accountIdentity =
@@ -678,7 +671,10 @@ export class CloudModelLoginVault {
 	async recordAccountLogins(signal: AbortSignal): Promise<number> {
 		const account = this.#account;
 		if (!account) return 0;
-		const input = record(await account.listAccountModelLoginsWithoutAccount(signal), "Account model login accounts");
+		const input = parseRecord(
+			await account.listAccountModelLoginsWithoutAccount(signal),
+			"Account model login accounts",
+		);
 		if (
 			input.schema !== "qorpera.account-model-login-accounts/v1" ||
 			!Array.isArray(input.logins) ||
@@ -688,10 +684,10 @@ export class CloudModelLoginVault {
 		let recorded = 0;
 		for (const item of input.logins) {
 			try {
-				const entry = record(item, "Account model login account");
+				const entry = parseRecord(item, "Account model login account");
 				const login: LoginOwner = {
-					loginId: uuid(entry.loginId, "Model login"),
-					ownerUserId: uuid(entry.ownerUserId, "Model login member"),
+					loginId: parseUuid(entry.loginId, "Model login"),
+					ownerUserId: parseUuid(entry.ownerUserId, "Model login member"),
 				};
 				const opened = await this.#open(login, version(entry.version, "Model login version"), parseEnvelope(entry));
 				if (opened.kind !== "codex") continue;
@@ -814,7 +810,7 @@ export class CloudModelLoginVault {
 			};
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				try {
-					const saved = record(
+					const saved = parseRecord(
 						await withAbortScopes(
 							[],
 							(signal) =>
@@ -885,7 +881,7 @@ export class CloudModelLoginVault {
 			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				try {
-					const saved = record(
+					const saved = parseRecord(
 						await withAbortScopes(
 							[],
 							(deadline) =>
@@ -989,7 +985,7 @@ export class CloudModelLoginVault {
 }
 
 function parseSwitchOff(value: unknown): ModelLoginSwitchOff {
-	const input = record(value, "Model login switch-off");
+	const input = parseRecord(value, "Model login switch-off");
 	const count = (item: unknown): number => {
 		if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 0 || item > 4)
 			throw new Error("Model login switch-off is invalid");

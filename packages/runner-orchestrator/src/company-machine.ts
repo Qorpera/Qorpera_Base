@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { AGENT_BRIDGE, agentPlugCard, isAgentPlugCard } from "./agent-plug.ts";
 import type { CodingMachineIntent, CodingMachineJournalPlan } from "./coding-machine.ts";
 import type { LxdCreateInstanceRequest, LxdInstanceRecord } from "./lxd-client.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;
 const GiB = 1024 ** 3;
@@ -99,7 +99,7 @@ export function parseCompanyMachinePolicy(value: unknown): Readonly<CompanyMachi
 }
 
 export function lxdCompanyMachineName(placementId: string): string {
-	if (!UUID.test(placementId)) throw new Error("INVALID_COMPANY_MACHINE_BINDING");
+	if (!UUID_PATTERN.test(placementId)) throw new Error("INVALID_COMPANY_MACHINE_BINDING");
 	return `qorpera-machine-${placementId.replaceAll("-", "")}`;
 }
 
@@ -118,7 +118,7 @@ export function lxdCompanyMachinePlan(value: LxdCompanyMachineBinding): {
 		Object.keys(value).sort().join() !== [...COMPANY_MACHINE_KEYS].sort().join() ||
 		value.schema !== "qorpera.lxd-company-machine/v2" ||
 		![value.machineId, value.placementId, value.companyId, value.environmentId].every(
-			(id) => typeof id === "string" && UUID.test(id),
+			(id) => typeof id === "string" && UUID_PATTERN.test(id),
 		) ||
 		![value.cpus, value.memoryBytes, value.rootDiskBytes].every((n) => Number.isSafeInteger(n) && n > 0) ||
 		value.cpus > 64 ||

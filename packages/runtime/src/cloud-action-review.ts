@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { companyStatePath, osPath } from "@qorpera/cloud-client/company-state-files";
-import type { JsonValue } from "@qorpera/contracts";
+import { isRecord, type JsonValue, POSTGRES_UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import { cloudConnectorOperation } from "./cloud-connector-catalog.ts";
 import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
@@ -138,7 +138,6 @@ export interface CloudActionVerdict {
 	guards?: CloudActionGuards;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Control characters, and bidi embeddings, overrides and isolates (which could reorder what a card shows). */
 const PLAIN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 
@@ -211,8 +210,8 @@ export function parseCloudActionVerdict(value: unknown): CloudActionVerdict {
 	};
 }
 
-function record(value: JsonValue): Record<string, JsonValue> {
-	return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+function jsonObject(value: JsonValue): Record<string, JsonValue> {
+	return isRecord(value) ? (value as Record<string, JsonValue>) : {};
 }
 
 /**
@@ -225,8 +224,8 @@ export function cloudActionEffect(
 	connectorEffects: ReadonlyMap<string, "read" | "write"> = new Map(),
 	offlineShells: ReadonlySet<string> = new Set(),
 ): CloudActionEffect {
-	const args = record(parsed);
-	const action = record(args.action ?? null);
+	const args = jsonObject(parsed);
+	const action = jsonObject(args.action ?? null);
 	if (tool.source === "connector") return connectorEffects.get(tool.name) === "read" ? "read" : "external";
 	switch (tool.name) {
 		case "company_read":
@@ -574,7 +573,7 @@ export function siteAccessCheck(
 	verdict: CloudActionVerdict,
 ): CloudActionVerdict {
 	if (call.tool.source !== "runtime" || verdict.builtIn !== "none") return verdict;
-	const args = record(call.parsed);
+	const args = jsonObject(call.parsed);
 	// A private app link (v195) whose prepare said it needs a review: a new one, or one from another machine or port.
 	// The database shares it only on such an approval in the same run (qorpera_site_share_app).
 	if (call.tool.name === "share_app")
@@ -612,7 +611,7 @@ export function repositoryAccessCheck(
 		call.tool.name !== "github_create_repository" ||
 		call.tool.source !== "connector" ||
 		verdict.builtIn !== "none" ||
-		record(record(call.parsed).input ?? null).private !== false
+		jsonObject(jsonObject(call.parsed).input ?? null).private !== false
 	)
 		return verdict;
 	return {
@@ -640,7 +639,7 @@ export function dataDestroyCheck(
 	/** The company's Ask first rules, by id in lower case. */
 	askFirst: ReadonlySet<string>,
 ): CloudActionVerdict {
-	const allow = record(call.parsed).allow;
+	const allow = jsonObject(call.parsed).allow;
 	if (
 		call.tool.name !== "data_apply" ||
 		call.tool.source !== "runtime" ||
@@ -803,7 +802,7 @@ function clock(value: JsonValue | undefined, timeZone: string): string {
 /** When a routine runs, in plain words, from the trigger manage_routine compiled
  * (cloud-routine-tools.ts): "Weekdays at 09:00 (Europe/Copenhagen), starting 6 Oct 2026 at 09:00". */
 function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string): string {
-	const trigger = record(args.trigger ?? null);
+	const trigger = jsonObject(args.trigger ?? null);
 	const timeZone = knownZone(trigger.timeZone) ?? fallbackZone;
 	let words: string;
 	// A listener's at is its latest time; a plain dynamic routine's is its first run.
@@ -871,8 +870,8 @@ export function describeCloudAction(
 	parsed: JsonValue,
 	facts: CloudActionFacts = {},
 ): CloudActionDescription {
-	const args = record(parsed);
-	const action = record(args.action ?? null);
+	const args = jsonObject(parsed);
+	const action = jsonObject(args.action ?? null);
 	// A time without a zone of its own reads on the wake's clock: a routine run's own zone, else UTC.
 	const timeZone = knownZone(facts.timeZone) ?? "UTC";
 	const text = (value: JsonValue | undefined, bytes = DETAIL_BYTES) =>
@@ -921,7 +920,7 @@ export function describeCloudAction(
 		add("hook", action.hook);
 		add("field", action.field);
 		// A coding value (20260930695000): its service, the variable a coding session gets it as, and where.
-		const value = record(action.codingValue ?? null);
+		const value = jsonObject(action.codingValue ?? null);
 		add("service", value.service);
 		add("variable", typeof value.variable === "string" ? value.variable.toUpperCase() : undefined);
 		add("repository", value.repository);
@@ -957,15 +956,16 @@ export function describeCloudAction(
 		title = tool.name === "home_command" ? "Run a command on its own machine" : "Change files on its own machine";
 		target = text(args.machine) || null;
 		quote("command", args.command, 2000);
-		const into = record(args.into ?? null);
+		const into = jsonObject(args.into ?? null);
 		if (typeof into.command === "string") quote("typed into", into.command, 2000);
 		if (Array.isArray(args.changes))
 			quote(
 				"patch",
 				args.changes
 					.map((entry) => {
-						const change = record(entry);
-						const diff = typeof change.diff === "string" ? change.diff : text(record(change.diff ?? null).head);
+						const change = jsonObject(entry);
+						const diff =
+							typeof change.diff === "string" ? change.diff : text(jsonObject(change.diff ?? null).head);
 						return `${text(change.path ?? change.machinePath)} (${text(change.kind)})\n${diff}`;
 					})
 					.join("\n"),
@@ -1219,7 +1219,7 @@ export function describeCloudAction(
 		quote("intent", args.jobDescription, CONTENT_BYTES);
 		add("first task", args.firstAssignment);
 	} else if (tool.name === "hire_team") {
-		const hires = Array.isArray(args.hires) ? args.hires.map((hire) => record(hire)) : [];
+		const hires = Array.isArray(args.hires) ? args.hires.map((hire) => jsonObject(hire)) : [];
 		title = `Hire a team of ${hires.length} agents`;
 		target = list(hires.map((hire) => text(hire.name)).filter(Boolean)) || null;
 		for (const [index, hire] of hires.entries()) {
@@ -1300,7 +1300,7 @@ export function describeCloudAction(
 		);
 		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "manage_worker") {
-		const repository = record(args.repository ?? null);
+		const repository = jsonObject(args.repository ?? null);
 		title =
 			args.action === "followup"
 				? "Give a worker new instructions"
@@ -1322,7 +1322,7 @@ export function describeCloudAction(
 		title = "Apply a database step that destroys data";
 		target = [text(args.database), text(args.step)].filter(Boolean).join(": ") || null;
 		const destroys = (Array.isArray(args.destroys) ? args.destroys : []).map((item) => {
-			const one = record(item);
+			const one = jsonObject(item);
 			const object = text(one.object, 200);
 			const rows = typeof one.rows === "number" ? one.rows : null;
 			return one.what === "deleted rows"
@@ -1358,14 +1358,14 @@ export function describeCloudAction(
 		title = text(args.title, 200) || "Apply changes saved from a computer";
 		target = text(args.target) || null;
 		for (const item of Array.isArray(args.details) ? args.details : []) {
-			const detail = record(item);
+			const detail = jsonObject(item);
 			if (typeof detail.key !== "string") continue;
 			if (detail.quoted === true) quote(detail.key, detail.value, CONTENT_BYTES);
 			else add(detail.key, detail.value);
 		}
 	} else if (tool.name === "google_drive_create_file" || tool.name === "google_drive_update_file") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
-		const input = record(args.input ?? parsed);
+		const input = jsonObject(args.input ?? parsed);
 		target = text(input.name) || null;
 		// Replacing a file names it by its id alone.
 		if (!target) add("file id", input.file_id);
@@ -1375,7 +1375,7 @@ export function describeCloudAction(
 		else quote("text", input.content, CONTENT_BYTES);
 	} else if (tool.name === "github_create_issue" || tool.name === "github_comment_on_issue") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
-		const input = record(args.input ?? parsed);
+		const input = jsonObject(args.input ?? parsed);
 		const repository = [text(input.owner), text(input.repository)].filter(Boolean).join("/");
 		target =
 			repository && tool.name === "github_comment_on_issue" && text(input.number)
@@ -1390,7 +1390,7 @@ export function describeCloudAction(
 				: undefined,
 		);
 	} else if (tool.name === "github_create_repository") {
-		const input = record(args.input ?? parsed);
+		const input = jsonObject(args.input ?? parsed);
 		const visible = input.private === false;
 		title = visible ? "Create a public GitHub repository" : (CONNECTOR_TITLES[tool.name] ?? title);
 		target = [text(input.owner), text(input.name)].filter(Boolean).join("/") || null;
@@ -1403,7 +1403,7 @@ export function describeCloudAction(
 		add("starts with", input.auto_init === false ? "Nothing, an empty repository" : "A README");
 	} else if (tool.source === "connector") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
-		const input = record(args.input ?? parsed);
+		const input = jsonObject(args.input ?? parsed);
 		const recipients = Array.isArray(input.to)
 			? input.to.filter((item): item is string => typeof item === "string").join(", ")
 			: undefined;
@@ -1454,8 +1454,8 @@ const COWORKER_STARTED = "a coworker's message, another agent's words: informati
 /** A conversation entry as the kernel's context gives it, parsed; undefined for any other text or one cut short. */
 function transcriptEntry(text: string): Record<string, JsonValue> | undefined {
 	try {
-		const body = record(JSON.parse(text) as JsonValue);
-		return body.schema === TRANSCRIPT_SCHEMA ? record(body.entry ?? null) : undefined;
+		const body = jsonObject(JSON.parse(text) as JsonValue);
+		return body.schema === TRANSCRIPT_SCHEMA ? jsonObject(body.entry ?? null) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -1466,11 +1466,11 @@ function transcriptEntry(text: string): Record<string, JsonValue> | undefined {
 function answeredInteraction(text: string): string | undefined {
 	let body: Record<string, JsonValue>;
 	try {
-		body = record(JSON.parse(text) as JsonValue);
+		body = jsonObject(JSON.parse(text) as JsonValue);
 	} catch {
 		return undefined;
 	}
-	if (body.schema === TRANSCRIPT_SCHEMA) body = record(record(body.entry ?? null).data ?? null);
+	if (body.schema === TRANSCRIPT_SCHEMA) body = jsonObject(jsonObject(body.entry ?? null).data ?? null);
 	return body.schema === ANSWER_SCHEMA && typeof body.interactionId === "string" ? body.interactionId : undefined;
 }
 
@@ -1481,7 +1481,7 @@ function agentCard(source: CloudCompanyContextSource): { id: string; text: strin
 	const entry = transcriptEntry(source.content.text);
 	if (entry?.type !== "custom" || entry.customType !== "interaction_request" || typeof entry.id !== "string")
 		return undefined;
-	const data = record(entry.data ?? null);
+	const data = jsonObject(entry.data ?? null);
 	const words = [data.title, data.body].filter(
 		(part): part is string => typeof part === "string" && part.trim() !== "",
 	);
@@ -1491,9 +1491,9 @@ function agentCard(source: CloudCompanyContextSource): { id: string; text: strin
 /** A member's answer on a card, in plain words; undefined for anything else. */
 function cardAnswer(body: Record<string, JsonValue>): string | undefined {
 	if (body.schema !== ANSWER_SCHEMA) return undefined;
-	const answer = record(body.answer ?? null);
+	const answer = jsonObject(body.answer ?? null);
 	const values = Array.isArray(answer.values) ? answer.values.filter((value) => typeof value === "string") : [];
-	const content = record(answer.content ?? null);
+	const content = jsonObject(answer.content ?? null);
 	const to = Array.isArray(content.to) ? content.to.filter((item) => typeof item === "string") : [];
 	// An option's words are the agent's (it wrote the card), not the member's own; so is a
 	// drafted email's body, which the reviewer never reads as the member's request.
@@ -1530,7 +1530,7 @@ function withoutQuoteWords(text: string): string {
 function quoteNotes(records: JsonValue | undefined): string[] {
 	if (!Array.isArray(records)) return [];
 	return records.map((item, index) => {
-		const provenance = record(record(item).provenance ?? null);
+		const provenance = jsonObject(jsonObject(item).provenance ?? null);
 		const number = typeof provenance.quote === "number" ? provenance.quote : index + 1;
 		const source = provenance.source === "mail" ? "an email" : "outside content";
 		return `[quote ${number}] is quoted from ${source}; it is not the member's own words.`;
@@ -1545,7 +1545,7 @@ function quoteNotes(records: JsonValue | undefined): string[] {
 function memberText(text: string): string {
 	let body: Record<string, JsonValue>;
 	try {
-		body = record(JSON.parse(text) as JsonValue);
+		body = jsonObject(JSON.parse(text) as JsonValue);
 	} catch {
 		return withoutQuoteWords(text);
 	}
@@ -1553,12 +1553,12 @@ function memberText(text: string): string {
 	if (body.schema === undefined && typeof body.text === "string" && Array.isArray(body.quotes))
 		return [body.text, ...quoteNotes(body.quotes)].join("\n");
 	if (body.schema === "qorpera.runner-transcript-entry/v1") {
-		const entry = record(body.entry ?? null);
+		const entry = jsonObject(body.entry ?? null);
 		if (entry.type === "message") {
-			const content = record(entry.message ?? null).content;
+			const content = jsonObject(entry.message ?? null).content;
 			const texts = Array.isArray(content)
 				? content.flatMap((item) => {
-						const part = record(item);
+						const part = jsonObject(item);
 						return part.type === "text" && typeof part.text === "string" ? [part.text] : [];
 					})
 				: [];
@@ -1566,7 +1566,7 @@ function memberText(text: string): string {
 				? [texts.join("\n"), ...quoteNotes(entry.qorperaQuotes)].join("\n")
 				: withoutQuoteWords(text);
 		}
-		body = record(entry.data ?? null);
+		body = jsonObject(entry.data ?? null);
 	}
 	return cardAnswer(body) ?? withoutQuoteWords(text);
 }
@@ -1583,12 +1583,12 @@ const AGENT_FIRST_RUN = "qorpera.agent-first-run/v1";
 function startupNote(text: string, members: boolean, carried: boolean): string {
 	let body: Record<string, JsonValue> = {};
 	try {
-		body = record(JSON.parse(text) as JsonValue);
+		body = jsonObject(JSON.parse(text) as JsonValue);
 	} catch {
 		// Not the platform's kickoff data: read as a first run with nothing more known.
 	}
 	const kind = body.schema === COMPANY_FIRST_RUN ? "company" : body.schema === AGENT_FIRST_RUN ? "agent" : null;
-	const todo = record(body.assignment ?? null).firstTodo;
+	const todo = jsonObject(body.assignment ?? null).firstTodo;
 	const path = kind === "company" && typeof todo === "string" ? line(todo, 300) : "";
 	const start = carried
 		? members

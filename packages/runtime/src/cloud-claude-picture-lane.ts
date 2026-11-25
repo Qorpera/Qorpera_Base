@@ -8,8 +8,10 @@ import {
 	CloudPictureChannel,
 	CloudPictureFailure,
 	type CloudPictureInput,
+	type CloudPictureLane,
 	type CloudPictureMade,
 } from "./cloud-picture-channel.ts";
+import type { CloudRuntimeImageModel } from "./cloud-runtime-policy.ts";
 
 export const CLAUDE_PICTURE_IDLE_MS = 10 * 60_000;
 
@@ -186,17 +188,33 @@ export function cloudClaudePictureSessionStart(options: {
 export async function claudeWorkerPictures(input: {
 	readonly facts: unknown;
 	readonly home: boolean;
+	readonly preferredModel?: CloudRuntimeImageModel;
 	readonly given?: CloudClaudePictures["make"];
+	readonly gemini?: CloudPictureLane;
+	readonly chatGptPlan?: CloudPictureLane;
 	readonly lane: () => Promise<CloudClaudePictureLane | undefined>;
 	readonly foreignOwner: NonNullable<CloudClaudePictures["foreignOwner"]>;
 }): Promise<{ readonly pictures: CloudClaudePictures; readonly lane?: CloudClaudePictureLane }> {
+	if (input.home && input.preferredModel === "gemini-3-pro-image" && input.gemini) {
+		return {
+			pictures: {
+				make: input.gemini,
+				foreignOwner: input.foreignOwner,
+			},
+		};
+	}
 	const login = claudePictureLogin(input.facts);
-	const lane = input.home && login.own && input.given === undefined ? await input.lane() : undefined;
+	const usePlan = input.home && login.own && input.given === undefined && input.chatGptPlan !== undefined;
+	const lane = input.home && login.own && input.given === undefined && !usePlan ? await input.lane() : undefined;
 	const made = lane;
 	const make = !login.own
 		? undefined
 		: (input.given ??
-			(made ? (picture: CloudPictureInput, signal: AbortSignal) => made.make(picture, signal) : undefined));
+			(usePlan
+				? input.chatGptPlan
+				: made
+					? (picture: CloudPictureInput, signal: AbortSignal) => made.make(picture, signal)
+					: undefined));
 	return {
 		pictures: {
 			make,

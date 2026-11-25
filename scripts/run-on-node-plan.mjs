@@ -54,6 +54,17 @@ const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 export const beside = (first, second, label) =>
 	`out=$(mktemp) && { ( ${second} ) >"$out" 2>&1 & pid=$!; ${first}; a=$?; wait $pid; b=$?; echo "== ${label} (ran beside)"; cat "$out"; rm -f "$out"; [ $a = 0 ] && [ $b = 0 ]; }`;
 
+export function parallelCommands(commands) {
+	if (commands.length <= 1) return commands.join(" && ");
+	return [
+		'pdir=$(mktemp -d); trap \'rm -rf "$pdir"\' EXIT; pids=()',
+		...commands.map((command, index) => `( ${command} ) >"$pdir/${index}.log" 2>&1 & pids[${index}]=$!`),
+		"rc=0",
+		...commands.map((_, index) => `wait "\${pids[${index}]}" || rc=1; cat "$pdir/${index}.log"`),
+		"exit $rc",
+	].join("; ");
+}
+
 /** The commands that run `waiting`, test files of packages/`workspace` that mostly wait, as a second vitest beside
  * the rest of the package. The rest excludes them by these same names (and `exclude` too), so every test file runs
  * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. With `shard`
@@ -76,6 +87,7 @@ const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
  * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNNER_ORCHESTRATOR_WAITING = [
 	"test/company-machine-stream-process.test.ts",
+	"test/company-machine-stream-process-stress.test.ts",
 	"test/company-machine-host.test.ts",
 	"test/lxd-login-gateway.test.ts",
 	"test/orchestrator-wake.test.ts",
@@ -84,10 +96,11 @@ export const RUNNER_ORCHESTRATOR_WAITING = [
 	"test/orchestrator.test.ts",
 ];
 
-/** Runtime test files that spend nearly all their time asleep on timers and child processes, not on CPU: about 127 s
- * of the step's 235 s of file time, 121 s of it asleep (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNTIME_WAITING = [
+	"test/cloud-native-company-runtime.test.ts",
 	"test/cloud-codex-tool-session.test.ts",
+	"test/cloud-coding-guest-agent.test.ts",
+	"test/cloud-claude-box-start.test.ts",
 	"test/shared-vault-secrets.test.ts",
 	"test/cloud-native-transport.test.ts",
 ];
@@ -95,7 +108,7 @@ export const RUNTIME_WAITING = [
 const RUNTIME_GUEST = "test/cloud-coding-command-guest.test.ts";
 
 /** Paths that never need a test: prose, and the switched-off workflows. */
-const QUIET = [/\.md$/, /^docs-audit\//, /^LICENSE$/, /^\.github\//];
+const QUIET = [/^(?!packages\/runtime\/(?:skills|kits)\/).*\.md$/, /^docs-audit\//, /^LICENSE$/, /^\.github\//];
 /** Paths every package reads: every step. */
 const WHOLE = [
 	/^package(-lock)?\.json$/,
@@ -104,7 +117,6 @@ const WHOLE = [
 	/^tsconfig[^/]*\.json$/,
 	/^biome\.json$/,
 	/^test\.sh$/,
-	/^packages\/contracts\//,
 ];
 const WEB_ONLY = (file) =>
 	/^packages\/web\//.test(file) &&
@@ -128,6 +140,7 @@ export const STEPS = [
 		// Reads every file: a file another step is writing could fail it.
 		commands: [],
 		alone: ["npx biome check --error-on-warnings ."],
+		readOnlyAlone: true,
 	},
 	{
 		name: "typecheck",
@@ -135,6 +148,7 @@ export const STEPS = [
 		paths: ANY,
 		commands: [],
 		alone: ["npx tsgo --noEmit"],
+		readOnlyAlone: true,
 	},
 	{
 		name: "checks",
@@ -153,37 +167,39 @@ export const STEPS = [
 			"npm run check:connector-catalog",
 			"npm run check:runtime-bundle:release-train",
 		],
+		readOnlyAlone: true,
+		parallelAlone: true,
 	},
-	{
-		name: "web",
-		why: "the web client and what it consumes (web-client.yml)",
-		seconds: 61,
+	...[1, 2].map((half) => ({
+		name: `web-${half}`,
+		why: `the web client and what it consumes (web-client.yml): half ${half} of web tests`,
+		seconds: 40,
 		paths: [
 			/^packages\/web\//,
 			/^packages\/cloud-client\//,
+			/^packages\/contracts\//,
 			/^supabase\/functions\//,
 			/^scripts\/web-deployment/,
 		],
 		build: true,
-		cores: 2,
+		cores: 1.5,
+		workers: 4,
 		commands: [
-			"npm run typecheck --workspace packages/web",
-			"npm test --workspace packages/web",
-			`node --test ${FUNCTION_TESTS.slice(0, 3).join(" ")} scripts/web-deployment.test.mjs`,
+			...(half === 1 ? ["npm run typecheck --workspace packages/web"] : []),
+			vitest("web", ` --shard=${half}/2`),
+			...(half === 1 ? [`node --test ${FUNCTION_TESTS.slice(0, 3).join(" ")} scripts/web-deployment.test.mjs`] : []),
 		],
-		// The release build measures its source from git and refuses uncommitted changes. The run copy has
-		// no .git, so the step commits it into a throwaway repository for the build and removes it after.
-		// This checks bundling and the release configuration; the snapshot commit is never deployed. A file
-		// another step writes meanwhile would dirty the tree, and the build rewrites the built packages other
-		// steps import: alone.
-		alone: [
-			"git init -q && git add -A && git -c user.name=run-on-node -c user.email=run-on-node@invalid commit -qm snapshot",
-			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' npm run build:release --workspace packages/web; built=$?; rm -rf .git; exit $built`,
-		],
-	},
+		alone:
+			half === 1
+				? [
+						"git init -q && printf '*\\n' >>.git/info/exclude && git -c user.name=run-on-node -c user.email=run-on-node@invalid commit --allow-empty -qm snapshot",
+						`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' node packages/web/scripts/build.mjs --release; built=$?; rm -rf .git; exit $built`,
+					]
+				: [],
+	})),
 	{
 		name: "contracts",
-		why: "packages/contracts (a change there runs every step)",
+		why: "packages/contracts",
 		paths: [/^packages\/contracts\//],
 		commands: ["npm test --workspace packages/contracts"],
 	},
@@ -193,17 +209,22 @@ export const STEPS = [
 		paths: NOT_WEB_ONLY,
 		commands: [vitest("cloud-client")],
 	},
-	{
-		name: "runtime",
-		why: "every change that is not web-only (runtime-release-train.yml): all tests, then the coding command supervisor; the files that mostly wait run beside the rest",
-		seconds: 154,
+	...[1, 2].map((half) => ({
+		name: `runtime-${half}`,
+		why: `every change that is not web-only (runtime-release-train.yml): half ${half} of runtime tests; the files that mostly wait run beside the rest${half === 1 ? ", then the coding command supervisor" : ""}`,
+		seconds: 58,
 		paths: NOT_WEB_ONLY,
-		commands: [...besideTheRest("runtime", RUNTIME_WAITING, [RUNTIME_GUEST]), vitest("runtime", ` ${RUNTIME_GUEST}`)],
-	},
+		cores: 1.5,
+		workers: 4,
+		commands: [
+			...besideTheRest("runtime", RUNTIME_WAITING, [RUNTIME_GUEST], `${half}/2`),
+			...(half === 1 ? [vitest("runtime", ` ${RUNTIME_GUEST}`)] : []),
+		],
+	})),
 	{
 		name: "scripts",
 		why: "every change that is not web-only: all script tests, packaging and pins included (runtime-release-train.yml, step2-lxd.yml)",
-		seconds: 31,
+		seconds: 55,
 		paths: NOT_WEB_ONLY,
 		build: true,
 		// Mostly waits on the programs its tests start. One file at a time (cores 1) it took 128 s for 56 CPU seconds;
@@ -215,9 +236,10 @@ export const STEPS = [
 	{
 		name: "object-gateway",
 		why: "packages/object-gateway",
-		seconds: 30,
-		paths: [/^packages\/object-gateway\//],
-		cores: 0.4,
+		seconds: 35,
+		paths: [/^packages\/object-gateway\//, /^packages\/contracts\//],
+		cores: 1,
+		workers: 4,
 		commands: [vitest("object-gateway")],
 	},
 	// runner-orchestrator's tests in two halves, a step each, so a run in parts puts one half on each machine. As one
@@ -228,26 +250,24 @@ export const STEPS = [
 	...[1, 2].map((half) => ({
 		name: `runner-orchestrator-${half}`,
 		why: `packages/runner-orchestrator (half ${half} of its test files) and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest`,
-		seconds: 294,
+		seconds: 52,
+		build: true,
 		paths: [
 			/^packages\/runner-orchestrator\//,
-			/^deploy\//,
+			/^deploy\/(agent-exit|cloud-secret-broker|code-host|coding-machine|coding-worker|first-node|folder-service|machine|node-agent|shared-execution|web-hosting)\//,
 			/^packages\/runtime\/src\//,
 			/^packages\/runtime\/test\/fixtures\//,
 			/^packages\/cloud-client\/src\//,
+			/^packages\/contracts\//,
 		],
-		// Mostly waits on its tests' deadlines: 1.16 cores over 602 s as one vitest. Since the files that mostly wait
-		// run beside the rest, the same CPU (689 s) takes about 400 s (402 s in pr-loop's one run so far): about 1.7.
-		// Side by side, the rest is the whole run's critical path, CPU-bound at 2 workers (634 s of a 651 s run, 16 Oct):
-		// 4 workers, packed as 3 cores so hosted-db still starts beside it. Each half keeps that.
-		cores: 3,
+		cores: 2,
 		workers: 4,
 		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING, [], `${half}/2`),
 	})),
 	{
 		name: "folder-program",
 		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image and, beside them, the release build, its check against the build record and the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
-		seconds: 89,
+		seconds: 70,
 		paths: [
 			/^crates\/qorpera-folder\//,
 			/^packages\/object-gateway\/(src\/folder-service\/|test\/folder-)/,
@@ -257,13 +277,13 @@ export const STEPS = [
 		// Compiled crates stay in a volume of the runner user's own between runs (scripts/folder-program-step.mjs). Its
 		// containers' CPU, read from their cgroups (node02, 16 Oct): 90 CPU seconds over 98 s with the crates emptied,
 		// 32 over 80 s with them kept.
-		cores: 1,
+		cores: 1.5,
 		commands: ["node scripts/folder-program-step.mjs"],
 	},
 	{
 		name: "web-hosting-programs",
 		why: "crates/qorpera-web-router and crates/qorpera-app-host: unit and integration tests in the pinned Rust image",
-		seconds: 35,
+		seconds: 30,
 		paths: [
 			/^crates\/qorpera-web-router\//,
 			/^crates\/qorpera-app-host\//,
@@ -275,27 +295,27 @@ export const STEPS = [
 	{
 		name: "functions",
 		why: "Supabase functions (web-client.yml, step2-lxd.yml)",
-		paths: [/^supabase\/functions\//],
+		paths: [/^supabase\/functions\//, /^packages\/contracts\//],
 		commands: [`node --test ${FUNCTION_TESTS.join(" ")}`],
 	},
 	{
 		name: "deploy-node",
 		why: "node agent, parity and tidy-up (step2-lxd.yml), and the P3 proof driver's own check",
-		seconds: 96,
-		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
-		cores: 0.4,
-		width: 4,
+		seconds: 40,
+		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//, /^packages\/contracts\//],
+		cores: 1.5,
+		width: 6,
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs deploy/sites/sites-route.test.mjs deploy/sites/envoy-front-sites.test.mjs deploy/sites/app-relay/relay.test.mjs deploy/company-data/gateway/sql-text.test.mjs deploy/company-data/gateway/gateway.test.mjs deploy/company-data/gateway/snapshot.test.mjs deploy/company-data/gateway/external-doors.test.mjs deploy/company-data/kit/kit.test.mjs deploy/screens-door/qorpera-screens-door.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/coding-worker/test/p3-driver.test.mjs deploy/coding-worker/test/p3-c1v.test.mjs deploy/sites/sites-route.test.mjs deploy/sites/envoy-front-sites.test.mjs deploy/sites/app-relay/relay.test.mjs deploy/company-data/gateway/sql-text.test.mjs deploy/company-data/gateway/gateway.test.mjs deploy/company-data/gateway/gateway-runs.test.mjs deploy/company-data/gateway/gateway-rows-and-edits.test.mjs deploy/company-data/gateway/gateway-resilience.test.mjs deploy/company-data/gateway/snapshot.test.mjs deploy/company-data/gateway/external-doors.test.mjs deploy/company-data/kit/kit.test.mjs deploy/screens-door/qorpera-screens-door.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},
 	{
 		name: "deploy-agent-exit-proof",
 		why: "privileged root container proof for deploy/agent-exit",
-		seconds: 143,
+		seconds: 45,
 		paths: [/^deploy\/agent-exit\//],
-		cores: 0.4,
+		cores: 1.5,
 		width: 1,
 		commands: ["node --test deploy/agent-exit/qorpera-agent-exit-proof.test.mjs"],
 	},
@@ -309,7 +329,7 @@ export const STEPS = [
 	{
 		name: "hosted-db",
 		why: "migrations, SQL tests and the PostgreSQL scripts with their inputs (hosted-db.yml)",
-		seconds: 240,
+		seconds: 85,
 		paths: [
 			/^supabase\/(?!functions\/)/,
 			/^scripts\/test-hosted-db/,
@@ -317,6 +337,7 @@ export const STEPS = [
 			/^scripts\/fixtures\/email-draft-e2e/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
+			/^packages\/contracts\//,
 			// The folder service's parsers and tree, checked against the folder core's own answers. The folder core's
 			// acceptance script (F3-3c) also runs its writes, staging and mounts on the real commit. Not server.ts or cli.ts.
 			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree|https-request|service|staging|mounts|machines|plan|pending|protocol|objects|search)\.ts$/,
@@ -333,7 +354,7 @@ export const STEPS = [
 		],
 		// Those two import the runtime's TypeScript, which imports built packages.
 		build: true,
-		cores: 2.6,
+		cores: 3,
 		// One PostgreSQL and one migration replay for the SQL tests and every script (scripts/test-hosted-db.mjs).
 		commands: ["node --test scripts/test-hosted-db.test.mjs", "node scripts/test-hosted-db.mjs --scripts"],
 	},
@@ -344,13 +365,13 @@ export const STEPS = [
 		// holds 5,000 paths (about 2.5 min with its setup).
 		name: "folder-core-load",
 		why: "one folder-v2 company under pooled load with the production role timeouts on a real disk: its runs' fences, reads, writes, releases and subtree deletes, a stop, narrowing, wakes, GC and rank-0 writers; fails on a deadlock, a leak, a lost parent or bytes, an unexpected failure or a call over the result fence",
-		seconds: 121,
+		seconds: 65,
 		paths: [
 			/^supabase\/migrations\//,
 			/^supabase\/tests\/648_folder_core_run_fence_concurrency\.test\.sql$/,
 			/^scripts\/load-folder-core\./,
 		],
-		cores: 1.6,
+		cores: 1.5,
 		commands: ["node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check"],
 	},
 ];
@@ -415,14 +436,14 @@ function enforceRuntimeBundleOnStep(step) {
 			),
 		};
 	}
-	if (step.name === "web") {
+	if (step.name === "web-1") {
 		return {
 			...step,
 			alone: step.alone.map((command) =>
-				command.includes("npm run build:release --workspace packages/web") && !command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1")
+				command.includes("node packages/web/scripts/build.mjs --release") && !command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1")
 					? command.replace(
-							"npm run build:release --workspace packages/web",
-							"QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run build:release --workspace packages/web",
+							"node packages/web/scripts/build.mjs --release",
+							"QORPERA_ENFORCE_RUNTIME_BUNDLE=1 node packages/web/scripts/build.mjs --release",
 						)
 					: command,
 			),
@@ -504,6 +525,8 @@ function planned(step) {
 		why: step.why,
 		commands: step.commands,
 		alone: step.alone ?? [],
+		readOnlyAlone: step.readOnlyAlone ?? false,
+		parallelAlone: step.parallelAlone ?? false,
 		cores: step.cores ?? 1,
 		seconds: step.seconds ?? 0,
 		workers: step.workers ?? null,
@@ -519,14 +542,23 @@ function planned(step) {
  * they were filled): run-on-node.mjs queues them in that order. */
 export function splitPlan(steps, parts) {
 	const work = (step) => (step.seconds ?? 0) * (step.cores ?? 1);
-	const groups = Array.from({ length: Math.min(parts, steps.length) }, () => ({ indexes: [], work: 0 }));
+	const family = (step) => /^(.*)-\d+$/.exec(step.name)?.[1] ?? null;
+	const groups = Array.from({ length: Math.min(parts, steps.length) }, () => ({
+		indexes: [],
+		work: 0,
+		families: new Set(),
+	}));
 	const heaviest = steps.map((_, i) => i).sort((a, b) => work(steps[b]) - work(steps[a]) || a - b);
 	for (const i of heaviest) {
-		const lightest = groups.reduce((best, group) =>
+		const fam = family(steps[i]);
+		const candidates = fam ? groups.filter((group) => !group.families.has(fam)) : groups;
+		const pool = candidates.length > 0 ? candidates : groups;
+		const lightest = pool.reduce((best, group) =>
 			group.work < best.work || (group.work === best.work && group.indexes.length < best.indexes.length) ? group : best,
 		);
 		lightest.indexes.push(i);
 		lightest.work += work(steps[i]);
+		if (fam) lightest.families.add(fam);
 	}
 	return groups
 		.sort((a, b) => b.work - a.work)
@@ -630,11 +662,12 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 			"failed=''",
 			...(failFast ? ["stopped=''"] : []),
 			...order.flatMap((step) => {
+				const alonePart = step.alone?.length ? (step.parallelAlone ? [parallelCommands(step.alone)] : step.alone) : [];
 				const run = [
 					`echo "== changed: ${step.name}"`,
 					"started=$(date +%s)",
 					// && and not set -e: errexit is ignored inside an if condition, so a failed first command would pass.
-					`if ( ${[...step.commands, ...(step.alone ?? [])].join(" && ")} ); then echo "== changed: ${step.name} passed in $(( $(date +%s) - started )) s"; else echo "== changed: ${step.name} FAILED after $(( $(date +%s) - started )) s"; failed="$failed ${step.name}"; fi`,
+					`if ( ${[...step.commands, ...alonePart].join(" && ")} ); then echo "== changed: ${step.name} passed in $(( $(date +%s) - started )) s"; else echo "== changed: ${step.name} FAILED after $(( $(date +%s) - started )) s"; failed="$failed ${step.name}"; fi`,
 				];
 				return failFast ? [`if ${halted}; then stopped="$stopped ${step.name}"; else`, ...run, "fi"] : run;
 			}),
@@ -646,6 +679,12 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 		.filter(({ step }) => step.commands.length)
 		.sort((a, b) => (b.step.seconds ?? 0) - (a.step.seconds ?? 0) || a.i - b.i)
 		.map(({ i }) => i);
+	const aloneEntries = indexed.filter(({ step }) => step.alone?.length);
+	const readOnlyEntries = !failFast ? aloneEntries.filter(({ step }) => step.readOnlyAlone && !step.commands.length) : [];
+	const concurrentReadOnly = readOnlyEntries.length > 1 ? readOnlyEntries : [];
+	const serialAloneEntries = concurrentReadOnly.length
+		? aloneEntries.filter((entry) => !concurrentReadOnly.includes(entry))
+		: aloneEntries;
 	return [
 		"set -u",
 		"failed=''",
@@ -658,21 +697,25 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 		`seconds=(${steps.map(() => 0).join(" ")})`,
 		// Each part is a subshell, so a command's own exit ends only its part. A rest fans out within its step's cores.
 		...indexed.flatMap(({ step, i }) => [
-			...(step.alone?.length ? [`alone_${i}() ( ${step.alone.join(" && ")} )`] : []),
+			...(step.alone?.length ? [`alone_${i}() ( ${step.parallelAlone ? parallelCommands(step.alone) : step.alone.join(" && ")} )`] : []),
 			...(step.commands.length ? [`rest_${i}() ( ${narrow(step, stepWorkers)}; ${step.commands.join(" && ")} )`] : []),
 		]),
 		'report() { echo "== changed: ${names[$1]}"; cat "$out/$1.log"; if [ "${code[$1]}" = 0 ]; then echo "== changed: ${names[$1]} passed in ${seconds[$1]} s"; else echo "== changed: ${names[$1]} FAILED after ${seconds[$1]} s"; failed="$failed ${names[$1]}"; fi; }',
-		...indexed
-			.filter(({ step }) => step.alone?.length)
-			.map(({ step, i }) => {
-				const run = `started=$(date +%s); alone_${i} >"$out/${i}.log" 2>&1; code[${i}]=$?; seconds[${i}]=$(( $(date +%s) - started ))`;
-				if (!failFast) return `${run}${step.commands.length ? "" : `; report ${i}`}`;
-				// A failed alone part fails its step at once. A step with a rest whose alone part did not run is stopped
-				// with the steps not started (stop).
-				return step.commands.length
-					? `if ! ${halted}; then ${run}; [ "\${code[${i}]}" = 0 ] || report ${i}; fi`
-					: `if ${halted}; then stopped="$stopped ${step.name}"; else ${run}; report ${i}; fi`;
-			}),
+		...concurrentReadOnly.map(
+			({ i }) => `( s=$(date +%s); alone_${i} >"$out/${i}.log" 2>&1; c=$?; echo "$c $(( $(date +%s) - s ))" >"$out/${i}.end" ) & ro_pid_${i}=$!`,
+		),
+		...concurrentReadOnly.map(
+			({ i }) => `wait "$ro_pid_${i}"; read -r code[${i}] seconds[${i}] <"$out/${i}.end"; report ${i}`,
+		),
+		...serialAloneEntries.map(({ step, i }) => {
+			const run = `started=$(date +%s); alone_${i} >"$out/${i}.log" 2>&1; code[${i}]=$?; seconds[${i}]=$(( $(date +%s) - started ))`;
+			if (!failFast) return `${run}${step.commands.length ? "" : `; report ${i}`}`;
+			// A failed alone part fails its step at once. A step with a rest whose alone part did not run is stopped
+			// with the steps not started (stop).
+			return step.commands.length
+				? `if ! ${halted}; then ${run}; [ "\${code[${i}]}" = 0 ] || report ${i}; fi`
+				: `if ${halted}; then stopped="$stopped ${step.name}"; else ${run}; report ${i}; fi`;
+		}),
 		// The rest's end (exit code, seconds) appears in one rename, so the loop never reads half of it.
 		'start() { ( s=$(date +%s); "rest_$1" >>"$out/$1.log" 2>&1; c=$?; echo "$c $(( $(date +%s) - s ))" >"$out/$1.end.tmp" && mv "$out/$1.end.tmp" "$out/$1.end" ) & pid[$1]=$!; began[$1]=$(date +%s); }',
 		// A worker is alive while /proc shows it running (not a zombie) as this shell's child, so its pid handed out

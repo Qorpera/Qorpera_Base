@@ -2,6 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import { withAbortScopes } from "../abort-scope.ts";
 import { memberFolderStructured } from "../member-folder-commits.ts";
+import type { FolderHintSource } from "../realtime-wake.ts";
 import {
 	COMMAND_ENDED,
 	type CommitActor,
@@ -154,6 +155,7 @@ export interface FolderServiceOptions {
 	readonly dataCallMs?: number;
 	readonly dataApplyMs?: number;
 	readonly maxBoundaryBatches?: number;
+	readonly hints?: FolderHintSource;
 }
 
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
@@ -853,6 +855,8 @@ export class FolderService {
 	readonly #dataCallMs: number;
 	readonly #dataApplyMs: number;
 	readonly #maxBoundaryBatches: number;
+	readonly #hints: FolderHintSource | undefined;
+	readonly #hintUnsubs = new Map<string, () => void>();
 	readonly #dataCalls = new Map<string, { running: number; began: number[] }>();
 	readonly #boundaryFlights = new Map<
 		string,
@@ -895,6 +899,7 @@ export class FolderService {
 		this.#dataCallMs = options.dataCallMs ?? DATA_CALL_MS;
 		this.#dataApplyMs = options.dataApplyMs ?? DATA_APPLY_MS;
 		this.#maxBoundaryBatches = Math.max(1, options.maxBoundaryBatches ?? MAX_BOUNDARY_BATCHES);
+		this.#hints = options.hints;
 	}
 
 	get currentPollMs(): number {
@@ -956,8 +961,46 @@ export class FolderService {
 	}
 
 	#closeTransports(): void {
+		for (const unsubscribe of this.#hintUnsubs.values()) unsubscribe();
+		this.#hintUnsubs.clear();
+		this.#hints?.close?.();
 		this.#core.close?.();
 		this.#staging?.close();
+	}
+
+	// WHY: Advance mounted views for an environment immediately when a qorpera_folder_hint_internal Realtime broadcast reports a higher clock seq.
+	notifyEnvironment(environmentId: string, seq: number | null = null): void {
+		if (this.#stopping) return;
+		let advanced = false;
+		for (const view of this.#views.values()) {
+			if (view.environmentId !== environmentId || !view.tree || view.closed || view.moving) continue;
+			if (seq !== null && view.seq >= seq) continue;
+			advanced = true;
+			this.#queue(view, () => this.#advance(view));
+		}
+		if (advanced) this.#noteActivity();
+	}
+
+	#syncEnvironmentHints(): void {
+		if (!this.#hints || this.#stopping) return;
+		const active = new Set<string>();
+		for (const view of this.#views.values()) {
+			if (!view.closed) active.add(view.environmentId);
+		}
+		for (const environmentId of active) {
+			if (!this.#hintUnsubs.has(environmentId)) {
+				this.#hintUnsubs.set(
+					environmentId,
+					this.#hints.watch(environmentId, (seq) => this.notifyEnvironment(environmentId, seq)),
+				);
+			}
+		}
+		for (const [environmentId, unsubscribe] of [...this.#hintUnsubs]) {
+			if (!active.has(environmentId)) {
+				this.#hintUnsubs.delete(environmentId);
+				unsubscribe();
+			}
+		}
 	}
 
 	/** A boundary of a coding machine, which the executor asks over the control socket (F3 5c, the plan's "Boundaries"):
@@ -1570,6 +1613,7 @@ export class FolderService {
 		if (!view || (view.closed && !asksFinal)) {
 			view = new View(grant);
 			this.#views.set(grant.key, view);
+			this.#syncEnvironmentHints();
 		}
 		view.connections++;
 		view.idleSince = undefined;
@@ -2062,9 +2106,11 @@ export class FolderService {
 					if (now - view.closedAt >= CLOSED_GRACE_MS) {
 						this.#discard(view);
 						this.#views.delete(key);
+						this.#syncEnvironmentHints();
 					}
 				} else if (view.idleSince !== undefined && now - view.idleSince >= this.#idleMs) {
 					this.#views.delete(key);
+					this.#syncEnvironmentHints();
 					this.#forgetReads(view);
 				}
 			}
@@ -2187,7 +2233,10 @@ export class FolderService {
 		if (this.#retained(view)) return;
 		if (view.finalOut) {
 			if (view.connections === 0) view.idleSince ??= this.#now();
-		} else if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		} else if (this.#views.get(view.key) === view) {
+			this.#views.delete(view.key);
+			this.#syncEnvironmentHints();
+		}
 	}
 
 	/** A final that did not close its view, which closed otherwise (a renewal heard why): the view goes now, as any
@@ -2217,7 +2266,10 @@ export class FolderService {
 	/** Forgets a core view no machine holds, with its pass and anything its last boundary kept pending. */
 	#drop(view: View): void {
 		if (view.closed || view.moving) return;
-		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		if (this.#views.get(view.key) === view) {
+			this.#views.delete(view.key);
+			this.#syncEnvironmentHints();
+		}
 		view.lease = undefined;
 		view.closed = "No machine holds the view";
 		view.tree = undefined;
@@ -2911,9 +2963,33 @@ export class FolderService {
 			files.push({ path: reflog, at: reflog, node: log, expectedVersion: lock.versions.reflog });
 		const units: GitUnit[] = [];
 		const made: { path: string; at: string; version: string }[] = [];
-		for (const file of files) {
-			const version = file.node.version;
-			const staged = await this.#gitStage(view, file.node, file.path);
+		// WHY: Stage independent pending git objects concurrently while preserving exact unit ordering and earliest refusal semantics.
+		const stagedByIndex = new Array<
+			{ readonly version: string; readonly staged: FileRef | undefined; readonly error?: unknown } | undefined
+		>(files.length);
+		let nextIndex = 0;
+		const stageConcurrency = Math.min(4, files.length);
+		await Promise.all(
+			Array.from({ length: stageConcurrency }, async () => {
+				for (;;) {
+					const i = nextIndex++;
+					if (i >= files.length) return;
+					const file = files[i]!;
+					const version = file.node.version;
+					try {
+						const staged = await this.#gitStage(view, file.node, file.path);
+						stagedByIndex[i] = { version, staged };
+					} catch (error) {
+						stagedByIndex[i] = { version, staged: undefined, error };
+					}
+				}
+			}),
+		);
+		for (let i = 0; i < files.length; i++) {
+			const file = files[i]!;
+			const result = stagedByIndex[i]!;
+			if ("error" in result) throw result.error;
+			const staged = result.staged;
 			if (!staged) {
 				if (file.expectedVersion === undefined) continue;
 				throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
@@ -2923,7 +2999,7 @@ export class FolderService {
 					? { op: "write", path: file.path, file: staged }
 					: { op: "write", path: file.path, file: staged, expectedVersion: file.expectedVersion },
 			);
-			made.push({ path: file.path, at: file.at, version });
+			made.push({ path: file.path, at: file.at, version: result.version });
 		}
 		this.#gitHold(view, pending, target);
 		await this.#gitReadGate(view);
@@ -2984,6 +3060,7 @@ export class FolderService {
 		if (answer.seq !== null) {
 			view.gitUnsettled.push({ seq: answer.seq, made: settled });
 			await this.#gitCatchUpTo(view, answer.seq);
+			this.#nudgeSiblings(view, answer.seq);
 		}
 		return answer;
 	}
@@ -4873,7 +4950,26 @@ export class FolderService {
 				);
 				return;
 			}
-		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written, moved);
+		if (view.unsettled === settlement) {
+			this.#finishSettle(view, settlement, written, moved);
+			this.#nudgeSiblings(view, seq);
+		}
+	}
+
+	// WHY: Advance sibling views of the same environment on this node immediately after a commit settles so coding VMs see new commits over FUSE without waiting for the poll timer.
+	#nudgeSiblings(source: View, seq: number): void {
+		for (const sibling of this.#views.values()) {
+			if (
+				sibling === source ||
+				sibling.environmentId !== source.environmentId ||
+				!sibling.tree ||
+				sibling.closed ||
+				sibling.moving ||
+				sibling.seq >= seq
+			)
+				continue;
+			this.#queue(sibling, () => this.#advance(sibling));
+		}
 	}
 
 	async #changeSets(

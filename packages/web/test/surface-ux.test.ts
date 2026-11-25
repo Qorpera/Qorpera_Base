@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { inferSurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
+import { inferSurfaceKind, type SurfaceSession, type SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import {
@@ -268,6 +268,8 @@ describe("operational surfaces", () => {
 		store.openDrawer(SURFACE, SESSION);
 		view.update();
 		const drawer = view.el.querySelector(".surface-drawer")!;
+		expect(drawer.querySelectorAll(".surface-switch")).toHaveLength(0);
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
 		expect(drawer.querySelectorAll(".surface-switch")).toHaveLength(3);
 		expect(drawer.querySelector(".surface-action-card")).toBeNull();
 		expect(view.el.querySelector<HTMLTextAreaElement>(".surface-input")?.placeholder).toBe(
@@ -670,6 +672,11 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(drawer.querySelector('[data-act="choose-variant"]')).toBeNull();
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
 		expect(drawer.classList.contains("is-overview")).toBe(false);
+		const foldToggle = drawer.querySelector<HTMLButtonElement>(".surface-drawer-pinned .surface-changes-toggle")!;
+		expect(foldToggle.getAttribute("aria-expanded")).toBe("false");
+		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)")).toHaveLength(0);
+		foldToggle.click();
+		expect(drawer.querySelector(".surface-changes-toggle")?.getAttribute("aria-expanded")).toBe("true");
 		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)").length).toBe(waiting.length);
 		expect(drawer.querySelectorAll(".surface-drawer-pinned .surface-drawer-change:not(.is-option)").length).toBe(
 			waiting.length,
@@ -715,14 +722,21 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();
 		expect(drawer.querySelector<HTMLFormElement>(".surface-drawer-foot")?.hidden).toBe(false);
-		const firstChange = drawer.querySelector<HTMLElement>(".surface-drawer-change")!;
-		expect(firstChange.querySelector(".surface-drawer-change-title")?.textContent).toBe(
+		const unfold = drawer.querySelector<HTMLButtonElement>('.surface-changes-toggle[aria-expanded="false"]');
+		unfold?.click();
+		const firstRow = drawer.querySelector<HTMLElement>(".surface-drawer-change")!;
+		expect(firstRow.querySelector(".surface-drawer-change-title")?.textContent).toBe(
 			"Tydelig pris: 1.995 kr. inkl. fragt",
 		);
+		expect(firstRow.querySelector(".surface-drawer-change-acts")).toBeNull();
+		expect(firstRow.querySelector('.surface-drawer-change-top [role="switch"]')).not.toBeNull();
+		firstRow.querySelector<HTMLButtonElement>('[data-act="open-change"]')!.click();
+		const firstChange = drawer.querySelector<HTMLElement>(".surface-drawer-change.is-expanded")!;
+		expect(firstChange.dataset.change).toBe(firstRow.dataset.change);
 		const rowActions = [...firstChange.querySelectorAll<HTMLButtonElement>(".surface-drawer-change-acts button")].map(
-			(btn) => btn.getAttribute("role") ?? btn.textContent,
+			(btn) => btn.textContent,
 		);
-		expect(rowActions).toEqual(["switch", "Approve", "Change", "Discard"]);
+		expect(rowActions).toEqual(["Approve", "Change", "Discard"]);
 		expect(drawer.querySelector(".surface-drawer-title p")).toBeNull();
 		expect(drawer.textContent).not.toContain("toggle to preview");
 
@@ -746,7 +760,11 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(document.querySelector(".surface-publish-sheet")).toBeNull();
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
 
-		const remainingChange = drawer.querySelector<HTMLElement>(".surface-drawer-change:not(.is-closed)")!;
+		drawer
+			.querySelector<HTMLElement>(".surface-drawer-change:not(.is-closed)")!
+			.querySelector<HTMLButtonElement>('[data-act="open-change"]')!
+			.click();
+		const remainingChange = drawer.querySelector<HTMLElement>(".surface-drawer-change.is-expanded:not(.is-closed)")!;
 		remainingChange.querySelector<HTMLButtonElement>('[data-act="quote-change"]')!.click();
 		const replyStrip = drawer.querySelector<HTMLElement>(".surface-drawer-reply")!;
 		expect(replyStrip.hidden).toBe(false);
@@ -1644,7 +1662,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		store.openDrawer(site.id, SESSION);
 		view.update();
-		const drawerChange = view.el.querySelector<HTMLElement>(".surface-drawer-change");
+		view.el.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
+		const drawerChange = view.el.querySelector<HTMLElement>(".surface-drawer-change.is-expanded");
 		expect(drawerChange?.querySelector(".surface-drawer-change-title")?.textContent).toBe("Refine hero & tokens");
 		expect(drawerChange?.textContent).not.toContain("src/Hero.tsx");
 		expect(drawerChange?.querySelector("a")).toBeNull();
@@ -2647,6 +2666,251 @@ describe("a website's rail row", () => {
 	});
 });
 
+describe("single-session change option groups", () => {
+	it("renders a mutually exclusive option list in Changes, allows unselecting all, and graduates the chosen option to Tier 2", async () => {
+		const opt1 = change(CHANGES[0], 1, "staged", {
+			title: "Broker",
+			summary: "Editorial layout",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt2 = change(CHANGES[1], 2, "staged", {
+			title: "Showcase",
+			summary: "Product-led direction",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt3 = change(CHANGES[2], 3, "staged", {
+			title: "Trading desk",
+			summary: "Compact market table",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const initialSession = session([], {
+			title: "Homepage directions",
+			changes: [opt1, opt2, opt3],
+			openChangeCount: 3,
+		});
+		const graduatedSession = session([], {
+			title: "Homepage directions",
+			changes: [
+				{ ...opt1, status: "discarded" },
+				{ ...opt2, optionGroupKey: null, optionGroupTitle: null },
+				{ ...opt3, status: "discarded" },
+			],
+			openChangeCount: 1,
+		});
+		let currentSession = initialSession;
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chooseSurfaceChangeOption = vi.fn(async () => {
+			currentSession = graduatedSession;
+			return graduatedSession;
+		});
+		const discardSurfaceOptionGroup = vi.fn(async () => {
+			currentSession = session([], {
+				title: "Homepage directions",
+				state: "discarded",
+				changes: initialSession.changes.map((item) => ({ ...item, status: "discarded" as const })),
+				openChangeCount: 0,
+			});
+			return currentSession;
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([currentSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		const optionButtons = () => [...drawer.querySelectorAll<HTMLButtonElement>('[data-act="pick-option"]')];
+		expect(optionButtons()).toHaveLength(3);
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
+		expect(drawer.querySelector('[data-act="approve"]')).toBeNull();
+		expect(drawer.querySelector('[data-act="approve-shown"]')).toBeNull();
+		expect(drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')?.disabled).toBe(false);
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [opt2.id],
+			explorationSessionId: null,
+		});
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["false", "false", "false"]);
+		expect(drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')?.disabled).toBe(true);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [],
+			explorationSessionId: null,
+		});
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')!.click();
+		await flush();
+		view.update();
+
+		expect(chooseSurfaceChangeOption).toHaveBeenCalledWith(opt2.id);
+		expect(drawer.querySelectorAll('[data-act="pick-option"]')).toHaveLength(0);
+		const toggleSwitch = drawer.querySelector<HTMLButtonElement>('[data-act="toggle"]');
+		expect(toggleSwitch?.getAttribute("aria-checked")).toBe("true");
+		expect(drawer.querySelector('[data-act="approve"]')?.textContent).toBe("Approve");
+		expect(drawer.querySelector('[data-act="approve-shown"]')?.textContent).toContain("Approve all 1");
+
+		view.dispose();
+		store.dispose();
+
+		currentSession = initialSession;
+		const focusedStore = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([currentSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await focusedStore.load();
+		const focusedView = new SurfaceView(
+			{ store: focusedStore, mount: () => undefined, openMigration: () => undefined },
+			"website",
+		);
+		document.body.append(focusedView.el);
+		await flush();
+		focusedStore.openDrawer(SURFACE, SESSION);
+		focusedView.update();
+
+		const focusedDrawer = focusedView.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(focusedDrawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(focusedDrawer.querySelectorAll('[data-act="pick-option"]')).toHaveLength(3);
+		const focusedDiscard = focusedDrawer.querySelector<HTMLButtonElement>('[data-act="discard-option-group-armed"]')!;
+		expect(focusedDiscard.textContent).toBe("Discard");
+		focusedDiscard.click();
+		await flush();
+		expect(discardSurfaceOptionGroup).not.toHaveBeenCalled();
+		const armedFocusedDiscard = focusedDrawer.querySelector<HTMLButtonElement>(
+			'[data-act="discard-option-group-armed"]',
+		)!;
+		expect(armedFocusedDiscard.textContent).toBe("Confirm");
+		expect(armedFocusedDiscard.dataset.armed).toBe("true");
+		armedFocusedDiscard.click();
+		await flush();
+		expect(discardSurfaceOptionGroup).toHaveBeenCalledWith(SESSION, "concept");
+		focusedView.dispose();
+		focusedStore.dispose();
+	});
+
+	it("keeps multiple option groups and standalone changes independent in one session until every group is resolved", async () => {
+		const s1 = change("44444444-4444-4444-8444-444444444450", 1, "staged", { title: "Fix favicon" });
+		const a1 = change("44444444-4444-4444-8444-444444444451", 2, "staged", {
+			title: "Hero A",
+			optionGroupKey: "hero",
+			optionGroupTitle: "Hero layout",
+		});
+		const a2 = change("44444444-4444-4444-8444-444444444452", 3, "staged", {
+			title: "Hero B",
+			optionGroupKey: "hero",
+			optionGroupTitle: "Hero layout",
+		});
+		const b1 = change("44444444-4444-4444-8444-444444444453", 4, "staged", {
+			title: "Pricing A",
+			optionGroupKey: "pricing",
+			optionGroupTitle: "Pricing table",
+		});
+		const b2 = change("44444444-4444-4444-8444-444444444454", 5, "staged", {
+			title: "Pricing B",
+			optionGroupKey: "pricing",
+			optionGroupTitle: "Pricing table",
+		});
+		let current = session([], { title: "Full redesign", changes: [s1, a1, a2, b1, b2], openChangeCount: 5 });
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chooseSurfaceChangeOption = vi.fn(async (changeId: string) => {
+			const picked = current.changes.find((c) => c.id === changeId)!;
+			const nextChanges = current.changes.map((c) => {
+				if (c.id === changeId) return { ...c, optionGroupKey: null, optionGroupTitle: null };
+				if (c.optionGroupKey === picked.optionGroupKey) return { ...c, status: "discarded" as const };
+				return c;
+			});
+			current = {
+				...current,
+				changes: nextChanges,
+				openChangeCount: nextChanges.filter((c) => c.status === "staged").length,
+			};
+			return current;
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([current])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(drawer.querySelectorAll('[data-option-group="hero"] [data-act="pick-option"]')).toHaveLength(2);
+		expect(drawer.querySelectorAll('[data-option-group="pricing"] [data-act="pick-option"]')).toHaveLength(2);
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a1.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-option"][data-change="${a1.id}"]`)!.click();
+		await flush();
+		view.update();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-option"][data-change="${a2.id}"]`)!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="choose-option"][data-change="${a2.id}"]`)!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="choose-option"][data-change="${b1.id}"]`)!.click();
+		await flush();
+		view.update();
+		expect(drawer.querySelector('[data-act="approve-all"]')?.textContent).toBe("Approve all");
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
+		view.dispose();
+		store.dispose();
+	});
+});
+
 describe("the rail's empty-space menu with interfaces (20260930892000)", () => {
 	it("offers the interfaces' New section in the list, never in the Agents and Members dock", async () => {
 		stubFigureMotion();
@@ -2702,6 +2966,236 @@ describe("the rail's empty-space menu with interfaces (20260930892000)", () => {
 		openMenu()?.close();
 		await flush();
 		company.stop();
+		store.dispose();
+	});
+});
+
+describe("seeded ops surface sidepanel", () => {
+	const FILES_ID = "22222222-2222-4222-8222-222222222261";
+	const INBOX_ID = "22222222-2222-4222-8222-222222222262";
+	const INBOX_SESSION = "33333333-3333-4333-8333-333333333361";
+	const HISTORY_SESSION = "33333333-3333-4333-8333-333333333362";
+
+	it("never jumps out on seeded ops surfaces when another surface opened the panel, and always lets an open panel toggle off", async () => {
+		stubFigureMotion();
+		const website = summary();
+		const files = summary({
+			id: FILES_ID,
+			slug: "files",
+			title: "Files",
+			group: "operations",
+			archetype: "ops",
+			kind: "files",
+			icon: "drawers",
+			sourceKind: "native_ops",
+			previewMode: "none",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const inbox = summary({
+			id: INBOX_ID,
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			kind: "inbox",
+			icon: "mail",
+			sourceKind: "native_ops",
+			previewMode: "none",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const websiteSession = session(["staged"], { id: SESSION, surfaceId: website.id });
+		const inboxChange = change(CHANGES[1], 1, "staged", { kind: "ops_action", title: "Send follow-up" });
+		const inboxSession = session(["staged"], {
+			id: INBOX_SESSION,
+			surfaceId: inbox.id,
+			title: "Draft follow-up",
+			changes: [inboxChange],
+		});
+		const filesHistory = session([], {
+			id: HISTORY_SESSION,
+			surfaceId: files.id,
+			state: "completed",
+			title: "Sorted Q3 folder",
+			changes: [],
+		});
+		let inboxActive: SurfaceSession[] = [inboxSession];
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [website, inbox, files]),
+			getSurfaceWorkspace: vi.fn(async (surfaceId: string) => {
+				if (surfaceId === files.id) return workspace([], { surface: files, recentHistory: [filesHistory] });
+				if (surfaceId === inbox.id) return workspace(inboxActive, { surface: inbox });
+				return workspace([websiteSession], { surface: website });
+			}),
+			discardSurfaceChange: vi.fn(async () => {
+				inboxActive = [];
+				const discarded: SurfaceSession = {
+					...inboxSession,
+					state: "discarded",
+					changes: [{ ...inboxChange, status: "discarded" }],
+					openChangeCount: 0,
+					closedAt: "2026-11-25T01:00:00Z",
+				};
+				return discarded;
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+
+		const websiteView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(websiteView.el);
+		await flush();
+		websiteView.update();
+
+		store.openDrawer(website.id, websiteSession.id);
+		websiteView.update();
+		websiteView.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="back-overview"]')!.click();
+		websiteView.update();
+		expect(store.state.previewPanel).toBe("auto");
+		expect(websiteView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+
+		websiteView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		websiteView.update();
+		websiteView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		websiteView.update();
+		expect(store.state.previewPanel).toBe("open");
+		websiteView.dispose();
+
+		const filesView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "files");
+		document.body.append(filesView.el);
+		await flush();
+		filesView.update();
+		const filesToggle = filesView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!;
+		expect(filesView.el.classList.contains("has-drawer")).toBe(false);
+		expect(filesView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(filesToggle.hidden).toBe(true);
+
+		store.openDrawer(files.id, filesHistory.id);
+		filesView.update();
+		expect(filesView.el.classList.contains("has-drawer")).toBe(true);
+		expect(filesView.el.querySelector(".surface-drawer.is-open")).not.toBeNull();
+		expect(filesToggle.hidden).toBe(false);
+
+		filesToggle.click();
+		filesView.update();
+		expect(filesView.el.classList.contains("has-drawer")).toBe(false);
+		expect(filesView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(filesToggle.hidden).toBe(true);
+		expect(store.state.previewPanel).toBe("open");
+		filesView.dispose();
+
+		const inboxView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(inboxView.el);
+		await flush();
+		inboxView.update();
+		const inboxToggle = inboxView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!;
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(false);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(inboxToggle.hidden).toBe(false);
+
+		inboxToggle.click();
+		inboxView.update();
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(true);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(inboxToggle.hidden).toBe(false);
+
+		inboxToggle.click();
+		inboxView.update();
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(false);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(store.state.previewPanel).toBe("open");
+
+		inboxToggle.click();
+		inboxView.update();
+		expect(inboxView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		await store.discardChange(inboxSession.id, inboxChange.id);
+		await flush();
+		inboxView.update();
+		expect(inboxView.el.classList.contains("has-drawer")).toBe(false);
+		expect(inboxView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(store.state.opsPanelSurfaceId).toBeUndefined();
+		expect(inboxToggle.hidden).toBe(true);
+
+		inboxView.dispose();
+		store.dispose();
+	});
+
+	it("handles back-to-overview and leaving on an ops surface without sticking an empty panel open", async () => {
+		stubFigureMotion();
+		const inbox = summary({
+			id: INBOX_ID,
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			kind: "inbox",
+			icon: "mail",
+			sourceKind: "native_ops",
+			previewMode: "none",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+		});
+		const heldSession = session([], {
+			id: INBOX_SESSION,
+			surfaceId: inbox.id,
+			state: "ready",
+			hasActiveChat: true,
+			title: "Held follow-up",
+			changes: [change(CHANGES[1], 1, "merged", { kind: "ops_action", title: "Sent follow-up" })],
+		});
+		const secondSession = session(["staged"], {
+			id: HISTORY_SESSION,
+			surfaceId: inbox.id,
+			title: "Second follow-up",
+			changes: [change(CHANGES[2], 1, "staged", { kind: "ops_action", title: "Draft reply" })],
+		});
+		let active: SurfaceSession[] = [heldSession, secondSession];
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [inbox]),
+				getSurfaceWorkspace: vi.fn(async () => workspace(active, { surface: inbox })),
+				setSessionChatOpen: vi.fn(async (_id: string, open: boolean) => ({ ...heldSession, hasActiveChat: open })),
+			}),
+		);
+		await store.load();
+
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		store.openDrawer(inbox.id, heldSession.id);
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="back-overview"]')!.click();
+		view.update();
+		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(store.state.previewPanel).toBe("auto");
+		expect(store.state.opsPanelSurfaceId).toBe(inbox.id);
+
+		view.deactivate();
+		expect(store.state.opsPanelSurfaceId).toBeUndefined();
+		view.dispose();
+
+		active = [heldSession];
+		const secondView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(secondView.el);
+		await flush();
+		secondView.update();
+		expect(secondView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+
+		store.openDrawer(inbox.id, heldSession.id);
+		secondView.update();
+		expect(secondView.el.querySelector(".surface-drawer.is-open")).not.toBeNull();
+		secondView.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="back-overview"]')!.click();
+		secondView.update();
+		expect(secondView.el.querySelector(".surface-drawer.is-open")).toBeNull();
+		expect(secondView.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.hidden).toBe(true);
+
+		secondView.dispose();
 		store.dispose();
 	});
 });

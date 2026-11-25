@@ -2,7 +2,8 @@ import { constants, realpathSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Pool } from "pg";
+import { isRecord, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
+import { Client, Pool } from "pg";
 import { CloudBankSyncs, CloudBankSyncUpkeep } from "./cloud-bank-sync.ts";
 import { ChatGptPlanOAuth, parseChatGptPlanClient } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
@@ -40,22 +41,19 @@ import { databaseTls } from "./database-ca.ts";
 import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
 
-function record(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+function closedPlainRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
 	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
+		!isRecord(value) ||
 		Object.getPrototypeOf(value) !== Object.prototype ||
 		Object.keys(value).sort().join() !== [...keys].sort().join()
 	)
 		throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function brokerDatabase(value: string): {
@@ -159,7 +157,11 @@ async function readCredentialBytes(directory: string, name: string): Promise<Buf
 }
 
 function parseLoginHelper(value: string): { socketPath: string; token: string } {
-	const input = record(JSON.parse(value), ["schema", "socketPath", "token"], "Cloud secret broker login helper");
+	const input = closedPlainRecord(
+		JSON.parse(value),
+		["schema", "socketPath", "token"],
+		"Cloud secret broker login helper",
+	);
 	if (
 		input.schema !== "qorpera.model-login-helper-client/v1" ||
 		typeof input.socketPath !== "string" ||
@@ -175,7 +177,7 @@ function parseLoginHelper(value: string): { socketPath: string; token: string } 
 /** A company's own keys (`qorpera.cloud-secret-keyring/v1`), or the shared vault's master keys
  * (`qorpera.cloud-secret-master-keys/v1`), from which each company's key is derived. */
 function parseKeyring(value: string, masterKeys = false): CloudSecretKeyring {
-	const input = record(JSON.parse(value), ["schema", "keys"], "Cloud secret keyring");
+	const input = closedPlainRecord(JSON.parse(value), ["schema", "keys"], "Cloud secret keyring");
 	if (
 		input.schema !== (masterKeys ? "qorpera.cloud-secret-master-keys/v1" : "qorpera.cloud-secret-keyring/v1") ||
 		!Array.isArray(input.keys)
@@ -187,7 +189,7 @@ function parseKeyring(value: string, masterKeys = false): CloudSecretKeyring {
 	const opened: Buffer[] = [];
 	try {
 		for (const item of input.keys) {
-			const entry = record(item, ["keyId", "keyBase64url"], "Cloud secret keyring entry");
+			const entry = closedPlainRecord(item, ["keyId", "keyBase64url"], "Cloud secret keyring entry");
 			if (
 				typeof entry.keyId !== "string" ||
 				!KEY_ID.test(entry.keyId) ||
@@ -231,7 +233,7 @@ export async function runCloudSecretBrokerServiceMain(
 		typeof configValue === "object" &&
 		(configValue as Record<string, unknown>).schema === "qorpera.cloud-secret-broker-service/v3";
 	const identityKey = shared ? "principalId" : "brokerAuthorityId";
-	const config = record(
+	const config = closedPlainRecord(
 		configValue,
 		withOrigins ? ["schema", identityKey, "port", "memberOrigins"] : ["schema", identityKey, "port"],
 		"Cloud secret broker configuration",
@@ -367,6 +369,8 @@ export async function runCloudSecretBrokerServiceMain(
 					principalId: identity,
 					principalSecret: brokerCapability,
 				}),
+				database,
+				ssl,
 				keyring,
 				adapters: [...adapters, ...(connectors?.adapters ?? [])],
 				helper: loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined,
@@ -508,6 +512,8 @@ export async function runCloudSecretBrokerServiceMain(
  * authority, with the same routes and background work as one company's broker. */
 async function runSharedVault(options: {
 	principal: PostgresCloudSecretBrokerPrincipal;
+	database: ReturnType<typeof brokerDatabase>;
+	ssl: ReturnType<typeof databaseTls>;
 	keyring: CloudSecretKeyring;
 	adapters: readonly CloudSecretConnectorAdapter[];
 	helper: ModelLoginHelperClient | undefined;
@@ -533,6 +539,8 @@ async function runSharedVault(options: {
 		...(options.bank ? { bank: options.bank } : {}),
 		...(options.digitalPost ? { digitalPost: options.digitalPost } : {}),
 		...(options.digitalPostPdfText ? { digitalPostPdfText: options.digitalPostPdfText } : {}),
+		// WHY: Keep fallback registration well inside the founding page's 8 s connect grace even when LISTEN is behind a transaction pooler.
+		refreshEveryMs: 3_000,
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {
 		host: "127.0.0.1",
@@ -546,9 +554,11 @@ async function runSharedVault(options: {
 	const shutdown = (): void => stop.abort();
 	process.once("SIGINT", shutdown);
 	process.once("SIGTERM", shutdown);
+	let listener: Promise<void> | undefined;
 	try {
 		await service.start();
 		companies.start();
+		listener = listenSharedVaultCompanies(options.database, options.ssl, () => companies.wake(), stop.signal);
 		await new Promise<void>((resolveWait) => {
 			if (stop.signal.aborted) resolveWait();
 			else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -556,7 +566,69 @@ async function runSharedVault(options: {
 	} finally {
 		process.removeListener("SIGINT", shutdown);
 		process.removeListener("SIGTERM", shutdown);
-		await Promise.all([companies.close(), service.close()]);
+		await Promise.all([companies.close(), service.close(), listener]);
+	}
+}
+
+// WHY: Listen for new-company NOTIFY events on a dedicated session so shared-vault registration runs in milliseconds instead of waiting for a poll tick.
+async function listenSharedVaultCompanies(
+	database: ReturnType<typeof brokerDatabase>,
+	ssl: ReturnType<typeof databaseTls>,
+	onCompanyCreated: () => void,
+	signal: AbortSignal,
+): Promise<void> {
+	let backoffMs = 1_000;
+	while (!signal.aborted) {
+		const client = new Client({
+			host: database.host,
+			port: database.port,
+			user: database.user,
+			password: database.password,
+			database: database.database,
+			ssl,
+			application_name: "qorpera-shared-vault-listen",
+			connectionTimeoutMillis: 5_000,
+		});
+		let doneResolve: (() => void) | undefined;
+		const ended = new Promise<void>((resolveDone) => {
+			doneResolve = resolveDone;
+		});
+		const finish = (): void => {
+			doneResolve?.();
+			doneResolve = undefined;
+		};
+		const onAbort = (): void => {
+			void client.end().catch(() => undefined);
+			finish();
+		};
+		client.on("notification", () => {
+			if (!signal.aborted) onCompanyCreated();
+		});
+		client.on("error", () => finish());
+		client.on("end", () => finish());
+		signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			await client.connect();
+			await client.query("LISTEN qorpera_shared_vault_companies");
+			backoffMs = 1_000;
+			if (!signal.aborted) onCompanyCreated();
+			await ended;
+		} catch {
+			// WHY: Fail open to the periodic refresh loop if LISTEN cannot connect or drops.
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+			await client.end().catch(() => undefined);
+		}
+		if (signal.aborted) return;
+		await new Promise<void>((resolveWait) => {
+			const timer = setTimeout(resolveWait, backoffMs);
+			const stopWait = (): void => {
+				clearTimeout(timer);
+				resolveWait();
+			};
+			signal.addEventListener("abort", stopWait, { once: true });
+		});
+		backoffMs = Math.min(backoffMs * 2, 30_000);
 	}
 }
 

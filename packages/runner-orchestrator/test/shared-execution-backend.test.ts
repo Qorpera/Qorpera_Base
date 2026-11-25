@@ -29,7 +29,7 @@ const secretBrokerCa = readFileSync(
 	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
 	"utf-8",
 );
-const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
+const sha256Hex = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const token = (): string => randomBytes(32).toString("base64url");
 /** The execution host's own credential (G2-3e): every database call of the service goes through its entry points. */
 const hostCredential = token();
@@ -188,7 +188,7 @@ async function fixture(
 	const runRoot = join(await root(), "run");
 	const identityRoot = join(await root(), "identities");
 	const masterKey = token();
-	const keySha256 = sha256(Buffer.from(masterKey, "base64url"));
+	const keySha256 = sha256Hex(Buffer.from(masterKey, "base64url"));
 	const epoch = options.epoch ?? 1;
 	const volume = join(identityRoot, computeIdentityId);
 	await mkdir(volume, { recursive: true, mode: 0o700 });
@@ -224,7 +224,7 @@ async function fixture(
 			origin: "https://broker.example.test",
 			runtimeToken: token(),
 			caCertificate: secretBrokerCa,
-			caSha256: sha256(secretBrokerCa),
+			caSha256: sha256Hex(secretBrokerCa),
 		},
 		network: "qorpera0",
 		recoveryVolumePrefix: "phql-a1-recovery-",
@@ -493,7 +493,7 @@ describe("shared execution provider backend", () => {
 			origin: "https://10.41.0.1:8481",
 			token: token(),
 			caCertificate: secretBrokerCa,
-			caSha256: sha256(secretBrokerCa),
+			caSha256: sha256Hex(secretBrokerCa),
 		};
 		const f = await fixture({ companyData: door });
 		await f.backend.acquire(runId, work(), new AbortController().signal);
@@ -607,10 +607,10 @@ describe("shared execution provider backend", () => {
 			p_provider_adapter: "native26-test",
 			p_instance_sha256: (f.rpc[1]?.body as { p_instance_sha256: string }).p_instance_sha256,
 			p_holder_kind: "exec_slot",
-			p_credential_sha256: sha256(identityToken),
+			p_credential_sha256: sha256Hex(identityToken),
 		});
 		expect(JSON.stringify(f.rpc)).not.toContain(identityToken);
-		expect(await journal(f)).toMatchObject({ credentials: { nativeIdentitySha256: sha256(identityToken) } });
+		expect(await journal(f)).toMatchObject({ credentials: { nativeIdentitySha256: sha256Hex(identityToken) } });
 		expect((await readFile(join(slotRun, "credentials", "qorpera-native-provider-master-key"), "utf-8")).trim()).toBe(
 			f.masterKey,
 		);
@@ -620,7 +620,7 @@ describe("shared execution provider backend", () => {
 			computeIdentityId,
 			companyId,
 			epoch: 1,
-			keySha256: sha256(Buffer.from(f.masterKey, "base64url")),
+			keySha256: sha256Hex(Buffer.from(f.masterKey, "base64url")),
 		});
 		expect(await readFile(join(slotRun, "credentials", "qorpera-office-native"), "utf-8")).toBe("");
 		expect(await readFile(join(slotRun, "credentials", "qorpera-coding-command"), "utf-8")).toBe("");
@@ -1137,6 +1137,7 @@ describe("shared execution provider backend", () => {
 		expect(await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf8")).toContain(
 			"QORPERA_NATIVE_LOGIN_CUSTODY=vault",
 		);
+		expect(f.rpc.filter((call) => call.name === "qorpera_compute_identity_login_in_vault")).toHaveLength(1);
 	});
 
 	it("does not hold the service lock while units are stopping", async () => {
@@ -1332,7 +1333,7 @@ describe("warm conversations", () => {
 		const binds = f.rpc.filter((call) => call.name === "qorpera_bind_native_identity_credential");
 		expect(binds.map((call) => call.body.p_allocation_id)).toEqual([runId, secondRun]);
 		expect(binds[0]?.body.p_credential_sha256).not.toBe(binds[1]?.body.p_credential_sha256);
-		expect(binds[1]?.body.p_credential_sha256).toBe(sha256(identityToken));
+		expect(binds[1]?.body.p_credential_sha256).toBe(sha256Hex(identityToken));
 		const runnerConfig = JSON.parse(
 			await readFile(join(f.stateRoot, "slots", "0", "runner", "config.json"), "utf-8"),
 		);
@@ -1392,10 +1393,13 @@ describe("warm conversations", () => {
 		f.loginInVault = true;
 		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);
+		expect(f.rpc.filter((call) => call.name === "qorpera_compute_identity_login_in_vault")).toHaveLength(1);
 		await finishRun(f);
 		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
 		f.units.log.length = 0;
+		f.rpc.length = 0;
 		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(f.rpc.filter((call) => call.name === "qorpera_compute_identity_login_in_vault")).toHaveLength(1);
 		expect(f.units.log).toEqual([`start ${runnerUnit(0)}`]);
 		expect(
 			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-native-provider-master-key"), "utf8"),

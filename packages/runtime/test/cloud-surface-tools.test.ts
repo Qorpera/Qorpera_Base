@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { cloudActionEffect, cloudActionReviewMandate } from "../src/cloud-action-review.ts";
 import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
+import { CloudControlRpcRefused } from "../src/cloud-control-errors.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
 import {
 	cloudCompanyRuntimeInstructions,
@@ -36,7 +37,12 @@ import {
 	createStageSurfacePatchTool,
 	createStartSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
-import { buildSurfaceTurnBrief, SURFACE_STAGED_CODING_INSTRUCTIONS } from "../src/cloud-surface-turn-context.ts";
+import {
+	buildSurfaceTurnBrief,
+	parseSurfaceTurnOpenChanges,
+	parseSurfaceTurnResolvedChanges,
+	SURFACE_STAGED_CODING_INSTRUCTIONS,
+} from "../src/cloud-surface-turn-context.ts";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -474,8 +480,25 @@ describe("cloud surface runtime tools", () => {
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("atomic, self-contained, and conflict-minimizing");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("surfaceGate");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("apps/<repo>*/index.html");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("scrolled viewport-sized slices");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("structural skeleton");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("qorpera-identity.css");
 		expect(text).toContain("surfaceGate");
 		expect(text).toContain("runChecks: true");
+		expect(text.trimEnd().endsWith(`Session ID: ${sessionId}`)).toBe(true);
+		const secondSessionId = randomUUID();
+		const secondText = buildSurfaceTurnBrief({
+			sessionId: secondSessionId,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			briefMarkdown: "Warm Danish editorial tone. Terracotta accent #d76f45.",
+			recordChange: vi.fn(),
+		});
+		const marker = "## Surface Brief (QorperaOS/surfaces/website/brief.md)";
+		const prefixEnd = text.indexOf(marker) + marker.length;
+		expect(prefixEnd).toBeGreaterThan(marker.length);
+		expect(secondText.slice(0, prefixEnd)).toBe(text.slice(0, prefixEnd));
+		expect(secondText.trimEnd().endsWith(`Session ID: ${secondSessionId}`)).toBe(true);
 	});
 
 	it("formats structured conflictDetails and mainSha in buildSurfaceTurnBrief", () => {
@@ -3293,6 +3316,11 @@ describe("cloud surface runtime tools", () => {
 			);
 
 			expect(codingExecute).toHaveBeenCalledTimes(1);
+			for (const identityPath of ["identity/brief.md", "identity/voice.md", "identity/tokens.json"]) {
+				expect(
+					recordedRpcs.filter((rpc) => rpc.method === "qorpera_folder_read" && rpc.args.p_path === identityPath),
+				).toHaveLength(1);
+			}
 			expect(recordedRpcs).toContainEqual({
 				method: "qorpera_native_surface_record_change",
 				args: expect.objectContaining({
@@ -3357,5 +3385,958 @@ describe("cloud surface runtime tools", () => {
 			bundleSpy.mockRestore();
 			await rm(tempRoot, { recursive: true, force: true });
 		}
+	});
+
+	it("updates existing open changes in place across coding, folder_patch, and ops_action tools with follow-up targeting guards", async () => {
+		const sessionId = randomUUID();
+		const c1 = randomUUID();
+		const c2 = randomUUID();
+		const unknownId = randomUUID();
+		const baseSha = "a".repeat(40);
+		const head1 = "b".repeat(40);
+		const head2 = "c".repeat(40);
+		const head3 = "d".repeat(40);
+
+		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				rpcCalls.push({ method, args });
+				return {
+					changeId: (args.p_change_id as string | undefined) ?? c2,
+					seq: 1,
+					openChangeCount: 1,
+					updated: Boolean(args.p_change_id),
+				};
+			},
+		});
+		const ctx = toolContext();
+		const recUpdate = await port.recordChange(
+			sessionId,
+			{
+				title: "Revised hero",
+				summary: "Updated.",
+				commitSha: head2,
+				parentSha: baseSha,
+				changeId: c1,
+			},
+			ctx,
+		);
+		expect(recUpdate).toEqual({ changeId: c1, seq: 1, openChangeCount: 1, updated: true });
+		expect(rpcCalls[0]?.args).toMatchObject({
+			p_change_id: c1,
+			p_parent_sha: baseSha,
+			p_head_sha: head2,
+			p_depends_on_change_ids: null,
+		});
+
+		const recRebase = await port.recordChange(
+			sessionId,
+			{
+				title: "Rebased pricing",
+				summary: "Shifted onto revised hero.",
+				commitSha: head3,
+				parentSha: head2,
+				dependsOnChangeIds: [],
+				changeId: c2,
+				rebase: true,
+			},
+			ctx,
+		);
+		expect(recRebase.updated).toBe(true);
+		expect(rpcCalls[1]?.args).toMatchObject({
+			p_change_id: c2,
+			p_parent_sha: head2,
+			p_head_sha: head3,
+			p_depends_on_change_ids: [],
+			p_patch_manifest: { rebase: true },
+		});
+
+		const patchUpdate = await port.stageSurfacePatch(
+			sessionId,
+			{
+				title: "Full redo",
+				summary: "Replaced manifest.",
+				ops: [{ op: "write_text", path: "brief.md", content: "New" }],
+				notePaths: [],
+				finishSession: false,
+				changeId: c1,
+				replaceAll: true,
+			},
+			ctx,
+		);
+		expect(patchUpdate.updated).toBe(true);
+		expect(rpcCalls[2]?.args).toMatchObject({
+			p_change_id: c1,
+			p_patch_manifest: { ops: [{ op: "write_text", path: "brief.md", content: "New" }], replaceAll: true },
+		});
+
+		const opsUpdate = await port.stageSurfaceOpsAction(
+			sessionId,
+			{
+				title: "Updated email",
+				summary: "Shorter copy.",
+				actionKind: "inbox.draft_email",
+				actionPayload: { body: "Updated" },
+				finishSession: false,
+				changeId: c1,
+			},
+			ctx,
+		);
+		expect(opsUpdate.updated).toBe(true);
+		expect(rpcCalls[3]?.args).toMatchObject({ p_change_id: c1, p_depends_on_change_ids: null });
+
+		await port.recordChange(
+			sessionId,
+			{
+				title: "Fresh insert with null deps",
+				summary: "Normalizes null deps on insert.",
+				commitSha: head2,
+				parentSha: baseSha,
+				dependsOnChangeIds: null,
+			},
+			ctx,
+		);
+		expect(rpcCalls[4]?.args).toMatchObject({ p_depends_on_change_ids: [] });
+
+		const recordedCoding: unknown[] = [];
+		const singleCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => {
+					recordedCoding.push(req);
+					return {
+						changeId: req.changeId ?? c2,
+						seq: req.changeId ? 1 : 2,
+						openChangeCount: req.changeId ? 1 : 2,
+						updated: Boolean(req.changeId),
+					};
+				}),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Gør heroen roligere",
+						summary: "Initial sketch.",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+			},
+		);
+		const autoTargeted = singleCodingTool.parseArguments({
+			title: "Superpower-style hero",
+			summary: "Revised direction.",
+			parentSha: head1,
+			commitSha: head2,
+		});
+		expect(autoTargeted).not.toHaveProperty("dependsOnChangeIds");
+		const autoResult = await singleCodingTool.execute(autoTargeted, ctx);
+		expect(recordedCoding[0]).toMatchObject({ changeId: c1, parentSha: baseSha, commitSha: head2 });
+		expect(JSON.parse(autoResult.kind === "text" ? autoResult.value : "{}")).toMatchObject({
+			changeId: c1,
+			updated: true,
+		});
+		const clearDepsUpdate = singleCodingTool.parseArguments({
+			title: "Superpower-style hero",
+			summary: "Clear deps explicitly.",
+			commitSha: head2,
+			changeId: c1,
+			dependsOnChangeIds: [],
+		});
+		expect(clearDepsUpdate).toMatchObject({ changeId: c1, dependsOnChangeIds: [] });
+
+		let secondError = "";
+		try {
+			singleCodingTool.parseArguments({ title: "Another pass", summary: "Ambiguous.", commitSha: head3 });
+		} catch (error) {
+			secondError = error instanceof Error ? error.message : String(error);
+		}
+		expect(secondError).toContain(c1);
+		expect(secondError).toContain("createNew: true");
+		expect(/^[\u0020-\u007e]+$/.test(secondError)).toBe(true);
+
+		const createdSecond = singleCodingTool.parseArguments({
+			title: "Footer links",
+			summary: "Separate deliverable.",
+			parentSha: head2,
+			commitSha: head3,
+			createNew: true,
+		});
+		await singleCodingTool.execute(createdSecond, ctx);
+		expect(recordedCoding[1]).not.toHaveProperty("changeId");
+
+		const multiCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? c2,
+					seq: 2,
+					openChangeCount: 2,
+					updated: true,
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Hero",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: c2,
+						seq: 2,
+						title: "Pricing",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: head1,
+						headSha: head2,
+						affectedPaths: ["pricing.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: c2,
+			},
+		);
+		expect(
+			multiCodingTool.parseArguments({ title: "Tighter pricing", summary: "Adjusted.", commitSha: head3 }),
+		).toMatchObject({ changeId: c2, parentSha: head1 });
+		expect(() =>
+			multiCodingTool.parseArguments({
+				title: "Bad",
+				summary: "Both.",
+				commitSha: head3,
+				changeId: c1,
+				createNew: true,
+			}),
+		).toThrow(/not both/);
+		expect(() =>
+			multiCodingTool.parseArguments({ title: "Bad", summary: "Unknown.", commitSha: head3, changeId: unknownId }),
+		).toThrow(/not an open change/);
+		expect(() =>
+			multiCodingTool.parseArguments({
+				title: "Tip wrong parent",
+				summary: "Needs rebase.",
+				parentSha: "9".repeat(40),
+				commitSha: head3,
+				changeId: c2,
+			}),
+		).toThrow(/rebase: true/);
+		expect(
+			multiCodingTool.parseArguments({
+				title: "Tip rebased",
+				summary: "Rebased.",
+				parentSha: "9".repeat(40),
+				commitSha: head3,
+				changeId: c2,
+				rebase: true,
+			}),
+		).toMatchObject({ changeId: c2, parentSha: "9".repeat(40), rebase: true });
+
+		const nonTipReplyCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? c1,
+					seq: 1,
+					openChangeCount: 2,
+					updated: true,
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Hero",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: c2,
+						seq: 2,
+						title: "Pricing",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: head1,
+						headSha: head2,
+						affectedPaths: ["pricing.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: c1,
+			},
+		);
+		expect(() =>
+			nonTipReplyCodingTool.parseArguments({
+				title: "Make hero blue",
+				summary: "Committed on top of pricing.",
+				parentSha: head2,
+				commitSha: head3,
+			}),
+		).toThrow(/not the tip change/);
+		expect(() =>
+			nonTipReplyCodingTool.parseArguments({
+				title: "Non-tip without parent",
+				summary: "Omitted parent.",
+				commitSha: head3,
+				changeId: c1,
+			}),
+		).toThrow(/explicit parentSha/);
+		expect(() =>
+			nonTipReplyCodingTool.parseArguments({
+				title: "Non-tip with wrong parent",
+				summary: "Wrong parent.",
+				parentSha: head2,
+				commitSha: head3,
+				changeId: c1,
+			}),
+		).toThrow(/rebase: true/);
+		expect(
+			nonTipReplyCodingTool.parseArguments({
+				title: "Hero rebased cleanly",
+				summary: "Matches original base.",
+				parentSha: baseSha,
+				commitSha: head3,
+				changeId: c1,
+			}),
+		).toMatchObject({ changeId: c1, parentSha: baseSha, commitSha: head3 });
+
+		const validReportA = JSON.stringify({
+			headline: "Report A",
+			sections: [{ heading: "Overview", paragraphs: ["Body A"] }],
+		});
+		const validReportB = JSON.stringify({
+			headline: "Report B",
+			sections: [{ heading: "Overview", paragraphs: ["Body B"] }],
+		});
+		const stagedPatches: unknown[] = [];
+		const patchTool = createStageSurfacePatchTool(
+			sessionId,
+			{
+				stageSurfacePatch: vi.fn(async (_sid, req) => {
+					stagedPatches.push(req);
+					return { changeId: req.changeId ?? c2, seq: 1, openChangeCount: 1, updated: Boolean(req.changeId) };
+				}),
+			},
+			undefined,
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Report A",
+						summary: "Draft report.",
+						kind: "folder_patch",
+						status: "staged",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["reports/a.report.json"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: [{ op: "write_text", path: "reports/a.report.json", content: validReportA }],
+						baseFiles: { "reports/a.report.json": null },
+					},
+				],
+			},
+		);
+		const badAddSecondReport = patchTool.parseArguments({
+			title: "Add Report B into C1",
+			summary: "Should fail single-deliverable check on merged ops.",
+			ops: [{ op: "write_text", path: "reports/b.report.json", content: validReportB }],
+		});
+		await expect(patchTool.prepare!(badAddSecondReport, ctx)).rejects.toThrow(CloudToolRefusal);
+
+		const goodReplaceReport = patchTool.parseArguments({
+			title: "Replace with Report B",
+			summary: "Replaces whole change.",
+			ops: [{ op: "write_text", path: "reports/b.report.json", content: validReportB }],
+			replaceAll: true,
+		});
+		const preparedReplace = await patchTool.prepare!(goodReplaceReport, ctx);
+		await patchTool.execute(preparedReplace, ctx);
+		expect(stagedPatches[0]).toMatchObject({ changeId: c1, replaceAll: true });
+
+		expect(() =>
+			patchTool.parseArguments({
+				title: "Invalid",
+				summary: "replaceAll with createNew",
+				ops: [{ op: "write_text", path: "notes.md", content: "x" }],
+				createNew: true,
+				replaceAll: true,
+			}),
+		).toThrow(/replaceAll/);
+
+		const opsTool = createStageSurfaceOpsActionTool(
+			sessionId,
+			{
+				stageSurfaceOpsAction: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? c2,
+					seq: 1,
+					openChangeCount: 2,
+					updated: Boolean(req.changeId),
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Email Ada",
+						summary: "",
+						kind: "ops_action",
+						status: "staged",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: [],
+						previewBaseChangeIds: [],
+						actionKind: "inbox.draft_email",
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: c2,
+						seq: 2,
+						title: "Email Bo",
+						summary: "",
+						kind: "ops_action",
+						status: "staged",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: [],
+						previewBaseChangeIds: [],
+						actionKind: "inbox.draft_email",
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: c1,
+			},
+		);
+		expect(
+			opsTool.parseArguments({
+				title: "Email Ada (short)",
+				summary: "Tighter note.",
+				actionKind: "inbox.draft_email",
+				actionPayload: { body: "Hi Ada" },
+			}),
+		).toMatchObject({ changeId: c1 });
+
+		const opt1 = randomUUID();
+		const opt2 = randomUUID();
+		const optionGroupCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? randomUUID(),
+					seq: 1,
+					openChangeCount: 2,
+					updated: Boolean(req.changeId),
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: opt1,
+						seq: 1,
+						title: "Calm studio",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						optionGroupKey: "homepage-direction",
+						optionGroupTitle: "Homepage direction",
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: opt2,
+						seq: 2,
+						title: "Bold editorial",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head2,
+						optionGroupKey: "homepage-direction",
+						optionGroupTitle: "Homepage direction",
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: opt1,
+			},
+		);
+		expect(
+			optionGroupCodingTool.parseArguments({
+				title: "Calm studio v2",
+				summary: "Darker header.",
+				parentSha: baseSha,
+				commitSha: head3,
+			}),
+		).toMatchObject({ changeId: opt1, parentSha: baseSha, commitSha: head3 });
+		expect(
+			optionGroupCodingTool.parseArguments({
+				title: "Minimalist third option",
+				summary: "New option in group.",
+				parentSha: baseSha,
+				commitSha: head3,
+				optionGroup: "homepage-direction",
+			}),
+		).not.toHaveProperty("changeId");
+		expect(() =>
+			optionGroupCodingTool.parseArguments({
+				title: "Wrong group",
+				summary: "Cannot switch group.",
+				parentSha: baseSha,
+				commitSha: head3,
+				changeId: opt1,
+				optionGroup: "other-group",
+			}),
+		).toThrow(/Cannot change optionGroup/);
+	});
+
+	it("validates and forwards optionGroup and optionGroupTitle on coding_record_change and stage_surface_patch", async () => {
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const recordChange = vi.fn().mockResolvedValue({ changeId, seq: 1, openChangeCount: 1 });
+		const codingTool = createCodingRecordChangeTool(sessionId, { recordChange });
+
+		expect(() =>
+			codingTool.parseArguments({
+				title: "Option A",
+				summary: "Direction A",
+				commitSha: "1".repeat(40),
+				optionGroup: "Not Valid",
+			}),
+		).toThrow();
+		expect(() =>
+			codingTool.parseArguments({
+				title: "Option A",
+				summary: "Direction A",
+				commitSha: "1".repeat(40),
+				optionGroupTitle: "Missing key",
+			}),
+		).toThrow();
+
+		const parsedCoding = codingTool.parseArguments({
+			title: "Broker direction",
+			summary: "Editorial homepage concept.",
+			commitSha: "2".repeat(40),
+			optionGroup: "homepage-direction",
+			optionGroupTitle: "Homepage direction",
+		});
+		await codingTool.execute(parsedCoding, toolContext());
+		expect(recordChange).toHaveBeenCalledWith(
+			sessionId,
+			expect.objectContaining({
+				optionGroup: "homepage-direction",
+				optionGroupTitle: "Homepage direction",
+			}),
+			expect.anything(),
+		);
+
+		const stageSurfacePatch = vi.fn().mockResolvedValue({ changeId, seq: 1, openChangeCount: 1 });
+		const patchTool = createStageSurfacePatchTool(sessionId, { stageSurfacePatch });
+		expect(() =>
+			patchTool.parseArguments({
+				title: "Palette A",
+				summary: "Warm palette",
+				ops: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+				optionGroupTitle: "Missing key",
+			}),
+		).toThrow();
+
+		const parsedPatch = patchTool.parseArguments({
+			title: "Warm palette",
+			summary: "Warm linen tones.",
+			ops: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+			optionGroup: "palette",
+			optionGroupTitle: "Brand palette",
+		});
+		await patchTool.execute(parsedPatch, toolContext());
+		expect(stageSurfacePatch).toHaveBeenCalledWith(
+			sessionId,
+			expect.objectContaining({
+				optionGroup: "palette",
+				optionGroupTitle: "Brand palette",
+			}),
+			expect.anything(),
+		);
+
+		const calls: { method: string; args: Record<string, unknown> }[] = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				calls.push({ method, args });
+				return { changeId, seq: 1, session: { openChangeCount: 1 } };
+			},
+		});
+		const ctx = toolContext();
+		await port.recordChange(
+			sessionId,
+			{
+				title: "Option 1",
+				summary: "Standalone page 1",
+				commitSha: "3".repeat(40),
+				dependsOnChangeIds: [],
+				optionGroup: "homepage-direction",
+				optionGroupTitle: "Homepage direction",
+			},
+			ctx,
+		);
+		await port.stageSurfacePatch(
+			sessionId,
+			{
+				title: "Option 2",
+				summary: "Standalone patch 2",
+				ops: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#111111" } }],
+				notePaths: [],
+				optionGroup: "palette",
+				optionGroupTitle: "Brand palette",
+				finishSession: true,
+			},
+			ctx,
+		);
+		expect(calls[0]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: {
+				p_option_group_key: "homepage-direction",
+				p_option_group_title: "Homepage direction",
+			},
+		});
+		expect(calls[1]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: {
+				p_option_group_key: "palette",
+				p_option_group_title: "Brand palette",
+			},
+		});
+	});
+
+	it("forbids in-page concept switchers and emits chosen-option reset hints in buildSurfaceTurnBrief", () => {
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("NEVER embed a concept switcher");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("optionGroup");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("git read-tree --reset -u $BASE");
+
+		const chosenHead = "2".repeat(40);
+		const branchTip = "3".repeat(40);
+		const brief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			branchHeadSha: branchTip,
+			openChanges: [
+				{
+					id: randomUUID(),
+					title: "Option 2: Showcase",
+					parentSha: "1".repeat(40),
+					headSha: chosenHead,
+					optionGroupKey: null,
+					optionGroupTitle: null,
+				},
+			],
+		});
+		expect(brief).toContain("## Active Staged Changes on This Session");
+		expect(brief).toContain(`git read-tree --reset -u ${chosenHead}`);
+		expect(brief).toContain("Option 2: Showcase");
+
+		const mainSha = "4".repeat(40);
+		const emptyOpenBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			mainSha,
+			branchHeadSha: branchTip,
+			openChanges: [],
+		});
+		expect(emptyOpenBrief).toContain("## Session Branch Sync");
+		expect(emptyOpenBrief).toContain(`git log ${mainSha}..HEAD`);
+		expect(emptyOpenBrief).toContain(`git reset --hard ${mainSha}`);
+		expect(emptyOpenBrief).not.toContain(`git read-tree --reset -u ${mainSha}`);
+		expect(emptyOpenBrief).toContain(`parentSha: "${mainSha}"`);
+
+		const syncedBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			mainSha,
+			branchHeadSha: mainSha,
+			openChanges: [],
+		});
+		expect(syncedBrief).not.toContain("## Session Branch Sync");
+	});
+
+	it("surfaces discarded changes across code_repo and folder turns and relays discarded-parent refusals", async () => {
+		const mainSha = "1".repeat(40);
+		const c1Head = "2".repeat(40);
+		const c2Head = "3".repeat(40);
+		const c1Id = randomUUID();
+		const c2Id = randomUUID();
+
+		const parsedOpen = parseSurfaceTurnOpenChanges([
+			{
+				id: c1Id,
+				seq: 1,
+				title: "Tre retninger for Thetabands hjemmeside",
+				summary: "Three calm homepage directions.",
+				status: "staged",
+				parentSha: mainSha,
+				headSha: c1Head,
+				affectedPaths: ["index.html", "styles.css"],
+				optionGroupKey: null,
+				optionGroupTitle: null,
+			},
+		]);
+		const parsedResolved = parseSurfaceTurnResolvedChanges([
+			{
+				id: c2Id,
+				seq: 2,
+				title: "Superpower-inspired sketches",
+				summary: "Three bold dark-hero variations.",
+				status: "discarded",
+				parentSha: c1Head,
+				headSha: c2Head,
+				affectedPaths: ["index.html", "hero.css"],
+				optionGroupKey: null,
+				optionGroupTitle: null,
+				discardedByExploration: false,
+				resolvedAt: "2026-11-25T03:30:00Z",
+			},
+			{
+				id: randomUUID(),
+				title: "Ignored status",
+				status: "staged",
+				parentSha: null,
+				headSha: null,
+				optionGroupKey: null,
+				optionGroupTitle: null,
+			},
+		]);
+		expect(parsedOpen).toHaveLength(1);
+		expect(parsedOpen[0]?.seq).toBe(1);
+		expect(parsedOpen[0]?.affectedPaths).toEqual(["index.html", "styles.css"]);
+		expect(parsedResolved).toHaveLength(1);
+		expect(parsedResolved[0]?.status).toBe("discarded");
+
+		const briefAfterTipDiscard = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: parsedOpen,
+			resolvedChanges: parsedResolved,
+		});
+		expect(briefAfterTipDiscard).toContain("## Active Staged Changes on This Session");
+		expect(briefAfterTipDiscard).toContain(`#1 \`${c1Id}\` — Tre retninger for Thetabands hjemmeside`);
+		expect(briefAfterTipDiscard).toContain("IMPORTANT — Worktree Out of Sync");
+		expect(briefAfterTipDiscard).toContain('"Superpower-inspired sketches"');
+		expect(briefAfterTipDiscard).toContain(`git read-tree --reset -u ${c1Head}`);
+		expect(briefAfterTipDiscard).toContain("(or its `changeId` to update it in place)");
+		expect(briefAfterTipDiscard).toContain("## Resolved Changes on This Session");
+		expect(briefAfterTipDiscard).toContain("#2 Superpower-inspired sketches — discarded by member");
+		expect(briefAfterTipDiscard).toContain("removed by the member and are no longer staged or shown in Preview");
+
+		const briefAfterOptionDiscard = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: [
+				{
+					id: c1Id,
+					seq: 1,
+					title: "Editorial direction",
+					parentSha: mainSha,
+					headSha: c1Head,
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Homepage direction",
+				},
+			],
+			resolvedChanges: [
+				{
+					id: c2Id,
+					seq: 2,
+					title: "Bold direction",
+					status: "discarded",
+					parentSha: mainSha,
+					headSha: c2Head,
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Homepage direction",
+					discardedByExploration: false,
+				},
+			],
+		});
+		expect(briefAfterOptionDiscard).toContain("IMPORTANT — Worktree Out of Sync");
+		expect(briefAfterOptionDiscard).toContain(`git read-tree --reset -u ${mainSha}`);
+		expect(briefAfterOptionDiscard).toContain(`optionGroup: "homepage-direction"`);
+		expect(briefAfterOptionDiscard).toContain(`parentSha: "${mainSha}"`);
+		expect(briefAfterOptionDiscard).not.toContain(`git read-tree --reset -u ${c1Head}`);
+
+		const briefAfterBaseDiscard = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: [
+				{
+					id: c2Id,
+					seq: 2,
+					title: "Superpower-inspired sketches",
+					parentSha: c1Head,
+					headSha: c2Head,
+					optionGroupKey: null,
+					optionGroupTitle: null,
+				},
+			],
+			resolvedChanges: [
+				{
+					id: c1Id,
+					seq: 1,
+					title: "Tre retninger for Thetabands hjemmeside",
+					status: "discarded",
+					parentSha: mainSha,
+					headSha: c1Head,
+					optionGroupKey: null,
+					optionGroupTitle: null,
+					discardedByExploration: false,
+				},
+			],
+		});
+		expect(briefAfterBaseDiscard).toContain("was originally branched from discarded change");
+		expect(briefAfterBaseDiscard).toContain("Tre retninger for Thetabands hjemmeside");
+
+		const briefAllDiscarded = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: [],
+			resolvedChanges: parsedResolved,
+		});
+		expect(briefAllDiscarded).toContain("## Resolved Changes on This Session");
+		expect(briefAllDiscarded).toContain("## Session Branch Sync");
+		expect(briefAllDiscarded).toContain("prior changes on this session were discarded by the member");
+		expect(briefAllDiscarded).toContain(`git reset --hard ${mainSha}`);
+
+		const folderBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "identity",
+			surfaceTitle: "Identity",
+			sourceKind: "folder",
+			folderRoot: "identity",
+			briefMarkdown: "Brand identity.",
+			openChanges: [
+				{
+					id: c1Id,
+					seq: 1,
+					title: "Updated brief",
+					summary: "Sharper positioning.",
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["brief.md"],
+					optionGroupKey: null,
+					optionGroupTitle: null,
+				},
+			],
+			resolvedChanges: [
+				{
+					id: c2Id,
+					seq: 2,
+					title: "Experimental voice",
+					summary: "Playful draft.",
+					status: "discarded",
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["voice.md"],
+					optionGroupKey: null,
+					optionGroupTitle: null,
+					discardedByExploration: false,
+				},
+			],
+		});
+		expect(folderBrief).toContain("## Active Staged Changes on This Session");
+		expect(folderBrief).toContain(`#1 \`${c1Id}\` — Updated brief`);
+		expect(folderBrief).toContain("## Resolved Changes on This Session");
+		expect(folderBrief).toContain("#2 Experimental voice — discarded by member");
+		expect(folderBrief).not.toContain("git read-tree");
+
+		const refusalTool = createCodingRecordChangeTool(randomUUID(), {
+			recordChange: async () => {
+				throw new CloudControlRpcRefused(
+					"22023",
+					`parentSha ${c2Head} belongs to discarded change "Superpower-inspired sketches".`,
+				);
+			},
+		});
+		await expect(
+			refusalTool.execute(
+				refusalTool.parseArguments({
+					title: "Hero tweak",
+					summary: "Adjusted spacing.",
+					parentSha: c2Head,
+					commitSha: "4".repeat(40),
+				}),
+				toolContext(),
+			),
+		).rejects.toThrow(CloudToolRefusal);
 	});
 });

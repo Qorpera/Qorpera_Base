@@ -322,12 +322,25 @@ function setup(
 			}
 			const code = state.pointerAnswers.shift();
 			if (code) return Response.json({ code }, { status: 409 });
-			if ("begin" in body)
+			if ("begin" in body) {
+				if (body.withStreamTicket === true) {
+					if (state.ticketAnswers[0] === "old")
+						return Response.json({ error: "member_pointer_invalid" }, { status: 400 });
+					if (state.ticketAnswers.length === 0)
+						return Response.json({
+							schema: "qorpera.member-machine-pointer/v1",
+							pass: id(900 + pointers.length),
+							milliseconds: 10000,
+							ticket: `${"T".repeat(40)}${String(pointers.length).padStart(3, "0")}`,
+							seconds: 30,
+						});
+				}
 				return Response.json({
 					schema: "qorpera.member-machine-pointer/v1",
 					pass: id(900 + pointers.length),
 					milliseconds: 10000,
 				});
+			}
 			return Response.json({ schema: "qorpera.member-machine-pointer/v1", moved: true });
 		}
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/act")) {
@@ -3969,17 +3982,13 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("sends clicks, double and right clicks, drags and the wheel at the screen's own pixels, one at a time", async () => {
 		const { s, p } = await holding();
 		const target = canvas(p);
-		// A press in the middle of an 800 x 500 box showing 1600 x 1000: the screen's (800, 500), once no second comes.
 		press(target, 400, 250);
-		await advance(DOUBLE_CLICK_MS - 1);
-		expect(s.acts).toEqual([]);
-		await advance(1);
+		await flush();
 		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 800, y: 500 }]);
 		expect(s.acts[0]!.url).toBe(`/v1/member-machine-screens/${profileA.profileId}/${machine(1).machineId}/act`);
-		// Two presses close together: one double click.
 		press(target, 100, 50);
 		press(target, 101, 50);
-		await advance(DOUBLE_CLICK_MS);
+		await flush();
 		expect(s.acts.at(-1)!.action).toEqual({ type: "double", x: 200, y: 100 });
 		// A right press, at once; a middle one too.
 		press(target, 10, 20, { button: 2 });
@@ -4074,12 +4083,11 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 			["type", "c"],
 			["type", "d"],
 		]);
-		// A double click still is one, with nothing between its two presses.
 		from = s.acts.length;
 		press(target, 100, 50);
 		press(target, 101, 50);
 		await advance(DOUBLE_CLICK_MS);
-		expect(sent(from)).toEqual(["double"]);
+		expect(sent(from)).toEqual(["click", "double"]);
 	});
 
 	it("maps a press by the picture as drawn, letterboxed, and takes none outside it", async () => {
@@ -5465,7 +5473,6 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 	it("ages input from the member's own event, through the picture's buffers: a tab suspended before a batch went sends nothing of it (review r4 F2 of #1701)", async () => {
 		const gathers: [string, (p: ComputerPanel) => void, (p: ComputerPanel) => void][] = [
 			["a text not sent yet", (p) => key(canvas(p), "a"), () => {}],
-			["a click waiting for its second", (p) => press(canvas(p), 100, 100), () => {}],
 			[
 				"a wheel burst",
 				(p) =>
@@ -5647,7 +5654,14 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 					on();
 					await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
 					await flush();
-					expect.soft(sent(), name).toEqual([]);
+					if (what === "a click and its second")
+						expect
+							.soft(
+								sent().map((act) => act.action),
+								name,
+							)
+							.toEqual([{ type: "click", x: 200, y: 200 }]);
+					else expect.soft(sent(), name).toEqual([]);
 					expect.soft(controls(p)?.textContent, name).toContain(lost);
 					p.dispose();
 				}
@@ -6111,16 +6125,10 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		hover(p, 50, 50);
 		await advance(40);
 		await flush();
-		// A click on a hover menu's item, then the pointer moves away at once: the click waits for its second (250 ms).
 		press(canvas(p), 100, 100);
 		hover(p, 300, 300);
 		hover(p, 310, 310);
 		await advance(100);
-		await flush();
-		expect(s.order.filter((one) => one.startsWith("move ")).at(-1)).toBe("move 100 100");
-		await advance(DOUBLE_CLICK_MS);
-		await flush();
-		await advance(40);
 		await flush();
 		// The click went first, then the newest position.
 		expect(s.order.slice(-2)).toEqual(["act click", "move 620 620"]);
@@ -6386,10 +6394,9 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		s.state.seats.set(machine(1).machineId, 3);
 		const { p } = await inside(s);
 		await flush();
-		const pass = id(901);
-		expect(bodies(s)).toEqual([{ begin: { generation: 3 } }, { stream: { pass, hold: { generation: 3 } } }]);
+		expect(bodies(s)).toEqual([{ begin: { generation: 3 }, withStreamTicket: true }]);
 		expect(s.sockets).toHaveLength(1);
-		expect(s.sockets[0]!.url).toMatch(/^wss:\/\/screens\.example\.invalid\/v1\/member-machine-streams\/T{40}002$/);
+		expect(s.sockets[0]!.url).toMatch(/^wss:\/\/screens\.example\.invalid\/v1\/member-machine-streams\/T{40}001$/);
 		expect(s.sockets[0]!.protocol).toBe("qorpera.machine-stream.v1");
 		await live(s);
 		expect(mark(p)).toBe("Live");
@@ -6397,10 +6404,9 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		const looked = s.looks.length;
 		await advance(5000);
 		expect(s.looks).toHaveLength(looked);
-		// The pass is begun again before it runs out (10 s), on the same hold.
 		await advance(3000);
 		expect(bodies(s).filter((body) => "begin" in body)).toEqual([
-			{ begin: { generation: 3 } },
+			{ begin: { generation: 3 }, withStreamTicket: true },
 			{ begin: { generation: 3 } },
 		]);
 		expect(s.sockets).toHaveLength(1);
@@ -6441,7 +6447,7 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 			await flush();
 			expect(s.sockets[0]!.closedWith).toBe(1000);
 			await advance(2000);
-			expect(tickets(s).at(-1)).toMatchObject({ stream: { hold: { epoch: 0, seat: 1 } } });
+			expect(bodies(s).at(-1)).toEqual({ begin: { epoch: 0, seat: 1 }, withStreamTicket: true });
 			expect(s.sockets).toHaveLength(2);
 			p.dispose();
 			expect(s.sockets[1]!.closedWith).toBe(1000);
@@ -6581,6 +6587,29 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		expect(bodies(refused).filter((body) => "begin" in body)).toHaveLength(2);
 		expect(tickets(refused)).toHaveLength(2);
 		expect(refused.sockets).toHaveLength(1);
+	});
+
+	it("overlaps combined pass+stream-ticket acquisition with initial look() when opening directly into the large view", async () => {
+		const s = setup({ stream: true });
+		s.state.seats.set(machine(1).machineId, 5);
+		let releaseLook = () => {};
+		s.state.lookGate = new Promise<void>((resolve) => {
+			releaseLook = resolve;
+		});
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		p.enterWhenShown();
+		await flush();
+		// WHY: Combined pass+ticket request runs while look() is still in flight so opening into the large view does not serialize them.
+		expect(s.looks).toHaveLength(1);
+		expect(bodies(s)).toEqual([{ begin: { generation: 5 }, withStreamTicket: true }]);
+		releaseLook();
+		await flush();
+		await flush();
+		expect(entered(p)).toBe(true);
+		expect(s.sockets).toHaveLength(1);
+		expect(bodies(s)).toEqual([{ begin: { generation: 5 }, withStreamTicket: true }]);
+		expect(tickets(s)).toEqual([]);
 	});
 
 	it("adds no uncertainty of its own: while it shows, a move that got no answer still holds the next action, in the company's ledger (v242 review r1 F1 with step 2)", async () => {

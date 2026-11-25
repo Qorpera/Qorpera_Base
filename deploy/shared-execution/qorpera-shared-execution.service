@@ -13,6 +13,8 @@ Type=exec
 # units. Its own secrets arrive as credentials, never on the command line.
 User=root
 Group=root
+# WHY: Keep warm conversation slots active for 5 minutes by default while letting /etc/qorpera/shared-execution.env override.
+Environment=QORPERA_SHARED_EXECUTION_WARM_IDLE_MS=300000
 EnvironmentFile=/etc/qorpera/shared-execution.env
 LoadCredential=qorpera-runner-provider:/etc/qorpera/shared-execution-credentials/qorpera-runner-provider
 # G2-3e: the host's own credential, which rebuild-exec-host.sh mints and binds.

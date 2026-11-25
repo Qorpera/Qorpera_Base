@@ -11,7 +11,7 @@ import {
 	type CloudToolContent,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
@@ -201,7 +201,16 @@ it("keeps save_app's schema small enough that the model receives its fields' des
 it("answers a guide's text, and nothing of the company", async () => {
 	const f = await fixture({}, true);
 	const tool = f.tool("app_guide");
-	expect((tool.inputSchema as { properties: { about: { enum: string[] } } }).properties.about.enum).toEqual([
+	const aboutSchema = (
+		tool.inputSchema as {
+			properties: {
+				about: {
+					oneOf: [{ type: string; enum: string[] }, { type: string; items: { type: string; enum: string[] } }];
+				};
+			};
+		}
+	).properties.about;
+	const expectedGuides = [
 		"look",
 		"model",
 		"board",
@@ -219,7 +228,9 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"reads",
 		"writes",
 		"icons",
-	]);
+	];
+	expect(aboutSchema.oneOf[0].enum).toEqual(expectedGuides);
+	expect(aboutSchema.oneOf[1].items.enum).toEqual(expectedGuides);
 	for (const about of APP_GUIDES) expect(tool.description, about).toContain(about);
 	refusesArguments(
 		tool,
@@ -317,6 +328,33 @@ it("saves a kit's file only in a run that has read the kit's guide", async () =>
 	expect(
 		read(
 			await f.call("save_app", save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), scenes)),
+		),
+	).toMatchObject({ state: "applied", created: true });
+});
+
+it("accepts a list of topics in app_guide and marks all shown kits as read in one turn", async () => {
+	const f = await fixture({}, true);
+	const tool = f.tool("app_guide");
+	refusesArguments(tool, { about: [] }, "about list must have 1 to 6 topics");
+	refusesArguments(
+		tool,
+		{ about: ["look", "model", "board", "path", "object", "curve", "stack"] },
+		"about list must have 1 to 6 topics",
+	);
+	refusesArguments(tool, { about: ["look", "unknown"] }, "about must be one of look");
+	const batch = await f.call("app_guide", { about: ["look", "explainer", "look"] });
+	expect(batch.kind).toBe("text");
+	const text = (batch as { kind: "text"; value: string }).value;
+	expect(text).toContain(appGuide("look"));
+	expect(text).toContain(appGuide("explainer"));
+	expect(
+		read(
+			await f.call(
+				"save_app",
+				save("fee", "make-batch", manifest("How the fee works", { kit: "explainer" }), [
+					{ path: "scenes.js", text: SCENES },
+				]),
+			),
 		),
 	).toMatchObject({ state: "applied", created: true });
 });
@@ -1230,4 +1268,57 @@ it("keeps at most 12 icons: a new one takes an old one's id, or an old one goes 
 		f.call("save_app", save("trips", "icons-4", null, [{ path: "icons/compass.svg", text: ICON }])),
 		"APP_ICONS_FULL",
 	);
+});
+
+it("reads retired.md and app.toml once across prepare and execute for own apps and re-reads for foreign or reviewed saves", async () => {
+	const f = await fixture({ folders: ["apps"] });
+	const me = f.identity.staffAgentId.toLowerCase();
+	const other = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f";
+	f.seed("apps/mine/app.toml", `name = "Mine"\nowner = "${me}"\nposted = false\n`);
+	f.seed("apps/mine/index.html", PAGE);
+	f.seed("apps/theirs/app.toml", `name = "Theirs"\nowner = "${other}"\nposted = false\n`);
+	f.seed("apps/theirs/index.html", PAGE);
+
+	const readText = vi.spyOn(f.folder, "readText");
+	const pathsRead = () => readText.mock.calls.map(([path]) => path);
+	const tool = f.tool("save_app");
+
+	const { actionReviewId: _ignoredReviewId, ...unreviewedContext } = f.context;
+	const ownParsed = tool.parseArguments(
+		save("mine", "own-1", null, [{ path: "index.html", text: `${PAGE}<!--1-->` }]),
+	);
+	const ownPrepared = (await tool.prepare?.(ownParsed, { ...unreviewedContext, callId: "call_own_1" })) ?? ownParsed;
+	expect(read(await tool.execute(ownPrepared, { ...unreviewedContext, callId: "call_own_1" })).state).toBe("applied");
+	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(1);
+	expect(pathsRead().filter((path) => path === "apps/mine/app.toml")).toHaveLength(1);
+
+	readText.mockClear();
+	const foreignParsed = tool.parseArguments(
+		save("theirs", "foreign-1", null, [{ path: "index.html", text: `${PAGE}<!--2-->` }]),
+	);
+	const foreignPrepared =
+		(await tool.prepare?.(foreignParsed, { ...unreviewedContext, callId: "call_foreign_1" })) ?? foreignParsed;
+	expect(read(await tool.execute(foreignPrepared, { ...unreviewedContext, callId: "call_foreign_1" })).state).toBe(
+		"applied",
+	);
+	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(2);
+	expect(pathsRead().filter((path) => path === "apps/theirs/app.toml")).toHaveLength(2);
+
+	readText.mockClear();
+	const reviewedParsed = tool.parseArguments(
+		save("mine", "own-reviewed", null, [{ path: "index.html", text: `${PAGE}<!--3-->` }]),
+	);
+	const reviewedPrepared =
+		(await tool.prepare?.(reviewedParsed, { ...unreviewedContext, callId: "call_reviewed_1" })) ?? reviewedParsed;
+	expect(
+		read(
+			await tool.execute(reviewedPrepared, {
+				...unreviewedContext,
+				callId: "call_reviewed_1",
+				actionReviewId: "rev_1",
+			}),
+		).state,
+	).toBe("applied");
+	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(2);
+	expect(pathsRead().filter((path) => path === "apps/mine/app.toml")).toHaveLength(2);
 });

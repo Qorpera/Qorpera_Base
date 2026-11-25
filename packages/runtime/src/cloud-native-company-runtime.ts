@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue, StudioPatchOp, SurfaceSessionQuestion, SurfaceSourceKind } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -21,6 +19,7 @@ import {
 } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { cloudNarrateAppTool } from "./cloud-app-narrate-tool.ts";
+import { hasChatGptPlanDirectory, hasChatGptPlanToken } from "./cloud-chatgpt-plan-image.ts";
 import {
 	CLAUDE_ACTION_REVIEW_MODEL,
 	CLAUDE_CODE_PIN,
@@ -142,9 +141,13 @@ import {
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
-import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
+import {
+	cloudNativeContextIdentity,
+	cloudNativeContextWithPromptCacheKey,
+	cloudNativePromptCacheKey,
+} from "./cloud-native-context-composition.ts";
 import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
-import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
@@ -170,6 +173,7 @@ import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	cloudToolJsonText,
+	isCloudParallelReadCall,
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import {
@@ -177,7 +181,6 @@ import {
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
 import { cloudToolsOnDemand } from "./cloud-native-tools-on-demand.ts";
-import { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { cloudRecordReflectionTool, readCloudPlatformUpdates } from "./cloud-platform-updates.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
@@ -185,6 +188,12 @@ import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { CloudRunLogCompanyFolder } from "./cloud-run-log-folder.ts";
 import { openCloudRunLog } from "./cloud-run-log-open.ts";
 import { CloudRunLogRpcProtection } from "./cloud-run-log-protection.ts";
+import {
+	createChatGptPlanImageLane,
+	createGeminiImageLane,
+	type ResolvedRunPictureLane,
+	resolveRunPictureLane,
+} from "./cloud-run-picture-lane.ts";
 import { CloudRunResumeRpc } from "./cloud-run-resume.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
@@ -195,8 +204,10 @@ import {
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import {
+	type CloudRuntimeImageModel,
 	type CloudRuntimeReasoningEffort,
 	type CloudRuntimeServiceTier,
+	isCloudRuntimeImageModel,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
 import { type ClaudeLoginRunClient, type GeminiKeyRunClient, openGeminiKeyForRun } from "./cloud-secret-broker-http.ts";
@@ -216,13 +227,16 @@ import {
 	type SurfaceMemberImage,
 	surfaceMemberImagesSection,
 } from "./cloud-surface-images.ts";
-import { parseSurfaceOmittedBaseChanges, parseSurfacePreviewContext } from "./cloud-surface-preview-overlay.ts";
+import {
+	parseSurfaceOmittedBaseChanges,
+	parseSurfacePreviewContext,
+	parseSurfaceSessionOpenChanges,
+} from "./cloud-surface-preview-overlay.ts";
 import {
 	cloudStudioFileReader,
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
 	extractPointToChangeTarget,
-	loadSurfaceIdentityContext,
 	loadSurfaceSharedAssets,
 	openSurfaceLayoutOps,
 	runSurfaceSessionTurn,
@@ -240,7 +254,12 @@ import {
 	type SurfaceCompanySenses,
 	type SurfaceToolsRpcClient,
 } from "./cloud-surface-tools.ts";
-import { parseSurfaceConflictDetails, type SurfaceCodingTurnBinding } from "./cloud-surface-turn-context.ts";
+import {
+	parseSurfaceConflictDetails,
+	parseSurfaceTurnOpenChanges,
+	parseSurfaceTurnResolvedChanges,
+	type SurfaceCodingTurnBinding,
+} from "./cloud-surface-turn-context.ts";
 import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
@@ -296,17 +315,6 @@ function confirmNativeAdmission(answer: unknown, expected: Readonly<Record<strin
 		Object.entries(expected).some(([key, value]) => (answer as Record<string, unknown>)[key] !== value)
 	)
 		throw new Error("Native execution admission was not confirmed");
-}
-
-/** Whether an identity root is a ChatGPT plan run's: its host wrote the plan's token directory there. Anything but a
- * clear absence counts as one, so a run is never offered pictures it cannot make. */
-async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
-	try {
-		await lstat(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ENOENT";
-	}
 }
 
 export { type ControlPlaneSurfaceToolsPortOptions, createControlPlaneSurfaceToolsPort, type SurfaceToolsRpcClient };
@@ -382,6 +390,9 @@ export interface CloudNativeCompanyRuntimeOptions {
 	geminiApiBaseUrl?: string;
 	geminiAllowLoopback?: boolean;
 	geminiFetch?: typeof fetch;
+	chatGptPlanApiBaseUrl?: string;
+	chatGptPlanAllowLoopback?: boolean;
+	chatGptPlanFetch?: typeof fetch;
 	/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
 	 * save_coding_value. */
 	codingValues?: CloudMachineCodingValues;
@@ -422,6 +433,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #geminiApiBaseUrl: string | undefined;
 	readonly #geminiAllowLoopback: boolean | undefined;
 	readonly #geminiFetch: typeof fetch | undefined;
+	readonly #chatGptPlanApiBaseUrl: string | undefined;
+	readonly #chatGptPlanAllowLoopback: boolean | undefined;
+	readonly #chatGptPlanFetch: typeof fetch | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #companyData: CloudCompanyDataDoor | undefined;
@@ -452,6 +466,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#geminiApiBaseUrl = options.geminiApiBaseUrl;
 		this.#geminiAllowLoopback = options.geminiAllowLoopback;
 		this.#geminiFetch = options.geminiFetch;
+		this.#chatGptPlanApiBaseUrl = options.chatGptPlanApiBaseUrl;
+		this.#chatGptPlanAllowLoopback = options.chatGptPlanAllowLoopback;
+		this.#chatGptPlanFetch = options.chatGptPlanFetch;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#codingValues = options.codingValues;
@@ -466,12 +483,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
 	readonly #spareEfforts = new Map<
 		string,
-		{ reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier }
+		{ reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier; home: boolean }
 	>();
 
 	#rememberSpareEffort(
 		identityRoot: string,
-		settings: { reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier },
+		settings: { reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier; home: boolean },
 	): void {
 		this.#spareEfforts.delete(identityRoot);
 		this.#spareEfforts.set(identityRoot, settings);
@@ -492,6 +509,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				reasoningEffort: settings.reasoningEffort,
 				serviceTier: settings.serviceTier,
 				identityRoot,
+				...(settings.home ? { home: true } : {}),
 				...(this.#isolation ? { isolation: this.#isolation } : {}),
 				...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 			},
@@ -537,6 +555,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		let stage: NativeRuntimeFailureStage = "company-context";
 		let presence: CloudCompanyPathPresence | undefined;
 		let isGeminiRun = false;
+		let prefetchAbort: AbortController | undefined;
+		let prefetchedRunHandle: CloudNativeToolRun | undefined;
+		let prefetchedRunAdopted = false;
 		try {
 			// Both reads need only the binding: ask for them together and check them in
 			// the original order, so a failure still names its stage. Since 20260930499000 only the
@@ -623,20 +644,53 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (!this.#coding)
 					throw new Error("Coding sessions run in the coding composition, which this node does not carry");
 				stage = "coding-session";
+				let folder: CloudCompanyFolderClient | undefined;
+				const getFolder = (): CloudCompanyFolderClient => {
+					folder ??= new CloudCompanyFolderClient({
+						binding,
+						identity: context.identity,
+						control: this.#paths,
+						bytes: this.#folderBytes(binding, context.identity),
+						...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
+					});
+					return folder;
+				};
 				const surfaceSession = await this.#loadSurfaceCodingBinding(
-					binding,
 					context.identity,
 					wake.payload,
+					getFolder,
 					signal,
 				);
+				if (this.#coding.supportsFolderWrites) getFolder();
+				const codingPictureLane = this.#coding.supportsFolderWrites
+					? await this.#pictureLane({
+							binding,
+							identity: context.identity,
+							identityRoot,
+							preferredModel: context.imageModel,
+							usesPrimaryCodexSession: !isGeminiRun,
+							signal,
+						})
+					: undefined;
 				composition.finish("succeeded", { outputBytes: 0 });
-				return await this.#coding.execute(request, identityRoot, signal, {
-					binding,
-					identity: context.identity,
-					wake,
-					observability,
-					...(surfaceSession ? { surfaceSession } : {}),
-				});
+				try {
+					return await this.#coding.execute(request, identityRoot, signal, {
+						binding,
+						identity: context.identity,
+						wake,
+						observability,
+						...(folder ? { folder } : {}),
+						...(surfaceSession ? { surfaceSession } : {}),
+						...(codingPictureLane?.channel
+							? {
+									pictures: codingPictureLane.channel,
+									attachPicturesToCodex: codingPictureLane.attachToCodex,
+								}
+							: {}),
+					});
+				} finally {
+					await codingPictureLane?.close();
+				}
 			}
 			// A plain worker Claude Code does (20260930770000) is never a Codex turn: its run is the Claude Code worker's own
 			// composition (slice C4c), in its own stage. A node without it refuses the run, and nothing runs on Codex.
@@ -740,6 +794,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			});
 			const compactor = new MemoryCompactChannel();
 			const lane = new MemoryCompactLane();
+			let connectorEffects: ReturnType<typeof cloudConnectorEffects> = new Map();
+			const offlineShells = new Set<string>();
+			// WHY: Overlap vault key fetch with Wave 2 folder/context reads.
+			const geminiKeyRequest =
+				context.gemini && this.#geminiKeys
+					? openGeminiKeyForRun(
+							this.#geminiKeys,
+							{
+								leaseId: binding.leaseId,
+								runId: binding.runId,
+								jobId: binding.jobId,
+								runnerId: binding.runnerId,
+								assignmentId: binding.assignmentId,
+								credentialCapsuleId: binding.credentialCapsuleId,
+								computeIdentityId: binding.computeIdentityId,
+							},
+							signal,
+						)
+					: undefined;
+			geminiKeyRequest?.catch(() => undefined);
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
 				// Only a typed, cloud-authorized file event selects an initial path.
@@ -750,10 +824,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const firstChange = Array.isArray(changes)
 					? (changes[0] as Record<string, unknown> | undefined)
 					: undefined;
-				const initialPresence =
+				// WHY: Presence observation does not gate Wave 2 reads; run it concurrently and collect with the rest.
+				const initialPresenceRequest =
 					typeof firstChange?.path === "string"
-						? await observeCloudCompanyPathPresence(presence, firstChange.path, "object", "reading", signal)
-						: undefined;
+						? observeCloudCompanyPathPresence(presence, firstChange.path, "object", "reading", signal)
+						: Promise.resolve(undefined);
+				initialPresenceRequest.catch(() => undefined);
 				const gateway = new CloudCompanyPathGateway({
 					binding,
 					identity: context.identity,
@@ -843,7 +919,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					readCloudAgentHeadReading(notebooks.composition, signal),
 				]);
 				return {
-					initialPresence,
+					initialPresence: await initialPresenceRequest,
 					gateway,
 					memory,
 					skills,
@@ -857,6 +933,56 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 			const contextPromise = composeContext();
 			contextPromise.catch(() => undefined);
+			// WHY: Overlap tool-authority open and run-log open with Wave 2 folder/context reads.
+			prefetchAbort = new AbortController();
+			const runSignal = AbortSignal.any([signal, prefetchAbort.signal]);
+			const prefetchedRun = CloudNativeToolRun.open(
+				binding,
+				this.#control,
+				runSignal,
+				NATIVE_AUTHORITY_LEASE_SECONDS * 1000,
+			);
+			prefetchedRun.then(
+				(openedRun) => {
+					if (prefetchAbort?.signal.aborted) openedRun.close();
+					else prefetchedRunHandle = openedRun;
+				},
+				() => undefined,
+			);
+			const prefetchedLog = prefetchedRun.then((openedRun) => {
+				if (
+					Object.entries(context.identity).some(
+						([key, value]) => openedRun.identity[key as keyof typeof openedRun.identity] !== value,
+					)
+				)
+					throw new Error("Cloud context identity changed before execution");
+				return openCloudRunLog({
+					resume: new CloudRunResumeRpc({ run: openedRun, control: this.#paths }),
+					folder: new CloudRunLogCompanyFolder({
+						environmentId: openedRun.identity.environmentId,
+						runId: binding.runId,
+						folder: folder.client,
+						control: this.#paths,
+					}),
+					log: {
+						runId: binding.runId,
+						protection: new CloudRunLogRpcProtection({
+							environmentId: openedRun.identity.environmentId,
+							jobId: binding.jobId,
+							runId: binding.runId,
+							call: (method, argumentsValue, requestSignal) =>
+								this.#paths.call(method, argumentsValue, requestSignal),
+						}),
+						signal: openedRun.signal,
+						// WHY: Strictly read-only parallelRead actions never mutate state and skip run-log precommit barriers.
+						effectful: (tool, parsed) =>
+							!isCloudParallelReadCall(tool, parsed) &&
+							cloudActionEffect(tool, parsed, connectorEffects, offlineShells) !== "read",
+					},
+					lines: { call: compactor.call, lane },
+				});
+			});
+			prefetchedLog.catch(() => undefined);
 			const machinesAvailable = await machinesRequest;
 			stage = "codex-home";
 			const home = await homeRequest;
@@ -882,10 +1008,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// in the run's compactor lane, on threads this run's Codex session answers (§7.1), and its work composer
 			// serves the agent's requests from then on (§5.7). A run without a log sends each request as Codex built it,
 			// with only its receipts' work message added on a resumed attempt (20260930539000).
+			const promptCacheRole = cloudWorkerToolFilter(wake).isWorker ? "worker" : context.agentKind;
+			const promptCacheKeyFor = (model: string): string =>
+				cloudNativePromptCacheKey(
+					"company",
+					context.identity.companyId,
+					context.identity.staffAgentId,
+					context.identity.audienceKind,
+					context.identity.audienceUserId ?? "",
+					promptCacheRole,
+					model,
+				);
 			let runWork: CloudCodexContextComposer | undefined;
-			const composeRun: CloudCodexContextComposer = (request, composeSignal) =>
-				runWork ? runWork(request, composeSignal) : cloudNativeContextIdentity(request);
-			const connectorEffects = cloudConnectorEffects(connectorDescriptors);
+			const composeRun: CloudCodexContextComposer = async (request, composeSignal) => {
+				const composed = runWork ? await runWork(request, composeSignal) : cloudNativeContextIdentity(request);
+				return composed.promptCacheKey === undefined
+					? { ...composed, promptCacheKey: promptCacheKeyFor(request.model) }
+					: composed;
+			};
+			connectorEffects = cloudConnectorEffects(connectorDescriptors);
 			// The run's admission (contract §6, M1b-4b-3), before any provider work: its binary, bundle, reasoning policy
 			// and exact tool catalog. The opening binds its context to it once composed.
 			let admitted: Record<string, unknown> | undefined;
@@ -1117,19 +1258,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return { kind: "text", value: text, completesTurn: true };
 				},
 			};
+			let pictureLane: ResolvedRunPictureLane | undefined;
 			try {
 				stage = "native-tools";
-				// The run's own offline commands (F3 4d): its computer tools add each one it starts, and its action review
-				// lets input to them through as it lets their start through.
-				const offlineShells = new Set<string>();
 				// A worker's report, once the folder saved it: its run's closing act (turnCorrection, below).
 				let workerReported = false;
-				// Pictures are made on the run's own Codex sign-in (cloud-picture-channel.ts), which a run on a member's
-				// ChatGPT plan has not: it gets no picture lane and is not offered make_picture. Its identity root says so, as
-				// the session reads it.
-				const pictures =
-					isGeminiRun || (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
-				const voice = pictures ? new CloudVoiceChannel() : undefined;
 				let geminiSession:
 					| {
 							readonly model: NonNullable<CloudNativeCompanyContext["gemini"]>["model"];
@@ -1151,23 +1284,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					  }
 					| undefined;
 				if (context.gemini) {
-					if (!this.#geminiKeys)
+					if (!geminiKeyRequest)
 						throw new Error(
 							"Gemini 4 Neon conversations require the company vault, which this host does not carry; nothing ran on Codex",
 						);
-					const openedKey = await openGeminiKeyForRun(
-						this.#geminiKeys,
-						{
-							leaseId: binding.leaseId,
-							runId: binding.runId,
-							jobId: binding.jobId,
-							runnerId: binding.runnerId,
-							assignmentId: binding.assignmentId,
-							credentialCapsuleId: binding.credentialCapsuleId,
-							computeIdentityId: binding.computeIdentityId,
-						},
-						signal,
-					);
+					const openedKey = await geminiKeyRequest;
 					if (openedKey.state === "refused") {
 						if (openedKey.reason === "CAP_REACHED") {
 							throw tagNativeRuntimeFailure(
@@ -1212,11 +1333,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						},
 					};
 				}
+				pictureLane = await this.#pictureLane({
+					binding,
+					identity: context.identity,
+					identityRoot,
+					preferredModel: context.imageModel,
+					usesPrimaryCodexSession: !isGeminiRun,
+					...(geminiSession ? { existingGeminiApiKey: geminiSession.apiKey } : {}),
+					geminiFallbackAllowed: isGeminiRun,
+					signal,
+				});
+				const pictures = pictureLane.channel;
+				const voice =
+					!isGeminiRun && !(await hasChatGptPlanDirectory(identityRoot)) ? new CloudVoiceChannel() : undefined;
+				prefetchedRunAdopted = true;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
 					serviceTier,
 					controlPlane: this.#control,
+					prefetchedRun,
 					...(geminiSession ? { gemini: geminiSession } : {}),
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
@@ -1252,7 +1388,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					opening,
 					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
 					compactor,
-					...(pictures ? { pictures } : {}),
+					...(pictures && pictureLane.attachToCodex ? { pictures } : {}),
 					...(voice ? { voice } : {}),
 					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
 					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
@@ -1361,29 +1497,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						// Before any provider request: a resumed attempt reads its earlier work first (W5b-2), or, in Agent
 						// notebooks, the run's receipts (20260930539000). The log steps a call as auto-review classifies
 						// it. A log made once and no longer there ends the run, as it does mid-run.
-						const opened = await openCloudRunLog({
-							resume: new CloudRunResumeRpc({ run, control: this.#paths }),
-							folder: new CloudRunLogCompanyFolder({
-								environmentId: identity.environmentId,
-								runId: binding.runId,
-								folder: folder.client,
-								control: this.#paths,
-							}),
-							log: {
-								runId: binding.runId,
-								protection: new CloudRunLogRpcProtection({
-									environmentId: identity.environmentId,
-									jobId: binding.jobId,
-									runId: binding.runId,
-									call: (method, argumentsValue, requestSignal) =>
-										this.#paths.call(method, argumentsValue, requestSignal),
-								}),
-								signal: run.signal,
-								effectful: (tool, parsed) =>
-									cloudActionEffect(tool, parsed, connectorEffects, offlineShells) !== "read",
-							},
-							lines: { call: compactor.call, lane },
-						}).catch((error: unknown) => {
+						const opened = await prefetchedLog.catch((error: unknown) => {
 							throw error instanceof CloudRunLogGone
 								? tagNativeRuntimeFailure(error, "native-tools", "authority_unavailable")
 								: error;
@@ -1786,9 +1900,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					this.#rememberSpareEffort(identityRoot, {
 						reasoningEffort: context.identity.reasoningEffort,
 						serviceTier,
+						home: Boolean(home && this.#homeChannel),
 					});
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
+				await pictureLane?.close();
 				await mouth.close();
 			}
 		} catch (error) {
@@ -1805,6 +1921,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 			throw tagNativeRuntimeFailure(error, stage, cloudRuntimeErrorCategory(error, signal));
 		} finally {
+			if (!prefetchedRunAdopted) {
+				prefetchAbort?.abort();
+				prefetchedRunHandle?.close();
+			}
 			await presence?.close().catch(() => undefined);
 			await observability.close();
 		}
@@ -1945,14 +2065,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			timeoutMs: this.#timeoutMs,
 		});
 		if (usageSignal) await this.#recordUsageSignalKind(binding, usageSignal);
-		this.#rememberSpareEffort(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+		this.#rememberSpareEffort(identityRoot, {
+			reasoningEffort: identity.reasoningEffort,
+			serviceTier,
+			home: false,
+		});
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
 	async #loadSurfaceCodingBinding(
-		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
 		payload: Record<string, unknown>,
+		getFolder: () => CloudCompanyFolderClient,
 		signal: AbortSignal,
 	): Promise<SurfaceCodingTurnBinding | undefined> {
 		const rawSurface = payload.surfaceSession;
@@ -1984,7 +2108,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
+		const resolvedChanges = parseSurfaceTurnResolvedChanges(sessionTurnRaw.resolvedChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
+		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
+		const replyChangeId =
+			typeof sessionTurnRaw.replyChangeId === "string" && sessionTurnRaw.replyChangeId.trim()
+				? sessionTurnRaw.replyChangeId.trim()
+				: null;
 		const originRefRec =
 			sessionTurnRaw.originRef &&
 			typeof sessionTurnRaw.originRef === "object" &&
@@ -1994,13 +2125,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const chainMode = originRefRec?.chainMode === true;
 		const omittedBaseChanges = parseSurfaceOmittedBaseChanges(originRefRec?.omittedBaseChanges);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
-		const folderClient = new CloudCompanyFolderClient({
-			binding,
-			identity,
-			control: this.#paths,
-			bytes: this.#folderBytes(binding, identity),
-			...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
-		});
+		const branchHeadSha = typeof sessionTurnRaw.branchHeadSha === "string" ? sessionTurnRaw.branchHeadSha : null;
+		const folderClient = getFolder();
 		const readBrief = async (): Promise<string | null> => {
 			try {
 				const found = await folderClient.readText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`, 16_384, signal);
@@ -2011,18 +2137,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				return null;
 			}
 		};
-		const [briefMarkdown, identityContext, sharedSnapshot, memberImages] = await Promise.all([
+		// WHY: loadSurfaceSharedAssets already reads brief.md, voice.md, and tokens.json; derive identityContext instead of reading them twice.
+		const [briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
 			readBrief(),
-			loadSurfaceIdentityContext(folderClient, signal).catch((error) => {
-				if (signal.aborted) throw error;
-				return null;
-			}),
 			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
 			}),
 			this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
 		]);
+		const identityContext =
+			sharedSnapshot && (sharedSnapshot.briefMarkdown || sharedSnapshot.voiceSummary || sharedSnapshot.tokensJson)
+				? {
+						briefMarkdown: sharedSnapshot.briefMarkdown,
+						voiceSummary: sharedSnapshot.voiceSummary,
+						tokensJson: sharedSnapshot.tokensJson,
+					}
+				: null;
 		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
 			leaseToken,
 			deferSessionCompletion: true,
@@ -2047,9 +2178,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			conflictPaths,
 			conflictDetails,
 			previewBaseChanges: previewContext.previewBaseChanges,
+			...(sessionOpenChanges.length > 0 ? { sessionOpenChanges } : {}),
+			...(replyChangeId ? { replyChangeId } : {}),
 			chainMode,
 			omittedBaseChanges,
 			mainSha,
+			branchHeadSha,
+			openChanges,
+			resolvedChanges,
 			recordChange: surfaceTools.recordChange,
 			memberImages,
 			viewAttachment: (image, readSignal) => readSurfaceMemberImage(folderClient, image, readSignal),
@@ -2092,6 +2228,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const sourceKind = payload.sourceKind as SurfaceSourceKind;
 		const leaseToken = String(payload.leaseToken);
 		// WHY: Read the full prompt, briefSummary, originRef, and conflictPaths via native host call so wake payloads remain well under Postgres's 8192-byte check.
+		// WHY: Start member-images and vault Gemini key fetches concurrently since both depend only on wake/binding fields.
+		const memberImagesRequest = this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal);
+		memberImagesRequest.catch(() => undefined);
+		const geminiKeyRequest =
+			context.gemini && this.#geminiKeys
+				? openGeminiKeyForRun(
+						this.#geminiKeys,
+						{
+							leaseId: binding.leaseId,
+							runId: binding.runId,
+							jobId: binding.jobId,
+							runnerId: binding.runnerId,
+							assignmentId: binding.assignmentId,
+							credentialCapsuleId: binding.credentialCapsuleId,
+							computeIdentityId: binding.computeIdentityId,
+						},
+						signal,
+					)
+				: undefined;
+		geminiKeyRequest?.catch(() => undefined);
 		const sessionTurnRaw = (await this.#paths.call(
 			"qorpera_native_surface_read_session_turn",
 			{
@@ -2115,7 +2271,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
+		const resolvedChanges = parseSurfaceTurnResolvedChanges(sessionTurnRaw.resolvedChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
+		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
+		const replyChangeId =
+			typeof sessionTurnRaw.replyChangeId === "string" && sessionTurnRaw.replyChangeId.trim()
+				? sessionTurnRaw.replyChangeId.trim()
+				: null;
 		const originRefRec =
 			sessionTurnRaw.originRef &&
 			typeof sessionTurnRaw.originRef === "object" &&
@@ -2127,6 +2290,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const surfaceArchetype = surfaceArchetypeOf(sessionTurnRaw.surfaceArchetype);
 		const openLayoutOps = openSurfaceLayoutOps(sessionTurnRaw.openLayoutOps);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
+		const branchHeadSha = typeof sessionTurnRaw.branchHeadSha === "string" ? sessionTurnRaw.branchHeadSha : null;
 		const voiceModel =
 			typeof sessionTurnRaw.voiceModel === "string" && sessionTurnRaw.voiceModel.trim()
 				? sessionTurnRaw.voiceModel.trim()
@@ -2135,6 +2299,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			typeof sessionTurnRaw.voiceName === "string" && sessionTurnRaw.voiceName.trim()
 				? sessionTurnRaw.voiceName.trim()
 				: null;
+		const imageModel: CloudRuntimeImageModel | undefined = isCloudRuntimeImageModel(sessionTurnRaw.imageModel)
+			? sessionTurnRaw.imageModel
+			: context.imageModel;
 		const openScenesOps: StudioPatchOp[] = [];
 		if (Array.isArray(sessionTurnRaw.openScenesOps)) {
 			for (const entry of sessionTurnRaw.openScenesOps) {
@@ -2147,10 +2314,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				}
 			}
 		}
-		const memberImagesSection = surfaceMemberImagesSection(
-			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
-			"company_read",
-		);
+		const memberImagesSection = surfaceMemberImagesSection(await memberImagesRequest, "company_read");
 		const turnInput: SurfaceSessionTurnInput = {
 			sessionId,
 			surfaceId,
@@ -2185,11 +2349,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(previewContext.previewReconciliations.length > 0
 				? { previewReconciliations: previewContext.previewReconciliations }
 				: {}),
+			...(sessionOpenChanges.length > 0 ? { sessionOpenChanges } : {}),
+			...(replyChangeId ? { replyChangeId } : {}),
 			...(chainMode ? { chainMode: true } : {}),
 			...(omittedBaseChanges.length > 0 ? { omittedBaseChanges } : {}),
 			...(mainSha ? { mainSha } : {}),
+			...(branchHeadSha ? { branchHeadSha } : {}),
+			...(openChanges.length > 0 ? { openChanges } : {}),
+			...(resolvedChanges.length > 0 ? { resolvedChanges } : {}),
 			...(voiceModel ? { voiceModel } : {}),
 			...(voiceName ? { voiceName } : {}),
+			...(imageModel ? { imageModel } : {}),
 			...(openScenesOps.length > 0 ? { openScenesOps } : {}),
 			leaseToken,
 		};
@@ -2240,24 +2410,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			  }
 			| undefined;
 		if (context.gemini) {
-			if (!this.#geminiKeys) {
+			if (!geminiKeyRequest) {
 				throw new Error(
 					"Gemini 4 Neon conversations require the company vault, which this host does not carry; nothing ran on Codex",
 				);
 			}
-			const openedKey = await openGeminiKeyForRun(
-				this.#geminiKeys,
-				{
-					leaseId: binding.leaseId,
-					runId: binding.runId,
-					jobId: binding.jobId,
-					runnerId: binding.runnerId,
-					assignmentId: binding.assignmentId,
-					credentialCapsuleId: binding.credentialCapsuleId,
-					computeIdentityId: binding.computeIdentityId,
-				},
-				signal,
-			);
+			const openedKey = await geminiKeyRequest;
 			if (openedKey.state === "refused") {
 				if (openedKey.reason === "CAP_REACHED") {
 					throw tagNativeRuntimeFailure(
@@ -2304,7 +2462,21 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 		}
 
-		const studioVoice = isGeminiRun || (await chatGptPlanRun(identityRoot)) ? undefined : new CloudVoiceChannel();
+		const studioVoice =
+			!isGeminiRun && !(await hasChatGptPlanDirectory(identityRoot)) ? new CloudVoiceChannel() : undefined;
+		const studioPictureLane =
+			sourceKind === "folder" && !(turnInput.isInternal === true && turnInput.state === "reconciling")
+				? await this.#pictureLane({
+						binding,
+						identity,
+						identityRoot,
+						preferredModel: imageModel,
+						usesPrimaryCodexSession: !isGeminiRun,
+						...(geminiSession ? { existingGeminiApiKey: geminiSession.apiKey } : {}),
+						geminiFallbackAllowed: isGeminiRun,
+						signal,
+					})
+				: undefined;
 		let lastProviderSessionId = `surface-session:${sessionId}`;
 		const runModelTurn = async (spec: {
 			instructions: string;
@@ -2473,6 +2645,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				controlPlane: this.#control,
 				...(geminiSession ? { gemini: geminiSession } : {}),
 				...(studioVoice ? { voice: studioVoice } : {}),
+				...(studioPictureLane?.channel && studioPictureLane.attachToCodex
+					? { pictures: studioPictureLane.channel }
+					: {}),
 				beginExecution: async (specification, requestSignal) => {
 					const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 					const answer = await this.#paths.call(
@@ -2526,7 +2701,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return {
 						prompt: fullPrompt,
 						runtimeInstructions,
-						composeContext: cloudNativeContextIdentity,
+						composeContext: (request) =>
+							cloudNativeContextWithPromptCacheKey(
+								cloudNativeContextIdentity(request),
+								cloudNativePromptCacheKey(
+									"surface",
+									identity.companyId,
+									identity.staffAgentId,
+									surfaceSlug,
+									sourceKind,
+									isInternalTurn ? "internal" : "turn",
+									request.model,
+								),
+							),
 					};
 				},
 				turnCorrection: async () =>
@@ -2561,7 +2748,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				await this.#recordUsageSignalKind(binding, sessionResult.usageSignal);
 			}
 			if (!isGeminiRun) {
-				this.#rememberSpareEffort(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+				this.#rememberSpareEffort(identityRoot, {
+					reasoningEffort: identity.reasoningEffort,
+					serviceTier,
+					home: false,
+				});
 			}
 			const outcome = captured as SurfaceSessionTurnExecutionOutcome | null;
 			const mergedNotes = [...new Set([...stagedNotePaths, ...(outcome?.notePaths ?? [])])];
@@ -2714,6 +2905,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							}
 						: {}),
 				},
+				...(studioPictureLane?.channel
+					? {
+							makePicture: {
+								stageBytes: async (bytes, mediaType, reqSignal) => {
+									const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
+									return {
+										manifestSha256: ref.manifestSha256,
+										fileSha256: ref.fileSha256,
+										bytes: ref.bytes,
+										mediaType: ref.mediaType,
+									};
+								},
+								pictures: studioPictureLane.channel,
+							},
+						}
+					: {}),
 				executeTurn: async (turnReq) =>
 					runModelTurn({
 						instructions: turnReq.instructions,
@@ -2773,6 +2980,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			});
 		} finally {
 			surfaceFolderSearch?.close();
+			await studioPictureLane?.close();
 		}
 
 		if (turnResult.cause !== undefined) {
@@ -2932,10 +3140,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						timeZone: wake.time.timeZone,
 					},
 				});
+				const geminiWorkerLane = createGeminiImageLane({
+					binding,
+					paths: this.#paths,
+					...(this.#geminiKeys ? { geminiKeys: this.#geminiKeys } : {}),
+					...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+					...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+					...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
+					signal: runSignal,
+				});
+				const chatGptPlanWorkerLane =
+					home !== undefined && (await hasChatGptPlanToken(identityRoot))
+						? createChatGptPlanImageLane({
+								identityRoot,
+								model: binding.model,
+								...(this.#chatGptPlanApiBaseUrl ? { apiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
+								...(this.#chatGptPlanAllowLoopback ? { allowLoopback: true } : {}),
+								...(this.#chatGptPlanFetch ? { fetcher: this.#chatGptPlanFetch } : {}),
+							})
+						: undefined;
 				const chosen = await claudeWorkerPictures({
 					facts,
 					home: home !== undefined,
+					...(input.context.imageModel ? { preferredModel: input.context.imageModel } : {}),
 					...(host.pictures ? { given: host.pictures(identityRoot) } : {}),
+					...(geminiWorkerLane ? { gemini: geminiWorkerLane } : {}),
+					...(chatGptPlanWorkerLane ? { chatGptPlan: chatGptPlanWorkerLane } : {}),
 					lane: () => this.#claudePictureLane(identityRoot, binding, identity, runSignal),
 					foreignOwner: (path, ownerSignal) =>
 						cloudPictureForeignOwner(folder, path, identity.staffAgentId, ownerSignal),
@@ -3121,6 +3351,45 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				run.close();
 			}
 		}
+	}
+
+	#pictureLane(options: {
+		readonly binding: CloudNativeToolBinding;
+		readonly identity: CloudNativeToolIdentity;
+		readonly identityRoot: string;
+		readonly preferredModel?: CloudRuntimeImageModel;
+		readonly usesPrimaryCodexSession: boolean;
+		readonly allowChatGptSubscription?: boolean;
+		readonly existingGeminiApiKey?: string;
+		readonly geminiFallbackAllowed?: boolean;
+		readonly signal: AbortSignal;
+	}): Promise<ResolvedRunPictureLane> {
+		const geminiLane = createGeminiImageLane({
+			binding: options.binding,
+			paths: this.#paths,
+			...(this.#geminiKeys ? { geminiKeys: this.#geminiKeys } : {}),
+			...(options.existingGeminiApiKey ? { existingApiKey: options.existingGeminiApiKey } : {}),
+			...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+			...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+			...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
+			signal: options.signal,
+		});
+		return resolveRunPictureLane({
+			...(options.preferredModel ? { preferredModel: options.preferredModel } : {}),
+			identityRoot: options.identityRoot,
+			usesPrimaryCodexSession: options.usesPrimaryCodexSession,
+			...(options.allowChatGptSubscription === undefined
+				? {}
+				: { allowChatGptSubscription: options.allowChatGptSubscription }),
+			...(geminiLane ? { geminiLane } : {}),
+			...(options.geminiFallbackAllowed ? { geminiFallbackAllowed: true } : {}),
+			startCodexSideLane: () =>
+				this.#claudePictureLane(options.identityRoot, options.binding, options.identity, options.signal),
+			chatGptPlanModel: options.binding.model,
+			...(this.#chatGptPlanApiBaseUrl ? { chatGptPlanApiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
+			...(this.#chatGptPlanAllowLoopback ? { chatGptPlanAllowLoopback: true } : {}),
+			...(this.#chatGptPlanFetch ? { chatGptPlanFetch: this.#chatGptPlanFetch } : {}),
+		});
 	}
 
 	#claudePictureLane(

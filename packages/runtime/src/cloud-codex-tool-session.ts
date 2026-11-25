@@ -2,7 +2,20 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { BigIntStats, Dirent, Stats } from "node:fs";
 import { createReadStream, existsSync, constants as fsConstants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, rmdir, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	open,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	rmdir,
+	writeFile,
+} from "node:fs/promises";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -18,6 +31,7 @@ import {
 import {
 	CLOUD_HOME_CWD,
 	CLOUD_HOME_ENVIRONMENT_ID,
+	CLOUD_HOME_SOCKET_NAME,
 	type CloudCodexHome,
 	cloudHomeEnvironmentsToml,
 } from "./cloud-codex-home.ts";
@@ -40,6 +54,8 @@ import {
 	CHATGPT_PLAN_TOKEN_ENVIRONMENT,
 	CHATGPT_PLAN_TOKEN_FILE,
 	launchIsolatedNativeProcess,
+	NATIVE_ISOLATION_HOME_SOCKET,
+	NATIVE_ISOLATION_WORKSPACE,
 	type NativeChatGptPlanAccess,
 	type NativeIsolationConfiguration,
 } from "./cloud-native-isolation.ts";
@@ -215,15 +231,29 @@ type ModelRequestIdentity = Pick<CloudNativeFenceRequest, "threadId" | "turnId" 
 	outputs: readonly unknown[];
 };
 
-interface ReviewThread {
-	readonly threadId: string;
-	turnId?: string;
+const MAX_REUSABLE_REVIEW_TURNS = 16;
+const MAX_REUSABLE_REVIEW_BYTES = 128 * 1024;
+const REVIEW_SETTLE_WAIT_MS = 1_500;
+
+interface ReviewTurn {
+	id?: string;
 	verdictReceived: boolean;
 	busy?: true;
-	/** Exact outputs this host issued for the reviewer's calls. */
-	readonly issued: Map<string, string>;
 	resolve(value: unknown): void;
 	reject(error: Error): void;
+}
+
+interface ReviewThread {
+	readonly threadId: string;
+	readonly key: string;
+	readonly issued: Map<string, string>;
+	readonly endedTurnIds: Set<string>;
+	turn?: ReviewTurn;
+	turns: number;
+	promptBytes: number;
+	settling?: Promise<void>;
+	settled?: () => void;
+	retire?: boolean;
 }
 
 /** The threads a run's app-server holds beside the agent's: auto-review's, the memory compactor's, a voice call's and a
@@ -344,7 +374,7 @@ const DISABLED_FEATURES = [
 	"unified_image_budget",
 ] as const;
 
-/** Digests started ahead of a session, by artifact path. */
+const MAX_ARTIFACT_DIGESTS = 32;
 const artifactDigests = new Map<string, { identity: string; digest: Promise<string> }>();
 
 async function artifactIdentity(path: string): Promise<string> {
@@ -376,6 +406,29 @@ async function hashArtifact(path: string, signal?: AbortSignal): Promise<string>
 	return hash.digest("hex");
 }
 
+// WHY: Cache binary SHA-256 by (path, dev, ino, size, mtimeNs, ctimeNs) on every start so unchanged 398 MB binaries are never re-hashed across cold starts.
+async function cachedArtifactDigest(path: string, signal?: AbortSignal): Promise<string> {
+	const identity = await artifactIdentity(path);
+	const cached = artifactDigests.get(path);
+	if (cached?.identity === identity) {
+		try {
+			return signal ? await abortableDigest(cached.digest, signal) : await cached.digest;
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			if (artifactDigests.get(path) === cached) artifactDigests.delete(path);
+		}
+	}
+	const digest = hashArtifact(path);
+	const entry = { identity, digest };
+	artifactDigests.set(path, entry);
+	while (artifactDigests.size > MAX_ARTIFACT_DIGESTS)
+		artifactDigests.delete(artifactDigests.keys().next().value as string);
+	digest.catch(() => {
+		if (artifactDigests.get(path) === entry) artifactDigests.delete(path);
+	});
+	return signal ? await abortableDigest(digest, signal) : await digest;
+}
+
 /**
  * Starts hashing the Codex artifact (about 300 MB) once per service process, before
  * its run arrives. A session still compares the digest with its pin before it starts
@@ -386,10 +439,7 @@ export async function prefetchCloudCodexArtifact(executable: string): Promise<vo
 	try {
 		const path = await realpath(executable);
 		if (!(await lstat(path)).isFile()) return;
-		const identity = await artifactIdentity(path);
-		const digest = hashArtifact(path);
-		artifactDigests.set(path, { identity, digest });
-		await digest;
+		await cachedArtifactDigest(path);
 	} catch {
 		// The session hashes the artifact itself.
 	}
@@ -826,6 +876,7 @@ class CodexBoundaryRpc {
 	readonly #reviews = new Map<string, ReviewThread>();
 	/** Ended reviews keep their issued outputs: a closing request may still arrive before the interrupt lands. */
 	readonly #endedReviews = new Map<string, ReviewThread>();
+	#reusableReview?: ReviewThread;
 	#reviewQueue: Promise<void> = Promise.resolve();
 	/** The memory compactor (RUNTIME-AGENT-MEMORY-TREE.md §7.1): fresh tool-less threads in this same app-server, on
 	 * the run's payer, during the agent's turn and at closing after it. Their model requests pass the result fence on
@@ -1183,9 +1234,12 @@ class CodexBoundaryRpc {
 		// A request of an ended review changes nothing: its outputs are only our own acknowledgements.
 		if (this.#endedReviews.has(request.threadId)) return;
 		const review = this.#reviews.get(request.threadId);
-		if (!review || request.turnId === null || (review.turnId !== undefined && review.turnId !== request.turnId))
+		if (!review || request.turnId === null) throw new Error("Native review binding failed");
+		// WHY: A closing request from an interrupted prior turn on a reused reviewer thread still releases only recorded acknowledgements.
+		if (review.endedTurnIds.has(request.turnId)) return;
+		if (!review.turn || (review.turn.id !== undefined && review.turn.id !== request.turnId))
 			throw new Error("Native review binding failed");
-		review.turnId = request.turnId;
+		review.turn.id = request.turnId;
 	}
 
 	/** Released outputs of a reviewer request: exactly the verdict acknowledgements this host issued. */
@@ -1278,39 +1332,92 @@ class CodexBoundaryRpc {
 	async #review(input: Parameters<CodexBoundaryRpc["review"]>[0], signal: AbortSignal): Promise<unknown> {
 		signal.throwIfAborted();
 		if (this.#failure || this.#closed || this.#finished) throw new Error("Native review is unavailable");
-		// The start is followed to its end even when the caller stops waiting (its
-		// prewarm must stay on the reviewer's lane); a thread nobody waits for any
-		// more is ended at once, so its later messages are ignored.
-		const started = this.#startSide("review", signal, {
-			model: input.model,
-			cwd: input.cwd,
-			runtimeWorkspaceRoots: [],
-			environments: [],
-			ephemeral: true,
-			approvalPolicy: "never",
-			approvalsReviewer: "user",
-			sandbox: "read-only",
-			developerInstructions: input.instructions,
-			dynamicTools: [CLOUD_ACTION_REVIEW_SPECIFICATION],
-		});
-		let threadId: string;
-		try {
-			threadId = await untilAborted(started, signal);
-		} catch (error) {
-			void started.then(
-				(id) => {
-					this.#endedReviews.set(id, {
-						threadId: id,
-						issued: new Map(),
-						verdictReceived: true,
-						resolve: () => undefined,
-						reject: () => undefined,
+		const key = JSON.stringify([input.model, input.cwd, input.instructions]);
+		const promptBytes = Buffer.byteLength(input.prompt);
+		let review: ReviewThread | undefined;
+		const candidate = this.#reusableReview;
+		if (candidate) {
+			if (
+				!candidate.retire &&
+				candidate.key === key &&
+				candidate.turns < MAX_REUSABLE_REVIEW_TURNS &&
+				candidate.promptBytes + promptBytes <= MAX_REUSABLE_REVIEW_BYTES &&
+				this.#reviews.get(candidate.threadId) === candidate
+			) {
+				if (candidate.settling) {
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const timed = new Promise<void>((resolve) => {
+						timer = setTimeout(resolve, REVIEW_SETTLE_WAIT_MS);
+						timer.unref?.();
 					});
-				},
-				() => undefined,
-			);
-			throw error;
+					try {
+						await untilAborted(Promise.race([candidate.settling, timed]), signal, "Native review cancelled");
+					} finally {
+						clearTimeout(timer);
+					}
+				}
+				if (
+					!candidate.retire &&
+					!candidate.turn &&
+					!candidate.settling &&
+					this.#reviews.get(candidate.threadId) === candidate
+				) {
+					review = candidate;
+				} else {
+					this.#endReview(candidate.threadId);
+				}
+			} else {
+				this.#endReview(candidate.threadId);
+			}
 		}
+		if (!review) {
+			// The start is followed to its end even when the caller stops waiting (its
+			// prewarm must stay on the reviewer's lane); a thread nobody waits for any
+			// more is ended at once, so its later messages are ignored.
+			const started = this.#startSide("review", signal, {
+				model: input.model,
+				cwd: input.cwd,
+				runtimeWorkspaceRoots: [],
+				environments: [],
+				ephemeral: true,
+				approvalPolicy: "never",
+				approvalsReviewer: "user",
+				sandbox: "read-only",
+				developerInstructions: input.instructions,
+				dynamicTools: [CLOUD_ACTION_REVIEW_SPECIFICATION],
+			});
+			let threadId: string;
+			try {
+				threadId = await untilAborted(started, signal);
+			} catch (error) {
+				void started.then(
+					(id) => {
+						this.#endedReviews.set(id, {
+							threadId: id,
+							key,
+							issued: new Map(),
+							endedTurnIds: new Set(),
+							turns: 0,
+							promptBytes: 0,
+							retire: true,
+						});
+					},
+					() => undefined,
+				);
+				throw error;
+			}
+			review = {
+				threadId,
+				key,
+				issued: new Map(),
+				endedTurnIds: new Set(),
+				turns: 0,
+				promptBytes: 0,
+			};
+			this.#reviews.set(threadId, review);
+		}
+		const threadId = review.threadId;
+		this.#reusableReview = review;
 		let resolveVerdict: (value: unknown) => void = () => undefined;
 		let rejectVerdict: (error: Error) => void = () => undefined;
 		const verdict = new Promise<unknown>((resolve, reject) => {
@@ -1318,21 +1425,22 @@ class CodexBoundaryRpc {
 			rejectVerdict = reject;
 		});
 		void verdict.catch(() => undefined);
-		const review: ReviewThread = {
-			threadId,
-			issued: new Map(),
+		const turn: ReviewTurn = {
 			verdictReceived: false,
 			resolve: resolveVerdict,
 			reject: (error) => {
+				review.retire = true;
 				rejectVerdict(error);
 				this.#endReview(threadId);
 			},
 		};
-		this.#reviews.set(threadId, review);
+		review.turn = turn;
+		review.settling = new Promise<void>((resolve) => {
+			review.settled = resolve;
+		});
 		const abort = (): void => {
-			if (review.turnId)
-				void this.request("turn/interrupt", { threadId, turnId: review.turnId }).catch(() => undefined);
-			review.reject(new Error("Native review cancelled"));
+			if (turn.id) void this.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => undefined);
+			turn.reject(new Error("Native review cancelled"));
 		};
 		signal.addEventListener("abort", abort, { once: true });
 		try {
@@ -1355,21 +1463,28 @@ class CodexBoundaryRpc {
 			void starting.then(
 				(value) => {
 					const tid = (value as { turn?: { id?: unknown } } | null)?.turn?.id;
-					if (review.turnId === undefined && typeof tid === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(tid)) {
-						review.turnId = tid;
-						if (this.#reviews.get(threadId) !== review)
+					if (turn.id === undefined && typeof tid === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(tid)) {
+						turn.id = tid;
+						if (this.#reviews.get(threadId) !== review || review.turn !== turn)
 							void this.request("turn/interrupt", { threadId, turnId: tid }).catch(() => undefined);
 					}
 				},
 				() => undefined,
 			);
-			const turn = object(await untilAborted(starting, signal, "Native review cancelled"));
-			const turnId = identifier(object(turn.turn).id);
-			if (review.turnId !== undefined && review.turnId !== turnId) throw new Error("Native review binding failed");
-			review.turnId = turnId;
-			return await verdict;
+			const startedTurn = object(await untilAborted(starting, signal, "Native review cancelled"));
+			const turnId = identifier(object(startedTurn.turn).id);
+			if (turn.id !== undefined && turn.id !== turnId) throw new Error("Native review binding failed");
+			turn.id = turnId;
+			const result = await verdict;
+			review.turns += 1;
+			review.promptBytes += promptBytes;
+			if (review.turns >= MAX_REUSABLE_REVIEW_TURNS || review.promptBytes >= MAX_REUSABLE_REVIEW_BYTES) {
+				review.retire = true;
+			}
+			if (review.retire && !review.turn && !review.settling) this.#endReview(threadId);
+			return result;
 		} catch (error) {
-			review.reject(error instanceof Error ? error : new Error("Native review failed"));
+			turn.reject(error instanceof Error ? error : new Error("Native review failed"));
 			throw error;
 		} finally {
 			signal.removeEventListener("abort", abort);
@@ -1380,6 +1495,11 @@ class CodexBoundaryRpc {
 		const review = this.#reviews.get(threadId);
 		if (!review) return;
 		this.#reviews.delete(threadId);
+		if (this.#reusableReview === review) this.#reusableReview = undefined;
+		review.turn = undefined;
+		review.settled?.();
+		review.settled = undefined;
+		review.settling = undefined;
 		this.#endedReviews.set(threadId, review);
 		if (this.#endedReviews.size > TRACKED_REQUESTS)
 			this.#endedReviews.delete(this.#endedReviews.keys().next().value as string);
@@ -1399,15 +1519,17 @@ class CodexBoundaryRpc {
 		)
 			return false;
 		const review = this.#reviews.get(threadId);
+		const turn = review?.turn;
 		if (message.id !== undefined) {
 			// The verdict: the reviewer's only tool, called once in its turn.
 			if (
 				message.method !== "item/tool/call" ||
 				!review ||
-				review.verdictReceived ||
+				!turn ||
+				turn.verdictReceived ||
 				params!.namespace !== "qorpera" ||
 				params!.tool !== CLOUD_ACTION_REVIEW_TOOL ||
-				(review.turnId !== undefined && params!.turnId !== review.turnId)
+				(turn.id !== undefined && params!.turnId !== turn.id)
 			) {
 				this.#write({
 					id: message.id,
@@ -1416,29 +1538,49 @@ class CodexBoundaryRpc {
 				return true;
 			}
 			const callId = identifier(params!.callId);
-			review.verdictReceived = true;
+			turn.verdictReceived = true;
 			review.issued.set(callId, REVIEW_RECORDED_OUTPUT);
+			while (review.issued.size > TRACKED_REQUESTS)
+				review.issued.delete(review.issued.keys().next().value as string);
 			this.#write({
 				id: message.id,
 				result: { contentItems: [{ type: "inputText", text: REVIEW_RECORDED_OUTPUT }], success: true },
 			});
-			review.resolve(params!.arguments);
+			const args = params!.arguments;
+			// WHY: Only reuse a reviewer thread after an allow verdict so refusal/ask context never biases subsequent actions.
+			if (
+				args === null ||
+				typeof args !== "object" ||
+				Array.isArray(args) ||
+				(args as { decision?: unknown }).decision !== "allow"
+			) {
+				review.retire = true;
+			}
+			turn.resolve(args);
 			// The verdict is the review's only output: stop before a closing model round.
 			if (typeof params!.turnId === "string")
 				void this.request("turn/interrupt", { threadId, turnId: params!.turnId }).catch(() => undefined);
 			return true;
 		}
-		if (message.method === "turn/started" && review) {
+		if (message.method === "turn/started" && review && turn) {
 			const turnId = identifier(object(params!.turn).id);
-			if (review.turnId !== undefined && review.turnId !== turnId)
-				review.reject(new Error("Native review binding failed"));
-			else review.turnId = turnId;
-		} else if (message.method === "error" && review && params?.willRetry === false) {
-			if (providerBusy(params.error)) review.busy = true;
+			if (turn.id !== undefined && turn.id !== turnId) turn.reject(new Error("Native review binding failed"));
+			else turn.id = turnId;
+		} else if (message.method === "error" && review && turn && params?.willRetry === false) {
+			if (providerBusy(params.error)) turn.busy = true;
 		} else if (message.method === "turn/completed" && review) {
-			if (!review.verdictReceived)
-				review.reject(
-					review.busy ||
+			const finishedTurn = review.turn;
+			review.turn = undefined;
+			const completedTurnId =
+				params?.turn && typeof params.turn === "object" ? (params.turn as Record<string, unknown>).id : undefined;
+			if (finishedTurn?.id !== undefined) review.endedTurnIds.add(finishedTurn.id);
+			if (typeof completedTurnId === "string") review.endedTurnIds.add(completedTurnId);
+			review.settled?.();
+			review.settled = undefined;
+			review.settling = undefined;
+			if (finishedTurn && !finishedTurn.verdictReceived) {
+				finishedTurn.reject(
+					finishedTurn.busy ||
 						providerBusy(
 							params?.turn && typeof params.turn === "object"
 								? (params.turn as Record<string, unknown>).error
@@ -1447,7 +1589,13 @@ class CodexBoundaryRpc {
 						? new CloudActionReviewBusy()
 						: new Error("Native review ended without a verdict"),
 				);
-			this.#endReview(threadId);
+			} else if (
+				review.retire ||
+				review.turns >= MAX_REUSABLE_REVIEW_TURNS ||
+				review.promptBytes >= MAX_REUSABLE_REVIEW_BYTES
+			) {
+				this.#endReview(threadId);
+			}
 		}
 		// The reviewer's text, reasoning, usage and diagnostics are never delivered or kept.
 		return true;
@@ -2491,7 +2639,11 @@ class CodexBoundaryRpc {
 		this.#boundary?.close();
 		for (const pending of this.#pending.values()) pending.reject(this.#failure);
 		this.#pending.clear();
-		for (const review of this.#reviews.values()) review.reject(this.#failure);
+		for (const review of [...this.#reviews.values()]) {
+			review.retire = true;
+			review.turn?.reject(this.#failure);
+			this.#endReview(review.threadId);
+		}
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
 		this.#closeVoiceWindows();
 		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
@@ -2593,7 +2745,11 @@ class CodexBoundaryRpc {
 		this.#boundary?.close();
 		for (const pending of this.#pending.values()) pending.reject(new Error("Native boundary transport closed"));
 		this.#pending.clear();
-		for (const review of this.#reviews.values()) review.reject(new Error("Native boundary transport closed"));
+		for (const review of [...this.#reviews.values()]) {
+			review.retire = true;
+			review.turn?.reject(new Error("Native boundary transport closed"));
+			this.#endReview(review.threadId);
+		}
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
 		this.#closeVoiceWindows();
 		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
@@ -2937,9 +3093,9 @@ interface CloudCodexProcessInputs {
 	serviceTier: CloudRuntimeServiceTier;
 	identityRoot?: string;
 	isolation?: NativeIsolationConfiguration;
-	/** The agent's home for this run (slice 1). A run with one never takes a spare process and never leaves one:
-	 * its socket, its environment file and its configuration belong to this run alone. */
 	home?: CloudCodexHome;
+	homeEnabled?: boolean;
+	homeProgram?: string;
 	/** How a plan run's Codex gets the plan's token (the host's setting; unused for a Codex login). */
 	chatGptPlanAuth?: CloudChatGptPlanAuth;
 }
@@ -2947,6 +3103,7 @@ interface CloudCodexProcessInputs {
 /** What the result fence reaches once a run is bound to the process. */
 interface CloudCodexRunBinding {
 	boundary?: CloudNativeToolBoundary;
+	home?: CloudCodexHome;
 	recordContextView?: (
 		frame: CloudNativeFenceRequest,
 		outputs: readonly CloudNativeFencedResult[],
@@ -2980,6 +3137,7 @@ interface CloudCodexProcess {
 	readonly key: string;
 	readonly identityRoot?: string;
 	readonly workspace: string;
+	readonly hostWorkspace: string;
 	/** The process's CODEX_HOME, as the host names it: where Codex saves a picture it made. */
 	readonly codexHome: string;
 	readonly rpc: CodexBoundaryRpc;
@@ -2991,16 +3149,26 @@ interface CloudCodexProcess {
 	close(): Promise<void>;
 }
 
+function isHomeProcess(inputs: CloudCodexProcessInputs): boolean {
+	return inputs.home !== undefined || inputs.homeEnabled === true;
+}
+
+function homeProgramOf(inputs: CloudCodexProcessInputs): string | undefined {
+	return inputs.home?.program ?? inputs.homeProgram;
+}
+
 function cloudCodexProcessKey(inputs: CloudCodexProcessInputs): string {
 	return createHash("sha256")
 		.update(
 			JSON.stringify([
 				inputs.command,
 				inputs.binarySha256,
-				cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier),
+				cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier, undefined, isHomeProcess(inputs)),
 				inputs.identityRoot ?? null,
 				inputs.isolation ?? null,
 				inputs.chatGptPlanAuth ?? "command",
+				isHomeProcess(inputs),
+				homeProgramOf(inputs) ?? null,
 			]),
 		)
 		.digest("hex");
@@ -3024,21 +3192,29 @@ async function startCloudCodexProcess(
 	// Linux commonly uses /tmp. Keep the runtime below the unique private
 	// allocation so the containment validator never receives a shallow root.
 	const root = join(allocation, "runtime");
-	const binding: CloudCodexRunBinding = {};
-	const state = { fenceFailed: false, closed: false };
+	const binding: CloudCodexRunBinding = { ...(inputs.home ? { home: inputs.home } : {}) };
+	const state = { fenceFailed: false, homeFailed: false, closed: false };
+	const homeEnabled = isHomeProcess(inputs);
 	let child: ChildProcessWithoutNullStreams | undefined;
 	let isolated: Awaited<ReturnType<typeof launchIsolatedNativeProcess>> | undefined;
 	let rpc: CodexBoundaryRpc | undefined;
 	let fence: Awaited<ReturnType<typeof startCloudNativeResultFence>> | undefined;
+	let homeServer: Server | undefined;
+	let hostHomeSocket: string | undefined;
+	let environmentsFile: string | undefined;
 	const close = async (): Promise<void> => {
 		if (state.closed) return;
 		state.closed = true;
 		lifetime.abort();
 		rpc?.close();
 		binding.boundary?.close();
+		binding.home = undefined;
+		if (homeServer) await new Promise<void>((resolve) => homeServer!.close(() => resolve()));
+		if (hostHomeSocket) await rm(hostHomeSocket, { force: true }).catch(() => undefined);
 		await fence?.close();
 		if (isolated) await isolated.close();
 		else if (child) await stopProcessGroup(child);
+		if (environmentsFile) await rm(environmentsFile, { force: true }).catch(() => undefined);
 		await rm(allocation, { recursive: true, force: true });
 	};
 	const stop = (): void => {
@@ -3054,14 +3230,7 @@ async function startCloudCodexProcess(
 		const artifact = await lstat(command);
 		if (!artifact.isFile() || artifact.size > 512 * 1024 * 1024 || (artifact.mode & 0o022) !== 0)
 			throw new Error("Invalid native boundary artifact");
-		const prefetched = artifactDigests.get(command);
-		const digest =
-			prefetched?.identity === (await artifactIdentity(command))
-				? await abortableDigest(
-						prefetched.digest.catch(() => hashArtifact(command, signal)),
-						signal,
-					)
-				: await hashArtifact(command, signal);
+		const digest = await cachedArtifactDigest(command, signal);
 		signal.throwIfAborted();
 		if (digest !== inputs.binarySha256) throw new Error("Native boundary artifact mismatch");
 		progress.stage = "codex-identity";
@@ -3093,27 +3262,44 @@ async function startCloudCodexProcess(
 			: undefined;
 		if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
 			throw new Error("Invalid ChatGPT plan access token");
-		const workspace = join(root, "workspace");
+		const hostWorkspace = join(root, "workspace");
 		const home = join(root, "home");
 		await Promise.all(
-			[workspace, home, join(root, "config"), join(root, "data"), join(root, "cache")].map((path) =>
+			[hostWorkspace, home, join(root, "config"), join(root, "data"), join(root, "cache")].map((path) =>
 				mkdir(path, { mode: 0o700 }),
 			),
 		);
 		signal.throwIfAborted();
-		// The agent's home (slice 1): its socket in this run's own scratch root, and the one environment Codex may
-		// reach, written by this host after the auth-only check above, never by the model or a company file.
-		if (inputs.home) {
+		// WHY: Pre-bind the home Unix socket at a fixed virtual mount so home-mode Codex spares can warm before a run attaches its CloudCodexHome, failing closed on any early connection.
+		if (homeEnabled) {
 			progress.stage = "codex-home";
-			await inputs.home.listen(root);
-			await writeFile(
-				join(codexHome, "environments.toml"),
-				cloudHomeEnvironmentsToml(inputs.home.program ?? command, inputs.home.socketPath),
-				{
-					mode: 0o400,
-					flag: "wx",
-				},
-			);
+			hostHomeSocket = join(root, CLOUD_HOME_SOCKET_NAME);
+			const server = createServer((client) => {
+				const activeHome = binding.home;
+				if (!activeHome || state.closed) {
+					client.destroy();
+					state.homeFailed = true;
+					rpc?.fail("Native home boundary unavailable", "authority_unavailable");
+					return;
+				}
+				activeHome.serve(client);
+			});
+			server.on("error", () => undefined);
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(hostHomeSocket!, () => {
+					server.removeListener("error", reject);
+					resolve();
+				});
+			});
+			await chmod(hostHomeSocket, 0o600);
+			homeServer = server;
+			const socketTarget = inputs.isolation ? NATIVE_ISOLATION_HOME_SOCKET : hostHomeSocket;
+			environmentsFile = join(codexHome, "environments.toml");
+			await writeFile(environmentsFile, cloudHomeEnvironmentsToml(homeProgramOf(inputs) ?? command, socketTarget), {
+				mode: 0o400,
+				flag: "wx",
+			});
 		}
 		progress.stage = "codex-result-fence";
 		fence = await startCloudNativeResultFence({
@@ -3172,9 +3358,10 @@ async function startCloudCodexProcess(
 			"--strict-config",
 			"--listen",
 			"stdio://",
-			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier, plan, inputs.home !== undefined).flatMap(
-				(config) => ["-c", config],
-			),
+			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier, plan, homeEnabled).flatMap((config) => [
+				"-c",
+				config,
+			]),
 		];
 		progress.stage = "codex-process-start";
 		if (inputs.isolation) {
@@ -3185,14 +3372,15 @@ async function startCloudCodexProcess(
 				scratchRoot: root,
 				codexHome,
 				fenceSocket: fence.path,
-				...(inputs.home ? { homeSocket: inputs.home.socketPath } : {}),
+				workspaceMount: NATIVE_ISOLATION_WORKSPACE,
+				...(hostHomeSocket ? { homeSocket: hostHomeSocket, homeSocketMount: NATIVE_ISOLATION_HOME_SOCKET } : {}),
 				...(planAccess ? { chatGptPlan: planAccess } : {}),
 				signal: lifetime.signal,
 			});
 			child = isolated.child;
 		} else
 			child = spawn(command, commandArgs, {
-				cwd: workspace,
+				cwd: hostWorkspace,
 				env: {
 					HOME: home,
 					CODEX_HOME: codexHome,
@@ -3207,6 +3395,7 @@ async function startCloudCodexProcess(
 				stdio: ["pipe", "pipe", "pipe"],
 				detached: true,
 			});
+		const workspace = isolated?.workspace ?? hostWorkspace;
 		rpc = new CodexBoundaryRpc(child, undefined, undefined, isolated?.allowRealtime, isolated?.allowLongWaits);
 		rpc.chatGptPlan = plan !== undefined;
 		rpc.home = inputs.home;
@@ -3243,7 +3432,7 @@ async function startCloudCodexProcess(
 			{ includeLayers: false, cwd: workspace },
 			"handshake",
 		);
-		verifyConfiguration(configuration, inputs.effort, inputs.serviceTier, plan, inputs.home !== undefined);
+		verifyConfiguration(configuration, inputs.effort, inputs.serviceTier, plan, homeEnabled);
 		handshake.webSearch = plan === undefined && standaloneWebSearch(configuration);
 		progress.stage = "codex-skills";
 		const skills = object(
@@ -3265,6 +3454,7 @@ async function startCloudCodexProcess(
 			key: cloudCodexProcessKey(inputs),
 			...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
 			workspace,
+			hostWorkspace,
 			codexHome,
 			rpc: handshake,
 			userAgent,
@@ -3276,6 +3466,7 @@ async function startCloudCodexProcess(
 				return (
 					!state.closed &&
 					!state.fenceFailed &&
+					!state.homeFailed &&
 					!lifetime.signal.aborted &&
 					handshake.usable &&
 					launched.exitCode === null &&
@@ -3344,6 +3535,8 @@ export function prepareCloudCodexSpare(
 		serviceTier?: CloudRuntimeServiceTier;
 		identityRoot?: string;
 		isolation?: NativeIsolationConfiguration;
+		home?: boolean;
+		homeProgram?: string;
 		chatGptPlanAuth?: CloudChatGptPlanAuth;
 	},
 	idleMs: number,
@@ -3359,6 +3552,8 @@ export function prepareCloudCodexSpare(
 		serviceTier,
 		...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
 		...(inputs.isolation ? { isolation: inputs.isolation } : {}),
+		...(inputs.home ? { homeEnabled: true } : {}),
+		...(inputs.homeProgram ? { homeProgram: inputs.homeProgram } : {}),
 		...(inputs.chatGptPlanAuth ? { chatGptPlanAuth: inputs.chatGptPlanAuth } : {}),
 	};
 	// In the environment fallback a process keeps the plan token it started with, so a spare could run the
@@ -3370,11 +3565,17 @@ export function prepareCloudCodexSpare(
 	)
 		return;
 	const key = cloudCodexProcessKey(processInputs);
-	discardSpare(key);
+	const previousDisposal =
+		inputs.identityRoot !== undefined ? disposeCloudCodexSpares(inputs.identityRoot) : Promise.resolve(0);
+	if (inputs.identityRoot === undefined) discardSpare(key);
 	const starting = new AbortController();
-	const process = startCloudCodexProcess(processInputs, { stage: "codex-artifact" }, starting.signal).catch(
-		() => undefined,
-	);
+	const process = previousDisposal
+		.then(async () => {
+			if (starting.signal.aborted) return undefined;
+			if (inputs.identityRoot) await pruneCodexHome(join(inputs.identityRoot, "codex"));
+			return await startCloudCodexProcess(processInputs, { stage: "codex-artifact" }, starting.signal);
+		})
+		.catch(() => undefined);
 	const spare: NonNullable<ReturnType<typeof spares.get>> = {
 		...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
 		process,
@@ -3592,9 +3793,7 @@ export async function runCloudCodexToolSession(options: {
 			const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
 			let started: CloudCodexProcess;
 			try {
-				// A home is this run's own (its socket, its environment file, its configuration), so a run with one starts its
-				// own process and never leaves it for another run.
-				const spare = inputs.home ? undefined : await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
+				const spare = await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
 				if (spare) started = spare;
 				else {
 					if (options.identityRoot) {
@@ -3620,6 +3819,10 @@ export async function runCloudCodexToolSession(options: {
 				// now the fence refused every request and no thread could start.
 				rpc.bind(options.boundary, options.observability);
 				started.binding.boundary = options.boundary;
+				if (options.home) {
+					started.binding.home = options.home;
+					rpc.home = options.home;
+				}
 				if (options.recordContextView) {
 					started.binding.recordContextView = options.recordContextView;
 					started.binding.recordChecksAuthority = options.recordChecksAuthority === true;
@@ -3715,7 +3918,7 @@ export async function runCloudCodexToolSession(options: {
 						.filter(Boolean)
 						.join("\n"),
 				);
-				await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
+				await writeFile(join(started.hostWorkspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 				stage = "codex-thread-start";
 				await rpc.startThread();
 				const thread = object(
@@ -3838,6 +4041,8 @@ export async function runCloudCodexToolSession(options: {
 				options.pictures?.attach(undefined);
 				if (idleWatch !== undefined) clearInterval(idleWatch);
 				signal.removeEventListener("abort", abort);
+				started.binding.home = undefined;
+				rpc.home = undefined;
 				options.boundary.close();
 				// One run per process: the next run takes a spare or starts its own.
 				await started.close();

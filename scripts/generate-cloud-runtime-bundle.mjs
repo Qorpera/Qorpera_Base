@@ -8,20 +8,20 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929028199_runtime_bundle_activation_v281.sql";
-const activationVersion = 281;
-const previousActivationVersion = 280;
-const previousActivationSha256 = "f79958c4966dab58d7895a727c6dc1e080aa7b5795db847da288e110fddaf346";
+const activation = "supabase/migrations/20260929028399_runtime_bundle_activation_v283.sql";
+const activationVersion = 283;
+const previousActivationVersion = 282;
+const previousActivationSha256 = "c8e468a4259d98372ee4535002f910a9988168b5e28b33a5a8e310c2331b56fc";
 const activationRequires = Object.freeze([
 	[
-		"20260930888000_surface_silent_reconciliation",
-		"#2317 (silent reconciliation): bundle 281 pairs with qorpera_surface_reconciliations and qorpera_ensure_surface_reconciliation",
-		"to_regclass('public.qorpera_surface_reconciliations') is not null and to_regprocedure('public.qorpera_ensure_surface_reconciliation(uuid,uuid[],text[],boolean)') is not null",
+		"20260930900000_surface_discard_worktree_cleanup",
+		"#2370 (discarded code_repo worktree cleanup): bundle 283 pairs with qorpera_surface_complete_cleanup and qorpera_surface_lock_coding_workers_for_sessions",
+		"to_regprocedure('public.qorpera_surface_complete_cleanup(uuid,text,text,uuid)') is not null and to_regprocedure('public.qorpera_surface_lock_coding_workers_for_sessions(uuid[])') is not null",
 	],
 	[
-		"20260930890000_surface_preview_lineage",
-		"#2321 (preview lineage): bundle 281 reads previewContext and pairs with preview_base_change_ids and standalone dependent helpers",
-		"exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_surface_changes' and column_name = 'preview_base_change_ids') and to_regprocedure('public.qorpera_surface_enqueue_standalone_dependents(uuid,uuid[])') is not null",
+		"20260930901000_surface_update_change_in_place",
+		"#2365 (surface update change in place): bundle 283 pairs with qorpera_surface_reply_target_change_id and 14/16-arg change recording signatures",
+		"to_regprocedure('public.qorpera_surface_reply_target_change_id(uuid)') is not null and to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid)') is not null and to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text,uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires
@@ -143,6 +143,9 @@ export async function cloudRuntimeBundle(root = repository) {
 		return sha(runtimeManifestText(selected));
 	};
 	const runtime = (names) => names.map((name) => `packages/runtime/src/${name}.ts`);
+	const authorization = component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/")));
+	const implementation = [...files].filter(([path]) => !path.startsWith("supabase/migrations/"));
+	implementation.push(["supabase/migrations", authorization]);
 	const manifest = {
 		schema: "qorpera.runtime-bundle/v2",
 		modelPolicy,
@@ -154,18 +157,24 @@ export async function cloudRuntimeBundle(root = repository) {
 			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus"])),
 			contextComposer: component(runtime(["cloud-native-company-context", "cloud-runtime-hire-overlays", "cloud-company-path-gateway"])),
 			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-runtime-constitution", "cloud-runtime-hire-overlays", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
-			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),
+			authorization,
 			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-context-composition", "cloud-native-tool-boundary"])),
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
 			interactionSurfaces: component(runtime(["cloud-agent-mouth", "cloud-native-company-runtime"])),
 			workerLifecycle: component([...runtime(["cloud-runner-worker", "cloud-native-provider-host", "cloud-worker-tools"]), ...[...files.keys()].filter((path) => path.startsWith("packages/runtime/src/cloud-coding-") || path.startsWith("packages/runner-orchestrator/src/coding-") || path.startsWith("packages/contracts/src/cloud-coding"))]),
 			memoryAndSkills: component([...runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-memory-tools", "cloud-skill-tools", "cloud-company-path-gateway"]), "packages/cloud-client/src/cloud-skill-file.ts", "packages/cloud-client/src/cloud-agent-folder.ts"]),
 		},
-		implementation: Object.fromEntries([...files].sort(([a], [b]) => a.localeCompare(b, "en"))),
+		implementation: Object.fromEntries(implementation.sort(([a], [b]) => a.localeCompare(b, "en"))),
 	};
 	const text = runtimeManifestText(manifest);
 	if (Buffer.byteLength(text) > 512 * 1024) throw new Error("Runtime manifest exceeds its SQL bound (20260929023450)");
-	return { manifest, text, sha256: sha(text), modelPolicySha256: sha(runtimeManifestText(modelPolicy)) };
+	return {
+		manifest,
+		text,
+		sha256: sha(text),
+		modelPolicySha256: sha(runtimeManifestText(modelPolicy)),
+		sourceFiles: [...files.keys()].sort((a, b) => a.localeCompare(b, "en")),
+	};
 }
 
 export async function generateCloudRuntimeBundle(check = false, root = repository) {

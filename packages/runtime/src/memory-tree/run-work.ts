@@ -25,6 +25,7 @@ import {
 	type CloudNativeContextItem,
 	type CloudNativeContextRequest,
 	cloudNativeContextIdentity,
+	cloudNativeContextWithPromptCacheKey,
 } from "../cloud-native-context-composition.ts";
 import { RUN_VIEW } from "./tree.ts";
 
@@ -58,6 +59,14 @@ export interface CloudRunWorkOptions {
 	lines(r: number, budget: number, signal: AbortSignal): Promise<readonly string[]>;
 	/** Resume's uncertain outcomes, repeated verbatim outside summary folding in every work message. */
 	unfolded?: readonly string[];
+	promptCacheKey?: string | ((request: CloudNativeContextRequest) => string | undefined);
+}
+
+function resolvePromptCacheKey(
+	option: CloudRunWorkOptions["promptCacheKey"],
+	request: CloudNativeContextRequest,
+): string | undefined {
+	return typeof option === "function" ? option(request) : option;
 }
 
 /** What Codex lets a fold leave out: the run's own work. */
@@ -100,17 +109,20 @@ export function cloudRunWorkMessage(lines: readonly string[]): string {
  */
 export function cloudRunResumeComposer(
 	lines: readonly string[],
+	promptCacheKey?: CloudRunWorkOptions["promptCacheKey"],
 ): (request: CloudNativeContextRequest, signal: AbortSignal) => Promise<CloudNativeContextComposition> {
 	const message = cloudRunWorkMessage(lines);
 	// Codex refuses a larger one, and the run with it.
 	if (Buffer.byteLength(message) > CLOUD_NATIVE_WORK_MESSAGE_BYTES) throw new Error("Run work exceeds its bound");
 	return async (request) => {
+		const cacheKey = resolvePromptCacheKey(promptCacheKey, request);
 		// A prewarm is no turn's request and has no work.
-		if (request.purpose === "prewarm") return cloudNativeContextIdentity(request);
+		if (request.purpose === "prewarm")
+			return cloudNativeContextWithPromptCacheKey(cloudNativeContextIdentity(request), cacheKey);
 		const input: CloudNativeContextEntry[] = request.items.map((_, keep) => ({ keep }));
 		const place = request.items.findIndex(work);
 		input.splice(place < 0 ? input.length : place, 0, { work: message });
-		return { input };
+		return { input, ...(cacheKey === undefined ? {} : { promptCacheKey: cacheKey }) };
 	};
 }
 
@@ -138,8 +150,10 @@ export function cloudRunWorkComposer(
 		request: CloudNativeContextRequest,
 		signal: AbortSignal,
 	): Promise<CloudNativeContextComposition> => {
+		const cacheKey = resolvePromptCacheKey(options.promptCacheKey, request);
 		// A prewarm is no turn's request and has no work.
-		if (request.purpose === "prewarm") return cloudNativeContextIdentity(request);
+		if (request.purpose === "prewarm")
+			return cloudNativeContextWithPromptCacheKey(cloudNativeContextIdentity(request), cacheKey);
 		const items = request.items;
 		if (request.threadId !== thread || items.length < seen) {
 			// Another thread, or a history that shrank: nothing before this request is known.
@@ -231,7 +245,7 @@ export function cloudRunWorkComposer(
 			if (index === place && fold.message !== null) input.push({ work: fold.message });
 			if (index < items.length && kept(index)) input.push({ keep: index });
 		}
-		return { input };
+		return { input, ...(cacheKey === undefined ? {} : { promptCacheKey: cacheKey }) };
 	};
 
 	return (request, signal) => {

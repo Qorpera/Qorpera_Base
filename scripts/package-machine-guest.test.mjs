@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -181,6 +181,8 @@ test("the guest helper with the folder mount stays under the executor's 64 KiB r
 			platform: "node",
 			format: "esm",
 			target: "node22.19",
+			minifyWhitespace: true,
+			minifySyntax: true,
 			legalComments: "none",
 			logLevel: "silent",
 		});
@@ -840,6 +842,8 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 		);
 		// Where the pointer is cannot be read: the move is waited for, as it always was.
 		assert.equal(desktop("", "click", "640", "400"), "mousemove --sync 640 400 click 1");
+		assert.equal(desktop("100 100", "scroll", "down", "4", "640", "400"), "mousemove --sync 640 400 click --repeat 4 --delay 30 5");
+		assert.equal(desktop("640 400", "scroll", "up", "2", "640", "400"), "mousemove 640 400 click --repeat 2 --delay 30 4");
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}
@@ -849,7 +853,10 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 	assert.match(command, /then move=\(mousemove "\$3" "\$4"\); else move=\(mousemove --sync "\$3" "\$4"\); fi\n/);
 	// One xdotool call tells where the pointer is and how large the screen is: every call is a program started.
 	assert.match(command, /< <\(xdotool getmouselocation getdisplaygeometry 2>\/dev\/null\) \|\| true\n/);
-	assert.equal(command.match(/getmouselocation|getdisplaygeometry/g).length, 2);
+	assert.equal(
+		command.split("\n").filter((line) => /xdotool.*\b(getmouselocation|getdisplaygeometry)\b/.test(line)).length,
+		1,
+	);
 	for (const line of [
 		"\tdesktop click 800 500\n\tdesktop double 800 500\n\tdesktop move 800 500\n\tdesktop drag 800 500 800 500\n",
 		"\t(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||\n",
@@ -2263,34 +2270,39 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	// what that leaves to the image build).
 	if (process.platform !== "linux") return t.skip("the program is for a Linux machine (its ACLs, its descriptors)");
 	if (process.getuid() === 0) return t.skip("as root nothing is refused for want of a right: these cases need a plain account");
-	const base = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
-	let cases;
-	let said;
-	try {
-		const run = spawnSync(
-			"python3",
-			["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), base, "cases"],
-			{ encoding: "utf8" },
-		);
-		assert.equal(run.status, 0, run.stderr);
-		cases = JSON.parse(run.stdout);
-		said = run.stderr;
-	} finally {
-		spawnSync("chmod", ["-R", "u+rwx", base]);
-		await rm(base, { recursive: true, force: true });
-	}
-	// Root's side asked to stop, with its signals held back as its `main` holds them: one signal and a burst of ten
-	// (of the three kinds), a second into a copy, as the account's side is started, and as root's side ends what a
-	// side that is gone left (its `cp`, still to write); a second signal right after root's side ended the copy for
-	// the first, with the copy's staging there (review r4 F1 of #1712); and signals as the taking away is started.
-	// Each time root's side gives the work up, the taking away runs to its end, three seconds later the desk holds
-	// nothing, and only then does root's side end, BY the signal (the lowest that waits). The account's side and its
-	// child hold no signal back.
-	// Last: root's side started with SIGHUP ignored, as under nohup (review r5 F1 of #1712). It holds back and reads
-	// the other two only. A copy under a burst of ten SIGHUP runs to its end and nothing waits; a second copy in the
-	// same run is stopped by a SIGTERM as any is, after the cleanup. The account's side ignores SIGHUP too, as any
-	// program started under nohup does, and is ended all the same (the group's end is SIGKILL).
-	for (const [when, signalled, gaveUp, waits] of [
+	const runAsync = (command, args) =>
+		new Promise((resolveRun, rejectRun) => {
+			const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+			let stdout = "";
+			let stderr = "";
+			child.stdout.setEncoding("utf8").on("data", (chunk) => {
+				stdout += chunk;
+			});
+			child.stderr.setEncoding("utf8").on("data", (chunk) => {
+				stderr += chunk;
+			});
+			child.on("error", rejectRun);
+			child.on("close", (status, signal) => resolveRun({ status, signal, stdout, stderr }));
+		});
+	const casesPromise = (async () => {
+		const base = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
+		try {
+			const run = await runAsync("python3", [
+				"-I",
+				"-B",
+				join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"),
+				join(repositoryRoot, "deploy/machine/desktop-files"),
+				base,
+				"cases",
+			]);
+			assert.equal(run.status, 0, run.stderr);
+			return { cases: JSON.parse(run.stdout), said: run.stderr };
+		} finally {
+			spawnSync("chmod", ["-R", "u+rwx", base]);
+			await rm(base, { recursive: true, force: true });
+		}
+	})();
+	const stoppedSpecs = [
 		["copying", "SIGTERM", "stopped", [15]],
 		["copying:10", "SIGHUP", "stopped", [1, 2, 15]],
 		["spawn", "SIGTERM", "stopped", [15]],
@@ -2301,42 +2313,54 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		["tidy", "SIGTERM", "the desktop's user could not put /everyone/large on the desktop", [15]],
 		["tidy:10", "SIGHUP", "the desktop's user could not put /everyone/large on the desktop", [1, 2, 15]],
 		["ignored", "SIGTERM", "stopped", [15]],
-	]) {
-		const second = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
-		try {
-			const words = ["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), second, `stopped:${when}`];
-			const ignored = when === "ignored";
-			const run = ignored
-				? spawnSync("sh", ["-c", 'trap "" HUP; exec python3 "$@"', "sh", ...words], { encoding: "utf8" })
-				: spawnSync("python3", words, { encoding: "utf8" });
-			assert.deepEqual([run.status, run.signal], [null, signalled], `${when}: ${run.stderr}`);
-			const { "its child": child, "under SIGHUP": underHangups, ...told } = JSON.parse(run.stdout);
-			const copied = { large: "folder 755", "large/a.bin": "file 644" };
-			assert.deepEqual(
-				told,
-				{
-					"gave up": gaveUp,
-					calls: ["copy", "tidy"],
-					desk: ignored ? copied : {},
-					waits,
-					"held back": ignored ? [2, 15] : [1, 2, 15],
-					"the account's side": { "held back": [], "ignores SIGHUP": ignored },
-				},
-				when,
-			);
-			assert.deepEqual(
-				underHangups,
-				ignored ? { answer: ["folder", `${second}/desk/large`, "large"], calls: ["copy"], waits: [], "on the desk": Object.keys(copied) } : undefined,
-				when,
-			);
-			// (The child's note is there when it was not ended before it could write it.)
-			if (child) assert.equal(child, "SigBlk:\t0000000000000000", when);
-			if (when === "copying") assert.equal(child, "SigBlk:\t0000000000000000");
-		} finally {
-			spawnSync("chmod", ["-R", "u+rwx", second]);
-			await rm(second, { recursive: true, force: true });
-		}
-	}
+	];
+	const [{ cases, said }] = await Promise.all([
+		casesPromise,
+		Promise.all(
+			stoppedSpecs.map(async ([when, signalled, gaveUp, waits]) => {
+				const second = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
+				try {
+					const words = [
+						"-I",
+						"-B",
+						join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"),
+						join(repositoryRoot, "deploy/machine/desktop-files"),
+						second,
+						`stopped:${when}`,
+					];
+					const ignored = when === "ignored";
+					const run = ignored
+						? await runAsync("sh", ["-c", 'trap "" HUP; exec python3 "$@"', "sh", ...words])
+						: await runAsync("python3", words);
+					assert.deepEqual([run.status, run.signal], [null, signalled], `${when}: ${run.stderr}`);
+					const { "its child": child, "under SIGHUP": underHangups, ...told } = JSON.parse(run.stdout);
+					const copied = { large: "folder 755", "large/a.bin": "file 644" };
+					assert.deepEqual(
+						told,
+						{
+							"gave up": gaveUp,
+							calls: ["copy", "tidy"],
+							desk: ignored ? copied : {},
+							waits,
+							"held back": ignored ? [2, 15] : [1, 2, 15],
+							"the account's side": { "held back": [], "ignores SIGHUP": ignored },
+						},
+						when,
+					);
+					assert.deepEqual(
+						underHangups,
+						ignored ? { answer: ["folder", `${second}/desk/large`, "large"], calls: ["copy"], waits: [], "on the desk": Object.keys(copied) } : undefined,
+						when,
+					);
+					if (child) assert.equal(child, "SigBlk:\t0000000000000000", when);
+					if (when === "copying") assert.equal(child, "SigBlk:\t0000000000000000");
+				} finally {
+					spawnSync("chmod", ["-R", "u+rwx", second]);
+					await rm(second, { recursive: true, force: true });
+				}
+			}),
+		),
+	]);
 	const { top, desk } = cases;
 	const answer = (result) => {
 		assert.ok("answer" in result, JSON.stringify(result));

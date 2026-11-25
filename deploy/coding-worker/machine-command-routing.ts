@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import type {
 	CompanyMachineAccountFill, CompanyMachineAccountFillOutcome, CompanyMachineAccountFillSeal,
@@ -192,10 +192,14 @@ interface MemberPointerPass {
 	readonly authority: MemberMachinePointerAuthority;
 	readonly companyId: string | null;
 	readonly tokenSha256: string | null;
+	readonly epoch: number | null;
 	readonly until: number;
 	second: number;
 	moves: number;
 }
+const MEMBER_SHARED_ACTS_WINDOW_MS = 5_000;
+const MEMBER_SHARED_ACTS_LIMIT = 25;
+const MEMBER_SHARED_ACT_BUCKETS = 10_000;
 
 /** How long the executor's word that the agent was told of a member's touch may take (20260930734000): it goes beside
  * the agent's answer and never holds it (review r2 F2 of #1701). */
@@ -233,6 +237,7 @@ export class MachineCommandRouter {
 	readonly #pages = new CloudCommandPages();
 	readonly #pointers = new Map<string, MemberPointerPass>();
 	readonly #pointersByHold = new Map<string, Set<MemberPointerPass>>();
+	readonly #sharedActTimes = new Map<string, number[]>();
 	readonly #streamTickets = new Map<string, MemberStreamTicket>();
 	readonly #streamsOpen = new Set<{ readonly userId: string; readonly machineId: string }>();
 	/** The pointer begins on their way (by the sha-256 of their token), and the current second's count. */
@@ -521,23 +526,76 @@ export class MachineCommandRouter {
 	 * read again as the executor, and run on this node or sent once to the machine's node. What the member typed goes only
 	 * to the machine. */
 	async memberAct(request: CloudMemberMachineActRequest, signal: AbortSignal): Promise<CloudMemberMachineAct> {
-		if (request.shared === true) {
-			// A shared action (20260930734000): no hold of the member's; SQL refuses it while anyone holds the desktop
-			// privately, and serves it only while no one took it since.
-			if (!this.#options.memberShareBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
-			// The lease generation the input was made under goes to SQL, which refuses it once someone held the desktop
-			// privately since (20260930738000); a page before it sends none and is served as before.
-			const actionId = await this.#options.memberShareBegin(request.token, { companyId: request.companyId,
-				machineId: request.machineId, action: request.action,
-				...(request.generation === undefined ? {} : { generation: request.generation }) }, signal);
-			return this.#memberActServe(actionId, request.action, signal, false);
+		const tokenSha256 = sha256(request.token);
+		const cached = this.#actPass(request, tokenSha256);
+		if (cached && cached.authority.served && this.#options.memberActLocal) {
+			if (request.shared === true && !this.#admitSharedAct(cached.authority.userId, request.machineId))
+				throw new CloudMemberMachineActRefusal("DESKTOP_ACTIONS_TOO_FAST");
+			const authority: MemberMachineActAuthority = {
+				actionId: randomUUID(),
+				machineId: cached.authority.machineId,
+				placementId: cached.authority.placementId,
+				bootId: cached.authority.bootId,
+				executorOwner: cached.authority.executorOwner,
+				providerId: cached.authority.providerId,
+				userId: cached.authority.userId,
+				seat: cached.authority.generation,
+				served: true,
+				shared: request.shared === true,
+				passVerified: true,
+			};
+			try {
+				return await this.#options.memberActLocal(authority, request.action, signal);
+			} catch (error) {
+				// WHY: Any non-transient refusal invalidates the cached desktop pass so the next call re-verifies with SQL.
+				if (error instanceof CloudMemberMachineActRefusal && error.code !== "DESKTOP_BUSY")
+					this.#deletePointer(cached.authority.passId);
+				throw error;
+			}
 		}
-		if (!this.#options.memberActBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
-		// The epoch and the seat of the hold the page captured it under go to SQL, which runs it only under that hold (F24,
-		// F26).
-		const actionId = await this.#options.memberActBegin(request.token, { companyId: request.companyId,
-			machineId: request.machineId, action: request.action, epoch: request.epoch, seat: request.seat }, signal);
-		return this.#memberActServe(actionId, request.action, signal, false);
+		try {
+			if (request.shared === true) {
+				// A shared action (20260930734000): no hold of the member's; SQL refuses it while anyone holds the desktop
+				// privately, and serves it only while no one took it since.
+				if (!this.#options.memberShareBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+				// The lease generation the input was made under goes to SQL, which refuses it once someone held the desktop
+				// privately since (20260930738000); a page before it sends none and is served as before.
+				const actionId = await this.#options.memberShareBegin(
+					request.token,
+					{
+						companyId: request.companyId,
+						machineId: request.machineId,
+						action: request.action,
+						...(request.generation === undefined ? {} : { generation: request.generation }),
+					},
+					signal,
+				);
+				return await this.#memberActServe(actionId, request.action, signal, false);
+			}
+			if (!this.#options.memberActBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			// The epoch and the seat of the hold the page captured it under go to SQL, which runs it only under that hold (F24,
+			// F26).
+			const actionId = await this.#options.memberActBegin(
+				request.token,
+				{
+					companyId: request.companyId,
+					machineId: request.machineId,
+					action: request.action,
+					epoch: request.epoch,
+					seat: request.seat,
+				},
+				signal,
+			);
+			return await this.#memberActServe(actionId, request.action, signal, false);
+		} catch (error) {
+			if (
+				error instanceof CloudMemberMachineActRefusal &&
+				error.code !== "DESKTOP_BUSY" &&
+				error.code !== "DESKTOP_ACTIONS_TOO_FAST"
+			)
+				this.#revokeMachinePasses(tokenSha256, request.companyId, request.machineId);
+			throw error;
+		}
 	}
 	/** A member's action another executor sent here (the peer listener): read again, and run on this node only. */
 	memberActPeer(request: CloudMemberMachineActPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineAct> {
@@ -619,12 +677,19 @@ export class MachineCommandRouter {
 				const authority = await authorizeMemberMachinePointer(this.#options.control,
 					{ passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
 				if (authority.machineId !== request.machineId) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
-				const kept = this.#keepPointer(authority, request.companyId, tokenSha256, askedAt);
+				const epoch = "epoch" in request.begin ? request.begin.epoch : null;
+				const kept = this.#keepPointer(authority, request.companyId, tokenSha256, askedAt, epoch);
 				// What is left of it now, not what SQL said before its answer travelled.
 				const remaining = Math.floor(kept.until - performance.now());
 				if (remaining < 1) {
 					this.#deletePointer(authority.passId);
 					throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+				}
+				if (request.withStreamTicket === true) {
+					if (typeof request.origin !== "string" || !request.origin)
+						throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+					const minted = this.#mintStreamTicket(kept, request.companyId, request.machineId, request.begin, request.origin);
+					return { pass: passId, milliseconds: remaining, ticket: minted.ticket, seconds: minted.seconds };
 				}
 				return { pass: passId, milliseconds: remaining };
 			} finally {
@@ -658,7 +723,7 @@ export class MachineCommandRouter {
 			const authority = await authorizeMemberMachinePointer(this.#options.control,
 				{ passId: request.passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
 			if (!authority.served) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
-			kept = this.#keepPointer(authority, null, null, askedAt);
+			kept = this.#keepPointer(authority, null, null, askedAt, null);
 		}
 		if (!admitMove(kept)) return { moved: false };
 		return this.#pointerLocal(kept, request.x, request.y, signal);
@@ -687,6 +752,16 @@ export class MachineCommandRouter {
 			kept.authority.machineId !== request.machineId || kept.authority.private !== isPrivate ||
 			kept.authority.generation !== ("epoch" in hold ? hold.seat : hold.generation))
 			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		return this.#mintStreamTicket(kept, request.companyId, request.machineId, hold, request.origin);
+	}
+	#mintStreamTicket(
+		kept: MemberPointerPass,
+		companyId: string,
+		machineId: string,
+		hold: { readonly generation: number } | { readonly epoch: number; readonly seat: number },
+		origin: string,
+	): { ticket: string; seconds: number } {
+		const isPrivate = "epoch" in hold;
 		const now = performance.now();
 		for (const [ticket, asked] of this.#streamTickets) if (asked.until <= now) this.#streamTickets.delete(ticket);
 		while (this.#streamTickets.size >= MEMBER_STREAM_TICKETS) {
@@ -696,11 +771,55 @@ export class MachineCommandRouter {
 		}
 		const ticket = randomBytes(32).toString("base64url");
 		this.#streamTickets.set(ticket, {
-			until: now + MEMBER_STREAM_TICKET_MS, origin: request.origin, tokenSha256: kept.tokenSha256 as string,
-			companyId: request.companyId, machineId: request.machineId, userId: kept.authority.userId, private: isPrivate,
+			until: now + MEMBER_STREAM_TICKET_MS, origin, tokenSha256: kept.tokenSha256 as string,
+			companyId, machineId, userId: kept.authority.userId, private: isPrivate,
 			generation: kept.authority.generation, epoch: "epoch" in hold ? hold.epoch : null,
 		});
 		return { ticket, seconds: MEMBER_STREAM_TICKET_MS / 1000 };
+	}
+	#actPass(request: CloudMemberMachineActRequest, tokenSha256: string): MemberPointerPass | undefined {
+		const isPrivate = request.shared !== true;
+		if (!isPrivate && request.generation === undefined) return undefined;
+		const generation = isPrivate ? request.seat : (request.generation as number);
+		const key = pointerHoldKey(tokenSha256, request.companyId, request.machineId, isPrivate, generation);
+		const bucket = this.#pointersByHold.get(key);
+		if (!bucket) return undefined;
+		const now = performance.now();
+		let newest: MemberPointerPass | undefined;
+		for (const kept of [...bucket]) {
+			if (kept.until <= now) {
+				this.#deletePointer(kept.authority.passId);
+				continue;
+			}
+			if (isPrivate && kept.epoch !== request.epoch) continue;
+			if (!newest || kept.until > newest.until) newest = kept;
+		}
+		return newest;
+	}
+	#revokeMachinePasses(tokenSha256: string, companyId: string, machineId: string): void {
+		for (const [passId, kept] of [...this.#pointers]) {
+			if (kept.tokenSha256 === tokenSha256 && kept.companyId === companyId && kept.authority.machineId === machineId)
+				this.#deletePointer(passId);
+		}
+	}
+	#admitSharedAct(userId: string, machineId: string): boolean {
+		const now = performance.now();
+		const key = `${userId}\0${machineId}`;
+		let times = this.#sharedActTimes.get(key);
+		if (times) {
+			const cutoff = now - MEMBER_SHARED_ACTS_WINDOW_MS;
+			while (times.length > 0 && (times[0] as number) <= cutoff) times.shift();
+		} else {
+			if (this.#sharedActTimes.size >= MEMBER_SHARED_ACT_BUCKETS) {
+				const oldest = this.#sharedActTimes.keys().next().value;
+				if (oldest !== undefined) this.#sharedActTimes.delete(oldest);
+			}
+			times = [];
+			this.#sharedActTimes.set(key, times);
+		}
+		if (times.length >= MEMBER_SHARED_ACTS_LIMIT) return false;
+		times.push(now);
+		return true;
 	}
 	/**
 	 * A member's stream, as the live-picture listener took it (20260930745000): the ticket is used up here, whatever comes
@@ -839,7 +958,7 @@ export class MachineCommandRouter {
 	 * that ran out go, and the oldest when there are too many.
 	 */
 	#keepPointer(authority: MemberMachinePointerAuthority, companyId: string | null, tokenSha256: string | null,
-		askedAt: number): MemberPointerPass {
+		askedAt: number, epoch: number | null): MemberPointerPass {
 		const now = performance.now();
 		const until = askedAt + authority.milliseconds;
 		if (authority.milliseconds <= 0 || until <= now) throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
@@ -857,7 +976,7 @@ export class MachineCommandRouter {
 			if (oldest === undefined) break;
 			this.#deletePointer(oldest);
 		}
-		const kept: MemberPointerPass = { authority, companyId, tokenSha256, until, second: now, moves: 0 };
+		const kept: MemberPointerPass = { authority, companyId, tokenSha256, epoch, until, second: now, moves: 0 };
 		this.#pointers.set(authority.passId, kept);
 		if (tokenSha256 !== null && companyId !== null) {
 			const key = pointerHoldKey(tokenSha256, companyId, authority.machineId, authority.private, authority.generation);
@@ -1006,7 +1125,8 @@ export function localMemberMachineAct(host: {
 		const outcome = await host.memberAct({ placementId: authority.placementId, bootId: authority.bootId,
 			actionId: authority.actionId, action: { ...action }, seat: authority.seat, userId: authority.userId,
 			// A shared action (20260930734000): the host's fence names no member, so any private hold since stops it.
-			...(authority.shared ? { shared: true } : {}) }, signal);
+			...(authority.shared ? { shared: true } : {}),
+			...(authority.passVerified ? { passVerified: true } : {}) }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMemberMachineActRefusal(outcome.refused)) throw new CloudMemberMachineActRefusal(outcome.refused);
 			throw new Error("MEMBER_MACHINE_ACT_FAILED");

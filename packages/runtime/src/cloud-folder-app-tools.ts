@@ -100,7 +100,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { placeAppInGroup } from "./cloud-folder-app-groups.ts";
-import { refuseRetiredApp } from "./cloud-folder-app-retired.ts";
+import { type RetiredAppsRead, refuseRetiredApp } from "./cloud-folder-app-retired.ts";
 import {
 	args,
 	cloudFolderRefusal,
@@ -112,11 +112,13 @@ import {
 } from "./cloud-folder-file-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	CloudToolRefusal,
 	cloudToolJsonText,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
 	MAX_TOOL_ARGUMENT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
@@ -148,7 +150,7 @@ const SAVE_APP_EMBLEM =
  * The guides stood on save_app's fields until 14 November 2026 (#1804, cloud-app-guides.ts says why no model read them).
  */
 const APP_GUIDE_DESCRIPTION = [
-	"Read the guide to one part of an interface app before you make it with save_app. It reads nothing of the company and changes nothing.",
+	"Read the guide to one or several parts of an interface app before you make it with save_app (pass a topic name or a list of topics in about). It reads nothing of the company and changes nothing.",
 	"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
 	"- about a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, explainer, program): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
 	"- style, reads, writes: for a page written by hand: the base style and the company's colours as CSS variables, in light and dark; how its script reads the company's live data through the qorpera object, and how often; how it lets a member answer a question or change a table's row.",
@@ -681,6 +683,17 @@ export function cloudAppTools(options: {
 			return unavailable(error, "saved");
 		}
 	};
+	// WHY: Hand off retired.md and app.toml reads from save_app.prepare to execute for unreviewed own-app saves.
+	type ManifestRead = Awaited<ReturnType<typeof manifestText>>;
+	const preparedSaves = new Map<
+		string,
+		{
+			readonly name: string;
+			readonly operationKey: string;
+			readonly retired: RetiredAppsRead;
+			readonly stored: ManifestRead;
+		}
+	>();
 	// The guides this run has read (app_guide).
 	const guided = new Set<AppGuide>();
 	// A kit's own file is saved only in a run that has read the kit's guide: its fields, their bounds and its example
@@ -847,27 +860,65 @@ export function cloudAppTools(options: {
 		// its owner to members. Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as SaveRequest;
-			// A retired interface is the members' alone (cloud-folder-app-retired.ts): neither changed nor made again under
-			// its name, refused before the review.
-			await refuseRetiredApp(folder, request.name, context.signal, "saved");
-			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
+			// WHY: Read retired.md and app.toml concurrently while keeping retired refusal precedence.
+			const [retiredResult, storedResult] = await Promise.allSettled([
+				refuseRetiredApp(folder, request.name, context.signal, "saved"),
+				manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal),
+			]);
+			if (retiredResult.status === "rejected") throw retiredResult.reason;
+			if (storedResult.status === "rejected") throw storedResult.reason;
+			const retired = retiredResult.value;
+			const stored = storedResult.value;
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
+			if (!foreign) {
+				if (preparedSaves.size >= 64) preparedSaves.clear();
+				preparedSaves.set(context.callId, {
+					name: request.name,
+					operationKey: request.operationKey,
+					retired,
+					stored,
+				});
+			} else {
+				preparedSaves.delete(context.callId);
+			}
 			return foreign ? ({ ...request, foreignOwner: true } as unknown as JsonValue) : value;
 		},
 		refused: cloudFolderRefusal,
 		async execute(value, context) {
-			const request = value as unknown as SaveRequest;
+			const request = value as unknown as SaveRequest & { readonly foreignOwner?: boolean };
 			writable();
 			context.observation?.update({
 				inputBytes: request.files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0),
 			});
 			const root = appFolder(request.name) as string;
 			const reads: CloudCompanyFolderEntry[] = [];
-			// Again at the save, since a member may have retired it since the review: the read is released with the answer.
-			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
+			const cached = preparedSaves.get(context.callId);
+			preparedSaves.delete(context.callId);
+			// WHY: Only reuse prepare reads when no action review ran and the app is not foreign-owned.
+			const handoff =
+				!context.actionReviewId &&
+				!request.foreignOwner &&
+				cached?.name === request.name &&
+				cached.operationKey === request.operationKey
+					? cached
+					: undefined;
+			let retired: RetiredAppsRead;
+			let at: CloudCompanyFolderEntry | null;
+			if (handoff) {
+				retired = handoff.retired;
+				at = await read(root, context.signal);
+			} else {
+				const [retiredResult, atResult] = await Promise.allSettled([
+					refuseRetiredApp(folder, request.name, context.signal, "saved"),
+					read(root, context.signal),
+				]);
+				if (retiredResult.status === "rejected") throw retiredResult.reason;
+				if (atResult.status === "rejected") throw atResult.reason;
+				retired = retiredResult.value;
+				at = atResult.value;
+			}
 			if (retired.entry) reads.push(retired.entry);
-			const at = await read(root, context.signal);
 			if (at !== null && at.kind !== "folder")
 				throw new CloudToolRefusal(
 					`APP_NOT_A_FOLDER: ${root} is a ${at.kind === "file" ? "file" : "link"}, not an app's folder`,
@@ -1020,7 +1071,7 @@ export function cloudAppTools(options: {
 			// A change: the manifest kept or rewritten with its owner and posted as stored, and each file written over the
 			// version read now (a file another call changed in between is a conflict).
 			const manifestPath = `${root}/${APP_MANIFEST}`;
-			const stored = await manifestText(manifestPath, context.signal);
+			const stored = handoff ? handoff.stored : await manifestText(manifestPath, context.signal);
 			const units: CloudCompanyFolderUnit[] = [];
 			let entry = APP_DEFAULT_ENTRY;
 			if (stored !== null && stored !== "unreadable") reads.push(stored.entry);
@@ -1285,9 +1336,14 @@ export function cloudAppTools(options: {
 		// version read here, so an app made or changed in between is refused, never posted under the wrong class.
 		async prepare(value, context) {
 			const request = value as unknown as { name: string };
-			// A retired interface is posted or taken away by no agent, refused before the review.
-			await refuseRetiredApp(folder, request.name, context.signal, "saved");
-			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
+			// WHY: Read retired.md and app.toml concurrently while keeping retired refusal precedence.
+			const [retiredResult, storedResult] = await Promise.allSettled([
+				refuseRetiredApp(folder, request.name, context.signal, "saved"),
+				manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal),
+			]);
+			if (retiredResult.status === "rejected") throw retiredResult.reason;
+			if (storedResult.status === "rejected") throw storedResult.reason;
+			const stored = storedResult.value;
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			// A manifest that cannot be read or does not parse names no owner: it is reviewed as another's.
 			const foreign = parsed === null ? stored === "unreadable" : !parsed.ok || parsed.manifest.owner !== owner;
@@ -1306,9 +1362,16 @@ export function cloudAppTools(options: {
 				checkedVersion?: string | null;
 			};
 			writable();
-			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const path = `${appFolder(request.name)}/${APP_MANIFEST}`;
-			const stored = await manifestText(path, context.signal);
+			// WHY: Re-read retired.md and app.toml fresh in parallel to preserve APP_CHANGED and retired checks.
+			const [retiredResult, storedResult] = await Promise.allSettled([
+				refuseRetiredApp(folder, request.name, context.signal, "saved"),
+				manifestText(path, context.signal),
+			]);
+			if (retiredResult.status === "rejected") throw retiredResult.reason;
+			if (storedResult.status === "rejected") throw storedResult.reason;
+			const retired = retiredResult.value;
+			const stored = storedResult.value;
 			// The review judged the manifest read in prepare: one made or changed since is not the one it judged.
 			if (
 				request.checkedVersion !== undefined &&
@@ -1386,6 +1449,9 @@ export function cloudAppTools(options: {
 		},
 	};
 
+	const APP_GUIDE_MAX_TOPICS = 6;
+	const guideFencedBytes = (value: string): number =>
+		Buffer.byteLength(JSON.stringify(value)) + 5 * (value.match(/[<>&\u2028\u2029]/g)?.length ?? 0);
 	const appGuideTool: CloudNativeTool = {
 		name: "app_guide" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -1395,18 +1461,69 @@ export function cloudAppTools(options: {
 			type: "object",
 			additionalProperties: false,
 			required: ["about"],
-			properties: { about: { type: "string", enum: [...APP_GUIDES] } },
+			properties: {
+				about: {
+					oneOf: [
+						{ type: "string", enum: [...APP_GUIDES] },
+						{
+							type: "array",
+							items: { type: "string", enum: [...APP_GUIDES] },
+							minItems: 1,
+							maxItems: APP_GUIDE_MAX_TOPICS,
+							uniqueItems: true,
+						},
+					],
+				},
+			},
 		},
 		parseArguments(value) {
 			const about = args(value, "app_guide", ["about"]).about;
-			if (!isAppGuide(about)) throw new CloudToolArgumentRefusal(`about must be one of ${APP_GUIDES.join(", ")}`);
-			return { about };
+			if (isAppGuide(about)) return { about };
+			if (Array.isArray(about)) {
+				if (about.length < 1 || about.length > APP_GUIDE_MAX_TOPICS)
+					throw new CloudToolArgumentRefusal(`about list must have 1 to ${APP_GUIDE_MAX_TOPICS} topics`);
+				const topics: AppGuide[] = [];
+				for (const entry of about) {
+					if (!isAppGuide(entry))
+						throw new CloudToolArgumentRefusal(`about must be one of ${APP_GUIDES.join(", ")}`);
+					if (!topics.includes(entry)) topics.push(entry);
+				}
+				return { about: topics };
+			}
+			throw new CloudToolArgumentRefusal(`about must be one of ${APP_GUIDES.join(", ")}`);
 		},
 		async execute(value, context) {
-			const about = (value as { about: AppGuide }).about;
-			// Read once the answer is on its way: a guide that could not be shown was not read.
-			const shown = await released(folder, identity.runId, context, appGuide(about), []);
-			guided.add(about);
+			const raw = (value as { about: AppGuide | readonly AppGuide[] }).about;
+			const topics = Array.isArray(raw) ? raw : [raw];
+			if (topics.length === 1) {
+				const topic = topics[0]!;
+				const shown = await released(folder, identity.runId, context, appGuide(topic), []);
+				guided.add(topic);
+				return shown;
+			}
+			// WHY: Pack as many requested guides as fit in one tool result so multi-topic calls never exceed MAX_CLOUD_TOOL_RESULT_BYTES.
+			const budget = MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES - 256;
+			const shownTopics: AppGuide[] = [];
+			const shownTexts: string[] = [];
+			const deferred: AppGuide[] = [];
+			for (const topic of topics) {
+				const body = appGuide(topic);
+				if (
+					shownTexts.length === 0 ||
+					(deferred.length === 0 && guideFencedBytes([...shownTexts, body].join("\n\n---\n\n")) <= budget)
+				) {
+					shownTopics.push(topic);
+					shownTexts.push(body);
+				} else {
+					deferred.push(topic);
+				}
+			}
+			const combined =
+				deferred.length === 0
+					? shownTexts.join("\n\n---\n\n")
+					: `${shownTexts.join("\n\n---\n\n")}\n\nNot shown here to keep each guide whole: ${deferred.join(", ")}. Call app_guide again for them.`;
+			const shown = await released(folder, identity.runId, context, combined, []);
+			for (const topic of shownTopics) guided.add(topic);
 			return shown;
 		},
 	};

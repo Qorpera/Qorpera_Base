@@ -1,3 +1,5 @@
+import { isRecord, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
+
 export const NATIVE_ACCOUNT_REFRESH_SCHEMA = "qorpera.native-account-refresh/v1";
 export const NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA = "qorpera.native-account-refresh-result/v1";
 
@@ -14,12 +16,11 @@ export interface NativeAccountRefreshDescription extends Omit<NativeAccountRefre
 	status: "pending" | "completed";
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 
 function object(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid account refresh");
-	return value as Record<string, unknown>;
+	if (!isRecord(value)) throw new Error("Invalid account refresh");
+	return value;
 }
 
 function identity(value: Record<string, unknown>): Omit<NativeAccountRefreshRequest, "capability"> {

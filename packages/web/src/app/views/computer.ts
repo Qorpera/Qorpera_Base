@@ -521,6 +521,20 @@ export class ComputerPanel {
 	/** The desktop's live picture in the large view (20260930745000), while there is one; no new one before
 	 * `#streamAfter`, and none on this page once the way has no stream route (`#streamOff`). */
 	#stream: PageStream | undefined;
+	// WHY: Pre-warmed pass+ticket started in parallel with initial look() on warm direct-to-large-view opens.
+	#prewarm:
+		| {
+				readonly machineId: string;
+				readonly holdKey: string;
+				readonly promise: Promise<{
+					readonly pass: string;
+					readonly until: number;
+					readonly endsBy: number;
+					readonly ticket?: string;
+					readonly ticketUntil?: number;
+				} | null>;
+		  }
+		| undefined;
 	#streamAfter = Number.NEGATIVE_INFINITY;
 	#streamOff = false;
 	/** A shared action was refused DESKTOP_HELD_SINCE (20260930738000) when this many list reads had begun: no sharing
@@ -1062,6 +1076,7 @@ export class ComputerPanel {
 		this.#enterOnShow = false;
 		this.#enterOnOpen = false;
 		this.#openedOn = undefined;
+		this.#prewarm = undefined;
 		this.#view?.back();
 		this.el.remove();
 		// Removal takes focus without a focusout in every browser; the next focus in the panel starts clean.
@@ -1092,6 +1107,7 @@ export class ComputerPanel {
 		// The member closes it: shared input goes, unsaid (review r5 F2), before anything redraws.
 		this.#endShared();
 		this.#released();
+		this.#prewarm = undefined;
 		if (this.#stream) this.#endStream(this.#stream);
 		if (!this.#parentGone()) void this.#ledger.releaseAgent(this.agentId, "closed");
 		this.#teardown();
@@ -1194,6 +1210,7 @@ export class ComputerPanel {
 				// and says so (review r5 F2), as does a word that input was lost before.
 				this.#screenSeen = false;
 				this.#endShared(true);
+				this.#prewarm = undefined;
 				if (!this.#lostShown) this.#controlNote.textContent = "";
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
@@ -1252,6 +1269,8 @@ export class ComputerPanel {
 			const begun = Date.now();
 			this.#lastLook = begun;
 			const watching = this.#confirm;
+			// WHY: Overlap pass+stream-ticket acquisition with initial look() when opening directly into the large view.
+			this.#maybePrewarmStream(computer, machine);
 			let look: MachineScreenLook;
 			try {
 				look = await computer.screens.look(machine.machineId, { etag: this.#etag, watching }, signal);
@@ -2171,38 +2190,134 @@ export class ComputerPanel {
 	 * own begin is (one request of the lane at a time, at most one begin a second, the same refusals): true while a pass
 	 * lasts. A begin of the pointer's own on its way is waited for.
 	 */
-	async #renewPass(sender: PageHold | SharedInput, signal: AbortSignal): Promise<boolean> {
+	#holdKey(hold: { generation: number } | { epoch: number; seat: number }): string {
+		return "epoch" in hold ? `p:${hold.epoch}:${hold.seat}` : `s:${hold.generation}`;
+	}
+
+	#maybePrewarmStream(computer: WebCompanyComputer, machine: MemberAgentMachine): void {
+		if (
+			computer.screens.stream === undefined ||
+			this.#stream ||
+			this.#pointerOff ||
+			this.#streamOff ||
+			Date.now() < this.#streamAfter ||
+			this.#listed?.canTakeOver !== true ||
+			!(
+				this.#view?.entered === true ||
+				this.#enterOnShow ||
+				(this.#enterOnHold && this.#holding === machine.machineId) ||
+				this.#enterOnOpen
+			)
+		)
+			return;
+		let hold: { generation: number } | { epoch: number; seat: number } | null = null;
+		if (this.#hold?.machineId === machine.machineId) {
+			if (this.#hold.pointer.pass && this.#hold.pointer.pass.until - Date.now() >= STREAM_RENEW_MS) return;
+			hold = { epoch: this.#hold.epoch, seat: this.#hold.seat };
+		} else if (
+			!machine.control &&
+			this.#hold === undefined &&
+			!this.#ledger.mayHold(machine.machineId) &&
+			!this.#takingLive(machine.machineId) &&
+			this.#wantTakeOver === undefined &&
+			this.#heldSince === undefined &&
+			!this.#handBackFailed &&
+			typeof machine.generation === "number"
+		) {
+			if (
+				this.#shared?.machineId === machine.machineId &&
+				this.#shared.pointer.pass &&
+				this.#shared.pointer.pass.until - Date.now() >= STREAM_RENEW_MS
+			)
+				return;
+			hold = { generation: machine.generation };
+		}
+		if (!hold) return;
+		const holdKey = this.#holdKey(hold);
+		if (this.#prewarm?.machineId === machine.machineId && this.#prewarm.holdKey === holdKey) return;
+		const machineId = machine.machineId;
+		const began = Date.now();
+		const promise = computer.screens
+			.pointer(machineId, { begin: hold, withStreamTicket: true }, this.#stop.signal)
+			.then((answer) => {
+				if (answer.kind !== "pass") return null;
+				return {
+					pass: answer.pass,
+					until: began + answer.milliseconds,
+					endsBy: Date.now() + answer.milliseconds + POINTER_PASS_MARGIN_MS,
+					...(answer.ticket !== undefined && answer.seconds !== undefined
+						? { ticket: answer.ticket, ticketUntil: began + answer.seconds * 1000 }
+						: {}),
+				};
+			})
+			.catch(() => null);
+		this.#prewarm = { machineId, holdKey, promise };
+	}
+
+	async #renewPass(
+		sender: PageHold | SharedInput,
+		signal: AbortSignal,
+		withStreamTicket = false,
+	): Promise<{ readonly ok: boolean; readonly ticket?: string }> {
 		const lane = sender.pointer;
 		const computer = this.#computer;
 		for (let waited = 0; lane.inFlight && waited < POINTER_RENEW_MS * 2 && !signal.aborted; waited += 50)
 			await this.#streamPause(50, signal);
 		const lasts = () => lane.pass !== null && lane.pass.until > Date.now();
-		if (!computer || signal.aborted || lane.inFlight || lane.done || this.#pointerOff) return false;
-		if (lane.pass && lane.pass.until - Date.now() >= STREAM_RENEW_MS) return true;
-		if (Date.now() < lane.paused || Date.now() < lane.begunAt + POINTER_BEGIN_EVERY_MS) return lasts();
+		if (!computer || signal.aborted || lane.inFlight || lane.done || this.#pointerOff) return { ok: false };
 		const begin = this.#streamHold(sender);
 		if (!begin) {
 			lane.done = true;
-			return false;
+			return { ok: false };
 		}
+		if (!lane.pass) {
+			const prewarm = this.#prewarm;
+			if (prewarm && prewarm.machineId === sender.machineId && prewarm.holdKey === this.#holdKey(begin)) {
+				this.#prewarm = undefined;
+				lane.inFlight = true;
+				try {
+					const warm = await prewarm.promise;
+					if (signal.aborted || lane.done || this.#pointerOff) return { ok: false };
+					if (warm && warm.until > Date.now()) {
+						lane.pass = { id: warm.pass, until: warm.until, endsBy: warm.endsBy };
+						return {
+							ok: true,
+							...(withStreamTicket && warm.ticket && (warm.ticketUntil ?? 0) > Date.now()
+								? { ticket: warm.ticket }
+								: {}),
+						};
+					}
+				} finally {
+					lane.inFlight = false;
+					if (lane.pending && !lane.done) void this.#pumpPointer(sender);
+				}
+			}
+		}
+		if (lane.pass && lane.pass.until - Date.now() >= STREAM_RENEW_MS) return { ok: true };
+		if (Date.now() < lane.paused || Date.now() < lane.begunAt + POINTER_BEGIN_EVERY_MS) return { ok: lasts() };
+		const wantTicket = withStreamTicket && !this.#streamOff && computer.screens.stream !== undefined;
 		lane.inFlight = true;
 		try {
 			const began = Date.now();
 			lane.begunAt = began;
-			const answer = await computer.screens.pointer(sender.machineId, { begin }, sender.stop.signal);
+			const answer = await computer.screens.pointer(
+				sender.machineId,
+				wantTicket ? { begin, withStreamTicket: true } : { begin },
+				sender.stop.signal,
+			);
 			if (answer.kind === "pass") {
 				lane.pass = {
 					id: answer.pass,
 					until: began + answer.milliseconds,
 					endsBy: Date.now() + answer.milliseconds + POINTER_PASS_MARGIN_MS,
 				};
-				return true;
+				return { ok: true, ...(answer.ticket !== undefined ? { ticket: answer.ticket } : {}) };
 			}
 			this.#pointerRefused(sender, answer);
-			return false;
+			return { ok: false };
 		} catch {
 			// No answer: the pass that lasts still serves; the next check asks again.
-			return lasts();
+			return { ok: lasts() };
 		} finally {
 			lane.inFlight = false;
 			if (lane.pending && !lane.done) void this.#pumpPointer(sender);
@@ -2237,7 +2352,8 @@ export class ComputerPanel {
 		let openedAt = Number.NEGATIVE_INFINITY;
 		try {
 			while (open && !signal.aborted) {
-				if (!(await this.#renewPass(sender, signal)) || !sender.pointer.pass) {
+				const renewed = await this.#renewPass(sender, signal, true);
+				if (!renewed.ok || !sender.pointer.pass) {
 					if (signal.aborted || sender.pointer.done || this.#pointerOff) return;
 					if (++failures >= STREAM_FAILURES) {
 						this.#streamAfter = Date.now() + STREAM_OFF_MS;
@@ -2246,17 +2362,19 @@ export class ComputerPanel {
 					await this.#streamPause(STREAM_RETRY_MS * failures, signal);
 					continue;
 				}
+				const passBeforeWait = sender.pointer.pass.id;
 				const hold = this.#streamHold(sender);
 				if (!hold) return;
 				await this.#streamPause(openedAt + STREAM_OPEN_EVERY_MS - Date.now(), signal);
 				// The pass as it is after the wait (a renewal may have replaced it, a refusal ended it).
 				const pass = sender.pointer.pass;
 				if (signal.aborted || !pass) continue;
+				const ticket = pass.id === passBeforeWait ? renewed.ticket : undefined;
 				openedAt = Date.now();
 				stream.drew = false;
 				const end = await open(
 					sender.machineId,
-					{ pass: pass.id, hold },
+					{ pass: pass.id, hold, ...(ticket !== undefined ? { ticket } : {}) },
 					(message) => this.#streamMessage(stream, message),
 					signal,
 				).catch(() => ({ kind: "failed", delivered: false }) as const);
@@ -2652,6 +2770,7 @@ export class ComputerPanel {
 	#unpicture(shown: Shown, member: string | null = null): void {
 		this.#etag = null;
 		this.#screenSeen = false;
+		this.#prewarm = undefined;
 		this.#view?.clear();
 		this.#show(shown, null, member);
 		this.#syncControls();

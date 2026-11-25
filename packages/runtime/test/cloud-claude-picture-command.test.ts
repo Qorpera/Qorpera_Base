@@ -225,6 +225,8 @@ describe("one picture", () => {
 
 	it.each<[CloudPictureFailure, string]>([
 		[new CloudPictureFailure("picture_limit", 1763049600), "PICTURE_LIMIT_REACHED"],
+		[new CloudPictureFailure("spend_cap"), "GEMINI_SPEND_CAP_REACHED"],
+		[new CloudPictureFailure("billing_required"), "GEMINI_BILLING_REQUIRED"],
 		[new CloudPictureFailure("free_plan"), "NO_PICTURES: the member's ChatGPT plan is Free"],
 		[new CloudPictureFailure("refused"), "PICTURE_REFUSED"],
 		[new CloudPictureFailure("timeout"), "PICTURE_TIMEOUT"],

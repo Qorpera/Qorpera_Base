@@ -30,6 +30,34 @@ export type NativeChatGptPlanAccess = { readonly directory: string } | { readonl
 
 export type NativeClaudeRead = "usage" | "screen";
 export const NATIVE_CLAUDE_TERMINAL = Object.freeze({ rows: 40, cols: 200 });
+export const NATIVE_ISOLATION_WORKSPACE = "/workspace";
+// WHY: Fixed mount point inside bwrap lets warm Codex spares bind environments.toml before a per-run home attaches.
+export const NATIVE_ISOLATION_HOME_SOCKET = "/run/qorpera-home/exec.sock";
+const RESERVED_WORKSPACE_MOUNTS = new Set([
+	"/",
+	"/usr",
+	"/bin",
+	"/lib",
+	"/lib64",
+	"/etc",
+	"/proc",
+	"/dev",
+	"/tmp",
+	"/qorpera",
+]);
+
+function validateWorkspaceMount(path: string): string {
+	if (!/^\/[a-z0-9_-]+(?:\/[a-z0-9_-]+)*$/.test(path) || RESERVED_WORKSPACE_MOUNTS.has(path))
+		throw new Error("Invalid native isolation workspace mount");
+	return path;
+}
+
+function validateHomeSocketMount(path: string): string {
+	const top = `/${path.split("/")[1] ?? ""}`;
+	if (!/^\/[a-z0-9_-]+(?:\/[a-z0-9._-]+)+$/.test(path) || RESERVED_WORKSPACE_MOUNTS.has(top))
+		throw new Error("Invalid native isolation home socket mount");
+	return path;
+}
 
 /** A root-owned file no one else may write, every folder above it root's too (also the Claude Code box's check). */
 export async function rootOwnedFile(path: string): Promise<void> {
@@ -138,21 +166,42 @@ export function nativeIsolationInvocation(options: {
 	/** The agent's home (slice 1): the host's socket in this same scratch root, which Codex reaches with
 	 * `stdio-to-uds` to run its own shell and file tools on the run's machine. Never a path outside the root. */
 	homeSocket?: string;
+	homeSocketMount?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
 	harness?: "claude-code";
 	claudeRead?: NativeClaudeRead;
+	workspaceMount?: string;
 }): { args: string[]; environment: Record<string, string> } {
 	const plan = options.chatGptPlan;
 	const claude = options.harness === "claude-code";
-	if (claude && (plan || options.fenceSocket || options.homeSocket)) throw new Error("A Claude sign-in runs alone");
+	if (claude && (plan || options.fenceSocket || options.homeSocket || options.homeSocketMount))
+		throw new Error("A Claude sign-in runs alone");
 	if (options.claudeRead && !claude) throw new Error("A Claude read runs Claude Code");
+	if (options.homeSocketMount !== undefined && !options.homeSocket)
+		throw new Error("The home's socket is the run's own");
 	if (options.homeSocket && dirname(options.homeSocket) !== options.scratchRoot)
 		throw new Error("The home's socket is the run's own");
+	const homeSocketTarget =
+		options.homeSocket !== undefined
+			? options.homeSocketMount !== undefined
+				? validateHomeSocketMount(options.homeSocketMount)
+				: options.homeSocket
+			: undefined;
 	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
 	const planToken = plan && "accessToken" in plan ? plan.accessToken : undefined;
 	if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
 		throw new Error("Invalid ChatGPT plan access token");
-	const directories = ["workspace", "home", "config", "data", "cache"].map((name) => join(options.scratchRoot, name));
+	const workspaceTarget =
+		options.workspaceMount !== undefined
+			? validateWorkspaceMount(options.workspaceMount)
+			: join(options.scratchRoot, "workspace");
+	const directoryBinds: [string, string][] = [
+		[join(options.scratchRoot, "workspace"), workspaceTarget],
+		...["home", "config", "data", "cache"].map((name): [string, string] => {
+			const dir = join(options.scratchRoot, name);
+			return [dir, dir];
+		}),
+	];
 	const args = [
 		"--unshare-user",
 		"--unshare-pid",
@@ -201,7 +250,7 @@ export function nativeIsolationInvocation(options: {
 		"--ro-bind",
 		options.configuration.entryPoint,
 		"/qorpera/native-entry.mjs",
-		...directories.flatMap((path) => ["--bind", path, path]),
+		...directoryBinds.flatMap(([source, target]) => ["--bind", source, target]),
 		"--bind",
 		options.codexHome,
 		options.codexHome,
@@ -213,7 +262,7 @@ export function nativeIsolationInvocation(options: {
 		...(planDirectory ? ["--ro-bind", planDirectory, planDirectory] : []),
 		...(options.fenceSocket ? ["--ro-bind", options.fenceSocket, options.fenceSocket] : []),
 		// Read-only, as the fence's socket is: the namespace writes JSON-RPC lines to it, nothing else.
-		...(options.homeSocket ? ["--ro-bind", options.homeSocket, options.homeSocket] : []),
+		...(options.homeSocket && homeSocketTarget ? ["--ro-bind", options.homeSocket, homeSocketTarget] : []),
 	];
 	const environment = {
 		HOME: join(options.scratchRoot, "home"),
@@ -237,7 +286,7 @@ export function nativeIsolationInvocation(options: {
 	for (const [name, value] of Object.entries(environment)) args.push("--setenv", name, value);
 	args.push(
 		"--chdir",
-		join(options.scratchRoot, "workspace"),
+		workspaceTarget,
 		"--remount-ro",
 		"/",
 		"--",
@@ -272,13 +321,16 @@ export async function launchIsolatedNativeProcess(options: {
 	fenceSocket?: string;
 	/** The agent's home socket, in the scratch root beside the fence's (cloud-codex-home.ts). */
 	homeSocket?: string;
+	homeSocketMount?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
 	/** A Claude sign-in: `codexHome` is Claude Code's config directory (the vault's helper only). */
 	harness?: "claude-code";
 	claudeRead?: NativeClaudeRead;
+	workspaceMount?: string;
 	signal: AbortSignal;
 }): Promise<{
 	child: ChildProcessWithoutNullStreams;
+	workspace?: string;
 	close(): Promise<void>;
 	/** The relay's voice call window (NativeEgressRelay.allowRealtime): a Codex login's process only. */
 	allowRealtime?: () => () => void;
@@ -358,6 +410,7 @@ export async function launchIsolatedNativeProcess(options: {
 		});
 		return {
 			child: launched,
+			workspace: options.workspaceMount ?? join(options.scratchRoot, "workspace"),
 			...(relay.allowRealtime ? { allowRealtime: relay.allowRealtime } : {}),
 			...(relay.allowLongWaits ? { allowLongWaits: relay.allowLongWaits } : {}),
 			async close() {

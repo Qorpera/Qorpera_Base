@@ -566,7 +566,7 @@ export class AppPanel {
 				let html: string;
 				try {
 					html = new TextDecoder("utf-8", { fatal: true }).decode(
-						await folder.readFile(entry.file, signal, 1024 * 1024),
+						await folder.readFile(entry.file, signal, 1024 * 1024, { cached: true }),
 					);
 				} catch {
 					return this.#status(t("This page can't be shown here."));
@@ -621,7 +621,9 @@ export class AppPanel {
 		signal: AbortSignal,
 	): Promise<void> {
 		if (this.#program?.busy) return;
-		const { ProgramPage, readProgram } = await import("./program-page.ts");
+		const {
+			programPage: { ProgramPage, readProgram },
+		} = await import("./lazy-ops.ts");
 		if (signal.aborted) return;
 		const read = await readProgram(this.#host.folder(), app.path, signal);
 		if (signal.aborted) return;

@@ -9,8 +9,8 @@ import {
 	sign,
 	verify,
 } from "node:crypto";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_ENVELOPE_BYTES = 16_384;
 

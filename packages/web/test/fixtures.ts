@@ -192,6 +192,7 @@ const HINT_TABLES: ReadonlyMap<string, string> = new Map([
 	["member-chats", "qorpera_member_messages"],
 	// A company's machines (20260930712000): pushed to every member.
 	["machines", "qorpera_company_machines"],
+	["activity", "qorpera_runner_jobs"],
 ]);
 
 export function fixture() {

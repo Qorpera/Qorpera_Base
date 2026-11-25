@@ -503,12 +503,19 @@ export function checkClaudeCodePin(path: string): Promise<void> {
 
 export const CLAUDE_ACTION_REVIEW_MODEL = "haiku";
 const REVIEW_OUTPUT_BYTES = 1024 * 1024;
+const CLAUDE_WARM_REVIEWER_MAX_TURNS = 16;
+const CLAUDE_WARM_REVIEWER_MAX_BYTES = 128 * 1024;
+const CLAUDE_WARM_REVIEWER_MAX_AGE_MS = 5 * 60_000;
 const VERDICT_SCHEMA = (CLOUD_ACTION_REVIEW_SPECIFICATION as { tools: { inputSchema: unknown }[] }).tools[0]
 	?.inputSchema;
 export const CLAUDE_ACTION_REVIEW_ANSWER = `Here you have no tools, and qorpera.review_verdict is not one you can call: your whole reply is its arguments, exactly one JSON object and nothing before or after it, matching this JSON schema: ${JSON.stringify(VERDICT_SCHEMA)}`;
 
-export function claudeReviewerArguments(model: string): string[] {
+function assertClaudeReviewerModel(model: string): void {
 	if (!/^[A-Za-z0-9._:[\]-]{1,128}$/.test(model)) throw new Error("Invalid Claude model");
+}
+
+export function claudeReviewerArguments(model: string): string[] {
+	assertClaudeReviewerModel(model);
 	return [
 		"-p",
 		"--output-format",
@@ -529,9 +536,31 @@ export function claudeReviewerArguments(model: string): string[] {
 	];
 }
 
-export function claudeReviewerVerdict(stdout: string): unknown {
-	const last = stdout.trim().split("\n").at(-1) ?? "";
-	const result = JSON.parse(last) as { type?: unknown; is_error?: unknown; result?: unknown };
+// WHY: Persistent stream-json mode keeps the sandboxed Claude reviewer warm across allowed actions instead of cold-spawning bwrap + node + 366 MB claude per action.
+export function claudeWarmReviewerArguments(model: string): string[] {
+	assertClaudeReviewerModel(model);
+	return [
+		"-p",
+		"--input-format",
+		"stream-json",
+		"--output-format",
+		"stream-json",
+		"--verbose",
+		"--tools",
+		"",
+		"--settings",
+		CLAUDE_BOX_PATHS.settings,
+		"--setting-sources",
+		"user",
+		"--strict-mcp-config",
+		"--system-prompt-file",
+		CLAUDE_BOX_PATHS.systemNote,
+		"--model",
+		model,
+	];
+}
+
+function parseClaudeVerdictResult(result: { type?: unknown; is_error?: unknown; result?: unknown }): unknown {
 	if (result.type !== "result" || result.is_error !== false || typeof result.result !== "string")
 		throw new Error("The reviewer gave no verdict");
 	const text = result.result;
@@ -539,6 +568,11 @@ export function claudeReviewerVerdict(stdout: string): unknown {
 	const end = text.lastIndexOf("}");
 	if (start < 0 || end < start) throw new Error("The reviewer gave no verdict");
 	return JSON.parse(text.slice(start, end + 1));
+}
+
+export function claudeReviewerVerdict(stdout: string): unknown {
+	const last = stdout.trim().split("\n").at(-1) ?? "";
+	return parseClaudeVerdictResult(JSON.parse(last) as { type?: unknown; is_error?: unknown; result?: unknown });
 }
 
 function reviewerPaths(root: string) {
@@ -552,14 +586,17 @@ function reviewerPaths(root: string) {
 	};
 }
 
-export function claudeReviewerInvocation(options: {
-	configuration: ClaudeBoxConfiguration;
-	root: string;
-	relayPath: string;
-	login: "token" | { folder: string };
-	extraCa?: string;
-	model: string;
-}): string[] {
+function reviewerInvocationArgs(
+	options: {
+		configuration: ClaudeBoxConfiguration;
+		root: string;
+		relayPath: string;
+		login: "token" | { folder: string };
+		extraCa?: string;
+		model: string;
+	},
+	claudeArgs: readonly string[],
+): string[] {
 	const c = options.configuration;
 	const r = reviewerPaths(options.root);
 	const args = [
@@ -602,21 +639,48 @@ export function claudeReviewerInvocation(options: {
 		`${CLAUDE_BOX_PATHS.entryPoint}${extname(c.entryPoint)}`,
 		options.relayPath,
 		CLAUDE_BOX_PATHS.binary,
-		...claudeReviewerArguments(options.model),
+		...claudeArgs,
 	);
 	return args;
+}
+
+export function claudeReviewerInvocation(options: {
+	configuration: ClaudeBoxConfiguration;
+	root: string;
+	relayPath: string;
+	login: "token" | { folder: string };
+	extraCa?: string;
+	model: string;
+}): string[] {
+	return reviewerInvocationArgs(options, claudeReviewerArguments(options.model));
+}
+
+export function claudeWarmReviewerInvocation(options: {
+	configuration: ClaudeBoxConfiguration;
+	root: string;
+	relayPath: string;
+	login: "token" | { folder: string };
+	extraCa?: string;
+	model: string;
+}): string[] {
+	return reviewerInvocationArgs(options, claudeWarmReviewerArguments(options.model));
 }
 
 type ReviewInput = Parameters<CloudActionReviewer["review"]>[0];
 
 export class ClaudeCodeReviewer implements CloudActionReviewer {
 	readonly #run: (input: ReviewInput, signal: AbortSignal) => Promise<unknown>;
+	readonly #onClose?: () => void | Promise<void>;
 	readonly #closing = new AbortController();
 	#queue: Promise<unknown> = Promise.resolve();
 	reviews = 0;
 
-	constructor(run: (input: ReviewInput, signal: AbortSignal) => Promise<unknown>) {
+	constructor(
+		run: (input: ReviewInput, signal: AbortSignal) => Promise<unknown>,
+		onClose?: () => void | Promise<void>,
+	) {
 		this.#run = run;
+		this.#onClose = onClose;
 	}
 
 	review(input: ReviewInput, signal: AbortSignal): Promise<unknown> {
@@ -654,69 +718,348 @@ export class ClaudeCodeReviewer implements CloudActionReviewer {
 
 	close(): void {
 		this.#closing.abort();
+		void this.#onClose?.();
+	}
+
+	async dispose(): Promise<void> {
+		this.#closing.abort();
+		await this.#onClose?.();
+	}
+}
+
+interface ReviewerRunnerOptions {
+	configuration: ClaudeBoxConfiguration;
+	scratchRoot: string;
+	relayPath?: string;
+	login: ClaudeBoxLogin;
+	proof?: ClaudeCodeBoxOptions["proof"];
+	spawnBox: typeof spawn;
+}
+
+async function prepareReviewerRoot(root: string, instructions: string, token: string | undefined): Promise<void> {
+	const uid = process.getuid?.() ?? 0;
+	const gid = process.getgid?.() ?? uid;
+	const r = reviewerPaths(root);
+	await Promise.all([
+		mkdir(r.home, { mode: 0o700 }),
+		writeFile(r.settings, claudeBoxSettings(), { mode: 0o400, flag: "wx" }),
+		writeFile(r.system, `${instructions}\n\n${CLAUDE_ACTION_REVIEW_ANSWER}\n`, { mode: 0o400, flag: "wx" }),
+		writeFile(r.passwd, `claude:x:${uid}:${gid}::${CLAUDE_BOX_PATHS.home}:/bin/bash\n`, {
+			mode: 0o400,
+			flag: "wx",
+		}),
+		writeFile(r.group, `claude:x:${gid}:\n`, { mode: 0o400, flag: "wx" }),
+		...(token !== undefined
+			? [
+					mkdir(r.config, { mode: 0o700 }).then(() =>
+						writeFile(
+							join(r.config, ".claude.json"),
+							`${JSON.stringify({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true })}\n`,
+							{ mode: 0o600, flag: "wx" },
+						),
+					),
+				]
+			: []),
+	]);
+}
+
+function killReviewerChild(child: ChildProcess | undefined): void {
+	if (child?.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+	try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch {
+		child.kill("SIGKILL");
+	}
+}
+
+async function waitReviewerExit(exited: Promise<void> | undefined): Promise<void> {
+	if (!exited) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([
+		exited,
+		new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, 5_000);
+			timer.unref();
+		}),
+	]);
+	clearTimeout(timer);
+}
+
+interface WarmClaudeReviewerSession {
+	readonly child: ChildProcess;
+	readonly exited: Promise<void>;
+	readonly root: string;
+	readonly relay?: Awaited<ReturnType<typeof startNativeCodexEgress>>;
+	readonly stdin: Writable;
+	readonly lines: AsyncGenerator<string>;
+	readonly model: string;
+	readonly instructions: string;
+	readonly startedAt: number;
+	readonly getErr: () => string;
+	turns: number;
+	promptBytes: number;
+	overflowed: boolean;
+}
+
+function nextWarmLine(lines: AsyncGenerator<string>, signal: AbortSignal): Promise<IteratorResult<string>> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<IteratorResult<string>>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		lines.next().then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+// WHY: Reusing one sandboxed Claude reviewer process across allowed actions removes cold per-action spawn overhead while recycling on non-allow verdicts prevents prior refusal/ask context from leaking into subsequent reviews.
+export class WarmClaudeReviewer {
+	readonly #options: ReviewerRunnerOptions;
+	#session: WarmClaudeReviewerSession | undefined;
+	#closing: Promise<void> = Promise.resolve();
+	#closed = false;
+
+	constructor(options: ReviewerRunnerOptions) {
+		this.#options = options;
+	}
+
+	#usable(session: WarmClaudeReviewerSession, input: ReviewInput): boolean {
+		return (
+			session.child.exitCode === null &&
+			session.child.signalCode === null &&
+			!session.overflowed &&
+			!session.stdin.destroyed &&
+			!session.stdin.writableEnded &&
+			session.model === input.model &&
+			session.instructions === input.instructions &&
+			session.turns < CLAUDE_WARM_REVIEWER_MAX_TURNS &&
+			session.promptBytes + Buffer.byteLength(input.prompt) <= CLAUDE_WARM_REVIEWER_MAX_BYTES &&
+			Date.now() - session.startedAt < CLAUDE_WARM_REVIEWER_MAX_AGE_MS
+		);
+	}
+
+	async #closeSession(): Promise<void> {
+		const session = this.#session;
+		this.#session = undefined;
+		if (!session) return;
+		const closing = (async () => {
+			killReviewerChild(session.child);
+			await waitReviewerExit(session.exited);
+			await session.relay?.close().catch(() => undefined);
+			await rm(session.root, { recursive: true, force: true }).catch(() => undefined);
+		})();
+		this.#closing = this.#closing.then(
+			() => closing,
+			() => closing,
+		);
+		await closing;
+	}
+
+	async #start(input: ReviewInput, signal: AbortSignal): Promise<WarmClaudeReviewerSession> {
+		const token = "token" in this.#options.login ? this.#options.login.token : undefined;
+		const root = await mkdtemp(join(this.#options.scratchRoot, "rw"));
+		let ownedRelay: Awaited<ReturnType<typeof startNativeCodexEgress>> | undefined;
+		let child: ChildProcess | undefined;
+		let exited: Promise<void> | undefined;
+		try {
+			await prepareReviewerRoot(root, input.instructions, token);
+			let relayPath = this.#options.relayPath;
+			if (!relayPath) {
+				ownedRelay = await startNativeCodexEgress({
+					root,
+					signal,
+					hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
+					...(this.#options.proof?.transport ? { transport: this.#options.proof.transport } : {}),
+				});
+				relayPath = ownedRelay.path;
+			}
+			signal.throwIfAborted();
+			const launched = this.#options.spawnBox(
+				this.#options.configuration.bwrap,
+				claudeWarmReviewerInvocation({
+					configuration: this.#options.configuration,
+					root,
+					relayPath,
+					login: token !== undefined ? "token" : { folder: (this.#options.login as { folder: string }).folder },
+					...(this.#options.proof?.extraCa ? { extraCa: this.#options.proof.extraCa } : {}),
+					model: input.model,
+				}),
+				{
+					cwd: root,
+					env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
+					stdio: ["pipe", "pipe", "pipe", token !== undefined ? "pipe" : "ignore"],
+					detached: true,
+				},
+			);
+			child = launched;
+			exited = new Promise<void>((resolve) => {
+				launched.once("error", () => resolve());
+				launched.once("close", () => resolve());
+			});
+			const stdio = launched.stdio as unknown as readonly (Readable | Writable | null)[];
+			if (token !== undefined) {
+				const tokenPipe = stdio[3] as Writable;
+				tokenPipe.on("error", () => undefined);
+				tokenPipe.end(token);
+			}
+			const stdin = stdio[0] as Writable;
+			stdin.on("error", () => undefined);
+			let err = "";
+			const stderr = stdio[2] as Readable;
+			stderr.setEncoding("utf8");
+			stderr.on("data", (text: string) => {
+				err = (err + text).slice(-4096);
+			});
+			const stdout = stdio[1] as Readable;
+			stdout.setEncoding("utf8");
+			const session: WarmClaudeReviewerSession = {
+				child: launched,
+				exited,
+				root,
+				...(ownedRelay ? { relay: ownedRelay } : {}),
+				stdin,
+				lines: claudeBoxStdoutLines(
+					stdout as AsyncIterable<string>,
+					undefined,
+					() => {
+						session.overflowed = true;
+						killReviewerChild(launched);
+					},
+					REVIEW_OUTPUT_BYTES,
+				),
+				model: input.model,
+				instructions: input.instructions,
+				startedAt: Date.now(),
+				getErr: () => err,
+				turns: 0,
+				promptBytes: 0,
+				overflowed: false,
+			};
+			return session;
+		} catch (error) {
+			killReviewerChild(child);
+			await waitReviewerExit(exited);
+			await ownedRelay?.close().catch(() => undefined);
+			await rm(root, { recursive: true, force: true }).catch(() => undefined);
+			throw error;
+		}
+	}
+
+	async review(input: ReviewInput, signal: AbortSignal): Promise<unknown> {
+		signal.throwIfAborted();
+		if (this.#closed) throw new Error("The reviewer is closed");
+		let wasReused = false;
+		let sawResult = false;
+		let lastLine = "";
+		let errTail = "";
+		try {
+			if (!this.#session || !this.#usable(this.#session, input)) {
+				await this.#closeSession();
+				if (this.#closed) throw new Error("The reviewer is closed");
+				this.#session = await this.#start(input, signal);
+			} else {
+				wasReused = true;
+			}
+			const session = this.#session;
+			const turnLine = `${JSON.stringify({ type: "user", message: { role: "user", content: input.prompt } })}\n`;
+			await new Promise<void>((resolve, reject) => {
+				const onAbort = () => reject(signal.reason);
+				signal.addEventListener("abort", onAbort, { once: true });
+				session.stdin.write(turnLine, (error) => {
+					signal.removeEventListener("abort", onAbort);
+					if (error) reject(error);
+					else resolve();
+				});
+			});
+			while (true) {
+				const next = await nextWarmLine(session.lines, signal);
+				if (next.done) break;
+				const line = next.value.trim();
+				if (!line) continue;
+				lastLine = line;
+				let parsed: { type?: unknown; is_error?: unknown; result?: unknown };
+				try {
+					parsed = JSON.parse(line) as { type?: unknown; is_error?: unknown; result?: unknown };
+				} catch {
+					continue;
+				}
+				if (parsed.type !== "result") continue;
+				sawResult = true;
+				errTail = session.getErr();
+				const verdict = parseClaudeVerdictResult(parsed);
+				session.turns += 1;
+				session.promptBytes += Buffer.byteLength(input.prompt);
+				const isAllow =
+					verdict !== null &&
+					typeof verdict === "object" &&
+					!Array.isArray(verdict) &&
+					(verdict as { decision?: unknown }).decision === "allow";
+				if (
+					!isAllow ||
+					session.turns >= CLAUDE_WARM_REVIEWER_MAX_TURNS ||
+					session.promptBytes >= CLAUDE_WARM_REVIEWER_MAX_BYTES ||
+					Date.now() - session.startedAt >= CLAUDE_WARM_REVIEWER_MAX_AGE_MS
+				)
+					await this.#closeSession();
+				return verdict;
+			}
+			errTail = session.getErr();
+			throw new Error("The reviewer gave no verdict");
+		} catch (error) {
+			await this.#closeSession();
+			if (signal.aborted || this.#closed) throw error;
+			// WHY: Fall back once to single-shot cold review when the warm stream exits early or a reused session fails.
+			if (!sawResult || wasReused) return await runClaudeReviewer(this.#options, input, signal);
+			console.error("The Claude Code warm reviewer gave no verdict");
+			this.#options.proof?.onReviewerFailure?.(`${errTail}\n${lastLine.slice(-2000)}`);
+			throw error;
+		}
+	}
+
+	async close(): Promise<void> {
+		this.#closed = true;
+		await this.#closeSession();
+		await this.#closing;
 	}
 }
 
 async function runClaudeReviewer(
-	options: {
-		configuration: ClaudeBoxConfiguration;
-		scratchRoot: string;
-		login: ClaudeBoxLogin;
-		proof?: ClaudeCodeBoxOptions["proof"];
-		spawnBox: typeof spawn;
-	},
+	options: ReviewerRunnerOptions,
 	input: ReviewInput,
 	signal: AbortSignal,
 ): Promise<unknown> {
-	const uid = process.getuid?.() ?? 0;
-	const gid = process.getgid?.() ?? uid;
 	const token = "token" in options.login ? options.login.token : undefined;
 	const root = await mkdtemp(join(options.scratchRoot, "r"));
-	let relay: Awaited<ReturnType<typeof startNativeCodexEgress>> | undefined;
+	let ownedRelay: Awaited<ReturnType<typeof startNativeCodexEgress>> | undefined;
 	let child: ChildProcess | undefined;
 	let exited: Promise<void> | undefined;
-	const kill = (): void => {
-		if (child?.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-		try {
-			process.kill(-child.pid, "SIGKILL");
-		} catch {
-			child.kill("SIGKILL");
-		}
-	};
+	const kill = (): void => killReviewerChild(child);
 	try {
-		const r = reviewerPaths(root);
-		await mkdir(r.home, { mode: 0o700 });
-		await writeFile(r.settings, claudeBoxSettings(), { mode: 0o400, flag: "wx" });
-		await writeFile(r.system, `${input.instructions}\n\n${CLAUDE_ACTION_REVIEW_ANSWER}\n`, {
-			mode: 0o400,
-			flag: "wx",
-		});
-		await writeFile(r.passwd, `claude:x:${uid}:${gid}::${CLAUDE_BOX_PATHS.home}:/bin/bash\n`, {
-			mode: 0o400,
-			flag: "wx",
-		});
-		await writeFile(r.group, `claude:x:${gid}:\n`, { mode: 0o400, flag: "wx" });
-		if (token !== undefined) {
-			await mkdir(r.config, { mode: 0o700 });
-			await writeFile(
-				join(r.config, ".claude.json"),
-				`${JSON.stringify({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true })}\n`,
-				{ mode: 0o600, flag: "wx" },
-			);
+		await prepareReviewerRoot(root, input.instructions, token);
+		let relayPath = options.relayPath;
+		if (!relayPath) {
+			ownedRelay = await startNativeCodexEgress({
+				root,
+				signal,
+				hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
+				...(options.proof?.transport ? { transport: options.proof.transport } : {}),
+			});
+			relayPath = ownedRelay.path;
 		}
-		relay = await startNativeCodexEgress({
-			root,
-			signal,
-			hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
-			...(options.proof?.transport ? { transport: options.proof.transport } : {}),
-		});
 		signal.throwIfAborted();
 		const launched = options.spawnBox(
 			options.configuration.bwrap,
 			claudeReviewerInvocation({
 				configuration: options.configuration,
 				root,
-				relayPath: relay.path,
+				relayPath,
 				login: token !== undefined ? "token" : { folder: (options.login as { folder: string }).folder },
 				...(options.proof?.extraCa ? { extraCa: options.proof.extraCa } : {}),
 				model: input.model,
@@ -767,18 +1110,8 @@ async function runClaudeReviewer(
 	} finally {
 		signal.removeEventListener("abort", kill);
 		kill();
-		if (exited) {
-			let timer: ReturnType<typeof setTimeout> | undefined;
-			await Promise.race([
-				exited,
-				new Promise<void>((resolve) => {
-					timer = setTimeout(resolve, 5_000);
-					timer.unref();
-				}),
-			]);
-			clearTimeout(timer);
-		}
-		await relay?.close().catch(() => undefined);
+		await waitReviewerExit(exited);
+		await ownedRelay?.close().catch(() => undefined);
 		await rm(root, { recursive: true, force: true }).catch(() => undefined);
 	}
 }
@@ -1100,24 +1433,23 @@ async function startBox(
 		});
 		cleanups.push(() => relay.close());
 		if (review) {
-			const made = new ClaudeCodeReviewer((input, reviewSignal) =>
-				runClaudeReviewer(
-					{
-						configuration,
-						scratchRoot: options.scratchRoot,
-						login,
-						...(options.proof ? { proof: options.proof } : {}),
-						spawnBox,
-					},
-					input,
-					reviewSignal,
-				),
+			const warm = new WarmClaudeReviewer({
+				configuration,
+				scratchRoot: options.scratchRoot,
+				relayPath: relay.path,
+				login,
+				...(options.proof ? { proof: options.proof } : {}),
+				spawnBox,
+			});
+			const made = new ClaudeCodeReviewer(
+				(input, reviewSignal) => warm.review(input, reviewSignal),
+				() => warm.close(),
 			);
 			reviewer = made;
 			review.attach(made);
 			cleanups.push(async () => {
 				review.attach(undefined);
-				made.close();
+				await made.dispose();
 			});
 		}
 		signal.throwIfAborted();

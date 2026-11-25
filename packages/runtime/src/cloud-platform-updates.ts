@@ -420,6 +420,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Studio and report sessions now stage each report, analysis, essay or blog post as its own staged change rather than bundling several pieces together, and malformed report payloads are refused at stage time. Write finished reports and posts as structured reports (or standalone HTML pages when bespoke presentation is requested) instead of raw Markdown, and members open each piece directly from its change row in Preview before approving it.",
 	},
 	{
+		id: "coding-picture-generation-and-reference-study",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Image generation and reference-site study in coding",
+		text: "Coding and Surface sessions on Codex logins can now generate bespoke PNG visuals directly into their repository worktree with make_picture, inspect each image inline, and iterate until it fits the layout. When given a reference website URL, sessions also study the full page through multiple scrolled viewport screenshots instead of a single above-the-fold or crushed full-page capture, using the reference as the structural skeleton and visual rhythm while keeping the company identity tokens.",
+	},
+	{
 		id: "studio-artifacts-block",
 		kind: "behaviour",
 		date: "2026-11-24",
@@ -427,11 +434,25 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Product and Identity interfaces no longer have a catch-all Files tab. When a tab needs vector art, pictures, notes, briefs, pages or extra structured files, the session working on that interface adds an artifacts block to the tab in its layout. Members can expand every artifact fullscreen without seeing raw filepaths.",
 	},
 	{
+		id: "surface-single-session-option-groups",
+		kind: "capability",
+		date: "2026-11-24",
+		title: "Multiple real options inside a single interface change",
+		text: "A single interface session can now stage 2 to 4 mutually exclusive real options inside one choice block in the Changes sidebar instead of embedding an in-page concept switcher into a website or spinning up separate sessions. Members flick through real standalone previews, can unselect all options to inspect Base, and click Use this one to discard the other options and keep the picked one as a normal toggleable change ready to approve. When a member asks for design ideas or a multiple choice to flick through, start a single session on that interface and ask for grouped options rather than an in-page concept picker.",
+	},
+	{
+		id: "image-generation-gemini-and-gpt",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Image generation with Gemini and ChatGPT plans",
+		text: "Members can now pick their default image generation model under Settings, AI subscriptions, Default models: Gemini 3 Pro Image (using their Gemini API key and monthly spend cap) or ChatGPT Image (using either a Codex sign-in or a Sign in with ChatGPT subscription). Image generation now works across company chats, Gemini 4 Neon conversations, coding sessions, Claude Code workers, and Studio interface sessions, where make_picture stages PNG assets directly for Preview.",
+	},
+	{
 		id: "strategy-surface-and-custom-studios",
 		kind: "capability",
 		date: "2026-11-25",
-		title: "Strategy surface, custom studios and live surface links",
-		text: "Every company now has a Strategy Studio surface (surfaces/strategy) for the grand plan, competing strategic plays, unit economics simulator, competitive landscape, and falsifiable hypotheses — and custom planning rooms or calculators belong in Custom Studio surfaces (archetype studio, sourceKind folder), never legacy apps/ widgets. Studio sessions now read company vision, reading, folder search, and read-only databases, and support plays, economics, hypotheses, and landscape blocks. Link surfaces directly in chat with [Title](surface:<slug>) or [Title](surface:<slug>#<tab>).",
+		title: "Strategy surface, custom studios and narrated voice tours",
+		text: "Every company now has a Strategy Studio surface (surfaces/strategy) for the grand plan, competing plays, interactive unit economics and market maps, falsifiable hypotheses, animated breakdowns, and guided voice tours narrated with connected ChatGPT Voice or Gemini TTS. Put custom planning rooms or calculators in Custom Studio surfaces (archetype studio, folder-backed) instead of legacy apps/ widgets, and link any surface tab in chat with [Title](surface:<slug>#<tab>).",
 	},
 ]);
 

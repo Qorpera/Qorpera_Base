@@ -126,10 +126,25 @@ export class MemberChats {
 	#placesPending = 0;
 	#open: string | undefined;
 	#stopped = false;
+	#paused = false;
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(host: MemberChatsHost) {
 		this.#host = host;
+	}
+
+	// WHY: Parked company controllers pause member-chat timers and clear the open thread while keeping drafts intact.
+	pause(): void {
+		if (this.#stopped || this.#paused) return;
+		this.#paused = true;
+		clearTimeout(this.#hintTimer);
+		this.#hintTimer = undefined;
+		this.setOpen(undefined);
+	}
+
+	resume(): void {
+		if (this.#stopped || !this.#paused) return;
+		this.#paused = false;
 	}
 
 	/** One chat's messages, draft and sends. Kept while the company is open, so a draft survives a look elsewhere. */
@@ -178,7 +193,7 @@ export class MemberChats {
 	/** The cloud said a chat of this member's changed: the list, and the open chat, are read again. Hints about one
 	 * change arrive together (the message, then the read mark it moved). */
 	hinted(): void {
-		if (this.#stopped || this.#hintTimer) return;
+		if (this.#stopped || this.#paused || this.#hintTimer) return;
 		this.#hintTimer = setTimeout(() => {
 			this.#hintTimer = undefined;
 			void this.poll();
@@ -189,12 +204,13 @@ export class MemberChats {
 	 * listens the old way gets none), so whatever a hint would have brought (a new message, one taken back, the other
 	 * member's look) shows no later than the next turn of the clock. */
 	async poll(): Promise<void> {
+		if (this.#stopped || this.#paused) return;
 		await Promise.all([this.refresh(), this.#open ? this.load(this.#open) : undefined]);
 	}
 
 	/** Reads the list again. */
 	async refresh(): Promise<void> {
-		if (this.#stopped || !this.#host.available()) return;
+		if (this.#stopped || this.#paused || !this.#host.available()) return;
 		const version = ++this.#listReads;
 		try {
 			const list = await this.#host.calls().list();
@@ -496,7 +512,7 @@ export class MemberChats {
 	 * unread to them, and writing moves no mark. */
 	seen(): void {
 		const key = this.#open;
-		if (this.#stopped || !key || !this.#host.visible() || !this.#host.available()) return;
+		if (this.#stopped || this.#paused || !key || !this.#host.visible() || !this.#host.available()) return;
 		const store = this.thread(key);
 		const thread = store.get();
 		const newest = thread.messages[thread.messages.length - 1];

@@ -929,3 +929,69 @@ it("does not let a late-settling aborted refresh overwrite a newer refresh's ser
 	expect(stillServed).toBe(addedScope);
 	await companies.close();
 });
+
+it("wakes immediately to register a newly created company and coalesces concurrent wakes", async () => {
+	const existing = randomUUID();
+	const created = randomUUID();
+	const { principal } = principalFixture({ registered: [existing] });
+	let listeners: Array<() => void> = [];
+	const wake = {
+		subscribe(listener: () => void) {
+			listeners.push(listener);
+			return () => {
+				listeners = listeners.filter((entry) => entry !== listener);
+			};
+		},
+	};
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		helper: helperFixture(),
+		refreshEveryMs: 60_000,
+		wake,
+	});
+	companies.start();
+	await vi.waitFor(() => {
+		expect(principal.companies).toHaveBeenCalledTimes(1);
+		expect(listeners).toHaveLength(1);
+	});
+
+	let releaseSecond!: () => void;
+	const secondEntered = new Promise<void>((resolve) => {
+		principal.companies.mockImplementationOnce(async () => {
+			resolve();
+			await new Promise<void>((done) => {
+				releaseSecond = done;
+			});
+			return {
+				schema: "qorpera.broker-principal-companies/v1",
+				keyId: "vault-root-1",
+				registered: [{ companyId: existing, authorityId: randomUUID(), keyId: "vault-root-1" }],
+				unregistered: [created],
+			};
+		});
+	});
+	principal.companies.mockResolvedValueOnce({
+		schema: "qorpera.broker-principal-companies/v1",
+		keyId: "vault-root-1",
+		registered: [
+			{ companyId: existing, authorityId: randomUUID(), keyId: "vault-root-1" },
+			{ companyId: created, authorityId: randomUUID(), keyId: "vault-root-1" },
+		],
+		unregistered: [],
+	});
+
+	for (const listener of listeners) listener();
+	await secondEntered;
+	companies.wake();
+	companies.wake();
+	releaseSecond();
+
+	await vi.waitFor(() => {
+		expect(principal.register).toHaveBeenCalledWith(created, expect.any(AbortSignal));
+		expect(principal.companies).toHaveBeenCalledTimes(3);
+	});
+	await companies.close();
+	expect(listeners).toHaveLength(0);
+});

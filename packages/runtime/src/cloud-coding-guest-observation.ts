@@ -4,10 +4,14 @@ import { constants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { CLOUD_CODING_GUEST_ROOTS, cloudCodingSessionLayout, idleRuleProcessIoBytes } from "@qorpera/contracts";
+import {
+	CLOUD_CODING_GUEST_ROOTS,
+	cloudCodingSessionLayout,
+	idleRuleProcessIoBytes,
+	UUID_PATTERN as UUID,
+} from "@qorpera/contracts";
 
 const executeFile = promisify(execFile);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Commands named per session; more are counted. A bound on the report, not on the work. */
 export const CODING_GUEST_OBSERVED_COMMANDS = 64;
 /** Bytes of a command the report keeps (the executor passes them to the next turn). */

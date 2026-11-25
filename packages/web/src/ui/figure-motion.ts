@@ -779,23 +779,98 @@ function burst(entry: LiveMotion, effect: Effect): void {
  * only when their drawn eyes do. */
 const SYMBOLIC: readonly MotionActivity[] = ["Blocked", "Thinking", "Done"];
 
+function stillPose(activity: MotionActivity): MotionPose {
+	const face = [
+		{ x: 0, y: 0, width: 1, height: 1, rotation: 0, alpha: 1 },
+		{ x: 0, y: 0, width: 1, height: 1, rotation: 0, alpha: 1 },
+	];
+	if (activity === "Blocked") {
+		return {
+			scaleX: 1,
+			scaleY: 1,
+			turn: 0,
+			x: 0,
+			y: 0,
+			body: 0,
+			open: 1,
+			eyes: 0,
+			face,
+			dots: [
+				{ x: 50, y: 50, r: 0, alpha: 1 },
+				{ x: 50, y: 50, r: 0, alpha: 1 },
+				{ x: 50, y: 50, r: 0, alpha: 1 },
+			],
+			stemTop: 29,
+			stemBottom: 60,
+			stemWidth: 7.5,
+			alertDotY: 71,
+			alertDotR: 4.4,
+			strokes: [],
+		};
+	}
+	if (activity === "Thinking") {
+		return {
+			scaleX: 1,
+			scaleY: 1,
+			turn: 0,
+			x: 0,
+			y: 0,
+			body: 0,
+			open: 1,
+			eyes: 0,
+			face,
+			dots: [0, 1, 2].map((i) => ({ x: 50 + (i - 1) * 21.5, y: 50, r: 7.15, alpha: i === 1 ? 1 : 0.46 })),
+			stemTop: 50,
+			stemBottom: 50,
+			stemWidth: 0,
+			alertDotY: 50,
+			alertDotR: 0,
+			strokes: [],
+		};
+	}
+	return {
+		scaleX: 1,
+		scaleY: 1,
+		turn: 0,
+		x: 0,
+		y: 0,
+		body: 1,
+		open: 1,
+		eyes: 1,
+		face,
+		dots: [
+			{ x: 50, y: 50, r: 0, alpha: 1 },
+			{ x: 50, y: 50, r: 0, alpha: 1 },
+			{ x: 50, y: 50, r: 0, alpha: 1 },
+		],
+		stemTop: 50,
+		stemBottom: 50,
+		stemWidth: 0,
+		alertDotY: 50,
+		alertDotR: 0,
+		strokes: [],
+	};
+}
+
 // The studio's 100-unit compositor. Bodies keep their original shading and silhouette; every eye is drawn.
 function paint(entry: LiveMotion): void {
 	const { canvas, artwork } = entry;
 	const activity = studio(entry.activity);
-	const { localTime, pose, timelines } = motion!;
 	const reduced = Boolean(media?.matches) || entry.still;
-	const duration = timelines[activity].end - timelines[activity].start;
+	const loaded = motion;
+	const duration = loaded ? loaded.timelines[activity].end - loaded.timelines[activity].start : 0;
 	// Using its computer: its own frame (the light, the eyes, the lean) over Idle's settled stand.
 	const desk =
 		entry.activity === "AtComputer" ? atComputerFrame(entry.clock.elapsed, entry.clock.seed, reduced) : undefined;
 	// A member who wants no motion sees each state's still: its end, or (working, which has none) one second in.
 	const elapsed = desk || reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
-	const sample = Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
+	const sample = loaded
+		? Math.min(Math.round(duration * 60) - 1, Math.floor(loaded.localTime(activity, elapsed) * 60 + 1e-6))
+		: 0;
 	// Using its computer acts on its own clock (its frame, and the ask's turns), over Idle's settled stand.
 	const act = acting(entry, desk && !reduced ? entry.clock.elapsed : elapsed, reduced);
 	place(entry, act);
-	const p = pose(activity, elapsed, { reduced });
+	const p = loaded ? loaded.pose(activity, elapsed, { reduced }) : stillPose(activity);
 	const { symbol } = act;
 	const drawn: EyePose[] = act.eyes ?? p.face.map((face) => ({ ...face, smile: 0 }));
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
@@ -1287,7 +1362,9 @@ export function mountFigureMotion(
 		recolor(entry);
 	};
 	const shown = shownColor(entry);
-	if (motion && surfaces.has(id + shown)) {
+	// WHY: Still avatars (other than Waiting) use deterministic static poses and never need the 118 KB motion chunk.
+	const needsMotion = !(entry.still && studio(activity) !== "Waiting");
+	if ((!needsMotion || motion) && surfaces.has(id + shown)) {
 		// Its artwork in this colour and the motion are here already (a row built anew, another view of the agent):
 		// its first frame is drawn now, before the view is shown, so its place is never empty for a frame. It moves
 		// only once the observer says it is in view.
@@ -1310,7 +1387,7 @@ export function mountFigureMotion(
 		};
 		canvas.addEventListener("animationend", arrived);
 		canvas.addEventListener("animationcancel", arrived);
-		void Promise.all([prepare(entry), loadFigureMotion()])
+		void (needsMotion ? Promise.all([prepare(entry), loadFigureMotion()]) : prepare(entry))
 			.then(() => {
 				if (live.has(entry)) begin();
 			})

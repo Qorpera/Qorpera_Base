@@ -228,7 +228,7 @@ describe("runCloudGeminiToolSession", () => {
 		expect(result.codexVersion).toBe("gemini-4-neon");
 		expect(recordedViews).toHaveBeenCalledTimes(2);
 		expect(requests).toHaveLength(2);
-		expect(requests[0]?.path).toBe("/v1beta/models/gemini-4-neon:generateContent");
+		expect(requests[0]?.path).toBe("/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse");
 		expect(requests[0]?.apiKeyHeader).toBe(CANARY_KEY);
 		expect(requests[0]?.body.generationConfig).toEqual({ thinkingConfig: { thinkingLevel: "high" } });
 		expect(requests[0]?.body.tools).toEqual([
@@ -578,7 +578,7 @@ describe("runCloudGeminiToolSession", () => {
 									role: "model",
 									parts: [
 										{ thought: true, text: "Thinking about part 1" },
-										{ text: "Checking part 1..." },
+										{ text: `Checking part 1... ${"x".repeat(70_000)}` },
 										{
 											functionCall: { id: "call_1", name: "big_read", args: { part: 1 } },
 											thoughtSignature: "sig-1",
@@ -1350,5 +1350,338 @@ describe("runCloudGeminiToolSession", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("parses SSE streams incrementally, assembles split UTF-8 text/thoughts/tool calls, and emits live message_composition", async () => {
+		const observed: Array<{
+			operation: string;
+			phase: "start" | "finish";
+			status?: string;
+			parentAttemptId?: string;
+			logicalOperationSha256?: string;
+		}> = [];
+		let attemptCounter = 0;
+		const observability = {
+			start: (operation: string, opts?: { logicalOperationSha256?: string; parentAttemptId?: string }) => {
+				const attemptId = `attempt-${++attemptCounter}`;
+				observed.push({
+					operation,
+					phase: "start",
+					parentAttemptId: opts?.parentAttemptId,
+					logicalOperationSha256: opts?.logicalOperationSha256,
+				});
+				return {
+					attemptId,
+					finish: (status: string) => {
+						observed.push({
+							operation,
+							phase: "finish",
+							status,
+							parentAttemptId: opts?.parentAttemptId,
+							logicalOperationSha256: opts?.logicalOperationSha256,
+						});
+					},
+				};
+			},
+		} as unknown as CloudRuntimeObservability;
+
+		const executeLookup = vi.fn<CloudNativeTool["execute"]>(async () => ({
+			kind: "text",
+			value: "Q4 revenue is 420k",
+		}));
+		const boundary = makeBoundary([
+			{
+				name: "lookup_metric",
+				description: "Lookup a metric",
+				source: "company_file",
+				inputSchema: {
+					type: "object",
+					additionalProperties: false,
+					properties: { key: { type: "string" } },
+					required: ["key"],
+				},
+				parseArguments: (args) => args,
+				execute: executeLookup,
+			},
+		]);
+
+		let sawCompositionMidStream = false;
+		let releaseSecondTextChunk!: () => void;
+		const secondChunkGate = new Promise<void>((resolve) => {
+			releaseSecondTextChunk = resolve;
+		});
+		const seenUrls: string[] = [];
+		const seenBodies: Array<Record<string, unknown>> = [];
+		let callCount = 0;
+		const sseFetch: typeof fetch = async (input, init) => {
+			seenUrls.push(String(input));
+			seenBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+			callCount += 1;
+			const enc = new TextEncoder();
+			if (callCount === 1) {
+				// WHY: Thought-only + tool-call turn must preserve thoughtSignature verbatim without emitting message_composition.
+				const frames = [
+					`: keepalive\n\n`,
+					`data: ${JSON.stringify({
+						candidates: [{ content: { role: "model", parts: [{ thought: true, text: "Need to " }] } }],
+						usageMetadata: { promptTokenCount: 1000 },
+					})}\n\n`,
+					`data: ${JSON.stringify({
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{ thought: true, text: "check metric", thoughtSignature: "sig-thought-1" },
+										{
+											functionCall: { id: "call_sse_1", name: "lookup_metric", args: { key: "rev" } },
+											thoughtSignature: "sig-call-1",
+										},
+									],
+								},
+								finishReason: "STOP",
+							},
+						],
+						usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 30, thoughtsTokenCount: 20 },
+					})}\n\n`,
+				];
+				const stream = new ReadableStream<Uint8Array>({
+					start(controller) {
+						for (const frame of frames) controller.enqueue(enc.encode(frame));
+						controller.close();
+					},
+				});
+				return new Response(stream, {
+					status: 200,
+					headers: { "content-type": "text/event-stream; charset=utf-8" },
+				});
+			}
+
+			// WHY: Split a multi-byte UTF-8 character across chunks and gate the final chunk to prove message_composition starts live.
+			const euroFrame = enc.encode(
+				`data: ${JSON.stringify({
+					candidates: [{ content: { role: "model", parts: [{ text: "Revenue €" }] } }],
+					usageMetadata: { promptTokenCount: 1200 },
+				})}\n\n`,
+			);
+			const euroIdx = euroFrame.indexOf(0xe2);
+			const firstHalf = euroFrame.slice(0, euroIdx + 1);
+			const secondHalf = euroFrame.slice(euroIdx + 1);
+			const finalFrame = enc.encode(
+				`data: ${JSON.stringify({
+					candidates: [
+						{
+							content: { role: "model", parts: [{ text: "420k." }] },
+							finishReason: "STOP",
+							groundingMetadata: { webSearchQueries: ["q4 revenue"] },
+						},
+					],
+					usageMetadata: {
+						promptTokenCount: 1200,
+						cachedContentTokenCount: 400,
+						candidatesTokenCount: 25,
+						thoughtsTokenCount: 5,
+					},
+				})}\n\n`,
+			);
+			const stream = new ReadableStream<Uint8Array>({
+				async start(controller) {
+					controller.enqueue(firstHalf);
+					controller.enqueue(secondHalf);
+					await secondChunkGate;
+					controller.enqueue(finalFrame);
+					controller.close();
+				},
+			});
+			return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+		};
+
+		const usageCalls: GeminiToolSessionUsage[] = [];
+		const runPromise = runCloudGeminiToolSession({
+			boundary,
+			observability,
+			model: "gemini-4-neon",
+			effort: "high",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: sseFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "What is Q4 revenue?",
+			onUsage: async (usage) => {
+				usageCalls.push(usage);
+				return { monthSpendMicrodollars: 0, monthlyCapCents: null, capReached: false };
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+
+		await vi.waitFor(() => {
+			if (observed.some((row) => row.operation === "message_composition" && row.phase === "start")) {
+				sawCompositionMidStream = true;
+			}
+			expect(sawCompositionMidStream).toBe(true);
+		});
+		// WHY: While the SSE stream is still open, message_composition must be started and not yet finished.
+		expect(observed.filter((row) => row.operation === "message_composition")).toHaveLength(1);
+		releaseSecondTextChunk();
+
+		const result = await runPromise;
+		expect(result.toolCalls).toBe(1);
+		expect(seenUrls).toEqual([
+			"http://127.0.0.1:1/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+			"http://127.0.0.1:1/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+		]);
+		expect(usageCalls).toEqual([
+			{ inputTokens: 1000, cachedTokens: 0, outputTokens: 50 },
+			{ inputTokens: 2200, cachedTokens: 400, outputTokens: 80 },
+		]);
+
+		const secondTurnContents = seenBodies[1]?.contents as Array<{
+			role: string;
+			parts: Array<Record<string, unknown>>;
+		}>;
+		expect(secondTurnContents[1]?.parts).toEqual([
+			{ thought: true, text: "Need to check metric", thoughtSignature: "sig-thought-1" },
+			{
+				functionCall: { id: "call_sse_1", name: "lookup_metric", args: { key: "rev" } },
+				thoughtSignature: "sig-call-1",
+			},
+		]);
+
+		const compositions = observed.filter((row) => row.operation === "message_composition");
+		expect(compositions).toHaveLength(2);
+		expect(compositions[0]).toMatchObject({ operation: "message_composition", phase: "start" });
+		expect(compositions[1]).toMatchObject({
+			operation: "message_composition",
+			phase: "finish",
+			status: "succeeded",
+			logicalOperationSha256: compositions[0]?.logicalOperationSha256,
+			parentAttemptId: compositions[0]?.parentAttemptId,
+		});
+	});
+
+	it("handles SSE errors: retries mid-stream disconnect, fails closed on malformed JSON, byte limit, and in-stream error frames", async () => {
+		const enc = new TextEncoder();
+
+		let disconnectAttempts = 0;
+		const disconnectResult = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: async () => {
+				disconnectAttempts += 1;
+				if (disconnectAttempts === 1) {
+					const broken = new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(
+								enc.encode(
+									`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "Part" }] } }] })}\n\n`,
+								),
+							);
+							controller.error(new Error("stream reset"));
+						},
+					});
+					return new Response(broken, { status: 200, headers: { "content-type": "text/event-stream" } });
+				}
+				return new Response(
+					`data: ${JSON.stringify({
+						candidates: [{ content: { role: "model", parts: [{ text: "Recovered." }] } }],
+						usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+					})}`,
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			},
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Recover from SSE drop",
+			signal: AbortSignal.timeout(10_000),
+		});
+		expect(disconnectAttempts).toBe(2);
+		expect(disconnectResult.fencedRequests).toBe(1);
+
+		let malformedAttempts = 0;
+		const malformedErr = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: async () => {
+				malformedAttempts += 1;
+				return new Response("data: {not-valid-json\n\n", {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			},
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Malformed SSE",
+			signal: AbortSignal.timeout(10_000),
+		}).catch((failure: unknown) => failure);
+		expect(malformedAttempts).toBe(1);
+		expect(nativeRuntimeFailureMetadata(malformedErr)).toMatchObject({ category: "provider_failed" });
+
+		let streamErrAttempts = 0;
+		const streamErr = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: async () => {
+				streamErrAttempts += 1;
+				return new Response(
+					`data: ${JSON.stringify({
+						error: { code: 403, status: "PERMISSION_DENIED", details: [{ reason: "BILLING_DISABLED" }] },
+					})}\n\n`,
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			},
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "In-stream error",
+			signal: AbortSignal.timeout(10_000),
+		}).catch((failure: unknown) => failure);
+		expect(streamErrAttempts).toBe(1);
+		expect(streamErr).toBeInstanceOf(GeminiProviderError);
+		expect(geminiProviderErrorCode(streamErr)).toBe("billing_required");
+
+		let oversizedAttempts = 0;
+		const oversizedErr = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: async () => {
+				oversizedAttempts += 1;
+				let sent = 0;
+				const huge = new ReadableStream<Uint8Array>({
+					pull(controller) {
+						if (sent >= 17 * 1024 * 1024) {
+							controller.close();
+							return;
+						}
+						const chunk = new Uint8Array(1024 * 1024).fill(0x20);
+						sent += chunk.byteLength;
+						controller.enqueue(chunk);
+					},
+				});
+				return new Response(huge, { status: 200, headers: { "content-type": "text/event-stream" } });
+			},
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Oversized SSE",
+			signal: AbortSignal.timeout(10_000),
+		}).catch((failure: unknown) => failure);
+		expect(oversizedAttempts).toBe(1);
+		expect(nativeRuntimeFailureMetadata(oversizedErr)).toMatchObject({ category: "provider_failed" });
 	});
 });

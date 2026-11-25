@@ -12,6 +12,7 @@ import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
+	closedFolderRecord,
 	drainPlatformClaims,
 	mapBounded,
 	PLATFORM_STAGE_CONCURRENCY,
@@ -20,7 +21,6 @@ import {
 	PlatformFolderWriter,
 	platformFolderProblem,
 	platformFolderProblemCode,
-	record,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -83,10 +83,10 @@ export interface CompanyCreationClaim {
 /** A claim (`qorpera.company-creation-claim/v1`) as a closed record, or null when nothing is due. */
 export function parseCompanyCreationClaim(value: unknown): CompanyCreationClaim | null {
 	if (value === null) return null;
-	const claim = record(value, CLAIM_KEYS, "claim_invalid");
-	const input = record(claim.input, INPUT_KEYS, "claim_invalid");
+	const claim = closedFolderRecord(value, CLAIM_KEYS, "claim_invalid");
+	const input = closedFolderRecord(claim.input, INPUT_KEYS, "claim_invalid");
 	const founders = Array.isArray(input.founders)
-		? input.founders.map((entry) => record(entry, FOUNDER_KEYS, "claim_invalid"))
+		? input.founders.map((entry) => closedFolderRecord(entry, FOUNDER_KEYS, "claim_invalid"))
 		: platformFolderProblem("claim_invalid");
 	const ids = [claim.creationId, claim.profileId, claim.environmentId, claim.cofounderId, claim.firstTodoId];
 	if (
@@ -282,7 +282,8 @@ export class CompanyFolderCreator {
 			return "seed_invalid";
 		}
 		const fileEntries = tree.filter((entry) => entry.kind === "file");
-		const objectConcurrency = fileEntries.length > 1 ? 1 : PLATFORM_STAGE_CONCURRENCY;
+		// WHY: Stage chunk and manifest objects concurrently per seed file (2 objects per small file) to halve seed-tree RPC depth.
+		const objectConcurrency = fileEntries.length > 1 ? 2 : PLATFORM_STAGE_CONCURRENCY;
 		const staged = await mapBounded(
 			fileEntries,
 			PLATFORM_STAGE_CONCURRENCY,

@@ -1,6 +1,5 @@
+import { UUID_ANY_CASE_PATTERN as COMPANY_COMPUTER_UUID, isRecord } from "@qorpera/contracts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
-
-const COMPANY_COMPUTER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Where one of an agent's machines stands (qorpera_company_machine_state): on its way up while `starting` (placed)
  * or `waiting` (for room or computer hours), on, going to sleep, or asleep. */
@@ -124,13 +123,13 @@ export interface MemberDesktopHandBack {
 }
 
 function field(value: unknown, error: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
-	return value as Record<string, unknown>;
+	if (!isRecord(value)) throw new Error(error);
+	return value;
 }
-function record(value: unknown, keys: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
+function closedComputerRecord(value: unknown, keys: string): Record<string, unknown> {
+	if (!isRecord(value) || Object.keys(value).sort().join() !== keys)
 		throw new Error("Invalid Company Computer response");
-	return value as Record<string, unknown>;
+	return value;
 }
 interface Options {
 	companyId: string;
@@ -446,14 +445,14 @@ export class CloudMemberCompanyComputerClient {
 		);
 		if (value.schema !== "qorpera.member-agent-computer/v1") throw new Error("Invalid computer start");
 		if (value.state === "refused") {
-			record(value, "reason,schema,state");
+			closedComputerRecord(value, "reason,schema,state");
 			if (!(MEMBER_AGENT_COMPUTER_REFUSALS as readonly unknown[]).includes(value.reason))
 				throw new Error("Invalid computer start");
 			return { kind: "refused", reason: value.reason as MemberAgentComputerRefusal };
 		}
-		record(value, "machine,schema,state");
+		closedComputerRecord(value, "machine,schema,state");
 		const machine = field(value.machine, "Invalid computer start");
-		record(machine, "machineId,name,state");
+		closedComputerRecord(machine, "machineId,name,state");
 		if (
 			(value.state !== "started" && value.state !== "existing") ||
 			typeof machine.machineId !== "string" ||

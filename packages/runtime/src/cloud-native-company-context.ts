@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type CloudAgentFolderPlace, cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
 import { osPath, osRelative } from "@qorpera/cloud-client/company-state-files";
-import { isUuid, type JsonValue } from "@qorpera/contracts";
+import { isUuid, isUuidAnyCase, type JsonValue } from "@qorpera/contracts";
 import type { CloudAgentHead } from "./cloud-agent-head.ts";
 import { CLOUD_FOLDER_LINK_EXAMPLE } from "./cloud-agent-mouth.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
@@ -42,15 +42,16 @@ import {
 	CLOUD_RUNTIME_GEMINI_MODELS,
 	type CloudRuntimeClaudeChoice,
 	type CloudRuntimeGeminiChoice,
+	type CloudRuntimeImageModel,
 	type CloudRuntimeServiceTier,
 	isCloudRuntimeClaudeChoice,
+	isCloudRuntimeImageModel,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
 import { type CloudAgentSkillsBlock, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import { type CloudWakeEnvelope, cloudWakeIsOwnThread } from "./cloud-wake-bus.ts";
 import type { CloudAgentOpenWork } from "./cloud-worker-tools.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 /** A member's chat image in the company folder: under its conversation's summary-tree root (an agent's thread, or a
  * group chat), <root>/images/<client input id>/<sha256>.<ext>, below QorperaOS/. */
@@ -140,7 +141,7 @@ Read every source your assignment names first. Work in tight quality loops until
 If you hit a decision or input only your parent can give, report blocked with the exact question instead of guessing. Report a broken connection rather than working around it with a browser sign-in. Secrets travel only on a member's secret card into the vault: never ask for, write, or pass a password, key, or code in a file, table, notebook, command, or report. Members may open your files directly: write them in plain, natural words in the company's language.`;
 
 export const CLOUD_ACKNOWLEDGEMENT_LINE =
-	'When beforeWork is acknowledge (and initialAcknowledgementSatisfied is false), make your very first call a short, natural progress send naming what you are about to do ("On it — checking the refund log now."), without repeating the request, before reading any continuation: it lets the member know you have picked it up. initialAcknowledgementSatisfied means this run has already acknowledged.';
+	'When beforeWork is acknowledge (and initialAcknowledgementSatisfied is false), make your very first call a short, natural progress send naming what you are about to do ("On it — checking the refund log now."), without repeating the request: it lets the member know you have picked it up. You may emit read-only tool calls (such as company_read, company_list, read_skill, or read_context) in parallel in the same turn so you do not burn a whole round-trip just to acknowledge, before any writes or mutations. initialAcknowledgementSatisfied means this run has already acknowledged.';
 
 function membersSee(has: CloudOfferedTool, surfaceFirst = false): string {
 	const after = [...CLOUD_AFTER_ANSWER_TOOLS].filter(has);
@@ -406,7 +407,7 @@ ${sentences(
 	has("propose_surface") &&
 		'Use propose_surface to create 1 to 2 tailored product surfaces for what the company is building with activateImmediately: true on Day 0; for later sidebar additions after founding — including dedicated Custom Studio Surfaces (archetype: "studio", sourceKind: "folder", kind: "custom") for pricing labs, GTM trackers, sketching rooms, or investor rooms — omit activateImmediately so they arrive in proposed status for founder approval.',
 	has("start_surface_session") &&
-		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose. When a founder opens strategy, business planning, pricing, or GTM work, launch a high-effort session on the Strategy surface (or a dedicated Custom Studio Surface) so it researches real rivals, contrasts competing plays, stress-tests honest unit economics with capacity ceilings and 3-tier epistemics (verified / benchmark / hypothesis), and records falsifiable kill criteria rather than one-shotting a shallow summary in chat.",
+		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose. When asking a single session to propose multiple design or website directions, instruct it to stage each real, publishable version as a separate option in one optionGroup — never embed an in-page concept switcher or design-question UI into a publishable website. When a founder opens strategy, business planning, pricing, or GTM work, launch a high-effort session on the Strategy surface (or a dedicated Custom Studio Surface) so it researches real rivals, contrasts competing plays, stress-tests honest unit economics with capacity ceilings and 3-tier epistemics (verified / benchmark / hypothesis), and records falsifiable kill criteria rather than one-shotting a shallow summary in chat.",
 	has("manage_surface_automation") &&
 		"Use manage_surface_automation to schedule recurring work onto a target Surface instead of creating standalone org-chart roles.",
 	"Keep primary navigation focused: strategic work belongs in the Strategy surface (or a dedicated Custom Studio Surface), and supporting session rationale lives as Notes under QorperaOS/surfaces/<slug>/notes/ rather than loose markdown folders or legacy apps/.",
@@ -652,6 +653,7 @@ export interface CloudNativeCompanyContext {
 	serviceTier?: CloudRuntimeServiceTier;
 	claude?: CloudRuntimeClaudeChoice;
 	gemini?: CloudRuntimeGeminiChoice;
+	imageModel?: CloudRuntimeImageModel;
 	/** Every company run is on the company folder (folder-v2, workstream F2), whose agents' folders are
 	 * named: this agent's folder name, and its listed coworkers' by id. */
 	folder: CloudCompanyContextFolders;
@@ -701,8 +703,8 @@ function closed(value: unknown, keys: readonly string[]): Record<string, unknown
 	return value as Record<string, unknown>;
 }
 
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error("Invalid cloud context identity");
+function contextUuid(value: unknown): string {
+	if (!isUuidAnyCase(value)) throw new Error("Invalid cloud context identity");
 	return value;
 }
 
@@ -722,7 +724,7 @@ function contextAgent(value: unknown): ContextAgent {
 	if (!Number.isSafeInteger(item.version) || (item.version as number) < 1)
 		throw new Error("Invalid cloud agent version");
 	return {
-		id: uuid(item.id),
+		id: contextUuid(item.id),
 		version: item.version as number,
 		name: shortText(item.name),
 		role: shortText(item.role),
@@ -784,7 +786,7 @@ function contextSource(value: unknown): CloudCompanyContextSource {
 				createHash("sha256").update(content.text).digest("hex") !== content.sha256))
 	)
 		throw new Error("Invalid cloud context source");
-	const authorUserId = source.authorUserId === null ? null : uuid(source.authorUserId);
+	const authorUserId = source.authorUserId === null ? null : contextUuid(source.authorUserId);
 	const actorKinds: Record<CloudCompanyContextSource["kind"], CloudCompanyContextSource["actorKind"]> = {
 		current_human_request: "human",
 		private_startup: "control_plane",
@@ -806,7 +808,7 @@ function contextSource(value: unknown): CloudCompanyContextSource {
 	return {
 		kind: source.kind as CloudCompanyContextSource["kind"],
 		sourceKind: source.sourceKind as CloudCompanyContextSource["sourceKind"],
-		id: uuid(source.id),
+		id: contextUuid(source.id),
 		actorKind: source.actorKind as CloudCompanyContextSource["actorKind"],
 		authorUserId,
 		sequence: source.sequence as number | null,
@@ -849,10 +851,19 @@ export function parseCloudNativeCompanyContext(
 	const originated = record !== null && Object.hasOwn(record, "origin");
 	const picked = record !== null && Object.hasOwn(record, "claude");
 	const geminiPicked = record !== null && Object.hasOwn(record, "gemini");
-	const { serviceTier, origin: originValue, claude: claudeValue, gemini: geminiValue, ...always } = record ?? {};
+	const imagePicked = record !== null && Object.hasOwn(record, "imageModel");
+	const {
+		serviceTier,
+		origin: originValue,
+		claude: claudeValue,
+		gemini: geminiValue,
+		imageModel: imageModelValue,
+		...always
+	} = record ?? {};
 	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
 	if (picked && !isCloudRuntimeClaudeChoice(claudeValue)) throw new Error("Invalid cloud company context");
 	if (geminiPicked && !isGeminiChoice(geminiValue)) throw new Error("Invalid cloud company context");
+	if (imagePicked && !isCloudRuntimeImageModel(imageModelValue)) throw new Error("Invalid cloud company context");
 	const data = closed(record ? always : value, [
 		"schema",
 		"identity",
@@ -909,10 +920,10 @@ export function parseCloudNativeCompanyContext(
 	const jobSpecification = contextSource(data.jobSpecification);
 	const continuation = data.continuation === null ? null : contextSource(data.continuation);
 	if (
-		uuid(company.id) !== identity.companyId ||
+		contextUuid(company.id) !== identity.companyId ||
 		audience.kind !== identity.audienceKind ||
-		(audience.userId === null ? null : uuid(audience.userId)) !== identity.audienceUserId ||
-		uuid(runtimeBundle.id) !== identity.runtimeBundleId ||
+		(audience.userId === null ? null : contextUuid(audience.userId)) !== identity.audienceUserId ||
+		contextUuid(runtimeBundle.id) !== identity.runtimeBundleId ||
 		typeof runtimeBundle.sha256 !== "string" ||
 		!SHA256.test(runtimeBundle.sha256) ||
 		runtimeBundle.sha256 !== identity.runtimeBundleSha256 ||
@@ -958,7 +969,7 @@ export function parseCloudNativeCompanyContext(
 		audience: { kind: identity.audienceKind, userId: identity.audienceUserId },
 		runtimeBundle: { id: identity.runtimeBundleId, sha256: identity.runtimeBundleSha256 },
 		sourceKind: data.sourceKind as CloudNativeCompanyContext["sourceKind"],
-		sourceId: uuid(data.sourceId),
+		sourceId: contextUuid(data.sourceId),
 		currentInputs: inputs,
 		history,
 		historyTruncated: data.historyTruncated,
@@ -974,6 +985,7 @@ export function parseCloudNativeCompanyContext(
 		...(isGeminiChoice(geminiValue)
 			? { gemini: { model: geminiValue.model, effort: geminiValue.effort, keyId: geminiValue.keyId.toLowerCase() } }
 			: {}),
+		...(imagePicked ? { imageModel: imageModelValue as CloudRuntimeImageModel } : {}),
 		folder,
 		...(origin ? { origin } : {}),
 	};
@@ -991,7 +1003,7 @@ function contextOrigin(value: unknown, identity: CloudNativeToolIdentity): Cloud
 			!item.includes("\0"));
 	if (!Array.isArray(origin.inputs) || origin.inputs.length > 32 || !text(origin.routineIntent))
 		throw new Error("Invalid cloud context origin");
-	const runId = uuid(origin.runId);
+	const runId = contextUuid(origin.runId);
 	const inputs = origin.inputs.map(contextSource);
 	if (
 		runId === identity.runId ||
@@ -1401,6 +1413,7 @@ export function composeCloudNativeCompanyPrompt(
 	// The request is shown once, whole, as the request (item 3 of the 21 October 2026 amendment).
 	const requested = new Set(request.map((entry) => entry.input.id));
 	const history = context.history.filter((source) => !requested.has(source.id));
+	// WHY: Place stable company/agent/skills/memory/history prefix before volatile per-run fields so KV caches hit.
 	const json = JSON.stringify({
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity: {
@@ -1411,57 +1424,10 @@ export function composeCloudNativeCompanyPrompt(
 			audience: context.audience,
 			runtimeBundle: context.runtimeBundle,
 		},
-		observedAt: context.observedAt,
-		presence: {
-			trust: "ephemeral_observation",
-			selection: presence ? "wake_path" : "on_demand",
-			view: presence ?? null,
-		},
-		delivery: wake
-			? {
-					...deliveryProgress,
-					requireFinalSend: wake.policy.final === "required",
-					initial: wake.policy.initial,
-					final: wake.policy.final,
-					silenceAllowed: wake.policy.silenceAllowed,
-					maxPublicSends: wake.policy.maxPublicSends,
-				}
-			: { ...deliveryProgress, requireFinalSend: context.identity.sessionId !== null },
-		wake: wake
-			? {
-					sourceKind: context.sourceKind,
-					sourceId: context.sourceId,
-					kind: wake.kind,
-					occurrenceId: wake.id,
-					source: wake.source,
-					time: wake.time,
-					routine: wake.routine,
-					payload: wake.payload,
-					actorStaffId: wake.actorStaffId,
-					actorUserId: wake.actorUserId,
-					parentRunId: wake.parentRunId,
-					causalAgentCount: wake.causal.agentIds.length,
-				}
-			: { sourceKind: context.sourceKind, sourceId: context.sourceId },
-		currentInputs: context.currentInputs,
-		...(request.length ? { request } : {}),
-		history,
-		historyTruncated,
 		coworkers: context.coworkers.map((coworker) => withFolder(coworker, folders)),
 		coworkersTruncated: context.coworkersTruncated,
 		job: context.job,
-		continuation: context.continuation,
-		// How much open work the agent has; the list itself stays behind manage_todo and manage_worker.
-		...(openWork ? { openWork } : {}),
-		...(updates ? { updates } : {}),
-		// The platform's facts about the whole company (qorpera_describe_company_senses), in the Co-Founder's company runs
-		// only; null when the read failed.
-		...(senses !== undefined ? { senses } : {}),
-		// Changes the agent saved from a computer that wait for review (P40); apply_proposal applies one.
-		...(proposals ? { proposals } : {}),
-		// Contract 15.2: the skill catalog (own and company libraries), never the bodies.
 		skills: skills ?? unavailableCloudAgentSkills("not_composed"),
-		// Contract 15.1: the agent's own notebook, composed from its Company File objects with exact versions.
 		memory: !memory
 			? unavailableCloudAgentMemory("not_composed")
 			: memory.available && head?.shown.has("profile")
@@ -1481,6 +1447,47 @@ export function composeCloudNativeCompanyPrompt(
 					? context.currentInputs.filter((source) => source.kind === "private_startup")
 					: [],
 		},
+		history,
+		historyTruncated,
+		continuation: context.continuation,
+		...(openWork ? { openWork } : {}),
+		...(updates ? { updates } : {}),
+		...(senses !== undefined ? { senses } : {}),
+		...(proposals ? { proposals } : {}),
+		delivery: wake
+			? {
+					...deliveryProgress,
+					requireFinalSend: wake.policy.final === "required",
+					initial: wake.policy.initial,
+					final: wake.policy.final,
+					silenceAllowed: wake.policy.silenceAllowed,
+					maxPublicSends: wake.policy.maxPublicSends,
+				}
+			: { ...deliveryProgress, requireFinalSend: context.identity.sessionId !== null },
+		presence: {
+			trust: "ephemeral_observation",
+			selection: presence ? "wake_path" : "on_demand",
+			view: presence ?? null,
+		},
+		observedAt: context.observedAt,
+		wake: wake
+			? {
+					sourceKind: context.sourceKind,
+					kind: wake.kind,
+					sourceId: context.sourceId,
+					occurrenceId: wake.id,
+					source: wake.source,
+					time: wake.time,
+					routine: wake.routine,
+					payload: wake.payload,
+					actorStaffId: wake.actorStaffId,
+					actorUserId: wake.actorUserId,
+					parentRunId: wake.parentRunId,
+					causalAgentCount: wake.causal.agentIds.length,
+				}
+			: { sourceKind: context.sourceKind, sourceId: context.sourceId },
+		currentInputs: context.currentInputs,
+		...(request.length ? { request } : {}),
 	});
 	// A webhook signing secret is cut out of all of it, as the tool boundary cuts one out of every tool result (E3c-2):
 	// every source shown here (current inputs, the request, history, the job record and description, the continuation)

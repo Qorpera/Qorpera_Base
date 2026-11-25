@@ -1,7 +1,15 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
-import { boundedInteger, CloudShapeError, nonEmptyString, record, timestamp, UUID_PATTERN, uuid } from "./parse.ts";
+import {
+	boundedInteger,
+	CloudShapeError,
+	cloudRecord,
+	cloudUuid,
+	nonEmptyString,
+	timestamp,
+	UUID_PATTERN,
+} from "./parse.ts";
 
 export const GEMINI_MIN_CAP_CENTS = 100;
 export const GEMINI_MAX_CAP_CENTS = 10_000_000;
@@ -146,14 +154,14 @@ function parseHttpsOrigin(value: unknown, label: string): string {
 }
 
 export function parseGeminiKeyState(value: unknown): GeminiKeyState {
-	const input = record(value, "gemini key state");
+	const input = cloudRecord(value, "gemini key state");
 	if (input.schema !== "qorpera.gemini-key/v1" || typeof input.vaultAvailable !== "boolean") {
 		throw new CloudShapeError("gemini key state");
 	}
 	if (input.key === null) {
 		return { vaultAvailable: input.vaultAvailable, key: null };
 	}
-	const key = record(input.key, "gemini key");
+	const key = cloudRecord(input.key, "gemini key");
 	if (
 		typeof key.defaultForChats !== "boolean" ||
 		typeof key.capReached !== "boolean" ||
@@ -187,7 +195,7 @@ export function parseGeminiKeyState(value: unknown): GeminiKeyState {
 	return {
 		vaultAvailable: input.vaultAvailable,
 		key: {
-			id: uuid(key.id, "gemini key id"),
+			id: cloudUuid(key.id, "gemini key id"),
 			keyHint: nonEmptyString(key.keyHint, "gemini key hint", 16),
 			defaultForChats: key.defaultForChats,
 			monthlyCapCents,
@@ -220,7 +228,7 @@ interface GeminiKeyTicket {
 }
 
 function parseGeminiKeyTicket(value: unknown, expectedProfileId: string): GeminiKeyTicket {
-	const input = record(value, "gemini key ticket");
+	const input = cloudRecord(value, "gemini key ticket");
 	if (
 		input.schema !== "qorpera.gemini-key-ticket/v1" ||
 		typeof input.capability !== "string" ||
@@ -228,12 +236,12 @@ function parseGeminiKeyTicket(value: unknown, expectedProfileId: string): Gemini
 	) {
 		throw new CloudShapeError("gemini key ticket");
 	}
-	const profileId = uuid(input.profileId, "gemini key ticket profile");
+	const profileId = cloudUuid(input.profileId, "gemini key ticket profile");
 	if (profileId !== expectedProfileId.toLowerCase()) {
 		throw new CloudShapeError("gemini key ticket profile");
 	}
 	return {
-		ticketId: uuid(input.ticketId, "gemini key ticket id"),
+		ticketId: cloudUuid(input.ticketId, "gemini key ticket id"),
 		capability: input.capability,
 		serviceOrigin: parseHttpsOrigin(input.serviceOrigin, "gemini key broker origin"),
 		profileId,
@@ -457,7 +465,7 @@ export function createWebGeminiKey(
 						if (response.status !== 200) {
 							throw new Error("The Gemini API key could not be checked.");
 						}
-						const parsed = record(
+						const parsed = cloudRecord(
 							JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown,
 							"gemini key check",
 						);

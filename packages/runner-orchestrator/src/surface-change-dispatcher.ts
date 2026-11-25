@@ -16,6 +16,7 @@ import {
 export interface PeerOpenSessionInput {
 	readonly sessionId: string;
 	readonly workerId: string;
+	readonly recordedChangeHeadShas?: readonly string[];
 	readonly remainingChanges: readonly CodeHostChangeRange[];
 }
 
@@ -23,6 +24,8 @@ export interface SurfaceChangeApprovalRequest {
 	readonly surfaceId: string;
 	readonly sessionId: string;
 	readonly workerId: string;
+	readonly sessionBranchHeadSha?: string | null;
+	readonly recordedChangeHeadShas?: readonly string[];
 	readonly repository: CloudCodingRepository;
 	readonly expectMainSha?: string;
 	readonly reconciledCommitSha?: string;
@@ -88,10 +91,17 @@ export async function approveAndSyncSurfaceChanges(
 
 	// WHY: Once cherryPickChangeUnits advances refs/heads/main, isolate non-abort rebase errors so one peer session never fails an already-landed merge.
 	let siblingRebase: RebaseSessionChangesResult | null = null;
-	if (request.siblingRemainingChanges.length > 0) {
+	const approvedHeads = new Set(request.approvedChanges.map((change) => change.headSha));
+	const needsBranchReset = Boolean(request.sessionBranchHeadSha && !approvedHeads.has(request.sessionBranchHeadSha));
+	if (request.siblingRemainingChanges.length > 0 || needsBranchReset) {
 		const allowedBranchTips = [
-			request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha,
-			...request.approvedChanges.map((change) => change.headSha),
+			...new Set([
+				...(request.siblingRemainingChanges.length > 0
+					? [request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha]
+					: []),
+				...request.approvedChanges.map((change) => change.headSha),
+				...(request.recordedChangeHeadShas ?? []),
+			]),
 		];
 		try {
 			siblingRebase = await rebaseSessionChanges(job, {
@@ -125,7 +135,12 @@ export async function approveAndSyncSurfaceChanges(
 				ontoSha: landed.mainAfter,
 				remainingChanges: peer.remainingChanges,
 				updateBranchRef: true,
-				allowedBranchTips: [peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha],
+				allowedBranchTips: [
+					...new Set([
+						peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha,
+						...(peer.recordedChangeHeadShas ?? []),
+					]),
+				],
 			});
 		} catch (error) {
 			if (job.signal.aborted) throw error;

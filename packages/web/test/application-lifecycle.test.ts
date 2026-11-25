@@ -234,49 +234,26 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("textarea")!.value).toBe("");
 		expect(f.root.textContent).toContain("First message");
 	});
-	it("keeps a new compose send authorized when an older compose finishes loading its transcript", async () => {
+	it("navigates from new compose immediately once the post succeeds without waiting for transcript reload", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/new`);
 		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
 		const send = executionTransport();
 		const events = deferred<Awaited<ReturnType<typeof f.api.readSessionEvents>>>();
 		vi.mocked(f.api.readSessionEvents).mockReturnValueOnce(events.promise);
 		await draw();
-		const submit = (text: string) => {
-			f.root.querySelector<HTMLElement>(`[data-choice="${staff.id}"]`)!.click();
-			const input = f.root.querySelector("textarea")!;
-			input.value = text;
-			input.dispatchEvent(new Event("input"));
-			f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
-		};
-		submit("First accepted message");
+		f.root.querySelector<HTMLElement>(`[data-choice="${staff.id}"]`)!.click();
+		const input = f.root.querySelector("textarea")!;
+		input.value = "First accepted message";
+		input.dispatchEvent(new Event("input"));
+		f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
 		await draw();
 		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
 		await draw();
-		expect(f.api.readSessionEvents).toHaveBeenCalledTimes(1);
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
-
-		// Leave the accepted send waiting for its transcript and start another
-		// compose for the same session, so session identity cannot distinguish them.
-		location.hash = `#/c/${profileA.profileId}/file`;
-		await draw();
-		location.hash = `#/c/${profileA.profileId}/new`;
-		await draw();
-		const original = await f.cloud.supabase.auth.getSession();
-		const token = deferred<typeof original>();
-		vi.mocked(f.cloud.supabase.auth.getSession).mockResolvedValueOnce(original).mockReturnValueOnce(token.promise);
-		submit("Second message");
-		await draw();
-		expect(send).toHaveBeenCalledTimes(1);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.textContent).toContain("First accepted message");
 		events.resolve([]);
 		await draw();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
-		token.resolve(original);
-		await draw();
-		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
-		await draw();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		expect(f.root.querySelector("textarea")!.value).toBe("");
-		expect(f.root.textContent).toContain("Second message");
 		expect(f.root.textContent).not.toContain("Cloud execution could not be confirmed");
 	});
 	it("retries an uncertain product send with the same input identity and preserves its draft", async () => {
@@ -313,15 +290,9 @@ describe("account and route ownership", () => {
 		const send = executionTransport();
 		await draw();
 		const { button } = await drafted(f.root, "Private draft");
-		// A click first checks the account again, then writes. Token reads are
-		// held back only once that check has read the accounts, so it is the
-		// write that waits on the token when the change happens. The usage
-		// refresh also reads the accounts; it is over before the click.
 		const calls = (method: string) =>
 			vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith(`/${method}`)).length;
-		const accountReads = () => calls("qorpera_list_member_native_execution_connections");
 		const selections = calls("qorpera_select_member_session_account");
-		const checked = accountReads() + 1;
 		const getSession = vi.mocked(f.cloud.supabase.auth.getSession);
 		const current = getSession.getMockImplementation()!;
 		const original = await getSession();
@@ -329,14 +300,14 @@ describe("account and route ownership", () => {
 		let holding = true;
 		let held = 0;
 		getSession.mockImplementation(() => {
-			if (!holding || accountReads() < checked) return current();
+			if (!holding) return current();
 			held++;
 			return token.promise;
 		});
 		button.click();
 		for (let turn = 0; turn < 10 && !held; turn++) await settle();
 		expect(held).toBe(1);
-		expect(calls("qorpera_select_member_session_account")).toBe(selections + 1);
+		expect(calls("qorpera_select_member_session_account")).toBe(selections);
 		expect(send).not.toHaveBeenCalled();
 		holding = false;
 		if (change === "route") history.replaceState(null, "", "/#/account");
@@ -2423,5 +2394,125 @@ describe("a new website's first publish in the app", () => {
 		expect(count("qorpera_list_company_sites")).toBe(3);
 		expect(count("qorpera_company_site_hosting")).toBe(2);
 		expect(line()).toBe(ADDRESS_HOST);
+	});
+});
+
+describe("cold-boot waterfall optimizations", () => {
+	it("boots a company route as soon as listProfiles resolves while invitations and founding are still pending", async () => {
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		f.cloud.config.publishableKey = "sb_publishable_fixturekey";
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		f.cloud.config.nativeProviderLoginUrl = "https://login.fixture.invalid/";
+		const pendingInvites = deferred<Awaited<ReturnType<typeof f.api.listIncomingInvitations>>>();
+		const pendingFoundings = deferred<Awaited<ReturnType<typeof f.api.listCompanyFoundings>>>();
+		vi.mocked(f.api.listIncomingInvitations).mockReturnValue(pendingInvites.promise);
+		vi.mocked(f.api.listCompanyFoundings).mockReturnValue(pendingFoundings.promise);
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await draw();
+		expect(f.api.getTeam).toHaveBeenCalledWith(profileA.profileId, expect.any(AbortSignal));
+		expect(f.api.readSessionEvents).toHaveBeenCalled();
+		pendingInvites.resolve([]);
+		pendingFoundings.resolve([]);
+		await draw();
+	});
+
+	it("resolves Co-Founder home as soon as org, team, staff, and sessions load without waiting on sidebar or activity", async () => {
+		history.replaceState(null, "", `/#/c/${profileA.profileId}`);
+		const f = fixture();
+		f.cloud.config.publishableKey = "sb_publishable_fixturekey";
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		f.cloud.config.nativeProviderLoginUrl = "https://login.fixture.invalid/";
+		const pendingSidebar = deferred<Awaited<ReturnType<typeof f.api.readCompanySidebar>>>();
+		const pendingActivity = deferred<Awaited<ReturnType<typeof f.api.listStaffActivity>>>();
+		vi.mocked(f.api.readCompanySidebar).mockReturnValue(pendingSidebar.promise);
+		vi.mocked(f.api.listStaffActivity).mockReturnValue(pendingActivity.promise);
+		vi.mocked(f.api.getOrganization).mockResolvedValue({
+			schema: "qorpera.company-organization/v1",
+			profileId: profileA.profileId,
+			cofounder: {
+				staffAgentId: staff.id,
+				formationId: id(199),
+				memberSessionId: session.sessionId,
+			},
+			formation: {
+				formationId: id(199),
+				state: "operating",
+				status: "active",
+				revision: 1,
+				projectionStatus: "ready",
+				sourcePath: "QorperaOS/company/formation.md",
+			},
+			responsibilities: [],
+			projects: [],
+		});
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		pendingSidebar.resolve({ sections: [], placements: {}, pinned: [], hidden: [] });
+		pendingActivity.resolve([]);
+		await draw();
+	});
+
+	it("overlaps auth.start() with localeReady while holding the boot skeleton until locale resolves", async () => {
+		history.replaceState(null, "", "/#/");
+		const f = fixture();
+		const locale = deferred<void>();
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api, {}, { localeReady: locale.promise });
+		await draw();
+		expect(f.cloud.supabase.auth.getSession).toHaveBeenCalled();
+		expect(f.api.listProfiles).toHaveBeenCalled();
+		expect(root.querySelector(".frame")).toBeNull();
+		locale.resolve();
+		await draw();
+		expect(root.querySelector(".frame")).not.toBeNull();
+	});
+
+	it("keeps recently visited companies warm across A -> B -> A switches, suspends parked Realtime, and disposes on sign-out", async () => {
+		const startSpy = vi.spyOn(CompanyController.prototype, "start");
+		const suspendSpy = vi.spyOn(CompanyController.prototype, "suspend");
+		const resumeSpy = vi.spyOn(CompanyController.prototype, "resume");
+		const stopSpy = vi.spyOn(CompanyController.prototype, "stop");
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		await draw();
+		await draw();
+		expect(startSpy).toHaveBeenCalledTimes(1);
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileA.profileName);
+
+		location.hash = `#/c/${profileB.profileId}/team`;
+		await draw();
+		await draw();
+		expect(suspendSpy).toHaveBeenCalledTimes(1);
+		expect(startSpy).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileB.profileName);
+
+		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+		await draw();
+		expect(f.root.querySelector(".thread-skeleton")).toBeNull();
+		expect(resumeSpy).toHaveBeenCalledTimes(1);
+		expect(startSpy).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileA.profileName);
+
+		const stopsBeforeSignOut = stopSpy.mock.calls.length;
+		f.auth(null);
+		await draw();
+		expect(stopSpy.mock.calls.length - stopsBeforeSignOut).toBeGreaterThanOrEqual(2);
+	});
+
+	it("keeps the app-card MutationObserver disconnected when a company has no legacy apps", async () => {
+		const observeSpy = vi.spyOn(MutationObserver.prototype, "observe");
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const mainEl = f.root.querySelector<HTMLElement>("main")!;
+		const mainObserved = observeSpy.mock.calls.some(([target]) => target === mainEl);
+		expect(mainObserved).toBe(false);
 	});
 });

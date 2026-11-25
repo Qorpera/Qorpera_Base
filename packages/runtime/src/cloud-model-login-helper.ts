@@ -1,7 +1,7 @@
-import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import type { ClaudeLoginRead, ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import {
@@ -20,6 +20,7 @@ import {
 	type ClaudeResetKind,
 	type ClaudeResetOutcome,
 } from "./cloud-claude-login-usage.ts";
+import { bearerTokenMatches, readBoundedJsonBody, writeJsonResponse } from "./cloud-http-server-kit.ts";
 import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-budget.ts";
 import type {
 	ModelLoginSignInBinding,
@@ -59,7 +60,6 @@ const SIGN_IN_CODE = /^[\x21-\x7e]{8,512}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const CLAUDE_CHECK_ANSWER_MS = 30_000;
 const CLAUDE_CHECK_CLIENT_WAIT_MS = CLAUDE_CHECK_ANSWER_MS + 5_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CLAUDE_READ_ANSWER_MS = 22_000;
 const CLAUDE_READ_CLIENT_WAIT_MS = CLAUDE_READ_ANSWER_MS + 3_000;
 const CLAUDE_RESET_ANSWER_MS = 70_000;
@@ -155,37 +155,15 @@ function claudeReset(value: unknown): ClaudeResetOutcome {
 }
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
-	if (!authorization?.startsWith("Bearer ")) return false;
-	const left = Buffer.from(expected, "utf8");
-	const right = Buffer.from(authorization.slice("Bearer ".length), "utf8");
-	try {
-		return left.byteLength === right.byteLength && timingSafeEqual(left, right);
-	} finally {
-		left.fill(0);
-		right.fill(0);
-	}
+	return bearerTokenMatches(expected, authorization);
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {
-	const chunks: Buffer[] = [];
-	let body: Buffer | undefined;
-	let total = 0;
-	try {
-		for await (const chunk of request) {
-			const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-			total += bytes.byteLength;
-			if (total > MAX_REQUEST_BYTES) {
-				bytes.fill(0);
-				throw new Error("Login helper request is too large");
-			}
-			chunks.push(bytes);
-		}
-		body = Buffer.concat(chunks);
-		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
-	} finally {
-		body?.fill(0);
-		for (const chunk of chunks) chunk.fill(0);
-	}
+	return readBoundedJsonBody(request, {
+		maxBytes: MAX_REQUEST_BYTES,
+		tooLargeError: "Login helper request is too large",
+		zeroize: true,
+	});
 }
 
 function parseRenewalRequest(value: unknown): string {
@@ -357,14 +335,12 @@ export class ModelLoginHelperService {
 		await rm(this.#socketPath, { force: true });
 		const server = createServer((request, reply) => {
 			if (this.#closing) {
-				const body = JSON.stringify({ schema: "qorpera.model-login-helper-error/v1", error: "busy" });
-				reply.writeHead(503, {
-					"content-type": "application/json",
-					"cache-control": "no-store",
-					"content-length": Buffer.byteLength(body),
-					connection: "close",
-				});
-				reply.end(body);
+				writeJsonResponse(
+					reply,
+					503,
+					{ schema: "qorpera.model-login-helper-error/v1", error: "busy" },
+					{ includeNoSniff: false, headers: { connection: "close" } },
+				);
 				return;
 			}
 			this.#inFlight += 1;
@@ -377,14 +353,10 @@ export class ModelLoginHelperService {
 			void this.#handle(request, requestAbort.signal)
 				.then((result) => {
 					if (reply.destroyed || reply.writableEnded) return;
-					const body = JSON.stringify(result.body);
-					reply.writeHead(result.status, {
-						"content-type": "application/json",
-						"cache-control": "no-store",
-						"content-length": Buffer.byteLength(body),
-						...(this.#closing ? { connection: "close" } : {}),
+					writeJsonResponse(reply, result.status, result.body, {
+						includeNoSniff: false,
+						headers: this.#closing ? { connection: "close" } : undefined,
 					});
-					reply.end(body);
 				})
 				.catch(() => reply.destroy())
 				.finally(() => {

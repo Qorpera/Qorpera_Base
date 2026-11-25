@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, openSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, type FSWatcher, openSync, type Stats, unlinkSync, watch, writeSync } from "node:fs";
 import {
 	chmod,
 	chown,
@@ -81,6 +81,9 @@ const SUBID_LIMIT = 4294967295;
 const NETWORKS = 16384;
 const FOLDER_POLLS = 100;
 const POLL_MS = 200;
+const OUTPUT_POLL_BACKOFF_MS = [15, 30, 60, 150] as const;
+const PRUNE_INTERVAL_MS = 60_000;
+const CACHE_STAT_BATCH = 32;
 const USER_SCHEMA = "qorpera.coding-guest-session-user/v1";
 const NETWORK_SCHEMA = "qorpera.coding-guest-network/v1";
 const INTENT_SCHEMA = "qorpera.coding-guest-intent/v1";
@@ -147,6 +150,7 @@ export interface CodingGuestAgentPorts {
 	readMountinfo?: () => Promise<string>;
 	chown?: (path: string, uid: number, gid: number) => Promise<void>;
 	removeTree?: (path: string) => void;
+	sweepCaches?: (task: () => Promise<void>) => void;
 	lockWaitSeconds?: number;
 	ring?: { segmentBytes: number; segments: number };
 	requireRoot?: boolean;
@@ -192,6 +196,15 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		readMountinfo: ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8")),
 		chown: ports.chown ?? chown,
 		removeTree: ports.removeTree ?? detachRemove,
+		sweepCaches:
+			ports.sweepCaches ??
+			((task: () => Promise<void>) => {
+				if (ports.requireRoot ?? true) {
+					detachCacheSweep(ports.agent ?? CODING_GUEST.agent);
+					return;
+				}
+				void task().catch(() => undefined);
+			}),
 		lockWaitSeconds: ports.lockWaitSeconds ?? 60,
 		ring: ports.ring ?? { segmentBytes: CODING_GUEST.segmentBytes, segments: CODING_GUEST.segments },
 		requireRoot: ports.requireRoot ?? true,
@@ -364,6 +377,7 @@ function places(at: Agent, workerId: string) {
 		slice: `qorpera-coding-${worker}.slice`,
 		sliceUnit: join(at.systemdRoot, `qorpera-coding-${worker}.slice`),
 		activeDir: join(at.runtimeRoot, "active", worker),
+		pruneStamp: join(at.runtimeRoot, "pruned", worker),
 		networkRecord: join(at.runtimeRoot, "networks", `${worker}.json`),
 		namespace: `qorpera-${worker}`,
 	};
@@ -590,18 +604,38 @@ async function treesMatching(folder: string, pattern: string): Promise<string[]>
 	}
 	return paths;
 }
+async function lstatBatch(paths: readonly string[]): Promise<(Stats | undefined)[]> {
+	const results: (Stats | undefined)[] = new Array(paths.length);
+	for (let start = 0; start < paths.length; start += CACHE_STAT_BATCH) {
+		const slice = paths.slice(start, start + CACHE_STAT_BATCH);
+		const stats = await Promise.all(slice.map((path) => missing(() => lstat(path))));
+		for (let i = 0; i < stats.length; i++) results[start + i] = stats[i];
+	}
+	return results;
+}
+
 /** The last use of what is at or below `path`, never followed through a link: the newest read, write or change of a
  * file, and of a folder its newest write or change (this walk's own listing moves a folder's read time); 0 when there
  * is nothing. */
 async function lastUse(path: string): Promise<number> {
 	let usedMs = 0;
-	for (const paths = [path]; paths.length > 0; ) {
-		const at = paths.pop() as string;
-		const stat = await missing(() => lstat(at));
-		if (stat?.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
-		else if (stat?.isDirectory()) {
-			usedMs = Math.max(usedMs, stat.mtimeMs, stat.ctimeMs);
-			for (const name of (await missing(() => readdir(at))) ?? []) paths.push(join(at, name));
+	const rootStat = await missing(() => lstat(path));
+	if (rootStat?.isFile()) return Math.max(rootStat.atimeMs, rootStat.mtimeMs, rootStat.ctimeMs);
+	if (!rootStat?.isDirectory()) return 0;
+	usedMs = Math.max(rootStat.mtimeMs, rootStat.ctimeMs);
+	for (const dirs = [path]; dirs.length > 0; ) {
+		const at = dirs.pop() as string;
+		const names = (await missing(() => readdir(at))) ?? [];
+		const children = names.map((name) => join(at, name));
+		const stats = await lstatBatch(children);
+		for (let i = 0; i < children.length; i++) {
+			const stat = stats[i];
+			if (!stat) continue;
+			if (stat.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+			else if (stat.isDirectory()) {
+				usedMs = Math.max(usedMs, stat.mtimeMs, stat.ctimeMs);
+				dirs.push(children[i] as string);
+			}
 		}
 	}
 	return usedMs;
@@ -637,7 +671,15 @@ function trackCacheInode(
 	return bytes;
 }
 
-export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
+// WHY: Walk package caches once to age expired trees and collect LRU eviction metrics instead of traversing 50k+ files twice.
+export async function ageAndTrimCodingPackageCaches(
+	root: string,
+	limitBytes: number,
+	nowMs?: number,
+	ageMs?: number,
+): Promise<{ aged: string[]; evicted: string[] }> {
+	const doAge = nowMs !== undefined && ageMs !== undefined;
+	const aged: string[] = [];
 	const held = new Map<string, { bytes: number; refs: number }>();
 	const dirInfo = new Map<string, { key: string; bytes: number; usedMs: number }>();
 	const units: {
@@ -675,26 +717,41 @@ export async function trimCodingPackageCaches(root: string, limitBytes: number):
 				}
 				continue;
 			}
-			for (const name of names) {
-				const entry = join(directory, name);
-				const stat = await missing(() => lstat(entry));
+			const childPaths = names.map((name) => join(directory, name));
+			const childStats = await lstatBatch(childPaths);
+			for (let idx = 0; idx < childPaths.length; idx++) {
+				const entry = childPaths[idx] as string;
+				const stat = childStats[idx];
 				if (!stat) continue;
 				if (treeRoots.has(entry)) {
-					const entries = new Set<string>();
-					let bytes = trackCacheInode(held, entries, stat.dev, stat.ino, stat.blocks * 512);
+					if (doAge && !stat.isDirectory() && !stat.isFile()) {
+						if (nowMs > ageMs) {
+							await rm(entry, { recursive: true, force: true });
+							aged.push(entry.slice(root.length + 1));
+							continue;
+						}
+					}
+					const localInodes = new Map<string, number>();
+					const recordLocal = (dev: number, ino: number, bytes: number) => {
+						const key = `${dev}:${ino}`;
+						if (!localInodes.has(key)) localInodes.set(key, bytes);
+					};
+					recordLocal(stat.dev, stat.ino, stat.blocks * 512);
 					let fileUsedMs = 0;
 					let dirUsedMs = Math.max(stat.mtimeMs, stat.ctimeMs);
 					if (stat.isDirectory()) {
 						for (const stack = [entry]; stack.length > 0; ) {
 							const current = stack.pop() as string;
-							for (const childName of (await missing(() => readdir(current))) ?? []) {
-								const child = join(current, childName);
-								const childStat = await missing(() => lstat(child));
+							const subNames = (await missing(() => readdir(current))) ?? [];
+							const subPaths = subNames.map((childName) => join(current, childName));
+							const subStats = await lstatBatch(subPaths);
+							for (let s = 0; s < subPaths.length; s++) {
+								const childStat = subStats[s];
 								if (!childStat) continue;
-								bytes += trackCacheInode(held, entries, childStat.dev, childStat.ino, childStat.blocks * 512);
+								recordLocal(childStat.dev, childStat.ino, childStat.blocks * 512);
 								if (childStat.isDirectory()) {
 									dirUsedMs = Math.max(dirUsedMs, childStat.mtimeMs, childStat.ctimeMs);
-									stack.push(child);
+									stack.push(subPaths[s] as string);
 								} else if (childStat.isFile()) {
 									fileUsedMs = Math.max(fileUsedMs, childStat.atimeMs, childStat.mtimeMs, childStat.ctimeMs);
 								}
@@ -702,6 +759,21 @@ export async function trimCodingPackageCaches(root: string, limitBytes: number):
 						}
 					} else if (stat.isFile()) {
 						fileUsedMs = Math.max(stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+					}
+					const ageUsedMs = stat.isDirectory() ? Math.max(fileUsedMs, dirUsedMs) : stat.isFile() ? fileUsedMs : 0;
+					if (doAge && nowMs - ageUsedMs > ageMs) {
+						await rm(entry, { recursive: true, force: true });
+						aged.push(entry.slice(root.length + 1));
+						continue;
+					}
+					const entries = new Set<string>();
+					let bytes = 0;
+					for (const [key, size] of localInodes) {
+						entries.add(key);
+						const known = held.get(key);
+						if (known) known.refs++;
+						else held.set(key, { bytes: size, refs: 1 });
+						bytes += size;
 					}
 					units.push({
 						relative: entry.slice(root.length + 1),
@@ -771,7 +843,11 @@ export async function trimCodingPackageCaches(root: string, limitBytes: number):
 		}
 		evicted.push(unit.relative);
 	}
-	return evicted;
+	return { aged, evicted };
+}
+
+export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
+	return (await ageAndTrimCodingPackageCaches(root, limitBytes)).evicted;
 }
 
 const STAGING_TTL_MS = 3_600_000;
@@ -870,27 +946,64 @@ export async function trimCodingCheckCaches(root: string, limitBytes: number, no
 	return evicted;
 }
 
-/** The machine's package caches, once a boot, at its first mount and before the session's user (the guest agent has no
- * boot of its own; every turn mounts before its commands run): the tmpfiles file written, its folders made or set right,
- * the tools' trees not used for the age removed whole, and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. Answers
- * whether they are ready. A step that fails leaves no record, and the mount goes on: the executor then gives the
- * session's commands no cache variables (they work as before the caches), and the next mount tries again. */
-async function ensurePackageCaches(at: Agent): Promise<boolean> {
+// WHY: Create tmpfiles dirs synchronously under machineLock while deferring aging/trimming outside locks so cold VM boots never stall.
+async function ensurePackageCaches(at: Agent): Promise<{ readonly ready: boolean; readonly needsSweep: boolean }> {
 	const ready = join(at.runtimeRoot, "packages.ready");
-	if (await exists(ready)) return true;
-	const { root, config, limitBytes } = at.packageCaches;
+	const swept = join(at.runtimeRoot, "packages.swept");
+	if (await exists(ready)) return { ready: true, needsSweep: !(await exists(swept)) };
+	const { root, config } = at.packageCaches;
 	try {
 		await mkdir(dirname(config), { recursive: true, mode: 0o755 });
 		await writeText(config, codingPackageCachesTmpfiles(root, at.checkCaches.root), 0o644);
 		await at.system(TOOLS.systemdTmpfiles, ["--create", config]);
-		await ageCodingPackageTrees(root, at.nowMs(), CODING_PACKAGE_CACHES.ageDays * 86_400_000);
-		await trimCodingPackageCaches(root, limitBytes);
-		await trimCodingCheckCaches(at.checkCaches.root, at.checkCaches.limitBytes, at.nowMs());
 		await writeText(ready, "", 0o600);
-		return true;
+		return { ready: true, needsSweep: true };
+	} catch {
+		return { ready: false, needsSweep: false };
+	}
+}
+
+async function maintainPackageCaches(at: Agent): Promise<boolean> {
+	const swept = join(at.runtimeRoot, "packages.swept");
+	if (await exists(swept)) return true;
+	const sweepLock = join(at.runtimeRoot, "locks", "package-caches-sweep");
+	try {
+		return await locked({ ...at, lockWaitSeconds: 0 }, sweepLock, "CODING_GUEST_CACHE_SWEEP_BUSY", async () => {
+			if (await exists(swept)) return true;
+			await ageAndTrimCodingPackageCaches(
+				at.packageCaches.root,
+				at.packageCaches.limitBytes,
+				at.nowMs(),
+				CODING_PACKAGE_CACHES.ageDays * 86_400_000,
+			);
+			await trimCodingCheckCaches(at.checkCaches.root, at.checkCaches.limitBytes, at.nowMs());
+			await writeText(swept, "", 0o600);
+			return true;
+		});
 	} catch {
 		return false;
 	}
+}
+
+function detachCacheSweep(agentPath: string): void {
+	const child = spawn(CODING_GUEST.node, [agentPath, "sweep-caches"], {
+		env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
+		detached: true,
+		stdio: "ignore",
+	});
+	child.once("error", () => undefined);
+	child.unref();
+}
+
+export async function sweepCodingGuestCaches(
+	argv: readonly string[],
+	ports: CodingGuestAgentPorts = {},
+): Promise<number> {
+	if (argv.length > 0) throw new Error("CODING_GUEST_ARGUMENTS_INVALID");
+	const at = settle(ports);
+	requireRoot(at);
+	await maintainPackageCaches(at);
+	return 0;
 }
 
 function detachRemove(path: string): void {
@@ -1360,6 +1473,7 @@ export async function mountCodingGuestSession(
 	if (mountOf(await at.readMountinfo(), at.folderRoot)?.fstype !== "tmpfs")
 		throw new Error("CODING_GUEST_FOLDER_NOT_IN_MEMORY");
 	let trash: string | undefined;
+	let needsCacheSweep = false;
 	let mount: { mount: CodingGuestMountAnswer["mount"]; caches: boolean };
 	try {
 		mount = await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
@@ -1368,7 +1482,9 @@ export async function mountCodingGuestSession(
 				throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
 			let caches = false;
 			const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
-				caches = await ensurePackageCaches(at);
+				const ensured = await ensurePackageCaches(at);
+				caches = ensured.ready;
+				needsCacheSweep = ensured.needsSweep;
 				const user = await ensureUser(at, request.uid, request.gid);
 				await ensureDataCommand(at);
 				trash = await collectOrphanFolderCaches(at, session.worker);
@@ -1389,6 +1505,15 @@ export async function mountCodingGuestSession(
 	} finally {
 		const doomed = trash;
 		if (doomed) await ignore(Promise.resolve().then(() => at.removeTree(doomed)));
+		if (needsCacheSweep) {
+			await ignore(
+				Promise.resolve().then(() =>
+					at.sweepCaches(async () => {
+						await maintainPackageCaches(at);
+					}),
+				),
+			);
+		}
 	}
 	// Said only when asked (v2): an executor from before reads exactly the v1 answer.
 	return Object.freeze({
@@ -1642,6 +1767,18 @@ async function pruneEnded(at: Agent, session: Places): Promise<void> {
 			await rm(join(inputs, name), { force: true });
 	}
 }
+async function maybePruneEnded(at: Agent, session: Places): Promise<void> {
+	const now = at.nowMs();
+	const raw = await missing(() => readFile(session.pruneStamp, "utf8"));
+	if (raw !== undefined) {
+		const lastPrunedMs = Number(raw.trim());
+		if (Number.isFinite(lastPrunedMs) && now >= lastPrunedMs && now - lastPrunedMs < PRUNE_INTERVAL_MS) return;
+	}
+	await pruneEnded(at, session);
+	await mkdir(dirname(session.pruneStamp), { recursive: true, mode: 0o700 });
+	await writeText(session.pruneStamp, String(now), 0o600);
+}
+
 async function knownRun(
 	at: Agent,
 	command: CommandPlaces,
@@ -1672,7 +1809,7 @@ export async function runCodingGuestCommand(
 			if (!user) throw new Error("CODING_GUEST_SESSION_UNMOUNTED");
 			if (user.uid !== request.uid || user.gid !== request.gid) throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
 			if (!(await folderMounted(at, session))) throw new Error("CODING_GUEST_FOLDER_UNMOUNTED");
-			await pruneEnded(at, session);
+			await maybePruneEnded(at, session);
 			await ensureNetwork(at, session);
 			if (await ensureSessionSlice(at, session)) await at.system(TOOLS.systemctl, ["daemon-reload"]);
 			await mkdir(session.commands, { recursive: true, mode: 0o755 });
@@ -1702,35 +1839,91 @@ export async function readCodingGuestOutput(
 ): Promise<{ answer: CodingGuestOutputAnswer; bytes: Buffer }> {
 	const at = settle(ports);
 	const command = commandPlaces(at, places(at, request.workerId), request.commandId);
-	const polls = Math.max(1, Math.ceil(request.waitMs / POLL_MS));
-	for (let poll = 1; ; poll++) {
-		const now = await observe(at, command, request.commandId);
-		const segments = await openRing(command.output);
+	const budgetMs = Math.max(0, request.waitMs);
+	const customSleep = ports.sleep !== undefined;
+	let waitedMs = 0;
+	let stepIndex = 0;
+	let watcher: FSWatcher | undefined;
+	let woke = false;
+	let notifyWaiter: (() => void) | undefined;
+	const onFsEvent = () => {
+		woke = true;
+		const wake = notifyWaiter;
+		notifyWaiter = undefined;
+		wake?.();
+	};
+	if (budgetMs > 0) {
 		try {
-			const last = segments.at(-1);
-			// An ended command's last byte is its outcome's, even once its ring was dropped.
-			const end = now.state === "running" ? (last ? last.start + last.size : 0) : now.end;
-			if (request.offset > end) throw new Error("CODING_GUEST_OUTPUT_OFFSET_INVALID");
-			// The ring is the session user's: a first segment past the end shows nothing.
-			const gap = Math.max(0, Math.min(segments[0]?.start ?? end, end) - request.offset);
-			const from = request.offset + gap;
-			if (from < end || now.state !== "running" || poll >= polls) {
-				const bytes = await readPage(segments, from, Math.min(request.maxBytes, end - from));
-				const answer: CodingGuestOutputAnswer = Object.freeze({
-					schema: "qorpera.coding-guest-output/v1",
-					workerId: request.workerId,
-					...now,
-					end,
-					offset: from,
-					bytes: bytes.length,
-					gap,
-				});
-				return { answer, bytes };
-			}
-		} finally {
-			await closeRing(segments);
+			watcher = watch(command.output, { persistent: false }, onFsEvent);
+			watcher.on("error", () => undefined);
+		} catch {
+			watcher = undefined;
 		}
-		await at.sleep(POLL_MS);
+	}
+	try {
+		for (;;) {
+			woke = false;
+			const now = await observe(at, command, request.commandId);
+			const segments = await openRing(command.output);
+			try {
+				const last = segments.at(-1);
+				// An ended command's last byte is its outcome's, even once its ring was dropped.
+				const end = now.state === "running" ? (last ? last.start + last.size : 0) : now.end;
+				if (request.offset > end) throw new Error("CODING_GUEST_OUTPUT_OFFSET_INVALID");
+				// The ring is the session user's: a first segment past the end shows nothing.
+				const gap = Math.max(0, Math.min(segments[0]?.start ?? end, end) - request.offset);
+				const from = request.offset + gap;
+				if (from < end || now.state !== "running" || waitedMs >= budgetMs) {
+					const bytes = await readPage(segments, from, Math.min(request.maxBytes, end - from));
+					const answer: CodingGuestOutputAnswer = Object.freeze({
+						schema: "qorpera.coding-guest-output/v1",
+						workerId: request.workerId,
+						...now,
+						end,
+						offset: from,
+						bytes: bytes.length,
+						gap,
+					});
+					return { answer, bytes };
+				}
+			} finally {
+				await closeRing(segments);
+			}
+			if (woke) continue;
+			const remaining = budgetMs - waitedMs;
+			const step = Math.min(
+				remaining,
+				OUTPUT_POLL_BACKOFF_MS[Math.min(stepIndex, OUTPUT_POLL_BACKOFF_MS.length - 1)] as number,
+			);
+			stepIndex++;
+			const startedAt = Date.now();
+			const wokeByFs = await new Promise<boolean>((resolve) => {
+				let settled = false;
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const finish = (fromFs: boolean) => {
+					if (settled) return;
+					settled = true;
+					if (timer !== undefined) clearTimeout(timer);
+					if (notifyWaiter === wake) notifyWaiter = undefined;
+					resolve(fromFs);
+				};
+				const wake = () => finish(true);
+				notifyWaiter = wake;
+				if (woke) {
+					finish(true);
+					return;
+				}
+				if (customSleep) {
+					void at.sleep(step).then(() => finish(false));
+				} else {
+					timer = setTimeout(() => finish(false), step);
+				}
+			});
+			waitedMs += wokeByFs ? Math.max(1, Date.now() - startedAt) : step;
+		}
+	} finally {
+		notifyWaiter = undefined;
+		watcher?.close();
 	}
 }
 
@@ -2079,6 +2272,7 @@ export async function stopCodingGuestSession(
 		await rm(session.view, { force: true });
 		await rm(session.folderState, { recursive: true, force: true });
 		await rm(session.activeDir, { recursive: true, force: true });
+		await rm(session.pruneStamp, { force: true });
 		const inputs = join(at.runtimeRoot, "inputs");
 		for (const name of (await missing(() => readdir(inputs))) ?? [])
 			if (name.startsWith(`${session.worker}-`)) await rm(join(inputs, name), { force: true });
@@ -2236,6 +2430,7 @@ export async function runCodingGuestAgent(
 ): Promise<number> {
 	const [verb, ...rest] = argv;
 	if (verb === "relay") return relayCodingGuestCommand(rest, input, ports);
+	if (verb === "sweep-caches") return sweepCodingGuestCaches(rest, ports);
 	let line: unknown;
 	let bytes: Buffer = Buffer.alloc(0);
 	try {

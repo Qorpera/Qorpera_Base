@@ -9,6 +9,8 @@ ConditionPathExists=/etc/qorpera/runner-orchestrator.env
 Type=exec
 User=qorpera-orchestrator
 Group=qorpera-orchestrator
+# WHY: Enable realtime push wake-ups by default while letting /etc/qorpera/runner-orchestrator.env override to off.
+Environment=QORPERA_RUNNER_ORCHESTRATOR_WAKE=realtime
 EnvironmentFile=-/etc/qorpera/runner-orchestrator.env
 ExecStart=/usr/bin/node --jitless /opt/qorpera/runner-orchestrator/qorpera-runner-orchestrator.mjs
 Restart=on-failure

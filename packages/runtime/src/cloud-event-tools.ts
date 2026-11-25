@@ -1,5 +1,5 @@
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderHookRequest } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
@@ -19,7 +19,6 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** A plain address, lowercase, as the database checks it: no display name, a domain name with a top-level domain. */
 const ADDRESS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const MAIL_KEYS = new Set(["from", "to", "cc", "subject", "text", "inReplyTo", "attachments"]);

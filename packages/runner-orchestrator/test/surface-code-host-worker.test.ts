@@ -11,6 +11,7 @@ import {
 	addCodeWorktree,
 	type CodeHostCommand,
 	type CodeHostJob,
+	CodeHostJobFailure,
 	type CodeHostShell,
 	startCodeArea,
 } from "../src/code-host-jobs.ts";
@@ -234,7 +235,7 @@ describe("SurfaceCodeHostWorker", () => {
 		};
 
 		const previewPass = await worker.pass(new AbortController().signal);
-		expect(previewPass).toEqual({ previews: 1, merges: 0, publishes: 0, failed: 0 });
+		expect(previewPass).toEqual({ previews: 1, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
 		const previewComplete = rpcCalls.find((c) => c.method === "qorpera_surface_complete_preview");
 		expect(previewComplete?.args).toMatchObject({
 			p_preview_id: previewId,
@@ -296,7 +297,7 @@ describe("SurfaceCodeHostWorker", () => {
 		};
 
 		const mergePass = await worker.pass(new AbortController().signal);
-		expect(mergePass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
+		expect(mergePass).toEqual({ previews: 0, merges: 1, publishes: 0, cleanups: 0, failed: 0 });
 		expect(hostRunOrder).toEqual(["enter", "published"]);
 		const mergeComplete = rpcCalls.find((c) => c.method === "qorpera_surface_complete_merge");
 		expect(mergeComplete?.args).toMatchObject({
@@ -338,7 +339,7 @@ describe("SurfaceCodeHostWorker", () => {
 		};
 
 		const publishPass = await worker.pass(new AbortController().signal);
-		expect(publishPass).toEqual({ previews: 0, merges: 0, publishes: 1, failed: 0 });
+		expect(publishPass).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
 		const finishLive = rpcCalls.find(
 			(c) => c.method === "qorpera_surface_site_version_finish" && c.args.p_promote_live === true,
 		);
@@ -459,7 +460,7 @@ describe("SurfaceCodeHostWorker", () => {
 		};
 
 		const failedPass = await worker.pass(new AbortController().signal);
-		expect(failedPass).toEqual({ previews: 0, merges: 0, publishes: 0, failed: 1 });
+		expect(failedPass).toEqual({ previews: 0, merges: 0, publishes: 0, cleanups: 0, failed: 1 });
 		const failedComplete = rpcCalls.find((c) => c.method === "qorpera_surface_complete_merge");
 		expect(failedComplete?.args).toMatchObject({
 			p_job_id: failedMergeJobId,
@@ -508,7 +509,7 @@ describe("SurfaceCodeHostWorker", () => {
 		};
 
 		const undoPass = await worker.pass(new AbortController().signal);
-		expect(undoPass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
+		expect(undoPass).toEqual({ previews: 0, merges: 1, publishes: 0, cleanups: 0, failed: 0 });
 		const undoComplete = rpcCalls.find((c) => c.method === "qorpera_surface_complete_merge");
 		expect(undoComplete?.args).toMatchObject({
 			p_job_id: undoJobId,
@@ -646,7 +647,7 @@ describe("SurfaceCodeHostWorker", () => {
 		});
 
 		const pass = await worker.pass(new AbortController().signal);
-		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
+		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, cleanups: 0, failed: 0 });
 		expect(callOrder).toEqual(["published", "complete:1:landed", "complete:2:landed", "rebase", "rebase", "rebase"]);
 		expect(reported.some((ev) => ev.event === "surface-code-host-rebase-persist-failed")).toBe(true);
 	});
@@ -787,7 +788,7 @@ describe("SurfaceCodeHostWorker", () => {
 		};
 
 		const firstPass = await worker.pass(new AbortController().signal);
-		expect(firstPass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
+		expect(firstPass).toEqual({ previews: 0, merges: 1, publishes: 0, cleanups: 0, failed: 0 });
 		expect(callOrder).toEqual(["published", "complete:1", "complete:2", "rebase:1"]);
 
 		callOrder.length = 0;
@@ -850,7 +851,7 @@ describe("SurfaceCodeHostWorker", () => {
 		expect(shaC2).toMatch(/^[0-9a-f]{40}$/);
 
 		const secondPass = await worker.pass(new AbortController().signal);
-		expect(secondPass).toEqual({ previews: 0, merges: 0, publishes: 0, failed: 1 });
+		expect(secondPass).toEqual({ previews: 0, merges: 0, publishes: 0, cleanups: 0, failed: 1 });
 		expect(callOrder).toEqual(["published", "complete:1", "complete:2", "complete:3", "rebase:1", "rebase:2"]);
 	});
 
@@ -961,6 +962,7 @@ function buildHarness(f: Awaited<ReturnType<typeof createCodeHostFixture>>, buil
 					return { state: args.p_promote_live === true ? "live" : "ready" };
 				case "qorpera_surface_complete_preview":
 				case "qorpera_surface_complete_publish":
+				case "qorpera_surface_complete_cleanup":
 					return {};
 				case "qorpera_surface_renew_lease":
 					return { renewed: true };
@@ -1049,6 +1051,7 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 			previews: 1,
 			merges: 0,
 			publishes: 0,
+			cleanups: 0,
 			failed: 0,
 		});
 		expect(h.calls.some((c) => c.method === "qorpera_surface_request_build")).toBe(false);
@@ -1092,6 +1095,7 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 			previews: 1,
 			merges: 0,
 			publishes: 0,
+			cleanups: 0,
 			failed: 0,
 		});
 		const asked = h.calls.filter((c) => c.method === "qorpera_surface_request_build");
@@ -1138,6 +1142,7 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 			previews: 1,
 			merges: 0,
 			publishes: 0,
+			cleanups: 0,
 			failed: 0,
 		});
 		expect(h.calls.some((c) => c.method === "qorpera_surface_complete_preview")).toBe(false);
@@ -1172,6 +1177,7 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 			previews: 0,
 			merges: 0,
 			publishes: 1,
+			cleanups: 0,
 			failed: 0,
 		});
 		expect(h.calls.find((c) => c.method === "qorpera_surface_request_build")?.args).toMatchObject({
@@ -1200,5 +1206,300 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 		expect(failed?.args.p_status).toBe("failed");
 		expect(String(failed?.args.p_error_detail).split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
 		expect(g.calls.some((c) => c.method === "qorpera_surface_request_build")).toBe(false);
+	});
+
+	it("skips duplicate compose on Pass 2 after a parked preview build and passes readOnly for read-only passes", async () => {
+		const f = await createCodeHostFixture();
+		const output = await commitFiles(f, { "dist/index.html": "<!doctype html><h1>Cached Plan</h1>\n" }, "Output");
+		const builtTree = await f.git(join(f.code, "repo.git"), "rev-parse", `${output.commit}:dist`);
+		const source = await commitFiles(
+			f,
+			{ ".qorpera/checks.json": RECIPE_CHECKS, "package.json": "{}\n", "src/main.tsx": "export {};\n" },
+			"Source",
+		);
+		const buildId = randomUUID();
+		const previewId = randomUUID();
+		const lease = randomUUID();
+		const buildAnswers: Record<string, unknown>[] = [
+			{ state: "waiting", buildId },
+			{ state: "built", buildId, builtTreeSha: builtTree },
+			{ state: "built", buildId, builtTreeSha: builtTree },
+		];
+		const runOpts: { yields?: boolean; readOnly?: boolean }[] = [];
+		const calls: { method: SurfaceCodeHostRpc; args: Record<string, unknown> }[] = [];
+		let pendingClaim: Record<string, unknown> = {
+			sessions: [],
+			previews: [],
+			merges: [],
+			publishes: [],
+			automations: [],
+		};
+		const worker = new SurfaceCodeHostWorker({
+			control: {
+				async call(method, args) {
+					calls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						const res = pendingClaim;
+						pendingClaim = { sessions: [], previews: [], merges: [], publishes: [], automations: [] };
+						return res;
+					}
+					if (method === "qorpera_surface_request_build") return buildAnswers.shift()!;
+					if (method === "qorpera_surface_site_version_begin") {
+						return {
+							state: "uploading",
+							versionId: randomUUID(),
+							siteId: randomUUID(),
+							siteSlug: "shop",
+							listed: false,
+						};
+					}
+					if (method === "qorpera_surface_site_version_list") return { state: "listed", missing: 0 };
+					if (method === "qorpera_surface_site_version_put") return { state: "kept" };
+					if (method === "qorpera_surface_site_version_finish") {
+						return { state: args.p_promote_live === true ? "live" : "ready" };
+					}
+					if (method === "qorpera_surface_renew_lease") return { renewed: true };
+					if (method === "qorpera_surface_shared_product_folder_roots") return [];
+					return {};
+				},
+			},
+			hosts: {
+				async run(_c, _e, _s, fn, opts) {
+					runOpts.push({ yields: opts?.yields, readOnly: opts?.readOnly });
+					return await fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const preview = previewClaim(source.commit, previewId, lease);
+		pendingClaim = { ...pendingClaim, ...preview };
+		expect(await worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			cleanups: 0,
+			failed: 0,
+		});
+		expect(runOpts).toEqual([{ yields: true, readOnly: true }]);
+
+		pendingClaim = { ...pendingClaim, ...preview };
+		expect(await worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			cleanups: 0,
+			failed: 0,
+		});
+		// WHY: Pass 2 reuses the cached Pass 1 compose plan, so hosts.run only executes once to read the built tree.
+		expect(runOpts).toEqual([
+			{ yields: true, readOnly: true },
+			{ yields: true, readOnly: true },
+		]);
+
+		runOpts.length = 0;
+		pendingClaim = {
+			sessions: [],
+			previews: [],
+			merges: [],
+			automations: [],
+			publishes: [
+				{
+					jobId: randomUUID(),
+					surfaceId: randomUUID(),
+					profileId: randomUUID(),
+					environmentId: randomUUID(),
+					sourceKind: "code_repo",
+					liveHeadSha: source.commit,
+					leaseToken: randomUUID(),
+					repositoryKey: "thetaband/website",
+					siteId: randomUUID(),
+					payload: {},
+				},
+			],
+		};
+		expect(await worker.pass(new AbortController().signal)).toEqual({
+			previews: 0,
+			merges: 0,
+			publishes: 1,
+			cleanups: 0,
+			failed: 0,
+		});
+		expect(runOpts).toEqual([
+			{ yields: true, readOnly: true },
+			{ yields: true, readOnly: true },
+		]);
+	});
+});
+
+describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
+	it("runs two yieldable code-host passes to remove a discarded session worktree, git admin folder, and branch", async () => {
+		const f = await createCodeHostFixture();
+		const discardedWorkerId = randomUUID();
+		const peerWorkerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId: discardedWorkerId, baseSha: f.baseSha });
+		await addCodeWorktree(f.job, { repository: f.repository, workerId: peerWorkerId, baseSha: f.baseSha });
+
+		const discardedTree = join(f.code, "worktrees", discardedWorkerId);
+		const discardedAdmin = join(f.code, "repo.git", "worktrees", discardedWorkerId);
+		const peerTree = join(f.code, "worktrees", peerWorkerId);
+		await writeFile(join(discardedTree, "draft.html"), "<h1>Discarded</h1>\n");
+		await f.git(discardedTree, "add", "draft.html");
+		await f.git(discardedTree, "commit", "-m", "Discarded draft");
+		await writeFile(join(discardedTree, "dirty.txt"), "uncommitted\n");
+
+		const hostRuns: { yields: boolean | undefined; treeExistedBefore: boolean }[] = [];
+		const jobId = randomUUID();
+		const sessionId = randomUUID();
+		const leaseToken = randomUUID();
+		const rpcCalls: RpcCall[] = [];
+		let claimed = false;
+
+		const worker = new SurfaceCodeHostWorker({
+			control: {
+				async call(method: SurfaceCodeHostRpc, args: Record<string, unknown>): Promise<unknown> {
+					expect(SURFACE_CODE_HOST_RPCS).toContain(method);
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						if (claimed)
+							return { sessions: [], previews: [], merges: [], publishes: [], cleanups: [], automations: [] };
+						claimed = true;
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [],
+							cleanups: [
+								{
+									jobId,
+									surfaceId: randomUUID(),
+									sessionId,
+									profileId: randomUUID(),
+									environmentId: randomUUID(),
+									sourceKind: "code_repo",
+									leaseToken,
+									repositoryKey: "thetaband/website",
+									workerId: discardedWorkerId,
+								},
+							],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_complete_cleanup") return { jobId, status: args.p_status };
+					if (method === "qorpera_surface_renew_lease") return { renewed: true };
+					throw new Error(`Unexpected RPC ${method}`);
+				},
+			},
+			hosts: {
+				async run(_c, _e, _s, fn, opts) {
+					hostRuns.push({ yields: opts?.yields, treeExistedBefore: existsSync(discardedTree) });
+					return await fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const pass = await worker.pass(new AbortController().signal);
+		expect(pass).toEqual({ previews: 0, merges: 0, publishes: 0, cleanups: 1, failed: 0 });
+		expect(hostRuns).toEqual([
+			{ yields: true, treeExistedBefore: true },
+			{ yields: true, treeExistedBefore: false },
+		]);
+		expect(existsSync(discardedTree)).toBe(false);
+		expect(existsSync(discardedAdmin)).toBe(false);
+		expect(
+			await f.git(join(f.code, "repo.git"), "for-each-ref", `refs/heads/qorpera/coding/${discardedWorkerId}`),
+		).toBe("");
+		expect(existsSync(peerTree)).toBe(true);
+		expect(await f.git(join(f.code, "repo.git"), "rev-parse", `refs/heads/qorpera/coding/${peerWorkerId}`)).toBe(
+			f.baseSha,
+		);
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_complete_cleanup")?.args).toEqual({
+			p_job_id: jobId,
+			p_status: "completed",
+			p_error_detail: null,
+			p_lease_token: leaseToken,
+		});
+	});
+
+	it("leaves yielded cleanups uncompleted and reports failed on invalid cleanup metadata", async () => {
+		const f = await createCodeHostFixture();
+		const events: Record<string, unknown>[] = [];
+		const yieldRpcCalls: RpcCall[] = [];
+		let yieldClaimed = false;
+		const yieldWorker = new SurfaceCodeHostWorker({
+			yieldRetryDelaysMs: [1],
+			report: (ev) => events.push(ev),
+			control: {
+				async call(method: SurfaceCodeHostRpc, args: Record<string, unknown>): Promise<unknown> {
+					yieldRpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						if (yieldClaimed) return { sessions: [], previews: [], merges: [], publishes: [], cleanups: [] };
+						yieldClaimed = true;
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [],
+							cleanups: [
+								{
+									jobId: randomUUID(),
+									surfaceId: randomUUID(),
+									sessionId: randomUUID(),
+									profileId: randomUUID(),
+									environmentId: randomUUID(),
+									sourceKind: "code_repo",
+									leaseToken: randomUUID(),
+									repositoryKey: "thetaband/website",
+									workerId: randomUUID(),
+								},
+							],
+						};
+					}
+					return { renewed: true };
+				},
+			},
+			hosts: {
+				async run() {
+					throw new CodeHostJobFailure("CODE_HOST_JOB_YIELDED", "busy");
+				},
+			},
+		});
+		expect(await yieldWorker.pass(new AbortController().signal)).toEqual({
+			previews: 0,
+			merges: 0,
+			publishes: 0,
+			cleanups: 0,
+			failed: 0,
+		});
+		expect(yieldRpcCalls.some((c) => c.method === "qorpera_surface_complete_cleanup")).toBe(false);
+		expect(events).toContainEqual(expect.objectContaining({ event: "surface-code-host-yielded", kind: "cleanup" }));
+
+		const h = buildHarness(f, []);
+		const badJobId = randomUUID();
+		h.claim({
+			cleanups: [
+				{
+					jobId: badJobId,
+					surfaceId: randomUUID(),
+					sessionId: randomUUID(),
+					profileId: randomUUID(),
+					environmentId: null,
+					sourceKind: "code_repo",
+					leaseToken: randomUUID(),
+					repositoryKey: "thetaband/website",
+					workerId: randomUUID(),
+				},
+			],
+		});
+		expect(await h.worker.pass(new AbortController().signal)).toEqual({
+			previews: 0,
+			merges: 0,
+			publishes: 0,
+			cleanups: 1,
+			failed: 0,
+		});
+		expect(h.calls.find((c) => c.method === "qorpera_surface_complete_cleanup")?.args).toMatchObject({
+			p_job_id: badJobId,
+			p_status: "failed",
+		});
 	});
 });

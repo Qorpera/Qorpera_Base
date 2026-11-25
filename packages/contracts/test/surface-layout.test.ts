@@ -73,6 +73,8 @@ describe("parseSurfaceLayout", () => {
 				{ type: "cards", from: "vendors.json#/vendors", title: "vendor", badge: "status" },
 				{ type: "report", match: "*.report.json" },
 				{ type: "report", from: "essay.report.json" },
+				{ type: "report", from: "posts/launch.html" },
+				{ type: "report", from: "posts/deck.pdf" },
 				{ type: "artifacts" },
 				{
 					type: "row",
@@ -89,7 +91,7 @@ describe("parseSurfaceLayout", () => {
 		expect(blocks[6]).toEqual({ type: "facts", from: "specs.json#/overview", take: 4, skip: [] });
 		expect(blocks[7]).toEqual({ type: "facts", items: [{ label: "Weight", from: "specs.json#/overview/weight" }] });
 		expect(blocks[10]).toMatchObject({ type: "cards", lines: [] });
-		expect(blocks[14]).toEqual({
+		expect(blocks[16]).toEqual({
 			type: "row",
 			blocks: [
 				{ type: "module", from: "modules/price-calc", height: "auto" },
@@ -994,7 +996,7 @@ describe("starter layouts", () => {
 			from: ["vendors.json#/vendors", "vendors.json#/suppliers"],
 			lines: ["component", "unitPrice", "moq", "leadTime", "region", "certifications"],
 		});
-		expect(product.tabs[3]?.blocks).toEqual([{ type: "report", match: "**/*.report.json" }]);
+		expect(product.tabs[3]?.blocks).toEqual([{ type: "report", match: "**/*" }]);
 		expect(product.tabs[4]?.blocks).toEqual([{ type: "explainer", match: "breakdowns/**/scenes.js" }]);
 	});
 

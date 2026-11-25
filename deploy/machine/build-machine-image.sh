@@ -84,7 +84,7 @@ BLENDER_VERSION=4.3.2
 BLENDER_SHA256=4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
-EXPECTED_FOLDER_PROGRAM_SHA256="04628fcc705346ab6e69ed7ca2e2b6219671de4d7404ad8095b58f625553ac15"
+EXPECTED_FOLDER_PROGRAM_SHA256="da2f37ea3d2de7cb20e4d93d1498c2e42233f09949c55556f722406d38652c97"
 # The pin: the record's artifact, its sha-256 and its size (both under "artifact").
 EXPECTED_CODEX_SHA256= EXPECTED_CODEX_BYTES=
 read -r EXPECTED_CODEX_SHA256 EXPECTED_CODEX_BYTES < <(python3 -c 'import json,sys;a=json.load(open(sys.argv[1]))["artifact"];print(a["sha256"],a["bytes"])' \

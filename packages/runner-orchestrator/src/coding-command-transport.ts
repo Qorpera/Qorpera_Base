@@ -7,6 +7,7 @@ import {
 	cloudCodingSessionLayout,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import {
 	assertLxdCodingMachineInstance,
@@ -17,7 +18,6 @@ import {
 } from "./coding-machine.ts";
 import type { LxdInspectableClient } from "./lxd-client.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const HELPER = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
 type Action = "start" | "read" | "cancel";
@@ -44,8 +44,8 @@ export async function inspectCodingSessionGuest(
 	signal: AbortSignal,
 ): Promise<void> {
 	if (
-		!UUID.test(options.workerId) ||
-		!UUID.test(options.bootId) ||
+		!UUID_PATTERN.test(options.workerId) ||
+		!UUID_PATTERN.test(options.bootId) ||
 		!SHA.test(options.helperSha256) ||
 		!SHA.test(options.guestConfigSha256)
 	)
@@ -126,12 +126,12 @@ export class LxdCodingCommandTransport {
 		const machine = lxdCodingMachinePlan(options.machine).binding;
 		if (
 			Object.keys(options.scope).sort().join() !== "requestId,turn,vmId,workerId" ||
-			!UUID.test(options.scope.workerId) ||
+			!UUID_PATTERN.test(options.scope.workerId) ||
 			options.scope.vmId !== machine.machineId ||
-			!UUID.test(options.scope.requestId) ||
+			!UUID_PATTERN.test(options.scope.requestId) ||
 			!Number.isSafeInteger(options.scope.turn) ||
 			options.scope.turn < 1 ||
-			!UUID.test(options.bootId) ||
+			!UUID_PATTERN.test(options.bootId) ||
 			!SHA.test(options.helperSha256) ||
 			!SHA.test(options.guestConfigSha256)
 		)
@@ -162,7 +162,7 @@ export class LxdCodingCommandTransport {
 		if (
 			Object.keys(scope).sort().join() !== "requestId,turn,vmId,workerId" ||
 			Object.entries(this.#scope).some(([key, value]) => scope[key as keyof CloudCodingCommandScope] !== value) ||
-			!UUID.test(commandId) ||
+			!UUID_PATTERN.test(commandId) ||
 			(inputSha256 !== null && !SHA.test(inputSha256))
 		)
 			throw new Error("CODING_COMMAND_SCOPE_DIFFERS");

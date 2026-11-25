@@ -432,40 +432,40 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "plays",
 		family: "strategy",
-		summary: "competing bets side by side",
+		summary: "competing plays",
 		fields: [{ name: "from", kind: "source", required: true, note: "plays.json" }, HEADING_FIELD],
 	},
 	{
 		type: "economics",
 		family: "strategy",
-		summary: "unit economics simulator",
+		summary: "economics model",
 		fields: [{ name: "from", kind: "source", required: true, note: "economics.json" }, HEADING_FIELD],
 	},
 	{
 		type: "hypotheses",
 		family: "strategy",
-		summary: "bets & kill criteria",
+		summary: "bets & kill gates",
 		fields: [{ name: "from", kind: "source", required: true, note: "hypotheses.json" }, HEADING_FIELD],
 	},
 	{
 		type: "landscape",
 		family: "strategy",
-		summary: "rivals map & matrix",
+		summary: "rivals map",
 		fields: [{ name: "from", kind: "source", required: true, note: "landscape.json" }, HEADING_FIELD],
 	},
 	{
 		type: "report",
 		family: "report",
-		summary: "essays and charts from report files",
+		summary: "posts read one at a time: report files, HTML pages and PDFs; add to any tab",
 		fields: [
 			{
 				name: "from",
 				kind: "file",
 				required: false,
-				note: "one report file; or use match",
-				accepts: [".json"],
+				note: "one post; or use match",
+				accepts: [".json", ".html", ".htm", ".pdf"],
 			},
-			{ name: "match", kind: "glob", required: false, note: "every matching file" },
+			{ name: "match", kind: "glob", required: false, note: "every matching post" },
 			HEADING_FIELD,
 		],
 	},
@@ -1260,7 +1260,7 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 		{
 			id: "reports",
 			title: "Reports",
-			blocks: [{ type: "report", match: "**/*.report.json" }],
+			blocks: [{ type: "report", match: "**/*" }],
 		},
 		{
 			id: "breakdowns",

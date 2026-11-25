@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
 import {
 	CLOUD_AGENT_NO_FINAL_SEND_CODE,
@@ -1233,7 +1234,14 @@ it.each([
 			role: f.context.agent.role,
 			startupAssignment: [],
 		});
-		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
+		const promptKeys = Object.keys(prompt);
+		expect(promptKeys.slice(promptKeys.indexOf("skills"), promptKeys.indexOf("skills") + 3)).toEqual([
+			"skills",
+			"memory",
+			"hireOverlay",
+		]);
+		expect(promptKeys.indexOf("observedAt")).toBeGreaterThan(promptKeys.indexOf("hireOverlay"));
+		expect(promptKeys.indexOf("wake")).toBeGreaterThan(promptKeys.indexOf("hireOverlay"));
 		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
 		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
 		// The Co-Founder's company runs read the company's senses beside it; no other run asks for them.
@@ -1251,8 +1259,11 @@ it.each([
 			expect(prompt).not.toHaveProperty("senses");
 			expect(asked).not.toContain("qorpera_describe_company_senses");
 		}
-		// Contract 15.2: the skill catalog sits before the notebook and the job; both libraries are empty here.
-		expect(Object.keys(prompt).slice(-3)).toEqual(["skills", "memory", "hireOverlay"]);
+		expect(promptKeys.slice(promptKeys.indexOf("skills"), promptKeys.indexOf("skills") + 3)).toEqual([
+			"skills",
+			"memory",
+			"hireOverlay",
+		]);
 		expect(prompt.skills).toMatchObject({
 			schema: "qorpera.agent-skills/v1",
 			trust: "guidance_not_authority",
@@ -2343,7 +2354,7 @@ it("raises one typed card for the member, appended before the final sentence, an
 	const [request, card] = f.control.appendInteractionRequest.mock.calls[0]!;
 	expect(request.authority.runId).toBe(f.binding.runId);
 	expect(card).toEqual({
-		eventId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/),
+		eventId: expect.stringMatching(UUID_PATTERN),
 		data: {
 			schema: "qorpera.interaction/v1",
 			surface: "question",
@@ -2356,6 +2367,8 @@ it("raises one typed card for the member, appended before the final sentence, an
 			},
 		},
 	});
+	expect(card.eventId[14]).toBe("4");
+	expect(card.eventId[19]).toBe("a");
 	// The retry reuses the same event id, so the kernel sees one card.
 	expect(f.control.appendInteractionRequest.mock.calls[1]![1].eventId).toBe(card.eventId);
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
@@ -3447,14 +3460,16 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	// tools are built, and before and after the execution's start) asked for the run's admission and then
 	// its read set, one after the other, not together: 12 before that. Since 20260930618000 each of the three is one
 	// call again, with both reads in it (qorpera_check_native_run): 15 before that.
-	expect(wave("qorpera_memory_run_log_place")).toBe(6);
-	expect(wave("qorpera_memory_run_resume_receipts")).toBe(6);
+	// WHY: Authority open overlaps Wave 4 reads, run-log open follows in Wave 5, and beforeModelStart skips redundant check_native_run calls around begin_v3.
+	expect(wave("describeToolAuthority")).toBe(4);
+	expect(wave("qorpera_memory_run_log_place")).toBe(5);
+	expect(wave("qorpera_memory_run_resume_receipts")).toBe(5);
 	expect(wave("qorpera_bind_native_company_context")).toBeGreaterThan(
 		wave("qorpera_begin_native_company_execution_v3"),
 	);
 	expect(wave("qorpera_fence_native_context")).toBeGreaterThan(wave("qorpera_bind_native_company_context"));
 	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
-	expect(wave("qorpera_record_native_context_view")).toBe(12);
+	expect(wave("qorpera_record_native_context_view")).toBe(9);
 });
 
 it("lists a company run's tool catalog, and the tools more_tools opens, in their order", async () => {
@@ -3523,14 +3538,13 @@ it("lists a company run's tool catalog, and the tools more_tools opens, in their
 	]);
 });
 
-it("offers make_picture to a run on a Codex login, and never to one on a member's ChatGPT plan (20260930746000)", async () => {
+it("offers make_picture to both Codex login and ChatGPT plan runs with a token", async () => {
 	const codex = await fixture("company-runtime");
 	await codex.runtime.execute(codex.request, codex.identityRoot, new AbortController().signal);
 	const offered = offeredNames(JSON.parse(await readFile(codex.evidence, "utf8")));
 	expect(offered).toContain("make_picture");
 	await rm(codex.identityRoot, { recursive: true, force: true });
 	await rm(codex.companyRoot, { recursive: true, force: true });
-	// A plan run's identity root holds the plan's token and an empty Codex home.
 	const plan = await fixture("company-runtime");
 	await rm(join(plan.identityRoot, "codex", "auth.json"));
 	await mkdir(join(plan.identityRoot, "chatgpt-plan"), { mode: 0o700 });
@@ -3538,7 +3552,7 @@ it("offers make_picture to a run on a Codex login, and never to one on a member'
 	await plan.runtime.execute(plan.request, plan.identityRoot, new AbortController().signal);
 	const names = offeredNames(JSON.parse(await readFile(plan.evidence, "utf8")));
 	expect(names).toContain("save_app");
-	expect(names).not.toContain("make_picture");
+	expect(names).toContain("make_picture");
 });
 
 it("offers narrate_app to a Codex login's run with machines, on demand, and to no run without a voice lane", async () => {
@@ -3998,10 +4012,17 @@ describe("Gemini 4 Neon conversation runs", () => {
 		expect(result.providerSessionId).toMatch(/^gemini:gemini-4-neon:/);
 		expect(result.delivery.messageCount).toBe(1);
 		expect(seenBodies).toHaveLength(2);
-		const tools = seenBodies[0]?.tools as Array<{ functionDeclarations?: Array<{ name: string }> }>;
-		const offered = (tools[0]?.functionDeclarations ?? []).map((decl) => decl.name);
+		const tools = seenBodies[0]?.tools as Array<{
+			functionDeclarations?: Array<{ name: string; description?: string }>;
+		}>;
+		const decls = tools[0]?.functionDeclarations ?? [];
+		const more = decls.find((decl) => decl.name === "more_tools");
+		const listed = more
+			? [...(more.description ?? "").matchAll(/^- ([a-z][a-z0-9_]*)(?::|$)/gm)].map((match) => match[1])
+			: [];
+		const offered = [...decls.map((decl) => decl.name), ...listed];
 		expect(offered).toContain("send_message");
-		expect(offered).not.toContain("make_picture");
+		expect(offered).toContain("make_picture");
 		expect(offered).not.toContain("narrate_app");
 		expect(offered).not.toContain("home");
 		expect(rpcCalls(f, "qorpera_record_gemini_run_usage")).toHaveLength(2);
@@ -4350,5 +4371,97 @@ describe("Gemini 4 Neon conversation runs", () => {
 		expect(rpcCalls(result.f, "qorpera_record_gemini_voice_usage").length).toBeGreaterThanOrEqual(1);
 		expect(result.outputs[1]).toMatchObject({ ok: true, state: "partly_spoken", spokenNow: 1, left: 1 });
 		expect(result.outputs[3]).toMatchObject({ ok: true, state: "spoken", spokenNow: 2, reused: 1, left: 0 });
+	});
+
+	it("overlaps openGeminiKeyForRun with Wave 2 context reads", async () => {
+		let releaseVault!: () => void;
+		const vaultGate = new Promise<void>((resolve) => {
+			releaseVault = resolve;
+		});
+		let vaultStarted = false;
+		let overlapped = false;
+		let geminiCalls = 0;
+		const geminiFetch = vi.fn<typeof fetch>(async () => {
+			geminiCalls += 1;
+			if (geminiCalls === 1) {
+				return Response.json({
+					candidates: [
+						{
+							content: {
+								role: "model",
+								parts: [
+									{
+										functionCall: {
+											id: "send_1",
+											name: "send_message",
+											args: { idempotencyKey: "overlap-final", text: "Done.", phase: "final" },
+										},
+									},
+								],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
+				});
+			}
+			return Response.json({
+				candidates: [{ content: { role: "model", parts: [{ text: "Done." }] } }],
+				usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
+			});
+		});
+		const vaultFetch = vi.fn<typeof fetch>(async () => {
+			vaultStarted = true;
+			await vaultGate;
+			return Response.json({
+				schema: "qorpera.gemini-key-for-run/v1",
+				state: "open",
+				geminiKeyId: GEMINI_KEY_ID,
+				apiKey: GEMINI_API_KEY,
+				spendMonth: "2026-11",
+				monthSpendMicrodollars: 0,
+				monthlyCapCents: 10_000,
+			});
+		});
+		const f = await fixture(
+			"company-runtime",
+			false,
+			undefined,
+			false,
+			false,
+			15_000,
+			false,
+			{},
+			{
+				geminiKeys: {
+					origin: "https://vault.example",
+					runtimeToken: VAULT_TOKEN,
+					companyId: "22222222-2222-4222-8222-222222222222",
+					holder: () => "H".repeat(43),
+					fetch: vaultFetch,
+				},
+				geminiFetch,
+			},
+		);
+		f.context.gemini = { model: "gemini-4-neon", effort: "low", keyId: GEMINI_KEY_ID };
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_folder_read" && vaultStarted && !overlapped) {
+				overlapped = true;
+				releaseVault();
+			}
+			if (method === "qorpera_record_gemini_run_usage") {
+				return {
+					schema: "qorpera.gemini-run-usage/v1",
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: 1_000,
+					monthlyCapCents: 10_000,
+					capReached: false,
+				};
+			}
+			return original(method, args, signal);
+		});
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(vaultFetch).toHaveBeenCalledTimes(1);
+		expect(overlapped).toBe(true);
 	});
 });

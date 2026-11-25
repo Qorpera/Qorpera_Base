@@ -224,6 +224,8 @@ export function cloudAppGroupsTool(options: {
 	return {
 		name: "organize_apps" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "list",
 		description: ORGANIZE_APPS_DESCRIPTION,
 		inputSchema: {
 			type: "object",

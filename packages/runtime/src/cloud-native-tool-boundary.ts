@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { CLOUD_TOOL_RESULT_MAX_BYTES } from "@qorpera/cloud-client/cloud-tool-result";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import { CLOUD_REVIEW_UNAVAILABLE, type CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
@@ -78,7 +78,6 @@ const OUTCOME_UNKNOWN =
 const COMPANY_FILE_PARENT_MISSING =
 	"COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When this folder is where the file belongs (its area, such as sales/, or a place a member or your assignment named), create it with company_mkdir first, and any missing folder above it, outermost first (expectedVersion is the version company_read reports for that folder, null if it never existed), then repeat this call unchanged. Otherwise write the file in the folder where it belongs. If company_read shows a file at that path, it is not a folder: do not replace the file; choose another path.";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = DEFAULT_TOOL_JSON_MAX_BYTES;
@@ -146,14 +145,32 @@ export function cloudSecretSpans(text: string): readonly { readonly start: numbe
 /** A JSON value with the same cut in each of its texts, its keys included. */
 export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {
 	if (typeof value === "string") return redactCloudWebhookSecrets(value);
-	if (Array.isArray(value)) return value.map(redactCloudWebhookSecretsIn);
-	if (value && typeof value === "object")
-		return Object.fromEntries(
-			Object.entries(value).map(([key, item]) => [
-				redactCloudWebhookSecrets(key),
-				redactCloudWebhookSecretsIn(item),
-			]),
-		);
+	if (Array.isArray(value)) {
+		let next: JsonValue[] | undefined;
+		for (let i = 0; i < value.length; i += 1) {
+			const item = value[i]!;
+			const redacted = redactCloudWebhookSecretsIn(item);
+			if (redacted !== item && !next) next = value.slice(0, i);
+			if (next) next.push(redacted);
+		}
+		return next ?? value;
+	}
+	if (value && typeof value === "object") {
+		let next: { [key: string]: JsonValue } | undefined;
+		const keys = Object.keys(value);
+		for (let i = 0; i < keys.length; i += 1) {
+			const key = keys[i]!;
+			const item = value[key]!;
+			const redactedKey = redactCloudWebhookSecrets(key);
+			const redactedItem = redactCloudWebhookSecretsIn(item);
+			if ((redactedKey !== key || redactedItem !== item) && !next) {
+				next = {};
+				for (let j = 0; j < i; j += 1) next[keys[j]!] = value[keys[j]!]!;
+			}
+			if (next) next[redactedKey] = redactedItem;
+		}
+		return next ?? value;
+	}
 	return value;
 }
 /** The pinned fence's bound on one tool result's PNG, and on its size in pixels. */
@@ -267,7 +284,7 @@ export interface CloudNativeTool {
 	readonly inputSchema: { [key: string]: JsonValue };
 	/** Its answers may show the model an image (`CloudToolContent.image`): the native session must then carry images. */
 	readonly images?: true;
-	readonly parallelRead?: true;
+	readonly parallelRead?: true | ((argumentsValue: JsonValue) => boolean);
 	/** Its arguments' bound as escaped JSON, when larger than every tool's 64 KiB, up to MAX_TOOL_ARGUMENT_BYTES: a file
 	 * write's text. */
 	readonly maxArgumentBytes?: number;
@@ -293,6 +310,19 @@ export interface CloudNativeTool {
 	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
 	 * denial. It never runs the call; if it fails, the denial stands as it is. */
 	denied?(argumentsValue: JsonValue, context: CloudToolContext & { readonly actionReviewId: string }): Promise<string>;
+}
+
+export function isCloudParallelReadCall(
+	tool: Pick<CloudNativeTool, "parallelRead">,
+	argumentsValue: JsonValue,
+): boolean {
+	if (tool.parallelRead === true) return true;
+	if (typeof tool.parallelRead !== "function") return false;
+	try {
+		return tool.parallelRead(argumentsValue) === true;
+	} catch {
+		return false;
+	}
 }
 
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
@@ -550,6 +580,11 @@ export class CloudNativeToolBoundary {
 	 * pixels), kept as long as the issued results are. */
 	readonly #shownImages = new Map<string, string>();
 	readonly #shownImageCalls = new Map<string, number>();
+	readonly #responseMeta = new WeakMap<
+		CloudDynamicToolResponse,
+		{ readonly status: CloudToolResult["status"]; readonly errorCode?: string; readonly originalBytes: number }
+	>();
+	readonly #responseImages = new WeakMap<CloudDynamicToolResponse, string>();
 	readonly #nativeResults = new Map<
 		string,
 		{ digest: string; output: string; outputBytes: number; imageSha256?: string }
@@ -849,6 +884,10 @@ export class CloudNativeToolBoundary {
 		return outputs;
 	}
 
+	shownImageSha256(response: CloudDynamicToolResponse): string | undefined {
+		return this.#responseImages.get(response);
+	}
+
 	async invoke(
 		callId: string,
 		namespace: string | null,
@@ -877,8 +916,9 @@ export class CloudNativeToolBoundary {
 		try {
 			const response = await this.#invoke(callId, namespace, name, argumentsValue, observation);
 			// Only this host can construct the envelope. Do not collect its content.
-			const envelope = JSON.parse(response.contentItems[0].text) as CloudToolResult;
-			if (envelope.status === "ok") {
+			const meta = this.#responseMeta.get(response);
+			const status = meta ? meta.status : (JSON.parse(response.contentItems[0].text) as CloudToolResult).status;
+			if (status === "ok") {
 				// Execution normally finished its own span before the release guard.
 				observation?.finish("unconfirmed", { errorCategory: "unknown" });
 			} else {
@@ -901,10 +941,15 @@ export class CloudNativeToolBoundary {
 					WORK_LOG_UNAVAILABLE: "transport_unavailable",
 					WORK_LOG_GONE: "authority_unavailable",
 				} as const;
-				observation?.finish(envelope.status, {
+				const errorCode =
+					status === "denied"
+						? (meta?.errorCode ??
+							(JSON.parse(response.contentItems[0].text) as CloudToolResult).content.text.split(":", 1)[0])
+						: undefined;
+				observation?.finish(status, {
 					errorCategory:
-						envelope.status === "denied"
-							? (categories[envelope.content.text.split(":", 1)[0] as keyof typeof categories] ?? "unknown")
+						status === "denied"
+							? (categories[errorCode as keyof typeof categories] ?? "unknown")
 							: "ambiguous_effect",
 				});
 			}
@@ -1029,11 +1074,17 @@ export class CloudNativeToolBoundary {
 			if (executed.answered) this.#answers.add(digest);
 			return executed;
 		};
-		const canParallelRead =
-			tool.parallelRead === true &&
-			!tool.prepare &&
-			!this.#folderReports &&
-			!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name);
+		let canParallelRead = false;
+		if (!tool.prepare && !this.#folderReports) {
+			if (tool.parallelRead === true) canParallelRead = true;
+			else if (typeof tool.parallelRead === "function") {
+				try {
+					canParallelRead = tool.parallelRead(JSON.parse(argumentsText) as JsonValue) === true;
+				} catch {
+					canParallelRead = false;
+				}
+			}
+		}
 		let result: Promise<CloudDynamicToolResponse>;
 		if (previous) {
 			result = previous.result;
@@ -1415,11 +1466,14 @@ export class CloudNativeToolBoundary {
 					type: "inputImage",
 					imageUrl: `data:image/png;base64,${png.toString("base64")}`,
 				});
+				this.#responseImages.set(response, sha256);
 			}
-			if (tool.source !== "company_file")
-				observation?.update({
-					outputBytes: (JSON.parse(response.contentItems[0].text) as CloudToolResult).content.originalBytes,
-				});
+			if (tool.source !== "company_file") {
+				const originalBytes =
+					this.#responseMeta.get(response)?.originalBytes ??
+					(JSON.parse(response.contentItems[0].text) as CloudToolResult).content.originalBytes;
+				observation?.update({ outputBytes: originalBytes });
+			}
 			// Classify the host adapter's complete value, never a truncated rendered
 			// envelope, and finish execution before testing permission to release it.
 			const proposed =
@@ -1602,6 +1656,11 @@ export class CloudNativeToolBoundary {
 			...(completesTurn ? { completesTurn } : {}),
 			...(answered ? { answered: true as const } : {}),
 		};
+		this.#responseMeta.set(response, {
+			status,
+			...(status === "denied" ? { errorCode: result.content.text.split(":", 1)[0] } : {}),
+			originalBytes: bytes.length,
+		});
 		if (folder && result.companyFolder) this.#folderIssued = { response, mark: folder.mark };
 		return response;
 	}

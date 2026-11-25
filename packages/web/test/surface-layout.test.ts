@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import type { StudioBinaryRef, StudioPatchOp, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { surfaceDocSlug } from "../src/app/surfaces-store.ts";
 import { setStudioExplainerEngineForTests } from "../src/app/views/studio-explainer-engine.ts";
 import { PDF_PREVIEW_DATA, PDF_PREVIEW_READY, PDF_PREVIEW_URL } from "../src/app/views/surface-blocks/pdf.ts";
 import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
@@ -1658,6 +1659,80 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 
 		view.dispose();
 		store.dispose();
+	});
+
+	it("reads a PDF in any tab's posts block, claims it from Files, keeps module pages out, and opens it there", async () => {
+		const board = studio({ kind: "custom", icon: "star" });
+		const deckPath = `${ROOT}/decks/pitch.pdf`;
+		const deckRef: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 2048,
+			mediaType: "application/pdf",
+		};
+		Object.assign(URL, { createObjectURL: vi.fn(() => "blob:pitch"), revokeObjectURL: vi.fn() });
+		try {
+			const files = {
+				[`${ROOT}/layout.json`]: JSON.stringify({
+					schema: "qorpera.surface-layout/v1",
+					tabs: [
+						{ id: "overview", title: "Overview", blocks: [{ type: "artifacts", heading: "Files" }] },
+						{ id: "posts", title: "Posts", blocks: [{ type: "report", match: "**/*" }] },
+						{ id: "tools", title: "Tools", blocks: [{ type: "module", from: "calculator" }] },
+					],
+				}),
+				[`${ROOT}/why.report.json`]: REPORT,
+				[`${ROOT}/calculator/index.html`]: "<!doctype html><title>Calculator</title><p>calc</p>",
+			};
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [board]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: board })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () => folderContents(files, { [deckPath]: deckRef })),
+					readCloudBinary: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
+				},
+			);
+			await store.load();
+			await store.openSurface(board.slug);
+			const view = new SurfaceStudioView({
+				store,
+				surface: board,
+				signal: new AbortController().signal,
+				timeSlice: false,
+			});
+			document.body.append(view.el);
+			const onTab = () => view.el.querySelector<HTMLElement>(".studio-tab.is-on")?.dataset.tab;
+			await vi.waitFor(() => expect(view.el.querySelector(".studio-tab")).not.toBeNull());
+
+			expect(onTab()).toBe("overview");
+			expect(view.el.querySelector(`[data-file="${deckPath}"]`)).toBeNull();
+
+			await store.openChangeDeliverable(board.id, CHANGES[0], surfaceDocSlug(deckPath), deckPath);
+			await vi.waitFor(() => expect(onTab()).toBe("posts"));
+			expect(store.state.mode).toBe("preview");
+			const pills = [...view.el.querySelectorAll<HTMLElement>('[data-act="report-select"]')];
+			expect(pills.map((pill) => pill.dataset.slug).sort()).toEqual([surfaceDocSlug(deckPath), "why-wool"].sort());
+			expect(
+				view.el
+					.querySelector(`[data-act="report-select"][data-slug="${surfaceDocSlug(deckPath)}"]`)
+					?.getAttribute("aria-selected"),
+			).toBe("true");
+			expect(pills.some((pill) => pill.dataset.slug === surfaceDocSlug(`${ROOT}/calculator/index.html`))).toBe(
+				false,
+			);
+
+			const calculatorPath = `${ROOT}/calculator/index.html`;
+			await store.openChangeDeliverable(board.id, CHANGES[0], surfaceDocSlug(calculatorPath), calculatorPath);
+			await vi.waitFor(() => expect(onTab()).toBe("tools"));
+			expect(store.state.mode).toBe("preview");
+			view.dispose();
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
 	});
 
 	it("renders PDF binary files in an artifacts block with a pinned application/pdf blob and revokes URLs on dispose", async () => {

@@ -316,6 +316,63 @@ describe("the search window", () => {
 		expect(window.isOpen).toBe(false);
 		expect(titles()).toEqual([]);
 	});
+
+	it("renders cached recent files and repeat queries immediately on reopen, revalidates in background, and clears on invalidation or company switch", async () => {
+		vi.useFakeTimers();
+		let recentResolve: ((hits: SearchHit[]) => void) | undefined;
+		let searchCalls = 0;
+		const recentFile = fileHit({ path: "notes/roadmap.md", kind: "file" }, () => {});
+		const files: SearchFiles = {
+			recent: vi.fn(
+				() =>
+					new Promise<SearchHit[]>((resolve) => {
+						recentResolve = resolve;
+					}),
+			),
+			search: vi.fn(async (query) => {
+				searchCalls++;
+				return { hits: [fileHit({ path: `docs/${query}.md`, kind: "file" }, () => {})], more: false };
+			}),
+		};
+		const { window, type, titles } = mount(files);
+		recentResolve!([recentFile]);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(titles()).toEqual(["roadmap.md"]);
+
+		type("budget");
+		await vi.advanceTimersByTimeAsync(150);
+		expect(searchCalls).toBe(1);
+		expect(titles()).toContain("budget.md");
+
+		window.close();
+		recentResolve = undefined;
+		window.open(sources(files));
+		// WHY: Cached recent files render synchronously at 0ms while the background recent() refresh is still pending.
+		expect(titles()).toEqual(["roadmap.md"]);
+		expect(files.recent).toHaveBeenCalledTimes(2);
+
+		type("budget");
+		// WHY: Cached query results render at 0ms before FILE_DELAY_MS fires, then revalidate after debounce.
+		expect(titles()).toContain("budget.md");
+		expect(searchCalls).toBe(1);
+		await vi.advanceTimersByTimeAsync(150);
+		expect(searchCalls).toBe(2);
+
+		window.invalidateFiles("p1");
+		window.close();
+		window.open(sources(files));
+		expect(titles()).toEqual([]);
+
+		recentResolve!([recentFile]);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(titles()).toEqual(["roadmap.md"]);
+
+		window.close();
+		window.open({ ...sources(files), profileId: "other-company" });
+		expect(titles()).toEqual([]);
+	});
 });
 
 describe("times and order", () => {

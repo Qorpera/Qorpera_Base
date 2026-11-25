@@ -68,6 +68,8 @@ import {
 
 /** The executor's program file run with this as its first argument is a desktop's stream instance, and nothing else. */
 export const DESKTOP_STREAM_ROLE = "--qorpera-desktop-stream";
+// WHY: Keep a recently watched desktop stream instance warm briefly so quick reopens skip cold process spawn and DESKTOP_START_GAP_MS.
+export const DESKTOP_STREAM_IDLE_GRACE_MS = 20_000;
 /** The frames' protocol; with the program's own version (its file's sha-256) in HELLO. */
 export const DESKTOP_STREAM_PROTOCOL = 1;
 
@@ -168,6 +170,7 @@ export interface DesktopRelaySpec {
 /** A watched desktop, as the host uses it: an instance of its own (the executor), or this process (the host's tests). */
 export interface WatchedDesktop {
 	readonly ended: string | null;
+	readonly idle?: boolean;
 	watch(release: DesktopStreamRelease, sink: DesktopStreamSink, signal: AbortSignal): Promise<string>;
 	close?(): void;
 }
@@ -324,6 +327,8 @@ export class InstanceDesktop implements WatchedDesktop {
 	});
 	readonly #pinger: ReturnType<typeof setInterval>;
 	readonly #pingEveryMs: number;
+	readonly #idleGraceMs: number;
+	#idleTimer: ReturnType<typeof setTimeout> | null = null;
 	/** Members that left on this side, whose DONE has not come yet, each with how many frames it may still send before
 	 * it: at most one RELEASE or one SEND a correct instance can have on its way when it reads the UNWATCH. */
 	readonly #leaving = new Map<number, { frames: number }>();
@@ -366,6 +371,7 @@ export class InstanceDesktop implements WatchedDesktop {
 			readonly pingEveryMs?: number;
 			readonly pongWithinMs?: number;
 			readonly releaseGapMs?: number;
+			readonly idleGraceMs?: number;
 			/** MAX_UNREAD_BYTES, for the tests. */
 			readonly maxUnreadBytes?: number;
 			/** Called at the end of every turn something was charged in, for the tests. */
@@ -379,6 +385,7 @@ export class InstanceDesktop implements WatchedDesktop {
 		this.#pongWithinMs = options.pongWithinMs ?? 15_000;
 		this.#maxMembers = options.maxMembers ?? DESKTOP_STREAM_MEMBERS;
 		this.#releaseGapMs = options.releaseGapMs ?? RELEASE_GAP_MS;
+		this.#idleGraceMs = Math.max(0, options.idleGraceMs ?? 0);
 		this.#maxUnreadBytes = options.maxUnreadBytes ?? MAX_UNREAD_BYTES;
 		this.#observe = options.observe;
 		this.#pingEveryMs = options.pingEveryMs ?? 5000;
@@ -401,7 +408,14 @@ export class InstanceDesktop implements WatchedDesktop {
 			this.#connection,
 			F.hello,
 			0,
-			Buffer.from(JSON.stringify({ protocol: DESKTOP_STREAM_PROTOCOL, version: options.version, spec })),
+			Buffer.from(
+				JSON.stringify({
+					protocol: DESKTOP_STREAM_PROTOCOL,
+					version: options.version,
+					spec,
+					...(this.#idleGraceMs > 0 ? { idleGraceMs: this.#idleGraceMs } : {}),
+				}),
+			),
 		);
 		this.#pinger = setInterval(() => this.#tick(), this.#pingEveryMs);
 		this.#pinger.unref();
@@ -410,6 +424,9 @@ export class InstanceDesktop implements WatchedDesktop {
 	/** Why it ended, or null while it lives. */
 	get ended(): string | null {
 		return this.#reason;
+	}
+	get idle(): boolean {
+		return this.#reason === null && this.#members.size === 0;
 	}
 	/** Why, in a few words for an operator's log: what the instance broke, or what it said ended its relay. */
 	get cause(): string | null {
@@ -428,6 +445,10 @@ export class InstanceDesktop implements WatchedDesktop {
 		// never an end.
 		if (this.#members.size >= this.#maxMembers || this.#leaving.size >= MAX_LEAVING)
 			return Promise.resolve("STREAM_BUSY");
+		if (this.#idleTimer) {
+			clearTimeout(this.#idleTimer);
+			this.#idleTimer = null;
+		}
 		const id = this.#nextId++;
 		return new Promise<string>((resolve) => {
 			const onAbort = () => {
@@ -717,7 +738,17 @@ export class InstanceDesktop implements WatchedDesktop {
 		this.#members.delete(id);
 		member.signal.removeEventListener("abort", member.onAbort);
 		member.resolve(reason);
-		if (this.#members.size === 0) this.#finish("idle", "its last member left");
+		if (this.#members.size === 0) {
+			if (this.#idleGraceMs > 0) {
+				if (!this.#idleTimer) {
+					this.#idleTimer = setTimeout(() => {
+						this.#idleTimer = null;
+						if (this.#members.size === 0) this.#finish("idle", "its last member left");
+					}, this.#idleGraceMs);
+					this.#idleTimer.unref?.();
+				}
+			} else this.#finish("idle", "its last member left");
+		}
 		return true;
 	}
 
@@ -731,6 +762,10 @@ export class InstanceDesktop implements WatchedDesktop {
 		this.#reason = reason;
 		this.#cause = cause;
 		clearInterval(this.#pinger);
+		if (this.#idleTimer) {
+			clearTimeout(this.#idleTimer);
+			this.#idleTimer = null;
+		}
 		this.#wake?.clear();
 		this.#wake = null;
 		this.#nextTurn = false;
@@ -819,7 +854,7 @@ export function runDesktopStreamInstance(options: {
 		{ readonly stop: AbortController; verdict?: (value: Buffer) => void; sent?: (failed: boolean) => void }
 	>();
 	const hello = (payload: Buffer) => {
-		let said: { protocol?: unknown; version?: unknown; spec?: unknown };
+		let said: { protocol?: unknown; version?: unknown; spec?: unknown; idleGraceMs?: unknown };
 		try {
 			said = JSON.parse(payload.toString("utf8")) as typeof said;
 		} catch {
@@ -831,6 +866,10 @@ export function runDesktopStreamInstance(options: {
 			return;
 		}
 		const spec = said.spec as DesktopRelaySpec;
+		const idleGraceMs =
+			typeof said.idleGraceMs === "number" && Number.isFinite(said.idleGraceMs) && said.idleGraceMs > 0
+				? Math.min(60_000, Math.floor(said.idleGraceMs)) + 1000
+				: 0;
 		if (
 			typeof spec !== "object" ||
 			spec === null ||
@@ -846,6 +885,7 @@ export function runDesktopStreamInstance(options: {
 		openRelay = options.openRelay(spec);
 		const relay = openRelay;
 		const stream: DesktopStream = new DesktopStream({
+			...(idleGraceMs > 0 ? { idleGraceMs } : {}),
 			run: (stdout, stdin, signal) =>
 				relay(
 					(chunk) => {

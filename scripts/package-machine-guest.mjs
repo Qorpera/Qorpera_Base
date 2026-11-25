@@ -103,6 +103,8 @@ await build({
 	platform: "node",
 	format: "esm",
 	target: "node22.19",
+	minifyWhitespace: true,
+	minifySyntax: true,
 	legalComments: "none",
 	logLevel: "silent",
 });
@@ -127,6 +129,8 @@ await build({
 	platform: "node",
 	format: "esm",
 	target: "node22.19",
+	minifyWhitespace: true,
+	minifySyntax: true,
 	legalComments: "none",
 	logLevel: "silent",
 });
@@ -149,6 +153,8 @@ await build({
 	platform: "node",
 	format: "esm",
 	target: "node22.19",
+	minifyWhitespace: true,
+	minifySyntax: true,
 	legalComments: "none",
 	logLevel: "silent",
 });
@@ -169,6 +175,8 @@ await build({
 	platform: "node",
 	format: "esm",
 	target: "node22.19",
+	minifyWhitespace: true,
+	minifySyntax: true,
 	legalComments: "none",
 	logLevel: "silent",
 });
@@ -238,6 +246,8 @@ await build({
 	platform: "node",
 	format: "esm",
 	target: "node22.19",
+	minifyWhitespace: true,
+	minifySyntax: true,
 	legalComments: "none",
 	logLevel: "silent",
 });

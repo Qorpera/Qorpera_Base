@@ -1,17 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isUuidAnyCase, parseRecord } from "@qorpera/contracts";
 import type { CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 
 /** Helpers every provider backend shares. The attempt-id derivation and the
  * provisioned-runner check in particular must stay identical across backends:
  * SQL binds a runner row to the client runner id, so two backends deriving
  * different ids for the same attempt would provision twice. */
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-export function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
 
 export function canonical(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map((entry) => canonical(entry));
@@ -27,12 +21,12 @@ export function canonical(value: unknown): unknown {
 	);
 }
 
-export function sha256(value: string): string {
+export function sha256Hex(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
-export function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
+function providerUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
@@ -68,7 +62,7 @@ export function nativeIdentityCredentialFile(
  * them — or every second attempt is refused as foreign work. */
 export function workSha256(work: CloudRunnerWork): string {
 	const { attempt: _attempt, ...immutable } = work as CloudRunnerWork & { attempt?: unknown };
-	return sha256(JSON.stringify(canonical(immutable)));
+	return sha256Hex(JSON.stringify(canonical(immutable)));
 }
 
 /** The first attempt retains its original key and historical journals. A
@@ -76,13 +70,13 @@ export function workSha256(work: CloudRunnerWork): string {
  * replay of the prior attempt's credentials, activation or retained state. */
 export function runAttemptAcquisitionId(runId: string, attempt: number): string {
 	if (attempt === 1) return runId;
-	const digest = sha256(`qorpera.lxd-run-attempt/v1:${runId}:${attempt}`);
+	const digest = sha256Hex(`qorpera.lxd-run-attempt/v1:${runId}:${attempt}`);
 	const variant = ((Number.parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
 	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 
 export function exactRunner(value: unknown, work: CloudRunnerWork, adapterId: string): CloudRunnerInstance {
-	const input = record(value, "Provisioned runner");
+	const input = parseRecord(value, "Provisioned runner");
 	if (
 		input.runner_kind !== "qorpera_computer" ||
 		input.provider_adapter !== adapterId ||
@@ -99,7 +93,7 @@ export function exactRunner(value: unknown, work: CloudRunnerWork, adapterId: st
 		throw new Error("Provisioned runner does not match immutable compute authority");
 	}
 	return {
-		runnerId: uuid(input.runner_id, "Provisioned runner id"),
+		runnerId: providerUuid(input.runner_id, "Provisioned runner id"),
 		...(work.logicalComputerId ? { logicalComputerId: work.logicalComputerId } : {}),
 		...(work.computeIdentityId ? { computeIdentityId: work.computeIdentityId } : {}),
 		workerClass: work.workerClass,

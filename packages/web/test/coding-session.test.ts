@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CodingSession,
@@ -611,7 +612,6 @@ describe("the element in the thread", () => {
 		expect(
 			[...element.el.querySelectorAll(".coding-footer .coding-options button")].map((item) => item.textContent),
 		).toEqual(["Keep 250 ms", "Raise to 500 ms", "Let Mark decide"]);
-		const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 		// A used choice goes with the redraw; the focus stays in the session's log, not on the page's body.
 		const keep = button(element.el, "Keep 250 ms");
 		keep.focus();
@@ -621,12 +621,14 @@ describe("the element in the thread", () => {
 		expect(answer).toHaveBeenCalledTimes(1);
 		expect(answer.mock.calls[0]?.[0]).toBe(WORKER);
 		expect(answer.mock.calls[0]?.[1]).toBe("Keep 250 ms");
-		expect(answer.mock.calls[0]?.[2]).toMatch(uuid);
+		expect(answer.mock.calls[0]?.[2]).toMatch(UUID_PATTERN);
+		expect(answer.mock.calls[0]?.[2]?.[14]).toBe("4");
 		// Answering re-reads the session at once.
 		expect(read.mock.calls.length).toBeGreaterThanOrEqual(2);
 		button(element.el, "Let Mark decide").click();
 		await settle();
-		expect(delegate).toHaveBeenCalledWith(WORKER, expect.stringMatching(uuid));
+		expect(delegate).toHaveBeenCalledWith(WORKER, expect.stringMatching(UUID_PATTERN));
+		expect(delegate.mock.calls[0]?.[1]?.[14]).toBe("4");
 		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
 		expect(field.getAttribute("aria-disabled")).toBe("false");
 		expect(field.readOnly).toBe(false);
@@ -635,7 +637,12 @@ describe("the element in the thread", () => {
 		field.dispatchEvent(new Event("input", { bubbles: true }));
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		await settle();
-		expect(answer).toHaveBeenLastCalledWith(WORKER, "Keep it, and add a comment why.", expect.stringMatching(uuid));
+		expect(answer).toHaveBeenLastCalledWith(
+			WORKER,
+			"Keep it, and add a comment why.",
+			expect.stringMatching(UUID_PATTERN),
+		);
+		expect(answer.mock.calls.at(-1)?.[2]?.[14]).toBe("4");
 		// A typed answer empties the composer; the same field stays in place for the next.
 		expect(field.value).toBe("");
 		expect(element.el.querySelector(".coding-field-input")).toBe(field);

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import { JpegChroma, JpegEncoder } from "image-in-browser/lib/src/formats/jpeg-encoder.js";
 import { PngDecoder } from "image-in-browser/lib/src/formats/png-decoder.js";
 import { WebPEncoder } from "image-in-browser/lib/src/formats/webp-encoder.js";
@@ -743,9 +743,7 @@ describe("coding_run_command inspectImage visual screenshot inspection", () => {
 					schema: CODING_INSPECT_IMAGE_SCHEMA,
 					kind: "image",
 					path: rel,
-					commandId: expect.stringMatching(
-						/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-					),
+					commandId: expect.stringMatching(UUID_PATTERN),
 					mediaType,
 					totalBytes: rawBytes.byteLength,
 					width: expectedWidth,

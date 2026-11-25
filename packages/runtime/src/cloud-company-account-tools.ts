@@ -331,6 +331,8 @@ export function cloudCompanyAccountTool(options: {
 	return {
 		name: "company_account" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "find",
 		description: CLOUD_COMPANY_ACCOUNT_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",

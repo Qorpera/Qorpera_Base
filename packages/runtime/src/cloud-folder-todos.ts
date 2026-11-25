@@ -12,7 +12,7 @@ import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderFileEntry,
 	type CloudCompanyFolderUnit,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -142,7 +142,7 @@ export class CloudFolderTodos {
 				nextCursor: null,
 			});
 			if (found && todo) {
-				const outputSha256 = sha256(new TextEncoder().encode(output));
+				const outputSha256 = sha256Hex(new TextEncoder().encode(output));
 				await this.#folder.release(
 					releaseIdFor(this.#identity.runId, context.callId, outputSha256),
 					[
@@ -291,7 +291,7 @@ export class CloudFolderTodos {
 								fileSha256: current.entry.file.fileSha256,
 							},
 						],
-						sha256(new TextEncoder().encode(output)),
+						sha256Hex(new TextEncoder().encode(output)),
 						performSignal,
 					);
 				return { content: { kind: "text", value: output }, folderCommitId: committed.commitId };

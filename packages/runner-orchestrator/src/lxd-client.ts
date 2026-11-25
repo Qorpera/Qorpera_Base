@@ -2,7 +2,7 @@ import { X509Certificate } from "node:crypto";
 import { Agent as HttpAgent, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { CODING_GUEST_HELPER_MAX_BYTES } from "@qorpera/contracts";
+import { CODING_GUEST_HELPER_MAX_BYTES, parseRecord, UUID_PATTERN } from "@qorpera/contracts";
 import { withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import { AGENT_BRIDGE } from "./agent-plug.ts";
 import { lxdMacAddress } from "./lxd-guest-network.ts";
@@ -455,19 +455,18 @@ export interface LxdHostInventoryClient {
 	inspectHostInventory(signal: AbortSignal): Promise<LxdHostInventory>;
 }
 
-const OPERATION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const INSTANCE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 
 function trackedOperation(value: unknown, reference: LxdOperationReference): LxdOperationState {
-	const input = record(value, "LXD operation");
-	const resources = record(input.resources, "LXD operation resources");
+	const input = parseRecord(value, "LXD operation");
+	const resources = parseRecord(input.resources, "LXD operation resources");
 	const instances = resources.instances;
 	const path = `/1.0/instances/${encodeURIComponent(reference.instanceName)}`;
 	const scopedPath = projectPath(path, reference.project);
 	// LXD 6.9 moved the primary target from resources to metadata.entity_url.
 	// If both are present they must agree; a legacy bare resource URL is only
 	// accepted on this already project-scoped, exact operation-ID lookup.
-	const metadata = input.metadata === undefined ? {} : record(input.metadata, "LXD operation metadata");
+	const metadata = input.metadata === undefined ? {} : parseRecord(input.metadata, "LXD operation metadata");
 	const entity = metadata.entity_url;
 	if (
 		input.id !== reference.operationId ||
@@ -504,11 +503,6 @@ interface HttpResult {
 	body: unknown;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 /** Keys JavaScript objects treat specially. Copied with `output[key] = …`, a
  * key `__proto__` sets the copy's prototype instead of adding an entry, so a
  * device of that name would vanish from Object.keys, JSON and every digest
@@ -523,7 +517,7 @@ const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const DEVICE_NAME = /^(?!\.)[A-Za-z0-9/.:_-]{1,63}$/;
 
 function plainEntries(value: unknown, label: string): [string, unknown][] {
-	const entries = Object.entries(record(value, label));
+	const entries = Object.entries(parseRecord(value, label));
 	if (entries.some(([key]) => RESERVED_KEYS.has(key))) throw new Error(`${label} is invalid`);
 	return entries;
 }
@@ -559,7 +553,7 @@ function strings(value: unknown, label: string): string[] {
 }
 
 function instance(value: unknown): LxdInstanceRecord {
-	const input = record(value, "LXD instance");
+	const input = parseRecord(value, "LXD instance");
 	if (
 		typeof input.name !== "string" ||
 		(input.type !== "virtual-machine" && input.type !== "container") ||
@@ -582,7 +576,7 @@ function instance(value: unknown): LxdInstanceRecord {
 }
 
 function projectRecord(value: unknown): LxdProjectRecord {
-	const input = record(value, "LXD project");
+	const input = parseRecord(value, "LXD project");
 	if (typeof input.name !== "string") throw new Error("LXD project is invalid");
 	return {
 		name: input.name,
@@ -592,7 +586,7 @@ function projectRecord(value: unknown): LxdProjectRecord {
 }
 
 function instanceState(value: unknown): LxdInstanceStateRecord {
-	const input = record(value, "LXD instance state");
+	const input = parseRecord(value, "LXD instance state");
 	if (typeof input.status !== "string" || typeof input.status_code !== "number") {
 		throw new Error("LXD instance state is invalid");
 	}
@@ -609,10 +603,10 @@ function instanceState(value: unknown): LxdInstanceStateRecord {
 		{ hwaddr?: string; addresses: readonly { family: string; address: string; scope: string }[] }
 	> = {};
 	for (const [name, rawInterface] of networkInput) {
-		const networkInterface = record(rawInterface, "LXD instance network interface");
+		const networkInterface = parseRecord(rawInterface, "LXD instance network interface");
 		if (!Array.isArray(networkInterface.addresses)) throw new Error("LXD instance network addresses are invalid");
 		const addresses = networkInterface.addresses.map((rawAddress) => {
-			const address = record(rawAddress, "LXD instance network address");
+			const address = parseRecord(rawAddress, "LXD instance network address");
 			if (
 				typeof address.family !== "string" ||
 				typeof address.address !== "string" ||
@@ -631,7 +625,7 @@ function instanceState(value: unknown): LxdInstanceStateRecord {
 }
 
 function storageVolume(value: unknown): LxdStorageVolumeRecord {
-	const input = record(value, "LXD storage volume");
+	const input = parseRecord(value, "LXD storage volume");
 	if (
 		typeof input.name !== "string" ||
 		input.type !== "custom" ||
@@ -694,7 +688,7 @@ function operationFailure(message: unknown, definitive = false): Error {
 
 function lxdError(result: HttpResult, fallback: string): Error {
 	try {
-		const envelope = record(result.body, "LXD response");
+		const envelope = parseRecord(result.body, "LXD response");
 		if (typeof envelope.error === "string" && AGENT_OFFLINE.test(envelope.error))
 			return operationFailure(envelope.error);
 		if (typeof envelope.error === "string" && envelope.error.trim()) return new Error(`LXD: ${envelope.error}`);
@@ -705,7 +699,7 @@ function lxdError(result: HttpResult, fallback: string): Error {
 }
 
 function envelopeMetadata(result: HttpResult): unknown {
-	const envelope = record(result.body, "LXD response");
+	const envelope = parseRecord(result.body, "LXD response");
 	if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
 	return envelope.metadata;
 }
@@ -884,10 +878,10 @@ export class LxdUnixClient
 			checked.throwIfAborted();
 			const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
 			checked.throwIfAborted();
-			const envelope = record(result.body, "office metadata");
+			const envelope = parseRecord(result.body, "office metadata");
 			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
 				throw new Error("office metadata unavailable");
-			return record(envelope.metadata, "office metadata");
+			return parseRecord(envelope.metadata, "office metadata");
 		});
 	}
 
@@ -899,7 +893,7 @@ export class LxdUnixClient
 		try {
 			if (!/^[a-z][a-z0-9-]{0,62}$/.test(project)) throw new Error("invalid project");
 			const server = await this.#officeMetadata(projectPath("/1.0", project), signal);
-			const environment = record(server.environment, "office server environment");
+			const environment = parseRecord(server.environment, "office server environment");
 			if (requireInventory && !strings(server.api_extensions, "server extensions").includes("instance_all_projects"))
 				throw new Error("all-project inventory unsupported");
 			if (
@@ -961,7 +955,7 @@ export class LxdUnixClient
 						checked,
 						recursive ? MAX_RESPONSE_BYTES : 1048576,
 					);
-					const envelope = record(result.body, "host inventory");
+					const envelope = parseRecord(result.body, "host inventory");
 					if (
 						result.status !== 200 ||
 						envelope.type !== "sync" ||
@@ -1007,7 +1001,7 @@ export class LxdUnixClient
 					);
 				const expanded = async (): Promise<LxdHostInventoryInstance[]> => {
 					const result = (await listing(true)).map((value) => {
-						const raw = record(value, "inventory instance"),
+						const raw = parseRecord(value, "inventory instance"),
 							parsed = instance(raw);
 						key(raw.project, parsed.name);
 						if (
@@ -1060,7 +1054,7 @@ export class LxdUnixClient
 					checked,
 					MAX_RESPONSE_BYTES,
 				);
-				const envelope = record(result.body, "project instances");
+				const envelope = parseRecord(result.body, "project instances");
 				if (
 					result.status !== 200 ||
 					envelope.type !== "sync" ||
@@ -1071,7 +1065,7 @@ export class LxdUnixClient
 					throw new Error("invalid project instances");
 				const seen = new Set<string>();
 				const items = envelope.metadata.map((value) => {
-					const raw = record(value, "project instance");
+					const raw = parseRecord(value, "project instance");
 					const parsed = instance(raw);
 					if (
 						typeof raw.project !== "string" ||
@@ -1117,13 +1111,13 @@ export class LxdUnixClient
 					65536,
 				);
 				checked.throwIfAborted();
-				const envelope = record(result.body, "image");
+				const envelope = parseRecord(result.body, "image");
 				if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return false;
 				if (
 					result.status !== 200 ||
 					envelope.type !== "sync" ||
 					envelope.status_code !== 200 ||
-					record(envelope.metadata, "image").fingerprint !== fingerprint
+					parseRecord(envelope.metadata, "image").fingerprint !== fingerprint
 				)
 					throw new Error("image not confirmed");
 				return true;
@@ -1158,12 +1152,12 @@ export class LxdUnixClient
 		};
 		const result = await this.#request("POST", projectPath("/1.0/images", project), body, signal);
 		const operation = await this.#waitForOperation(result, signal, waitSeconds);
-		const metadata = record(operation.metadata, "LXD image publish metadata");
+		const metadata = parseRecord(operation.metadata, "LXD image publish metadata");
 		const fingerprint = metadata.fingerprint;
 		if (typeof fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(fingerprint))
 			throw new Error("LXD published image fingerprint is invalid");
 		const info = await this.#request("GET", projectPath(`/1.0/images/${fingerprint}`, project), undefined, signal);
-		const imageMeta = record(envelopeMetadata(info), "LXD image");
+		const imageMeta = parseRecord(envelopeMetadata(info), "LXD image");
 		if (
 			imageMeta.fingerprint !== fingerprint ||
 			!Number.isSafeInteger(imageMeta.size) ||
@@ -1193,7 +1187,7 @@ export class LxdUnixClient
 		const entries = envelopeMetadata(result);
 		if (!Array.isArray(entries)) throw new Error("LXD images list is invalid");
 		return entries.map((entry) => {
-			const meta = record(entry, "LXD image");
+			const meta = parseRecord(entry, "LXD image");
 			if (
 				typeof meta.fingerprint !== "string" ||
 				!/^[0-9a-f]{64}$/.test(meta.fingerprint) ||
@@ -1235,7 +1229,7 @@ export class LxdUnixClient
 		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
 		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project);
 		const current = await this.#request("GET", path, undefined, signal);
-		const metadata = record(envelopeMetadata(current), "LXD instance");
+		const metadata = parseRecord(envelopeMetadata(current), "LXD instance");
 		const etag = current.headers?.etag;
 		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
 		const existingConfig = stringRecord(metadata.config, "LXD instance config");
@@ -1300,7 +1294,7 @@ export class LxdUnixClient
 		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
 		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project);
 		const current = await this.#request("GET", path, undefined, signal);
-		const metadata = record(envelopeMetadata(current), "LXD instance");
+		const metadata = parseRecord(envelopeMetadata(current), "LXD instance");
 		const etag = current.headers?.etag;
 		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
 		await this.#putInstanceDevices(path, metadata, etag, devices, signal);
@@ -1320,7 +1314,7 @@ export class LxdUnixClient
 		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
 		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project);
 		const current = await this.#request("GET", path, undefined, signal);
-		const metadata = record(envelopeMetadata(current), "LXD instance");
+		const metadata = parseRecord(envelopeMetadata(current), "LXD instance");
 		const etag = current.headers?.etag;
 		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
 		const devices = update(instance(metadata));
@@ -1437,7 +1431,7 @@ export class LxdUnixClient
 	async readStoragePoolSpace(pool: string, signal: AbortSignal): Promise<LxdStoragePoolSpace> {
 		if (!INSTANCE_NAME.test(pool)) throw new Error("LXD storage scope is invalid");
 		const resources = await this.#officeMetadata(`/1.0/storage-pools/${encodeURIComponent(pool)}/resources`, signal);
-		const space = record(resources.space, "LXD storage pool space");
+		const space = parseRecord(resources.space, "LXD storage pool space");
 		const totalBytes = space.total;
 		const usedBytes = space.used;
 		if (
@@ -1484,7 +1478,7 @@ export class LxdUnixClient
 			signal,
 		);
 		if (result.status === 404) return false;
-		const envelope = record(result.body, "LXD response");
+		const envelope = parseRecord(result.body, "LXD response");
 		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
 		// A custom volume's delete answers synchronously, with or without metadata.
 		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
@@ -1555,7 +1549,7 @@ export class LxdUnixClient
 				checked.throwIfAborted();
 				return response;
 			});
-			const envelope = record(result.body, "LXD response");
+			const envelope = parseRecord(result.body, "LXD response");
 			// LXD refused the request itself, with its own error and no operation: what it said is kept.
 			if (result.status >= 400 && result.status <= 599 && envelope.type === "error")
 				throw new LxdSubmissionRefused(result.status, envelope.error_code, envelope.error);
@@ -1568,7 +1562,7 @@ export class LxdUnixClient
 			)
 				throw new Error("operation not confirmed");
 			const operationId = envelope.operation.slice("/1.0/operations/".length);
-			if (!OPERATION_UUID.test(operationId)) throw new Error("invalid operation URL");
+			if (!UUID_PATTERN.test(operationId)) throw new Error("invalid operation URL");
 			const reference = { project, instanceName: name, operationId };
 			trackedOperation(envelope.metadata, reference);
 			return reference;
@@ -1598,7 +1592,7 @@ export class LxdUnixClient
 			if (
 				!INSTANCE_NAME.test(reference.project) ||
 				!INSTANCE_NAME.test(reference.instanceName) ||
-				!OPERATION_UUID.test(reference.operationId)
+				!UUID_PATTERN.test(reference.operationId)
 			)
 				throw new Error("invalid operation reference");
 			return await withAbortScopes([signal, AbortSignal.timeout(5000)], async (checked) => {
@@ -1610,7 +1604,7 @@ export class LxdUnixClient
 					checked,
 				);
 				checked.throwIfAborted();
-				const envelope = record(result.body, "LXD response");
+				const envelope = parseRecord(result.body, "LXD response");
 				if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
 				if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
 					throw new Error("operation unavailable");
@@ -1631,7 +1625,7 @@ export class LxdUnixClient
 			if (
 				!INSTANCE_NAME.test(reference.project) ||
 				!INSTANCE_NAME.test(reference.instanceName) ||
-				!OPERATION_UUID.test(reference.operationId)
+				!UUID_PATTERN.test(reference.operationId)
 			)
 				throw new Error("invalid operation reference");
 			const clamped = Math.max(1, Math.min(30, Math.trunc(waitSeconds)));
@@ -1646,7 +1640,7 @@ export class LxdUnixClient
 				checked.throwIfAborted();
 				return response;
 			});
-			const envelope = record(result.body, "LXD response");
+			const envelope = parseRecord(result.body, "LXD response");
 			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
 			if (result.status >= 200 && result.status < 300 && envelope.type === "error") {
 				return await this.inspectInstanceOperation(reference, signal);
@@ -1803,7 +1797,7 @@ export class LxdUnixClient
 					},
 					checked,
 				);
-				const envelope = record(result.body, "boot read");
+				const envelope = parseRecord(result.body, "boot read");
 				if (
 					result.status !== 202 ||
 					envelope.type !== "async" ||
@@ -1813,7 +1807,7 @@ export class LxdUnixClient
 				)
 					throw new Error("read not accepted");
 				const operationId = envelope.operation.slice("/1.0/operations/".length);
-				if (!OPERATION_UUID.test(operationId)) throw new Error("invalid read operation");
+				if (!UUID_PATTERN.test(operationId)) throw new Error("invalid read operation");
 				const reference = { project, instanceName: name, operationId };
 				trackedOperation(envelope.metadata, reference);
 				const operation = await this.#officeMetadata(
@@ -1821,8 +1815,8 @@ export class LxdUnixClient
 					checked,
 				);
 				if (trackedOperation(operation, reference) !== "succeeded") throw new Error("read incomplete");
-				const metadata = record(operation.metadata, "boot read result");
-				const output = record(metadata.output, "boot read output");
+				const metadata = parseRecord(operation.metadata, "boot read result");
+				const output = parseRecord(metadata.output, "boot read output");
 				const prefix = `/1.0/instances/${name}/logs/exec-output/exec_${operationId}`;
 				if (
 					metadata.return !== 0 ||
@@ -1857,7 +1851,7 @@ export class LxdUnixClient
 					stderr.body !== "" ||
 					typeof stdout.body !== "string" ||
 					(path === "/proc/sys/kernel/random/boot_id" &&
-						(!/^[0-9a-f-]{36}\n$/.test(stdout.body) || !OPERATION_UUID.test(stdout.body.slice(0, -1))))
+						(!/^[0-9a-f-]{36}\n$/.test(stdout.body) || !UUID_PATTERN.test(stdout.body.slice(0, -1))))
 				)
 					throw new Error("invalid public proc read");
 				if (path === "/proc/uptime") parseLxdProcUptime(Buffer.from(stdout.body));
@@ -2008,7 +2002,7 @@ export class LxdUnixClient
 			{ name, description: "", config: { ...config } },
 			signal,
 		);
-		const envelope = record(result.body, "LXD response");
+		const envelope = parseRecord(result.body, "LXD response");
 		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
 		// A project's create answers synchronously, with null metadata.
 		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
@@ -2018,7 +2012,7 @@ export class LxdUnixClient
 		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
 		const result = await this.#request("DELETE", `/1.0/projects/${encodeURIComponent(name)}`, undefined, signal);
 		if (result.status === 404) return false;
-		const envelope = record(result.body, "LXD response");
+		const envelope = parseRecord(result.body, "LXD response");
 		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
 		// A project's delete answers synchronously, with or without metadata.
 		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
@@ -2065,7 +2059,7 @@ export class LxdUnixClient
 			signal,
 		);
 		const operation = await this.#waitForOperation(result, signal, waitSeconds);
-		const metadata = record(operation.metadata, "LXD exec operation metadata");
+		const metadata = parseRecord(operation.metadata, "LXD exec operation metadata");
 		if (metadata.return !== 0) throw new Error("LXD instance command failed");
 	}
 
@@ -2173,16 +2167,19 @@ export class LxdUnixClient
 				checked,
 			);
 			if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD exec stream was refused");
-			const envelope = record(result.body, "LXD exec stream");
+			const envelope = parseRecord(result.body, "LXD exec stream");
 			if (
 				envelope.type !== "async" ||
 				typeof envelope.operation !== "string" ||
 				!envelope.operation.startsWith("/1.0/operations/") ||
-				!OPERATION_UUID.test(envelope.operation.slice("/1.0/operations/".length))
+				!UUID_PATTERN.test(envelope.operation.slice("/1.0/operations/".length))
 			)
 				throw new Error("LXD exec stream operation is invalid");
-			const fds = record(
-				record(record(envelope.metadata, "LXD exec stream operation").metadata, "LXD exec stream metadata").fds,
+			const fds = parseRecord(
+				parseRecord(
+					parseRecord(envelope.metadata, "LXD exec stream operation").metadata,
+					"LXD exec stream metadata",
+				).fds,
 				"LXD exec stream fds",
 			);
 			const fdStream = (fd: "0" | "1" | "2", bound: number) => {
@@ -2272,7 +2269,7 @@ export class LxdUnixClient
 				if (stdin.byteLength > 0) stdinSocket.sendBinary(stdin);
 				stdinSocket.send("");
 				const operation = await this.#waitForOperation(result, checked);
-				const metadata = record(operation.metadata, "LXD exec stream result");
+				const metadata = parseRecord(operation.metadata, "LXD exec stream result");
 				const exitCode = metadata.return;
 				if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode))
 					throw new Error("LXD exec stream result is invalid");
@@ -2330,16 +2327,16 @@ export class LxdUnixClient
 			signal,
 		);
 		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD exec pipe was refused");
-		const envelope = record(result.body, "LXD exec pipe");
+		const envelope = parseRecord(result.body, "LXD exec pipe");
 		if (
 			envelope.type !== "async" ||
 			typeof envelope.operation !== "string" ||
 			!envelope.operation.startsWith("/1.0/operations/") ||
-			!OPERATION_UUID.test(envelope.operation.slice("/1.0/operations/".length))
+			!UUID_PATTERN.test(envelope.operation.slice("/1.0/operations/".length))
 		)
 			throw new Error("LXD exec pipe operation is invalid");
-		const fds = record(
-			record(record(envelope.metadata, "LXD exec pipe operation").metadata, "LXD exec pipe metadata").fds,
+		const fds = parseRecord(
+			parseRecord(parseRecord(envelope.metadata, "LXD exec pipe operation").metadata, "LXD exec pipe metadata").fds,
 			"LXD exec pipe fds",
 		);
 		const secretOf = (fd: "0" | "1" | "2"): string => {
@@ -2496,7 +2493,7 @@ export class LxdUnixClient
 			await ended;
 			if (failure) throw failure;
 			const operation = await this.#waitForOperation(result, signal);
-			const metadata = record(operation.metadata, "LXD exec pipe result");
+			const metadata = parseRecord(operation.metadata, "LXD exec pipe result");
 			const exitCode = metadata.return;
 			if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode))
 				throw new Error("LXD exec pipe result is invalid");
@@ -2524,9 +2521,9 @@ export class LxdUnixClient
 		signal?: AbortSignal,
 		waitSeconds = this.#operationTimeoutSeconds,
 	): Promise<Record<string, unknown>> {
-		const envelope = record(result.body, "LXD response");
+		const envelope = parseRecord(result.body, "LXD response");
 		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
-		if (envelope.type === "sync") return record(envelope.metadata, "LXD synchronous operation");
+		if (envelope.type === "sync") return parseRecord(envelope.metadata, "LXD synchronous operation");
 		if (
 			envelope.type !== "async" ||
 			typeof envelope.operation !== "string" ||
@@ -2540,12 +2537,12 @@ export class LxdUnixClient
 		// failed operation arrives as an error envelope under HTTP 200
 		// ({"type":"error","error_code":500,"error":"...","metadata":null}). Newer
 		// LXD renders the failed operation itself (status_code 400, err "...").
-		const waited = record(wait.body, "LXD response");
+		const waited = parseRecord(wait.body, "LXD response");
 		// That error envelope is also what a wait that merely timed out writes ("context deadline exceeded"):
 		// only the operation's own end says whether it failed.
 		if (wait.status >= 200 && wait.status < 300 && waited.type === "error")
 			throw operationFailure(waited.error, await this.#endedInFailure(envelope.operation, signal));
-		const operation = record(envelopeMetadata(wait), "LXD operation");
+		const operation = parseRecord(envelopeMetadata(wait), "LXD operation");
 		if (
 			typeof operation.status_code !== "number" ||
 			operation.status_code < 200 ||
@@ -2568,9 +2565,9 @@ export class LxdUnixClient
 		try {
 			return await withTimeoutScope(signal, 5000, async (checked) => {
 				const result = await this.#request("GET", operationPath, undefined, checked);
-				const envelope = record(result.body, "LXD response");
+				const envelope = parseRecord(result.body, "LXD response");
 				if (result.status !== 200 || envelope.type !== "sync") return false;
-				const operation = record(envelope.metadata, "LXD operation");
+				const operation = parseRecord(envelope.metadata, "LXD operation");
 				return (
 					(operation.status_code === 400 && operation.status === "Failure") ||
 					(operation.status_code === 401 && operation.status === "Cancelled")

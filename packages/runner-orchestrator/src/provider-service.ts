@@ -7,7 +7,7 @@ import {
 } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { isIP } from "node:net";
-import { SURFACE_SOURCE_KINDS, type SurfaceSourceKind } from "@qorpera/contracts";
+import { isUuidAnyCase, parseRecord, SURFACE_SOURCE_KINDS, type SurfaceSourceKind } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import { NODE_OBSERVATIONS_PATH, type ProviderNodeObservability } from "./node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
@@ -17,7 +17,6 @@ import type { ClaimedSurfaceSessionJob, ClaimedSurfaceSessionSponsor } from "./s
 const REQUEST_SCHEMA = "qorpera.runner-provider/v1";
 const REQUEST_PATH = "/v1/qorpera-runner-provider";
 const ADAPTER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_REQUEST_BYTES = 256 * 1024;
 const DEFAULT_MAX_CONCURRENT_SURFACE_DELIVERIES = 32;
 const MAX_CONCURRENT_SURFACE_DELIVERIES_LIMIT = 256;
@@ -74,7 +73,7 @@ function optionalBoundedString(value: unknown, label: string, maximum: number): 
 }
 
 function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
-	const input = record(value, "Surface session");
+	const input = parseRecord(value, "Surface session");
 	exactKeys(
 		input,
 		[
@@ -119,7 +118,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 	) {
 		throw new Error("Surface session origin kind is invalid");
 	}
-	const placement = record(input.placement, "Surface session placement");
+	const placement = parseRecord(input.placement, "Surface session placement");
 	exactKeys(placement, ["strategy", "machineId", "activeTurns", "targetDensity"], "Surface session placement");
 	if (
 		(placement.strategy !== "reuse_machine" && placement.strategy !== "spawn_overflow_machine") ||
@@ -135,7 +134,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 	const placementMachineId =
 		placement.machineId === null || placement.machineId === undefined
 			? null
-			: uuid(placement.machineId, "Placement machine id");
+			: providerUuid(placement.machineId, "Placement machine id");
 	let surfaceSourceKind: SurfaceSourceKind | undefined;
 	if (input.surfaceSourceKind !== undefined && input.surfaceSourceKind !== null) {
 		if (typeof input.surfaceSourceKind !== "string" || !SURFACE_SOURCE_KIND_SET.has(input.surfaceSourceKind)) {
@@ -148,7 +147,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 			? undefined
 			: input.explorationId === null
 				? null
-				: uuid(input.explorationId, "Surface exploration id");
+				: providerUuid(input.explorationId, "Surface exploration id");
 	let retryCount: number | undefined;
 	if (input.retryCount !== undefined && input.retryCount !== null) {
 		if (
@@ -165,7 +164,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 		if (input.sponsor === null) {
 			sponsor = null;
 		} else {
-			const rawSponsor = record(input.sponsor, "Surface session sponsor");
+			const rawSponsor = parseRecord(input.sponsor, "Surface session sponsor");
 			exactKeys(rawSponsor, ["sponsorBindingId", "sponsorVersion"], "Surface session sponsor");
 			if (
 				!Number.isSafeInteger(rawSponsor.sponsorVersion) ||
@@ -175,7 +174,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 				throw new Error("Surface session sponsor version is invalid");
 			}
 			sponsor = {
-				sponsorBindingId: uuid(rawSponsor.sponsorBindingId, "Surface sponsor binding id"),
+				sponsorBindingId: providerUuid(rawSponsor.sponsorBindingId, "Surface sponsor binding id"),
 				sponsorVersion: rawSponsor.sponsorVersion as number,
 			};
 		}
@@ -229,11 +228,11 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 			? undefined
 			: input.leaseToken === null
 				? null
-				: uuid(input.leaseToken, "Surface lease token");
+				: providerUuid(input.leaseToken, "Surface lease token");
 	return {
-		sessionId: uuid(input.sessionId, "Surface session id"),
-		surfaceId: uuid(input.surfaceId, "Surface id"),
-		profileId: uuid(input.profileId, "Surface profile id"),
+		sessionId: providerUuid(input.sessionId, "Surface session id"),
+		surfaceId: providerUuid(input.surfaceId, "Surface id"),
+		profileId: providerUuid(input.profileId, "Surface profile id"),
 		state: input.state,
 		prompt: input.prompt,
 		originKind: input.originKind,
@@ -263,23 +262,18 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 	};
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 function exactKeys(input: Record<string, unknown>, allowed: readonly string[], label: string): void {
 	const allowedKeys = new Set(allowed);
 	if (Object.keys(input).some((key) => !allowedKeys.has(key))) throw new Error(`${label} has unknown fields`);
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
+function providerUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
 function parseRunner(value: unknown, adapterId: string): CloudRunnerInstance {
-	const input = record(value, "Runner instance");
+	const input = parseRecord(value, "Runner instance");
 	exactKeys(
 		input,
 		[
@@ -317,13 +311,13 @@ function parseRunner(value: unknown, adapterId: string): CloudRunnerInstance {
 		throw new Error("Runner instance is invalid");
 	}
 	return {
-		runnerId: uuid(input.runnerId, "Runner id"),
+		runnerId: providerUuid(input.runnerId, "Runner id"),
 		...(input.logicalComputerId === null || input.logicalComputerId === undefined
 			? {}
-			: { logicalComputerId: uuid(input.logicalComputerId, "Logical computer id") }),
+			: { logicalComputerId: providerUuid(input.logicalComputerId, "Logical computer id") }),
 		...(input.computeIdentityId === null || input.computeIdentityId === undefined
 			? {}
-			: { computeIdentityId: uuid(input.computeIdentityId, "Compute identity id") }),
+			: { computeIdentityId: providerUuid(input.computeIdentityId, "Compute identity id") }),
 		workerClass: input.workerClass,
 		providerAdapter: adapterId,
 		capabilities: input.capabilities,
@@ -334,9 +328,9 @@ function parseRunner(value: unknown, adapterId: string): CloudRunnerInstance {
 }
 
 function parseDelivery(value: unknown): CloudRunnerAssignmentDelivery {
-	const input = record(value, "Assignment delivery");
+	const input = parseRecord(value, "Assignment delivery");
 	exactKeys(input, ["assignment", "capability", "work"], "Assignment delivery");
-	const assignment = record(input.assignment, "Assignment");
+	const assignment = parseRecord(input.assignment, "Assignment");
 	exactKeys(
 		assignment,
 		["assignmentId", "claimId", "runId", "jobId", "runnerId", "capabilitySha256", "expiresAt"],
@@ -356,11 +350,11 @@ function parseDelivery(value: unknown): CloudRunnerAssignmentDelivery {
 	validateCloudRunnerWork(work);
 	return {
 		assignment: {
-			assignmentId: uuid(assignment.assignmentId, "Assignment id"),
-			claimId: uuid(assignment.claimId, "Claim id"),
-			runId: uuid(assignment.runId, "Assignment run id"),
-			jobId: uuid(assignment.jobId, "Assignment job id"),
-			runnerId: uuid(assignment.runnerId, "Assignment runner id"),
+			assignmentId: providerUuid(assignment.assignmentId, "Assignment id"),
+			claimId: providerUuid(assignment.claimId, "Claim id"),
+			runId: providerUuid(assignment.runId, "Assignment run id"),
+			jobId: providerUuid(assignment.jobId, "Assignment job id"),
+			runnerId: providerUuid(assignment.runnerId, "Assignment runner id"),
 			capabilitySha256: assignment.capabilitySha256,
 			expiresAt: new Date(assignment.expiresAt).toISOString(),
 		},
@@ -409,7 +403,7 @@ async function executeParsedRequest(
 }
 
 function parseRequest(value: unknown, adapterId: string): ProviderRequest {
-	const input = record(value, "Provider request");
+	const input = parseRecord(value, "Provider request");
 	if (input.schema !== REQUEST_SCHEMA || input.adapter_id !== adapterId) {
 		throw new Error("Provider request authority is invalid");
 	}
@@ -419,7 +413,7 @@ function parseRequest(value: unknown, adapterId: string): ProviderRequest {
 			return { action: "reconcile" };
 		case "acquire": {
 			exactKeys(input, ["schema", "action", "adapter_id", "acquisition_id", "work"], "Provider acquire request");
-			const acquisitionId = uuid(input.acquisition_id, "Acquisition id");
+			const acquisitionId = providerUuid(input.acquisition_id, "Acquisition id");
 			const work = input.work as CloudRunnerWork;
 			validateCloudRunnerWork(work);
 			if (acquisitionId !== work.runId) throw new Error("Acquisition id does not name the immutable run");
@@ -453,7 +447,7 @@ function parseRequest(value: unknown, adapterId: string): ProviderRequest {
 			);
 			return {
 				action: "surface_session",
-				machineId: uuid(input.machine_id, "Machine id"),
+				machineId: providerUuid(input.machine_id, "Machine id"),
 				session: parseSurfaceSession(input.session),
 			};
 		}

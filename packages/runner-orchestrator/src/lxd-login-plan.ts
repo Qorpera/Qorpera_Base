@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import type { LxdCreateInstanceRequest } from "./lxd-client.ts";
 import type { LxdNativeLoginGatewayConfig } from "./lxd-login-gateway.ts";
 import { lxdResourceBytes } from "./lxd-native-node-policy.ts";
 
-export const LOGIN_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const LOGIN_UUID = UUID_PATTERN;
 const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 export const loginSha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");

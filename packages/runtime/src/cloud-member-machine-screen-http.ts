@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { UUID_PATTERN } from "@qorpera/contracts";
+import { isRecord, UUID_PATTERN } from "@qorpera/contracts";
+import { readBoundedJsonBody, writeJsonResponse } from "./cloud-http-server-kit.ts";
 import {
 	type CloudMemberMachineAct,
 	CloudMemberMachineActRefusal,
@@ -116,7 +117,11 @@ export type CloudMemberMachinePointerRequest = {
 	/** The member's bearer token, passed on to the database (a begin) or compared with the pass's (a move), nowhere else. */
 	readonly token: string;
 } & (
-	| { readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number } }
+	| {
+			readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number };
+			readonly withStreamTicket?: true;
+			readonly origin?: string;
+	  }
 	| { readonly pass: string; readonly x: number; readonly y: number }
 	| {
 			/** A ticket for the desktop's live picture on that pass, under that hold (20260930745000), for the browser
@@ -131,7 +136,12 @@ export type CloudMemberMachinePointerRequest = {
 /** A pointer pass (its id and what is left of it), a move's end, or a live picture's ticket (single use, for its
  * seconds). */
 export type CloudMemberMachinePointerAnswer =
-	| { readonly pass: string; readonly milliseconds: number }
+	| {
+			readonly pass: string;
+			readonly milliseconds: number;
+			readonly ticket?: string;
+			readonly seconds?: number;
+	  }
 	| CloudMemberMachinePointerMove
 	| { readonly ticket: string; readonly seconds: number };
 /** One start of the desktop, as the listener read it from the member's request. */
@@ -188,6 +198,21 @@ export interface CloudMemberMachineScreenServiceOptions {
  * made under that lease generation, 20260930738000) and nothing else, the action one of machine_screen's but `open`
  * and the epoch, the seat and the generation safe whole numbers, 0 or more (never guessed: an epoch without a seat, a
  * generation beside them, or anything else, is undefined, a bad request). Nothing of the body is kept or told. */
+async function readJsonObject(
+	request: IncomingMessage,
+	signal: AbortSignal,
+	maxBytes: number,
+): Promise<Record<string, unknown> | undefined> {
+	if (request.headers["content-type"] !== "application/json") return undefined;
+	try {
+		const body = await readBoundedJsonBody(request, { maxBytes, signal });
+		return isRecord(body) ? body : undefined;
+	} catch (error) {
+		if (signal.aborted) throw error;
+		return undefined;
+	}
+}
+
 async function readAction(
 	request: IncomingMessage,
 	signal: AbortSignal,
@@ -196,18 +221,9 @@ async function readAction(
 	| { action: MachineScreenAction; shared: true; generation?: number }
 	| undefined
 > {
-	if (request.headers["content-type"] !== "application/json") return undefined;
-	const chunks: Buffer[] = [];
-	let bytes = 0;
-	for await (const chunk of request) {
-		signal.throwIfAborted();
-		bytes += (chunk as Buffer).length;
-		if (bytes > ACT_BODY_BYTES) return undefined;
-		chunks.push(chunk as Buffer);
-	}
+	const body = await readJsonObject(request, signal, ACT_BODY_BYTES);
+	if (!body) return undefined;
 	try {
-		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
 		const keys = Object.keys(body).sort().join();
 		const whole = (value: unknown): value is number =>
 			typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -240,23 +256,14 @@ async function readPointer(
 	request: IncomingMessage,
 	signal: AbortSignal,
 ): Promise<
-	| { begin: { generation: number } | { epoch: number; seat: number } }
+	| { begin: { generation: number } | { epoch: number; seat: number }; withStreamTicket?: true }
 	| { pass: string; x: number; y: number }
 	| { stream: { pass: string; hold: { generation: number } | { epoch: number; seat: number } } }
 	| undefined
 > {
-	if (request.headers["content-type"] !== "application/json") return undefined;
-	const chunks: Buffer[] = [];
-	let bytes = 0;
-	for await (const chunk of request) {
-		signal.throwIfAborted();
-		bytes += (chunk as Buffer).length;
-		if (bytes > POINTER_BODY_BYTES) return undefined;
-		chunks.push(chunk as Buffer);
-	}
+	const body = await readJsonObject(request, signal, POINTER_BODY_BYTES);
+	if (!body) return undefined;
 	try {
-		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
 		const whole = (value: unknown): value is number =>
 			typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 		const keys = Object.keys(body).sort().join();
@@ -267,7 +274,7 @@ async function readPointer(
 			return { pass: pass.toLowerCase(), x: x as number, y: y as number };
 		}
 		const holdOf = (hold: unknown) => {
-			if (!hold || typeof hold !== "object" || Array.isArray(hold)) return undefined;
+			if (!isRecord(hold)) return undefined;
 			const form = Object.keys(hold).sort().join();
 			const { generation, epoch, seat } = hold as { generation?: unknown; epoch?: unknown; seat?: unknown };
 			if (form === "generation" && whole(generation)) return { generation };
@@ -277,16 +284,18 @@ async function readPointer(
 		if (keys === "stream") {
 			// A live picture's ticket (20260930745000): `{"stream": {"pass": p, "hold": {...}}}`.
 			const stream = (body as { stream: unknown }).stream;
-			if (!stream || typeof stream !== "object" || Array.isArray(stream)) return undefined;
+			if (!isRecord(stream)) return undefined;
 			if (Object.keys(stream).sort().join() !== "hold,pass") return undefined;
 			const { pass, hold } = stream as { pass: unknown; hold: unknown };
 			const held = holdOf(hold);
 			if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !held) return undefined;
 			return { stream: { pass: pass.toLowerCase(), hold: held } };
 		}
-		if (keys !== "begin") return undefined;
+		if (keys !== "begin" && keys !== "begin,withStreamTicket") return undefined;
+		const withStreamTicket = (body as { withStreamTicket?: unknown }).withStreamTicket;
+		if (keys === "begin,withStreamTicket" && withStreamTicket !== true) return undefined;
 		const begin = holdOf((body as { begin: unknown }).begin);
-		return begin ? { begin } : undefined;
+		return begin ? (withStreamTicket === true ? { begin, withStreamTicket: true } : { begin }) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -296,18 +305,9 @@ async function readPointer(
  * plain rule takes (20260930758000): `{}` for the one, the path for the other, null for anything else (never guessed: a
  * bad request). */
 async function readStart(request: IncomingMessage, signal: AbortSignal): Promise<{ open?: string } | null> {
-	if (request.headers["content-type"] !== "application/json") return null;
-	const chunks: Buffer[] = [];
-	let bytes = 0;
-	for await (const chunk of request) {
-		signal.throwIfAborted();
-		bytes += (chunk as Buffer).length;
-		if (bytes > START_BODY_BYTES) return null;
-		chunks.push(chunk as Buffer);
-	}
+	const body = await readJsonObject(request, signal, START_BODY_BYTES);
+	if (!body) return null;
 	try {
-		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body)) return null;
 		const keys = Object.keys(body);
 		if (keys.length === 0) return {};
 		const open = (body as { open?: unknown }).open;
@@ -322,14 +322,7 @@ function replyJson(
 	status: number,
 	value: Record<string, string | number | boolean | null>,
 ): void {
-	const body = JSON.stringify(value);
-	reply.writeHead(status, {
-		"content-type": "application/json",
-		"content-length": Buffer.byteLength(body),
-		"cache-control": "no-store",
-		"x-content-type-options": "nosniff",
-	});
-	reply.end(body);
+	writeJsonResponse(reply, status, value);
 }
 
 /** Loopback only, behind the node's mux. Each request is bounded at 30 s and ends with its client. */
@@ -459,26 +452,36 @@ export class HttpCloudMemberMachineScreenService {
 				const asked = await readPointer(request, controller.signal);
 				// A live picture's ticket is for the browser that asked: its Origin, as the member bridge passed it on.
 				const origin = request.headers.origin;
-				if (
-					asked === undefined ||
-					("stream" in asked && (typeof origin !== "string" || !STREAM_ORIGIN.test(origin)))
-				) {
+				const needsOrigin =
+					asked !== undefined && ("stream" in asked || ("begin" in asked && asked.withStreamTicket === true));
+				if (asked === undefined || (needsOrigin && (typeof origin !== "string" || !STREAM_ORIGIN.test(origin)))) {
 					replyJson(reply, 400, { error: "member_pointer_invalid" });
 					return;
 				}
 				const base = { companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string };
 				const done = await this.#options.pointer(
-					"stream" in asked ? { ...base, stream: asked.stream, origin: origin as string } : { ...base, ...asked },
+					"stream" in asked
+						? { ...base, stream: asked.stream, origin: origin as string }
+						: "begin" in asked && asked.withStreamTicket === true
+							? { ...base, begin: asked.begin, withStreamTicket: true, origin: origin as string }
+							: { ...base, ...asked },
 					controller.signal,
 				);
 				controller.signal.throwIfAborted();
 				replyJson(
 					reply,
 					200,
-					"ticket" in done
-						? { schema: "qorpera.member-machine-pointer/v1", ticket: done.ticket, seconds: done.seconds }
-						: "pass" in done
-							? { schema: "qorpera.member-machine-pointer/v1", pass: done.pass, milliseconds: done.milliseconds }
+					"pass" in done
+						? {
+								schema: "qorpera.member-machine-pointer/v1",
+								pass: done.pass,
+								milliseconds: done.milliseconds,
+								...(done.ticket !== undefined && done.seconds !== undefined
+									? { ticket: done.ticket, seconds: done.seconds }
+									: {}),
+							}
+						: "ticket" in done
+							? { schema: "qorpera.member-machine-pointer/v1", ticket: done.ticket, seconds: done.seconds }
 							: { schema: "qorpera.member-machine-pointer/v1", moved: done.moved },
 				);
 				return;

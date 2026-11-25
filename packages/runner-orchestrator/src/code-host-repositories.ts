@@ -918,7 +918,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				}
 				if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_LAND_CONFLICT") {
 					await this.#reportRefused(session, headSha, "conflict", error.code, error.paths);
-					throw new CodingLandConflict(error.paths);
+					throw new CodingLandConflict(error.paths, error.messages);
 				}
 				// A refusal by rule, and refs git could not read (a failed command, `Run.ref`): both have their own words.
 				let code: string | undefined;

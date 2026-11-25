@@ -599,11 +599,11 @@ it("keeps a fake instruction a tool result carried into the run's lines as data 
 		turnId: "turn_1",
 		purpose: "turn",
 		model: "gpt-6",
-		// A raw tail of 41,000 bytes: the fold ends at step 2's call, the first cut that leaves less than RUN_VIEW / 4.
+		// WHY: A raw tail over RUN_VIEW / 2 (96 KB) folds steps 0 and 1, leaving step 2 raw under RUN_VIEW / 4.
 		items: [
 			{ kind: "message", role: "user", callId: null, id: null, bytes: 2_000, media: 0 },
-			...call(0, 10_000),
-			...call(1, 10_000),
+			...call(0, 25_000),
+			...call(1, 25_000),
 			...call(2, 500),
 		],
 	};

@@ -251,13 +251,13 @@ begin
 		clock_timestamp()
 	from public.qorpera_company_path_resources r where r.id = v_root;
 	v_rows := pg_temp.authority_rows();
-	if jsonb_array_length(pg_temp.drain()) <> 2 then raise exception 'Two hires, two steps'; end if;
+	-- WHY: Batched follow-up steps converge up to 16 agent subjects in one step while keeping company subjects isolated.
+	if jsonb_array_length(pg_temp.drain()) <> 1 then raise exception 'Two hires converge in one batched step'; end if;
 	if (select array_agg(permissions) from pg_temp.root_grants(a2) where resource_id = v_root) is distinct from array[array['read']]
 		or (select count(*) from pg_temp.root_grants(a3) where resource_id = v_root and revoked_at is null) <> 0
 		or (select count(*) from pg_temp.root_grants(a3) where resource_id = v_root) <> 1 then
 		raise exception 'The default grant widened or revived a grant'; end if;
-	-- One journal row for each hire that got a grant on another root, none for a hire that got none.
-	if pg_temp.authority_rows() <> v_rows + 2 * (case when pg_temp.roots() > 1 then 1 else 0 end) then
+	if pg_temp.authority_rows() <> v_rows + (case when pg_temp.roots() > 1 then 1 else 0 end) then
 		raise exception 'Journal rows without a grant: %', pg_temp.authority_rows() - v_rows; end if;
 	if (pg_temp.work(a2)).dirty or (pg_temp.work(a3)).dirty or pg_temp.turn(a2) is null or pg_temp.turn(a3) is null then
 		raise exception 'The hires still converged'; end if;

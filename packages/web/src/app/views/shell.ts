@@ -44,8 +44,9 @@ import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.t
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
-import { companyDisplayName, companyInSentence, showCompanyName } from "../../ui/company-name.ts";
+import { companyDisplayName, companyInSentence } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
+import { waitForDeferredStyles } from "../../ui/deferred-styles.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { friendsCount } from "../../ui/friends-count.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -79,6 +80,7 @@ import {
 	isPrimaryStaffSession,
 	siteAnswer,
 } from "../company.ts";
+import { CompanyWordmarkSlot } from "../company-wordmark.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
@@ -86,7 +88,14 @@ import { type PersonWhere, personWhere } from "../person-place.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
 import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
-import { activeTaskSessions, isOpenChange, isRunningSession, openExplorations, surfacesOf } from "../surfaces-store.ts";
+import {
+	activeTaskSessions,
+	isOpenChange,
+	isRunningSession,
+	openExplorations,
+	surfacesDisabledOf,
+	surfacesOf,
+} from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
@@ -140,6 +149,7 @@ export interface ShellContext {
 	searchBlocked?: () => boolean;
 	openInFiles?: (path: string) => void;
 	invites?: InviteCalls;
+	prefetchCompanyWordmarks?: (profiles: readonly HostedProfile[]) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -413,7 +423,7 @@ export function renderTopbar(
 interface RailParts {
 	/** The company's name at the start of the top row; it opens the menu of the member's companies (Jonas, 5 Nov 2026). */
 	readonly company: HTMLButtonElement;
-	readonly companyName: HTMLElement;
+	readonly companyWordmark: CompanyWordmarkSlot;
 	/** The four-windows button: it opens the company's interfaces as icons under the top row, and stays open until
 	 * pressed again (Jonas, 5 Nov 2026; it replaced the Agents | Interfaces tabs). */
 	readonly apps: HTMLButtonElement;
@@ -768,11 +778,25 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
 		const dock = h("div", { class: "rail-dock" });
 		const companyName = h("span", { class: "rail-company-name" });
+		const companyWordmarkImage = h("img", {
+			class: "rail-company-wordmark",
+			alt: "",
+			draggable: "false",
+			hidden: true,
+		});
 		const companyButton = h(
 			"button",
 			{ type: "button", class: "rail-company", "aria-haspopup": "menu", "aria-expanded": "false" },
+			companyWordmarkImage,
 			companyName,
 			h("span", { class: "rail-company-chevron", "aria-hidden": "true" }, icon("chevron-down")),
+		);
+		const companyWordmark = new CompanyWordmarkSlot(
+			company.profile.profileId,
+			companyButton,
+			companyName,
+			companyWordmarkImage,
+			company.signal,
 		);
 		const apps = h(
 			"button",
@@ -795,7 +819,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const members = membersSection();
 		const created: RailParts = {
 			company: companyButton,
-			companyName,
+			companyWordmark,
 			apps,
 			appsDrawer,
 			appsOwed,
@@ -952,6 +976,14 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			{ capture: true, signal: company.signal },
 		);
 		companyButton.addEventListener(
+			"pointerenter",
+			() => {
+				const profiles = created.context?.profiles;
+				if (profiles && profiles.length > 1) created.context?.prefetchCompanyWordmarks?.(profiles);
+			},
+			{ signal: company.signal },
+		);
+		companyButton.addEventListener(
 			"click",
 			() => {
 				if (pressClosesMenu) {
@@ -961,6 +993,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				if (openMenu()?.el.isConnected && companyButton.getAttribute("aria-expanded") === "true") return;
 				const box = companyButton.getBoundingClientRect();
 				const profiles = created.context?.profiles ?? [company.profile];
+				if (profiles.length > 1) created.context?.prefetchCompanyWordmarks?.(profiles);
 				companyButton.setAttribute("aria-expanded", "true");
 				openContextMenu({
 					label: t("Your companies"),
@@ -1436,8 +1469,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.appsDrawer.inert = !appsOpen;
 	// WHY: Surfaces lists Inbox, Money, Members and Databases in the rail itself; the old icon drawer above the
 	// Co-Founder duplicated them, so a surface-first rail folds it (and its grid button) away visually.
-	container.classList.toggle("has-surface-rail", surfacesOf(company) !== undefined);
-	showCompanyName(parts.companyName, company.profile.profileName);
+	const surfaces = surfacesOf(company);
+	container.classList.toggle("has-surface-rail", surfaces !== undefined);
+	parts.companyWordmark.update(company.profile.profileName, surfaces, surfacesDisabledOf(company));
 	const searchLabel = `${t("Search")} (${shortcutLabel()})`;
 	parts.searchToggle.setAttribute("aria-label", t("Search"));
 	parts.searchToggle.setAttribute("aria-keyshortcuts", SEARCH_SHORTCUT);
@@ -4551,7 +4585,7 @@ function withSurfaceMigrationSheet(run: (mod: typeof SurfaceMigrationSheetMod) =
 		run(preloadedSurfaceMigrationSheet);
 		return;
 	}
-	void import("./surface-migration-sheet.ts").then((mod) => {
+	void Promise.all([import("./lazy-quick.ts"), waitForDeferredStyles()]).then(([{ surfaceMigrationSheet: mod }]) => {
 		preloadedSurfaceMigrationSheet = mod;
 		run(mod);
 	});
@@ -4566,10 +4600,16 @@ function openSearchWindow(company: CompanyController, context: ShellContext | un
 	};
 	if (preloadedSearchWindow) mount(preloadedSearchWindow);
 	else
-		void import("./search-window.ts").then(({ SearchWindow: Loaded }) => {
-			preloadedSearchWindow = Loaded;
-			mount(Loaded);
-		});
+		void Promise.all([import("./lazy-quick.ts"), waitForDeferredStyles()]).then(
+			([
+				{
+					searchWindow: { SearchWindow: Loaded },
+				},
+			]) => {
+				preloadedSearchWindow = Loaded;
+				mount(Loaded);
+			},
+		);
 }
 
 function anotherModalOpen(): boolean {
@@ -4579,6 +4619,10 @@ function anotherModalOpen(): boolean {
 			!element.closest(".is-leaving") &&
 			(!(element instanceof HTMLDialogElement) || element.open),
 	);
+}
+
+export function invalidateShellSearchFiles(profileId: string): void {
+	searchWindow?.invalidateFiles(profileId);
 }
 
 export function clearShellCompanyState(company?: CompanyController): void {

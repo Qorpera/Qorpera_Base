@@ -755,4 +755,25 @@ describe("interaction cards in the transcript", () => {
 		expect(projection.items).toHaveLength(0);
 		expect(projection.hiddenCount).toBe(1);
 	});
+
+	it("preserves TranscriptItem object identity for unchanged messages and cards across streaming projections", () => {
+		const input1 = "55555555-5555-4555-8555-000000000001";
+		const input2 = "55555555-5555-4555-8555-000000000002";
+		const msg1 = event(1, {
+			eventId: input1,
+			sessionInputId: input1,
+			body: runnerEntry("user", "First", { id: input1 }),
+		});
+		const card1 = event(2, { eventId: CARD, eventType: "interaction_request", body: request });
+		const msg2 = event(3, {
+			eventId: input2,
+			sessionInputId: input2,
+			body: runnerEntry("user", "Second", { id: input2 }),
+		});
+		const first = projectTranscript([msg1, card1]);
+		const second = projectTranscript([msg1, card1, msg2], [], first);
+		expect(second.items).toHaveLength(3);
+		expect(second.items[0]).toBe(first.items[0]);
+		expect(second.items[1]).toBe(first.items[1]);
+	});
 });

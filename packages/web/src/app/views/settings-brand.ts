@@ -44,6 +44,7 @@ export interface CompanyBrandOptions {
 	readonly folder: () => WebMemberFolder;
 	readonly signal: AbortSignal;
 	readonly renamed: (name: string) => void;
+	readonly logoChanged?: () => void;
 }
 
 export class CompanyBrandView {
@@ -122,6 +123,11 @@ export class CompanyBrandView {
 			),
 			this.#error,
 		);
+		const unsubscribeLogo = companyLogos()?.subscribe?.(options.profileId, () => this.update());
+		if (unsubscribeLogo) {
+			if (options.signal.aborted) unsubscribeLogo();
+			else options.signal.addEventListener("abort", unsubscribeLogo, { once: true });
+		}
 		this.update();
 	}
 
@@ -172,7 +178,11 @@ export class CompanyBrandView {
 	}
 
 	#hasLogo(): boolean {
-		return Boolean(companyLogos()?.logo(this.#options.profileId)?.objectName);
+		const store = companyLogos();
+		if (!store) return false;
+		return store.hasLogo
+			? store.hasLogo(this.#options.profileId)
+			: Boolean(store.logo(this.#options.profileId)?.objectName);
 	}
 
 	#setMenu(open: boolean): void {
@@ -195,6 +205,7 @@ export class CompanyBrandView {
 			const crop = await choosePictureCrop(file, this.#options.signal, undefined, "square");
 			if (!crop || this.#options.signal.aborted) return;
 			await store.choose(this.#options.profileId, file, crop, this.#options.folder, this.#options.signal);
+			this.#options.logoChanged?.();
 		}, phrase("The logo could not be saved."));
 	}
 
@@ -202,10 +213,10 @@ export class CompanyBrandView {
 		this.#setMenu(false);
 		const store = companyLogos();
 		if (!store) return;
-		await this.#run(
-			() => store.remove(this.#options.profileId, this.#options.folder, this.#options.signal),
-			phrase("The logo could not be removed."),
-		);
+		await this.#run(async () => {
+			await store.remove(this.#options.profileId, this.#options.folder, this.#options.signal);
+			this.#options.logoChanged?.();
+		}, phrase("The logo could not be removed."));
 	}
 
 	#startRename(): void {

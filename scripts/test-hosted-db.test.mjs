@@ -14,6 +14,7 @@ import {
 	POSTGRES_IMAGE,
 	POSTGRES_LOCALE,
 	parseArguments,
+	planSqlTestBatches,
 	SQL_TEST_DATABASES,
 	selectTests,
 	sortMigrationNames,
@@ -23,6 +24,7 @@ import {
 import {
 	bestSnapshot,
 	CLUSTER_ENV,
+	FAST_POSTGRES_ARGS,
 	HostedDbCluster,
 	MIGRATED,
 	newestBundleActivation,
@@ -96,6 +98,38 @@ test("a test can run after another test's fixture section", () => {
 	assert.throws(() => expandTestFixture("390_missing.test.sql", read), /fixture is unavailable/);
 	assert.equal(expandTestFixture("395_chained.test.sql", read), "begin;\nselect 1;\nselect 3;\nselect 4;\nrollback;\n");
 	assert.throws(() => expandTestFixture("396_cycle_a.test.sql", read), /fixture is unavailable/);
+});
+
+test("rolled-back @fixture tests sharing a prefix batch with SAVEPOINT and respect barriers", () => {
+	const files = {
+		"150_early.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 10;\nrollback;\n',
+		"300_base.test.sql": "begin;\nselect 'commit';\n-- END FIXTURE\nselect 2;\nrollback;\n",
+		"310_a.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 11;\nrollback;\n',
+		"320_b.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nsavepoint inner_sp;\nselect 12;\nrollback to savepoint inner_sp;\n',
+		"330_locks.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect * from pg_locks;\nrollback;\n',
+		"340_c.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 14;\nrollback;\n',
+		"350_commits.test.sql": "begin;\nselect 15;\ncommit;\n",
+		"360_d.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 16;\nrollback;\n',
+		"370_e.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 17;\nrollback;\n',
+	};
+	const read = (name) => files[name];
+	const plan = planSqlTestBatches(Object.keys(files), read, 2);
+	assert.deepEqual(
+		plan.map((entry) => (entry.type === "single" ? ["single", entry.name] : ["batch", entry.items.map((item) => item.name)])),
+		[
+			["single", "150_early.test.sql"],
+			["single", "300_base.test.sql"],
+			["batch", ["310_a.test.sql", "320_b.test.sql"]],
+			["single", "330_locks.test.sql"],
+			["single", "340_c.test.sql"],
+			["single", "350_commits.test.sql"],
+			["batch", ["360_d.test.sql", "370_e.test.sql"]],
+		],
+	);
+	const firstBatch = plan[2];
+	assert.equal(firstBatch.prefix, "begin;\nselect 'commit';\n");
+	assert.equal(firstBatch.items[0].body, "--\nselect 11;\n");
+	assert.equal(firstBatch.items[1].body, "--\nsavepoint inner_sp;\nselect 12;\nrollback to savepoint inner_sp;\n");
 });
 
 test("one psql process opens a fresh session for every file", () => {
@@ -410,17 +444,21 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"000_schema_smoke.test.sql",
 		"040_account_separation.test.sql",
 		"200_deleted_profile_object_gc.test.sql",
-		"529_last.test.sql",
-		"530_first.test.sql",
-		"684_last.test.sql",
-		"685_first.test.sql",
-		"824_last.test.sql",
-		"825_first.test.sql",
+		"506_last.test.sql",
+		"508_first.test.sql",
+		"509_last.test.sql",
+		"510_first.test.sql",
+		"675_last.test.sql",
+		"676_first.test.sql",
+		"839_last.test.sql",
+		"840_first.test.sql",
 		"964_last.test.sql",
 		"965_first.test.sql",
 		"1100_four_digit.test.sql",
-		"1244_last.test.sql",
-		"1245_first.test.sql",
+		"1210_last.test.sql",
+		"1211_first.test.sql",
+		"1250_last.test.sql",
+		"1251_first.test.sql",
 		"company_end.test.sql",
 	];
 	const split = splitTests(tests, null);
@@ -429,8 +467,10 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		["qorpera_test_2", tests.slice(4, 6)],
 		["qorpera_test_3", tests.slice(6, 8)],
 		["qorpera_test_4", tests.slice(8, 10)],
-		["qorpera_test_5", tests.slice(10, 13)],
-		["qorpera_test_6", tests.slice(13)],
+		["qorpera_test_5", tests.slice(10, 12)],
+		["qorpera_test_6", tests.slice(12, 15)],
+		["qorpera_test_7", tests.slice(15, 17)],
+		["qorpera_test_8", tests.slice(17)],
 	]);
 	// Every test runs once, in its usual order.
 	assert.deepEqual(split.flatMap(([, part]) => part), tests);
@@ -444,14 +484,23 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 9)],
-			["c", tests.slice(9)],
+			["b", tests.slice(2, 11)],
+			["c", tests.slice(11)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");
 	assert.equal(SQL_TEST_DATABASES[0][1], "");
 	for (let i = 2; i < SQL_TEST_DATABASES.length; i++)
 		assert.ok(compareTestNames(SQL_TEST_DATABASES[i - 1][1], SQL_TEST_DATABASES[i][1]) < 0);
+});
+
+test("FAST_POSTGRES_ARGS keeps wal_level compatible with pg_basebackup", () => {
+	assert.ok(FAST_POSTGRES_ARGS.includes("fsync=off"));
+	assert.ok(FAST_POSTGRES_ARGS.includes("jit=off"));
+	assert.equal(
+		FAST_POSTGRES_ARGS.some((arg) => arg.startsWith("wal_level=")),
+		false,
+	);
 });
 
 test("the tests that keep rows for later tests stay in the first database", () => {

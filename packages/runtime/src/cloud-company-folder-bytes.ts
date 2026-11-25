@@ -8,7 +8,7 @@ import {
 	type CloudCompanyFolderRunActor,
 	cloudCompanyFolderFailure,
 	cloudCompanyFolderRunActor,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "./cloud-company-path-gateway.ts";
 import {
@@ -33,6 +33,8 @@ const MAX_CHUNKS = 64;
 const MAX_MANIFEST_BYTES = 32 * 1024;
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const CHUNK_CONCURRENCY = 4;
+const PUT_CONCURRENCY = 2;
+const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
 /** An open intent lasts 15 minutes; a long upload renews it before that. */
 const RENEW_AFTER_MS = 10 * 60 * 1000;
 /** A busy gateway (503) is asked twice more, after a short random wait: meant for its NAS lanes, two operations in
@@ -85,14 +87,14 @@ function manifestOf(bytes: Uint8Array, mediaType: string, executable: boolean): 
 	if (bytes.byteLength === 0) {
 		fileSha256 = EMPTY_SHA256;
 	} else if (bytes.byteLength <= CHUNK_BYTES) {
-		fileSha256 = sha256(bytes);
+		fileSha256 = sha256Hex(bytes);
 		chunks.push({ sha256: fileSha256, bytes: bytes.byteLength });
 	} else {
 		const whole = createHash("sha256");
 		for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
 			const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
 			whole.update(chunk);
-			chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
+			chunks.push({ sha256: sha256Hex(chunk), bytes: chunk.byteLength });
 		}
 		fileSha256 = whole.digest("hex");
 	}
@@ -107,7 +109,22 @@ function manifestOf(bytes: Uint8Array, mediaType: string, executable: boolean): 
 	return { manifest, text: JSON.stringify(manifest) };
 }
 
+function canonicalSingleChunkManifestSha256(file: CloudCompanyFolderFile): string | null {
+	if (!Number.isSafeInteger(file.bytes) || file.bytes < 1 || file.bytes > CHUNK_BYTES) return null;
+	if (!SHA256_HEX_PATTERN.test(file.fileSha256)) return null;
+	const manifest: Manifest = {
+		schema: "qorpera.cloud-file-manifest/v2",
+		fileSha256: file.fileSha256,
+		bytes: file.bytes,
+		mediaType: file.mediaType,
+		executable: file.executable,
+		chunks: [{ sha256: file.fileSha256, bytes: file.bytes }],
+	};
+	return sha256Hex(Buffer.from(JSON.stringify(manifest), "utf8"));
+}
+
 export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
+	readonly verifiesBytes = true as const;
 	readonly #origin: string;
 	readonly #token: string;
 	readonly #binding: string;
@@ -184,7 +201,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	): Promise<CloudFileReference> {
 		const { manifest, text } = manifestOf(bytes, mediaType, executable);
 		const manifestBytes = new TextEncoder().encode(text);
-		const manifestSha256 = sha256(manifestBytes);
+		const manifestSha256 = sha256Hex(manifestBytes);
 		const open = answer(await this.#call("qorpera_folder_open_upload", { p_manifest: text }, signal), [
 			"schema",
 			"intentId",
@@ -210,17 +227,15 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		});
 		objects.set(manifestSha256, manifestBytes);
 		let renewed = this.#now();
-		const putAll = async (hashes: Iterable<string>): Promise<void> => {
-			for (const hash of hashes) {
-				const object = objects.get(hash);
-				if (!object) invalid();
-				if (this.#now() - renewed >= RENEW_AFTER_MS) {
-					const renew = answer(await this.#call("qorpera_folder_renew_upload", { p_intent: intentId }, signal), [
-						"schema",
-						"intentId",
-						"state",
-						"expiresAt",
-					]);
+		let renewInFlight: Promise<void> | null = null;
+		const ensureRenewed = async (requestSignal: AbortSignal): Promise<void> => {
+			if (this.#now() - renewed < RENEW_AFTER_MS) return;
+			if (!renewInFlight) {
+				renewInFlight = (async () => {
+					const renew = answer(
+						await this.#call("qorpera_folder_renew_upload", { p_intent: intentId }, requestSignal),
+						["schema", "intentId", "state", "expiresAt"],
+					);
 					if (
 						renew.schema !== "qorpera.folder-upload-renew/v1" ||
 						renew.intentId !== intentId ||
@@ -229,9 +244,48 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 					)
 						invalid();
 					renewed = this.#now();
-				}
-				await this.#put(hash, object, intentId, signal);
+				})().finally(() => {
+					renewInFlight = null;
+				});
 			}
+			await renewInFlight;
+		};
+		const putOne = async (hash: string, requestSignal: AbortSignal): Promise<void> => {
+			const object = objects.get(hash);
+			if (!object) invalid();
+			await ensureRenewed(requestSignal);
+			await this.#put(hash, object, intentId, requestSignal);
+		};
+		const putAll = async (hashes: Iterable<string>): Promise<void> => {
+			const list = [...hashes];
+			if (list.length === 0) return;
+			if (list.length <= 1) {
+				await putOne(list[0]!, signal);
+				return;
+			}
+			let cursor = 0;
+			const abort = new AbortController();
+			const putSignal = AbortSignal.any([signal, abort.signal]);
+			let firstError: unknown;
+			let failed = false;
+			const worker = async (): Promise<void> => {
+				while (!failed) {
+					const index = cursor++;
+					if (index >= list.length) return;
+					try {
+						await putOne(list[index]!, putSignal);
+					} catch (error) {
+						if (!failed) {
+							failed = true;
+							firstError = error;
+							abort.abort();
+						}
+						return;
+					}
+				}
+			};
+			await Promise.allSettled(Array.from({ length: Math.min(PUT_CONCURRENCY, list.length) }, () => worker()));
+			if (failed) throw firstError;
 		};
 		const present = new Set(open.present as string[]);
 		await putAll([...objects.keys()].filter((hash) => !present.has(hash)));
@@ -310,7 +364,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		);
 		let receipt: unknown;
 		try {
-			receipt = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+			receipt = JSON.parse(UTF8_FATAL.decode(body));
 		} catch {
 			invalid();
 		}
@@ -386,7 +440,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			const chunk = chunks[0]!;
 			const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
 			if (part.byteLength !== chunk.bytes) invalid();
-			// WHY: #fetchObject already verified sha256(part) === chunk.sha256, so a single chunk needs no second hash or copy.
+			// WHY: #fetchObject already verified sha256Hex(part) === chunk.sha256, so a single chunk needs no second hash or copy.
 			if (chunk.sha256 !== file.fileSha256)
 				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 			return part;
@@ -414,7 +468,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			signal,
 		);
 		// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
-		if (sha256(bytes) !== file.fileSha256)
+		if (sha256Hex(bytes) !== file.fileSha256)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 		return bytes;
 	}
@@ -475,10 +529,13 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		file: CloudCompanyFolderFile,
 		signal: AbortSignal,
 	): Promise<{ readonly sha256: string; readonly bytes: number }[]> {
+		// WHY: canonical manifest hash proves chunks === [{ sha256: fileSha256, bytes }] without a manifest HTTP round trip.
+		if (canonicalSingleChunkManifestSha256(file) === file.manifestSha256)
+			return [{ sha256: file.fileSha256, bytes: file.bytes }];
 		const manifestBytes = await this.#fetchObject(file.manifestSha256, MAX_MANIFEST_BYTES, signal);
 		let manifest: Manifest;
 		try {
-			manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)) as Manifest;
+			manifest = JSON.parse(UTF8_FATAL.decode(manifestBytes)) as Manifest;
 		} catch {
 			invalid();
 		}
@@ -513,7 +570,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	async #fetchObject(hash: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
 		if (!SHA256_HEX_PATTERN.test(hash)) invalid();
 		const { status, body } = await this.#requestUnlessBusy(hash, { method: "GET" }, maximum, signal);
-		if (status !== 200 || sha256(body) !== hash)
+		if (status !== 200 || sha256Hex(body) !== hash)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder object failed its check");
 		return body;
 	}

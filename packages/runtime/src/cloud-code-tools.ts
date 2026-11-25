@@ -1622,6 +1622,12 @@ export function cloudCodeTools(options: {
 	const code: CloudNativeTool = {
 		name: "manage_code" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null &&
+			typeof value === "object" &&
+			!Array.isArray(value) &&
+			typeof value.action === "string" &&
+			READ_ONLY_ACTIONS.has(value.action),
 		description: CLOUD_CODE_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",

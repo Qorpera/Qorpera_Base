@@ -11,7 +11,7 @@
 		"dev": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs --serve",
 		"typecheck": "tsgo -p tsconfig.json && tsgo -p tsconfig.test.json",
 		"test": "vitest run",
-		"clean": "shx rm -rf dist"
+		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
 	},
 	"dependencies": {
 		"@qorpera/cloud-client": "*",
@@ -23,7 +23,6 @@
 	"devDependencies": {
 		"esbuild": "0.28.1",
 		"jsdom": "27.4.0",
-		"shx": "0.4.0",
 		"vitest": "4.1.11"
 	},
 	"engines": {

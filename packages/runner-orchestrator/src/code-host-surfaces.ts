@@ -33,6 +33,7 @@ export interface CodeHostChangeRange {
 	readonly headSha: string;
 	readonly title: string;
 	readonly summary?: string;
+	readonly optionGroupKey?: string | null;
 }
 
 export class CodeHostChangeConflict extends CodeHostRefusal {
@@ -167,16 +168,42 @@ function assertChangeRange(value: CodeHostChangeRange): void {
 	}
 }
 
-async function prepareKeptArea(run: Run) {
-	const area = await run.prepare();
+async function prepareKeptArea(run: Run, options: { readOnly?: boolean } = {}) {
+	const area = await run.prepare(undefined, { readOnly: options.readOnly === true });
 	if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-	if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
+	const base = `refs/heads/${run.repository.baseBranch}`;
+	const refs = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base]);
+	if (refs(CODE_AREA_IN_QORPERA_REF) === null) {
 		throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 	}
-	const base = `refs/heads/${run.repository.baseBranch}`;
-	const mainSha = await run.ref(base);
+	const mainSha = refs(base);
 	if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
 	return { area, base, mainSha };
+}
+
+async function prepareKeptBaseSha(
+	run: Run,
+	options: { readOnly?: boolean; skipMainRef?: boolean } = {},
+): Promise<string> {
+	const base = `refs/heads/${run.repository.baseBranch}`;
+	if (run.job.preparedKeptArea === run.area) {
+		if (options.skipMainRef) return "";
+		const mainSha = await run.ref(base);
+		if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+		return mainSha;
+	}
+	const area = await run.prepare(undefined, { readOnly: options.readOnly === true });
+	if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+	const refs = await run.refsNamed(
+		options.skipMainRef ? [CODE_AREA_IN_QORPERA_REF] : [CODE_AREA_IN_QORPERA_REF, base],
+	);
+	if (refs(CODE_AREA_IN_QORPERA_REF) === null) {
+		throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+	}
+	if (options.skipMainRef) return "";
+	const mainSha = refs(base);
+	if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+	return mainSha;
 }
 
 async function treeOfCommit(run: Run, commitSha: string, errorCode: string): Promise<string> {
@@ -551,13 +578,26 @@ export async function rebaseSessionChanges(
 
 		let cursor = ontoSha;
 		let cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_REBASE_FAILED");
+		const groupBases = new Map<string, { readonly commitSha: string; readonly treeSha: string }>();
 		const rebased: { changeId: string; parentSha: string; headSha: string }[] = [];
 		for (const change of input.remainingChanges) {
+			const groupKey = change.optionGroupKey?.trim() || null;
+			let baseCommit = cursor;
+			let baseTree = cursorTree;
+			if (groupKey) {
+				const existingBase = groupBases.get(groupKey);
+				if (existingBase) {
+					baseCommit = existingBase.commitSha;
+					baseTree = existingBase.treeSha;
+				} else {
+					groupBases.set(groupKey, { commitSha: cursor, treeSha: cursorTree });
+				}
+			}
 			if (change.parentSha === change.headSha) {
-				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+				rebased.push({ changeId: change.changeId, parentSha: baseCommit, headSha: baseCommit });
 				continue;
 			}
-			const applied = await applyRange(run, cursor, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
+			const applied = await applyRange(run, baseCommit, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
 			if (!applied.ok) {
 				return {
 					status: "conflicted" as const,
@@ -568,8 +608,8 @@ export async function rebaseSessionChanges(
 					restored: run.restored,
 				};
 			}
-			if (applied.treeSha === cursorTree) {
-				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+			if (applied.treeSha === baseTree) {
+				rebased.push({ changeId: change.changeId, parentSha: baseCommit, headSha: baseCommit });
 				continue;
 			}
 			const body = change.summary?.trim()
@@ -583,7 +623,7 @@ export async function rebaseSessionChanges(
 				[`Qorpera-Change: ${change.changeId}`],
 				"CODE_HOST_REBASE_FAILED",
 			);
-			rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: nextSha });
+			rebased.push({ changeId: change.changeId, parentSha: baseCommit, headSha: nextSha });
 			cursor = nextSha;
 			cursorTree = applied.treeSha;
 		}
@@ -680,8 +720,16 @@ export async function composePreviewTree(
 		throw new Error("INVALID_CODE_HOST_JOB");
 	}
 
+	const isReadOnlyCompose =
+		input.changes.length === 0 &&
+		(!input.exploration || input.exploration.baseSha === input.exploration.headSha) &&
+		input.previewRefId === undefined;
+
 	return withJob(job, repository, async (run) => {
-		const { mainSha } = await prepareKeptArea(run);
+		const mainSha = await prepareKeptBaseSha(run, {
+			readOnly: isReadOnlyCompose,
+			skipMainRef: input.baseSha !== undefined,
+		});
 		const baseSha = input.baseSha ?? mainSha;
 		if (input.reconciledCommitSha && !input.exploration) {
 			const [hasBase, hasReconciled] = await run.areCommits(run.repo, [baseSha, input.reconciledCommitSha]);
@@ -983,8 +1031,9 @@ export async function ensureSurfaceStarterRepository(
 			if (area.made) run.restored.push(run.relative(`${run.repo}/HEAD`));
 		}
 
-		let kept = await run.ref(CODE_AREA_IN_QORPERA_REF);
-		const head = await run.ref(base);
+		const refs = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base]);
+		let kept = refs(CODE_AREA_IN_QORPERA_REF);
+		const head = refs(base);
 		if (kept === null && head !== null) {
 			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 		}
@@ -1125,5 +1174,75 @@ export async function verifyStagedSurfaceBranch(
 			checksFile,
 			restored: run.restored,
 		};
+	});
+}
+
+export interface DiscardSurfaceSessionWorktreeInput {
+	readonly repository: CloudCodingRepository;
+	readonly workerId: string;
+	readonly phase: "files" | "git-folder";
+}
+
+export type DiscardSurfaceSessionWorktreeResult =
+	| { readonly status: "unseeded" }
+	| { readonly status: "files_still_there" }
+	| {
+			readonly status: "cleaned";
+			readonly removedWorktree: boolean;
+			readonly removedAdmin: boolean;
+			readonly deletedBranch: boolean;
+	  };
+
+export async function discardSurfaceSessionWorktree(
+	job: CodeHostJob,
+	input: DiscardSurfaceSessionWorktreeInput,
+): Promise<DiscardSurfaceSessionWorktreeResult> {
+	const repository = keptRepositoryOf(input.repository);
+	if (!isUuid(input.workerId) || (input.phase !== "files" && input.phase !== "git-folder")) {
+		throw new Error("INVALID_CODE_HOST_JOB");
+	}
+	return await withJob(job, repository, async (run) => {
+		const area = await run.prepare(input.workerId);
+		if (!area.seeded) return { status: "unseeded" };
+		const tree = `${run.code}/worktrees/${input.workerId}`;
+		const admin = `${run.repo}/worktrees/${input.workerId}`;
+		const ref = `refs/heads/qorpera/coding/${input.workerId}`;
+
+		if (input.phase === "files") {
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+			}
+			if (area.worktree?.tree !== "directory") {
+				return { status: "cleaned", removedWorktree: false, removedAdmin: false, deletedBranch: false };
+			}
+			const removed = await run.command(["/usr/bin/rm", "-rf", "--", tree]);
+			if (removed.status !== 0) {
+				throw new CodeHostJobFailure("CODE_HOST_CLEANUP_FAILED", tail(removed.stderr));
+			}
+			return { status: "cleaned", removedWorktree: true, removedAdmin: false, deletedBranch: false };
+		}
+
+		const refs = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, ref]);
+		if (refs(CODE_AREA_IN_QORPERA_REF) === null) {
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
+		if (area.worktree?.tree !== "none") {
+			return { status: "files_still_there" };
+		}
+		let removedAdmin = false;
+		if (area.worktree.admin === "directory") {
+			const removed = await run.command(["/usr/bin/rm", "-rf", "--", admin]);
+			if (removed.status !== 0) {
+				throw new CodeHostJobFailure("CODE_HOST_CLEANUP_FAILED", tail(removed.stderr));
+			}
+			removedAdmin = true;
+		}
+		let deletedBranch = false;
+		const branchSha = refs(ref);
+		if (branchSha !== null) {
+			await run.gitOk(run.repo, ["update-ref", "-d", ref, branchSha], "CODE_HOST_CLEANUP_FAILED");
+			deletedBranch = true;
+		}
+		return { status: "cleaned", removedWorktree: false, removedAdmin, deletedBranch };
 	});
 }

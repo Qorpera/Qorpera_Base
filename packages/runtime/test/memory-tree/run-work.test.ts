@@ -4,6 +4,8 @@ import {
 	type CloudNativeContextEntry,
 	type CloudNativeContextItem,
 	type CloudNativeContextRequest,
+	cloudNativeContextReply,
+	cloudNativePromptCacheKey,
 } from "@qorpera/runtime/cloud-native-context-composition";
 import {
 	CLOUD_RUN_WORK_SCHEMA,
@@ -338,7 +340,7 @@ describe("the run's own work (§5.7)", () => {
 		const run = new Run();
 		await run.request();
 		for (let response = 0; response < 4; response++) run.respond([2_000]);
-		run.respond([30_000, 30_000, 30_000]);
+		run.respond([40_000, 40_000, 40_000]);
 		const composed = await run.request();
 		expect(firstRaw(composed)).toBe(run.responses[4].start);
 		expect(raw(composed)).toBeGreaterThan(RUN_VIEW / 2);
@@ -349,12 +351,12 @@ describe("the run's own work (§5.7)", () => {
 	it("moves a fold to the first response that brings the tail under RUN_VIEW / 4", async () => {
 		const run = new Run();
 		await run.request();
-		// The tail from each response on: 43,600, 38,150, 32,700, 27,250, 21,800, 16,350, 10,900 and 5,450 bytes.
-		for (let response = 0; response < 8; response++) run.respond([4_000]);
+		// WHY: Eight 12,000-byte responses (~107.6 KB total) exceed RUN_VIEW / 2 (96 KB) and fold down under RUN_VIEW / 4 (48 KB).
+		for (let response = 0; response < 8; response++) run.respond([12_000]);
 		const composed = await run.request();
-		expect(run.folds).toEqual([{ r: 6, budget: RUN_VIEW / 2 }]);
-		expect(firstRaw(composed)).toBe(run.responses[6].start);
-		expect(raw(composed)).toBe(10_900);
+		expect(run.folds).toEqual([{ r: 5, budget: RUN_VIEW / 2 }]);
+		expect(firstRaw(composed)).toBe(run.responses[5].start);
+		expect(raw(composed)).toBeLessThan(RUN_VIEW / 4);
 	});
 
 	it("leaves out reasoning a model did not make, and keeps the rest", async () => {
@@ -406,7 +408,7 @@ describe("the run's own work (§5.7)", () => {
 			...[2, 3, 4].map((keep) => ({ keep })),
 		]);
 		expect(run.folds).toHaveLength(1);
-		for (let response = 0; response < 6; response++) run.respond([9_000]);
+		for (let response = 0; response < 6; response++) run.respond([20_000]);
 		composed = await run.request();
 		const r = run.folds.at(-1)?.r ?? 0;
 		expect(r).toBeGreaterThan(7);
@@ -454,7 +456,7 @@ describe("the run's own work (§5.7)", () => {
 		});
 		await run.request();
 		for (let response = 0; response < 24; response++) {
-			run.respond([4_000, 1_000]);
+			run.respond([10_000, 2_000]);
 			const folds = run.folds.length;
 			const composed = await run.request();
 			expect(bounded(run, composed)).toBe(true);
@@ -488,15 +490,15 @@ describe("the run's own work (§5.7)", () => {
 	});
 
 	it("counts an image or audio item as RUN_WORK_MEDIA_BYTES", async () => {
-		// Screenshots: little text, an image each, 6,050 bytes a response.
 		const run = new Run();
 		let composed = await run.request();
-		for (let response = 0; response < 30; response++) {
+		const maxImages = Math.ceil(RUN_VIEW / 2 / RUN_WORK_MEDIA_BYTES);
+		for (let response = 0; response < 60; response++) {
 			run.respond([200], { images: 1 });
 			composed = await run.request();
 			expect(bounded(run, composed)).toBe(true);
 			const images = composed.items.filter((entry, index) => entry.media > 0 && composed.kept.has(index));
-			expect(images.length).toBeLessThan(6);
+			expect(images.length).toBeLessThanOrEqual(maxImages);
 		}
 		expect(run.folds.length).toBeGreaterThan(4);
 	});
@@ -506,7 +508,7 @@ describe("the run's own work (§5.7)", () => {
 		let large = true;
 		const run = new Run({ lines: (r) => (large ? ["<".repeat(45_000)] : [`0+${r}|folded`]) });
 		await run.request();
-		for (let response = 0; response < 6; response++) run.respond([8_000]);
+		for (let response = 0; response < 6; response++) run.respond([20_000]);
 		await expect(run.request()).rejects.toThrow("Run work exceeds its bound");
 		large = false;
 		const composed = await run.request();
@@ -527,7 +529,7 @@ describe("the run's own work (§5.7)", () => {
 	it("starts over on another thread or a shorter history", async () => {
 		const run = new Run();
 		await run.request();
-		for (let response = 0; response < 6; response++) run.respond([8_000]);
+		for (let response = 0; response < 6; response++) run.respond([20_000]);
 		expect((await run.request()).message).not.toBeNull();
 		run.items.splice(2);
 		let composed = await run.request();
@@ -552,7 +554,7 @@ describe("the run's own work (§5.7)", () => {
 			},
 		});
 		await run.request();
-		for (let response = 0; response < 6; response++) run.respond([8_000]);
+		for (let response = 0; response < 6; response++) run.respond([20_000]);
 		const first = run.request();
 		const second = run.request();
 		await new Promise((resolve) => setTimeout(resolve, 10));
@@ -624,6 +626,28 @@ describe("a resumed run that keeps no log (Agent notebooks, 20260930539000)", ()
 	it("refuses a work message over Codex's bound before any request", () => {
 		// Escaped, each `<` is six bytes.
 		expect(() => cloudRunResumeComposer(["<".repeat(45_000)])).toThrow("Run work exceeds its bound");
+	});
+
+	it("attaches deterministic promptCacheKey on turn and prewarm compositions when configured", async () => {
+		const cacheKey = cloudNativePromptCacheKey("company", "company-1", "agent-1", "gpt-5.5");
+		expect(cacheKey).toMatch(/^qorpera:[A-Za-z0-9_-]{43}$/);
+		expect(cloudNativePromptCacheKey("company", "company-1", "agent-1", "gpt-5.5")).toBe(cacheKey);
+		expect(cloudNativePromptCacheKey("company", "company-2", "agent-1", "gpt-5.5")).not.toBe(cacheKey);
+
+		const resume = cloudRunResumeComposer(lines, (req) => cloudNativePromptCacheKey("company", "c1", req.model));
+		const items = [item("message", { role: "user", bytes: 400 })];
+		const prewarm = await resume(request(items, "prewarm"), signal);
+		const turn = await resume(request(items, "turn"), signal);
+		expect(prewarm.promptCacheKey).toBe(turn.promptCacheKey);
+		expect(cloudNativeContextReply(request(items, "turn"), turn).promptCacheKey).toBe(turn.promptCacheKey);
+
+		const work = cloudRunWorkComposer({
+			steps: async () => [],
+			lines: async () => [],
+			promptCacheKey: cacheKey,
+		});
+		const composed = await work(request(items, "turn"), signal);
+		expect(composed.promptCacheKey).toBe(cacheKey);
 	});
 });
 

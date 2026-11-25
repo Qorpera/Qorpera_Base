@@ -134,6 +134,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_surface_message_images.sql",
 			"_code_ops_status_claims_and_lifecycle.sql",
 			"_studio_voice_narration.sql",
+			"_image_generation_gemini_and_gpt.sql",
+			"_instant_founding_hiring_and_wakes.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -166,7 +168,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(165);
+	expect(rows).toHaveLength(167);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",
@@ -291,9 +293,9 @@ it("gives the dispatch to every database client the host builds, and to its serv
 	// holder's transport, never the service key.
 	expect(main).toMatch(/new SupabaseNativeCredentialCapsuleStore\(baseUrl, dispatch\.fetch\)/);
 	expect(main).toMatch(
-		/createClient\(baseUrl, publishableKey, \{[\s\S]*?realtime: \{ transport: nativeHostRealtimeTransport\(dispatch\) \}/,
+		/new RealtimeClient\(realtimeUrl\.href, \{[\s\S]*?params: \{ apikey: publishableKey \},[\s\S]*?transport: nativeHostRealtimeTransport\(dispatch\),/,
 	);
-	expect(main).not.toMatch(/createClient\(baseUrl, serviceKey/);
+	expect(main).not.toMatch(/createClient\(/);
 	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, identity \}\)/);
 	// G2-5: the host reads no service key, gives its clients the publishable key, and refuses to start with one.
 	expect(main).not.toMatch(/\bserviceKey\b/);

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { RealtimeFolderHints } from "../realtime-wake.ts";
 import { leaveCleanStop, takeCleanStop } from "./clean-stop.ts";
 import { CONTROL_SOCKET, createControlServer } from "./control.ts";
 import { SupabaseFolderCore } from "./core.ts";
@@ -106,9 +107,16 @@ if (!runtime || runtime.includes(":"))
 const vouched = takeCleanStop(runtime, log);
 const supabaseCa = optionalCredential("qorpera-folder-supabase-ca");
 const gatewayCa = optionalCredential("qorpera-folder-gateway-ca");
+const serviceKey = credential("qorpera-supabase-service-key");
 const core = new SupabaseFolderCore({
 	projectUrl: settings.supabaseUrl,
-	secretKey: credential("qorpera-supabase-service-key"),
+	secretKey: serviceKey,
+	...(supabaseCa !== undefined ? { ca: supabaseCa } : {}),
+});
+// WHY: Subscribe mounted environments to qorpera_folder_hint_internal Realtime broadcasts so /company mounts wake immediately instead of backing off to 5s.
+const hints = new RealtimeFolderHints({
+	supabaseUrl: settings.supabaseUrl,
+	apiKey: serviceKey,
 	...(supabaseCa !== undefined ? { ca: supabaseCa } : {}),
 });
 const FOLDER_PROGRAM = "/opt/qorpera-folder-service/qorpera-folder";
@@ -117,6 +125,7 @@ const objects = new NasObjects({ root: settings.storageRoot, cacheBytes: (settin
 const service = new FolderService({
 	core,
 	objects,
+	hints,
 	...(folderProgram ? { folderProgram } : {}),
 	...(settings.gatewayUrl
 		? {

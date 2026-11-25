@@ -27,7 +27,7 @@ import type {
 import { CLOUD_COMMAND_PAGE_ASK, cloudCommandFits, fitCloudCommandPage } from "./cloud-command-page-fit.ts";
 import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "./cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
-import { FolderImageRefusal, folderImageView, oneImageAtATime } from "./cloud-folder-images.ts";
+import { FolderImageRefusal, folderImageView, oneImageAtATime, tryFastPathValidPng } from "./cloud-folder-images.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	CloudMachineAccountFillRefusal,
@@ -102,7 +102,6 @@ export interface CloudMachineCodingValues {
 // operations (exactly once per operationKey); stopping and deleting are
 // desired states the machine's executor carries out.
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 /** How long machine_run's start may take, in all, with its sends again: the limit of one tool request. */
@@ -441,15 +440,27 @@ export function cloudMachineTools(options: {
 		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Machine result differs");
 		return value as Record<string, JsonValue>;
 	};
+	// WHY: Cache resolved running machine IDs per run so consecutive machine_screen calls skip the redundant list RPC.
+	const runningMachines = new Map<string, { readonly machineId: string; readonly name: string }>();
+	const rememberMachine = (machine: MachineView | null | undefined): void => {
+		if (!machine || typeof machine.name !== "string") return;
+		if (machine.state === "running" && typeof machine.machineId === "string" && UUID_PATTERN.test(machine.machineId))
+			runningMachines.set(machine.name, { machineId: machine.machineId, name: machine.name });
+		else runningMachines.delete(machine.name);
+	};
 	const list = async (signal: AbortSignal): Promise<MachineView[]> => {
 		const result = await manage({ action: "list" }, signal);
 		if (result.schema !== "qorpera.machine-list/v1" || !Array.isArray(result.machines))
 			throw new Error("Machine list differs");
-		return result.machines as unknown as MachineView[];
+		const machines = result.machines as unknown as MachineView[];
+		runningMachines.clear();
+		for (const machine of machines) rememberMachine(machine);
+		return machines;
 	};
 	const find = async (name: string, signal: AbortSignal): Promise<MachineView | undefined> =>
 		(await list(signal)).find(
-			(machine) => machine.name === name && typeof machine.machineId === "string" && UUID.test(machine.machineId),
+			(machine) =>
+				machine.name === name && typeof machine.machineId === "string" && UUID_PATTERN.test(machine.machineId),
 		);
 	const refused = (reason: string, message: string, extra: Record<string, JsonValue> = {}) => ({
 		kind: "text" as const,
@@ -737,7 +748,7 @@ export function cloudMachineTools(options: {
 	};
 	const operationKey = { type: "string", pattern: KEY.source };
 	const machineName = { type: "string", pattern: NAME.source };
-	const commandId = { type: "string", pattern: UUID.source };
+	const commandId = { type: "string", pattern: UUID_PATTERN.source };
 
 	const start: CloudNativeTool = {
 		name: "machine_start" satisfies CloudRuntimeToolOperation,
@@ -876,6 +887,7 @@ export function cloudMachineTools(options: {
 			const machine = started?.machine as MachineView | undefined;
 			const pending = (view: MachineView): boolean => view.state === "starting" || view.state === "waiting";
 			const forHours = (view: MachineView): boolean => view.waitingFor === "COMPUTER_HOURS_EXHAUSTED";
+			if (machine) rememberMachine(machine);
 			if (!machine || !pending(machine)) return result;
 			const asked = waitSeconds !== undefined;
 			const limit = asked ? Number(waitSeconds) : CLOUD_MACHINE_START_WAIT_SECONDS.byDefault;
@@ -1327,7 +1339,7 @@ export function cloudMachineTools(options: {
 			const input = closed(value, ["operationKey", "machine", "commandId"]);
 			key(input.operationKey);
 			name(input.machine);
-			if (typeof input.commandId !== "string" || !UUID.test(input.commandId))
+			if (typeof input.commandId !== "string" || !UUID_PATTERN.test(input.commandId))
 				throw new Error("Invalid command handle");
 			return input;
 		},
@@ -1390,6 +1402,7 @@ export function cloudMachineTools(options: {
 			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026), unless an earlier
 			// attempt at the same change ended unknown.
 			const machine = (value as { machine: string }).machine;
+			runningMachines.delete(machine);
 			const result = await refusals.call(`${action}:${machine}`, () => manage({ action, machine }, context.signal));
 			if (
 				result.schema !== "qorpera.machine-change/v1" ||
@@ -1706,7 +1719,9 @@ export function cloudMachineTools(options: {
 		if (answer.png !== null) {
 			try {
 				const bytes = Buffer.from(answer.png, "base64");
-				const view = await oneImageAtATime(signal, async () => folderImageView(bytes));
+				// WHY: Clean scrot RGB PNGs pass full chunk/CRC/zlib verification without waiting on or blocking oneImageAtATime.
+				const view =
+					tryFastPathValidPng(bytes) ?? (await oneImageAtATime(signal, async () => folderImageView(bytes)));
 				image = { png: view.png, sha256: view.sha256 };
 				value.imageSha256 = view.sha256;
 				value.screen = { width: view.width, height: view.height };
@@ -1835,10 +1850,17 @@ export function cloudMachineTools(options: {
 			check(context);
 			const { window: _window, ...args } = value as Record<string, JsonValue>;
 			const named = String(args.machine);
-			const machine = await find(named, context.signal);
-			if (!machine) return screenRefusal(named, "MACHINE_NOT_FOUND", `no machine is named ${named}`);
-			if (machine.state !== "running")
-				return screenRefusal(machine.name, "MACHINE_NOT_RUNNING", `${machine.name} is ${machine.state}`);
+			const cached = runningMachines.get(named);
+			let machine: { readonly machineId: string; readonly name: string };
+			if (cached) {
+				machine = cached;
+			} else {
+				const found = await find(named, context.signal);
+				if (!found) return screenRefusal(named, "MACHINE_NOT_FOUND", `no machine is named ${named}`);
+				if (found.state !== "running")
+					return screenRefusal(found.name, "MACHINE_NOT_RUNNING", `${found.name} is ${found.state}`);
+				machine = found;
+			}
 			if (!screenGateway) throw new Error("Machine screens are unavailable");
 			const scope = { machineId: machine.machineId };
 			const settleMs = Number(args.settleMs);
@@ -1849,8 +1871,12 @@ export function cloudMachineTools(options: {
 				try {
 					answer = await screenGateway(scope, { commandId: null, envelope: null, settleMs, look }, context.signal);
 				} catch (error) {
-					if (error instanceof CloudMachineScreenRefusal)
+					if (error instanceof CloudMachineScreenRefusal) {
+						if (error.code === "MACHINE_NOT_RUNNING" || error.code === "MACHINE_BOOT_CHANGED")
+							runningMachines.delete(named);
 						return screenRefusal(machine.name, error.code, SCREEN_REFUSED[error.code]);
+					}
+					if (cached) runningMachines.delete(named);
 					if (error instanceof CloudMachineCommandUnanswered && !context.signal.aborted)
 						return screenRefusal(
 							machine.name,
@@ -1893,8 +1919,12 @@ export function cloudMachineTools(options: {
 					try {
 						answer = await screenGateway(scope, input, effect.signal);
 					} catch (error) {
-						if (error instanceof CloudMachineScreenRefusal)
+						if (error instanceof CloudMachineScreenRefusal) {
+							if (error.code === "MACHINE_NOT_RUNNING" || error.code === "MACHINE_BOOT_CHANGED")
+								runningMachines.delete(named);
 							return { content: screenRefusal(machine.name, error.code, SCREEN_REFUSED[error.code]) };
+						}
+						if (cached) runningMachines.delete(named);
 						throw error;
 					}
 					const shown = await present(machine.name, answer, look, effect.signal);

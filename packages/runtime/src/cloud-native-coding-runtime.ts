@@ -4,19 +4,34 @@ import {
 	type CloudCodingCommandScope,
 	type CloudCodingPullRequest,
 	type CloudCodingRepository,
+	isRecord,
 	type JsonValue,
 	parseCloudCodingPullRequest,
 	parseCloudCodingRepository,
+	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
+import { hasChatGptPlanDirectory, hasChatGptPlanToken } from "./cloud-chatgpt-plan-image.ts";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
 import { CODING_INSPECT_IMAGE_SCHEMA } from "./cloud-coding-image-inspect.ts";
+import { CODING_MAKE_PICTURE_SCHEMA, createCodingPictureTool } from "./cloud-coding-picture-tool.ts";
+import {
+	CODING_FINISH_CONFLICT_SCHEMA,
+	formatCodingFinishConflictFeedback,
+	runCodingFinishConflictPreflight,
+} from "./cloud-coding-preflight-land.ts";
+import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import {
 	cloudControlBackoffMs,
 	cloudControlEnded,
 	cloudControlPause,
 	cloudControlRetryable,
 } from "./cloud-control-errors.ts";
+import {
+	cloudNativeContextIdentity,
+	cloudNativeContextWithPromptCacheKey,
+	cloudNativePromptCacheKey,
+} from "./cloud-native-context-composition.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { NativeCloudExecutionDriver, NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
@@ -39,6 +54,8 @@ import {
 	type CloudNativeToolOperationControlPlane,
 	observedCloudToolAuthority,
 } from "./cloud-native-tool-operations.ts";
+import { CloudPictureChannel } from "./cloud-picture-channel.ts";
+import { createChatGptPlanImageLane } from "./cloud-run-picture-lane.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
@@ -72,9 +89,13 @@ export interface CloudNativeCodingTurnContext {
 	identity: CloudNativeToolIdentity;
 	wake: CloudWakeEnvelope;
 	observability?: CloudRuntimeObservability;
+	folder?: CloudCompanyFolderClient;
 	surfaceSession?: SurfaceCodingTurnBinding;
+	pictures?: CloudPictureChannel;
+	attachPicturesToCodex?: boolean;
 }
 export interface CloudNativeCodingDriver {
+	readonly supportsFolderWrites?: boolean;
 	execute(
 		request: NativeCompanyExecutionRequest,
 		identityRoot: string,
@@ -83,7 +104,6 @@ export interface CloudNativeCodingDriver {
 	): ReturnType<NativeCloudExecutionDriver["execute"]>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 /** A finish's picture, as the submit call takes it (20260930720000): a path from the top of the repository to a .png,
@@ -125,6 +145,7 @@ const INSTRUCTIONS =
 	// sentence and the picture are the session's to give; a hand-in without them lands the same.
 	"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it. Leave it out when a customer will notice nothing. When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium (chromium --headless --screenshot=<file> --window-size=1280,800 <address>), keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository. Neither is required: never hold work back for them. " +
 	"For UI or web changes, verify what you built visually before coding_finish: start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with the machine's headless Chromium or Playwright (for example at desktop 1280x800 and mobile 390x844 widths into a temporary file or docs/changes/), and call coding_run_command with inspectImage set to that relative workspace path (using a fresh operationKey for each new or re-captured screenshot) to view each screenshot directly in your context, fix layout, styling, or responsive issues, and stop any temporary server and remove temporary screenshots before committing. " +
+	"When the member shares a reference website URL as design inspiration, study the entire reference page visually before building: open it in headless Chromium or Playwright, dismiss cookie or promo banners, capture multiple scrolled viewport-sized slices (for example 1440x900 down the full page covering hero, mid-page product/app showcases, social proof/comparison, and pricing/footer, plus mobile 390x844), and inspect each slice with coding_run_command (inspectImage) — never rely on a single above-the-fold capture or one tall full-page screenshot (inspectImage scales images to fit within 1920x1200, crushing tall full-page shots into unreadable slivers). Use the reference site as the structural skeleton and visual vibe (section architecture, scroll cadence, typography scale, dark/light contrast rhythm, card and UI framing) adapted to the company's brand and product rather than copying its text or trademarks. " +
 	// Own code storage, slice 1 (8 Nov 2026): a repository kept in Qorpera starts empty, and its landing merges.
 	// Step 6 (12 Nov 2026): code brought in keeps its other branches under refs/qorpera/imported/heads/, for reading; the
 	// import's follow-ups (13 Nov 2026): one is brought into the default branch by merging it into the session's branch.
@@ -161,6 +182,8 @@ const SURFACE_BASE_INSTRUCTIONS =
  * attached when the disk was replaced, so no command of it ended as MACHINE_NEW_DISK to say so. */
 const NEW_DISK =
 	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh.";
+const CODING_PICTURE_INSTRUCTIONS =
+	"Use make_picture to generate bespoke PNG imagery (hero scenes, product concept shots, lifestyle compositions, editorial visuals, or illustrations) directly into the repository worktree (for example assets/hero.png) when the design calls for original visuals beyond existing company files or SVGs. Inspect each returned image inline and iterate with expectedVersion if it does not match the quality, lighting, and framing of the layout; never present generated images as photos of real people, places, or competitors.";
 
 // WHY: Trims UTF-8 text to a byte cap on codepoint boundaries so surface brief truncation never emits invalid surrogates.
 function trimUtf8ToBytes(text: string, maxBytes: number): string {
@@ -195,9 +218,9 @@ function codingShownImageSha256(text: unknown, wanted: string = CODING_INSPECT_I
 		: undefined;
 }
 
-function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
-	return value as Record<string, unknown>;
+function codingObject(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(label);
+	return value;
 }
 
 /** How long a turn's two first reads (its authority, then its context) are each asked again, from their first attempt. */
@@ -301,7 +324,7 @@ function closedRecord(
 	keys: readonly string[],
 	optional: readonly string[] = [],
 ): Record<string, unknown> {
-	const item = record(value, "CODING_TURN_CONTEXT_INVALID");
+	const item = codingObject(value, "CODING_TURN_CONTEXT_INVALID");
 	const expected = [...keys, ...optional.filter((key) => Object.hasOwn(item, key))];
 	if (Object.keys(item).sort().join() !== expected.sort().join()) throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return item;
@@ -514,6 +537,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 	readonly #binarySha256: string;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #chatGptPlanAuth: CloudChatGptPlanAuth | undefined;
+	readonly #chatGptPlanApiBaseUrl: string | undefined;
+	readonly #chatGptPlanAllowLoopback: boolean | undefined;
+	readonly #chatGptPlanFetch: typeof fetch | undefined;
 	readonly #timeoutMs: number | undefined;
 	constructor(options: {
 		control: CloudCodingNativeControl;
@@ -522,6 +548,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		binarySha256: string;
 		isolation?: NativeIsolationConfiguration;
 		chatGptPlanAuth?: CloudChatGptPlanAuth;
+		chatGptPlanApiBaseUrl?: string;
+		chatGptPlanAllowLoopback?: boolean;
+		chatGptPlanFetch?: typeof fetch;
 		timeoutMs?: number;
 	}) {
 		if (!SHA.test(options.binarySha256)) throw new Error("Invalid coding native configuration");
@@ -531,7 +560,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		this.#binarySha256 = options.binarySha256;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#chatGptPlanAuth = options.chatGptPlanAuth;
+		this.#chatGptPlanApiBaseUrl = options.chatGptPlanApiBaseUrl;
+		this.#chatGptPlanAllowLoopback = options.chatGptPlanAllowLoopback;
+		this.#chatGptPlanFetch = options.chatGptPlanFetch;
 		this.#timeoutMs = options.timeoutMs;
+	}
+	get supportsFolderWrites(): boolean {
+		return this.#control.completeFolderToolOperation !== undefined;
 	}
 	async execute(
 		_request: NativeCompanyExecutionRequest,
@@ -543,7 +578,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		if (wake.kind !== "agent" || wake.source.kind !== "worker-dispatch" || wake.payload.species !== "coding")
 			throw new Error("CODING_TURN_WAKE_DIFFERS");
 		const authorize = async (checked: AbortSignal) => {
-			const authority = record(
+			const authority = codingObject(
 				await this.#control.call("qorpera_authorize_coding_turn", { p_binding: binding }, checked),
 			);
 			if (Object.keys(authority).sort().join() !== "coding,identity,schema,validForMs")
@@ -552,7 +587,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				{ schema: authority.schema, identity: authority.identity, validForMs: authority.validForMs },
 				binding,
 			);
-			const coding = record(authority.coding);
+			const coding = codingObject(authority.coding);
 			if (
 				typeof coding.workerId !== "string" ||
 				!UUID.test(coding.workerId) ||
@@ -675,7 +710,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			// The turn check is its own observation: a refusal or timeout there is
 			// told apart from the submission itself.
 			await observedCloudToolAuthority(context.observation, () => assertContext(checked), checked);
-			const receipt = record(
+			const receipt = codingObject(
 				await this.#control.call(
 					"qorpera_submit_coding_turn",
 					{ p_binding: binding, p_submission: input },
@@ -704,11 +739,14 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				operationKey: receipt.operationKey,
 			});
 		};
+		let finishPreflight:
+			| ((input: Record<string, JsonValue>, toolContext: CloudToolContext) => Promise<string | null>)
+			| undefined;
 		const finish: CloudNativeTool = {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,
 			source: "worker",
 			description: surfaceSession
-				? "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of what you inspected, built, and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. For a read-only or no-change turn where HEAD still equals the session's baseSha, call coding_finish with that headSha and your summary (no change is staged; commits from earlier turns beyond baseSha are verified and staged as usual). When you committed user-visible deliverables, call coding_record_change for each one before calling coding_finish. Stop modifying the repository after submitting."
+				? "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of what you inspected, built, and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. For a read-only or no-change turn where HEAD still equals the session's baseSha, call coding_finish with that headSha and your summary (no change is staged; commits from earlier turns beyond baseSha are verified and staged as usual). When you committed user-visible deliverables, call coding_record_change for each one (passing an existing changeId when revising an open change in place) before calling coding_finish. Stop modifying the repository after submitting."
 				: "End the turn with the exact head SHA on the session branch (git rev-parse HEAD, which equals baseSha when no commits exist beyond the session base) and a factual summary of the findings, changes, and check results. For a read-only, inspection, or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), calling coding_finish with that headSha (omitting notice and picture) completes cleanly as a report-only handoff without running checks, landing on the default branch, or opening a pull request; commits from earlier turns beyond baseSha that have not landed are handed in as usual. When you committed changes, notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform then validates that commit and hands it in (in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated). This is a durable submission, not proof that a new commit landed. Stop modifying the repository after submitting.",
 			inputSchema: {
 				type: "object",
@@ -733,7 +771,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				additionalProperties: false,
 			},
 			parseArguments(value) {
-				const input = record(value, "Invalid coding submission");
+				const input = codingObject(value, "Invalid coding submission");
 				if (
 					Object.keys(input).some(
 						(key) => !["operationKey", "summary", "headSha", "notice", "picture"].includes(key),
@@ -776,8 +814,28 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					...(picture === undefined ? {} : { picture }),
 				};
 			},
+			refused(content) {
+				if (content.kind !== "text") return undefined;
+				try {
+					const parsed = JSON.parse(content.value) as { schema?: unknown };
+					return parsed?.schema === CODING_FINISH_CONFLICT_SCHEMA ? "stale_version" : undefined;
+				} catch {
+					return undefined;
+				}
+			},
 			execute: async (value, toolContext) => {
 				const input = finish.parseArguments(value) as Record<string, JsonValue>;
+				if (
+					!toolContext.identity ||
+					cloudToolJsonText(toolContext.identity) !== cloudToolJsonText(initial.identity)
+				)
+					throw new Error("CODING_SUBMISSION_IDENTITY_DIFFERS");
+				if (finishPreflight) {
+					const conflictFeedback = await finishPreflight(input, toolContext);
+					if (conflictFeedback !== null) {
+						return { kind: "text", value: conflictFeedback };
+					}
+				}
 				return {
 					kind: "text",
 					value: await submit({ kind: "finish", ...input }, toolContext),
@@ -801,7 +859,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				additionalProperties: false,
 			},
 			parseArguments(value) {
-				const input = record(value, "Invalid coding question");
+				const input = codingObject(value, "Invalid coding question");
 				const options = input.options === undefined ? [] : input.options;
 				if (
 					Object.keys(input).some((key) => !["operationKey", "summary", "question", "options"].includes(key)) ||
@@ -828,12 +886,41 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				};
 			},
 		};
-		const runtimeInstructions = surfaceSession
-			? `${SURFACE_BASE_INSTRUCTIONS}${turn.machine.newDisk ? ` ${NEW_DISK}` : ""} ${SURFACE_STAGED_CODING_INSTRUCTIONS}`
-			: turn.machine.newDisk
-				? `${INSTRUCTIONS} ${NEW_DISK}`
-				: INSTRUCTIONS;
+		let pictures = context.pictures;
+		let attachPicturesToCodex = context.attachPicturesToCodex ?? (pictures !== undefined && !pictures.attached);
+		if (!pictures && context.folder && this.#control.completeFolderToolOperation) {
+			if (await hasChatGptPlanToken(identityRoot)) {
+				pictures = new CloudPictureChannel();
+				pictures.attach(
+					createChatGptPlanImageLane({
+						identityRoot,
+						model: binding.model,
+						...(this.#chatGptPlanApiBaseUrl ? { apiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
+						...(this.#chatGptPlanAllowLoopback ? { allowLoopback: true } : {}),
+						...(this.#chatGptPlanFetch ? { fetcher: this.#chatGptPlanFetch } : {}),
+					}),
+				);
+				attachPicturesToCodex = false;
+			} else if (!(await hasChatGptPlanDirectory(identityRoot))) {
+				pictures = new CloudPictureChannel();
+				attachPicturesToCodex = true;
+			}
+		}
+		const instructionParts = surfaceSession
+			? [
+					SURFACE_BASE_INSTRUCTIONS,
+					...(turn.machine.newDisk ? [NEW_DISK] : []),
+					...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
+					SURFACE_STAGED_CODING_INSTRUCTIONS,
+				]
+			: [
+					INSTRUCTIONS,
+					...(turn.machine.newDisk ? [NEW_DISK] : []),
+					...(pictures ? [CODING_PICTURE_INSTRUCTIONS] : []),
+				];
+		const runtimeInstructions = instructionParts.join(" ");
 		const gateway = this.#gateway(binding);
+		const completeFolderToolOperation = this.#control.completeFolderToolOperation;
 		const result = await runCloudNativeRunToolSession({
 			binding,
 			controlPlane: {
@@ -849,14 +936,33 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				beginToolOperation: (value, input, checked) => this.#control.beginToolOperation(value, input, checked),
 				completeToolOperation: (value, input, checked) =>
 					this.#control.completeToolOperation(value, input, checked),
+				...(completeFolderToolOperation
+					? {
+							completeFolderToolOperation: (value, input, checked) =>
+								completeFolderToolOperation(value, input, checked),
+						}
+					: {}),
 			},
 			command: this.#command,
 			binarySha256: this.#binarySha256,
 			identityRoot,
 			isolation: this.#isolation,
 			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
+			...(pictures && attachPicturesToCodex ? { pictures } : {}),
 			prompt: effectivePrompt,
 			runtimeInstructions,
+			composeContext: (request) =>
+				cloudNativeContextWithPromptCacheKey(
+					cloudNativeContextIdentity(request),
+					cloudNativePromptCacheKey(
+						"coding",
+						initial.identity.companyId,
+						initial.identity.staffAgentId,
+						`${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`,
+						surfaceSession ? `surface:${surfaceSession.surfaceSlug}` : "standard",
+						request.model,
+					),
+				),
 			signal,
 			timeoutMs: this.#timeoutMs,
 			observability: context.observability,
@@ -870,7 +976,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					: surfaceSession?.isInternalReconciliation
 						? "Your automatic reconciliation turn ended without coding_finish. Commit the clean combined resolution on this branch, call coding_record_change with the resolved range, and call coding_finish with the final headSha and a brief summary. This is the last turn of this run."
 						: surfaceSession
-							? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (if not already recorded) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
+							? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. For a read-only or no-change task where HEAD still equals the session's baseSha, call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — no change is staged. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (passing its existing changeId if revising an open change in place, if not already updated) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
 							: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. For a read-only or no-change task where HEAD still equals the session's baseSha (no commits beyond the session base, and on GitHub with no open pull request), call coding_finish with that headSha (git rev-parse HEAD) and your factual summary — nothing will be landed or pushed. When you have a commit beyond baseSha to hand in (including an unlanded commit from an earlier turn), call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member (in plain words, without internal harness jargon). This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution: async (specification, checked) => {
 				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
@@ -917,8 +1023,38 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					read: (...input) => gateway.read(...input),
 					cancel: (...input) => gateway.cancel(...input),
 				};
+				// WHY: Dry-run merge-tree in coding_finish on direct Qorpera-hosted repos so merge conflicts return to the warm coding agent instead of tearing down the turn.
+				finishPreflight =
+					!surfaceSession && initial.repository.host === "qorpera"
+						? async (input, toolContext) => {
+								const headSha = typeof input.headSha === "string" ? input.headSha : "";
+								if (!headSha || headSha === initial.coding.baseSha) return null;
+								const checked = await runCodingFinishConflictPreflight({
+									scope,
+									operations,
+									gateway: guarded,
+									checkAuthority: (ctx) =>
+										observedCloudToolAuthority(ctx.observation, () => assertContext(ctx.signal), ctx.signal),
+									baseBranch: initial.repository.baseBranch,
+									headSha,
+									operationKey: String(input.operationKey),
+									context: toolContext,
+								});
+								return checked.conflicted ? formatCodingFinishConflictFeedback(checked) : null;
+							}
+						: undefined;
 				const recordChangeTool = surfaceSession
-					? [createCodingRecordChangeTool(surfaceSession.sessionId, { recordChange: surfaceSession.recordChange })]
+					? [
+							createCodingRecordChangeTool(
+								surfaceSession.sessionId,
+								{ recordChange: surfaceSession.recordChange },
+								{
+									openChanges: surfaceSession.sessionOpenChanges ?? [],
+									replyChangeId: surfaceSession.replyChangeId ?? null,
+									isInternalReconciliation: surfaceSession.isInternalReconciliation === true,
+								},
+							),
+						]
 					: [];
 				const attachments = surfaceSession?.memberImages ?? [];
 				const viewAttachmentTool =
@@ -926,11 +1062,23 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						? [createCodingViewAttachmentTool(attachments, surfaceSession.viewAttachment)]
 						: [];
 				const repositoryArea = `code/${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`;
+				const pictureTool =
+					pictures && context.folder && operations.completesFolderCommits
+						? [
+								createCodingPictureTool({
+									folder: context.folder,
+									worktreeArea: `${repositoryArea}/worktrees/${scope.workerId}`,
+									operations,
+									pictures,
+								}),
+							]
+						: [];
 				return {
 					tools: [
 						...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded, repositoryArea }),
 						...recordChangeTool,
 						...viewAttachmentTool,
+						...pictureTool,
 						finish,
 						...(surfaceSession?.isInternalReconciliation ? [] : [ask]),
 					],
@@ -943,8 +1091,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							turnId: frame.turnId || null,
 							purpose: frame.purpose,
 							outputs: outputs.map((output) => {
-								const envelope = record(JSON.parse(output.output), "Invalid coding context output");
-								const provenance = record(envelope.provenance, "Invalid coding context output");
+								const envelope = codingObject(JSON.parse(output.output), "Invalid coding context output");
+								const provenance = codingObject(envelope.provenance, "Invalid coding context output");
 								const content =
 									envelope.content && typeof envelope.content === "object" && !Array.isArray(envelope.content)
 										? (envelope.content as Record<string, unknown>)
@@ -962,6 +1110,10 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 										(provenance.tool === "coding_view_attachment" &&
 											viewAttachmentTool.length > 0 &&
 											codingShownImageSha256(content?.text, CODING_ATTACHMENT_VIEW_SCHEMA) ===
+												output.imageSha256) ||
+										(provenance.tool === "make_picture" &&
+											pictureTool.length > 0 &&
+											codingShownImageSha256(content?.text, CODING_MAKE_PICTURE_SCHEMA) ===
 												output.imageSha256));
 								if (
 									output.capture ||
@@ -981,7 +1133,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								};
 							}),
 						};
-						const receipt = record(
+						const receipt = codingObject(
 							await this.#control.call(
 								"qorpera_record_coding_context_view",
 								{ p_binding: binding, p_view: view },

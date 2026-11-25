@@ -3,13 +3,13 @@ import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
+	closedFolderRecord,
 	commitUnitOutcome,
 	drainPlatformClaims,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
 	platformFolderProblem,
 	platformFolderProblemCode,
-	record,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -65,7 +65,7 @@ const reasonCode = (reason: string): string => (/^[a-z][a-z0-9_]{0,63}$/.test(re
 /** A claim answer (`qorpera.bank-summary-claim/v1`), checked field by field; null when nothing is due. */
 export function parseBankSummaryClaim(value: unknown): BankSummaryClaim | null {
 	if (value === null) return null;
-	const input = record(value, CLAIM_KEYS, "claim_invalid");
+	const input = closedFolderRecord(value, CLAIM_KEYS, "claim_invalid");
 	const whole = (field: unknown) =>
 		Number.isSafeInteger(field) && (field as number) >= 1 ? (field as number) : problem("claim_invalid");
 	const generation = whole(input.generation);

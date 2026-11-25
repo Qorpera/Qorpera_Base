@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 
 export const CLOUD_RUNTIME_OBSERVATION_SCHEMA = "qorpera.runtime-observation/v1";
 /** Runtime-owned tools observed under their own registered name. Connector tools
@@ -199,7 +200,6 @@ export function cloudRuntimeErrorCategory(error: unknown, signal?: AbortSignal):
 		return signal.reason instanceof Error && signal.reason.name === "TimeoutError" ? "timeout" : "cancelled";
 	return error instanceof CloudRuntimeDiagnosticError ? error.category : "unknown";
 }
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
 const COUNTERS = [
 	"inputBytes",

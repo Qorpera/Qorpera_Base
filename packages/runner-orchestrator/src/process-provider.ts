@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isAbsolute, join, resolve } from "node:path";
+import { isUuidAnyCase, parseRecord } from "@qorpera/contracts";
 import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
@@ -10,7 +11,6 @@ import { validateCloudRunnerWork } from "./orchestrator.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 const RUNTIME_START_TIMEOUT_MS = 30_000;
 
@@ -54,13 +54,8 @@ interface ProcessRuntime {
 	nativeExit: Promise<void>;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
+function providerUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
@@ -97,7 +92,7 @@ async function reserveLoopbackPort(): Promise<number> {
 }
 
 function exactRunner(value: unknown, work: CloudRunnerWork, adapterId: string): CloudRunnerInstance {
-	const input = record(value, "Provisioned runner");
+	const input = parseRecord(value, "Provisioned runner");
 	if (
 		input.runner_kind !== "qorpera_computer" ||
 		input.provider_adapter !== adapterId ||
@@ -114,7 +109,7 @@ function exactRunner(value: unknown, work: CloudRunnerWork, adapterId: string): 
 		throw new Error("Provisioned runner does not match immutable compute authority");
 	}
 	return {
-		runnerId: uuid(input.runner_id, "Provisioned runner id"),
+		runnerId: providerUuid(input.runner_id, "Provisioned runner id"),
 		...(work.logicalComputerId ? { logicalComputerId: work.logicalComputerId } : {}),
 		...(work.computeIdentityId ? { computeIdentityId: work.computeIdentityId } : {}),
 		workerClass: work.workerClass as "managed_sandbox" | "company_computer",

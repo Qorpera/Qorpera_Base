@@ -1,5 +1,14 @@
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, timestamp, uuid } from "./parse.ts";
+import {
+	array,
+	boundedInteger,
+	CloudShapeError,
+	cloudRecord,
+	cloudUuid,
+	nonEmptyString,
+	oneOf,
+	timestamp,
+} from "./parse.ts";
 
 /* Members read the company's mail (step I5a: migrations 20260928439980_runtime_company_mail_member_read and
  * 20260930002660, the `sessionId` of a waiting send; supabase/CLIENT-CONTRACT.md "Members read mail"). Five calls, each
@@ -233,27 +242,27 @@ function flag(value: unknown, label: string): boolean {
 
 function agent(value: unknown, label: string): MailAgent | undefined {
 	if (absent(value)) return undefined;
-	const item = record(value, label);
+	const item = cloudRecord(value, label);
 	const name = shownText(item.name, 512);
-	return { staffAgentId: uuid(item.staffAgentId, label), ...(name ? { name } : {}) };
+	return { staffAgentId: cloudUuid(item.staffAgentId, label), ...(name ? { name } : {}) };
 }
 
 function member(value: unknown, label: string): MailMember | undefined {
 	if (absent(value)) return undefined;
-	const item = record(value, label);
+	const item = cloudRecord(value, label);
 	const name = shownText(item.name, 512);
-	return { userId: uuid(item.userId, label), ...(name ? { name } : {}) };
+	return { userId: cloudUuid(item.userId, label), ...(name ? { name } : {}) };
 }
 
 function account(value: unknown): MailAccount | undefined {
 	if (absent(value)) return undefined;
-	const item = record(value, "mail account");
+	const item = cloudRecord(value, "mail account");
 	if (item.unknown === true) return { unknown: true };
 	const site = shownText(item.site, 2048);
 	return {
 		unknown: false,
 		...(site ? { site } : {}),
-		...(absent(item.lastUsedBy) ? {} : { lastUsedBy: uuid(item.lastUsedBy, "mail account user") }),
+		...(absent(item.lastUsedBy) ? {} : { lastUsedBy: cloudUuid(item.lastUsedBy, "mail account user") }),
 		...(absent(item.lastUsedAt) ? {} : { lastUsedAt: timestamp(item.lastUsedAt, "mail account time") }),
 	};
 }
@@ -287,7 +296,7 @@ function optional<K extends string, T>(key: K, value: T | undefined): { [P in K]
 }
 
 function parseAddress(value: unknown): MailAddress {
-	const item = record(value, "mail address");
+	const item = cloudRecord(value, "mail address");
 	return {
 		address: nonEmptyString(item.address, "mail address", 320),
 		...optional("status", shownText(item.status, 64)),
@@ -296,11 +305,13 @@ function parseAddress(value: unknown): MailAddress {
 			return found ? [found] : [];
 		}),
 		routines: array(item.routines ?? [], "mail address routines").map((entry) => {
-			const routine = record(entry, "mail address routine");
+			const routine = cloudRecord(entry, "mail address routine");
 			return {
-				routineId: uuid(routine.routineId, "mail routine"),
+				routineId: cloudUuid(routine.routineId, "mail routine"),
 				title: shownText(routine.title, 512) ?? "",
-				...(absent(routine.staffAgentId) ? {} : { staffAgentId: uuid(routine.staffAgentId, "mail routine agent") }),
+				...(absent(routine.staffAgentId)
+					? {}
+					: { staffAgentId: cloudUuid(routine.staffAgentId, "mail routine agent") }),
 			};
 		}),
 		last7Days: absent(item.last7Days) ? 0 : boundedInteger(item.last7Days, "mail count", 0, Number.MAX_SAFE_INTEGER),
@@ -308,21 +319,21 @@ function parseAddress(value: unknown): MailAddress {
 }
 
 function parseCursor(value: unknown): MailCursor {
-	const item = record(value, "mail page");
+	const item = cloudRecord(value, "mail page");
 	return { lastAt: timestamp(item.lastAt, "mail page time"), thread: threadId(item.thread, "mail page thread") };
 }
 
 function parseMessageCursor(value: unknown): MailMessageCursor {
-	const item = record(value, "mail thread page");
+	const item = cloudRecord(value, "mail thread page");
 	return {
 		at: timestamp(item.at, "mail thread page time"),
 		kind: oneOf(item.kind, MAIL_DIRECTIONS, "mail thread page kind"),
-		id: uuid(item.id, "mail thread page message"),
+		id: cloudUuid(item.id, "mail thread page message"),
 	};
 }
 
 function parseSummary(value: unknown): MailThreadSummary {
-	const item = record(value, "mail thread");
+	const item = cloudRecord(value, "mail thread");
 	const found = account(item.account);
 	const handledBy = agent(item.handledBy, "mail thread agent");
 	const sentBy = member(item.sentBy, "mail thread member");
@@ -345,7 +356,7 @@ function parseSummary(value: unknown): MailThreadSummary {
 }
 
 function parseMessage(value: unknown): MailMessage {
-	const item = record(value, "mail message");
+	const item = cloudRecord(value, "mail message");
 	const kind = oneOf(item.kind, ["received", "sent"] as const, "mail message kind");
 	const found = kind === "received" ? account(item.account) : undefined;
 	const base = {
@@ -387,11 +398,11 @@ function parseMessage(value: unknown): MailMessage {
 }
 
 function parseWaitingSend(value: unknown): MailWaitingSend {
-	const item = record(value, "mail waiting send");
+	const item = cloudRecord(value, "mail waiting send");
 	const staffAgent = agent(item.staffAgent, "mail agent");
 	return {
-		reviewId: uuid(item.reviewId, "mail waiting review"),
-		...(absent(item.sessionId) ? {} : { sessionId: uuid(item.sessionId, "mail waiting conversation") }),
+		reviewId: cloudUuid(item.reviewId, "mail waiting review"),
+		...(absent(item.sessionId) ? {} : { sessionId: cloudUuid(item.sessionId, "mail waiting conversation") }),
 		...(staffAgent ? { staffAgent } : {}),
 		to: recipients(item.to),
 		cc: recipients(item.cc),
@@ -403,12 +414,12 @@ function parseWaitingSend(value: unknown): MailWaitingSend {
 }
 
 function parseWaitingItem(value: unknown): MailWaitingItem {
-	const item = record(value, "mail waiting send");
+	const item = cloudRecord(value, "mail waiting send");
 	const staffAgent = agent(item.staffAgent, "mail agent");
 	return {
-		reviewId: uuid(item.reviewId, "mail waiting review"),
+		reviewId: cloudUuid(item.reviewId, "mail waiting review"),
 		...(absent(item.thread) ? {} : { thread: threadId(item.thread, "mail waiting thread") }),
-		...(absent(item.sessionId) ? {} : { sessionId: uuid(item.sessionId, "mail waiting conversation") }),
+		...(absent(item.sessionId) ? {} : { sessionId: cloudUuid(item.sessionId, "mail waiting conversation") }),
 		...optional("address", shownText(item.address, 320)),
 		...(staffAgent ? { staffAgent } : {}),
 		to: recipients(item.to),
@@ -449,7 +460,7 @@ export async function readMailThreads(
 			limit: request.limit ?? MAIL_PAGE_SIZE,
 		},
 	};
-	const answer = record(
+	const answer = cloudRecord(
 		await (signal
 			? cloud.rpc("qorpera_member_mail_threads", args, signal)
 			: cloud.rpc("qorpera_member_mail_threads", args)),
@@ -475,7 +486,7 @@ export async function readMailThread(
 		p_thread: thread,
 		...(before === undefined ? {} : { p_before: before }),
 	};
-	const answer = record(
+	const answer = cloudRecord(
 		await (signal
 			? cloud.rpc("qorpera_member_mail_thread", args, signal)
 			: cloud.rpc("qorpera_member_mail_thread", args)),
@@ -545,14 +556,14 @@ export async function sendMemberMail(
 			...(request.replyTo ? { replyTo: { kind: request.replyTo.kind, id: request.replyTo.id } } : {}),
 		},
 	};
-	const answer = record(
+	const answer = cloudRecord(
 		await (signal
 			? cloud.rpc("qorpera_send_member_mail", args, signal)
 			: cloud.rpc("qorpera_send_member_mail", args)),
 		"mail send",
 	);
 	return {
-		mailId: uuid(answer.mailId, "mail send"),
+		mailId: cloudUuid(answer.mailId, "mail send"),
 		thread: threadId(answer.thread, "mail send thread"),
 		status: shownText(answer.status, 64) ?? "queued",
 	};

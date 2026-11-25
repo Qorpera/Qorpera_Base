@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { createClient } from "@supabase/supabase-js";
+import { RealtimeClient } from "@supabase/realtime-js";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
@@ -457,6 +457,8 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								controlPlane.beginToolOperation(value, input, checked),
 							completeToolOperation: (value, input, checked) =>
 								controlPlane.completeToolOperation(value, input, checked),
+							completeFolderToolOperation: (value, input, checked) =>
+								controlPlane.completeFolderToolOperation(value, input, checked),
 						},
 						gateway: (binding) =>
 							createHttpCloudCodingCommandGateway({
@@ -485,11 +487,16 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							identity,
 							signal,
 							control: pathControl,
-							// G2-4: the publishable key, and the job's lease token on the WebSocket's upgrade.
-							client: createClient(baseUrl, publishableKey, {
-								auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-								realtime: { transport: nativeHostRealtimeTransport(dispatch) },
-							}),
+							lazy: true,
+							// WHY: direct RealtimeClient drops 604 KiB of unused Supabase auth/postgrest/storage SDK and opens only on observe().
+							client: () => {
+								const realtimeUrl = new URL("realtime/v1", baseUrl);
+								realtimeUrl.protocol = realtimeUrl.protocol.replace("http", "ws");
+								return new RealtimeClient(realtimeUrl.href, {
+									params: { apikey: publishableKey },
+									transport: nativeHostRealtimeTransport(dispatch),
+								});
+							},
 						})
 					: undefined,
 			command: runtimeConfiguration.command,

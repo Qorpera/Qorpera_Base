@@ -1,6 +1,6 @@
 import { withAbortScopes } from "./abort-scope.ts";
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, oneOf, timestamp } from "./parse.ts";
 
 /* Good will (migration 20260930566000; design good-will-tax-design.md): a company pays a falling-step share of each
  * month's customer sales, 10 % of the first 100,000 kr down to 0.2 % over 1 million. Members read the Company tab's
@@ -96,7 +96,7 @@ function invoiceUrl(value: unknown): string | null {
 }
 
 function parseMonth(value: unknown): GoodWillMonth {
-	const input = record(value, "good will month");
+	const input = cloudRecord(value, "good will month");
 	if (typeof input.month !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.month))
 		throw new CloudShapeError("good will month");
 	return {
@@ -111,11 +111,11 @@ function parseMonth(value: unknown): GoodWillMonth {
 }
 
 export function parseCompanyGoodWill(value: unknown, profileId: string): CompanyGoodWill {
-	const input = record(value, "company good will");
+	const input = cloudRecord(value, "company good will");
 	if (input.schema !== "qorpera.company-good-will/v1") throw new CloudShapeError("company good will");
-	const company = uuid(input.profileId, "company good will company");
+	const company = cloudUuid(input.profileId, "company good will company");
 	if (company !== profileId.toLowerCase()) throw new CloudShapeError("company good will company");
-	const card = input.card === null ? null : record(input.card, "good will card");
+	const card = input.card === null ? null : cloudRecord(input.card, "good will card");
 	return {
 		profileId: company,
 		companyName: text(input.companyName, "good will company name") ?? "",
@@ -130,7 +130,7 @@ export function parseCompanyGoodWill(value: unknown, profileId: string): Company
 			: null,
 		months: array(input.months, "good will months").map(parseMonth),
 		steps: array(input.steps, "good will steps").map((item) => {
-			const step = record(item, "good will step");
+			const step = cloudRecord(item, "good will step");
 			return {
 				fromOre: ore(step.fromOre, "good will step"),
 				toOre: step.toOre === null ? null : ore(step.toOre, "good will step"),
@@ -142,15 +142,15 @@ export function parseCompanyGoodWill(value: unknown, profileId: string): Company
 }
 
 export function parseMyGoodWill(value: unknown): MyGoodWill {
-	const input = record(value, "my good will");
+	const input = cloudRecord(value, "my good will");
 	if (input.schema !== "qorpera.my-good-will/v1") throw new CloudShapeError("my good will");
 	return {
 		year: boundedInteger(input.year, "good will year", 2000, 9999),
 		paidByMeOre: ore(input.paidByMeOre, "good will paid"),
 		companies: array(input.companies, "good will companies").map((item) => {
-			const company = record(item, "good will company");
+			const company = cloudRecord(item, "good will company");
 			return {
-				profileId: uuid(company.profileId, "good will company"),
+				profileId: cloudUuid(company.profileId, "good will company"),
 				name: text(company.name, "good will company name") ?? "",
 				netOre: ore(company.netOre, "good will sales"),
 				feeOre: ore(company.feeOre, "good will fee"),

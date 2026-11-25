@@ -16,8 +16,10 @@ import {
 	cloudCodingSessionLayout,
 	type IdleRuleSample,
 	idleRuleBusy,
+	isRecord,
 	isUuid,
 	parseCloudCodingNasPolicy,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
@@ -453,7 +455,6 @@ interface ListedMachine {
 const SHA = /^[0-9a-f]{64}$/;
 /** Guest uids from here on belong to one session each (SQL assigns them). */
 const CODING_SESSION_UID_BASE = 200000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Budget for one physical stop or delete, journal I/O included. Callers that
  * bound a whole step (lookup + effect) allow more than this. */
 export const CODING_VM_STOP_BUDGET_MS = 30_000;
@@ -682,7 +683,7 @@ const CODE_CHECKS_COPY = [
 	'git clone --quiet --shared --no-checkout -- "$QORPERA_CHECKS_REPOSITORY" "$d/src"',
 	'git -C "$d/src" -c advice.detachedHead=false checkout --quiet --detach "$QORPERA_CHECKS_COMMIT"',
 	'test "$(git -C "$d/src" rev-parse HEAD)" = "$QORPERA_CHECKS_COMMIT"',
-	`if [ -n "\${QORPERA_CHECKS_CACHES:-}" ] && [ -n "\${QORPERA_CHECKS_CACHE_ROOT:-}" ]; then`,
+	`if [ -n "\${QORPERA_CHECKS_CACHE_ROOT:-}" ] && { [ -n "\${QORPERA_CHECKS_CACHES:-}" ] || [ -n "\${QORPERA_CHECKS_BLESSED_CACHES_BRANCH:-}" ]; }; then`,
 	'python3 -I - "$d/src" <<\x27QORPERA_CACHE_RESTORE_EOF\x27 || true',
 	"import hashlib,json,os,re,stat,subprocess,sys",
 	"TOK=re.compile(r\"\\$\\{hash\\('([^']*)'\\)\\}|hash\\('([^']*)'\\)\")",
@@ -693,6 +694,24 @@ const CODE_CHECKS_COPY = [
 	'\treturn all(x not in ("",".","..") and x.lower()!=".git" for x in p.split("/"))',
 	"def safe_cache_path(p):",
 	'\treturn safe_rel(p) and p.split("/")[0].lower()!=".qorpera"',
+	"def load_blessed_specs(repo,branch):",
+	"\tif not repo or not branch:return []",
+	'\tenv={"PATH":os.environ.get("PATH","/usr/bin:/bin"),"GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":"/dev/null","GIT_TERMINAL_PROMPT":"0"}',
+	'\tr=subprocess.run(["git","--git-dir",repo,"-c","core.fsmonitor=false","-c","core.hooksPath=/dev/null","show","refs/heads/"+branch+":.qorpera/checks.json"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=env,check=False)',
+	"\tif r.returncode!=0 or not r.stdout or len(r.stdout)>65536:return []",
+	'\ttext=r.stdout.decode("utf-8",errors="strict")',
+	'\tif text.startswith("\\ufeff"):text=text[1:]',
+	"\tdoc=json.loads(text)",
+	'\tif not isinstance(doc,dict) or not isinstance(doc.get("caches"),list):return []',
+	"\tout=[]",
+	'\tfor raw in doc["caches"][:8]:',
+	"\t\tif not isinstance(raw,dict):continue",
+	'\t\tkey=raw.get("key");paths=raw.get("paths");rks=raw.get("restoreKeys")',
+	"\t\tif not isinstance(key,str) or not (1<=len(key)<=200) or not isinstance(paths,list) or not (1<=len(paths)<=16):continue",
+	"\t\tif not all(safe_cache_path(p) for p in paths):continue",
+	"\t\tif rks is not None and (not isinstance(rks,list) or len(rks)>8 or not all(isinstance(k,str) and 1<=len(k)<=200 for k in rks)):continue",
+	'\t\tout.append({"key":key,"paths":paths,"restoreKeys":rks or []})',
+	"\treturn out",
 	"def no_link(root,rel):",
 	"\tcur=root",
 	'\tfor part in rel.split("/"):',
@@ -747,34 +766,37 @@ const CODE_CHECKS_COPY = [
 	"try:",
 	'\tsrc=sys.argv[1];root=os.environ.get("QORPERA_CHECKS_CACHE_ROOT","")',
 	'\trepo=os.environ.get("QORPERA_CHECKS_REPOSITORY","");commit=os.environ.get("QORPERA_CHECKS_COMMIT","")',
-	'\tspecs=json.loads(os.environ.get("QORPERA_CHECKS_CACHES","[]"))',
-	"\tif root and not os.path.islink(root) and os.path.isdir(root) and isinstance(specs,list):",
-	"\t\tsrc_fd=os.open(src,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)",
-	"\t\ttry:",
-	"\t\t\tfor spec in specs:",
-	'\t\t\t\tkey=eval_key(spec.get("key",""),src_fd)',
-	"\t\t\t\tif not key:continue",
-	"\t\t\t\thit=os.path.join(root,key)",
-	"\t\t\t\tif not valid_entry(hit):",
-	"\t\t\t\t\thit=None",
-	"\t\t\t\t\ttry:names=os.listdir(root)",
-	"\t\t\t\t\texcept OSError:names=[]",
-	'\t\t\t\t\tfor rk in spec.get("restoreKeys") or []:',
-	"\t\t\t\t\t\tpref=eval_key(rk,src_fd)",
-	"\t\t\t\t\t\tif not pref:continue",
-	"\t\t\t\t\t\tms=[os.path.join(root,n) for n in names if n.startswith(pref) and valid_entry(os.path.join(root,n))]",
-	"\t\t\t\t\t\tif ms:",
-	"\t\t\t\t\t\t\tms.sort(key=used_t,reverse=True);hit=ms[0];break",
-	"\t\t\t\tif not hit:continue",
-	'\t\t\t\tfor rel in spec.get("paths") or []:',
-	"\t\t\t\t\tif not safe_cache_path(rel):continue",
-	'\t\t\t\t\tsp=no_link(os.path.join(hit,"data"),rel)',
-	"\t\t\t\t\tif not sp or not os.path.lexists(sp):continue",
-	"\t\t\t\t\tdp=no_link(src,rel)",
-	"\t\t\t\t\tif not dp or os.path.lexists(dp) or not parent_ok(src,rel) or is_tracked(repo,commit,rel):continue",
-	"\t\t\t\t\tos.makedirs(os.path.dirname(dp),exist_ok=True)",
-	'\t\t\t\t\tsubprocess.run(["cp","-R","-P","--preserve=mode,timestamps","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)',
-	"\t\tfinally:os.close(src_fd)",
+	'\traw_specs=os.environ.get("QORPERA_CHECKS_CACHES","")',
+	'\tblessed_branch=os.environ.get("QORPERA_CHECKS_BLESSED_CACHES_BRANCH","")',
+	"\tif root and not os.path.islink(root) and os.path.isdir(root):",
+	"\t\tspecs=json.loads(raw_specs) if raw_specs else (load_blessed_specs(repo,blessed_branch) if blessed_branch else [])",
+	"\t\tif isinstance(specs,list) and specs:",
+	"\t\t\tsrc_fd=os.open(src,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)",
+	"\t\t\ttry:",
+	"\t\t\t\tfor spec in specs:",
+	'\t\t\t\t\tkey=eval_key(spec.get("key",""),src_fd)',
+	"\t\t\t\t\tif not key:continue",
+	"\t\t\t\t\thit=os.path.join(root,key)",
+	"\t\t\t\t\tif not valid_entry(hit):",
+	"\t\t\t\t\t\thit=None",
+	"\t\t\t\t\t\ttry:names=os.listdir(root)",
+	"\t\t\t\t\t\texcept OSError:names=[]",
+	'\t\t\t\t\t\tfor rk in spec.get("restoreKeys") or []:',
+	"\t\t\t\t\t\t\tpref=eval_key(rk,src_fd)",
+	"\t\t\t\t\t\t\tif not pref:continue",
+	"\t\t\t\t\t\t\tms=[os.path.join(root,n) for n in names if n.startswith(pref) and valid_entry(os.path.join(root,n))]",
+	"\t\t\t\t\t\t\tif ms:",
+	"\t\t\t\t\t\t\t\tms.sort(key=used_t,reverse=True);hit=ms[0];break",
+	"\t\t\t\t\tif not hit:continue",
+	'\t\t\t\t\tfor rel in spec.get("paths") or []:',
+	"\t\t\t\t\t\tif not safe_cache_path(rel):continue",
+	'\t\t\t\t\t\tsp=no_link(os.path.join(hit,"data"),rel)',
+	"\t\t\t\t\t\tif not sp or not os.path.lexists(sp):continue",
+	"\t\t\t\t\t\tdp=no_link(src,rel)",
+	"\t\t\t\t\t\tif not dp or os.path.lexists(dp) or not parent_ok(src,rel) or is_tracked(repo,commit,rel):continue",
+	"\t\t\t\t\t\tos.makedirs(os.path.dirname(dp),exist_ok=True)",
+	'\t\t\t\t\t\tsubprocess.run(["cp","-R","-P","--preserve=mode,timestamps","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)',
+	"\t\t\tfinally:os.close(src_fd)",
 	"except Exception:",
 	"\tpass",
 	"QORPERA_CACHE_RESTORE_EOF",
@@ -1431,9 +1453,9 @@ export function codingHostId(label: string, source: string): string {
 export function codingTurnScope(workerId: string, vmId: string, sequence: number): CloudCodingCommandScope {
 	return Object.freeze({ workerId, vmId, requestId: codingHostId("turn", `${workerId}:${sequence}`), turn: sequence });
 }
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_HOST_RECEIPT_INVALID");
-	return value as Record<string, unknown>;
+function receiptRecord(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("CODING_HOST_RECEIPT_INVALID");
+	return value;
 }
 /** A record's `detached`: each session SQL detached, by its attachment; null when it is not a list of them. */
 function detachedSessions(value: unknown): { workerId: string; attachmentToken: string }[] | null {
@@ -1743,7 +1765,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		prepareStorage = false,
 	): Promise<CodingMachineAdmissionReceipt> {
 		const plan = lxdCodingMachinePlan(machine);
-		const value = record(raw);
+		const value = receiptRecord(raw);
 		if (value.state === "refused") {
 			const reason = String(value.reason ?? "");
 			if (WAITABLE.has(reason)) throw new CodingMachineUnavailable(reason);
@@ -1786,7 +1808,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		session?: { workerId: string; leaseToken: string | null },
 	): Promise<CodingMachineAdmissionReceipt> {
 		const started = performance.now();
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_authorize_coding_machine_custody",
 				{
@@ -1934,7 +1956,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			p_machine_id_sha256: this.#options.machineIdSha256,
 		};
 		if (setupDigest !== undefined) planArgs.p_setup_digest = setupDigest;
-		const value = record(await this.#call("qorpera_plan_coding_machine", planArgs, signal));
+		const value = receiptRecord(await this.#call("qorpera_plan_coding_machine", planArgs, signal));
 		if (value.state === "refused") {
 			const reason = String(value.reason ?? "");
 			if (WAITABLE.has(reason)) throw new CodingMachineUnavailable(reason);
@@ -1955,7 +1977,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				);
 				if (!existing) {
 					// WHY: Fail closed to the pinned base image when a SQL-selected snapshot image is absent from local LXD.
-					const fallbackRaw = record(
+					const fallbackRaw = receiptRecord(
 						await this.#call(
 							"qorpera_fallback_coding_machine_base_image",
 							{
@@ -1996,7 +2018,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			...restPolicy
 		} = machine;
 		const { imageFingerprint: baseImageFingerprint, ...restVmPolicy } = this.#options.vmPolicy;
-		const snapshotId = typeof value.snapshotId === "string" && UUID.test(value.snapshotId) ? value.snapshotId : null;
+		const snapshotId =
+			typeof value.snapshotId === "string" && UUID_PATTERN.test(value.snapshotId) ? value.snapshotId : null;
 		const snapshotImageFingerprint =
 			typeof value.snapshotImageFingerprint === "string" && SHA.test(value.snapshotImageFingerprint)
 				? value.snapshotImageFingerprint
@@ -2129,21 +2152,29 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
 		const bootId = boot.content.toString("utf8").trim();
-		if (boot.uid !== 0 || boot.gid !== 0 || boot.mode !== 0o444 || !UUID.test(bootId))
+		if (boot.uid !== 0 || boot.gid !== 0 || boot.mode !== 0o444 || !UUID_PATTERN.test(bootId))
 			throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
-		for (const [file, hash] of [
+		// WHY: Read and verify all four immutable guest helpers concurrently to cut cold boot LXD RTTs from 4 to 1.
+		const helperFiles = [
 			["cloud-coding-command-guest.mjs", this.#options.guest.commandHelperSha256],
 			["cloud-coding-git-guest.mjs", this.#options.guest.gitHelperSha256],
 			["cloud-coding-watchdog.mjs", this.#options.guest.watchdogHelperSha256],
 			["cloud-coding-storage-guest.mjs", this.#options.guest.storageHelperSha256],
-		]) {
-			const content = await client.readInstanceFile(
-				machine.project,
-				name,
-				`/opt/qorpera-coding/${file}`,
-				CODING_GUEST_HELPER_MAX_BYTES,
-				signal,
-			);
+		] as const;
+		const verified = await Promise.all(
+			helperFiles.map(([file]) =>
+				client.readInstanceFile(
+					machine.project,
+					name,
+					`/opt/qorpera-coding/${file}`,
+					CODING_GUEST_HELPER_MAX_BYTES,
+					signal,
+				),
+			),
+		);
+		for (let i = 0; i < helperFiles.length; i++) {
+			const content = verified[i]!;
+			const [, hash] = helperFiles[i]!;
 			if (content.uid !== 0 || content.gid !== 0 || content.mode !== 0o444 || digest(content.content) !== hash)
 				throw new Error("CODING_HOST_GUEST_ARTIFACT_CHANGED");
 		}
@@ -2436,7 +2467,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// outlives every machine the session runs on.
 		const seededName = `${claim.workerId}.seeded.json`;
 		try {
-			const seeded = record((await readRecord(join(root, seededName))).value);
+			const seeded = receiptRecord((await readRecord(join(root, seededName))).value);
 			if (seeded.workerId !== claim.workerId || seeded.headSha !== baseSha)
 				throw new Error("CODING_HOST_SEED_CHANGED");
 		} catch (error) {
@@ -2478,7 +2509,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const baseName = `${claim.workerId}.base.json`;
 		let baseSha: string;
 		try {
-			baseSha = String(record((await readRecord(join(root, baseName))).value).baseSha);
+			baseSha = String(receiptRecord((await readRecord(join(root, baseName))).value).baseSha);
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
 			const sha =
@@ -2496,9 +2527,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				baseName,
 				Buffer.from(JSON.stringify({ workerId: claim.workerId, repository: claim.repository, baseSha: sha })),
 			);
-			baseSha = String(record((await readRecord(join(root, baseName))).value).baseSha);
+			baseSha = String(receiptRecord((await readRecord(join(root, baseName))).value).baseSha);
 		}
-		const pinned = record((await readRecord(join(root, baseName))).value);
+		const pinned = receiptRecord((await readRecord(join(root, baseName))).value);
 		if (
 			pinned.workerId !== claim.workerId ||
 			!isDeepStrictEqual(pinned.repository, claim.repository) ||
@@ -2858,7 +2889,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// The kernel takes the report only from the executor that holds the turn's lease, and takes the row's words
 			// (title, summary, what a customer will notice) from its own rows.
 			recordChange: async (report, checked) => {
-				const answer = record(
+				const answer = receiptRecord(
 					await this.#call(
 						"qorpera_record_code_change",
 						{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken, p_change: report },
@@ -2883,7 +2914,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// and no drill (a drill in an answer lost is spent: the operator sets it again).
 			checksSwitch: async (checked) => {
 				try {
-					const answer = record(
+					const answer = receiptRecord(
 						await this.#call(
 							"qorpera_code_checks_switch",
 							{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
@@ -2951,6 +2982,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				maxParallel: 1,
 				failFast: true,
 				caches: [],
+				// WHY: Restore blessed check caches read-only from the default branch so preview builds reuse node_modules without poisoning shared caches.
+				blessedCachesBranch: claim.repository.baseBranch,
+				allowCacheSave: false,
 			},
 			signal,
 		);
@@ -2995,6 +3029,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			maxParallel?: number;
 			failFast?: boolean;
 			caches?: readonly CodeCheckCache[];
+			blessedCachesBranch?: string;
+			allowCacheSave?: boolean;
 			changedPaths?: readonly string[];
 			checksChanged?: boolean;
 		},
@@ -3009,8 +3045,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const maxParallel = Math.max(1, Math.min(8, input.maxParallel ?? meta?.maxParallel ?? MAX_PARALLEL_CHECKS));
 		const failFast = input.failFast ?? meta?.failFast ?? true;
 		const caches = input.caches ?? meta?.caches ?? [];
+		const blessedCachesBranch = caches.length === 0 ? input.blessedCachesBranch : undefined;
 		const checksChanged = input.checksChanged ?? meta?.checksChanged ?? false;
-		const allowCacheSave = meta?.allowCacheSave ?? true;
+		const allowCacheSave = input.allowCacheSave ?? meta?.allowCacheSave ?? true;
 		const answer = (run: CodeChecksRun): CodeChecksRun => {
 			this.#checksReport({
 				event: "code-checks",
@@ -3101,6 +3138,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					(recipe === null ? 0 : CODE_SITE_BUDGET_MS),
 		);
 		const cacheEnabled = caches.length > 0 && ready.folder.packageCaches;
+		const cacheRestoreEnabled =
+			(caches.length > 0 || blessedCachesBranch !== undefined) && ready.folder.packageCaches;
 		const repoCacheRoot = `${CODING_CHECK_CACHES.root}/${digest(areaPath).slice(0, 24)}`;
 		let copyTransport: LxdCodingFolderCommandTransport;
 		try {
@@ -3110,9 +3149,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					...base,
 					QORPERA_CHECKS_REPOSITORY: repository,
 					QORPERA_CHECKS_COMMIT: input.commit,
-					...(cacheEnabled
+					...(cacheRestoreEnabled
 						? {
-								QORPERA_CHECKS_CACHES: JSON.stringify(caches),
+								...(caches.length > 0
+									? { QORPERA_CHECKS_CACHES: JSON.stringify(caches) }
+									: { QORPERA_CHECKS_BLESSED_CACHES_BRANCH: blessedCachesBranch as string }),
 								QORPERA_CHECKS_CACHE_ROOT: repoCacheRoot,
 							}
 						: {}),
@@ -4644,7 +4685,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			generation = lease && lease.expiresInMs >= CODING_ATTACH_LEASE_MARGIN_MS ? lease.tokenSha256 : null;
 		}
 		const started = performance.now();
-		const attached = record(
+		const attached = receiptRecord(
 			await this.#call(
 				"qorpera_attach_coding_session",
 				{
@@ -4670,7 +4711,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			attached.workerId !== claim.workerId ||
 			attached.machineId !== machine.machineId ||
 			typeof attached.attachmentToken !== "string" ||
-			!UUID.test(attached.attachmentToken) ||
+			!UUID_PATTERN.test(attached.attachmentToken) ||
 			turnState.sequence !== claim.sequence ||
 			turnState.turnId !== scope.requestId ||
 			!turnState.open ||
@@ -4746,12 +4787,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** A turn as SQL names it in an attachment: its sequence, its turn id and whether it may start commands. */
 	#attachedTurn(value: unknown): Attachment["turn"] {
-		const turn = record(value);
+		const turn = receiptRecord(value);
 		if (
 			!Number.isSafeInteger(turn.sequence) ||
 			Number(turn.sequence) < 1 ||
 			typeof turn.turnId !== "string" ||
-			!UUID.test(turn.turnId) ||
+			!UUID_PATTERN.test(turn.turnId) ||
 			typeof turn.open !== "boolean"
 		)
 			throw new Error("CODING_HOST_ATTACHMENT_UNCONFIRMED");
@@ -5166,7 +5207,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		stopped: readonly ObservedCommand[],
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_session_detached",
 				{
@@ -5214,7 +5255,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		startOperationId: string,
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_stopped",
 				{
@@ -5245,7 +5286,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		newDisk: boolean,
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				newDisk ? "qorpera_mark_coding_machine_new_disk" : "qorpera_mark_coding_machine_folder_restart",
 				{
@@ -5298,7 +5339,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		afterOperationId: string,
 		signal: AbortSignal,
 	): Promise<boolean> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_folder_restart",
 				{
@@ -5332,7 +5373,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		rebuildOperationId: string,
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_new_disk",
 				{
@@ -5611,7 +5652,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						sessionCpu.push({ workerId, cpuMillis });
 					}
 					const started = performance.now();
-					const kept = record(
+					const kept = receiptRecord(
 						await this.#call(
 							"qorpera_keep_coding_attachments",
 							{
@@ -5635,9 +5676,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					)
 						throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 					const items = kept.sessions.map((value) => {
-						const item = record(value);
-						const workerId = typeof item.workerId === "string" && UUID.test(item.workerId) ? item.workerId : null;
-						if (!workerId || typeof item.attachmentToken !== "string" || !UUID.test(item.attachmentToken))
+						const item = receiptRecord(value);
+						const workerId =
+							typeof item.workerId === "string" && UUID_PATTERN.test(item.workerId) ? item.workerId : null;
+						if (!workerId || typeof item.attachmentToken !== "string" || !UUID_PATTERN.test(item.attachmentToken))
 							throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 						return { workerId, item };
 					});
@@ -5830,7 +5872,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			: meminfoFull || memoryFull
 				? true
 				: null;
-		const recorded = record(
+		const recorded = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_load",
 				{
@@ -5996,7 +6038,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			const uid =
 				file.uid === 0 && file.gid === 0
 					? (() => {
-							const parsed = record(JSON.parse(file.content.toString("utf8")));
+							const parsed = receiptRecord(JSON.parse(file.content.toString("utf8")));
 							return parsed.schema === "qorpera.coding-guest-session-user/v1" ? validGuestUid(parsed.uid) : null;
 						})()
 					: null;
@@ -6028,7 +6070,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444)
 			throw new Error("CODING_HOST_GUEST_CONFIGURATION_UNCONFIRMED");
 		const content = file.content.toString("utf8");
-		const configuration = record(JSON.parse(content));
+		const configuration = receiptRecord(JSON.parse(content));
 		const journal = await readRecord(join(await this.#directory("guests", signal), `${workerId}.${bootId}.json`));
 		if (
 			!isDeepStrictEqual(journal.value, configuration) ||
@@ -6048,7 +6090,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			name = lxdCodingMachineName(machine.machineId);
 		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
 		const bootId = boot.content.toString("utf8").trim();
-		if (boot.uid !== 0 || boot.gid !== 0 || !UUID.test(bootId)) throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
+		if (boot.uid !== 0 || boot.gid !== 0 || !UUID_PATTERN.test(bootId))
+			throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
 		// The helper this process runs as root in the guest is the pinned one, checked once per boot.
 		if (this.#helperBoots.get(machine.machineId) !== bootId) {
 			const helper = await client.readInstanceFile(
@@ -6077,7 +6120,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			const file = await client.readInstanceFile(machine.project, name, path, 65536, signal);
 			if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444)
 				throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
-			return record(JSON.parse(file.content.toString("utf8")));
+			return receiptRecord(JSON.parse(file.content.toString("utf8")));
 		};
 		const value = await published(CODING_GUEST_OBSERVATION);
 		if (
@@ -6089,11 +6132,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
 		const sessions: Observed["sessions"] = new Map();
 		for (const entry of value.sessions) {
-			const session = record(entry);
-			const lease = session.lease === null ? null : record(session.lease);
+			const session = receiptRecord(entry);
+			const lease = session.lease === null ? null : receiptRecord(session.lease);
 			if (
 				typeof session.workerId !== "string" ||
-				!UUID.test(session.workerId) ||
+				!UUID_PATTERN.test(session.workerId) ||
 				![session.cpuUsageUsec, session.ioBytes].every(
 					(count) => Number.isSafeInteger(count) && Number(count) >= 0,
 				) ||
@@ -6118,10 +6161,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				)
 					throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
 				running = commands.running.map((command: unknown) => {
-					const c = record(command);
+					const c = receiptRecord(command);
 					if (
 						typeof c.commandId !== "string" ||
-						!UUID.test(c.commandId) ||
+						!UUID_PATTERN.test(c.commandId) ||
 						!Number.isSafeInteger(c.turn) ||
 						Number(c.turn) < 1 ||
 						typeof c.command !== "string" ||
@@ -6512,11 +6555,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return outcomes;
 	}
 	#listed(value: unknown): ListedMachine {
-		const entry = record(value);
+		const entry = receiptRecord(value);
 		if (
 			entry.schema !== "qorpera.coding-machine-state/v1" ||
 			typeof entry.machineId !== "string" ||
-			!UUID.test(entry.machineId) ||
+			!UUID_PATTERN.test(entry.machineId) ||
 			(entry.kind !== "member" && entry.kind !== "session") ||
 			(entry.instanceSha256 !== null &&
 				(typeof entry.instanceSha256 !== "string" || !SHA.test(entry.instanceSha256))) ||
@@ -6534,12 +6577,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		)
 			throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
 		const attached = entry.attached.map((value) => {
-			const session = record(value);
+			const session = receiptRecord(value);
 			if (
 				typeof session.workerId !== "string" ||
-				!UUID.test(session.workerId) ||
+				!UUID_PATTERN.test(session.workerId) ||
 				typeof session.attachmentToken !== "string" ||
-				!UUID.test(session.attachmentToken)
+				!UUID_PATTERN.test(session.attachmentToken)
 			)
 				throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
 			return { workerId: session.workerId, attachmentToken: session.attachmentToken };
@@ -6547,7 +6590,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return {
 			machineId: entry.machineId,
 			kind: entry.kind,
-			binding: record(entry.binding),
+			binding: receiptRecord(entry.binding),
 			instanceSha256: entry.instanceSha256 as string | null,
 			live: entry.live as boolean,
 			reserved: entry.reserved as boolean,
@@ -6685,7 +6728,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				budget,
 			);
 		}
-		const slept = record(
+		const slept = receiptRecord(
 			await this.#call(
 				"qorpera_suspend_coding_machine",
 				{
@@ -6729,7 +6772,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const release = async (text: string) => {
 			let released: Record<string, unknown>;
 			try {
-				released = record(
+				released = receiptRecord(
 					await this.#call(
 						"qorpera_release_coding_machine",
 						{

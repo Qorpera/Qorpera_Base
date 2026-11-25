@@ -271,10 +271,10 @@ export function machineScreenDesktopArgs(action: MachineScreenAction): readonly 
 		case "key":
 			return [["key", ...action.keys]];
 		case "scroll":
-			return [
-				...(action.x !== undefined && action.y !== undefined ? [["move", String(action.x), String(action.y)]] : []),
-				["scroll", action.direction, String(action.steps ?? 3)],
-			];
+			// WHY: Combine move+scroll into a single desktop invocation (1 systemd-run instead of 2).
+			return action.x !== undefined && action.y !== undefined
+				? [["scroll", action.direction, String(action.steps ?? 3), String(action.x), String(action.y)]]
+				: [["scroll", action.direction, String(action.steps ?? 3)]];
 		case "open":
 			return [["open", action.target]];
 	}

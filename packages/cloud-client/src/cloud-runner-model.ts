@@ -1,6 +1,5 @@
-import type { JsonValue } from "@qorpera/contracts";
+import { isRecord, isUuidAnyCase, type JsonValue } from "@qorpera/contracts";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const MAX_MODEL_INPUT_BYTES = 256 * 1024;
 const MAX_MODEL_OUTPUT_BYTES = 512 * 1024;
@@ -27,11 +26,11 @@ export interface CloudRunnerModelResponse {
 	usage: CloudRunnerModelUsage;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+function modelRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) {
 		throw new Error(`Runner model broker contains invalid ${label}`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function integer(value: unknown, label: string, minimum: number, maximum: number): number {
@@ -41,8 +40,8 @@ function integer(value: unknown, label: string, minimum: number, maximum: number
 	return value as number;
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+function modelUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) {
 		throw new Error(`Runner model broker contains invalid ${label}`);
 	}
 	return value;
@@ -78,7 +77,7 @@ function json(value: unknown, label: string, maximumBytes: number): JsonValue {
 
 export function validateCloudRunnerModelRequest(value: CloudRunnerModelRequest): CloudRunnerModelRequest {
 	return {
-		requestId: uuid(value.requestId, "request id"),
+		requestId: modelUuid(value.requestId, "request id"),
 		provider: provider(value.provider),
 		model: model(value.model),
 		input: json(value.input, "request input", MAX_MODEL_INPUT_BYTES),
@@ -87,10 +86,10 @@ export function validateCloudRunnerModelRequest(value: CloudRunnerModelRequest):
 }
 
 export function parseCloudRunnerModelResponse(value: unknown): CloudRunnerModelResponse {
-	const input = record(value, "response");
-	const usage = record(input.usage, "response usage");
+	const input = modelRecord(value, "response");
+	const usage = modelRecord(input.usage, "response usage");
 	return {
-		requestId: uuid(input.request_id, "response request id"),
+		requestId: modelUuid(input.request_id, "response request id"),
 		provider: provider(input.provider),
 		model: model(input.model),
 		output: json(input.output, "response output", MAX_MODEL_OUTPUT_BYTES),

@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
+import { parseCompanyComputerNativeRoute, UUID_PATTERN } from "@qorpera/contracts";
 
 export interface LxdNativeCompanyOffice {
 	companyId: string;
@@ -8,7 +8,6 @@ export interface LxdNativeCompanyOffice {
 	url: string;
 	token: string;
 }
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export function validateLxdNativeCompanyOffices(offices: LxdNativeCompanyOffice[], otherTokens: readonly string[]) {
 	if (!Array.isArray(offices) || offices.length < 1 || offices.length > 128)
 		throw new Error("INVALID_NATIVE_OFFICE_ROUTES");
@@ -20,9 +19,9 @@ export function validateLxdNativeCompanyOffices(offices: LxdNativeCompanyOffice[
 			!office ||
 			Object.keys(office).sort().join() !== "companyId,environmentId,token,url" ||
 			typeof office.companyId !== "string" ||
-			!UUID.test(office.companyId) ||
+			!UUID_PATTERN.test(office.companyId) ||
 			typeof office.environmentId !== "string" ||
-			!UUID.test(office.environmentId) ||
+			!UUID_PATTERN.test(office.environmentId) ||
 			typeof office.url !== "string" ||
 			typeof office.token !== "string" ||
 			!/^[A-Za-z0-9_-]{43}$/.test(office.token)
@@ -93,9 +92,9 @@ export function readLxdNativeCompanyOffices(path: string, readToken: (path: stri
 		const route = entry as Record<string, unknown>;
 		if (
 			typeof route.companyId !== "string" ||
-			!UUID.test(route.companyId) ||
+			!UUID_PATTERN.test(route.companyId) ||
 			typeof route.environmentId !== "string" ||
-			!UUID.test(route.environmentId) ||
+			!UUID_PATTERN.test(route.environmentId) ||
 			typeof route.url !== "string"
 		)
 			throw new Error("INVALID_NATIVE_OFFICE_ROUTE");

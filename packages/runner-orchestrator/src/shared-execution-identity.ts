@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { parseRecord, UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 
@@ -13,7 +14,6 @@ import type { ServiceHttpFetch } from "./http-transport.ts";
  * Nothing here initialises an identity: a missing key or marker is a refusal,
  * exactly as the one-run guest bootstrap refuses it outside a login. */
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const IDENTITY_SCHEMA = "qorpera.compute-identity-volume/v1";
@@ -55,16 +55,11 @@ export type SharedExecutionLoginCustody = (
 	runId: string,
 ) => Promise<boolean>;
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 /** The arguments of an identity read: the identity and the run it is read for, which the execution host's entry
  * point checks and removes (G2-3e). */
 function identityArguments(computeIdentityId: string, runId: string): string {
-	if (!UUID_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
-	if (!UUID_PATTERN.test(runId)) throw new Error("Run id is invalid");
+	if (!UUID_ANY_CASE_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
+	if (!UUID_ANY_CASE_PATTERN.test(runId)) throw new Error("Run id is invalid");
 	return JSON.stringify({ p_compute_identity_id: computeIdentityId, p_run_id: runId });
 }
 
@@ -146,12 +141,12 @@ export function supabaseSharedExecutionLoginCustody(
 }
 
 export function parseSharedExecutionIdentityState(value: unknown): SharedExecutionIdentityState {
-	const input = record(value, "Identity recovery runtime state");
+	const input = parseRecord(value, "Identity recovery runtime state");
 	if (
 		typeof input.companyId !== "string" ||
-		!UUID_PATTERN.test(input.companyId) ||
+		!UUID_ANY_CASE_PATTERN.test(input.companyId) ||
 		typeof input.computeIdentityId !== "string" ||
-		!UUID_PATTERN.test(input.computeIdentityId) ||
+		!UUID_ANY_CASE_PATTERN.test(input.computeIdentityId) ||
 		!Number.isSafeInteger(input.epoch) ||
 		(input.epoch as number) < 0 ||
 		typeof input.blocked !== "boolean" ||
@@ -225,7 +220,7 @@ export async function readSharedExecutionIdentity(
 	options: ReadSharedExecutionIdentityOptions,
 ): Promise<SharedExecutionIdentityMaterial> {
 	const { computeIdentityId } = options;
-	if (!UUID_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
+	if (!UUID_ANY_CASE_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
 	if (!isAbsolute(options.identityRoot) || resolve(options.identityRoot) !== options.identityRoot)
 		throw new Error("Identity root must be an absolute physical path");
 	const volume = join(options.identityRoot, computeIdentityId);
@@ -238,7 +233,7 @@ export async function readSharedExecutionIdentity(
 		if (!mountInfoHasMountPoint(mountInfo, volume))
 			throw new Error("Compute Identity volume is not a distinct mounted filesystem");
 	}
-	const marker = record(
+	const marker = parseRecord(
 		JSON.parse(
 			await readRootPrivateFile(
 				join(volume, "qorpera-compute-identity.json"),
@@ -275,7 +270,7 @@ export async function readSharedExecutionIdentity(
 	if (state.keySha256 !== null && state.keySha256 !== keySha256)
 		throw new Error("Local identity key differs from cloud recovery history");
 	if (state.epoch > 0) {
-		const recovery = record(
+		const recovery = parseRecord(
 			JSON.parse(
 				await readRootPrivateFile(
 					join(volume, `qorpera-identity-recovery-${state.epoch}.json`),

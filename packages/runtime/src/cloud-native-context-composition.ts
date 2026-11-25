@@ -9,6 +9,7 @@
 // request only, so the work message never enters Codex's history; the result fence then runs over what was kept.
 // The reply may also set the request's prompt cache key (§6.2), a capability of its own.
 
+import { createHash } from "node:crypto";
 import { redactCloudWebhookSecrets } from "./cloud-native-tool-boundary.ts";
 
 export const CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA = "qorpera.native-context-composition/v1";
@@ -142,9 +143,20 @@ export function parseCloudNativeContextRequest(value: unknown): CloudNativeConte
 	};
 }
 
+export function cloudNativePromptCacheKey(...parts: readonly (string | null | undefined)[]): string {
+	return `qorpera:${createHash("sha256").update(JSON.stringify(parts)).digest("base64url")}`;
+}
+
 /** Every item kept, unchanged: a request with nothing to compose. */
 export function cloudNativeContextIdentity(request: CloudNativeContextRequest): CloudNativeContextComposition {
 	return { input: request.items.map((_, keep) => ({ keep })) };
+}
+
+export function cloudNativeContextWithPromptCacheKey(
+	composition: CloudNativeContextComposition,
+	promptCacheKey?: string,
+): CloudNativeContextComposition {
+	return promptCacheKey === undefined ? composition : { ...composition, promptCacheKey };
 }
 
 /** The reply to `request`: only the protocol's own keys, so nothing else a composer returns reaches Codex. */

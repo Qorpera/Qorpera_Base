@@ -14,6 +14,7 @@ import type {
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	type CachedFolderListing,
 	CompanyFolderBrowser,
 	type CompanyFolderBrowserOptions,
 	type CompanyFolderPick,
@@ -2051,5 +2052,97 @@ describe("choose mode: Open's \"A file…\" on an agent's computer (202609307580
 		} finally {
 			Reflect.deleteProperty(document, "hidden");
 		}
+	});
+
+	it("paints cached folder listings immediately on reopen and navigation while revalidating in background", async () => {
+		const fake = folderFake();
+		const listingCache = new Map<string, CachedFolderListing>();
+		const firstHost = document.createElement("section");
+		document.body.append(firstHost);
+		const firstSrc = source(fake);
+		const first = new CompanyFolderBrowser(firstHost, firstSrc.value, people, { listingCache });
+		disposers.push(() => first.dispose());
+		await first.open();
+		await click(row(firstHost, "notes"));
+		expect(rows(firstHost)).toEqual(["log.txt", "plan.md"]);
+		expect(listingCache.has("")).toBe(true);
+		expect(listingCache.has("notes")).toBe(true);
+		first.dispose();
+
+		const pendingRoot = deferred<CloudMemberFolderListPage>();
+		const pendingNotes = deferred<CloudMemberFolderListPage>();
+		fake.client.list.mockReturnValueOnce(pendingRoot.promise).mockReturnValueOnce(pendingNotes.promise);
+
+		const secondHost = document.createElement("section");
+		document.body.append(secondHost);
+		const secondSrc = source(fake);
+		const second = new CompanyFolderBrowser(secondHost, secondSrc.value, people, { listingCache });
+		disposers.push(() => second.dispose());
+		await second.open();
+		expect(secondHost.querySelector(".skeleton-list")).toBeNull();
+		expect(rows(secondHost)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+
+		pendingRoot.resolve({
+			asOfSeq: 2,
+			entries: [
+				{
+					path: "notes",
+					kind: "folder",
+					version: id(201),
+					seq: 2,
+					updatedAt: at,
+					file: null,
+					target: null,
+				},
+			],
+			next: null,
+		});
+		await settle();
+		expect(rows(secondHost)).toEqual(["notes"]);
+
+		row(secondHost, "notes")!.click();
+		await Promise.resolve();
+		expect(rows(secondHost)).toEqual(["log.txt", "plan.md"]);
+		pendingNotes.resolve({
+			asOfSeq: 3,
+			entries: [
+				{
+					path: "notes/plan.md",
+					kind: "file",
+					version: id(202),
+					seq: 3,
+					updatedAt: at,
+					file: {
+						fileSha256: "b".repeat(64),
+						bytes: 12,
+						executable: false,
+						manifestSha256: "b".repeat(64),
+						mediaType: "text/markdown",
+					},
+					target: null,
+				},
+				{
+					path: "notes/extra.md",
+					kind: "file",
+					version: id(203),
+					seq: 3,
+					updatedAt: at,
+					file: {
+						fileSha256: "c".repeat(64),
+						bytes: 12,
+						executable: false,
+						manifestSha256: "c".repeat(64),
+						mediaType: "text/markdown",
+					},
+					target: null,
+				},
+			],
+			next: null,
+		});
+		await settle();
+		expect(rows(secondHost)).toEqual(["extra.md", "plan.md"]);
+
+		secondSrc.hint(4);
+		expect(listingCache.size).toBe(0);
 	});
 });

@@ -17,6 +17,7 @@ import {
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
+	codeAreaPath,
 	keptRepositoryOf,
 	withJob,
 } from "./code-host-jobs.ts";
@@ -25,9 +26,14 @@ import {
 	CodeSiteTreeInvalid,
 	readCodeSiteTree,
 	readSurfacePreviewPlan,
+	readSurfacePreviewPlanAndTree,
 	readSurfaceSiteTree,
 } from "./code-host-sites.ts";
-import { composePreviewTree, type RebaseSessionChangesResult } from "./code-host-surfaces.ts";
+import {
+	composePreviewTree,
+	discardSurfaceSessionWorktree,
+	type RebaseSessionChangesResult,
+} from "./code-host-surfaces.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CODE_SITE_EXTENSIONS, CODE_SITE_PATH, codeSiteManifest, codeSiteTreeProblem } from "./code-site.ts";
 import { CODE_SITE_LIST_BYTES, CODE_SITE_LIST_FILES, type CodeSiteTreeRead } from "./code-site-uploads.ts";
@@ -50,6 +56,7 @@ import {
 	type SurfacePreviewRecipe,
 } from "./surface-preview-runner.ts";
 import type {
+	ClaimedSurfaceCleanupJob,
 	ClaimedSurfaceMergeJob,
 	ClaimedSurfacePreviewJob,
 	ClaimedSurfacePublishJob,
@@ -60,6 +67,7 @@ export const SURFACE_CODE_HOST_RPCS = [
 	"qorpera_surface_complete_preview",
 	"qorpera_surface_complete_merge",
 	"qorpera_surface_complete_publish",
+	"qorpera_surface_complete_cleanup",
 	"qorpera_surface_renew_lease",
 	"qorpera_surface_update_rebased_changes",
 	"qorpera_surface_site_version_begin",
@@ -111,6 +119,7 @@ export interface SurfaceCodeHostPassResult {
 	readonly previews: number;
 	readonly merges: number;
 	readonly publishes: number;
+	readonly cleanups: number;
 	readonly failed: number;
 }
 
@@ -357,26 +366,32 @@ async function resolveMainHeadAndTree(
 	codeHostJob: CodeHostJob,
 	repository: CloudCodingRepository,
 	explicitHeadSha: string | null,
+	options: { readonly readOnly?: boolean } = {},
 ): Promise<{ readonly headSha: string; readonly treeSha: string }> {
 	const kept = keptRepositoryOf(repository);
 	return await withJob(codeHostJob, kept, async (run) => {
-		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
-			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		if (codeHostJob.preparedKeptArea !== run.area) {
+			if (!(await run.prepare(undefined, { readOnly: options.readOnly === true })).seeded)
+				throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+			}
 		}
 		const targetRef =
 			explicitHeadSha && GIT_SHA.test(explicitHeadSha) ? explicitHeadSha : `refs/heads/${kept.baseBranch}`;
-		const headSha = (
-			await run.gitOk(run.repo, ["rev-parse", "--verify", `${targetRef}^{commit}`], "CODE_HOST_MAIN_MISSING")
+		const lines = (
+			await run.gitOk(
+				run.repo,
+				["rev-parse", `${targetRef}^{commit}`, `${targetRef}^{tree}`],
+				"CODE_HOST_MAIN_MISSING",
+			)
 		)
 			.toString("utf8")
-			.trim();
-		const treeSha = (
-			await run.gitOk(run.repo, ["rev-parse", "--verify", `${headSha}^{tree}`], "CODE_HOST_TREE_MISSING")
-		)
-			.toString("utf8")
-			.trim();
-		if (!GIT_SHA.test(headSha) || !GIT_SHA.test(treeSha)) {
+			.trim()
+			.split("\n");
+		const headSha = lines[0]?.trim() ?? "";
+		const treeSha = lines[1]?.trim() ?? "";
+		if (lines.length !== 2 || !GIT_SHA.test(headSha) || !GIT_SHA.test(treeSha)) {
 			throw new Error("Resolved main commit or tree SHA is invalid");
 		}
 		return { headSha, treeSha };
@@ -638,6 +653,16 @@ interface ActiveLease {
 	stop(): void;
 }
 
+const PREVIEW_BUILD_PLAN_TTL_MS = 5 * 60_000;
+const PREVIEW_BUILD_PLAN_MAX = 256;
+
+function isUnseededAreaRefusal(error: unknown): boolean {
+	return (
+		error instanceof CodeHostRefusal &&
+		(error.code === "CODE_HOST_NOT_SEEDED" || error.code === "CODE_HOST_AREA_NO_BASE")
+	);
+}
+
 // WHY: Executes code_repo Surface previews, selective merges, rebases, undos, and live site publishes on coding-executor where LxdCodeHosts lives.
 export class SurfaceCodeHostWorker {
 	readonly #control: SurfaceCodeHostControl;
@@ -645,6 +670,16 @@ export class SurfaceCodeHostWorker {
 	readonly #readTree: CodeSiteTreeRead;
 	readonly #readBuiltTree: CodeSiteTreeRead;
 	readonly #readPlan: SurfacePreviewPlanRead;
+	readonly #useCombinedPlanAndTree: boolean;
+	readonly #previewBuildPlans = new Map<
+		string,
+		{
+			readonly expiresAt: number;
+			readonly compositeCommitSha: string;
+			readonly compositeTreeSha: string;
+			readonly recipe: SurfacePreviewRecipe;
+		}
+	>();
 	readonly #batchLimit: number;
 	readonly #companyConcurrency: number;
 	readonly #uploadConcurrency: number;
@@ -660,6 +695,7 @@ export class SurfaceCodeHostWorker {
 		this.#readTree = options.readTree ?? readSurfaceSiteTree;
 		this.#readBuiltTree = options.readBuiltTree ?? readCodeSiteTree;
 		this.#readPlan = options.readPlan ?? readSurfacePreviewPlan;
+		this.#useCombinedPlanAndTree = options.readTree === undefined && options.readPlan === undefined;
 		this.#batchLimit = Math.min(Math.max(1, options.batchLimit ?? 8), 64);
 		this.#companyConcurrency = Math.min(Math.max(1, options.companyConcurrency ?? DEFAULT_COMPANY_CONCURRENCY), 16);
 		this.#uploadConcurrency = Math.min(Math.max(1, options.uploadConcurrency ?? DEFAULT_UPLOAD_CONCURRENCY), 16);
@@ -740,6 +776,7 @@ export class SurfaceCodeHostWorker {
 		const merges = claimed.merges ?? [];
 		const publishes = claimed.publishes ?? [];
 		const previews = claimed.previews ?? [];
+		const cleanups = claimed.cleanups ?? [];
 
 		// WHY: Start lease renewal for every claimed item immediately so items queued behind long merges never silently expire before execution.
 		const leases = new Map<string, ActiveLease>();
@@ -759,19 +796,26 @@ export class SurfaceCodeHostWorker {
 				this.#startLease("preview", preview.previewId, preview.leaseToken ?? null, signal),
 			);
 		}
+		for (const cleanup of cleanups) {
+			leases.set(
+				leaseKey("job", cleanup.jobId),
+				this.#startLease("job", cleanup.jobId, cleanup.leaseToken ?? null, signal),
+			);
+		}
 
-		// WHY: Serialize merges, publishes, and previews within each company while running distinct companies concurrently.
+		// WHY: Serialize merges, publishes, previews, and cleanups within each company while running distinct companies concurrently.
 		type CompanyWork = {
 			readonly profileId: string;
 			readonly merges: ClaimedSurfaceMergeJob[];
 			readonly publishes: ClaimedSurfacePublishJob[];
 			readonly previews: ClaimedSurfacePreviewJob[];
+			readonly cleanups: ClaimedSurfaceCleanupJob[];
 		};
 		const byCompany = new Map<string, CompanyWork>();
 		const bucketOf = (profileId: string): CompanyWork => {
 			let bucket = byCompany.get(profileId);
 			if (!bucket) {
-				bucket = { profileId, merges: [], publishes: [], previews: [] };
+				bucket = { profileId, merges: [], publishes: [], previews: [], cleanups: [] };
 				byCompany.set(profileId, bucket);
 			}
 			return bucket;
@@ -779,10 +823,12 @@ export class SurfaceCodeHostWorker {
 		for (const merge of merges) bucketOf(merge.profileId).merges.push(merge);
 		for (const pub of publishes) bucketOf(pub.profileId).publishes.push(pub);
 		for (const preview of previews) bucketOf(preview.profileId).previews.push(preview);
+		for (const cleanup of cleanups) bucketOf(cleanup.profileId).cleanups.push(cleanup);
 
 		let previewsDone = 0;
 		let mergesDone = 0;
 		let publishesDone = 0;
+		let cleanupsDone = 0;
 		let failed = 0;
 
 		const runCompany = async (work: CompanyWork): Promise<void> => {
@@ -842,6 +888,25 @@ export class SurfaceCodeHostWorker {
 					lease.stop();
 				}
 			}
+
+			for (const cleanup of work.cleanups) {
+				if (signal.aborted) break;
+				const lease = leases.get(leaseKey("job", cleanup.jobId))!;
+				try {
+					const completed = await this.#runCleanup(cleanup, lease.signal);
+					if (completed) cleanupsDone += 1;
+				} catch (error) {
+					failed += 1;
+					this.#emit({
+						event: "surface-code-host-error",
+						kind: "cleanup",
+						jobId: cleanup.jobId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				} finally {
+					lease.stop();
+				}
+			}
 		};
 
 		try {
@@ -851,7 +916,13 @@ export class SurfaceCodeHostWorker {
 			for (const lease of leases.values()) lease.stop();
 		}
 
-		return { previews: previewsDone, merges: mergesDone, publishes: publishesDone, failed };
+		return {
+			previews: previewsDone,
+			merges: mergesDone,
+			publishes: publishesDone,
+			cleanups: cleanupsDone,
+			failed,
+		};
 	}
 
 	async #runYieldable<T>(
@@ -859,6 +930,7 @@ export class SurfaceCodeHostWorker {
 		environmentId: string,
 		signal: AbortSignal,
 		fn: (codeHostJob: CodeHostJob) => Promise<T>,
+		options: { readonly readOnly?: boolean } = {},
 	): Promise<{ readonly yielded: false; readonly value: T } | { readonly yielded: true }> {
 		for (let attempt = 0; attempt <= this.#yieldRetryDelaysMs.length; attempt += 1) {
 			try {
@@ -867,7 +939,7 @@ export class SurfaceCodeHostWorker {
 					environmentId,
 					signal,
 					async (codeHostJob) => await fn(codeHostJob),
-					{ yields: true },
+					{ yields: true, ...(options.readOnly ? { readOnly: true } : {}) },
 				);
 				return { yielded: false, value };
 			} catch (error) {
@@ -879,6 +951,57 @@ export class SurfaceCodeHostWorker {
 			}
 		}
 		return { yielded: true };
+	}
+
+	#previewPlanKey(
+		preview: ClaimedSurfacePreviewJob,
+		environmentId: string,
+		baseSha: string | undefined,
+	): string | null {
+		if (!baseSha) return null;
+		return JSON.stringify([
+			preview.previewId,
+			preview.profileId,
+			environmentId,
+			preview.repositoryKey,
+			baseSha,
+			preview.reconciledCommitSha ?? null,
+			preview.exploration
+				? [preview.exploration.sessionId, preview.exploration.baseSha, preview.exploration.headSha]
+				: null,
+			(preview.changes ?? []).map((change) => [change.changeId, change.parentSha, change.headSha]),
+		]);
+	}
+
+	#getCachedPreviewPlan(key: string | null) {
+		if (!key) return undefined;
+		const cached = this.#previewBuildPlans.get(key);
+		if (!cached) return undefined;
+		if (cached.expiresAt <= Date.now()) {
+			this.#previewBuildPlans.delete(key);
+			return undefined;
+		}
+		this.#previewBuildPlans.delete(key);
+		this.#previewBuildPlans.set(key, cached);
+		return cached;
+	}
+
+	#setCachedPreviewPlan(
+		key: string | null,
+		value: {
+			readonly compositeCommitSha: string;
+			readonly compositeTreeSha: string;
+			readonly recipe: SurfacePreviewRecipe;
+		},
+	): void {
+		if (!key) return;
+		this.#previewBuildPlans.delete(key);
+		this.#previewBuildPlans.set(key, { ...value, expiresAt: Date.now() + PREVIEW_BUILD_PLAN_TTL_MS });
+		while (this.#previewBuildPlans.size > PREVIEW_BUILD_PLAN_MAX) {
+			const oldest = this.#previewBuildPlans.keys().next().value;
+			if (oldest === undefined) break;
+			this.#previewBuildPlans.delete(oldest);
+		}
 	}
 
 	#handlersForMergeJob(
@@ -1035,20 +1158,26 @@ export class SurfaceCodeHostWorker {
 		productFolderRoots: readonly string[],
 		signal: AbortSignal,
 	): Promise<{ readonly yielded: true } | { readonly yielded: false; readonly site: ReadSite | null }> {
-		const ran = await this.#runYieldable<ReadSite | null>(at.profileId, at.environmentId, signal, async (job) => {
-			let files: readonly CodeSiteTreeFile[];
-			try {
-				files = (await this.#readBuiltTree(job, { repository, tree: builtTreeSha })).files;
-			} catch (error) {
-				if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_SITE_TREE_UNKNOWN") return null;
-				throw error;
-			}
-			return {
-				treeSha: builtTreeSha,
-				files,
-				sharedAssets: await readSharedIdentityAssets(job, job.signal, productFolderRoots),
-			};
-		});
+		const ran = await this.#runYieldable<ReadSite | null>(
+			at.profileId,
+			at.environmentId,
+			signal,
+			async (job) => {
+				let files: readonly CodeSiteTreeFile[];
+				try {
+					files = (await this.#readBuiltTree(job, { repository, tree: builtTreeSha })).files;
+				} catch (error) {
+					if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_SITE_TREE_UNKNOWN") return null;
+					throw error;
+				}
+				return {
+					treeSha: builtTreeSha,
+					files,
+					sharedAssets: await readSharedIdentityAssets(job, job.signal, productFolderRoots),
+				};
+			},
+			{ readOnly: true },
+		);
 		return ran.yielded ? { yielded: true } : { yielded: false, site: ran.value };
 	}
 
@@ -1130,69 +1259,140 @@ export class SurfaceCodeHostWorker {
 			  };
 
 		const productFolderRoots = await this.#resolveProductFolderRoots(preview.profileId, signal);
-		let prepared: PreparedPreview;
-		try {
-			const ran = await this.#runYieldable<PreparedPreview>(
-				preview.profileId,
-				environmentId,
-				signal,
-				async (codeHostJob) => {
-					await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
-					const composed = await composePreviewTree(codeHostJob, {
-						repository,
-						...(baseSha ? { baseSha } : {}),
-						...(preview.reconciledCommitSha ? { reconciledCommitSha: preview.reconciledCommitSha } : {}),
-						...(preview.exploration ? { exploration: preview.exploration } : {}),
-						changes: (preview.changes ?? []).map((change) => ({
-							changeId: change.changeId,
-							parentSha: change.parentSha,
-							headSha: change.headSha,
-						})),
-					});
-					if (composed.status === "conflicted") {
-						return {
-							status: "conflicted",
-							lastCleanTreeSha: composed.lastCleanTreeSha,
-							changeIds: [...composed.appliedChangeIds, composed.conflictingChangeId],
-							paths: [...composed.conflictPaths],
-						};
-					}
-					const plan = await this.#readPlan(codeHostJob, { repository, tree: composed.compositeTreeSha });
-					if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
-					if (plan.kind === "build")
-						return {
-							status: "build",
-							compositeCommitSha: composed.compositeCommitSha,
-							compositeTreeSha: composed.compositeTreeSha,
-							recipe: plan.recipe,
-						};
-					const treeData = await this.#readTree(codeHostJob, {
-						repository,
-						tree: composed.compositeTreeSha,
-					});
-					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal, productFolderRoots);
+		const planCacheKey = this.#previewPlanKey(preview, environmentId, baseSha);
+		const cachedBuildPlan = this.#getCachedPreviewPlan(planCacheKey);
+		const area = codeAreaPath(repository);
+		const readPlanAndTree = async (
+			preparedJob: CodeHostJob,
+			compositeCommitSha: string,
+			compositeTreeSha: string,
+		): Promise<PreparedPreview> => {
+			if (this.#useCombinedPlanAndTree) {
+				const combined = await readSurfacePreviewPlanAndTree(preparedJob, { repository, tree: compositeTreeSha });
+				if (combined.kind === "invalid") return { status: "invalid", detail: combined.detail };
+				if (combined.kind === "build") {
 					return {
-						status: "ready",
-						compositeCommitSha: composed.compositeCommitSha,
-						compositeTreeSha: composed.compositeTreeSha,
-						files: treeData.files,
-						sharedAssets,
+						status: "build",
+						compositeCommitSha,
+						compositeTreeSha,
+						recipe: combined.recipe,
 					};
-				},
-			);
-			if (ran.yielded) {
-				this.#emit({
-					event: "surface-code-host-yielded",
-					kind: "preview",
-					previewId: preview.previewId,
-					surfaceId: preview.surfaceId,
-				});
-				return false;
+				}
+				const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
+				return {
+					status: "ready",
+					compositeCommitSha,
+					compositeTreeSha,
+					files: combined.files,
+					sharedAssets,
+				};
 			}
-			prepared = ran.value;
-		} catch (error) {
-			if (signal.aborted) throw error;
-			return await fail(surfaceFailureDetail(error, null, "Surface preview build failed"));
+			const plan = await this.#readPlan(preparedJob, { repository, tree: compositeTreeSha });
+			if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
+			if (plan.kind === "build") {
+				return {
+					status: "build",
+					compositeCommitSha,
+					compositeTreeSha,
+					recipe: plan.recipe,
+				};
+			}
+			const treeData = await this.#readTree(preparedJob, {
+				repository,
+				tree: compositeTreeSha,
+			});
+			const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
+			return {
+				status: "ready",
+				compositeCommitSha,
+				compositeTreeSha,
+				files: treeData.files,
+				sharedAssets,
+			};
+		};
+		const composeAndRead = async (codeHostJob: CodeHostJob, seedFirst: boolean): Promise<PreparedPreview> => {
+			if (seedFirst) {
+				await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
+			}
+			const composeJob: CodeHostJob = seedFirst ? { ...codeHostJob, preparedKeptArea: area } : codeHostJob;
+			const composed = await composePreviewTree(composeJob, {
+				repository,
+				...(baseSha ? { baseSha } : {}),
+				...(preview.reconciledCommitSha ? { reconciledCommitSha: preview.reconciledCommitSha } : {}),
+				...(preview.exploration ? { exploration: preview.exploration } : {}),
+				changes: (preview.changes ?? []).map((change) => ({
+					changeId: change.changeId,
+					parentSha: change.parentSha,
+					headSha: change.headSha,
+				})),
+			});
+			if (composed.status === "conflicted") {
+				return {
+					status: "conflicted",
+					lastCleanTreeSha: composed.lastCleanTreeSha,
+					changeIds: [...composed.appliedChangeIds, composed.conflictingChangeId],
+					paths: [...composed.conflictPaths],
+				};
+			}
+			const preparedJob: CodeHostJob = { ...codeHostJob, preparedKeptArea: area };
+			return await readPlanAndTree(preparedJob, composed.compositeCommitSha, composed.compositeTreeSha);
+		};
+		const canReadOnlyPreview =
+			(preview.changes ?? []).length === 0 &&
+			(!preview.exploration || preview.exploration.baseSha === preview.exploration.headSha);
+
+		let prepared: PreparedPreview;
+		if (cachedBuildPlan) {
+			// WHY: Pass 2 after a parked preview build reuses the deterministic Pass 1 compose result instead of re-running all code-host compose execs.
+			prepared = {
+				status: "build",
+				compositeCommitSha: cachedBuildPlan.compositeCommitSha,
+				compositeTreeSha: cachedBuildPlan.compositeTreeSha,
+				recipe: cachedBuildPlan.recipe,
+			};
+		} else {
+			try {
+				let ran: { readonly yielded: false; readonly value: PreparedPreview } | { readonly yielded: true };
+				if (canReadOnlyPreview) {
+					try {
+						ran = await this.#runYieldable<PreparedPreview>(
+							preview.profileId,
+							environmentId,
+							signal,
+							(codeHostJob) => composeAndRead(codeHostJob, false),
+							{ readOnly: true },
+						);
+					} catch (error) {
+						if (!isUnseededAreaRefusal(error) || signal.aborted) throw error;
+						ran = await this.#runYieldable<PreparedPreview>(
+							preview.profileId,
+							environmentId,
+							signal,
+							(codeHostJob) => composeAndRead(codeHostJob, true),
+						);
+					}
+				} else {
+					ran = await this.#runYieldable<PreparedPreview>(
+						preview.profileId,
+						environmentId,
+						signal,
+						(codeHostJob) => composeAndRead(codeHostJob, true),
+					);
+				}
+				if (ran.yielded) {
+					this.#emit({
+						event: "surface-code-host-yielded",
+						kind: "preview",
+						previewId: preview.previewId,
+						surfaceId: preview.surfaceId,
+					});
+					return false;
+				}
+				prepared = ran.value;
+			} catch (error) {
+				if (signal.aborted) throw error;
+				return await fail(surfaceFailureDetail(error, null, "Surface preview build failed"));
+			}
 		}
 
 		if (prepared.status === "conflicted") {
@@ -1232,11 +1432,20 @@ export class SurfaceCodeHostWorker {
 					signal,
 				);
 			} catch (error) {
+				if (planCacheKey) this.#previewBuildPlans.delete(planCacheKey);
 				if (signal.aborted) throw error;
 				return await fail(surfaceFailureDetail(error, prepared.recipe.folder, "Surface preview build failed"));
 			}
-			if (built === "parked") return true;
+			if (built === "parked") {
+				this.#setCachedPreviewPlan(planCacheKey, {
+					compositeCommitSha: prepared.compositeCommitSha,
+					compositeTreeSha: prepared.compositeTreeSha,
+					recipe: prepared.recipe,
+				});
+				return true;
+			}
 			if (built === "yielded") return false;
+			if (planCacheKey) this.#previewBuildPlans.delete(planCacheKey);
 			site = built;
 		} else {
 			site = { treeSha: prepared.compositeTreeSha, files: prepared.files, sharedAssets: prepared.sharedAssets };
@@ -1421,30 +1630,67 @@ export class SurfaceCodeHostWorker {
 			return true;
 		};
 		const productFolderRoots = await this.#resolveProductFolderRoots(pub.profileId, signal);
-		let prepared: PreparedPublish;
-		try {
-			const ran = await this.#runYieldable<PreparedPublish>(
-				pub.profileId,
-				environmentId,
-				signal,
-				async (codeHostJob) => {
-					await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
-					const resolved = await resolveMainHeadAndTree(codeHostJob, repository, explicitHeadSha);
-					const plan = await this.#readPlan(codeHostJob, { repository, tree: resolved.treeSha });
-					if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
-					if (plan.kind === "build")
-						return { status: "build", headSha: resolved.headSha, treeSha: resolved.treeSha, recipe: plan.recipe };
-					const treeData = await this.#readTree(codeHostJob, { repository, tree: resolved.treeSha });
-					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal, productFolderRoots);
+		const area = codeAreaPath(repository);
+		const readPublish = async (codeHostJob: CodeHostJob, seedFirst: boolean): Promise<PreparedPublish> => {
+			if (seedFirst) {
+				await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
+			}
+			const resolveJob: CodeHostJob = seedFirst ? { ...codeHostJob, preparedKeptArea: area } : codeHostJob;
+			const resolved = await resolveMainHeadAndTree(resolveJob, repository, explicitHeadSha, {
+				readOnly: !seedFirst,
+			});
+			const preparedJob: CodeHostJob = { ...codeHostJob, preparedKeptArea: area };
+			if (this.#useCombinedPlanAndTree) {
+				const combined = await readSurfacePreviewPlanAndTree(preparedJob, { repository, tree: resolved.treeSha });
+				if (combined.kind === "invalid") return { status: "invalid", detail: combined.detail };
+				if (combined.kind === "build") {
 					return {
-						status: "ready",
+						status: "build",
 						headSha: resolved.headSha,
 						treeSha: resolved.treeSha,
-						files: treeData.files,
-						sharedAssets,
+						recipe: combined.recipe,
 					};
-				},
-			);
+				}
+				const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
+				return {
+					status: "ready",
+					headSha: resolved.headSha,
+					treeSha: resolved.treeSha,
+					files: combined.files,
+					sharedAssets,
+				};
+			}
+			const plan = await this.#readPlan(preparedJob, { repository, tree: resolved.treeSha });
+			if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
+			if (plan.kind === "build")
+				return { status: "build", headSha: resolved.headSha, treeSha: resolved.treeSha, recipe: plan.recipe };
+			const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha });
+			const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
+			return {
+				status: "ready",
+				headSha: resolved.headSha,
+				treeSha: resolved.treeSha,
+				files: treeData.files,
+				sharedAssets,
+			};
+		};
+		let prepared: PreparedPublish;
+		try {
+			let ran: { readonly yielded: false; readonly value: PreparedPublish } | { readonly yielded: true };
+			try {
+				ran = await this.#runYieldable<PreparedPublish>(
+					pub.profileId,
+					environmentId,
+					signal,
+					(codeHostJob) => readPublish(codeHostJob, false),
+					{ readOnly: true },
+				);
+			} catch (error) {
+				if (!isUnseededAreaRefusal(error) || signal.aborted) throw error;
+				ran = await this.#runYieldable<PreparedPublish>(pub.profileId, environmentId, signal, (codeHostJob) =>
+					readPublish(codeHostJob, true),
+				);
+			}
 			if (ran.yielded) {
 				this.#emit({
 					event: "surface-code-host-yielded",
@@ -1528,6 +1774,99 @@ export class SurfaceCodeHostWorker {
 					"Surface publish upload failed",
 				),
 			);
+		}
+	}
+
+	async #runCleanup(cleanup: ClaimedSurfaceCleanupJob, signal: AbortSignal): Promise<boolean> {
+		const completeCleanup = async (status: "completed" | "failed", errorDetail: string | null): Promise<true> => {
+			await retryCommittedCompletion(
+				(attemptSignal) =>
+					this.#control.call(
+						"qorpera_surface_complete_cleanup",
+						{
+							p_job_id: cleanup.jobId,
+							p_status: status,
+							p_error_detail: errorDetail,
+							p_lease_token: cleanup.leaseToken ?? null,
+						},
+						attemptSignal,
+					),
+				signal,
+				this.#completionRetryDelaysMs,
+				{ treatNotRunningAsDoneOnRetry: true },
+			);
+			return true;
+		};
+
+		if (!cleanup.environmentId) {
+			return await completeCleanup("failed", "Code cleanup job is missing environmentId");
+		}
+		const repository = parseSurfaceRepositoryKey(cleanup.repositoryKey);
+		if (!repository) {
+			return await completeCleanup(
+				"failed",
+				cleanup.repositoryKey
+					? `Invalid surface repositoryKey "${cleanup.repositoryKey}"`
+					: "Code repository surface cleanup is missing repository metadata",
+			);
+		}
+		if (!isUuid(cleanup.workerId)) {
+			return await completeCleanup("failed", "Code cleanup job has invalid workerId");
+		}
+
+		const environmentId = cleanup.environmentId;
+		try {
+			// WHY: Remove worktree files in one published code-host job before deleting repo.git/worktrees and the branch ref in a second job.
+			const filesRan = await this.#runYieldable(cleanup.profileId, environmentId, signal, async (codeHostJob) =>
+				discardSurfaceSessionWorktree(codeHostJob, {
+					repository,
+					workerId: cleanup.workerId,
+					phase: "files",
+				}),
+			);
+			if (filesRan.yielded) {
+				this.#emit({
+					event: "surface-code-host-yielded",
+					kind: "cleanup",
+					jobId: cleanup.jobId,
+					surfaceId: cleanup.surfaceId,
+				});
+				return false;
+			}
+			if (filesRan.value.status === "unseeded") {
+				return await completeCleanup("completed", null);
+			}
+
+			const gitRan = await this.#runYieldable(cleanup.profileId, environmentId, signal, async (codeHostJob) =>
+				discardSurfaceSessionWorktree(codeHostJob, {
+					repository,
+					workerId: cleanup.workerId,
+					phase: "git-folder",
+				}),
+			);
+			if (gitRan.yielded) {
+				this.#emit({
+					event: "surface-code-host-yielded",
+					kind: "cleanup",
+					jobId: cleanup.jobId,
+					surfaceId: cleanup.surfaceId,
+				});
+				return false;
+			}
+			if (gitRan.value.status === "files_still_there") {
+				this.#emit({
+					event: "surface-code-host-cleanup-deferred",
+					jobId: cleanup.jobId,
+					surfaceId: cleanup.surfaceId,
+					workerId: cleanup.workerId,
+				});
+				return false;
+			}
+
+			return await completeCleanup("completed", null);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return await completeCleanup("failed", surfaceFailureDetail(error, null, "Surface worktree cleanup failed"));
 		}
 	}
 }

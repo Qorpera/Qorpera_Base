@@ -675,3 +675,41 @@ it("preserves exact pixel output across 1:1 transparent zeroing, all five first-
 	expect(idatFilteredSha256(interlacedView.png)).toBe(expectedRgbaFilteredSha);
 	expect(interlacedView.sha256).toBe(rgbaSha);
 });
+
+it("fast-paths clean bounded 8-bit RGB PNGs when requested and falls back on unsafe, malformed, or oversized inputs", () => {
+	const raw = pngFile(pngHeader(16, 10, 8, 2), pngRows(new Array(10).fill(new Array(16 * 3).fill(120))));
+	const fast = folderImageView(raw, { fastPathValidPng: true });
+	expect(fast.width).toBe(16);
+	expect(fast.height).toBe(10);
+	expect(fast.shownWidth).toBe(16);
+	expect(fast.shownHeight).toBe(10);
+	expect(fast.png.equals(raw)).toBe(true);
+	expect(fast.sha256).toBe(createHash("sha256").update(raw).digest("hex"));
+	const withSrgb = Buffer.concat([
+		raw.subarray(0, 8 + 12 + 13),
+		pngChunk("sRGB", Buffer.from([0])),
+		raw.subarray(8 + 12 + 13),
+	]);
+	expect(folderImageView(withSrgb, { fastPathValidPng: true }).png.equals(withSrgb)).toBe(true);
+	const withText = Buffer.concat([
+		raw.subarray(0, 8 + 12 + 13),
+		pngChunk("tEXt", Buffer.from("Comment\0secret")),
+		raw.subarray(8 + 12 + 13),
+	]);
+	const stripped = folderImageView(withText, { fastPathValidPng: true });
+	expect(stripped.png.equals(withText)).toBe(false);
+	expect(stripped.png.includes(Buffer.from("secret"))).toBe(false);
+	const rgba = pngFile(pngHeader(8, 8, 8, 6), pngRows(new Array(8).fill(new Array(8 * 4).fill(255))));
+	const fromRgba = folderImageView(rgba, { fastPathValidPng: true });
+	expect(fromRgba.png.equals(rgba)).toBe(false);
+	expect(fromRgba.png[25]).toBe(2);
+	const badCrc = Buffer.from(raw);
+	badCrc[badCrc.byteLength - 1] ^= 0xff;
+	expect(() => folderImageView(badCrc, { fastPathValidPng: true })).toThrow(FolderImageRefusal);
+	const trailing = Buffer.concat([raw, Buffer.from([1, 2, 3])]);
+	expect(folderImageView(trailing, { fastPathValidPng: true }).png.equals(trailing)).toBe(false);
+	const wide = pngFile(pngHeader(1921, 10, 8, 2), pngRows(new Array(10).fill(new Array(1921 * 3).fill(80))));
+	const scaled = folderImageView(wide, { fastPathValidPng: true });
+	expect(scaled.width).toBe(1921);
+	expect(scaled.shownWidth).toBe(1920);
+});

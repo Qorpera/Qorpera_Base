@@ -7,19 +7,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { crc32, inflateSync } from "node:zlib";
+import { constants, crc32, createDeflate, inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	COMPANY_MACHINE_DESKTOP_VIEW,
 	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
 	DesktopStream,
 	type DesktopStreamRelease,
+	decodeZlibRect,
+	decodeZrleRect,
 	encodePng,
+	maxZrleBytes,
 	PNG_PIXELS_PER_TURN,
+	RFB_ENCODING_ZLIB,
+	RFB_ENCODING_ZRLE,
 	RFB_TAKE_PER_TURN,
 	RFB_UNIT_COST,
 	RFB_VERSION,
 	RfbReader,
+	RfbZlibStream,
 	rfbSetEncodings,
 	rfbSetPixelFormat,
 	rfbUpdateRequest,
@@ -130,8 +136,9 @@ function clientMessages(sent: Buffer): string[] {
 			at += 20;
 			out.push("pixel format");
 		} else if (type === 2) {
-			expect(sent.subarray(at, at + 16).equals(rfbSetEncodings())).toBe(true);
-			at += 16;
+			const encodings = rfbSetEncodings();
+			expect(sent.subarray(at, at + encodings.byteLength).equals(encodings)).toBe(true);
+			at += encodings.byteLength;
 			out.push("encodings");
 		} else if (type === 3) {
 			out.push(`update ${sent[at + 1] === 1 ? "incremental" : "whole"}`);
@@ -1468,4 +1475,164 @@ describe("a desktop's live picture (20260930745000)", () => {
 		},
 		15_000,
 	);
+
+	it("decodes every RFC 6143 ZRLE subencoding, multi-tile rectangles, and rejects malformed or overflowing payloads", () => {
+		const rawTile = Buffer.from([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]);
+		expect(decodeZrleRect(2, 2, rawTile)).toEqual(
+			Buffer.from([10, 20, 30, 0, 40, 50, 60, 0, 70, 80, 90, 0, 100, 110, 120, 0]),
+		);
+		const solidTile = Buffer.from([1, 5, 6, 7]);
+		expect(decodeZrleRect(3, 2, solidTile)).toEqual(
+			Buffer.from([5, 6, 7, 0, 5, 6, 7, 0, 5, 6, 7, 0, 5, 6, 7, 0, 5, 6, 7, 0, 5, 6, 7, 0]),
+		);
+		// WHY: Verify 1-bit (palette=2), 2-bit (palette=3), and 4-bit (palette=5) MSB-first packed palette decoding.
+		const pal1Bit = Buffer.from([2, 1, 2, 3, 4, 5, 6, 0b1010_0000]);
+		expect(decodeZrleRect(4, 1, pal1Bit)).toEqual(Buffer.from([4, 5, 6, 0, 1, 2, 3, 0, 4, 5, 6, 0, 1, 2, 3, 0]));
+		const pal2Bit = Buffer.from([3, 1, 0, 0, 2, 0, 0, 3, 0, 0, 0b00_01_10_01]);
+		expect(decodeZrleRect(4, 1, pal2Bit)).toEqual(Buffer.from([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0]));
+		const pal4Bit = Buffer.from([5, 1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0, 5, 0, 0, 0x40, 0x21]);
+		expect(decodeZrleRect(4, 1, pal4Bit)).toEqual(Buffer.from([5, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0]));
+		// WHY: Plain RLE (128) including a run exceeding 255 pixels (255 + 4 + 1 = 260 pixels in a 20x13 tile).
+		const plainRle = Buffer.from([128, 9, 8, 7, 255, 4]);
+		const decodedPlain = decodeZrleRect(20, 13, plainRle);
+		expect(decodedPlain.byteLength).toBe(20 * 13 * 4);
+		expect(decodedPlain.subarray(0, 4)).toEqual(Buffer.from([9, 8, 7, 0]));
+		expect(decodedPlain.subarray(decodedPlain.byteLength - 4)).toEqual(Buffer.from([9, 8, 7, 0]));
+		// WHY: Palette RLE (130 = palette size 2) mixing single-pixel tags and multi-pixel run tags.
+		const palRle = Buffer.from([130, 11, 22, 33, 44, 55, 66, 0, 0x81, 2]);
+		expect(decodeZrleRect(2, 2, palRle)).toEqual(
+			Buffer.from([11, 22, 33, 0, 44, 55, 66, 0, 44, 55, 66, 0, 44, 55, 66, 0]),
+		);
+		// WHY: Multi-tile 66x65 rect exercises 4 tiles (64x64, 2x64, 64x1, 2x1).
+		const multiTile = Buffer.from([1, 1, 0, 0, 1, 2, 0, 0, 1, 3, 0, 0, 1, 4, 0, 0]);
+		const multi = decodeZrleRect(66, 65, multiTile);
+		expect(multi[0]).toBe(1);
+		expect(multi[64 * 4]).toBe(2);
+		expect(multi[64 * 66 * 4]).toBe(3);
+		expect(multi[(64 * 66 + 64) * 4]).toBe(4);
+		for (const bad of [
+			Buffer.from([17]),
+			Buffer.from([129]),
+			Buffer.from([1, 1, 2]),
+			Buffer.from([1, 1, 2, 3, 99]),
+			Buffer.from([3, 1, 0, 0, 2, 0, 0, 3, 0, 0, 0b11_00_00_00]),
+			Buffer.from([128, 1, 2, 3, 10]),
+			Buffer.from([130, 1, 0, 0, 2, 0, 0, 2]),
+			Buffer.from([130, 1, 0, 0, 2, 0, 0, 0x80, 10]),
+		])
+			expect(() => decodeZrleRect(2, 2, bad)).toThrow("RFB_INVALID");
+		expect(decodeZlibRect(1, 1, Buffer.from([1, 2, 3, 0]))).toEqual(Buffer.from([1, 2, 3, 0]));
+		expect(() => decodeZlibRect(1, 1, Buffer.from([1, 2, 3]))).toThrow("RFB_INVALID");
+	});
+
+	it("streams persistent ZRLE, Zlib, and Raw updates through DesktopStream, guards against zip bombs, and supports idleGraceMs", async () => {
+		const compress = (def: ReturnType<typeof createDeflate>, chunk: Buffer): Promise<Buffer> =>
+			new Promise((resolve, reject) => {
+				const out: Buffer[] = [];
+				const onData = (d: Buffer) => out.push(d);
+				const onErr = (err: Error) => {
+					def.off("data", onData);
+					reject(err);
+				};
+				def.on("data", onData);
+				def.once("error", onErr);
+				def.write(chunk);
+				def.flush(constants.Z_SYNC_FLUSH, () => {
+					def.off("data", onData);
+					def.off("error", onErr);
+					resolve(Buffer.concat(out));
+				});
+			});
+		const compressedRect = (
+			x: number,
+			y: number,
+			w: number,
+			h: number,
+			encoding: number,
+			payload: Buffer,
+		): Buffer => {
+			const head = Buffer.alloc(16);
+			head.writeUInt16BE(x, 0);
+			head.writeUInt16BE(y, 2);
+			head.writeUInt16BE(w, 4);
+			head.writeUInt16BE(h, 6);
+			head.writeInt32BE(encoding, 8);
+			head.writeUInt32BE(payload.byteLength, 12);
+			return Buffer.concat([head, payload]);
+		};
+		const bomb = createDeflate();
+		const bombPayload = await compress(bomb, Buffer.alloc(64 * 1024));
+		bomb.close();
+		const z = new RfbZlibStream();
+		await expect(z.inflate(bombPayload, 1024)).rejects.toThrow("RFB_UPDATE_TOO_LARGE");
+		z.close();
+		expect(maxZrleBytes(1600, 1000)).toBeGreaterThan(1600 * 1000 * 4);
+
+		const zrleDef = createDeflate();
+		const zlibDef = createDeflate();
+		const zrle1 = await compress(zrleDef, Buffer.from([1, 10, 20, 30]));
+		const zrle2 = await compress(zrleDef, Buffer.from([1, 40, 50, 60]));
+		const zlib1 = await compress(zlibDef, Buffer.from([70, 80, 90, 0, 70, 80, 90, 0, 70, 80, 90, 0, 70, 80, 90, 0]));
+		zrleDef.close();
+		zlibDef.close();
+
+		let emit: (chunk: Buffer) => void = () => {};
+		const stream = new DesktopStream({
+			cycleEveryMs: 0,
+			idleGraceMs: 200,
+			run: async (stdout, stdin, signal) => {
+				emit = stdout;
+				for (const piece of serverHello(4, 4)) stdout(piece);
+				const read = (async () => {
+					for await (const _chunk of stdin) {
+						if (signal.aborted) break;
+					}
+				})();
+				await new Promise<void>((resolve) => {
+					if (signal.aborted) resolve();
+					else signal.addEventListener("abort", () => resolve(), { once: true });
+				});
+				await read.catch(() => undefined);
+				return 0;
+			},
+		});
+		const messages: Buffer[] = [];
+		const stop1 = new AbortController();
+		const watch1 = stream.watch(async () => "ok", { send: async (msg) => void messages.push(msg) }, stop1.signal);
+		await vi.waitFor(() => expect(messages.some((m) => m[0] === STREAM_SIZE)).toBe(true));
+		emit(update(compressedRect(0, 0, 2, 2, RFB_ENCODING_ZRLE, zrle1)));
+		await vi.waitFor(() => expect(messages.filter((m) => m[0] === STREAM_RECTS)).toHaveLength(1));
+		emit(update(compressedRect(2, 0, 2, 2, RFB_ENCODING_ZRLE, zrle2)));
+		await vi.waitFor(() => expect(messages.filter((m) => m[0] === STREAM_RECTS)).toHaveLength(2));
+		emit(update(compressedRect(0, 2, 2, 2, RFB_ENCODING_ZLIB, zlib1)));
+		await vi.waitFor(() => expect(messages.filter((m) => m[0] === STREAM_RECTS)).toHaveLength(3));
+		emit(update(rawRect(2, 2, 2, 2, [200, 150, 100])));
+		await vi.waitFor(() => expect(messages.filter((m) => m[0] === STREAM_RECTS)).toHaveLength(4));
+		const rectMessages = messages.filter((m) => m[0] === STREAM_RECTS);
+		const firstPixel = (msg: Buffer) => {
+			const png = msg.subarray(15, 15 + msg.readUInt32BE(11));
+			return [...decodePng(png).data.subarray(0, 3)];
+		};
+		expect(firstPixel(rectMessages[0]!)).toEqual([30, 20, 10]);
+		expect(firstPixel(rectMessages[1]!)).toEqual([60, 50, 40]);
+		expect(firstPixel(rectMessages[2]!)).toEqual([90, 80, 70]);
+		expect(firstPixel(rectMessages[3]!)).toEqual([200, 150, 100]);
+		stop1.abort();
+		expect(await watch1).toBe("closed");
+		expect(stream.ended).toBeNull();
+		expect(stream.idle).toBe(true);
+		const stop2 = new AbortController();
+		const secondMessages: Buffer[] = [];
+		const watch2 = stream.watch(
+			async () => "ok",
+			{ send: async (msg) => void secondMessages.push(msg) },
+			stop2.signal,
+		);
+		expect(stream.idle).toBe(false);
+		emit(update(rawRect(0, 0, 4, 4, [12, 34, 56])));
+		await vi.waitFor(() => expect(secondMessages.some((m) => m[0] === STREAM_RECTS)).toBe(true));
+		stop2.abort();
+		expect(await watch2).toBe("closed");
+		await vi.waitFor(() => expect(stream.ended).toBe("idle"), { timeout: 2000 });
+	});
 });

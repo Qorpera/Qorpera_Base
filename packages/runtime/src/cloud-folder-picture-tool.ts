@@ -31,7 +31,7 @@ import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderEntry,
 	type CloudCompanyFolderUnit,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { refuseRetiredPath } from "./cloud-folder-app-retired.ts";
@@ -104,6 +104,10 @@ function pictureRefusal(error: unknown): never {
 		}; nothing was saved. Do not try again before then: go on without the picture, or tell the member.`,
 		usage_limit:
 			"USAGE_LIMIT_REACHED: the member's ChatGPT usage limit stopped the picture; nothing was saved. Try again later, or go on without it.",
+		spend_cap:
+			"GEMINI_SPEND_CAP_REACHED: the member's monthly Gemini API spend cap was reached; nothing was saved. Go on without the picture, and tell the member in one line.",
+		billing_required:
+			"GEMINI_BILLING_REQUIRED: the member's Gemini API key does not have billing or credits enabled for image generation; nothing was saved. Go on without the picture, and tell the member in one line.",
 		refused:
 			"PICTURE_REFUSED: the picture generator refused this prompt or could not draw it; nothing was saved. Change the prompt (leave out real people, brands and anything unsafe) and call again with a new operationKey; if it fails again, go on without it.",
 		free_plan:
@@ -259,7 +263,7 @@ export function cloudPictureTool(options: {
 			if (!operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
 			context.observation?.update({ inputBytes: Buffer.byteLength(request.prompt) });
 			// A repeat of a call this run already answered (its answer was lost on the way) costs no second picture.
-			const call = sha256(
+			const call = sha256Hex(
 				Buffer.from(
 					cloudToolJsonText({
 						path: request.path,
@@ -323,7 +327,7 @@ export function cloudPictureTool(options: {
 				return pictureRefusal(new CloudPictureFailure("invalid"));
 			}
 			if (view.format !== "png") pictureRefusal(new CloudPictureFailure("invalid"));
-			const fileSha256 = sha256(made.png);
+			const fileSha256 = sha256Hex(made.png);
 			// The picture model's own words for the prompt, when they differ: never more than a description's bound (the lane
 			// cuts them there), and left out when the answer would not reach the model whole with them (below).
 			const revised =
@@ -343,7 +347,7 @@ export function cloudPictureTool(options: {
 						arguments: {
 							path: request.path,
 							expectedVersion: request.expectedVersion,
-							promptSha256: sha256(Buffer.from(request.prompt, "utf8")),
+							promptSha256: sha256Hex(Buffer.from(request.prompt, "utf8")),
 						},
 						target: { path: request.path },
 						requiresCompanyRevision: true,
@@ -353,7 +357,7 @@ export function cloudPictureTool(options: {
 					refused: cloudFolderRefusal,
 					perform: async (_operation, { receiptId, signal }) => {
 						// The commit's operation key for the model's: fixed length, and distinct per tool.
-						const key = `make_picture:${sha256(Buffer.from(request.operationKey, "utf8"))}`;
+						const key = `make_picture:${sha256Hex(Buffer.from(request.operationKey, "utf8"))}`;
 						const unit: CloudCompanyFolderUnit = {
 							op: "write",
 							path: request.path,

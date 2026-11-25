@@ -17,7 +17,7 @@ import {
 	parseCompanyPresenceRoutes,
 } from "@qorpera/cloud-client/company-path-presence";
 import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
-import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
+import type { RealtimeChannel, RealtimeClient } from "@supabase/realtime-js";
 import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "./cloud-company-path-gateway.ts";
 import {
@@ -27,7 +27,7 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 
-type PresenceClient = Pick<SupabaseClient, "channel" | "removeChannel">;
+type PresenceClient = Pick<RealtimeClient, "channel" | "removeChannel">;
 export interface CloudCompanyPathPresence {
 	/** Publishes this claim and waits for a fresh observation of `path`. */
 	observe(
@@ -97,14 +97,16 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 	readonly #binding: CloudNativeToolBinding;
 	readonly #identity: CloudNativeToolIdentity;
 	readonly #control: CloudCompanyPathControl;
-	readonly #client: PresenceClient;
+	readonly #clientFactory: () => PresenceClient;
+	#client: PresenceClient | undefined;
 	readonly #stop = new AbortController();
 	readonly #parentSignal: AbortSignal;
 	readonly #signal: AbortSignal;
 	readonly #signatures = new PresenceSignatures();
 	readonly #clientId = crypto.randomUUID();
-	readonly #timer: ReturnType<typeof setInterval>;
+	#timer: ReturnType<typeof setInterval> | undefined;
 	readonly #onParentAbort: () => void;
+	#activated = false;
 	#channel: RealtimeChannel | undefined;
 	#connected = false;
 	#closed = false;
@@ -122,15 +124,22 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		binding: CloudNativeToolBinding;
 		identity: CloudNativeToolIdentity;
 		control: CloudCompanyPathControl;
-		client: PresenceClient;
+		client: PresenceClient | (() => PresenceClient);
 		signal: AbortSignal;
+		lazy?: boolean;
 	}) {
 		if (options.identity.audienceKind !== "company" || options.identity.runId !== options.binding.runId)
 			throw new Error("INVALID_NATIVE_PRESENCE_AUDIENCE");
 		this.#binding = parseCloudNativeToolBinding(options.binding);
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#control = options.control;
-		this.#client = options.client;
+		if (typeof options.client === "function") {
+			this.#clientFactory = options.client;
+		} else {
+			const fixed = options.client;
+			this.#client = fixed;
+			this.#clientFactory = () => fixed;
+		}
 		this.#parentSignal = options.signal;
 		this.#signal = this.#stop.signal;
 		this.#onParentAbort = () => {
@@ -142,12 +151,27 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		} else {
 			this.#parentSignal.addEventListener("abort", this.#onParentAbort, { once: true });
 		}
+		if (options.lazy !== true) {
+			this.#activate();
+			if (this.#signal.aborted) void this.close();
+			else void this.#refresh();
+		} else if (this.#signal.aborted) {
+			void this.close();
+		}
+	}
+
+	#activate(): void {
+		if (this.#activated || this.#closed) return;
+		this.#activated = true;
 		this.#timer = setInterval(() => {
 			void this.#refresh();
 		}, RENEWAL_MS);
 		this.#timer.unref?.();
-		if (this.#signal.aborted) void this.close();
-		else void this.#refresh();
+	}
+
+	#presenceClient(): PresenceClient {
+		if (!this.#client) this.#client = this.#clientFactory();
+		return this.#client;
 	}
 
 	#call(method: CloudCompanyPathRpc, args: Record<string, unknown>, signal = this.#signal): Promise<unknown> {
@@ -212,7 +236,7 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#channel = undefined;
 		this.#connected = false;
 		this.#statements = [];
-		void this.#client.removeChannel(channel).catch(() => undefined);
+		if (this.#client) void this.#client.removeChannel(channel).catch(() => undefined);
 	}
 	#refresh(): Promise<void> {
 		if (this.#pending) return this.#pending;
@@ -251,7 +275,7 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#registration = identity;
 		this.#signal.throwIfAborted();
 		if (!this.#channel) {
-			const next = this.#client.channel(`qorpera-presence-${identity.companyId}`, {
+			const next = this.#presenceClient().channel(`qorpera-presence-${identity.companyId}`, {
 				config: { private: true, presence: { key: this.#clientId }, broadcast: { self: false } },
 			});
 			this.#channel = next;
@@ -324,6 +348,7 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		};
 		try {
 			const paths = companyPresencePaths([path]);
+			this.#activate();
 			this.#claims = [{ path, extent, activity }];
 			this.#revision++;
 			await this.#refresh();
@@ -446,16 +471,24 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#parentSignal.removeEventListener("abort", this.#onParentAbort);
 		this.#stop.abort();
 		clearInterval(this.#timer);
+		this.#timer = undefined;
 		const channel = this.#channel;
+		const client = this.#client;
+		const activated = this.#activated;
 		this.#channel = undefined;
 		this.#connected = false;
 		this.#statements = [];
 		this.#claims = [];
+		// WHY: lazy instances that never observed skip registration, WS, and forget RPCs on ~99% of turns.
+		if (!activated) {
+			this.#closing = Promise.resolve();
+			return this.#closing;
+		}
 		this.#closing = (async () => {
 			// It settles promptly once stopped: its requests share the aborted signal.
 			await this.#pending;
 			await Promise.allSettled([
-				...(channel ? [this.#client.removeChannel(channel)] : []),
+				...(channel && client ? [client.removeChannel(channel)] : []),
 				this.#call(
 					"qorpera_native_presence_forget",
 					{ p_binding: this.#binding, p_client_id: this.#clientId },

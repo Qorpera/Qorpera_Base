@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+	isRecord,
 	type JsonValue,
 	SURFACE_AUTOMATION_OUTPUT_MODES,
 	SURFACE_CHANGE_STATUSES,
@@ -11,6 +12,7 @@ import {
 	type SurfaceSessionQuestion,
 	type SurfaceSessionState,
 	type SurfaceSourceKind,
+	UUID_ANY_CASE_PATTERN,
 } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { CloudRunnerProviderRequestError } from "./provider-http.ts";
@@ -24,6 +26,7 @@ import type {
 	ClaimedSurfaceApprovedChange,
 	ClaimedSurfaceAutomationJob,
 	ClaimedSurfaceChangeRange,
+	ClaimedSurfaceCleanupJob,
 	ClaimedSurfaceJobs,
 	ClaimedSurfaceMergeJob,
 	ClaimedSurfacePeerSession,
@@ -39,7 +42,6 @@ import type {
 export type CloudRunnerCapability = "agent_turn" | "git_worktree" | "company_substrate";
 export type CloudComputeIdentityOwnershipKind = "member" | "company" | "department" | "security_boundary";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const CONTROL_PLANE_REQUEST_TIMEOUT_MS = 30_000;
@@ -840,7 +842,7 @@ type CloudRunnerOrchestratorRequest =
 	  };
 
 function requiredUuid(value: string, label: string): void {
-	if (!UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
+	if (!UUID_ANY_CASE_PATTERN.test(value)) throw new Error(`${label} is invalid`);
 }
 
 function requiredSeconds(value: number, label: string, maximum: number): number {
@@ -876,15 +878,15 @@ function safeDeliveryFailure(error: unknown): string {
 	);
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+function responseRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) {
 		throw new Error(`Runner orchestrator returned invalid ${label}`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function responseUuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+	if (typeof value !== "string" || !UUID_ANY_CASE_PATTERN.test(value)) {
 		throw new Error(`Runner orchestrator returned invalid ${label}`);
 	}
 	return value;
@@ -932,7 +934,7 @@ function responseSha256(value: unknown, label: string): string {
 }
 
 function parseRoutineScheduleHead(value: unknown): CloudRoutineScheduleHead {
-	const input = record(value, "routine schedule head");
+	const input = responseRecord(value, "routine schedule head");
 	if (!Array.isArray(input.triggers) || input.triggers.length < 1 || input.triggers.length > 12) {
 		throw new Error("Runner orchestrator returned invalid routine triggers");
 	}
@@ -947,7 +949,7 @@ function parseRoutineScheduleHead(value: unknown): CloudRoutineScheduleHead {
 		staffAgentId: responseUuid(input.staff_agent_id, "routine staff agent id"),
 		triggers: structuredClone(input.triggers) as JsonValue,
 		scheduleCursors: input.schedule_cursors.map((value) => {
-			const cursor = record(value, "routine schedule cursor");
+			const cursor = responseRecord(value, "routine schedule cursor");
 			const lastScheduledFor =
 				cursor.last_scheduled_for === null || cursor.last_scheduled_for === undefined
 					? undefined
@@ -972,7 +974,7 @@ function parseRoutineScheduleHead(value: unknown): CloudRoutineScheduleHead {
 }
 
 function parseRoutineSchedulePage(value: unknown): CloudRoutineSchedulePage {
-	const input = record(value, "routine schedule page");
+	const input = responseRecord(value, "routine schedule page");
 	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
 		throw new Error("Runner orchestrator returned invalid routine schedule page");
 	}
@@ -991,7 +993,7 @@ function parseRoutineSchedulePage(value: unknown): CloudRoutineSchedulePage {
 }
 
 function parseRoutineWakeOccurrence(value: unknown, occurrenceId?: string): CloudRoutineWakeOccurrence {
-	const input = record(value, "routine wake occurrence");
+	const input = responseRecord(value, "routine wake occurrence");
 	// The company is paused: nothing was admitted and the cursor did not move; the
 	// same occurrence is offered again on the next pass.
 	if (input.status === "deferred" && input.occurrence_id === null && occurrenceId) {
@@ -1024,7 +1026,7 @@ function parseRoutineWakeOccurrence(value: unknown, occurrenceId?: string): Clou
 }
 
 function parseRoutineNextDue(value: unknown): CloudRoutineNextDue {
-	const input = record(value, "routine next due time");
+	const input = responseRecord(value, "routine next due time");
 	if (input.status !== "advanced" && input.status !== "unchanged" && input.status !== "stale") {
 		throw new Error("Runner orchestrator returned invalid routine next due status");
 	}
@@ -1036,7 +1038,7 @@ function parseRoutineNextDue(value: unknown): CloudRoutineNextDue {
 }
 
 function parseFolderDynamicRoutinePage(value: unknown): CloudFolderDynamicRoutinePage {
-	const input = record(value, "folder dynamic routine page");
+	const input = responseRecord(value, "folder dynamic routine page");
 	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
 		throw new Error("Runner orchestrator returned invalid folder dynamic routine page");
 	}
@@ -1049,7 +1051,7 @@ function parseFolderDynamicRoutinePage(value: unknown): CloudFolderDynamicRoutin
 	}
 	return {
 		items: input.items.map((value) => {
-			const item = record(value, "folder dynamic routine");
+			const item = responseRecord(value, "folder dynamic routine");
 			if (
 				!Number.isSafeInteger(item.version) ||
 				(item.version as number) < 1 ||
@@ -1082,7 +1084,7 @@ const FOLDER_DYNAMIC_ROUTINE_RUN_STATUSES = new Set<CloudFolderDynamicRoutineRun
 ]);
 
 function parseFolderDynamicRoutineRun(value: unknown): CloudFolderDynamicRoutineRun {
-	const input = record(value, "folder dynamic routine run");
+	const input = responseRecord(value, "folder dynamic routine run");
 	const status = input.status as CloudFolderDynamicRoutineRun["status"];
 	if (!FOLDER_DYNAMIC_ROUTINE_RUN_STATUSES.has(status)) {
 		throw new Error("Runner orchestrator returned an invalid folder dynamic routine status");
@@ -1104,7 +1106,7 @@ function folderDrainName(drain: string): void {
 }
 
 function parseFolderDrainPage(value: unknown): CloudFolderDrainPage {
-	const input = record(value, "folder drain page");
+	const input = responseRecord(value, "folder drain page");
 	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
 		throw new Error("Runner orchestrator returned invalid folder drain page");
 	}
@@ -1117,7 +1119,7 @@ function parseFolderDrainPage(value: unknown): CloudFolderDrainPage {
 	}
 	return {
 		items: input.items.map((item) =>
-			responseUuid(record(item, "folder drain company").environment_id, "folder environment id"),
+			responseUuid(responseRecord(item, "folder drain company").environment_id, "folder environment id"),
 		),
 		hasMore: input.has_more,
 		...(nextAfterEnvironmentId ? { nextAfterEnvironmentId } : {}),
@@ -1125,7 +1127,7 @@ function parseFolderDrainPage(value: unknown): CloudFolderDrainPage {
 }
 
 function parseFolderDrainResult(value: unknown): CloudFolderDrainResult {
-	const input = record(value, "folder drain result");
+	const input = responseRecord(value, "folder drain result");
 	if (typeof input.state !== "string" || !/^[a-z_]{1,32}$/.test(input.state)) {
 		throw new Error("Runner orchestrator returned an invalid folder drain state");
 	}
@@ -1133,7 +1135,7 @@ function parseFolderDrainResult(value: unknown): CloudFolderDrainResult {
 }
 
 function parseFolderMaterializationPage(value: unknown): CloudFolderMaterializationPage {
-	const input = record(value, "folder materialization page");
+	const input = responseRecord(value, "folder materialization page");
 	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
 		throw new Error("Runner orchestrator returned invalid folder materialization page");
 	}
@@ -1145,7 +1147,9 @@ function parseFolderMaterializationPage(value: unknown): CloudFolderMaterializat
 		throw new Error("Runner orchestrator returned inconsistent folder materialization pagination");
 	}
 	return {
-		items: input.items.map((value) => responseUuid(record(value, "folder company").profile_id, "folder company id")),
+		items: input.items.map((value) =>
+			responseUuid(responseRecord(value, "folder company").profile_id, "folder company id"),
+		),
 		hasMore: input.has_more,
 		...(nextAfterProfileId ? { nextAfterProfileId } : {}),
 	};
@@ -1160,7 +1164,7 @@ const FOLDER_MATERIALIZATION_STATES = new Set<CloudFolderMaterialization["state"
 ]);
 
 function parseFolderMaterialization(value: unknown): CloudFolderMaterialization {
-	const input = record(value, "folder materialization");
+	const input = responseRecord(value, "folder materialization");
 	const state = input.state as CloudFolderMaterialization["state"];
 	if (!FOLDER_MATERIALIZATION_STATES.has(state)) {
 		throw new Error("Runner orchestrator returned an invalid folder materialization state");
@@ -1173,7 +1177,7 @@ function parseFolderMaterialization(value: unknown): CloudFolderMaterialization 
 }
 
 function parseExecutionSponsor(value: unknown): CloudExecutionSponsorPin {
-	const input = record(value, "execution sponsor");
+	const input = responseRecord(value, "execution sponsor");
 	if (
 		input.kind !== "member_connection" &&
 		input.kind !== "company_service_account" &&
@@ -1213,11 +1217,11 @@ function parseExecutionSponsor(value: unknown): CloudExecutionSponsorPin {
 }
 
 function parseRunnerModelPolicy(value: unknown): CloudRunnerModelPolicyPin {
-	const input = record(value, "runner model policy");
+	const input = responseRecord(value, "runner model policy");
 	if (!Array.isArray(input.allowed_models) || input.allowed_models.length !== 1) {
 		throw new Error("Runner orchestrator returned invalid model authority");
 	}
-	const allowed = record(input.allowed_models[0], "allowed runner model");
+	const allowed = responseRecord(input.allowed_models[0], "allowed runner model");
 	const provider = responseText(allowed.provider, "model provider", 64);
 	const model = responseText(allowed.model, "model id", 160);
 	if (!PROVIDER_ID_PATTERN.test(provider)) throw new Error("Runner orchestrator returned invalid model provider");
@@ -1232,7 +1236,7 @@ function parseRunnerModelPolicy(value: unknown): CloudRunnerModelPolicyPin {
 }
 
 function parseRunnerWork(value: unknown): CloudRunnerWork {
-	const input = record(value, "runner work");
+	const input = responseRecord(value, "runner work");
 	if (
 		input.source_kind !== "session_turn" &&
 		input.source_kind !== "wake" &&
@@ -1357,7 +1361,7 @@ function parseRunnerWork(value: unknown): CloudRunnerWork {
 }
 
 function parseOrchestrationClaim(value: unknown): CloudRunnerOrchestrationClaim {
-	const input = record(value, "orchestration claim");
+	const input = responseRecord(value, "orchestration claim");
 	if (input.status !== "claimed" && input.status !== "assigned") {
 		throw new Error("Runner orchestrator returned invalid claim status");
 	}
@@ -1434,7 +1438,7 @@ function validateSurfaceStringList(
 }
 
 function parseSurfacePlacementHint(value: unknown): SurfaceMachinePlacementHint {
-	const input = record(value, "surface placement hint");
+	const input = responseRecord(value, "surface placement hint");
 	if (input.strategy !== "reuse_machine" && input.strategy !== "spawn_overflow_machine") {
 		throw new Error("Runner orchestrator returned invalid surface placement strategy");
 	}
@@ -1451,7 +1455,7 @@ function parseSurfacePlacementHint(value: unknown): SurfaceMachinePlacementHint 
 }
 
 function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob {
-	const input = record(value, "claimed surface session");
+	const input = responseRecord(value, "claimed surface session");
 	if (input.state !== "queued" && input.state !== "reconciling") {
 		throw new Error("Runner orchestrator returned invalid claimed surface session state");
 	}
@@ -1521,7 +1525,7 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		if (input.sponsor === null) {
 			sponsor = null;
 		} else {
-			const rawSponsor = record(input.sponsor, "surface session sponsor");
+			const rawSponsor = responseRecord(input.sponsor, "surface session sponsor");
 			sponsor = {
 				sponsorBindingId: responseUuid(rawSponsor.sponsorBindingId, "surface sponsor binding id"),
 				sponsorVersion: responseInteger(rawSponsor.sponsorVersion, "surface sponsor version", 1, 1_000_000),
@@ -1563,20 +1567,25 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 }
 
 function parseClaimedSurfaceChangeRange(value: unknown, label: string): ClaimedSurfaceChangeRange {
-	const input = record(value, label);
+	const input = responseRecord(value, label);
 	if (typeof input.title !== "string") {
 		throw new Error(`Runner orchestrator returned invalid ${label} title`);
 	}
+	const optionGroupKey =
+		input.optionGroupKey === undefined
+			? undefined
+			: optionalResponseString(input.optionGroupKey, `${label} option group key`);
 	return {
 		changeId: responseUuid(input.changeId, `${label} change id`),
 		parentSha: responseText(input.parentSha, `${label} parent sha`, 64),
 		headSha: responseText(input.headSha, `${label} head sha`, 64),
 		title: input.title,
+		...(optionGroupKey !== undefined ? { optionGroupKey } : {}),
 	};
 }
 
 function parseClaimedSurfacePreviewExploration(value: unknown): ClaimedSurfacePreviewExploration {
-	const input = record(value, "surface preview exploration");
+	const input = responseRecord(value, "surface preview exploration");
 	return {
 		sessionId: responseUuid(input.sessionId, "surface exploration session id"),
 		baseSha: responseText(input.baseSha, "surface exploration base sha", 64),
@@ -1585,7 +1594,7 @@ function parseClaimedSurfacePreviewExploration(value: unknown): ClaimedSurfacePr
 }
 
 function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob {
-	const input = record(value, "claimed surface preview");
+	const input = responseRecord(value, "claimed surface preview");
 	if (!Array.isArray(input.selectedChangeIds)) {
 		throw new Error("Runner orchestrator returned invalid preview change ids");
 	}
@@ -1652,7 +1661,7 @@ function parseOptionalBaseFiles(value: unknown): Readonly<Record<string, string 
 }
 
 function parseClaimedSurfaceApprovedChange(value: unknown): ClaimedSurfaceApprovedChange {
-	const input = record(value, "approved surface change");
+	const input = responseRecord(value, "approved surface change");
 	if (
 		typeof input.kind !== "string" ||
 		typeof input.title !== "string" ||
@@ -1676,20 +1685,33 @@ function parseClaimedSurfaceApprovedChange(value: unknown): ClaimedSurfaceApprov
 	};
 }
 
+function parseOptionalShaList(value: unknown, label: string): readonly string[] | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!Array.isArray(value) || value.length > 64) {
+		throw new Error(`Runner orchestrator returned invalid ${label}`);
+	}
+	return value.map((item) => responseText(item, label, 64));
+}
+
 function parseClaimedSurfacePeerSession(value: unknown): ClaimedSurfacePeerSession {
-	const input = record(value, "surface peer session");
+	const input = responseRecord(value, "surface peer session");
 	if (!Array.isArray(input.remainingChanges)) {
 		throw new Error("Runner orchestrator returned invalid surface peer session changes");
 	}
+	const recordedChangeHeadShas = parseOptionalShaList(
+		input.recordedChangeHeadShas,
+		"surface peer recorded change head shas",
+	);
 	return {
 		sessionId: responseUuid(input.sessionId, "surface peer session id"),
 		workerId: responseUuid(input.workerId, "surface peer worker id"),
+		...(recordedChangeHeadShas !== undefined ? { recordedChangeHeadShas } : {}),
 		remainingChanges: input.remainingChanges.map((item) => parseClaimedSurfaceChangeRange(item, "peer change")),
 	};
 }
 
 function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
-	const input = record(value, "claimed surface merge");
+	const input = responseRecord(value, "claimed surface merge");
 	if (input.kind !== "land_change" && input.kind !== "undo_change") {
 		throw new Error("Runner orchestrator returned invalid surface merge kind");
 	}
@@ -1700,7 +1722,7 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 	const payload =
 		input.payload === null || input.payload === undefined
 			? {}
-			: (structuredClone(record(input.payload, "surface merge payload")) as Record<string, unknown>);
+			: (structuredClone(responseRecord(input.payload, "surface merge payload")) as Record<string, unknown>);
 	let sourceKind: SurfaceSourceKind | undefined;
 	if (input.sourceKind !== undefined && input.sourceKind !== null) {
 		if (typeof input.sourceKind !== "string" || !SURFACE_SOURCE_KIND_SET.has(input.sourceKind)) {
@@ -1723,6 +1745,14 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 			: input.sessionWorkerId === null
 				? null
 				: responseUuid(input.sessionWorkerId, "surface session worker id");
+	const sessionBranchHeadSha =
+		input.sessionBranchHeadSha === undefined
+			? undefined
+			: optionalResponseString(input.sessionBranchHeadSha, "surface session branch head sha");
+	const sessionRecordedChangeHeadShas = parseOptionalShaList(
+		input.sessionRecordedChangeHeadShas,
+		"surface session recorded change head shas",
+	);
 	let sessionState: SurfaceSessionState | null | undefined;
 	if (input.sessionState !== undefined) {
 		if (input.sessionState === null) {
@@ -1746,7 +1776,7 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 			throw new Error("Runner orchestrator returned invalid session change statuses");
 		}
 		allSessionChangeStatuses = input.allSessionChangeStatuses.map((item) => {
-			const entry = record(item, "session change status");
+			const entry = responseRecord(item, "session change status");
 			if (typeof entry.status !== "string" || !SURFACE_CHANGE_STATUS_SET.has(entry.status)) {
 				throw new Error("Runner orchestrator returned invalid session change status");
 			}
@@ -1790,7 +1820,7 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 			? undefined
 			: input.preMergeSnapshot === null
 				? null
-				: (structuredClone(record(input.preMergeSnapshot, "surface merge pre-merge snapshot")) as Record<
+				: (structuredClone(responseRecord(input.preMergeSnapshot, "surface merge pre-merge snapshot")) as Record<
 						string,
 						unknown
 					>);
@@ -1828,6 +1858,8 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		...(autoPublish !== undefined ? { autoPublish } : {}),
 		...(expectMainSha !== undefined ? { expectMainSha } : {}),
 		...(sessionWorkerId !== undefined ? { sessionWorkerId } : {}),
+		...(sessionBranchHeadSha !== undefined ? { sessionBranchHeadSha } : {}),
+		...(sessionRecordedChangeHeadShas !== undefined ? { sessionRecordedChangeHeadShas } : {}),
 		...(sessionState !== undefined ? { sessionState } : {}),
 		...(sessionHasActiveChat !== undefined ? { sessionHasActiveChat } : {}),
 		payload,
@@ -1843,13 +1875,13 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 }
 
 function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob {
-	const input = record(value, "claimed surface publish");
+	const input = responseRecord(value, "claimed surface publish");
 	const siteId =
 		input.siteId === null || input.siteId === undefined ? null : responseUuid(input.siteId, "surface site id");
 	const payload =
 		input.payload === null || input.payload === undefined
 			? {}
-			: (structuredClone(record(input.payload, "surface publish payload")) as Record<string, unknown>);
+			: (structuredClone(responseRecord(input.payload, "surface publish payload")) as Record<string, unknown>);
 	const leaseToken =
 		input.leaseToken === undefined
 			? undefined
@@ -1886,7 +1918,7 @@ function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob
 }
 
 function parseClaimedSurfaceAutomationJob(value: unknown): ClaimedSurfaceAutomationJob {
-	const input = record(value, "claimed surface automation");
+	const input = responseRecord(value, "claimed surface automation");
 	if (typeof input.title !== "string" || typeof input.prompt !== "string") {
 		throw new Error("Runner orchestrator returned invalid claimed surface automation");
 	}
@@ -1914,15 +1946,59 @@ function parseClaimedSurfaceAutomationJob(value: unknown): ClaimedSurfaceAutomat
 	};
 }
 
+function parseClaimedSurfaceCleanupJob(value: unknown): ClaimedSurfaceCleanupJob {
+	const input = responseRecord(value, "claimed surface cleanup");
+	const sessionId =
+		input.sessionId === null || input.sessionId === undefined
+			? null
+			: responseUuid(input.sessionId, "surface cleanup session id");
+	const leaseToken =
+		input.leaseToken === undefined
+			? undefined
+			: input.leaseToken === null
+				? null
+				: responseUuid(input.leaseToken, "surface cleanup lease token");
+	const environmentId =
+		input.environmentId === undefined
+			? undefined
+			: input.environmentId === null
+				? null
+				: responseUuid(input.environmentId, "surface cleanup environment id");
+	let sourceKind: SurfaceSourceKind | undefined;
+	if (input.sourceKind !== undefined && input.sourceKind !== null) {
+		if (typeof input.sourceKind !== "string" || !SURFACE_SOURCE_KIND_SET.has(input.sourceKind)) {
+			throw new Error("Runner orchestrator returned invalid surface source kind");
+		}
+		sourceKind = input.sourceKind as SurfaceSourceKind;
+	}
+	return {
+		jobId: responseUuid(input.jobId, "surface cleanup job id"),
+		surfaceId: responseUuid(input.surfaceId, "surface id"),
+		sessionId,
+		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(environmentId !== undefined ? { environmentId } : {}),
+		...(sourceKind !== undefined ? { sourceKind } : {}),
+		...(leaseToken !== undefined ? { leaseToken } : {}),
+		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		workerId: responseUuid(input.workerId, "surface cleanup worker id"),
+	};
+}
+
 export function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
-	const input = record(value, "claimed surface jobs");
+	const input = responseRecord(value, "claimed surface jobs");
 	if (!Array.isArray(input.sessions) || !Array.isArray(input.previews)) {
 		throw new Error("Runner orchestrator returned invalid claimed surface jobs");
 	}
 	const rawMerges = input.merges === undefined || input.merges === null ? [] : input.merges;
 	const rawPublishes = input.publishes === undefined || input.publishes === null ? [] : input.publishes;
+	const rawCleanups = input.cleanups === undefined || input.cleanups === null ? [] : input.cleanups;
 	const rawAutomations = input.automations === undefined || input.automations === null ? [] : input.automations;
-	if (!Array.isArray(rawMerges) || !Array.isArray(rawPublishes) || !Array.isArray(rawAutomations)) {
+	if (
+		!Array.isArray(rawMerges) ||
+		!Array.isArray(rawPublishes) ||
+		!Array.isArray(rawCleanups) ||
+		!Array.isArray(rawAutomations)
+	) {
 		throw new Error("Runner orchestrator returned invalid claimed surface jobs");
 	}
 	return {
@@ -1930,12 +2006,13 @@ export function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 		previews: input.previews.map(parseClaimedSurfacePreviewJob),
 		merges: rawMerges.map(parseClaimedSurfaceMergeJob),
 		publishes: rawPublishes.map(parseClaimedSurfacePublishJob),
+		cleanups: rawCleanups.map(parseClaimedSurfaceCleanupJob),
 		automations: rawAutomations.map(parseClaimedSurfaceAutomationJob),
 	};
 }
 
 function parseRenewSurfaceLeaseResult(value: unknown): RenewSurfaceLeaseResult {
-	const input = record(value, "surface lease renewal");
+	const input = responseRecord(value, "surface lease renewal");
 	if (typeof input.renewed !== "boolean") {
 		throw new Error("Runner orchestrator returned invalid surface lease renewal flag");
 	}
@@ -1947,7 +2024,7 @@ function parseRenewSurfaceLeaseResult(value: unknown): RenewSurfaceLeaseResult {
 }
 
 function parseReleaseSurfaceSessionClaimResult(value: unknown): ReleaseSurfaceSessionClaimResult {
-	const input = record(value, "surface session claim release");
+	const input = responseRecord(value, "surface session claim release");
 	const sessionId = responseUuid(input.sessionId, "surface session id");
 	if (typeof input.released !== "boolean") {
 		throw new Error("Runner orchestrator returned invalid surface session release flag");
@@ -1959,7 +2036,7 @@ function parseReleaseSurfaceSessionClaimResult(value: unknown): ReleaseSurfaceSe
 }
 
 function parseCompleteSurfacePreviewResult(value: unknown): CompleteSurfacePreviewResult {
-	const input = record(value, "surface preview completion");
+	const input = responseRecord(value, "surface preview completion");
 	if (
 		input.status !== "ready" &&
 		input.status !== "reconciling" &&
@@ -1981,7 +2058,7 @@ function parseCompleteSurfacePreviewResult(value: unknown): CompleteSurfacePrevi
 }
 
 function parseCompleteSurfaceSessionTurnResult(value: unknown): CompleteSurfaceSessionTurnResult {
-	const input = record(value, "surface session completion");
+	const input = responseRecord(value, "surface session completion");
 	if (typeof input.state !== "string" || !SURFACE_SESSION_STATE_SET.has(input.state)) {
 		throw new Error("Runner orchestrator returned invalid surface session state");
 	}
@@ -1993,7 +2070,7 @@ function parseCompleteSurfaceSessionTurnResult(value: unknown): CompleteSurfaceS
 }
 
 function parseCompleteSurfaceMergeResult(value: unknown): CompleteSurfaceMergeResult {
-	const input = record(value, "surface merge completion");
+	const input = responseRecord(value, "surface merge completion");
 	if (input.status !== "landed" && input.status !== "conflicted" && input.status !== "failed") {
 		throw new Error("Runner orchestrator returned invalid surface merge status");
 	}
@@ -2004,7 +2081,7 @@ function parseCompleteSurfaceMergeResult(value: unknown): CompleteSurfaceMergeRe
 }
 
 function parseCompleteSurfacePublishResult(value: unknown): CompleteSurfacePublishResult {
-	const input = record(value, "surface publish completion");
+	const input = responseRecord(value, "surface publish completion");
 	if (input.status !== "published" && input.status !== "failed") {
 		throw new Error("Runner orchestrator returned invalid surface publish status");
 	}
@@ -3281,7 +3358,7 @@ function waitForPoll(delayMs: number, signal: AbortSignal): Promise<void> {
 }
 
 function parseRunnerAssignment(value: unknown): CloudRunnerAssignment {
-	const input = record(value, "runner assignment");
+	const input = responseRecord(value, "runner assignment");
 	if (typeof input.capability_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(input.capability_sha256)) {
 		throw new Error("Runner orchestrator returned invalid assignment capability hash");
 	}
@@ -3887,6 +3964,8 @@ export class CloudRunnerOrchestrator {
 			slow: false,
 			/** When the last claim batch a wake-up brought forward started; those stay pollIntervalMs apart. */
 			lastWokenClaimAt: Number.NEGATIVE_INFINITY,
+			emptyWokenClaims: 0,
+			lastEmptyWokenAt: Number.NEGATIVE_INFINITY,
 			/** A backstop claim found new work no wake-up had announced, at this time. Realtime delivers a
 			 * wake-up just after the enqueue commits, so one may still be on its way for WAKE_GRACE_MS. */
 			unannouncedSince: undefined as number | undefined,
@@ -3978,10 +4057,22 @@ export class CloudRunnerOrchestrator {
 					wakes.announced = false;
 					const reconciled = reconcile.succeeded;
 					const includeRetained = reconciled > reconcile.retainedRead;
-					if (announced) wakes.lastWokenClaimAt = performance.now();
+					const claimStartedAt = performance.now();
 					const { claims, fresh } = await this.#claimBatch(available, signal, inFlightClaimIds, includeRetained);
 					if (includeRetained) reconcile.retainedRead = Math.max(reconcile.retainedRead, reconciled);
-					if (claims.length > 0) wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
+					if (claims.length > 0) {
+						wakes.emptyWokenClaims = 0;
+						if (announced) wakes.lastWokenClaimAt = claimStartedAt;
+						wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
+					} else if (announced) {
+						// WHY: Do not throttle Wake #2 (job insert) behind an empty Wake #1 (pre-materialization), while still bounding repeated empty wake bursts to one claim per poll interval.
+						if (claimStartedAt - wakes.lastEmptyWokenAt >= pollIntervalMs) wakes.emptyWokenClaims = 0;
+						wakes.emptyWokenClaims += 1;
+						wakes.lastEmptyWokenAt = claimStartedAt;
+						if (wakes.emptyWokenClaims >= 2) wakes.lastWokenClaimAt = claimStartedAt;
+					} else {
+						wakes.emptyWokenClaims = 0;
+					}
 					if (wake && fresh > 0 && wakes.slow && !announced && wakes.sequence === sequence)
 						wakes.unannouncedSince ??= performance.now();
 					for (const claim of claims) {
@@ -4280,7 +4371,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			},
 			signal,
 		);
-		const obj = record(answer, "routine check wake decision");
+		const obj = responseRecord(answer, "routine check wake decision");
 		if (
 			obj.schema !== "qorpera.routine-check-wake/v1" ||
 			(obj.status !== "skipped" && obj.status !== "wake_required" && obj.status !== "stale") ||
@@ -4311,7 +4402,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			},
 			signal,
 		);
-		const obj = record(answer, "routine code checks result");
+		const obj = responseRecord(answer, "routine code checks result");
 		if (
 			obj.schema !== "qorpera.routine-code-checks/v1" ||
 			typeof obj.ok !== "boolean" ||
@@ -4458,7 +4549,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 	}
 
 	async readPassDue(signal?: AbortSignal): Promise<Readonly<Record<string, boolean>>> {
-		const input = record(
+		const input = responseRecord(
 			await this.#request({ action: "due_summary", orchestratorId: this.#orchestratorId }, signal),
 			"due summary",
 		);
@@ -4611,7 +4702,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 	): Promise<EnqueueSurfaceSessionRunResult> {
 		requiredUuid(input.sessionId, "Surface session id");
 		requiredUuid(input.leaseToken, "Surface lease token");
-		const raw = record(
+		const raw = responseRecord(
 			await this.#request(
 				{
 					action: "surface_enqueue_session_run",
@@ -4661,7 +4752,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 
 	async triggerSurfaceAutomation(automationId: string, signal?: AbortSignal): Promise<TriggerSurfaceAutomationResult> {
 		requiredUuid(automationId, "Surface automation id");
-		const raw = record(
+		const raw = responseRecord(
 			await this.#request(
 				{
 					action: "surface_trigger_automation",
@@ -4983,7 +5074,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		} catch (error) {
 			throw new Error("Runner orchestrator returned invalid JSON", { cause: error });
 		}
-		const envelope = record(value, "response envelope");
+		const envelope = responseRecord(value, "response envelope");
 		return envelope.value;
 	}
 }

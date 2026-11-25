@@ -12,6 +12,7 @@ import { CompanyFoundingApi, parseCompanyFounding } from "../src/cloud/company-f
 import { companyDisplayName, companyInSentence, isUnnamed } from "../src/ui/company-name.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, settle, userA, userB, visibleText } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 const table = id(900);
 const me = userA.id;
@@ -2232,6 +2233,125 @@ describe("founding table opens the made company", () => {
 		await settle();
 		expect(location.hash.startsWith(`#/c/${table}`)).toBe(true);
 		expect(visibleText(root)).not.toContain("This company is not available to your account.");
+	});
+
+	it("opens with initial vision in one RPC, hydrates without an extra initial read, polls at 500 ms while starting, and enters without waiting on invitations", async () => {
+		vi.restoreAllMocks();
+		vi.useFakeTimers();
+		vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+		const f = fixture();
+		const api = new CompanyFoundingApi(f.cloud);
+		const rpc = vi.mocked(f.cloud.rpc);
+		rpc.mockRejectedValueOnce(
+			new CloudRpcError("qorpera_open_company_founding", { message: "missing", code: "PGRST202" }, 404),
+		).mockResolvedValueOnce(wire({ vision: "" }));
+		const fallback = await api.open(id(1), "Fallback Co", "Save my idea");
+		expect(fallback.vision).toBe("");
+		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_open_company_founding", {
+			p_client_creation_id: id(1),
+			p_company_name: "Fallback Co",
+			p_vision: "Save my idea",
+		});
+		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_open_company_founding", {
+			p_client_creation_id: id(1),
+			p_company_name: "Fallback Co",
+		});
+
+		rpc.mockReset();
+		const calls: string[] = [];
+		let readCount = 0;
+		vi.mocked(f.api.companyFoundingAvailable).mockResolvedValue(true);
+		const slowInvites = deferred<never[]>();
+		vi.mocked(f.api.listIncomingInvitations).mockReturnValue(slowInvites.promise);
+		const made = { ...profileA, profileId: table, profileName: "Instant Co" };
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, made]);
+		rpc.mockImplementation(async (name: string) => {
+			calls.push(name);
+			if (name === "qorpera_open_company_founding") {
+				return wire({
+					companyName: "Instant Co",
+					vision: "Ship fast.",
+					seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: true, ready: false }],
+					waitingFor: [me],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false },
+				});
+			}
+			if (name === "qorpera_set_founder_ready") {
+				return wire({
+					companyName: "Instant Co",
+					vision: "Ship fast.",
+					seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: true, ready: true }],
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: true },
+				});
+			}
+			if (name === "qorpera_start_company_founding") {
+				return wire({
+					companyName: "Instant Co",
+					vision: "Ship fast.",
+					phase: "started",
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: {
+						startedAt: "2026-09-28T18:00:00Z",
+						startedByUserId: me,
+						revision: 5,
+						companyReady: false,
+						companySetup: "pending",
+						firstRun: null,
+					},
+				});
+			}
+			if (name === "qorpera_read_company_founding") {
+				readCount++;
+				return wire({
+					companyName: "Instant Co",
+					vision: "Ship fast.",
+					phase: "started",
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: {
+						startedAt: "2026-09-28T18:00:00Z",
+						startedByUserId: me,
+						revision: 5,
+						companyReady: true,
+						companySetup: "ready",
+						firstRun: "queued",
+					},
+				});
+			}
+			throw new CloudRpcError(name, { message: "missing", code: "PGRST202" }, 404);
+		});
+
+		const hub = new HubController(f.api, me);
+		expect(await hub.startFromIdea("Ship fast.", "start", "Instant Co")).toBe(true);
+		expect(calls).toEqual(["qorpera_open_company_founding"]);
+
+		let readyTriggered = false;
+		const controller = new FoundingController(f.api, me, table, {
+			currentUserId: () => me,
+			onCompanyReady: () => {
+				readyTriggered = true;
+			},
+		});
+		await settle();
+		await settle();
+		expect(calls).toEqual([
+			"qorpera_open_company_founding",
+			"qorpera_set_founder_ready",
+			"qorpera_start_company_founding",
+		]);
+		expect(readCount).toBe(0);
+
+		await vi.advanceTimersByTimeAsync(500);
+		await settle();
+		expect(readCount).toBe(1);
+		expect(readyTriggered).toBe(true);
+
+		await hub.refreshProfilesAfter();
+		expect(hub.store.get().profiles.some((p) => p.profileId === table)).toBe(true);
+		controller.dispose();
+		hub.dispose();
 	});
 });
 

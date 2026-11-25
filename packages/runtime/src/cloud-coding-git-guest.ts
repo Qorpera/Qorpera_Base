@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { type CloudCodingRepository, cloudCodingSessionLayout, parseCloudCodingRepository } from "@qorpera/contracts";
+import {
+	type CloudCodingRepository,
+	cloudCodingSessionLayout,
+	parseCloudCodingRepository,
+	UUID_PATTERN as UUID,
+} from "@qorpera/contracts";
 import {
 	type CodingGuestConfiguration,
 	type CodingGuestFolders,
@@ -16,7 +21,6 @@ import { assertCloudCodingGuestStorage } from "./cloud-coding-storage-guest.ts";
 
 const exec = promisify(execFile);
 const ENTRY = "/opt/qorpera-coding/cloud-coding-git-guest.mjs";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{40}$/;
 /** The seeded base, which an export leaves out. */
 const BASE_REF = "refs/qorpera/base";

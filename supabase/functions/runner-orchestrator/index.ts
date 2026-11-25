@@ -35,17 +35,6 @@ Deno.serve(async (request) => {
 	const client = getClient(supabaseUrl, serviceKey);
 	const tokenSha256 = await sha256(token);
 	try {
-		if (action.action !== "rotate_control") {
-			const { data: valid, error: validationError } = await withAbortSignal(
-				client.rpc("qorpera_runner_orchestrator_control_valid", {
-					p_orchestrator_id: action.orchestratorId,
-					p_control_token_sha256: tokenSha256,
-				}),
-				request.signal,
-			);
-			const authFailure = orchestratorAuthFailure(validationError, valid);
-			if (authFailure) return jsonResponse({ error: authFailure.error }, authFailure.status);
-		}
 		let rpc: string;
 		let args: Record<string, unknown>;
 		switch (action.action) {
@@ -308,6 +297,31 @@ Deno.serve(async (request) => {
 					p_lease_token: action.leaseToken ?? null,
 				};
 				break;
+		}
+		if (action.action !== "rotate_control") {
+			const { data: dispatched, error: dispatchError } = await withAbortSignal(
+				client.rpc("qorpera_runner_orchestrator_dispatch", {
+					p_orchestrator_id: action.orchestratorId,
+					p_control_token_sha256: tokenSha256,
+					p_rpc: rpc,
+					p_args: args,
+				}),
+				request.signal,
+			);
+			if (!dispatchError) return jsonResponse({ value: dispatched });
+			if (dispatchError.code !== "PGRST202" && dispatchError.code !== "QRD01") {
+				return jsonResponse({ error: "Orchestrator request was rejected" }, runnerOrchestratorRpcStatus(dispatchError));
+			}
+			// WHY: fall back to the 2-RPC path when the Edge Function rolls out ahead of the dispatch migration.
+			const { data: valid, error: validationError } = await withAbortSignal(
+				client.rpc("qorpera_runner_orchestrator_control_valid", {
+					p_orchestrator_id: action.orchestratorId,
+					p_control_token_sha256: tokenSha256,
+				}),
+				request.signal,
+			);
+			const authFailure = orchestratorAuthFailure(validationError, valid);
+			if (authFailure) return jsonResponse({ error: authFailure.error }, authFailure.status);
 		}
 		const { data, error } = await withAbortSignal(client.rpc(rpc, args), request.signal);
 		if (error) return jsonResponse({ error: "Orchestrator request was rejected" }, runnerOrchestratorRpcStatus(error));

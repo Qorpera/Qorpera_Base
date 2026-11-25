@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, timestamp } from "./parse.ts";
 
 /* What each agent's work waits on the signed-in member for (migration 20260930723000): the cards an agent raised for
  * them in its own thread (a question, a secret, a takeover or an email draft) and the approval cards that wait for their
@@ -29,15 +29,15 @@ export interface WaitingWork {
 }
 
 export function parseWaitingWork(value: unknown): WaitingWork[] {
-	const input = record(value, "waiting work");
+	const input = cloudRecord(value, "waiting work");
 	if (input.schema !== WAITING_WORK_SCHEMA) throw new CloudShapeError("waiting work");
 	return array(input.agents, "waiting work").map((value): WaitingWork => {
-		const item = record(value, "waiting agent");
+		const item = cloudRecord(value, "waiting agent");
 		const kind = KINDS.find((candidate) => candidate === item.kind);
 		const what = typeof item.what === "string" ? item.what.replace(/\s+/gu, " ").trim() : "";
 		return {
-			staffAgentId: uuid(item.staffAgentId, "waiting agent"),
-			sessionId: uuid(item.sessionId, "waiting conversation"),
+			staffAgentId: cloudUuid(item.staffAgentId, "waiting agent"),
+			sessionId: cloudUuid(item.sessionId, "waiting conversation"),
 			count: boundedInteger(item.count, "waiting count", 1, 1_000_000),
 			questions: boundedInteger(item.questions, "waiting questions", 0, 1_000_000),
 			approvals: boundedInteger(item.approvals, "waiting approvals", 0, 1_000_000),

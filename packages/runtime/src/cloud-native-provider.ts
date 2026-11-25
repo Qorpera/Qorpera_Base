@@ -6,7 +6,7 @@ import {
 	type NativeProviderIdentityBridge,
 	type NativeProviderLoginPrompt,
 } from "@qorpera/cloud-client/native-provider-login";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, parseRecord, UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import { isNativeHostPublishableKey } from "./cloud-native-host-dispatch.ts";
 import type { CloudRunnerNativeAuthority } from "./cloud-runner-broker.ts";
@@ -17,10 +17,9 @@ const BRIDGE_RESPONSE_SCHEMA = "qorpera.native-provider-result/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 // The result plus a keepalive newline a minute (years of them fit).
 const MAX_BRIDGE_RESPONSE_BYTES = 1024 * 1024;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_SESSION_PATTERN = /^[^\0\r\n]{1,1024}$/;
 const BRIDGE_READY_TIMEOUT_MS = 300_000;
-const BRIDGE_READY_POLL_MS = 250;
+const BRIDGE_READY_POLL_MS = 25;
 const BRIDGE_HEALTH_REQUEST_MS = 5000;
 export const NATIVE_BRIDGE_NOT_LISTENING =
 	"Native provider bridge is not listening [code=NATIVE_BRIDGE_CONNECTION:TRANSPORT_UNAVAILABLE]";
@@ -77,7 +76,7 @@ export function parseNativeHarnessResult(
 	final_message_id: string | null;
 	provider_session_id: string | null;
 } {
-	const result = record(value, "Native harness result");
+	const result = parseRecord(value, "Native harness result");
 	if (
 		result.schema !== "qorpera.native-harness-result/v2" ||
 		result.run_id !== runId ||
@@ -103,11 +102,6 @@ export function parseNativeHarnessResult(
 		final_message_id: result.final_message_id as string | null,
 		provider_session_id: result.provider_session_id as string | null,
 	};
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
 }
 
 function assertNoCredentialMaterial(value: unknown, label: string): void {
@@ -324,7 +318,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 			(reqSignal) => this.#request(this.#executeUrl, body, reqSignal),
 			this.#requestTimeoutMs,
 		).then((value) => {
-			const envelope = record(value, "Native provider bridge response");
+			const envelope = parseRecord(value, "Native provider bridge response");
 			if (
 				envelope.schema !== BRIDGE_RESPONSE_SCHEMA ||
 				envelope.lease_id !== authority.leaseId ||

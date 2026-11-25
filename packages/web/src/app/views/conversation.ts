@@ -362,7 +362,14 @@ export class ConversationView {
 	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
 	 * message is still the same: its text, the question it answers and its files. */
 	#sendSoon:
-		| { text: string; answering?: string; files: readonly File[]; until: number; login?: ContinueLogin }
+		| {
+				text: string;
+				answering?: string;
+				files: readonly File[];
+				retry?: ConversationState["retrySend"];
+				until: number;
+				login?: ContinueLogin;
+		  }
 		| undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
 	readonly #sharedDrafts: SharedDrafts;
@@ -494,6 +501,15 @@ export class ConversationView {
 	readonly #foot = h("div", { class: "thread-foot" });
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
+	#autosizeFrame: number | undefined;
+	#autosizeUiSize = "";
+	#autosizeMetrics:
+		| {
+				compact?: { minHeight: number; tallest: number; frame: number };
+				expanded?: { minHeight: number; tallest: number; frame: number };
+		  }
+		| undefined;
+	#autosizeLast: { overflowY: string; shellHeight: string } | undefined;
 	#statusKey = "";
 	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
@@ -982,8 +998,22 @@ export class ConversationView {
 			once: true,
 			signal: this.#lifetime.signal,
 		});
-		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
-		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		window.addEventListener(
+			"resize",
+			() => {
+				this.#autosizeMetrics = undefined;
+				this.#autosize();
+			},
+			{ signal: this.#lifetime.signal },
+		);
+		window.addEventListener(
+			"qorpera-rail-resize",
+			() => {
+				this.#autosizeMetrics = undefined;
+				this.#autosize();
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		const refreshTimestamps = () => {
 			if (!document.hidden) this.#refreshTimestamps();
 		};
@@ -1029,6 +1059,10 @@ export class ConversationView {
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
+		if (this.#autosizeFrame !== undefined && typeof cancelAnimationFrame === "function") {
+			cancelAnimationFrame(this.#autosizeFrame);
+			this.#autosizeFrame = undefined;
+		}
 		this.#lifetime.abort();
 		this.#decisions?.dispose();
 		window.clearInterval(this.#timestampTimer);
@@ -1094,31 +1128,93 @@ export class ConversationView {
 	}
 
 	#autosize(): void {
-		const taller = this.#attachments.count > 0 || this.#answerShown !== undefined;
-		this.#composerShell.classList.toggle("is-expanded", taller);
-		this.#composer.style.height = "auto";
+		if (this.#disposed) return;
+		// WHY: Keep skill mention highlighting/loading synchronous while deferring DOM layout measurement to one frame.
+		this.#skills.sync();
+		if (typeof requestAnimationFrame !== "function") {
+			this.#measureAutosize();
+			return;
+		}
+		if (this.#autosizeFrame !== undefined) return;
+		// WHY: Coalesce input, store-update, and resize autosize calls into one animation frame to prevent reflow storms.
+		this.#autosizeFrame = requestAnimationFrame(() => {
+			this.#autosizeFrame = undefined;
+			if (!this.#disposed) this.#measureAutosize();
+		});
+	}
+
+	#readAutosizeMetrics(mode: "compact" | "expanded"): { minHeight: number; tallest: number; frame: number } {
+		const cached = this.#autosizeMetrics?.[mode];
+		if (cached) return cached;
 		const field = getComputedStyle(this.#composer);
 		const minHeight = Number.parseFloat(field.minHeight) || 0;
-		const oneLine = Math.ceil(minHeight);
 		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
-		let contentHeight = this.#composer.scrollHeight;
-		const expanded = contentHeight > oneLine || taller;
-		if (expanded !== taller) {
-			this.#composerShell.classList.toggle("is-expanded", expanded);
-			contentHeight = this.#composer.scrollHeight;
-		}
-		const targetHeight = Math.min(contentHeight, tallest);
 		const shell = getComputedStyle(this.#composerShell);
 		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
 			(sum, value) => sum + (Number.parseFloat(value) || 0),
 			0,
 		);
-		const composerHeight = Math.max(minHeight, targetHeight);
+		const measured = { minHeight, tallest, frame };
+		if (minHeight > 0 || frame > 0 || this.#composer.isConnected) {
+			this.#autosizeMetrics ??= {};
+			this.#autosizeMetrics[mode] = measured;
+		}
+		return measured;
+	}
+
+	#measureAutosize(): void {
+		const uiSize = document.documentElement.dataset.uiSize ?? "";
+		if (uiSize !== this.#autosizeUiSize) {
+			this.#autosizeUiSize = uiSize;
+			this.#autosizeMetrics = undefined;
+		}
+		const taller = this.#attachments.count > 0 || this.#answerShown !== undefined;
+		const wasExpanded = this.#composerShell.classList.contains("is-expanded");
+		let expanded: boolean;
+		let contentHeight: number;
+		let metrics: { minHeight: number; tallest: number; frame: number };
+		if (wasExpanded && !taller && this.#autosizeMetrics?.compact) {
+			// WHY: Stay in expanded layout during multi-line typing instead of toggling compact on every keystroke.
+			this.#composer.style.height = "auto";
+			contentHeight = this.#composer.scrollHeight;
+			const compactOneLine = Math.ceil(this.#autosizeMetrics.compact.minHeight);
+			if (contentHeight > compactOneLine) {
+				expanded = true;
+				metrics = this.#readAutosizeMetrics("expanded");
+			} else {
+				this.#composerShell.classList.toggle("is-expanded", false);
+				metrics = this.#readAutosizeMetrics("compact");
+				contentHeight = this.#composer.scrollHeight;
+				expanded = contentHeight > Math.ceil(metrics.minHeight);
+				if (expanded) {
+					this.#composerShell.classList.toggle("is-expanded", true);
+					contentHeight = this.#composer.scrollHeight;
+					metrics = this.#readAutosizeMetrics("expanded");
+				}
+			}
+		} else {
+			this.#composerShell.classList.toggle("is-expanded", taller);
+			this.#composer.style.height = "auto";
+			metrics = this.#readAutosizeMetrics(taller ? "expanded" : "compact");
+			const oneLine = Math.ceil(metrics.minHeight);
+			contentHeight = this.#composer.scrollHeight;
+			expanded = contentHeight > oneLine || taller;
+			if (expanded !== taller) {
+				this.#composerShell.classList.toggle("is-expanded", expanded);
+				contentHeight = this.#composer.scrollHeight;
+				metrics = this.#readAutosizeMetrics(expanded ? "expanded" : "compact");
+			}
+		}
+		const targetHeight = Math.min(contentHeight, metrics.tallest);
+		const composerHeight = Math.max(metrics.minHeight, targetHeight);
 		const attachmentsHeight = this.#attachments.count > 0 ? this.#attachments.el.getBoundingClientRect().height : 0;
 		const answerHeight = this.#answerShown !== undefined ? this.#answerStrip.getBoundingClientRect().height : 0;
+		const overflowY = contentHeight > metrics.tallest ? "auto" : "hidden";
+		const shellHeight = `${composerHeight + metrics.frame + attachmentsHeight + answerHeight}px`;
 		this.#composer.style.height = `${targetHeight}px`;
-		this.#composer.style.overflowY = contentHeight > tallest ? "auto" : "hidden";
-		this.#composerShell.style.height = `${composerHeight + frame + attachmentsHeight + answerHeight}px`;
+		if (this.#autosizeLast?.overflowY !== overflowY) this.#composer.style.overflowY = overflowY;
+		if (this.#autosizeLast?.shellHeight !== shellHeight) this.#composerShell.style.height = shellHeight;
+		this.#autosizeLast = { overflowY, shellHeight };
 		this.#skills.sync();
 	}
 
@@ -1267,7 +1363,7 @@ export class ConversationView {
 			const cached = preloadedAgentDetails;
 			if (cached) openDetails(cached, undefined);
 			else
-				void import("./agent-details.ts").then(({ AgentDetails: Loaded }) => {
+				void import("./lazy-ops.ts").then(({ agentDetails: { AgentDetails: Loaded } }) => {
 					preloadedAgentDetails = Loaded;
 					openDetails(Loaded, undefined);
 				});
@@ -1275,7 +1371,7 @@ export class ConversationView {
 			const cached = preloadedGroupDetails;
 			if (cached) openDetails(undefined, cached);
 			else
-				void import("./group-details.ts").then(({ GroupDetails: Loaded }) => {
+				void import("./lazy-quick.ts").then(({ groupDetails: { GroupDetails: Loaded } }) => {
 					preloadedGroupDetails = Loaded;
 					openDetails(undefined, Loaded);
 				});
@@ -2323,11 +2419,12 @@ export class ConversationView {
 		const text = this.#composer.value;
 		this.#sendSoon = undefined;
 		if (text.trim() && this.#send.disabled && !this.#submitting && this.#actions.sendMessage) {
-			const { answering, attachments } = this.#company.conversation(this.#sessionId).get();
+			const { answering, attachments, retrySend } = this.#company.conversation(this.#sessionId).get();
 			this.#sendSoon = {
 				text,
 				...(answering ? { answering } : {}),
 				files: [...(attachments ?? [])],
+				retry: retrySend,
 				until: Date.now() + 2000,
 				...(login ? { login } : {}),
 			};
@@ -2348,11 +2445,12 @@ export class ConversationView {
 		this.#syncSend();
 		void (async () => {
 			try {
-				// Reconcile a runtime account handoff before new input. An uncertain
-				// retry retains its exact original request and account authority.
-				if (this.#execution && !retry) await this.#execution.refresh();
-				if (this.#disposed || this.#notificationSignal.aborted) return;
-				this.update();
+				// WHY: Paint optimistic send at 0 ms using the verified cached sponsor; only block before send for explicit login switches or unready state.
+				if (this.#execution && !retry && (login || !this.#execution.canSend)) {
+					await this.#execution.refresh();
+					if (this.#disposed || this.#notificationSignal.aborted) return;
+					this.update();
+				}
 				const current = this.#company.conversation(this.#sessionId).get();
 				const currentFiles = current.attachments ?? [];
 				// Editing during the account check cancels this submission; no draft
@@ -2379,7 +2477,10 @@ export class ConversationView {
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
 					if (!this.#isRoom) this.#run?.messageSent();
-					void this.#execution?.refresh();
+					void this.#execution?.refresh({ background: true });
+				} else if (!sent && !this.#disposed && !this.#notificationSignal.aborted) {
+					// WHY: Surface stale-sponsor or revoked-account changes immediately when a send fails.
+					void this.#execution?.refresh({ background: true });
 				}
 			} catch {
 				if (!this.#disposed && !this.#notificationSignal.aborted)
@@ -2491,6 +2592,7 @@ export class ConversationView {
 			if (
 				soon.text === this.#composer.value &&
 				soon.answering === conversation.answering &&
+				soon.retry === conversation.retrySend &&
 				soon.files.length === files.length &&
 				soon.files.every((file, index) => file === files[index]) &&
 				Date.now() <= soon.until

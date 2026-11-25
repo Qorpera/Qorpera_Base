@@ -1,5 +1,5 @@
 import { POSTGRES_UUID_PATTERN, SHA256_HEX_PATTERN } from "@qorpera/contracts";
-import { array, record, timestamp, uuid } from "./parse.ts";
+import { array, cloudRecord, cloudUuid, timestamp } from "./parse.ts";
 
 /* A company's logo (migration 20260930696000). The official logo is the company folder's QorperaOS/brand/logo.svg, which
  * the company's Branding & Identity agent draws and an owner or admin can replace. Everyone sees it through a PNG drawn
@@ -8,6 +8,8 @@ import { array, record, timestamp, uuid } from "./parse.ts";
  * then also says which SVG the folder holds (`sourceSha256`), so the app knows when its PNG is behind. */
 
 export const COMPANY_LOGO_BUCKET = "qorpera-company-logos";
+export const COMPANY_IDENTITY_LOGO_PATH = "identity/logo.svg";
+export const COMPANY_IDENTITY_FOLDER = "identity";
 export const COMPANY_LOGO_PATH = "QorperaOS/brand/logo.svg";
 export const COMPANY_BRAND_FOLDER = "QorperaOS/brand";
 
@@ -29,6 +31,7 @@ export interface CompanyLogo {
 	publisher: boolean;
 	/** For a publisher: the sha256 of the folder's logo.svg, or null when the folder holds none. */
 	sourceSha256: string | null;
+	sourcePath?: string | null;
 }
 
 export interface CompanyLogoChange {
@@ -60,23 +63,31 @@ function sha(value: unknown, label: string): string | null {
 
 export function parseCompanyLogos(value: unknown): CompanyLogo[] {
 	return array(value, "company logos").map((item) => {
-		const input = record(item, "company logo");
-		const profileId = uuid(input.profile_id, "logo company id");
+		const input = cloudRecord(item, "company logo");
+		const profileId = cloudUuid(input.profile_id, "logo company id");
 		const objectName = input.object_name ?? null;
 		if (objectName !== null && (typeof objectName !== "string" || !isCompanyLogoName(objectName, profileId)))
 			throw new Error("Invalid logo name");
+		const rawSourcePath = input.source_path;
+		if (
+			rawSourcePath !== null &&
+			rawSourcePath !== undefined &&
+			(typeof rawSourcePath !== "string" || rawSourcePath.length === 0 || rawSourcePath.length > 4096)
+		)
+			throw new Error("Invalid logo source path");
 		return {
 			profileId,
 			objectName,
 			updatedAt: input.updated_at == null ? null : timestamp(input.updated_at, "logo time"),
 			publisher: input.publisher === true,
 			sourceSha256: sha(input.source_sha256, "logo source"),
+			...(typeof rawSourcePath === "string" ? { sourcePath: rawSourcePath } : {}),
 		};
 	});
 }
 
 export function parseCompanyLogoChange(value: unknown): CompanyLogoChange {
-	const input = record(value, "logo change");
+	const input = cloudRecord(value, "logo change");
 	const previous = input.previous_object_name;
 	if (previous === null || previous === undefined) return {};
 	if (typeof previous !== "string" || !isCompanyLogoName(previous)) throw new Error("Invalid previous logo name");

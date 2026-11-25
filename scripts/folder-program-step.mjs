@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,6 +26,8 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FUSE = ["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN", "--security-opt", "apparmor=unconfined"];
 /** The target directory scripts/build-folder-program.mjs builds the recorded program in. */
 const TARGET = "/tmp/target";
+// WHY: cargo test uses a sibling target subdir so its .cargo-lock does not serialize against the concurrent release build.
+const TEST_TARGET = `${TARGET}/test`;
 /** A runner's volume unused this long is removed; so is a run's own volume that a killed run left behind a day ago. */
 const RUNNER_DAYS = 2;
 const LEFTOVER_DAYS = 1;
@@ -35,11 +37,11 @@ const LABEL = "qorpera.folder-program-target";
 
 const PREPARE = `if [ "$(cat ${TARGET}/.qorpera-key 2>/dev/null)" = "$KEY" ]; then echo kept; else find ${TARGET} -mindepth 1 -delete && echo "$KEY" >${TARGET}/.qorpera-key && echo emptied; fi && touch ${TARGET}/.qorpera-used && cargo fetch --locked >&2`;
 const TEST = "cargo clean --locked -p qorpera-folder && cargo test --locked";
-const BUILD = `cargo clean --locked -p qorpera-folder --release && ${CARGO_BUILD} && cp ${TARGET}/release/qorpera-folder /out/`;
-const CLEAN_BUILD = `rm -rf ${TARGET}/release && ${CARGO_BUILD} && cp ${TARGET}/release/qorpera-folder /out/`;
+const BUILD = `if [ -n "$SRC_HASH" ] && [ -x "${TARGET}/cached-release/$SRC_HASH/qorpera-folder" ]; then cp "${TARGET}/cached-release/$SRC_HASH/qorpera-folder" /out/qorpera-folder && echo "== folder-program: reused cached release binary ($SRC_HASH)"; else cargo clean --locked -p qorpera-folder --release && ${CARGO_BUILD} && { if [ -n "$SRC_HASH" ]; then rm -rf ${TARGET}/cached-release && mkdir -p "${TARGET}/cached-release/$SRC_HASH" && cp ${TARGET}/release/qorpera-folder "${TARGET}/cached-release/$SRC_HASH/qorpera-folder"; fi; } && cp ${TARGET}/release/qorpera-folder /out/; fi`;
+const CLEAN_BUILD = `rm -rf ${TARGET}/release ${TARGET}/cached-release && ${CARGO_BUILD} && { if [ -n "$SRC_HASH" ]; then mkdir -p "${TARGET}/cached-release/$SRC_HASH" && cp ${TARGET}/release/qorpera-folder "${TARGET}/cached-release/$SRC_HASH/qorpera-folder"; fi; } && cp ${TARGET}/release/qorpera-folder /out/`;
 const CHECK = "node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder";
 const E2E =
-	"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts test/folder-search-e2e.test.ts";
+	"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-grace-e2e.test.ts test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts test/folder-search-e2e.test.ts";
 /** The pinned git, for the program's runs with real git on the mount (F3 step 5d): the coding machine's
  * (deploy/coding-machine/coding-image.json), built in NODE_IMAGE once per test machine into a volume of its own,
  * relocatable, and without what the runs do not use (http, Perl, Python, translations). A run that loses the race to
@@ -143,14 +145,14 @@ export async function folderProgramStep({
 	const runner = cacheRunner(status, user);
 	const target = runner ? `qorpera-folder-target-${runner}` : `qorpera-folder-target-run-${now}-${process.pid}`;
 	const out = `qorpera-folder-out-${now}-${process.pid}`;
-	const rust = (script, extra = []) => [
+	const rust = (script, extra = [], targetDir = TARGET) => [
 		"run",
 		"--rm",
 		"--label",
 		`${LABEL}=${target}`,
 		...extra,
 		"-e",
-		`CARGO_TARGET_DIR=${TARGET}`,
+		`CARGO_TARGET_DIR=${targetDir}`,
 		"-v",
 		"qorpera-cargo-registry:/usr/local/cargo/registry",
 		"-v",
@@ -200,20 +202,31 @@ export async function folderProgramStep({
 		const kept = prepared.stdout.trim() === "kept";
 		const state = kept ? "kept" : "emptied for a clean build";
 		console.log(`== folder-program: compiled crates in ${target} ${state} (key ${key.slice(0, 12)})`);
-		// The tests' output waits in a file and is printed after the build's, as run-on-node-plan.mjs's `beside` does.
+		const srcHash = folderProgramSourceSha256(root);
 		const testLog = openSync(join(work, "tests.log"), "w");
-		const tested = run(docker, rust(TEST, [...FUSE, "-e", "QORPERA_FOLDER_FUSE_TESTS=1"]), testLog);
-		let built = (await run(docker, rust(BUILD, ["-v", `${out}:/out`]))) === 0;
+		const tested = run(docker, rust(TEST, [...FUSE, "-e", "QORPERA_FOLDER_FUSE_TESTS=1"], TEST_TARGET), testLog);
+		let built = (await run(docker, rust(BUILD, ["-e", `SRC_HASH=${srcHash}`, "-v", `${out}:/out`]))) === 0;
 		let checked = built && (await run(docker, node(CHECK))) === 0;
 		// Kept crates that give other bytes than a clean build would fail a sound record: build again from clean, so the
 		// check always judges what a clean build gives. A record of other source fails either way.
 		if (built && !checked && kept && sourceRecorded(root)) {
 			console.log("== folder-program: the build from kept crates is not the recorded one; building again from clean");
-			built = (await run(docker, rust(CLEAN_BUILD, ["-v", `${out}:/out`]))) === 0;
+			built = (await run(docker, rust(CLEAN_BUILD, ["-e", `SRC_HASH=${srcHash}`, "-v", `${out}:/out`]))) === 0;
 			checked = built && (await run(docker, node(CHECK))) === 0;
 		}
 		const gitReady = checked && (await run(docker, node(GIT, ["-v", `${GIT_VOLUME}:/git`]))) === 0;
-		const gitRuns = ["-e", `QORPERA_GIT_BIN=/git/${GIT_VERSION}/bin/git`, "-v", `${GIT_VOLUME}:/git:ro`];
+		// WHY: Pre-create .vite-temp as the runner user and mount tmpfs over it so Docker never leaves it root-owned.
+		if (gitReady && existsSync(join(root, "node_modules"))) mkdirSync(join(root, "node_modules", ".vite-temp"), { recursive: true });
+		const gitRuns = [
+			"-e",
+			`QORPERA_GIT_BIN=/git/${GIT_VERSION}/bin/git`,
+			"-e",
+			"VITEST_MAX_WORKERS=4",
+			"-v",
+			`${GIT_VOLUME}:/git:ro`,
+			"--tmpfs",
+			"/repo/node_modules/.vite-temp:rw,size=64m",
+		];
 		const served = gitReady && (await run(docker, node(E2E, [...FUSE, ...gitRuns]))) === 0;
 		const testCode = await tested;
 		closeSync(testLog);

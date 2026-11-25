@@ -155,6 +155,8 @@ export class ViewTree {
 	#explicitCount = 0;
 	#digestHi = 0n;
 	#digestLo = 0n;
+	// WHY: Bulk listing loads thousands of entries before entriesDigest is read; deferring hashing avoids wasted SHA-256 calls under --jitless.
+	#digestDirty = true;
 
 	get size(): number {
 		return this.#entries.size;
@@ -165,6 +167,19 @@ export class ViewTree {
 	}
 
 	get entriesDigest(): string {
+		if (this.#digestDirty) {
+			let hi = 0n;
+			let lo = 0n;
+			for (const entry of this.#entries.values()) {
+				if (entry.implicit) continue;
+				const next = entryDigest(entry);
+				hi ^= next.hi;
+				lo ^= next.lo;
+			}
+			this.#digestHi = hi;
+			this.#digestLo = lo;
+			this.#digestDirty = false;
+		}
 		return this.#digestHi.toString(16).padStart(16, "0") + this.#digestLo.toString(16).padStart(16, "0");
 	}
 
@@ -403,16 +418,20 @@ export class ViewTree {
 		this.#recordDelta(entry.path, entry);
 		const existing = this.#entries.get(entry.path);
 		if (existing && !existing.implicit) {
-			const prev = entryDigest(existing);
 			this.#explicitCount--;
-			this.#digestHi ^= prev.hi;
-			this.#digestLo ^= prev.lo;
+			if (!this.#digestDirty) {
+				const prev = entryDigest(existing);
+				this.#digestHi ^= prev.hi;
+				this.#digestLo ^= prev.lo;
+			}
 		}
 		if (!entry.implicit) {
-			const next = entryDigest(entry);
 			this.#explicitCount++;
-			this.#digestHi ^= next.hi;
-			this.#digestLo ^= next.lo;
+			if (!this.#digestDirty) {
+				const next = entryDigest(entry);
+				this.#digestHi ^= next.hi;
+				this.#digestLo ^= next.lo;
+			}
 		}
 		const parent = parentOf(entry.path);
 		this.#entries.set(entry.path, entry);
@@ -432,10 +451,12 @@ export class ViewTree {
 		this.#recordDelta(path, undefined);
 		const existing = this.#entries.get(path);
 		if (existing && !existing.implicit) {
-			const prev = entryDigest(existing);
 			this.#explicitCount--;
-			this.#digestHi ^= prev.hi;
-			this.#digestLo ^= prev.lo;
+			if (!this.#digestDirty) {
+				const prev = entryDigest(existing);
+				this.#digestHi ^= prev.hi;
+				this.#digestLo ^= prev.lo;
+			}
 		}
 		const parent = parentOf(path);
 		this.#entries.delete(path);

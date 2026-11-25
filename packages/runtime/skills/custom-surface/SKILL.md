@@ -1,34 +1,29 @@
 ---
 name: custom-surface
-description: How to shape and fill a custom Studio surface for planning, sketching, calculators, trackers, GTM rooms, or any bespoke workspace no template covers. Use in every session on a custom interface.
+description: How to shape and fill a custom Studio surface for planning, sketching, calculators, trackers, GTM rooms, or any bespoke workspace. Use in every session on a custom interface.
 ---
 
 # Custom Studio surface
 
-A custom Studio surface is a living workspace tailored to a specific goal that product or identity surfaces do not cover — such as a pricing lab, GTM war room, launch tracker, sketching board, supplier matrix, or investor room. Its starter layout is nearly empty on purpose: shape the page freely first, then fill it.
+A custom Studio surface is a living workspace tailored to a goal that product or identity surfaces do not cover: a pricing lab, GTM room, launch tracker, sketching board, supplier matrix, or investor room. Shape the page freely first, then fill it piece by piece.
 
 ## Shape freely first
-- Read the member's goal, the company vision, the brief, and relevant company files (`company_search`, `data_describe`, `data_query`).
-- You have full freedom over tabs and layout: stage a `layout.json` with the exact tabs and block mix this workspace needs (combining `explainer` videos, `report` articles/posts, `artifacts` images/diagrams, `module` custom tools, and strategy/data blocks on any tab). Where structure is a genuine taste choice, offer 2 or 3 concrete layout directions via `surface_ask` and build the one the member picks.
-- Then fill the homes piece by piece.
+- Read the member's goal, company vision, brief, and relevant company files and databases (`company_search`, `data_describe`, `data_query`).
+- Shape the layout file freely with the tabs and blocks this workspace needs (`explainer` videos, `report` articles and posts, `artifacts` images and diagrams, `module` custom tools, and strategy or data blocks on any tab). When structure is a genuine taste choice, offer two or three concrete options via `surface_ask` once early, then build on the answer.
+- Fill the layout one coherent deliverable per `stage_surface_patch` call so each piece lands and approves cleanly on its own.
 
 ## Show, narrate, don't dump text
-- Never build a text-only page. Lead every tab with a clear visual model, diagram, imagery, interactive simulator, or a short narrated explainer video (`scenes.js` + `narrate_explainer`).
-- Whenever a static visual cannot cleanly carry the story or mechanism, stage a narrated `explainer` video instead of long prose.
-- For multi-section or multi-tab workspaces, stage a guided **Studio Voice Tour (`tour.json`)** + call `narrate_explainer` with `scenesPath: "tour.json"` so a spoken voice walks the founder across sections and tabs with `spotlight`, `pulse`, and smooth scroll effects.
-- Keep supporting text light and scannable: one-line takeaways, concise labels, progressive disclosure for secondary detail — never walls of paragraphs or dense multi-column spreadsheets.
+- Never build a text-only page. Lead each tab with a visual model, diagram, imagery, interactive simulator, or narrated animated `explainer` video (recorded with `narrate_explainer`).
+- For multi-section or multi-tab workspaces, add a guided Studio voice tour and record its spoken clips with `narrate_explainer` so a real voice walks the founder across sections and tabs with spotlight, pulse, and smooth scroll effects.
+- Keep text light and scannable: one-line takeaways, concise labels, and progressive disclosure for detail rather than walls of paragraphs or dense spreadsheets.
 
 ## How to work
-- Stage one cohesive deliverable per `stage_surface_patch` call so the member sees and approves each piece independently. Never dump the whole workspace in one giant patch.
-- Write reports, analyses, memos, and blog posts as structured `*.report.json` articles (or self-contained `.html` pages when custom visual presentation is asked for), never loose raw Markdown notes; stage each piece in its own change.
-- Use three-tier epistemics instead of leaving everything blank: distinguish `verified` company facts (files, databases, confirmed decisions), `benchmark` public/market facts (statutory taxes, payment fees, competitor list prices — always with `source`), and `hypothesis` working bets (clearly labeled with what test confirms or kills them). Never invent company traction, revenue, or signed customers; never leave publicly researchable benchmarks blank.
-- For strategic, commercial, or pricing workspaces, pressure-test real market incentives, rival alternatives, margins, and capacity ceilings instead of building a passive worksheet.
-- Write to the member about the workspace and decisions, never about file paths, schemas, or tool names in change titles, summaries, or replies.
+- Write reports, analyses, memos, and blog posts as structured report articles, standalone HTML pages, or PDFs — never plain Markdown notes; stage each piece in its own change.
+- Use three-tier epistemics: distinguish verified company facts (files, databases, confirmed decisions), benchmark market facts (taxes, fees, rival prices with cited sources), and hypothesis working bets (with test and kill criteria). Never invent company traction, revenue, or signed customers; never draw stand-in clipart in place of real art or photos.
+- For commercial or pricing rooms, pressure-test real incentives, rivals, margins, and capacity ceilings instead of passive worksheets.
+- Write to the member about the workspace and decisions — never mention file paths, schemas, or tool names in change titles, summaries, or replies.
 
 ## Native blocks first, module when blocks cannot
-- Prefer native blocks — they inherit the company's Identity tokens and light/dark themes automatically:
-  - Strategy & decision blocks: `plays`, `economics`, `hypotheses`, `landscape`.
-  - General blocks: `explainer` (narrated animated video), `title`, `facts`, `spec_list`, `table`, `cards`, `report` (articles & blog posts), `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts` (images, SVGs, visual sketches, HTML boards, PDFs).
-- Use a `module` block (an interactive HTML/JS app inside its own subfolder) only when no native block fits — for example, a bespoke interactive sketchpad, funnel simulator, drag-and-drop planner, or custom calculator.
-- Link `/identity/tokens.css` inside modules so they wear the company look; never hardcode brand colors or fonts. Modules have no network access, can read company/surface files via `qorpera.read(path)` and `qorpera.list(prefix)`, and can hand founder inputs or decisions back into a Surface session via `qorpera.tell(text, about)`.
-- A module with `height: "auto"` sizes itself to its content and must not lock itself to `100vh`.
+- Prefer native blocks (they inherit company Identity tokens and light or dark themes automatically): `plays`, `economics`, `hypotheses`, `landscape`, `explainer`, `title`, `facts`, `spec_list`, `table`, `cards`, `report`, `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts`.
+- Use a `module` block (an interactive app inside its own subfolder) only when no native block fits — for example a custom sketchpad, funnel tool, or drag-and-drop planner.
+- Link the company Identity tokens stylesheet inside modules so they wear the company look; never hardcode brand colors or fonts. Modules have no network access, read files through the built-in read and list bridge, and hand founder inputs back through the built-in tell bridge. Auto-height modules must not lock to viewport height.

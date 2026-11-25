@@ -1,4 +1,5 @@
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
 import { type CloudCodexHome, type CloudCodexHomeReview, cloudHomeActionReview } from "./cloud-codex-home.ts";
 import {
@@ -52,6 +53,22 @@ import type {
 import type { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
+import { CLOSE_MS } from "./memory-tree/tree.ts";
+
+async function finishRunLogLines(lines: Pick<CloudRunStepLines, "finish">, closeSignal: AbortSignal): Promise<void> {
+	// WHY: Bound derived step-summary compaction to CLOSE_MS after durable log.close so slow summaries never stall turn release.
+	const deadline = new AbortController();
+	const timer = setTimeout(() => deadline.abort(new Error("Run log summary finish deadline reached")), CLOSE_MS);
+	timer.unref?.();
+	try {
+		await withAbortScopes([closeSignal, deadline.signal], (finishSignal) => lines.finish(finishSignal));
+	} catch (error) {
+		if (deadline.signal.aborted && !closeSignal.aborted) return;
+		throw error;
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 async function withTimeoutSignal<T>(timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
 	const controller = new AbortController();
@@ -110,6 +127,7 @@ export interface CloudNativeRunToolAdapters {
  */
 export async function runCloudNativeRunToolSession(options: {
 	binding: CloudNativeToolBinding;
+	prefetchedRun?: Promise<CloudNativeToolRun>;
 	/** The run's admitted tier, from its company context; absent runs at standard speed. */
 	serviceTier?: CloudRuntimeServiceTier;
 	controlPlane: CloudNativeToolAuthorityReader & CloudNativeToolOperationControlPlane;
@@ -183,12 +201,14 @@ export async function runCloudNativeRunToolSession(options: {
 	try {
 		// A short control-plane outage does not close the run (WB-001, 28 Oct 2026): it holds for the native lease's
 		// length. The run's worker renews that lease and stops the run when the lease ends.
-		run = await CloudNativeToolRun.open(
-			options.binding,
-			options.controlPlane,
-			options.signal,
-			NATIVE_AUTHORITY_LEASE_SECONDS * 1000,
-		);
+		run = options.prefetchedRun
+			? await options.prefetchedRun
+			: await CloudNativeToolRun.open(
+					options.binding,
+					options.controlPlane,
+					options.signal,
+					NATIVE_AUTHORITY_LEASE_SECONDS * 1000,
+				);
 		admission?.finish("succeeded");
 	} catch (error) {
 		admission?.finish("denied", {
@@ -313,13 +333,13 @@ export async function runCloudNativeRunToolSession(options: {
 		});
 		const runLog = adapters.runLog;
 		const beforeModelStart = async (startSignal: AbortSignal) => {
-			await assertActive(startSignal);
+			// WHY: assertActive ran right before harness launch and beginExecution re-checks run+context atomically in SQL.
+			await run.assertFresh(startSignal, 5_000, CLOUD_RUN_ROW_READ_MS);
 			await cloudToolRequest(
 				(requestSignal) => options.beginExecution(boundary!.specification, requestSignal),
 				startSignal,
 				CLOUD_RUN_ROW_READ_MS,
 			);
-			await assertActive(startSignal);
 		};
 		const recordContextView = async (
 			frame: CloudNativeFenceRequest,
@@ -356,7 +376,7 @@ export async function runCloudNativeRunToolSession(options: {
 								hasLogError = true;
 							}
 							const settled = await Promise.allSettled([
-								runLog.lines.finish(closeSignal),
+								finishRunLogLines(runLog.lines, closeSignal),
 								...(options.closing ? [options.closing(closeSignal)] : []),
 							]);
 							if (hasLogError) throw logError;

@@ -1118,4 +1118,64 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 			vi.useRealTimers();
 		}
 	});
+
+	it("uses backstopPollIntervalMs while wake is listening and falls back to pollIntervalMs when disconnected", async () => {
+		vi.useFakeTimers();
+		try {
+			const listeners = new Set<() => void>();
+			const wake = {
+				listening: true,
+				subscribe(listener: () => void) {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+			};
+			const claimPendingJobs = vi.fn(
+				async (): Promise<ClaimedSurfaceJobs> => ({
+					sessions: [],
+					previews: [],
+					merges: [],
+					publishes: [],
+				}),
+			);
+			const loop = new SurfaceWorkerLoop(
+				{
+					claimPendingJobs,
+					spawnOverflowMachine: vi.fn(),
+					dispatchSessionTurn: vi.fn(),
+					runPreviewJob: vi.fn(),
+				},
+				{ pollIntervalMs: 100, backstopPollIntervalMs: 5_000 },
+			);
+			const ac = new AbortController();
+			const running = loop.run(ac.signal, wake);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(claimPendingJobs).toHaveBeenCalledTimes(1);
+
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(claimPendingJobs).toHaveBeenCalledTimes(1);
+
+			for (const listener of listeners) listener();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(claimPendingJobs).toHaveBeenCalledTimes(2);
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(claimPendingJobs).toHaveBeenCalledTimes(3);
+
+			wake.listening = false;
+			for (const listener of listeners) listener();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(claimPendingJobs).toHaveBeenCalledTimes(4);
+
+			await vi.advanceTimersByTimeAsync(100);
+			expect(claimPendingJobs).toHaveBeenCalledTimes(5);
+
+			ac.abort();
+			await running;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

@@ -31,18 +31,15 @@ export function checkLocale(line) {
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Without `--only`, the SQL tests run in these databases at the same time, each a fresh copy of the migrated
- * database. A database runs the tests from its first name on, in their usual order, up to the next database's;
- * the five take about the same time (100-125 s each on a test machine, 7 Nov). The tests that keep rows for a later
- * one, 000 and 040 and its readers up to 200, stay in the first, so a test still sees only rows its usual predecessors
- * left. A test connecting to its database again uses `current_database()`, not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "530"],
-	["qorpera_test_3", "685"],
-	["qorpera_test_4", "825"],
-	["qorpera_test_5", "965"],
-	["qorpera_test_6", "1245"],
+	["qorpera_test_2", "508"],
+	["qorpera_test_3", "510"],
+	["qorpera_test_4", "676"],
+	["qorpera_test_5", "840"],
+	["qorpera_test_6", "965"],
+	["qorpera_test_7", "1211"],
+	["qorpera_test_8", "1251"],
 ];
 
 export function compareTestNames(a, b) {
@@ -70,12 +67,181 @@ export function sortMigrationNames(names) {
 	return migrations;
 }
 
+const FIXTURE_DIRECTIVE = /^-- @fixture ([0-9a-z_.-]+\.test\.sql) until "([^"\n]+)"\n/;
+const BATCH_SAVEPOINT = "qorpera_batch_fixture";
+const BATCH_LIMIT = 16;
+const DISALLOWED_BATCH_META = /^\s*\\(?!g\s+\/dev\/null\b|echo\b)/m;
+const DISALLOWED_BATCH_SQL =
+	/\b(?:listen|unlisten|notify|pg_advisory|pg_locks|pg_stat_activity|pg_backend_pid|dblink|discard|prepare\s+transaction|vacuum|reindex|cluster|alter\s+system|set\s+transaction|qorpera_batch_fixture)\b/i;
+
+function scanSqlForBatching(sql, splitDollars = true) {
+	let outer = "";
+	let dollarBodies = "";
+	for (let i = 0; i < sql.length; ) {
+		if (sql[i] === "-" && sql[i + 1] === "-") {
+			while (i < sql.length && sql[i] !== "\n") {
+				outer += " ";
+				i++;
+			}
+		} else if (sql[i] === "/" && sql[i + 1] === "*") {
+			let depth = 1;
+			outer += "  ";
+			i += 2;
+			while (i < sql.length && depth > 0) {
+				if (sql[i] === "/" && sql[i + 1] === "*") {
+					depth++;
+					outer += "  ";
+					i += 2;
+				} else if (sql[i] === "*" && sql[i + 1] === "/") {
+					depth--;
+					outer += "  ";
+					i += 2;
+				} else {
+					outer += sql[i] === "\n" ? "\n" : " ";
+					i++;
+				}
+			}
+		} else if (sql[i] === "'") {
+			const escaped = i > 0 && (sql[i - 1] === "E" || sql[i - 1] === "e") && (i === 1 || !/[A-Za-z0-9_$]/.test(sql[i - 2]));
+			outer += " ";
+			i++;
+			while (i < sql.length) {
+				if (escaped && sql[i] === "\\" && i + 1 < sql.length) {
+					outer += sql[i + 1] === "\n" ? " \n" : "  ";
+					i += 2;
+					continue;
+				}
+				if (sql[i] === "'" && sql[i + 1] === "'") {
+					outer += "  ";
+					i += 2;
+					continue;
+				}
+				const ch = sql[i++];
+				outer += ch === "\n" ? "\n" : " ";
+				if (ch === "'") break;
+			}
+		} else if (sql[i] === '"') {
+			outer += " ";
+			i++;
+			while (i < sql.length) {
+				if (sql[i] === '"' && sql[i + 1] === '"') {
+					outer += "  ";
+					i += 2;
+					continue;
+				}
+				const ch = sql[i++];
+				outer += ch === "\n" ? "\n" : " ";
+				if (ch === '"') break;
+			}
+		} else if (splitDollars && sql[i] === "$") {
+			const match = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+			if (match) {
+				const tag = match[0];
+				const end = sql.indexOf(tag, i + tag.length);
+				if (end >= 0) {
+					const inner = sql.slice(i + tag.length, end);
+					dollarBodies += `\n${scanSqlForBatching(inner, false).outer}`;
+					outer += sql.slice(i, end + tag.length).replace(/[^\n]/g, " ");
+					i = end + tag.length;
+					continue;
+				}
+			}
+			outer += sql[i++];
+		} else {
+			outer += sql[i++];
+		}
+	}
+	return { outer, dollarBodies };
+}
+
+function maskRollbackTo(outer) {
+	return outer.replace(/\brollback\s+(?:work\s+|transaction\s+)?to\b/gi, (match) => match.replace(/[^\n]/g, " "));
+}
+
+function isSingleRolledBackTransaction(sql) {
+	if (DISALLOWED_BATCH_META.test(sql)) return false;
+	const scanned = scanSqlForBatching(sql);
+	const outer = maskRollbackTo(scanned.outer);
+	return (
+		/^\s*begin\s*(?:transaction|work)?\s*;/i.test(outer) &&
+		!/\b(?:commit|end\s+(?:transaction|work)?)\s*;/i.test(outer) &&
+		!/\bcommit\s*;/i.test(scanned.dollarBodies)
+	);
+}
+
+function inspectBatchableFixtureTest(name, read) {
+	if (compareTestNames(name, "201") < 0) return null;
+	const source = read(name);
+	const directive = FIXTURE_DIRECTIVE.exec(source);
+	if (!directive) return null;
+	const [line, fixtureName, marker] = directive;
+	if (fixtureName === name) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
+	const fixture = expandTestFixture(fixtureName, read, [name]);
+	const end = fixture.indexOf(marker);
+	if (end < 0) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
+	const prefix = fixture.slice(0, end);
+	const body = `--\n${source.slice(line.length)}`;
+	if (DISALLOWED_BATCH_META.test(prefix) || DISALLOWED_BATCH_META.test(body)) return null;
+	const p = scanSqlForBatching(prefix);
+	const b = scanSqlForBatching(body);
+	const pOuter = maskRollbackTo(p.outer);
+	const bOuter = maskRollbackTo(b.outer);
+	const tailRollback = /\brollback\s*(?:work|transaction)?\s*;\s*$/i.exec(bOuter);
+	const bOuterNoTail = tailRollback ? bOuter.slice(0, tailRollback.index) : bOuter;
+	if (!/^\s*begin\s*(?:transaction|work)?\s*;/i.test(pOuter)) return null;
+	if (/\b(?:commit|end\s+(?:transaction|work)?)\s*;/i.test(pOuter) || /\b(?:commit|end\s+(?:transaction|work)?)\s*;/i.test(bOuter)) return null;
+	if (/\brollback\s*(?:work|transaction)?\s*;/i.test(pOuter) || /\brollback\s*(?:work|transaction)?\s*;/i.test(bOuterNoTail)) return null;
+	if (
+		/\bbegin\s*(?:transaction|work)?\s*;/i.test(pOuter.replace(/^\s*begin\s*(?:transaction|work)?\s*;/i, "")) ||
+		/\bbegin\s*(?:transaction|work)?\s*;/i.test(bOuter)
+	) {
+		return null;
+	}
+	if (/\b(?:commit|rollback)\s*;/i.test(`${p.dollarBodies}\n${b.dollarBodies}`)) return null;
+	if (DISALLOWED_BATCH_SQL.test(`${p.outer}\n${b.outer}\n${p.dollarBodies}\n${b.dollarBodies}`)) return null;
+	const trimmedOuter = bOuterNoTail.trimEnd();
+	if (!trimmedOuter.endsWith(";") && !/\\g\s+\/dev\/null$/.test(trimmedOuter)) return null;
+	const strippedBody = tailRollback ? body.slice(0, tailRollback.index) : body;
+	return { key: `${fixtureName}\0${marker}`, prefix, body: strippedBody };
+}
+
+export function planSqlTestBatches(tests, read, limit = BATCH_LIMIT) {
+	const plan = [];
+	const open = new Map();
+	const flush = () => {
+		open.clear();
+	};
+	for (const name of tests) {
+		const candidate = inspectBatchableFixtureTest(name, read);
+		if (candidate) {
+			let batch = open.get(candidate.key);
+			if (!batch || batch.items.length >= limit) {
+				batch = { type: "batch", prefix: candidate.prefix, items: [] };
+				plan.push(batch);
+				open.set(candidate.key, batch);
+			}
+			batch.items.push({ name, body: candidate.body });
+		} else {
+			const expanded = expandTestFixture(name, read);
+			if (compareTestNames(name, "201") < 0 || !isSingleRolledBackTransaction(expanded)) flush();
+			plan.push({ type: "single", name, sql: expanded });
+		}
+	}
+	return plan.map((entry) => {
+		if (entry.type === "batch" && entry.items.length === 1) {
+			const [{ name }] = entry.items;
+			return { type: "single", name, sql: expandTestFixture(name, read) };
+		}
+		return entry;
+	});
+}
+
 /** A test may begin with `-- @fixture <file> until "<marker>"` to run after another test's
  * fixture section instead of copying it. The marker line itself is not included. The other
  * test may itself run after a third one; a cycle is refused. */
 export function expandTestFixture(name, read, chain = []) {
 	const source = read(name);
-	const directive = /^-- @fixture ([0-9a-z_.-]+\.test\.sql) until "([^"\n]+)"\n/.exec(source);
+	const directive = FIXTURE_DIRECTIVE.exec(source);
 	if (!directive) return source;
 	const [line, fixtureName, marker] = directive;
 	if (fixtureName === name || chain.includes(fixtureName)) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
@@ -155,8 +321,6 @@ function startInBackground(script, environment = {}) {
 	});
 }
 
-/** The shared-server scripts that run in a second lane: the longest (about 61 s on a busy test machine) and the
- * one after it (28 s), together about as long as all the others in the first (79 s). */
 const SECOND_LANE = new Set([
 	"scripts/test-folder-core-acceptance.mjs",
 ]);
@@ -195,14 +359,31 @@ async function reportEach(failed, started) {
  * first failure, as one psql run per test did. */
 async function runSqlTests(cluster, database, tests) {
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
-	const files = cluster.copyIn(
-		Object.fromEntries(tests.map((test) => [test, expandTestFixture(test, (name) => readFileSync(join(testsRoot, name), "utf-8"))])),
-	);
-	await cluster.scriptInBackground(
-		database,
-		tests.map((test) => `\\echo Running ${test}\n${sessionPerFile(database, [files[test]])}`).join(""),
-		{ progress: true },
-	);
+	const read = (name) => readFileSync(join(testsRoot, name), "utf-8");
+	const plan = planSqlTestBatches(tests, read);
+	const copyMap = {};
+	let fixtureIndex = 0;
+	for (const entry of plan) {
+		if (entry.type === "single") {
+			copyMap[entry.name] = entry.sql;
+		} else {
+			entry.fixtureFile = `__fixture_${fixtureIndex++}.sql`;
+			copyMap[entry.fixtureFile] = `${entry.prefix}\nSAVEPOINT ${BATCH_SAVEPOINT};\n`;
+			for (const item of entry.items) copyMap[item.name] = item.body;
+		}
+	}
+	const files = cluster.copyIn(copyMap);
+	const script = plan
+		.map((entry) => {
+			if (entry.type === "single") return `\\echo Running ${entry.name}\n${sessionPerFile(database, [files[entry.name]])}`;
+			const head = sessionPerFile(database, [files[entry.fixtureFile]]);
+			const body = entry.items
+				.map((item) => `\\echo Running ${item.name}\n\\i ${files[item.name]}\nROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT};\n`)
+				.join("");
+			return `${head}${body}ROLLBACK;\n`;
+		})
+		.join("");
+	await cluster.scriptInBackground(database, script, { progress: true });
 }
 
 const USAGE = "Usage: node scripts/test-hosted-db.mjs [--scripts] [--only <test>[,<test>...]]";
@@ -285,7 +466,6 @@ async function main() {
 		const testing = performance.now();
 		const databases = splitTests(tests, only);
 		for (const [database] of databases) cluster.create(database);
-		// The scripts that share this PostgreSQL run in turn in two lanes beside the SQL tests, each in a database of its own.
 		if (withScripts)
 			shared = startInTurn(
 				HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name)),
@@ -296,8 +476,12 @@ async function main() {
 		const results = await Promise.allSettled(
 			databases.map(async ([database, part]) => {
 				const since = performance.now();
-				await runSqlTests(cluster, database, part);
-				if (databases.length > 1) process.stdout.write(`${part.length} tests passed on ${database} in ${seconds(since)}\n`);
+				try {
+					await runSqlTests(cluster, database, part);
+					if (databases.length > 1) process.stdout.write(`${part.length} tests passed on ${database} in ${seconds(since)}\n`);
+				} finally {
+					cluster.drop(database);
+				}
 			}),
 		);
 		const errors = results.filter(({ status }) => status === "rejected");
@@ -307,7 +491,6 @@ async function main() {
 			process.stdout.write(
 				`Hosted database checks passed (${migrations} migrations, ${tests.length}${only ? ` of ${all.length}` : ""} tests) in ${seconds(testing)}\n`,
 			);
-		for (const [database] of databases) cluster.drop(database);
 	} finally {
 		// The scripts using this run's PostgreSQL end before it is removed.
 		await reportEach(failed, shared);

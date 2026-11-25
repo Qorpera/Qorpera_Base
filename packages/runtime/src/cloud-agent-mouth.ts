@@ -1,4 +1,4 @@
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 
 export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
 /** How an agent links a file of the company folder in a message: a markdown link whose target is `folder:` and the
@@ -6,7 +6,7 @@ export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
 export const CLOUD_FOLDER_LINK_EXAMPLE = "[sales-dashboard.html](folder:sales/sales-dashboard.html)";
 export const CLOUD_AGENT_SEND_INSTRUCTIONS = [
 	"Send a message to this conversation — your only public voice. Your reasoning, tool calls, and private text stay hidden.",
-	"- progress: keeps members informed without ending your turn. When delivery.beforeWork asks you to acknowledge, send one short, natural line naming what you are doing before starting work (once per run).",
+	"- progress: keeps members informed without ending your turn. When delivery.beforeWork asks you to acknowledge, send one short, natural line naming what you are doing (once per run); you may emit read-only tool calls in parallel in the same turn, before any writes or mutations.",
 	"- final: delivers this turn's actual answer, result, concrete blocker, or decision. Make it last, after file changes, checks, and coworker messages. End with what is ready (and where), naming what carries any ongoing work (a worker, routine, or todo) instead of promising \"I'll do it\".",
 	"Retry an unconfirmed send with the exact same idempotencyKey and arguments. Never put credentials in a message.",
 ].join("\n");

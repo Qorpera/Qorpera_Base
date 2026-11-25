@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import { CloudCompanyPathRpcMissing, CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
@@ -12,7 +13,6 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeFencedResult } from "./cloud-native-tool-boundary.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 
 export type CloudCompanyPathRpc =
@@ -35,6 +35,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_record_claude_run_usage"
 	| "qorpera_record_gemini_run_usage"
 	| "qorpera_record_gemini_voice_usage"
+	| "qorpera_record_gemini_image_usage"
 	| "qorpera_record_gemini_cap_reached"
 	| "qorpera_record_gemini_key_error"
 	| "qorpera_describe_company_run_context"
@@ -80,6 +81,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_read"
 	| "qorpera_folder_list"
 	| "qorpera_folder_commit"
+	| "qorpera_folder_follow_up_run_commit"
 	| "qorpera_folder_memory_commit"
 	| "qorpera_memory_run_log_place"
 	| "qorpera_memory_run_resume"
@@ -269,6 +271,15 @@ export class CloudCompanyPathGateway {
 	/** The one-call run check: the database lacks it (a runtime ahead of 20260930618000), or it has answered this run. */
 	#checkUnavailable = false;
 	#checkAnswered = false;
+	readonly #contextOutputCache = new Map<
+		string,
+		{
+			readonly raw: string;
+			readonly kind: CloudNativeFencedResult["kind"];
+			readonly imageSha256: string | undefined;
+			readonly entry: Record<string, unknown>;
+		}
+	>();
 
 	constructor(options: {
 		binding: CloudNativeToolBinding;
@@ -413,6 +424,16 @@ export class CloudCompanyPathGateway {
 			turnId: frame.turnId || null,
 			purpose: frame.purpose,
 			outputs: outputs.map((output) => {
+				if (output.capture === undefined) {
+					const cached = this.#contextOutputCache.get(output.callId);
+					if (
+						cached &&
+						cached.raw === output.output &&
+						cached.kind === output.kind &&
+						cached.imageSha256 === output.imageSha256
+					)
+						return cached.entry;
+				}
 				const envelope = JSON.parse(output.output) as {
 					status?: string;
 					provenance?: {
@@ -470,7 +491,7 @@ export class CloudCompanyPathGateway {
 						envelope.content.includedBytes !== Buffer.byteLength(envelope.content.text))
 				)
 					throw new Error("Company File output provenance changed");
-				return {
+				const entry: Record<string, unknown> = {
 					...(capture ? { capture } : {}),
 					callId: output.callId,
 					kind: output.kind,
@@ -481,6 +502,19 @@ export class CloudCompanyPathGateway {
 					includedBytes: readId ? envelope.content!.includedBytes! : null,
 					includedSha256: readId ? createHash("sha256").update(envelope.content!.text!).digest("hex") : null,
 				};
+				if (output.capture === undefined) {
+					this.#contextOutputCache.set(output.callId, {
+						raw: output.output,
+						kind: output.kind,
+						imageSha256: output.imageSha256,
+						entry,
+					});
+					if (this.#contextOutputCache.size > 8_192) {
+						const oldest = this.#contextOutputCache.keys().next().value;
+						if (oldest !== undefined) this.#contextOutputCache.delete(oldest);
+					}
+				}
+				return entry;
 			}),
 		};
 	}

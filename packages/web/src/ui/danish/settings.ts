@@ -357,6 +357,14 @@ export const SETTINGS: Record<string, string> = {
 	"Voice profile": "Stemmeprofil",
 	"Default model and voice profile for narrated Studio breakdowns.":
 		"Standardmodel og stemmeprofil til indtalte Studio-gennemgange.",
+	"Image generation": "Billedgenerering",
+	"Image generation model": "Model til billedgenerering",
+	"Default model for generated images across chats, coding, workers, and Studio.":
+		"Standardmodel til genererede billeder i chats, kodning, baggrundsarbejde og Studio.",
+	Test: "Test",
+	"Test {voice} voice": "Test stemmen {voice}",
+	"Stop voice sample": "Stop stemmeprøve",
+	"Voice sample could not be played. Try again.": "Stemmeprøven kunne ikke afspilles. Prøv igen.",
 	Informative: "Informativ",
 	Firm: "Bestemt",
 	Upbeat: "Opløftende",
@@ -382,6 +390,7 @@ export const SETTINGS: Record<string, string> = {
 	"Connect Claude or add a Gemini API key below to choose their models here.":
 		"Forbind Claude eller tilføj en Gemini-API-nøgle nedenfor for at vælge deres modeller her.",
 	"{model} (unavailable here)": "{model} (ikke tilgængelig her)",
+	"{model} (no preview)": "{model} (ingen forhåndsvisning)",
 	"API credits": "API-kredit",
 	Unlimited: "Ubegrænset",
 	"{balance} left of {limit}": "{balance} tilbage af {limit}",

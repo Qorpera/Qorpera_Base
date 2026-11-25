@@ -1,5 +1,6 @@
 import { osPath } from "@qorpera/cloud-client/company-state-files";
 import { isStaffCharacterId, STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import type { CloudFolderGroupChat, CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import {
 	type CloudFolderHire,
@@ -14,7 +15,6 @@ import { type CloudNativeTool, CloudToolArgumentRefusal, type CloudToolContext }
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const FIELDS = ["operationKey", "name", "role", "jobDescription", "firstAssignment", "figure"] as const;
 const MEMBER_FIELDS = ["name", "role", "jobDescription", "firstAssignment", "figure"] as const;
 const TEAM_FIELDS = ["operationKey", "hires"] as const;

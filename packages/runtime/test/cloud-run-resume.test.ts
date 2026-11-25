@@ -231,7 +231,7 @@ describe("dormant run resume opening", () => {
 		const next = request();
 		next.items.push(
 			{ kind: "function_call", role: null, callId: "new", id: null, bytes: 50, media: 0 },
-			{ kind: "function_call_output", role: null, callId: "new", id: null, bytes: 50_000, media: 0 },
+			{ kind: "function_call_output", role: null, callId: "new", id: null, bytes: 100_000, media: 0 },
 			{ kind: "function_call", role: null, callId: "last", id: null, bytes: 50, media: 0 },
 			{ kind: "function_call_output", role: null, callId: "last", id: null, bytes: 100, media: 0 },
 		);

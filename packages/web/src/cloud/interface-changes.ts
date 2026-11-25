@@ -1,6 +1,6 @@
 import type { CloudMemberFolderOp } from "@qorpera/cloud-client/cloud-member-folder";
 import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-shared";
-import { array, boundedInteger, CloudShapeError, oneOf, record, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, oneOf } from "./parse.ts";
 
 /*
  * An agent's change to the company's pages and tables, and its Undo (Interfaces I10; deploy/first-node/
@@ -41,12 +41,12 @@ const UNDER = /^(?:interfaces|tables)\/[^/]+(?:\/[^/]+)*$/;
  * QorperaOS/interfaces/ or QorperaOS/tables/, since a note names nothing else. */
 export function parseInterfaceChange(value: unknown): InterfaceChange | null {
 	try {
-		const body = record(value, "interface change");
+		const body = cloudRecord(value, "interface change");
 		if (body.schema !== INTERFACE_CHANGE_SCHEMA) return null;
 		const items = array(body.changes, "interface change paths");
 		if (!items.length) return null;
 		const changes = items.map((item): InterfaceChangePath => {
-			const change = record(item, "interface change path");
+			const change = cloudRecord(item, "interface change path");
 			const { path } = change;
 			if (
 				typeof path !== "string" ||
@@ -60,15 +60,16 @@ export function parseInterfaceChange(value: unknown): InterfaceChange | null {
 				op: oneOf(change.op, OPS, "interface change op"),
 				kind: oneOf(change.kind, KINDS, "interface change kind"),
 				path,
-				version: uuid(change.version, "interface change version"),
-				priorVersion: change.priorVersion === null ? null : uuid(change.priorVersion, "interface change version"),
+				version: cloudUuid(change.version, "interface change version"),
+				priorVersion:
+					change.priorVersion === null ? null : cloudUuid(change.priorVersion, "interface change version"),
 			};
 		});
 		return {
-			commitId: uuid(body.commitId, "interface change commit"),
+			commitId: cloudUuid(body.commitId, "interface change commit"),
 			seq: boundedInteger(body.seq, "interface change seq", 1, Number.MAX_SAFE_INTEGER),
-			runId: uuid(body.runId, "interface change run"),
-			staffAgentId: uuid(body.staffAgentId, "interface change agent"),
+			runId: cloudUuid(body.runId, "interface change run"),
+			staffAgentId: cloudUuid(body.staffAgentId, "interface change agent"),
 			changes,
 		};
 	} catch (error) {

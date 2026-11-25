@@ -1,6 +1,6 @@
 import { supabaseServiceHeaders } from "@qorpera/cloud-client/cloud-request";
 import { UUID_PATTERN } from "@qorpera/contracts";
-import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
+import type { WebSocketLikeConstructor } from "@supabase/realtime-js";
 
 /** G2-2 to G2-5: the native host reaches the database, Storage and Realtime without the service key, and holds none
  * (G2-5). A call it makes inside a job goes through the entry points of migration 20260928409985 with the publishable
@@ -82,6 +82,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_complete_run_receipt", "standard"],
 	["qorpera_folder_describe_code_change", "standard"],
 	["qorpera_folder_emit_data_change_wakes", "standard"],
+	["qorpera_folder_follow_up_run_commit", "standard"],
 	["qorpera_folder_list", "standard"],
 	["qorpera_folder_manage_hook", "standard"],
 	["qorpera_folder_memory_commit", "standard"],
@@ -161,6 +162,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_record_gemini_key_error", "standard"],
 	["qorpera_record_gemini_run_usage", "standard"],
 	["qorpera_record_gemini_voice_usage", "standard"],
+	["qorpera_record_gemini_image_usage", "standard"],
 	["qorpera_record_native_context_view", "standard"],
 	["qorpera_record_provider_usage_signal", "standard"],
 	["qorpera_record_runtime_observation_batch", "standard"],

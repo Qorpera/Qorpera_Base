@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import type { CloudRunnerAssignmentAcceptance } from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import { UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
+import { bearerTokenMatches, readBoundedJsonBody } from "./cloud-http-server-kit.ts";
 import type { CloudRunnerAssignmentSource } from "./cloud-runner-worker.ts";
 
 const ASSIGNMENT_SCHEMA = "qorpera.runner-assignment-delivery/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_REQUEST_BYTES = 16 * 1024;
 
 interface PendingNext {
@@ -143,17 +144,12 @@ export class HttpCloudRunnerAssignmentInbox implements CloudRunnerAssignmentSour
 			response.writeHead(404).end();
 			return;
 		}
-		if (request.headers.authorization !== `Bearer ${this.#token}`) {
+		if (!bearerTokenMatches(this.#token, request.headers.authorization)) {
 			response.writeHead(401).end();
 			return;
 		}
 		try {
-			let encoded = "";
-			for await (const chunk of request) {
-				encoded += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
-				if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) throw new Error("request too large");
-			}
-			const assignment = assignmentFromBody(JSON.parse(encoded) as unknown);
+			const assignment = assignmentFromBody(await readBoundedJsonBody(request, { maxBytes: MAX_REQUEST_BYTES }));
 			if (this.#lastAccepted && sameAssignment(this.#lastAccepted, assignment)) {
 				response.writeHead(200, { "content-type": "application/json" }).end('{"accepted":true}\n');
 				return;

@@ -309,6 +309,14 @@ describe("when no picture comes back", () => {
 			"USAGE_LIMIT_REACHED: the member's ChatGPT usage limit stopped the picture",
 		],
 		[
+			new CloudPictureFailure("spend_cap"),
+			"GEMINI_SPEND_CAP_REACHED: the member's monthly Gemini API spend cap was reached",
+		],
+		[
+			new CloudPictureFailure("billing_required"),
+			"GEMINI_BILLING_REQUIRED: the member's Gemini API key does not have billing or credits enabled for image generation",
+		],
+		[
 			new CloudPictureFailure("refused"),
 			"PICTURE_REFUSED: the picture generator refused this prompt or could not draw it",
 		],

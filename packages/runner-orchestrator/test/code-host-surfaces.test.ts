@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -10,6 +10,7 @@ import {
 	addCodeWorktree,
 	type CodeHostCommand,
 	type CodeHostJob,
+	CodeHostRefusal,
 	type CodeHostShell,
 	startCodeArea,
 	undoCodeChange,
@@ -18,6 +19,7 @@ import {
 	CodeHostChangeConflict,
 	cherryPickChangeUnits,
 	composePreviewTree,
+	discardSurfaceSessionWorktree,
 	ensureSurfaceStarterRepository,
 	inspectChangeRange,
 	rebaseSessionChanges,
@@ -361,5 +363,443 @@ describe("code-host surfaces multi-change engine", () => {
 			previewRefId: "11223344",
 		});
 		expect(preview.status).toBe("ready");
+	}, 20_000);
+
+	it("previews, rebases, and lands isolated single-session option groups without cross-option bleed or conflicts", async () => {
+		const f = await keptFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit({ "index.html": "<main>Base</main>\n" }, "Seed base");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed base" }],
+		});
+
+		const s = await f.startSession(base.mainAfter);
+		const opt1Id = randomUUID();
+		const opt2Id = randomUUID();
+		const opt3Id = randomUUID();
+
+		const opt1Head = await s.commit(
+			{ "index.html": "<main>Option 1: Broker</main>\n", "opt1.css": ".a { color: #111; }\n" },
+			"Option 1",
+		);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt2Head = await s.commit(
+			{ "index.html": "<main>Option 2: Showcase</main>\n", "opt2.css": ".b { color: #222; }\n" },
+			"Option 2",
+		);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt3Head = await s.commit(
+			{ "index.html": "<main>Option 3: Trading desk</main>\n", "opt3.css": ".c { color: #333; }\n" },
+			"Option 3",
+		);
+
+		const previewOpt2 = await composePreviewTree(f.job, {
+			repository: f.repository,
+			baseSha: base.mainAfter,
+			changes: [{ changeId: opt2Id, parentSha: base.mainAfter, headSha: opt2Head }],
+		});
+		expect(previewOpt2.status).toBe("ready");
+		if (previewOpt2.status !== "ready") throw new Error("expected ready preview for option 2");
+		const preview2Files = (await f.git(f.repo, "--git-dir=.", "ls-tree", "--name-only", previewOpt2.compositeTreeSha))
+			.split("\n")
+			.sort();
+		expect(preview2Files).toEqual(["index.html", "opt2.css"]);
+		expect(await f.git(f.repo, "--git-dir=.", "show", `${previewOpt2.compositeTreeSha}:index.html`)).toBe(
+			"<main>Option 2: Showcase</main>",
+		);
+
+		const peer = await f.startSession(base.mainAfter);
+		const peerHead = await peer.commit({ "footer.html": "<footer>Brooks ApS</footer>\n" }, "Add footer");
+		const main2 = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: base.mainAfter,
+			changes: [{ changeId: randomUUID(), parentSha: base.mainAfter, headSha: peerHead, title: "Add footer" }],
+		});
+
+		const rebased = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: s.workerId,
+			ontoSha: main2.mainAfter,
+			updateBranchRef: true,
+			remainingChanges: [
+				{
+					changeId: opt1Id,
+					parentSha: base.mainAfter,
+					headSha: opt1Head,
+					title: "Option 1",
+					optionGroupKey: "concept",
+				},
+				{
+					changeId: opt2Id,
+					parentSha: base.mainAfter,
+					headSha: opt2Head,
+					title: "Option 2",
+					optionGroupKey: "concept",
+				},
+				{
+					changeId: opt3Id,
+					parentSha: base.mainAfter,
+					headSha: opt3Head,
+					title: "Option 3",
+					optionGroupKey: "concept",
+				},
+			],
+		});
+		expect(rebased.status).toBe("clean");
+		if (rebased.status !== "clean") throw new Error("expected clean option-group rebase");
+		expect(rebased.rebasedChanges).toHaveLength(3);
+		for (const item of rebased.rebasedChanges) {
+			expect(item.parentSha).toBe(main2.mainAfter);
+		}
+		const rebasedOpt2 = rebased.rebasedChanges[1]!;
+		const rebasedOpt3 = rebased.rebasedChanges[2]!;
+
+		const previewOpt3 = await composePreviewTree(f.job, {
+			repository: f.repository,
+			baseSha: main2.mainAfter,
+			changes: [{ changeId: opt3Id, parentSha: rebasedOpt3.parentSha, headSha: rebasedOpt3.headSha }],
+		});
+		expect(previewOpt3.status).toBe("ready");
+		if (previewOpt3.status !== "ready") throw new Error("expected ready preview for rebased option 3");
+		const preview3Files = (await f.git(f.repo, "--git-dir=.", "ls-tree", "--name-only", previewOpt3.compositeTreeSha))
+			.split("\n")
+			.sort();
+		expect(preview3Files).toEqual(["footer.html", "index.html", "opt3.css"]);
+
+		const landed = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: main2.mainAfter,
+			changes: [
+				{
+					changeId: opt2Id,
+					parentSha: rebasedOpt2.parentSha,
+					headSha: rebasedOpt2.headSha,
+					title: "Option 2",
+				},
+			],
+		});
+		expect(landed.mainBefore).toBe(main2.mainAfter);
+		expect(await readFile(join(f.code, "main/index.html"), "utf8")).toBe("<main>Option 2: Showcase</main>\n");
+		expect(await exists(join(f.code, "main/opt2.css"))).toBe(true);
+		expect(await exists(join(f.code, "main/opt1.css"))).toBe(false);
+		expect(await exists(join(f.code, "main/opt3.css"))).toBe(false);
+		expect(await readFile(join(f.code, "main/footer.html"), "utf8")).toBe("<footer>Brooks ApS</footer>\n");
+	}, 20_000);
+
+	it("stress-tests 4-option groups across 3 sequential main landings, file deletions, conflicts, and post-pick follow-up steering", async () => {
+		const f = await keptFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit(
+			{
+				"index.html": "<main>Base</main>\n",
+				"legacy.css": ".legacy { display: block; }\n",
+				"shared.css": "body { margin: 0; }\n.hero { color: #000; }\n",
+			},
+			"Seed multi-file base",
+		);
+		const m0 = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed base" }],
+		});
+
+		const s = await f.startSession(m0.mainAfter);
+		const optIds = [randomUUID(), randomUUID(), randomUUID(), randomUUID()] as const;
+
+		const c1 = await s.commit(
+			{
+				"index.html": "<main>Option 1</main>\n",
+				"assets/opt1/style.css": ".opt1 { gap: 8px; }\n",
+			},
+			"Option 1",
+		);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", m0.mainAfter);
+		const c2 = await s.commit(
+			{
+				"index.html": "<main>Option 2</main>\n",
+				"assets/opt2/style.css": ".opt2 { gap: 16px; }\n",
+				"components/opt2/hero.js": "export const hero = 2;\n",
+			},
+			"Option 2",
+		);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", m0.mainAfter);
+		await rm(join(s.worktree, "legacy.css"));
+		const c3 = await s.commit(
+			{
+				"index.html": "<main>Option 3</main>\n",
+				"assets/opt3/style.css": ".opt3 { gap: 24px; }\n",
+			},
+			"Option 3 (deletes legacy.css)",
+		);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", m0.mainAfter);
+		const c4 = await s.commit(
+			{
+				"index.html": "<main>Option 4</main>\n",
+				"shared.css": "body { margin: 0; }\n.hero { color: #f00; }\n",
+			},
+			"Option 4",
+		);
+
+		let currentMain = m0.mainAfter;
+		let tracked = [
+			{ changeId: optIds[0], parentSha: currentMain, headSha: c1, title: "Option 1", optionGroupKey: "dir" },
+			{ changeId: optIds[1], parentSha: currentMain, headSha: c2, title: "Option 2", optionGroupKey: "dir" },
+			{ changeId: optIds[2], parentSha: currentMain, headSha: c3, title: "Option 3", optionGroupKey: "dir" },
+			{ changeId: optIds[3], parentSha: currentMain, headSha: c4, title: "Option 4", optionGroupKey: "dir" },
+		];
+
+		for (let round = 1; round <= 3; round++) {
+			const peer = await f.startSession(currentMain);
+			const peerHead = await peer.commit({ [`peer-${round}.txt`]: `round ${round}\n` }, `Peer landing ${round}`);
+			const landedPeer = await cherryPickChangeUnits(f.job, {
+				repository: f.repository,
+				expectMainSha: currentMain,
+				changes: [{ changeId: randomUUID(), parentSha: currentMain, headSha: peerHead, title: `Peer ${round}` }],
+			});
+			currentMain = landedPeer.mainAfter;
+			const rebased = await rebaseSessionChanges(f.job, {
+				repository: f.repository,
+				workerId: s.workerId,
+				ontoSha: currentMain,
+				updateBranchRef: true,
+				remainingChanges: tracked,
+			});
+			expect(rebased.status).toBe("clean");
+			if (rebased.status !== "clean") throw new Error(`expected clean rebase round ${round}`);
+			tracked = rebased.rebasedChanges.map((item, idx) => ({
+				...tracked[idx]!,
+				parentSha: item.parentSha,
+				headSha: item.headSha,
+			}));
+			for (const item of tracked) expect(item.parentSha).toBe(currentMain);
+		}
+
+		for (const [idx, expectedUnique, expectLegacy] of [
+			[0, "assets/opt1/style.css", true],
+			[1, "components/opt2/hero.js", true],
+			[2, "assets/opt3/style.css", false],
+			[3, "shared.css", true],
+		] as const) {
+			const opt = tracked[idx]!;
+			const preview = await composePreviewTree(f.job, {
+				repository: f.repository,
+				baseSha: currentMain,
+				changes: [{ changeId: opt.changeId, parentSha: opt.parentSha, headSha: opt.headSha }],
+			});
+			expect(preview.status).toBe("ready");
+			if (preview.status !== "ready") throw new Error(`expected ready preview for option ${idx + 1}`);
+			const allPaths = (
+				await f.git(f.repo, "--git-dir=.", "ls-tree", "-r", "--name-only", preview.compositeTreeSha)
+			).split("\n");
+			expect(allPaths).toContain(expectedUnique);
+			expect(allPaths).toContain("peer-1.txt");
+			expect(allPaths).toContain("peer-2.txt");
+			expect(allPaths).toContain("peer-3.txt");
+			expect(allPaths.includes("legacy.css")).toBe(expectLegacy);
+			for (let other = 1; other <= 3; other++) {
+				if (other !== idx + 1) {
+					expect(allPaths).not.toContain(`assets/opt${other}/style.css`);
+				}
+			}
+			expect(await f.git(f.repo, "--git-dir=.", "show", `${preview.compositeTreeSha}:index.html`)).toBe(
+				`<main>Option ${idx + 1}</main>`,
+			);
+		}
+
+		const conflictPeer = await f.startSession(currentMain);
+		const conflictPeerHead = await conflictPeer.commit(
+			{ "shared.css": "body { margin: 0; }\n.hero { color: #00f; }\n" },
+			"Conflicting hero color",
+		);
+		const mConflict = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: currentMain,
+			changes: [
+				{ changeId: randomUUID(), parentSha: currentMain, headSha: conflictPeerHead, title: "Conflicting hero" },
+			],
+		});
+		const conflictRebase = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: s.workerId,
+			ontoSha: mConflict.mainAfter,
+			updateBranchRef: false,
+			remainingChanges: tracked,
+		});
+		expect(conflictRebase.status).toBe("conflicted");
+		if (conflictRebase.status !== "conflicted") throw new Error("expected conflict on option 4");
+		expect(conflictRebase.conflictedChangeId).toBe(optIds[3]);
+		expect(conflictRebase.conflictPaths).toEqual(["shared.css"]);
+
+		const chosenOpt2 = tracked[1]!;
+		const tipAtOpt4 = tracked[3]!.headSha;
+		await f.git(s.worktree, "reset", "--hard", tipAtOpt4);
+		await f.git(s.worktree, "read-tree", "--reset", "-u", chosenOpt2.headSha);
+		const followUpId = randomUUID();
+		const followUpHead = await s.commit(
+			{
+				"index.html": "<main>Option 2 — Refined CTA</main>\n",
+				"cta.js": "export const cta = true;\n",
+			},
+			"Refine chosen option 2",
+		);
+
+		const rebasedChosen = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: s.workerId,
+			ontoSha: mConflict.mainAfter,
+			updateBranchRef: true,
+			allowedBranchTips: [followUpHead],
+			remainingChanges: [
+				{
+					changeId: chosenOpt2.changeId,
+					parentSha: chosenOpt2.parentSha,
+					headSha: chosenOpt2.headSha,
+					title: "Opt 2",
+				},
+				{ changeId: followUpId, parentSha: chosenOpt2.headSha, headSha: followUpHead, title: "Refine CTA" },
+			],
+		});
+		expect(rebasedChosen.status).toBe("clean");
+		if (rebasedChosen.status !== "clean") throw new Error("expected clean rebase of chosen option + follow-up");
+		expect(rebasedChosen.rebasedChanges).toHaveLength(2);
+		const [rOpt2, rFollowUp] = rebasedChosen.rebasedChanges;
+		expect(rOpt2!.parentSha).toBe(mConflict.mainAfter);
+		expect(rFollowUp!.parentSha).toBe(rOpt2!.headSha);
+
+		await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			expectMainSha: mConflict.mainAfter,
+			changes: [
+				{ changeId: chosenOpt2.changeId, parentSha: rOpt2!.parentSha, headSha: rOpt2!.headSha, title: "Opt 2" },
+				{ changeId: followUpId, parentSha: rFollowUp!.parentSha, headSha: rFollowUp!.headSha, title: "Refine CTA" },
+			],
+		});
+		expect(await readFile(join(f.code, "main/index.html"), "utf8")).toBe("<main>Option 2 — Refined CTA</main>\n");
+		expect(await readFile(join(f.code, "main/cta.js"), "utf8")).toBe("export const cta = true;\n");
+		expect(await exists(join(f.code, "main/components/opt2/hero.js"))).toBe(true);
+		expect(await exists(join(f.code, "main/assets/opt1/style.css"))).toBe(false);
+		expect(await exists(join(f.code, "main/assets/opt3/style.css"))).toBe(false);
+		expect(await readFile(join(f.code, "main/shared.css"), "utf8")).toBe(
+			"body { margin: 0; }\n.hero { color: #00f; }\n",
+		);
+	}, 30_000);
+
+	it("removes dirty discarded session worktree, git admin folder, and branch ref in two phases without affecting peers or main", async () => {
+		const f = await keptFixture();
+		const baseSha = f.baseSha;
+		const discarded = await f.startSession(baseSha);
+		const peer = await f.startSession(baseSha);
+
+		await discarded.commit({ "draft.html": "<p>Unmerged change</p>\n" }, "Draft change");
+		await writeFile(join(discarded.worktree, "index.html"), "<main>Dirty edit</main>\n");
+		await writeFile(join(discarded.worktree, "untracked.txt"), "scratch\n");
+		const peerHead = await peer.commit({ "peer.html": "<p>Keep peer</p>\n" }, "Peer change");
+
+		const worktreeDir = join(f.code, "worktrees", discarded.workerId);
+		const adminDir = join(f.repo, "worktrees", discarded.workerId);
+		const discardedRef = `refs/heads/qorpera/coding/${discarded.workerId}`;
+		expect(existsSync(worktreeDir)).toBe(true);
+		expect(existsSync(adminDir)).toBe(true);
+
+		const deferredGit = await discardSurfaceSessionWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			phase: "git-folder",
+		});
+		expect(deferredGit).toEqual({ status: "files_still_there" });
+		expect(existsSync(adminDir)).toBe(true);
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", discardedRef)).toMatch(/^[0-9a-f]{40}$/);
+
+		const phase1 = await discardSurfaceSessionWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			phase: "files",
+		});
+		expect(phase1).toEqual({
+			status: "cleaned",
+			removedWorktree: true,
+			removedAdmin: false,
+			deletedBranch: false,
+		});
+		expect(existsSync(worktreeDir)).toBe(false);
+		expect(existsSync(adminDir)).toBe(true);
+
+		const phase2 = await discardSurfaceSessionWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			phase: "git-folder",
+		});
+		expect(phase2).toEqual({
+			status: "cleaned",
+			removedWorktree: false,
+			removedAdmin: true,
+			deletedBranch: true,
+		});
+		expect(existsSync(worktreeDir)).toBe(false);
+		expect(existsSync(adminDir)).toBe(false);
+		expect(await f.git(f.repo, "--git-dir=.", "for-each-ref", discardedRef)).toBe("");
+
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(baseSha);
+		expect(existsSync(peer.worktree)).toBe(true);
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", `refs/heads/qorpera/coding/${peer.workerId}`)).toBe(
+			peerHead,
+		);
+
+		expect(
+			await discardSurfaceSessionWorktree(f.job, {
+				repository: f.repository,
+				workerId: discarded.workerId,
+				phase: "files",
+			}),
+		).toEqual({ status: "cleaned", removedWorktree: false, removedAdmin: false, deletedBranch: false });
+		expect(
+			await discardSurfaceSessionWorktree(f.job, {
+				repository: f.repository,
+				workerId: discarded.workerId,
+				phase: "git-folder",
+			}),
+		).toEqual({ status: "cleaned", removedWorktree: false, removedAdmin: false, deletedBranch: false });
+
+		const reopened = await addCodeWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			baseSha,
+			preferCurrentBase: true,
+		});
+		expect(reopened.state).toBe("added");
+		expect(existsSync(worktreeDir)).toBe(true);
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", discardedRef)).toBe(baseSha);
+	}, 20_000);
+
+	it("handles unseeded repositories cleanly and refuses symlinks in discardSurfaceSessionWorktree", async () => {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "code-host-discard-edge-")));
+		roots.push(root);
+		const companyRoot = join(root, "folder");
+		const scratchRoot = join(root, "scratch");
+		await mkdir(companyRoot, { recursive: true });
+		await mkdir(scratchRoot, { recursive: true });
+		const log: CodeHostCommand[] = [];
+		const job: CodeHostJob = {
+			shell: crossPlatformLocalShell(log),
+			layout: { companyRoot, scratchRoot, git: GIT },
+			signal: new AbortController().signal,
+		};
+		const repository = { host: "qorpera" as const, owner: "surfaces", name: "unseeded", baseBranch: "main" };
+		const workerId = randomUUID();
+		expect(await discardSurfaceSessionWorktree(job, { repository, workerId, phase: "files" })).toEqual({
+			status: "unseeded",
+		});
+
+		const f = await keptFixture();
+		const linkWorkerId = randomUUID();
+		await mkdir(join(f.code, "worktrees"), { recursive: true });
+		await symlink(join(f.code, "main"), join(f.code, "worktrees", linkWorkerId));
+		await expect(
+			discardSurfaceSessionWorktree(f.job, {
+				repository: f.repository,
+				workerId: linkWorkerId,
+				phase: "files",
+			}),
+		).rejects.toSatisfy((error: unknown) => error instanceof CodeHostRefusal && error.code === "CODE_HOST_LINK");
 	}, 20_000);
 });
