@@ -448,6 +448,20 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Members can now pick their default image generation model under Settings, AI subscriptions, Default models: Gemini 3 Pro Image (using their Gemini API key and monthly spend cap) or ChatGPT Image (using either a Codex sign-in or a Sign in with ChatGPT subscription). Image generation now works across company chats, Gemini 4 Neon conversations, coding sessions, Claude Code workers, and Studio interface sessions, where make_picture stages PNG assets directly for Preview.",
 	},
 	{
+		id: "coding-sessions-on-claude-code",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Coding sessions run on Claude Code",
+		text: "Members whose Coding & working default uses Claude (Opus 5.5 or Fable 5.2) now run their coding sessions and code-backed interface sessions on Claude Code directly in the coding machine, using Claude's own shell and file tools over the governed workspace channels alongside the platform's finish, ask, change-recording, attachment, and picture tools. When Claude is chosen explicitly as the Coding & working default, missing logins, sign-outs, or plan limits fail clearly on Claude and never silently fall back to GPT or Codex.",
+	},
+	{
+		id: "studio-ops-unified-coding-agents",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Studio and Ops interfaces run on coding machines",
+		text: "Studio, Identity, and Ops interface sessions now run as coding agents on your coding machines under the hood, respecting your Coding & working default model (including Claude Opus 5.5 and Fable 5.2 with no silent GPT fallback) while preserving Preview patch staging, layout and report checks, narration, image generation, and Action cards. Studio and Ops sessions share a coding machine with read-only access to Company Files and a writable scratch workspace for scripts, analysis, and visual checks.",
+	},
+	{
 		id: "strategy-surface-and-custom-studios",
 		kind: "capability",
 		date: "2026-11-25",

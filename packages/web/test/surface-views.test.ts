@@ -17,9 +17,10 @@ import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { SurfaceSessionDrawer } from "../src/app/views/surface-session-drawer.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { figureElement } from "../src/ui/avatar.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
-import { deferred } from "./fixtures.ts";
+import { deferred, stubFigureMotion } from "./fixtures.ts";
 import {
 	CHANGES,
 	COMPANY,
@@ -2565,5 +2566,57 @@ describe("removing an agent from the Changes list", () => {
 
 		stop.abort();
 		store.dispose();
+	});
+
+	it("revives figure canvases inside a parked SurfaceView when reattached and activated", async () => {
+		const disposeFigure = vi.fn();
+		const mountFigure = stubFigureMotion(disposeFigure);
+		try {
+			const inbox = summary({
+				id: "22222222-2222-4222-8222-222222222249",
+				slug: "inbox",
+				title: "Inbox",
+				archetype: "ops",
+				icon: "mail",
+				siteSlug: null,
+				liveUrl: null,
+			});
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [inbox]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: inbox })),
+				}),
+			);
+			await store.load();
+			await store.openSurface("inbox");
+
+			const figure = figureElement("crown", "#fcb51b", { size: 40, still: true });
+			const mounted = document.createElement("div");
+			mounted.append(figure);
+			const mount = vi.fn(() => ({ el: mounted, update: vi.fn(), dispose: vi.fn() }));
+			const view = new SurfaceView({ store, mount, openMigration: () => undefined }, "inbox");
+			document.body.append(view.el);
+			view.update();
+			await flush();
+			expect(mountFigure).toHaveBeenCalledTimes(1);
+			expect(figure.dataset.figureDisposed).toBeUndefined();
+
+			view.park();
+			view.el.remove();
+			await flush();
+			expect(disposeFigure).toHaveBeenCalledTimes(1);
+			expect(figure.dataset.figureDisposed).toBe("true");
+
+			view.activate();
+			document.body.append(view.el);
+			view.update();
+			expect(mountFigure).toHaveBeenCalledTimes(2);
+			expect(figure.dataset.figureDisposed).toBeUndefined();
+
+			view.dispose();
+			store.dispose();
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

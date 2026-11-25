@@ -426,7 +426,7 @@ describe("cloud surface session runner", () => {
 					expect(req.turnBrief).toContain("## Conflict Reconciliation");
 					expect(req.instructions).toContain("coding_record_change");
 
-					await req.binding.recordChange(
+					await req.binding.recordChange!(
 						sessionId,
 						{
 							title: "Tighten hero CTA",

@@ -73,7 +73,7 @@ import {
 	companyConcepts,
 	sharedFolderHints,
 } from "./interface-apps.ts";
-import type { InterfaceWrites } from "./interface-claims.ts";
+import { type InterfaceWrites, writesUnderSurfaceBar } from "./interface-claims.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { companyInterfaces, pagesOn } from "./interfaces.ts";
@@ -1290,6 +1290,7 @@ export function mountApplication(
 		if (cacheable) {
 			active.suspend();
 			surfacesOf(active)?.suspend();
+			appQuestions.get(active)?.pause();
 			warmCompanies.delete(active.profile.profileId);
 			warmCompanies.set(active.profile.profileId, active);
 			while (warmCompanies.size > WARM_COMPANIES_MAX) {
@@ -1396,6 +1397,8 @@ export function mountApplication(
 			unsubscribeCompany = warm.store.subscribe(() => render());
 			warm.resume();
 			surfacesOf(warm)?.resume();
+			appQuestions.get(warm)?.resume();
+			logos.resumeIdentity(profileId);
 			return warm;
 		}
 		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision) {
@@ -1660,6 +1663,7 @@ export function mountApplication(
 				const syncIdentityFiles = () => {
 					if (
 						controller.signal.aborted ||
+						company !== controller ||
 						controller.store.get().accessLost ||
 						!controller.store.get().team ||
 						surfaces.state.source !== "cloud"
@@ -3105,7 +3109,7 @@ export function mountApplication(
 						});
 						return;
 					}
-					mod.renderInterface(el, controller, page, interfaceWrites());
+					mod.renderInterface(el, controller, page, writesUnderSurfaceBar(interfaceWrites()));
 				};
 				return {
 					el,

@@ -24,6 +24,7 @@ import { PAGE_READY } from "../src/ui/page-frame.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
+	event,
 	fixture,
 	id,
 	placeholderLabel,
@@ -32,6 +33,7 @@ import {
 	session,
 	settle,
 	staff,
+	stubFigureMotion,
 	team,
 	userA,
 	userB,
@@ -2514,5 +2516,46 @@ describe("cold-boot waterfall optimizations", () => {
 		const mainEl = f.root.querySelector<HTMLElement>("main")!;
 		const mainObserved = observeSpy.mock.calls.some(([target]) => target === mainEl);
 		expect(mainObserved).toBe(false);
+	});
+
+	it("revives Co-Founder rail figures and refreshes conversation messages after an A -> B -> A warm switch", async () => {
+		const disposeFigure = vi.fn();
+		const mountFigure = stubFigureMotion(disposeFigure);
+		try {
+			const cofounder: HostedStaffAgent = { ...staff, templateId: "co-founder", displayName: "Co-Founder" };
+			const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+			vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+			vi.mocked(f.api.listStaff).mockResolvedValue([cofounder]);
+			vi.mocked(f.api.readSessionEventsTail).mockResolvedValue([event(1, "First message")]);
+			let extraMessage = false;
+			vi.mocked(f.api.readSessionEvents).mockImplementation(async () =>
+				extraMessage ? [event(2, "Message while away")] : [],
+			);
+			await draw();
+			await draw();
+			const cofounderFigure = f.root.querySelector<HTMLElement>(".cofounder-home .figure");
+			expect(cofounderFigure).not.toBeNull();
+			expect(cofounderFigure?.dataset.figureDisposed).toBeUndefined();
+			expect(f.root.textContent).toContain("First message");
+			const mountsAfterFirst = mountFigure.mock.calls.length;
+
+			location.hash = `#/c/${profileB.profileId}/team`;
+			await draw();
+			await draw();
+			expect(cofounderFigure?.dataset.figureDisposed).toBe("true");
+			expect(disposeFigure).toHaveBeenCalled();
+
+			extraMessage = true;
+			location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+			await draw();
+			await draw();
+			const restoredFigure = f.root.querySelector<HTMLElement>(".cofounder-home .figure");
+			expect(restoredFigure).toBe(cofounderFigure);
+			expect(restoredFigure?.dataset.figureDisposed).toBeUndefined();
+			expect(mountFigure.mock.calls.length).toBeGreaterThan(mountsAfterFirst);
+			expect(f.root.textContent).toContain("Message while away");
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

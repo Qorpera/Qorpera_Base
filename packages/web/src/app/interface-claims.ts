@@ -15,6 +15,11 @@ export interface InterfaceWrites {
 	readonly dataAsk?: DataAskSend;
 }
 
+export function writesUnderSurfaceBar(writes: InterfaceWrites): InterfaceWrites {
+	const { dataAsk: _asksOnTheBar, ...rest } = writes;
+	return rest;
+}
+
 /** A rewrite's `locate` for `QorperaOS/tables/<table>/rows.csv`. The definition is read again on every try and handed
  * to `found`, so the rows are always parsed against the current one; a definition that doesn't parse is refused with
  * its problems. */

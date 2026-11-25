@@ -31,6 +31,7 @@ interface Mask {
 const loaded = new WeakMap<FigureArtwork["prepare"], Map<FigureId, Promise<void>>>();
 const masks = new WeakMap<FigureArtwork["prepare"], Map<string, Mask>>();
 const groups = new Map<HTMLCanvasElement, Group>();
+const parked = new WeakMap<HTMLCanvasElement, Group>();
 let mutations: MutationObserver | undefined;
 let themeMutations: MutationObserver | undefined;
 let resize: ResizeObserver | undefined;
@@ -200,10 +201,12 @@ function scheduleSweep(): void {
 }
 
 function sweep(): void {
-	for (const canvas of groups.keys()) {
+	for (const [canvas, group] of groups) {
 		if (canvas.isConnected) continue;
 		resize?.unobserve(canvas);
 		groups.delete(canvas);
+		parked.set(canvas, group);
+		canvas.dataset.avatarDisposed = "true";
 	}
 	if (groups.size) return;
 	resize?.disconnect();
@@ -214,6 +217,32 @@ function sweep(): void {
 	mutations = undefined;
 	themeMutations = undefined;
 	lifetime = undefined;
+}
+
+export function reviveGroupAvatars(root: ParentNode): void {
+	const reviveOne = (canvas: HTMLCanvasElement) => {
+		if (!canvas.isConnected) return;
+		const group = parked.get(canvas);
+		if (!group) return;
+		parked.delete(canvas);
+		delete canvas.dataset.avatarDisposed;
+		groups.set(canvas, group);
+		observe();
+		resize?.observe(canvas);
+		scheduleSweep();
+		if (group.ready) {
+			draw(group);
+			return;
+		}
+		void Promise.all(group.members.map(({ figure }) => prepare(group.artwork, figure)))
+			.then(() => {
+				group.ready = true;
+				draw(group);
+			})
+			.catch(() => {});
+	};
+	if (root instanceof HTMLCanvasElement && root.dataset.avatarDisposed === "true") reviveOne(root);
+	for (const canvas of root.querySelectorAll<HTMLCanvasElement>("[data-avatar-disposed]")) reviveOne(canvas);
 }
 
 function observe(): void {

@@ -8,6 +8,7 @@ import { CLOUD_ACTION_REVIEW_INSTRUCTIONS } from "@qorpera/runtime/cloud-action-
 import {
 	CLAUDE_ACTION_REVIEW_ANSWER,
 	CLAUDE_ACTION_REVIEW_MODEL,
+	CLAUDE_BOX_CODING_FOLDERS,
 	CLAUDE_BOX_CONFIGURATION,
 	CLAUDE_BOX_DENY,
 	CLAUDE_BOX_HOME_FOLDERS,
@@ -619,4 +620,70 @@ it("keeps a warm stream-json reviewer alive across allow verdicts, recycles on d
 	} finally {
 		await rm(temp, { recursive: true, force: true });
 	}
+});
+
+it("supports custom homeFolders, cwd, and local MCP bridge config for coding sessions", () => {
+	expect(CLAUDE_BOX_CODING_FOLDERS).toEqual(["/company", "/tmp"]);
+	const argsWithMcp = claudeBoxArguments({ mcpConfig: true });
+	expect(argsWithMcp).toContain("--strict-mcp-config");
+	expect(argsWithMcp.slice(argsWithMcp.indexOf("--mcp-config"), argsWithMcp.indexOf("--mcp-config") + 2)).toEqual([
+		"--mcp-config",
+		CLAUDE_BOX_PATHS.mcpConfig,
+	]);
+	const invocation = claudeBoxInvocation({
+		...base,
+		login: { folder: "/var/lib/qorpera-native-provider/login" },
+		homeFolders: CLAUDE_BOX_CODING_FOLDERS,
+		cwd: "/company/code/app/web/worktrees/w1",
+		mcp: { socketPath: `${scratch}/mcp.sock`, serverName: "qorpera" },
+		model: "claude-opus-5-5",
+		effort: "high",
+		systemNote: true,
+	});
+	const split = invocation.args.indexOf("/usr/bin/bwrap");
+	const box = invocation.args.slice(split + 1);
+	const binds = pairs(box, "--bind");
+	expect(binds).toEqual([
+		["/var/lib/qorpera-native-provider/login", "/slot/config"],
+		[`${scratch}/slot-home`, "/slot/home"],
+		[`${scratch}/mnt/company`, "/company"],
+		[`${scratch}/mnt/tmp`, "/tmp"],
+	]);
+	const roBinds = pairs(box, "--ro-bind");
+	expect(roBinds).toContainEqual([`${scratch}/mcp.sock`, CLAUDE_BOX_PATHS.mcpSocket]);
+	expect(roBinds).toContainEqual([`${scratch}/mcp-client`, CLAUDE_BOX_PATHS.mcpClient]);
+	expect(roBinds).toContainEqual([`${scratch}/mcp-config.json`, CLAUDE_BOX_PATHS.mcpConfig]);
+	expect(box.slice(box.indexOf("--chdir"), box.indexOf("--chdir") + 2)).toEqual([
+		"--chdir",
+		"/company/code/app/web/worktrees/w1",
+	]);
+	expect(box).toContain("--mcp-config");
+	expect(box).toContain(CLAUDE_BOX_PATHS.mcpConfig);
+	expect(() => claudeBoxInvocation({ ...base, login: "token", homeFolders: [] })).toThrow(
+		"Invalid Claude box home folders",
+	);
+	expect(() => claudeBoxInvocation({ ...base, login: "token", homeFolders: ["/company", "/company"] })).toThrow(
+		"Invalid Claude box home folders",
+	);
+	expect(() => claudeBoxInvocation({ ...base, login: "token", homeFolders: ["/company/../etc"] })).toThrow(
+		"Invalid Claude box home folders",
+	);
+	expect(() =>
+		claudeBoxInvocation({
+			...base,
+			login: "token",
+			homeFolders: CLAUDE_BOX_CODING_FOLDERS,
+			cwd: "/var/lib/qorpera-agent",
+		}),
+	).toThrow("Invalid Claude box working directory");
+	expect(() => claudeBoxInvocation({ ...base, login: "token", mcp: { socketPath: "relative.sock" } })).toThrow(
+		"Invalid Claude MCP socket",
+	);
+	expect(() =>
+		claudeBoxInvocation({
+			...base,
+			login: "token",
+			mcp: { socketPath: `${scratch}/mcp.sock`, serverName: "Bad Name" },
+		}),
+	).toThrow("Invalid Claude MCP server name");
 });

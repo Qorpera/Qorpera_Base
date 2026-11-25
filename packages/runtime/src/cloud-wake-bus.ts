@@ -96,15 +96,22 @@ function closedWithOptional(
 function codingScope(value: unknown, sequence: unknown): boolean {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const scope = value as Record<string, unknown>;
+	const workspaceKind = scope.workspaceKind ?? "git_repo";
+	if (workspaceKind !== "git_repo" && workspaceKind !== "surface_folder" && workspaceKind !== "surface_ops")
+		return false;
 	const repository = scope.repository as Record<string, unknown> | null | undefined;
+	const validRepository =
+		workspaceKind === "git_repo"
+			? !!repository &&
+				typeof repository === "object" &&
+				(repository.host === "github.com" || repository.host === "qorpera") &&
+				typeof repository.owner === "string" &&
+				typeof repository.name === "string" &&
+				typeof repository.baseBranch === "string"
+			: repository === null;
 	return (
 		(scope.harness === "codex" || scope.harness === "claude-code") &&
-		!!repository &&
-		typeof repository === "object" &&
-		(repository.host === "github.com" || repository.host === "qorpera") &&
-		typeof repository.owner === "string" &&
-		typeof repository.name === "string" &&
-		typeof repository.baseBranch === "string" &&
+		validRepository &&
 		typeof scope.branch === "string" &&
 		/^qorpera\/coding\/[0-9a-f-]{36}$/.test(scope.branch) &&
 		scope.sequence === sequence

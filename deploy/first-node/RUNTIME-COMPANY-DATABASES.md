@@ -354,7 +354,7 @@ design canvas "Company data view".
 
 ### What a member may do there
 
-- **See.** A member who may read `data/<name>/database.toml` sees that database: its tables as tabs, every row of a
+- **See.** A member who may read `data/<name>/database.toml` sees that database: its tables, every row of a
   table, and each question they may read as a list of its own beside the tables.
 - **Change.** A member who may write `data/<name>/` may add a row, change a row and remove a row. Removing asks
   first, on the bar above the list. A member who may only read sees the list and no way to change it.
@@ -385,7 +385,13 @@ At the gateway, beside `query`, `watch`, `apply`, `describe` and `change` (§3):
   by offset. Each row carries `seen`, a hash of the row as it was read. Only relations in the folder's own schema are
   read. A relation with no primary key (a view, or a table made without one) is listed and cannot be changed: it
   gives its first page alone, ordered by the column named or else as the store returns it, with `more` and no
-  `next`. The list says so, and Ask reaches the rest.
+  `next`. The list says so, and Ask reaches the rest. `find` (text, at most 200 characters) keeps the rows where
+  some column's text holds it, in any case and never as a pattern; a list with a find pages and is watched as a
+  list of its own. `at` names columns and the values they equal (a value or up to 200 of them), whole: a value is never
+  cut or rounded to the column's length or precision, and a column whose values have no equals is refused. It is read
+  under the same right, login and viewer as any page; it takes no `after` and is not watched. `describe` answers
+  `can: ["at", "find"]` from a gateway that takes them, and the web shows Find and linked names only then, since a
+  gateway from before ignores both and answers every row.
 - **`edit`** `{database, table, op, key?, values?, seen?}`, `op` one of `add`, `change`, `remove`. The gateway
   writes one statement from the catalog (identifiers quoted, every value a parameter cast to its column's type) and
   runs it as the folder's write login under a change's rules (§8: 5 s, the watched tables, the company's size). A
@@ -440,10 +446,19 @@ member or the agent from the lists it already holds.
 
 - An interface page `data` (the cloud's list of pages and its checks gain it; one migration), shown in the apps row
   when `describe` lists a database. Its emblem is a chest of drawers.
-- The list: tabs for the tables and the kept questions, column heads that sort, a row that opens with its fields.
+- The home: a database with two or more tables opens as fields, one a table, each as large as the root of its row
+  count allows and an empty one outlined; a field opens its table's list, and no rows are read while the home shows.
+  A database with one table opens on its list.
+- The list: titles for the tables and the kept questions, column heads that sort, a row that opens with its fields.
+  Tables whose names start with the same word share one title and stand in a second line under it with their row
+  counts; two or more kept questions share the title Questions. The list leads with the column that names the row,
+  and `uuid` columns and created times show only in the opened row. Find, beside the titles, narrows a table's
+  list to the rows that hold the text. A column that points at another table of the database (a foreign key on one
+  column) shows that row's name in place of the value; a click on it shows the row in a small card, which opens it.
   A new row and a changed field are written as the member makes them: the member's own typing is the ask. Only a
   removal asks first, on the bar above the page, as `qorpera.act` will ask (§5, §8).
-- **Ask.** The box under the list sends the question to an agent with the list it was asked on. The answer comes as
+- **Ask.** The box under the list sends the question to an agent with the list it was asked on; from the home it
+  sends it with the database alone. Inside a surface the page draws no box: the surface's bar is the one place to ask. The answer comes as
   that agent's message. "Keep as a list" has the agent write the question as a file (`queries/`), and it then shows
   beside the tables.
 - Not in this slice: safe copies (going back a night and taking a copy home need slice 6's snapshot, a restore and
@@ -482,7 +497,7 @@ member or the agent from the lists it already holds.
   A thread whose draft already answers another page's or app's note takes nothing, and the words stay in the line
   with a link to it. The member presses once; the line is held while the thread opens and has no spinner.
 - **What travels.** The message opens with `> page:data#<database>.<table> · <about>` (`#<database>:<question>` for a
-  kept question; `#<database>` alone when the name is no id), `about` being the database's and the list's names in
+  kept question; `#<database>` alone when the name is no id or the member asked from the home), `about` being the database's and the list's names in
   words and the values filled in, at most 60 characters. The conversation draws that line as the Data page's card
   (its drawers, "Data", `about`), which opens that list; the composer shows it above the field while it waits. The
   sort and the page in view do not travel: the agent reads the database itself, and the question is about rows, not
@@ -738,8 +753,11 @@ command has the other three verbs.
 ### Who the command is
 
 - A machine's identity is its folder view: each company machine boot whose starter's agent and member read the company
-  folder's root has one open `test_machine` view (`RUNTIME-FOLDER-TEST-MACHINES.md`), and each attached coding session
-  has one open `coding_session` view (`RUNTIME-FOLDER-CODING-MACHINES.md`, migration `20260930829000`). The node serves
+  folder's root has one open `test_machine` view (`RUNTIME-FOLDER-TEST-MACHINES.md`), and each attached `git_repo`
+  coding session has one open `coding_session` view (`RUNTIME-FOLDER-CODING-MACHINES.md`, migrations `20260930829000`
+  and `20260930910000`). Non-git surface coding sessions (`workspace_kind` in `surface_folder`, `surface_ops`) do not
+  receive machine data passes because their changes must go through surface staging (`stage_surface_patch` /
+  `stage_surface_ops_action`) for approval rather than mutating live database rows directly. The node serves
   each view to its own CID-authenticated machine only. The command acts as that view: what it may read under
   `data/<name>/` is what the view may read (`coding_agent ∩ member` for a coding session, company audience). A machine
   without `/company` has no databases to reach, and `data` says so.
@@ -747,15 +765,18 @@ command has the other three verbs.
   and bind-mounts each session's `/run/qorpera-folder/views/<worker32>.json` read-only at `/run/qorpera-folder/view.json`
   in every session command unit and `user@<uid>.service`, giving each session its own default view with no environment
   variable and zero database credentials on disk. Sessions on one coding machine share root (`%qorpera-coding` has
-  `NOPASSWD: ALL`), and a coding machine holds one member's sessions for one coding agent, repository, and setup digest
+  `NOPASSWD: ALL`), and a coding machine holds one member's sessions for one coding agent, repository (or the reserved
+  `qorpera/surface-workspace` key for Studio/Ops sessions), and setup digest
   (`RUNTIME-FOLDER-CODING-MACHINES.md`), so the security boundary is the CID-authenticated machine rather than the
   session.
-- So a program on a company machine or in a coding session reaches the company's databases as it reaches the company's
+- So a program on a company machine or in a `git_repo` coding session reaches the company's databases as it reaches the company's
   files, and no further. Root on a company machine is the agent's, where every command started there is reviewed as an
-  outside effect (`machine_run`); root on a coding VM is the member's, where shell commands are not reviewed one by one
+  outside effect (`machine_run`); root on a `git_repo` coding VM is the member's, where shell commands are not reviewed one by one
   and allowing `data` matches a run's `data_change` / `data_apply` tools and the session's own `/company` writes (with
   destructive schema steps still held for a member's yes through `data_apply`, and every read recorded in the coding
-  machine's provenance set). The files of every readable database folder are already in `/company`. What is new: a
+  machine's provenance set). Studio (`surface_folder`) and Ops (`surface_ops`) coding VMs have both direct `/company`
+  commits and machine data passes refused so every change is staged for founder approval. The files of every readable
+  database folder are already in `/company`. What is new: a
   program there can read rows and run changes, where before it could only read and write the files that define them. A
   database in a folder the view does not show (such as a member's private folder, or a folder either the coding agent or
   member may not read) is not reached.
@@ -810,18 +831,20 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 
 ### The pass
 
-- `qorpera_machine_data_pass(p_environment_id, p_actor, p_database)` (migrations `20260930775000`, `20260930829000`),
-  for the service role: `p_actor` is `{"kind":"view", viewId, pass}`, and the view must be an open, valid `test_machine`
-  or `coding_session` view (for `coding_session`, the session must not be archived and its coding machine must not be
-  marked for restart or removal). It lists and keeps the files as `qorpera_run_data_pass` does (one listing, used by
-  both), as the view may read them now, with the view, its machine, its agent and its member. `qorpera_data_passes.kind`
-  keeps `machine`; such a pass names no run and no job. It answers the pass and the entries it kept (above). It is
-  refused while the company's execution is paused or deleting, as a run's pass is: a machine that keeps running through
-  a pause reads and writes no rows.
+- `qorpera_machine_data_pass(p_environment_id, p_actor, p_database)` (migrations `20260930775000`, `20260930829000`,
+  `20260930910000`), for the service role: `p_actor` is `{"kind":"view", viewId, pass}`, and the view must be an open,
+  valid `test_machine` or `coding_session` view (for `coding_session`, the session's `workspace_kind` must be `git_repo`
+  — Studio and Ops sessions are refused because their changes must go through staging — the session must not be archived,
+  and its coding machine must not be marked for restart or removal). It lists and keeps the files as
+  `qorpera_run_data_pass` does (one listing, used by both), as the view may read them now, with the view, its machine,
+  its agent and its member. `qorpera_data_passes.kind` keeps `machine`; such a pass names no run and no job. It answers
+  the pass and the entries it kept (above). It is refused while the company's execution is paused or deleting, as a run's
+  pass is: a machine that keeps running through a pause reads and writes no rows.
 - `qorpera_data_pass_redeem` answers a machine's pass once, within its 60 s, while its `test_machine` or
-  `coding_session` view is open and valid (and for `coding_session`, neither archived nor restarting/removing), the
-  company is not paused or deleting, and the agent and member still stand, with `kind: "machine"`. The gateway takes it
-  at the run door as it takes a run's, with an agent's limits. A machine's pass never carries an `allow`.
+  `coding_session` view is open and valid (and, for `coding_session`, the session's `workspace_kind` is `git_repo` per
+  migration `20260930910000` and it is neither archived nor restarting/removing), the company is not paused or deleting,
+  and the agent and member still stand, with `kind: "machine"`. The gateway takes it at the run door as it takes a run's,
+  with an agent's limits. A machine's pass never carries an `allow`.
 
 ### Limits
 
@@ -839,8 +862,9 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 - It gives no yes for a held step and deletes no database folder.
 - It adds no listener in a machine and none on a node: the folder service stays the one host service on vsock, and
   `security.devlxd` stays off.
-- The Company Computer's desktop (`computer_shell`), `run_box`, and `code_host` views get no `data`: only
-  `test_machine` and `coding_session` views are taken.
+- The Company Computer's desktop (`computer_shell`), `run_box`, `code_host`, and non-git surface `coding_session`
+  (`surface_folder`, `surface_ops`) views get no `data`: only `test_machine` and `git_repo` `coding_session` views are
+  taken.
 - No call is reviewed by itself. On a company machine, starting a command (`machine_run`) is reviewed; on a coding
   machine, shell commands are not reviewed one by one, and `data` matches a run's `data_change` / `data_apply` tools
   and the session's own folder writes. What a command writes, to the folder or to rows, is the command's.

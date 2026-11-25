@@ -70,7 +70,9 @@ describe("the data gateway run door against a real PostgreSQL", { skip: dockerUs
 		assert.deepEqual(await runSend("describe", { pass: randomBytes(32).toString("base64url") }), refused, "an unknown pass");
 		const expired = passFor(ENV_D, OWNER, "stock", { ms: -1 });
 		assert.deepEqual(await runSend("describe", { pass: expired }), refused, "an expired pass");
-		assert.equal((await runSend("describe", { pass })).status, 200, "the pass, once");
+		const once = await runSend("describe", { pass });
+		assert.equal(once.status, 200, "the pass, once");
+		assert.equal(Object.hasOwn(once.value, "can"), false, "a run's describe says nothing of the member's rows call");
 		assert.deepEqual(await runSend("describe", { pass }), refused, "the same pass again");
 		assert.equal((await send({ path: "/v1/run-data/describe", bearer: owner, text: JSON.stringify({ pass: passFor(ENV_D, OWNER) }) })).status, 404);
 		assert.equal((await send({ to: h.runServer.address().port, path: `/v1/company-data/${ENV_D}/describe`, bearer: RUN_TOKEN, text: "{}" })).status, 404);

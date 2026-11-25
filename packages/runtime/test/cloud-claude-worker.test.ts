@@ -1327,4 +1327,56 @@ describe("the box's scratch root on a run host", () => {
 		});
 		await rm(runRoot, { recursive: true });
 	});
+
+	it("accepts declared MCP tools alongside built-ins and rejects undeclared or duplicate MCP tools", () => {
+		const declared = ["mcp__qorpera__coding_finish", "mcp__qorpera__coding_ask"];
+		const ok = new ClaudeWorkerStream();
+		ok.push(
+			JSON.stringify({
+				type: "system",
+				subtype: "init",
+				session_id: "s-mcp-ok",
+				model: "claude-opus-5-5",
+				tools: [...CLAUDE_BOX_TOOLS, ...declared],
+			}),
+		);
+		expect(ok.toolsAsAllowed(declared)).toBe(true);
+		expect(ok.toolsAsAllowed()).toBe(false);
+
+		const undeclared = new ClaudeWorkerStream();
+		undeclared.push(
+			JSON.stringify({
+				type: "system",
+				subtype: "init",
+				session_id: "s-mcp-bad",
+				model: "claude-opus-5-5",
+				tools: [...CLAUDE_BOX_TOOLS, "mcp__qorpera__coding_finish", "mcp__evil__shell"],
+			}),
+		);
+		expect(undeclared.toolsAsAllowed(declared)).toBe(false);
+
+		const duplicate = new ClaudeWorkerStream();
+		duplicate.push(
+			JSON.stringify({
+				type: "system",
+				subtype: "init",
+				session_id: "s-mcp-dup",
+				model: "claude-opus-5-5",
+				tools: [...CLAUDE_BOX_TOOLS, "mcp__qorpera__coding_finish", "mcp__qorpera__coding_finish"],
+			}),
+		);
+		expect(duplicate.toolsAsAllowed(declared)).toBe(false);
+
+		const extraBuiltin = new ClaudeWorkerStream();
+		extraBuiltin.push(
+			JSON.stringify({
+				type: "system",
+				subtype: "init",
+				session_id: "s-mcp-extra",
+				model: "claude-opus-5-5",
+				tools: [...CLAUDE_BOX_TOOLS, "WebFetch", "mcp__qorpera__coding_finish"],
+			}),
+		);
+		expect(extraBuiltin.toolsAsAllowed(declared)).toBe(false);
+	});
 });

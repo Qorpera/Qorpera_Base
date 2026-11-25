@@ -95,6 +95,7 @@ import {
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
 	codingFolderNoRepositories,
+	type GitCodingSessionClaim,
 } from "./coding-folder-repositories.ts";
 import {
 	CodingFolderRestartRequired,
@@ -367,7 +368,7 @@ interface Prepared extends Attached {
 	scope: CloudCodingCommandScope;
 	bootId: string;
 	guestConfigSha256: string;
-	baseSha: string;
+	baseSha: string | null;
 	/** On the folder model: the session's user, where its commands start, and whether its machine's agent said the
 	 * machine's package caches are ready at this turn's mount (own code storage, step 6). */
 	folder?: { uid: number; cwd: string; packageCaches: boolean };
@@ -560,6 +561,15 @@ const CGROUP_MEMORY_STAT_PATTERNS = [
 	/^shmem ([0-9]{1,15})$/m,
 	/^kernel ([0-9]{1,15})$/m,
 ] as const;
+
+function isSurfaceWorkspaceClaim(claim: CodingSessionClaim): boolean {
+	return claim.workspaceKind === "surface_folder" || claim.workspaceKind === "surface_ops";
+}
+
+function requireGitClaim(claim: CodingSessionClaim): GitCodingSessionClaim {
+	if (!claim.repository) throw new Error("CODING_HOST_REPOSITORY_MISSING");
+	return claim as GitCodingSessionClaim;
+}
 
 function validGuestUid(value: unknown): number | null {
 	return typeof value === "number" &&
@@ -2730,10 +2740,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * prepared (the executor detaches only after that settles); an export runs
 	 * only while the turn is still prepared. */
 	#transfer(ready: Prepared, seeding = false): LxdCodingGitTransfer {
+		const gitClaim = requireGitClaim(ready.claim);
 		return new LxdCodingGitTransfer({
 			machine: ready.machine,
 			storage: this.#placement,
-			repository: ready.claim.repository,
+			repository: gitClaim.repository,
 			scope: ready.scope,
 			bootId: ready.bootId,
 			guestConfigSha256: ready.guestConfigSha256,
@@ -2768,15 +2779,18 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (turn.workerId !== claim.workerId || turn.sequence !== claim.sequence)
 			throw new Error("CODING_HOST_TURN_CHANGED");
 		const folder = this.#options.folder;
+		const isSurfaceWorkspace = isSurfaceWorkspaceClaim(claim);
 		let discoveredSetup: ParsedCodingSetup | null = null;
 		if (
+			!isSurfaceWorkspace &&
 			folder?.repositories?.readSetup &&
 			typeof claim.baseSha === "string" &&
 			/^[0-9a-f]{40}$/.test(claim.baseSha)
 		) {
+			const gitClaim = requireGitClaim(claim);
 			discoveredSetup = await folder.repositories.readSetup(
 				{
-					claim,
+					claim: gitClaim,
 					assertAuthorized: async (checked) => {
 						await this.#assertSessionAuthorized(claim, checked);
 					},
@@ -2813,6 +2827,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			return workspace;
 		}
+		if (isSurfaceWorkspace) {
+			throw new CodingWorkspaceFailed(
+				"CODING_SURFACE_FOLDER_MODEL_REQUIRED",
+				"Studio and Ops coding sessions require the company folder workspace model.",
+			);
+		}
+		const gitClaim = requireGitClaim(claim);
 		const bootId = await this.#exclusive(machine.machineId, signal, async () => {
 			await this.#run(claim, machine, storage, signal, true);
 			// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
@@ -2841,7 +2862,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const authorize = async () => {
 			await this.#run(claim, machine, storage, signal);
 		};
-		const { root, baseSha } = await this.#base(claim, turn, authorize, signal);
+		const { root, baseSha } = await this.#base(gitClaim, turn, authorize, signal);
 		const ready: Prepared = {
 			claim,
 			machine,
@@ -2861,7 +2882,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
 			const seed = await fetchCloudCodingSeed(
-				{ repository: claim.repository, workerId: claim.workerId, baseSha },
+				{ repository: gitClaim.repository, workerId: claim.workerId, baseSha },
 				{
 					journalRoot: root,
 					signal,
@@ -2888,7 +2909,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** The commit the session started from: resolved and pinned in the Git journal by its first turn, the same for
 	 * every later one. */
 	async #base(
-		claim: CodingSessionClaim,
+		claim: GitCodingSessionClaim,
 		turn: CodingTurnState,
 		authorize: () => Promise<void>,
 		signal: AbortSignal,
@@ -2932,7 +2953,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * it is not there yet, by the company's code host, and its default branch's commit. Only the folder model with code
 	 * hosts keeps repositories; without them the turn fails before the model runs, saying so. No token is asked for. */
 	async #startRepository(
-		claim: CodingSessionClaim,
+		claim: GitCodingSessionClaim,
 		authorize: () => Promise<void>,
 		signal: AbortSignal,
 	): Promise<string> {
@@ -2959,6 +2980,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const initialUid = initialReceipt.guestUid;
 		if (initialUid === null || initialUid < CODING_GUEST.minUid || initialUid > CODING_GUEST.maxUid)
 			throw new Error("CODING_FOLDER_SESSION_UID_MISSING");
+		const isSurfaceWorkspace = isSurfaceWorkspaceClaim(claim);
 		const overlap = new AbortController();
 		const overlapSignal = AbortSignal.any([signal, overlap.signal]);
 		const authorize = async () => {
@@ -2975,38 +2997,48 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			true,
 			overlap.signal,
 		);
-		const repoPromise = (async (): Promise<{ root: string; baseSha: string; cwd: string }> => {
-			const { root, baseSha } = await this.#base(claim, turn, authorize, overlapSignal);
-			const { cwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
-				this.#repositorySession(claim, machine, storage, initialUid, baseSha, root),
-				overlapSignal,
-			);
-			return { root, baseSha, cwd };
-		})();
 		let started: { bootId: string; uid: number; starts: number };
-		let repo: { root: string; baseSha: string; cwd: string };
-		try {
-			[started, repo] = await Promise.all([
-				startPromise.catch((error: unknown) => {
-					overlap.abort(error);
-					throw error;
-				}),
-				repoPromise.catch((error: unknown) => {
-					overlap.abort(error);
-					throw error;
-				}),
-			]);
-		} catch (error) {
-			await Promise.allSettled([startPromise, repoPromise]);
-			throw error;
-		}
-		const { baseSha, cwd } = repo;
-		if (folder.repositories && !claim.worktreeCreatedAt) {
-			await this.#call(
-				"qorpera_record_coding_worktree_created",
-				{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
-				signal,
-			).catch(() => undefined);
+		let baseSha: string | null;
+		let cwd: string;
+		if (isSurfaceWorkspace) {
+			started = await startPromise;
+			baseSha = null;
+			cwd = CODING_FOLDER_COMPANY_ROOT;
+		} else {
+			const gitClaim = requireGitClaim(claim);
+			const repoPromise = (async (): Promise<{ root: string; baseSha: string; cwd: string }> => {
+				const { root, baseSha: sha } = await this.#base(gitClaim, turn, authorize, overlapSignal);
+				const { cwd: repoCwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
+					this.#repositorySession(gitClaim, machine, storage, initialUid, sha, root),
+					overlapSignal,
+				);
+				return { root, baseSha: sha, cwd: repoCwd };
+			})();
+			let repo: { root: string; baseSha: string; cwd: string };
+			try {
+				[started, repo] = await Promise.all([
+					startPromise.catch((error: unknown) => {
+						overlap.abort(error);
+						throw error;
+					}),
+					repoPromise.catch((error: unknown) => {
+						overlap.abort(error);
+						throw error;
+					}),
+				]);
+			} catch (error) {
+				await Promise.allSettled([startPromise, repoPromise]);
+				throw error;
+			}
+			baseSha = repo.baseSha;
+			cwd = repo.cwd;
+			if (folder.repositories && !claim.worktreeCreatedAt) {
+				await this.#call(
+					"qorpera_record_coding_worktree_created",
+					{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
+					signal,
+				).catch(() => undefined);
+			}
 		}
 		let packageCaches = false;
 		const attach = async ({ bootId, uid }: { bootId: string; uid: number }) => {
@@ -3256,7 +3288,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** The session as its folder repositories see it, with fresh run authority for each step. */
 	#repositorySession(
-		claim: CodingSessionClaim,
+		claim: GitCodingSessionClaim,
 		machine: Readonly<LxdCodingMachineBinding>,
 		storage: Readonly<CloudCodingStorageBinding>,
 		uid: number,
@@ -3351,8 +3383,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		build: CodingPreviewBuild,
 		signal: AbortSignal,
 	): Promise<SurfacePreviewBuildOutcome> {
+		const gitClaim = requireGitClaim(claim);
 		const run = await this.#runChecks(
-			claim,
+			gitClaim,
 			{
 				commit: build.commitSha,
 				checks: [
@@ -3371,7 +3404,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				failFast: true,
 				caches: [],
 				// WHY: Restore blessed check caches read-only from the default branch so preview builds reuse node_modules without poisoning shared caches.
-				blessedCachesBranch: claim.repository.baseBranch,
+				blessedCachesBranch: gitClaim.repository.baseBranch,
 				allowCacheSave: false,
 			},
 			signal,
@@ -3407,7 +3440,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * true lets the site's links from `/` through (step 5: the collect's QORPERA_SITE_ROOT_LINKS is `allowed`); else they
 	 * are refused as before (`refused`, always set, so no value of the session's of that name reaches the collect). */
 	async #runChecks(
-		claim: CodingSessionClaim,
+		claim: GitCodingSessionClaim,
 		input: {
 			commit: string;
 			checks: readonly CodeCheck[];
@@ -5249,12 +5282,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		submission: Extract<CodingSubmission, { kind: "finish" }>,
 		signal: AbortSignal,
 	): Promise<CodingExecutorPublication> {
+		const gitClaim = requireGitClaim(claim);
 		const ready = this.#active(claim);
+		if (!ready.baseSha) throw new Error("CODING_HOST_BASE_MISSING");
+		if (!submission.headSha) throw new Error("CODING_HOST_HEAD_MISSING");
+		const baseSha = ready.baseSha;
+		const headSha = submission.headSha;
 		const root = await this.#directory("git", signal),
 			token = this.#repositoryToken(claim);
 		const folder = this.#options.folder;
 		// Only the folder model keeps repositories in Qorpera (its base came from the code host): never a push to GitHub.
-		if (claim.repository.host === "qorpera" && !(folder && ready.folder))
+		if (gitClaim.repository.host === "qorpera" && !(folder && ready.folder))
 			throw new Error("CODING_REPOSITORY_NOT_HERE");
 		let bundle: Buffer;
 		if (folder && ready.folder) {
@@ -5297,13 +5335,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// A repository kept in Qorpera (own code storage, slice 1): the commit lands on its default branch in the
 			// company folder. Nothing is pushed, no token is asked for, and there is no pull request. What the session
 			// saved was checked for its secret values by the folder's save check above.
-			if (claim.repository.host === "qorpera") {
+			if (gitClaim.repository.host === "qorpera") {
 				const repositories = folder.repositories;
 				if (claim.surfaceSession) {
 					if (!repositories?.verifyStaged) throw new Error("CODING_REPOSITORY_NOT_HERE");
 					const staged = await repositories.verifyStaged(
-						this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
-						submission.headSha,
+						this.#repositorySession(gitClaim, ready.machine, ready.storage, ready.folder.uid, baseSha, root),
+						headSha,
 						signal,
 					);
 					return {
@@ -5318,22 +5356,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					};
 				}
 				if (!repositories?.land) throw new Error("CODING_REPOSITORY_NOT_HERE");
-				if (submission.headSha === ready.baseSha) return { pullRequest: null, noChange: true };
+				if (headSha === baseSha) return { pullRequest: null, noChange: true };
 				// The picture the session named with its hand-in is checked by the landing, in the commit that lands.
 				const landed = await repositories.land(
-					this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
-					submission.headSha,
+					this.#repositorySession(gitClaim, ready.machine, ready.storage, ready.folder.uid, baseSha, root),
+					headSha,
 					signal,
 					submission.picture === undefined ? {} : { picture: submission.picture },
 				);
 				return { pullRequest: null, noChange: false, landed };
 			}
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(
-				this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
-				submission.headSha,
+				this.#repositorySession(gitClaim, ready.machine, ready.storage, ready.folder.uid, baseSha, root),
+				headSha,
 				signal,
 			);
-			if (exported === null || (submission.headSha === ready.baseSha && !claim.pullRequest)) {
+			if (exported === null || (headSha === baseSha && !claim.pullRequest)) {
 				if (!claim.pullRequest) return { pullRequest: null, noChange: true };
 				// The open pull request's branch is the session's: nothing to push to it is no publication.
 				throw new Error("CODING_FOLDER_EXPORT_EMPTY");
@@ -5342,10 +5380,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		} else {
 			const exported = await this.#transfer(ready).export(
 				codingHostId("export", `${claim.workerId}:${claim.sequence}`),
-				submission.headSha,
+				headSha,
 				signal,
 			);
-			if (submission.headSha === ready.baseSha && !claim.pullRequest) return { pullRequest: null, noChange: true };
+			if (headSha === baseSha && !claim.pullRequest) return { pullRequest: null, noChange: true };
 			bundle = exported.bundle;
 		}
 		const authorize = async (): Promise<void> => {
@@ -5371,10 +5409,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new CodingPushRefused({ kind: "pull-request" });
 		await pushCloudCodingBundle(
 			{
-				repository: claim.repository,
+				repository: gitClaim.repository,
 				workerId: claim.workerId,
-				headSha: submission.headSha,
-				baseSha: ready.baseSha,
+				headSha,
+				baseSha,
 				expectedRemoteHeadSha: claim.pullRequest?.headSha ?? null,
 			},
 			bundle,
@@ -5389,9 +5427,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		);
 		const pullRequest = await publishCloudCodingDraftPullRequest(
 			{
-				repository: claim.repository,
+				repository: gitClaim.repository,
 				workerId: claim.workerId,
-				headSha: submission.headSha,
+				headSha,
 				title,
 				body: submission.summary,
 			},
@@ -7534,13 +7572,23 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		discovered: ParsedCodingSetup | null,
 		signal: AbortSignal,
 	): Promise<void> {
+		if (isSurfaceWorkspaceClaim(claim)) {
+			this.#sessionSetups.delete(claim.workerId);
+			return;
+		}
 		const ready = this.#prepared.get(claim.workerId);
 		if (!ready?.folder) return;
+		const gitClaim = requireGitClaim(claim);
 		let setup = discovered;
-		if (!setup && folder.repositories?.readSetup && /^[0-9a-f]{40}$/.test(ready.baseSha)) {
+		if (
+			!setup &&
+			folder.repositories?.readSetup &&
+			typeof ready.baseSha === "string" &&
+			/^[0-9a-f]{40}$/.test(ready.baseSha)
+		) {
 			setup = await folder.repositories.readSetup(
 				{
-					claim,
+					claim: gitClaim,
 					assertAuthorized: async (checked) => {
 						await this.#run(claim, ready.machine, ready.storage, checked);
 					},
@@ -7591,12 +7639,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (
 			this.#options.snapshotBuilder &&
 			setup.setupDigest !== EMPTY_CODING_SETUP_DIGEST &&
+			typeof ready.baseSha === "string" &&
 			/^[0-9a-f]{40}$/.test(ready.baseSha) &&
 			(planned.snapshotBuildNeeded || planned.snapshotImageFingerprint === null)
 		) {
 			const repositories = folder.repositories;
 			const commitSha = ready.baseSha;
-			const repositoryKey = `${claim.repository.owner}/${claim.repository.name}`.toLowerCase();
+			const repositoryKey = `${gitClaim.repository.owner}/${gitClaim.repository.name}`.toLowerCase();
 			this.#options.snapshotBuilder.enqueue({
 				workerId: claim.workerId,
 				leaseToken: claim.leaseToken,
@@ -7611,7 +7660,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					? (archiveSignal) =>
 							repositories.archiveCommit!(
 								{
-									claim,
+									claim: gitClaim,
 									assertAuthorized: async (checked) => {
 										await this.#assertSessionAuthorized(claim, checked);
 									},

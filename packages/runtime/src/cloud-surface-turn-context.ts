@@ -1,3 +1,4 @@
+import type { StudioPreviewReconciliation } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	IDENTITY_COMPANY_PATH,
 	IDENTITY_LOGO_PATH,
@@ -7,11 +8,18 @@ import {
 	PRODUCT_CATALOG_PATH,
 	PRODUCT_SPECS_PATH,
 	parseStudioPatchOps,
+	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
 	SURFACE_SHARED_DIR,
+	type SurfaceArchetype,
 	type SurfaceSourceKind,
 } from "@qorpera/contracts";
+import type { GeminiTtsModel, GeminiTtsSpeechResult, GeminiTtsVoice } from "./cloud-gemini-tts.ts";
+import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
+import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
+import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import type { StudioChatGptVoiceBatchResult } from "./cloud-studio-voice-recorder.ts";
 import {
 	type SurfaceAttachmentReader,
 	type SurfaceMemberImage,
@@ -22,7 +30,8 @@ import type {
 	SurfacePreviewBaseChange,
 	SurfaceSessionOpenChange,
 } from "./cloud-surface-preview-overlay.ts";
-import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
+import type { CloudSurfaceToolsPort, SurfaceOpsActionToolPort, SurfacePatchToolPort } from "./cloud-surface-tools.ts";
+import type { CloudVoiceName } from "./cloud-voice-channel.ts";
 
 export interface SurfaceIdentityContext {
 	readonly briefMarkdown?: string | null;
@@ -241,8 +250,42 @@ export interface SurfaceTurnBriefInput {
 	readonly viewAttachment?: SurfaceAttachmentReader;
 }
 
+export interface SurfaceCodingNarratePort {
+	readonly stageBytes: (bytes: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<StudioBinaryRef>;
+	readonly synthesizeGemini?: (input: {
+		readonly model: GeminiTtsModel;
+		readonly voiceName: GeminiTtsVoice;
+		readonly text: string;
+		readonly signal: AbortSignal;
+	}) => Promise<GeminiTtsSpeechResult>;
+	readonly synthesizeChatGptVoice?: (input: {
+		readonly voiceName?: CloudVoiceName;
+		readonly captions: readonly { readonly hash: string; readonly text: string }[];
+		readonly signal: AbortSignal;
+	}) => Promise<StudioChatGptVoiceBatchResult>;
+}
+
 export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
-	readonly recordChange: CloudSurfaceToolsPort["recordChange"];
+	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
+	readonly stageSurfacePatch?: SurfacePatchToolPort["stageSurfacePatch"];
+	readonly stageSurfaceOpsAction?: SurfaceOpsActionToolPort["stageSurfaceOpsAction"];
+	readonly surfaceKind?: string;
+	readonly surfaceIcon?: string | null;
+	readonly surfaceIsGlobal?: boolean | null;
+	readonly surfaceArchetype?: SurfaceArchetype | null;
+	readonly openLayoutOps?: readonly StudioPatchOp[] | null;
+	readonly openScenesOps?: readonly StudioPatchOp[];
+	readonly previewReconciliations?: readonly StudioPreviewReconciliation[] | null;
+	readonly voiceModel?: string | null;
+	readonly voiceName?: string | null;
+	readonly imageModel?: string | null;
+	readonly narrateExplainer?: SurfaceCodingNarratePort;
+	readonly stageBytes?: (bytes: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<StudioBinaryRef>;
+	readonly readSkillTools?: (
+		operations: CloudNativeToolOperations,
+		identity: CloudNativeToolIdentity,
+	) => readonly CloudNativeTool[];
+	readonly getStagedNotePaths?: () => readonly string[];
 }
 
 export const SURFACE_STAGED_CODING_INSTRUCTIONS =

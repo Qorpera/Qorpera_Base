@@ -79,6 +79,12 @@ export interface CloudMemberDataColumn {
 	readonly settable: boolean;
 }
 
+export interface CloudMemberDataReference {
+	readonly columns: readonly string[];
+	readonly table: string;
+	readonly to: readonly string[];
+}
+
 export interface CloudMemberDataTable {
 	readonly name: string;
 	readonly kind: "table" | "view";
@@ -86,6 +92,7 @@ export interface CloudMemberDataTable {
 	readonly rows?: number;
 	readonly rowsAbout?: number;
 	readonly columns: readonly CloudMemberDataColumn[];
+	readonly references?: readonly CloudMemberDataReference[];
 }
 
 export interface CloudMemberDataNamed {
@@ -111,6 +118,7 @@ export interface CloudMemberDataDescription {
 	readonly databases: readonly CloudMemberDatabase[];
 	readonly companyBytes: number;
 	readonly limitBytes: number;
+	readonly can?: readonly string[];
 }
 
 export interface CloudMemberDataRow {
@@ -136,11 +144,19 @@ export interface CloudMemberDataTableAsked {
 	readonly order?: string;
 	readonly desc?: boolean;
 	readonly limit?: number;
+	readonly find?: string;
 }
 
 export interface CloudMemberDataTableWatch extends CloudMemberDataTableAsked {
 	readonly etag: string;
 }
+
+export const CLOUD_MEMBER_DATA_FIND_MAX = 200;
+export const CLOUD_MEMBER_DATA_AT_LIST = 200;
+export type CloudMemberDataAtValue = string | number | boolean;
+export type CloudMemberDataAt = Readonly<
+	Record<string, CloudMemberDataAtValue | null | readonly CloudMemberDataAtValue[]>
+>;
 
 export type CloudMemberDataValues = Readonly<Record<string, unknown>>;
 export type CloudMemberDataKey = Readonly<Record<string, unknown>>;
@@ -385,8 +401,25 @@ function parseNamed(value: unknown): CloudMemberDataNamed {
 	};
 }
 
+const isNames = (value: unknown): value is string[] =>
+	Array.isArray(value) && value.length > 0 && value.every((item) => isText(item, 200));
+
+function referenceOf(item: unknown, columns: readonly CloudMemberDataColumn[]): CloudMemberDataReference[] {
+	if (!item || typeof item !== "object") return [];
+	const { type, columns: from, references } = item as Record<string, unknown>;
+	if (type !== "foreign_key" || !references || typeof references !== "object") return [];
+	const { table, schema, columns: to } = references as Record<string, unknown>;
+	if (schema !== undefined || !isText(table, 200) || !isNames(from) || !isNames(to)) return [];
+	if (from.length !== to.length || from.some((name) => !columns.some((column) => column.name === name))) return [];
+	return [{ columns: from, table, to }];
+}
+
 function parseTable(value: unknown): CloudMemberDataTable {
-	const table = shapedKeys(value, ["name", "kind", "key", "columns"], ["rows", "rowsAbout"]);
+	const table = shapedKeys(
+		value,
+		["name", "kind", "key", "columns"],
+		["rows", "rowsAbout", "constraints", "indexes", "viewDefinition"],
+	);
 	if (!isText(table.name, 200) || (table.kind !== "table" && table.kind !== "view")) invalid();
 	if (
 		(table.rows !== undefined && !isCount(table.rows)) ||
@@ -395,12 +428,20 @@ function parseTable(value: unknown): CloudMemberDataTable {
 		invalid();
 	if (!Array.isArray(table.columns)) invalid();
 	const columns = table.columns.map((item) => {
-		const column = closed(item, ["name", "type", "settable"]);
+		const column = shapedKeys(item, ["name", "type", "settable"], ["nullable", "default"]);
 		if (!isText(column.name, 200) || !isText(column.type, 1024) || typeof column.settable !== "boolean") invalid();
+		if (column.nullable !== undefined && typeof column.nullable !== "boolean") invalid();
+		if (column.default !== undefined && column.default !== null && !isText(column.default, 4096)) invalid();
 		return { name: column.name, type: column.type, settable: column.settable };
 	});
 	const key = texts(table.key, 200);
 	if (key.some((name) => !columns.some((column) => column.name === name))) invalid();
+	if (table.constraints !== undefined && !Array.isArray(table.constraints)) invalid();
+	if (table.indexes !== undefined && !Array.isArray(table.indexes)) invalid();
+	if (table.viewDefinition !== undefined && typeof table.viewDefinition !== "string") invalid();
+	const references = ((table.constraints as unknown[] | undefined) ?? []).flatMap((item) =>
+		referenceOf(item, columns),
+	);
 	return {
 		name: table.name,
 		kind: table.kind,
@@ -408,18 +449,21 @@ function parseTable(value: unknown): CloudMemberDataTable {
 		...(table.rows === undefined ? {} : { rows: table.rows as number }),
 		...(table.rowsAbout === undefined ? {} : { rowsAbout: table.rowsAbout as number }),
 		columns,
+		...(references.length > 0 ? { references } : {}),
 	};
 }
 
 export function parseCloudMemberDataDescription(value: unknown): CloudMemberDataDescription {
-	const described = closed(value, ["databases", "companyBytes", "limitBytes"]);
+	const described = shapedKeys(value, ["databases", "companyBytes", "limitBytes"], ["can"]);
 	if (!Array.isArray(described.databases) || !isCount(described.companyBytes) || !isCount(described.limitBytes))
 		invalid();
+	const can = described.can === undefined ? undefined : texts(described.can, 40);
+	if (can && can.length > 32) invalid();
 	const databases = described.databases.map((item): CloudMemberDatabase => {
 		const one = shapedKeys(
 			item,
 			["database", "name", "about", "write", "list", "questions", "changes"],
-			["applied", "tables"],
+			["applied", "tables", "enums", "extensions", "ddlTruncated"],
 		);
 		if (typeof one.database !== "string" || !CLOUD_MEMBER_DATA_DATABASE.test(one.database)) invalid();
 		if ((one.name !== null && !isText(one.name, 16 * 1024)) || (one.about !== null && !isText(one.about, 16 * 1024)))
@@ -427,6 +471,9 @@ export function parseCloudMemberDataDescription(value: unknown): CloudMemberData
 		if (typeof one.write !== "boolean" || typeof one.list !== "boolean") invalid();
 		if (!Array.isArray(one.questions) || !Array.isArray(one.changes)) invalid();
 		if (!one.list && (one.tables !== undefined || one.applied !== undefined)) invalid();
+		if (one.enums !== undefined && !Array.isArray(one.enums)) invalid();
+		if (one.extensions !== undefined && !Array.isArray(one.extensions)) invalid();
+		if (one.ddlTruncated !== undefined && one.ddlTruncated !== true) invalid();
 		const applied =
 			one.applied === undefined
 				? undefined
@@ -459,7 +506,12 @@ export function parseCloudMemberDataDescription(value: unknown): CloudMemberData
 		};
 	});
 	if (new Set(databases.map((one) => one.database)).size !== databases.length) invalid();
-	return { databases, companyBytes: described.companyBytes, limitBytes: described.limitBytes };
+	return {
+		databases,
+		companyBytes: described.companyBytes,
+		limitBytes: described.limitBytes,
+		...(can ? { can } : {}),
+	};
 }
 
 function parseRow(value: unknown, width: number | null): CloudMemberDataRow {
@@ -749,6 +801,14 @@ function checkTable(asked: CloudMemberDataTableAsked): void {
 		(!Number.isSafeInteger(asked.limit) || asked.limit < 1 || asked.limit > CLOUD_MEMBER_DATA_PAGE_ROWS)
 	)
 		throw new CloudMemberDataError(`A page holds 1 to ${CLOUD_MEMBER_DATA_PAGE_ROWS} rows`);
+	if (
+		asked.find !== undefined &&
+		(typeof asked.find !== "string" ||
+			asked.find.trim() === "" ||
+			asked.find.length > CLOUD_MEMBER_DATA_FIND_MAX ||
+			asked.find.includes("\0"))
+	)
+		throw new CloudMemberDataError(`find is 1 to ${CLOUD_MEMBER_DATA_FIND_MAX} characters`);
 }
 
 function tableBody(asked: CloudMemberDataTableAsked): Record<string, unknown> {
@@ -758,7 +818,22 @@ function tableBody(asked: CloudMemberDataTableAsked): Record<string, unknown> {
 		...(asked.order === undefined ? {} : { order: asked.order }),
 		...(asked.desc === undefined ? {} : { desc: asked.desc }),
 		...(asked.limit === undefined ? {} : { limit: asked.limit }),
+		...(asked.find === undefined ? {} : { find: asked.find }),
 	};
+}
+
+function checkAt(at: CloudMemberDataAt): void {
+	const named = at && typeof at === "object" && !Array.isArray(at) ? Object.entries(at) : [];
+	const plain = (value: unknown) =>
+		typeof value === "boolean" ||
+		(typeof value === "string" && !value.includes("\0")) ||
+		(typeof value === "number" && Number.isFinite(value));
+	const given = (value: unknown) =>
+		value === null ||
+		plain(value) ||
+		(Array.isArray(value) && value.length >= 1 && value.length <= CLOUD_MEMBER_DATA_AT_LIST && value.every(plain));
+	if (named.length < 1 || named.length > 32 || named.some(([column, value]) => !isName(column) || !given(value)))
+		throw new CloudMemberDataError("at names 1 to 32 columns, each with a value, null or a list of values");
 }
 
 const plainObject = (value: unknown): value is Record<string, unknown> =>
@@ -889,16 +964,25 @@ export class CloudMemberData {
 	}
 
 	async rows(
-		asked: CloudMemberDataTableAsked & { readonly after?: readonly unknown[] },
+		asked: CloudMemberDataTableAsked & { readonly after?: readonly unknown[]; readonly at?: CloudMemberDataAt },
 		signal: AbortSignal,
 	): Promise<CloudMemberDataPage> {
 		checkTable(asked);
+		if (asked.at !== undefined) {
+			checkAt(asked.at);
+			if (asked.after !== undefined)
+				throw new CloudMemberDataError("at reads rows by their values: it takes no after");
+		}
 		if (
 			asked.after !== undefined &&
 			(!Array.isArray(asked.after) || asked.after.length === 0 || asked.after.length > 33)
 		)
 			throw new CloudMemberDataError("after is the next a page gave");
-		const body = { ...tableBody(asked), ...(asked.after === undefined ? {} : { after: asked.after }) };
+		const body = {
+			...tableBody(asked),
+			...(asked.after === undefined ? {} : { after: asked.after }),
+			...(asked.at === undefined ? {} : { at: asked.at }),
+		};
 		const answer = await this.#askFolder(
 			"rows",
 			body,

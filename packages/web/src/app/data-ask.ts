@@ -9,16 +9,19 @@ export type DataAskSend = (agentId: string, note: TellNote) => Promise<TellResul
 export interface DataAskPlace {
 	readonly database: string;
 	readonly databaseName: string;
-	readonly kind: "table" | "question";
-	readonly name: string;
-	readonly title: string;
+	readonly kind?: "table" | "question";
+	readonly name?: string;
+	readonly title?: string;
 	readonly values: readonly string[];
 }
 
 export function dataAskLine(place: DataAskPlace): string {
-	const thing = `${place.database}${place.kind === "table" ? "." : ":"}${place.name}`;
+	const thing =
+		place.name === undefined ? place.database : `${place.database}${place.kind === "table" ? "." : ":"}${place.name}`;
 	const at = APP_NOTE_AT.test(thing) ? thing : APP_NOTE_AT.test(place.database) ? place.database : null;
-	const about = appNoteAbout([place.databaseName, place.title, ...place.values].join(" · "));
+	const about = appNoteAbout(
+		[place.databaseName, ...(place.title === undefined ? [] : [place.title]), ...place.values].join(" · "),
+	);
 	const letters = [...about];
 	const cut =
 		letters.length > APP_NOTE_ABOUT_MAX

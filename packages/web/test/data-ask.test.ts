@@ -104,7 +104,10 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-async function open(options: { send?: DataAskSend; write?: boolean; cofounder?: boolean; mine?: boolean } = {}) {
+async function open(
+	options: { send?: DataAskSend; write?: boolean; cofounder?: boolean; mine?: boolean; home?: boolean } = {},
+) {
+	const list = options.home !== true;
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
 	controller.store.set({
@@ -141,13 +144,20 @@ async function open(options: { send?: DataAskSend; write?: boolean; cofounder?: 
 	draw();
 	cleanup.push(controller.store.subscribe(draw));
 	await settle();
+	if (list) {
+		container.querySelector<HTMLButtonElement>(".data-plot[data-table='repairs']")?.click();
+		await settle();
+	}
 	return { container, calls: data, controller };
 }
 
 const tab = (root: ParentNode, label: string) => {
-	const found = [...root.querySelectorAll<HTMLButtonElement>(".data-tab")].find(
-		(one) => one.textContent?.trim() === label,
-	);
+	const named = () =>
+		[...root.querySelectorAll<HTMLButtonElement>(".data-tab, .data-subtab")].find(
+			(one) => one.textContent?.trim() === label,
+		);
+	if (!named()) root.querySelector<HTMLButtonElement>(".data-tab.is-question")?.click();
+	const found = named();
 	if (!found) throw new Error(`No tab ${label}`);
 	return found;
 };
@@ -294,12 +304,18 @@ describe("a kept question that takes values", () => {
 		const { container, calls } = await open();
 		expect([...container.querySelectorAll(".data-tab")].map((one) => one.textContent)).toEqual([
 			"Repairs",
+			"Questions",
+		]);
+		tab(container, "Handed in since").click();
+		expect([...container.querySelectorAll(".data-subtab")].map((one) => one.textContent)).toEqual([
 			"Waited over a week",
 			"Handed in since",
 		]);
-		tab(container, "Handed in since").click();
 		await settle();
-		expect(calls.query).not.toHaveBeenCalled();
+		expect(calls.query).not.toHaveBeenCalledWith(
+			expect.objectContaining({ question: "handed-in-since" }),
+			expect.anything(),
+		);
 		const labels = [...container.querySelectorAll(".data-param-label")].map((one) => one.textContent);
 		expect(labels).toEqual(["Since", "State"]);
 		expect(container.querySelector(".data-empty h1")?.textContent).toBe("Repairs handed in since a day.");
@@ -307,7 +323,10 @@ describe("a kept question that takes values", () => {
 		const [since, state] = [...container.querySelectorAll<HTMLInputElement>(".data-param-input")];
 		fill(since!, " 2026-10-01 ", "change");
 		await settle();
-		expect(calls.query).not.toHaveBeenCalled();
+		expect(calls.query).not.toHaveBeenCalledWith(
+			expect.objectContaining({ question: "handed-in-since" }),
+			expect.anything(),
+		);
 		expect(container.querySelector(".data-empty p")?.textContent).toBe("Fill in State to see the list.");
 		expect(container.querySelector<HTMLInputElement>(".data-param-input")).toBe(since);
 		state!.value = "Ready";
@@ -439,7 +458,8 @@ describe("the note in the conversation", () => {
 
 		wantDataList(profileA.profileId, "workshop:waited-over-a-week");
 		const { container, calls } = await open();
-		expect(container.querySelector(".data-tab[aria-selected='true']")?.textContent).toBe("Waited over a week");
+		expect(container.querySelector(".data-tab[aria-selected='true']")?.textContent).toBe("Questions");
+		expect(container.querySelector(".data-subtab[aria-selected='true']")?.textContent).toBe("Waited over a week");
 		expect(calls.query).toHaveBeenCalledWith(
 			{ database: "workshop", question: "waited-over-a-week", params: {} },
 			expect.anything(),

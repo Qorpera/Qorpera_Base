@@ -1132,15 +1132,19 @@ describe("conversation lifecycle regressions", () => {
 	it("discards outstanding reads after membership is revoked", async () => {
 		const { api, controller } = company();
 		const read = deferred<HostedSessionEvent[]>();
+		const inputs = deferred<Awaited<ReturnType<typeof api.listSessionInputs>>>();
 		vi.mocked(api.readSessionEvents).mockReturnValueOnce(read.promise);
+		vi.mocked(api.listSessionInputs).mockReturnValueOnce(inputs.promise);
 		const store = controller.conversation(session.sessionId);
 		vi.mocked(api.getTeam).mockRejectedValue(new CloudRpcError("team", { code: "42501", message: "revoked" }, 403));
 		await controller.refreshTeam();
 		read.resolve([event(1, "Private data")]);
+		inputs.resolve({ items: [pending(1, "Private input")], hasMore: true, nextAfterPosition: 1 });
 		await settle();
 		expect(controller.store.get().accessLost).toBe(true);
 		expect(store.get().events).toEqual([]);
-		expect(api.listSessionInputs).not.toHaveBeenCalled();
+		expect(store.get().pending).toEqual([]);
+		expect(api.listSessionInputs).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -2079,5 +2083,64 @@ describe("the member's own interfaces layout (20260930892000)", () => {
 		expect(controller.store.get().railError).toBe("Your interfaces changed in another tab. Try again.");
 		expect(readRail).toHaveBeenCalledTimes(2);
 		expect(controller.store.get().surfaceRail?.layout.order).toEqual([id(3)]);
+	});
+});
+
+describe("warm company suspend/resume and deferred conversation loading", () => {
+	it("loads a conversation when opened after conversation(id, false) pre-created its store", async () => {
+		const f = company();
+		vi.spyOn(f.api, "readSessionEventsTail").mockResolvedValue([event(1, "Hello from Co-Founder")]);
+		const pre = f.controller.conversation(session.sessionId, false);
+		expect(pre.get().loading).toBe(true);
+		expect(f.api.readSessionEventsTail).not.toHaveBeenCalled();
+
+		f.controller.conversation(session.sessionId);
+		await vi.waitFor(() => {
+			expect(pre.get().loading).toBe(false);
+			expect(pre.get().complete).toBe(true);
+		});
+		expect(pre.get().events).toHaveLength(1);
+		expect(f.api.readSessionEventsTail).toHaveBeenCalledTimes(1);
+	});
+
+	it("revalidates cached conversations on reopen after suspend/resume and retries failed loads once", async () => {
+		const f = company();
+		vi.spyOn(f.api, "readSessionEventsTail").mockResolvedValue([event(1, "Initial message")]);
+		vi.spyOn(f.api, "readSessionEvents").mockResolvedValue([event(2, "Arrived while parked")]);
+
+		const store = f.controller.conversation(session.sessionId);
+		f.controller.setOpenSession(session.sessionId);
+		await vi.waitFor(() => expect(store.get().complete).toBe(true));
+		expect(store.get().events.map((item) => item.sequence)).toEqual([1]);
+
+		f.controller.suspend();
+		f.controller.resume();
+		f.controller.setOpenSession(session.sessionId);
+		await vi.waitFor(() => expect(store.get().events.map((item) => item.sequence)).toEqual([1, 2]));
+	});
+
+	it("pauses OpenQuestions polling while suspended and refreshes on resume", async () => {
+		vi.useFakeTimers();
+		const f = company();
+		const listDecisions = vi.spyOn(f.api, "listCompanyOpenDecisions").mockResolvedValue([]);
+		const questions = new OpenQuestions(f.controller, {
+			listConnections: vi.fn(async () => connections),
+		});
+		const stop = questions.watch();
+		cleanup.push(() => {
+			stop();
+			questions.dispose();
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		const beforePause = listDecisions.mock.calls.length;
+		expect(beforePause).toBeGreaterThanOrEqual(1);
+
+		questions.pause();
+		await vi.advanceTimersByTimeAsync(150_000);
+		expect(listDecisions.mock.calls.length).toBe(beforePause);
+
+		questions.resume();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(listDecisions.mock.calls.length).toBeGreaterThan(beforePause);
 	});
 });

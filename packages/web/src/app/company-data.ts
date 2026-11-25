@@ -1,5 +1,6 @@
 import type {
 	CloudMemberDataAnswer,
+	CloudMemberDataAt,
 	CloudMemberDataChanges,
 	CloudMemberDataChangesAsked,
 	CloudMemberDataDescription,
@@ -15,7 +16,7 @@ import type {
 export interface CompanyDataCalls {
 	describe(database: string | null, signal: AbortSignal): Promise<CloudMemberDataDescription>;
 	rows(
-		asked: CloudMemberDataTableAsked & { readonly after?: readonly unknown[] },
+		asked: CloudMemberDataTableAsked & { readonly after?: readonly unknown[]; readonly at?: CloudMemberDataAt },
 		signal: AbortSignal,
 	): Promise<CloudMemberDataPage>;
 	query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer>;

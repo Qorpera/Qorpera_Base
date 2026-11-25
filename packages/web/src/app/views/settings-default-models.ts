@@ -559,7 +559,9 @@ export class DefaultModelsView {
 						h(
 							"small",
 							null,
-							t("Default for background workers and coding sessions. Routines keep using your ChatGPT login."),
+							t(
+								"Default for background workers, coding sessions, Studio, and Ops. Routines keep using your ChatGPT login.",
+							),
 						),
 					),
 					h("div", { class: "default-model-controls" }, codingModelSelect, codingEffortSelect),
