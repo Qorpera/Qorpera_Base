@@ -2776,7 +2776,7 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .studio-land-table :is(thead th:first-child, .studio-land-player) { position: sticky; left: 0; z-index: 1; }
 .studio-land-player { min-width: 168px; background: var(--bg); font-weight: inherit; }
 .studio-land-table td { color: var(--text); transition: background-color var(--motion-fast) ease; }
-.studio-land-table td.is-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.studio-land-table td.is-num { font-variant-numeric: tabular-nums; }
 .studio-land-who { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .studio-land-who strong, .studio-land-name-link { color: var(--text); font-weight: 680; }
 .studio-land-name-link { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--text) 25%, transparent); text-underline-offset: 3px; }
