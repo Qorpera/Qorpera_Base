@@ -287,19 +287,13 @@ export class CloudSurfacesClient {
 						...baseArgs,
 						p_client_input_id: attach.clientInputId,
 						p_images: surfaceImageRows(attach.images),
+						...(normalizedChangeId ? { p_change_id: normalizedChangeId } : {}),
 					}
-				: baseArgs;
-		let data: unknown;
-		if (normalizedChangeId) {
-			try {
-				data = await this.#rpc(rpcName, { ...args, p_change_id: normalizedChangeId });
-			} catch (error) {
-				if (!isMissingSurfaceRpcError(error)) throw error;
-				data = await this.#rpc(rpcName, args);
-			}
-		} else {
-			data = await this.#rpc(rpcName, args);
-		}
+				: {
+						...baseArgs,
+						...(normalizedChangeId ? { p_change_id: normalizedChangeId } : {}),
+					};
+		const data = await this.#rpc(rpcName, args);
 		return parseSurfaceSession(data, "session");
 	}
 

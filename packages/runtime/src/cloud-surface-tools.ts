@@ -146,6 +146,7 @@ export interface CodingRecordChangeRequest {
 	readonly parentSha?: string | null;
 	readonly dependsOnChangeIds: readonly string[];
 	readonly changeId?: string | null;
+	readonly rebase?: boolean;
 }
 
 export interface ProposeSurfaceRequest {
@@ -385,6 +386,7 @@ function resolveFollowUpTargetChangeId(input: {
 	readonly updatedInTurn: ReadonlySet<string>;
 	readonly isInternalReconciliation: boolean;
 	readonly explicitParentSha?: string | null;
+	readonly tipOnly?: boolean;
 }): string | null {
 	const {
 		explicitChangeId,
@@ -394,6 +396,7 @@ function resolveFollowUpTargetChangeId(input: {
 		updatedInTurn,
 		isInternalReconciliation,
 		explicitParentSha,
+		tipOnly,
 	} = input;
 	if (explicitChangeId && createNew) {
 		throw new CloudToolArgumentRefusal(
@@ -410,6 +413,30 @@ function resolveFollowUpTargetChangeId(input: {
 	}
 	if (createNew || isInternalReconciliation || openChanges.length === 0) {
 		return null;
+	}
+	if (tipOnly) {
+		const tipChange = openChanges[openChanges.length - 1]!;
+		if (openChanges.length === 1 && !updatedInTurn.has(tipChange.changeId)) {
+			return tipChange.changeId;
+		}
+		if (replyChangeId === tipChange.changeId && !updatedInTurn.has(tipChange.changeId)) {
+			return tipChange.changeId;
+		}
+		if (explicitParentSha && tipChange.parentSha === explicitParentSha && !updatedInTurn.has(tipChange.changeId)) {
+			return tipChange.changeId;
+		}
+		if (
+			replyChangeId &&
+			replyChangeId !== tipChange.changeId &&
+			openChanges.some((item) => item.changeId === replyChangeId)
+		) {
+			throw new CloudToolArgumentRefusal(
+				`Change ${replyChangeId} is not the tip change on this branch (tip is ${tipChange.changeId}). Rebase the branch so each change keeps a non-overlapping commit range, then call coding_record_change with explicit changeId, parentSha, and commitSha (passing rebase: true for shifted downstream changes), or pass createNew: true to stage a separate new change.`,
+			);
+		}
+		throw new CloudToolArgumentRefusal(
+			`This session already has open staged changes (${formatOpenChangesRefusalList(openChanges)}). Pass changeId to update an existing change in place, or pass createNew: true to stage a separate new change.`,
+		);
 	}
 	if (
 		replyChangeId &&
@@ -604,7 +631,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_depends_on_change_ids: [...request.dependsOnChangeIds],
 					p_affected_paths: [],
 					p_diff_stats: null,
-					p_patch_manifest: null,
+					p_patch_manifest: request.rebase === true ? { rebase: true } : null,
 					p_finish_session: false,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 					...(request.changeId ? { p_change_id: request.changeId } : {}),
@@ -772,8 +799,11 @@ export function createCodingRecordChangeTool(
 	port: Pick<CloudSurfaceToolsPort, "recordChange">,
 	options: SurfaceFollowUpChangeOptions = {},
 ): CloudNativeTool {
-	const openChanges = (options.openChanges ?? []).filter((item) => item.kind === "git_range");
+	const openChanges = (options.openChanges ?? [])
+		.filter((item) => item.kind === "git_range")
+		.sort((a, b) => a.seq - b.seq || a.changeId.localeCompare(b.changeId));
 	const openById = new Map(openChanges.map((item) => [item.changeId, item]));
+	const tipChange = openChanges.length > 0 ? openChanges[openChanges.length - 1]! : null;
 	const replyChangeId = options.replyChangeId?.trim() || null;
 	const isInternalReconciliation = options.isInternalReconciliation === true;
 	const updatedInTurn = new Set<string>();
@@ -781,7 +811,7 @@ export function createCodingRecordChangeTool(
 		name: "coding_record_change",
 		source: "worker",
 		description:
-			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main, or update an existing open ChangeUnit in place by passing its changeId. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit) and commitSha, calling once per distinct deliverable before coding_finish. When revising an existing open change on a follow-up turn, pass its changeId (keeping its original parentSha and passing the new commitSha); pass createNew: true only when adding a separate new deliverable alongside existing open changes.",
+			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main, or update an existing open ChangeUnit in place by passing its changeId. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit) and commitSha, calling once per distinct deliverable before coding_finish. When revising an existing open change on a follow-up turn, pass its changeId (keeping its original parentSha and passing the new commitSha, or rebase: true when moving its parentSha after rebasing); pass createNew: true only when adding a separate new deliverable alongside existing open changes.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -792,7 +822,7 @@ export function createCodingRecordChangeTool(
 				parentSha: {
 					type: "string",
 					description:
-						"Optional 40-hex Git parent commit SHA before this change unit; defaults to the target change's original parentSha on updates, or the previous recorded change head / session base SHA on new changes.",
+						"Optional 40-hex Git parent commit SHA before this change unit; defaults to the target change's original parentSha on tip updates, or the previous recorded change head / session base SHA on new changes.",
 				},
 				commitSha: { type: "string", description: "40-hex Git commit SHA on the session branch." },
 				dependsOnChangeIds: {
@@ -810,6 +840,11 @@ export function createCodingRecordChangeTool(
 					description:
 						"Set true when intentionally staging an additional separate ChangeUnit alongside existing open changes in this session.",
 				},
+				rebase: {
+					type: "boolean",
+					description:
+						"Only when updating an existing open ChangeUnit via changeId: set true when intentionally moving its parentSha to a new base commit after rebasing the session branch.",
+				},
 			},
 		},
 		parseArguments(value: JsonValue): JsonValue {
@@ -819,7 +854,7 @@ export function createCodingRecordChangeTool(
 					value,
 					"coding_record_change",
 					["title", "summary", "commitSha"],
-					["parentSha", "dependsOnChangeIds", "changeId", "createNew"],
+					["parentSha", "dependsOnChangeIds", "changeId", "createNew", "rebase"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -854,6 +889,7 @@ export function createCodingRecordChangeTool(
 				explicitChangeId = raw.changeId;
 			}
 			const createNew = parseBooleanArg(raw.createNew, "createNew", false);
+			const rebase = parseBooleanArg(raw.rebase, "rebase", false);
 			const targetChangeId = resolveFollowUpTargetChangeId({
 				explicitChangeId,
 				createNew,
@@ -862,14 +898,34 @@ export function createCodingRecordChangeTool(
 				updatedInTurn,
 				isInternalReconciliation,
 				explicitParentSha: parentSha ?? null,
+				tipOnly: true,
 			});
+			if (rebase && !targetChangeId) {
+				throw new CloudToolArgumentRefusal("rebase can only be used when updating an existing open change");
+			}
 			if (targetChangeId) {
 				const target = openById.get(targetChangeId);
-				if (target?.parentSha) {
+				const isNonTip = Boolean(tipChange && targetChangeId !== tipChange.changeId);
+				if (isNonTip) {
+					if (parentSha === undefined) {
+						throw new CloudToolArgumentRefusal(
+							"Updating a non-tip git_range change requires an explicit parentSha; rebase the branch so commit ranges do not overlap.",
+						);
+					}
+					if (!rebase && target?.parentSha && parentSha !== target.parentSha) {
+						throw new CloudToolArgumentRefusal(
+							"Updating a non-tip git_range change with a different parentSha requires rebase: true after rebasing the branch.",
+						);
+					}
+				} else if (target?.parentSha && !rebase) {
 					if (parentSha === undefined) {
 						parentSha = target.parentSha;
 					} else if (target.headSha && parentSha === target.headSha && raw.commitSha !== target.headSha) {
 						parentSha = target.parentSha;
+					} else if (parentSha !== target.parentSha && (!target.headSha || parentSha !== target.headSha)) {
+						throw new CloudToolArgumentRefusal(
+							"parentSha must match the existing change's parentSha or prior headSha unless rebase: true is set.",
+						);
 					}
 				}
 			}
@@ -880,6 +936,7 @@ export function createCodingRecordChangeTool(
 				...(parentSha !== undefined ? { parentSha } : {}),
 				dependsOnChangeIds: [...(depsRaw as string[])],
 				...(targetChangeId ? { changeId: targetChangeId } : {}),
+				...(rebase ? { rebase: true } : {}),
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {

@@ -373,10 +373,78 @@ begin
 		'git_range update preserves original parent_sha even if caller passes prior head_sha as parent_sha'
 	);
 
+	v_c_c2 := (public.qorpera_native_surface_record_change(
+		v_profile, v_c_session, 'Pricing section', 'Added pricing table.', 'git_range',
+		repeat('e', 40), repeat('f', 40), array[v_c_c1], array['pricing.html'], null, null, false, v_c_lease
+	) ->> 'changeId')::uuid;
+
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_c_session, 'Pricing section v2', 'Tightened pricing copy.', 'git_range',
+		null, repeat('1', 40), '{}'::uuid[], array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+	);
+	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
+	perform pg_temp.suci_assert(
+		v_c_change.parent_sha = repeat('e', 40)
+		and v_c_change.head_sha = repeat('1', 40)
+		and v_c_change.depends_on_change_ids = array[v_c_c1],
+		'updating a change with empty depends_on_change_ids preserves existing dependencies'
+	);
+
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_profile, v_c_session, 'Non-tip omit parent', 'Should refuse.', 'git_range',
+			null, repeat('2', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, v_c_c1
+		);
+		perform pg_temp.suci_assert(false, 'updating non-tip git_range without explicit parent_sha must fail');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.suci_assert(v_errcode = '22023', 'non-tip null parent must fail with 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_profile, v_c_session, 'Non-tip wrong parent', 'Should refuse.', 'git_range',
+			repeat('1', 40), repeat('2', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, v_c_c1
+		);
+		perform pg_temp.suci_assert(false, 'updating non-tip git_range with tip head_sha as parent_sha must fail');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.suci_assert(v_errcode = '22023', 'non-tip mismatched parent must fail with 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_profile, v_c_session, 'Tip bogus parent', 'Should refuse.', 'git_range',
+			repeat('9', 40), repeat('2', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, v_c_c2
+		);
+		perform pg_temp.suci_assert(false, 'updating tip git_range with unrelated parent_sha without rebase must fail');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.suci_assert(v_errcode = '22023', 'unrelated parent without rebase must fail with 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_c_session, 'Hero rebased', 'Rebased hero commit.', 'git_range',
+		repeat('a', 40), repeat('7', 40), '{}'::uuid[], array['index.html'], null, null, false, v_c_lease, v_c_c1
+	);
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_c_session, 'Pricing rebased', 'Rebased pricing on new hero.', 'git_range',
+		repeat('7', 40), repeat('8', 40), '{}'::uuid[], array['pricing.html'], null,
+		jsonb_build_object('rebase', true), false, v_c_lease, v_c_c2
+	);
+	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
+	perform pg_temp.suci_assert(
+		(select head_sha from public.qorpera_surface_changes where id = v_c_c1) = repeat('7', 40)
+		and v_c_change.parent_sha = repeat('7', 40)
+		and v_c_change.head_sha = repeat('8', 40)
+		and v_c_change.depends_on_change_ids = array[v_c_c1],
+		'explicit rebase updates stacked git_range changes cleanly while preserving dependencies'
+	);
+
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Bad self dep', 'Bad.', 'git_range',
-			null, repeat('d', 40), array[v_c_c1], '{}'::text[], null, null, false, v_c_lease, v_c_c1
+			null, repeat('d', 40), array[v_c_c2], '{}'::text[], null, null, false, v_c_lease, v_c_c2
 		);
 		perform pg_temp.suci_assert(false, 'updating a change with self-dependency must fail');
 	exception when others then
@@ -556,5 +624,29 @@ begin
 	perform pg_temp.suci_assert(
 		(select count(*) from public.qorpera_surface_changes where session_id = v_sync_session) = 3,
 		'untargeted follow-up coding_finish on multi-change session inserts new change instead of clobbering'
+	);
+
+	perform pg_temp.suci_as(v_owner);
+	perform public.qorpera_reply_surface_session(v_sync_session, 'Make hero blue', true, v_sync_c1);
+
+	update public.qorpera_runtime_workers set sequence = 5 where id = v_worker.id returning * into v_worker;
+	insert into public.qorpera_coding_session_turns(worker_id, sequence, input_from, input_text)
+	values (v_worker.id, 5, 'member', 'Make hero blue');
+
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = extensions.gen_random_uuid()
+	where id = v_sync_session;
+
+	perform public.qorpera_surface_sync_coding_completion(
+		v_coding, v_worker, 'succeeded', 'Hero tweak on tip.', null, null,
+		jsonb_build_array(jsonb_build_object('headSha', repeat('6', 40), 'baseSha', repeat('a', 40)))
+	);
+
+	select * into strict v_sync_change from public.qorpera_surface_changes where id = v_sync_c1;
+	perform pg_temp.suci_assert(
+		v_sync_change.parent_sha = repeat('a', 40)
+		and v_sync_change.head_sha = repeat('2', 40)
+		and (select count(*) from public.qorpera_surface_changes where session_id = v_sync_session) = 4,
+		'follow-up coding_finish targeting a non-tip change must not corrupt its commit range'
 	);
 end $$;

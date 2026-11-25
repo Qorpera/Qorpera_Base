@@ -70,7 +70,7 @@ describe("cloud-client surface session images", () => {
 		);
 	});
 
-	it("forwards target changeId on replySurfaceSession and falls back on an unmigrated database", async () => {
+	it("forwards target changeId on replySurfaceSession with and without images", async () => {
 		const changeId = "29600000-0000-4000-8000-000000000099";
 		const { rpc, client } = fixture();
 		await client.replySurfaceSession(sessionId, "Re: [Hero]\nMake it warmer", true, undefined, changeId);
@@ -101,23 +101,6 @@ describe("cloud-client surface session images", () => {
 				p_images: [row],
 				p_change_id: changeId,
 			},
-		]);
-
-		const fallbackRpc = vi
-			.fn()
-			.mockResolvedValueOnce({ data: null, error: { message: "not found", code: "PGRST202" } })
-			.mockResolvedValueOnce({ data: session, error: null });
-		const fallbackClient = new CloudSurfacesClient({ rpc: fallbackRpc } as unknown as SupabaseClient);
-		await fallbackClient.replySurfaceSession(sessionId, "Re: [Hero]\nRetry", true, undefined, changeId);
-		expect(fallbackRpc.mock.calls).toEqual([
-			[
-				"qorpera_reply_surface_session",
-				{ p_session_id: sessionId, p_message: "Re: [Hero]\nRetry", p_keep_open: true, p_change_id: changeId },
-			],
-			[
-				"qorpera_reply_surface_session",
-				{ p_session_id: sessionId, p_message: "Re: [Hero]\nRetry", p_keep_open: true },
-			],
 		]);
 	});
 

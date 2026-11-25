@@ -450,7 +450,10 @@ $old$	v_retry_enqueued boolean := false;
 	v_now timestamptz := clock_timestamp();$old$,
 $new$	v_retry_enqueued boolean := false;
 	v_replace_all boolean := false;
+	v_allow_rebase boolean := false;
+	v_has_later_git_change boolean := false;
 	v_existing public.qorpera_surface_changes%rowtype;
+	v_raw_parent_sha text;
 	v_eff_parent_sha text;
 	v_eff_head_sha text;
 	v_eff_paths text[];
@@ -476,7 +479,11 @@ $new$	if coalesce(p_kind, 'git_range') = 'folder_patch'
 			when jsonb_typeof(p_patch_manifest -> 'baseFiles') = 'object' then p_patch_manifest -> 'baseFiles'
 			else null
 		end;
-		v_replace_all := coalesce((p_patch_manifest ->> 'replaceAll')::boolean, false);
+		v_replace_all := coalesce(
+			jsonb_typeof(p_patch_manifest -> 'replaceAll') = 'boolean'
+				and p_patch_manifest ->> 'replaceAll' = 'true',
+			false
+		);
 	else
 		v_patch_manifest := p_patch_manifest;
 		v_base_files := null;
@@ -563,14 +570,52 @@ $new$	if p_change_id is not null then
 			v_eff_parent_sha := v_existing.parent_sha;
 			v_eff_head_sha := v_existing.head_sha;
 		elsif v_existing.kind = 'git_range' then
+			v_allow_rebase := coalesce(
+				jsonb_typeof(p_patch_manifest) = 'object'
+					and jsonb_typeof(p_patch_manifest -> 'rebase') = 'boolean'
+					and p_patch_manifest ->> 'rebase' = 'true',
+				false
+			);
+			select exists (
+				select 1
+				from public.qorpera_surface_changes later_ch
+				where later_ch.session_id = p_session_id
+					and later_ch.profile_id = v_session.profile_id
+					and later_ch.kind = 'git_range'
+					and later_ch.status in ('staged', 'conflicted')
+					and (later_ch.seq > v_existing.seq or (later_ch.seq = v_existing.seq and later_ch.id > v_existing.id))
+			) into v_has_later_git_change;
+
 			v_eff_head_sha := coalesce(nullif(btrim(coalesce(p_head_sha, '')), ''), v_existing.head_sha);
-			v_eff_parent_sha := coalesce(nullif(btrim(coalesce(p_parent_sha, '')), ''), v_existing.parent_sha);
-			if v_existing.parent_sha is not null
+			v_raw_parent_sha := nullif(btrim(coalesce(p_parent_sha, '')), '');
+
+			if v_has_later_git_change and v_raw_parent_sha is null then
+				raise exception 'Updating a non-tip git_range change requires an explicit parent_sha' using errcode = '22023';
+			end if;
+			if v_has_later_git_change and not v_allow_rebase
+				and v_existing.parent_sha is not null
+				and v_raw_parent_sha is distinct from v_existing.parent_sha then
+				raise exception 'Non-tip git_range update parent_sha must match existing parent_sha unless rebasing' using errcode = '22023';
+			end if;
+
+			if v_raw_parent_sha is null then
+				v_eff_parent_sha := v_existing.parent_sha;
+			elsif not v_has_later_git_change
+				and not v_allow_rebase
+				and v_existing.parent_sha is not null
 				and v_existing.head_sha is not null
-				and v_eff_parent_sha = v_existing.head_sha
+				and v_raw_parent_sha = v_existing.head_sha
 				and v_eff_head_sha is distinct from v_existing.head_sha then
 				v_eff_parent_sha := v_existing.parent_sha;
+			elsif not v_allow_rebase
+				and v_existing.parent_sha is not null
+				and v_raw_parent_sha is distinct from v_existing.parent_sha
+				and (v_existing.head_sha is null or v_raw_parent_sha is distinct from v_existing.head_sha) then
+				raise exception 'git_range update parent_sha must match existing parent_sha or head_sha unless rebasing' using errcode = '22023';
+			else
+				v_eff_parent_sha := v_raw_parent_sha;
 			end if;
+
 			v_eff_paths := case
 				when coalesce(cardinality(p_affected_paths), 0) > 0 then p_affected_paths
 				else coalesce(v_existing.affected_paths, '{}'::text[])
@@ -589,7 +634,10 @@ $new$	if p_change_id is not null then
 			summary = coalesce(p_summary, ''),
 			parent_sha = v_eff_parent_sha,
 			head_sha = v_eff_head_sha,
-			depends_on_change_ids = coalesce(p_depends_on_change_ids, '{}'::uuid[]),
+			depends_on_change_ids = case
+				when coalesce(cardinality(p_depends_on_change_ids), 0) > 0 then p_depends_on_change_ids
+				else coalesce(depends_on_change_ids, '{}'::uuid[])
+			end,
 			affected_paths = coalesce(v_eff_paths, '{}'::text[]),
 			diff_stats = coalesce(p_diff_stats, diff_stats),
 			patch_manifest = case
@@ -661,24 +709,13 @@ $old$	if coalesce(p_kind, 'git_range') = 'git_range' then
 					where c.session_id = p_session_id and c.head_sha is not null
 						and c.status in ('staged', 'conflicted')
 					order by c.seq desc limit 1),$old$,
-$new$	if coalesce(p_kind, 'git_range') = 'git_range' then
-		if v_parent_sha is null then
-			if p_change_id is not null then
-				select nullif(btrim(c.parent_sha), '') into v_parent_sha
-				from public.qorpera_surface_changes c
-				where c.id = p_change_id
-					and c.session_id = p_session_id
-					and c.profile_id = p_profile_id
-					and c.status in ('staged', 'conflicted');
-			end if;
-		end if;
+$new$	if coalesce(p_kind, 'git_range') = 'git_range' and p_change_id is null then
 		if v_parent_sha is null then
 			select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id;
 			v_parent_sha := coalesce(
 				(select nullif(btrim(c.head_sha), '') from public.qorpera_surface_changes c
 					where c.session_id = p_session_id and c.head_sha is not null
 						and c.status in ('staged', 'conflicted')
-						and (p_change_id is null or c.id <> p_change_id)
 					order by c.seq desc limit 1),$new$,
 $old$	v_result := public.qorpera_record_surface_change(
 		p_session_id, p_title, p_summary, p_kind, v_parent_sha, v_head_sha,

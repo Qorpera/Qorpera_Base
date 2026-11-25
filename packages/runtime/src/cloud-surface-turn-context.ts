@@ -329,7 +329,7 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			lines.push(
 				`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"} on this branch. When the member's follow-up revises, adjusts, or fixes an existing change below, commit on the branch and call \`coding_record_change\` with its \`changeId\` (keeping that change's original \`parentSha\` and passing the new \`commitSha\`) to update it in place instead of creating a duplicate change.${
 					sessionOpenChanges.length > 1
-						? " If revising an earlier non-tip change, rebase or update any subsequent commits cleanly and update each shifted change via its `changeId`."
+						? " If revising an earlier non-tip change, rebase or update any subsequent commits cleanly so ranges do not overlap and update each shifted change via its `changeId` with explicit `parentSha`, `commitSha`, and `rebase: true`."
 						: ""
 				} Only pass \`createNew: true\` when adding a separate new deliverable alongside the existing open change(s).`,
 			);

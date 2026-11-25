@@ -3397,6 +3397,27 @@ describe("cloud surface runtime tools", () => {
 		expect(recUpdate).toEqual({ changeId: c1, seq: 1, openChangeCount: 1, updated: true });
 		expect(rpcCalls[0]?.args).toMatchObject({ p_change_id: c1, p_parent_sha: baseSha, p_head_sha: head2 });
 
+		const recRebase = await port.recordChange(
+			sessionId,
+			{
+				title: "Rebased pricing",
+				summary: "Shifted onto revised hero.",
+				commitSha: head3,
+				parentSha: head2,
+				dependsOnChangeIds: [],
+				changeId: c2,
+				rebase: true,
+			},
+			ctx,
+		);
+		expect(recRebase.updated).toBe(true);
+		expect(rpcCalls[1]?.args).toMatchObject({
+			p_change_id: c2,
+			p_parent_sha: head2,
+			p_head_sha: head3,
+			p_patch_manifest: { rebase: true },
+		});
+
 		const patchUpdate = await port.stageSurfacePatch(
 			sessionId,
 			{
@@ -3411,7 +3432,7 @@ describe("cloud surface runtime tools", () => {
 			ctx,
 		);
 		expect(patchUpdate.updated).toBe(true);
-		expect(rpcCalls[1]?.args).toMatchObject({
+		expect(rpcCalls[2]?.args).toMatchObject({
 			p_change_id: c1,
 			p_patch_manifest: { ops: [{ op: "write_text", path: "brief.md", content: "New" }], replaceAll: true },
 		});
@@ -3429,7 +3450,7 @@ describe("cloud surface runtime tools", () => {
 			ctx,
 		);
 		expect(opsUpdate.updated).toBe(true);
-		expect(rpcCalls[2]?.args).toMatchObject({ p_change_id: c1 });
+		expect(rpcCalls[3]?.args).toMatchObject({ p_change_id: c1 });
 
 		const recordedCoding: unknown[] = [];
 		const singleCodingTool = createCodingRecordChangeTool(
@@ -3559,6 +3580,106 @@ describe("cloud surface runtime tools", () => {
 		expect(() =>
 			multiCodingTool.parseArguments({ title: "Bad", summary: "Unknown.", commitSha: head3, changeId: unknownId }),
 		).toThrow(/not an open change/);
+		expect(() =>
+			multiCodingTool.parseArguments({
+				title: "Tip wrong parent",
+				summary: "Needs rebase.",
+				parentSha: "9".repeat(40),
+				commitSha: head3,
+				changeId: c2,
+			}),
+		).toThrow(/rebase: true/);
+		expect(
+			multiCodingTool.parseArguments({
+				title: "Tip rebased",
+				summary: "Rebased.",
+				parentSha: "9".repeat(40),
+				commitSha: head3,
+				changeId: c2,
+				rebase: true,
+			}),
+		).toMatchObject({ changeId: c2, parentSha: "9".repeat(40), rebase: true });
+
+		const nonTipReplyCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? c1,
+					seq: 1,
+					openChangeCount: 2,
+					updated: true,
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: c1,
+						seq: 1,
+						title: "Hero",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: c2,
+						seq: 2,
+						title: "Pricing",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: head1,
+						headSha: head2,
+						affectedPaths: ["pricing.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: c1,
+			},
+		);
+		expect(() =>
+			nonTipReplyCodingTool.parseArguments({
+				title: "Make hero blue",
+				summary: "Committed on top of pricing.",
+				parentSha: head2,
+				commitSha: head3,
+			}),
+		).toThrow(/not the tip change/);
+		expect(() =>
+			nonTipReplyCodingTool.parseArguments({
+				title: "Non-tip without parent",
+				summary: "Omitted parent.",
+				commitSha: head3,
+				changeId: c1,
+			}),
+		).toThrow(/explicit parentSha/);
+		expect(() =>
+			nonTipReplyCodingTool.parseArguments({
+				title: "Non-tip with wrong parent",
+				summary: "Wrong parent.",
+				parentSha: head2,
+				commitSha: head3,
+				changeId: c1,
+			}),
+		).toThrow(/rebase: true/);
+		expect(
+			nonTipReplyCodingTool.parseArguments({
+				title: "Hero rebased cleanly",
+				summary: "Matches original base.",
+				parentSha: baseSha,
+				commitSha: head3,
+				changeId: c1,
+			}),
+		).toMatchObject({ changeId: c1, parentSha: baseSha, commitSha: head3 });
 
 		const validReportA = JSON.stringify({
 			headline: "Report A",
