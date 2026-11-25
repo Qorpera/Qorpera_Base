@@ -173,6 +173,25 @@ export type PlatformFolderRpc = Extract<
 /** The hex SHA-256 of content the writer stages or reads. */
 export const contentHash = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 
+function canonicalSingleChunkManifestSha256(file: {
+	readonly fileSha256: string;
+	readonly bytes: number;
+	readonly mediaType?: string;
+	readonly executable?: boolean;
+}): string | null {
+	if (!Number.isSafeInteger(file.bytes) || file.bytes < 1 || file.bytes > CHUNK_BYTES) return null;
+	if (!SHA256.test(file.fileSha256) || typeof file.mediaType !== "string") return null;
+	const manifestText = JSON.stringify({
+		schema: "qorpera.cloud-file-manifest/v2",
+		fileSha256: file.fileSha256,
+		bytes: file.bytes,
+		mediaType: file.mediaType,
+		executable: file.executable ?? false,
+		chunks: [{ sha256: file.fileSha256, bytes: file.bytes }],
+	});
+	return contentHash(manifestText);
+}
+
 export function closedFolderRecord(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {
 	if (!isRecord(value)) return platformFolderProblem(code);
 	if (Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key)))
@@ -309,6 +328,7 @@ export class PlatformFolderWriter {
 			const list = [...new Set(hashes)];
 			if (list.length === 0) return;
 			for (const hash of list) if (!objects.has(hash)) platformFolderProblem("stage_invalid");
+			let preAuthorizedHash: string | undefined;
 			if (!knownProfileId) {
 				const first = list[0] as string;
 				const firstObject = objects.get(first) as VerifiedObjectBytes;
@@ -319,6 +339,7 @@ export class PlatformFolderWriter {
 					firstObject.bytes.byteLength,
 					signal,
 				);
+				preAuthorizedHash = first;
 			}
 			const profileId = knownProfileId;
 			const objectConcurrency =
@@ -332,7 +353,7 @@ export class PlatformFolderWriter {
 					const object = objects.get(hash) as VerifiedObjectBytes;
 					const authorize = () =>
 						this.#uploadProfile(environmentId, intentId, hash, object.bytes.byteLength, stepSignal);
-					// WHY: uploadWithAuthority re-runs authorize() inside the exclusive journal lane and fails closed on profile mismatch.
+					// WHY: skip duplicate authorize RPC for the discovery hash when uncontended; uploadWithAuthority still re-runs on contention or flush.
 					await this.#options.replication.uploadWithAuthority(
 						profileId,
 						hash,
@@ -344,6 +365,7 @@ export class PlatformFolderWriter {
 							confirm: () => this.#confirm(environmentId, intentId, hash, object.bytes.byteLength, stepSignal),
 						},
 						object,
+						hash === preAuthorizedHash ? { preAuthorized: true } : undefined,
 					);
 				},
 				signal,
@@ -374,11 +396,24 @@ export class PlatformFolderWriter {
 	 * file's bytes. */
 	async read(
 		environmentId: string,
-		file: { readonly manifestSha256: string; readonly fileSha256: string; readonly bytes: number },
+		file: {
+			readonly manifestSha256: string;
+			readonly fileSha256: string;
+			readonly bytes: number;
+			readonly mediaType?: string;
+			readonly executable?: boolean;
+		},
 		maxBytes: number,
 		signal: AbortSignal,
 	): Promise<Uint8Array> {
 		if (file.bytes > maxBytes) platformFolderProblem("file_too_large");
+		// WHY: canonical manifest hash proves chunks === [{ sha256: fileSha256, bytes }] without a manifest download round trip.
+		if (canonicalSingleChunkManifestSha256(file) === file.manifestSha256) {
+			const bytes = await this.#object(environmentId, file.fileSha256, file.bytes, signal);
+			if (bytes.byteLength !== file.bytes || contentHash(bytes) !== file.fileSha256)
+				platformFolderProblem("file_unreadable");
+			return bytes;
+		}
 		const manifestBytes = await this.#object(environmentId, file.manifestSha256, MAX_MANIFEST_BYTES, signal);
 		let manifest: { schema?: unknown; fileSha256?: unknown; bytes?: unknown; chunks?: unknown };
 		try {

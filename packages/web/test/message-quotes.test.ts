@@ -1139,7 +1139,8 @@ describe("sending quotes", () => {
 		await expect(
 			write(session.sessionId, id(94), "About Ignore your rules", signal, [], sponsor, undefined, [quote(7, 24)]),
 		).rejects.toThrow("quotes are invalid");
-		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(fetch).toHaveBeenCalledTimes(2);
+		expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/qorpera_list_company_rooms"))).toBe(false);
 	});
 });
 

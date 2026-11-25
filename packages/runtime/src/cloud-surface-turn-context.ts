@@ -118,11 +118,36 @@ export function parseSurfaceConflictDetails(raw: unknown): SurfaceConflictDetail
 
 export interface SurfaceTurnOpenChange {
 	readonly id: string;
+	readonly seq?: number | null;
 	readonly title: string;
+	readonly summary?: string | null;
+	readonly status?: string | null;
 	readonly parentSha: string | null;
 	readonly headSha: string | null;
+	readonly affectedPaths?: readonly string[];
 	readonly optionGroupKey: string | null;
 	readonly optionGroupTitle: string | null;
+}
+
+export interface SurfaceTurnResolvedChange {
+	readonly id: string;
+	readonly seq?: number | null;
+	readonly title: string;
+	readonly summary?: string | null;
+	readonly status: "discarded" | "merged" | "reverted";
+	readonly parentSha: string | null;
+	readonly headSha: string | null;
+	readonly affectedPaths?: readonly string[];
+	readonly optionGroupKey: string | null;
+	readonly optionGroupTitle: string | null;
+	readonly discardedByExploration?: boolean;
+	readonly resolvedAt?: string | null;
+}
+
+function parseOptionalPaths(raw: unknown): readonly string[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const paths = raw.filter((p): p is string => typeof p === "string" && p.trim().length > 0);
+	return paths.length > 0 ? paths : undefined;
 }
 
 export function parseSurfaceTurnOpenChanges(raw: unknown): SurfaceTurnOpenChange[] {
@@ -132,13 +157,49 @@ export function parseSurfaceTurnOpenChanges(raw: unknown): SurfaceTurnOpenChange
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
 		const item = entry as Record<string, unknown>;
 		if (typeof item.id !== "string" || typeof item.title !== "string") continue;
+		const affectedPaths = parseOptionalPaths(item.affectedPaths);
 		out.push({
 			id: item.id,
+			...(typeof item.seq === "number" && Number.isInteger(item.seq) ? { seq: item.seq } : {}),
 			title: item.title,
+			...(typeof item.summary === "string" && item.summary.trim() ? { summary: item.summary.trim() } : {}),
+			...(typeof item.status === "string" && item.status.trim() ? { status: item.status.trim() } : {}),
 			parentSha: typeof item.parentSha === "string" ? item.parentSha : null,
 			headSha: typeof item.headSha === "string" ? item.headSha : null,
+			...(affectedPaths ? { affectedPaths } : {}),
 			optionGroupKey: typeof item.optionGroupKey === "string" ? item.optionGroupKey : null,
 			optionGroupTitle: typeof item.optionGroupTitle === "string" ? item.optionGroupTitle : null,
+		});
+	}
+	return out;
+}
+
+export function parseSurfaceTurnResolvedChanges(raw: unknown): SurfaceTurnResolvedChange[] {
+	if (!Array.isArray(raw)) return [];
+	const out: SurfaceTurnResolvedChange[] = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const item = entry as Record<string, unknown>;
+		if (typeof item.id !== "string" || typeof item.title !== "string") continue;
+		if (item.status !== "discarded" && item.status !== "merged" && item.status !== "reverted") continue;
+		const affectedPaths = parseOptionalPaths(item.affectedPaths);
+		out.push({
+			id: item.id,
+			...(typeof item.seq === "number" && Number.isInteger(item.seq) ? { seq: item.seq } : {}),
+			title: item.title,
+			...(typeof item.summary === "string" && item.summary.trim() ? { summary: item.summary.trim() } : {}),
+			status: item.status,
+			parentSha: typeof item.parentSha === "string" ? item.parentSha : null,
+			headSha: typeof item.headSha === "string" ? item.headSha : null,
+			...(affectedPaths ? { affectedPaths } : {}),
+			optionGroupKey: typeof item.optionGroupKey === "string" ? item.optionGroupKey : null,
+			optionGroupTitle: typeof item.optionGroupTitle === "string" ? item.optionGroupTitle : null,
+			...(typeof item.discardedByExploration === "boolean"
+				? { discardedByExploration: item.discardedByExploration }
+				: {}),
+			...(typeof item.resolvedAt === "string" && item.resolvedAt.trim()
+				? { resolvedAt: item.resolvedAt.trim() }
+				: {}),
 		});
 	}
 	return out;
@@ -172,6 +233,7 @@ export interface SurfaceTurnBriefInput {
 	readonly mainSha?: string | null;
 	readonly branchHeadSha?: string | null;
 	readonly openChanges?: readonly SurfaceTurnOpenChange[] | null;
+	readonly resolvedChanges?: readonly SurfaceTurnResolvedChange[] | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
 	readonly memberImages?: readonly SurfaceMemberImage[] | null;
 	readonly viewAttachment?: SurfaceAttachmentReader;
@@ -330,16 +392,16 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 
 	const fallbackOpenChanges: SurfaceSessionOpenChange[] = (binding.openChanges ?? []).map((ch, idx) => ({
 		changeId: ch.id,
-		seq: idx + 1,
+		seq: ch.seq ?? idx + 1,
 		title: ch.title,
-		summary: "",
+		summary: ch.summary ?? "",
 		kind: binding.repositoryKey ? "git_range" : binding.sourceKind === "native_ops" ? "ops_action" : "folder_patch",
-		status: "staged",
+		status: ch.status === "conflicted" ? "conflicted" : "staged",
 		parentSha: ch.parentSha,
 		headSha: ch.headSha,
 		optionGroupKey: ch.optionGroupKey,
 		optionGroupTitle: ch.optionGroupTitle,
-		affectedPaths: [],
+		affectedPaths: ch.affectedPaths ?? [],
 		previewBaseChangeIds: [],
 		actionKind: null,
 		patchManifest: null,
@@ -347,95 +409,191 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	}));
 	const sessionOpenChanges =
 		(binding.sessionOpenChanges ?? []).length > 0 ? (binding.sessionOpenChanges ?? []) : fallbackOpenChanges;
+	const resolvedChanges = binding.resolvedChanges ?? [];
+	const discardedChanges = resolvedChanges.filter((ch) => ch.status === "discarded");
 	const branchHeadSha = binding.branchHeadSha?.trim() || null;
 	const mainSha = binding.mainSha?.trim() || null;
 	const replyChangeId = binding.replyChangeId?.trim() || null;
-	if (!binding.isInternalReconciliation && sessionOpenChanges.length > 0) {
-		const isFolderSurface = binding.sourceKind === "folder" || isFolderOnly;
-		const isOpsSurface = binding.sourceKind === "native_ops";
-		const folderRootLabel = folderRoot || binding.surfaceSlug;
-		const ownSkipped = (binding.sessionOverlaySkippedPaths ?? []).filter((p) => p.trim().length > 0);
-		const anyTruncated = sessionOpenChanges.some((item) => item.truncated === true || item.pathsTruncated === true);
-		const lines: string[] = ["## Active Staged Changes on This Session"];
-		if (isFolderSurface) {
-			if (binding.sessionOverlayStatus === "truncated" || (binding.sessionOverlayStatus == null && anyTruncated)) {
+	if (!binding.isInternalReconciliation) {
+		if (sessionOpenChanges.length > 0) {
+			const isFolderSurface = binding.sourceKind === "folder" || isFolderOnly;
+			const isOpsSurface = binding.sourceKind === "native_ops";
+			const folderRootLabel = folderRoot || binding.surfaceSlug;
+			const ownSkipped = (binding.sessionOverlaySkippedPaths ?? []).filter((p) => p.trim().length > 0);
+			const anyTruncated = sessionOpenChanges.some(
+				(item) => item.truncated === true || item.pathsTruncated === true,
+			);
+			const lines: string[] = ["## Active Staged Changes on This Session"];
+			if (isFolderSurface) {
+				if (
+					binding.sessionOverlayStatus === "truncated" ||
+					(binding.sessionOverlayStatus == null && anyTruncated)
+				) {
+					lines.push(
+						`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. Part of the prior patch manifest exceeded the inline context budget, so \`company_read\` under \`${folderRootLabel}/\` may show live files for omitted paths.`,
+					);
+				} else {
+					lines.push(
+						`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` already reflect this session's staged files above.${
+							ownSkipped.length > 0
+								? ` (${ownSkipped.length} path${ownSkipped.length === 1 ? "" : "s"} exceeded overlay limits: ${ownSkipped.slice(0, 10).join(", ")}${ownSkipped.length > 10 ? `, +${ownSkipped.length - 10} more` : ""}.)`
+								: ""
+						}`,
+					);
+				}
 				lines.push(
-					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. Part of the prior patch manifest exceeded the inline context budget, so \`company_read\` under \`${folderRootLabel}/\` may show live files for omitted paths.`,
+					"When the member's follow-up revises, adjusts, or fixes an existing change below, update it in place by passing its `changeId` to `stage_surface_patch` instead of creating a duplicate change. By default your new ops merge into that change by path (preserving untouched files from the prior version); pass `replaceAll: true` alongside `changeId` only if replacing the entire change from scratch. Only pass `createNew: true` when adding a separate new deliverable alongside the existing open change(s).",
+				);
+			} else if (isOpsSurface) {
+				lines.push(
+					`This session already has ${sessionOpenChanges.length} open staged action${sessionOpenChanges.length === 1 ? "" : "s"}. When revising an existing action below, call \`stage_surface_ops_action\` with its \`changeId\` to update that Action card in place. Only pass \`createNew: true\` when staging an additional separate action.`,
 				);
 			} else {
 				lines.push(
-					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"}. \`company_read\` and \`company_list\` under \`${folderRootLabel}/\` already reflect this session's staged files above.${
-						ownSkipped.length > 0
-							? ` (${ownSkipped.length} path${ownSkipped.length === 1 ? "" : "s"} exceeded overlay limits: ${ownSkipped.slice(0, 10).join(", ")}${ownSkipped.length > 10 ? `, +${ownSkipped.length - 10} more` : ""}.)`
+					`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"} on this branch. When the member's follow-up revises, adjusts, or fixes an existing change below, commit on the branch and call \`coding_record_change\` with its \`changeId\` (keeping that change's original \`parentSha\` and passing the new \`commitSha\`) to update it in place instead of creating a duplicate change.${
+						sessionOpenChanges.length > 1
+							? " If revising an earlier non-tip change or option, run `git read-tree --reset -u <headSha>` first so your edit starts from that change's tree, commit on the branch, and pass its `changeId` and original `parentSha` (for stacked chains, rebase any subsequent commits cleanly and update each shifted change with explicit `parentSha`, `commitSha`, and `rebase: true`)."
 							: ""
-					}`,
+					} Only pass \`createNew: true\` when adding a separate new deliverable alongside the existing open change(s).`,
 				);
 			}
-			lines.push(
-				"When the member's follow-up revises, adjusts, or fixes an existing change below, update it in place by passing its `changeId` to `stage_surface_patch` instead of creating a duplicate change. By default your new ops merge into that change by path (preserving untouched files from the prior version); pass `replaceAll: true` alongside `changeId` only if replacing the entire change from scratch. Only pass `createNew: true` when adding a separate new deliverable alongside the existing open change(s).",
-			);
-		} else if (isOpsSurface) {
-			lines.push(
-				`This session already has ${sessionOpenChanges.length} open staged action${sessionOpenChanges.length === 1 ? "" : "s"}. When revising an existing action below, call \`stage_surface_ops_action\` with its \`changeId\` to update that Action card in place. Only pass \`createNew: true\` when staging an additional separate action.`,
-			);
-		} else {
-			lines.push(
-				`This session already has ${sessionOpenChanges.length} open staged change${sessionOpenChanges.length === 1 ? "" : "s"} on this branch. When the member's follow-up revises, adjusts, or fixes an existing change below, commit on the branch and call \`coding_record_change\` with its \`changeId\` (keeping that change's original \`parentSha\` and passing the new \`commitSha\`) to update it in place instead of creating a duplicate change.${
-					sessionOpenChanges.length > 1
-						? " If revising an earlier non-tip change or option, run `git read-tree --reset -u <headSha>` first so your edit starts from that change's tree, commit on the branch, and pass its `changeId` and original `parentSha` (for stacked chains, rebase any subsequent commits cleanly and update each shifted change with explicit `parentSha`, `commitSha`, and `rebase: true`)."
-						: ""
-				} Only pass \`createNew: true\` when adding a separate new deliverable alongside the existing open change(s).`,
-			);
-		}
-		const maxOpenShown = 20;
-		for (let i = 0; i < Math.min(sessionOpenChanges.length, maxOpenShown); i += 1) {
-			const item = sessionOpenChanges[i]!;
-			const isTargeted = Boolean(replyChangeId && item.changeId === replyChangeId);
-			const parts: string[] = [
-				`#${item.seq} \`${item.changeId}\` — ${item.title.slice(0, 160)}${item.optionGroupKey ? ` (optionGroup: ${item.optionGroupKey})` : ""}${isTargeted ? " **(targeted by follow-up)**" : ""}`,
-			];
-			if (item.status && item.status !== "staged") {
-				parts.push(`status: ${item.status}`);
-			}
-			if (item.kind === "git_range") {
-				if (item.parentSha && item.headSha) {
-					parts.push(`range \`${item.parentSha.slice(0, 40)}..${item.headSha.slice(0, 40)}\``);
-				} else if (item.headSha) {
-					parts.push(`commit \`${item.headSha.slice(0, 40)}\``);
+			const maxOpenShown = 20;
+			for (let i = 0; i < Math.min(sessionOpenChanges.length, maxOpenShown); i += 1) {
+				const item = sessionOpenChanges[i]!;
+				const isTargeted = Boolean(replyChangeId && item.changeId === replyChangeId);
+				const parts: string[] = [
+					`#${item.seq} \`${item.changeId}\` — ${item.title.slice(0, 160)}${item.optionGroupKey ? ` (optionGroup: ${item.optionGroupKey})` : ""}${isTargeted ? " **(targeted by follow-up)**" : ""}`,
+				];
+				if (item.status && item.status !== "staged") {
+					parts.push(`status: ${item.status}`);
 				}
-			} else if (item.kind === "ops_action" && item.actionKind) {
-				parts.push(`action: \`${item.actionKind}\``);
+				if (item.kind === "git_range") {
+					if (item.parentSha && item.headSha) {
+						parts.push(`range \`${item.parentSha.slice(0, 40)}..${item.headSha.slice(0, 40)}\``);
+					} else if (item.headSha) {
+						parts.push(`commit \`${item.headSha.slice(0, 40)}\``);
+					}
+				} else if (item.kind === "ops_action" && item.actionKind) {
+					parts.push(`action: \`${item.actionKind}\``);
+				}
+				if (item.affectedPaths.length > 0) {
+					parts.push(`paths: ${item.affectedPaths.slice(0, 16).join(", ")}`);
+				}
+				if (item.summary) {
+					parts.push(`summary: ${item.summary.slice(0, 240)}`);
+				}
+				lines.push(`- ${parts.join(" · ")}`);
 			}
-			if (item.affectedPaths.length > 0) {
-				parts.push(`paths: ${item.affectedPaths.slice(0, 16).join(", ")}`);
+			if (sessionOpenChanges.length > maxOpenShown) {
+				lines.push(`- ...and ${sessionOpenChanges.length - maxOpenShown} more open changes`);
 			}
-			if (item.summary) {
-				parts.push(`summary: ${item.summary.slice(0, 240)}`);
+			if (binding.repositoryKey) {
+				const latestOpen = sessionOpenChanges[sessionOpenChanges.length - 1];
+				if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
+					const discardedAtTip = discardedChanges.filter(
+						(ch) => ch.headSha === branchHeadSha || (typeof ch.seq === "number" && ch.seq > latestOpen.seq),
+					);
+					const discardedNames = discardedAtTip.map((ch) => `"${ch.title.slice(0, 120)}"`).join(", ");
+					if (latestOpen.optionGroupKey && latestOpen.parentSha) {
+						const groupKey = latestOpen.optionGroupKey;
+						const groupBase = latestOpen.parentSha;
+						lines.push(
+							discardedNames
+								? `IMPORTANT — Worktree Out of Sync: the session branch tip (\`${branchHeadSha}\`) still holds discarded change(s) (${discardedNames}), which are past the latest active option (\`${latestOpen.headSha}\` in optionGroup \`${groupKey}\`, shared base \`${groupBase}\`). The files currently checked out in your worktree reflect \`${branchHeadSha}\`, NOT the active staged state. Before reading or editing files: to add another option in \`${groupKey}\`, run \`git read-tree --reset -u ${groupBase}\` (keeping HEAD on the branch tip and removing any untracked scratch files) and pass \`optionGroup: "${groupKey}"\` with \`parentSha: "${groupBase}"\`; to revise an existing open option in place, run \`git read-tree --reset -u <option headSha>\` and pass its \`changeId\` with \`parentSha: "${groupBase}"\`.`
+								: `Note: the session branch tip (\`${branchHeadSha}\`) is past the latest active option (\`${latestOpen.headSha}\` in optionGroup \`${groupKey}\`, shared base \`${groupBase}\`), likely because a later option was discarded. Before making follow-up edits: to add another option in \`${groupKey}\`, run \`git read-tree --reset -u ${groupBase}\` (keeping HEAD on the branch tip) and pass \`optionGroup: "${groupKey}"\` with \`parentSha: "${groupBase}"\`; to revise an existing open option in place, run \`git read-tree --reset -u <option headSha>\` and pass its \`changeId\` with \`parentSha: "${groupBase}"\`.`,
+						);
+					} else {
+						lines.push(
+							discardedNames
+								? `IMPORTANT — Worktree Out of Sync: the session branch tip (\`${branchHeadSha}\`) still holds discarded change(s) (${discardedNames}), which are past the latest active staged commit (\`${latestOpen.headSha}\`). The files currently checked out in your worktree reflect \`${branchHeadSha}\`, NOT the active staged state. Before reading or editing files, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip and removing any untracked scratch files) so your new commit builds cleanly on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`
+								: `Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option or change was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`,
+						);
+					}
+				}
+				const activeOrMergedHeads = new Set(
+					[
+						...sessionOpenChanges.map((ch) => ch.headSha),
+						...resolvedChanges.filter((ch) => ch.status === "merged").map((ch) => ch.headSha),
+					].filter((sha): sha is string => Boolean(sha)),
+				);
+				const discardedByHead = new Map<string, SurfaceTurnResolvedChange>();
+				for (const ch of discardedChanges) {
+					if (ch.headSha && !activeOrMergedHeads.has(ch.headSha)) {
+						discardedByHead.set(ch.headSha, ch);
+					}
+				}
+				for (const item of sessionOpenChanges) {
+					if (!item.parentSha) continue;
+					const discardedParent = discardedByHead.get(item.parentSha);
+					if (!discardedParent) continue;
+					lines.push(
+						`Note: active staged change "${item.title.slice(0, 120)}" was originally branched from discarded change "${discardedParent.title.slice(0, 120)}" (\`${item.parentSha}\`), so your local worktree may still contain files from that discarded change even though Preview only applies \`${item.parentSha}..${item.headSha ?? "HEAD"}\` onto \`main\`. Do not rely on code introduced only by the discarded change.`,
+					);
+				}
 			}
-			lines.push(`- ${parts.join(" · ")}`);
+			sections.push(lines.join("\n"));
 		}
-		if (sessionOpenChanges.length > maxOpenShown) {
-			lines.push(`- ...and ${sessionOpenChanges.length - maxOpenShown} more open changes`);
-		}
-		if (binding.repositoryKey) {
-			const latestOpen = sessionOpenChanges[sessionOpenChanges.length - 1];
-			if (latestOpen?.headSha && branchHeadSha && latestOpen.headSha !== branchHeadSha) {
+
+		if (resolvedChanges.length > 0) {
+			const lines = [
+				"## Resolved Changes on This Session",
+				...resolvedChanges.map((ch) => {
+					const statusLabel =
+						ch.status === "discarded"
+							? ch.discardedByExploration
+								? "discarded (another option was chosen)"
+								: "discarded by member"
+							: ch.status === "merged"
+								? "approved and merged"
+								: "reverted";
+					const parts: string[] = [
+						`${typeof ch.seq === "number" ? `#${ch.seq} ` : ""}${ch.title.slice(0, 160)} — ${statusLabel}${ch.optionGroupKey ? ` (optionGroup: ${ch.optionGroupKey})` : ""}`,
+					];
+					if (binding.repositoryKey) {
+						if (ch.parentSha && ch.headSha) {
+							parts.push(`range \`${ch.parentSha.slice(0, 40)}..${ch.headSha.slice(0, 40)}\``);
+						} else if (ch.headSha) {
+							parts.push(`commit \`${ch.headSha.slice(0, 40)}\``);
+						}
+					}
+					if (ch.affectedPaths && ch.affectedPaths.length > 0) {
+						parts.push(`paths: ${ch.affectedPaths.slice(0, 12).join(", ")}`);
+					}
+					if (ch.summary) {
+						parts.push(`summary: ${ch.summary.slice(0, 200)}`);
+					}
+					return `- ${parts.join(" · ")}`;
+				}),
+			];
+			if (discardedChanges.length > 0) {
 				lines.push(
-					`Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the chosen option, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`,
+					"Discarded changes above were removed by the member and are no longer staged or shown in Preview. Do not assume they are active, do not build on them, and do not re-introduce their edits unless the member explicitly asks for them again.",
 				);
 			}
+			sections.push(lines.join("\n"));
 		}
-		sections.push(lines.join("\n"));
-	} else if (
-		!binding.isInternalReconciliation &&
-		binding.repositoryKey &&
-		branchHeadSha &&
-		mainSha &&
-		branchHeadSha !== mainSha
-	) {
-		sections.push(
-			`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), likely because prior changes or options were approved or discarded. First check \`git log ${mainSha}..HEAD\` (and \`git status\`) for any unrecorded commits you still need — record them or save their SHAs to cherry-pick after resetting. Once clear, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
-		);
+
+		if (
+			sessionOpenChanges.length === 0 &&
+			binding.repositoryKey &&
+			branchHeadSha &&
+			mainSha &&
+			branchHeadSha !== mainSha
+		) {
+			const hasDiscarded = discardedChanges.length > 0;
+			const hasMerged = resolvedChanges.some((ch) => ch.status === "merged");
+			const reason =
+				hasDiscarded && hasMerged
+					? "prior changes on this session were approved or discarded"
+					: hasDiscarded
+						? "prior changes on this session were discarded by the member"
+						: hasMerged
+							? "prior changes on this session were approved and merged"
+							: "prior changes or options were approved or discarded";
+			sections.push(
+				`## Session Branch Sync\nNote: this session has no open staged changes, and the session branch tip (\`${branchHeadSha}\`) differs from \`main\` (\`${mainSha}\`), because ${reason}. First check \`git log ${mainSha}..HEAD\` (and \`git status\`) for any unrecorded commits you still need — record them or save their SHAs to cherry-pick after resetting. Once clear, run \`git reset --hard ${mainSha}\` so HEAD and the working tree start cleanly from \`main\`, then commit and pass \`parentSha: "${mainSha}"\` to \`coding_record_change\`.`,
+			);
+		}
 	}
 
 	const previewBaseChanges = binding.previewBaseChanges ?? [];

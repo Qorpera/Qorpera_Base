@@ -95,7 +95,9 @@ export async function serveFolderObject(
 		assignmentId: (binding.assignmentId as string).toLowerCase(),
 	};
 	if (request.method === "PUT") {
-		await putFolderObject(request, response, environmentId, sha256, actor, options.authority, replication);
+		await putFolderObject(request, response, environmentId, sha256, actor, options.authority, replication, {
+			singleAuthorize: true,
+		});
 		return;
 	}
 	if (request.method !== "GET") throw new ObjectDependencyError(405);

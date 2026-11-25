@@ -231,7 +231,6 @@ import {
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
 	extractPointToChangeTarget,
-	loadSurfaceIdentityContext,
 	loadSurfaceSharedAssets,
 	openSurfaceLayoutOps,
 	runSurfaceSessionTurn,
@@ -252,6 +251,7 @@ import {
 import {
 	parseSurfaceConflictDetails,
 	parseSurfaceTurnOpenChanges,
+	parseSurfaceTurnResolvedChanges,
 	type SurfaceCodingTurnBinding,
 } from "./cloud-surface-turn-context.ts";
 import {
@@ -548,6 +548,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		let stage: NativeRuntimeFailureStage = "company-context";
 		let presence: CloudCompanyPathPresence | undefined;
 		let isGeminiRun = false;
+		let prefetchAbort: AbortController | undefined;
+		let prefetchedRunHandle: CloudNativeToolRun | undefined;
+		let prefetchedRunAdopted = false;
 		try {
 			// Both reads need only the binding: ask for them together and check them in
 			// the original order, so a failure still names its stage. Since 20260930499000 only the
@@ -784,6 +787,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			});
 			const compactor = new MemoryCompactChannel();
 			const lane = new MemoryCompactLane();
+			let connectorEffects: ReturnType<typeof cloudConnectorEffects> = new Map();
+			const offlineShells = new Set<string>();
+			// WHY: Overlap vault key fetch with Wave 2 folder/context reads.
+			const geminiKeyRequest =
+				context.gemini && this.#geminiKeys
+					? openGeminiKeyForRun(
+							this.#geminiKeys,
+							{
+								leaseId: binding.leaseId,
+								runId: binding.runId,
+								jobId: binding.jobId,
+								runnerId: binding.runnerId,
+								assignmentId: binding.assignmentId,
+								credentialCapsuleId: binding.credentialCapsuleId,
+								computeIdentityId: binding.computeIdentityId,
+							},
+							signal,
+						)
+					: undefined;
+			geminiKeyRequest?.catch(() => undefined);
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
 				// Only a typed, cloud-authorized file event selects an initial path.
@@ -794,10 +817,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const firstChange = Array.isArray(changes)
 					? (changes[0] as Record<string, unknown> | undefined)
 					: undefined;
-				const initialPresence =
+				// WHY: Presence observation does not gate Wave 2 reads; run it concurrently and collect with the rest.
+				const initialPresenceRequest =
 					typeof firstChange?.path === "string"
-						? await observeCloudCompanyPathPresence(presence, firstChange.path, "object", "reading", signal)
-						: undefined;
+						? observeCloudCompanyPathPresence(presence, firstChange.path, "object", "reading", signal)
+						: Promise.resolve(undefined);
+				initialPresenceRequest.catch(() => undefined);
 				const gateway = new CloudCompanyPathGateway({
 					binding,
 					identity: context.identity,
@@ -887,7 +912,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					readCloudAgentHeadReading(notebooks.composition, signal),
 				]);
 				return {
-					initialPresence,
+					initialPresence: await initialPresenceRequest,
 					gateway,
 					memory,
 					skills,
@@ -901,6 +926,54 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 			const contextPromise = composeContext();
 			contextPromise.catch(() => undefined);
+			// WHY: Overlap tool-authority open and run-log open with Wave 2 folder/context reads.
+			prefetchAbort = new AbortController();
+			const runSignal = AbortSignal.any([signal, prefetchAbort.signal]);
+			const prefetchedRun = CloudNativeToolRun.open(
+				binding,
+				this.#control,
+				runSignal,
+				NATIVE_AUTHORITY_LEASE_SECONDS * 1000,
+			);
+			prefetchedRun.then(
+				(openedRun) => {
+					if (prefetchAbort?.signal.aborted) openedRun.close();
+					else prefetchedRunHandle = openedRun;
+				},
+				() => undefined,
+			);
+			const prefetchedLog = prefetchedRun.then((openedRun) => {
+				if (
+					Object.entries(context.identity).some(
+						([key, value]) => openedRun.identity[key as keyof typeof openedRun.identity] !== value,
+					)
+				)
+					throw new Error("Cloud context identity changed before execution");
+				return openCloudRunLog({
+					resume: new CloudRunResumeRpc({ run: openedRun, control: this.#paths }),
+					folder: new CloudRunLogCompanyFolder({
+						environmentId: openedRun.identity.environmentId,
+						runId: binding.runId,
+						folder: folder.client,
+						control: this.#paths,
+					}),
+					log: {
+						runId: binding.runId,
+						protection: new CloudRunLogRpcProtection({
+							environmentId: openedRun.identity.environmentId,
+							jobId: binding.jobId,
+							runId: binding.runId,
+							call: (method, argumentsValue, requestSignal) =>
+								this.#paths.call(method, argumentsValue, requestSignal),
+						}),
+						signal: openedRun.signal,
+						effectful: (tool, parsed) =>
+							cloudActionEffect(tool, parsed, connectorEffects, offlineShells) !== "read",
+					},
+					lines: { call: compactor.call, lane },
+				});
+			});
+			prefetchedLog.catch(() => undefined);
 			const machinesAvailable = await machinesRequest;
 			stage = "codex-home";
 			const home = await homeRequest;
@@ -929,7 +1002,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			let runWork: CloudCodexContextComposer | undefined;
 			const composeRun: CloudCodexContextComposer = (request, composeSignal) =>
 				runWork ? runWork(request, composeSignal) : cloudNativeContextIdentity(request);
-			const connectorEffects = cloudConnectorEffects(connectorDescriptors);
+			connectorEffects = cloudConnectorEffects(connectorDescriptors);
 			// The run's admission (contract §6, M1b-4b-3), before any provider work: its binary, bundle, reasoning policy
 			// and exact tool catalog. The opening binds its context to it once composed.
 			let admitted: Record<string, unknown> | undefined;
@@ -1164,7 +1237,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			let pictureLane: ResolvedRunPictureLane | undefined;
 			try {
 				stage = "native-tools";
-				const offlineShells = new Set<string>();
+				// A worker's report, once the folder saved it: its run's closing act (turnCorrection, below).
 				let workerReported = false;
 				let geminiSession:
 					| {
@@ -1187,23 +1260,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					  }
 					| undefined;
 				if (context.gemini) {
-					if (!this.#geminiKeys)
+					if (!geminiKeyRequest)
 						throw new Error(
 							"Gemini 4 Neon conversations require the company vault, which this host does not carry; nothing ran on Codex",
 						);
-					const openedKey = await openGeminiKeyForRun(
-						this.#geminiKeys,
-						{
-							leaseId: binding.leaseId,
-							runId: binding.runId,
-							jobId: binding.jobId,
-							runnerId: binding.runnerId,
-							assignmentId: binding.assignmentId,
-							credentialCapsuleId: binding.credentialCapsuleId,
-							computeIdentityId: binding.computeIdentityId,
-						},
-						signal,
-					);
+					const openedKey = await geminiKeyRequest;
 					if (openedKey.state === "refused") {
 						if (openedKey.reason === "CAP_REACHED") {
 							throw tagNativeRuntimeFailure(
@@ -1261,11 +1322,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const pictures = pictureLane.channel;
 				const voice =
 					!isGeminiRun && !(await hasChatGptPlanDirectory(identityRoot)) ? new CloudVoiceChannel() : undefined;
+				prefetchedRunAdopted = true;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
 					serviceTier,
 					controlPlane: this.#control,
+					prefetchedRun,
 					...(geminiSession ? { gemini: geminiSession } : {}),
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
@@ -1410,29 +1473,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						// Before any provider request: a resumed attempt reads its earlier work first (W5b-2), or, in Agent
 						// notebooks, the run's receipts (20260930539000). The log steps a call as auto-review classifies
 						// it. A log made once and no longer there ends the run, as it does mid-run.
-						const opened = await openCloudRunLog({
-							resume: new CloudRunResumeRpc({ run, control: this.#paths }),
-							folder: new CloudRunLogCompanyFolder({
-								environmentId: identity.environmentId,
-								runId: binding.runId,
-								folder: folder.client,
-								control: this.#paths,
-							}),
-							log: {
-								runId: binding.runId,
-								protection: new CloudRunLogRpcProtection({
-									environmentId: identity.environmentId,
-									jobId: binding.jobId,
-									runId: binding.runId,
-									call: (method, argumentsValue, requestSignal) =>
-										this.#paths.call(method, argumentsValue, requestSignal),
-								}),
-								signal: run.signal,
-								effectful: (tool, parsed) =>
-									cloudActionEffect(tool, parsed, connectorEffects, offlineShells) !== "read",
-							},
-							lines: { call: compactor.call, lane },
-						}).catch((error: unknown) => {
+						const opened = await prefetchedLog.catch((error: unknown) => {
 							throw error instanceof CloudRunLogGone
 								? tagNativeRuntimeFailure(error, "native-tools", "authority_unavailable")
 								: error;
@@ -1853,6 +1894,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 			throw tagNativeRuntimeFailure(error, stage, cloudRuntimeErrorCategory(error, signal));
 		} finally {
+			if (!prefetchedRunAdopted) {
+				prefetchAbort?.abort();
+				prefetchedRunHandle?.close();
+			}
 			await presence?.close().catch(() => undefined);
 			await observability.close();
 		}
@@ -2033,6 +2078,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
+		const resolvedChanges = parseSurfaceTurnResolvedChanges(sessionTurnRaw.resolvedChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
 		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
 		const replyChangeId =
@@ -2060,18 +2106,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				return null;
 			}
 		};
-		const [briefMarkdown, identityContext, sharedSnapshot, memberImages] = await Promise.all([
+		// WHY: loadSurfaceSharedAssets already reads brief.md, voice.md, and tokens.json; derive identityContext instead of reading them twice.
+		const [briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
 			readBrief(),
-			loadSurfaceIdentityContext(folderClient, signal).catch((error) => {
-				if (signal.aborted) throw error;
-				return null;
-			}),
 			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
 			}),
 			this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
 		]);
+		const identityContext =
+			sharedSnapshot && (sharedSnapshot.briefMarkdown || sharedSnapshot.voiceSummary || sharedSnapshot.tokensJson)
+				? {
+						briefMarkdown: sharedSnapshot.briefMarkdown,
+						voiceSummary: sharedSnapshot.voiceSummary,
+						tokensJson: sharedSnapshot.tokensJson,
+					}
+				: null;
 		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
 			leaseToken,
 			deferSessionCompletion: true,
@@ -2103,6 +2154,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			mainSha,
 			branchHeadSha,
 			openChanges,
+			resolvedChanges,
 			recordChange: surfaceTools.recordChange,
 			memberImages,
 			viewAttachment: (image, readSignal) => readSurfaceMemberImage(folderClient, image, readSignal),
@@ -2145,6 +2197,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const sourceKind = payload.sourceKind as SurfaceSourceKind;
 		const leaseToken = String(payload.leaseToken);
 		// WHY: Read the full prompt, briefSummary, originRef, and conflictPaths via native host call so wake payloads remain well under Postgres's 8192-byte check.
+		// WHY: Start member-images and vault Gemini key fetches concurrently since both depend only on wake/binding fields.
+		const memberImagesRequest = this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal);
+		memberImagesRequest.catch(() => undefined);
+		const geminiKeyRequest =
+			context.gemini && this.#geminiKeys
+				? openGeminiKeyForRun(
+						this.#geminiKeys,
+						{
+							leaseId: binding.leaseId,
+							runId: binding.runId,
+							jobId: binding.jobId,
+							runnerId: binding.runnerId,
+							assignmentId: binding.assignmentId,
+							credentialCapsuleId: binding.credentialCapsuleId,
+							computeIdentityId: binding.computeIdentityId,
+						},
+						signal,
+					)
+				: undefined;
+		geminiKeyRequest?.catch(() => undefined);
 		const sessionTurnRaw = (await this.#paths.call(
 			"qorpera_native_surface_read_session_turn",
 			{
@@ -2169,6 +2241,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const openChanges = parseSurfaceTurnOpenChanges(sessionTurnRaw.openChanges);
+		const resolvedChanges = parseSurfaceTurnResolvedChanges(sessionTurnRaw.resolvedChanges);
 		const previewContext = parseSurfacePreviewContext(sessionTurnRaw.previewContext);
 		const sessionOpenChanges = parseSurfaceSessionOpenChanges(sessionTurnRaw.sessionOpenChanges);
 		const replyChangeId =
@@ -2210,10 +2283,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				}
 			}
 		}
-		const memberImagesSection = surfaceMemberImagesSection(
-			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
-			"company_read",
-		);
+		const memberImagesSection = surfaceMemberImagesSection(await memberImagesRequest, "company_read");
 		const turnInput: SurfaceSessionTurnInput = {
 			sessionId,
 			surfaceId,
@@ -2255,6 +2325,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(mainSha ? { mainSha } : {}),
 			...(branchHeadSha ? { branchHeadSha } : {}),
 			...(openChanges.length > 0 ? { openChanges } : {}),
+			...(resolvedChanges.length > 0 ? { resolvedChanges } : {}),
 			...(voiceModel ? { voiceModel } : {}),
 			...(voiceName ? { voiceName } : {}),
 			...(imageModel ? { imageModel } : {}),
@@ -2308,24 +2379,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			  }
 			| undefined;
 		if (context.gemini) {
-			if (!this.#geminiKeys) {
+			if (!geminiKeyRequest) {
 				throw new Error(
 					"Gemini 4 Neon conversations require the company vault, which this host does not carry; nothing ran on Codex",
 				);
 			}
-			const openedKey = await openGeminiKeyForRun(
-				this.#geminiKeys,
-				{
-					leaseId: binding.leaseId,
-					runId: binding.runId,
-					jobId: binding.jobId,
-					runnerId: binding.runnerId,
-					assignmentId: binding.assignmentId,
-					credentialCapsuleId: binding.credentialCapsuleId,
-					computeIdentityId: binding.computeIdentityId,
-				},
-				signal,
-			);
+			const openedKey = await geminiKeyRequest;
 			if (openedKey.state === "refused") {
 				if (openedKey.reason === "CAP_REACHED") {
 					throw tagNativeRuntimeFailure(

@@ -376,6 +376,112 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("approves distinct sessions concurrently and preserves dependency wave ordering within a session", async () => {
+		const OTHER = "33333333-3333-4333-8333-333333333334";
+		const approveA = deferred<ReturnType<typeof session>>();
+		const approveB = deferred<ReturnType<typeof session>>();
+		const order: string[] = [];
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([
+					session([], {
+						changes: [
+							change(CHANGES[0], 1, "staged"),
+							change(CHANGES[1], 2, "staged", { dependsOnChangeIds: [CHANGES[0]] }),
+							change(CHANGES[2], 3, "staged"),
+						],
+					}),
+					session([], {
+						id: OTHER,
+						changes: [change("55555555-5555-4555-8555-555555555555", 1, "staged", { sessionId: OTHER })],
+					}),
+				]),
+			),
+			approveSurfaceChange: vi.fn(async (changeId: string) => {
+				order.push(changeId);
+				if (changeId === CHANGES[0]) return approveA.promise;
+				return session(["merged", "merged", "staged"]);
+			}),
+			approveSessionAll: vi.fn(async () => {
+				order.push(`all:${OTHER}`);
+				return approveB.promise;
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		const approving = store.approveChanges(SURFACE, [
+			{ sessionId: SESSION, changeIds: [CHANGES[0], CHANGES[1]] },
+			{ sessionId: OTHER, changeIds: ["55555555-5555-4555-8555-555555555555"] },
+		]);
+		await vi.waitFor(() => expect(order).toEqual([CHANGES[0], `all:${OTHER}`]));
+		approveB.resolve(
+			session([], {
+				id: OTHER,
+				changes: [change("55555555-5555-4555-8555-555555555555", 1, "merged", { sessionId: OTHER })],
+			}),
+		);
+		approveA.resolve(session(["merged", "staged", "staged"]));
+		expect(await approving).toBe(true);
+		expect(order).toEqual([CHANGES[0], `all:${OTHER}`, CHANGES[1]]);
+		store.dispose();
+	});
+
+	it("undoes distinct sessions concurrently while keeping same-session batch undos sequential", async () => {
+		const OTHER = "33333333-3333-4333-8333-333333333334";
+		const undoFirst = deferred<ReturnType<typeof session>>();
+		const undoSecond = deferred<ReturnType<typeof session>>();
+		const started: string[] = [];
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([
+					session(["staged", "staged"]),
+					session([], {
+						id: OTHER,
+						changes: [change(CHANGES[2], 1, "staged", { sessionId: OTHER })],
+					}),
+				]),
+			),
+			approveSessionAll: vi.fn(async (sessionId: string) =>
+				sessionId === SESSION
+					? session(["merged", "merged"])
+					: session([], {
+							id: OTHER,
+							changes: [change(CHANGES[2], 1, "merged", { sessionId: OTHER })],
+						}),
+			),
+			undoSurfaceChange: vi.fn(async (changeId: string) => {
+				started.push(changeId);
+				if (changeId === CHANGES[0]) return undoFirst.promise;
+				if (changeId === CHANGES[2]) return undoSecond.promise;
+				throw new Error(`Unexpected undo call: ${changeId}`);
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		expect(
+			await store.approveChanges(SURFACE, [
+				{ sessionId: SESSION, changeIds: [CHANGES[0], CHANGES[1]] },
+				{ sessionId: OTHER, changeIds: [CHANGES[2]] },
+			]),
+		).toBe(true);
+
+		const undoing = store.undo();
+		await vi.waitFor(() => expect(started).toEqual([CHANGES[0], CHANGES[2]]));
+		undoFirst.resolve(session(["staged", "staged"]));
+		undoSecond.resolve(
+			session([], {
+				id: OTHER,
+				changes: [change(CHANGES[2], 1, "staged", { sessionId: OTHER })],
+			}),
+		);
+		expect(await undoing).toBe(true);
+		expect(started).toEqual([CHANGES[0], CHANGES[2]]);
+		store.dispose();
+	});
+
 	it("previews every open change that is turned on", async () => {
 		const client = fakeClient({
 			setPreviewSelection: vi.fn(async () => workspace([]).previewState),
@@ -3550,6 +3656,69 @@ describe("SurfacesStore", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
 		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("ready");
+		store.dispose();
+	});
+
+	it("appends localized discard system messages when discarding local interactive option groups", async () => {
+		const store = storeWith(undefined, { companyName: "Thetaband", localInteractive: true });
+		await store.load();
+		const site = await store.createSurface({
+			title: "Website",
+			slug: "website",
+			archetype: "studio",
+			icon: "figure:browser",
+			folderRoot: "surfaces/website",
+		});
+		expect(site).toBeDefined();
+		const surfaceId = site!.id;
+		const localSessionId = "local-session-option-discard";
+		const optA = change(CHANGES[0], 1, "staged", {
+			title: "Editorial",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage direction",
+		});
+		const optB = change(CHANGES[1], 2, "staged", {
+			title: "Showcase",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage direction",
+		});
+		const soloOpt = change(CHANGES[2], 3, "staged", {
+			title: "Minimalist",
+			optionGroupKey: "solo",
+			optionGroupTitle: "Footer tone",
+		});
+		const seeded = session([], {
+			id: localSessionId,
+			surfaceId,
+			changes: [optA, optB, soloOpt],
+			openChangeCount: 3,
+			messages: [],
+		});
+		store.store.set((state) => ({
+			workspaces: {
+				...state.workspaces,
+				[surfaceId]: {
+					...state.workspaces[surfaceId]!,
+					activeSessions: [seeded],
+				},
+			},
+		}));
+
+		expect(await store.discardOptionGroup(localSessionId, "concept")).toBe(true);
+		const afterMulti = store.session(localSessionId);
+		expect(afterMulti?.messages.at(-1)).toMatchObject({
+			authorKind: "system",
+			text: "Discarded options: Editorial, Showcase",
+			changeId: null,
+		});
+
+		expect(await store.discardOptionGroup(localSessionId, "solo")).toBe(true);
+		const afterSolo = store.session(localSessionId);
+		expect(afterSolo?.messages.at(-1)).toMatchObject({
+			authorKind: "system",
+			text: "Discarded option “Minimalist”",
+			changeId: soloOpt.id,
+		});
 		store.dispose();
 	});
 });

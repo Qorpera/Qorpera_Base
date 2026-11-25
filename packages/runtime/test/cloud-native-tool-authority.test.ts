@@ -951,3 +951,32 @@ it("coalesces concurrent assertActive callers into one RPC and batches mid-fligh
 	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(2);
 	expect(run.signal.aborted).toBe(false);
 });
+
+it("assertFresh skips cloud RPC within min(maxAgeMs, validForMs), rechecks on expiry, and honors aborts", async () => {
+	const clock = fakeClock();
+	const { run, reader, authority } = await admit();
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(1);
+
+	await run.assertFresh(run.signal, 5_000);
+	clock.now += 4_000;
+	await run.assertFresh(run.signal, 5_000);
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(1);
+
+	const callerAbort = new AbortController();
+	callerAbort.abort(new Error("caller-cancelled"));
+	await expect(run.assertFresh(callerAbort.signal, 5_000)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(1);
+
+	reader.describeToolAuthority.mockResolvedValueOnce({ ...structuredClone(authority), validForMs: 1_000 });
+	clock.now += 1_000;
+	await run.assertFresh(run.signal, 5_000);
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(2);
+
+	clock.now += 500;
+	await run.assertFresh(run.signal, 5_000);
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(2);
+
+	clock.now += 500;
+	await expect(run.assertFresh(run.signal, 5_000)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(true);
+});

@@ -1137,6 +1137,7 @@ describe("shared execution provider backend", () => {
 		expect(await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf8")).toContain(
 			"QORPERA_NATIVE_LOGIN_CUSTODY=vault",
 		);
+		expect(f.rpc.filter((call) => call.name === "qorpera_compute_identity_login_in_vault")).toHaveLength(1);
 	});
 
 	it("does not hold the service lock while units are stopping", async () => {
@@ -1392,10 +1393,13 @@ describe("warm conversations", () => {
 		f.loginInVault = true;
 		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);
+		expect(f.rpc.filter((call) => call.name === "qorpera_compute_identity_login_in_vault")).toHaveLength(1);
 		await finishRun(f);
 		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
 		f.units.log.length = 0;
+		f.rpc.length = 0;
 		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(f.rpc.filter((call) => call.name === "qorpera_compute_identity_login_in_vault")).toHaveLength(1);
 		expect(f.units.log).toEqual([`start ${runnerUnit(0)}`]);
 		expect(
 			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-native-provider-master-key"), "utf8"),

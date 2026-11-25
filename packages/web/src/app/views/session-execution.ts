@@ -132,6 +132,33 @@ function usageCard(
 export const ACCOUNT_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000, 30_000, 60_000];
 
 const CLAUDE_READ_EVERY_MS = 60_000;
+const EXECUTION_CACHE_TTL_MS = 30_000;
+
+interface ExecutionCache {
+	connections?: { value: WebExecutionConnections; at: number };
+	sessionAccounts: Map<string, { connectionId: string | undefined; at: number }>;
+}
+
+const executionCaches = new WeakMap<CompanyController, ExecutionCache>();
+
+function executionCacheFor(company: CompanyController): ExecutionCache {
+	let cache = executionCaches.get(company);
+	if (!cache) {
+		cache = { sessionAccounts: new Map() };
+		executionCaches.set(company, cache);
+		if (company.signal.aborted) executionCaches.delete(company);
+		else company.signal.addEventListener("abort", () => executionCaches.delete(company), { once: true });
+	}
+	return cache;
+}
+
+function invalidateExecutionCache(company: CompanyController, sessionId?: string): void {
+	const cache = executionCaches.get(company);
+	if (!cache) return;
+	cache.connections = undefined;
+	if (sessionId) cache.sessionAccounts.delete(sessionId);
+	else cache.sessionAccounts.clear();
+}
 
 /** One of the member's logins that can pay for a conversation, as the composer's Login page lists it. */
 export interface SessionLogin {
@@ -158,6 +185,7 @@ export class SessionExecutionView {
 	#observed: WebExecutionConnections | undefined;
 	#started = false;
 	#busy = false;
+	#inFlight: "blocking" | "background" | undefined;
 	#error: string | undefined;
 	#renderKey = "";
 	#room = false;
@@ -238,8 +266,10 @@ export class SessionExecutionView {
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#busy = false;
+			this.#inFlight = undefined;
 			this.#started = false;
 			this.#room = room;
+			executionCaches.get(this.#company)?.sessionAccounts.delete(this.#sessionId);
 		}
 		const canRead =
 			!company.accessLost &&
@@ -253,6 +283,8 @@ export class SessionExecutionView {
 			this.#observed = undefined;
 			this.#started = false;
 			this.#busy = false;
+			this.#inFlight = undefined;
+			if (company.accessLost) executionCaches.delete(this.#company);
 			this.#usageHydratedAt = undefined;
 			this.#usageRequest?.abort();
 			this.#usageRequest = undefined;
@@ -262,13 +294,42 @@ export class SessionExecutionView {
 		}
 		if (!this.#started) {
 			this.#started = true;
-			void this.refresh();
+			const cache = executionCacheFor(this.#company);
+			const now = Date.now();
+			const cachedConnections =
+				cache.connections && now - cache.connections.at < EXECUTION_CACHE_TTL_MS
+					? cache.connections.value
+					: undefined;
+			const conversation = this.#company.conversation(this.#sessionId).get();
+			const serverSelection = Boolean(
+				this.#native.selectSessionAccount && !conversation.retrySend && !conversation.sending,
+			);
+			const cachedAccount = cache.sessionAccounts.get(this.#sessionId);
+			const freshAccount = cachedAccount !== undefined && now - cachedAccount.at < EXECUTION_CACHE_TTL_MS;
+			if (cachedConnections && (!serverSelection || freshAccount)) {
+				// WHY: Hydrate synchronously from the company cache so switching back to a thread unlocks Send at 0 ms.
+				this.#observed = cachedConnections;
+				this.#serverSelection = serverSelection;
+				this.#serverConnectionId = serverSelection ? cachedAccount?.connectionId : undefined;
+				this.#choose();
+				void this.refresh({ background: true, useCachedConnections: true });
+			} else if (cachedConnections) {
+				void this.refresh({ useCachedConnections: true });
+			} else {
+				void this.refresh();
+			}
 		}
 		this.#render();
 	}
 
-	async refresh(): Promise<void> {
+	async refresh(options?: { background?: boolean; useCachedConnections?: boolean }): Promise<void> {
 		if (this.#lifetime.signal.aborted || this.#busy) return;
+		if (this.#inFlight === "background") {
+			if (options?.background) return;
+			this.#request?.abort();
+			this.#request = undefined;
+			this.#inFlight = undefined;
+		}
 		const company = this.#company.store.get();
 		if (
 			company.accessLost ||
@@ -280,40 +341,85 @@ export class SessionExecutionView {
 		this.#refreshTimer = undefined;
 		const request = new AbortController();
 		this.#request = request;
+		const background = options?.background === true && this.#observed !== undefined;
 		let readClaude = false;
 		await withAbortScopes([request.signal, this.#lifetime.signal], async (signal) => {
-			this.#busy = true;
-			// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
-			if (!this.#failures) this.#error = undefined;
-			this.#render();
-			this.#changed();
+			this.#inFlight = background ? "background" : "blocking";
+			if (!background) {
+				this.#busy = true;
+				// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
+				if (!this.#failures) this.#error = undefined;
+				this.#render();
+				this.#changed();
+			}
 			const conversation = this.#company.conversation(this.#sessionId).get();
 			this.#serverSelection = Boolean(
 				this.#native.selectSessionAccount && !conversation.retrySend && !conversation.sending,
 			);
+			const cache = executionCacheFor(this.#company);
+			const cachedConnections =
+				options?.useCachedConnections &&
+				cache.connections &&
+				Date.now() - cache.connections.at < EXECUTION_CACHE_TTL_MS
+					? cache.connections.value
+					: undefined;
 			// The cloud's last answer stands until this read lands, so the composer's Login page keeps its
 			// tick through a read; sending, the choice and the reasons wait for #busy to clear anyway.
 			let serverConnectionId: string | undefined;
+			let fetchedConnections = false;
 			const readConnections = async (): Promise<WebExecutionConnections> => {
-				if (this.#serverSelection) {
+				if (!this.#serverSelection) {
+					if (cachedConnections) return cachedConnections;
+					fetchedConnections = true;
+					return this.#native.listConnections(signal);
+				}
+				if (cachedConnections) {
 					serverConnectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
 					signal.throwIfAborted();
+					if (
+						!serverConnectionId ||
+						cachedConnections.connections.some((connection) => connection.connectionId === serverConnectionId)
+					)
+						return cachedConnections;
+					fetchedConnections = true;
+					return this.#native.listConnections(signal);
 				}
-				return this.#native.listConnections(signal);
+				// WHY: selectSessionAccount only reads bindings on steady state, so fetch selection and connections in parallel.
+				fetchedConnections = true;
+				const [selected, connections] = await Promise.all([
+					this.#native.selectSessionAccount!(this.#sessionId, signal),
+					this.#native.listConnections(signal),
+				]);
+				signal.throwIfAborted();
+				serverConnectionId = selected;
+				return connections;
 			};
 			const connections = await readConnections().catch(() => undefined);
-			if (signal.aborted) return;
+			if (signal.aborted) {
+				if (this.#request === request) {
+					this.#busy = false;
+					this.#inFlight = undefined;
+					this.#request = undefined;
+				}
+				return;
+			}
 			this.#serverConnectionId = serverConnectionId;
+			const observedAt = Date.now();
 			if (connections) {
 				this.#observed = connections;
+				if (fetchedConnections) cache.connections = { value: connections, at: observedAt };
+				if (this.#serverSelection)
+					cache.sessionAccounts.set(this.#sessionId, { connectionId: serverConnectionId, at: observedAt });
 				if (this.#failures) this.#error = undefined;
 				this.#failures = 0;
 			} else {
 				this.#observed = undefined;
+				invalidateExecutionCache(this.#company, this.#sessionId);
 				this.#failures++;
 				this.#error = t("Model accounts are unavailable. Trying again…");
 			}
 			this.#busy = false;
+			this.#inFlight = undefined;
 			this.#request = undefined;
 			this.#choose();
 			this.#settleMoved();
@@ -791,6 +897,7 @@ export class SessionExecutionView {
 		let picked = false;
 		try {
 			await this.#native.chooseSessionAccount!(this.#sessionId, connectionId, this.#lifetime.signal);
+			invalidateExecutionCache(this.#company, this.#sessionId);
 			picked = true;
 		} catch {
 			this.#error = t("The login could not be chosen. Try again.");
@@ -815,6 +922,7 @@ export class SessionExecutionView {
 		let moved: number | undefined;
 		try {
 			moved = await this.#native.chooseSessionsAccount(fromConnectionId, connectionId, this.#lifetime.signal);
+			invalidateExecutionCache(this.#company);
 		} catch {
 			this.#error = t("The chats could not be moved. Try again.");
 		} finally {
@@ -1084,6 +1192,7 @@ export class SessionExecutionView {
 		clearTimeout(this.#refreshTimer);
 		this.#refreshTimer = undefined;
 		this.#request?.abort();
+		this.#inFlight = undefined;
 		this.#usageRequest?.abort();
 		this.#usageRequest = undefined;
 		this.#observed = undefined;

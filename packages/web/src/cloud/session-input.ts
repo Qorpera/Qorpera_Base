@@ -141,21 +141,25 @@ export function createWebSessionInputWriter(
 				const images: { objectSha256: string; bytes: number; mediaType: string }[] = [];
 				if (files.length) {
 					const client = createWebSessionAttachments(cloud, memberId, deadline, check);
-					// Read every selected file before staging any upload. File objects are
-					// immutable; retries retain these exact selections and the input ID.
-					const selected: { bytes: Uint8Array<ArrayBuffer>; mediaType: string }[] = [];
-					for (const file of files) {
-						const bytes = new Uint8Array(await file.arrayBuffer());
-						check();
-						if (bytes.length !== file.size) throw new Error("The selected image changed.");
-						selected.push({ bytes, mediaType: file.type });
-					}
-					for (const file of selected) {
-						check();
-						const image = await client.upload(sessionId, clientInputId, file.bytes, file.mediaType, deadline);
-						check();
-						images.push({ objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType });
-					}
+					// WHY: Read every selected file in parallel before staging any upload, then upload concurrently (<= 5 files).
+					const selected = await Promise.all(
+						files.map(async (file) => {
+							const bytes = new Uint8Array(await file.arrayBuffer());
+							check();
+							if (bytes.length !== file.size) throw new Error("The selected image changed.");
+							return { bytes, mediaType: file.type };
+						}),
+					);
+					check();
+					const uploaded = await Promise.all(
+						selected.map(async (file) => {
+							check();
+							const image = await client.upload(sessionId, clientInputId, file.bytes, file.mediaType, deadline);
+							check();
+							return { objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType };
+						}),
+					);
+					images.push(...uploaded);
 				}
 				if (room) {
 					return createWebRoomMessages(cloud, profileId, memberId, companySignal, () => check()).post(
@@ -169,6 +173,7 @@ export function createWebSessionInputWriter(
 							...(quoted ? { quotes: quoted } : {}),
 							sponsorBindingId: sponsor.sponsorBindingId,
 							sponsorVersion: sponsor.sponsorVersion,
+							skipDiscovery: true,
 						},
 						deadline,
 					);

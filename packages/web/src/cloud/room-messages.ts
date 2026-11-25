@@ -16,6 +16,8 @@ export interface RoomMessageInput {
 	quotes?: readonly MessageQuote[];
 	sponsorBindingId: string;
 	sponsorVersion: number;
+	// WHY: Skip qorpera_list_company_rooms when roomId already came from the session scope; post RPC enforces authority.
+	skipDiscovery?: boolean;
 }
 export interface RoomMessageReceipt {
 	schema: "qorpera.company-room-post/v1";
@@ -83,9 +85,12 @@ export function createWebRoomMessages(
 									"quotes",
 									"sponsorBindingId",
 									"sponsorVersion",
+									"skipDiscovery",
 								].includes(key),
 						)
 					)
+						throw new Error("Room messages support text, images and quotes only.");
+					if (request.skipDiscovery !== undefined && typeof request.skipDiscovery !== "boolean")
 						throw new Error("Room messages support text, images and quotes only.");
 					const images = request.images ?? [];
 					if (
@@ -169,30 +174,32 @@ export function createWebRoomMessages(
 							if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
 						}
 					};
-					const rooms = await rpc("qorpera_list_company_rooms", { p_profile_id: profileId });
-					check();
-					if (!Array.isArray(rooms)) throw new Error("Invalid room discovery.");
-					const matches = rooms
-						.map((value: unknown) => roomRecord(value))
-						.filter((room) => room.roomId === request.roomId);
-					if (matches.length !== 1) throw new Error("Room is unavailable.");
-					const room = matches[0]!;
-					if (
-						room.status !== "active" ||
-						room.sessionId !== request.sessionId ||
-						room.environmentId !== request.environmentId ||
-						!Array.isArray(room.members)
-					)
-						throw new Error("Room scope changed.");
-					const members = room.members.map((value: unknown) => {
-						const member = roomRecord(value);
-						if (member.kind !== "member" && member.kind !== "staff_agent")
-							throw new Error("Invalid room member.");
-						return { kind: member.kind, id: roomUuid(member.id) };
-					});
-					if (members.filter((member) => member.kind === "member" && member.id === memberId).length !== 1)
-						throw new Error("Room membership changed.");
-					check();
+					if (!request.skipDiscovery) {
+						const rooms = await rpc("qorpera_list_company_rooms", { p_profile_id: profileId });
+						check();
+						if (!Array.isArray(rooms)) throw new Error("Invalid room discovery.");
+						const matches = rooms
+							.map((value: unknown) => roomRecord(value))
+							.filter((room) => room.roomId === request.roomId);
+						if (matches.length !== 1) throw new Error("Room is unavailable.");
+						const room = matches[0]!;
+						if (
+							room.status !== "active" ||
+							room.sessionId !== request.sessionId ||
+							room.environmentId !== request.environmentId ||
+							!Array.isArray(room.members)
+						)
+							throw new Error("Room scope changed.");
+						const members = room.members.map((value: unknown) => {
+							const member = roomRecord(value);
+							if (member.kind !== "member" && member.kind !== "staff_agent")
+								throw new Error("Invalid room member.");
+							return { kind: member.kind, id: roomUuid(member.id) };
+						});
+						if (members.filter((member) => member.kind === "member" && member.id === memberId).length !== 1)
+							throw new Error("Room membership changed.");
+						check();
+					}
 					const value = roomRecord(
 						await rpc("qorpera_post_company_room_message", {
 							p_room_id: request.roomId,

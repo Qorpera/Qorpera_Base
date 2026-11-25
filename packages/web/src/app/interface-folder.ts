@@ -251,7 +251,7 @@ export class CompanyInterfaceFolder {
 				return;
 			}
 			if (this.#reads.get(key)?.version === read.entry.version) return;
-			const bytes = await this.#client!.readFile(file, this.#signal(), max);
+			const bytes = await this.#client!.readFile(file, this.#signal(), max, { cached: true });
 			this.#live();
 			const text = decode(bytes);
 			this.#reads.set(key, text === null ? null : { version: read.entry.version, text });

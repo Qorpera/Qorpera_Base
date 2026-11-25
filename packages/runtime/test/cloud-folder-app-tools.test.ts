@@ -11,7 +11,7 @@ import {
 	type CloudToolContent,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
@@ -1230,4 +1230,57 @@ it("keeps at most 12 icons: a new one takes an old one's id, or an old one goes 
 		f.call("save_app", save("trips", "icons-4", null, [{ path: "icons/compass.svg", text: ICON }])),
 		"APP_ICONS_FULL",
 	);
+});
+
+it("reads retired.md and app.toml once across prepare and execute for own apps and re-reads for foreign or reviewed saves", async () => {
+	const f = await fixture({ folders: ["apps"] });
+	const me = f.identity.staffAgentId.toLowerCase();
+	const other = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f";
+	f.seed("apps/mine/app.toml", `name = "Mine"\nowner = "${me}"\nposted = false\n`);
+	f.seed("apps/mine/index.html", PAGE);
+	f.seed("apps/theirs/app.toml", `name = "Theirs"\nowner = "${other}"\nposted = false\n`);
+	f.seed("apps/theirs/index.html", PAGE);
+
+	const readText = vi.spyOn(f.folder, "readText");
+	const pathsRead = () => readText.mock.calls.map(([path]) => path);
+	const tool = f.tool("save_app");
+
+	const { actionReviewId: _ignoredReviewId, ...unreviewedContext } = f.context;
+	const ownParsed = tool.parseArguments(
+		save("mine", "own-1", null, [{ path: "index.html", text: `${PAGE}<!--1-->` }]),
+	);
+	const ownPrepared = (await tool.prepare?.(ownParsed, { ...unreviewedContext, callId: "call_own_1" })) ?? ownParsed;
+	expect(read(await tool.execute(ownPrepared, { ...unreviewedContext, callId: "call_own_1" })).state).toBe("applied");
+	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(1);
+	expect(pathsRead().filter((path) => path === "apps/mine/app.toml")).toHaveLength(1);
+
+	readText.mockClear();
+	const foreignParsed = tool.parseArguments(
+		save("theirs", "foreign-1", null, [{ path: "index.html", text: `${PAGE}<!--2-->` }]),
+	);
+	const foreignPrepared =
+		(await tool.prepare?.(foreignParsed, { ...unreviewedContext, callId: "call_foreign_1" })) ?? foreignParsed;
+	expect(read(await tool.execute(foreignPrepared, { ...unreviewedContext, callId: "call_foreign_1" })).state).toBe(
+		"applied",
+	);
+	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(2);
+	expect(pathsRead().filter((path) => path === "apps/theirs/app.toml")).toHaveLength(2);
+
+	readText.mockClear();
+	const reviewedParsed = tool.parseArguments(
+		save("mine", "own-reviewed", null, [{ path: "index.html", text: `${PAGE}<!--3-->` }]),
+	);
+	const reviewedPrepared =
+		(await tool.prepare?.(reviewedParsed, { ...unreviewedContext, callId: "call_reviewed_1" })) ?? reviewedParsed;
+	expect(
+		read(
+			await tool.execute(reviewedPrepared, {
+				...unreviewedContext,
+				callId: "call_reviewed_1",
+				actionReviewId: "rev_1",
+			}),
+		).state,
+	).toBe("applied");
+	expect(pathsRead().filter((path) => path === "apps/retired.md")).toHaveLength(2);
+	expect(pathsRead().filter((path) => path === "apps/mine/app.toml")).toHaveLength(2);
 });

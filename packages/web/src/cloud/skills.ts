@@ -60,7 +60,7 @@ async function describe(folder: SkillFolder, path: string, signal: AbortSignal):
 	const read = await folder.read(path, signal);
 	if (!read.entry?.file) return undefined;
 	if (read.entry.file.bytes > DESCRIBED_BYTES) return null;
-	const bytes = await folder.readFile(read.entry.file, signal, DESCRIBED_BYTES);
+	const bytes = await folder.readFile(read.entry.file, signal, DESCRIBED_BYTES, { cached: true });
 	return parseCloudSkillFile(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).description;
 }
 

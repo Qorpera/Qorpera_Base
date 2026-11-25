@@ -87,7 +87,14 @@ import { type PersonWhere, personWhere } from "../person-place.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
 import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
-import { activeTaskSessions, isOpenChange, isRunningSession, openExplorations, surfacesOf } from "../surfaces-store.ts";
+import {
+	activeTaskSessions,
+	isOpenChange,
+	isRunningSession,
+	openExplorations,
+	surfacesDisabledOf,
+	surfacesOf,
+} from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
@@ -141,6 +148,7 @@ export interface ShellContext {
 	searchBlocked?: () => boolean;
 	openInFiles?: (path: string) => void;
 	invites?: InviteCalls;
+	prefetchCompanyWordmarks?: (profiles: readonly HostedProfile[]) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -782,7 +790,13 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			companyName,
 			h("span", { class: "rail-company-chevron", "aria-hidden": "true" }, icon("chevron-down")),
 		);
-		const companyWordmark = new CompanyWordmarkSlot(companyButton, companyName, companyWordmarkImage, company.signal);
+		const companyWordmark = new CompanyWordmarkSlot(
+			company.profile.profileId,
+			companyButton,
+			companyName,
+			companyWordmarkImage,
+			company.signal,
+		);
 		const apps = h(
 			"button",
 			{
@@ -961,6 +975,14 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			{ capture: true, signal: company.signal },
 		);
 		companyButton.addEventListener(
+			"pointerenter",
+			() => {
+				const profiles = created.context?.profiles;
+				if (profiles && profiles.length > 1) created.context?.prefetchCompanyWordmarks?.(profiles);
+			},
+			{ signal: company.signal },
+		);
+		companyButton.addEventListener(
 			"click",
 			() => {
 				if (pressClosesMenu) {
@@ -970,6 +992,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				if (openMenu()?.el.isConnected && companyButton.getAttribute("aria-expanded") === "true") return;
 				const box = companyButton.getBoundingClientRect();
 				const profiles = created.context?.profiles ?? [company.profile];
+				if (profiles.length > 1) created.context?.prefetchCompanyWordmarks?.(profiles);
 				companyButton.setAttribute("aria-expanded", "true");
 				openContextMenu({
 					label: t("Your companies"),
@@ -1447,7 +1470,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// Co-Founder duplicated them, so a surface-first rail folds it (and its grid button) away visually.
 	const surfaces = surfacesOf(company);
 	container.classList.toggle("has-surface-rail", surfaces !== undefined);
-	parts.companyWordmark.update(company.profile.profileName, surfaces);
+	parts.companyWordmark.update(company.profile.profileName, surfaces, surfacesDisabledOf(company));
 	const searchLabel = `${t("Search")} (${shortcutLabel()})`;
 	parts.searchToggle.setAttribute("aria-label", t("Search"));
 	parts.searchToggle.setAttribute("aria-keyshortcuts", SEARCH_SHORTCUT);

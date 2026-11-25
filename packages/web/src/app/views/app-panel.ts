@@ -566,7 +566,7 @@ export class AppPanel {
 				let html: string;
 				try {
 					html = new TextDecoder("utf-8", { fatal: true }).decode(
-						await folder.readFile(entry.file, signal, 1024 * 1024),
+						await folder.readFile(entry.file, signal, 1024 * 1024, { cached: true }),
 					);
 				} catch {
 					return this.#status(t("This page can't be shown here."));

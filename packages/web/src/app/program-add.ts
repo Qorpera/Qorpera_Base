@@ -207,7 +207,7 @@ async function readKept(
 	if (entry.kind !== "file" || !entry.file || entry.file.bytes > MEMBER_TEXT_MAX_BYTES)
 		throw new ProgramAddRefusal("full");
 	const text = new TextDecoder("utf-8", { fatal: true }).decode(
-		await folder.readFile(entry.file, signal, MEMBER_TEXT_MAX_BYTES),
+		await folder.readFile(entry.file, signal, MEMBER_TEXT_MAX_BYTES, { cached: true }),
 	);
 	const program = parseProgram(text);
 	if (!program) throw new ProgramAddRefusal("gone");

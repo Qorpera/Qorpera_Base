@@ -14,12 +14,13 @@ import { t } from "../../ui/preferences.ts";
 import { type SurfaceSkeletonKind, surfaceSkeleton } from "../../ui/skeleton.ts";
 import { afterPaint } from "../../ui/time-slice.ts";
 import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
-import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
 	askedToPublish,
+	getLocalSandbox,
 	isLocalSurfaceId,
 	isOpenChange,
 	isOpenVariant,
+	loadLocalSandbox,
 	migrationPending,
 	openExplorations,
 	runningSessionTotal,
@@ -1340,8 +1341,18 @@ export class SurfaceView {
 			appliedChanges.map((change) => [change.id, change.title, change.summary]),
 		]);
 		if (key === this.#localSiteShown && this.#localFrame?.parentElement === host) return;
+		const sandbox = getLocalSandbox();
+		if (!sandbox) {
+			// WHY: Load surface-local-sandbox.ts lazily so production surface views do not statically bundle dev sandbox code.
+			void loadLocalSandbox().then(() => {
+				if (this.#lifetime.signal.aborted || this.#localHost !== host) return;
+				const current = surfaceBySlug(this.#host.store.state, this.slug);
+				if (current?.id === surface.id && this.#localSiteShown !== key) this.#drawLocalLiveSite(current);
+			});
+			return;
+		}
 		this.#localSiteShown = key;
-		const html = renderLocalSitePreviewHtml(
+		const html = sandbox.renderLocalSitePreviewHtml(
 			store.companyName,
 			surface,
 			appliedChanges,

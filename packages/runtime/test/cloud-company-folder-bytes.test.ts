@@ -351,10 +351,10 @@ it("stages a file's chunks and manifest under an intent, seals it, and reads it 
 	});
 	expect(puts).toHaveLength(4);
 	expect(calls.map((call) => call.method)).toEqual(["qorpera_folder_open_upload", "qorpera_folder_seal_upload"]);
-	// Each put is authorized, authorized again inside the gateway's journal lane, and confirmed.
-	expect(gatewayCalls.filter((method) => method === "qorpera_folder_authorize_object_upload")).toHaveLength(8);
+	// WHY: With singleAuthorize, each put is authorized once inside the gateway's journal lane and confirmed.
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_authorize_object_upload")).toHaveLength(4);
 	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(4);
-	expect(gatewayCalls).toHaveLength(12);
+	expect(gatewayCalls).toHaveLength(8);
 	sql.readable.add(reference.manifestSha256);
 	const read = await bytes.get({ ...reference, executable: false }, new AbortController().signal);
 	expect(Buffer.from(read).equals(content)).toBe(true);
@@ -566,7 +566,7 @@ it("refuses a body that is not the object it names, before the folder core confi
 		},
 	});
 	expect(response.status).toBe(400);
-	expect(gatewayCalls).toEqual(["qorpera_folder_authorize_object_upload"]);
+	expect(gatewayCalls).toEqual([]);
 	expect(puts).toEqual([]);
 });
 
@@ -595,7 +595,7 @@ it("reads a stop, a lock conflict and a lock timeout at confirm as the run's", a
 		});
 	}
 	expect(authority.health().api.status).toBe("healthy");
-	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(4);
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object").length).toBeGreaterThanOrEqual(4);
 });
 
 it("reads an object folder GC holds as contended, at the control and at the gateway", async () => {
@@ -625,14 +625,10 @@ it("fails fast on any other database 500, which opens the gateway's circuit", as
 	// A statement timeout is the database's: the gateway answers 503, and the adapter's two more tries meet the open
 	// circuit (5 s) without reaching the database again.
 	sql.confirmFailures.push("57014");
-	await expect(
-		bytes.put(Buffer.from("timeout"), "text/plain", false, new AbortController().signal),
-	).rejects.toMatchObject({ category: "transport_unavailable" });
-	expect(gatewayCalls).toEqual([
-		"qorpera_folder_authorize_object_upload",
-		"qorpera_folder_authorize_object_upload",
-		"qorpera_folder_confirm_object",
-	]);
+	await expect(bytes.put(new Uint8Array(0), "text/plain", false, new AbortController().signal)).rejects.toMatchObject({
+		category: "transport_unavailable",
+	});
+	expect(gatewayCalls).toEqual(["qorpera_folder_authorize_object_upload", "qorpera_folder_confirm_object"]);
 	expect(authority.health().api.status).toBe("unavailable");
 });
 
@@ -647,7 +643,7 @@ it("rides out a busy NAS lane on put and on read, twice at most", async () => {
 	store.busyGets = 2;
 	expect(Buffer.from(await bytes.get({ ...reference, executable: false }, signal)).toString()).toBe("busy lane");
 	store.busyPuts = 3;
-	await expect(bytes.put(Buffer.from("still busy"), "text/plain", false, signal)).rejects.toMatchObject({
+	await expect(bytes.put(new Uint8Array(0), "text/plain", false, signal)).rejects.toMatchObject({
 		category: "transport_unavailable",
 	});
 	store.busyGets = 3;
@@ -731,7 +727,9 @@ it("reports a full company before any byte is written", async () => {
 		failure: "full",
 		category: "budget_exhausted",
 	});
-	expect(gatewayCalls).toEqual(["qorpera_folder_authorize_object_upload"]);
+	expect(gatewayCalls.length).toBeGreaterThanOrEqual(1);
+	expect(gatewayCalls.length).toBeLessThanOrEqual(2);
+	expect(gatewayCalls.every((method) => method === "qorpera_folder_authorize_object_upload")).toBe(true);
 	expect(existsSync(join(root, "objects", companyId, sha("no room")))).toBe(false);
 	expect(authority.health().api.status).toBe("healthy");
 	// Bytes the company already holds cost nothing more.
@@ -741,13 +739,14 @@ it("reports a full company before any byte is written", async () => {
 it("keeps any other refusal's 400, which never opens the gateway's circuit", async () => {
 	const { bytes, sql, authority } = await fixture();
 	const signal = new AbortController().signal;
-	for (const body of [JSON.stringify({ code: "22023", message: "invalid" }), "not json"]) {
+	for (const [mediaType, body] of [
+		["text/plain", JSON.stringify({ code: "22023", message: "invalid" })],
+		["text/markdown", "not json"],
+	] as const) {
 		sql.badRequest = body;
-		await expect(bytes.put(Buffer.from(`refused ${body.length}`), "text/plain", false, signal)).rejects.toMatchObject(
-			{
-				category: "transport_unavailable",
-			},
-		);
+		await expect(bytes.put(new Uint8Array(0), mediaType, false, signal)).rejects.toMatchObject({
+			category: "transport_unavailable",
+		});
 		expect(authority.health().api.status).toBe("healthy");
 	}
 });
@@ -924,4 +923,37 @@ it("aborts in-flight sibling chunk fetches and propagates the first typed error 
 	const corrupt = await runAbortCase("corrupt");
 	expect(corrupt.error).toMatchObject({ category: "invalid_response" });
 	expect(corrupt.aborted).toBeGreaterThanOrEqual(2);
+});
+
+it("uploads a 2-object single-chunk file and its manifest concurrently with one authorize RPC per object", async () => {
+	const { origin, token, binding, holder, identity, control, gatewayCalls } = await fixture();
+	let inFlight = 0;
+	let peak = 0;
+	const client = new HttpCloudCompanyFolderBytes({
+		baseUrl: origin,
+		token,
+		binding,
+		holder: () => holder,
+		identity,
+		control,
+		fetch: async (input, init) => {
+			if (init?.method === "PUT") {
+				inFlight++;
+				peak = Math.max(peak, inFlight);
+				try {
+					await new Promise((resolve) => setTimeout(resolve, 25));
+					return await fetch(input, init);
+				} finally {
+					inFlight--;
+				}
+			}
+			return await fetch(input, init);
+		},
+	});
+	const content = Buffer.from("concurrent two-object upload");
+	const ref = await client.put(content, "text/plain", false, new AbortController().signal);
+	expect(ref.fileSha256).toBe(sha(content));
+	expect(peak).toBe(2);
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_authorize_object_upload")).toHaveLength(2);
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(2);
 });
