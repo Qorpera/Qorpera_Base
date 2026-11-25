@@ -440,6 +440,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Multiple real options inside a single interface change",
 		text: "A single interface session can now stage 2 to 4 mutually exclusive real options inside one choice block in the Changes sidebar instead of embedding an in-page concept switcher into a website or spinning up separate sessions. Members flick through real standalone previews, can unselect all options to inspect Base, and click Use this one to discard the other options and keep the picked one as a normal toggleable change ready to approve. When a member asks for design ideas or a multiple choice to flick through, start a single session on that interface and ask for grouped options rather than an in-page concept picker.",
 	},
+	{
+		id: "identity-dark-marks-and-starter-layout-extends",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Dark-ground brand marks and starter-extending layouts",
+		text: "Identity brand marks now have optional dark-ground homes (logo-dark.svg and wordmark-dark.svg) alongside logo.svg and wordmark.svg, and all four sync automatically to websites and apps as shared identity assets. A mark that reads on both plain white and Qorpera's dark ground needs only the main file; a dark-ground version goes in its dark file rather than splitting the layout or relying on prefers-color-scheme inside an SVG. When any Studio interface needs to add, replace or drop a tab, its layout can now set extends to starter instead of copying the whole starter, so untouched starter tabs stay up to date.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

@@ -39,6 +39,7 @@ import {
 	type SurfacePublishStatus,
 	type SurfaceSessionState,
 	type SurfaceSourceKind,
+	type SurfaceStarterKind,
 	type SurfaceStatus,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -1083,6 +1084,7 @@ export function createStartSurfaceSessionTool(
 
 export interface SurfaceLayoutStaging {
 	readonly folderRoot: string;
+	readonly starter?: SurfaceStarterKind;
 	readonly waitingOps: readonly StudioPatchOp[] | null;
 	readLayout(signal: AbortSignal): Promise<string | null>;
 }
@@ -1325,7 +1327,7 @@ export async function checkStagedSurfaceLayout(
 	if (!state.known) return "unchecked";
 	if (state.text === undefined || state.text === null) return "checked";
 	try {
-		parseSurfaceLayoutText(state.text);
+		parseSurfaceLayoutText(state.text, layout.starter);
 	} catch (error) {
 		throw layoutRefusal(error instanceof Error ? error.message : "it does not parse");
 	}

@@ -612,11 +612,17 @@ describe("cloud surface session runner", () => {
 			"product/specs.json": '{"batteryHours":14,"weightGrams":38}',
 			"product/catalog.json": '{"items":[{"sku":"TB-1","priceDkk":1899}]}',
 			"identity/logo.svg": "<svg viewBox='0 0 32 32'></svg>",
+			"identity/logo-dark.svg": "<svg viewBox='0 0 32 32'><circle/></svg>",
+			"identity/wordmark.svg": "<svg viewBox='0 0 120 32'></svg>",
+			"identity/wordmark-dark.svg": "<svg viewBox='0 0 120 32'><rect/></svg>",
 		});
 
 		const compiled = await loadSurfaceSharedAssets(readerWithoutCss, signal);
 		expect(compiled).not.toBeNull();
 		expect(compiled?.hasLogoSvg).toBe(true);
+		expect(compiled?.hasLogoDarkSvg).toBe(true);
+		expect(compiled?.hasWordmarkSvg).toBe(true);
+		expect(compiled?.hasWordmarkDarkSvg).toBe(true);
 		expect(compiled?.tokensCss).toContain("--q-color-accent: #d76f45;");
 		expect(compiled?.tokensCss).toContain("--q-color-primary: #161615;");
 		expect(compiled?.tokensCss).toContain("--q-font-heading:");
@@ -644,6 +650,9 @@ describe("cloud surface session runner", () => {
 			"product/specs.json": '{"weightGrams":38}',
 			"product/catalog.json": '{"items":[{"sku":"TB-1","priceDkk":1899}]}',
 			"identity/logo.svg": "<svg></svg>",
+			"identity/logo-dark.svg": "<svg><path/></svg>",
+			"identity/wordmark.svg": "<svg><g/></svg>",
+			"identity/wordmark-dark.svg": "<svg><rect/></svg>",
 		});
 		const completeSessionTurn = vi.fn().mockResolvedValue(undefined);
 
@@ -664,10 +673,16 @@ describe("cloud surface session runner", () => {
 				completeSessionTurn,
 				async executeCodeRepoTurn(req) {
 					expect(req.binding.sharedAssets?.hasLogoSvg).toBe(true);
+					expect(req.binding.sharedAssets?.hasLogoDarkSvg).toBe(true);
+					expect(req.binding.sharedAssets?.hasWordmarkSvg).toBe(true);
+					expect(req.binding.sharedAssets?.hasWordmarkDarkSvg).toBe(true);
 					expect(req.binding.sharedAssets?.tokensCss).toContain("--q-color-accent: #d76f45;");
 					expect(req.turnBrief).toContain("## Live Shared Company Files");
 					expect(req.turnBrief).toContain("qorpera-identity.css");
 					expect(req.turnBrief).toContain("var(--q-color-primary)");
+					expect(req.turnBrief).toContain("public/qorpera-shared/identity/logo-dark.svg");
+					expect(req.turnBrief).toContain("public/qorpera-shared/identity/wordmark.svg");
+					expect(req.turnBrief).toContain("public/qorpera-shared/identity/wordmark-dark.svg");
 					expect(req.turnBrief).toContain("public/qorpera-shared/product/specs.json");
 					expect(req.turnBrief).toContain("public/qorpera-shared/product/catalog.json");
 					expect(req.turnBrief).toContain("public/qorpera-shared/identity/company.json");

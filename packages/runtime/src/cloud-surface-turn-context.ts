@@ -1,8 +1,11 @@
 import {
 	IDENTITY_COMPANY_PATH,
+	IDENTITY_LOGO_DARK_PATH,
 	IDENTITY_LOGO_PATH,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
+	IDENTITY_WORDMARK_DARK_PATH,
+	IDENTITY_WORDMARK_PATH,
 	type PointToChangeTarget,
 	PRODUCT_CATALOG_PATH,
 	PRODUCT_SPECS_PATH,
@@ -32,6 +35,9 @@ export interface SurfaceSharedAssetsContext {
 	readonly productSpecsJson?: string | null;
 	readonly productCatalogJson?: string | null;
 	readonly hasLogoSvg?: boolean;
+	readonly hasLogoDarkSvg?: boolean;
+	readonly hasWordmarkSvg?: boolean;
+	readonly hasWordmarkDarkSvg?: boolean;
 }
 
 export interface SurfaceConflictDetail {
@@ -281,7 +287,7 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		? [
 				"## Live Shared Company Files",
 				`- **Visual Identity CSS Live Sync:** Changes you stage to \`${IDENTITY_TOKENS_JSON_PATH}\` automatically recompile \`${IDENTITY_TOKENS_CSS_PATH}\` and flow live as \`${SURFACE_IDENTITY_CSS_MOUNT_PATH}\` CSS custom properties (\`--q-color-*\`, \`--q-font-*\`, \`--q-radius-*\`, \`--q-space-*\`) into every downstream surface with zero manual copy-paste.`,
-				`- **Shared Company Data:** Keep canonical company details in \`${IDENTITY_COMPANY_PATH}\` and the vector mark in \`${IDENTITY_LOGO_PATH}\` so downstream surfaces consume them from \`${SURFACE_SHARED_DIR}/\` automatically.`,
+				`- **Shared Company Data:** Keep canonical company details in \`${IDENTITY_COMPANY_PATH}\` and vector marks in \`${IDENTITY_LOGO_PATH}\` (optional dark-ground \`${IDENTITY_LOGO_DARK_PATH}\`) and \`${IDENTITY_WORDMARK_PATH}\` (optional dark-ground \`${IDENTITY_WORDMARK_DARK_PATH}\`) so downstream surfaces consume them from \`${SURFACE_SHARED_DIR}/\` automatically.`,
 			]
 		: [
 				"## Live Shared Company Files",
@@ -294,6 +300,21 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		if (shared.hasLogoSvg) {
 			sharedLines.push(
 				`- **Shared Brand Logo:** Available at \`${SURFACE_SHARED_DIR}/${IDENTITY_LOGO_PATH}\` (canonical path \`${IDENTITY_LOGO_PATH}\`).`,
+			);
+		}
+		if (shared.hasLogoDarkSvg) {
+			sharedLines.push(
+				`- **Shared Dark-Ground Logo:** Available at \`${SURFACE_SHARED_DIR}/${IDENTITY_LOGO_DARK_PATH}\` (canonical path \`${IDENTITY_LOGO_DARK_PATH}\`).`,
+			);
+		}
+		if (shared.hasWordmarkSvg) {
+			sharedLines.push(
+				`- **Shared Brand Wordmark:** Available at \`${SURFACE_SHARED_DIR}/${IDENTITY_WORDMARK_PATH}\` (canonical path \`${IDENTITY_WORDMARK_PATH}\`).`,
+			);
+		}
+		if (shared.hasWordmarkDarkSvg) {
+			sharedLines.push(
+				`- **Shared Dark-Ground Wordmark:** Available at \`${SURFACE_SHARED_DIR}/${IDENTITY_WORDMARK_DARK_PATH}\` (canonical path \`${IDENTITY_WORDMARK_DARK_PATH}\`).`,
 			);
 		}
 		const tokensCss = shared.tokensCss?.trim();

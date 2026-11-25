@@ -177,6 +177,26 @@ describe("the page contract a Studio session is told", () => {
 		expect(broken).toContain(
 			"surfaces/field-notes/layout.json does not read (not valid JSON), so the page shows the custom starter:",
 		);
+
+		const extending = await instructionsFor(IDENTITY, {
+			"identity/layout.json": JSON.stringify({
+				schema: "qorpera.surface-layout/v1",
+				extends: "starter",
+				tabs: [
+					{
+						id: "web-app-mockups",
+						title: "Web app mockups",
+						after: "overview",
+						blocks: [{ type: "artifacts", id: "mockup-gallery", match: ["/identity/mockups/*.html"] }],
+					},
+				],
+			}),
+		});
+		expect(extending).toContain(
+			"Drawn from identity/layout.json (extends the identity starter; resolved page below — read identity/layout.json before editing it):",
+		);
+		expect(extending).toContain('"id":"web-app-mockups"');
+		expect(extending).toContain('"dark":"/identity/logo-dark.svg"');
 	});
 
 	it("picks the Product starter for a folder that holds a model, as the page does", async () => {
@@ -460,6 +480,38 @@ describe("stage_surface_patch and the layout", () => {
 		await expect(check([{ op: "write_text", path: "layout.json", content: breakdowns }], layout)).resolves.toBe(
 			"checked",
 		);
+		const identityStaging = { ...staging(null), folderRoot: "identity", starter: "identity" as const };
+		const extending = JSON.stringify({
+			schema: "qorpera.surface-layout/v1",
+			extends: "starter",
+			tabs: [
+				{
+					id: "web-app-mockups",
+					title: "Web app mockups",
+					after: "overview",
+					blocks: [{ type: "artifacts", id: "mockup-gallery", match: ["/identity/mockups/*.html"] }],
+				},
+			],
+		});
+		await expect(
+			check([{ op: "write_text", path: "layout.json", content: extending }], identityStaging),
+		).resolves.toBe("checked");
+		await expect(
+			check(
+				[
+					{
+						op: "write_text",
+						path: "layout.json",
+						content: JSON.stringify({
+							schema: "qorpera.surface-layout/v1",
+							extends: "starter",
+							tabs: [{ id: "extra", title: "Extra", after: "missing", blocks: [{ type: "artifacts" }] }],
+						}),
+					},
+				],
+				identityStaging,
+			),
+		).rejects.toThrow('names no tab "missing"');
 		expect(layout.readLayout).not.toHaveBeenCalled();
 	});
 

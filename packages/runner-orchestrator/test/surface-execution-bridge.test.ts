@@ -1532,6 +1532,21 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		expect(collected["public/qorpera-shared/identity/tokens.json"]).toBe(tokensJson);
 		expect(collected["public/qorpera-shared/product/specs.json"]).toBe(specsJson);
 		expect(collected["public/qorpera-shared/identity/logo.svg"]).toBeUndefined();
+		expect(collected["public/qorpera-shared/identity/logo-dark.svg"]).toBeUndefined();
+		expect(collected["public/qorpera-shared/identity/wordmark.svg"]).toBeUndefined();
+		expect(collected["public/qorpera-shared/identity/wordmark-dark.svg"]).toBeUndefined();
+
+		const marksMem = createInMemoryCompanyFolder({
+			"identity/logo.svg": "<svg id='l'/>",
+			"identity/logo-dark.svg": "<svg id='ld'/>",
+			"identity/wordmark.svg": "<svg id='w'/>",
+			"identity/wordmark-dark.svg": "<svg id='wd'/>",
+		});
+		const marksCollected = await collectSharedCompanyAssets(marksMem.folder, profileId, new AbortController().signal);
+		expect(marksCollected["public/qorpera-shared/identity/logo.svg"]).toBe("<svg id='l'/>");
+		expect(marksCollected["public/qorpera-shared/identity/logo-dark.svg"]).toBe("<svg id='ld'/>");
+		expect(marksCollected["public/qorpera-shared/identity/wordmark.svg"]).toBe("<svg id='w'/>");
+		expect(marksCollected["public/qorpera-shared/identity/wordmark-dark.svg"]).toBe("<svg id='wd'/>");
 
 		const buildAndUploadPreview = vi.fn().mockResolvedValue({ siteVersionId });
 		const publishSurface = vi.fn().mockResolvedValue({ publishedHeadSha: base.mainAfter });
