@@ -641,6 +641,8 @@ const NO_ID = "00000000-0000-0000-0000-000000000000";
 /** A hint on the open conversation reads its new events at once, and its waiting inputs and coding
  * sessions again at most this often (a send, and the clock, read them anyway). */
 const OPEN_FULL_MS = 10_000;
+const OPEN_PARALLEL_COOLDOWN_MS = 400;
+const ACTIVITY_HINT_COALESCE_MS = 250;
 /** The work watch skips a read of the open conversation a hint made this recently. */
 const WATCH_SKIP_MS = 1_500;
 /** The company's clock: its heartbeat with live hints, its recovery path without them. */
@@ -1418,6 +1420,19 @@ export class CompanyController {
 	/** A sessions hint: reads what changed, then reads again only what it touched. The open
 	 * conversation is read again when it changed, the mentions when a room changed; a whole read
 	 * (no cursor yet, or an old one) counts as everything changed, as every hint did before. */
+	#lastParallelOpenRead: { sessionId: string; at: number } | undefined;
+
+	#isOpenSessionActive(sessionId: string): boolean {
+		if (this.#watchUntil > Date.now()) return true;
+		const openSession = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		if (openSession?.staffAgentId) {
+			const state = this.agentState(openSession.staffAgentId);
+			if (state === "working" || state === "writing" || state === "computer") return true;
+		}
+		const conversation = this.conversations.get(sessionId)?.get();
+		return Boolean(conversation && (conversation.sending || conversation.pending.length > 0));
+	}
+
 	async #sessionsChanged(): Promise<void> {
 		if (this.#stopped) return;
 		if (this.#changedRead) {
@@ -1427,10 +1442,28 @@ export class CompanyController {
 		const read = (async () => {
 			do {
 				this.#changedAgain = false;
+				const open = this.#openSessionId;
+				const lastParallel =
+					open !== undefined && this.#lastParallelOpenRead?.sessionId === open ? this.#lastParallelOpenRead.at : 0;
+				const lastOpenRead = open ? Math.max(lastParallel, this.#conversationReadAt.get(open)?.any ?? 0) : 0;
+				const parallelOpen =
+					open !== undefined &&
+					(typeof document === "undefined" || document.visibilityState !== "hidden") &&
+					this.#isOpenSessionActive(open) &&
+					Date.now() - lastOpenRead >= OPEN_PARALLEL_COOLDOWN_MS;
+				// WHY: Overlap readSessionEvents with listSessions on active visible threads so agent replies paint in one RTT.
+				if (parallelOpen) {
+					this.#lastParallelOpenRead = { sessionId: open, at: Date.now() };
+					this.#triggerOpenConversationRead(open);
+				}
 				const changed = await this.#readChangedSessions();
 				if (this.#stopped) return;
-				const open = this.#openSessionId;
-				if (open && (!changed || changed.some((session) => session.sessionId === open)))
+				const currentOpen = this.#openSessionId;
+				if (
+					currentOpen &&
+					(!changed || changed.some((session) => session.sessionId === currentOpen)) &&
+					!(parallelOpen && currentOpen === open)
+				)
 					this.#refreshOpenConversation();
 				if (!changed || changed.some((session) => typeof session.executionScope?.roomId === "string"))
 					this.#refreshMentionsSoon();
@@ -3981,13 +4014,9 @@ export class CompanyController {
 	readonly #refreshMentionsSoon = throttle(() => void this.refreshMentions(), 5_000);
 
 	/** A change to the open conversation is read as a hint says (readOnHint). */
-	readonly #refreshOpenConversation = readOnHint(() => {
-		const open = this.#openSessionId;
-		if (!open) return;
+	#triggerOpenConversationRead(open: string): void {
 		const due = (this.#conversationReadAt.get(open)?.full ?? 0) + OPEN_FULL_MS - Date.now();
 		void this.loadConversation(open, { eventsOnly: due > 0 });
-		// Its waiting inputs and coding sessions are read within OPEN_FULL_MS of the hint, also
-		// when no later hint comes; a full read meanwhile (a send, the clock) makes this one moot.
 		if (due > 0 && !this.#openFullTimer)
 			this.#openFullTimer = setTimeout(() => {
 				this.#openFullTimer = undefined;
@@ -3995,6 +4024,12 @@ export class CompanyController {
 				if (Date.now() - (this.#conversationReadAt.get(open)?.full ?? 0) >= OPEN_FULL_MS)
 					void this.loadConversation(open);
 			}, due);
+	}
+
+	readonly #refreshOpenConversation = readOnHint(() => {
+		const open = this.#openSessionId;
+		if (!open) return;
+		this.#triggerOpenConversationRead(open);
 	}, 400);
 
 	/** Realtime is back after an error: what changed while hints could not arrive is read once. */
@@ -4015,6 +4050,8 @@ export class CompanyController {
 
 	/** The agents' activity moves with their events: read at most every few seconds while they write. */
 	readonly #refreshActivitySoon = throttle(() => void this.refreshActivity(), 3_000);
+	// WHY: Dedicated activity hint cadence prevents a user's own sessions hint from starving real Working/Writing transitions for 3 s.
+	readonly #refreshActivityOnHint = readOnHint(() => void this.refreshActivity(), ACTIVITY_HINT_COALESCE_MS);
 	readonly #refreshStaffSoon = readOnHint(() => {
 		if (this.#stopped) return;
 		void this.refreshStaff();
@@ -4053,6 +4090,8 @@ export class CompanyController {
 			this.#atComputers.hinted();
 		} else if (resource === "company-file") {
 			this.#refreshCompanyFileSoon();
+		} else if (resource === "activity") {
+			this.#refreshActivityOnHint();
 		}
 	}
 

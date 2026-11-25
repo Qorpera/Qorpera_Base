@@ -404,6 +404,60 @@ describe("reading again after a hint", () => {
 		);
 		await settle();
 	});
+
+	it("fires an activity hint immediately even after a sessions hint burned the 3 s activity throttle", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		const activityCalls = () => vi.mocked(busy.f.api.listStaffActivity).mock.calls.length;
+		const before = activityCalls();
+		// WHY: User's own message triggers a sessions hint while the agent is still idle.
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(activityCalls()).toBe(before + 1);
+		expect(busy.controller.agentState(staff.id)).toBe("idle");
+
+		// WHY: 100 ms later the job leases and emits an activity hint; it must bypass the 3 s sessions throttle.
+		await vi.advanceTimersByTimeAsync(100);
+		busy.activity.rows = [{ ...working()[0]!, phase: "writing" }];
+		busy.f.hints.get("qorpera_runner_jobs")?.();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(activityCalls()).toBe(before + 2);
+		expect(busy.controller.agentState(staff.id)).toBe("writing");
+
+		// WHY: Rapid bursts of activity hints coalesce over 250 ms rather than spamming RPCs.
+		busy.f.hints.get("qorpera_runner_jobs")?.();
+		busy.f.hints.get("qorpera_runner_jobs")?.();
+		await vi.advanceTimersByTimeAsync(100);
+		expect(activityCalls()).toBe(before + 2);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(activityCalls()).toBe(before + 3);
+	});
+
+	it("starts readSessionEvents in parallel with listSessions for an active open thread", async () => {
+		const busy = await company("connected", true);
+		await vi.advanceTimersByTimeAsync(5_000);
+		let releaseList = () => {};
+		busy.delta.hold = new Promise<void>((resolve) => {
+			releaseList = resolve;
+		});
+		const readsBefore = vi
+			.mocked(busy.f.api.readSessionEvents)
+			.mock.calls.filter((call) => call[0] === open.sessionId).length;
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(0);
+		// WHY: Even while listSessions is still in flight, the open thread's new reply is already fetched and painted.
+		expect(
+			vi.mocked(busy.f.api.readSessionEvents).mock.calls.filter((call) => call[0] === open.sessionId).length,
+		).toBe(readsBefore + 1);
+		expect(busy.store.get().events).toHaveLength(1);
+		busy.delta.hold = undefined;
+		releaseList();
+		await vi.advanceTimersByTimeAsync(500);
+		// WHY: Completing listSessions does not trigger a duplicate readSessionEvents for the same hint.
+		expect(
+			vi.mocked(busy.f.api.readSessionEvents).mock.calls.filter((call) => call[0] === open.sessionId).length,
+		).toBe(readsBefore + 1);
+	});
 });
 
 describe("hints on a thread that opened at its newest events", () => {
