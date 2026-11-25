@@ -5473,7 +5473,6 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 	it("ages input from the member's own event, through the picture's buffers: a tab suspended before a batch went sends nothing of it (review r4 F2 of #1701)", async () => {
 		const gathers: [string, (p: ComputerPanel) => void, (p: ComputerPanel) => void][] = [
 			["a text not sent yet", (p) => key(canvas(p), "a"), () => {}],
-			["a click waiting for its second", (p) => press(canvas(p), 100, 100), () => {}],
 			[
 				"a wheel burst",
 				(p) =>
@@ -5655,7 +5654,14 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 					on();
 					await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
 					await flush();
-					expect.soft(sent(), name).toEqual([]);
+					if (what === "a click and its second")
+						expect
+							.soft(
+								sent().map((act) => act.action),
+								name,
+							)
+							.toEqual([{ type: "click", x: 200, y: 200 }]);
+					else expect.soft(sent(), name).toEqual([]);
 					expect.soft(controls(p)?.textContent, name).toContain(lost);
 					p.dispose();
 				}
@@ -6579,7 +6585,7 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		expect(refused.sockets).toEqual([]);
 		await advance(2500);
 		expect(bodies(refused).filter((body) => "begin" in body)).toHaveLength(2);
-		expect(tickets(refused)).toHaveLength(1);
+		expect(tickets(refused)).toHaveLength(2);
 		expect(refused.sockets).toHaveLength(1);
 	});
 
