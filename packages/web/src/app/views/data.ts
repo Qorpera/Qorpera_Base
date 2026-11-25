@@ -490,7 +490,11 @@ class DataListView {
 		if (!database || !tab || this.#open || this.#changing) return undefined;
 		if (database.questions.some((question) => question.parameters?.includes("viewer"))) return undefined;
 		if (this.#showsHome())
-			return { database: database.database, databaseName: database.name ?? humanName(database.database), values: [] };
+			return {
+				database: database.database,
+				databaseName: database.name ?? humanName(database.database),
+				values: [],
+			};
 		return {
 			database: database.database,
 			databaseName: database.name ?? humanName(database.database),
@@ -962,7 +966,11 @@ class DataListView {
 					changes,
 				),
 				questions.length > 0
-					? h("div", { class: "data-sub", role: "tablist", "aria-label": t("Questions") }, ...questions.map(subTab))
+					? h(
+							"div",
+							{ class: "data-sub", role: "tablist", "aria-label": t("Questions") },
+							...questions.map(subTab),
+						)
 					: null,
 			);
 			return;
@@ -1037,7 +1045,11 @@ class DataListView {
 		const wanted = JSON.stringify(read.key.map((name) => key[name] ?? null));
 		const row = read.rows.find((one) => keyOf(read.columns, read.key, one.values) === wanted);
 		const types = tableOf(this.#current(), table)?.columns;
-		const [lead] = listedColumns(read.columns, read.key, (name) => types?.find((column) => column.name === name)?.type);
+		const [lead] = listedColumns(
+			read.columns,
+			read.key,
+			(name) => types?.find((column) => column.name === name)?.type,
+		);
 		return row && lead !== undefined ? row.values[read.columns.indexOf(lead)] : undefined;
 	}
 

@@ -71,7 +71,9 @@ export function dataGroups(names: readonly string[], human: (name: string) => st
 export function fieldWeights(rows: readonly (number | undefined)[]): number[] {
 	const roots = rows.map((count) => Math.sqrt(Math.max(count ?? 0, 0)));
 	const top = Math.max(1, ...roots);
-	return rows.map((count, index) => (count === 0 ? top * EMPTY_SHARE : Math.max(roots[index] ?? 0, top * SMALL_SHARE)));
+	return rows.map((count, index) =>
+		count === 0 ? top * EMPTY_SHARE : Math.max(roots[index] ?? 0, top * SMALL_SHARE),
+	);
 }
 
 export function squarify(weights: readonly number[], box: DataBox): DataBox[] {
