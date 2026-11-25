@@ -718,6 +718,7 @@ export class CloudCodingExecutor {
 	readonly #host: CodingExecutorHost;
 	readonly #owner: string;
 	readonly #turnPollMs: number;
+	readonly #wake: { subscribe(listener: () => void): () => void } | undefined;
 	readonly #report: ((stage: CodingReportStage, error: unknown) => void) | undefined;
 	readonly #turns = new Set<Promise<CodingTurnOutcome>>();
 	constructor(options: {
@@ -725,6 +726,7 @@ export class CloudCodingExecutor {
 		host: CodingExecutorHost;
 		owner: string;
 		turnPollMs?: number;
+		wake?: { subscribe(listener: () => void): () => void };
 		/** Observability only: which stage failed and with what error, before
 		 * recovery. Never decides anything; the kernel receipts do. */
 		report?: (stage: CodingReportStage, error: unknown) => void;
@@ -734,6 +736,7 @@ export class CloudCodingExecutor {
 		this.#host = options.host;
 		this.#owner = options.owner;
 		this.#turnPollMs = options.turnPollMs ?? 2000;
+		this.#wake = options.wake;
 		this.#report = options.report;
 	}
 	/** Observability must never change the outcome: a throwing reporter is ignored. */
@@ -1151,18 +1154,51 @@ export class CloudCodingExecutor {
 				// The turn runs whether or not the executor can read it: a describe that stays lost past its budget is asked
 				// again at the next poll for as long as the lease is renewed, and said once (10 Nov 2026). A lease that can
 				// no longer be renewed ends the turn, as before; so does a refusal, which is the kernel's answer.
-				for (let unread = false; ; ) {
-					await setTimeout(this.#turnPollMs, undefined, { signal: active });
-					try {
-						turn = await describe();
-					} catch (error) {
-						if (active.aborted || error instanceof CodingControlRefused) throw error;
-						if (!unread) this.#reported("watch", error);
-						unread = true;
-						continue;
+				// WHY: Interrupt turn polling immediately when a Realtime wake reports job completion, keeping #turnPollMs as a durable backstop.
+				let wakePending = false;
+				let wakeWaiter: AbortController | undefined;
+				const unsubscribeTurnWake = this.#wake?.subscribe(() => {
+					if (wakeWaiter) {
+						wakeWaiter.abort("wake");
+					} else {
+						wakePending = true;
 					}
-					unread = false;
-					if (turnEnded(turn)) break;
+				});
+				try {
+					for (let unread = false; ; ) {
+						if (wakePending) {
+							wakePending = false;
+							await setTimeout(Math.min(50, this.#turnPollMs), undefined, { signal: active });
+						} else if (this.#wake) {
+							const pause = new AbortController();
+							wakeWaiter = pause;
+							const onActiveAbort = () => pause.abort(active.reason);
+							if (active.aborted) pause.abort(active.reason);
+							else active.addEventListener("abort", onActiveAbort, { once: true });
+							try {
+								await setTimeout(this.#turnPollMs, undefined, { signal: pause.signal });
+							} catch (pauseError) {
+								if (active.aborted) throw pauseError;
+							} finally {
+								wakeWaiter = undefined;
+								active.removeEventListener("abort", onActiveAbort);
+							}
+						} else {
+							await setTimeout(this.#turnPollMs, undefined, { signal: active });
+						}
+						try {
+							turn = await describe();
+						} catch (error) {
+							if (active.aborted || error instanceof CodingControlRefused) throw error;
+							if (!unread) this.#reported("watch", error);
+							unread = true;
+							continue;
+						}
+						unread = false;
+						if (turnEnded(turn)) break;
+					}
+				} finally {
+					unsubscribeTurnWake?.();
 				}
 				// 3. What the harness left behind decides the outcome; prose never does.
 				const submission = turn.submission;

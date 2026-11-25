@@ -2,6 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import { withAbortScopes } from "../abort-scope.ts";
 import { memberFolderStructured } from "../member-folder-commits.ts";
+import type { FolderHintSource } from "../realtime-wake.ts";
 import {
 	COMMAND_ENDED,
 	type CommitActor,
@@ -154,6 +155,7 @@ export interface FolderServiceOptions {
 	readonly dataCallMs?: number;
 	readonly dataApplyMs?: number;
 	readonly maxBoundaryBatches?: number;
+	readonly hints?: FolderHintSource;
 }
 
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
@@ -853,6 +855,8 @@ export class FolderService {
 	readonly #dataCallMs: number;
 	readonly #dataApplyMs: number;
 	readonly #maxBoundaryBatches: number;
+	readonly #hints: FolderHintSource | undefined;
+	readonly #hintUnsubs = new Map<string, () => void>();
 	readonly #dataCalls = new Map<string, { running: number; began: number[] }>();
 	readonly #boundaryFlights = new Map<
 		string,
@@ -895,6 +899,7 @@ export class FolderService {
 		this.#dataCallMs = options.dataCallMs ?? DATA_CALL_MS;
 		this.#dataApplyMs = options.dataApplyMs ?? DATA_APPLY_MS;
 		this.#maxBoundaryBatches = Math.max(1, options.maxBoundaryBatches ?? MAX_BOUNDARY_BATCHES);
+		this.#hints = options.hints;
 	}
 
 	get currentPollMs(): number {
@@ -956,8 +961,46 @@ export class FolderService {
 	}
 
 	#closeTransports(): void {
+		for (const unsubscribe of this.#hintUnsubs.values()) unsubscribe();
+		this.#hintUnsubs.clear();
+		this.#hints?.close?.();
 		this.#core.close?.();
 		this.#staging?.close();
+	}
+
+	// WHY: Advance mounted views for an environment immediately when a qorpera_folder_hint_internal Realtime broadcast reports a higher clock seq.
+	notifyEnvironment(environmentId: string, seq: number | null = null): void {
+		if (this.#stopping) return;
+		let advanced = false;
+		for (const view of this.#views.values()) {
+			if (view.environmentId !== environmentId || !view.tree || view.closed || view.moving) continue;
+			if (seq !== null && view.seq >= seq) continue;
+			advanced = true;
+			this.#queue(view, () => this.#advance(view));
+		}
+		if (advanced) this.#noteActivity();
+	}
+
+	#syncEnvironmentHints(): void {
+		if (!this.#hints || this.#stopping) return;
+		const active = new Set<string>();
+		for (const view of this.#views.values()) {
+			if (!view.closed) active.add(view.environmentId);
+		}
+		for (const environmentId of active) {
+			if (!this.#hintUnsubs.has(environmentId)) {
+				this.#hintUnsubs.set(
+					environmentId,
+					this.#hints.watch(environmentId, (seq) => this.notifyEnvironment(environmentId, seq)),
+				);
+			}
+		}
+		for (const [environmentId, unsubscribe] of [...this.#hintUnsubs]) {
+			if (!active.has(environmentId)) {
+				this.#hintUnsubs.delete(environmentId);
+				unsubscribe();
+			}
+		}
 	}
 
 	/** A boundary of a coding machine, which the executor asks over the control socket (F3 5c, the plan's "Boundaries"):
@@ -1570,6 +1613,7 @@ export class FolderService {
 		if (!view || (view.closed && !asksFinal)) {
 			view = new View(grant);
 			this.#views.set(grant.key, view);
+			this.#syncEnvironmentHints();
 		}
 		view.connections++;
 		view.idleSince = undefined;
@@ -2062,9 +2106,11 @@ export class FolderService {
 					if (now - view.closedAt >= CLOSED_GRACE_MS) {
 						this.#discard(view);
 						this.#views.delete(key);
+						this.#syncEnvironmentHints();
 					}
 				} else if (view.idleSince !== undefined && now - view.idleSince >= this.#idleMs) {
 					this.#views.delete(key);
+					this.#syncEnvironmentHints();
 					this.#forgetReads(view);
 				}
 			}
@@ -2187,7 +2233,10 @@ export class FolderService {
 		if (this.#retained(view)) return;
 		if (view.finalOut) {
 			if (view.connections === 0) view.idleSince ??= this.#now();
-		} else if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		} else if (this.#views.get(view.key) === view) {
+			this.#views.delete(view.key);
+			this.#syncEnvironmentHints();
+		}
 	}
 
 	/** A final that did not close its view, which closed otherwise (a renewal heard why): the view goes now, as any
@@ -2217,7 +2266,10 @@ export class FolderService {
 	/** Forgets a core view no machine holds, with its pass and anything its last boundary kept pending. */
 	#drop(view: View): void {
 		if (view.closed || view.moving) return;
-		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		if (this.#views.get(view.key) === view) {
+			this.#views.delete(view.key);
+			this.#syncEnvironmentHints();
+		}
 		view.lease = undefined;
 		view.closed = "No machine holds the view";
 		view.tree = undefined;

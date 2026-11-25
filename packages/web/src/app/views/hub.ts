@@ -180,6 +180,28 @@ export class HubController {
 		await this.refresh();
 	}
 
+	// WHY: Navigating into a freshly ready company only needs an authoritative listProfiles read after any in-flight profile read, without blocking on invitations or founding tables.
+	async refreshProfilesAfter(): Promise<void> {
+		if (this.#disposed) return;
+		await this.#profilesRefresh;
+		if (this.#disposed) return;
+		const revision = this.#membershipRevision;
+		const fresh = this.#api
+			.listProfiles(this.#abort.signal)
+			.then(
+				(profiles) => {
+					if (this.#disposed || revision !== this.#membershipRevision) return;
+					this.store.set({ profiles: this.#withRenames(profiles), connectionLost: undefined });
+				},
+				() => undefined,
+			)
+			.finally(() => {
+				if (this.#profilesRefresh === fresh) this.#profilesRefresh = undefined;
+			});
+		this.#profilesRefresh = fresh;
+		await fresh;
+	}
+
 	renamed(profileId: string, name: string): void {
 		if (this.#disposed) return;
 		const earlier = this.#renames.get(profileId);
@@ -444,12 +466,12 @@ export class HubController {
 	/** The table is the company being founded: open it with the idea, then the founders go on there. */
 	async #openTable(creation: Creation, route: string): Promise<boolean> {
 		try {
-			const table = await this.#founding.open(creation.clientCreationId, creation.name);
+			let table = await this.#founding.open(creation.clientCreationId, creation.name, creation.vision);
 			if (this.#disposed) return false;
 			let pending: string | undefined;
 			if (creation.vision && !table.vision) {
 				try {
-					await this.#founding.update(table.profileId, table.revision, table.companyName, creation.vision);
+					table = await this.#founding.update(table.profileId, table.revision, table.companyName, creation.vision);
 				} catch {
 					// The table's page saves it on its first read.
 					pending = creation.vision;
@@ -472,6 +494,7 @@ export class HubController {
 				...(pending ? { vision: pending } : {}),
 				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
 				...(creation.spectators?.length ? { spectators: [...creation.spectators] } : {}),
+				table,
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;

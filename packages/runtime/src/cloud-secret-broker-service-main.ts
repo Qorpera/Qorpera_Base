@@ -3,7 +3,7 @@ import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isRecord, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 import { CloudBankSyncs, CloudBankSyncUpkeep } from "./cloud-bank-sync.ts";
 import { ChatGptPlanOAuth, parseChatGptPlanClient } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
@@ -369,6 +369,8 @@ export async function runCloudSecretBrokerServiceMain(
 					principalId: identity,
 					principalSecret: brokerCapability,
 				}),
+				database,
+				ssl,
 				keyring,
 				adapters: [...adapters, ...(connectors?.adapters ?? [])],
 				helper: loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined,
@@ -510,6 +512,8 @@ export async function runCloudSecretBrokerServiceMain(
  * authority, with the same routes and background work as one company's broker. */
 async function runSharedVault(options: {
 	principal: PostgresCloudSecretBrokerPrincipal;
+	database: ReturnType<typeof brokerDatabase>;
+	ssl: ReturnType<typeof databaseTls>;
 	keyring: CloudSecretKeyring;
 	adapters: readonly CloudSecretConnectorAdapter[];
 	helper: ModelLoginHelperClient | undefined;
@@ -535,6 +539,8 @@ async function runSharedVault(options: {
 		...(options.bank ? { bank: options.bank } : {}),
 		...(options.digitalPost ? { digitalPost: options.digitalPost } : {}),
 		...(options.digitalPostPdfText ? { digitalPostPdfText: options.digitalPostPdfText } : {}),
+		// WHY: Keep fallback registration well inside the founding page's 8 s connect grace even when LISTEN is behind a transaction pooler.
+		refreshEveryMs: 3_000,
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {
 		host: "127.0.0.1",
@@ -548,9 +554,11 @@ async function runSharedVault(options: {
 	const shutdown = (): void => stop.abort();
 	process.once("SIGINT", shutdown);
 	process.once("SIGTERM", shutdown);
+	let listener: Promise<void> | undefined;
 	try {
 		await service.start();
 		companies.start();
+		listener = listenSharedVaultCompanies(options.database, options.ssl, () => companies.wake(), stop.signal);
 		await new Promise<void>((resolveWait) => {
 			if (stop.signal.aborted) resolveWait();
 			else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -558,7 +566,69 @@ async function runSharedVault(options: {
 	} finally {
 		process.removeListener("SIGINT", shutdown);
 		process.removeListener("SIGTERM", shutdown);
-		await Promise.all([companies.close(), service.close()]);
+		await Promise.all([companies.close(), service.close(), listener]);
+	}
+}
+
+// WHY: Listen for new-company NOTIFY events on a dedicated session so shared-vault registration runs in milliseconds instead of waiting for a poll tick.
+async function listenSharedVaultCompanies(
+	database: ReturnType<typeof brokerDatabase>,
+	ssl: ReturnType<typeof databaseTls>,
+	onCompanyCreated: () => void,
+	signal: AbortSignal,
+): Promise<void> {
+	let backoffMs = 1_000;
+	while (!signal.aborted) {
+		const client = new Client({
+			host: database.host,
+			port: database.port,
+			user: database.user,
+			password: database.password,
+			database: database.database,
+			ssl,
+			application_name: "qorpera-shared-vault-listen",
+			connectionTimeoutMillis: 5_000,
+		});
+		let doneResolve: (() => void) | undefined;
+		const ended = new Promise<void>((resolveDone) => {
+			doneResolve = resolveDone;
+		});
+		const finish = (): void => {
+			doneResolve?.();
+			doneResolve = undefined;
+		};
+		const onAbort = (): void => {
+			void client.end().catch(() => undefined);
+			finish();
+		};
+		client.on("notification", () => {
+			if (!signal.aborted) onCompanyCreated();
+		});
+		client.on("error", () => finish());
+		client.on("end", () => finish());
+		signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			await client.connect();
+			await client.query("LISTEN qorpera_shared_vault_companies");
+			backoffMs = 1_000;
+			if (!signal.aborted) onCompanyCreated();
+			await ended;
+		} catch {
+			// WHY: Fail open to the periodic refresh loop if LISTEN cannot connect or drops.
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+			await client.end().catch(() => undefined);
+		}
+		if (signal.aborted) return;
+		await new Promise<void>((resolveWait) => {
+			const timer = setTimeout(resolveWait, backoffMs);
+			const stopWait = (): void => {
+				clearTimeout(timer);
+				resolveWait();
+			};
+			signal.addEventListener("abort", stopWait, { once: true });
+		});
+		backoffMs = Math.min(backoffMs * 2, 30_000);
 	}
 }
 

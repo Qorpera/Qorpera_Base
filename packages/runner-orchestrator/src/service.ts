@@ -472,7 +472,7 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 		? createSurfaceWorkerLoop(controlPlane, {
 				...surfaceWorkerConfig,
 				...(surfaceWorkerConfig.pollIntervalMs === undefined && options.config.wake
-					? { pollIntervalMs: options.config.wake.backstopMs }
+					? { backstopPollIntervalMs: options.config.wake.backstopMs }
 					: {}),
 				...(!surfaceWorkerConfig.onEvent && options.onError
 					? {

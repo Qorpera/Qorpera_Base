@@ -1883,11 +1883,13 @@ export function mountApplication(
 						onCompanyReady: () => {
 							const page = routeHash({ name: "found", profileId });
 							const currentHub = hub;
-							void currentHub.refreshAfter().then(() => {
+							// WHY: Enter the ready company as soon as a fresh profile list confirms it instead of blocking navigation on full hub refresh (invitations/founding tables).
+							void currentHub.refreshProfilesAfter().then(() => {
 								if (disposed || hub !== currentHub || location.hash !== page) return;
 								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId)) {
 									landStartCrown();
 									navigate({ name: "company", profileId, section: "home" }, true);
+									void currentHub.refresh();
 								}
 							});
 						},
@@ -1897,7 +1899,15 @@ export function mountApplication(
 					controller.store.subscribe(() => {
 						if (founding?.controller !== controller) return;
 						// A started table's company joins the hub's list once it is ready.
-						if (!companyListed && controller.store.get().table?.start?.companyReady) {
+						const start = controller.store.get().table?.start;
+						const autoOpening =
+							start?.companyReady &&
+							!start.firstRunWaitsUntil &&
+							(start.firstRun === null ||
+								start.firstRun === undefined ||
+								start.firstRun === "queued" ||
+								start.firstRun === "started");
+						if (!companyListed && start?.companyReady && !autoOpening) {
 							companyListed = true;
 							void hub.refresh();
 						}

@@ -282,7 +282,8 @@ export class CompanyFolderCreator {
 			return "seed_invalid";
 		}
 		const fileEntries = tree.filter((entry) => entry.kind === "file");
-		const objectConcurrency = fileEntries.length > 1 ? 1 : PLATFORM_STAGE_CONCURRENCY;
+		// WHY: Stage chunk and manifest objects concurrently per seed file (2 objects per small file) to halve seed-tree RPC depth.
+		const objectConcurrency = fileEntries.length > 1 ? 2 : PLATFORM_STAGE_CONCURRENCY;
 		const staged = await mapBounded(
 			fileEntries,
 			PLATFORM_STAGE_CONCURRENCY,

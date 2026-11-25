@@ -81,6 +81,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_read"
 	| "qorpera_folder_list"
 	| "qorpera_folder_commit"
+	| "qorpera_folder_follow_up_run_commit"
 	| "qorpera_folder_memory_commit"
 	| "qorpera_memory_run_log_place"
 	| "qorpera_memory_run_resume"

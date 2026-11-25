@@ -531,7 +531,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const config = parseCodingExecutorConfiguration(JSON.parse(await credential("qorpera-coding-executor-config")));
 	const machine = (await readFile("/etc/machine-id", "utf8")).trim();
 	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
-	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
+	const serviceRoleKey = await credential("qorpera-coding-registry");
+	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey });
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	// The same broker gives each command its session's vault environment (5j-4).
@@ -624,13 +625,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner } : null),
 		owner: config.owner, machineIdSha256,
 	}) : undefined;
-	const requestWake = codeRequests && config.memberScreens ? new RealtimeOrchestratorWake({
+	// WHY: Enable Realtime wake on all coding-worker nodes (not just nodes with memberScreens) using publishableKey when configured or serviceRoleKey otherwise.
+	const wakeKey =
+		config.memberScreens?.publishableKey ??
+		process.env.QORPERA_SUPABASE_PUBLISHABLE_KEY?.trim() ??
+		serviceRoleKey;
+	const requestWake = new RealtimeOrchestratorWake({
 		supabaseUrl: config.supabaseUrl,
-		publishableKey: config.memberScreens.publishableKey,
+		publishableKey: wakeKey,
 		topic: () => `qorpera-code-requests-wake-${createHash("sha256").update(`qorpera.code-requests-wake/v1:${config.owner}:${machineIdSha256}`).digest("hex")}`,
 		onState: (state, reason) => console.log(JSON.stringify({ event: "code-request-wake", state, ...(reason ? { reason } : {}) })),
-	}) : undefined;
-	requestWake?.subscribe(() => codeRequests?.wake());
+	});
+	requestWake.subscribe(() => codeRequests?.wake());
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
@@ -923,26 +929,63 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			control,
 			host,
 			owner: config.owner,
+			wake: requestWake,
 			report: (stage, error) => console.error(JSON.stringify({ event: "coding-turn-error", stage, ...loggedError(error) })),
 		});
 		executor = running;
+		// WHY: Share one wake channel across machine starts, coding session claims, coding turn completion, and surface code host jobs.
+		requestWake.subscribe(() => machineHost?.wake());
+		requestWake.start();
+		const wakeableWait = () => {
+			let pending = false;
+			let release: (() => void) | undefined;
+			const unsubscribe = requestWake.subscribe(() => {
+				if (release) release();
+				else pending = true;
+			});
+			const wait = async (ms: number): Promise<boolean> => {
+				if (stop.signal.aborted) return false;
+				if (pending) {
+					pending = false;
+					return true;
+				}
+				return await new Promise<boolean>((resolveWait) => {
+					const done = (woken: boolean): void => {
+						clearTimeout(timer);
+						stop.signal.removeEventListener("abort", onAbort);
+						release = undefined;
+						resolveWait(woken);
+					};
+					const onAbort = () => done(false);
+					const timer = globalThis.setTimeout(() => done(false), ms);
+					stop.signal.addEventListener("abort", onAbort, { once: true });
+					release = () => done(true);
+				});
+			};
+			return { wait, unsubscribe };
+		};
 		// Every claimable turn runs at once; the member machines and the node's
 		// capacity are the only bound.
 		const claiming = (async () => {
-			while (!stop.signal.aborted) {
-				let claimed = false;
-				try {
-					const result = await running.claim(stop.signal);
-					claimed = result.state === "claimed";
-					if (result.state === "claimed")
-						void result.turn.then(
-							(status) => console.log(JSON.stringify({ event: "coding-turn", status })),
-							(error) => console.error(JSON.stringify({ event: "coding-turn-error", stage: "turn", ...loggedError(error) })),
-						);
-				} catch {
-					if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
+			const claimWait = wakeableWait();
+			try {
+				while (!stop.signal.aborted) {
+					let claimed = false;
+					try {
+						const result = await running.claim(stop.signal);
+						claimed = result.state === "claimed";
+						if (result.state === "claimed")
+							void result.turn.then(
+								(status) => console.log(JSON.stringify({ event: "coding-turn", status })),
+								(error) => console.error(JSON.stringify({ event: "coding-turn-error", stage: "turn", ...loggedError(error) })),
+							);
+					} catch {
+						if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
+					}
+					if (!claimed) await claimWait.wait(2000);
 				}
-				if (!claimed) await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
+			} finally {
+				claimWait.unsubscribe();
 			}
 		})();
 		// The keeper renews every attached session (standing by or in a turn) in a
@@ -1043,7 +1086,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		// the passes, so an undo never waits behind one, and are counted in the pass after they ended.
 		const requesting = (async () => {
 			if (!codeRequests) return;
-			requestWake?.start();
 			while (!stop.signal.aborted) {
 				let worked = false;
 				try {
@@ -1054,7 +1096,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-request-error", step: "pass", ...loggedError(error) }));
 				}
-				if (!worked) await codeRequests.wait(requestWake?.listening ? 5_000 : 1_000, stop.signal);
+				if (!worked) await codeRequests.wait(requestWake.listening ? 5_000 : 1_000, stop.signal);
 			}
 		})();
 		// The change record's files a landing's or an undo's own job did not write (a refused landing, a described
@@ -1087,26 +1129,32 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		})();
 		const surfacing = (async () => {
 			if (!surfaceCodeHost) return;
-			// WHY: Drain bursty preview toggles and merge approvals immediately with adaptive backoff instead of adding a fixed 2s stall per pass.
+			const surfaceWait = wakeableWait();
+			// WHY: Drain bursty preview toggles and merge approvals immediately via Realtime wakes with adaptive backoff as fallback.
 			let idleDelayMs = 250;
-			while (!stop.signal.aborted) {
-				let worked = false;
-				try {
-					const passed = await surfaceCodeHost.pass(stop.signal);
-					const total = passed.previews + passed.merges + passed.publishes + passed.cleanups;
-					worked = total > 0;
-					if (total + passed.failed > 0) {
-						console.log(JSON.stringify({ event: "surface-code-host", step: "pass", ...passed }));
+			try {
+				while (!stop.signal.aborted) {
+					let worked = false;
+					try {
+						const passed = await surfaceCodeHost.pass(stop.signal);
+						const total = passed.previews + passed.merges + passed.publishes + passed.cleanups;
+						worked = total > 0;
+						if (total + passed.failed > 0) {
+							console.log(JSON.stringify({ event: "surface-code-host", step: "pass", ...passed }));
+						}
+					} catch (error) {
+						idleDelayMs = 2_000;
+						if (!stop.signal.aborted) {
+							console.error(JSON.stringify({ event: "surface-code-host-error", step: "pass", ...loggedError(error) }));
+						}
 					}
-				} catch (error) {
-					idleDelayMs = 2_000;
-					if (!stop.signal.aborted) {
-						console.error(JSON.stringify({ event: "surface-code-host-error", step: "pass", ...loggedError(error) }));
-					}
+					const delayMs = worked ? 50 : idleDelayMs;
+					idleDelayMs = worked ? 250 : Math.min(2_000, idleDelayMs * 2);
+					const woken = await surfaceWait.wait(delayMs);
+					if (woken) idleDelayMs = 250;
 				}
-				const delayMs = worked ? 50 : idleDelayMs;
-				idleDelayMs = worked ? 250 : Math.min(2_000, idleDelayMs * 2);
-				await setTimeout(delayMs, undefined, { signal: stop.signal }).catch(() => undefined);
+			} finally {
+				surfaceWait.unsubscribe();
 			}
 		})();
 		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading, surfacing]);

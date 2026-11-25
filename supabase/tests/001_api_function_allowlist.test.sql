@@ -289,7 +289,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_offer_interface_agent(uuid,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company, not paused; the caller offers a hired agent to a supervised area''s supervisor (I9b)'),
 	('public.qorpera_offer_interface_cell(uuid,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company, not paused; the caller offers their own or an empty cell (I9c)'),
 	('public.qorpera_offer_surface_automation(uuid,uuid)', false, true, 'member: qorpera_assert_surface_member(company, true); its owner or an owner/admin offers it to a member who is not a viewer, and one nobody owns is taken at once (20260930868000)'),
-	('public.qorpera_open_company_founding(uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_open_company_founding(uuid,text,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_open_runtime_office_screen(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_open_site_preview(uuid,text,text,integer)', false, true, 'member: auth.uid() + owner or admin of a folder-v2 company; a one-time ticket of 2 minutes for the ready version What''s new shows, on the site''s next host (20260930756000)'),
 	('public.qorpera_own_member_picture_objects()', false, true, 'member: auth.uid() + membership/ownership'),

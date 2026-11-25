@@ -1,4 +1,4 @@
-import type { Cloud } from "./client.ts";
+import { type Cloud, CloudRpcError } from "./client.ts";
 import {
 	array,
 	boundedInteger,
@@ -192,13 +192,26 @@ export class CompanyFoundingApi {
 	list(): Promise<FoundingTableEntry[]> {
 		return this.#cloud.rpc("qorpera_list_company_foundings").then(parseFoundingTables);
 	}
-	open(clientCreationId: string, companyName: string): Promise<CompanyFounding> {
-		return this.#cloud
-			.rpc("qorpera_open_company_founding", {
-				p_client_creation_id: cloudUuid(clientCreationId, "creation id"),
-				p_company_name: companyName.trim(),
-			})
-			.then(parseCompanyFounding);
+	async open(clientCreationId: string, companyName: string, vision?: string): Promise<CompanyFounding> {
+		const trimmedVision = vision?.trim();
+		const base = {
+			p_client_creation_id: cloudUuid(clientCreationId, "creation id"),
+			p_company_name: companyName.trim(),
+		};
+		if (!trimmedVision) {
+			return parseCompanyFounding(await this.#cloud.rpc("qorpera_open_company_founding", base));
+		}
+		try {
+			return parseCompanyFounding(
+				await this.#cloud.rpc("qorpera_open_company_founding", { ...base, p_vision: trimmedVision }),
+			);
+		} catch (error) {
+			// WHY: Fall back to the legacy 2-arg open RPC during rolling deploys before the combined open+vision migration lands.
+			if (error instanceof CloudRpcError && error.missing) {
+				return parseCompanyFounding(await this.#cloud.rpc("qorpera_open_company_founding", base));
+			}
+			throw error;
+		}
 	}
 	read(profileId: string): Promise<CompanyFounding> {
 		return this.#call("qorpera_read_company_founding", profileId);
