@@ -57,13 +57,81 @@ export function registerLocalSandbox(mod: LocalSandboxModule): void {
 	localSandbox = mod;
 }
 
-function loadLocalSandbox(): Promise<LocalSandboxModule> {
+export function getLocalSandbox(): LocalSandboxModule | undefined {
+	return localSandbox;
+}
+
+export function loadLocalSandbox(): Promise<LocalSandboxModule> {
 	if (localSandbox) return Promise.resolve(localSandbox);
 	localSandboxLoading ??= import("./surface-local-sandbox.ts").then((mod) => {
 		localSandbox = mod;
 		return mod;
 	});
 	return localSandboxLoading;
+}
+
+const SURFACE_BATCH_CONCURRENCY = 4;
+
+async function runBounded<T>(items: readonly T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+	const count = Math.min(limit, items.length);
+	let next = 0;
+	await Promise.all(
+		Array.from({ length: count }, async () => {
+			while (next < items.length) {
+				const index = next++;
+				await worker(items[index]!);
+			}
+		}),
+	);
+}
+
+const APPROVAL_STATUS_RANK: Record<SurfaceChangeUnit["status"], number> = {
+	staged: 0,
+	conflicted: 0,
+	reverted: 0,
+	merging: 1,
+	merged: 2,
+	discarded: 2,
+};
+
+function mergeApprovedSession(previous: SurfaceSession | undefined, incoming: SurfaceSession): SurfaceSession {
+	if (!previous) return incoming;
+	const newer = incoming.updatedAt >= previous.updatedAt ? incoming : previous;
+	const older = newer === incoming ? previous : incoming;
+	const olderById = new Map(older.changes.map((change) => [change.id, change]));
+	const changes = newer.changes.map((change) => {
+		const other = olderById.get(change.id);
+		if (!other) return change;
+		return APPROVAL_STATUS_RANK[other.status] > APPROVAL_STATUS_RANK[change.status] ? other : change;
+	});
+	const openChangeCount = countOpenSurfaceChanges(changes);
+	return { ...newer, changes, openChangeCount };
+}
+
+function approvalWaves(
+	changeIds: readonly string[],
+	changes: readonly SurfaceChangeUnit[] | undefined,
+): readonly (readonly string[])[] {
+	if (changeIds.length <= 1 || !changes?.length) return [changeIds];
+	const selected = new Set(changeIds);
+	const byId = new Map(changes.map((change) => [change.id, change]));
+	const remaining = new Set(changeIds);
+	const waves: string[][] = [];
+	while (remaining.size > 0) {
+		const wave: string[] = [];
+		for (const id of changeIds) {
+			if (!remaining.has(id)) continue;
+			const deps = byId.get(id)?.dependsOnChangeIds ?? [];
+			if (!deps.some((dep) => selected.has(dep) && remaining.has(dep))) wave.push(id);
+		}
+		if (wave.length === 0) {
+			for (const id of changeIds) if (remaining.has(id)) waves.push([id]);
+			break;
+		}
+		for (const id of wave) remaining.delete(id);
+		waves.push(wave);
+	}
+	return waves;
 }
 
 export type SurfacesClient = Pick<
@@ -4302,23 +4370,55 @@ export class SurfacesStore {
 			return { busy, error: undefined };
 		});
 		const approved = new Map<string, SurfaceSession>();
-		let finished = false;
+		const plans = targets.map((group) => {
+			const session = this.session(group.sessionId);
+			const open = session?.changes.filter(isOpenChange) ?? [];
+			const whole =
+				open.length === group.changeIds.length && open.every((change) => group.changeIds.includes(change.id));
+			return { group, whole, waves: whole ? [] : approvalWaves(group.changeIds, session?.changes) };
+		});
+		let firstError: unknown;
+		let hasError = false;
 		try {
-			for (const group of targets) {
-				const open = this.session(group.sessionId)?.changes.filter(isOpenChange) ?? [];
-				const whole =
-					open.length === group.changeIds.length && open.every((change) => group.changeIds.includes(change.id));
-				if (whole) {
-					approved.set(group.sessionId, await client.approveSessionAll(group.sessionId));
-					continue;
+			// WHY: Independent sessions and dependency-free changes approve concurrently with bounded parallelism.
+			await runBounded(plans, SURFACE_BATCH_CONCURRENCY, async ({ group, whole, waves }) => {
+				try {
+					if (whole) {
+						approved.set(
+							group.sessionId,
+							mergeApprovedSession(
+								approved.get(group.sessionId),
+								await client.approveSessionAll(group.sessionId),
+							),
+						);
+						return;
+					}
+					for (const wave of waves) {
+						let waveError = false;
+						await runBounded(wave, SURFACE_BATCH_CONCURRENCY, async (id) => {
+							try {
+								const next = await client.approveSurfaceChange(id);
+								approved.set(group.sessionId, mergeApprovedSession(approved.get(group.sessionId), next));
+							} catch (error) {
+								if (!hasError) {
+									hasError = true;
+									firstError = error;
+								}
+								waveError = true;
+							}
+						});
+						if (waveError) return;
+					}
+				} catch (error) {
+					if (!hasError) {
+						hasError = true;
+						firstError = error;
+					}
 				}
-				for (const id of group.changeIds) approved.set(group.sessionId, await client.approveSurfaceChange(id));
-			}
-			finished = true;
-		} catch (error) {
-			if (!this.#options.signal.aborted)
+			});
+			if (hasError && !this.#options.signal.aborted)
 				this.store.set({
-					error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
+					error: isMissingSurfaceRpcError(firstError) ? this.#options.unavailableMessage : describe(firstError),
 				});
 		} finally {
 			if (!this.#options.signal.aborted)
@@ -4328,6 +4428,7 @@ export class SurfacesStore {
 					return { busy };
 				});
 		}
+		const finished = !hasError;
 		if (approved.size === 0) return false;
 		const statusById = new Map<string, SurfaceChangeUnit["status"]>();
 		for (const updated of approved.values()) {
@@ -4560,19 +4661,40 @@ export class SurfacesStore {
 				this.#applySession(session, approvalOutcome(session, this.drawerOpenOn(session.id)));
 			if (restored.size > 0) void this.refreshSurfaces();
 		};
-		for (const changeId of undo.changeIds) {
-			const already = [...restored.values()].some(
-				(session) => session.changes.find((item) => item.id === changeId)?.status === "staged",
-			);
-			if (already) continue;
-			const next = await this.#run(`undo:${changeId}`, (client) => client.undoSurfaceChange(changeId));
-			if (!next) {
-				applyRestored();
-				return false;
+		const sessionForChange = (changeId: string): string | undefined => {
+			for (const workspace of Object.values(this.state.workspaces)) {
+				const session =
+					workspace.activeSessions.find((item) => item.changes.some((change) => change.id === changeId)) ??
+					workspace.recentHistory.find((item) => item.changes.some((change) => change.id === changeId));
+				if (session) return session.id;
 			}
-			restored.set(next.id, next);
+			return undefined;
+		};
+		const grouped = new Map<string, string[]>();
+		for (const changeId of undo.changeIds) {
+			const key = sessionForChange(changeId) ?? `unknown:${changeId}`;
+			const bucket = grouped.get(key) ?? [];
+			bucket.push(changeId);
+			grouped.set(key, bucket);
 		}
+		let failed = false;
+		// WHY: Undo distinct sessions concurrently while keeping same-session batch undos sequential so atomic batches skip cleanly.
+		await runBounded([...grouped.values()], SURFACE_BATCH_CONCURRENCY, async (changeIds) => {
+			for (const changeId of changeIds) {
+				const already = [...restored.values()].some(
+					(session) => session.changes.find((item) => item.id === changeId)?.status === "staged",
+				);
+				if (already) continue;
+				const next = await this.#run(`undo:${changeId}`, (client) => client.undoSurfaceChange(changeId));
+				if (!next) {
+					failed = true;
+					return;
+				}
+				restored.set(next.id, next);
+			}
+		});
 		applyRestored();
+		if (failed) return false;
 		if (restored.size === 0) void this.refreshSurfaces();
 		return true;
 	}

@@ -14,10 +14,12 @@ if (deferredCss && !document.querySelector(`link[rel="stylesheet"][href="${defer
 
 const root = document.getElementById("app");
 if (!root) throw new Error("Missing #app root");
-if (presentationLocale() === "da") {
-	void ensureLocaleLoaded().then(() => {
-		mountApplication(root, createCloud(resolveCloudConfig()));
-	});
-} else {
-	mountApplication(root, createCloud(resolveCloudConfig()));
-}
+// WHY: Start auth and profile bootstrap in parallel with the Danish dictionary chunk instead of serializing them.
+const localeReady = presentationLocale() === "da" ? ensureLocaleLoaded() : undefined;
+mountApplication(
+	root,
+	createCloud(resolveCloudConfig()),
+	undefined,
+	undefined,
+	localeReady ? { localeReady } : undefined,
+);

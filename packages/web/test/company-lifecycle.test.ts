@@ -1004,6 +1004,10 @@ describe("conversation lifecycle regressions", () => {
 		});
 
 		await controller.sendPrompt(session.sessionId, "One message");
+		const immediate = controller.conversation(session.sessionId).get();
+		expect(immediate.sending).toBe(false);
+		expect(immediate.draft).toBe("");
+		await settle();
 		const state = controller.conversation(session.sessionId).get();
 		expect(state.optimistic).toEqual([]);
 		expect(state.projection.items).toHaveLength(1);

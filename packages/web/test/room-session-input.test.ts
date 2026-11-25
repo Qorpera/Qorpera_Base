@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { createWebSessionInputWriter, type SessionExecutionSponsor } from "../src/cloud/session-input.ts";
@@ -55,17 +56,15 @@ function setup() {
 }
 
 describe("room session input routing", () => {
-	it("uses the public room post receipt and creates no native turn or image upload", async () => {
+	it("posts directly with known roomId without listing company rooms and creates no native turn or image upload", async () => {
 		const f = setup();
 		await expect(
 			f.write(session.sessionId, id(92), "Room message", f.view.signal, [], sponsor, target),
 		).resolves.toMatchObject({ inputId: receipt.inputId });
 		expect(f.fetch.mock.calls.map(([url]) => String(url))).toEqual([
-			"https://fixture.invalid/rest/v1/rpc/qorpera_list_company_rooms",
 			"https://fixture.invalid/rest/v1/rpc/qorpera_post_company_room_message",
 		]);
-		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toEqual({ p_profile_id: profileA.profileId });
-		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toEqual({
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toEqual({
 			p_room_id: target.roomId,
 			p_client_input_id: id(92),
 			p_body: { schema: "qorpera.session-prompt/v1", text: "Room message", images: [] },
@@ -75,7 +74,7 @@ describe("room session input routing", () => {
 	});
 	it("replays the exact uncertain room input and sponsor despite a newer selected binding", async () => {
 		const f = setup();
-		f.fetch.mockResolvedValueOnce(Response.json(rooms)).mockRejectedValueOnce(new Error("Lost post reply"));
+		f.fetch.mockRejectedValueOnce(new Error("Lost post reply"));
 		expect(await f.controller.sendPrompt(session.sessionId, "Room draft")).toBe(false);
 		const state = f.controller.conversation(session.sessionId, false),
 			retained = state.get().retrySend!;
@@ -93,23 +92,23 @@ describe("room session input routing", () => {
 		expect(f.write.mock.calls[1]![6]).toEqual(target);
 		expect(state.get()).toMatchObject({ draft: "", attachments: [] });
 		expect(state.get().retrySend).toBeUndefined();
-		expect(f.fetch).toHaveBeenCalledTimes(4);
+		expect(f.fetch).toHaveBeenCalledTimes(2);
 	});
 	it("requires explicit abandonment before posting an edited uncertain room message", async () => {
 		const f = setup();
-		f.fetch.mockResolvedValueOnce(Response.json(rooms)).mockRejectedValueOnce(new Error("Lost post reply"));
+		f.fetch.mockRejectedValueOnce(new Error("Lost post reply"));
 		expect(await f.controller.sendPrompt(session.sessionId, "Original room draft")).toBe(false);
 		const state = f.controller.conversation(session.sessionId, false),
 			retained = state.get().retrySend!;
 		state.set({ draft: "Edited room draft" });
 		expect(await f.controller.sendPrompt(session.sessionId, "Edited room draft")).toBe(false);
-		expect(f.fetch).toHaveBeenCalledTimes(2);
+		expect(f.fetch).toHaveBeenCalledTimes(1);
 		expect(state.get().retrySend).toBe(retained);
 		expect(retained.roomTarget).toEqual(target);
 		f.controller.discardSendRetry(session.sessionId);
 		expect(state.get().draft).toBe("Edited room draft");
 		expect(await f.controller.sendPrompt(session.sessionId, "Edited room draft")).toBe(true);
-		expect(f.fetch).toHaveBeenCalledTimes(4);
+		expect(f.fetch).toHaveBeenCalledTimes(2);
 		expect(f.write.mock.calls[1]![1]).not.toBe(retained.clientInputId);
 		expect(f.write.mock.calls[1]![2]).toBe("Edited room draft");
 		expect(f.write.mock.calls[1]![6]).toEqual(target);
@@ -118,7 +117,7 @@ describe("room session input routing", () => {
 		"refuses replay when the canonical destination becomes %s",
 		async (change) => {
 			const f = setup();
-			f.fetch.mockResolvedValueOnce(Response.json(rooms)).mockRejectedValueOnce(new Error("Lost post reply"));
+			f.fetch.mockRejectedValueOnce(new Error("Lost post reply"));
 			expect(await f.controller.sendPrompt(session.sessionId, "Keep this draft")).toBe(false);
 			const state = f.controller.conversation(session.sessionId, false),
 				retained = state.get().retrySend;
@@ -130,7 +129,7 @@ describe("room session input routing", () => {
 			expect(state.get().draft).toBe("Keep this draft");
 			expect(state.get().sendError).toContain("destination changed");
 			expect(f.write).toHaveBeenCalledTimes(1);
-			expect(f.fetch).toHaveBeenCalledTimes(2);
+			expect(f.fetch).toHaveBeenCalledTimes(1);
 		},
 	);
 	it("rejects room images before reading or uploading and preserves the controller draft and exact files", async () => {
@@ -230,15 +229,53 @@ describe("room session input routing", () => {
 	it("does not accept a late room receipt after the caller's destination fence changes", async () => {
 		const f = setup(),
 			response = deferred<Response>();
-		f.fetch.mockResolvedValueOnce(Response.json(rooms)).mockReturnValueOnce(response.promise);
+		f.fetch.mockReturnValueOnce(response.promise);
 		const sending = f.write(session.sessionId, id(92), "Draft", f.view.signal, [], sponsor, target);
-		await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(1));
 		f.current.mockImplementation(() => {
 			throw new Error("Destination changed");
 		});
 		response.resolve(Response.json(receipt));
 		await expect(sending).rejects.toThrow();
 		await settle();
-		expect(f.fetch).toHaveBeenCalledTimes(2);
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+	it("uploads multiple image attachments concurrently while preserving attachment order", async () => {
+		const f = setup();
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		const bytesA = new TextEncoder().encode("first-image");
+		const bytesB = new TextEncoder().encode("second-image-longer");
+		const fileA = new File([bytesA], "a.png", { type: "image/png" });
+		const fileB = new File([bytesB], "b.png", { type: "image/png" });
+		Object.defineProperty(fileA, "arrayBuffer", { value: async () => bytesA.slice().buffer });
+		Object.defineProperty(fileB, "arrayBuffer", { value: async () => bytesB.slice().buffer });
+		const shaA = await cloudFileBytesSha256(bytesA);
+		const shaB = await cloudFileBytesSha256(bytesB);
+		const firstUpload = deferred<Response>();
+		const secondUpload = deferred<Response>();
+		const startedShas: string[] = [];
+		f.fetch.mockImplementation(async (url) => {
+			const text = String(url);
+			if (text.includes("/v1/member-session-attachments/upload/")) {
+				const sha = text.slice(text.lastIndexOf("/") + 1);
+				startedShas.push(sha);
+				return sha === shaA ? firstUpload.promise : secondUpload.promise;
+			}
+			if (text.endsWith("/qorpera_post_company_room_message")) return Response.json(receipt);
+			throw new Error(`Unexpected transport: ${text}`);
+		});
+		const sending = f.write(session.sessionId, id(92), "Two images", f.view.signal, [fileA, fileB], sponsor, {
+			...target,
+			images: true,
+		});
+		await vi.waitFor(() => expect(startedShas).toHaveLength(2));
+		secondUpload.resolve(Response.json({ sha256: shaB, bytes: fileB.size, mediaType: "image/png" }));
+		firstUpload.resolve(Response.json({ sha256: shaA, bytes: fileA.size, mediaType: "image/png" }));
+		await expect(sending).resolves.toMatchObject({ inputId: receipt.inputId });
+		const postCall = f.fetch.mock.calls.find(([url]) => String(url).endsWith("/qorpera_post_company_room_message"))!;
+		expect(JSON.parse(postCall[1]!.body as string).p_body.images).toEqual([
+			{ objectSha256: shaA, bytes: fileA.size, mediaType: "image/png" },
+			{ objectSha256: shaB, bytes: fileB.size, mediaType: "image/png" },
+		]);
 	});
 });

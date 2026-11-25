@@ -225,4 +225,15 @@ describe("room messages use the public room admission contract", () => {
 		await settle();
 		expect(f.fetch).toHaveBeenCalledTimes(2);
 	});
+	it("skips room discovery when skipDiscovery is true while still validating auth, fence, and receipt", async () => {
+		const f = setup();
+		expect(await f.client.post({ ...f.input, skipDiscovery: true }, f.view.signal)).toEqual(f.receipt);
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+		expect(String(f.fetch.mock.calls[0]![0])).toBe(
+			"https://fixture.invalid/rest/v1/rpc/qorpera_post_company_room_message",
+		);
+		expect(f.current).toHaveBeenCalledWith(id(91));
+		f.receipt.roomId = id(999);
+		await expect(f.client.post({ ...f.input, skipDiscovery: true })).rejects.toThrow("Refresh the conversation");
+	});
 });

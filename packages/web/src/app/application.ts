@@ -302,6 +302,7 @@ export function mountApplication(
 	cloud: Cloud,
 	api = new CloudApi(cloud),
 	workspaceActions: WorkspaceActions = {},
+	options?: { readonly localeReady?: Promise<void> },
 ): () => void {
 	translateCloudErrors(t);
 	const auth = new AuthController(cloud);
@@ -392,6 +393,7 @@ export function mountApplication(
 	const unwatchTheme = watchTheme();
 	const unwatchBrowserBar = watchBrowserBar(root);
 	let disposed = false;
+	let localePending = Boolean(options?.localeReady);
 	let settings: SettingsView | undefined;
 	let feedback: FeedbackView | undefined;
 	let friendsWindow: FriendsWindow | undefined;
@@ -1066,7 +1068,8 @@ export function mountApplication(
 			try {
 				let profile = profiles.find((item) => item.profileId === profileId);
 				if (!profile) {
-					await currentHub.refresh();
+					// WHY: Opening a company only needs the profile list; do not block boot on invitations or founding tables.
+					await currentHub.ensureProfiles();
 					if (!current()) return undefined;
 					profile = currentHub.store.get().profiles.find((item) => item.profileId === profileId);
 				}
@@ -1525,7 +1528,7 @@ export function mountApplication(
 		settleStartCrown();
 		const current = captureRoute();
 		const authState = auth.store.get();
-		if (!authState.ready) {
+		if (!authState.ready || localePending) {
 			// A start that failed keeps saying so; a redraw (a route change) never blanks it again. index.html's
 			// first screen (ui/boot.ts) stands until the app knows which screen to draw.
 			if (startError) replace(root!, startError);
@@ -2883,8 +2886,14 @@ export function mountApplication(
 				return;
 			}
 			case "home": {
-				// Home needs organization, membership and sessions, not just staff.
-				if (state.loading) {
+				// WHY: Resolve Co-Founder home once org, team, staff, and sessions load instead of waiting on sidebar/groups/activity.
+				const homeReady =
+					!state.loading ||
+					(state.organizationState !== "loading" &&
+						state.team !== undefined &&
+						state.staffLoaded === true &&
+						state.sessionsLoaded === true);
+				if (!homeReady) {
 					showThreadSkeleton(t("Opening company"));
 					return;
 				}
@@ -3527,6 +3536,21 @@ export function mountApplication(
 		}
 	}
 
+	if (options?.localeReady) {
+		// WHY: Keep the boot skeleton until the Danish chunk lands while auth.start() and hub.refresh() overlap in parallel.
+		void options.localeReady.finally(() => {
+			localePending = false;
+			if (disposed) return;
+			applyLanguage();
+			shownLocale = presentationLocale();
+			rail.setAttribute("aria-label", t("Company navigation"));
+			backdrop.setAttribute("aria-label", t("Close company navigation"));
+			reopenRailBtn.setAttribute("aria-label", t("Show sidebar"));
+			reopenRailBtn.title = t("Show sidebar");
+			railLayout.relabel();
+			render();
+		});
+	}
 	if (hasWebsiteIdea()) auth.showStep("create");
 	void auth.start().then(
 		() => render(),

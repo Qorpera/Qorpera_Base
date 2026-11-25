@@ -238,7 +238,7 @@ export class CompanyLogos implements CompanyLogoStore {
 			// The folder moved on since the cloud answered: the next sync draws the newer logo.
 			if (!file || file.fileSha256 !== row.sourceSha256) return false;
 			if (file.bytes > MAX_SVG_BYTES) return false;
-			const svg = new TextDecoder().decode(await client.readFile(file, signal, MAX_SVG_BYTES));
+			const svg = new TextDecoder().decode(await client.readFile(file, signal, MAX_SVG_BYTES, { cached: true }));
 			const png = await this.#rasterize(svg, COMPANY_LOGO_SIZE);
 			signal.throwIfAborted();
 			objectName = companyLogoName(profileId, row.sourceSha256);

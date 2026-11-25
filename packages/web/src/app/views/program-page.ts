@@ -534,7 +534,10 @@ export class ProgramPage {
 					if (count > 2)
 						progress.textContent = t("{percent}%", { percent: Math.round(((index + 1) / count) * 100) });
 				});
-			else pieces.push(new Blob([(await folder.readFile(file, signal, MAX_DOWNLOAD_BYTES)) as BlobPart]));
+			else
+				pieces.push(
+					new Blob([(await folder.readFile(file, signal, MAX_DOWNLOAD_BYTES, { cached: true })) as BlobPart]),
+				);
 			this.#host.current?.();
 			this.#downloads.offerPieces(form.file, pieces, file.bytes);
 			say(t("It's in your Downloads."));
