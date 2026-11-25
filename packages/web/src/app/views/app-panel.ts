@@ -621,7 +621,9 @@ export class AppPanel {
 		signal: AbortSignal,
 	): Promise<void> {
 		if (this.#program?.busy) return;
-		const { ProgramPage, readProgram } = await import("./program-page.ts");
+		const {
+			programPage: { ProgramPage, readProgram },
+		} = await import("./lazy-secondary.ts");
 		if (signal.aborted) return;
 		const read = await readProgram(this.#host.folder(), app.path, signal);
 		if (signal.aborted) return;
