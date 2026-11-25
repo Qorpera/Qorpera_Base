@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { runtimeAssetsPlugin } from "./runtime-assets-plugin.mjs";
 import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 
 // One company run through the real patched Codex, for the end-to-end proofs of what a folder tool gives the model
@@ -73,6 +74,7 @@ async function bundle(scratch) {
 		format: "esm",
 		target: "node22",
 		bundle: true,
+		plugins: [runtimeAssetsPlugin(repositoryRoot)],
 		outfile: modulePath,
 		logLevel: "silent",
 	});

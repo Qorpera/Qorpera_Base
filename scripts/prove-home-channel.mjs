@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
 import { build, transformSync } from "esbuild";
+import { runtimeAssetsPlugin } from "./runtime-assets-plugin.mjs";
 import {
 	controlPlane,
 	Database,
@@ -214,6 +215,7 @@ async function bundles(scratch) {
 		format: "esm",
 		target: "node22",
 		bundle: true,
+		plugins: [runtimeAssetsPlugin(repositoryRoot)],
 		outfile: modulePath,
 		logLevel: "silent",
 	});
