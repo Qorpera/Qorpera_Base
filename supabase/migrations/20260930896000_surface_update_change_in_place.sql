@@ -639,9 +639,12 @@ $new$	if p_change_id is not null then
 				order by prev_ch.seq desc, prev_ch.id desc
 				limit 1;
 				if v_prev_git_head_sha is not null
-					and (v_eff_parent_sha is distinct from v_prev_git_head_sha or v_prev_git_status = 'conflicted')
-					and (not v_allow_rebase or v_eff_parent_sha = v_existing.parent_sha) then
-					raise exception 'Conflicted git_range change must be rebased onto a clean preceding change head_sha with rebase: true' using errcode = '22023';
+					and (v_prev_git_status = 'conflicted' or v_eff_parent_sha is distinct from v_prev_git_head_sha) then
+					if v_prev_git_status = 'conflicted' then
+						raise exception 'Rebase the conflicted preceding git_range change before updating this change' using errcode = '22023';
+					elsif not v_allow_rebase or v_eff_parent_sha = v_existing.parent_sha then
+						raise exception 'Conflicted git_range change requires rebase: true with a new parent_sha' using errcode = '22023';
+					end if;
 				end if;
 			end if;
 
@@ -890,7 +893,16 @@ $new$		if v_head_sha ~ '^[0-9a-f]{40}$' and v_base_sha ~ '^[0-9a-f]{40}$' then
 					and v_tip_change.status = 'conflicted'
 					and v_open_git_count > 1
 					and not coalesce(v_surf_session.is_internal, false) then
-					null;
+					insert into public.qorpera_surface_session_messages(
+						profile_id, session_id, author_kind, body, change_id
+					)
+					values (
+						v_surf_session.profile_id,
+						v_surf_session.id,
+						'system',
+						'Latest commits were not staged: "' || v_tip_change.title || '" must be rebased onto the updated earlier change first.',
+						v_tip_change.id
+					);
 				elsif p_worker.sequence > 1
 					and v_tip_change.id is not null
 					and not coalesce(v_surf_session.is_internal, false)

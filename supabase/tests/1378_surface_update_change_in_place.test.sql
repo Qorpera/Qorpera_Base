@@ -729,7 +729,15 @@ begin
 		v_sync_change.status = 'conflicted'
 		and v_sync_change.parent_sha = repeat('5', 40)
 		and v_sync_change.head_sha = repeat('6', 40)
-		and (select count(*) from public.qorpera_surface_changes where session_id = v_sync_session) = 4,
-		'coding_finish sync must leave a conflicted stacked tip conflicted instead of clearing conflict with stale parent_sha'
+		and (select count(*) from public.qorpera_surface_changes where session_id = v_sync_session) = 4
+		and exists (
+			select 1
+			from public.qorpera_surface_session_messages m
+			where m.session_id = v_sync_session
+				and m.author_kind = 'system'
+				and m.change_id = v_sync_change.id
+				and m.body like 'Latest commits were not staged:%'
+		),
+		'coding_finish sync leaves conflicted stacked tip conflicted and records a system message'
 	);
 end $$;

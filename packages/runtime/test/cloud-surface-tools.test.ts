@@ -3455,7 +3455,20 @@ describe("cloud surface runtime tools", () => {
 			ctx,
 		);
 		expect(opsUpdate.updated).toBe(true);
-		expect(rpcCalls[3]?.args).toMatchObject({ p_change_id: c1 });
+		expect(rpcCalls[3]?.args).toMatchObject({ p_change_id: c1, p_depends_on_change_ids: null });
+
+		await port.recordChange(
+			sessionId,
+			{
+				title: "Fresh insert with null deps",
+				summary: "Normalizes null deps on insert.",
+				commitSha: head2,
+				parentSha: baseSha,
+				dependsOnChangeIds: null,
+			},
+			ctx,
+		);
+		expect(rpcCalls[4]?.args).toMatchObject({ p_depends_on_change_ids: [] });
 
 		const recordedCoding: unknown[] = [];
 		const singleCodingTool = createCodingRecordChangeTool(
