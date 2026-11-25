@@ -153,6 +153,8 @@ export const LIMITS = Object.freeze({
 	/** A watch call: how long it is held, and how often its questions are asked again. */
 	watchMs: 20_000,
 	watchAgainMs: 500,
+	listenIdleMs: 45_000,
+	readPoolIdleMs: 45_000,
 	/** How long a member's folder read is kept. */
 	proofMs: 10_000,
 	/** A request's body. */
@@ -1284,6 +1286,7 @@ export class Gateway {
 	#tagSalt = randomBytes(16);
 	#schemaEpoch = new Map();
 	#schemaEpochSeq = 0;
+	#storedCache = new Map();
 	#relations = new Map();
 	#prepared = new WeakMap();
 	#askPlans = new Map();
@@ -1545,7 +1548,9 @@ export class Gateway {
 						: door === "qorpera_data_admin"
 							? { query_timeout: ADMIN_QUERY_TIMEOUT_MS, statement_timeout: ADMIN_QUERY_TIMEOUT_MS }
 							: {}),
-					idleTimeoutMillis: kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : 5_000,
+					// WHY: Keep steady-state read pools warm for readPoolIdleMs so prepared statements stay cached while write pools drain in 5s.
+					idleTimeoutMillis:
+						kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : kind === "r" ? this.#limits.readPoolIdleMs : 5_000,
 					connectionTimeoutMillis: CONNECT_MS,
 					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
 				});
@@ -1641,6 +1646,15 @@ export class Gateway {
 	}
 
 	async #makeRoomLocal(database, asking, { fallback = true } = {}) {
+		const reclaimIdleListeners = (matchDb) => {
+			const ending = [];
+			for (const [db, listener] of [...this.#listeners.entries()]) {
+				if (listener.heard.size > 0 || !matchDb(db)) continue;
+				const clientToEnd = this.#teardownListener(db, listener);
+				if (clientToEnd) ending.push(clientToEnd.end().catch(() => undefined));
+			}
+			return ending;
+		};
 		const reclaim = (filter) => {
 			const ending = [];
 			for (const [key, entry] of this.#pools) {
@@ -1658,8 +1672,8 @@ export class Gateway {
 			}
 			return ending;
 		};
-		let ending = reclaim((key) => key.endsWith(`@${database}`));
-		if (ending.length === 0 && fallback) ending = reclaim(() => true);
+		let ending = [...reclaimIdleListeners((db) => db === database), ...reclaim((key) => key.endsWith(`@${database}`))];
+		if (ending.length === 0 && fallback) ending = [...reclaimIdleListeners(() => true), ...reclaim(() => true)];
 		await raceTimeout(Promise.all(ending), POOL_END_TIMEOUT_MS);
 	}
 
@@ -1671,6 +1685,7 @@ export class Gateway {
 		const key = `${database}/${schema}`;
 		// WHY: Use a monotonic counter with bounded storage so evicted schema keys can never reuse an older epoch value.
 		this.#rememberMap(this.#schemaEpoch, key, ++this.#schemaEpochSeq);
+		this.#storedCache.delete(key);
 		const prefix = `${key}/`;
 		for (const relKey of this.#relations.keys()) if (relKey.startsWith(prefix)) this.#relations.delete(relKey);
 	}
@@ -3212,8 +3227,27 @@ export class Gateway {
 		return { columns: columns.map((column) => column.name), key: keyed.map((column) => column.name), row: op === "remove" ? null : asRow(result) };
 	}
 
+	#teardownListener(database, listener) {
+		if (listener.idleTimer) {
+			clearTimeout(listener.idleTimer);
+			listener.idleTimer = null;
+		}
+		listener.stopped = true;
+		listener.wakeStop?.();
+		if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
+		this.#clearListenerCache(listener);
+		listener.viewerScoped.clear();
+		const clientToEnd = listener.client;
+		listener.client = null;
+		return clientToEnd;
+	}
+
 	#listen(database, heard) {
 		let listener = this.#listeners.get(database);
+		if (listener?.idleTimer) {
+			clearTimeout(listener.idleTimer);
+			listener.idleTimer = null;
+		}
 		if (!listener) {
 			listener = {
 				client: null,
@@ -3231,10 +3265,15 @@ export class Gateway {
 				cache: new Map(),
 				viewerScoped: new Map(),
 				wakeStop: null,
+				idleTimer: null,
 			};
 			const lost = () => {
 				if (listener.dropped) return;
 				listener.dropped = true;
+				if (listener.idleTimer) {
+					clearTimeout(listener.idleTimer);
+					listener.idleTimer = null;
+				}
 				if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
 				this.#clearListenerCache(listener);
 				listener.viewerScoped.clear();
@@ -3338,14 +3377,22 @@ export class Gateway {
 			stop: () => {
 				listener.heard.delete(heard);
 				if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
-					listener.stopped = true;
-					listener.wakeStop?.();
-					this.#listeners.delete(database);
-					this.#clearListenerCache(listener);
-					listener.viewerScoped.clear();
-					const clientToEnd = listener.client;
-					listener.client = null;
-					clientToEnd?.end().catch(() => undefined);
+					// WHY: Hold LISTEN client and watch caches across 20s browser /watch polls instead of tearing down on every gap.
+					const listenIdleMs =
+						typeof this.#limits.listenIdleMs === "number" && Number.isFinite(this.#limits.listenIdleMs) && this.#limits.listenIdleMs > 0
+							? this.#limits.listenIdleMs
+							: 0;
+					if (this.#closed || listenIdleMs <= 0) {
+						this.#teardownListener(database, listener)?.end().catch(() => undefined);
+					} else if (!listener.idleTimer) {
+						listener.idleTimer = setTimeout(() => {
+							listener.idleTimer = null;
+							if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
+								this.#teardownListener(database, listener)?.end().catch(() => undefined);
+							}
+						}, listenIdleMs);
+						listener.idleTimer.unref?.();
+					}
 				}
 			},
 		};
@@ -4237,15 +4284,28 @@ export class Gateway {
 		};
 		let steps;
 		let ddl;
-		try {
-			({ steps, ddl } = await runDdl(false));
-		} catch (error) {
-			if (error?.code === "55P03") {
-				({ steps, ddl } = await runDdl(true).catch((retryError) => {
-					throw storeProblem(retryError);
-				}));
-			} else {
-				throw storeProblem(error);
+		const cacheKey = `${database}/${schema}`;
+		const liveListener = this.#listeners.get(database);
+		const liveListenerEpoch =
+			liveListener?.client && !liveListener.dropped && !liveListener.stopped ? liveListener.epoch : null;
+		const epoch = this.#schemaEpoch.get(cacheKey) ?? 0;
+		const cached = appliedSteps === null && liveListenerEpoch !== null ? this.#storedCache.get(cacheKey) : undefined;
+		if (cached && cached.name === name && cached.epoch === epoch && cached.listenerEpoch === liveListenerEpoch) {
+			({ steps, ddl } = cached);
+		} else {
+			try {
+				({ steps, ddl } = await runDdl(false));
+				if (appliedSteps === null && liveListenerEpoch !== null && (this.#schemaEpoch.get(cacheKey) ?? 0) === epoch) {
+					this.#rememberMap(this.#storedCache, cacheKey, { name, epoch, listenerEpoch: liveListenerEpoch, steps, ddl });
+				}
+			} catch (error) {
+				if (error?.code === "55P03") {
+					({ steps, ddl } = await runDdl(true).catch((retryError) => {
+						throw storeProblem(retryError);
+					}));
+				} else {
+					throw storeProblem(error);
+				}
 			}
 		}
 		const ddlRow = ddl.rows[0] ?? {};
@@ -6132,6 +6192,10 @@ export class Gateway {
 		this.#scheduleTestReaper();
 		const listener = this.#listeners.get(database);
 		if (listener) {
+			if (listener.idleTimer) {
+				clearTimeout(listener.idleTimer);
+				listener.idleTimer = null;
+			}
 			listener.stopped = true;
 			listener.wakeStop?.();
 			this.#listeners.delete(database);
@@ -6148,6 +6212,8 @@ export class Gateway {
 			listener.client = null;
 			await lateClient?.end().catch(() => undefined);
 		}
+		const storedPrefix = `${database}/`;
+		for (const key of this.#storedCache.keys()) if (key.startsWith(storedPrefix)) this.#storedCache.delete(key);
 		for (const [key, entry] of this.#watchInFlight) {
 			if (key.includes(`|${database}|`)) {
 				entry.controller.abort();
@@ -6705,6 +6771,10 @@ export class Gateway {
 		for (const entry of this.#watchInFlight.values()) entry.controller.abort();
 		this.#watchInFlight.clear();
 		for (const listener of this.#listeners.values()) {
+			if (listener.idleTimer) {
+				clearTimeout(listener.idleTimer);
+				listener.idleTimer = null;
+			}
 			listener.stopped = true;
 			listener.wakeStop?.();
 			this.#clearListenerCache(listener);
@@ -6719,6 +6789,7 @@ export class Gateway {
 			await lateClient?.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
+		this.#storedCache.clear();
 		this.#watchCacheOrder.clear();
 		this.#watchCacheBytes = 0;
 		this.#texts.clear();

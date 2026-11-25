@@ -31,6 +31,8 @@ const LIMITS_HERE = {
 	stepLockMs: 1_000,
 	watchMs: 4_000,
 	watchAgainMs: 50,
+	listenIdleMs: 0,
+	readPoolIdleMs: 5_000,
 	proofMs: 0,
 	bodyBytes: 8192,
 	agentMs: 4_000,
@@ -4156,6 +4158,40 @@ create trigger nap before update on slowed for each row execute function nap();
 		);
 		await assert.rejects(platform.redeemPass("pass-1"), (err) => err?.status === 503);
 		assert.equal(canceled, 4);
+	});
+
+	it("keeps an idle LISTEN client and stored DDL cache warm across watch gaps within listenIdleMs, then closes it", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		const watchPids = async () =>
+			(
+				await asAdmin(
+					"postgres",
+					"select pid::int as pid from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen' order by pid",
+					[companyDb],
+				)
+			).map((row) => row.pid);
+		await withGateway({ limits: { ...LIMITS_HERE, watchMs: 2_000, listenIdleMs: 500 } }, async () => {
+			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+			assert.equal(seed.status, 200);
+			const first = await ask(viewer, "watch", {
+				watches: [{ database: "m00", question: "count", etag: seed.value.etag }],
+				wait: 0.1,
+			});
+			assert.equal(first.status, 200);
+			const pidsAfterFirst = await watchPids();
+			assert.equal(pidsAfterFirst.length, 1);
+			const describedWarm = await ask(viewer, "describe", { database: "m00" });
+			assert.equal(describedWarm.status, 200);
+			await sleep(100);
+			const second = await ask(viewer, "watch", {
+				watches: [{ database: "m00", question: "count", etag: seed.value.etag }],
+				wait: 0.1,
+			});
+			assert.equal(second.status, 200);
+			const pidsAfterSecond = await watchPids();
+			assert.deepEqual(pidsAfterSecond, pidsAfterFirst);
+			assert.equal(await until(listening, 0, 2_000), 0);
+		});
 	});
 
 	it("breaks watch out promptly when the LISTEN backend is terminated", async () => {
