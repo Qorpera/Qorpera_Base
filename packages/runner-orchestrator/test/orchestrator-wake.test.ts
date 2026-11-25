@@ -432,6 +432,32 @@ describe("claim loop with wake-ups", () => {
 		expect(Date.now() - announcedAt).toBeLessThan(1000);
 	});
 
+	it("does not delay a follow-up job wake behind an empty pre-materialization wake", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, pollIntervalMs: 500, wakeBackstopMs: 5000 });
+		await until(() => f.calls() === 1);
+		await sleep(40);
+		// WHY: Wake #1 simulates wake_occurrences insert before materialization; Wake #2 arrives 20 ms later with the runner job.
+		wake.fire();
+		await until(() => f.calls() === 2);
+		await sleep(20);
+		f.queue.queued.push(fakeWork(runId(1)));
+		const secondWakeAt = performance.now();
+		wake.fire();
+		await until(() => f.acquired.length === 1);
+		expect(performance.now() - secondWakeAt).toBeLessThan(200);
+	});
+
+	it("still throttles a burst of empty wake-ups to one claim per poll interval", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, pollIntervalMs: 80, wakeBackstopMs: 5000 });
+		await until(() => f.calls() === 1);
+		const before = f.calls();
+		for (let index = 0; index < 40; index++) wake.fire();
+		await sleep(200);
+		expect(f.calls() - before).toBeLessThanOrEqual(6);
+	});
+
 	it("does not report a missed wake-up that arrives while the claim that finds its work is in flight", async () => {
 		const wake = new ManualWake();
 		const f = loop({ wake, wakeBackstopMs: 300 });

@@ -47,9 +47,8 @@ const MAX_CONNECTIONS = 4;
 const MAX_REMEMBERED = 8_192;
 /** How long the run waits for its session to be closed in SQL as it ends; a run that comes back supersedes it. */
 export const CLOUD_HOME_CLOSE_MS = 5_000;
-/** How long a file change waits for Codex's word of the patch it belongs to (its item notification arrives on the
- * session's other pipe, so it can come a moment after the change itself). */
-const PATCH_NOTICE_MS = 3_000;
+// WHY: Two local pipes from the same Codex process deliver patch item notices within milliseconds; 500 ms avoids stalling lone fs/writeFile calls for 3 s while preserving patch grouping.
+const PATCH_NOTICE_MS = 500;
 /** The most of one text the review's identity carries as itself; past it, its head with its size and digest. */
 export const IDENTITY_TEXT_BYTES = 32 * 1024;
 /** What all of a patch's diffs may take of the identity together, so the whole stays within the gate's 64 KiB. */
@@ -820,6 +819,11 @@ export class CloudCodexHome {
 			this.#opened = false;
 			await this.#endSession(this.#sessionId, reason).catch(() => undefined);
 		}
+	}
+
+	// WHY: Warm home-mode Codex spares pre-bind the Unix socket before a run starts and hand accepted connections to the run's home once bound.
+	serve(client: Socket): void {
+		this.#serve(client);
 	}
 
 	/** One connection of the namespace: its own channel to the machine for as long as it lasts. */

@@ -5,6 +5,7 @@ import { NATIVE_CHATGPT_PLAN_EGRESS_HOSTS, NATIVE_CODEX_EGRESS_HOSTS } from "@qo
 import {
 	CHATGPT_PLAN_TOKEN_ENVIRONMENT,
 	NATIVE_CLAUDE_TERMINAL,
+	NATIVE_ISOLATION_HOME_SOCKET,
 	NATIVE_ISOLATION_WORKSPACE,
 	nativeIsolationEgressHosts,
 	nativeIsolationInvocation,
@@ -217,6 +218,25 @@ it("bind-mounts workspace to a fixed virtual path when workspaceMount is configu
 	for (const bad of ["/", "/usr", "/tmp", "workspace", "/work space", "/workspace/.."])
 		expect(() => nativeIsolationInvocation({ ...base, workspaceMount: bad })).toThrow(
 			"Invalid native isolation workspace mount",
+		);
+});
+
+it("bind-mounts homeSocket to a fixed virtual path when homeSocketMount is configured", () => {
+	const homeSocket = `${scratch}/exec.sock`;
+	const mounted = nativeIsolationInvocation({
+		...base,
+		homeSocket,
+		homeSocketMount: NATIVE_ISOLATION_HOME_SOCKET,
+	});
+	const idx = mounted.args.indexOf(homeSocket);
+	expect(idx).toBeGreaterThan(0);
+	expect(mounted.args.slice(idx - 1, idx + 2)).toEqual(["--ro-bind", homeSocket, NATIVE_ISOLATION_HOME_SOCKET]);
+	expect(() => nativeIsolationInvocation({ ...base, homeSocketMount: NATIVE_ISOLATION_HOME_SOCKET })).toThrow(
+		"The home's socket is the run's own",
+	);
+	for (const bad of ["/", "/etc/exec.sock", "/tmp/exec.sock", "run/exec.sock", "/run/a b/exec.sock"])
+		expect(() => nativeIsolationInvocation({ ...base, homeSocket, homeSocketMount: bad })).toThrow(
+			"Invalid native isolation home socket mount",
 		);
 });
 
