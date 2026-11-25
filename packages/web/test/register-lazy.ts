@@ -15,6 +15,7 @@ import { SearchWindow } from "../src/app/views/search-window.ts";
 import * as settingsView from "../src/app/views/settings.ts";
 import * as goodWillView from "../src/app/views/settings-good-will.ts";
 import { registerLazyShellModules } from "../src/app/views/shell.ts";
+import * as siteView from "../src/app/views/site-view.ts";
 import * as surfaceMigrationSheet from "../src/app/views/surface-migration-sheet.ts";
 import * as surfaceView from "../src/app/views/surface-view.ts";
 import * as teamView from "../src/app/views/team.ts";
@@ -25,6 +26,7 @@ registerLazyApplicationModules({
 	companyFolder,
 	concepts,
 	surfaceView,
+	siteView,
 	settingsView,
 	friendsWindow,
 	feedbackView,
