@@ -98,7 +98,7 @@ function surfaceLayoutPath(folderRoot: string | null | undefined): string {
 	return root ? `${root}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
 }
 
-const SOURCE_FIELDS = new Set(["from", "model", "tint", "name", "line"]);
+const SOURCE_FIELDS = new Set(["from", "dark", "model", "tint", "name", "line"]);
 
 function bindingsOf(value: unknown): string[] {
 	if (typeof value === "string") return [value];
@@ -248,8 +248,9 @@ export class SurfaceLayoutView {
 	plan(input: SurfaceLayoutInput): SurfaceLayoutPlan {
 		const layoutPath = surfaceLayoutPath(input.surface.folderRoot);
 		const text = input.files[layoutPath];
-		const read = text === undefined ? undefined : readSurfaceLayout(text);
+		const read = text === undefined ? undefined : readSurfaceLayout(text, input.starter);
 		const own = read && "layout" in read ? read.layout : undefined;
+		const extended = Boolean(read && "layout" in read && read.extended);
 		const layout: SurfaceLayoutRead = own ?? starterSurfaceLayout(input.starter);
 		const ctx = createBlockContext({
 			surface: input.surface,
@@ -260,7 +261,7 @@ export class SurfaceLayoutView {
 			company: input.company,
 			briefSummary: input.briefSummary,
 			signal: this.#options.signal,
-			fromStarter: own === undefined,
+			fromStarter: own === undefined || extended,
 		});
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();

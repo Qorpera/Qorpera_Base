@@ -2,6 +2,7 @@ import { WireValueError } from "./wire-values.ts";
 
 export const SURFACE_LAYOUT_PATH = "layout.json";
 export const SURFACE_LAYOUT_SCHEMA = "qorpera.surface-layout/v1";
+export const SURFACE_LAYOUT_EXTENDS_STARTER = "starter";
 export const SURFACE_LAYOUT_MAX_BYTES = 64 * 1024;
 export const SURFACE_LAYOUT_MAX_TABS = 12;
 export const SURFACE_LAYOUT_MAX_TAB_NODES = 24;
@@ -90,6 +91,7 @@ export interface SurfacePaletteBlock extends SurfaceBlockBase {
 export interface SurfaceBrandMarkBlock extends SurfaceBlockBase {
 	readonly type: "brand_mark";
 	readonly from: string;
+	readonly dark?: string;
 	readonly grounds: readonly SurfaceBrandGround[];
 	readonly heading?: string;
 }
@@ -251,7 +253,9 @@ export interface SurfaceLayoutRead {
 	readonly tabs: readonly SurfaceTab<SurfaceReadNode>[];
 }
 
-export type SurfaceLayoutReadResult = { readonly layout: SurfaceLayoutRead } | { readonly problem: string };
+export type SurfaceLayoutReadResult =
+	| { readonly layout: SurfaceLayoutRead; readonly extended?: boolean }
+	| { readonly problem: string };
 
 export type SurfaceBlockFieldKind =
 	| "source"
@@ -338,6 +342,13 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 				kind: "file",
 				required: true,
 				note: "a picture file",
+				accepts: SURFACE_PICTURE_EXTENSIONS,
+			},
+			{
+				name: "dark",
+				kind: "file",
+				required: false,
+				note: "dark-ground picture",
 				accepts: SURFACE_PICTURE_EXTENSIONS,
 			},
 			{ name: "grounds", kind: "grounds", required: false, note: "default both" },
@@ -480,7 +491,7 @@ const FIELD_KIND_WORDS: Readonly<Record<SurfaceBlockFieldKind, string>> = {
 
 export function describeSurfaceBlocks(): string {
 	const lines = [
-		`${SURFACE_LAYOUT_PATH} at the interface folder's root sets the page: {"schema":"${SURFACE_LAYOUT_SCHEMA}","tabs":[{"id","title","blocks":[...]}]}.`,
+		`${SURFACE_LAYOUT_PATH} at the interface folder's root sets the page: {"schema":"${SURFACE_LAYOUT_SCHEMA}","tabs":[{"id","title","blocks":[...]}]}, or extend the starter with {"schema":"${SURFACE_LAYOUT_SCHEMA}","extends":"${SURFACE_LAYOUT_EXTENDS_STARTER}","drop"?:[tabId],"tabs"?:[{"id","title","after"|"before"?:tabId,"blocks":[...]}]} (same id replaces a starter tab).`,
 		`1-${SURFACE_LAYOUT_MAX_TABS} tabs; at most ${SURFACE_LAYOUT_MAX_TAB_NODES} blocks a tab (a row and its blocks each count) and ${SURFACE_LAYOUT_MAX_BLOCKS} in all. Tab title <=${SURFACE_LAYOUT_TAB_TITLE_CHARS} chars, label <=${SURFACE_LAYOUT_LABEL_CHARS}.`,
 		'A source is "file.json#/pointer", "file" for a whole file, or {"value": ...} held in the layout; a string always names a file, never a literal. Paths are relative to the interface folder; a leading / names a company file, e.g. /identity/tokens.json.',
 		`A source may be a list of ${SURFACE_SOURCE_MIN_CHOICES}-${SURFACE_SOURCE_MAX_CHOICES} sources tried in order; the first found wins.`,
@@ -1001,19 +1012,72 @@ function checkAcrossBlocks(
 	});
 }
 
-function parseTabShell(value: unknown, label: string): { id: string; title: string; blocks: unknown[] } {
-	const raw = parseClosed(value, label, "a tab", ["id", "title", "blocks"], ["id", "title", "blocks"]);
+interface TabShell {
+	readonly id: string;
+	readonly title: string;
+	readonly blocks: unknown[];
+	readonly after?: string;
+	readonly before?: string;
+}
+
+function parseTabShell(value: unknown, label: string, allowPlacement = false): TabShell {
+	const fields = allowPlacement ? ["id", "title", "blocks", "after", "before"] : ["id", "title", "blocks"];
+	const raw = parseClosed(value, label, "a tab", fields, ["id", "title", "blocks"]);
 	const id = parseId(raw.id, `${label}.id`);
 	const title = parseText(raw.title, `${label}.title`, SURFACE_LAYOUT_TAB_TITLE_CHARS, "a tab title");
 	if (!Array.isArray(raw.blocks)) fail(`${label}.blocks`, "must be a list of blocks");
-	return { id, title, blocks: raw.blocks };
+	const after = raw.after !== undefined ? parseId(raw.after, `${label}.after`) : undefined;
+	const before = raw.before !== undefined ? parseId(raw.before, `${label}.before`) : undefined;
+	if (after !== undefined && before !== undefined) fail(label, "cannot set both after and before");
+	if (after === id) fail(`${label}.after`, "cannot name its own tab id");
+	if (before === id) fail(`${label}.before`, "cannot name its own tab id");
+	return {
+		id,
+		title,
+		blocks: raw.blocks,
+		...(after !== undefined ? { after } : {}),
+		...(before !== undefined ? { before } : {}),
+	};
 }
 
 function utf8Bytes(text: string): number {
 	return new TextEncoder().encode(text).byteLength;
 }
 
-export function parseSurfaceLayout(value: unknown): SurfaceLayout {
+function parseStrictTabs(
+	rawTabs: unknown,
+	allowPlacement: boolean,
+): { id: string; title: string; blocks: SurfaceLayoutNode[]; after?: string; before?: string }[] {
+	const tabs = parseList(rawTabs, "layout.tabs", 1, SURFACE_LAYOUT_MAX_TABS, (item, at) => {
+		const shell = parseTabShell(item, at, allowPlacement);
+		if (shell.blocks.length < 1) fail(`${at}.blocks`, "is empty; a tab holds at least one block");
+		const blocks = shell.blocks.map((node, index) => parseNode(node, `${at}.blocks[${index}]`));
+		const count = nodeCount(blocks);
+		if (count > SURFACE_LAYOUT_MAX_TAB_NODES) {
+			fail(
+				`${at}.blocks`,
+				`holds ${count} blocks; a tab holds at most ${SURFACE_LAYOUT_MAX_TAB_NODES}, a row and the blocks in it each counted`,
+			);
+		}
+		return {
+			id: shell.id,
+			title: shell.title,
+			blocks,
+			...(shell.after !== undefined ? { after: shell.after } : {}),
+			...(shell.before !== undefined ? { before: shell.before } : {}),
+		};
+	});
+	const tabIds = new Map<string, number>();
+	tabs.forEach((tab, index) => {
+		const first = tabIds.get(tab.id);
+		if (first !== undefined)
+			fail(`layout.tabs[${index}].id`, `repeats the id of layout.tabs[${first}]; tab ids must be unique`);
+		tabIds.set(tab.id, index);
+	});
+	return tabs;
+}
+
+export function parseSurfaceLayout(value: unknown, starter?: SurfaceStarterKind): SurfaceLayout {
 	let encoded: string | undefined;
 	try {
 		encoded = JSON.stringify(value);
@@ -1024,28 +1088,76 @@ export function parseSurfaceLayout(value: unknown): SurfaceLayout {
 	if (utf8Bytes(encoded) > SURFACE_LAYOUT_MAX_BYTES) {
 		fail("layout", `is larger than ${SURFACE_LAYOUT_MAX_BYTES} bytes; split long values into their own files`);
 	}
-	const raw = parseClosed(value, "layout", "the layout", ["schema", "tabs"], ["schema", "tabs"]);
-	if (raw.schema !== SURFACE_LAYOUT_SCHEMA) fail("layout.schema", `must be "${SURFACE_LAYOUT_SCHEMA}"`);
-	const tabs = parseList(raw.tabs, "layout.tabs", 1, SURFACE_LAYOUT_MAX_TABS, (item, at) => {
-		const shell = parseTabShell(item, at);
-		if (shell.blocks.length < 1) fail(`${at}.blocks`, "is empty; a tab holds at least one block");
-		const blocks = shell.blocks.map((node, index) => parseNode(node, `${at}.blocks[${index}]`));
-		const count = nodeCount(blocks);
-		if (count > SURFACE_LAYOUT_MAX_TAB_NODES) {
-			fail(
-				`${at}.blocks`,
-				`holds ${count} blocks; a tab holds at most ${SURFACE_LAYOUT_MAX_TAB_NODES}, a row and the blocks in it each counted`,
-			);
+	let tabs: { id: string; title: string; blocks: SurfaceLayoutNode[] }[];
+	if (isPlainObject(value) && Object.hasOwn(value, "extends")) {
+		const raw = parseClosed(
+			value,
+			"layout",
+			"the layout",
+			["schema", "extends", "drop", "tabs"],
+			["schema", "extends"],
+		);
+		if (raw.schema !== SURFACE_LAYOUT_SCHEMA) fail("layout.schema", `must be "${SURFACE_LAYOUT_SCHEMA}"`);
+		if (raw.extends !== SURFACE_LAYOUT_EXTENDS_STARTER) {
+			fail("layout.extends", `must be "${SURFACE_LAYOUT_EXTENDS_STARTER}"`);
 		}
-		return { id: shell.id, title: shell.title, blocks };
-	});
-	const tabIds = new Map<string, number>();
-	tabs.forEach((tab, index) => {
-		const first = tabIds.get(tab.id);
-		if (first !== undefined)
-			fail(`layout.tabs[${index}].id`, `repeats the id of layout.tabs[${first}]; tab ids must be unique`);
-		tabIds.set(tab.id, index);
-	});
+		if (raw.tabs === undefined && raw.drop === undefined) {
+			fail("layout", "must hold tabs or drop when extending the starter");
+		}
+		const drop =
+			raw.drop === undefined
+				? []
+				: parseList(raw.drop, "layout.drop", 1, SURFACE_LAYOUT_MAX_TABS, (item, at) => parseId(item, at));
+		const dropSeen = new Map<string, number>();
+		drop.forEach((id, index) => {
+			const first = dropSeen.get(id);
+			if (first !== undefined)
+				fail(`layout.drop[${index}]`, `repeats layout.drop[${first}]; dropped tab ids must be unique`);
+			dropSeen.set(id, index);
+		});
+		const overlayTabs = raw.tabs === undefined ? [] : parseStrictTabs(raw.tabs, true);
+		const overlayIds = new Set(overlayTabs.map((tab) => tab.id));
+		drop.forEach((id, index) => {
+			if (overlayIds.has(id))
+				fail(`layout.drop[${index}]`, `cannot drop tab "${id}" while layout.tabs also defines it`);
+		});
+		if (starter !== undefined) {
+			const base = starterSurfaceLayout(starter).tabs;
+			const baseIds = new Set(base.map((tab) => tab.id));
+			drop.forEach((id, index) => {
+				if (!baseIds.has(id)) fail(`layout.drop[${index}]`, `names no tab in the ${starter} starter`);
+			});
+			const merged: { id: string; title: string; blocks: SurfaceLayoutNode[] }[] = base
+				.filter((tab) => !dropSeen.has(tab.id))
+				.map((tab) => ({ id: tab.id, title: tab.title, blocks: [...tab.blocks] }));
+			overlayTabs.forEach((tab, index) => {
+				const clean = { id: tab.id, title: tab.title, blocks: tab.blocks };
+				const existing = merged.findIndex((item) => item.id === tab.id);
+				if (tab.after === undefined && tab.before === undefined) {
+					if (existing >= 0) merged[existing] = clean;
+					else merged.push(clean);
+					return;
+				}
+				if (existing >= 0) merged.splice(existing, 1);
+				const anchor = tab.after ?? tab.before!;
+				const field = tab.after !== undefined ? "after" : "before";
+				const at = merged.findIndex((item) => item.id === anchor);
+				if (at < 0) fail(`layout.tabs[${index}].${field}`, `names no tab "${anchor}" in the layout`);
+				merged.splice(tab.after !== undefined ? at + 1 : at, 0, clean);
+			});
+			if (merged.length < 1) fail("layout.drop", "removes every tab; a layout must keep at least one tab");
+			if (merged.length > SURFACE_LAYOUT_MAX_TABS) {
+				fail("layout.tabs", `would leave ${merged.length} tabs; a layout holds at most ${SURFACE_LAYOUT_MAX_TABS}`);
+			}
+			tabs = merged;
+		} else {
+			tabs = overlayTabs.map(({ id, title, blocks }) => ({ id, title, blocks }));
+		}
+	} else {
+		const raw = parseClosed(value, "layout", "the layout", ["schema", "tabs"], ["schema", "tabs"]);
+		if (raw.schema !== SURFACE_LAYOUT_SCHEMA) fail("layout.schema", `must be "${SURFACE_LAYOUT_SCHEMA}"`);
+		tabs = parseStrictTabs(raw.tabs, false).map(({ id, title, blocks }) => ({ id, title, blocks }));
+	}
 	const total = tabs.reduce((sum, tab) => sum + leafCount(tab.blocks), 0);
 	if (total > SURFACE_LAYOUT_MAX_BLOCKS) {
 		fail(
@@ -1057,7 +1169,7 @@ export function parseSurfaceLayout(value: unknown): SurfaceLayout {
 	return { schema: SURFACE_LAYOUT_SCHEMA, tabs };
 }
 
-export function parseSurfaceLayoutText(text: string): SurfaceLayout {
+export function parseSurfaceLayoutText(text: string, starter?: SurfaceStarterKind): SurfaceLayout {
 	if (utf8Bytes(text) > SURFACE_LAYOUT_MAX_BYTES) {
 		fail("layout", `is larger than ${SURFACE_LAYOUT_MAX_BYTES} bytes; split long values into their own files`);
 	}
@@ -1067,10 +1179,23 @@ export function parseSurfaceLayoutText(text: string): SurfaceLayout {
 	} catch {
 		fail("layout", "is not valid JSON");
 	}
-	return parseSurfaceLayout(value);
+	return parseSurfaceLayout(value, starter);
 }
 
-export function readSurfaceLayout(text: string): SurfaceLayoutReadResult {
+function finalizeReadTabs(tabs: { id: string; title: string; blocks: SurfaceReadNode[] }[]): SurfaceLayoutRead {
+	checkAcrossBlocks(tabs, (place, label, problem) => {
+		const block = place.block;
+		if (block.type === "swatch_row" && label.endsWith(".tints")) {
+			const { tints: _dropped, ...rest } = block;
+			place.replace(rest);
+		} else {
+			place.replace({ type: "unknown", reason: `${label} ${problem}` });
+		}
+	});
+	return { schema: SURFACE_LAYOUT_SCHEMA, tabs };
+}
+
+export function readSurfaceLayout(text: string, starter?: SurfaceStarterKind): SurfaceLayoutReadResult {
 	if (utf8Bytes(text) > SURFACE_LAYOUT_MAX_BYTES) return { problem: `larger than ${SURFACE_LAYOUT_MAX_BYTES} bytes` };
 	let value: unknown;
 	try {
@@ -1080,13 +1205,81 @@ export function readSurfaceLayout(text: string): SurfaceLayoutReadResult {
 	}
 	if (!isPlainObject(value)) return { problem: "not a JSON object" };
 	if (value.schema !== SURFACE_LAYOUT_SCHEMA) return { problem: `schema is not ${SURFACE_LAYOUT_SCHEMA}` };
+	if (Object.hasOwn(value, "extends")) {
+		if (value.extends !== SURFACE_LAYOUT_EXTENDS_STARTER) {
+			return { problem: `extends is not "${SURFACE_LAYOUT_EXTENDS_STARTER}"` };
+		}
+		if (starter === undefined) return { problem: "extends starter, which is unknown" };
+		const hasDrop = Array.isArray(value.drop);
+		const hasTabs = Array.isArray(value.tabs);
+		if (!hasDrop && !hasTabs) return { problem: "no tabs or drop" };
+		const dropSet = new Set<string>();
+		if (hasDrop) {
+			for (const item of value.drop as unknown[]) {
+				try {
+					dropSet.add(parseId(item, "layout.drop"));
+				} catch {}
+			}
+		}
+		const tabs: { id: string; title: string; blocks: SurfaceReadNode[] }[] = starterSurfaceLayout(starter)
+			.tabs.filter((tab) => !dropSet.has(tab.id))
+			.map((tab) => ({ id: tab.id, title: tab.title, blocks: [...tab.blocks] }));
+		if (hasTabs) {
+			const seenOverlay = new Set<string>();
+			(value.tabs as unknown[]).forEach((item, index) => {
+				let shell: TabShell;
+				try {
+					shell = parseTabShell(item, `layout.tabs[${index}]`, true);
+				} catch {
+					return;
+				}
+				if (seenOverlay.has(shell.id)) return;
+				seenOverlay.add(shell.id);
+				const blocks: SurfaceReadNode[] = [];
+				let nodes = 0;
+				for (const [slot, raw] of shell.blocks.entries()) {
+					const node = readNode(raw, `layout.tabs[${index}].blocks[${slot}]`);
+					const size = node.type === "row" ? 1 + node.blocks.length : 1;
+					if (nodes + size > SURFACE_LAYOUT_MAX_TAB_NODES) break;
+					nodes += size;
+					blocks.push(node);
+				}
+				const clean = { id: shell.id, title: shell.title, blocks };
+				const existing = tabs.findIndex((tab) => tab.id === shell.id);
+				if (existing < 0 && tabs.length >= SURFACE_LAYOUT_MAX_TABS) return;
+				if (shell.after === undefined && shell.before === undefined) {
+					if (existing >= 0) tabs[existing] = clean;
+					else tabs.push(clean);
+					return;
+				}
+				if (existing >= 0) tabs.splice(existing, 1);
+				const anchor = shell.after ?? shell.before!;
+				const at = tabs.findIndex((tab) => tab.id === anchor);
+				if (at < 0) tabs.push(clean);
+				else tabs.splice(shell.after !== undefined ? at + 1 : at, 0, clean);
+			});
+		}
+		let budget = SURFACE_LAYOUT_MAX_BLOCKS;
+		for (const tab of tabs) {
+			const kept: SurfaceReadNode[] = [];
+			for (const node of tab.blocks) {
+				const leaves = node.type === "row" ? node.blocks.length : 1;
+				if (leaves > budget) break;
+				budget -= leaves;
+				kept.push(node);
+			}
+			tab.blocks = kept;
+		}
+		if (tabs.length === 0) return { problem: "no usable tab" };
+		return { layout: finalizeReadTabs(tabs), extended: true };
+	}
 	if (!Array.isArray(value.tabs)) return { problem: "no tabs list" };
 	const tabs: { id: string; title: string; blocks: SurfaceReadNode[] }[] = [];
 	const tabIds = new Set<string>();
 	let budget = SURFACE_LAYOUT_MAX_BLOCKS;
 	value.tabs.forEach((item, index) => {
 		if (tabs.length >= SURFACE_LAYOUT_MAX_TABS) return;
-		let shell: { id: string; title: string; blocks: unknown[] };
+		let shell: TabShell;
 		try {
 			shell = parseTabShell(item, `layout.tabs[${index}]`);
 		} catch {
@@ -1108,16 +1301,7 @@ export function readSurfaceLayout(text: string): SurfaceLayoutReadResult {
 		tabs.push({ id: shell.id, title: shell.title, blocks });
 	});
 	if (tabs.length === 0) return { problem: "no usable tab" };
-	checkAcrossBlocks(tabs, (place, label, problem) => {
-		const block = place.block;
-		if (block.type === "swatch_row" && label.endsWith(".tints")) {
-			const { tints: _dropped, ...rest } = block;
-			place.replace(rest);
-		} else {
-			place.replace({ type: "unknown", reason: `${label} ${problem}` });
-		}
-	});
-	return { layout: { schema: SURFACE_LAYOUT_SCHEMA, tabs } };
+	return { layout: finalizeReadTabs(tabs) };
 }
 
 export const SURFACE_STARTER_KINDS = ["product", "identity", "custom"] as const;
@@ -1228,6 +1412,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 							type: "brand_mark",
 							id: "logo",
 							from: "/identity/logo.svg",
+							dark: "/identity/logo-dark.svg",
 							grounds: ["light", "dark"],
 							heading: "Logo",
 						},
@@ -1235,6 +1420,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 							type: "brand_mark",
 							id: "wordmark",
 							from: "/identity/wordmark.svg",
+							dark: "/identity/wordmark-dark.svg",
 							grounds: ["light", "dark"],
 							heading: "Wordmark",
 						},

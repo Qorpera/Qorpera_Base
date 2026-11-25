@@ -11,11 +11,14 @@ import {
 	describeSurfaceFormats,
 	IDENTITY_BRIEF_PATH,
 	IDENTITY_COMPANY_PATH,
+	IDENTITY_LOGO_DARK_PATH,
 	IDENTITY_LOGO_PATH,
 	IDENTITY_SHARED_ASSET_PATHS,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	IDENTITY_VOICE_PATH,
+	IDENTITY_WORDMARK_DARK_PATH,
+	IDENTITY_WORDMARK_PATH,
 	type PointToChangeTarget,
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
@@ -94,6 +97,9 @@ const IDENTITY_ASSET_BYTE_LIMITS: Readonly<Record<(typeof IDENTITY_SHARED_ASSET_
 	[IDENTITY_TOKENS_JSON_PATH]: MAX_IDENTITY_TOKENS_BYTES,
 	[IDENTITY_TOKENS_CSS_PATH]: MAX_IDENTITY_TOKENS_BYTES,
 	[IDENTITY_LOGO_PATH]: MAX_SHARED_ASSET_BYTES,
+	[IDENTITY_LOGO_DARK_PATH]: MAX_SHARED_ASSET_BYTES,
+	[IDENTITY_WORDMARK_PATH]: MAX_SHARED_ASSET_BYTES,
+	[IDENTITY_WORDMARK_DARK_PATH]: MAX_SHARED_ASSET_BYTES,
 	[IDENTITY_COMPANY_PATH]: MAX_SHARED_ASSET_BYTES,
 };
 
@@ -107,6 +113,12 @@ export interface SurfaceSharedAssetsSnapshot extends SurfaceSharedAssetsContext 
 	readonly productCatalogJson: string | null;
 	readonly logoSvg: string | null;
 	readonly hasLogoSvg: boolean;
+	readonly logoDarkSvg: string | null;
+	readonly hasLogoDarkSvg: boolean;
+	readonly wordmarkSvg: string | null;
+	readonly hasWordmarkSvg: boolean;
+	readonly wordmarkDarkSvg: string | null;
+	readonly hasWordmarkDarkSvg: boolean;
 }
 
 export interface SurfaceFolderTextReader {
@@ -518,6 +530,12 @@ export async function loadSurfaceSharedAssets(
 	const productCatalogJson = catalogEntries.find(([, text]) => text !== null)?.[1] ?? null;
 	const logoSvg = byPath.get(IDENTITY_LOGO_PATH) ?? null;
 	const hasLogoSvg = logoSvg !== null;
+	const logoDarkSvg = byPath.get(IDENTITY_LOGO_DARK_PATH) ?? null;
+	const hasLogoDarkSvg = logoDarkSvg !== null;
+	const wordmarkSvg = byPath.get(IDENTITY_WORDMARK_PATH) ?? null;
+	const hasWordmarkSvg = wordmarkSvg !== null;
+	const wordmarkDarkSvg = byPath.get(IDENTITY_WORDMARK_DARK_PATH) ?? null;
+	const hasWordmarkDarkSvg = wordmarkDarkSvg !== null;
 	if (
 		!briefMarkdown &&
 		!voiceSummary &&
@@ -526,7 +544,10 @@ export async function loadSurfaceSharedAssets(
 		!companyProfileJson &&
 		!productSpecsJson &&
 		!productCatalogJson &&
-		!hasLogoSvg
+		!hasLogoSvg &&
+		!hasLogoDarkSvg &&
+		!hasWordmarkSvg &&
+		!hasWordmarkDarkSvg
 	) {
 		return null;
 	}
@@ -540,6 +561,12 @@ export async function loadSurfaceSharedAssets(
 		productCatalogJson,
 		logoSvg,
 		hasLogoSvg,
+		logoDarkSvg,
+		hasLogoDarkSvg,
+		wordmarkSvg,
+		hasWordmarkSvg,
+		wordmarkDarkSvg,
+		hasWordmarkDarkSvg,
 	};
 }
 
@@ -559,7 +586,7 @@ export function extractPointToChangeTarget(originRef: unknown): PointToChangeTar
 
 const STUDIO_PAGE_RULES = [
 	"Put values in the files the layout binds; the page draws them from there.",
-	`Change the page's shape by staging ${SURFACE_LAYOUT_PATH} with stage_surface_patch like any other file: it shows in Changes and is approved like content. A layout that does not parse is refused when it is staged (checked on top of this session's own waiting changes, not other sessions'); deleting ${SURFACE_LAYOUT_PATH} brings back the starter.`,
+	`Change the page's shape by staging ${SURFACE_LAYOUT_PATH} with stage_surface_patch like any other file: it shows in Changes and is approved like content. To add, replace or drop starter tabs without copying the whole starter, set "extends":"starter" (with optional "drop" and "tabs" carrying optional "after"/"before"). A layout that does not parse is refused when it is staged (checked on top of this session's own waiting changes, not other sessions'); deleting ${SURFACE_LAYOUT_PATH} brings back the starter.`,
 	`Figures filled from an object show only values of at most ${SURFACE_FACT_FIGURE_CHARS} characters.`,
 	"A module is a folder (modules/<name>/) with index.html and its own css and js linked relatively: no network, nothing from outside its folder except tokens.css / qorpera-identity.css, and an auto module must not size itself by the viewport (100vh).",
 	"An artifacts block shows only what no other block draws; add one to any tab in layout.json when that tab should show vector art, pictures, notes, pages or extra files.",
@@ -580,6 +607,7 @@ export type SurfaceStudioPageView =
 			readonly page: "layout";
 			readonly layout: SurfaceLayoutRead;
 			readonly own: boolean;
+			readonly extended: boolean;
 			readonly starter: SurfaceStarterKind;
 			readonly problem: string | null;
 	  }
@@ -614,8 +642,8 @@ export function surfaceStudioPageView(
 ): SurfaceStudioPageView {
 	if (!contents) return { page: "unknown" };
 	const text = contents.files[`${folderRoot}/${SURFACE_LAYOUT_PATH}`];
-	const read = text === undefined ? undefined : readSurfaceLayout(text);
-	const own = read && "layout" in read ? read.layout : undefined;
+	const standaloneRead = text === undefined ? undefined : readSurfaceLayout(text);
+	const hasStandaloneLayout = standaloneRead !== undefined && "layout" in standaloneRead;
 	const known = surfaceStudioPageWhenKnown({
 		archetype: input.surfaceArchetype ?? "studio",
 		kind: storedSurfaceKind(input.surfaceKind),
@@ -624,15 +652,18 @@ export function surfaceStudioPageView(
 		isGlobal: input.surfaceIsGlobal ?? null,
 		paths: Object.keys(contents.files),
 		hasModel: surfaceFilesHaveModel(contents.files, Object.keys(contents.binaries)),
-		hasOwnLayout: own !== undefined,
+		hasOwnLayout: hasStandaloneLayout,
 	});
 	if (!known) return { page: "unknown" };
 	if (known.page === null) return { page: "none" };
 	if (known.page === "report") return { page: "report" };
+	const read = text === undefined ? undefined : readSurfaceLayout(text, known.starter);
+	const own = read && "layout" in read ? read.layout : undefined;
 	return {
 		page: "layout",
 		layout: own ?? starterSurfaceLayout(known.starter),
 		own: own !== undefined,
+		extended: Boolean(read && "layout" in read && read.extended),
 		starter: known.starter,
 		problem: read && "problem" in read ? read.problem : null,
 	};
@@ -660,7 +691,9 @@ function describeStudioPage(
 		return `${rules}\n\n${blocks}\n\n## This page\nIts layout is not known for this turn; read ${layoutFile} if it exists before you change the page's shape.\n\n## File formats\n${explainerBlock}`;
 	}
 	const source = view.own
-		? `Drawn from ${layoutFile}:`
+		? view.extended
+			? `Drawn from ${layoutFile} (extends the ${view.starter} starter; resolved page below — read ${layoutFile} before editing it):`
+			: `Drawn from ${layoutFile}:`
 		: view.problem
 			? `${layoutFile} does not read (${view.problem}), so the page shows the ${view.starter} starter:`
 			: `No ${layoutFile} yet, so the page shows the ${view.starter} starter:`;
@@ -1040,7 +1073,10 @@ export async function runSurfaceSessionTurn(
 				loaded.companyProfileJson ||
 				loaded.productSpecsJson ||
 				loaded.productCatalogJson ||
-				loaded.hasLogoSvg
+				loaded.hasLogoSvg ||
+				loaded.hasLogoDarkSvg ||
+				loaded.hasWordmarkSvg ||
+				loaded.hasWordmarkDarkSvg
 			) {
 				sharedAssets = {
 					tokensCss: loaded.tokensCss,
@@ -1048,6 +1084,9 @@ export async function runSurfaceSessionTurn(
 					productSpecsJson: loaded.productSpecsJson,
 					productCatalogJson: loaded.productCatalogJson,
 					hasLogoSvg: loaded.hasLogoSvg,
+					hasLogoDarkSvg: loaded.hasLogoDarkSvg,
+					hasWordmarkSvg: loaded.hasWordmarkSvg,
+					hasWordmarkDarkSvg: loaded.hasWordmarkDarkSvg,
 				};
 			}
 		}
@@ -1137,9 +1176,32 @@ export async function runSurfaceSessionTurn(
 						...(previewOverlay ? { previewOverlay } : {}),
 					})
 				: [];
+			const readStudioFiles =
+				ports.readStudioFiles ??
+				(ports.folderToolsContext ? cloudStudioFileReader(ports.folderToolsContext.folder) : undefined);
+			let contents = readStudioFiles
+				? await readStudioContents(readStudioFiles, { folderRoot, slug: input.surfaceSlug }, signal)
+				: null;
+			if (contents && previewOverlay) {
+				const layoutPath = `${folderRoot}/${SURFACE_LAYOUT_PATH}`;
+				const overlaidLayout = await previewOverlay.lookup(layoutPath, signal);
+				if (overlaidLayout?.kind === "file") {
+					contents = {
+						...contents,
+						files: { ...contents.files, [layoutPath]: overlaidLayout.content },
+					};
+				} else if (overlaidLayout?.kind === "deleted") {
+					const nextFiles = { ...contents.files };
+					delete nextFiles[layoutPath];
+					contents = { ...contents, files: nextFiles };
+				}
+			}
+			signal.throwIfAborted();
+			const view = surfaceStudioPageView(input, folderRoot, contents);
 			const layoutStaging: SurfaceLayoutStaging | undefined = effectiveFolderReader
 				? {
 						folderRoot,
+						...(view.page === "layout" ? { starter: view.starter } : {}),
 						waitingOps: input.openLayoutOps ?? null,
 						readLayout: (readSignal) =>
 							folderText(
@@ -1177,28 +1239,6 @@ export async function runSurfaceSessionTurn(
 				...folderTools,
 				...(ports.extraTools ?? []),
 			];
-			const readStudioFiles =
-				ports.readStudioFiles ??
-				(ports.folderToolsContext ? cloudStudioFileReader(ports.folderToolsContext.folder) : undefined);
-			let contents = readStudioFiles
-				? await readStudioContents(readStudioFiles, { folderRoot, slug: input.surfaceSlug }, signal)
-				: null;
-			if (contents && previewOverlay) {
-				const layoutPath = `${folderRoot}/${SURFACE_LAYOUT_PATH}`;
-				const overlaidLayout = await previewOverlay.lookup(layoutPath, signal);
-				if (overlaidLayout?.kind === "file") {
-					contents = {
-						...contents,
-						files: { ...contents.files, [layoutPath]: overlaidLayout.content },
-					};
-				} else if (overlaidLayout?.kind === "deleted") {
-					const nextFiles = { ...contents.files };
-					delete nextFiles[layoutPath];
-					contents = { ...contents, files: nextFiles };
-				}
-			}
-			signal.throwIfAborted();
-			const view = surfaceStudioPageView(input, folderRoot, contents);
 			const readSkill: CloudStudioSkillReader | undefined = folderReader
 				? (path, maxBytes, readSignal) => folderText(folderReader, path, maxBytes, readSignal)
 				: undefined;

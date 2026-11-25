@@ -8,6 +8,7 @@ import {
 	resolveSurfaceSource,
 	SURFACE_BLOCK_TYPES,
 	SURFACE_BLOCKS,
+	SURFACE_LAYOUT_EXTENDS_STARTER,
 	SURFACE_LAYOUT_MAX_BYTES,
 	SURFACE_LAYOUT_MAX_KEYS,
 	SURFACE_LAYOUT_PATH,
@@ -17,6 +18,7 @@ import {
 	type SurfaceLayout,
 	type SurfaceLayoutNode,
 	type SurfaceReadNode,
+	type SurfaceStarterKind,
 	starterSurfaceLayout,
 	surfaceCompanyPath,
 	surfaceGlobMatches,
@@ -24,9 +26,12 @@ import {
 import {
 	IDENTITY_BRIEF_PATH,
 	IDENTITY_COMPANY_PATH,
+	IDENTITY_LOGO_DARK_PATH,
 	IDENTITY_LOGO_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	IDENTITY_VOICE_PATH,
+	IDENTITY_WORDMARK_DARK_PATH,
+	IDENTITY_WORDMARK_PATH,
 } from "../src/surface-shared-assets.ts";
 import { WireValueError } from "../src/wire-values.ts";
 
@@ -36,9 +41,9 @@ function layoutWith(blocks: unknown[], extraTabs: unknown[] = []): unknown {
 	return { schema: SCHEMA, tabs: [{ id: "main", title: "Main", blocks }, ...extraTabs] };
 }
 
-function refusal(value: unknown): string {
+function refusal(value: unknown, starter?: SurfaceStarterKind): string {
 	try {
-		parseSurfaceLayout(value);
+		parseSurfaceLayout(value, starter);
 	} catch (error) {
 		expect(error).toBeInstanceOf(WireValueError);
 		return (error as Error).message;
@@ -915,7 +920,7 @@ function nodesOf(layout: SurfaceLayout): SurfaceLayoutNode[] {
 }
 
 function sourcesOf(value: unknown, key = ""): string[] {
-	if (typeof value === "string") return ["from", "model", "tint", "name", "line"].includes(key) ? [value] : [];
+	if (typeof value === "string") return ["from", "dark", "model", "tint", "name", "line"].includes(key) ? [value] : [];
 	if (Array.isArray(value)) return value.flatMap((item) => sourcesOf(item, key));
 	if (value !== null && typeof value === "object") {
 		return Object.entries(value).flatMap(([entry, item]) => sourcesOf(item, entry));
@@ -947,7 +952,14 @@ describe("starter layouts", () => {
 		const identityPaths = sourcesOf(SURFACE_STARTER_LAYOUTS.identity).map(
 			(source) => parseSurfaceBinding(source).path,
 		);
-		for (const canonical of [IDENTITY_COMPANY_PATH, IDENTITY_TOKENS_JSON_PATH, IDENTITY_LOGO_PATH]) {
+		for (const canonical of [
+			IDENTITY_COMPANY_PATH,
+			IDENTITY_TOKENS_JSON_PATH,
+			IDENTITY_LOGO_PATH,
+			IDENTITY_LOGO_DARK_PATH,
+			IDENTITY_WORDMARK_PATH,
+			IDENTITY_WORDMARK_DARK_PATH,
+		]) {
 			expect(identityPaths).toContain(`/${canonical}`);
 		}
 		const voice = nodesOf(SURFACE_STARTER_LAYOUTS.identity).find(
@@ -1069,5 +1081,161 @@ describe("explainer block", () => {
 			),
 		).toContain("explainer needs from or match");
 		expect(refusal(layoutWith([{ type: "explainer", from: "breakdowns/ux/notes.md" }]))).toContain(".js");
+	});
+});
+
+describe("brand_mark dark picture", () => {
+	it("accepts optional dark picture paths and refuses invalid ones", () => {
+		expect(
+			parseSurfaceLayout(
+				layoutWith([{ type: "brand_mark", from: "/identity/logo.svg", dark: "/identity/logo-dark.svg" }]),
+			).tabs[0]?.blocks[0],
+		).toEqual({
+			type: "brand_mark",
+			from: "/identity/logo.svg",
+			dark: "/identity/logo-dark.svg",
+			grounds: ["light", "dark"],
+		});
+		expect(refusal(layoutWith([{ type: "brand_mark", from: "logo.svg", dark: "logo-dark.svg#/x" }]))).toContain(
+			"whole file",
+		);
+		expect(refusal(layoutWith([{ type: "brand_mark", from: "logo.svg", dark: "logo-dark.json" }]))).toContain(
+			".svg, .png",
+		);
+	});
+});
+
+describe("extends starter", () => {
+	it("adds, places, replaces, and drops tabs on top of the starter while keeping untouched starter tabs", () => {
+		const extended = parseSurfaceLayout(
+			{
+				schema: SCHEMA,
+				extends: SURFACE_LAYOUT_EXTENDS_STARTER,
+				drop: ["breakdowns"],
+				tabs: [
+					{
+						id: "web-app-mockups",
+						title: "Web app mockups",
+						after: "overview",
+						blocks: [{ type: "artifacts", id: "mockup-gallery", match: ["/identity/mockups/*.html"] }],
+					},
+					{
+						id: "voice",
+						title: "Tone of voice",
+						before: "strategy",
+						blocks: [{ type: "artifacts", id: "voice", match: ["/identity/voice.md"] }],
+					},
+				],
+			},
+			"identity",
+		);
+		expect(extended.tabs.map((tab) => tab.id)).toEqual([
+			"overview",
+			"web-app-mockups",
+			"voice",
+			"strategy",
+			"philosophy",
+			"system",
+		]);
+		expect(extended.tabs[0]).toEqual(starterSurfaceLayout("identity").tabs[0]);
+		expect(extended.tabs[2]?.title).toBe("Tone of voice");
+
+		const readResult = readSurfaceLayout(
+			JSON.stringify({
+				schema: SCHEMA,
+				extends: SURFACE_LAYOUT_EXTENDS_STARTER,
+				drop: ["nonexistent-old-tab"],
+				tabs: [
+					{
+						id: "web-app-mockups",
+						title: "Web app mockups",
+						after: "overview",
+						blocks: [{ type: "artifacts", id: "mockup-gallery", match: ["/identity/mockups/*.html"] }],
+					},
+				],
+			}),
+			"identity",
+		);
+		expect("layout" in readResult && readResult.extended).toBe(true);
+		if ("layout" in readResult) {
+			expect(readResult.layout.tabs.map((tab) => tab.id)).toEqual([
+				"overview",
+				"web-app-mockups",
+				"strategy",
+				"philosophy",
+				"voice",
+				"system",
+				"breakdowns",
+			]);
+		}
+		expect(
+			readSurfaceLayout(
+				JSON.stringify({
+					schema: SCHEMA,
+					extends: SURFACE_LAYOUT_EXTENDS_STARTER,
+					tabs: [{ id: "extra", title: "Extra", blocks: [{ type: "artifacts" }] }],
+				}),
+			),
+		).toEqual({ problem: "extends starter, which is unknown" });
+	});
+
+	it("refuses malformed starter extensions, invalid anchors, unknown drops, and block id collisions with starter tabs", () => {
+		expect(refusal({ schema: SCHEMA, extends: "custom", tabs: [] })).toContain('layout.extends must be "starter"');
+		expect(refusal({ schema: SCHEMA, extends: "starter" })).toContain("must hold tabs or drop");
+		expect(refusal({ schema: SCHEMA, extends: "starter", drop: ["missing"] }, "identity")).toContain(
+			"names no tab in the identity starter",
+		);
+		expect(
+			refusal(
+				{
+					schema: SCHEMA,
+					extends: "starter",
+					drop: ["voice"],
+					tabs: [{ id: "voice", title: "Voice", blocks: [{ type: "artifacts" }] }],
+				},
+				"identity",
+			),
+		).toContain("cannot drop tab");
+		expect(
+			refusal(
+				{
+					schema: SCHEMA,
+					extends: "starter",
+					tabs: [
+						{
+							id: "extra",
+							title: "Extra",
+							after: "overview",
+							before: "strategy",
+							blocks: [{ type: "artifacts" }],
+						},
+					],
+				},
+				"identity",
+			),
+		).toContain("cannot set both after and before");
+		expect(
+			refusal(
+				{
+					schema: SCHEMA,
+					extends: "starter",
+					tabs: [{ id: "extra", title: "Extra", after: "missing", blocks: [{ type: "artifacts" }] }],
+				},
+				"identity",
+			),
+		).toContain('names no tab "missing"');
+		expect(
+			refusal(
+				{
+					schema: SCHEMA,
+					extends: "starter",
+					tabs: [{ id: "extra", title: "Extra", blocks: [{ type: "artifacts", id: "logo" }] }],
+				},
+				"identity",
+			),
+		).toContain("repeats the id");
+		expect(refusal({ schema: SCHEMA, extends: "starter", drop: ["overview", "reports"] }, "custom")).toContain(
+			"removes every tab",
+		);
 	});
 });

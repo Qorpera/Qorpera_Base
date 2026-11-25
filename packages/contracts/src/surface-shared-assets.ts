@@ -5,6 +5,9 @@ export const IDENTITY_TOKENS_CSS_PATH = "identity/tokens.css";
 export const IDENTITY_BRIEF_PATH = "identity/brief.md";
 export const IDENTITY_VOICE_PATH = "identity/voice.md";
 export const IDENTITY_LOGO_PATH = "identity/logo.svg";
+export const IDENTITY_LOGO_DARK_PATH = "identity/logo-dark.svg";
+export const IDENTITY_WORDMARK_PATH = "identity/wordmark.svg";
+export const IDENTITY_WORDMARK_DARK_PATH = "identity/wordmark-dark.svg";
 export const IDENTITY_COMPANY_PATH = "identity/company.json";
 export const PRODUCT_SPECS_PATH = "product/specs.json";
 export const PRODUCT_CATALOG_PATH = "product/catalog.json";
@@ -15,6 +18,9 @@ export const IDENTITY_SHARED_ASSET_PATHS = [
 	IDENTITY_BRIEF_PATH,
 	IDENTITY_VOICE_PATH,
 	IDENTITY_LOGO_PATH,
+	IDENTITY_LOGO_DARK_PATH,
+	IDENTITY_WORDMARK_PATH,
+	IDENTITY_WORDMARK_DARK_PATH,
 	IDENTITY_COMPANY_PATH,
 ] as const;
 
@@ -56,7 +62,14 @@ export const SHARED_SURFACE_ASSET_LINKS: readonly SharedSurfaceAssetLink[] = [
 	{
 		id: "visual-identity",
 		label: "Visual tokens (colors, typography, radius)",
-		sourcePaths: [IDENTITY_TOKENS_JSON_PATH, IDENTITY_TOKENS_CSS_PATH, IDENTITY_LOGO_PATH],
+		sourcePaths: [
+			IDENTITY_TOKENS_JSON_PATH,
+			IDENTITY_TOKENS_CSS_PATH,
+			IDENTITY_LOGO_PATH,
+			IDENTITY_LOGO_DARK_PATH,
+			IDENTITY_WORDMARK_PATH,
+			IDENTITY_WORDMARK_DARK_PATH,
+		],
 		producedBy: ["identity"],
 		consumedBy: ["website", "web_app", "mobile_app", "product"],
 		liveSyncMode: "css_variables",

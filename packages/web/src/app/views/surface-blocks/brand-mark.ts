@@ -15,6 +15,25 @@ function svgText(text: string | undefined): string | undefined {
 	return trimmed && /<svg[\s>]/i.test(trimmed) ? trimmed : undefined;
 }
 
+function readPicture(
+	source: string | undefined,
+	ctx: SurfaceBlockContext,
+): { readonly picture: Picture; readonly changed: boolean } {
+	const path = source ? ctx.companyPath(source) : undefined;
+	if (!path) return { picture: undefined, changed: false };
+	const text = SVG_FILE_RE.test(path) ? ctx.text(path) : undefined;
+	const svg = svgText(text?.value);
+	const binary = ctx.binary(path);
+	if (svg) return { picture: { kind: "svg", src: svgDataUrl(svg) }, changed: svg !== svgText(text?.base) };
+	if (binary.value) {
+		return {
+			picture: { kind: "binary", ref: binary.value },
+			changed: binary.value.fileSha256 !== binary.base?.fileSha256,
+		};
+	}
+	return { picture: undefined, changed: Boolean(svgText(text?.base) || binary.base) };
+}
+
 export class SurfacePictures {
 	readonly #read: StudioBinaryReader;
 	readonly #signal: AbortSignal;
@@ -27,50 +46,42 @@ export class SurfacePictures {
 	}
 
 	prepare(block: SurfaceBrandMarkBlock, ctx: SurfaceBlockContext, fullscreen: StudioFullscreen): SurfaceBlockPrepared {
-		const path = ctx.companyPath(block.from);
-		let picture: Picture;
-		let changed = false;
-		if (path) {
-			const text = SVG_FILE_RE.test(path) ? ctx.text(path) : undefined;
-			const svg = svgText(text?.value);
-			const binary = ctx.binary(path);
-			if (svg) {
-				picture = { kind: "svg", src: svgDataUrl(svg) };
-				changed = svg !== svgText(text?.base);
-			} else if (binary.value) {
-				picture = { kind: "binary", ref: binary.value };
-				changed = binary.value.fileSha256 !== binary.base?.fileSha256;
-			} else {
-				changed = Boolean(svgText(text?.base) || binary.base);
-			}
-		}
+		const light = readPicture(block.from, ctx);
+		const dark = readPicture(block.dark, ctx);
+		const pictureFor = (ground: SurfaceBrandMarkBlock["grounds"][number]): Picture =>
+			ground === "dark" ? (dark.picture ?? light.picture) : light.picture;
+		const hasAny = block.grounds.some((ground) => pictureFor(ground) !== undefined);
+		const changed =
+			(block.grounds.includes("light") && light.changed) ||
+			(block.grounds.includes("dark") && (dark.changed || (!dark.picture && light.changed)));
 		const heading = block.heading ? ctx.words(block.heading) : "";
 		const name = heading || readableName(block.from);
-		const renderGrounds = (pic: Picture, className: string) => {
+		const renderGrounds = (className: string) => {
 			const grounds = h(
 				"div",
-				{ class: `${className}${pic ? "" : " is-empty"}` },
-				block.grounds.map((ground) =>
-					h(
+				{ class: `${className}${hasAny ? "" : " is-empty"}` },
+				block.grounds.map((ground) => {
+					const pic = pictureFor(ground);
+					return h(
 						"div",
 						{ class: `studio-mark-ground is-${ground}`, "data-ground": ground },
 						pic ? this.#image(pic, name) : null,
-					),
-				),
+					);
+				}),
 			);
 			grounds.style.setProperty("--studio-mark-grounds", String(block.grounds.length));
 			return grounds;
 		};
 		return {
-			filled: picture !== undefined,
+			filled: hasAny,
 			pieces: [
 				{
 					build: () => {
-						const expand = picture
+						const expand = hasAny
 							? expandButton(name, () =>
 									fullscreen.openContent(
 										name,
-										() => renderGrounds(picture, "studio-mark-grounds is-fullscreen"),
+										() => renderGrounds("studio-mark-grounds is-fullscreen"),
 										"mark",
 									),
 								)
@@ -83,7 +94,7 @@ export class SurfacePictures {
 								: expand
 									? h("div", { class: "studio-section-head is-actions-only" }, expand)
 									: null,
-							renderGrounds(picture, "studio-mark-grounds"),
+							renderGrounds("studio-mark-grounds"),
 						);
 					},
 				},

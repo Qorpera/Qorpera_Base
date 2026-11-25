@@ -852,6 +852,70 @@ describe("Identity on the layout renderer", () => {
 		store.dispose();
 	});
 
+	it("renders optional dark-ground marks on dark tiles, falls back to from when absent, marks changes, and claims dark files", async () => {
+		const darkLogo = LOGO.replace('r="4"', 'r="7"');
+		const darkWordmark = LOGO.replace('r="4"', 'r="9"');
+		const { view, store } = await open(
+			{
+				...fullIdentity(),
+				"identity/logo-dark.svg": darkLogo,
+			},
+			{
+				surface: identityStudio(),
+				ops: [{ op: "write_text", path: "wordmark-dark.svg", content: darkWordmark }],
+			},
+		);
+		const marks = [...view.el.querySelectorAll('[data-block="brand_mark"]')];
+		expect(marks).toHaveLength(2);
+		const logoImgs = [...marks[0]!.querySelectorAll<HTMLImageElement>(".studio-mark-img")].map((img) => img.src);
+		expect(logoImgs[0]).not.toBe(logoImgs[1]);
+		expect(marks[0]!.classList.contains("is-changed")).toBe(false);
+		const wordmarkImgs = [...marks[1]!.querySelectorAll<HTMLImageElement>(".studio-mark-img")].map((img) => img.src);
+		expect(wordmarkImgs[0]).not.toBe(wordmarkImgs[1]);
+		expect(marks[1]!.classList.contains("is-changed")).toBe(true);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("merges extends: starter layouts onto the starter, claims dark mark files from artifacts, and keeps starter tab localization", async () => {
+		const darkLogo = LOGO.replace('r="4"', 'r="6"');
+		const { view, tab, tabs, store } = await open(
+			{
+				...fullIdentity(),
+				"identity/logo-dark.svg": darkLogo,
+				"identity/mockups/01-home.html": "<!doctype html><html><body>Mockup</body></html>",
+				"identity/layout.json": JSON.stringify({
+					schema: "qorpera.surface-layout/v1",
+					extends: "starter",
+					drop: ["breakdowns"],
+					tabs: [
+						{
+							id: "web-app-mockups",
+							title: "Web app mockups",
+							after: "overview",
+							blocks: [
+								{
+									type: "artifacts",
+									id: "mockup-gallery",
+									match: ["/identity/**/*.html", "/identity/**/*.svg"],
+								},
+							],
+						},
+					],
+				}),
+			},
+			{ surface: identityStudio() },
+		);
+		expect(tabs()).toEqual(["Overview", "Web app mockups", "Strategy", "Philosophy", "Voice", "Design system"]);
+		const logoImgs = [...view.el.querySelectorAll<HTMLImageElement>('[data-block="brand_mark"] .studio-mark-img')];
+		expect(logoImgs[0]?.src).not.toBe(logoImgs[1]?.src);
+		tab("web-app-mockups");
+		expect(view.el.querySelector('[data-file="identity/mockups/01-home.html"]')).not.toBeNull();
+		expect(view.el.querySelector('[data-file="identity/logo-dark.svg"]')).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("reads /identity files on another interface from the company's Identity, changes included", async () => {
 		const identity = identityStudio();
 		const lamp = studio();
