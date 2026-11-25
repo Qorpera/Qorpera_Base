@@ -1686,6 +1686,16 @@ def fake_run(command, input=None, capture_output=True, text=True, timeout=None):
     if command[:3] == ["nft", "-j", "list"]:
         if "list" in world["fail"]:
             return answer(1, stderr="Error: No such file or directory")
+        if command[3] == "table":
+            return answer(stdout=json.dumps({"nftables": [
+                {"metainfo": {}},
+                {"table": {"family": "inet", "name": "qorpera_agent_exit", "handle": world["table"]}},
+                *({"chain": {"family": "inet", "table": "qorpera_agent_exit", "name": name}} for name in
+                  ["agent_out", "open", *(f"only_{p}" for p in sorted(world["only"]))]),
+                {"map": {"name": "dns_port", "elem": [[a, p] for a, p in world["map"].items()]}},
+                {"set": {"name": "dns_allowed", "elem": [{"concat": [a, p]} for a, p in world["set"]]}},
+                {"map": {"name": "reach", "elem": [[a, {"goto": {"target": c}}] for a, c in world["reach"].items()]}},
+            ]}))
         if command[3] == "tables":
             return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, {"table": {
                 "family": "inet", "name": "qorpera_agent_exit", "handle": world["table"]}}]}))

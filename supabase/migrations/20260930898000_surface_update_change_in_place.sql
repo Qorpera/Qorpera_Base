@@ -4,17 +4,17 @@ set local lock_timeout = '3s';
 do $$ begin
 	if to_regprocedure('public.qorpera_reply_surface_session(uuid,text,boolean)') is null
 		or to_regprocedure('public.qorpera_reply_surface_session_with_images(uuid,text,boolean,uuid,jsonb)') is null
-		or to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean)') is null
-		or to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid)') is null
+		or to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text)') is null
+		or to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text)') is null
 		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions,public.qorpera_runtime_workers,text,text,text,jsonb,jsonb)') is null
 		or to_regprocedure('public.qorpera_surface_normalize_paths(text,text[])') is null
 		or to_regprocedure('public.qorpera_surface_enqueue_chain_reconciliation(uuid,uuid)') is null
 		or to_regclass('public.qorpera_surface_build_handbacks') is null then
-		raise exception '20260930896000 requires surface reply, record_change, build handback, and preview lineage migrations';
+		raise exception '20260930898000 requires surface reply, record_change (20260930897000), build handback, and preview lineage migrations';
 	end if;
-	if to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid)') is not null then
-		raise exception '20260930896000 is already applied';
+	if to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid)') is not null then
+		raise exception '20260930898000 is already applied';
 	end if;
 end $$;
 
@@ -30,15 +30,15 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930896000: invalid replacement pairs for %', p_label;
+		raise exception '20260930898000: invalid replacement pairs for %', p_label;
 	end if;
 	while v_i <= array_length(p_pairs, 1) loop
 		if p_pairs[v_i] = '' then
-			raise exception '20260930896000: empty anchor for %', p_label;
+			raise exception '20260930898000: empty anchor for %', p_label;
 		end if;
 		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
 		if v_hits <> 1 then
-			raise exception '20260930896000: anchor matched % time(s) in %: %', v_hits, p_label, left(p_pairs[v_i], 140);
+			raise exception '20260930898000: anchor matched % time(s) in %: %', v_hits, p_label, left(p_pairs[v_i], 140);
 		end if;
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
@@ -252,7 +252,9 @@ begin
 			ch.affected_paths,
 			ch.patch_manifest,
 			ch.base_files,
-			ch.preview_base_change_ids
+			ch.preview_base_change_ids,
+			ch.option_group_key,
+			ch.option_group_title
 		from public.qorpera_surface_changes ch
 		where ch.session_id = p_session_id
 			and ch.surface_id = p_surface.id
@@ -273,6 +275,8 @@ begin
 			'headSha', v_ch.head_sha,
 			'affectedPaths', to_jsonb(v_paths),
 			'previewBaseChangeIds', to_jsonb(coalesce(v_ch.preview_base_change_ids, '{}'::uuid[])),
+			'optionGroupKey', v_ch.option_group_key,
+			'optionGroupTitle', v_ch.option_group_title,
 			'actionKind', case
 				when v_ch.kind = 'ops_action' and jsonb_typeof(v_ch.patch_manifest) = 'object'
 				then v_ch.patch_manifest ->> 'actionKind'
@@ -323,6 +327,8 @@ begin
 				'headSha', v_ch.head_sha,
 				'affectedPaths', '[]'::jsonb,
 				'previewBaseChangeIds', '[]'::jsonb,
+				'optionGroupKey', v_ch.option_group_key,
+				'optionGroupTitle', v_ch.option_group_title,
 				'truncated', true,
 				'pathsTruncated', coalesce(cardinality(v_ch.affected_paths), 0) > 0
 			);
@@ -442,13 +448,14 @@ do $$
 declare
 	v_def text;
 begin
-	v_def := pg_get_functiondef('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean)'::regprocedure);
+	v_def := pg_get_functiondef('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text)'::regprocedure);
 	v_def := pg_temp.suci_apply_pairs(v_def, 'qorpera_record_surface_change', array[
-		'p_finish_session boolean DEFAULT false)',
-		'p_finish_session boolean DEFAULT false, p_change_id uuid DEFAULT NULL::uuid)',
-$old$	v_retry_enqueued boolean := false;
+		'p_finish_session boolean DEFAULT false, p_option_group_key text DEFAULT NULL::text, p_option_group_title text DEFAULT NULL::text)',
+		'p_finish_session boolean DEFAULT false, p_option_group_key text DEFAULT NULL::text, p_option_group_title text DEFAULT NULL::text, p_change_id uuid DEFAULT NULL::uuid)',
+$old$	v_existing_group_title text;
 	v_now timestamptz := clock_timestamp();$old$,
-$new$	v_retry_enqueued boolean := false;
+$new$	v_existing_group_title text;
+	v_other_group_parent text;
 	v_replace_all boolean := false;
 	v_allow_rebase boolean := false;
 	v_has_later_git_change boolean := false;
@@ -463,6 +470,14 @@ $new$	v_retry_enqueued boolean := false;
 	v_affected_change_ids uuid[];
 	v_conflicted_downstream_ids uuid[];
 	v_now timestamptz := clock_timestamp();$new$,
+$old$	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
+
+	if v_group_key is not null then$old$,
+$new$	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
+
+	if p_change_id is null and v_group_key is not null then$new$,
 $old$	if coalesce(p_kind, 'git_range') = 'folder_patch'
 		and jsonb_typeof(p_patch_manifest) = 'object'
 		and jsonb_typeof(p_patch_manifest -> 'ops') = 'array' then
@@ -512,6 +527,9 @@ $new$	if p_change_id is not null then
 		end if;
 		if v_existing.kind is distinct from coalesce(p_kind, 'git_range') then
 			raise exception 'Surface change kind cannot change on update' using errcode = '22023';
+		end if;
+		if v_group_key is not null and v_group_key is distinct from v_existing.option_group_key then
+			raise exception 'Cannot change optionGroup when updating an existing change' using errcode = '22023';
 		end if;
 		if p_change_id = any(coalesce(p_depends_on_change_ids, '{}'::uuid[])) then
 			raise exception 'Surface change cannot depend on itself' using errcode = '22023';
@@ -625,6 +643,25 @@ $new$	if p_change_id is not null then
 				raise exception 'Git range change requires valid 40-hex parent and head commit SHAs' using errcode = '22023';
 			end if;
 
+			if v_existing.option_group_key is not null then
+				v_other_group_parent := null;
+				select nullif(btrim(sib.parent_sha), '')
+				into v_other_group_parent
+				from public.qorpera_surface_changes sib
+				where sib.session_id = p_session_id
+					and sib.profile_id = v_session.profile_id
+					and sib.option_group_key = v_existing.option_group_key
+					and sib.id <> v_existing.id
+					and sib.kind = 'git_range'
+					and sib.status = 'staged'
+				order by sib.seq asc, sib.id asc
+				limit 1;
+				if v_other_group_parent is not null
+					and v_eff_parent_sha is distinct from v_other_group_parent then
+					raise exception 'All git options in the same optionGroup must share the same parentSha' using errcode = '22023';
+				end if;
+			end if;
+
 			if v_existing.status = 'conflicted' then
 				v_prev_git_status := null;
 				v_prev_git_head_sha := null;
@@ -635,6 +672,10 @@ $new$	if p_change_id is not null then
 					and prev_ch.profile_id = v_session.profile_id
 					and prev_ch.kind = 'git_range'
 					and prev_ch.status in ('staged', 'conflicted')
+					and (
+						v_existing.option_group_key is null
+						or prev_ch.option_group_key is distinct from v_existing.option_group_key
+					)
 					and (prev_ch.seq < v_existing.seq or (prev_ch.seq = v_existing.seq and prev_ch.id < v_existing.id))
 				order by prev_ch.seq desc, prev_ch.id desc
 				limit 1;
@@ -679,6 +720,10 @@ $new$	if p_change_id is not null then
 			base_files = case
 				when kind = 'folder_patch' then v_eff_base_files
 				else base_files
+			end,
+			option_group_title = case
+				when v_group_title is not null then v_group_title
+				else option_group_title
 			end,
 			status = 'staged',
 			conflict_paths = null,
@@ -762,49 +807,39 @@ $new$	if p_change_id is not null then
 	from public.qorpera_surface_changes
 	where session_id = p_session_id;$new$
 	]);
-	drop function public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean);
+	drop function public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, text, text);
 	execute v_def;
 
-	v_def := pg_get_functiondef('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid)'::regprocedure);
+	v_def := pg_get_functiondef('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text)'::regprocedure);
 	v_def := pg_temp.suci_apply_pairs(v_def, 'qorpera_native_surface_record_change', array[
-		'p_lease_token uuid DEFAULT NULL::uuid)',
-		'p_lease_token uuid DEFAULT NULL::uuid, p_change_id uuid DEFAULT NULL::uuid)',
+		'p_option_group_key text DEFAULT NULL::text, p_option_group_title text DEFAULT NULL::text)',
+		'p_option_group_key text DEFAULT NULL::text, p_option_group_title text DEFAULT NULL::text, p_change_id uuid DEFAULT NULL::uuid)',
 $old$	if coalesce(p_kind, 'git_range') = 'git_range' then
-		if v_parent_sha is null then
-			select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id;
-			v_parent_sha := coalesce(
-				(select nullif(btrim(c.head_sha), '') from public.qorpera_surface_changes c
-					where c.session_id = p_session_id and c.head_sha is not null
-						and c.status in ('staged', 'conflicted')
-					order by c.seq desc limit 1),$old$,
+		if v_parent_sha is null then$old$,
 $new$	if coalesce(p_kind, 'git_range') = 'git_range' and p_change_id is null then
-		if v_parent_sha is null then
-			select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id;
-			v_parent_sha := coalesce(
-				(select nullif(btrim(c.head_sha), '') from public.qorpera_surface_changes c
-					where c.session_id = p_session_id and c.head_sha is not null
-						and c.status in ('staged', 'conflicted')
-					order by c.seq desc limit 1),$new$,
+		if v_parent_sha is null then$new$,
 $old$	v_result := public.qorpera_record_surface_change(
 		p_session_id, p_title, p_summary, p_kind, v_parent_sha, v_head_sha,
-		p_depends_on_change_ids, p_affected_paths, p_diff_stats, p_patch_manifest, p_finish_session
+		p_depends_on_change_ids, p_affected_paths, p_diff_stats, p_patch_manifest, p_finish_session,
+		p_option_group_key, p_option_group_title
 	);$old$,
 $new$	v_result := public.qorpera_record_surface_change(
 		p_session_id, p_title, p_summary, p_kind, v_parent_sha, v_head_sha,
-		p_depends_on_change_ids, p_affected_paths, p_diff_stats, p_patch_manifest, p_finish_session, p_change_id
+		p_depends_on_change_ids, p_affected_paths, p_diff_stats, p_patch_manifest, p_finish_session,
+		p_option_group_key, p_option_group_title, p_change_id
 	);$new$
 	]);
-	drop function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid);
+	drop function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid, text, text);
 	execute v_def;
 end $$;
 
 revoke all on function
-	public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid),
-	public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid, uuid)
+	public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, text, text, uuid),
+	public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid, text, text, uuid)
 	from public, anon, authenticated, qorpera_secret_broker;
 grant execute on function
-	public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid),
-	public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid, uuid)
+	public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, text, text, uuid),
+	public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid, text, text, uuid)
 	to service_role;
 
 select pg_temp.suci_patch(
@@ -920,6 +955,8 @@ $new$		if v_head_sha ~ '^[0-9a-f]{40}$' and v_base_sha ~ '^[0-9a-f]{40}$' then
 						null,
 						null,
 						false,
+						null,
+						null,
 						v_tip_change.id
 					);
 				else
@@ -961,8 +998,8 @@ begin
 		where oid = any(array[
 			'public.qorpera_reply_surface_session(uuid,text,boolean,uuid)'::regprocedure,
 			'public.qorpera_reply_surface_session_with_images(uuid,text,boolean,uuid,jsonb,uuid)'::regprocedure,
-			'public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid)'::regprocedure,
-			'public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,uuid)'::regprocedure,
+			'public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid)'::regprocedure,
+			'public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text,uuid)'::regprocedure,
 			'public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)'::regprocedure,
 			'public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions,public.qorpera_runtime_workers,text,text,text,jsonb,jsonb)'::regprocedure
 		])
@@ -971,7 +1008,7 @@ begin
 			raise exception 'Surface update-in-place function has an API owner: %', v_owner;
 		end if;
 		execute format(
-			'grant execute on function public.qorpera_surface_deep_merge_jsonb(jsonb, jsonb, integer), public.qorpera_surface_merge_folder_patch_ops(text, jsonb, jsonb, jsonb), public.qorpera_surface_session_open_changes_json(public.qorpera_surfaces, uuid), public.qorpera_surface_reply_target_change_id(uuid), public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid), public.qorpera_reply_surface_session(uuid, text, boolean, uuid) to %I',
+			'grant execute on function public.qorpera_surface_deep_merge_jsonb(jsonb, jsonb, integer), public.qorpera_surface_merge_folder_patch_ops(text, jsonb, jsonb, jsonb), public.qorpera_surface_session_open_changes_json(public.qorpera_surfaces, uuid), public.qorpera_surface_reply_target_change_id(uuid), public.qorpera_record_surface_change(uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, text, text, uuid), public.qorpera_reply_surface_session(uuid, text, boolean, uuid) to %I',
 			v_owner
 		);
 	end loop;
@@ -983,7 +1020,7 @@ begin
 	where p.pronamespace = 'public'::regnamespace
 		and b.fields is distinct from (to_jsonb(p) - 'prosrc');
 	if v_bad is not null then
-		raise exception '20260930896000 changed function metadata on: %', v_bad;
+		raise exception '20260930898000 changed function metadata on: %', v_bad;
 	end if;
 end $$;
 

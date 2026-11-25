@@ -346,6 +346,19 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
+	async chooseSurfaceChangeOption(changeId: string): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_choose_surface_change_option", { p_change_id: changeId });
+		return parseSurfaceSession(data, "session");
+	}
+
+	async discardSurfaceOptionGroup(sessionId: string, optionGroupKey: string): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_discard_surface_option_group", {
+			p_session_id: sessionId,
+			p_option_group_key: optionGroupKey,
+		});
+		return parseSurfaceSession(data, "session");
+	}
+
 	async discardSurfaceSession(sessionId: string): Promise<SurfaceSession> {
 		const data = await this.#rpc("qorpera_discard_surface_session", { p_session_id: sessionId });
 		return parseSurfaceSession(data, "session");

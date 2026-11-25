@@ -13,7 +13,7 @@ import {
 	type CodeHostShell,
 	startCodeArea,
 } from "../src/code-host-jobs.ts";
-import { cherryPickChangeUnits } from "../src/code-host-surfaces.ts";
+import { cherryPickChangeUnits, inspectChangeRange, verifyStagedSurfaceBranch } from "../src/code-host-surfaces.ts";
 import { approveAndSyncSurfaceChanges } from "../src/surface-change-dispatcher.ts";
 import {
 	buildCompositeSurfacePreview,
@@ -98,9 +98,9 @@ async function surfaceRepoFixture() {
 			await git(worktree, "commit", "--quiet", "-m", message);
 			return git(worktree, "rev-parse", "HEAD");
 		};
-		return { workerId, commit };
+		return { workerId, worktree, commit };
 	};
-	return { job, repository, baseSha: started.baseSha, code, startSession };
+	return { job, repository, baseSha: started.baseSha, code, git, startSession };
 }
 
 describe("surface preview runner and change dispatcher", () => {
@@ -380,5 +380,295 @@ describe("surface preview runner and change dispatcher", () => {
 		expect(step2.published).toBe(true);
 		expect(publishSurface).toHaveBeenCalledWith(surfaceId, step2.mainAfter);
 		expect(await readFile(join(f.code, "main/faq.html"), "utf8")).toBe("<section>Spørgsmål</section>\n");
+	}, 20_000);
+
+	it("rebases a peer session cleanly after an option pick leaves a discarded option at the branch tip", async () => {
+		const f = await surfaceRepoFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit({ "index.html": "<main>Base</main>\n" }, "Seed");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed" }],
+		});
+
+		const landing = await f.startSession(base.mainAfter);
+		const landingId = randomUUID();
+		const landingHead = await landing.commit({ "footer.html": "<footer>DK</footer>\n" }, "Footer");
+
+		const peerOptions = await f.startSession(base.mainAfter);
+		const opt2Id = randomUUID();
+		await peerOptions.commit({ "index.html": "<main>Option 1</main>\n" }, "Option 1");
+		await f.git(peerOptions.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt2Head = await peerOptions.commit({ "index.html": "<main>Option 2</main>\n" }, "Option 2");
+		await f.git(peerOptions.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt3Head = await peerOptions.commit({ "index.html": "<main>Option 3</main>\n" }, "Option 3");
+
+		const synced = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: landing.workerId,
+				repository: f.repository,
+				expectMainSha: base.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: false,
+				allSessionChangeStatuses: [{ changeId: landingId, status: "staged" }],
+				approvedChanges: [
+					{ changeId: landingId, parentSha: base.mainAfter, headSha: landingHead, title: "Footer" },
+				],
+				siblingRemainingChanges: [],
+				peerSessions: [
+					{
+						sessionId: randomUUID(),
+						workerId: peerOptions.workerId,
+						recordedChangeHeadShas: [opt2Head, opt3Head],
+						remainingChanges: [
+							{ changeId: opt2Id, parentSha: base.mainAfter, headSha: opt2Head, title: "Option 2" },
+						],
+					},
+				],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+
+		expect(synced.status).toBe("landed");
+		if (synced.status !== "landed") throw new Error("expected landed");
+		expect(synced.peerSync[0]?.result.status).toBe("clean");
+		if (synced.peerSync[0]?.result.status !== "clean") throw new Error("expected clean peer rebase");
+		expect(synced.peerSync[0].result.rebasedChanges[0]?.parentSha).toBe(synced.mainAfter);
+	}, 20_000);
+
+	it("resets the session branch and worktree to mainAfter when approving an earlier chosen option with no remaining siblings", async () => {
+		const f = await surfaceRepoFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit({ "index.html": "<main>Base</main>\n" }, "Seed");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed" }],
+		});
+
+		const session = await f.startSession(base.mainAfter);
+		const opt1Id = randomUUID();
+		const opt1Head = await session.commit(
+			{ "index.html": "<main>Option 1 Chosen</main>\n", "opt1.css": "body { color: navy; }\n" },
+			"Option 1",
+		);
+		await f.git(session.worktree, "read-tree", "--reset", "-u", base.mainAfter);
+		const opt2Head = await session.commit(
+			{ "index.html": "<main>Option 2 Rejected</main>\n", "opt2.css": "body { color: crimson; }\n" },
+			"Option 2",
+		);
+
+		const landed = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: session.workerId,
+				sessionBranchHeadSha: opt2Head,
+				recordedChangeHeadShas: [opt1Head, opt2Head],
+				repository: f.repository,
+				expectMainSha: base.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: true,
+				allSessionChangeStatuses: [{ changeId: opt1Id, status: "staged" }],
+				approvedChanges: [{ changeId: opt1Id, parentSha: base.mainAfter, headSha: opt1Head, title: "Option 1" }],
+				siblingRemainingChanges: [],
+				peerSessions: [],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+
+		expect(landed.status).toBe("landed");
+		if (landed.status !== "landed") throw new Error("expected landed");
+		expect(landed.siblingRebase?.status).toBe("clean");
+		if (landed.siblingRebase?.status !== "clean") throw new Error("expected clean branch reset");
+		expect(landed.siblingRebase.rebasedChanges).toEqual([]);
+		expect(landed.siblingRebase.branchHeadSha).toBe(landed.mainAfter);
+		expect(await f.git(session.worktree, "rev-parse", "HEAD")).toBe(landed.mainAfter);
+		expect(await readFile(join(session.worktree, "index.html"), "utf8")).toBe("<main>Option 1 Chosen</main>\n");
+
+		const followUpId = randomUUID();
+		const followUpHead = await session.commit({ "footer.html": "<footer>Follow-up</footer>\n" }, "Follow-up");
+		const landedFollowUp = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: session.workerId,
+				sessionBranchHeadSha: followUpHead,
+				recordedChangeHeadShas: [opt1Head, opt2Head, followUpHead],
+				repository: f.repository,
+				expectMainSha: landed.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: false,
+				allSessionChangeStatuses: [{ changeId: followUpId, status: "staged" }],
+				approvedChanges: [
+					{ changeId: followUpId, parentSha: landed.mainAfter, headSha: followUpHead, title: "Follow-up" },
+				],
+				siblingRemainingChanges: [],
+				peerSessions: [],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+
+		expect(landedFollowUp.status).toBe("landed");
+		expect(await readFile(join(f.code, "main/index.html"), "utf8")).toBe("<main>Option 1 Chosen</main>\n");
+		expect(await readFile(join(f.code, "main/footer.html"), "utf8")).toBe("<footer>Follow-up</footer>\n");
+	}, 20_000);
+
+	it("lands a follow-up commit cleanly after git reset --hard mainAfter when no open changes remain", async () => {
+		const f = await surfaceRepoFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit({ "index.html": "<main>Base</main>\n" }, "Seed");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed" }],
+		});
+
+		const session = await f.startSession(base.mainAfter);
+		const firstId = randomUUID();
+		const firstHead = await session.commit({ "index.html": "<main>First</main>\n" }, "First");
+		const step1 = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: session.workerId,
+				sessionBranchHeadSha: firstHead,
+				recordedChangeHeadShas: [firstHead],
+				repository: f.repository,
+				expectMainSha: base.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: true,
+				allSessionChangeStatuses: [{ changeId: firstId, status: "staged" }],
+				approvedChanges: [{ changeId: firstId, parentSha: base.mainAfter, headSha: firstHead, title: "First" }],
+				siblingRemainingChanges: [],
+				peerSessions: [],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+		expect(step1.status).toBe("landed");
+		if (step1.status !== "landed") throw new Error("expected step1 landed");
+		expect(step1.siblingRebase).toBeNull();
+		expect(step1.mainAfter).not.toBe(firstHead);
+
+		await f.git(session.worktree, "reset", "--hard", step1.mainAfter);
+		const followUpId = randomUUID();
+		const followUpHead = await session.commit({ "about.html": "<section>About</section>\n" }, "About");
+
+		const inspected = await inspectChangeRange(f.job, {
+			repository: f.repository,
+			workerId: session.workerId,
+			parentSha: step1.mainAfter,
+			headSha: followUpHead,
+		});
+		expect(inspected.affectedPaths).toEqual(["about.html"]);
+
+		const staged = await verifyStagedSurfaceBranch(f.job, {
+			repository: f.repository,
+			workerId: session.workerId,
+			baseSha: base.mainAfter,
+			headSha: followUpHead,
+		});
+		expect(staged.changed).toBe(true);
+
+		const step2 = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: session.workerId,
+				sessionBranchHeadSha: followUpHead,
+				recordedChangeHeadShas: [firstHead, followUpHead],
+				repository: f.repository,
+				expectMainSha: step1.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: false,
+				allSessionChangeStatuses: [{ changeId: followUpId, status: "staged" }],
+				approvedChanges: [
+					{ changeId: followUpId, parentSha: step1.mainAfter, headSha: followUpHead, title: "About" },
+				],
+				siblingRemainingChanges: [],
+				peerSessions: [],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+		expect(step2.status).toBe("landed");
+		expect(await readFile(join(f.code, "main/index.html"), "utf8")).toBe("<main>First</main>\n");
+		expect(await readFile(join(f.code, "main/about.html"), "utf8")).toBe("<section>About</section>\n");
+	}, 20_000);
+
+	it("defers branch reset with branch_advanced when the session or peer tip is an unrecorded commit", async () => {
+		const f = await surfaceRepoFixture();
+		const seed = await f.startSession();
+		const seededHead = await seed.commit({ "index.html": "<main>Base</main>\n" }, "Seed");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seededHead, title: "Seed" }],
+		});
+
+		const primary = await f.startSession(base.mainAfter);
+		const recordedId = randomUUID();
+		const recordedHead = await primary.commit({ "index.html": "<main>Recorded</main>\n" }, "Recorded");
+		const unrecordedHead = await primary.commit({ "draft.txt": "keep my unrecorded draft\n" }, "Unrecorded draft");
+
+		const peer = await f.startSession(base.mainAfter);
+		const peerRecordedId = randomUUID();
+		const peerRecordedHead = await peer.commit({ "peer.html": "<aside>Peer</aside>\n" }, "Peer change");
+		const peerUnrecordedHead = await peer.commit({ "peer-draft.txt": "peer unrecorded\n" }, "Peer unrecorded");
+
+		const landed = await approveAndSyncSurfaceChanges(
+			f.job,
+			{
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				workerId: primary.workerId,
+				sessionBranchHeadSha: unrecordedHead,
+				recordedChangeHeadShas: [recordedHead],
+				repository: f.repository,
+				expectMainSha: base.mainAfter,
+				autoPublish: false,
+				sessionState: "ready",
+				sessionHasActiveChat: true,
+				allSessionChangeStatuses: [{ changeId: recordedId, status: "staged" }],
+				approvedChanges: [
+					{ changeId: recordedId, parentSha: base.mainAfter, headSha: recordedHead, title: "Recorded" },
+				],
+				siblingRemainingChanges: [],
+				peerSessions: [
+					{
+						sessionId: randomUUID(),
+						workerId: peer.workerId,
+						recordedChangeHeadShas: [peerRecordedHead],
+						remainingChanges: [
+							{
+								changeId: peerRecordedId,
+								parentSha: base.mainAfter,
+								headSha: peerRecordedHead,
+								title: "Peer change",
+							},
+						],
+					},
+				],
+			},
+			{ publishSurface: vi.fn().mockResolvedValue(undefined) },
+		);
+
+		expect(landed.status).toBe("landed");
+		if (landed.status !== "landed") throw new Error("expected landed");
+		expect(landed.siblingRebase).toMatchObject({ status: "deferred", reason: "branch_advanced" });
+		expect(await f.git(primary.worktree, "rev-parse", "HEAD")).toBe(unrecordedHead);
+		expect(await readFile(join(primary.worktree, "draft.txt"), "utf8")).toBe("keep my unrecorded draft\n");
+
+		expect(landed.peerSync[0]?.result).toMatchObject({ status: "deferred", reason: "branch_advanced" });
+		expect(await f.git(peer.worktree, "rev-parse", "HEAD")).toBe(peerUnrecordedHead);
+		expect(await readFile(join(peer.worktree, "peer-draft.txt"), "utf8")).toBe("peer unrecorded\n");
 	}, 20_000);
 });

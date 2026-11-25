@@ -3827,5 +3827,261 @@ describe("cloud surface runtime tools", () => {
 				actionPayload: { body: "Hi Ada" },
 			}),
 		).toMatchObject({ changeId: c1 });
+
+		const opt1 = randomUUID();
+		const opt2 = randomUUID();
+		const optionGroupCodingTool = createCodingRecordChangeTool(
+			sessionId,
+			{
+				recordChange: vi.fn(async (_sid, req) => ({
+					changeId: req.changeId ?? randomUUID(),
+					seq: 1,
+					openChangeCount: 2,
+					updated: Boolean(req.changeId),
+				})),
+			},
+			{
+				openChanges: [
+					{
+						changeId: opt1,
+						seq: 1,
+						title: "Calm studio",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head1,
+						optionGroupKey: "homepage-direction",
+						optionGroupTitle: "Homepage direction",
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+					{
+						changeId: opt2,
+						seq: 2,
+						title: "Bold editorial",
+						summary: "",
+						kind: "git_range",
+						status: "staged",
+						parentSha: baseSha,
+						headSha: head2,
+						optionGroupKey: "homepage-direction",
+						optionGroupTitle: "Homepage direction",
+						affectedPaths: ["index.html"],
+						previewBaseChangeIds: [],
+						actionKind: null,
+						patchManifest: null,
+						baseFiles: null,
+					},
+				],
+				replyChangeId: opt1,
+			},
+		);
+		expect(
+			optionGroupCodingTool.parseArguments({
+				title: "Calm studio v2",
+				summary: "Darker header.",
+				parentSha: baseSha,
+				commitSha: head3,
+			}),
+		).toMatchObject({ changeId: opt1, parentSha: baseSha, commitSha: head3 });
+		expect(
+			optionGroupCodingTool.parseArguments({
+				title: "Minimalist third option",
+				summary: "New option in group.",
+				parentSha: baseSha,
+				commitSha: head3,
+				optionGroup: "homepage-direction",
+			}),
+		).not.toHaveProperty("changeId");
+		expect(() =>
+			optionGroupCodingTool.parseArguments({
+				title: "Wrong group",
+				summary: "Cannot switch group.",
+				parentSha: baseSha,
+				commitSha: head3,
+				changeId: opt1,
+				optionGroup: "other-group",
+			}),
+		).toThrow(/Cannot change optionGroup/);
+	});
+
+	it("validates and forwards optionGroup and optionGroupTitle on coding_record_change and stage_surface_patch", async () => {
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const recordChange = vi.fn().mockResolvedValue({ changeId, seq: 1, openChangeCount: 1 });
+		const codingTool = createCodingRecordChangeTool(sessionId, { recordChange });
+
+		expect(() =>
+			codingTool.parseArguments({
+				title: "Option A",
+				summary: "Direction A",
+				commitSha: "1".repeat(40),
+				optionGroup: "Not Valid",
+			}),
+		).toThrow();
+		expect(() =>
+			codingTool.parseArguments({
+				title: "Option A",
+				summary: "Direction A",
+				commitSha: "1".repeat(40),
+				optionGroupTitle: "Missing key",
+			}),
+		).toThrow();
+
+		const parsedCoding = codingTool.parseArguments({
+			title: "Broker direction",
+			summary: "Editorial homepage concept.",
+			commitSha: "2".repeat(40),
+			optionGroup: "homepage-direction",
+			optionGroupTitle: "Homepage direction",
+		});
+		await codingTool.execute(parsedCoding, toolContext());
+		expect(recordChange).toHaveBeenCalledWith(
+			sessionId,
+			expect.objectContaining({
+				optionGroup: "homepage-direction",
+				optionGroupTitle: "Homepage direction",
+			}),
+			expect.anything(),
+		);
+
+		const stageSurfacePatch = vi.fn().mockResolvedValue({ changeId, seq: 1, openChangeCount: 1 });
+		const patchTool = createStageSurfacePatchTool(sessionId, { stageSurfacePatch });
+		expect(() =>
+			patchTool.parseArguments({
+				title: "Palette A",
+				summary: "Warm palette",
+				ops: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+				optionGroupTitle: "Missing key",
+			}),
+		).toThrow();
+
+		const parsedPatch = patchTool.parseArguments({
+			title: "Warm palette",
+			summary: "Warm linen tones.",
+			ops: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+			optionGroup: "palette",
+			optionGroupTitle: "Brand palette",
+		});
+		await patchTool.execute(parsedPatch, toolContext());
+		expect(stageSurfacePatch).toHaveBeenCalledWith(
+			sessionId,
+			expect.objectContaining({
+				optionGroup: "palette",
+				optionGroupTitle: "Brand palette",
+			}),
+			expect.anything(),
+		);
+
+		const calls: { method: string; args: Record<string, unknown> }[] = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				calls.push({ method, args });
+				return { changeId, seq: 1, session: { openChangeCount: 1 } };
+			},
+		});
+		const ctx = toolContext();
+		await port.recordChange(
+			sessionId,
+			{
+				title: "Option 1",
+				summary: "Standalone page 1",
+				commitSha: "3".repeat(40),
+				dependsOnChangeIds: [],
+				optionGroup: "homepage-direction",
+				optionGroupTitle: "Homepage direction",
+			},
+			ctx,
+		);
+		await port.stageSurfacePatch(
+			sessionId,
+			{
+				title: "Option 2",
+				summary: "Standalone patch 2",
+				ops: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#111111" } }],
+				notePaths: [],
+				optionGroup: "palette",
+				optionGroupTitle: "Brand palette",
+				finishSession: true,
+			},
+			ctx,
+		);
+		expect(calls[0]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: {
+				p_option_group_key: "homepage-direction",
+				p_option_group_title: "Homepage direction",
+			},
+		});
+		expect(calls[1]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: {
+				p_option_group_key: "palette",
+				p_option_group_title: "Brand palette",
+			},
+		});
+	});
+
+	it("forbids in-page concept switchers and emits chosen-option reset hints in buildSurfaceTurnBrief", () => {
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("NEVER embed a concept switcher");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("optionGroup");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("git read-tree --reset -u $BASE");
+
+		const chosenHead = "2".repeat(40);
+		const branchTip = "3".repeat(40);
+		const brief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			branchHeadSha: branchTip,
+			openChanges: [
+				{
+					id: randomUUID(),
+					title: "Option 2: Showcase",
+					parentSha: "1".repeat(40),
+					headSha: chosenHead,
+					optionGroupKey: null,
+					optionGroupTitle: null,
+				},
+			],
+		});
+		expect(brief).toContain("## Active Staged Changes on This Session");
+		expect(brief).toContain(`git read-tree --reset -u ${chosenHead}`);
+		expect(brief).toContain("Option 2: Showcase");
+
+		const mainSha = "4".repeat(40);
+		const emptyOpenBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			mainSha,
+			branchHeadSha: branchTip,
+			openChanges: [],
+		});
+		expect(emptyOpenBrief).toContain("## Session Branch Sync");
+		expect(emptyOpenBrief).toContain(`git log ${mainSha}..HEAD`);
+		expect(emptyOpenBrief).toContain(`git reset --hard ${mainSha}`);
+		expect(emptyOpenBrief).not.toContain(`git read-tree --reset -u ${mainSha}`);
+		expect(emptyOpenBrief).toContain(`parentSha: "${mainSha}"`);
+
+		const syncedBrief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			repositoryKey: "brooks/website",
+			briefMarkdown: "Broker homepage.",
+			mainSha,
+			branchHeadSha: mainSha,
+			openChanges: [],
+		});
+		expect(syncedBrief).not.toContain("## Session Branch Sync");
 	});
 });

@@ -228,6 +228,9 @@ export const SURFACES: Record<string, string> = {
 	"All changes": "Alle ændringer",
 	"View responses": "Se svar",
 	"Use this one": "Brug denne",
+	"Click again to unselect": "Klik igen for at fravælge",
+	"Preview this option": "Forhåndsvis dette forslag",
+	"Selected option: {title}": "Valgte forslag: {title}",
 	"None of these": "Ingen af dem",
 	"What should it be instead?": "Hvad skal det være i stedet?",
 	"No open changes yet. Describe a change below to start an agent.":

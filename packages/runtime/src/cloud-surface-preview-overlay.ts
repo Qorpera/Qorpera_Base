@@ -35,6 +35,8 @@ export interface SurfaceSessionOpenChange extends SurfacePreviewBaseChange {
 	readonly seq: number;
 	readonly status: string;
 	readonly actionKind: string | null;
+	readonly optionGroupKey?: string | null;
+	readonly optionGroupTitle?: string | null;
 }
 
 export interface SurfaceOmittedBaseChange {
@@ -214,6 +216,12 @@ export function parseSurfaceSessionOpenChanges(raw: unknown): SurfaceSessionOpen
 			affectedPaths: parseNonEmptyStrings(item.affectedPaths, 200),
 			previewBaseChangeIds: parseNonEmptyStrings(item.previewBaseChangeIds, 64),
 			actionKind: typeof item.actionKind === "string" && item.actionKind.trim() ? item.actionKind.trim() : null,
+			optionGroupKey:
+				typeof item.optionGroupKey === "string" && item.optionGroupKey.trim() ? item.optionGroupKey.trim() : null,
+			optionGroupTitle:
+				typeof item.optionGroupTitle === "string" && item.optionGroupTitle.trim()
+					? item.optionGroupTitle.trim()
+					: null,
 			patchManifest: parseOptionalManifest(item.patchManifest, "sessionOpenChange.patchManifest"),
 			baseFiles: parseOptionalBaseFileMap(item.baseFiles),
 			...(item.truncated === true ? { truncated: true } : {}),
@@ -663,8 +671,12 @@ export function createSurfaceSessionOwnOverlay(options: {
 	readonly folderRoot: string;
 	readonly sessionOpenChanges: readonly SurfaceSessionOpenChange[];
 	readonly baseReader: SurfaceFolderTextReader;
+	readonly replyChangeId?: string | null;
 }): CloudFolderPreviewOverlay | null {
-	const folderChanges = options.sessionOpenChanges.filter((change) => change.kind === "folder_patch");
+	const targetId = options.replyChangeId?.trim() || null;
+	const folderChanges = options.sessionOpenChanges.filter(
+		(change) => change.kind === "folder_patch" && (!change.optionGroupKey || change.changeId === targetId),
+	);
 	if (folderChanges.length === 0) return null;
 	let coalescedOps: StudioPatchOp[] = [];
 	const syntheticChanges: SurfacePreviewBaseChange[] = [];

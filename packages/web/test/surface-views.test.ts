@@ -6,6 +6,7 @@ import {
 	type SurfaceExplorationSet,
 	type SurfaceSession,
 	type SurfaceSummary,
+	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SurfacesClient } from "../src/app/surfaces-store.ts";
@@ -844,6 +845,14 @@ describe("the surface page", () => {
 			sessionMessage(MESSAGE_IDS[2], "system", "Staged change: Skarpere hero-tekst — Kortere og roligere.", {
 				changeId: CHANGES[0],
 			}),
+			sessionMessage(
+				"77777777-7777-4777-8777-777777777778",
+				"system",
+				"Staged option: Editorial hero — Clean look.",
+				{
+					changeId: CHANGES[1],
+				},
+			),
 			sessionMessage("77777777-7777-4777-8777-777777777779", "system", "Merge conflicted. Reconcile to resolve.", {
 				changeId: CHANGES[0],
 			}),
@@ -2236,14 +2245,30 @@ describe("removing an agent from the Changes list", () => {
 		store.dispose();
 	});
 
-	it("forwards the targeted changeId when replying via Change and omits it on an exploration variant without a staged change", async () => {
+	it("forwards the targeted changeId when replying via Change (including option groups) and omits it on an exploration variant without a staged change", async () => {
 		const explorationId = "88888888-8888-4888-8888-888888888891";
 		const emptyVariantId = "33333333-3333-4333-8333-333333333392";
+		const optionSessionId = "33333333-3333-4333-8333-333333333393";
 		const targetedSession = session(["staged", "staged"], {
 			id: SESSION,
 			changes: [
 				change(CHANGES[0], 1, "staged", { title: "Hero direction" }),
 				change(CHANGES[1], 2, "staged", { title: "Pricing section" }),
+			],
+		});
+		const optionSession = session(["staged", "staged"], {
+			id: optionSessionId,
+			changes: [
+				change(CHANGES[0], 1, "staged", {
+					title: "Stille ritual",
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Forside",
+				}),
+				change(CHANGES[1], 2, "staged", {
+					title: "Appen først",
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Forside",
+				}),
 			],
 		});
 		const variantWithChange = session(["staged"], {
@@ -2259,11 +2284,15 @@ describe("removing an agent from the Changes list", () => {
 			changes: [],
 		});
 		const replySurfaceSession = vi.fn(async (sessionId: string) =>
-			sessionId === emptyVariantId ? variantWithoutChange : targetedSession,
+			sessionId === emptyVariantId
+				? variantWithoutChange
+				: sessionId === optionSessionId
+					? optionSession
+					: targetedSession,
 		);
 		const client = fakeClient({
 			getSurfaceWorkspace: vi.fn(async () =>
-				workspace([targetedSession, variantWithChange, variantWithoutChange], {
+				workspace([targetedSession, optionSession, variantWithChange, variantWithoutChange], {
 					explorations: [
 						{
 							id: explorationId,
@@ -2310,6 +2339,28 @@ describe("removing an agent from the Changes list", () => {
 			CHANGES[1],
 		);
 
+		store.openDrawer(SURFACE, optionSessionId);
+		view.update();
+		drawer
+			.querySelector<HTMLButtonElement>(
+				`[data-act="quote-change"][data-session="${optionSessionId}"][data-change="${CHANGES[0]}"]`,
+			)!
+			.click();
+		view.update();
+		input.value = "Gør overskriften mørkere";
+		drawer
+			.querySelector<HTMLFormElement>(".surface-drawer-foot")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		expect(replySurfaceSession).toHaveBeenNthCalledWith(
+			2,
+			optionSessionId,
+			"Re: [Stille ritual]\nGør overskriften mørkere",
+			true,
+			undefined,
+			CHANGES[0],
+		);
+
 		store.openExplorationDrawer(SURFACE, explorationId);
 		view.update();
 		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-variant"][data-session="${emptyVariantId}"]`)!.click();
@@ -2327,10 +2378,87 @@ describe("removing an agent from the Changes list", () => {
 			.dispatchEvent(new Event("submit", { cancelable: true }));
 		await flush();
 		expect(replySurfaceSession).toHaveBeenNthCalledWith(
-			2,
+			3,
 			emptyVariantId,
 			"Re: [Varmt studie]\nStart i en roligere retning",
 		);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("shows the primary preview door instead of the live mount when mode stayed on report or compare from another surface", async () => {
+		const ready = previewFrame({
+			previewId: PREVIEW_IDS[0],
+			toggledChangeIds: [CHANGES[0], CHANGES[1]],
+		});
+		const ws = workspace([session(["staged", "staged"])], {
+			previewState: { surfaceId: SURFACE, mode: "single", primary: ready, compareFrames: [] },
+		});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws) }));
+		await store.load();
+		store.setMode("report");
+		const mounted = document.createElement("div");
+		mounted.className = "real-site-view";
+		const mount = vi.fn(() => ({ el: mounted, update: () => undefined, dispose: () => undefined }));
+		const view = new SurfaceView({ store, mount, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelectorAll("iframe.surface-frame")).toHaveLength(1);
+		expect(view.el.querySelector(".surface-notch-label")?.textContent).toBe("Preview");
+
+		store.setMode("compare");
+		view.update();
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelectorAll("iframe.surface-frame")).toHaveLength(1);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("holds the loading skeleton instead of flashing the live mount while auto-syncing a live_baseline workspace with staged changes", async () => {
+		let resolvePreview!: (value: SurfaceWorkspace["previewState"]) => void;
+		const setPreviewSelection = vi.fn(
+			() =>
+				new Promise<SurfaceWorkspace["previewState"]>((resolve) => {
+					resolvePreview = resolve;
+				}),
+		);
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged"])])),
+				setPreviewSelection,
+			}),
+		);
+		await store.load();
+		const mounted = document.createElement("div");
+		mounted.className = "real-site-view";
+		const mount = vi.fn(() => ({ el: mounted, update: () => undefined, dispose: () => undefined }));
+		const view = new SurfaceView({ store, mount, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelector(".skeleton-surface")).not.toBeNull();
+
+		resolvePreview({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({
+				previewId: PREVIEW_IDS[0],
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+			}),
+			compareFrames: [],
+		});
+		await flush();
+		view.update();
+
+		expect(mount).not.toHaveBeenCalled();
+		expect(view.el.querySelector(".skeleton-surface")).toBeNull();
+		expect(view.el.querySelectorAll("iframe.surface-frame")).toHaveLength(1);
 		view.dispose();
 		store.dispose();
 	});

@@ -713,7 +713,44 @@ describe("the edge function's route for the one call", () => {
 			}),
 		);
 	const answers = (controlValid: boolean, summary: RpcAnswer) => (name: string) =>
-		name === "qorpera_runner_orchestrator_control_valid" ? { data: controlValid } : summary;
+		name === "qorpera_runner_orchestrator_dispatch"
+			? { error: { code: "PGRST202" } }
+			: name === "qorpera_runner_orchestrator_control_valid"
+				? { data: controlValid }
+				: summary;
+
+	it("dispatches control-token validation and target RPC in one round trip when dispatch RPC exists", async () => {
+		const tokenHash = createHash("sha256").update(token).digest("hex");
+		calls.length = 0;
+		answer = (name) =>
+			name === "qorpera_runner_orchestrator_dispatch"
+				? { data: { listen: true, workers: false } }
+				: { error: { code: "UNEXPECTED" } };
+		const response = await post({ action: "due_summary", orchestratorId });
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { value: { listen: true, workers: false } });
+		assert.deepEqual(calls, [
+			[
+				"qorpera_runner_orchestrator_dispatch",
+				{
+					p_orchestrator_id: orchestratorId,
+					p_control_token_sha256: tokenHash,
+					p_rpc: "qorpera_orchestrator_due_summary",
+					p_args: {},
+				},
+			],
+		]);
+
+		calls.length = 0;
+		answer = () => ({ error: { code: "42501" } });
+		assert.equal((await post({ action: "due_summary", orchestratorId })).status, 401);
+		assert.deepEqual(calls.map(([name]) => name), ["qorpera_runner_orchestrator_dispatch"]);
+
+		calls.length = 0;
+		answer = () => ({ error: { code: "08006" } });
+		assert.equal((await post({ action: "due_summary", orchestratorId })).status, 503);
+		assert.deepEqual(calls.map(([name]) => name), ["qorpera_runner_orchestrator_dispatch"]);
+	});
 
 	it("checks the control token first, then calls the summary with no arguments and returns its answer", async () => {
 		calls.length = 0;
@@ -722,7 +759,7 @@ describe("the edge function's route for the one call", () => {
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get("cache-control"), "no-store");
 		assert.deepEqual(await response.json(), { value: { listen: true, workers: false } });
-		assert.deepEqual(calls, [
+		assert.deepEqual(calls.slice(1), [
 			[
 				"qorpera_runner_orchestrator_control_valid",
 				{ p_orchestrator_id: orchestratorId, p_control_token_sha256: createHash("sha256").update(token).digest("hex") },
@@ -736,7 +773,10 @@ describe("the edge function's route for the one call", () => {
 		answer = answers(false, { data: {} });
 		const response = await post({ action: "due_summary", orchestratorId });
 		assert.equal(response.status, 401);
-		assert.deepEqual(calls.map(([name]) => name), ["qorpera_runner_orchestrator_control_valid"]);
+		assert.deepEqual(calls.map(([name]) => name), [
+			"qorpera_runner_orchestrator_dispatch",
+			"qorpera_runner_orchestrator_control_valid",
+		]);
 	});
 
 	it("maps a failed summary as any other call, and sends none of its text", async () => {
@@ -790,7 +830,7 @@ describe("the edge function's route for the one call", () => {
 		const claimRes = await post({ action: "surface_claim_jobs", orchestratorId, limit: 24 });
 		assert.equal(claimRes.status, 200);
 		assert.deepEqual(await claimRes.json(), { value: { sessions: [], previews: [], merges: [], publishes: [] } });
-		assert.deepEqual(calls, [
+		assert.deepEqual(calls.slice(1), [
 			["qorpera_runner_orchestrator_control_valid", { p_orchestrator_id: orchestratorId, p_control_token_sha256: tokenHash }],
 			["qorpera_surface_claim_pending_jobs", { p_limit: 24 }],
 		]);
@@ -806,7 +846,7 @@ describe("the edge function's route for the one call", () => {
 			extendSeconds: 300,
 		});
 		assert.equal(renewRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_renew_lease",
 			{
 				p_kind: "session",
@@ -825,7 +865,7 @@ describe("the edge function's route for the one call", () => {
 			leaseToken,
 		});
 		assert.equal(releaseRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_release_session_claim",
 			{
 				p_session_id: sessionId,
@@ -845,7 +885,7 @@ describe("the edge function's route for the one call", () => {
 			leaseToken,
 		});
 		assert.equal(previewRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_complete_preview",
 			{
 				p_preview_id: previewId,
@@ -871,7 +911,7 @@ describe("the edge function's route for the one call", () => {
 			leaseToken,
 		});
 		assert.equal(turnRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_complete_session_turn",
 			{
 				p_session_id: sessionId,
@@ -898,7 +938,7 @@ describe("the edge function's route for the one call", () => {
 			leaseToken,
 		});
 		assert.equal(mergeRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_complete_merge",
 			{
 				p_job_id: jobId,
@@ -924,7 +964,7 @@ describe("the edge function's route for the one call", () => {
 			leaseToken,
 		});
 		assert.equal(publishRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_complete_publish",
 			{
 				p_job_id: jobId,
@@ -944,7 +984,7 @@ describe("the edge function's route for the one call", () => {
 			lane: "sessions",
 		});
 		assert.equal(laneClaimRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_claim_pending_jobs_for_lane",
 			{ p_limit: 12, p_lane: "sessions" },
 		]);
@@ -958,7 +998,7 @@ describe("the edge function's route for the one call", () => {
 			leaseToken,
 		});
 		assert.equal(enqueueRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_enqueue_session_run",
 			{ p_session_id: sessionId, p_lease_token: leaseToken },
 		]);
@@ -972,7 +1012,7 @@ describe("the edge function's route for the one call", () => {
 		});
 		assert.equal(productRootsRes.status, 200);
 		assert.deepEqual(await productRootsRes.json(), { value: ["surfaces/thetabands"] });
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_shared_product_folder_roots",
 			{ p_profile_id: assignmentId },
 		]);
@@ -985,7 +1025,7 @@ describe("the edge function's route for the one call", () => {
 			automationId: routineId,
 		});
 		assert.equal(triggerRes.status, 200);
-		assert.deepEqual(calls[1], ["qorpera_surface_trigger_automation", { p_automation_id: routineId }]);
+		assert.deepEqual(calls[2], ["qorpera_surface_trigger_automation", { p_automation_id: routineId }]);
 
 		calls.length = 0;
 		answer = answers(true, { data: { updated: 1, sessionId } });
@@ -998,7 +1038,7 @@ describe("the edge function's route for the one call", () => {
 			rebasedChanges: [{ changeId: occurrenceId, parentSha: sha1, headSha: sha2 }],
 		});
 		assert.equal(rebaseRes.status, 200);
-		assert.deepEqual(calls[1], [
+		assert.deepEqual(calls[2], [
 			"qorpera_surface_update_rebased_changes",
 			{
 				p_surface_id: assignmentId,
@@ -1019,7 +1059,11 @@ describe("the edge function's route for the one call", () => {
 
 		calls.length = 0;
 		answer = (name) =>
-			name === "qorpera_runner_orchestrator_control_valid" ? { error: { code: "08006" } } : { data: {} };
+			name === "qorpera_runner_orchestrator_dispatch"
+				? { error: { code: "PGRST202" } }
+				: name === "qorpera_runner_orchestrator_control_valid"
+					? { error: { code: "08006" } }
+					: { data: {} };
 		const outage = await post({ action: "due_summary", orchestratorId });
 		assert.equal(outage.status, 503);
 
@@ -1079,6 +1123,7 @@ describe("the edge function's route for the one call", () => {
 		signals.length = 0;
 		const ac = new AbortController();
 		answer = (name, signal) => {
+			if (name === "qorpera_runner_orchestrator_dispatch") return { error: { code: "PGRST202" } };
 			if (name === "qorpera_runner_orchestrator_control_valid") return { data: true };
 			signal?.throwIfAborted();
 			return { data: {} };
@@ -1091,10 +1136,11 @@ describe("the edge function's route for the one call", () => {
 		});
 		const ok = await (handler as Handler)(req);
 		assert.equal(ok.status, 200);
-		assert.equal(signals.length, 2);
+		assert.equal(signals.length, 3);
 		assert.equal(signals[0], req.signal);
 		assert.equal(signals[1], req.signal);
+		assert.equal(signals[2], req.signal);
 		ac.abort(new Error("caller gone"));
-		assert.equal(signals[1]?.aborted, true);
+		assert.equal(signals[2]?.aborted, true);
 	});
 });

@@ -380,7 +380,7 @@ ${sentences(
 	has("propose_surface") &&
 		"Use propose_surface to create 1 to 2 tailored product surfaces for what the company is building with activateImmediately: true on Day 0; for later sidebar additions after founding, omit activateImmediately so they arrive in proposed status for founder approval.",
 	has("start_surface_session") &&
-		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose.",
+		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose. When asking a single session to propose multiple design or website directions, instruct it to stage each real, publishable version as a separate option in one optionGroup — never embed an in-page concept switcher or design-question UI into a publishable website.",
 	has("manage_surface_automation") &&
 		"Use manage_surface_automation to schedule recurring work onto a target Surface instead of creating standalone org-chart roles.",
 	"Keep primary navigation focused: fold research analyses, audits, and reports as Notes on the owning agent or session (under QorperaOS/surfaces/<slug>/notes/) rather than creating standalone report surfaces or loose markdown folders.",

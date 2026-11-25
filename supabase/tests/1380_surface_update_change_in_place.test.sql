@@ -61,6 +61,12 @@ declare
 	v_sync_c1 uuid;
 	v_sync_c2 uuid;
 	v_sync_change public.qorpera_surface_changes%rowtype;
+	v_opt_session uuid;
+	v_opt_lease uuid;
+	v_opt_o1 uuid;
+	v_opt_o2 uuid;
+	v_opt_turn jsonb;
+	v_opt_change public.qorpera_surface_changes%rowtype;
 	v_msg_count_before integer;
 	v_msg_count_after integer;
 begin
@@ -239,6 +245,8 @@ begin
 		),
 		false,
 		v_f_lease,
+		null,
+		null,
 		v_f_c1
 	);
 
@@ -298,6 +306,8 @@ begin
 		),
 		false,
 		v_f_lease,
+		null,
+		null,
 		v_f_c1
 	);
 	select * into strict v_f_change from public.qorpera_surface_changes where id = v_f_c1;
@@ -345,7 +355,7 @@ begin
 
 	v_c_res := public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Three revised designs', 'Superpower-inspired take.', 'git_range',
-		null, repeat('c', 40), '{}'::uuid[], array['index.html', 'styles.css'], null, null, false, v_c_lease, v_c_c1
+		null, repeat('c', 40), '{}'::uuid[], array['index.html', 'styles.css'], null, null, false, v_c_lease, null, null, v_c_c1
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c1;
 	v_c_key_after := public.qorpera_surface_preview_composition_key(v_code_surface, repeat('a', 40), array[v_c_c1], null);
@@ -364,7 +374,7 @@ begin
 
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Three revised designs v2', 'Polished typography.', 'git_range',
-		repeat('c', 40), repeat('e', 40), '{}'::uuid[], array['index.html', 'styles.css'], null, null, false, v_c_lease, v_c_c1
+		repeat('c', 40), repeat('e', 40), '{}'::uuid[], array['index.html', 'styles.css'], null, null, false, v_c_lease, null, null, v_c_c1
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c1;
 	perform pg_temp.suci_assert(
@@ -380,7 +390,7 @@ begin
 
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Pricing section v2', 'Tightened pricing copy.', 'git_range',
-		null, repeat('1', 40), null, array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+		null, repeat('1', 40), null, array['pricing.html'], null, null, false, v_c_lease, null, null, v_c_c2
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
 	perform pg_temp.suci_assert(
@@ -393,7 +403,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Non-tip omit parent', 'Should refuse.', 'git_range',
-			null, repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, v_c_c1
+			null, repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, null, null, v_c_c1
 		);
 		perform pg_temp.suci_assert(false, 'updating non-tip git_range without explicit parent_sha must fail');
 	exception when others then
@@ -404,7 +414,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Non-tip wrong parent', 'Should refuse.', 'git_range',
-			repeat('1', 40), repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, v_c_c1
+			repeat('1', 40), repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, null, null, v_c_c1
 		);
 		perform pg_temp.suci_assert(false, 'updating non-tip git_range with tip head_sha as parent_sha must fail');
 	exception when others then
@@ -415,7 +425,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Tip bogus parent', 'Should refuse.', 'git_range',
-			repeat('9', 40), repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, v_c_c2
+			repeat('9', 40), repeat('2', 40), null, '{}'::text[], null, null, false, v_c_lease, null, null, v_c_c2
 		);
 		perform pg_temp.suci_assert(false, 'updating tip git_range with unrelated parent_sha without rebase must fail');
 	exception when others then
@@ -425,7 +435,7 @@ begin
 
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Hero rebased', 'Rebased hero commit.', 'git_range',
-		repeat('a', 40), repeat('7', 40), null, array['index.html'], null, null, false, v_c_lease, v_c_c1
+		repeat('a', 40), repeat('7', 40), null, array['index.html'], null, null, false, v_c_lease, null, null, v_c_c1
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
 	perform pg_temp.suci_assert(
@@ -436,7 +446,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Stale parent no rebase', 'Should refuse.', 'git_range',
-			repeat('e', 40), repeat('8', 40), null, array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+			repeat('e', 40), repeat('8', 40), null, array['pricing.html'], null, null, false, v_c_lease, null, null, v_c_c2
 		);
 		perform pg_temp.suci_assert(false, 're-recording conflicted downstream change with stale parent_sha must fail');
 	exception when others then
@@ -447,7 +457,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Omitted parent while conflicted', 'Should refuse.', 'git_range',
-			null, repeat('8', 40), null, array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+			null, repeat('8', 40), null, array['pricing.html'], null, null, false, v_c_lease, null, null, v_c_c2
 		);
 		perform pg_temp.suci_assert(false, 're-recording conflicted downstream change without moving parent_sha must fail');
 	exception when others then
@@ -464,7 +474,7 @@ begin
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Pricing rebased', 'Rebased pricing on new hero.', 'git_range',
 		repeat('7', 40), repeat('8', 40), null, array['pricing.html'], null,
-		jsonb_build_object('rebase', true), false, v_c_lease, v_c_c2
+		jsonb_build_object('rebase', true), false, v_c_lease, null, null, v_c_c2
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
 	perform pg_temp.suci_assert(
@@ -478,7 +488,7 @@ begin
 
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Pricing independent', 'Cleared dependency after rebase.', 'git_range',
-		repeat('7', 40), repeat('8', 40), '{}'::uuid[], array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+		repeat('7', 40), repeat('8', 40), '{}'::uuid[], array['pricing.html'], null, null, false, v_c_lease, null, null, v_c_c2
 	);
 	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
 	perform pg_temp.suci_assert(
@@ -489,7 +499,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'Bad self dep', 'Bad.', 'git_range',
-			null, repeat('d', 40), array[v_c_c2], '{}'::text[], null, null, false, v_c_lease, v_c_c2
+			null, repeat('d', 40), array[v_c_c2], '{}'::text[], null, null, false, v_c_lease, null, null, v_c_c2
 		);
 		perform pg_temp.suci_assert(false, 'updating a change with self-dependency must fail');
 	exception when others then
@@ -501,7 +511,7 @@ begin
 	begin
 		perform public.qorpera_native_surface_record_change(
 			v_profile, v_c_session, 'After merge', 'Bad.', 'git_range',
-			null, repeat('d', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, v_c_c1
+			null, repeat('d', 40), '{}'::uuid[], '{}'::text[], null, null, false, v_c_lease, null, null, v_c_c1
 		);
 		perform pg_temp.suci_assert(false, 'updating a merged change must fail');
 	exception when others then
@@ -534,7 +544,7 @@ begin
 		v_profile, v_ops_session, 'Re: Pricing (shorter)', 'Shortened email draft.', 'ops_action',
 		null, null, '{}'::uuid[], array['mailto:ada@example.com'], null,
 		jsonb_build_object('actionKind', 'inbox.draft_email', 'actionPayload', jsonb_build_object('body', 'Draft v2')),
-		false, v_ops_lease, v_ops_c1
+		false, v_ops_lease, null, null, v_ops_c1
 	);
 	select * into strict v_ops_change from public.qorpera_surface_changes where id = v_ops_c1;
 	perform pg_temp.suci_assert(
@@ -714,7 +724,7 @@ begin
 
 	perform public.qorpera_record_surface_change(
 		v_sync_session, 'Hero rebased during tip turn', 'Moved base change head.', 'git_range',
-		repeat('a', 40), repeat('9', 40), null, '{}'::text[], null, null, false, v_sync_c1
+		repeat('a', 40), repeat('9', 40), null, '{}'::text[], null, null, false, null, null, v_sync_c1
 	);
 
 	perform public.qorpera_surface_sync_coding_completion(
@@ -739,5 +749,86 @@ begin
 				and m.body like 'Latest commits were not staged:%'
 		),
 		'coding_finish sync leaves conflicted stacked tip conflicted and records a system message'
+	);
+
+	perform pg_temp.suci_as(v_owner);
+	v_opt_session := (public.qorpera_start_surface_session(v_code_surface, 'Give two homepage directions', 'Homepage options') ->> 'id')::uuid;
+	v_opt_lease := extensions.gen_random_uuid();
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_opt_lease, lease_expires_at = clock_timestamp() + interval '5 minutes'
+	where id = v_opt_session;
+
+	v_opt_o1 := (public.qorpera_native_surface_record_change(
+		v_profile, v_opt_session, 'Option A: Calm', 'Quiet studio.', 'git_range',
+		repeat('a', 40), repeat('1', 40), '{}'::uuid[], array['index.html'], null, null, false, v_opt_lease,
+		'homepage-direction', 'Homepage direction'
+	) ->> 'changeId')::uuid;
+	v_opt_o2 := (public.qorpera_native_surface_record_change(
+		v_profile, v_opt_session, 'Option B: Bold', 'Editorial layout.', 'git_range',
+		repeat('a', 40), repeat('2', 40), '{}'::uuid[], array['index.html'], null, null, false, v_opt_lease,
+		'homepage-direction', null
+	) ->> 'changeId')::uuid;
+
+	v_opt_turn := public.qorpera_native_surface_read_session_turn(v_profile, v_opt_session, v_opt_lease);
+	perform pg_temp.suci_assert(
+		jsonb_array_length(v_opt_turn -> 'sessionOpenChanges') = 2
+		and (v_opt_turn -> 'sessionOpenChanges' -> 0 ->> 'optionGroupKey') = 'homepage-direction'
+		and (v_opt_turn -> 'sessionOpenChanges' -> 0 ->> 'optionGroupTitle') = 'Homepage direction'
+		and jsonb_array_length(v_opt_turn -> 'openChanges') = 2,
+		'read_session_turn exposes optionGroup metadata on sessionOpenChanges while keeping openChanges intact'
+	);
+
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_opt_session, 'Option A: Darker Calm', 'Refined darker header.', 'git_range',
+		repeat('a', 40), repeat('3', 40), null, array['index.html'], null, null, false, v_opt_lease,
+		null, null, v_opt_o1
+	);
+	select * into strict v_opt_change from public.qorpera_surface_changes where id = v_opt_o1;
+	perform pg_temp.suci_assert(
+		v_opt_change.option_group_key = 'homepage-direction'
+		and v_opt_change.option_group_title = 'Homepage direction'
+		and v_opt_change.parent_sha = repeat('a', 40)
+		and v_opt_change.head_sha = repeat('3', 40)
+		and (select status from public.qorpera_surface_changes where id = v_opt_o2) = 'staged',
+		'updating non-tip option in place preserves option group and keeps sibling option staged'
+	);
+
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_profile, v_opt_session, 'Option A moved group', 'Should refuse.', 'git_range',
+			repeat('a', 40), repeat('4', 40), null, array['index.html'], null, null, false, v_opt_lease,
+			'other-group', null, v_opt_o1
+		);
+		perform pg_temp.suci_assert(false, 'updating change with a different optionGroup must fail');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.suci_assert(v_errcode = '22023', 'mismatched optionGroup on update must fail with 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_profile, v_opt_session, 'Option A drifted parent', 'Should refuse.', 'git_range',
+			repeat('5', 40), repeat('6', 40), null, array['index.html'], null,
+			jsonb_build_object('rebase', true), false, v_opt_lease,
+			null, null, v_opt_o1
+		);
+		perform pg_temp.suci_assert(false, 'rebasing one option away from staged sibling parentSha must fail');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.suci_assert(v_errcode = '22023', 'divergent sibling parentSha must fail with 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	update public.qorpera_surface_changes set status = 'conflicted' where id = v_opt_o2;
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_opt_session, 'Option B: Bold v2', 'Resolved conflict.', 'git_range',
+		repeat('a', 40), repeat('4', 40), null, array['index.html'], null, null, false, v_opt_lease,
+		'homepage-direction', 'Updated directions', v_opt_o2
+	);
+	select * into strict v_opt_change from public.qorpera_surface_changes where id = v_opt_o2;
+	perform pg_temp.suci_assert(
+		v_opt_change.status = 'staged'
+		and v_opt_change.head_sha = repeat('4', 40)
+		and v_opt_change.option_group_title = 'Updated directions',
+		'updating conflicted option sibling succeeds without false predecessor block from its sibling'
 	);
 end $$;

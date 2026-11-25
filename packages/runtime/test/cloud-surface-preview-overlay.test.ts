@@ -5,6 +5,7 @@ import { CloudCompanyPathNotText } from "../src/cloud-company-path-gateway.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
 import {
 	createSurfaceFolderPreviewOverlay,
+	createSurfaceSessionOwnOverlay,
 	mergeFolderPatchOps,
 	parseSurfaceOmittedBaseChanges,
 	parseSurfacePreviewContext,
@@ -849,7 +850,7 @@ describe("surface preview overlay and lineage turn context", () => {
 			},
 		);
 
-		expect(seenBrief).toContain("## Open Changes in This Session");
+		expect(seenBrief).toContain("## Active Staged Changes on This Session");
 		expect(seenBrief).toContain(ownChangeId);
 		expect(seenBrief).toContain("(targeted by follow-up)");
 		expect(readBriefInTurn).toContain("Turn 1 brief");
@@ -863,5 +864,51 @@ describe("surface preview overlay and lineage turn context", () => {
 				"intro.md": null,
 			},
 		});
+
+		const optA = randomUUID();
+		const optB = randomUUID();
+		const optionOpen = parseSurfaceSessionOpenChanges([
+			{
+				changeId: optA,
+				seq: 1,
+				title: "Warm palette",
+				summary: "",
+				kind: "folder_patch",
+				status: "staged",
+				affectedPaths: ["tokens.json"],
+				optionGroupKey: "palette",
+				optionGroupTitle: "Brand palette",
+				patchManifest: [{ op: "write_text", path: "tokens.json", content: '{"accent":"#d76f45"}\n' }],
+				baseFiles: { "tokens.json": liveFiles["identity/tokens.json"]! },
+			},
+			{
+				changeId: optB,
+				seq: 2,
+				title: "Cool palette",
+				summary: "",
+				kind: "folder_patch",
+				status: "staged",
+				affectedPaths: ["tokens.json"],
+				optionGroupKey: "palette",
+				optionGroupTitle: "Brand palette",
+				patchManifest: [{ op: "write_text", path: "tokens.json", content: '{"accent":"#2255aa"}\n' }],
+				baseFiles: { "tokens.json": liveFiles["identity/tokens.json"]! },
+			},
+		]);
+		const untargetedOptionOverlay = createSurfaceSessionOwnOverlay({
+			folderRoot: "identity",
+			sessionOpenChanges: optionOpen,
+			baseReader: liveReader,
+		});
+		expect(untargetedOptionOverlay).toBeNull();
+		const targetedOptionOverlay = createSurfaceSessionOwnOverlay({
+			folderRoot: "identity",
+			sessionOpenChanges: optionOpen,
+			baseReader: liveReader,
+			replyChangeId: optA,
+		});
+		expect(targetedOptionOverlay).not.toBeNull();
+		const optALookup = await targetedOptionOverlay!.lookup("identity/tokens.json", new AbortController().signal);
+		expect(optALookup?.kind === "file" ? optALookup.content : "").toBe('{"accent":"#d76f45"}\n');
 	});
 });

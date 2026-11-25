@@ -677,7 +677,7 @@ export class SurfaceView {
 					liveBuild &&
 					!localLive &&
 					!remoteCompare &&
-					state.mode === "preview" &&
+					state.mode !== "live" &&
 					preview !== undefined &&
 					preview.primary.status !== "live_baseline",
 			);
@@ -690,6 +690,18 @@ export class SurfaceView {
 					!workspace &&
 					store.isWorkspaceLoading(surface.id) &&
 					(surface.pendingChangeCount > 0 || surface.activeSessionCount > 0 || !surface.siteSlug),
+			);
+			const waitingForPreview = Boolean(
+				!reportMode &&
+					liveBuild &&
+					!localLive &&
+					!remoteCompare &&
+					!showPrimary &&
+					state.source === "cloud" &&
+					state.mode !== "live" &&
+					surface.sourceKind === "code_repo" &&
+					store.isPreviewSyncing(surface.id) &&
+					store.shownPreviewChangeCount(surface.id) > 0,
 			);
 			const waitingForMount = Boolean(
 				!reportMode && !remoteCompare && !showPrimary && this.#host.isMountLoading?.(surface),
@@ -718,7 +730,7 @@ export class SurfaceView {
 				const identityTokens = store.companyIdentityTokens();
 				this.#primaryDoor.setIdentityTokens(identityTokens);
 				for (const entry of this.#compareDoors.values()) entry.stage.setIdentityTokens(identityTokens);
-			} else if (waitingForWorkspace || waitingForMount) {
+			} else if (waitingForWorkspace || waitingForPreview || waitingForMount) {
 				this.#disposeAttachedReport();
 				this.#clearFrames();
 				this.#showLoading(skeletonKind, t("Opening surface…"));
@@ -835,8 +847,9 @@ export class SurfaceView {
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
 		const hasAgents = explorations.length + plainSessions.length > 0;
-		const shownCount =
-			state.mode === "preview" || state.mode === "compare" ? store.shownPreviewChangeCount(surface.id) : 0;
+		const reportMode = state.mode === "report" && look.kind !== "report" && surfaceHasDeliverables(state, surface.id);
+		const effectiveMode: SurfacePreviewMode = state.mode === "live" ? "live" : reportMode ? "report" : "preview";
+		const shownCount = effectiveMode === "preview" ? store.shownPreviewChangeCount(surface.id) : 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
 		const served = this.#host.isSiteLive?.(surface);
@@ -869,6 +882,7 @@ export class SurfaceView {
 			surface.liveUrl,
 			surface.unpublishedChangeCount,
 			state.mode,
+			reportMode,
 			state.device,
 			showViewportSplit,
 			studioHasChanges,
@@ -895,7 +909,6 @@ export class SurfaceView {
 		if (!this.#panelsHidden) this.#askShown = askKey;
 		if (site === "private" && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 
-		const effectiveMode: SurfacePreviewMode = state.mode === "compare" ? "preview" : state.mode;
 		const toggle = (name: string, label: string, ...segments: HTMLElement[]) =>
 			h(
 				"div",
@@ -1395,7 +1408,7 @@ export class SurfaceView {
 		const showPrimary =
 			liveBuild &&
 			!remoteCompare &&
-			state.mode === "preview" &&
+			state.mode !== "live" &&
 			preview !== undefined &&
 			preview.primary.status !== "live_baseline";
 
