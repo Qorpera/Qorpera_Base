@@ -4165,7 +4165,7 @@ create trigger nap before update on slowed for each row execute function nap();
 			(
 				await asAdmin(
 					"postgres",
-					"select pid::int as pid from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway watch' order by pid",
+					"select pid::int as pid from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen' order by pid",
 					[companyDb],
 				)
 			).map((row) => row.pid);
