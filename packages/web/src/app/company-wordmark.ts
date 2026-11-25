@@ -157,6 +157,7 @@ export class CompanyWordmarkSlot {
 	readonly #blobUrls = new Map<string, string>();
 	readonly #pendingReads = new Set<string>();
 	readonly #failedReads = new Map<string, number>();
+	readonly #retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #failedUrls = new Set<string>();
 	#wordmarks: CompanyWordmarks = EMPTY_WORDMARKS;
 	#store: SurfacesStore | undefined;
@@ -190,6 +191,7 @@ export class CompanyWordmarkSlot {
 			this.#wordmarks = next;
 			this.#failedUrls.clear();
 			this.#failedReads.clear();
+			this.#clearRetries();
 			this.#pruneBinaries(next);
 		}
 		if (next.light?.kind === "binary") this.#ensureBinary(next.light.ref);
@@ -222,12 +224,33 @@ export class CompanyWordmarkSlot {
 					this.#paint();
 				},
 				() => {
-					if (!this.#signal.aborted) this.#failedReads.set(sha, Date.now() + BINARY_RETRY_MS);
+					if (this.#signal.aborted) return;
+					this.#failedReads.set(sha, Date.now() + BINARY_RETRY_MS);
+					if (activeBinaryShas(this.#wordmarks).has(sha)) this.#scheduleRetry(ref);
 				},
 			)
 			.finally(() => {
 				this.#pendingReads.delete(sha);
 			});
+	}
+
+	#scheduleRetry(ref: StudioBinaryRef): void {
+		const sha = ref.fileSha256;
+		const existing = this.#retryTimers.get(sha);
+		if (existing !== undefined) clearTimeout(existing);
+		this.#retryTimers.set(
+			sha,
+			setTimeout(() => {
+				this.#retryTimers.delete(sha);
+				if (this.#signal.aborted || !activeBinaryShas(this.#wordmarks).has(sha)) return;
+				this.#ensureBinary(ref);
+			}, BINARY_RETRY_MS),
+		);
+	}
+
+	#clearRetries(): void {
+		for (const timer of this.#retryTimers.values()) clearTimeout(timer);
+		this.#retryTimers.clear();
 	}
 
 	#pruneBinaries(wordmarks: CompanyWordmarks): void {
@@ -272,6 +295,7 @@ export class CompanyWordmarkSlot {
 	}
 
 	#dispose(): void {
+		this.#clearRetries();
 		for (const url of this.#blobUrls.values()) URL.revokeObjectURL(url);
 		this.#blobUrls.clear();
 		this.#pendingReads.clear();

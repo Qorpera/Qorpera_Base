@@ -513,28 +513,25 @@ describe("sidepanel company selector wordmark", () => {
 		});
 		await store.load();
 		await store.refreshCloudFiles(identitySurface);
-		await Promise.resolve();
-		await Promise.resolve();
+		await settle();
 
 		const img = rail.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
 		expect(img.hidden).toBe(true);
 		expect(lightAttempts).toBe(1);
 
-		setTheme("dark");
-		expect(img.hidden).toBe(false);
-		expect(img.getAttribute("src")).toBe("blob:wordmark-1");
-
 		draw();
 		expect(lightAttempts).toBe(1);
 
-		vi.advanceTimersByTime(60_000);
-		setTheme("light");
-		await Promise.resolve();
-		await Promise.resolve();
+		await vi.advanceTimersByTimeAsync(60_000);
+		await settle();
 		expect(lightAttempts).toBe(2);
 		expect(createUrl).toHaveBeenCalledTimes(2);
 		expect(img.hidden).toBe(false);
 		expect(img.getAttribute("src")).toBe("blob:wordmark-2");
+
+		setTheme("dark");
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe("blob:wordmark-1");
 
 		company.stop();
 		expect(revokeUrl).toHaveBeenCalledTimes(2);
@@ -552,7 +549,7 @@ describe("sidepanel company selector wordmark", () => {
 		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(() => surfacesReady.promise);
 		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
 		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder);
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder as never);
 
 		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		const f = fixture();
