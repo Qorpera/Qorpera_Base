@@ -252,6 +252,10 @@ const SCHEMA_VIEWER_OBJECTS =
 	"where c.relrowsecurity or c.relkind in ('v', 'm') " +
 	"union " +
 	"select p.proname as name from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace and n.nspname = $1";
+const FIND_MAX = 200;
+const AT_LIST_MAX = 200;
+const AT_SHAPE = `at names 1 to 32 columns, each with a text, a number, true, false, null or a list of 1 to ${AT_LIST_MAX} of the first three`;
+const ROWS_CAN = Object.freeze(["at", "find"]);
 const CONSTRAINT_TYPES = Object.freeze({ p: "primary_key", f: "foreign_key", u: "unique", c: "check" });
 const FK_DELETE_ACTION = Object.freeze({ a: "no_action", r: "restrict", c: "cascade", n: "set_null", d: "set_default" });
 const STORED_DDL_QUERY =
@@ -2406,19 +2410,33 @@ export class Gateway {
 			values.push(text);
 			return `$${values.length}::${column.type}`;
 		};
-		let where = "";
+		const conditions = [];
 		if (ready.after !== null) {
 			const after = ready.after;
 			if (after.length !== placed.length || !after.every((one, index) => (index === 0 && by ? one === null : false) || typeof one === "string"))
 				refuse(400, "after is the next a page gave, for the same order");
 			const keyAfter = key.length === 0 ? "" : `(${key.map(ref).join(", ")}) ${by || !ready.desc ? ">" : "<"} (${key.map((column, index) => value(column, after[placed.length - key.length + index])).join(", ")})`;
-			if (!by) where = `where ${keyAfter}`;
-			else if (after[0] === null) where = `where ${ref(by)} is null and ${keyAfter}`;
+			if (!by) conditions.push(keyAfter);
+			else if (after[0] === null) conditions.push(`${ref(by)} is null and ${keyAfter}`);
 			else {
 				const from = value(by, after[0]);
-				where = `where (${ref(by)} ${ready.desc ? "<" : ">"} ${from} or (${ref(by)} = ${from} and ${keyAfter}) or ${ref(by)} is null)`;
+				conditions.push(`(${ref(by)} ${ready.desc ? "<" : ">"} ${from} or (${ref(by)} = ${from} and ${keyAfter}) or ${ref(by)} is null)`);
 			}
 		}
+		if ((ready.find ?? null) !== null) {
+			values.push(ready.find);
+			const sought = `pg_catalog.lower($${values.length}::text)`;
+			conditions.push(`(${columns.map((column) => `pg_catalog.strpos(pg_catalog.lower(${ref(column)}::text), ${sought}) > 0`).join(" or ")})`);
+		}
+		for (const [name, given] of Object.entries(ready.at ?? {})) {
+			const column = columns.find((one) => one.name === name);
+			if (!column) refuse(400, `No column ${name} in ${ready.table}`);
+			if (Array.isArray(given)) {
+				values.push(`{${given.map((one) => `"${String(one).replace(/[\\"]/g, "\\$&")}"`).join(",")}}`);
+				conditions.push(`${ref(column)} = any($${values.length}::${column.type}[])`);
+			} else conditions.push(given === null ? `${ref(column)} is null` : `${ref(column)} = ${value(column, String(given))}`);
+		}
+		const where = conditions.length === 0 ? "" : `where ${conditions.length === 1 ? conditions[0] : conditions.map((one) => `(${one})`).join(" and ")}`;
 		const order = [
 			...(by ? [`${ref(by)} ${ready.desc ? "desc" : "asc"} nulls last`] : []),
 			...key.map((column) => `${ref(column)} ${!by && ready.desc ? "desc" : "asc"}`),
@@ -2640,7 +2658,7 @@ export class Gateway {
 
 	async #table(caller, environmentId, asked, texts, { first = false, testSchemaName = null } = {}) {
 		if (!asked || typeof asked !== "object" || Array.isArray(asked)) refuse(400, "Name a table");
-		const { database: name, table, order = null, desc = false, limit = this.#limits.pageRowsUsual, after = null } = asked;
+		const { database: name, table, order = null, desc = false, limit = this.#limits.pageRowsUsual, after = null, find = null, at = null } = asked;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
 		if (typeof table !== "string" || table === "" || Buffer.byteLength(table) > 63 || table.includes("\0")) refuse(400, "Name a table");
 		if (order !== null && (typeof order !== "string" || order === "" || Buffer.byteLength(order) > 63 || order.includes("\0")))
@@ -2648,6 +2666,14 @@ export class Gateway {
 		if (typeof desc !== "boolean") refuse(400, "desc is true or false");
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.#limits.pageRows) refuse(400, `A page holds 1 to ${this.#limits.pageRows} rows`);
 		if (after !== null && (first || !Array.isArray(after) || after.length > 33)) refuse(400, first ? "A watched table is its first page" : "after is the next a page gave");
+		if (find !== null && (typeof find !== "string" || find.trim() === "" || find.length > FIND_MAX || find.includes("\0"))) refuse(400, `find is 1 to ${FIND_MAX} characters`);
+		if (at !== null) {
+			if (first || after !== null) refuse(400, first ? "A watched table is its first page" : "at reads rows by their values: it takes no after");
+			const named = at && typeof at === "object" && !Array.isArray(at) ? Object.entries(at) : [];
+			const plain = (value) => (typeof value === "string" && !value.includes("\0")) || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value));
+			const given = (value) => value === null || plain(value) || (Array.isArray(value) && value.length >= 1 && value.length <= AT_LIST_MAX && value.every(plain));
+			if (named.length < 1 || named.length > 32 || named.some(([column, value]) => column === "" || Buffer.byteLength(column) > 63 || column.includes("\0") || !given(value))) refuse(400, AT_SHAPE);
+		}
 		const right = await this.#mayList(caller, environmentId, name, texts);
 		if (right.need) return right;
 		if (!right.list) refuse(403, `The tables of ${name} are shown to those who may change it`);
@@ -2666,6 +2692,8 @@ export class Gateway {
 			desc,
 			limit,
 			after,
+			find,
+			at,
 			viewer: caller.userId,
 		};
 	}
@@ -3554,7 +3582,7 @@ export class Gateway {
 			ready.push(one);
 		}
 		if (need.length > 0) return { need };
-		const place = sha256(JSON.stringify([caller.userId, environmentId, watches.map((watched) => [watched.database, watched.question ?? null, watched.table ?? null, watched.params ?? {}, watched.order ?? null, watched.desc ?? false, watched.limit ?? null])]));
+		const place = sha256(JSON.stringify([caller.userId, environmentId, watches.map((watched) => [watched.database, watched.question ?? null, watched.table ?? null, watched.params ?? {}, watched.order ?? null, watched.desc ?? false, watched.limit ?? null, watched.find ?? null])]));
 		if (this.#resume.size > 1_000) {
 			const now = Date.now();
 			for (const [key, kept] of this.#resume) if (now - kept.at > 300_000) this.#resume.delete(key);
@@ -3622,7 +3650,7 @@ export class Gateway {
 									(schemaObjs.regex !== null && schemaObjs.regex.test(item.sql));
 						const scope = itemViewerScoped ? caller.userId : "*";
 						const baseKey = isTable
-							? `t|${database}|${item.name}|${scope}|${item.table}|${item.order ?? ""}|${item.desc ? 1 : 0}|${item.limit}|${this.#limits.questionBytes}`
+							? `t|${database}|${item.name}|${scope}|${item.table}|${item.order ?? ""}|${item.desc ? 1 : 0}|${item.limit}|${this.#limits.questionBytes}|${JSON.stringify(item.find ?? null)}`
 							: `q|${database}|${item.name}|${scope}|${item.sha256}|${JSON.stringify(item.values)}|${this.#limits.questionRows}|${this.#limits.questionBytes}`;
 						const itemGen = isTable
 							? Math.max(listener.wildcardGen, listener.schemaDdlGen.get(item.name) ?? 0, listener.tableGen.get(`${item.name}.${item.table}`) ?? 0)
@@ -4237,7 +4265,7 @@ export class Gateway {
 			}),
 			exists ? this.#ownBytes(database) : 0,
 		]);
-		return { databases, companyBytes, limitBytes: this.#limits.companyBytes };
+		return { databases, companyBytes, limitBytes: this.#limits.companyBytes, can: ROWS_CAN };
 	}
 
 	async #ownBytes(database) {

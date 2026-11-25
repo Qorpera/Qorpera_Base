@@ -400,6 +400,17 @@ describe("a member's questions to the company's databases", () => {
 			asOf: "2026-11-15T10:00:00.000Z",
 		};
 
+		it("keeps what the store says its rows call can do, and takes a store that says nothing", async () => {
+			const able = fakeFetch([[200, { ...described, databases: [described.databases[0]], can: ["at", "find"] }]]);
+			expect((await client(able.fetch).data.describe("shop", signal())).can).toEqual(["at", "find"]);
+			const silent = fakeFetch([[200, { ...described, databases: [described.databases[0]] }]]);
+			expect(await client(silent.fetch).data.describe("shop", signal())).not.toHaveProperty("can");
+			for (const can of ["find", [5], [{}], Array.from({ length: 33 }, () => "x")]) {
+				const odd = fakeFetch([[200, { ...described, databases: [described.databases[0]], can }]]);
+				await expect(client(odd.fetch).data.describe("shop", signal())).rejects.toThrow();
+			}
+		});
+
 		it("describes every database the member may read, sending the texts it asks for in rounds that fit", async () => {
 			const files: Record<string, string> = { "data/shop/database.toml": toml };
 			const need = [{ path: "data/shop/database.toml", sha256: sha(toml) }];
@@ -488,6 +499,34 @@ describe("a member's questions to the company's databases", () => {
 			expect(sent[0]?.body).toEqual({ database: "shop", table: "orders", order: "customer", desc: true, limit: 50 });
 			await data.rows({ database: "shop", table: "orders", after: [2] }, signal());
 			expect(sent[1]?.body).toEqual({ database: "shop", table: "orders", after: [2] });
+			const sought = fakeFetch([
+				[200, page],
+				[200, page],
+			]);
+			const seeking = client(sought.fetch).data;
+			await seeking.rows({ database: "shop", table: "orders", find: "Emma", after: [1] }, signal());
+			expect(sought.sent[0]?.body).toEqual({ database: "shop", table: "orders", find: "Emma", after: [1] });
+			await seeking.rows(
+				{ database: "shop", table: "orders", at: { id: [1, 2], customer: null }, limit: 2 },
+				signal(),
+			);
+			expect(sought.sent[1]?.body).toEqual({
+				database: "shop",
+				table: "orders",
+				limit: 2,
+				at: { id: [1, 2], customer: null },
+			});
+			for (const find of ["", "  ", "x".repeat(201), "a\0b", 5 as unknown as string])
+				await expect(data.rows({ database: "shop", table: "orders", find }, signal())).rejects.toThrow(
+					"find is 1 to 200 characters",
+				);
+			for (const at of [{}, { "": 1 }, { id: { more: 1 } }, { id: [] }, { id: [null] }, { id: Number.NaN }, ["id"], "id"])
+				await expect(
+					data.rows({ database: "shop", table: "orders", at: at as unknown as Record<string, string> }, signal()),
+				).rejects.toThrow("at names 1 to 32 columns");
+			await expect(
+				data.rows({ database: "shop", table: "orders", at: { id: 1 }, after: [1] }, signal()),
+			).rejects.toThrow("it takes no after");
 			await expect(data.rows({ database: "shop", table: "orders", limit: 201 }, signal())).rejects.toThrow(
 				"1 to 200",
 			);

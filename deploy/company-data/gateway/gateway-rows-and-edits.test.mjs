@@ -293,6 +293,69 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		assert.equal((await listed(viewer, { table: "people", limit: 1 })).status, 200, "the read login is free again");
 	});
 
+	it("finds a table's rows by a text in any column, across pages and in a watch of its own, and reads rows by their values", async () => {
+		assert.deepEqual((await ask(viewer, "describe", { database: "crm" }, ENV_E)).value.can, ["at", "find"]);
+		const found = await everyPage(viewer, { table: "people", find: "PERSON 03", limit: 7 });
+		assert.deepEqual(found, await ids("select id from crm.people where position('person 03' in lower(name)) > 0 order by id"));
+		assert.ok(found.length > 7, "the find spans pages");
+		const byNumber = await everyPage(viewer, { table: "people", find: "16", limit: 50, order: "score", desc: true });
+		assert.deepEqual(
+			[...byNumber].sort((a, b) => a - b),
+			await ids("select id from crm.people p where position('16' in p.id::text) > 0 or position('16' in coalesce(p.name, '')) > 0 or position('16' in p.score::text) > 0 or position('16' in p.double::text) > 0 order by id"),
+		);
+		for (const find of ["%", "_", "' or 1=1 --", "no such text"]) {
+			const none = await listed(viewer, { table: "pairs", find });
+			assert.deepEqual([none.status, none.value.rows, none.value.more], [200, [], false], find);
+		}
+		for (const find of ["", "   ", "x".repeat(201), 5, "a\0b"]) {
+			const refused = await listed(viewer, { table: "people", find });
+			assert.deepEqual([refused.status, refused.value.error], [400, "find is 1 to 200 characters"], JSON.stringify(find));
+		}
+		const sought = { database: "crm", table: "pairs", find: "b03" };
+		const part = (await listed(viewer, { table: "pairs", find: "b03" })).value;
+		const whole = (await listed(viewer, { table: "pairs" })).value;
+		assert.deepEqual(part.rows.map((row) => row.values[1]), Array(5).fill("b03"));
+		assert.notEqual(part.etag, whole.etag);
+		assert.deepEqual((await ask(viewer, "watch", { watches: [{ ...sought, etag: part.etag }], wait: 0 }, ENV_E)).value, { same: true });
+		const unsought = await ask(viewer, "watch", { watches: [{ database: "crm", table: "pairs", etag: part.etag }], wait: 0 }, ENV_E);
+		assert.equal(unsought.value.changed?.[0]?.answer.etag, whole.etag, "a watch without the find is another list");
+		const again = await ask(viewer, "watch", { watches: [{ ...sought, etag: whole.etag }], wait: 0 }, ENV_E);
+		assert.equal(again.value.changed?.[0]?.answer.etag, part.etag, "and a watch with it is not answered from the other's kept page");
+
+		const one = await listed(viewer, { table: "pairs", at: { a: 3, b: "b07" } });
+		assert.deepEqual([one.status, one.value.rows.map((row) => row.values), one.value.more], [200, [[3, "b07", "v38"]], false]);
+		assert.deepEqual((await listed(viewer, { table: "people", at: { id: "7" }, limit: 1 })).value.rows.map((row) => row.values[0]), [7]);
+		assert.deepEqual(
+			(await listed(viewer, { table: "people", at: { note: null, score: 16 } })).value.rows.map((row) => row.values[0]),
+			await ids("select id from crm.people where note is null and score = 16 order by id"),
+		);
+		const several = await listed(viewer, { table: "pairs", at: { b: ["b07", "b11", 'b"\\,{}'], a: 3 } });
+		assert.deepEqual([several.status, several.value.rows.map((row) => row.values[2]), several.value.more], [200, ["v38", "v58"], false]);
+		assert.deepEqual((await listed(viewer, { table: "people", at: { id: [3, "5", 7, 100_000] }, order: "id", desc: true })).value.rows.map((row) => row.values[0]), [7, 5, 3]);
+		const PLAIN = "at names 1 to 32 columns, each with a text, a number, true, false, null or a list of 1 to 200 of the first three";
+		for (const [at, error] of [
+			[{ nope: 1 }, "No column nope in people"],
+			[{ 'id" = 1 or "id': 1 }, 'No column id" = 1 or "id in people'],
+			[{}, PLAIN],
+			[[1], PLAIN],
+			["id", PLAIN],
+			[{ id: { more: 1 } }, PLAIN],
+			[{ id: [] }, PLAIN],
+			[{ id: [1, null] }, PLAIN],
+			[{ id: [[1]] }, PLAIN],
+			[{ id: Array.from({ length: 201 }, (_, n) => n) }, PLAIN],
+		]) {
+			const refused = await listed(viewer, { table: "people", at });
+			assert.deepEqual([refused.status, refused.value.error], [400, error], JSON.stringify(at));
+		}
+		assert.equal((await listed(viewer, { table: "people", at: { id: "seven" } })).status, 400, "a value that is no number for a number column");
+		const paged = await listed(viewer, { table: "people", at: { score: 1 }, after: ["5"] });
+		assert.deepEqual([paged.status, paged.value.error], [400, "at reads rows by their values: it takes no after"]);
+		const watched = await ask(viewer, "watch", { watches: [{ database: "crm", table: "people", at: { id: 1 }, etag: "x" }] }, ENV_E);
+		assert.deepEqual([watched.status, watched.value.error], [400, "A watched table is its first page"]);
+		assert.equal((await ask(viewer, "rows", { database: "mine", table: "notes", at: { id: 2 } }, ENV_E)).status, 403, "a read by value keeps the list's right");
+	});
+
 	it("answers a table's watch when its rows change", async () => {
 		const top = { database: "crm", table: "people", desc: true, limit: 5 };
 		const current = (await listed(viewer, top)).value;
