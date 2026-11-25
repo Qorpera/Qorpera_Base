@@ -291,9 +291,9 @@ it("gives the dispatch to every database client the host builds, and to its serv
 	// holder's transport, never the service key.
 	expect(main).toMatch(/new SupabaseNativeCredentialCapsuleStore\(baseUrl, dispatch\.fetch\)/);
 	expect(main).toMatch(
-		/createClient\(baseUrl, publishableKey, \{[\s\S]*?realtime: \{ transport: nativeHostRealtimeTransport\(dispatch\) \}/,
+		/new RealtimeClient\(realtimeUrl\.href, \{[\s\S]*?params: \{ apikey: publishableKey \},[\s\S]*?transport: nativeHostRealtimeTransport\(dispatch\),/,
 	);
-	expect(main).not.toMatch(/createClient\(baseUrl, serviceKey/);
+	expect(main).not.toMatch(/createClient\(/);
 	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, identity \}\)/);
 	// G2-5: the host reads no service key, gives its clients the publishable key, and refuses to start with one.
 	expect(main).not.toMatch(/\bserviceKey\b/);
