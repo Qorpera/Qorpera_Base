@@ -629,13 +629,11 @@ export function createControlPlaneSurfaceToolsPort(
 					p_parent_sha: request.parentSha ?? null,
 					p_head_sha: request.commitSha,
 					p_depends_on_change_ids:
-						request.dependsOnChangeIds === undefined
+						request.dependsOnChangeIds === undefined || request.dependsOnChangeIds === null
 							? request.changeId
 								? null
 								: []
-							: request.dependsOnChangeIds === null
-								? null
-								: [...request.dependsOnChangeIds],
+							: [...request.dependsOnChangeIds],
 					p_affected_paths: [],
 					p_diff_stats: null,
 					p_patch_manifest: request.rebase === true ? { rebase: true } : null,

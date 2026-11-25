@@ -433,6 +433,34 @@ begin
 		'updating non-tip git_range head_sha immediately marks chained downstream change conflicted until re-recorded'
 	);
 
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_profile, v_c_session, 'Stale parent no rebase', 'Should refuse.', 'git_range',
+			repeat('e', 40), repeat('8', 40), null, array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+		);
+		perform pg_temp.suci_assert(false, 're-recording conflicted downstream change with stale parent_sha must fail');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.suci_assert(v_errcode = '22023', 'stale-parent conflicted update must fail with 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_profile, v_c_session, 'Omitted parent while conflicted', 'Should refuse.', 'git_range',
+			null, repeat('8', 40), null, array['pricing.html'], null, null, false, v_c_lease, v_c_c2
+		);
+		perform pg_temp.suci_assert(false, 're-recording conflicted downstream change without moving parent_sha must fail');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.suci_assert(v_errcode = '22023', 'omitted-parent conflicted update must fail with 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	select * into strict v_c_change from public.qorpera_surface_changes where id = v_c_c2;
+	perform pg_temp.suci_assert(
+		v_c_change.status = 'conflicted',
+		'refused stale-parent updates leave downstream change conflicted'
+	);
+
 	perform public.qorpera_native_surface_record_change(
 		v_profile, v_c_session, 'Pricing rebased', 'Rebased pricing on new hero.', 'git_range',
 		repeat('7', 40), repeat('8', 40), null, array['pricing.html'], null,
@@ -665,5 +693,43 @@ begin
 		and v_sync_change.head_sha = repeat('2', 40)
 		and (select count(*) from public.qorpera_surface_changes where session_id = v_sync_session) = 4,
 		'follow-up coding_finish targeting a non-tip change must not corrupt its commit range'
+	);
+
+	select * into strict v_sync_change
+	from public.qorpera_surface_changes
+	where session_id = v_sync_session
+	order by seq desc, id desc
+	limit 1;
+
+	perform pg_temp.suci_as(v_owner);
+	perform public.qorpera_reply_surface_session(v_sync_session, 'Tweak latest change', true, v_sync_change.id);
+
+	update public.qorpera_runtime_workers set sequence = 6 where id = v_worker.id returning * into v_worker;
+	insert into public.qorpera_coding_session_turns(worker_id, sequence, input_from, input_text)
+	values (v_worker.id, 6, 'member', 'Tweak latest change');
+
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = extensions.gen_random_uuid()
+	where id = v_sync_session;
+
+	perform public.qorpera_record_surface_change(
+		v_sync_session, 'Hero rebased during tip turn', 'Moved base change head.', 'git_range',
+		repeat('a', 40), repeat('9', 40), null, '{}'::text[], null, null, false, v_sync_c1
+	);
+
+	perform public.qorpera_surface_sync_coding_completion(
+		v_coding, v_worker, 'succeeded', 'Finished without re-recording conflicted tip.', null, null,
+		jsonb_build_array(jsonb_build_object('headSha', repeat('b', 40), 'baseSha', repeat('a', 40)))
+	);
+
+	select * into strict v_sync_change
+	from public.qorpera_surface_changes
+	where id = v_sync_change.id;
+	perform pg_temp.suci_assert(
+		v_sync_change.status = 'conflicted'
+		and v_sync_change.parent_sha = repeat('5', 40)
+		and v_sync_change.head_sha = repeat('6', 40)
+		and (select count(*) from public.qorpera_surface_changes where session_id = v_sync_session) = 4,
+		'coding_finish sync must leave a conflicted stacked tip conflicted instead of clearing conflict with stale parent_sha'
 	);
 end $$;

@@ -454,6 +454,8 @@ $new$	v_retry_enqueued boolean := false;
 	v_has_later_git_change boolean := false;
 	v_existing public.qorpera_surface_changes%rowtype;
 	v_raw_parent_sha text;
+	v_prev_git_head_sha text;
+	v_prev_git_status text;
 	v_eff_parent_sha text;
 	v_eff_head_sha text;
 	v_eff_paths text[];
@@ -621,6 +623,26 @@ $new$	if p_change_id is not null then
 			if v_eff_parent_sha is null or v_eff_parent_sha !~ '^[0-9a-f]{40}$'
 				or v_eff_head_sha is null or v_eff_head_sha !~ '^[0-9a-f]{40}$' then
 				raise exception 'Git range change requires valid 40-hex parent and head commit SHAs' using errcode = '22023';
+			end if;
+
+			if v_existing.status = 'conflicted' then
+				v_prev_git_status := null;
+				v_prev_git_head_sha := null;
+				select prev_ch.status, nullif(btrim(prev_ch.head_sha), '')
+				into v_prev_git_status, v_prev_git_head_sha
+				from public.qorpera_surface_changes prev_ch
+				where prev_ch.session_id = p_session_id
+					and prev_ch.profile_id = v_session.profile_id
+					and prev_ch.kind = 'git_range'
+					and prev_ch.status in ('staged', 'conflicted')
+					and (prev_ch.seq < v_existing.seq or (prev_ch.seq = v_existing.seq and prev_ch.id < v_existing.id))
+				order by prev_ch.seq desc, prev_ch.id desc
+				limit 1;
+				if v_prev_git_head_sha is not null
+					and (v_eff_parent_sha is distinct from v_prev_git_head_sha or v_prev_git_status = 'conflicted')
+					and (not v_allow_rebase or v_eff_parent_sha = v_existing.parent_sha) then
+					raise exception 'Conflicted git_range change must be rebased onto a clean preceding change head_sha with rebase: true' using errcode = '22023';
+				end if;
 			end if;
 
 			v_eff_paths := case
@@ -864,6 +886,12 @@ $new$		if v_head_sha ~ '^[0-9a-f]{40}$' and v_base_sha ~ '^[0-9a-f]{40}$' then
 					v_reply_change_id := public.qorpera_surface_reply_target_change_id(v_surf_session.id);
 				end if;
 				if p_worker.sequence > 1
+					and v_tip_change.id is not null
+					and v_tip_change.status = 'conflicted'
+					and v_open_git_count > 1
+					and not coalesce(v_surf_session.is_internal, false) then
+					null;
+				elsif p_worker.sequence > 1
 					and v_tip_change.id is not null
 					and not coalesce(v_surf_session.is_internal, false)
 					and v_tip_change.created_at <= coalesce(v_turn_opened_at, clock_timestamp())
