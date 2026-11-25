@@ -232,6 +232,7 @@ export class SurfaceStudioView {
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 	#pendingTell: { readonly bar: HTMLElement; readonly owner: symbol; readonly cancel: () => void } | null = null;
 	#lastTellAt = Number.NEGATIVE_INFINITY;
+	#active = true;
 
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
@@ -278,6 +279,7 @@ export class SurfaceStudioView {
 	}
 
 	deactivate(): void {
+		this.#active = false;
 		this.#renderSeq++;
 		this.#renderedTab = null;
 		this.#renderedGrid = null;
@@ -287,6 +289,7 @@ export class SurfaceStudioView {
 	}
 
 	dispose(): void {
+		this.#active = false;
 		this.#renderSeq += 1;
 		this.#cancelPendingTell();
 		this.#disposeHtmlFrames();
@@ -338,7 +341,13 @@ export class SurfaceStudioView {
 			...(title?.trim() ? { originLabel: title.trim().slice(0, 160) } : {}),
 		});
 		if (!session) return false;
-		this.#options.store.openDrawer(this.#options.surface.id, session.id);
+		if (
+			this.#active &&
+			!this.#lifetime.signal.aborted &&
+			this.#options.store.isActiveSurface(this.#options.surface.id)
+		) {
+			this.#options.store.openDrawer(this.#options.surface.id, session.id);
+		}
 		return true;
 	}
 

@@ -1803,6 +1803,97 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		}
 	});
 
+	it("does not open this surface's drawer when a send finishes after deactivation or parking", async () => {
+		const surface = strategySurface();
+		const other = summary();
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surface, other]),
+				getSurfaceWorkspace: vi.fn(async (surfaceId) =>
+					workspace([], { surface: surfaceId === surface.id ? surface : other }),
+				),
+			}),
+		);
+		await store.load();
+		await store.openSurface(surface.slug);
+		let resolveDeactivated: ((value: ReturnType<typeof session> | undefined) => void) | undefined;
+		let resolveParked: ((value: ReturnType<typeof session> | undefined) => void) | undefined;
+		vi.spyOn(store, "startSession")
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveDeactivated = resolve;
+					}),
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveParked = resolve;
+					}),
+			);
+		const files: Record<string, string> = {
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				schema: "qorpera.surface-layout/v1",
+				tabs: [
+					{
+						id: "lab",
+						title: "Lab",
+						blocks: [{ type: "module", from: "sketch", heading: "Sketchpad" }],
+					},
+				],
+			}),
+			[`${ROOT}/sketch/index.html`]: "<!doctype html><p>Sketch module</p>",
+		};
+
+		const life1 = new AbortController();
+		const view1 = new SurfaceStudioView({
+			store,
+			surface,
+			signal: life1.signal,
+			baseFiles: files,
+			timeSlice: false,
+		});
+		document.body.append(view1.el);
+		const call1 = connectFrame(view1.el.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!);
+		const tell1 = call1("tell", { about: "Sketch", text: "Send before deactivate" });
+		await vi.waitFor(() => expect(view1.el.querySelector(".studio-tell-bar")).not.toBeNull());
+		view1.el.querySelector<HTMLButtonElement>('[data-tell-act="send"]')!.click();
+		await vi.waitFor(() => expect(resolveDeactivated).toBeDefined());
+
+		view1.deactivate();
+		resolveDeactivated!(session([]));
+		expect(await tell1).toMatchObject({ ok: true, value: { sent: true } });
+		expect(store.state.drawer).toBeUndefined();
+		life1.abort();
+		view1.dispose();
+
+		await store.openSurface(surface.slug);
+		const life2 = new AbortController();
+		const view2 = new SurfaceStudioView({
+			store,
+			surface,
+			signal: life2.signal,
+			baseFiles: files,
+			timeSlice: false,
+		});
+		document.body.append(view2.el);
+		const call2 = connectFrame(view2.el.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!);
+		const tell2 = call2("tell", { about: "Sketch", text: "Send before parking to another surface" });
+		await vi.waitFor(() => expect(view2.el.querySelector(".studio-tell-bar")).not.toBeNull());
+		view2.el.querySelector<HTMLButtonElement>('[data-tell-act="send"]')!.click();
+		await vi.waitFor(() => expect(resolveParked).toBeDefined());
+
+		store.clearActiveSurface(surface.id);
+		store.openDrawer(other.id, "other-session-1");
+		resolveParked!(session([]));
+		expect(await tell2).toMatchObject({ ok: true, value: { sent: true } });
+		expect(store.state.drawer).toEqual({ surfaceId: other.id, sessionId: "other-session-1" });
+
+		life2.abort();
+		view2.dispose();
+		store.dispose();
+	});
+
 	it("renders empty-state guidance on the fresh Strategy Breakdowns tab instead of a blank grid", async () => {
 		const { view, done } = await studio({});
 		view.el.querySelector<HTMLButtonElement>('[data-tab="breakdowns"]')!.click();

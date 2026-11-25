@@ -2596,6 +2596,10 @@ export class SurfacesStore {
 		if (this.state.opsPanelSurfaceId === surfaceId) this.store.set({ opsPanelSurfaceId: undefined });
 	}
 
+	isActiveSurface(surfaceId: string): boolean {
+		return this.#activeSurfaceId === surfaceId;
+	}
+
 	async openSurface(slug: string): Promise<SurfaceWorkspace | undefined> {
 		await this.load();
 		const surface = surfaceBySlug(this.state, slug);
