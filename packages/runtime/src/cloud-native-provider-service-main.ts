@@ -457,6 +457,8 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								controlPlane.beginToolOperation(value, input, checked),
 							completeToolOperation: (value, input, checked) =>
 								controlPlane.completeToolOperation(value, input, checked),
+							completeFolderToolOperation: (value, input, checked) =>
+								controlPlane.completeFolderToolOperation(value, input, checked),
 						},
 						gateway: (binding) =>
 							createHttpCloudCodingCommandGateway({

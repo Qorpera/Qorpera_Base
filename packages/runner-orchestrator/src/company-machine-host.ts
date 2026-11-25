@@ -1734,6 +1734,8 @@ export class LxdCompanyMachineHost {
 	/** The boot of each placement whose machine was found to have sftp-server (#homeSftp); a missing one is asked again,
 	 * since the agent, root on its home, may install it. */
 	readonly #homeSftps = new Map<string, string>();
+	// WHY: Skip re-reading and rehashing the immutable 50 KiB guest helper on every 10s heartbeat while bootId is unchanged.
+	readonly #verifiedHelpers = new Map<string, { readonly bootId: string; readonly sha256: string }>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
 		if (
@@ -2033,9 +2035,7 @@ export class LxdCompanyMachineHost {
 	 * for the machine, SQL knows it runs, and its lease is renewed. */
 	async #guest(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		const plan = this.#plan(e);
-		let prepared: Record<string, unknown>;
-		let helperSha256: string;
-		try {
+		const verifyHelper = async (): Promise<string> => {
 			const helper = await this.#options.client.readInstanceFile(
 				plan.project,
 				plan.name,
@@ -2043,13 +2043,27 @@ export class LxdCompanyMachineHost {
 				65536,
 				signal,
 			);
-			helperSha256 = createHash("sha256").update(helper.content).digest("hex");
-			if (
-				helperSha256 !== this.#options.helperSha256 &&
-				!(this.#options.previousHelperSha256s ?? []).includes(helperSha256)
-			)
+			const sha = createHash("sha256").update(helper.content).digest("hex");
+			if (sha !== this.#options.helperSha256 && !(this.#options.previousHelperSha256s ?? []).includes(sha))
 				throw new Error("COMPANY_MACHINE_HELPER_DIFFERS");
-			prepared = await this.#helper(e, ["prepare", e.machineId, String(this.#generation)], signal);
+			return sha;
+		};
+		const cachedHelper = e.bootId !== null ? this.#verifiedHelpers.get(e.placementId) : undefined;
+		let prepared: Record<string, unknown>;
+		let helperSha256: string;
+		try {
+			if (cachedHelper && cachedHelper.bootId === e.bootId) {
+				prepared = await this.#helper(e, ["prepare", e.machineId, String(this.#generation)], signal);
+				if (prepared.bootId === cachedHelper.bootId) {
+					helperSha256 = cachedHelper.sha256;
+				} else {
+					this.#verifiedHelpers.delete(e.placementId);
+					helperSha256 = await verifyHelper();
+				}
+			} else {
+				helperSha256 = await verifyHelper();
+				prepared = await this.#helper(e, ["prepare", e.machineId, String(this.#generation)], signal);
+			}
 		} catch (error) {
 			return this.#unready(e, error);
 		}
@@ -2060,6 +2074,7 @@ export class LxdCompanyMachineHost {
 			!UUID.test(prepared.bootId)
 		)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
+		this.#verifiedHelpers.set(e.placementId, { bootId: prepared.bootId, sha256: helperSha256 });
 		this.#pages.set(
 			e.placementId,
 			Number.isSafeInteger(prepared.pageBytes) && (prepared.pageBytes as number) >= 4
@@ -2732,6 +2747,7 @@ export class LxdCompanyMachineHost {
 		const state = await this.#physical(e, "stopped", signal);
 		if (state === "not-now") return { placementId: e.placementId, step: "stop", state: "not-now" };
 		this.#guests.delete(e.placementId);
+		this.#verifiedHelpers.delete(e.placementId);
 		// Its next boot has its own time to come up.
 		this.#starting.delete(e.placementId);
 		if (this.#options.folder && e.bootId !== null) {
@@ -2762,6 +2778,7 @@ export class LxdCompanyMachineHost {
 		);
 		if (released.state !== "released") throw new Error("COMPANY_MACHINE_RELEASE_INVALID");
 		this.#guests.delete(e.placementId);
+		this.#verifiedHelpers.delete(e.placementId);
 		this.#pages.delete(e.placementId);
 		this.#starting.delete(e.placementId);
 		this.#folders.delete(e.placementId);

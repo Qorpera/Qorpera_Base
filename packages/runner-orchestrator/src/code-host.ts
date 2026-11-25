@@ -397,12 +397,31 @@ export class LxdCodeHosts {
 	}
 
 	async #start(host: Host, signal: AbortSignal): Promise<void> {
-		await this.#project(host, signal, true);
 		const fresh = !host.started;
-		const waited = await this.#turn(host, signal);
+		let instance: Awaited<ReturnType<LxdCodeHostClient["getInstance"]>> | undefined;
+		if (fresh) {
+			await this.#project(host, signal, true);
+			const waited = await this.#turn(host, signal);
+			if (waited) {
+				try {
+					await this.#project(host, signal, true);
+				} catch (error) {
+					await withTimeoutScope(undefined, this.#agentWaitMs, (stopSignal) =>
+						this.#stopChecked(host, stopSignal),
+					).catch(() => undefined);
+					throw error;
+				}
+			}
+		} else {
+			// WHY: Overlap the read-only project and instance LXD GET checks on warm hosts into one round trip.
+			const [, fetched] = await Promise.all([
+				this.#project(host, signal, true),
+				this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal),
+			]);
+			instance = fetched;
+		}
 		try {
-			if (waited) await this.#project(host, signal, true);
-			let instance = await this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal);
+			if (fresh) instance = await this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal);
 			if (instance && !codeHostInstanceMatches(this.#policy, host.project, instance)) {
 				// Made under another policy (another image, other limits): its disk is scratch.
 				if (instance.statusCode !== STOPPED)
