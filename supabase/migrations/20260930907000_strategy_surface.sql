@@ -4,12 +4,12 @@ do $$ begin
 	if to_regclass('public.qorpera_surfaces') is null
 		or to_regprocedure('public.qorpera_service_bootstrap_company_surfaces(uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean)') is null then
-		raise exception '20260930894000 requires 20260930843000 and 20260930869000';
+		raise exception '20260930907000 requires 20260930843000 and 20260930869000';
 	end if;
 	if position('''strategy''' in pg_get_functiondef(
 		'public.qorpera_service_bootstrap_company_surfaces(uuid,uuid)'::regprocedure
 	)) > 0 then
-		raise exception '20260930894000 is already applied';
+		raise exception '20260930907000 is already applied';
 	end if;
 end $$;
 
@@ -50,12 +50,12 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930894000: invalid replacement pairs for %', p_target;
+		raise exception '20260930907000: invalid replacement pairs for %', p_target;
 	end if;
 	while v_i <= array_length(p_pairs, 1) loop
 		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
 		if v_hits <> 1 then
-			raise exception '20260930894000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
+			raise exception '20260930907000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
 		end if;
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
@@ -139,6 +139,6 @@ do $$ begin
 			or patched.provolatile is distinct from prior.provolatile
 			or patched.proacl::text is distinct from prior.proacl::text
 	) or (select count(*) from pg_temp.strategy_surface_before) <> 2 then
-		raise exception '20260930894000: patched function attributes or grants drifted';
+		raise exception '20260930907000: patched function attributes or grants drifted';
 	end if;
 end $$;
