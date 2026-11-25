@@ -102,8 +102,8 @@
     },
     {
       "file": "qorpera-ephemeral-runner.mjs",
-      "bytes": 123253,
-      "sha256": "469413922bd9713b720e18f0bbab4ffb51c16828f652af935b8e3abb4c1172a9"
+      "bytes": 125030,
+      "sha256": "8f3584479f1ec5fbdd535de6246eacd2bbb71147b0b253d5932039f2f6ff3e0c"
     },
     {
       "file": "qorpera-ephemeral-runner.service",
@@ -112,13 +112,13 @@
     },
     {
       "file": "qorpera-identity-recovery-restore.mjs",
-      "bytes": 23893,
-      "sha256": "66a2b9a095fab3590837515dc75efa3230f8773c89198279c65d6efe28525ce4"
+      "bytes": 23913,
+      "sha256": "8f36a9a265323f1c48b57d39d82c5e171e00f3ebef803c36dc18de0c1a600c3d"
     },
     {
       "file": "qorpera-lxd-native-login-bootstrap.mjs",
-      "bytes": 46302,
-      "sha256": "bc4efe335702270b85c111f1fa6e6f860f9d6f9515ba8e9aa71358acb5118611"
+      "bytes": 46478,
+      "sha256": "9fd97f12e6e0ace9118b1008ec8a16f22d4c90dfada69518361333af2bfad687"
     },
     {
       "file": "qorpera-lxd-native-login-bootstrap.service",
@@ -127,8 +127,8 @@
     },
     {
       "file": "qorpera-lxd-runner-bootstrap.mjs",
-      "bytes": 65825,
-      "sha256": "cd4d774f1eda4ddc1f6dfba2fdfbd356155d1d26d49792c00e90e56d39887220"
+      "bytes": 65963,
+      "sha256": "af29e93d3311089545e48e4970e598d4aeeacbd4b8f21f4c77d29c23bc390155"
     },
     {
       "file": "qorpera-lxd-runner-bootstrap.service",
@@ -152,8 +152,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 4513782,
-      "sha256": "77658ba1b0884e6cf041b0472ac5c3ce268de310586205ac2d5a038f4964c55e"
+      "bytes": 4335870,
+      "sha256": "4ad345323b001bb03123d31ae50ae5da5f67af88c3e207fbbde1148add35fde9"
     },
     {
       "file": "qorpera-native-provider-host.service",
@@ -162,8 +162,8 @@
     },
     {
       "file": "qorpera-sandbox-probe.mjs",
-      "bytes": 17191,
-      "sha256": "e306a1a57949d9c7a8ed812cecfa39414e9d7650e6a5d003e852136f58cf0fba"
+      "bytes": 17499,
+      "sha256": "2051a86dd53553c7d499fa8f645b18b5624cd00cc3c217157316d7b6c9f86b4a"
     },
     {
       "file": "run-job",

@@ -8,35 +8,20 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929028299_runtime_bundle_activation_v282.sql";
-const activationVersion = 282;
-const previousActivationVersion = 281;
-const previousActivationSha256 = "d36943302d60484e31afb515d64d7c3a1623f62f0f577314fc254a8dd7c5c313";
+const activation = "supabase/migrations/20260929028399_runtime_bundle_activation_v283.sql";
+const activationVersion = 283;
+const previousActivationVersion = 282;
+const previousActivationSha256 = "c8e468a4259d98372ee4535002f910a9988168b5e28b33a5a8e310c2331b56fc";
 const activationRequires = Object.freeze([
 	[
-		"20260930893000_runtime_manifest_prevalidated",
-		"#2348 (runtime manifest prevalidated): bundle 282 pairs with implementation_state and components_valid columns",
-		"to_regprocedure('public.qorpera_runtime_bundle_implementation_state(jsonb)') is not null and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_runtime_bundles' and column_name = 'implementation_state')",
+		"20260930900000_surface_discard_worktree_cleanup",
+		"#2370 (discarded code_repo worktree cleanup): bundle 283 pairs with qorpera_surface_complete_cleanup and qorpera_surface_lock_coding_workers_for_sessions",
+		"to_regprocedure('public.qorpera_surface_complete_cleanup(uuid,text,text,uuid)') is not null and to_regprocedure('public.qorpera_surface_lock_coding_workers_for_sessions(uuid[])') is not null",
 	],
 	[
-		"20260930894000_hot_path_manifest_plpgsql_and_indexes",
-		"#2356 (hot-path manifest head and PL/pgSQL helpers): bundle 282 pairs with manifest_head and qorpera_execution_runtime_manifest_head",
-		"to_regprocedure('public.qorpera_execution_runtime_manifest_head(public.qorpera_execution_runs)') is not null and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_runtime_bundles' and column_name = 'manifest_head')",
-	],
-	[
-		"20260930895000_runner_orchestrator_dispatch",
-		"#2359 (single-RTT orchestrator dispatch): bundle 282 pairs with qorpera_runner_orchestrator_dispatch",
-		"to_regprocedure('public.qorpera_runner_orchestrator_dispatch(uuid,text,text,jsonb)') is not null",
-	],
-	[
-		"20260930897000_surface_change_options",
-		"#2327 (surface change option groups): bundle 282 pairs with option_group_key and qorpera_choose_surface_change_option",
-		"exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_surface_changes' and column_name = 'option_group_key') and to_regprocedure('public.qorpera_choose_surface_change_option(uuid)') is not null",
-	],
-	[
-		"20260930899000_coding_make_picture",
-		"#2372 (coding make_picture): bundle 282 allows make_picture in coding executions and coding-run worktree writes in qorpera_folder_commit",
-		"strpos(pg_get_functiondef('public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)'::regprocedure), '''make_picture''') > 0 and strpos(pg_get_functiondef('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure), 'split_part(v_key, ''/'', 4) <> ''worktrees''') > 0",
+		"20260930901000_surface_update_change_in_place",
+		"#2365 (surface update change in place): bundle 283 pairs with qorpera_surface_reply_target_change_id and 14/16-arg change recording signatures",
+		"to_regprocedure('public.qorpera_surface_reply_target_change_id(uuid)') is not null and to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid)') is not null and to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text,uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires
