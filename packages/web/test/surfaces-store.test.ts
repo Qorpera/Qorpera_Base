@@ -3721,4 +3721,53 @@ describe("SurfacesStore", () => {
 		});
 		store.dispose();
 	});
+
+	it("retries interrupted cloud files, workspace hydrations, and fallback loads on resume()", async () => {
+		const identitySurface = summary({
+			id: "99999999-9999-4999-8999-999999999991",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			folderRoot: "surfaces/identity",
+			activeSessionCount: 1,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		let allowHydrate = false;
+		const getSurfaceWorkspace = vi.fn(async (surfaceId: string) => {
+			if (!allowHydrate) throw new Error("Company access changed.");
+			return workspace([session([], { surfaceId })], { surface: identitySurface });
+		});
+		let allowCloudFiles = false;
+		const loadCloudFiles = vi.fn(async () => {
+			if (!allowCloudFiles) throw new Error("Company access changed.");
+			return folderContents({ "surfaces/identity/brand/tokens.json": '{"accent":"#112233"}' });
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [identitySurface]),
+				getSurfaceWorkspace,
+			}),
+			{ loadCloudFiles },
+		);
+		await store.load();
+		store.refreshPendingCloudFiles();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(store.state.cloudSurfaceFiles[identitySurface.id]).toBeUndefined();
+		expect(store.state.workspaces[identitySurface.id]).toBeUndefined();
+
+		store.suspend();
+		expect(store.suspended).toBe(true);
+		allowHydrate = true;
+		allowCloudFiles = true;
+		store.resume();
+		expect(store.suspended).toBe(false);
+		await vi.waitFor(() => {
+			expect(store.state.cloudSurfaceFiles[identitySurface.id]).toEqual({
+				"surfaces/identity/brand/tokens.json": '{"accent":"#112233"}',
+			});
+			expect(store.state.workspaces[identitySurface.id]?.activeSessions).toHaveLength(1);
+		});
+		store.dispose();
+	});
 });

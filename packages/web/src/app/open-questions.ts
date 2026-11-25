@@ -91,6 +91,7 @@ export class OpenQuestions {
 	/** Cards answered from here: a read on its way when the answer went keeps them off the list. */
 	readonly #answered = new Set<string>();
 	#watchers = 0;
+	#paused = false;
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
 	#source: "company" | "member" | "questions" = "company";
@@ -107,7 +108,7 @@ export class OpenQuestions {
 	#again = false;
 	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
 	readonly #readSoon = throttle(() => {
-		if (this.#watchers > 0) void this.refresh();
+		if (this.#watchers > 0 && !this.#paused) void this.refresh();
 	}, HINT_MS);
 
 	constructor(company: CompanyController, accounts: QuestionAccounts) {
@@ -115,10 +116,22 @@ export class OpenQuestions {
 		this.#accounts = accounts;
 	}
 
-	/** Reads while someone looks: the first watcher starts the reads, the last one's stop ends them. */
+	pause(): void {
+		if (this.#paused) return;
+		this.#paused = true;
+		this.#stopWatching?.();
+		this.#stopWatching = undefined;
+	}
+
+	resume(): void {
+		if (!this.#paused) return;
+		this.#paused = false;
+		if (this.#watchers > 0 && !this.#stopWatching) this.#start();
+	}
+
 	watch(): () => void {
 		this.#watchers++;
-		if (this.#watchers === 1) this.#start();
+		if (this.#watchers === 1 && !this.#paused) this.#start();
 		let stopped = false;
 		return () => {
 			if (stopped) return;
@@ -130,9 +143,8 @@ export class OpenQuestions {
 		};
 	}
 
-	/** Reads the list again: one read at a time, and one more after it when asked meanwhile. */
 	refresh(): Promise<void> {
-		if (this.store.get().unavailable || this.#company.signal.aborted) return Promise.resolve();
+		if (this.store.get().unavailable || this.#company.signal.aborted || this.#paused) return Promise.resolve();
 		if (this.#reading) {
 			this.#again = true;
 			return this.#reading;
@@ -176,7 +188,7 @@ export class OpenQuestions {
 			)
 			.finally(() => {
 				this.#reading = undefined;
-				if (this.#again && this.#watchers > 0) {
+				if (this.#again && this.#watchers > 0 && !this.#paused) {
 					this.#again = false;
 					void this.refresh();
 				}

@@ -559,10 +559,20 @@ export class CompanyLogos implements CompanyLogoStore {
 		}
 	}
 
+	resumeIdentity(profileId: string): void {
+		const binding = this.#identityLive.get(profileId);
+		if (!binding || binding.signal.aborted || binding.store.suspended) return;
+		binding.failedReads.clear();
+		for (const timer of binding.retryTimers.values()) clearTimeout(timer);
+		binding.retryTimers.clear();
+		for (const ref of liveBinaryRefs(binding.resolved)) this.#ensureBindingBinary(binding, ref);
+	}
+
 	#ensureBindingBinary(binding: LiveIdentityBinding, ref: StudioBinaryRef): void {
 		const sha = ref.fileSha256;
 		const retryAt = binding.failedReads.get(sha);
 		if (
+			binding.store.suspended ||
 			binding.blobUrls.has(sha) ||
 			binding.pendingReads.has(sha) ||
 			(retryAt !== undefined && this.#now() < retryAt)
@@ -575,7 +585,8 @@ export class CompanyLogos implements CompanyLogoStore {
 			.readStudioBinary(ref, binding.signal)
 			.then(
 				(bytes) => {
-					if (binding.signal.aborted || !liveBinaryShas(binding.resolved).has(sha)) return;
+					if (binding.signal.aborted || binding.store.suspended || !liveBinaryShas(binding.resolved).has(sha))
+						return;
 					const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: ref.mediaType }));
 					binding.blobUrls.set(sha, url);
 					const mime = logoRasterMediaType("", ref.mediaType);
@@ -586,7 +597,7 @@ export class CompanyLogos implements CompanyLogoStore {
 					this.#repaint(binding.profileId);
 				},
 				() => {
-					if (binding.signal.aborted) return;
+					if (binding.signal.aborted || binding.store.suspended) return;
 					binding.pendingReads.delete(sha);
 					binding.failedReads.set(sha, this.#now() + RETRY_MS);
 					if (liveBinaryShas(binding.resolved).has(sha)) this.#scheduleBindingRetry(binding, ref);

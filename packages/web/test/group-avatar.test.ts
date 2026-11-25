@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { FIGURE_IDS } from "../src/ui/avatar.ts";
-import { groupAvatar } from "../src/ui/group-avatar.ts";
+import { groupAvatar, reviveGroupAvatars } from "../src/ui/group-avatar.ts";
 import { deferred, id, settle, staff } from "./fixtures.ts";
 
 function imageData(width: number, height: number) {
@@ -264,5 +264,26 @@ describe("approved group avatar compositor", () => {
 		expect(events.slice(0, 2)).toEqual(["read:a", "read:b"]);
 		expect(events.slice(2)).toContain("write:a");
 		expect(events.slice(2)).toContain("write:b");
+	});
+
+	it("revives a parked group avatar canvas when reattached to the document", async () => {
+		const { canvas, context } = await show(2);
+		context.drawImage.mockClear();
+		observed.observe.mockClear();
+
+		canvas.remove();
+		await settle();
+		expect(canvas.dataset.avatarDisposed).toBe("true");
+
+		document.body.append(canvas);
+		reviveGroupAvatars(document.body);
+		expect(canvas.dataset.avatarDisposed).toBeUndefined();
+		expect(observed.observe).toHaveBeenCalledWith(canvas);
+		expect(context.drawImage).toHaveBeenCalled();
+
+		context.drawImage.mockClear();
+		document.documentElement.dataset.theme = "dark";
+		await settle();
+		expect(context.drawImage).toHaveBeenCalled();
 	});
 });

@@ -43,12 +43,13 @@ import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
-import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, colourNameHex, figureFor, playFigure, reviveFigures } from "../../ui/avatar.ts";
 import { companyDisplayName, companyInSentence } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { waitForDeferredStyles } from "../../ui/deferred-styles.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { friendsCount } from "../../ui/friends-count.ts";
+import { reviveGroupAvatars } from "../../ui/group-avatar.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { appIconEmblem, type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -1477,6 +1478,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.searchToggle.setAttribute("aria-keyshortcuts", SEARCH_SHORTCUT);
 	parts.searchToggle.title = searchLabel;
 	searchTarget = { company, parts };
+	const reattachedRail = parts.list.parentElement !== container;
 	reconcile(container, [parts.toolbar, parts.appsDrawer, parts.list, parts.foot]);
 	parts.collapsed = isCollapsed(container);
 	parts.close.hidden = !context.navigation;
@@ -2000,6 +2002,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				idleStaff,
 			})
 		: null;
+	const reattachedSurfaceRail = surfaceRail !== undefined && surfaceRail.el.parentElement !== parts.list;
+	const reattachedAgentsHub = agentsHub !== null && agentsHub.parentElement !== parts.dock;
 	reconcile(
 		parts.list,
 		[
@@ -2064,6 +2068,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const menu = accountMenuElement(context, company);
 	if (menu.parentElement !== parts.foot) parts.foot.append(menu);
 	paintPresence(container, parts, company);
+	if (reattachedRail || reattachedSurfaceRail || reattachedAgentsHub) {
+		reviveFigures(container);
+		reviveGroupAvatars(container);
+	}
 	restoreFocus();
 }
 

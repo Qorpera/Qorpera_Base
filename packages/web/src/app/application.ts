@@ -1229,6 +1229,7 @@ export function mountApplication(
 		if (cacheable) {
 			active.suspend();
 			surfacesOf(active)?.suspend();
+			appQuestions.get(active)?.pause();
 			warmCompanies.delete(active.profile.profileId);
 			warmCompanies.set(active.profile.profileId, active);
 			while (warmCompanies.size > WARM_COMPANIES_MAX) {
@@ -1335,6 +1336,8 @@ export function mountApplication(
 			unsubscribeCompany = warm.store.subscribe(() => render());
 			warm.resume();
 			surfacesOf(warm)?.resume();
+			appQuestions.get(warm)?.resume();
+			logos.resumeIdentity(profileId);
 			return warm;
 		}
 		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision) {
@@ -1599,6 +1602,7 @@ export function mountApplication(
 				const syncIdentityFiles = () => {
 					if (
 						controller.signal.aborted ||
+						company !== controller ||
 						controller.store.get().accessLost ||
 						!controller.store.get().team ||
 						surfaces.state.source !== "cloud"
