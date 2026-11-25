@@ -1585,7 +1585,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							turnSignal.throwIfAborted();
 							if (overflowed) throw new Error("CODING_CLAUDE_OUTPUT_LIMIT");
 							if (stream.signedOut) throw new Error("CODING_CLAUDE_SIGNED_OUT");
-							if (stream.limit) throw new Error(`CODING_CLAUDE_RATE_LIMITED: ${stream.limit.words}`);
+							if (stream.limit) throw new Error("CODING_CLAUDE_RATE_LIMITED");
 							throw new Error("CODING_TURN_ENDED_WITHOUT_SUBMISSION");
 						} finally {
 							await box?.close().catch(() => undefined);

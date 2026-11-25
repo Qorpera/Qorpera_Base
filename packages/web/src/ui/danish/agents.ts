@@ -297,6 +297,18 @@ export const AGENTS: Record<string, string> = {
 		"Googles Gemini-tjeneste afviste sessionens forespørgsel. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.":
 		"ChatGPT var overbelastet eller havde en serverfejl, mens sessionen arbejdede. Det går som regel hurtigt over, og loginnet er i orden. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Claude no longer accepts the sign-in of the login that pays for this session. Sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Claude godtager ikke længere det login, der betaler for sessionen. Log ind igen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Claude no longer accepts the sign-in of the login that pays for this session. The member whose login it is can sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Claude godtager ikke længere det login, der betaler for sessionen. Det medlem, der ejer loginnet, kan logge ind igen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The Claude account paying for this session reached its usage limit. The workspace is kept; try a follow-up once the limit resets.":
+		"Claude-kontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; prøv en opfølgning, når grænsen er nulstillet.",
+	"Claude is not enabled for your account in this company. Ask an owner or admin to enable it, or choose another default model in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Claude er ikke slået til for din konto i denne virksomhed. Bed en ejer eller administrator om at slå det til, eller vælg en anden standardmodel under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Claude is not enabled for the session owner in this company. An owner or admin can enable it, or they can choose another default model in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Claude er ikke slået til for sessionens ejer i denne virksomhed. En ejer eller administrator kan slå det til, eller de kan vælge en anden standardmodel under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session's output grew too large for one turn. The workspace is kept; a follow-up continues it.":
+		"Sessionens output blev for stort til én tur. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The session lost its connection while it was working. The workspace is kept; a follow-up continues it.":
 		"Sessionen mistede forbindelsen, mens den arbejdede. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The session could not load the login that pays for it. Check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":

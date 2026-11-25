@@ -382,6 +382,15 @@ describe("the kernel's shapes", () => {
 		expect(read.events[0]).toMatchObject({ id: 3, kind: "needs_input", body: { needs: "Keep?" } });
 		expect(() => parseCodingSession({ ...wire, phase: "sleeping" })).toThrow();
 		expect(() => parseCodingSession({ ...wire, harness: "cursor" })).toThrow();
+		const withoutRepo = parseCodingSession({
+			...wire,
+			harness: "claude-code",
+			model: "claude-opus-5-5",
+			repository: null,
+		});
+		expect(withoutRepo.harness).toBe("claude-code");
+		expect(withoutRepo.model).toBe("claude-opus-5-5");
+		expect(withoutRepo.repository).toBeUndefined();
 	});
 
 	it("reads whether the session's login can pay, the last turn's reason and the owner's logins", () => {
@@ -550,6 +559,28 @@ describe("the element in the thread", () => {
 		await settle();
 		expect(kept.element.el.querySelector(".coding-meta")?.textContent).toBe("shop·claude-sonnet-5");
 		expect(kept.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
+		const opus = mount(
+			codingSession({
+				harness: "claude-code",
+				model: "claude-opus-5-5",
+				repository: undefined,
+			}),
+			{ events },
+		);
+		await settle();
+		expect(opus.element.el.querySelector(".coding-meta")?.textContent).toBe("Opus 5.5");
+		expect(opus.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
+		const fable = mount(
+			codingSession({
+				harness: "claude-code",
+				model: "claude-fable-5-2",
+				repository: undefined,
+			}),
+			{ events },
+		);
+		await settle();
+		expect(fable.element.el.querySelector(".coding-meta")?.textContent).toBe("Fable 5.2");
+		expect(fable.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
 		// One turn for the harness, behind its mark: its steps, then what it said, a bubble a paragraph, then a step.
 		const turns = [...element.el.querySelectorAll<HTMLElement>(".coding-body .coding-turn")];
 		expect(turns.map((turn) => turn.className)).toEqual(["coding-turn coding-turn-harness"]);
@@ -1366,6 +1397,24 @@ describe("the element in the thread", () => {
 			"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.",
 			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
 			"Qorpera lost contact with this session. The workspace is kept; a follow-up starts it again.",
+		]);
+
+		const claudeFailed = mount(
+			codingSession({ harness: "claude-code", model: "claude-opus-5-5", phase: "failed", workerState: "failed" }),
+			{
+				events: [
+					event(1, "failed", { code: "CODING_CLAUDE_SIGNED_OUT", summary: "Signed out" }, "executor"),
+					event(2, "failed", { code: "CODING_CLAUDE_RATE_LIMITED", summary: "Rate limited" }, "executor"),
+					event(3, "failed", { code: "CODING_CLAUDE_OUTPUT_LIMIT", summary: "Output limit" }, "executor"),
+				],
+			},
+		);
+		await settle();
+		const claudeNotes = [...claudeFailed.element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+		expect(claudeNotes).toEqual([
+			"Claude no longer accepts the sign-in of the login that pays for this session. Sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+			"The Claude account paying for this session reached its usage limit. The workspace is kept; try a follow-up once the limit resets.",
+			"The session's output grew too large for one turn. The workspace is kept; a follow-up continues it.",
 		]);
 	});
 

@@ -75,7 +75,7 @@ export interface CodingSession {
 	ownerUserId: string;
 	harness: CodingHarness;
 	model?: string;
-	repository: CodingRepository;
+	repository?: CodingRepository;
 	branch: string;
 	baseSha?: string;
 	/** The turn the session is on; follow-ups and answers each start a new one. */
@@ -208,6 +208,8 @@ function parseChecks(value: unknown): CodingCheck[] {
 /** `askedAt`: when the request that returned it was sent. */
 export function parseCodingSession(value: unknown, askedAt = performance.now()): CodingSession {
 	const item = cloudRecord(value, "Coding session");
+	const repository =
+		item.repository === null || item.repository === undefined ? undefined : parseRepository(item.repository);
 	const session: CodingSession = {
 		workerId: cloudUuid(item.workerId, "Coding session worker id"),
 		workerKey: nonEmptyString(item.workerKey, "Coding session worker key", 64),
@@ -215,7 +217,7 @@ export function parseCodingSession(value: unknown, askedAt = performance.now()):
 		agentId: cloudUuid(item.agentId, "Coding session agent id"),
 		ownerUserId: cloudUuid(item.ownerUserId, "Coding session owner id"),
 		harness: oneOf(item.harness, CODING_HARNESSES, "Coding session harness"),
-		repository: parseRepository(item.repository),
+		...(repository ? { repository } : {}),
 		branch: nonEmptyString(item.branch, "Coding session branch", 250),
 		sequence: boundedInteger(item.sequence, "Coding session sequence", 1, Number.MAX_SAFE_INTEGER),
 		workerState: nonEmptyString(item.workerState, "Coding session worker state", 32),
