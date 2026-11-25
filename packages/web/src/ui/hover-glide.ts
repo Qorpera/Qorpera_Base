@@ -267,6 +267,7 @@ const GLIDE_ITEMS = [
 	".files-row",
 	".storage-recent-row",
 	"button.data-row",
+	".data-row.is-linked",
 	".data-database",
 	".routine-row",
 	".bank-category-row",

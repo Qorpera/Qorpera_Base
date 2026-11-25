@@ -255,6 +255,8 @@ const SCHEMA_VIEWER_OBJECTS =
 const FIND_MAX = 200;
 const AT_LIST_MAX = 200;
 const AT_NO_EQUALS = new Set(["xml", "point", "polygon"]);
+const AT_NO_OPERATOR = "at names a column whose values cannot be compared";
+const atHasNoOperator = (ready, error) => (ready.at ?? null) !== null && (error?.code === "42883" || error?.code === "42804");
 const AT_SHAPE = `at names 1 to 32 columns, each with a text, a number, true, false, null or a list of 1 to ${AT_LIST_MAX} of the first three`;
 const ROWS_CAN = Object.freeze(["at", "find"]);
 const CONSTRAINT_TYPES = Object.freeze({ p: "primary_key", f: "foreign_key", u: "unique", c: "check" });
@@ -2436,9 +2438,9 @@ export class Gateway {
 				conditions.push(`${ref(column)} is null`);
 				continue;
 			}
-			if (column.json === "t" || AT_NO_EQUALS.has(column.base)) refuse(400, `${name} holds values at cannot compare`);
+			if (column.json === "t" || column.base.endsWith("[]") || AT_NO_EQUALS.has(column.base)) refuse(400, `${name} holds values at cannot compare`);
 			values.push(Array.isArray(given) ? `{${given.map((one) => `"${String(one).replace(/[\\"]/g, "\\$&")}"`).join(",")}}` : String(given));
-			const whole = column.base === "character" ? "bpchar" : column.base === "bit" ? column.type : column.base;
+			const whole = column.base === "character" ? "bpchar" : column.base === "bit" ? "bit varying" : column.base;
 			conditions.push(`${ref(column)} = ${Array.isArray(given) ? `any($${values.length}::${whole}[])` : `$${values.length}::${whole}`}`);
 		}
 		const where = conditions.length === 0 ? "" : `where ${conditions.length === 1 ? conditions[0] : conditions.map((one) => `(${one})`).join(" and ")}`;
@@ -2538,6 +2540,7 @@ export class Gateway {
 				this.#bumpSchemaEpoch(ready.database, schema);
 			} catch (error) {
 				if (error instanceof Refusal) throw error;
+				if (atHasNoOperator(ready, error)) refuse(400, AT_NO_OPERATOR);
 				if (
 					error?.code === "42P01" ||
 					error?.code === "42703" ||
@@ -2559,14 +2562,19 @@ export class Gateway {
 			options.onShape?.({ kind: shape.rows[0].kind, rls: shape.rows[0].rls === "t" });
 			const built = this.#buildPageQuery(ready, shape.rows, maxBytes);
 			const prepName = this.#preparedName(client, ready.database, schema, built.text);
-			const result = await client.query({
-				...(prepName ? { name: prepName } : {}),
-				text: built.text,
-				values: built.values,
-				rowMode: "array",
-				queryMode: "extended",
-				types: TEXT_TYPES,
-			});
+			const result = await client
+				.query({
+					...(prepName ? { name: prepName } : {}),
+					text: built.text,
+					values: built.values,
+					rowMode: "array",
+					queryMode: "extended",
+					types: TEXT_TYPES,
+				})
+				.catch((error) => {
+					if (atHasNoOperator(ready, error)) refuse(400, AT_NO_OPERATOR);
+					throw error;
+				});
 			return this.#formatPageResult(ready, built, result, maxBytes, options.raw !== false);
 		});
 	}

@@ -387,8 +387,9 @@ At the gateway, beside `query`, `watch`, `apply`, `describe` and `change` (§3):
   gives its first page alone, ordered by the column named or else as the store returns it, with `more` and no
   `next`. The list says so, and Ask reaches the rest. `find` (text, at most 200 characters) keeps the rows where
   some column's text holds it, in any case and never as a pattern; a list with a find pages and is watched as a
-  list of its own. `at` names columns and the values they equal (a value or up to 200 of them), read under the
-  same right, login and viewer as any page; it takes no `after` and is not watched. `describe` answers
+  list of its own. `at` names columns and the values they equal (a value or up to 200 of them), whole: a value is never
+  cut or rounded to the column's length or precision, and a column whose values have no equals is refused. It is read
+  under the same right, login and viewer as any page; it takes no `after` and is not watched. `describe` answers
   `can: ["at", "find"]` from a gateway that takes them, and the web shows Find and linked names only then, since a
   gateway from before ignores both and answers every row.
 - **`edit`** `{database, table, op, key?, values?, seen?}`, `op` one of `add`, `change`, `remove`. The gateway

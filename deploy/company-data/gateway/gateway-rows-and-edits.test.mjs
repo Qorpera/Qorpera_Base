@@ -993,7 +993,7 @@ create trigger nap before update on slowed for each row execute function nap();
 	it("reads rows at a value only where the column holds it whole, and refuses a column whose values have no equals", async () => {
 		put(ENV_E, {
 			"data/ledger/tables/006-priced.sql":
-				"create table priced (id int primary key, tag varchar(3), kind char(3), flags bit(4), price numeric(10,2), facts json, spot point);\ninsert into priced values (1, 'abc', 'xy', B'1010', 1.01, '{\"a\":1}', '(1,2)');\n",
+				"create domain place as point;\ncreate table priced (id int primary key, tag varchar(3), kind char(3), flags bit(4), price numeric(10,2), facts json, spot point, tags text[], home place);\ninsert into priced values (1, 'abc', 'xy', B'1010', 1.01, '{\"a\":1}', '(1,2)', '{a}', '(3,4)');\n",
 		});
 		assert.equal((await ask(contributor, "apply", { database: "ledger" }, ENV_E)).value.applied, true);
 		const at = async (table, values) => {
@@ -1007,6 +1007,9 @@ create trigger nap before update on slowed for each row execute function nap();
 		assert.deepEqual(await at("priced", { kind: "xyzw" }), []);
 		assert.deepEqual(await at("priced", { kind: ["xyzw", "xy"] }), [1]);
 		assert.deepEqual(await at("priced", { flags: "1010" }), [1]);
+		assert.deepEqual(await at("priced", { flags: "10101" }), [], "longer bits are not cut to the column's length");
+		assert.deepEqual(await at("priced", { flags: "1" }), [], "and shorter ones are not padded to it");
+		assert.deepEqual(await at("priced", { flags: ["1", "1010"] }), [1]);
 		assert.deepEqual(await at("priced", { price: 1.01 }), [1]);
 		assert.deepEqual(await at("priced", { price: "1.005" }), [], "a number is not rounded to the column's scale");
 		assert.deepEqual(await at("priced", { price: [1.005, 2] }), []);
@@ -1014,6 +1017,9 @@ create trigger nap before update on slowed for each row execute function nap();
 		assert.deepEqual(await at("priced", { facts: '{"a":1}' }), [400, "facts holds values at cannot compare"]);
 		assert.deepEqual(await at("priced", { spot: "(1,2)" }), [400, "spot holds values at cannot compare"]);
 		assert.deepEqual(await at("docs", { d: "hi" }), [400, "d holds values at cannot compare"]);
+		assert.deepEqual(await at("priced", { tags: "{a}" }), [400, "tags holds values at cannot compare"]);
+		assert.deepEqual(await at("priced", { home: "(3,4)" }), [400, "at names a column whose values cannot be compared"], "a type with no equals behind a domain");
+		assert.deepEqual(await at("priced", { home: "(3,4)" }), [400, "at names a column whose values cannot be compared"], "the same from the kept shape");
 		assert.deepEqual(await at("priced", { id: 1 }), [1], "and the table's shape is still kept after a refusal");
 	});
 

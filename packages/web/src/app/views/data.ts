@@ -1454,7 +1454,7 @@ class DataListView {
 				link: link && linked && title ? this.#linkEl(link, linked, title) : undefined,
 			};
 		});
-		if (opens && shown.some((cell) => cell.link))
+		if (opens && links.some((link, index) => index > 0 && link !== undefined))
 			return h(
 				"div",
 				{ class: "data-row is-linked", dataset: { key: keyOf(read.columns, read.key, row.values) } },
