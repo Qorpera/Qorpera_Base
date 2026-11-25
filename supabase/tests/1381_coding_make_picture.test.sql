@@ -38,7 +38,9 @@ begin
 		jsonb_build_object('op', 'write', 'path', d || 'worktrees/' || w2 || '/other.png', 'file', a),
 		jsonb_build_object('op', 'write', 'path', d || 'main/hero.png', 'file', a),
 		jsonb_build_object('op', 'write', 'path', g || 'config', 'file', a, 'expectedVersion', pg_temp.ver(g || 'config')),
-		jsonb_build_object('op', 'write', 'path', g || 'refs/heads/coding-pic', 'file', a)
+		jsonb_build_object('op', 'write', 'path', g || 'refs/heads/coding-pic', 'file', a),
+		jsonb_build_object('op', 'write', 'path', g || 'worktrees/' || w1 || '/HEAD', 'file', a),
+		jsonb_build_object('op', 'write', 'path', g || 'worktrees/' || w1 || '/index', 'file', a)
 	));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'saved');
@@ -46,6 +48,8 @@ begin
 	perform pg_temp.expect(r, 4, 'refused', 'git_platform_only');
 	perform pg_temp.expect(r, 5, 'refused', 'git_platform_only');
 	perform pg_temp.expect(r, 6, 'refused', 'git_lease_required');
+	perform pg_temp.expect(r, 7, 'refused', 'git_other_worker');
+	perform pg_temp.expect(r, 8, 'refused', 'git_other_worker');
 
 	v_inhouse_run := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
 	r := pg_temp.commit(v_inhouse_run, 'inhouse-pic-refused', jsonb_build_array(

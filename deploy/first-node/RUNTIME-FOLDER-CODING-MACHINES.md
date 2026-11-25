@@ -355,8 +355,9 @@ The core enforces the rules (5b, §7 item 9 as amended here):
 - leases on the shared files in `repo.git` (`refs/`, `packed-refs`, `shallow`), with the version check at the rename
   as the correctness rule: `X` and its reflog `logs/X` land together or not at all. A lease lives as long as its view.
   Objects take no lease: a session writes them freely and never removes them;
-- the per-worker rule: only a worker's session and the platform write under `worktrees/<workerId>/` and
-  `repo.git/worktrees/<workerId>/`, and no session takes a lease on another worker's branch
+- the per-worker rule: only a worker's session view and the platform write under `repo.git/worktrees/<workerId>/`, and
+  only that worker's session view, its live coding turn run (for workspace assets such as `make_picture`), and the
+  platform write under `worktrees/<workerId>/`; no session takes a lease on another worker's branch
   `refs/heads/qorpera/coding/<other>`;
 - `refs/stash` refused (it is shared between all worktrees);
 - no session deletes a published path under `repo.git/objects` (EPERM), and `objects/pack/*.keep` is never published;

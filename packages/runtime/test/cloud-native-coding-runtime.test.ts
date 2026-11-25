@@ -2298,7 +2298,7 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			]);
 			expect(fw.files.has(`${worktree}/assets/hero.png`)).toBe(true);
 			expect(capturedInstructions).toContain("Use make_picture to generate bespoke PNG imagery");
-			expect(capturedInstructions).toContain("multiple scrolled viewport-sized slices");
+			expect(capturedInstructions.split("multiple scrolled viewport-sized slices")).toHaveLength(2);
 			expect(capturedInstructions).toContain("1920x1200");
 			expect(capturedInstructions).toContain("structural skeleton and visual vibe");
 			expect(capturedInstructions).toContain("qorpera-identity.css");

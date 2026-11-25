@@ -35,12 +35,17 @@ select pg_temp.cmp_patch('public.qorpera_begin_native_coding_execution(jsonb,tex
 	$new$where tool ->> 'name' not in ('coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask','make_picture')$new$
 ]);
 
--- WHY: A live coding turn run writing generated assets via make_picture must be scoped to its own worktree while keeping all other git protections intact.
+-- WHY: A live coding turn run writing generated assets via make_picture must be scoped strictly to its own worktrees/<workerId>/ subtree while keeping repo.git/worktrees/<workerId>/ and all other git paths refused.
 select pg_temp.cmp_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure, array[
 	$old$	v_git_worker := case when v_view.kind = 'coding_session' then v_view.worker_id end;$old$,
 	$new$	v_git_worker := case when v_view.kind = 'coding_session' then v_view.worker_id
 		when v_actor_kind = 'run' and v_resolved ->> 'sessionKind' = 'coding'
-			then (public.qorpera_run_worker((v_resolved ->> 'runId')::uuid)).id end;$new$
+			then (public.qorpera_run_worker((v_resolved ->> 'runId')::uuid)).id end;$new$,
+	$old$			v_reason := public.qorpera_folder_git_unit_refusal(p_environment_id, v_unit, v_key, v_to_key, v_git_class, v_git_worker);$old$,
+	$new$			v_reason := public.qorpera_folder_git_unit_refusal(p_environment_id, v_unit, v_key, v_to_key, v_git_class,
+				case when v_actor_kind = 'run'
+					and (split_part(v_key, '/', 4) <> 'worktrees' or (v_to_key is not null and split_part(v_to_key, '/', 4) <> 'worktrees'))
+					then null else v_git_worker end);$new$
 ]);
 
 drop function pg_temp.cmp_patch(regprocedure, text[]);
@@ -54,6 +59,7 @@ begin
 		raise exception '20260930899000 missing from qorpera_begin_native_coding_execution';
 	end if;
 	if strpos(v_commit, 'qorpera_run_worker((v_resolved ->> ''runId'')::uuid)') = 0
+		or strpos(v_commit, 'split_part(v_key, ''/'', 4) <> ''worktrees''') = 0
 		or strpos(v_commit, '20260930446200') = 0
 		or strpos(v_commit, '20260930446000') = 0
 		or strpos(v_commit, '20260930445000') = 0 then
