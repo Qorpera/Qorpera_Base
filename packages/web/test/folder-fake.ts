@@ -315,6 +315,14 @@ export function folderFake(
 			const node = hidden(path) ? undefined : nodes.get(key(path));
 			return { asOfSeq: seq, entry: node ? entry(node) : null };
 		}),
+		readMany: vi.fn(async (readPaths: readonly string[], signal: AbortSignal) => {
+			signal.throwIfAborted();
+			return readPaths.map((path) => {
+				blocked(path);
+				const node = hidden(path) ? undefined : nodes.get(key(path));
+				return { asOfSeq: seq, entry: node ? entry(node) : null };
+			});
+		}),
 		list: vi.fn(
 			async (
 				parent: string | null,
