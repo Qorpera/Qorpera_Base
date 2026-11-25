@@ -181,6 +181,8 @@ test("the guest helper with the folder mount stays under the executor's 64 KiB r
 			platform: "node",
 			format: "esm",
 			target: "node22.19",
+			minifyWhitespace: true,
+			minifySyntax: true,
 			legalComments: "none",
 			logLevel: "silent",
 		});
