@@ -32,6 +32,7 @@ const LIMITS_HERE = {
 	watchMs: 4_000,
 	watchAgainMs: 50,
 	listenIdleMs: 0,
+	readPoolIdleMs: 5_000,
 	proofMs: 0,
 	bodyBytes: 8192,
 	agentMs: 4_000,

@@ -154,6 +154,7 @@ export const LIMITS = Object.freeze({
 	watchMs: 20_000,
 	watchAgainMs: 500,
 	listenIdleMs: 45_000,
+	readPoolIdleMs: 45_000,
 	/** How long a member's folder read is kept. */
 	proofMs: 10_000,
 	/** A request's body. */
@@ -1547,8 +1548,9 @@ export class Gateway {
 						: door === "qorpera_data_admin"
 							? { query_timeout: ADMIN_QUERY_TIMEOUT_MS, statement_timeout: ADMIN_QUERY_TIMEOUT_MS }
 							: {}),
-					// WHY: Keep steady-state read pools warm for 45s so prepared statements stay cached while write pools drain in 5s.
-					idleTimeoutMillis: kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : kind === "r" ? 45_000 : 5_000,
+					// WHY: Keep steady-state read pools warm for readPoolIdleMs so prepared statements stay cached while write pools drain in 5s.
+					idleTimeoutMillis:
+						kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : kind === "r" ? this.#limits.readPoolIdleMs : 5_000,
 					connectionTimeoutMillis: CONNECT_MS,
 					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
 				});
