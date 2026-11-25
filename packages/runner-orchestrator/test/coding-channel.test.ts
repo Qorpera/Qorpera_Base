@@ -286,6 +286,53 @@ describe("maskCodingChannelExecLines", () => {
 		expect(res2.chunks[0]?.seq).toBe(2);
 	});
 
+	it("preserves metadata and advances seq when flushing a held-back tail on an empty closed read", async () => {
+		const secret = "top-secret-token-12345678";
+		const mask = new CodingSecretMask([secret]);
+		const readProcessById = new Map<string, string>([
+			["20", "p-empty-close"],
+			["21", "p-empty-close"],
+		]);
+		const rawLines = [
+			JSON.stringify({
+				id: 20,
+				result: {
+					chunks: [{ seq: 4, stream: "stdout", tag: "keep", chunk: Buffer.from("prefix top-sec").toString("base64") }],
+					closed: false,
+				},
+			}),
+			JSON.stringify({
+				id: 21,
+				result: {
+					chunks: [],
+					closed: true,
+				},
+			}),
+		];
+		const collected: Record<string, unknown>[] = [];
+		for await (const line of maskCodingChannelExecLines(
+			(async function* () {
+				for (const l of rawLines) yield l;
+			})(),
+			() => mask.stream(),
+			readProcessById,
+		)) {
+			collected.push(JSON.parse(line) as Record<string, unknown>);
+		}
+		const res1 = collected.find((m) => m.id === 20)?.result as {
+			chunks: { seq: number; stream: string; tag?: string; chunk: string }[];
+		};
+		const res2 = collected.find((m) => m.id === 21)?.result as {
+			chunks: { seq: number; stream: string; tag?: string; chunk: string }[];
+		};
+		const combined = [...res1.chunks, ...res2.chunks]
+			.map((c) => Buffer.from(c.chunk, "base64").toString("utf8"))
+			.join("");
+		expect(combined).toBe("prefix top-sec");
+		expect(res2.chunks).toHaveLength(1);
+		expect(res2.chunks[0]).toMatchObject({ seq: 5, stream: "stdout", tag: "keep" });
+	});
+
 	it("flushes oldest held-back stream bytes cleanly when more than 1024 streams are opened", async () => {
 		const secret = "top-secret-token-12345678";
 		const mask = new CodingSecretMask([secret]);

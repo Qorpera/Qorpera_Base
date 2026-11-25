@@ -1667,6 +1667,7 @@ export async function* maskCodingChannelExecLines(
 		readonly processId: string | number;
 		readonly stream: string;
 		readonly mask: CodingCommandSecretMask;
+		lastReadChunk?: Record<string, unknown>;
 	}
 	const streams = new Map<string, TrackedStream>();
 	const flushTracked = (entry: TrackedStream): string | undefined => {
@@ -1686,9 +1687,9 @@ export async function* maskCodingChannelExecLines(
 		kind: "output" | "read",
 		processId: string | number,
 		stream: string,
-	): { mask: CodingCommandSecretMask; evicted?: string } => {
+	): { entry: TrackedStream; mask: CodingCommandSecretMask; evicted?: string } => {
 		const existing = streams.get(key);
-		if (existing) return { mask: existing.mask };
+		if (existing) return { entry: existing, mask: existing.mask };
 		let evicted: string | undefined;
 		if (streams.size >= 1024) {
 			const oldest = streams.entries().next().value;
@@ -1698,8 +1699,9 @@ export async function* maskCodingChannelExecLines(
 			}
 		}
 		const mask = createMask();
-		streams.set(key, { kind, processId, stream, mask });
-		return evicted ? { mask, evicted } : { mask };
+		const created: TrackedStream = { kind, processId, stream, mask };
+		streams.set(key, created);
+		return evicted ? { entry: created, mask, evicted } : { entry: created, mask };
 	};
 	for await (const line of lines) {
 		let parsed: unknown;
@@ -1763,6 +1765,7 @@ export async function* maskCodingChannelExecLines(
 					if (taken.evicted) yield taken.evicted;
 					touchedKeys.add(streamKey);
 					const maskedEntry = maskJsonStrings(entry, createMask) as Record<string, unknown>;
+					taken.entry.lastReadChunk = maskedEntry;
 					const maskedChunk = taken.mask.push(Buffer.from(entry.chunk, "base64"));
 					lastChunkIndexByStream.set(streamName, chunks.length);
 					chunks.push({ ...maskedEntry, chunk: Buffer.from(maskedChunk).toString("base64") });
@@ -1783,7 +1786,9 @@ export async function* maskCodingChannelExecLines(
 							const merged = Buffer.concat([Buffer.from(lastChunk.chunk, "base64"), Buffer.from(tail)]);
 							chunks[lastIdx!] = { ...lastChunk, chunk: merged.toString("base64") };
 						} else {
-							chunks.push({ stream: entry.stream, chunk: Buffer.from(tail).toString("base64") });
+							const base = entry.lastReadChunk ? { ...entry.lastReadChunk } : {};
+							if (typeof base.seq === "number") base.seq += 1;
+							chunks.push({ ...base, stream: entry.stream, chunk: Buffer.from(tail).toString("base64") });
 						}
 					}
 				}
