@@ -1,4 +1,5 @@
 import {
+	CLOUD_MEMBER_DATA_FIND_MAX,
 	CLOUD_MEMBER_DATA_QUESTION,
 	type CloudMemberDatabase,
 	type CloudMemberDataColumn,
@@ -20,6 +21,7 @@ import { takeWantedDataList } from "../data-page.ts";
 import { DataAskBox } from "./data-ask.ts";
 import { DataChanges } from "./data-changes.ts";
 import { type DataField, DataHome, dataGroups } from "./data-home.ts";
+import { type DataLink, DataLinked, type DataLinkedRow, tableLinks } from "./data-links.ts";
 import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
@@ -27,6 +29,8 @@ const MAX_WATCH_REFETCH_PAGES = 10;
 const WATCH_GAP_MS = 500;
 const WATCH_RETRY_MS = [2000, 5000, 10_000] as const;
 const SAVED_MS = 1600;
+const FIND_WAIT_MS = 250;
+const PEEK_FIELDS = 5;
 
 const numberFormats = new Map<string, Intl.NumberFormat>();
 const countFormats = new Map<string, Intl.NumberFormat>();
@@ -101,6 +105,7 @@ interface ListRead {
 	readonly order: string | undefined;
 	readonly desc: boolean;
 	readonly params: Readonly<Record<string, string>>;
+	readonly find: string | undefined;
 	columns: readonly string[];
 	key: readonly string[];
 	rows: Row[];
@@ -277,7 +282,9 @@ export function listedColumns(
 	columns: readonly string[],
 	key: readonly string[],
 	typeOf: (name: string) => string | undefined,
+	linked: (name: string) => boolean = () => false,
 ): string[] {
+	const waits = (name: string) => !linked(name) && waitsInTheRow(name, typeOf(name));
 	const ordered = shownColumns(columns, key);
 	const words = (name: string) => {
 		const type = typeOf(name);
@@ -286,9 +293,10 @@ export function listedColumns(
 	const named = LEAD_WORDS.map((word) =>
 		ordered.find((name) => words(name) && (name === word || name.endsWith(`_${word}`))),
 	).find((name) => name !== undefined);
-	const lead = named ?? ordered.find((name) => !waitsInTheRow(name, typeOf(name))) ?? ordered[0];
+	const lead =
+		named ?? ordered.find((name) => !waits(name) && !linked(name)) ?? ordered.find((name) => !waits(name)) ?? ordered[0];
 	if (lead === undefined) return ordered;
-	const kept = ordered.filter((name) => name !== lead && !waitsInTheRow(name, typeOf(name)));
+	const kept = ordered.filter((name) => name !== lead && !waits(name));
 	return [lead, ...(kept.length > 0 ? kept : ordered.filter((name) => name !== lead))];
 }
 
@@ -372,6 +380,10 @@ class DataListView {
 	#changing = false;
 	readonly #home = new DataHome();
 	#atHome = true;
+	readonly #finds = new Map<string, string>();
+	#findTimer: ReturnType<typeof setTimeout> | undefined;
+	readonly #linked: DataLinked;
+	#peek: HTMLElement | undefined;
 
 	constructor(company: CompanyController, databases: CompanyDatabases, send: DataAskSend | undefined) {
 		this.company = company;
@@ -382,6 +394,17 @@ class DataListView {
 			() => this.#calls(),
 			(database, table, key) => this.#listedTitle(database, table, key),
 		);
+		this.#linked = new DataLinked(
+			() => this.#calls(),
+			this.#lifetime.signal,
+			() => {
+				if (this.#list && !this.#open && !this.#changing && !this.#peek) this.#drawBody();
+			},
+		);
+		this.el.addEventListener("pointerdown", (event) => {
+			if (this.#peek && !(event.target instanceof Node && this.#peek.contains(event.target))) this.#hidePeek();
+		});
+		this.#body.addEventListener("scroll", () => this.#hidePeek(), { capture: true, passive: true });
 		replace(this.el, this.#bar, this.#top, this.#params.el, this.#body, this.#ask.el);
 		company.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		databases.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
@@ -389,6 +412,10 @@ class DataListView {
 			if (event.key === "Escape" && this.#open?.asking) {
 				event.preventDefault();
 				this.#notNow();
+			}
+			if (event.key === "Escape" && this.#peek) {
+				event.preventDefault();
+				this.#hidePeek();
 			}
 		});
 		void databases.refresh();
@@ -402,6 +429,7 @@ class DataListView {
 		this.#lifetime.abort();
 		this.#changes.dispose();
 		this.#home.dispose();
+		clearTimeout(this.#findTimer);
 		this.#list?.stop.abort();
 		this.#observer?.disconnect();
 	}
@@ -414,7 +442,10 @@ class DataListView {
 		const fresh = described !== this.#described;
 		if (!fresh && this.#top.childElementCount > 0) return;
 		this.#described = described;
-		if (fresh) this.#counted.clear();
+		if (fresh) {
+			this.#counted.clear();
+			this.#linked.forget();
+		}
 		const databases = described?.databases ?? [];
 		const wanted = described ? takeWantedDataList(this.company.profile.profileId) : undefined;
 		if (wanted !== undefined) this.#want(databases, wanted);
@@ -543,6 +574,55 @@ class DataListView {
 		return column ? columnKind(column.type) : "text";
 	}
 
+	#can(what: string): boolean {
+		return this.#described?.can?.includes(what) === true;
+	}
+
+	#findPlace(): string | undefined {
+		return this.#database && this.#tab?.kind === "table" && this.#can("find")
+			? `${this.#database}/${this.#tab.name}`
+			: undefined;
+	}
+
+	#find(): string | undefined {
+		const place = this.#findPlace();
+		const text = place === undefined ? "" : (this.#finds.get(place) ?? "").trim();
+		return text === "" ? undefined : text;
+	}
+
+	#findField(place: string, table: string): HTMLElement {
+		const field = h("input", {
+			type: "text",
+			class: "data-find-input",
+			maxlength: String(CLOUD_MEMBER_DATA_FIND_MAX),
+			autocomplete: "off",
+			spellcheck: "false",
+			placeholder: t("Find"),
+			"aria-label": t("Find in {table}", { table: humanName(table) }),
+			dataset: { focusKey: "find" },
+		});
+		field.value = this.#finds.get(place) ?? "";
+		const seek = () => {
+			this.#ensureList();
+			this.#drawBody();
+		};
+		field.addEventListener("input", () => {
+			this.#finds.set(place, field.value);
+			clearTimeout(this.#findTimer);
+			this.#findTimer = setTimeout(seek, FIND_WAIT_MS);
+		});
+		field.addEventListener("keydown", (pressed) => {
+			const event = pressed as KeyboardEvent;
+			if (event.key !== "Escape" || field.value === "") return;
+			event.preventDefault();
+			field.value = "";
+			this.#finds.delete(place);
+			clearTimeout(this.#findTimer);
+			seek();
+		});
+		return h("label", { class: "data-find" }, icon("search"), field);
+	}
+
 	#listId(): string | undefined {
 		if (!this.#database || !this.#tab || this.#showsHome()) return undefined;
 		if (!this.#filled()) return undefined;
@@ -554,6 +634,7 @@ class DataListView {
 			order?.column ?? null,
 			order?.desc ?? false,
 			this.#given(),
+			this.#find() ?? null,
 		]);
 	}
 
@@ -572,6 +653,7 @@ class DataListView {
 			order: order?.column,
 			desc: order?.desc ?? false,
 			params: this.#given(),
+			find: this.#find(),
 			...(before &&
 			before.database === this.#database &&
 			before.tab.kind === this.#tab.kind &&
@@ -597,6 +679,7 @@ class DataListView {
 			table: read.tab.name,
 			...(read.order ? { order: read.order, desc: read.desc } : {}),
 			limit: PAGE_ROWS,
+			...(read.find === undefined ? {} : { find: read.find }),
 		};
 	}
 
@@ -864,9 +947,12 @@ class DataListView {
 
 	#refocus(key: string | undefined): void {
 		if (key === undefined) return;
-		[...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")]
-			.find((control) => control.dataset.focusKey === key)
-			?.focus({ preventScroll: true });
+		const control = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
+			(one) => one.dataset.focusKey === key,
+		);
+		if (!control || control === document.activeElement) return;
+		control.focus({ preventScroll: true });
+		if (control instanceof HTMLInputElement) control.setSelectionRange(control.value.length, control.value.length);
 	}
 
 	#drawTop(): void {
@@ -987,6 +1073,7 @@ class DataListView {
 		}
 		const tables = groups.filter((group) => !group.question);
 		const questions = groups.filter((group) => group.question);
+		const findPlace = this.#changing ? undefined : this.#findPlace();
 		const add =
 			!this.#changing && this.#writable() && this.#tab?.kind === "table"
 				? button(t("New row"), () => this.#startDraft(), { primary: true })
@@ -1022,6 +1109,7 @@ class DataListView {
 						: null,
 					...questions.map(groupTab),
 				),
+				findPlace === undefined || !this.#tab ? null : this.#findField(findPlace, this.#tab.name),
 				changes,
 				add,
 			),
@@ -1130,6 +1218,7 @@ class DataListView {
 			return;
 		}
 		this.#changing = false;
+		this.#hidePeek();
 		const focus = this.#focusKey();
 		this.#observer?.disconnect();
 		const scroller = this.#body.querySelector<HTMLElement>(".data-scroll");
@@ -1202,10 +1291,21 @@ class DataListView {
 		readonly columns: readonly string[];
 		readonly indices: readonly number[];
 		readonly kinds: readonly Kind[];
+		readonly links: readonly (DataLink | undefined)[];
 	} {
+		const database = this.#current();
+		const linked =
+			read.tab.kind === "table" && database && this.#can("at")
+				? tableLinks(tableOf(database, read.tab.name), database.tables ?? [])
+				: new Map<string, DataLink>();
 		const columns =
 			read.tab.kind === "table"
-				? listedColumns(read.columns, read.key, (name) => this.#columnOf(name)?.type)
+				? listedColumns(
+						read.columns,
+						read.key,
+						(name) => this.#columnOf(name)?.type,
+						(name) => linked.has(name),
+					)
 				: shownColumns(read.columns, read.key);
 		const indices = columns.map((name) => read.columns.indexOf(name));
 		const kinds = columns.map(
@@ -1214,7 +1314,107 @@ class DataListView {
 					? answerKind(read.rows.map((row) => row.values[indices[index] ?? -1]))
 					: undefined) ?? this.#kindOf(name),
 		);
-		return { columns, indices, kinds };
+		return { columns, indices, kinds, links: columns.map((name) => linked.get(name)) };
+	}
+
+	#wantLinked(
+		read: ListRead,
+		rows: readonly Row[],
+		indices: readonly number[],
+		links: readonly (DataLink | undefined)[],
+	): void {
+		links.forEach((link, index) => {
+			if (!link) return;
+			this.#linked.want(
+				read.database,
+				link,
+				rows.map((row) => row.values[indices[index] ?? -1]),
+			);
+		});
+	}
+
+	#typeIn(table: string): (name: string) => string | undefined {
+		const columns = tableOf(this.#current(), table)?.columns;
+		return (name) => columns?.find((column) => column.name === name)?.type;
+	}
+
+	#linkedTitle(link: DataLink, linked: DataLinkedRow): string {
+		const typeOf = this.#typeIn(link.table);
+		const [lead] = listedColumns(linked.columns, linked.key, typeOf);
+		if (lead === undefined) return "";
+		return shownValue(linked.values[linked.columns.indexOf(lead)], columnKind(typeOf(lead) ?? "text"));
+	}
+
+	#linkEl(link: DataLink, linked: DataLinkedRow, title: string): HTMLElement {
+		const el = h("span", { class: "data-link", role: "link", tabindex: "0" }, title);
+		const peek = (event: Event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			this.#showPeek(el, link, linked, title);
+		};
+		el.addEventListener("click", peek);
+		el.addEventListener("keydown", (pressed) => {
+			const event = pressed as KeyboardEvent;
+			if (event.key === "Enter" || event.key === " ") peek(event);
+		});
+		return el;
+	}
+
+	#hidePeek(): void {
+		this.#peek?.remove();
+		this.#peek = undefined;
+	}
+
+	#showPeek(anchor: HTMLElement, link: DataLink, linked: DataLinkedRow, title: string): void {
+		this.#hidePeek();
+		const typeOf = this.#typeIn(link.table);
+		const [, ...rest] = listedColumns(linked.columns, linked.key, typeOf);
+		const fields = rest
+			.map((name) => {
+				const kind = columnKind(typeOf(name) ?? "text");
+				return [columnLabel(name, kind), shownValue(linked.values[linked.columns.indexOf(name)], kind)] as const;
+			})
+			.filter(([, text]) => text !== "")
+			.slice(0, PEEK_FIELDS);
+		const card = h(
+			"div",
+			{ class: "data-peek", role: "dialog", "aria-label": title },
+			h("strong", { class: "data-peek-title" }, title),
+			fields.length > 0
+				? h(
+						"dl",
+						{ class: "data-peek-fields" },
+						...fields.flatMap(([label, text]) => [h("dt", null, label), h("dd", null, text)]),
+					)
+				: null,
+			h(
+				"button",
+				{ type: "button", class: "data-peek-open", onclick: () => this.#openLinked(link, linked) },
+				t("Open in {table}", { table: humanName(link.table) }),
+				icon("chevron"),
+			),
+		);
+		this.#body.append(card);
+		this.#peek = card;
+		const body = this.#body.getBoundingClientRect();
+		const at = anchor.getBoundingClientRect();
+		const below = at.bottom - body.top + 6;
+		const left = Math.min(at.left - body.left - 12, body.width - card.offsetWidth - 8);
+		card.style.left = `${Math.max(8, left)}px`;
+		card.style.top = `${below + card.offsetHeight > body.height && at.top - body.top > card.offsetHeight + 6 ? at.top - body.top - card.offsetHeight - 6 : below}px`;
+	}
+
+	#openLinked(link: DataLink, linked: DataLinkedRow): void {
+		if (!this.#database) return;
+		this.#hidePeek();
+		this.#changing = false;
+		this.#atHome = false;
+		this.#tab = { kind: "table", name: link.table };
+		this.#ensureList();
+		this.#openAt(this.#database, link.table, linked.columns, linked.key, {
+			values: linked.values,
+			seen: linked.seen,
+		});
 	}
 
 	#listRowEl(
@@ -1223,16 +1423,20 @@ class DataListView {
 		indices: readonly number[],
 		kinds: readonly Kind[],
 		opens: boolean,
+		links: readonly (DataLink | undefined)[],
 	): HTMLElement {
 		const cells = indices.map((colIndex, index) => {
 			const value = colIndex >= 0 ? row.values[colIndex] : undefined;
-			const text = shownValue(value, kinds[index] ?? "text");
+			const link = links[index];
+			const linked =
+				link && value !== null && value !== undefined ? this.#linked.row(read.database, link, value) : undefined;
+			const title = link && linked ? this.#linkedTitle(link, linked) : "";
 			return h(
 				"span",
 				{
-					class: `data-cell${index === 0 ? " is-lead" : kinds[index] === "number" ? " is-number" : ""}`,
+					class: `data-cell${index === 0 ? " is-lead" : kinds[index] === "number" && !title ? " is-number" : ""}`,
 				},
-				text,
+				link && linked && title ? this.#linkEl(link, linked, title) : shownValue(value, kinds[index] ?? "text"),
 			);
 		});
 		return opens
@@ -1312,9 +1516,10 @@ class DataListView {
 		if (!list || !sentinel) return false;
 		if (added.length > 0) {
 			list.querySelector(".data-none")?.remove();
-			const { indices, kinds } = this.#listColumns(read);
+			const { indices, kinds, links } = this.#listColumns(read);
+			this.#wantLinked(read, added, indices, links);
 			const fragment = document.createDocumentFragment();
-			for (const row of added) fragment.append(this.#listRowEl(read, row, indices, kinds, true));
+			for (const row of added) fragment.append(this.#listRowEl(read, row, indices, kinds, true, links));
 			list.insertBefore(fragment, sentinel);
 		}
 		this.#syncMore(read);
@@ -1324,7 +1529,8 @@ class DataListView {
 	}
 
 	#listEl(read: ListRead): HTMLElement {
-		const { columns, indices, kinds } = this.#listColumns(read);
+		const { columns, indices, kinds, links } = this.#listColumns(read);
+		this.#wantLinked(read, read.rows, indices, links);
 		const template = columns
 			.map((_, index) =>
 				index === 0
@@ -1344,7 +1550,9 @@ class DataListView {
 			{ class: "data-row data-row-head" },
 			...columns.map((name, index) => {
 				const on = read.order === name;
-				const label = columnLabel(name, kinds[index] ?? "text");
+				const label = links[index]
+					? humanName(name.replace(/(?<=.)_(id|uuid)$/, ""))
+					: columnLabel(name, kinds[index] ?? "text");
 				return h(
 					"span",
 					{ class: `data-cell${index > 0 && kinds[index] === "number" ? " is-number" : ""}` },
@@ -1372,14 +1580,14 @@ class DataListView {
 			}),
 		);
 		const opens = read.tab.kind === "table";
-		const rows = read.rows.map((row) => this.#listRowEl(read, row, indices, kinds, opens));
+		const rows = read.rows.map((row) => this.#listRowEl(read, row, indices, kinds, opens, links));
 		const none = read.rows.length === 0 && !read.loading && !read.tooLarge;
 		return h(
 			"div",
 			{ class: "data-list", style: `--data-columns: ${template}` },
 			head,
 			...rows,
-			none ? h("p", { class: "data-none" }, t("No rows yet")) : null,
+			none ? h("p", { class: "data-none" }, read.find === undefined ? t("No rows yet") : t("Nothing found")) : null,
 			read.next && read.tab.kind === "table" ? h("div", { class: "data-more" }, this.#moreContent(read)) : null,
 		);
 	}
@@ -1388,13 +1596,13 @@ class DataListView {
 		const table = this.#table();
 		const described = this.#described;
 		const counted =
-			table?.rows === undefined
+			table?.rows === undefined || read.find !== undefined
 				? undefined
 				: Math.max(0, table.rows + (this.#counted.get(`${read.database}/${read.tab.name}`) ?? 0));
 		const count =
 			counted !== undefined
 				? t("{count} rows", { count: countFormat(presentationLocale()).format(counted) })
-				: table?.rowsAbout !== undefined
+				: table?.rowsAbout !== undefined && read.find === undefined
 					? t("About {count} rows", { count: countFormat(presentationLocale()).format(table.rowsAbout) })
 					: read.more
 						? t("The first {count} rows", { count: read.rows.length })
@@ -1436,11 +1644,15 @@ class DataListView {
 
 	#openRow(read: ListRead, row: Row): void {
 		if (read.tab.kind !== "table") return;
+		this.#openAt(read.database, read.tab.name, read.columns, read.key, row);
+	}
+
+	#openAt(database: string, table: string, columns: readonly string[], key: readonly string[], row: Row): void {
 		this.#open = {
-			database: read.database,
-			table: read.tab.name,
-			columns: read.columns,
-			key: read.key,
+			database,
+			table,
+			columns,
+			key,
 			row,
 			draft: new Map(),
 			notice: undefined,

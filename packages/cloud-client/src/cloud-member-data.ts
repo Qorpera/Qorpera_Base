@@ -144,6 +144,7 @@ export interface CloudMemberDataTableAsked {
 	readonly order?: string;
 	readonly desc?: boolean;
 	readonly limit?: number;
+	readonly find?: string;
 }
 
 export interface CloudMemberDataTableWatch extends CloudMemberDataTableAsked {
