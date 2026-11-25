@@ -60,7 +60,8 @@ export class DataLinked {
 	}
 
 	drop(database: string, table: string): void {
-		for (const place of [...this.#rows.keys()]) if (place.startsWith(`${database}/${table}/`)) this.#rows.delete(place);
+		for (const place of [...this.#rows.keys()])
+			if (place.startsWith(`${database}/${table}/`)) this.#rows.delete(place);
 	}
 
 	row(database: string, link: DataLink, value: unknown): DataLinkedRow | undefined {

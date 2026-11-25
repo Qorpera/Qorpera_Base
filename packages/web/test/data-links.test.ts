@@ -34,13 +34,17 @@ function linked(rows: (asked: { at?: Record<string, unknown> }) => Promise<Cloud
 describe("where a table's columns point (app/views/data-links.ts)", () => {
 	it("links a column by a one-column reference into a table of the database that has the column", () => {
 		const customers = table("customers", ["id", "name"]);
-		const orders = table("orders", ["id", "customer_id", "a", "b", "elsewhere", "ghost"], [
-			{ columns: ["customer_id"], table: "customers", to: ["id"] },
-			{ columns: ["customer_id"], table: "customers", to: ["name"] },
-			{ columns: ["a", "b"], table: "customers", to: ["id", "name"] },
-			{ columns: ["elsewhere"], table: "missing", to: ["id"] },
-			{ columns: ["ghost"], table: "customers", to: ["nope"] },
-		]);
+		const orders = table(
+			"orders",
+			["id", "customer_id", "a", "b", "elsewhere", "ghost"],
+			[
+				{ columns: ["customer_id"], table: "customers", to: ["id"] },
+				{ columns: ["customer_id"], table: "customers", to: ["name"] },
+				{ columns: ["a", "b"], table: "customers", to: ["id", "name"] },
+				{ columns: ["elsewhere"], table: "missing", to: ["id"] },
+				{ columns: ["ghost"], table: "customers", to: ["nope"] },
+			],
+		);
 		expect([...tableLinks(orders, [orders, customers])]).toEqual([["customer_id", link]]);
 		expect(tableLinks(customers, [orders, customers]).size).toBe(0);
 		expect(tableLinks(undefined, []).size).toBe(0);
