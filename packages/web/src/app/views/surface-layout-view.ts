@@ -220,7 +220,12 @@ export class SurfaceLayoutView {
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
 	#apart: readonly string[] = [];
-	#postTabs: readonly { readonly id: string; readonly posts: PathTest; readonly files: PathTest }[] = [];
+	#postTabs: readonly {
+		readonly id: string;
+		readonly posts: PathTest;
+		readonly modules: PathTest;
+		readonly files: PathTest;
+	}[] = [];
 
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
@@ -267,10 +272,15 @@ export class SurfaceLayoutView {
 				block.type === "report" ? [reportFiles(block, ctx, this.#apart).include] : [],
 			);
 			const files = blocks.flatMap((block) => (block.type === "artifacts" ? [artifactsHold(block, ctx)] : []));
+			const folders = blocks.flatMap((block) => {
+				const folder = block.type === "module" ? moduleFolder(block, ctx) : undefined;
+				return folder ? [folder] : [];
+			});
 			return {
 				id: tab.id,
 				posts: (path: string) => posts.some((include) => include(path)),
-				files: (path: string) => files.some((hold) => hold(path)),
+				modules: (path: string) => folders.some((folder) => path.startsWith(`${folder}/`)),
+				files: (path: string) => !claimed.has(path) && files.some((hold) => hold(path)),
 			};
 		});
 		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
@@ -449,9 +459,11 @@ export class SurfaceLayoutView {
 		return tasks;
 	}
 
-	placeOf(path: string): { readonly tab: string; readonly in: "posts" | "files" } | undefined {
+	placeOf(path: string): { readonly tab: string; readonly in: "posts" | "module" | "files" } | undefined {
 		const posts = this.#postTabs.find((tab) => tab.posts(path));
 		if (posts) return { tab: posts.id, in: "posts" };
+		const module = this.#postTabs.find((tab) => tab.modules(path));
+		if (module) return { tab: module.id, in: "module" };
 		const files = this.#postTabs.find((tab) => tab.files(path));
 		return files ? { tab: files.id, in: "files" } : undefined;
 	}

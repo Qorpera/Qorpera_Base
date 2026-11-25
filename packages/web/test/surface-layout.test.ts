@@ -1719,6 +1719,14 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 					.querySelector(`[data-act="report-select"][data-slug="${surfaceDocSlug(deckPath)}"]`)
 					?.getAttribute("aria-selected"),
 			).toBe("true");
+			expect(pills.some((pill) => pill.dataset.slug === surfaceDocSlug(`${ROOT}/calculator/index.html`))).toBe(
+				false,
+			);
+
+			const calculatorPath = `${ROOT}/calculator/index.html`;
+			await store.openChangeDeliverable(board.id, CHANGES[0], surfaceDocSlug(calculatorPath), calculatorPath);
+			await vi.waitFor(() => expect(onTab()).toBe("tools"));
+			expect(store.state.mode).toBe("preview");
 			view.dispose();
 			store.dispose();
 		} finally {
