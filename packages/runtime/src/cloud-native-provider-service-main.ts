@@ -13,7 +13,7 @@ import { HttpCloudCompanyFolderBytes } from "./cloud-company-folder-bytes.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
 import { CloudNativeCompanyPresence } from "./cloud-company-path-presence.ts";
 import { httpsCompanyDataDoor } from "./cloud-data-tools.ts";
-import { createCloudHomeChannel } from "./cloud-home-channel-client.ts";
+import { createCloudCodingChannel, createCloudHomeChannel } from "./cloud-home-channel-client.ts";
 import { recoveryBase64, recoveryDigest, recoveryRecord } from "./cloud-identity-recovery-crypto.ts";
 import {
 	backupNativeIdentityKey,
@@ -475,6 +475,32 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						binarySha256: runtimeConfiguration.binarySha256,
 						isolation: runtimeConfiguration.isolation,
 						chatGptPlanAuth: runtimeConfiguration.chatGptPlanAuth,
+						...(secretBrokerOrigin && secretBrokerToken
+							? {
+									claude: {
+										channel: (binding: CloudNativeToolBinding) =>
+											createCloudCodingChannel({
+												url: codingConfiguration.url,
+												token: codingToken,
+												binding,
+												holder,
+											}),
+										logins: {
+											origin: secretBrokerOrigin,
+											runtimeToken: secretBrokerToken,
+											companyId: state.companyId,
+											holder,
+										},
+										recordUsage: async (binding, usage, checked) => {
+											await pathControl.call(
+												"qorpera_record_claude_run_usage",
+												{ p_binding: binding, p_usage: usage },
+												checked,
+											);
+										},
+									},
+								}
+							: {}),
 					})
 				: undefined;
 		cloudRuntime = new CloudNativeCompanyRuntime({

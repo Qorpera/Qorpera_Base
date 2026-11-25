@@ -19,6 +19,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SOCKET = "/run/qorpera-home/shell.sock";
+const MCP_SOCKET = "/run/qorpera-home/mcp.sock";
 export const CLAUDE_HOME_REVIEW_HOOK = "/opt/qorpera/review-hook";
 const REQUEST_BYTES = 4 * 1024 * 1024 - 64 * 1024;
 const FORWARDED = [
@@ -122,7 +123,27 @@ export function cloudClaudeShellRequestLine(request: {
 	return `${JSON.stringify({ ...request, hook: "" })}\n`;
 }
 
+function runMcpBridge(): void {
+	const socket = connect(MCP_SOCKET);
+	const exit = (code: number): void => {
+		socket.destroy();
+		process.exit(code);
+	};
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGPIPE"] as const)
+		process.on(signal, () => exit(128 + constants.signals[signal]));
+	socket.on("error", () => exit(1));
+	socket.on("close", () => process.exit(0));
+	process.stdin.on("error", () => exit(0));
+	process.stdout.on("error", () => exit(0));
+	process.stdin.pipe(socket);
+	socket.pipe(process.stdout);
+}
+
 function main(): void {
+	if (process.argv[2] === "--mcp") {
+		runMcpBridge();
+		return;
+	}
 	const hook = process.argv[2] === "--hook" || process.argv[2] === CLAUDE_HOME_REVIEW_HOOK;
 	const cmd = hook
 		? CLAUDE_HOME_REVIEW_HOOK

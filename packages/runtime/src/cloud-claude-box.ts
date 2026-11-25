@@ -96,6 +96,9 @@ export const CLAUDE_BOX_PATHS = Object.freeze({
 	 * and bound read-only, as the settings are. */
 	systemNote: "/opt/qorpera/system-note.md",
 	shellSocket: "/run/qorpera-home/shell.sock",
+	mcpSocket: "/run/qorpera-home/mcp.sock",
+	mcpClient: "/opt/qorpera/mcp-client",
+	mcpConfig: "/opt/qorpera/mcp-config.json",
 	config: "/slot/config",
 	home: "/slot/home",
 	extraCa: "/opt/qorpera/extra-ca.pem",
@@ -103,6 +106,7 @@ export const CLAUDE_BOX_PATHS = Object.freeze({
 /** The home's folders the box sees at the same paths: the work, the agent's home folder, and /tmp (Claude Code's
  * working-folder file and its commands' output files are written on the home and read in the box). */
 export const CLAUDE_BOX_HOME_FOLDERS = Object.freeze(["/company", "/var/lib/qorpera-agent", "/tmp"]);
+export const CLAUDE_BOX_CODING_FOLDERS = Object.freeze(["/company", "/tmp"]);
 
 /** The deny rules: the box's own folders only (A5). */
 export const CLAUDE_BOX_DENY = Object.freeze([
@@ -212,7 +216,13 @@ export type ClaudeBoxTool = (typeof CLAUDE_BOX_TOOLS)[number];
 /** Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only, and
  * the tools named, no others. */
 export function claudeBoxArguments(
-	options: { model?: string; effort?: string; tools?: readonly ClaudeBoxTool[]; systemNote?: boolean } = {},
+	options: {
+		model?: string;
+		effort?: string;
+		tools?: readonly ClaudeBoxTool[];
+		systemNote?: boolean;
+		mcpConfig?: boolean;
+	} = {},
 ): string[] {
 	if (options.model !== undefined && !/^[A-Za-z0-9._:[\]-]{1,128}$/.test(options.model))
 		throw new Error("Invalid Claude model");
@@ -237,6 +247,7 @@ export function claudeBoxArguments(
 		"--setting-sources",
 		"user",
 		"--strict-mcp-config",
+		...(options.mcpConfig ? ["--mcp-config", CLAUDE_BOX_PATHS.mcpConfig] : []),
 		"--tools",
 		tools.join(","),
 		...(options.systemNote ? ["--append-system-prompt-file", CLAUDE_BOX_PATHS.systemNote] : []),
@@ -319,9 +330,39 @@ function scratchPaths(root: string) {
 		prefix: join(root, "home-shell"),
 		rg: join(root, "rg"),
 		reviewHook: join(root, "review-hook"),
+		mcpClient: join(root, "mcp-client"),
+		mcpConfig: join(root, "mcp-config.json"),
 		passwd: join(root, "passwd"),
 		group: join(root, "group"),
 	};
+}
+
+const BOX_MOUNT_PATH = /^\/[A-Za-z0-9._/-]{1,256}$/;
+const MCP_SERVER_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+
+function validBoxPath(path: string): boolean {
+	if (!BOX_MOUNT_PATH.test(path) || path.endsWith("/") || path.includes("//")) return false;
+	return !path.split("/").some((segment) => segment === "." || segment === "..");
+}
+
+function resolveBoxFoldersAndCwd(
+	homeFolders?: readonly string[],
+	cwd?: string,
+): { readonly folders: readonly string[]; readonly cwd: string } {
+	const folders = homeFolders ?? CLAUDE_BOX_HOME_FOLDERS;
+	if (
+		folders.length === 0 ||
+		new Set(folders).size !== folders.length ||
+		folders.some((folder) => !validBoxPath(folder))
+	)
+		throw new Error("Invalid Claude box home folders");
+	const targetCwd = cwd ?? "/company";
+	if (
+		!validBoxPath(targetCwd) ||
+		!folders.some((folder) => targetCwd === folder || targetCwd.startsWith(`${folder}/`))
+	)
+		throw new Error("Invalid Claude box working directory");
+	return { folders, cwd: targetCwd };
 }
 
 function claudeBoxSystem(passwd: string, group: string): string[] {
@@ -393,16 +434,39 @@ export function claudeBoxInvocation(options: {
 	/** The run wrote a system note (scratch `system-note.md`): bound read-only and appended to the system prompt. */
 	systemNote?: boolean;
 	reviewHook?: boolean;
+	homeFolders?: readonly string[];
+	cwd?: string;
+	mcp?: { readonly socketPath: string; readonly serverName?: string };
 }): { command: string; args: string[] } {
 	const c = options.configuration;
 	const s = scratchPaths(options.scratchRoot);
 	const login = options.login === "token" ? "token" : "folder";
 	const config = options.login === "token" ? s.config : options.login.folder;
+	const { folders, cwd } = resolveBoxFoldersAndCwd(options.homeFolders, options.cwd);
+	if (options.mcp) {
+		if (!isAbsolute(options.mcp.socketPath) || options.mcp.socketPath.includes("\0"))
+			throw new Error("Invalid Claude MCP socket");
+		if (options.mcp.serverName !== undefined && !MCP_SERVER_NAME.test(options.mcp.serverName))
+			throw new Error("Invalid Claude MCP server name");
+	}
 	const box = [
 		...claudeBoxSystem(s.passwd, s.group),
 		"--ro-bind",
 		options.shellSocket,
 		CLAUDE_BOX_PATHS.shellSocket,
+		...(options.mcp
+			? [
+					"--ro-bind",
+					options.mcp.socketPath,
+					CLAUDE_BOX_PATHS.mcpSocket,
+					"--ro-bind",
+					s.mcpClient,
+					CLAUDE_BOX_PATHS.mcpClient,
+					"--ro-bind",
+					s.mcpConfig,
+					CLAUDE_BOX_PATHS.mcpConfig,
+				]
+			: []),
 		"--ro-bind",
 		options.relayPath,
 		options.relayPath,
@@ -433,13 +497,13 @@ export function claudeBoxInvocation(options: {
 		"--bind",
 		s.home,
 		CLAUDE_BOX_PATHS.home,
-		...CLAUDE_BOX_HOME_FOLDERS.flatMap((folder) => ["--bind", `${s.mount}${folder}`, folder]),
+		...folders.flatMap((folder) => ["--bind", `${s.mount}${folder}`, folder]),
 	];
 	for (const [name, value] of Object.entries(claudeBoxEnvironment({ login, extraCa: Boolean(options.extraCa) })))
 		box.push("--setenv", name, value);
 	box.push(
 		"--chdir",
-		"/company",
+		cwd,
 		"--remount-ro",
 		"/",
 		"--",
@@ -452,6 +516,7 @@ export function claudeBoxInvocation(options: {
 			effort: options.effort,
 			tools: options.tools,
 			systemNote: options.systemNote,
+			mcpConfig: options.mcp !== undefined,
 		}),
 	);
 	return {
@@ -1208,6 +1273,10 @@ export interface ClaudeCodeBoxOptions {
 	effort?: string;
 	/** The tools Claude Code offers, no others (default and slice 1: CLAUDE_BOX_TOOLS). */
 	tools?: readonly ClaudeBoxTool[];
+	homeFolders?: readonly string[];
+	cwd?: string;
+	shellBaseEnv?: Readonly<Record<string, string>>;
+	mcp?: { readonly socketPath: string; readonly serverName?: string };
 	signal: AbortSignal;
 	review?: {
 		readonly gate: CloudCodexHomeReview;
@@ -1292,13 +1361,26 @@ async function startBox(
 	if (token !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(token)) throw new Error("Invalid Claude sign-in token");
 	// The model and the tools are checked before anything of the home opens: a start that fails on them has used
 	// nothing of the caller's one session (review r2, F3).
-	claudeBoxArguments({ model: options.model, effort: options.effort, tools: options.tools });
+	claudeBoxArguments({
+		model: options.model,
+		effort: options.effort,
+		tools: options.tools,
+		mcpConfig: options.mcp !== undefined,
+	});
+	resolveBoxFoldersAndCwd(options.homeFolders, options.cwd);
+	if (options.mcp) {
+		if (!isAbsolute(options.mcp.socketPath) || options.mcp.socketPath.includes("\0"))
+			throw new Error("Invalid Claude MCP socket");
+		if (options.mcp.serverName !== undefined && !MCP_SERVER_NAME.test(options.mcp.serverName))
+			throw new Error("Invalid Claude MCP server name");
+	}
 	if (options.systemNote !== undefined && (!options.systemNote || Buffer.byteLength(options.systemNote) > 16_384))
 		throw new Error("Invalid Claude system note");
 	progress.stage = "scratch";
 	await privateDirectory(options.scratchRoot);
 	progress.stage = "socket-path";
 	for (const path of claudeBoxSocketPaths(options.scratchRoot)) assertNativeSocketPath(path, "The Claude Code box's");
+	if (options.mcp) assertNativeSocketPath(options.mcp.socketPath, "The Claude Code box's MCP");
 	progress.stage = "scratch";
 	if ("folder" in login) {
 		if (!isAbsolute(login.folder) || login.folder.startsWith(`${options.scratchRoot}/`))
@@ -1335,6 +1417,23 @@ async function startBox(
 			`#!/bin/sh\nexec ${configuration.node} ${CLAUDE_BOX_PATHS.shellPrefix}${extname(configuration.shellClient)} --hook\n`,
 			{ mode: 0o500, flag: "wx" },
 		);
+	if (options.mcp) {
+		const serverName = options.mcp.serverName ?? "qorpera";
+		await writeFile(
+			s.mcpClient,
+			`#!/bin/sh\nexec ${configuration.node} ${CLAUDE_BOX_PATHS.shellPrefix}${extname(configuration.shellClient)} --mcp\n`,
+			{ mode: 0o500, flag: "wx" },
+		);
+		await writeFile(
+			s.mcpConfig,
+			`${JSON.stringify({
+				mcpServers: {
+					[serverName]: { type: "stdio", command: CLAUDE_BOX_PATHS.mcpClient, args: [] },
+				},
+			})}\n`,
+			{ mode: 0o400, flag: "wx" },
+		);
+	}
 	// Claude Code's own first-run state for a box of its own; a login folder is the caller's and is left as it is.
 	if (token !== undefined)
 		await writeFile(
@@ -1386,6 +1485,8 @@ async function startBox(
 				s.prefix,
 				s.rg,
 				s.reviewHook,
+				s.mcpClient,
+				s.mcpConfig,
 			])
 				await rm(path, { recursive: true, force: true }).catch(() => undefined);
 			// The mount point stays empty in this namespace (the mount lives in the box's): only an empty folder goes.
@@ -1400,6 +1501,7 @@ async function startBox(
 			sessionId: options.sessionId,
 			machineId: options.machineId,
 			signal,
+			...(options.shellBaseEnv ? { baseEnv: options.shellBaseEnv } : {}),
 			...(options.pictures ? { pictures: options.pictures } : {}),
 			...(review
 				? {
@@ -1468,6 +1570,9 @@ async function startBox(
 			tools: options.tools,
 			systemNote: options.systemNote !== undefined,
 			reviewHook: review !== undefined,
+			...(options.homeFolders ? { homeFolders: options.homeFolders } : {}),
+			...(options.cwd ? { cwd: options.cwd } : {}),
+			...(options.mcp ? { mcp: options.mcp } : {}),
 		});
 		const child = spawnBox(invocation.command, invocation.args, {
 			cwd: options.scratchRoot,

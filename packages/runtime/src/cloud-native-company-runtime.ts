@@ -667,7 +667,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							identity: context.identity,
 							identityRoot,
 							preferredModel: context.imageModel,
-							usesPrimaryCodexSession: !isGeminiRun,
+							usesPrimaryCodexSession: !isGeminiRun && wake.payload.harness !== "claude-code",
 							signal,
 						})
 					: undefined;

@@ -162,6 +162,7 @@ export class CloudClaudeHomeShell {
 	readonly #review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
 	readonly #hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
 	readonly #pictures?: CloudClaudePictures;
+	readonly #baseEnv: Readonly<Record<string, string>>;
 	#reviews = 0;
 	#pictureCalls = 0;
 	readonly #picturesWritten = new Map<string, string>();
@@ -195,6 +196,7 @@ export class CloudClaudeHomeShell {
 		review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
 		hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
 		pictures?: CloudClaudePictures;
+		baseEnv?: Readonly<Record<string, string>>;
 	}) {
 		this.#channel = options.channel;
 		this.#sessionId = options.sessionId;
@@ -203,6 +205,7 @@ export class CloudClaudeHomeShell {
 		if (options.review) this.#review = options.review;
 		if (options.hook) this.#hook = options.hook;
 		if (options.pictures) this.#pictures = options.pictures;
+		this.#baseEnv = options.baseEnv ? Object.freeze({ ...options.baseEnv }) : CLOUD_CLAUDE_SHELL_ENVIRONMENT;
 	}
 
 	get socketPath(): string {
@@ -552,7 +555,7 @@ export class CloudClaudeHomeShell {
 					processId,
 					argv: ["/bin/bash", "-c", request.cmd],
 					cwd: `file://${encodeURI(request.cwd)}`,
-					env: { ...CLOUD_CLAUDE_SHELL_ENVIRONMENT, ...request.env },
+					env: { ...this.#baseEnv, ...request.env },
 					tty: false,
 					pipeStdin: false,
 					arg0: null,

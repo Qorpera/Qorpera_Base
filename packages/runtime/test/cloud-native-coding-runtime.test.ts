@@ -1,15 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CLAUDE_BOX_CODING_FOLDERS, CLAUDE_BOX_TOOLS, type ClaudeCodeBox } from "../src/cloud-claude-box.ts";
+import type { ClaudeWorkerLogins } from "../src/cloud-claude-worker.ts";
 import type { CloudCodingCommandGateway } from "../src/cloud-coding-command-tools.ts";
 import { HttpCloudCodingControl } from "../src/cloud-coding-control.ts";
 import { CODING_MAKE_PICTURE_SCHEMA } from "../src/cloud-coding-picture-tool.ts";
 import { CloudControlRpcEnded } from "../src/cloud-control-errors.ts";
 import {
+	CLAUDE_CODING_SYSTEM_NOTE,
+	CLAUDE_SURFACE_CODING_SYSTEM_NOTE,
 	type CloudCodingNativeControl,
 	CloudNativeCodingRuntime,
 	type CloudNativeCodingTurnContext,
@@ -58,7 +63,7 @@ function fixture() {
 		turnId,
 		vmId,
 		harness: "codex",
-		model: null,
+		model: null as string | null,
 		repository,
 		branch: `qorpera/coding/${workerId}`,
 		baseSha: "a".repeat(40),
@@ -2645,6 +2650,352 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			expect(fGithub.gateway.start).not.toHaveBeenCalled();
 		} finally {
 			await rm(identityRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps Claude coding system notes under the 16 KiB box limit without Codex-only tool names", () => {
+		for (const note of [CLAUDE_CODING_SYSTEM_NOTE, CLAUDE_SURFACE_CODING_SYSTEM_NOTE]) {
+			expect(Buffer.byteLength(note)).toBeLessThanOrEqual(14_000);
+			expect(note).toContain("mcp__qorpera__coding_finish");
+			expect(note).toContain("mcp__qorpera__coding_ask");
+			expect(note).not.toContain("coding_run_command");
+		}
+		expect(CLAUDE_SURFACE_CODING_SYSTEM_NOTE).toContain("mcp__qorpera__coding_record_change");
+	});
+
+	it("executes a Claude Code coding turn over the local MCP bridge and records usage without invoking Codex", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "qcc-drv-"));
+		const identityRoot = join(parent, "id");
+		await mkdir(identityRoot, { mode: 0o700 });
+		const sendMcp = async (socketPath: string, requests: Record<string, unknown>[]) => {
+			const socket = connect(socketPath);
+			await new Promise<void>((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", reject);
+			});
+			const responses: Record<string, unknown>[] = [];
+			let pending = "";
+			const nextResponse = () =>
+				new Promise<Record<string, unknown>>((resolve, reject) => {
+					const drain = () => {
+						const nl = pending.indexOf("\n");
+						if (nl >= 0) {
+							const line = pending.slice(0, nl);
+							pending = pending.slice(nl + 1);
+							socket.off("data", onData);
+							socket.off("error", reject);
+							resolve(JSON.parse(line) as Record<string, unknown>);
+							return true;
+						}
+						return false;
+					};
+					const onData = (chunk: Buffer) => {
+						pending += chunk.toString("utf8");
+						drain();
+					};
+					if (!drain()) {
+						socket.on("data", onData);
+						socket.once("error", reject);
+					}
+				});
+			try {
+				for (const req of requests) {
+					socket.write(`${JSON.stringify(req)}\n`);
+					if (Object.hasOwn(req, "id")) responses.push(await nextResponse());
+				}
+			} finally {
+				socket.destroy();
+			}
+			return responses;
+		};
+		try {
+			const f = fixture();
+			f.coding.harness = "claude-code";
+			f.coding.model = "claude-opus-5-5";
+			(f.coding as Record<string, unknown>).claude = { model: "claude-opus-5-5", effort: "high" };
+			(f.turn.wake.payload as Record<string, unknown>).harness = "claude-code";
+			(f.turn.wake.payload as Record<string, unknown>).claude = { model: "claude-opus-5-5", effort: "high" };
+			(f.turn.wake.payload as Record<string, unknown>).coding = { harness: "claude-code" };
+			const recordChange = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+			f.turn.surfaceSession = {
+				sessionId: randomUUID(),
+				surfaceSlug: "site",
+				surfaceTitle: "Site",
+				sourceKind: "code_repo",
+				briefMarkdown: null,
+				repositoryKey: "qorpera/test",
+				folderRoot: null,
+				explorationVariantLabel: null,
+				identityContext: null,
+				sharedAssets: null,
+				pointToChangeTarget: null,
+				conflictPaths: [],
+				conflictDetails: [],
+				previewBaseChanges: [],
+				openChanges: [],
+				resolvedChanges: [],
+				recordChange,
+			};
+			const logins: ClaudeWorkerLogins = {
+				open: vi.fn().mockResolvedValue({
+					claudeLoginId: randomUUID(),
+					version: 1,
+					envelopeSha256: "b".repeat(64),
+					files: new Map([[".credentials.json", Buffer.from('{"claudeAiOauth":{"accessToken":"secret"}}')]]),
+					fileSha256: {},
+				}),
+			};
+			const recordUsage = vi.fn().mockResolvedValue(undefined);
+			const channelOpen = vi.fn();
+			let observedLoginFolder = "";
+			let observedScratchRoot = "";
+			let observedMcpSocket = "";
+			const launch = vi.fn(async (options) => {
+				expect(options.homeFolders).toEqual(CLAUDE_BOX_CODING_FOLDERS);
+				expect(options.cwd).toBe(`/company/code/qorpera/test/worktrees/${f.scope.workerId}`);
+				expect(options.model).toBe("claude-opus-5-5");
+				expect(options.effort).toBe("high");
+				expect(options.mcp?.serverName).toBe("qorpera");
+				expect(options.systemNote).toContain("mcp__qorpera__coding_finish");
+				observedScratchRoot = options.scratchRoot;
+				observedLoginFolder = "folder" in options.login ? options.login.folder : "";
+				observedMcpSocket = options.mcp?.socketPath ?? "";
+				const credsStat = await stat(join(observedLoginFolder, ".credentials.json"));
+				expect(credsStat.mode & 0o777).toBe(0o600);
+				const mcpAnswers = await sendMcp(observedMcpSocket, [
+					{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+					{ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+					{
+						jsonrpc: "2.0",
+						id: 3,
+						method: "tools/call",
+						params: {
+							name: "coding_record_change",
+							arguments: {
+								title: "Refresh hero",
+								summary: "Updated landing hero",
+								parentSha: "a".repeat(40),
+								commitSha: "b".repeat(40),
+							},
+						},
+					},
+					{
+						jsonrpc: "2.0",
+						id: 4,
+						method: "tools/call",
+						params: {
+							name: "coding_finish",
+							arguments: {
+								operationKey: "fin-1",
+								summary: "Committed refreshed hero.",
+								headSha: "b".repeat(40),
+							},
+						},
+					},
+				]);
+				expect((mcpAnswers[1]?.result as { tools: { name: string }[] }).tools.map((t) => t.name)).toEqual([
+					"coding_record_change",
+					"coding_finish",
+					"coding_ask",
+				]);
+				expect((mcpAnswers[2]?.result as { isError: boolean }).isError).toBe(false);
+				expect((mcpAnswers[3]?.result as { isError: boolean }).isError).toBe(false);
+				return {
+					lines: (async function* () {
+						yield JSON.stringify({
+							type: "system",
+							subtype: "init",
+							session_id: "claude-sess-1",
+							model: "claude-opus-5-5",
+							tools: [
+								...CLAUDE_BOX_TOOLS,
+								"mcp__qorpera__coding_record_change",
+								"mcp__qorpera__coding_finish",
+								"mcp__qorpera__coding_ask",
+							],
+						});
+						yield JSON.stringify({
+							type: "rate_limit_event",
+							rate_limit_info: {
+								unifiedWindows: {
+									seven_day: {
+										utilization: 0.25,
+										resetsAt: Math.floor(Date.now() / 1000) + 3600,
+									},
+								},
+							},
+						});
+						yield JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Done." });
+					})(),
+					exited: Promise.resolve(0),
+					stderr: () => "",
+					overflowed: () => false,
+					shell: {} as ClaudeCodeBox["shell"],
+					close: vi.fn().mockResolvedValue(undefined),
+				} satisfies ClaudeCodeBox;
+			});
+			const runtime = new CloudNativeCodingRuntime({
+				control: f.control,
+				gateway: f.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				claude: {
+					channel: () => ({ open: channelOpen }),
+					logins,
+					launch,
+					recordUsage,
+				},
+			});
+			const out = await runtime.execute(f.request, identityRoot, f.context.signal, f.turn);
+			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+			expect(out.providerSessionId).toContain("claude-code/");
+			expect(out.providerSessionId).toContain("claude-opus-5-5");
+			expect(recordChange).toHaveBeenCalledTimes(1);
+			expect(recordUsage).toHaveBeenCalledTimes(1);
+			expect(f.coding.submission).toMatchObject({ kind: "finish", headSha: "b".repeat(40), state: "submitted" });
+			const beginCall = f.call.mock.calls.find(([method]) => method === "qorpera_begin_native_coding_execution");
+			const admittedTools = JSON.parse(String(beginCall?.[1]?.p_tool_catalog_text)) as {
+				tools: { name: string }[];
+			};
+			expect(admittedTools.tools.map((tool) => tool.name)).toEqual([
+				"coding_record_change",
+				"coding_finish",
+				"coding_ask",
+			]);
+			expect(existsSync(observedLoginFolder)).toBe(false);
+			expect(existsSync(observedScratchRoot)).toBe(false);
+			expect(existsSync(observedMcpSocket)).toBe(false);
+		} finally {
+			await rm(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed on Claude auth, limit, tools-wrong, and unsubmitted turns without ever invoking Codex", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "qcc-err-"));
+		const identityRoot = join(parent, "id");
+		await mkdir(identityRoot, { mode: 0o700 });
+		const makeClaudeFixture = (logins: ClaudeWorkerLogins, lines: readonly string[] = []) => {
+			const f = fixture();
+			f.coding.harness = "claude-code";
+			f.coding.model = "claude-opus-5-5";
+			(f.coding as Record<string, unknown>).claude = { model: "claude-opus-5-5", effort: "high" };
+			(f.turn.wake.payload as Record<string, unknown>).harness = "claude-code";
+			(f.turn.wake.payload as Record<string, unknown>).coding = { harness: "claude-code" };
+			const close = vi.fn().mockResolvedValue(undefined);
+			const launch = vi.fn(async () => ({
+				lines: (async function* () {
+					for (const line of lines) yield line;
+				})(),
+				exited: Promise.resolve(1),
+				stderr: () => "",
+				overflowed: () => false,
+				shell: {} as ClaudeCodeBox["shell"],
+				close,
+			}));
+			const runtime = new CloudNativeCodingRuntime({
+				control: f.control,
+				gateway: f.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins,
+					launch,
+				},
+			});
+			return { f, runtime, close, launch };
+		};
+		const validLogins = (): ClaudeWorkerLogins => ({
+			open: vi.fn().mockResolvedValue({
+				claudeLoginId: randomUUID(),
+				version: 1,
+				envelopeSha256: "c".repeat(64),
+				files: new Map([[".credentials.json", Buffer.from("{}")]]),
+				fileSha256: {},
+			}),
+		});
+		try {
+			const signedOut = makeClaudeFixture({ open: vi.fn().mockResolvedValue({ refused: "SIGNED_OUT" }) });
+			await expect(
+				signedOut.runtime.execute(signedOut.f.request, identityRoot, signedOut.f.context.signal, signedOut.f.turn),
+			).rejects.toThrow("CODING_CLAUDE_SIGNED_OUT");
+
+			const notOpen = makeClaudeFixture({ open: vi.fn().mockResolvedValue({ refused: "NOT_OPEN" }) });
+			await expect(
+				notOpen.runtime.execute(notOpen.f.request, identityRoot, notOpen.f.context.signal, notOpen.f.turn),
+			).rejects.toThrow("CODING_CLAUDE_NOT_OPEN");
+
+			const limited = makeClaudeFixture(validLogins(), [
+				JSON.stringify({
+					type: "system",
+					subtype: "init",
+					session_id: "s-lim",
+					model: "claude-opus-5-5",
+					tools: [...CLAUDE_BOX_TOOLS, "mcp__qorpera__coding_finish", "mcp__qorpera__coding_ask"],
+				}),
+				JSON.stringify({
+					type: "assistant",
+					error: "rate_limit",
+					message: { content: [{ type: "text", text: "You hit your 5-hour limit" }] },
+				}),
+				JSON.stringify({
+					type: "result",
+					subtype: "error_during_execution",
+					is_error: true,
+					api_error_status: 429,
+				}),
+			]);
+			await expect(
+				limited.runtime.execute(limited.f.request, identityRoot, limited.f.context.signal, limited.f.turn),
+			).rejects.toThrow("CODING_CLAUDE_RATE_LIMITED");
+
+			const wrongTools = makeClaudeFixture(validLogins(), [
+				JSON.stringify({
+					type: "system",
+					subtype: "init",
+					session_id: "s-bad",
+					model: "claude-opus-5-5",
+					tools: [...CLAUDE_BOX_TOOLS, "mcp__evil__exec"],
+				}),
+			]);
+			await expect(
+				wrongTools.runtime.execute(
+					wrongTools.f.request,
+					identityRoot,
+					wrongTools.f.context.signal,
+					wrongTools.f.turn,
+				),
+			).rejects.toThrow("CODING_CLAUDE_TOOLS_WRONG");
+			expect(wrongTools.close).toHaveBeenCalled();
+
+			const unsubmitted = makeClaudeFixture(validLogins(), [
+				JSON.stringify({
+					type: "system",
+					subtype: "init",
+					session_id: "s-none",
+					model: "claude-opus-5-5",
+					tools: [...CLAUDE_BOX_TOOLS, "mcp__qorpera__coding_finish", "mcp__qorpera__coding_ask"],
+				}),
+				JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Forgot to submit." }),
+			]);
+			await expect(
+				unsubmitted.runtime.execute(
+					unsubmitted.f.request,
+					identityRoot,
+					unsubmitted.f.context.signal,
+					unsubmitted.f.turn,
+				),
+			).rejects.toThrow("CODING_TURN_ENDED_WITHOUT_SUBMISSION");
+
+			const mismatch = makeClaudeFixture(validLogins());
+			(mismatch.f.turn.wake.payload as Record<string, unknown>).coding = { harness: "codex" };
+			await expect(
+				mismatch.runtime.execute(mismatch.f.request, identityRoot, mismatch.f.context.signal, mismatch.f.turn),
+			).rejects.toThrow("CODING_TURN_SCOPE_DIFFERS");
+
+			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+		} finally {
+			await rm(parent, { recursive: true, force: true });
 		}
 	});
 });
