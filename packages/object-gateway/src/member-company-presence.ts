@@ -16,15 +16,15 @@ import {
 } from "@qorpera/cloud-client/company-path-presence";
 import type { MemberCompanyPresenceReply } from "@qorpera/cloud-client/member-company-path-presence";
 import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
+import { isRecord } from "@qorpera/contracts";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
-function record(value: unknown, keys: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
-		throw new ObjectDependencyError(400);
-	return value as Record<string, unknown>;
+function presenceRecord(value: unknown, keys: string): Record<string, unknown> {
+	if (!isRecord(value) || Object.keys(value).sort().join() !== keys) throw new ObjectDependencyError(400);
+	return value;
 }
 function current(
 	statement: CompanyPathPresenceWire,
@@ -53,7 +53,7 @@ export async function observeMemberCompanyPresence(options: {
 	const { authority, token, companyId, environmentId, signal } = options;
 	presenceUuid(companyId);
 	presenceUuid(environmentId);
-	const input = record(options.input, "candidates,paths,truncated");
+	const input = presenceRecord(options.input, "candidates,paths,truncated");
 	if (!Array.isArray(input.candidates) || input.candidates.length > 32 || typeof input.truncated !== "boolean")
 		throw new ObjectDependencyError(400);
 	let paths: string[], candidates: CompanyPathPresenceWire[];
@@ -67,7 +67,7 @@ export async function observeMemberCompanyPresence(options: {
 	}
 	const scope = async () => {
 		signal.throwIfAborted();
-		const row = record(
+		const row = presenceRecord(
 			await authority.member(
 				"qorpera_company_presence_scope",
 				token,
@@ -111,7 +111,7 @@ export async function observeMemberCompanyPresence(options: {
 						signal,
 					);
 					if (value === null) return;
-					const row = record(value, "identity,paths,schema");
+					const row = presenceRecord(value, "identity,paths,schema");
 					if (row.schema !== "qorpera.native-presence-subject/v1") throw new ObjectDependencyError(503);
 					const identity = parseCompanyPresenceIdentity(row.identity),
 						allowed = parseCompanyPresenceRoutes(row.paths, paths);

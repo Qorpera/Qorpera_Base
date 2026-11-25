@@ -16,8 +16,10 @@ import {
 	cloudCodingSessionLayout,
 	type IdleRuleSample,
 	idleRuleBusy,
+	isRecord,
 	isUuid,
 	parseCloudCodingNasPolicy,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
@@ -453,7 +455,6 @@ interface ListedMachine {
 const SHA = /^[0-9a-f]{64}$/;
 /** Guest uids from here on belong to one session each (SQL assigns them). */
 const CODING_SESSION_UID_BASE = 200000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Budget for one physical stop or delete, journal I/O included. Callers that
  * bound a whole step (lookup + effect) allow more than this. */
 export const CODING_VM_STOP_BUDGET_MS = 30_000;
@@ -1431,9 +1432,9 @@ export function codingHostId(label: string, source: string): string {
 export function codingTurnScope(workerId: string, vmId: string, sequence: number): CloudCodingCommandScope {
 	return Object.freeze({ workerId, vmId, requestId: codingHostId("turn", `${workerId}:${sequence}`), turn: sequence });
 }
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_HOST_RECEIPT_INVALID");
-	return value as Record<string, unknown>;
+function receiptRecord(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("CODING_HOST_RECEIPT_INVALID");
+	return value;
 }
 /** A record's `detached`: each session SQL detached, by its attachment; null when it is not a list of them. */
 function detachedSessions(value: unknown): { workerId: string; attachmentToken: string }[] | null {
@@ -1743,7 +1744,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		prepareStorage = false,
 	): Promise<CodingMachineAdmissionReceipt> {
 		const plan = lxdCodingMachinePlan(machine);
-		const value = record(raw);
+		const value = receiptRecord(raw);
 		if (value.state === "refused") {
 			const reason = String(value.reason ?? "");
 			if (WAITABLE.has(reason)) throw new CodingMachineUnavailable(reason);
@@ -1786,7 +1787,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		session?: { workerId: string; leaseToken: string | null },
 	): Promise<CodingMachineAdmissionReceipt> {
 		const started = performance.now();
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_authorize_coding_machine_custody",
 				{
@@ -1934,7 +1935,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			p_machine_id_sha256: this.#options.machineIdSha256,
 		};
 		if (setupDigest !== undefined) planArgs.p_setup_digest = setupDigest;
-		const value = record(await this.#call("qorpera_plan_coding_machine", planArgs, signal));
+		const value = receiptRecord(await this.#call("qorpera_plan_coding_machine", planArgs, signal));
 		if (value.state === "refused") {
 			const reason = String(value.reason ?? "");
 			if (WAITABLE.has(reason)) throw new CodingMachineUnavailable(reason);
@@ -1955,7 +1956,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				);
 				if (!existing) {
 					// WHY: Fail closed to the pinned base image when a SQL-selected snapshot image is absent from local LXD.
-					const fallbackRaw = record(
+					const fallbackRaw = receiptRecord(
 						await this.#call(
 							"qorpera_fallback_coding_machine_base_image",
 							{
@@ -1996,7 +1997,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			...restPolicy
 		} = machine;
 		const { imageFingerprint: baseImageFingerprint, ...restVmPolicy } = this.#options.vmPolicy;
-		const snapshotId = typeof value.snapshotId === "string" && UUID.test(value.snapshotId) ? value.snapshotId : null;
+		const snapshotId =
+			typeof value.snapshotId === "string" && UUID_PATTERN.test(value.snapshotId) ? value.snapshotId : null;
 		const snapshotImageFingerprint =
 			typeof value.snapshotImageFingerprint === "string" && SHA.test(value.snapshotImageFingerprint)
 				? value.snapshotImageFingerprint
@@ -2129,7 +2131,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
 		const bootId = boot.content.toString("utf8").trim();
-		if (boot.uid !== 0 || boot.gid !== 0 || boot.mode !== 0o444 || !UUID.test(bootId))
+		if (boot.uid !== 0 || boot.gid !== 0 || boot.mode !== 0o444 || !UUID_PATTERN.test(bootId))
 			throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
 		// WHY: Read and verify all four immutable guest helpers concurrently to cut cold boot LXD RTTs from 4 to 1.
 		const helperFiles = [
@@ -2444,7 +2446,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// outlives every machine the session runs on.
 		const seededName = `${claim.workerId}.seeded.json`;
 		try {
-			const seeded = record((await readRecord(join(root, seededName))).value);
+			const seeded = receiptRecord((await readRecord(join(root, seededName))).value);
 			if (seeded.workerId !== claim.workerId || seeded.headSha !== baseSha)
 				throw new Error("CODING_HOST_SEED_CHANGED");
 		} catch (error) {
@@ -2486,7 +2488,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const baseName = `${claim.workerId}.base.json`;
 		let baseSha: string;
 		try {
-			baseSha = String(record((await readRecord(join(root, baseName))).value).baseSha);
+			baseSha = String(receiptRecord((await readRecord(join(root, baseName))).value).baseSha);
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
 			const sha =
@@ -2504,9 +2506,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				baseName,
 				Buffer.from(JSON.stringify({ workerId: claim.workerId, repository: claim.repository, baseSha: sha })),
 			);
-			baseSha = String(record((await readRecord(join(root, baseName))).value).baseSha);
+			baseSha = String(receiptRecord((await readRecord(join(root, baseName))).value).baseSha);
 		}
-		const pinned = record((await readRecord(join(root, baseName))).value);
+		const pinned = receiptRecord((await readRecord(join(root, baseName))).value);
 		if (
 			pinned.workerId !== claim.workerId ||
 			!isDeepStrictEqual(pinned.repository, claim.repository) ||
@@ -2866,7 +2868,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// The kernel takes the report only from the executor that holds the turn's lease, and takes the row's words
 			// (title, summary, what a customer will notice) from its own rows.
 			recordChange: async (report, checked) => {
-				const answer = record(
+				const answer = receiptRecord(
 					await this.#call(
 						"qorpera_record_code_change",
 						{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken, p_change: report },
@@ -2891,7 +2893,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// and no drill (a drill in an answer lost is spent: the operator sets it again).
 			checksSwitch: async (checked) => {
 				try {
-					const answer = record(
+					const answer = receiptRecord(
 						await this.#call(
 							"qorpera_code_checks_switch",
 							{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
@@ -4652,7 +4654,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			generation = lease && lease.expiresInMs >= CODING_ATTACH_LEASE_MARGIN_MS ? lease.tokenSha256 : null;
 		}
 		const started = performance.now();
-		const attached = record(
+		const attached = receiptRecord(
 			await this.#call(
 				"qorpera_attach_coding_session",
 				{
@@ -4678,7 +4680,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			attached.workerId !== claim.workerId ||
 			attached.machineId !== machine.machineId ||
 			typeof attached.attachmentToken !== "string" ||
-			!UUID.test(attached.attachmentToken) ||
+			!UUID_PATTERN.test(attached.attachmentToken) ||
 			turnState.sequence !== claim.sequence ||
 			turnState.turnId !== scope.requestId ||
 			!turnState.open ||
@@ -4754,12 +4756,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** A turn as SQL names it in an attachment: its sequence, its turn id and whether it may start commands. */
 	#attachedTurn(value: unknown): Attachment["turn"] {
-		const turn = record(value);
+		const turn = receiptRecord(value);
 		if (
 			!Number.isSafeInteger(turn.sequence) ||
 			Number(turn.sequence) < 1 ||
 			typeof turn.turnId !== "string" ||
-			!UUID.test(turn.turnId) ||
+			!UUID_PATTERN.test(turn.turnId) ||
 			typeof turn.open !== "boolean"
 		)
 			throw new Error("CODING_HOST_ATTACHMENT_UNCONFIRMED");
@@ -5174,7 +5176,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		stopped: readonly ObservedCommand[],
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_session_detached",
 				{
@@ -5222,7 +5224,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		startOperationId: string,
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_stopped",
 				{
@@ -5253,7 +5255,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		newDisk: boolean,
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				newDisk ? "qorpera_mark_coding_machine_new_disk" : "qorpera_mark_coding_machine_folder_restart",
 				{
@@ -5306,7 +5308,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		afterOperationId: string,
 		signal: AbortSignal,
 	): Promise<boolean> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_folder_restart",
 				{
@@ -5340,7 +5342,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		rebuildOperationId: string,
 		signal: AbortSignal,
 	): Promise<void> {
-		const value = record(
+		const value = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_new_disk",
 				{
@@ -5619,7 +5621,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						sessionCpu.push({ workerId, cpuMillis });
 					}
 					const started = performance.now();
-					const kept = record(
+					const kept = receiptRecord(
 						await this.#call(
 							"qorpera_keep_coding_attachments",
 							{
@@ -5643,9 +5645,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					)
 						throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 					const items = kept.sessions.map((value) => {
-						const item = record(value);
-						const workerId = typeof item.workerId === "string" && UUID.test(item.workerId) ? item.workerId : null;
-						if (!workerId || typeof item.attachmentToken !== "string" || !UUID.test(item.attachmentToken))
+						const item = receiptRecord(value);
+						const workerId =
+							typeof item.workerId === "string" && UUID_PATTERN.test(item.workerId) ? item.workerId : null;
+						if (!workerId || typeof item.attachmentToken !== "string" || !UUID_PATTERN.test(item.attachmentToken))
 							throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 						return { workerId, item };
 					});
@@ -5838,7 +5841,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			: meminfoFull || memoryFull
 				? true
 				: null;
-		const recorded = record(
+		const recorded = receiptRecord(
 			await this.#call(
 				"qorpera_record_coding_machine_load",
 				{
@@ -6004,7 +6007,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			const uid =
 				file.uid === 0 && file.gid === 0
 					? (() => {
-							const parsed = record(JSON.parse(file.content.toString("utf8")));
+							const parsed = receiptRecord(JSON.parse(file.content.toString("utf8")));
 							return parsed.schema === "qorpera.coding-guest-session-user/v1" ? validGuestUid(parsed.uid) : null;
 						})()
 					: null;
@@ -6036,7 +6039,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444)
 			throw new Error("CODING_HOST_GUEST_CONFIGURATION_UNCONFIRMED");
 		const content = file.content.toString("utf8");
-		const configuration = record(JSON.parse(content));
+		const configuration = receiptRecord(JSON.parse(content));
 		const journal = await readRecord(join(await this.#directory("guests", signal), `${workerId}.${bootId}.json`));
 		if (
 			!isDeepStrictEqual(journal.value, configuration) ||
@@ -6056,7 +6059,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			name = lxdCodingMachineName(machine.machineId);
 		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
 		const bootId = boot.content.toString("utf8").trim();
-		if (boot.uid !== 0 || boot.gid !== 0 || !UUID.test(bootId)) throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
+		if (boot.uid !== 0 || boot.gid !== 0 || !UUID_PATTERN.test(bootId))
+			throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
 		// The helper this process runs as root in the guest is the pinned one, checked once per boot.
 		if (this.#helperBoots.get(machine.machineId) !== bootId) {
 			const helper = await client.readInstanceFile(
@@ -6085,7 +6089,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			const file = await client.readInstanceFile(machine.project, name, path, 65536, signal);
 			if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444)
 				throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
-			return record(JSON.parse(file.content.toString("utf8")));
+			return receiptRecord(JSON.parse(file.content.toString("utf8")));
 		};
 		const value = await published(CODING_GUEST_OBSERVATION);
 		if (
@@ -6097,11 +6101,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
 		const sessions: Observed["sessions"] = new Map();
 		for (const entry of value.sessions) {
-			const session = record(entry);
-			const lease = session.lease === null ? null : record(session.lease);
+			const session = receiptRecord(entry);
+			const lease = session.lease === null ? null : receiptRecord(session.lease);
 			if (
 				typeof session.workerId !== "string" ||
-				!UUID.test(session.workerId) ||
+				!UUID_PATTERN.test(session.workerId) ||
 				![session.cpuUsageUsec, session.ioBytes].every(
 					(count) => Number.isSafeInteger(count) && Number(count) >= 0,
 				) ||
@@ -6126,10 +6130,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				)
 					throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
 				running = commands.running.map((command: unknown) => {
-					const c = record(command);
+					const c = receiptRecord(command);
 					if (
 						typeof c.commandId !== "string" ||
-						!UUID.test(c.commandId) ||
+						!UUID_PATTERN.test(c.commandId) ||
 						!Number.isSafeInteger(c.turn) ||
 						Number(c.turn) < 1 ||
 						typeof c.command !== "string" ||
@@ -6520,11 +6524,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return outcomes;
 	}
 	#listed(value: unknown): ListedMachine {
-		const entry = record(value);
+		const entry = receiptRecord(value);
 		if (
 			entry.schema !== "qorpera.coding-machine-state/v1" ||
 			typeof entry.machineId !== "string" ||
-			!UUID.test(entry.machineId) ||
+			!UUID_PATTERN.test(entry.machineId) ||
 			(entry.kind !== "member" && entry.kind !== "session") ||
 			(entry.instanceSha256 !== null &&
 				(typeof entry.instanceSha256 !== "string" || !SHA.test(entry.instanceSha256))) ||
@@ -6542,12 +6546,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		)
 			throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
 		const attached = entry.attached.map((value) => {
-			const session = record(value);
+			const session = receiptRecord(value);
 			if (
 				typeof session.workerId !== "string" ||
-				!UUID.test(session.workerId) ||
+				!UUID_PATTERN.test(session.workerId) ||
 				typeof session.attachmentToken !== "string" ||
-				!UUID.test(session.attachmentToken)
+				!UUID_PATTERN.test(session.attachmentToken)
 			)
 				throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
 			return { workerId: session.workerId, attachmentToken: session.attachmentToken };
@@ -6555,7 +6559,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return {
 			machineId: entry.machineId,
 			kind: entry.kind,
-			binding: record(entry.binding),
+			binding: receiptRecord(entry.binding),
 			instanceSha256: entry.instanceSha256 as string | null,
 			live: entry.live as boolean,
 			reserved: entry.reserved as boolean,
@@ -6693,7 +6697,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				budget,
 			);
 		}
-		const slept = record(
+		const slept = receiptRecord(
 			await this.#call(
 				"qorpera_suspend_coding_machine",
 				{
@@ -6737,7 +6741,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const release = async (text: string) => {
 			let released: Record<string, unknown>;
 			try {
-				released = record(
+				released = receiptRecord(
 					await this.#call(
 						"qorpera_release_coding_machine",
 						{

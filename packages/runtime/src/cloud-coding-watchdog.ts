@@ -4,9 +4,8 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rmdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { CLOUD_CODING_GUEST_ROOTS, cloudCodingSessionLayout } from "@qorpera/contracts";
+import { CLOUD_CODING_GUEST_ROOTS, cloudCodingSessionLayout, UUID_PATTERN as UUID } from "@qorpera/contracts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
 // Execution authority is boot-local, not durable task data. A NAS outage must
 // never block the watchdog's lease read before it can stop command cgroups.

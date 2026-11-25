@@ -14,13 +14,13 @@ import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
+	closedFolderRecord,
 	commitUnitOutcome,
 	drainPlatformClaims,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
 	platformFolderProblem,
 	platformFolderProblemCode,
-	record,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -119,7 +119,7 @@ function resultsPath(value: unknown): string {
 /** A claim answer (`qorpera.coding-results-claim/v1`), checked field by field; null when nothing is due. */
 export function parseCodingResultsClaim(value: unknown): CodingResultsClaim | null {
 	if (value === null) return null;
-	const input = record(value, CLAIM_KEYS, "claim_invalid");
+	const input = closedFolderRecord(value, CLAIM_KEYS, "claim_invalid");
 	const whole = (field: unknown, min: number) =>
 		Number.isSafeInteger(field) && (field as number) >= min ? (field as number) : problem("claim_invalid");
 	const text = (field: unknown) => (typeof field === "string" ? field : problem("claim_invalid"));

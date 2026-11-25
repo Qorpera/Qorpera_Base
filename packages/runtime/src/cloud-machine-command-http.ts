@@ -8,8 +8,10 @@ import {
 	type CloudCodingCommandRead,
 	type CloudMachineCommandReceipt,
 	isCloudMachineFolderLost,
+	isRecord,
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandReceipt,
+	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
 import { CloudCommandPages } from "./cloud-command-pages.ts";
 import { MACHINE_ACCOUNT_FILL_REFUSALS } from "./cloud-machine-account-fill.ts";
@@ -43,7 +45,6 @@ import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./clou
 
 /** The machine tools' operation version: receipts and the executor's check both use it. */
 export const CLOUD_MACHINE_TOOL_VERSION = "qorpera.machine-tools/v1";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
@@ -223,7 +224,7 @@ export function isCloudMemberMachineScreenRefusal(code: unknown): code is CloudM
 	return (CLOUD_MEMBER_MACHINE_SCREEN_REFUSALS as readonly unknown[]).includes(code);
 }
 export function parseCloudMemberMachineScreenPeerRequest(value: unknown): CloudMemberMachineScreenPeerRequest {
-	const input = record(value, ["schema", "useId", "etag"]);
+	const input = closedObject(value, ["schema", "useId", "etag"]);
 	if (
 		input.schema !== CLOUD_MEMBER_MACHINE_SCREEN_HTTP_SCHEMA ||
 		typeof input.useId !== "string" ||
@@ -255,7 +256,7 @@ export function parseCloudMemberMachineScreenAnswer(
 	request: CloudMemberMachineScreenPeerRequest,
 	value: unknown,
 ): CloudMemberMachineScreen {
-	const answer = record(value, ["schema", "useId", "etag", "png"]);
+	const answer = closedObject(value, ["schema", "useId", "etag", "png"]);
 	if (
 		answer.schema !== CLOUD_MEMBER_MACHINE_SCREEN_SCHEMA ||
 		answer.useId !== request.useId ||
@@ -345,7 +346,7 @@ export function cloudMemberMachineActRecord(action: MachineScreenAction): Record
 	return { type: "type", length: [...action.text].length };
 }
 export function parseCloudMemberMachineActPeerRequest(value: unknown): CloudMemberMachineActPeerRequest {
-	const input = record(value, ["schema", "actionId", "action"]);
+	const input = closedObject(value, ["schema", "actionId", "action"]);
 	if (
 		input.schema !== CLOUD_MEMBER_MACHINE_ACT_HTTP_SCHEMA ||
 		typeof input.actionId !== "string" ||
@@ -371,7 +372,7 @@ export function parseCloudMemberMachineActAnswer(
 	request: CloudMemberMachineActPeerRequest,
 	value: unknown,
 ): CloudMemberMachineAct {
-	const answer = record(value, ["schema", "actionId", "exitCode"]);
+	const answer = closedObject(value, ["schema", "actionId", "exitCode"]);
 	if (
 		answer.schema !== CLOUD_MEMBER_MACHINE_ACT_SCHEMA ||
 		answer.actionId !== request.actionId ||
@@ -437,7 +438,7 @@ export function isCloudMemberMachineStartRefusal(code: unknown): code is CloudMe
 	return (CLOUD_MEMBER_MACHINE_START_REFUSALS as readonly unknown[]).includes(code);
 }
 export function parseCloudMemberMachineStartPeerRequest(value: unknown): CloudMemberMachineStartPeerRequest {
-	const input = record(value, ["schema", "startId"]);
+	const input = closedObject(value, ["schema", "startId"]);
 	if (
 		input.schema !== CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA ||
 		typeof input.startId !== "string" ||
@@ -457,7 +458,7 @@ export function parseCloudMemberMachineStartAnswer(
 	request: CloudMemberMachineStartPeerRequest,
 	value: unknown,
 ): CloudMemberMachineStart {
-	const answer = record(value, ["schema", "startId", "outcome"]);
+	const answer = closedObject(value, ["schema", "startId", "outcome"]);
 	if (
 		answer.schema !== CLOUD_MEMBER_MACHINE_START_SCHEMA ||
 		answer.startId !== request.startId ||
@@ -530,7 +531,7 @@ export function isCloudMemberMachinePointerPosition(x: unknown, y: unknown): boo
 	);
 }
 export function parseCloudMemberMachinePointerPeerRequest(value: unknown): CloudMemberMachinePointerPeerRequest {
-	const input = record(value, ["schema", "passId", "x", "y"]);
+	const input = closedObject(value, ["schema", "passId", "x", "y"]);
 	if (
 		input.schema !== CLOUD_MEMBER_MACHINE_POINTER_HTTP_SCHEMA ||
 		typeof input.passId !== "string" ||
@@ -556,7 +557,7 @@ export function parseCloudMemberMachinePointerAnswer(
 	request: CloudMemberMachinePointerPeerRequest,
 	value: unknown,
 ): CloudMemberMachinePointerMove {
-	const answer = record(value, ["schema", "passId", "moved"]);
+	const answer = closedObject(value, ["schema", "passId", "moved"]);
 	if (
 		answer.schema !== CLOUD_MEMBER_MACHINE_POINTER_SCHEMA ||
 		answer.passId !== request.passId ||
@@ -579,7 +580,7 @@ export interface CloudMemberMachineStreamPeerRequest {
 	readonly epoch: number | null;
 }
 export function parseCloudMemberMachineStreamPeerRequest(value: unknown): CloudMemberMachineStreamPeerRequest {
-	const input = record(value, ["schema", "passId", "epoch"]);
+	const input = closedObject(value, ["schema", "passId", "epoch"]);
 	if (
 		input.schema !== CLOUD_MEMBER_MACHINE_STREAM_HTTP_SCHEMA ||
 		typeof input.passId !== "string" ||
@@ -899,15 +900,9 @@ export type CloudMachineWakeHttpRequest = Readonly<{
 	input: { wait: boolean };
 }>;
 
-function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.keys(value).sort().join() !== [...keys].sort().join()
-	)
-		throw new Error(ERROR);
-	return value as Record<string, unknown>;
+function closedObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
+	if (!isRecord(value) || Object.keys(value).sort().join() !== [...keys].sort().join()) throw new Error(ERROR);
+	return value;
 }
 /** The first line of a command, for people and notifications (300 characters at most). */
 export function cloudMachineCommandHead(command: string): string {
@@ -915,19 +910,19 @@ export function cloudMachineCommandHead(command: string): string {
 	return head.length > 300 ? `${head.slice(0, 297)}...` : head;
 }
 export function parseCloudMachineCommandHttpRequest(value: unknown, action: string): CloudMachineCommandHttpRequest {
-	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
+	const input = closedObject(value, ["schema", "binding", "scope", "action", "input"]);
 	if (
 		input.schema !== "qorpera.machine-command-http/v1" ||
 		input.action !== action ||
 		!["start", "read", "cancel"].includes(action)
 	)
 		throw new Error(ERROR);
-	const scope = record(input.scope, ["machineId"]);
+	const scope = closedObject(input.scope, ["machineId"]);
 	if (typeof scope.machineId !== "string" || !UUID.test(scope.machineId)) throw new Error(ERROR);
 	const body =
 		action === "read"
 			? { ...parseCloudCodingCommandRead(input.input) }
-			: record(
+			: closedObject(
 					input.input,
 					action === "start" ? ["commandId", "inputSha256", "command", "timeoutMs", "notify"] : ["commandId"],
 				);
@@ -955,9 +950,9 @@ export function parseCloudMachineCommandHttpRequest(value: unknown, action: stri
 	}) as CloudMachineCommandHttpRequest;
 }
 export function parseCloudMachineWakeHttpRequest(value: unknown): CloudMachineWakeHttpRequest {
-	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
-	const scope = record(input.scope, ["machineId"]);
-	const body = record(input.input, ["wait"]);
+	const input = closedObject(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = closedObject(input.scope, ["machineId"]);
+	const body = closedObject(input.input, ["wait"]);
 	if (
 		input.schema !== "qorpera.machine-command-http/v1" ||
 		input.action !== "wake" ||
@@ -975,9 +970,9 @@ export function parseCloudMachineWakeHttpRequest(value: unknown): CloudMachineWa
 	});
 }
 export function parseCloudMachineCodingValueHttpRequest(value: unknown): CloudMachineCodingValueHttpRequest {
-	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
-	const scope = record(input.scope, ["machineId"]);
-	const body = record(input.input, ["commandId", "envelope"]);
+	const input = closedObject(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = closedObject(input.scope, ["machineId"]);
+	const body = closedObject(input.input, ["commandId", "envelope"]);
 	if (
 		input.schema !== "qorpera.machine-command-http/v1" ||
 		input.action !== "coding_value" ||
@@ -1009,8 +1004,8 @@ function validAppHealthPath(value: unknown): value is string {
 }
 
 export function parseCloudMachineAppHttpRequest(value: unknown): CloudMachineAppHttpRequest {
-	const req = record(value, ["schema", "binding", "scope", "action", "input"]);
-	const scope = record(req.scope, ["machineId"]);
+	const req = closedObject(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = closedObject(req.scope, ["machineId"]);
 	if (
 		req.schema !== "qorpera.machine-command-http/v1" ||
 		req.action !== "app" ||
@@ -1068,10 +1063,10 @@ export function parseCloudMachineAppHttpRequest(value: unknown): CloudMachineApp
 			...(raw.cwd !== undefined ? { cwd: raw.cwd } : {}),
 		});
 	} else if (op === "stop") {
-		record(raw, ["op", "receiptId", "envelope", "slug"]);
+		closedObject(raw, ["op", "receiptId", "envelope", "slug"]);
 		input = Object.freeze({ op: "stop", ...validReceipt(raw.receiptId, raw.envelope), slug });
 	} else if (op === "health") {
-		record(raw, ["op", "slug"]);
+		closedObject(raw, ["op", "slug"]);
 		input = Object.freeze({ op: "health", slug });
 	} else if (op === "reload") {
 		const allowed = new Set(["op", "receiptId", "envelope", "slug", "port", "healthPath"]);
@@ -1234,9 +1229,9 @@ export function parseCloudMachineAppAnswer(request: CloudMachineAppHttpRequest, 
 }
 
 export function parseCloudMachineAccountFillHttpRequest(value: unknown): CloudMachineAccountFillHttpRequest {
-	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
-	const scope = record(input.scope, ["machineId"]);
-	const body = record(input.input, ["commandId", "envelope", "idempotencyKey"]);
+	const input = closedObject(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = closedObject(input.scope, ["machineId"]);
+	const body = closedObject(input.input, ["commandId", "envelope", "idempotencyKey"]);
 	if (
 		input.schema !== "qorpera.machine-command-http/v1" ||
 		input.action !== "account_fill" ||
@@ -1264,7 +1259,7 @@ export function parseCloudMachineAccountFillAnswer(
 	request: CloudMachineAccountFillHttpRequest,
 	value: unknown,
 ): CloudMachineAccountFillAnswer {
-	const answer = record(value, ["schema", "commandId", "filled"]);
+	const answer = closedObject(value, ["schema", "commandId", "filled"]);
 	if (
 		answer.schema !== CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA ||
 		answer.commandId !== request.input.commandId ||
@@ -1282,8 +1277,8 @@ export function parseCloudMachineCodingValueAnswer(
 	request: CloudMachineCodingValueHttpRequest,
 	value: unknown,
 ): CloudMachineCodingValueAnswer {
-	const answer = record(value, ["schema", "commandId", "box"]);
-	const box = record(answer.box, ["schema", "ephemeralPublicKey", "iv", "tag", "ciphertext"]);
+	const answer = closedObject(value, ["schema", "commandId", "box"]);
+	const box = closedObject(answer.box, ["schema", "ephemeralPublicKey", "iv", "tag", "ciphertext"]);
 	if (
 		answer.schema !== CLOUD_MACHINE_CODING_VALUE_SCHEMA ||
 		answer.commandId !== request.input.commandId ||
@@ -1297,9 +1292,9 @@ export function parseCloudMachineCodingValueAnswer(
 	});
 }
 export function parseCloudMachineScreenHttpRequest(value: unknown): CloudMachineScreenHttpRequest {
-	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
-	const scope = record(input.scope, ["machineId"]);
-	const body = record(input.input, ["commandId", "envelope", "settleMs", "look"]);
+	const input = closedObject(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = closedObject(input.scope, ["machineId"]);
+	const body = closedObject(input.input, ["commandId", "envelope", "settleMs", "look"]);
 	if (
 		input.schema !== "qorpera.machine-command-http/v1" ||
 		input.action !== "screen" ||
@@ -1337,7 +1332,7 @@ export function parseCloudMachineScreenAnswer(
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(ERROR);
 	const held = "heldBack" in value;
 	const touched = "memberTouched" in value;
-	const answer = record(value, [
+	const answer = closedObject(value, [
 		"schema",
 		"commandId",
 		"header",
@@ -1600,7 +1595,7 @@ export function createHttpCloudMachineCommandGateway(options: {
 							void response.body?.cancel().catch(() => undefined);
 							throw new Error(ERROR);
 						}
-						const answer = record(
+						const answer = closedObject(
 							JSON.parse(
 								new TextDecoder("utf8", { fatal: true }).decode(
 									await readBoundedCloudResponse(response, 4096, requestSignal),

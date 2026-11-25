@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
 import {
 	CLOUD_AGENT_NO_FINAL_SEND_CODE,
@@ -2343,7 +2344,7 @@ it("raises one typed card for the member, appended before the final sentence, an
 	const [request, card] = f.control.appendInteractionRequest.mock.calls[0]!;
 	expect(request.authority.runId).toBe(f.binding.runId);
 	expect(card).toEqual({
-		eventId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/),
+		eventId: expect.stringMatching(UUID_PATTERN),
 		data: {
 			schema: "qorpera.interaction/v1",
 			surface: "question",
@@ -2356,6 +2357,8 @@ it("raises one typed card for the member, appended before the final sentence, an
 			},
 		},
 	});
+	expect(card.eventId[14]).toBe("4");
+	expect(card.eventId[19]).toBe("a");
 	// The retry reuses the same event id, so the kernel sees one card.
 	expect(f.control.appendInteractionRequest.mock.calls[1]![1].eventId).toBe(card.eventId);
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);

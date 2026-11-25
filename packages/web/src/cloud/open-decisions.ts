@@ -1,7 +1,7 @@
 import type { Cloud } from "./client.ts";
 import { asksAgain, type DecisionRound, isGmailDraft, parseInteractionRequest, roundNote } from "./interactions.ts";
 import type { OpenQuestion } from "./open-questions.ts";
-import { array, boundedInteger, CloudShapeError, jsonValue, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, jsonValue, timestamp } from "./parse.ts";
 import { type ActionReviewCard, actionReviewCard } from "./review-rules.ts";
 import type { JsonValue } from "./types.ts";
 
@@ -74,7 +74,7 @@ function parseVotes(value: unknown): DecisionVote[] {
 		try {
 			return [
 				{
-					userId: uuid(vote.userId, "decision vote member"),
+					userId: cloudUuid(vote.userId, "decision vote member"),
 					...(choice === undefined ? {} : { choice }),
 					...(note === undefined ? {} : { note }),
 					updatedAt: timestamp(vote.updatedAt, "decision vote time"),
@@ -87,15 +87,15 @@ function parseVotes(value: unknown): DecisionVote[] {
 }
 
 export function parseOpenDecisions(value: unknown): OpenDecision[] {
-	const input = record(value, "open decisions");
+	const input = cloudRecord(value, "open decisions");
 	const company = input.schema === COMPANY_OPEN_DECISIONS_SCHEMA;
 	if (!company && input.schema !== OPEN_DECISIONS_SCHEMA) throw new CloudShapeError("open decisions");
 	return array(input.decisions, "open decisions").flatMap((value): OpenDecision[] => {
-		const item = record(value, "open decision");
+		const item = cloudRecord(value, "open decision");
 		const shared = {
-			sessionId: uuid(item.sessionId, "open decision conversation"),
-			interactionId: uuid(item.id, "open decision id").toLowerCase(),
-			staffAgentId: uuid(item.staffAgentId, "open decision agent"),
+			sessionId: cloudUuid(item.sessionId, "open decision conversation"),
+			interactionId: cloudUuid(item.id, "open decision id").toLowerCase(),
+			staffAgentId: cloudUuid(item.staffAgentId, "open decision agent"),
 			createdAt: timestamp(item.createdAt, "open decision time"),
 			...(company && item.canAnswer !== true ? { othersAnswer: true as const } : {}),
 			...(company ? { votes: parseVotes(item.votes) } : {}),
@@ -120,7 +120,7 @@ export function parseOpenDecisions(value: unknown): OpenDecision[] {
 				kind,
 				...shared,
 				sequence: boundedInteger(item.sequence, "open decision sequence", 1, Number.MAX_SAFE_INTEGER),
-				actorUserId: uuid(item.answererUserId, "open decision member"),
+				actorUserId: cloudUuid(item.answererUserId, "open decision member"),
 				request,
 				...(round ? { round } : {}),
 			},

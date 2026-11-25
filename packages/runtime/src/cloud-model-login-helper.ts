@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import type { ClaudeLoginRead, ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import {
@@ -59,7 +60,6 @@ const SIGN_IN_CODE = /^[\x21-\x7e]{8,512}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const CLAUDE_CHECK_ANSWER_MS = 30_000;
 const CLAUDE_CHECK_CLIENT_WAIT_MS = CLAUDE_CHECK_ANSWER_MS + 5_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CLAUDE_READ_ANSWER_MS = 22_000;
 const CLAUDE_READ_CLIENT_WAIT_MS = CLAUDE_READ_ANSWER_MS + 3_000;
 const CLAUDE_RESET_ANSWER_MS = 70_000;

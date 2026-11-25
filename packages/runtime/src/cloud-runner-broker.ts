@@ -1,9 +1,13 @@
 import type { CloudRunnerCapability, CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
-import type { JsonValue } from "@qorpera/contracts";
+import {
+	isRecord,
+	isUuidAnyCase,
+	type JsonValue,
+	SHA256_HEX_PATTERN,
+	UUID_ANY_CASE_PATTERN as UUID_PATTERN,
+} from "@qorpera/contracts";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_OBJECTS = 100;
@@ -196,10 +200,9 @@ export interface CloudRunnerJobBrokerOptions {
 	start?: CloudRunnerStart;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value))
-		throw new Error(`Runner broker returned invalid ${label}`);
-	return value as Record<string, unknown>;
+function brokerRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(`Runner broker returned invalid ${label}`);
+	return value;
 }
 
 function array(value: unknown, label: string, maximum = 500): unknown[] {
@@ -207,15 +210,15 @@ function array(value: unknown, label: string, maximum = 500): unknown[] {
 	return value;
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+function brokerUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) {
 		throw new Error(`Runner broker returned invalid ${label}`);
 	}
 	return value;
 }
 
-function sha256(value: unknown, label: string): string {
-	if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
+function brokerSha256(value: unknown, label: string): string {
+	if (typeof value !== "string" || !SHA256_HEX_PATTERN.test(value)) {
 		throw new Error(`Runner broker returned invalid ${label}`);
 	}
 	return value;
@@ -253,7 +256,7 @@ function optionalTimestamp(value: unknown, label: string): string | undefined {
 }
 
 function optionalUuid(value: unknown, label: string): string | undefined {
-	return value === null || value === undefined ? undefined : uuid(value, label);
+	return value === null || value === undefined ? undefined : brokerUuid(value, label);
 }
 
 function capability(value: unknown): CloudRunnerCapability {
@@ -272,7 +275,7 @@ function json(value: unknown, label: string): JsonValue {
 }
 
 function parseBrokerJob(value: unknown): CloudRunnerJob {
-	const input = record(value, "job");
+	const input = brokerRecord(value, "job");
 	if (input.status !== "leased") throw new Error("Runner broker returned an inactive job");
 	const payload = json(input.payload, "job payload");
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -290,28 +293,28 @@ function parseBrokerJob(value: unknown): CloudRunnerJob {
 		throw new Error("Runner broker returned an already published job");
 	}
 	return {
-		jobId: uuid(input.job_id, "job id"),
+		jobId: brokerUuid(input.job_id, "job id"),
 		...(optionalUuid(input.run_id, "job execution run id")
-			? { runId: uuid(input.run_id, "job execution run id") }
+			? { runId: brokerUuid(input.run_id, "job execution run id") }
 			: {}),
-		profileId: uuid(input.profile_id, "job profile id"),
-		environmentId: uuid(input.environment_id, "job environment id"),
+		profileId: brokerUuid(input.profile_id, "job profile id"),
+		environmentId: brokerUuid(input.environment_id, "job environment id"),
 		...(sessionId ? { sessionId } : {}),
 		...(optionalUuid(input.substrate_version_id, "job substrate id")
-			? { substrateVersionId: uuid(input.substrate_version_id, "job substrate id") }
+			? { substrateVersionId: brokerUuid(input.substrate_version_id, "job substrate id") }
 			: {}),
-		clientJobId: uuid(input.client_job_id, "job client id"),
+		clientJobId: brokerUuid(input.client_job_id, "job client id"),
 		...(optionalUuid(input.assignment_id, "job assignment id")
-			? { assignmentId: uuid(input.assignment_id, "job assignment id") }
+			? { assignmentId: brokerUuid(input.assignment_id, "job assignment id") }
 			: {}),
 		requiredCapability: capability(input.required_capability),
 		jobType,
 		payload,
 		status: "leased",
 		attemptCount: integer(input.attempt_count, "job attempt count", 1, 1000),
-		runnerId: uuid(input.runner_id, "job runner id"),
+		runnerId: brokerUuid(input.runner_id, "job runner id"),
 		outputArtifactCount: 0,
-		createdByUserId: uuid(input.created_by_user_id, "job creator id"),
+		createdByUserId: brokerUuid(input.created_by_user_id, "job creator id"),
 		createdAt: timestamp(input.created_at, "job creation time"),
 		...(startedAt ? { startedAt } : {}),
 		leaseExpiresAt: timestamp(input.lease_expires_at, "job lease expiry"),
@@ -319,7 +322,7 @@ function parseBrokerJob(value: unknown): CloudRunnerJob {
 }
 
 function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
-	const input = record(value, "execution run");
+	const input = brokerRecord(value, "execution run");
 	if (
 		input.source_kind !== "session_turn" &&
 		input.source_kind !== "wake" &&
@@ -339,9 +342,11 @@ function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
 	if (workerClass !== "managed_sandbox" && workerClass !== "company_computer") {
 		throw new Error("Runner broker returned invalid worker class");
 	}
-	const inputIds = array(input.input_ids, "execution input ids", 32).map((value) => uuid(value, "execution input id"));
+	const inputIds = array(input.input_ids, "execution input ids", 32).map((value) =>
+		brokerUuid(value, "execution input id"),
+	);
 	const reviewerStaffIds = array(input.reviewer_staff_ids, "execution reviewer staff ids", 20).map((value) =>
-		uuid(value, "execution reviewer staff id"),
+		brokerUuid(value, "execution reviewer staff id"),
 	);
 	const reviewPolicyKey =
 		input.review_policy_key === null || input.review_policy_key === undefined
@@ -387,38 +392,38 @@ function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
 		throw new Error("Runner broker returned a run with both a snapshot and a folder sequence");
 	}
 	return {
-		runId: uuid(input.run_id, "execution run id"),
-		profileId: uuid(input.profile_id, "execution profile id"),
-		environmentId: uuid(input.environment_id, "execution environment id"),
+		runId: brokerUuid(input.run_id, "execution run id"),
+		profileId: brokerUuid(input.profile_id, "execution profile id"),
+		environmentId: brokerUuid(input.environment_id, "execution environment id"),
 		sourceKind: input.source_kind,
-		sourceId: uuid(input.source_id, "execution source id"),
+		sourceId: brokerUuid(input.source_id, "execution source id"),
 		...(optionalUuid(input.session_id, "execution session id")
-			? { sessionId: uuid(input.session_id, "execution session id") }
+			? { sessionId: brokerUuid(input.session_id, "execution session id") }
 			: {}),
-		jobId: uuid(input.job_id, "execution job id"),
+		jobId: brokerUuid(input.job_id, "execution job id"),
 		...((input.substrate_version_id === null || input.substrate_version_id === undefined) &&
 		(input.company_snapshot_id === null || input.company_snapshot_id === undefined)
 			? {}
 			: {
-					substrateVersionId: uuid(input.substrate_version_id, "execution substrate id"),
-					companySnapshotId: uuid(input.company_snapshot_id, "execution Company File snapshot id"),
+					substrateVersionId: brokerUuid(input.substrate_version_id, "execution substrate id"),
+					companySnapshotId: brokerUuid(input.company_snapshot_id, "execution Company File snapshot id"),
 				}),
 		...(input.company_seq === null || input.company_seq === undefined
 			? {}
 			: { companySeq: integer(input.company_seq, "execution folder sequence", 0, Number.MAX_SAFE_INTEGER) }),
-		staffAgentId: uuid(input.staff_agent_id, "execution staff agent id"),
+		staffAgentId: brokerUuid(input.staff_agent_id, "execution staff agent id"),
 		staffVersion: integer(input.staff_version, "execution staff version", 1, Number.MAX_SAFE_INTEGER),
 		inputIds,
-		sponsorBindingId: uuid(input.sponsor_binding_id, "execution sponsor binding id"),
+		sponsorBindingId: brokerUuid(input.sponsor_binding_id, "execution sponsor binding id"),
 		sponsorVersion: integer(input.sponsor_version, "execution sponsor version", 1, Number.MAX_SAFE_INTEGER),
 		requiredCapability: capability(input.required_capability),
 		jobType,
-		payloadSha256: sha256(input.payload_sha256, "execution payload hash"),
+		payloadSha256: brokerSha256(input.payload_sha256, "execution payload hash"),
 		publicationMode: input.publication_mode,
 		...(reviewPolicyKey ? { reviewPolicyKey } : {}),
 		reviewerStaffIds,
 		...(optionalUuid(input.logical_computer_id, "execution logical computer id")
-			? { logicalComputerId: uuid(input.logical_computer_id, "execution logical computer id") }
+			? { logicalComputerId: brokerUuid(input.logical_computer_id, "execution logical computer id") }
 			: {}),
 		...(computeIdentityId ? { computeIdentityId, ...computeOwnership } : {}),
 		workerClass,
@@ -429,10 +434,10 @@ function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
 			Number.MAX_SAFE_INTEGER,
 		),
 		status: text(input.status, "execution status", 64),
-		createdByUserId: uuid(input.created_by_user_id, "execution creator id"),
-		requestedByUserId: uuid(input.requested_by_user_id ?? input.created_by_user_id, "execution requester id"),
+		createdByUserId: brokerUuid(input.created_by_user_id, "execution creator id"),
+		requestedByUserId: brokerUuid(input.requested_by_user_id ?? input.created_by_user_id, "execution requester id"),
 		...(optionalUuid(input.sponsored_by_user_id, "execution sponsor user id")
-			? { sponsoredByUserId: uuid(input.sponsored_by_user_id, "execution sponsor user id") }
+			? { sponsoredByUserId: brokerUuid(input.sponsored_by_user_id, "execution sponsor user id") }
 			: {}),
 		createdAt: timestamp(input.created_at, "execution creation time"),
 	};
@@ -476,7 +481,7 @@ function parseComputeOwnership(
 }
 
 function parseExecutionSponsor(value: unknown): CloudRunnerExecutionSponsor {
-	const input = record(value, "execution sponsor");
+	const input = brokerRecord(value, "execution sponsor");
 	if (
 		input.kind !== "member_connection" &&
 		input.kind !== "company_service_account" &&
@@ -497,10 +502,10 @@ function parseExecutionSponsor(value: unknown): CloudRunnerExecutionSponsor {
 		throw new Error("Runner broker returned invalid execution sponsor");
 	}
 	return {
-		bindingId: uuid(input.binding_id, "execution sponsor binding id"),
+		bindingId: brokerUuid(input.binding_id, "execution sponsor binding id"),
 		version: integer(input.version, "execution sponsor version", 1, Number.MAX_SAFE_INTEGER),
 		kind: input.kind,
-		providerConnectionId: uuid(input.provider_connection_id, "execution provider connection id"),
+		providerConnectionId: brokerUuid(input.provider_connection_id, "execution provider connection id"),
 		providerConnectionVersion: integer(
 			input.provider_connection_version,
 			"execution provider connection version",
@@ -515,7 +520,7 @@ function parseExecutionSponsor(value: unknown): CloudRunnerExecutionSponsor {
 }
 
 function parseNativeAuthority(value: unknown): CloudRunnerNativeAuthority {
-	const input = record(value, "native provider authority");
+	const input = brokerRecord(value, "native provider authority");
 	if (
 		input.authentication_mode !== "native_subscription" ||
 		(input.native_harness !== "codex-cli" && input.native_harness !== "claude-code")
@@ -524,7 +529,7 @@ function parseNativeAuthority(value: unknown): CloudRunnerNativeAuthority {
 	}
 	const provider = text(input.provider, "native provider", 64);
 	if (!TYPE_PATTERN.test(provider)) throw new Error("Runner broker returned invalid native provider");
-	const nativeModel = record(input.model, "native model authority");
+	const nativeModel = brokerRecord(input.model, "native model authority");
 	if (nativeModel.provider !== provider) throw new Error("Runner broker returned a model for another provider");
 	const computeOwnership = parseComputeOwnership(
 		input.compute_identity_ownership_kind,
@@ -546,19 +551,19 @@ function parseNativeAuthority(value: unknown): CloudRunnerNativeAuthority {
 		throw new Error("Runner broker returned mismatched native credential ownership");
 	}
 	return {
-		leaseId: uuid(input.lease_id, "native provider lease id"),
-		runId: uuid(input.run_id, "native provider run id"),
-		providerConnectionId: uuid(input.provider_connection_id, "native provider connection id"),
+		leaseId: brokerUuid(input.lease_id, "native provider lease id"),
+		runId: brokerUuid(input.run_id, "native provider run id"),
+		providerConnectionId: brokerUuid(input.provider_connection_id, "native provider connection id"),
 		providerConnectionVersion: integer(
 			input.provider_connection_version,
 			"native provider connection version",
 			1,
 			Number.MAX_SAFE_INTEGER,
 		),
-		credentialCapsuleId: uuid(input.credential_capsule_id, "native credential capsule id"),
+		credentialCapsuleId: brokerUuid(input.credential_capsule_id, "native credential capsule id"),
 		encryptedCapsuleReference: text(input.encrypted_capsule_reference, "native credential capsule reference", 512),
-		attestationPolicySha256: sha256(input.attestation_policy_sha256, "native credential attestation policy"),
-		computeIdentityId: uuid(input.compute_identity_id, "native compute identity id"),
+		attestationPolicySha256: brokerSha256(input.attestation_policy_sha256, "native credential attestation policy"),
+		computeIdentityId: brokerUuid(input.compute_identity_id, "native compute identity id"),
 		...computeOwnership,
 		credentialOwnershipKind: credentialOwnership.computeIdentityOwnershipKind,
 		...(credentialOwnership.computeIdentityOwnerUserId
@@ -571,8 +576,8 @@ function parseNativeAuthority(value: unknown): CloudRunnerNativeAuthority {
 		authenticationMode: input.authentication_mode,
 		nativeHarness: input.native_harness,
 		model: text(nativeModel.model, "native model", 160),
-		runnerId: uuid(input.runner_id, "native provider runner id"),
-		assignmentId: uuid(input.assignment_id, "native provider assignment id"),
+		runnerId: brokerUuid(input.runner_id, "native provider runner id"),
+		assignmentId: brokerUuid(input.assignment_id, "native provider assignment id"),
 		expiresAt: timestamp(input.expires_at, "native provider lease expiry"),
 	};
 }
@@ -581,11 +586,11 @@ function parseNativeAuthority(value: unknown): CloudRunnerNativeAuthority {
  * (folder core C3, P23). A description naming a substrate (the whole-tree lane's, or a version, snapshot, proposal
  * snapshot, artifact index, Company File output limits, or a substrate on the job or the run) is refused. */
 export function parseCloudRunnerBrokerDescription(value: unknown): CloudRunnerBrokerDescription {
-	const input = record(value, "description");
+	const input = brokerRecord(value, "description");
 	if (input.company_runtime !== "company-path-v1") {
 		throw new Error("Runner broker returned an invalid Company File runtime selection");
 	}
-	const limits = record(input.output_limits, "output limits");
+	const limits = brokerRecord(input.output_limits, "output limits");
 	if (limits.root_contract !== "qorpera.object/v1") {
 		throw new Error("Runner broker returned unsupported output root contract");
 	}
@@ -667,8 +672,8 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		assignmentId: string,
 		leaseSeconds: number,
 	): Promise<unknown> {
-		uuid(runId, "native authority run id");
-		uuid(assignmentId, "native authority assignment id");
+		brokerUuid(runId, "native authority run id");
+		brokerUuid(assignmentId, "native authority assignment id");
 		integer(leaseSeconds, "native authority lease seconds", 30, 900);
 		return this.#post(authority, { action: "native_authority", runId, assignmentId, leaseSeconds });
 	}
@@ -678,7 +683,7 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		leaseId: string,
 		status: "released" | "revoked" | "expired",
 	): Promise<unknown> {
-		uuid(leaseId, "native authority lease id");
+		brokerUuid(leaseId, "native authority lease id");
 		return this.#post(authority, { action: "release_native_authority", leaseId, status });
 	}
 
@@ -687,7 +692,7 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		leaseId: string,
 		leaseSeconds: number,
 	): Promise<unknown> {
-		uuid(leaseId, "native authority lease id");
+		brokerUuid(leaseId, "native authority lease id");
 		integer(leaseSeconds, "native authority lease seconds", 30, 900);
 		return this.#post(authority, { action: "renew_native_authority", leaseId, leaseSeconds });
 	}
@@ -738,7 +743,7 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		} finally {
 			cleanup();
 		}
-		return record(value, "response").value;
+		return brokerRecord(value, "response").value;
 	}
 
 	/* Every broker action proxies through an Edge Function whose upstream can
@@ -942,7 +947,7 @@ export class CloudRunnerJobBroker {
 		const release = this.#options.transport.releaseNativeAuthority;
 		if (!release) throw new Error("Runner broker does not support native subscription authority release");
 		const leaseId = this.#nativeAuthority.leaseId;
-		const value = record(
+		const value = brokerRecord(
 			await release.call(this.#options.transport, this.#releaseAuthority(signal), leaseId, status),
 			"native provider authority release",
 		);
@@ -957,7 +962,7 @@ export class CloudRunnerJobBroker {
 		if (!current) throw new Error("Runner has no native subscription authority to renew");
 		const renew = this.#options.transport.renewNativeAuthority;
 		if (!renew) throw new Error("Runner broker does not support native subscription authority renewal");
-		const value = record(
+		const value = brokerRecord(
 			await renew.call(this.#options.transport, this.#authority(), current.leaseId, leaseSeconds),
 			"native provider authority renewal",
 		);

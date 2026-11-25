@@ -1,5 +1,5 @@
 import { POSTGRES_UUID_PATTERN, SHA256_HEX_PATTERN } from "@qorpera/contracts";
-import { array, boundedInteger, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, cloudRecord, cloudUuid, timestamp } from "./parse.ts";
 
 /* A member's picture is a private storage object named after its content:
  * <account UUID>/<sha256>.<webp|jpg|png> (migration 20260924150000). The cloud
@@ -51,8 +51,8 @@ function objectName(value: unknown, label: string, userId?: string): string {
 
 export function parseMemberPictures(value: unknown): MemberPicture[] {
 	return array(value, "member pictures").map((item) => {
-		const input = record(item, "member picture");
-		const userId = uuid(input.user_id, "picture account id");
+		const input = cloudRecord(item, "member picture");
+		const userId = cloudUuid(input.user_id, "picture account id");
 		return {
 			userId,
 			objectName: objectName(input.object_name, "picture name", userId),
@@ -62,7 +62,7 @@ export function parseMemberPictures(value: unknown): MemberPicture[] {
 }
 
 export function parseMemberPictureChange(value: unknown): MemberPictureChange {
-	const input = record(value, "picture change");
+	const input = cloudRecord(value, "picture change");
 	const previous = input.previous_object_name;
 	if (previous === null || previous === undefined) return {};
 	return { previousObjectName: objectName(previous, "replaced picture name") };
@@ -70,7 +70,7 @@ export function parseMemberPictureChange(value: unknown): MemberPictureChange {
 
 export function parseMemberPictureObjects(value: unknown): MemberPictureObject[] {
 	return array(value, "picture folder").map((item) => {
-		const input = record(item, "picture object");
+		const input = cloudRecord(item, "picture object");
 		return {
 			objectName: objectName(input.object_name, "picture object name"),
 			createdAt: timestamp(input.created_at, "picture object time"),

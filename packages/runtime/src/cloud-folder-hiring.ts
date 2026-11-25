@@ -16,7 +16,7 @@ import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderFileEntry,
 	type CloudCompanyFolderUnit,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -494,8 +494,8 @@ export class CloudFolderHiring {
 						name: hire.name,
 						role: hire.role,
 						figure: hire.figure,
-						jobDescriptionSha256: sha256(Buffer.from(hire.jobDescription)),
-						firstAssignmentSha256: sha256(Buffer.from(hire.firstAssignment)),
+						jobDescriptionSha256: sha256Hex(Buffer.from(hire.jobDescription)),
+						firstAssignmentSha256: sha256Hex(Buffer.from(hire.firstAssignment)),
 					})),
 				},
 				target: { agentIds: team.map(({ agentId }) => agentId) },

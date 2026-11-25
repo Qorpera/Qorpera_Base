@@ -1,5 +1,5 @@
 import { POSTGRES_UUID_PATTERN, SHA256_HEX_PATTERN } from "@qorpera/contracts";
-import { array, record, timestamp, uuid } from "./parse.ts";
+import { array, cloudRecord, cloudUuid, timestamp } from "./parse.ts";
 
 /* A company's logo (migration 20260930696000). The official logo is the company folder's QorperaOS/brand/logo.svg, which
  * the company's Branding & Identity agent draws and an owner or admin can replace. Everyone sees it through a PNG drawn
@@ -60,8 +60,8 @@ function sha(value: unknown, label: string): string | null {
 
 export function parseCompanyLogos(value: unknown): CompanyLogo[] {
 	return array(value, "company logos").map((item) => {
-		const input = record(item, "company logo");
-		const profileId = uuid(input.profile_id, "logo company id");
+		const input = cloudRecord(item, "company logo");
+		const profileId = cloudUuid(input.profile_id, "logo company id");
 		const objectName = input.object_name ?? null;
 		if (objectName !== null && (typeof objectName !== "string" || !isCompanyLogoName(objectName, profileId)))
 			throw new Error("Invalid logo name");
@@ -76,7 +76,7 @@ export function parseCompanyLogos(value: unknown): CompanyLogo[] {
 }
 
 export function parseCompanyLogoChange(value: unknown): CompanyLogoChange {
-	const input = record(value, "logo change");
+	const input = cloudRecord(value, "logo change");
 	const previous = input.previous_object_name;
 	if (previous === null || previous === undefined) return {};
 	if (typeof previous !== "string" || !isCompanyLogoName(previous)) throw new Error("Invalid previous logo name");

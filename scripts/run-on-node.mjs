@@ -128,6 +128,7 @@ export const DISK_TIDY_EVERY_MINUTES = 60;
 export const TREE_KEEP_COUNT = 12;
 export const LOW_DISK_MIB = 15 * 1024;
 export const TIDY_DISK_MIB = 25 * 1024;
+export const AUTO_PARTS_MIN_WORK = 250;
 export const WAKE_PROJECT = "testmachines";
 const WAKE_POLL_MS = 3_000;
 const WAKE_TIMEOUT_MS = 90_000;
@@ -471,6 +472,7 @@ export function pruneScript() {
 
 export function diskTidyLine({
 	trees = `${HOME}/trees`,
+	runs = `${HOME}/runs`,
 	keepTrees = TREE_KEEP_COUNT,
 	lowDiskMiB = TIDY_DISK_MIB,
 	sudo = "sudo -n ",
@@ -478,8 +480,10 @@ export function diskTidyLine({
 	everyMinutes = DISK_TIDY_EVERY_MINUTES,
 } = {}) {
 	const everySeconds = everyMinutes * 60;
-	const capTrees = `avail=$(df -Pm / | awk 'NR==2 {print $4}'); if [ -n "$avail" ] && [ "$avail" -lt ${lowDiskMiB} ]; then ls -t ${trees}/*.lock 2>/dev/null | tail -n +${keepTrees + 1} | while read -r l; do flock -n "$l" ${sudo}rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done; fi`;
-	return `if [ ! -e ${stamp} ] || [ $(( $(date +%s) - $(stat -c %Y ${stamp} 2>/dev/null || echo 0) )) -ge ${everySeconds} ]; then touch ${stamp}; docker volume prune -f >/dev/null 2>&1 || true; ${capTrees}; fi`;
+	const reapRuns = (age) =>
+		`dead_cut=$(date -u -d '-${age}' +%Y%m%dT%H%M%S); live=$(ps -eww -o args= 2>/dev/null || true); for d in ${runs}/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$dead_cut" ]] && ! grep -qF "$n" <<<"$live"; then ${sudo}rm -rf -- "$d"; fi; done`;
+	const capTrees = `avail=$(df -Pm / | awk 'NR==2 {print $4}'); if [ -n "$avail" ] && [ "$avail" -lt ${lowDiskMiB} ]; then ${reapRuns("30 minutes")}; docker builder prune -f --filter until=1h >/dev/null 2>&1 || true; ls -t ${trees}/*.lock 2>/dev/null | tail -n +${keepTrees + 1} | while read -r l; do flock -n "$l" ${sudo}rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done; fi`;
+	return `if [ ! -e ${stamp} ] || [ $(( $(date +%s) - $(stat -c %Y ${stamp} 2>/dev/null || echo 0) )) -ge ${everySeconds} ]; then touch ${stamp}; docker volume prune -f >/dev/null 2>&1 || true; ${reapRuns("2 hours")}; ${capTrees}; fi`;
 }
 
 export function laneTidyLine({
@@ -1044,6 +1048,18 @@ export function rankMachines(probes, pinned, quick, front = false) {
 export function runOrder(probes, pinned, quick, front = false) {
 	const answered = rankMachines(probes, pinned, quick, front).map((probe) => probe.name);
 	return answered.length ? answered : probes.filter((probe) => probe.unreachable !== undefined).map((probe) => probe.name);
+}
+
+export function effectiveParts({ requestedParts, explicitMachine = false, front = false, plan, probes, ranked }) {
+	if (!plan || ranked.length <= 1) return 1;
+	if (requestedParts !== null) return Math.min(requestedParts, ranked.length);
+	if (explicitMachine) return 1;
+	const ready = probes.filter((probe) => open(probe) && !lowDisk(probe) && free(probe, false, front) > 0);
+	if (ready.length < 2) return 1;
+	const parallelSteps = plan.steps.filter((step) => step.commands.length > 0);
+	const totalWork = parallelSteps.reduce((sum, step) => sum + (step.seconds ?? 0) * (step.cores ?? 1), 0);
+	if (parallelSteps.length < 2 || totalWork < AUTO_PARTS_MIN_WORK) return 1;
+	return Math.min(ready.length, ranked.length);
 }
 
 /** Asks every machine at once with `ask(machine, signal)`, which settles when asked to stop. Once one machine has
@@ -1626,7 +1642,15 @@ async function main() {
 	// changed --parts: the plan's steps split by their CPU work, each part a run of its own (RUN-p1, RUN-p2) with a plan
 	// of its own, the most work first. Each waits on every machine and runs on the first with a slot for it (claimParts);
 	// its order, from its own machine on (part 1 the best-ranked one, part 2 the next), is the order of its copies.
-	const split = plan && options.parts > 1 && ranked.length > 1 ? splitPlan(plan.steps, Math.min(options.parts, ranked.length)) : [];
+	const chosenParts = effectiveParts({
+		requestedParts: options.parts,
+		explicitMachine,
+		front: options.front,
+		plan,
+		probes,
+		ranked,
+	});
+	const split = plan && chosenParts > 1 ? splitPlan(plan.steps, chosenParts) : [];
 	const parts = (
 		split.length > 1
 			? split.map((group, k) => ({

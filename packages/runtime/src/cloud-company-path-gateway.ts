@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import { CloudCompanyPathRpcMissing, CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
@@ -12,7 +13,6 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeFencedResult } from "./cloud-native-tool-boundary.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 
 export type CloudCompanyPathRpc =

@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { UUID_PATTERN } from "@qorpera/contracts";
+import { isRecord, UUID_ANY_CASE_PATTERN as UUID, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	cloudControlBackoffMs,
 	cloudControlEnded,
@@ -16,7 +16,6 @@ const REQUEST_TIMEOUT_MS = 5_000;
  * this long, so the run's retry decides how long each attempt is (6 Oct 2026). */
 export const CLOUD_TOOL_REQUEST_MAX_MS = 300_000;
 const REFRESH_MS = 10_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /** Host-only binding. No field in this object is a model-selectable tool argument. */
@@ -82,13 +81,13 @@ export interface CloudNativeToolAuthorityReader {
 	readonly runRowMs?: number;
 }
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud tool authority");
-	return value as Record<string, unknown>;
+function authorityObject(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("Invalid cloud tool authority");
+	return value;
 }
 
 export function parseCloudNativeToolBinding(value: unknown): CloudNativeToolBinding {
-	const input = record(value);
+	const input = authorityObject(value);
 	const keys = ["leaseId", "runId", "jobId", "runnerId", "assignmentId", "credentialCapsuleId", "computeIdentityId"];
 	if (
 		keys.some((key) => typeof input[key] !== "string" || !UUID.test(input[key] as string)) ||
@@ -127,8 +126,8 @@ export function parseCloudNativeToolAuthority(
 	value: unknown,
 	binding: CloudNativeToolBinding,
 ): CloudNativeToolAuthority {
-	const input = record(value);
-	const identity = record(input.identity);
+	const input = authorityObject(value);
+	const identity = authorityObject(input.identity);
 	const uuidKeys = [
 		"companyId",
 		"environmentId",

@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { JsonValue } from "@qorpera/contracts";
+import { isRecord, isUuidAnyCase, type JsonValue, SHA256_HEX_PATTERN, UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 
-export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+export const UUID_PATTERN = UUID_ANY_CASE_PATTERN;
+export const SHA256_PATTERN = SHA256_HEX_PATTERN;
 export const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 export const MAX_JSON_BYTES = 64 * 1024;
 export const CONTROL_REQUEST_TIMEOUT_MS = 30_000;
@@ -139,15 +139,13 @@ export interface CloudRunnerAuthorityStore {
 	save(value: JsonValue): Promise<void>;
 }
 
-export function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value))
-		throw new Error(`Runner control returned invalid ${label}`);
-	return value as Record<string, unknown>;
+export function runnerRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(`Runner control returned invalid ${label}`);
+	return value;
 }
 
-export function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value))
-		throw new Error(`Runner control returned invalid ${label}`);
+export function runnerUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) throw new Error(`Runner control returned invalid ${label}`);
 	return value;
 }
 
@@ -185,14 +183,14 @@ export function json(value: unknown, label: string): JsonValue {
 }
 
 export function objectJson(value: unknown, label: string): JsonValue {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+	if (!isRecord(value)) {
 		throw new Error(`Runner control returned invalid ${label}`);
 	}
 	return json(value, label);
 }
 
 export function optionalUuid(value: unknown, label: string): string | undefined {
-	return value === null || value === undefined ? undefined : uuid(value, label);
+	return value === null || value === undefined ? undefined : runnerUuid(value, label);
 }
 
 export function optionalText(value: unknown, label: string, maximum: number): string | undefined {
@@ -204,7 +202,7 @@ export function optionalText(value: unknown, label: string, maximum: number): st
 }
 
 export function parseCloudRunner(value: unknown): CloudRunner {
-	const input = record(value, "runner");
+	const input = runnerRecord(value, "runner");
 	const capabilities = input.capabilities;
 	if (!Array.isArray(capabilities) || capabilities.length < 1 || capabilities.length > 8) {
 		throw new Error("Runner control returned invalid capabilities");
@@ -225,9 +223,9 @@ export function parseCloudRunner(value: unknown): CloudRunner {
 		throw new Error("Runner control returned inconsistent online state");
 	}
 	return {
-		runnerId: uuid(input.runner_id, "runner id"),
-		profileId: uuid(input.profile_id, "runner profile id"),
-		clientRunnerId: uuid(input.client_runner_id, "runner client id"),
+		runnerId: runnerUuid(input.runner_id, "runner id"),
+		profileId: runnerUuid(input.profile_id, "runner profile id"),
+		clientRunnerId: runnerUuid(input.client_runner_id, "runner client id"),
 		displayName: optionalText(input.display_name, "runner display name", 120) as string,
 		runnerKind: input.runner_kind,
 		capabilities: parsedCapabilities,
@@ -240,7 +238,7 @@ export function parseCloudRunner(value: unknown): CloudRunner {
 			: {}),
 		activationExpiresAt: timestamp(input.activation_expires_at, "runner activation expiry"),
 		...(sessionExpiresAt ? { sessionExpiresAt } : {}),
-		registeredByUserId: uuid(input.registered_by_user_id, "runner registering user id"),
+		registeredByUserId: runnerUuid(input.registered_by_user_id, "runner registering user id"),
 		createdAt: timestamp(input.created_at, "runner creation time"),
 		...(optionalTimestamp(input.activated_at, "runner activation time")
 			? { activatedAt: timestamp(input.activated_at, "runner activation time") }
@@ -249,7 +247,7 @@ export function parseCloudRunner(value: unknown): CloudRunner {
 			? { lastSeenAt: timestamp(input.last_seen_at, "runner last seen time") }
 			: {}),
 		...(optionalUuid(input.revoked_by_user_id, "runner revoking user id")
-			? { revokedByUserId: uuid(input.revoked_by_user_id, "runner revoking user id") }
+			? { revokedByUserId: runnerUuid(input.revoked_by_user_id, "runner revoking user id") }
 			: {}),
 		...(optionalTimestamp(input.revoked_at, "runner revocation time")
 			? { revokedAt: timestamp(input.revoked_at, "runner revocation time") }
@@ -259,7 +257,7 @@ export function parseCloudRunner(value: unknown): CloudRunner {
 }
 
 export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
-	const input = record(value, "runner job");
+	const input = runnerRecord(value, "runner job");
 	if (
 		input.status !== "queued" &&
 		input.status !== "leased" &&
@@ -294,21 +292,21 @@ export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
 		throw new Error("Runner control returned inconsistent output substrate");
 	}
 	return {
-		jobId: uuid(input.job_id, "runner job id"),
+		jobId: runnerUuid(input.job_id, "runner job id"),
 		...(optionalUuid(input.run_id, "runner execution run id")
-			? { runId: uuid(input.run_id, "runner execution run id") }
+			? { runId: runnerUuid(input.run_id, "runner execution run id") }
 			: {}),
-		profileId: uuid(input.profile_id, "runner job profile id"),
-		environmentId: uuid(input.environment_id, "runner job environment id"),
+		profileId: runnerUuid(input.profile_id, "runner job profile id"),
+		environmentId: runnerUuid(input.environment_id, "runner job environment id"),
 		...(optionalUuid(input.session_id, "runner job session id")
-			? { sessionId: uuid(input.session_id, "runner job session id") }
+			? { sessionId: runnerUuid(input.session_id, "runner job session id") }
 			: {}),
 		...(optionalUuid(input.substrate_version_id, "runner job substrate id")
-			? { substrateVersionId: uuid(input.substrate_version_id, "runner job substrate id") }
+			? { substrateVersionId: runnerUuid(input.substrate_version_id, "runner job substrate id") }
 			: {}),
-		clientJobId: uuid(input.client_job_id, "runner client job id"),
+		clientJobId: runnerUuid(input.client_job_id, "runner client job id"),
 		...(optionalUuid(input.assignment_id, "runner assignment id")
-			? { assignmentId: uuid(input.assignment_id, "runner assignment id") }
+			? { assignmentId: runnerUuid(input.assignment_id, "runner assignment id") }
 			: {}),
 		requiredCapability: capability(input.required_capability),
 		jobType: input.job_type,
@@ -316,14 +314,14 @@ export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
 		status: input.status,
 		attemptCount: boundedInteger(input.attempt_count, "runner job attempt count", 0, 1000),
 		...(optionalUuid(input.runner_id, "runner job runner id")
-			? { runnerId: uuid(input.runner_id, "runner job runner id") }
+			? { runnerId: runnerUuid(input.runner_id, "runner job runner id") }
 			: {}),
 		...(result ? { result } : {}),
 		outputArtifactCount,
 		...(outputArtifactIndexId ? { outputArtifactIndexId } : {}),
 		...(outputSubstrateVersionId ? { outputSubstrateVersionId } : {}),
 		...(optionalText(input.last_error, "runner job error", 1000) ? { lastError: input.last_error as string } : {}),
-		createdByUserId: uuid(input.created_by_user_id, "runner job creating user id"),
+		createdByUserId: runnerUuid(input.created_by_user_id, "runner job creating user id"),
 		createdAt: timestamp(input.created_at, "runner job creation time"),
 		...(optionalTimestamp(input.started_at, "runner job start time")
 			? { startedAt: timestamp(input.started_at, "runner job start time") }
@@ -333,7 +331,7 @@ export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
 			? { finishedAt: timestamp(input.finished_at, "runner job finish time") }
 			: {}),
 		...(optionalUuid(input.cancelled_by_user_id, "runner job cancelling user id")
-			? { cancelledByUserId: uuid(input.cancelled_by_user_id, "runner job cancelling user id") }
+			? { cancelledByUserId: runnerUuid(input.cancelled_by_user_id, "runner job cancelling user id") }
 			: {}),
 		...(optionalTimestamp(input.cancelled_at, "runner job cancellation time")
 			? { cancelledAt: timestamp(input.cancelled_at, "runner job cancellation time") }

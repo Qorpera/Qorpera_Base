@@ -3,12 +3,11 @@
  * cloud owns scheduling and delivery; a client only states intent. Shared by
  * every member client. */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+import { POSTGRES_UUID_PATTERN as HOOK_ID, isRecord, isUuid } from "@qorpera/contracts";
+
 const LOCAL_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const LISTENER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-/** The cloud's one spelling of a hook id, and of an event type. */
-const HOOK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 /** The cloud's closed form for a dynamic routine's next run. */
 const ONCE_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
@@ -189,16 +188,16 @@ export type CloudRoutineRpc = (
 function invalid(label: string): never {
 	throw new Error(`Invalid ${label}`);
 }
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) invalid(label);
-	return value as Record<string, unknown>;
+function routineRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) invalid(label);
+	return value;
 }
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) invalid(label);
-	return value as string;
+function routineUuid(value: unknown, label: string): string {
+	if (!isUuid(value)) invalid(label);
+	return value;
 }
 function optionalUuid(value: unknown, label: string): string | null {
-	return value === null || value === undefined ? null : uuid(value, label);
+	return value === null || value === undefined ? null : routineUuid(value, label);
 }
 function text(value: unknown, label: string, maximumBytes: number): string {
 	if (typeof value !== "string" || !value.trim() || encoder.encode(value).length > maximumBytes) invalid(label);
@@ -232,7 +231,7 @@ function zone(value: unknown): string {
 }
 
 function parseCheckBeforeWake(value: unknown): CloudRoutineCheckBeforeWake {
-	const input = record(value, "routine checkBeforeWake");
+	const input = routineRecord(value, "routine checkBeforeWake");
 	if (input.kind === "http_probe") {
 		only(input, ["kind", "url", "expectStatus", "timeoutMs"], "routine http_probe check");
 		if (
@@ -285,7 +284,7 @@ function parseCheckBeforeWake(value: unknown): CloudRoutineCheckBeforeWake {
 
 /** Mirrors the cloud's trigger rules so a member sees a refusal before the write. */
 export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
-	const input = record(value, "routine trigger");
+	const input = routineRecord(value, "routine trigger");
 	const reply = input.replyPolicy;
 	if (reply !== undefined && reply !== "optional" && reply !== "required" && reply !== "silent")
 		invalid("routine reply policy");
@@ -559,7 +558,7 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 }
 
 export function parseCloudRoutine(value: unknown): CloudRoutine {
-	const input = record(value, "routine");
+	const input = routineRecord(value, "routine");
 	if (!["active", "paused", "expired", "concluded", "retired"].includes(input.status as string))
 		invalid("routine status");
 	if (!["low", "medium", "high", "xhigh", "max"].includes(input.effort as string)) invalid("routine effort");
@@ -570,23 +569,23 @@ export function parseCloudRoutine(value: unknown): CloudRoutine {
 		invalid("routine triggers");
 	if (!Array.isArray(input.reviewer_staff_ids)) invalid("routine reviewers");
 	return {
-		routineId: uuid(input.routine_id, "routine id"),
-		clientRoutineId: uuid(input.client_routine_id, "routine client id"),
+		routineId: routineUuid(input.routine_id, "routine id"),
+		clientRoutineId: routineUuid(input.client_routine_id, "routine client id"),
 		version: count(input.version, "routine version"),
 		status: input.status as CloudRoutine["status"],
-		staffAgentId: uuid(input.staff_agent_id, "routine agent"),
+		staffAgentId: routineUuid(input.staff_agent_id, "routine agent"),
 		title: text(input.title, "routine title", 640),
 		prompt: text(input.prompt, "routine prompt", 32 * 1024),
 		triggers: (input.triggers as unknown[]).map(parseCloudRoutineTrigger),
 		effort: input.effort as CloudRoutineEffort,
-		sponsorBindingId: uuid(input.sponsor_binding_id, "routine sponsor"),
+		sponsorBindingId: routineUuid(input.sponsor_binding_id, "routine sponsor"),
 		sponsorVersion: count(input.sponsor_version, "routine sponsor version"),
 		logicalComputerId: optionalUuid(input.logical_computer_id, "routine computer"),
 		requiredCapability: input.required_capability as CloudRoutine["requiredCapability"],
 		jobType: text(input.job_type, "routine job type", 128),
 		publicationMode: input.publication_mode,
 		reviewPolicyKey: typeof input.review_policy_key === "string" ? input.review_policy_key : null,
-		reviewerStaffIds: (input.reviewer_staff_ids as unknown[]).map((id) => uuid(id, "routine reviewer")),
+		reviewerStaffIds: (input.reviewer_staff_ids as unknown[]).map((id) => routineUuid(id, "routine reviewer")),
 		createdAt: instant(input.created_at, "routine creation time"),
 		updatedAt: instant(input.updated_at, "routine update time"),
 		// Absent from a cloud older than dynamic routines.
@@ -596,9 +595,9 @@ export function parseCloudRoutine(value: unknown): CloudRoutine {
 }
 
 export function parseCloudRoutineOccurrence(value: unknown): CloudRoutineOccurrence {
-	const input = record(value, "routine occurrence");
+	const input = routineRecord(value, "routine occurrence");
 	return {
-		occurrenceId: uuid(input.occurrence_id, "occurrence id"),
+		occurrenceId: routineUuid(input.occurrence_id, "occurrence id"),
 		routineId: optionalUuid(input.routine_id, "occurrence routine"),
 		routineVersion: input.routine_version == null ? null : count(input.routine_version, "occurrence routine version"),
 		triggerId: typeof input.trigger_id === "string" ? input.trigger_id : null,
@@ -710,7 +709,7 @@ export class CloudRoutineClient {
 	async list(environmentId: string, signal: AbortSignal): Promise<CloudRoutine[]> {
 		const value = await this.#rpc(
 			"qorpera_list_cloud_routines",
-			{ p_environment_id: uuid(environmentId, "environment") },
+			{ p_environment_id: routineUuid(environmentId, "environment") },
 			signal,
 		);
 		if (!Array.isArray(value) || value.length > 4096) invalid("routine list");
@@ -732,7 +731,7 @@ export class CloudRoutineClient {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) invalid("occurrence limit");
 		const value = await this.#rpc(
 			"qorpera_list_wake_occurrences",
-			{ p_environment_id: uuid(environmentId, "environment"), p_limit: limit },
+			{ p_environment_id: routineUuid(environmentId, "environment"), p_limit: limit },
 			signal,
 		);
 		if (!Array.isArray(value) || value.length > limit) invalid("occurrence list");

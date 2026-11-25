@@ -1,10 +1,10 @@
 import { createHash, createPrivateKey, createPublicKey, type KeyObject, sign, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { parseRecord, parseSha256Hex } from "@qorpera/contracts";
 
 export const LXD_IMAGE_PROVENANCE_SCHEMA = "qorpera.lxd-runner-image-provenance/v2";
 export const LXD_IMAGE_PROVENANCE_ENVELOPE_SCHEMA = "qorpera.lxd-runner-image-provenance-envelope/v2";
 
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const OCI_IMAGE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 
@@ -60,13 +60,8 @@ export interface LxdImageProvenanceSigningKey {
 	passphrase: string | Buffer;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 function exactRecord(value: unknown, label: string, keys: readonly string[]): Record<string, unknown> {
-	const input = record(value, label);
+	const input = parseRecord(value, label);
 	const actual = Object.keys(input).sort();
 	const expected = [...keys].sort();
 	if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
@@ -80,12 +75,6 @@ function text(value: unknown, label: string): string {
 		throw new Error(`${label} is invalid`);
 	}
 	return value;
-}
-
-function sha256(value: unknown, label: string): string {
-	const encoded = text(value, label);
-	if (!SHA256_PATTERN.test(encoded)) throw new Error(`${label} is invalid`);
-	return encoded;
 }
 
 function imageServer(value: unknown): string {
@@ -199,15 +188,18 @@ export function parseLxdImageProvenanceStatement(value: unknown): LxdImageProven
 		schema: LXD_IMAGE_PROVENANCE_SCHEMA,
 		image: {
 			server: imageServer(image.server),
-			fingerprint: sha256(image.fingerprint, "Provenance image fingerprint"),
-			baseFingerprint: sha256(image.baseFingerprint, "Provenance base-image fingerprint"),
-			guestPackageManifestSha256: sha256(
+			fingerprint: parseSha256Hex(image.fingerprint, "Provenance image fingerprint"),
+			baseFingerprint: parseSha256Hex(image.baseFingerprint, "Provenance base-image fingerprint"),
+			guestPackageManifestSha256: parseSha256Hex(
 				image.guestPackageManifestSha256,
 				"Provenance guest-package manifest digest",
 			),
 			runnerImage: runnerImage(image.runnerImage),
-			runnerImageArchiveSha256: sha256(image.runnerImageArchiveSha256, "Provenance runner-image archive digest"),
-			runnerImageCosignBundleSha256: sha256(
+			runnerImageArchiveSha256: parseSha256Hex(
+				image.runnerImageArchiveSha256,
+				"Provenance runner-image archive digest",
+			),
+			runnerImageCosignBundleSha256: parseSha256Hex(
 				image.runnerImageCosignBundleSha256,
 				"Provenance runner-image Cosign bundle digest",
 			),
@@ -219,7 +211,7 @@ export function parseLxdImageProvenanceStatement(value: unknown): LxdImageProven
 		},
 		acceptance: {
 			testedAt: testedAt(acceptance.testedAt),
-			evidenceSha256: sha256(acceptance.evidenceSha256, "Provenance acceptance-evidence digest"),
+			evidenceSha256: parseSha256Hex(acceptance.evidenceSha256, "Provenance acceptance-evidence digest"),
 			virtualization: "kvm",
 			bootMode: "uefi-secureboot",
 			secureBoot: true,
@@ -266,7 +258,7 @@ function parseEnvelope(value: unknown): LxdImageProvenanceEnvelope {
 		statement: parseLxdImageProvenanceStatement(input.statement),
 		signature: {
 			algorithm: "ed25519",
-			keyIdSha256: sha256(signature.keyIdSha256, "LXD image provenance key id"),
+			keyIdSha256: parseSha256Hex(signature.keyIdSha256, "LXD image provenance key id"),
 			value: encodedSignature,
 		},
 	};
@@ -320,14 +312,15 @@ export function verifyLxdImageProvenance(
 	}
 	if (
 		envelope.statement.image.server !== imageServer(expectation.imageServer) ||
-		envelope.statement.image.fingerprint !== sha256(expectation.imageFingerprint, "Expected LXD image fingerprint") ||
+		envelope.statement.image.fingerprint !==
+			parseSha256Hex(expectation.imageFingerprint, "Expected LXD image fingerprint") ||
 		envelope.statement.image.guestPackageManifestSha256 !==
-			sha256(expectation.guestPackageManifestSha256, "Expected guest-package manifest digest") ||
+			parseSha256Hex(expectation.guestPackageManifestSha256, "Expected guest-package manifest digest") ||
 		envelope.statement.image.runnerImage !== runnerImage(expectation.runnerImage) ||
 		envelope.statement.image.runnerImageArchiveSha256 !==
-			sha256(expectation.runnerImageArchiveSha256, "Expected runner-image archive digest") ||
+			parseSha256Hex(expectation.runnerImageArchiveSha256, "Expected runner-image archive digest") ||
 		envelope.statement.image.runnerImageCosignBundleSha256 !==
-			sha256(expectation.runnerImageCosignBundleSha256, "Expected runner-image Cosign bundle digest")
+			parseSha256Hex(expectation.runnerImageCosignBundleSha256, "Expected runner-image Cosign bundle digest")
 	) {
 		throw new Error("LXD image provenance does not authorize the configured image contract");
 	}

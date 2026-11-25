@@ -4,13 +4,12 @@ import { mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { type CloudCodingRepository, parseGitHubCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, parseGitHubCodingRepository, UUID_PATTERN } from "@qorpera/contracts";
 import { type CodingPushCarrier, CodingPushRefused } from "./coding-executor.ts";
 import { type CodingGitSandboxOptions, codingGitSandboxPlan, codingGitSocketFilter } from "./coding-git-sandbox.ts";
 import type { CodingSecretMask, CodingSecretMaskStream } from "./coding-secret-mask.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const MAX_BUNDLE = 64 * 1024 ** 2;
 const MAX_PREREQUISITES = 64;
@@ -319,7 +318,7 @@ export async function pushCloudCodingBundle(
 		Array.isArray(value) ||
 		Object.keys(value).sort().join() !== "baseSha,expectedRemoteHeadSha,headSha,repository,workerId" ||
 		typeof value.workerId !== "string" ||
-		!UUID.test(value.workerId) ||
+		!UUID_PATTERN.test(value.workerId) ||
 		![value.headSha, value.baseSha].every((sha) => typeof sha === "string" && SHA.test(sha)) ||
 		(value.expectedRemoteHeadSha !== null &&
 			(typeof value.expectedRemoteHeadSha !== "string" || !SHA.test(value.expectedRemoteHeadSha))) ||

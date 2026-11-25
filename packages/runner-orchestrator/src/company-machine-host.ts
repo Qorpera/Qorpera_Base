@@ -18,9 +18,11 @@ import {
 	type IdleRuleSample,
 	idleRuleBusy,
 	isCloudMachineFolderLost,
+	isRecord,
 	parseCloudCodingNasPolicy,
 	parseCloudMachineCommandFolder,
 	parseCloudMachineCommandReceipt,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import { withAbortScope, withTimeoutScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
@@ -83,7 +85,6 @@ async function runLimited<T>(items: readonly T[], limit: number, run: (item: T) 
 	await Promise.all(workers);
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 /** A view's pass, as the folder core makes it. */
 const PASS = /^[A-Za-z0-9_-]{43}$/;
@@ -163,8 +164,8 @@ export function companyMachineHomeCommand(
 	kind: "exec" | "sftp" = "exec",
 ): string[] {
 	if (
-		!UUID.test(bootId) ||
-		!UUID.test(sessionId) ||
+		!UUID_PATTERN.test(bootId) ||
+		!UUID_PATTERN.test(sessionId) ||
 		!/^[0-9a-f]{8,32}$/.test(channel) ||
 		(kind !== "exec" && kind !== "sftp")
 	)
@@ -1397,9 +1398,9 @@ export type CompanyMachineCommand =
 	| { action: "read"; read: CloudCodingCommandRead }
 	| { action: "cancel"; commandId: string };
 
-function record(value: unknown, error: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
-	return value as Record<string, unknown>;
+function machineRecord(value: unknown, error: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(error);
+	return value;
 }
 /** A receipt whose output is held back, made from the request alone: still running, and nothing printed past where
  * the reader stands (`offset`). No size, end or exit of the guest's is in it. */
@@ -1496,7 +1497,7 @@ function errorCode(error: unknown): string {
 }
 /** The helper's answer in its reply file; its refusal throws its code. */
 function guestAnswer(content: Buffer): Record<string, unknown> {
-	const value = record(
+	const value = machineRecord(
 		JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(content)),
 		"COMPANY_MACHINE_GUEST_REPLY_INVALID",
 	);
@@ -1525,7 +1526,7 @@ function screenOutput(stdout: Buffer): CompanyMachineScreenOutcome {
 	if (end < 0 || end > SCREEN_HEADER_BYTES) throw invalid();
 	let header: Record<string, unknown>;
 	try {
-		header = record(
+		header = machineRecord(
 			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(stdout.subarray(0, end))),
 			"COMPANY_MACHINE_SCREEN_INVALID",
 		);
@@ -1588,10 +1589,10 @@ function screenPicture(png: Buffer): boolean {
 	);
 }
 function entry(value: unknown): CompanyMachineEntry {
-	const e = record(value, "COMPANY_MACHINE_LIST_INVALID");
+	const e = machineRecord(value, "COMPANY_MACHINE_LIST_INVALID");
 	if (
 		e.schema !== "qorpera.company-machine-state/v2" ||
-		![e.machineId, e.placementId].every((id) => typeof id === "string" && UUID.test(id)) ||
+		![e.machineId, e.placementId].every((id) => typeof id === "string" && UUID_PATTERN.test(id)) ||
 		typeof e.bindingText !== "string" ||
 		typeof e.instanceSha256 !== "string" ||
 		!SHA.test(e.instanceSha256) ||
@@ -1600,10 +1601,10 @@ function entry(value: unknown): CompanyMachineEntry {
 		![e.retired, e.reserved, e.removing, e.released, e.sleepDue, e.stopDue, e.removeDue].every(
 			(flag) => typeof flag === "boolean",
 		) ||
-		(e.bootId !== null && (typeof e.bootId !== "string" || !UUID.test(e.bootId))) ||
+		(e.bootId !== null && (typeof e.bootId !== "string" || !UUID_PATTERN.test(e.bootId))) ||
 		!Array.isArray(e.commands) ||
 		e.commands.length > 64 ||
-		e.commands.some((id) => typeof id !== "string" || !UUID.test(id))
+		e.commands.some((id) => typeof id !== "string" || !UUID_PATTERN.test(id))
 	)
 		throw new Error("COMPANY_MACHINE_LIST_INVALID");
 	return e as unknown as CompanyMachineEntry;
@@ -1856,7 +1857,7 @@ export class LxdCompanyMachineHost {
 	}
 	/** SQL's authority for one LXD effect; a refusal it can wait out throws COMPANY_MACHINE_REFUSED. */
 	async #authorize(e: CompanyMachineEntry, intent: CodingMachineIntent, signal: AbortSignal): Promise<unknown> {
-		const receipt = record(
+		const receipt = machineRecord(
 			await this.#custody(e, "qorpera_authorize_executor_machine", signal, { p_intent: intent }),
 			"COMPANY_MACHINE_AUTHORITY_INVALID",
 		);
@@ -2071,7 +2072,7 @@ export class LxdCompanyMachineHost {
 			prepared.schema !== "qorpera.machine-guest/v1" ||
 			prepared.machineId !== e.machineId ||
 			typeof prepared.bootId !== "string" ||
-			!UUID.test(prepared.bootId)
+			!UUID_PATTERN.test(prepared.bootId)
 		)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
 		this.#verifiedHelpers.set(e.placementId, { bootId: prepared.bootId, sha256: helperSha256 });
@@ -2138,7 +2139,7 @@ export class LxdCompanyMachineHost {
 			// The desktop's figure and time zone are in the machine before SQL says the boot runs: nobody starts a desktop
 			// earlier.
 			await this.#desktop(e, bootId, signal);
-			const marked = record(
+			const marked = machineRecord(
 				await this.#custody(e, "qorpera_mark_company_machine_running", signal, { p_boot_id: bootId }),
 				"COMPANY_MACHINE_RUNNING_INVALID",
 			);
@@ -2253,7 +2254,7 @@ export class LxdCompanyMachineHost {
 		const busy = !!same && (same.busy || idleRuleBusy(same.sample, sample));
 		this.#guests.set(e.placementId, { bootId, sample, busy });
 		const ended = observed.ended
-			.map((item) => record(item, "COMPANY_MACHINE_GUEST_REPLY_INVALID"))
+			.map((item) => machineRecord(item, "COMPANY_MACHINE_GUEST_REPLY_INVALID"))
 			.filter((item) => typeof item.commandId === "string" && e.commands.includes(item.commandId))
 			.map((item) => ({
 				commandId: item.commandId,
@@ -2320,7 +2321,7 @@ export class LxdCompanyMachineHost {
 		if (!f.view) {
 			let opened: Record<string, unknown>;
 			try {
-				opened = record(
+				opened = machineRecord(
 					await this.#call(
 						"qorpera_folder_view_open",
 						{
@@ -2343,7 +2344,7 @@ export class LxdCompanyMachineHost {
 			if (
 				opened.schema !== "qorpera.folder-view/v1" ||
 				typeof opened.viewId !== "string" ||
-				!UUID.test(opened.viewId) ||
+				!UUID_PATTERN.test(opened.viewId) ||
 				typeof opened.pass !== "string" ||
 				!PASS.test(opened.pass)
 			)
@@ -2417,7 +2418,7 @@ export class LxdCompanyMachineHost {
 	): Promise<string> {
 		let retired: Record<string, unknown>;
 		try {
-			retired = record(
+			retired = machineRecord(
 				await this.#custody(e, "qorpera_retire_company_machine", signal, { p_boot_id: f.bootId, p_reason: reason }),
 				"COMPANY_MACHINE_RETIRE_INVALID",
 			);
@@ -2732,7 +2733,7 @@ export class LxdCompanyMachineHost {
 				stopped.bootId === e.bootId &&
 				Array.isArray(stopped.commands) &&
 				stopped.commands.length <= 32 &&
-				stopped.commands.every((id) => typeof id === "string" && UUID.test(id)) &&
+				stopped.commands.every((id) => typeof id === "string" && UUID_PATTERN.test(id)) &&
 				typeof stopped.containers === "boolean"
 			)
 				// SQL takes the snapshot before the power-off; a record it does not take leaves the machine running.
@@ -2757,7 +2758,7 @@ export class LxdCompanyMachineHost {
 			);
 			this.#folders.delete(e.placementId);
 		}
-		const suspended = record(
+		const suspended = machineRecord(
 			await this.#custody(e, "qorpera_suspend_company_machine", signal),
 			"COMPANY_MACHINE_SUSPEND_INVALID",
 		);
@@ -2772,7 +2773,7 @@ export class LxdCompanyMachineHost {
 			const state = await this.#physical(e, "deleted", signal);
 			if (state === "not-now") return { placementId: e.placementId, step: "delete", state: "not-now" };
 		}
-		const released = record(
+		const released = machineRecord(
 			await this.#custody(e, "qorpera_release_company_machine", signal),
 			"COMPANY_MACHINE_RELEASE_INVALID",
 		);
@@ -3169,7 +3170,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
 		if (
-			![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)) ||
+			![run.placementId, run.bootId, run.receiptId].every((id) => UUID_PATTERN.test(id)) ||
 			!Number.isSafeInteger(run.desktopGeneration) ||
 			run.desktopGeneration < 0
 		)
@@ -3236,7 +3237,7 @@ export class LxdCompanyMachineHost {
 		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_CODING_VALUE_FAILED");
 		let output: Record<string, unknown>;
 		try {
-			output = record(
+			output = machineRecord(
 				JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(result.stdout)),
 				"COMPANY_MACHINE_CODING_VALUE_INVALID",
 			);
@@ -3337,7 +3338,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
 		if (
-			![run.placementId, run.bootId].every((id) => UUID.test(id)) ||
+			![run.placementId, run.bootId].every((id) => UUID_PATTERN.test(id)) ||
 			!Number.isSafeInteger(run.desktopGeneration) ||
 			run.desktopGeneration < 0
 		)
@@ -3376,7 +3377,7 @@ export class LxdCompanyMachineHost {
 		if (cleared === "boot") return { refused: "MACHINE_BOOT_CHANGED" };
 		if (cleared === "image") return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
 		if (cleared === "failed") return "failed";
-		const answer = record(
+		const answer = machineRecord(
 			await this.#call(
 				"qorpera_machine_desktop_clipboard_cleared",
 				{ p_placement_id: run.placementId, p_generation: run.desktopGeneration },
@@ -3492,7 +3493,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_SCREEN_UNAVAILABLE");
 		if (
-			![run.placementId, run.bootId, run.runId].every((id) => UUID.test(id)) ||
+			![run.placementId, run.bootId, run.runId].every((id) => UUID_PATTERN.test(id)) ||
 			!Number.isSafeInteger(run.desktopGeneration) ||
 			run.desktopGeneration < 0
 		)
@@ -3623,7 +3624,7 @@ export class LxdCompanyMachineHost {
 		userId: string | null,
 		signal: AbortSignal,
 	): Promise<boolean> {
-		const answer = record(
+		const answer = machineRecord(
 			await this.#call(
 				"qorpera_machine_desktop_picture_check",
 				{ p_placement_id: placementId, p_generation: generation, p_user_id: userId },
@@ -3645,7 +3646,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_START_UNAVAILABLE");
 		if (
-			![start.placementId, start.bootId, start.startId].every((id) => UUID.test(id)) ||
+			![start.placementId, start.bootId, start.startId].every((id) => UUID_PATTERN.test(id)) ||
 			(start.open !== undefined && !memberOpenPathValid(start.open))
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_START_INVALID");
@@ -3732,7 +3733,7 @@ export class LxdCompanyMachineHost {
 
 	/** SQL's decision right before an open touches the desktop (20260930758000, review r1 F1 of #1781): "ok", or why not. */
 	async #openAllowed(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<string> {
-		const answer = record(
+		const answer = machineRecord(
 			await this.#call(
 				"qorpera_member_machine_desktop_open_check",
 				{ p_start_id: start.startId, p_placement_id: start.placementId, p_boot_id: start.bootId },
@@ -3778,7 +3779,7 @@ export class LxdCompanyMachineHost {
 		const text = act.action?.text;
 		const shared = act.shared === true;
 		if (
-			![act.placementId, act.bootId, act.actionId, act.userId].every((id) => UUID.test(id)) ||
+			![act.placementId, act.bootId, act.actionId, act.userId].every((id) => UUID_PATTERN.test(id)) ||
 			(act.shared !== undefined && typeof act.shared !== "boolean") ||
 			!Number.isSafeInteger(act.seat) ||
 			act.seat < (shared ? 0 : 1) ||
@@ -3906,7 +3907,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_STREAM_UNAVAILABLE");
 		if (
-			![stream.placementId, stream.bootId, stream.userId].every((id) => UUID.test(id)) ||
+			![stream.placementId, stream.bootId, stream.userId].every((id) => UUID_PATTERN.test(id)) ||
 			!Number.isSafeInteger(stream.generation) ||
 			stream.generation < 0 ||
 			!(stream.epoch === null || (Number.isSafeInteger(stream.epoch) && stream.epoch >= 0))
@@ -3982,7 +3983,7 @@ export class LxdCompanyMachineHost {
 		await this.#confirmFence(pipe, stream.placementId, stream.bootId, signal);
 		const asked = async (): Promise<"ok" | { readonly end: string }> => {
 			try {
-				const answer = record(
+				const answer = machineRecord(
 					await this.#call(
 						"qorpera_member_machine_stream_release",
 						{
@@ -4047,7 +4048,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_POINTER_UNAVAILABLE");
 		if (
-			![move.placementId, move.bootId, move.userId].every((id) => UUID.test(id)) ||
+			![move.placementId, move.bootId, move.userId].every((id) => UUID_PATTERN.test(id)) ||
 			!Number.isSafeInteger(move.generation) ||
 			move.generation < 0 ||
 			typeof move.private !== "boolean" ||
@@ -4319,7 +4320,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_UNAVAILABLE");
 		if (
-			![look.placementId, look.bootId, look.userId].every((id) => UUID.test(id)) ||
+			![look.placementId, look.bootId, look.userId].every((id) => UUID_PATTERN.test(id)) ||
 			typeof look.keepDesktop !== "boolean" ||
 			!Number.isSafeInteger(look.desktopGeneration) ||
 			look.desktopGeneration < 0
@@ -4395,7 +4396,7 @@ export class LxdCompanyMachineHost {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_UNAVAILABLE");
 		if (
-			![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)) ||
+			![run.placementId, run.bootId, run.receiptId].every((id) => UUID_PATTERN.test(id)) ||
 			!Number.isSafeInteger(run.desktopGeneration) ||
 			run.desktopGeneration < 0
 		)
@@ -4461,7 +4462,7 @@ export class LxdCompanyMachineHost {
 			const line = (text: string) => {
 				let output: Record<string, unknown>;
 				try {
-					output = record(JSON.parse(text), "COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+					output = machineRecord(JSON.parse(text), "COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
 				} catch {
 					invalid = true;
 					throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
@@ -4600,9 +4601,9 @@ export class LxdCompanyMachineHost {
 	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
 		const kind = input.kind ?? "exec";
 		if (
-			!UUID.test(input.placementId) ||
-			!UUID.test(input.sessionId) ||
-			!UUID.test(input.bootId) ||
+			!UUID_PATTERN.test(input.placementId) ||
+			!UUID_PATTERN.test(input.sessionId) ||
+			!UUID_PATTERN.test(input.bootId) ||
 			(kind !== "exec" && kind !== "sftp")
 		)
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
@@ -4946,7 +4947,11 @@ export class LxdCompanyMachineHost {
 		signal: AbortSignal,
 	): Promise<CloudMachineCommandReceipt> {
 		const machine = { machineId: authority.machineId, project: this.#policy.project };
-		if (!UUID.test(machine.machineId) || !UUID.test(authority.placementId) || !SHA.test(authority.inputSha256))
+		if (
+			!UUID_PATTERN.test(machine.machineId) ||
+			!UUID_PATTERN.test(authority.placementId) ||
+			!SHA.test(authority.inputSha256)
+		)
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		const name = lxdCompanyMachineName(authority.placementId);
 		const commandId = request.action === "read" ? request.read.commandId : request.commandId;
@@ -4976,7 +4981,7 @@ export class LxdCompanyMachineHost {
 					typeof runId !== "string" ||
 					typeof staffAgentId !== "string" ||
 					typeof requestedByUserId !== "string" ||
-					![runId, staffAgentId, requestedByUserId].every((id) => UUID.test(id))
+					![runId, staffAgentId, requestedByUserId].every((id) => UUID_PATTERN.test(id))
 				)
 					throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 				const window = { commandId, runId, staffAgentId, requestedByUserId };
@@ -5201,11 +5206,16 @@ export class LxdCompanyMachineHost {
 		signal: AbortSignal,
 	): Promise<string | undefined> {
 		const { placementId, bootId, runId } = authority;
-		if (typeof bootId !== "string" || typeof runId !== "string" || !UUID.test(bootId) || !UUID.test(runId))
+		if (
+			typeof bootId !== "string" ||
+			typeof runId !== "string" ||
+			!UUID_PATTERN.test(bootId) ||
+			!UUID_PATTERN.test(runId)
+		)
 			return HELD.untaken;
 		const inheritId = randomUUID();
 		try {
-			const taken = record(
+			const taken = machineRecord(
 				await this.#call(
 					"qorpera_folder_test_machine_inherit_reads",
 					{ p_placement_id: placementId, p_boot_id: bootId, p_run_id: runId, p_inherit_id: inheritId },
@@ -5227,7 +5237,7 @@ export class LxdCompanyMachineHost {
 	 * this member alone: nothing of the boot is marked); otherwise held until the member looks again. */
 	async #memberReads(look: CompanyMachineMemberLook, signal: AbortSignal): Promise<string | undefined> {
 		try {
-			const checked = record(
+			const checked = machineRecord(
 				await this.#call(
 					"qorpera_folder_member_machine_reads",
 					{ p_placement_id: look.placementId, p_boot_id: look.bootId, p_user_id: look.userId },
@@ -5263,8 +5273,8 @@ export class LxdCompanyMachineHost {
 		signal: AbortSignal,
 	): Promise<CompanyMachineAppStartResult> {
 		if (
-			!UUID.test(authority.machineId) ||
-			!UUID.test(authority.placementId) ||
+			!UUID_PATTERN.test(authority.machineId) ||
+			!UUID_PATTERN.test(authority.placementId) ||
 			!APP_SLUG.test(request.slug) ||
 			typeof request.command !== "string" ||
 			!request.command.trim() ||
@@ -5318,7 +5328,7 @@ export class LxdCompanyMachineHost {
 		slug: string,
 		signal: AbortSignal,
 	): Promise<CompanyMachineAppStopResult> {
-		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(slug))
+		if (!UUID_PATTERN.test(authority.machineId) || !UUID_PATTERN.test(authority.placementId) || !APP_SLUG.test(slug))
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
 		await this.#checkAppFolder(authority, signal);
 		const value = await this.#runAppGuestCommand(authority.placementId, ["app-stop", slug], null, signal);
@@ -5332,7 +5342,7 @@ export class LxdCompanyMachineHost {
 		slug: string,
 		signal: AbortSignal,
 	): Promise<CompanyMachineAppHealthResult> {
-		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(slug))
+		if (!UUID_PATTERN.test(authority.machineId) || !UUID_PATTERN.test(authority.placementId) || !APP_SLUG.test(slug))
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
 		await this.#checkAppFolder(authority, signal);
 		const value = await this.#runAppGuestCommand(authority.placementId, ["app-health", slug], null, signal);
@@ -5354,7 +5364,11 @@ export class LxdCompanyMachineHost {
 		request: CompanyMachineAppReloadRequest,
 		signal: AbortSignal,
 	): Promise<CompanyMachineAppReloadResult> {
-		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(request.slug))
+		if (
+			!UUID_PATTERN.test(authority.machineId) ||
+			!UUID_PATTERN.test(authority.placementId) ||
+			!APP_SLUG.test(request.slug)
+		)
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
 		if (request.port !== undefined && (!Number.isInteger(request.port) || request.port < 1 || request.port > 65535))
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
@@ -5397,7 +5411,11 @@ export class LxdCompanyMachineHost {
 		request: CompanyMachineAppLogsRequest,
 		signal: AbortSignal,
 	): Promise<CompanyMachineAppLogsResult> {
-		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(request.slug))
+		if (
+			!UUID_PATTERN.test(authority.machineId) ||
+			!UUID_PATTERN.test(authority.placementId) ||
+			!APP_SLUG.test(request.slug)
+		)
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
 		if (request.stream !== undefined && !["stdout", "stderr", "all"].includes(request.stream))
 			throw new Error("COMPANY_MACHINE_APP_INVALID");

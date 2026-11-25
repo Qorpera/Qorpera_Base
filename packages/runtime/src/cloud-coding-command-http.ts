@@ -8,8 +8,10 @@ import {
 	type CloudCodingCommandRead,
 	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
+	isRecord,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
+	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "./cloud-command-pages.ts";
@@ -71,7 +73,6 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
@@ -91,18 +92,12 @@ export type CloudCodingCommandHttpRequest = Readonly<
 	)
 >;
 
-function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.keys(value).sort().join() !== [...keys].sort().join()
-	)
-		throw new Error(ERROR);
-	return value as Record<string, unknown>;
+function closedObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
+	if (!isRecord(value) || Object.keys(value).sort().join() !== [...keys].sort().join()) throw new Error(ERROR);
+	return value;
 }
 function scope(value: unknown): CloudCodingCommandScope {
-	const input = record(value, ["workerId", "vmId", "requestId", "turn"]);
+	const input = closedObject(value, ["workerId", "vmId", "requestId", "turn"]);
 	if (
 		![input.workerId, input.vmId, input.requestId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		!Number.isSafeInteger(input.turn) ||
@@ -112,7 +107,7 @@ function scope(value: unknown): CloudCodingCommandScope {
 	return Object.freeze({ ...input }) as unknown as CloudCodingCommandScope;
 }
 function parseRequest(value: unknown, action: string): CloudCodingCommandHttpRequest {
-	const valueRecord = record(value, ["schema", "binding", "scope", "action", "input"]);
+	const valueRecord = closedObject(value, ["schema", "binding", "scope", "action", "input"]);
 	if (
 		valueRecord.schema !== "qorpera.coding-command-http/v1" ||
 		valueRecord.action !== action ||
@@ -122,7 +117,7 @@ function parseRequest(value: unknown, action: string): CloudCodingCommandHttpReq
 	const input =
 		action === "read"
 			? { ...parseCloudCodingCommandRead(valueRecord.input) }
-			: record(
+			: closedObject(
 					valueRecord.input,
 					action === "start" ? ["commandId", "inputSha256", "command", "timeoutMs"] : ["commandId"],
 				);

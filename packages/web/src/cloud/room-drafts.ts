@@ -1,6 +1,6 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, timestamp } from "./parse.ts";
 import { type MessageQuote, parseQuotes, QUOTES_MAX } from "./quotes.ts";
 import type { RealtimePhase } from "./realtime.ts";
 
@@ -32,8 +32,8 @@ export type RoomDraftWrite =
 export const ROOM_DRAFT_BYTES = 65536;
 
 export function parseRoomDraft(value: unknown, roomId: string): RoomDraft {
-	const input = record(value, "room draft");
-	if (input.schema !== "qorpera.room-draft/v1" || uuid(input.roomId, "room draft room") !== roomId)
+	const input = cloudRecord(value, "room draft");
+	if (input.schema !== "qorpera.room-draft/v1" || cloudUuid(input.roomId, "room draft room") !== roomId)
 		throw new CloudShapeError("room draft");
 	if (typeof input.body !== "string" || new TextEncoder().encode(input.body).length > ROOM_DRAFT_BYTES)
 		throw new CloudShapeError("room draft text");
@@ -45,21 +45,21 @@ export function parseRoomDraft(value: unknown, roomId: string): RoomDraft {
 	const readable = input.quotes === undefined || quotes !== undefined;
 	return {
 		roomId,
-		ownerUserId: uuid(input.ownerUserId, "room draft owner"),
+		ownerUserId: cloudUuid(input.ownerUserId, "room draft owner"),
 		body: readable ? input.body : "",
 		...(quotes ? { quotes } : {}),
 		revision: boundedInteger(input.revision, "room draft revision", 0, Number.MAX_SAFE_INTEGER),
-		editorUserId: uuid(input.editorUserId, "room draft editor"),
+		editorUserId: cloudUuid(input.editorUserId, "room draft editor"),
 		contributors: array(input.contributors, "room draft contributors")
 			.slice(0, 64)
-			.map((id) => uuid(id, "room draft contributor")),
+			.map((id) => cloudUuid(id, "room draft contributor")),
 		updatedAt: timestamp(input.updatedAt, "room draft time"),
 	};
 }
 
 export async function listRoomDrafts(cloud: Cloud, roomId: string): Promise<RoomDraft[]> {
-	const input = record(await cloud.rpc("qorpera_list_room_drafts", { p_room_id: roomId }), "room drafts");
-	if (input.schema !== "qorpera.room-drafts/v1" || uuid(input.roomId, "room drafts room") !== roomId)
+	const input = cloudRecord(await cloud.rpc("qorpera_list_room_drafts", { p_room_id: roomId }), "room drafts");
+	if (input.schema !== "qorpera.room-drafts/v1" || cloudUuid(input.roomId, "room drafts room") !== roomId)
 		throw new CloudShapeError("room drafts");
 	return array(input.drafts, "room drafts").map((draft) => parseRoomDraft(draft, roomId));
 }
@@ -91,7 +91,7 @@ export async function putRoomDraft(
 	// A lone surrogate is not text the cloud can store; one character stands in for it, so the quotes still fit.
 	const text = body.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
 	if (quotes.length && !parseQuotes(quotes, text)) throw new DraftQuotesError(quotes.length > QUOTES_MAX);
-	const input = record(
+	const input = cloudRecord(
 		await cloud.rpc("qorpera_put_room_draft", {
 			p_room_id: roomId,
 			p_owner_user_id: ownerUserId,

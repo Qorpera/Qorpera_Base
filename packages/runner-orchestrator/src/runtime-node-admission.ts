@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { withTimeoutScope } from "./abort-scope.ts";
 
 export interface RuntimeNodeRegistry {
@@ -35,7 +36,6 @@ export type RuntimeNodeCapacityRefusal = (typeof NODE_CAPACITY_REFUSALS)[number]
 export type RuntimeNodeAdmission =
 	| { state: "refused"; reason: RuntimeNodeCapacityRefusal }
 	| { state: "reserved"; nodeId: string; nodeVersion: number; signal: AbortSignal; validForMs: number };
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 
 /** A company reservation is required separately. This gate binds its exact
@@ -50,12 +50,12 @@ export async function reserveRuntimeNodeMachine(
 	caller.throwIfAborted();
 	const machine = structuredClone(value);
 	if (
-		!UUID.test(machine.allocationId) ||
+		!UUID_PATTERN.test(machine.allocationId) ||
 		!SHA.test(machine.policySha256) ||
 		!SHA.test(machine.instanceSha256) ||
 		!SHA.test(machine.machineIdSha256) ||
 		!["native", "office", "login"].includes(machine.providerKind) ||
-		!(machine.providerKind === "office" ? UUID : /^[a-z][a-z0-9_-]{0,63}$/).test(machine.providerId) ||
+		!(machine.providerKind === "office" ? UUID_PATTERN : /^[a-z][a-z0-9_-]{0,63}$/).test(machine.providerId) ||
 		!Number.isSafeInteger(machine.cpuMillis) ||
 		machine.cpuMillis < 1 ||
 		machine.cpuMillis > 1024000 ||
@@ -90,7 +90,7 @@ export async function reserveRuntimeNodeMachine(
 	const record = result as Record<string, unknown>;
 	if (
 		typeof record.nodeId !== "string" ||
-		!UUID.test(record.nodeId) ||
+		!UUID_PATTERN.test(record.nodeId) ||
 		!Number.isSafeInteger(record.nodeVersion) ||
 		(record.nodeVersion as number) < 1 ||
 		!Number.isSafeInteger(record.validForMs) ||

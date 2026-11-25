@@ -1,6 +1,6 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import type { TableValue } from "@qorpera/cloud-client/interfaces";
-import { POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
+import { isRecord, POSTGRES_UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 
@@ -132,12 +132,12 @@ const invalid = () => new Error("Company notices returned an invalid response.")
 const invalidFlag = (): never => {
 	throw invalid();
 };
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
-	return value as Record<string, unknown>;
+function noticeRecord(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw invalid();
+	return value;
 }
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || !POSTGRES_UUID_PATTERN.test(value.toLowerCase())) throw invalid();
+function noticeUuid(value: unknown): string {
+	if (typeof value !== "string" || !POSTGRES_UUID_ANY_CASE_PATTERN.test(value)) throw invalid();
 	return value;
 }
 function integer(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): number {
@@ -178,17 +178,17 @@ function keyValues(value: unknown): TableValue[] {
 /** A retired record is skipped only when its envelope is otherwise sound; anything
  * else falls through to full validation and fails the read like any bad record. */
 function retired(value: unknown, profileId: string): boolean {
-	const v = record(value);
+	const v = noticeRecord(value);
 	if (
 		typeof v.kind === "string" &&
 		UNSHOWN.has(v.kind) &&
 		v.schema === "qorpera.member-notification/v1" &&
 		v.profile_id === profileId
 	) {
-		record(v.subject);
+		noticeRecord(v.subject);
 		return true;
 	}
-	const kinds = RETIRED.get(record(v.subject).schema as string);
+	const kinds = RETIRED.get(noticeRecord(v.subject).schema as string);
 	return (
 		kinds !== undefined &&
 		v.schema === "qorpera.member-notification/v1" &&
@@ -198,8 +198,8 @@ function retired(value: unknown, profileId: string): boolean {
 	);
 }
 function notification(value: unknown, profileId: string): MemberNotification {
-	const v = record(value),
-		s = record(v.subject);
+	const v = noticeRecord(value),
+		s = noticeRecord(v.subject);
 	if (v.schema !== "qorpera.member-notification/v1" || v.profile_id !== profileId) throw invalid();
 	let subject: MemberNotificationSubject;
 	const kind = v.kind;
@@ -209,8 +209,8 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			schema: s.schema,
 			provider: s.provider,
 			resetsAt: s.resetsAt === null ? null : date(s.resetsAt),
-			runId: uuid(s.runId),
-			connectionId: uuid(s.connectionId),
+			runId: noticeUuid(s.runId),
+			connectionId: noticeUuid(s.connectionId),
 			...(s.accountEmail === undefined ? {} : { accountEmail: email(s.accountEmail) }),
 			...(v.run_stopped === true ? { runStopped: true as const } : {}),
 		};
@@ -221,22 +221,22 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			dimension: s.dimension,
 			ceiling: integer(s.ceiling, 1),
 			used: integer(s.used),
-			allocationId: uuid(s.allocationId),
+			allocationId: noticeUuid(s.allocationId),
 		};
 	} else if (kind === "routine_needs_model_account" && s.schema === undefined) {
 		if (typeof s.title !== "string" || s.title.length > 200) throw invalid();
 		subject = {
 			schema: "routine-needs-model-account",
-			staffAgentId: uuid(s.staffAgentId),
-			routineId: uuid(s.routineId),
+			staffAgentId: noticeUuid(s.staffAgentId),
+			routineId: noticeUuid(s.routineId),
 			title: s.title,
 		};
 	} else if (kind === "run_no_progress" && s.schema === "qorpera.member-notification.run-no-progress/v1") {
 		subject = {
 			schema: s.schema,
-			runId: uuid(s.runId),
-			staffAgentId: uuid(s.staffAgentId),
-			sessionId: s.sessionId === null ? null : uuid(s.sessionId),
+			runId: noticeUuid(s.runId),
+			staffAgentId: noticeUuid(s.staffAgentId),
+			sessionId: s.sessionId === null ? null : noticeUuid(s.sessionId),
 			since: date(s.since),
 			minutes: integer(s.minutes, 1, 1440),
 			worker: s.worker === undefined ? false : s.worker === true ? true : s.worker === false ? false : invalidFlag(),
@@ -247,13 +247,13 @@ function notification(value: unknown, profileId: string): MemberNotification {
 		if ((payer !== "member" && payer !== "company") || (reason !== "save" && reason !== "pick")) throw invalid();
 		subject = {
 			schema: s.schema,
-			routineId: uuid(s.routineId),
+			routineId: noticeUuid(s.routineId),
 			routineVersion: integer(s.routineVersion, 1),
-			staffAgentId: uuid(s.staffAgentId),
+			staffAgentId: noticeUuid(s.staffAgentId),
 			payer,
 			// A member's login names its member; a company account none.
-			payerUserId: payer === "member" ? uuid(s.payerUserId) : s.payerUserId === null ? null : invalidFlag(),
-			changedByUserId: s.changedByUserId === null ? null : uuid(s.changedByUserId),
+			payerUserId: payer === "member" ? noticeUuid(s.payerUserId) : s.payerUserId === null ? null : invalidFlag(),
+			changedByUserId: s.changedByUserId === null ? null : noticeUuid(s.changedByUserId),
 			reason,
 			at: date(s.at),
 		};
@@ -265,12 +265,12 @@ function notification(value: unknown, profileId: string): MemberNotification {
 		if (reason !== "withdrawn" && reason !== "released" && reason !== "gone" && reason !== "left") throw invalid();
 		subject = {
 			schema: s.schema,
-			supervisionId: uuid(s.supervisionId),
-			tableId: uuid(s.tableId),
+			supervisionId: noticeUuid(s.supervisionId),
+			tableId: noticeUuid(s.tableId),
 			key: s.key === null ? null : keyValues(s.key),
-			supervisorUserId: uuid(s.supervisorUserId),
+			supervisorUserId: noticeUuid(s.supervisorUserId),
 			reason,
-			byUserId: s.byUserId === null ? null : uuid(s.byUserId),
+			byUserId: s.byUserId === null ? null : noticeUuid(s.byUserId),
 			at: date(s.at),
 		};
 	} else if (kind === "good_will_card_failed" && s.schema === "qorpera.member-notification.good-will-card-failed/v1") {
@@ -298,12 +298,12 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			month: s.month,
 			spendMicrodollars: integer(s.spendMicrodollars),
 			monthlyCapCents: integer(s.monthlyCapCents, 100),
-			runId: uuid(s.runId),
-			sessionId: s.sessionId === null ? null : uuid(s.sessionId),
+			runId: noticeUuid(s.runId),
+			sessionId: s.sessionId === null ? null : noticeUuid(s.sessionId),
 		};
 	} else throw invalid();
 	return {
-		notificationId: uuid(v.notification_id),
+		notificationId: noticeUuid(v.notification_id),
 		profileId,
 		kind,
 		subject,
@@ -325,8 +325,8 @@ export function createWebMemberNotifications(
 	companySignal: AbortSignal,
 	current: () => void,
 ): WebMemberNotifications {
-	uuid(profileId);
-	uuid(memberId);
+	noticeUuid(profileId);
+	noticeUuid(memberId);
 	const origin = new URL(cloud.config.projectUrl);
 	if (
 		origin.protocol !== "https:" ||
@@ -421,7 +421,7 @@ export function createWebMemberNotifications(
 			return notifications;
 		},
 		acknowledgeNotification: async (notificationId, signal) => {
-			if (!observedNotifications.has(uuid(notificationId)))
+			if (!observedNotifications.has(noticeUuid(notificationId)))
 				throw new Error("Refresh notifications before acknowledging this item.");
 			const result = notification(
 				await rpc("qorpera_acknowledge_member_notification", { p_notification_id: notificationId }, signal),

@@ -1,6 +1,6 @@
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, nonEmptyString, oneOf } from "./parse.ts";
 
 /* A member's calls for the company's code kept in Qorpera (migration 20260930720000_code_change_record, own code
  * storage step 2b): which repositories the company has, and, for an owner or admin, a download of one. The code host
@@ -149,14 +149,14 @@ export interface CodeDownloadCalls {
 }
 
 export function parseCodeRepositories(value: unknown): CodeRepositories {
-	const input = record(value, "code repositories");
+	const input = cloudRecord(value, "code repositories");
 	if (input.schema !== "qorpera.code-repositories/v1" || typeof input.canDownload !== "boolean")
 		throw new CloudShapeError("code repositories");
 	const imports = codeImports(input.bringing, input.lastImport);
 	return {
 		canDownload: input.canDownload,
 		repositories: array(input.repositories, "code repositories").map((entry) => {
-			const item = record(entry, "code repository");
+			const item = cloudRecord(entry, "code repository");
 			const imported = codeImported(
 				item.importedFrom,
 				item.importedAt,
@@ -246,10 +246,10 @@ function codeOtherWork(value: unknown): CodeOtherWork | null {
 }
 
 export function parseCodeImportAnswer(value: unknown): CodeImportAnswer {
-	const input = record(value, "code import");
+	const input = cloudRecord(value, "code import");
 	if (input.schema !== "qorpera.code-import/v1" || typeof input.state !== "string")
 		throw new CloudShapeError("code import");
-	if (input.state === "queued") return { state: "queued", requestId: uuid(input.requestId, "code import id") };
+	if (input.state === "queued") return { state: "queued", requestId: cloudUuid(input.requestId, "code import id") };
 	if (input.state === "refused")
 		return { state: "refused", reason: typeof input.reason === "string" && input.reason ? input.reason : "failed" };
 	return { state: "other" };
@@ -270,13 +270,13 @@ function githubCopy(value: unknown): CodeGitHubCopy | null {
 }
 
 export function parseCodeDownload(value: unknown): CodeDownload {
-	const input = record(value, "code download");
+	const input = cloudRecord(value, "code download");
 	if (input.schema !== "qorpera.code-download/v1") throw new CloudShapeError("code download");
 	const file = oneOf(input.file, CODE_DOWNLOAD_KINDS, "code download file");
 	const state = oneOf(input.state, ["queued", "running", "ready", "refused", "failed"], "code download state");
 	if (state === "refused" || state === "failed")
 		return { state, file, reason: typeof input.reason === "string" && input.reason ? input.reason : "failed" };
-	const requestId = uuid(input.requestId, "code download id");
+	const requestId = cloudUuid(input.requestId, "code download id");
 	if (state !== "ready") return { state, requestId, file };
 	return {
 		state,

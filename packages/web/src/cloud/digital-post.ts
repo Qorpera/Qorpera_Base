@@ -1,7 +1,7 @@
 import { POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import type { Cloud } from "./client.ts";
 import { createKeptReplacements, createSecretCapture, type SecretCaptureTarget } from "./connectors.ts";
-import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, oneOf, timestamp } from "./parse.ts";
 
 /* The company's Digital Post as a member reads it (deploy/first-node/RUNTIME-DIGITAL-POST.md; supabase/CLIENT-CONTRACT.md
  * "Digital Post"): the connection's state (`qorpera_member_digital_post`), the letters the folder holds (its index,
@@ -80,7 +80,7 @@ function text(value: unknown, maximum: number): string | undefined {
 
 function parseSupplier(value: unknown): DigitalPostSupplier | undefined {
 	if (absent(value)) return undefined;
-	const input = record(value, "Digital Post supplier");
+	const input = cloudRecord(value, "Digital Post supplier");
 	const cvr = text(input.cvr, 8);
 	if (!cvr || !/^[0-9]{8}$/.test(cvr)) throw new CloudShapeError("Digital Post supplier");
 	return {
@@ -106,7 +106,7 @@ export async function readDigitalPost(
 	signal?: AbortSignal,
 ): Promise<DigitalPostConnection> {
 	const args = { p_environment_id: environmentId };
-	const input = record(
+	const input = cloudRecord(
 		await (signal
 			? cloud.rpc("qorpera_member_digital_post", args, signal)
 			: cloud.rpc("qorpera_member_digital_post", args)),
@@ -118,7 +118,7 @@ export async function readDigitalPost(
 	return {
 		connected: input.connected === true,
 		status: oneOf(input.status, STATUSES, "Digital Post status"),
-		...(absent(input.secretId) ? {} : { secretId: uuid(input.secretId, "Digital Post connection") }),
+		...(absent(input.secretId) ? {} : { secretId: cloudUuid(input.secretId, "Digital Post connection") }),
 		...(supplier ? { supplier } : {}),
 		...(absent(input.systemId) ? {} : { systemId: systemIdOf(input.systemId) }),
 		...(absent(input.fetchedAt) ? {} : { fetchedAt: timestamp(input.fetchedAt, "Digital Post fetch time") }),

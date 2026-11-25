@@ -4,12 +4,12 @@ import {
 	array,
 	boundedInteger,
 	CloudShapeError,
+	cloudRecord,
+	cloudUuid,
 	nonEmptyString,
 	oneOf,
-	record,
 	timestamp,
 	UUID_PATTERN,
-	uuid,
 } from "./parse.ts";
 
 /**
@@ -77,28 +77,28 @@ export function codingValueProblem(value: string): "short" | "long" | "nul" | un
 }
 
 function parseGrant(value: unknown): CodingEnvironmentGrant {
-	const input = record(value, "coding environment grant");
+	const input = cloudRecord(value, "coding environment grant");
 	const repository = input.repository;
 	if (typeof repository !== "string" || !STORED_REPOSITORY.test(repository))
 		throw new CloudShapeError("coding environment repository");
 	return {
-		grantId: uuid(input.grantId, "coding environment grant id"),
+		grantId: cloudUuid(input.grantId, "coding environment grant id"),
 		repository,
-		issuedByUserId: uuid(input.issuedByUserId, "coding environment grant issuer"),
+		issuedByUserId: cloudUuid(input.issuedByUserId, "coding environment grant issuer"),
 		createdAt: timestamp(input.createdAt, "coding environment grant time"),
 	};
 }
 
 export function parseCodingEnvironment(value: unknown): CodingEnvironmentVariable[] {
 	return array(value, "coding environment").map((item) => {
-		const input = record(item, "coding environment variable");
+		const input = cloudRecord(item, "coding environment variable");
 		if (input.schema !== "qorpera.coding-environment-secret/v1")
 			throw new CloudShapeError("coding environment variable");
 		const name = input.name;
 		if (typeof name !== "string" || !CODING_VARIABLE_NAME.test(name))
 			throw new CloudShapeError("coding environment variable name");
 		return {
-			secretId: uuid(input.secretId, "coding environment variable id"),
+			secretId: cloudUuid(input.secretId, "coding environment variable id"),
 			name,
 			ownerKind: oneOf(input.ownerKind, ["company", "member"], "coding environment variable owner"),
 			purpose: nonEmptyString(input.purpose, "coding environment variable purpose"),
@@ -112,10 +112,10 @@ export function parseCodingEnvironment(value: unknown): CodingEnvironmentVariabl
 
 /** A grant as giving or withdrawing it answers, in the state the call must leave it in. */
 function parseGrantChange(value: unknown, status: "active" | "revoked"): CodingEnvironmentGrant {
-	const input = record(value, "coding environment grant");
+	const input = cloudRecord(value, "coding environment grant");
 	if (input.schema !== "qorpera.coding-environment-grant/v1" || input.status !== status)
 		throw new CloudShapeError("coding environment grant");
-	uuid(input.secretId, "coding environment variable id");
+	cloudUuid(input.secretId, "coding environment variable id");
 	return parseGrant(input);
 }
 

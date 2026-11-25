@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { type CloudCodingCommandScope, type CloudCodingRepository, cloudCodingSessionLayout } from "@qorpera/contracts";
+import {
+	type CloudCodingCommandScope,
+	type CloudCodingRepository,
+	cloudCodingSessionLayout,
+	UUID_PATTERN,
+} from "@qorpera/contracts";
 import { inspectCodingSessionGuest } from "./coding-command-transport.ts";
 import {
 	type CodingMachineStorage,
@@ -9,7 +14,6 @@ import {
 } from "./coding-machine.ts";
 import type { LxdInspectableClient } from "./lxd-client.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const HELPER = "/opt/qorpera-coding/cloud-coding-git-guest.mjs";
 const CHUNK = 32768,
@@ -76,12 +80,12 @@ export class LxdCodingGitTransfer {
 		const machine = lxdCodingMachinePlan(options.machine).binding;
 		if (
 			Object.keys(options.scope).sort().join() !== "requestId,turn,vmId,workerId" ||
-			!UUID.test(options.scope.workerId) ||
+			!UUID_PATTERN.test(options.scope.workerId) ||
 			options.scope.vmId !== machine.machineId ||
-			!UUID.test(options.scope.requestId) ||
+			!UUID_PATTERN.test(options.scope.requestId) ||
 			!Number.isSafeInteger(options.scope.turn) ||
 			options.scope.turn < 1 ||
-			!UUID.test(options.bootId) ||
+			!UUID_PATTERN.test(options.bootId) ||
 			!SHA.test(options.helperSha256) ||
 			!SHA.test(options.guestConfigSha256)
 		)
@@ -176,7 +180,7 @@ export class LxdCodingGitTransfer {
 	}
 	#request(transferId: string, headSha: string, bundle?: Uint8Array): Request {
 		if (
-			!UUID.test(transferId) ||
+			!UUID_PATTERN.test(transferId) ||
 			!/^[0-9a-f]{40}$/.test(headSha) ||
 			(bundle !== undefined &&
 				(!(bundle instanceof Uint8Array) || bundle.byteLength < 1 || bundle.byteLength > SEED_LIMIT))

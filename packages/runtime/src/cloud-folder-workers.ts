@@ -23,7 +23,7 @@ import {
 	type CloudCompanyFolderWorkerRequest,
 	CODING_ARCHIVE_REFUSALS,
 	CODING_QUESTION_STALE,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyFolderRpcError } from "./cloud-company-path-refusal.ts";
 import { hashedId } from "./cloud-folder-hiring.ts";
@@ -490,7 +490,7 @@ export class CloudFolderWorkers {
 				nextCursor: null,
 			});
 			if (found && results) {
-				const outputSha256 = sha256(new TextEncoder().encode(output));
+				const outputSha256 = sha256Hex(new TextEncoder().encode(output));
 				await this.#folder.release(
 					releaseIdFor(this.#identity.runId, context.callId, outputSha256),
 					[

@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { open, statfs } from "node:fs/promises";
 import { type CpuInfo, cpus } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import { isUuid } from "@qorpera/contracts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import {
 	assertLxdOfficeHostNamespace,
@@ -33,11 +34,7 @@ const ERRORS = [
 	"NETWORK_COUNTERS_UNAVAILABLE",
 ] as const;
 function officeUuid(value: unknown): string {
-	if (
-		typeof value !== "string" ||
-		!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
-	)
-		throw new Error("NODE_HEALTH_ID_INVALID");
+	if (!isUuid(value)) throw new Error("NODE_HEALTH_ID_INVALID");
 	return value;
 }
 /** How long the observer's health loop waits after each settled attempt. Health is diagnostics: admission,

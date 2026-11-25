@@ -5,6 +5,7 @@ import {
 	parseCloudRunnerModelResponse,
 	validateCloudRunnerModelRequest,
 } from "@qorpera/cloud-client/cloud-runner-model";
+import { isRecord } from "@qorpera/contracts";
 
 export const CLOUD_RUNNER_MODEL_SOCKET_REQUEST_SCHEMA = "qorpera.runner-model-socket-request/v1";
 export const CLOUD_RUNNER_MODEL_SOCKET_RESPONSE_SCHEMA = "qorpera.runner-model-socket-response/v1";
@@ -13,11 +14,11 @@ const MAX_REQUEST_BYTES = 300 * 1024;
 const MAX_RESPONSE_BYTES = 600 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+function frameObject(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) {
 		throw new Error("Runner model socket contains an invalid frame");
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
@@ -27,7 +28,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): voi
 }
 
 function parseResponseFrame(value: unknown, request: CloudRunnerModelRequest): CloudRunnerModelResponse {
-	const frame = record(value);
+	const frame = frameObject(value);
 	if (frame.schema !== CLOUD_RUNNER_MODEL_SOCKET_RESPONSE_SCHEMA) {
 		throw new Error("Runner model socket returned an unsupported response schema");
 	}

@@ -11,8 +11,10 @@ import {
 	type CloudCodingCommandRead,
 	type CloudCodingCommandReceipt,
 	cloudCodingSessionLayout,
+	isUuid,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
+	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
 import { collectCodingCommandOutput, readCodingCommandLog } from "./cloud-coding-command-log.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
@@ -26,7 +28,6 @@ import { assertCloudCodingGuestStorage, type CodingGuestSandbox } from "./cloud-
 import { refreshCodingGuestLease, requireCodingGuestLease } from "./cloud-coding-watchdog.ts";
 
 const executeFile = promisify(execFile);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const ENTRYPOINT = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
 const ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8" });
@@ -77,15 +78,14 @@ function closed(value: unknown, keys: readonly string[]): Record<string, unknown
 		throw new Error("INVALID_CODING_GUEST_REQUEST");
 	return value as Record<string, unknown>;
 }
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || value.length !== 36 || !UUID.test(value))
-		throw new Error("INVALID_CODING_GUEST_ID");
+function guestUuid(value: unknown): string {
+	if (!isUuid(value)) throw new Error("INVALID_CODING_GUEST_ID");
 	return value;
 }
 /** The command unit's ReadWritePaths, in order. The execute step asserts its
  * storage against exactly these, so the two cannot drift apart. */
 export function codingCommandWritablePaths(guest: CodingGuestConfiguration, commandId: string): string[] {
-	return [guest.workspacePath, guest.homePath, guest.cachePath, join(guest.outputRoot, uuid(commandId))];
+	return [guest.workspacePath, guest.homePath, guest.cachePath, join(guest.outputRoot, guestUuid(commandId))];
 }
 export function parseCodingGuestCommandRequest(value: unknown): CodingGuestCommandRequest {
 	const input = closed(value, [
@@ -117,10 +117,10 @@ export function parseCodingGuestCommandRequest(value: unknown): CodingGuestComma
 		throw new Error("INVALID_CODING_GUEST_REQUEST");
 	return Object.freeze({
 		schema: "qorpera.coding-command-request/v2",
-		workerId: uuid(input.workerId),
-		vmId: uuid(input.vmId),
-		commandId: uuid(input.commandId),
-		requestId: uuid(input.requestId),
+		workerId: guestUuid(input.workerId),
+		vmId: guestUuid(input.vmId),
+		commandId: guestUuid(input.commandId),
+		requestId: guestUuid(input.requestId),
 		turn: input.turn as number,
 		inputSha256: input.inputSha256,
 		command: input.command,
@@ -143,7 +143,7 @@ async function system(executable: string, args: readonly string[]): Promise<stri
 async function inspectMachine(): Promise<string> {
 	if (process.platform !== "linux") throw new Error("CODING_GUEST_REQUIRES_LINUX_VM");
 	await system("/usr/bin/systemd-detect-virt", ["--vm", "--quiet"]);
-	return uuid((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim());
+	return guestUuid((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim());
 }
 async function protectedRead(
 	path: string,
@@ -259,8 +259,8 @@ export async function runCodingGuestCommand(
 	ports: CodingGuestCommandPorts = {},
 	read: Omit<CloudCodingCommandRead, "commandId"> = {},
 ): Promise<CodingGuestCommandReceipt> {
-	uuid(workerId);
-	uuid(commandId);
+	guestUuid(workerId);
+	guestUuid(commandId);
 	if (!ports.inspectMachine && process.getuid?.() !== 0) throw new Error("CODING_GUEST_SUPERVISOR_REQUIRES_ROOT");
 	const root = custody(ports, workerId);
 	const owner = ports.protectedUid ?? 0;
@@ -328,7 +328,7 @@ export async function runCodingGuestCommand(
 			schema: "qorpera.coding-command-intent/v1",
 			request,
 			commandSha256,
-			bootId: uuid(saved.bootId),
+			bootId: guestUuid(saved.bootId),
 		};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -560,8 +560,8 @@ export async function runCodingGuestCommand(
 
 /** Everything the execute step checks before it starts the command. */
 async function prepareExecution(workerId: string, commandId: string, ports: CodingGuestCommandPorts) {
-	uuid(workerId);
-	uuid(commandId);
+	guestUuid(workerId);
+	guestUuid(commandId);
 	const guest = await configuration(ports, workerId);
 	// Inside the command unit: ProtectSystem=strict and ReadWritePaths change
 	// the mount view, so assert against exactly the paths the unit declares.
@@ -736,7 +736,7 @@ export async function executeCodingGuestCommand(
 /** Only the trusted root provider may stage this fixed refresh input. The
  * provider must first renew and recheck the matching cloud queue lease. */
 export async function refreshCodingGuestCommandLease(workerId: string, ports: CodingGuestCommandPorts = {}) {
-	uuid(workerId);
+	guestUuid(workerId);
 	const guest = await configuration(ports, workerId);
 	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest);
 	await (ports.system ?? system)("/usr/bin/systemctl", ["is-active", "--quiet", "qorpera-coding-watchdog.timer"]);

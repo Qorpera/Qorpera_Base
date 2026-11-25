@@ -1,8 +1,8 @@
 import { statfs } from "node:fs/promises";
 import { type CpuInfo, cpus, freemem, totalmem } from "node:os";
 import { performance } from "node:perf_hooks";
+import { normalizeUuid } from "@qorpera/contracts";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ADAPTER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 // Public build identifiers, never arbitrary environment text or host paths.
 const VERSION_PATTERN = /^(?:[0-9a-f]{40}|[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(?:-[a-z0-9.-]{1,32})?)$/;
@@ -152,7 +152,7 @@ export class ProviderNodeObservability {
 
 	constructor(options: NodeObservabilityOptions) {
 		this.#providerAdapter = ADAPTER_PATTERN.test(options.providerAdapter) ? options.providerAdapter : null;
-		this.#nodeId = options.nodeId && UUID_PATTERN.test(options.nodeId) ? options.nodeId.toLowerCase() : null;
+		this.#nodeId = normalizeUuid(options.nodeId);
 		this.#softwareVersion =
 			options.softwareVersion && VERSION_PATTERN.test(options.softwareVersion) ? options.softwareVersion : null;
 		this.#sources = {

@@ -1,6 +1,13 @@
 import { createHash, createHmac } from "node:crypto";
 import { CloudRequestTimeoutError, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
+import {
+	type CloudCodingRepository,
+	isRecord,
+	isUuidAnyCase,
+	type JsonValue,
+	parseCloudCodingRepository,
+	UUID_ANY_CASE_PATTERN as UUID,
+} from "@qorpera/contracts";
 import type { BankSyncAuthority } from "./cloud-bank-sync.ts";
 import type { ClaudeLoginRenewalAuthority } from "./cloud-claude-login-renewal.ts";
 import type { ClaudeLoginRunAuthority } from "./cloud-claude-login-vault.ts";
@@ -61,7 +68,6 @@ import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-se
 import { cloudToolJsonText } from "./cloud-tool-json.ts";
 import { markCloudVaultDatabaseFailure } from "./cloud-vault-database-failure.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
 const IDENTIFIER = /^[a-z][a-z0-9_-]{0,63}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -410,24 +416,19 @@ export interface CloudSecretConnectorAdapter {
 	}): Promise<JsonValue>;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.getPrototypeOf(value) !== Object.prototype
-	) {
+function plainRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value) || Object.getPrototypeOf(value) !== Object.prototype) {
 		throw new Error(`${label} is invalid`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function exact(input: Record<string, unknown>, keys: readonly string[], label: string): void {
 	if (Object.keys(input).sort().join() !== [...keys].sort().join()) throw new Error(`${label} is invalid`);
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error(`${label} is invalid`);
+function brokerUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
@@ -442,7 +443,7 @@ function identifier(value: unknown, label: string): string {
 }
 
 function parseCaptureDescription(value: unknown): CloudSecretCaptureDescription {
-	const input = record(value, "Cloud secret capture description");
+	const input = plainRecord(value, "Cloud secret capture description");
 	exact(
 		input,
 		[
@@ -479,10 +480,10 @@ function parseCaptureDescription(value: unknown): CloudSecretCaptureDescription 
 		throw new Error("Cloud secret capture description is invalid");
 	return {
 		schema: "qorpera.cloud-secret-capture-description/v1",
-		ticketId: uuid(input.ticketId, "Cloud secret capture ticket"),
-		companyId: uuid(input.companyId, "Cloud secret company"),
-		environmentId: uuid(input.environmentId, "Cloud secret environment"),
-		secretId: uuid(input.secretId, "Cloud secret id"),
+		ticketId: brokerUuid(input.ticketId, "Cloud secret capture ticket"),
+		companyId: brokerUuid(input.companyId, "Cloud secret company"),
+		environmentId: brokerUuid(input.environmentId, "Cloud secret environment"),
+		secretId: brokerUuid(input.secretId, "Cloud secret id"),
 		version: integer(input.version, "Cloud secret version"),
 		ownerKind: input.ownerKind,
 		ownerUserId: input.ownerUserId as string | null,
@@ -504,7 +505,7 @@ function parseCloudSecretAccountLabel(value: unknown): string | null {
 }
 
 function parseDescriptor(value: unknown, description: CloudSecretCaptureDescription): CloudSecretDescriptor {
-	const input = record(value, "Cloud secret descriptor");
+	const input = plainRecord(value, "Cloud secret descriptor");
 	const keys = [
 		"schema",
 		"secretId",
@@ -534,7 +535,7 @@ function parseDescriptor(value: unknown, description: CloudSecretCaptureDescript
 }
 
 function parseAuthorization(value: unknown, request: CloudSecretOperationRequest): CloudSecretOperationAuthorization {
-	const input = record(value, "Cloud secret operation authorization");
+	const input = plainRecord(value, "Cloud secret operation authorization");
 	exact(
 		input,
 		[
@@ -581,9 +582,9 @@ function parseAuthorization(value: unknown, request: CloudSecretOperationRequest
 		throw new Error("Cloud secret operation authorization differs from its request");
 	return {
 		schema: "qorpera.cloud-secret-operation-authorization/v1",
-		companyId: uuid(input.companyId, "Cloud secret company"),
-		environmentId: uuid(input.environmentId, "Cloud secret environment"),
-		secretId: uuid(input.secretId, "Cloud secret id"),
+		companyId: brokerUuid(input.companyId, "Cloud secret company"),
+		environmentId: brokerUuid(input.environmentId, "Cloud secret environment"),
+		secretId: brokerUuid(input.secretId, "Cloud secret id"),
 		version: integer(input.secretVersion, "Cloud secret version"),
 		keyId: input.keyId,
 		grantId: request.grantId,
@@ -609,8 +610,8 @@ export function parseCodingRepositoryCredentialRequest(value: {
 	if (typeof value.executorOwner !== "string" || !EXECUTOR_OWNER.test(value.executorOwner))
 		throw new Error("Coding repository credential request is invalid");
 	return {
-		workerId: uuid(value.workerId, "Coding worker").toLowerCase(),
-		leaseToken: uuid(value.leaseToken, "Coding lease").toLowerCase(),
+		workerId: brokerUuid(value.workerId, "Coding worker").toLowerCase(),
+		leaseToken: brokerUuid(value.leaseToken, "Coding lease").toLowerCase(),
 		executorOwner: value.executorOwner,
 		repository: parseCloudCodingRepository(value.repository),
 	};
@@ -620,7 +621,7 @@ function parseRepositoryAuthorization(
 	value: unknown,
 	request: CodingRepositoryCredentialRequest,
 ): CodingRepositoryCredentialAuthorization {
-	const input = record(value, "Coding repository credential authorization");
+	const input = plainRecord(value, "Coding repository credential authorization");
 	exact(
 		input,
 		[
@@ -657,9 +658,9 @@ function parseRepositoryAuthorization(
 		throw new Error("Coding repository credential authorization differs from its request");
 	return {
 		schema: "qorpera.coding-repository-credential-authorization/v1",
-		companyId: uuid(input.companyId, "Cloud secret company"),
-		environmentId: uuid(input.environmentId, "Cloud secret environment"),
-		secretId: uuid(input.secretId, "Cloud secret id"),
+		companyId: brokerUuid(input.companyId, "Cloud secret company"),
+		environmentId: brokerUuid(input.environmentId, "Cloud secret environment"),
+		secretId: brokerUuid(input.secretId, "Cloud secret id"),
 		version: integer(input.secretVersion, "Cloud secret version"),
 		keyId: input.keyId,
 		connectorId: "github",
@@ -679,8 +680,8 @@ export function parseCodingEnvironmentRequest(value: {
 	if (typeof value.executorOwner !== "string" || !EXECUTOR_OWNER.test(value.executorOwner))
 		throw new Error("Coding environment request is invalid");
 	return {
-		workerId: uuid(value.workerId, "Coding worker").toLowerCase(),
-		leaseToken: uuid(value.leaseToken, "Coding lease").toLowerCase(),
+		workerId: brokerUuid(value.workerId, "Coding worker").toLowerCase(),
+		leaseToken: brokerUuid(value.leaseToken, "Coding lease").toLowerCase(),
 		executorOwner: value.executorOwner,
 	};
 }
@@ -709,9 +710,11 @@ export function parseAppSecretsRequest(value: {
 	if (scope === "runtime" && !hasDeployment) {
 		throw new Error("App secrets request is invalid");
 	}
-	const deploymentId = hasDeployment ? uuid(value.deploymentId, "Hosted app deployment").toLowerCase() : undefined;
+	const deploymentId = hasDeployment
+		? brokerUuid(value.deploymentId, "Hosted app deployment").toLowerCase()
+		: undefined;
 	return {
-		siteId: uuid(value.siteId, "Hosted app site").toLowerCase(),
+		siteId: brokerUuid(value.siteId, "Hosted app site").toLowerCase(),
 		scope,
 		targetEnv,
 		executorOwner: value.executorOwner,
@@ -723,7 +726,7 @@ export function parseAppSecretsRequest(value: {
 const APP_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
 
 function parseAppSecretEntry(entry: unknown, request: AppSecretsRequest): AppSecretEntry {
-	const secret = record(entry, "App secret");
+	const secret = plainRecord(entry, "App secret");
 	exact(
 		secret,
 		[
@@ -757,7 +760,7 @@ function parseAppSecretEntry(entry: unknown, request: AppSecretsRequest): AppSec
 	}
 	return {
 		name: secret.name,
-		secretId: uuid(secret.secretId, "Cloud secret").toLowerCase(),
+		secretId: brokerUuid(secret.secretId, "Cloud secret").toLowerCase(),
 		version: integer(secret.secretVersion, "Cloud secret version"),
 		keyId: secret.keyId,
 		ownerKind: "company",
@@ -769,7 +772,7 @@ function parseAppSecretEntry(entry: unknown, request: AppSecretsRequest): AppSec
 }
 
 function parseAppSecretsAuthorization(value: unknown, request: AppSecretsRequest): AppSecretsAuthorization {
-	const input = record(value, "App secrets authorization");
+	const input = plainRecord(value, "App secrets authorization");
 	exact(
 		input,
 		["schema", "companyId", "environmentId", "siteId", "slug", "scope", "targetEnv", "secrets"],
@@ -787,8 +790,8 @@ function parseAppSecretsAuthorization(value: unknown, request: AppSecretsRequest
 	) {
 		throw new Error("App secrets authorization differs from its request");
 	}
-	const companyId = uuid(input.companyId, "Cloud secret company");
-	const environmentId = uuid(input.environmentId, "Cloud secret environment");
+	const companyId = brokerUuid(input.companyId, "Cloud secret company");
+	const environmentId = brokerUuid(input.environmentId, "Cloud secret environment");
 	const names = new Set<string>();
 	const secrets = input.secrets.map((entry: unknown): AppSecretEntry => {
 		const secret = parseAppSecretEntry(entry, request);
@@ -812,7 +815,7 @@ function parseCodingEnvironmentAuthorization(
 	value: unknown,
 	request: CodingEnvironmentRequest,
 ): CodingEnvironmentAuthorization {
-	const input = record(value, "Coding environment authorization");
+	const input = plainRecord(value, "Coding environment authorization");
 	const keys = ["schema", "companyId", "environmentId", "workerId", "repository", "secrets"];
 	exact(
 		input,
@@ -831,8 +834,8 @@ function parseCodingEnvironmentAuthorization(
 	)
 		throw new Error("Coding environment authorization differs from its request");
 	const repository = parseCloudCodingRepository(input.repository);
-	const companyId = uuid(input.companyId, "Cloud secret company");
-	const environmentId = uuid(input.environmentId, "Cloud secret environment");
+	const companyId = brokerUuid(input.companyId, "Cloud secret company");
+	const environmentId = brokerUuid(input.environmentId, "Cloud secret environment");
 	// The database settles a member's and the company's secret of the same name before it
 	// answers, so a repeated name here means the answer is not the one it promised. The
 	// mask's versions may repeat a name: they are older values, never an environment.
@@ -855,7 +858,7 @@ function parseCodingEnvironmentAuthorization(
 }
 
 function parseCodingEnvironmentSecret(entry: unknown): CodingEnvironmentSecret {
-	const secret = record(entry, "Coding environment secret");
+	const secret = plainRecord(entry, "Coding environment secret");
 	exact(
 		secret,
 		["name", "secretId", "secretVersion", "keyId", "ownerKind", "encryptedEnvelopeBase64", "envelopeSha256"],
@@ -875,7 +878,7 @@ function parseCodingEnvironmentSecret(entry: unknown): CodingEnvironmentSecret {
 		throw new Error("Coding environment secret is invalid");
 	return {
 		name: secret.name,
-		secretId: uuid(secret.secretId, "Cloud secret id"),
+		secretId: brokerUuid(secret.secretId, "Cloud secret id"),
 		version: integer(secret.secretVersion, "Cloud secret version"),
 		keyId: secret.keyId,
 		ownerKind: secret.ownerKind,
@@ -928,13 +931,13 @@ function parseCodingMcpSignInAuthorization(
 	request: CodingMcpSignInRequest,
 	companyId: string | undefined,
 ): CodingMcpSignInAuthorization {
-	const input = record(value, "Coding MCP sign-in authorization");
+	const input = plainRecord(value, "Coding MCP sign-in authorization");
 	exact(
 		input,
 		["schema", "companyId", "environmentId", "workerId", "origin", "signIn"],
 		"Coding MCP sign-in authorization",
 	);
-	const company = uuid(input.companyId, "Cloud secret company");
+	const company = brokerUuid(input.companyId, "Cloud secret company");
 	if (
 		input.schema !== "qorpera.coding-mcp-sign-in-authorization/v1" ||
 		typeof input.workerId !== "string" ||
@@ -943,9 +946,9 @@ function parseCodingMcpSignInAuthorization(
 		input.origin !== request.origin
 	)
 		throw new Error("Coding MCP sign-in authorization differs from its request");
-	const environmentId = uuid(input.environmentId, "Cloud secret environment");
+	const environmentId = brokerUuid(input.environmentId, "Cloud secret environment");
 	if (input.signIn === null) return { companyId: company, environmentId, signIn: null };
-	const signIn = record(input.signIn, "Coding MCP sign-in");
+	const signIn = plainRecord(input.signIn, "Coding MCP sign-in");
 	exact(
 		signIn,
 		[
@@ -985,7 +988,7 @@ function parseCodingMcpSignInAuthorization(
 		signIn: {
 			companyId: company,
 			environmentId,
-			secretId: uuid(signIn.secretId, "Cloud secret id"),
+			secretId: brokerUuid(signIn.secretId, "Cloud secret id"),
 			version: integer(signIn.secretVersion, "Cloud secret version"),
 			keyId: signIn.keyId,
 			headerName: signIn.headerName,
@@ -1003,7 +1006,7 @@ function parseCodingRepositoryFetchAuthorization(
 	request: CodingRepositoryFetchRequest,
 	companyId: string | undefined,
 ): CodingRepositoryFetchAuthorization {
-	const input = record(value, "Coding repository fetch authorization");
+	const input = plainRecord(value, "Coding repository fetch authorization");
 	exact(
 		input,
 		[
@@ -1023,7 +1026,7 @@ function parseCodingRepositoryFetchAuthorization(
 		"Coding repository fetch authorization",
 	);
 	const repository = parseCloudCodingRepository(input.repository);
-	const company = uuid(input.companyId, "Cloud secret company");
+	const company = brokerUuid(input.companyId, "Cloud secret company");
 	if (
 		input.schema !== "qorpera.coding-repository-fetch-authorization/v1" ||
 		input.connectorId !== "github" ||
@@ -1042,8 +1045,8 @@ function parseCodingRepositoryFetchAuthorization(
 		throw new Error("Coding repository fetch authorization differs from its request");
 	return {
 		companyId: company,
-		environmentId: uuid(input.environmentId, "Cloud secret environment"),
-		secretId: uuid(input.secretId, "Cloud secret id"),
+		environmentId: brokerUuid(input.environmentId, "Cloud secret environment"),
+		secretId: brokerUuid(input.secretId, "Cloud secret id"),
 		version: integer(input.secretVersion, "Cloud secret version"),
 		keyId: input.keyId,
 		encryptedEnvelopeBase64: input.encryptedEnvelopeBase64,
@@ -1404,7 +1407,10 @@ export class CloudSecretBroker {
 		)
 			throw new Error("Email draft action unavailable");
 		const hash = createHash("sha256").update(capability).digest("hex");
-		const claim = record(await this.#authority.claimEmailDraftAction(actionId, hash, signal), "Email draft claim");
+		const claim = plainRecord(
+			await this.#authority.claimEmailDraftAction(actionId, hash, signal),
+			"Email draft claim",
+		);
 		if (claim.execute === false) return claim.state as JsonValue;
 		if (claim.execute !== true || !["save", "send", "discard"].includes(String(claim.action)))
 			throw new Error("Email draft claim invalid");
@@ -1428,9 +1434,9 @@ export class CloudSecretBroker {
 				if (adapters.length !== 1) throw new Error("Gmail draft adapter unavailable");
 				const adapter = adapters[0];
 				const identity: CloudSecretEnvelopeIdentity = {
-					companyId: uuid(claim.companyId, "Email company"),
-					environmentId: uuid(claim.environmentId, "Email environment"),
-					secretId: uuid(claim.secretId, "Email secret"),
+					companyId: brokerUuid(claim.companyId, "Email company"),
+					environmentId: brokerUuid(claim.environmentId, "Email environment"),
+					secretId: brokerUuid(claim.secretId, "Email secret"),
 					version: integer(claim.version, "Email secret version"),
 					keyId: String(claim.keyId),
 				};
@@ -1439,7 +1445,7 @@ export class CloudSecretBroker {
 					if (createHash("sha256").update(envelope).digest("hex") !== claim.envelopeSha256)
 						throw new Error("Email envelope invalid");
 					result = await this.#keys.use(envelope, identity, async (credentials) => {
-						const content = record(claim.content, "Email content");
+						const content = plainRecord(claim.content, "Email content");
 						const argumentsValue: JsonValue =
 							claim.action === "discard"
 								? { draft_id: String(claim.draftId) }
@@ -1458,7 +1464,7 @@ export class CloudSecretBroker {
 						});
 						if (containsSensitiveOutput(output, sensitiveFingerprints(credentials)))
 							return { status: "unconfirmed" };
-						const response = record(output, "Gmail result");
+						const response = plainRecord(output, "Gmail result");
 						if (response.status === "completed") return response.result as JsonValue;
 						// Only a definitive rejection is retryable with a NEW member action.
 						// Provider/server failures, malformed success and transport errors may have sent.
@@ -1813,7 +1819,7 @@ export class PostgresCloudSecretBrokerAuthority
 		brokerCapability: string;
 	}) {
 		this.#database = options.database;
-		this.#brokerAuthorityId = uuid(options.brokerAuthorityId, "Cloud secret broker authority");
+		this.#brokerAuthorityId = brokerUuid(options.brokerAuthorityId, "Cloud secret broker authority");
 		if (!CAPABILITY.test(options.brokerCapability)) throw new Error("Cloud secret broker capability is invalid");
 		this.#brokerCapabilitySha256 = createHash("sha256").update(options.brokerCapability).digest("hex");
 	}
@@ -3041,7 +3047,7 @@ export function sharedBrokerCapability(principalSecret: string, companyId?: stri
 	const label =
 		companyId === undefined
 			? "qorpera.broker-principal/v1"
-			: `qorpera.broker-authority/v1:${uuid(companyId, "Shared cloud secret broker company").toLowerCase()}`;
+			: `qorpera.broker-authority/v1:${brokerUuid(companyId, "Shared cloud secret broker company").toLowerCase()}`;
 	return createHmac("sha256", Buffer.from(principalSecret, "base64url")).update(label).digest("base64url");
 }
 
@@ -3056,7 +3062,7 @@ export class PostgresCloudSecretBrokerPrincipal implements AccountModelLoginAuth
 
 	constructor(options: { database: CloudSecretPostgresClient; principalId: string; principalSecret: string }) {
 		this.#database = options.database;
-		this.#principalId = uuid(options.principalId, "Shared cloud secret broker principal");
+		this.#principalId = brokerUuid(options.principalId, "Shared cloud secret broker principal");
 		this.#principalSecret = options.principalSecret;
 		this.#capabilitySha256 = createHash("sha256")
 			.update(sharedBrokerCapability(options.principalSecret))

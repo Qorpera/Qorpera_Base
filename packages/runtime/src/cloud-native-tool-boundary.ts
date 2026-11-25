@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { CLOUD_TOOL_RESULT_MAX_BYTES } from "@qorpera/cloud-client/cloud-tool-result";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import { CLOUD_REVIEW_UNAVAILABLE, type CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
@@ -78,7 +78,6 @@ const OUTCOME_UNKNOWN =
 const COMPANY_FILE_PARENT_MISSING =
 	"COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When this folder is where the file belongs (its area, such as sales/, or a place a member or your assignment named), create it with company_mkdir first, and any missing folder above it, outermost first (expectedVersion is the version company_read reports for that folder, null if it never existed), then repeat this call unchanged. Otherwise write the file in the folder where it belongs. If company_read shows a file at that path, it is not a folder: do not replace the file; choose another path.";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = DEFAULT_TOOL_JSON_MAX_BYTES;

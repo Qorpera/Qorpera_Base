@@ -1,4 +1,4 @@
-import type { JsonValue } from "@qorpera/contracts";
+import { isRecord, type JsonValue } from "@qorpera/contracts";
 
 export const CLOUD_RUNNER_USAGE_SCHEMA = "qorpera.runner-usage/v1";
 
@@ -29,11 +29,11 @@ export interface CloudRunnerExecutionUsage {
 	limits: CloudRunnerUsageLimits;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+function usageRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) {
 		throw new Error(`Runner usage contains invalid ${label}`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function integer(value: unknown, label: string, minimum: number, maximum: number): number {
@@ -44,9 +44,9 @@ function integer(value: unknown, label: string, minimum: number, maximum: number
 }
 
 export function parseCloudRunnerExecutionUsage(value: unknown): CloudRunnerExecutionUsage {
-	const input = record(value, "observation");
+	const input = usageRecord(value, "observation");
 	if (input.schema !== CLOUD_RUNNER_USAGE_SCHEMA) throw new Error("Runner usage has an invalid schema");
-	const rawLimits = record(input.limits, "limits");
+	const rawLimits = usageRecord(input.limits, "limits");
 	const limits: CloudRunnerUsageLimits = {
 		wallTimeMs: integer(rawLimits.wall_time_ms, "wall-time limit", 10, MAX_WALL_TIME_MS),
 		memoryBytes: integer(rawLimits.memory_bytes, "memory limit", 64 * 1024 * 1024, MAX_MEMORY_BYTES),

@@ -8,7 +8,7 @@ import {
 	type CloudCompanyFolderRunActor,
 	cloudCompanyFolderFailure,
 	cloudCompanyFolderRunActor,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "./cloud-company-path-gateway.ts";
 import {
@@ -87,14 +87,14 @@ function manifestOf(bytes: Uint8Array, mediaType: string, executable: boolean): 
 	if (bytes.byteLength === 0) {
 		fileSha256 = EMPTY_SHA256;
 	} else if (bytes.byteLength <= CHUNK_BYTES) {
-		fileSha256 = sha256(bytes);
+		fileSha256 = sha256Hex(bytes);
 		chunks.push({ sha256: fileSha256, bytes: bytes.byteLength });
 	} else {
 		const whole = createHash("sha256");
 		for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
 			const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
 			whole.update(chunk);
-			chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
+			chunks.push({ sha256: sha256Hex(chunk), bytes: chunk.byteLength });
 		}
 		fileSha256 = whole.digest("hex");
 	}
@@ -120,7 +120,7 @@ function canonicalSingleChunkManifestSha256(file: CloudCompanyFolderFile): strin
 		executable: file.executable,
 		chunks: [{ sha256: file.fileSha256, bytes: file.bytes }],
 	};
-	return sha256(Buffer.from(JSON.stringify(manifest), "utf8"));
+	return sha256Hex(Buffer.from(JSON.stringify(manifest), "utf8"));
 }
 
 export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
@@ -201,7 +201,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	): Promise<CloudFileReference> {
 		const { manifest, text } = manifestOf(bytes, mediaType, executable);
 		const manifestBytes = new TextEncoder().encode(text);
-		const manifestSha256 = sha256(manifestBytes);
+		const manifestSha256 = sha256Hex(manifestBytes);
 		const open = answer(await this.#call("qorpera_folder_open_upload", { p_manifest: text }, signal), [
 			"schema",
 			"intentId",
@@ -440,7 +440,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			const chunk = chunks[0]!;
 			const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
 			if (part.byteLength !== chunk.bytes) invalid();
-			// WHY: #fetchObject already verified sha256(part) === chunk.sha256, so a single chunk needs no second hash or copy.
+			// WHY: #fetchObject already verified sha256Hex(part) === chunk.sha256, so a single chunk needs no second hash or copy.
 			if (chunk.sha256 !== file.fileSha256)
 				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 			return part;
@@ -468,7 +468,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			signal,
 		);
 		// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
-		if (sha256(bytes) !== file.fileSha256)
+		if (sha256Hex(bytes) !== file.fileSha256)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 		return bytes;
 	}
@@ -570,7 +570,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	async #fetchObject(hash: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
 		if (!SHA256_HEX_PATTERN.test(hash)) invalid();
 		const { status, body } = await this.#requestUnlessBusy(hash, { method: "GET" }, maximum, signal);
-		if (status !== 200 || sha256(body) !== hash)
+		if (status !== 200 || sha256Hex(body) !== hash)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder object failed its check");
 		return body;
 	}

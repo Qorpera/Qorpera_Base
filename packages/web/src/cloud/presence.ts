@@ -6,7 +6,7 @@ import {
 	SupabaseCloudPresenceTransport,
 } from "@qorpera/cloud-client/cloud-presence";
 import type { Cloud } from "./client.ts";
-import { array, nonEmptyString, record, uuid } from "./parse.ts";
+import { array, cloudRecord, cloudUuid, nonEmptyString } from "./parse.ts";
 
 /* Who has which conversation open (CLIENT-CONTRACT.md §3, qorpera-presence-{profileId}).
  * The lossy lane: nothing is stored. Each browser tab registers a device key and
@@ -18,10 +18,10 @@ import { array, nonEmptyString, record, uuid } from "./parse.ts";
 export type { CloudPresenceHandle, PresenceHealth, PresenceMember };
 
 function identity(value: unknown) {
-	const input = record(value, "presence identity");
+	const input = cloudRecord(value, "presence identity");
 	return {
-		clientId: uuid(input.client_id, "presence client"),
-		userId: uuid(input.user_id, "presence member"),
+		clientId: cloudUuid(input.client_id, "presence client"),
+		userId: cloudUuid(input.user_id, "presence member"),
 		name: nonEmptyString(input.name, "presence name", 256),
 		publicKey: nonEmptyString(input.public_key, "presence key", 256),
 	};

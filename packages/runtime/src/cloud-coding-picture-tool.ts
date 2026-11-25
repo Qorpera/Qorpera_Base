@@ -5,7 +5,7 @@ import {
 	type CloudCompanyFolderEntry,
 	type CloudCompanyFolderUnit,
 	type CloudCompanyFolderUnitResult,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import {
 	cloudFolderRefusal,
@@ -230,7 +230,7 @@ export function createCodingPictureTool(options: {
 			const request = value as unknown as CodingPictureRequest;
 			if (!operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
 			context.observation?.update({ inputBytes: Buffer.byteLength(request.prompt) });
-			const call = sha256(
+			const call = sha256Hex(
 				Buffer.from(
 					cloudToolJsonText({
 						path: request.path,
@@ -292,7 +292,7 @@ export function createCodingPictureTool(options: {
 				return pictureRefusal(new CloudPictureFailure("invalid"));
 			}
 			if (view.format !== "png") pictureRefusal(new CloudPictureFailure("invalid"));
-			const fileSha256 = sha256(made.png);
+			const fileSha256 = sha256Hex(made.png);
 			const revised =
 				made.revisedPrompt !== undefined && made.revisedPrompt !== request.prompt
 					? Buffer.byteLength(made.revisedPrompt) <= MAX_CLOUD_PICTURE_PROMPT_BYTES && !made.revisedPromptCut
@@ -309,7 +309,7 @@ export function createCodingPictureTool(options: {
 						arguments: {
 							path: request.path,
 							expectedVersion: request.expectedVersion,
-							promptSha256: sha256(Buffer.from(request.prompt, "utf8")),
+							promptSha256: sha256Hex(Buffer.from(request.prompt, "utf8")),
 						},
 						target: { path: fullPath },
 						requiresCompanyRevision: true,
@@ -317,7 +317,7 @@ export function createCodingPictureTool(options: {
 					authorize: async () => {},
 					refused: cloudFolderRefusal,
 					perform: async (_operation, { receiptId, signal }) => {
-						const key = `make_picture:${sha256(Buffer.from(request.operationKey, "utf8"))}`;
+						const key = `make_picture:${sha256Hex(Buffer.from(request.operationKey, "utf8"))}`;
 						const units: CloudCompanyFolderUnit[] = [
 							...missingDirs.map((dir): CloudCompanyFolderUnit => ({ op: "mkdir", path: dir })),
 							{

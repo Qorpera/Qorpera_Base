@@ -1,3 +1,4 @@
+import { parseRecord, UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes } from "./abort-scope.ts";
 import { CloudBankSyncs, logBankSyncPass } from "./cloud-bank-sync.ts";
 import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
@@ -57,7 +58,6 @@ import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
  * accounts and switches off the older logins they replaced, whatever the number of companies.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** A company the list does not know yet is looked up again at most this often. */
 const MISSING_LOOKUP_MS = 2000;
@@ -96,18 +96,13 @@ interface Served {
 	readonly digitalPostSyncs: CloudDigitalPostSyncs | undefined;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 function company(value: unknown): string {
 	if (typeof value !== "string" || !UUID.test(value.toLowerCase())) throw new Error("Shared vault company is invalid");
 	return value.toLowerCase();
 }
 
 function servedEntry(value: unknown): { companyId: string; authorityId: string; keyId: string } {
-	const input = record(value, "Shared vault company");
+	const input = parseRecord(value, "Shared vault company");
 	if (typeof input.keyId !== "string" || !KEY_ID.test(input.keyId)) throw new Error("Shared vault company is invalid");
 	return { companyId: company(input.companyId), authorityId: company(input.authorityId), keyId: input.keyId };
 }
@@ -403,7 +398,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	}
 
 	async #refresh(signal: AbortSignal, generation: number): Promise<void> {
-		const answer = record(await this.#principal.companies(signal), "Shared vault companies");
+		const answer = parseRecord(await this.#principal.companies(signal), "Shared vault companies");
 		if (
 			answer.schema !== "qorpera.broker-principal-companies/v1" ||
 			!Array.isArray(answer.registered) ||
@@ -422,7 +417,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				// Out of time: the next refresh registers the rest.
 				if (signal.aborted || generation !== this.#refreshGeneration) break;
 				try {
-					const done = record(
+					const done = parseRecord(
 						await this.#principal.register(company(waiting), signal),
 						"Shared vault registration",
 					);
@@ -595,7 +590,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		// Under a scope of its own: the vault's closing signal lasts as long as the process (abort-scope.ts).
 		return withAbortScope(this.#closing.signal, async (signal) => {
 			if (this.#closed) return;
-			const answer = record(
+			const answer = parseRecord(
 				await withAbortScopes(
 					[signal],
 					(dueSignal) => this.#principal.eventVerificationsDue(dueSignal),
@@ -621,7 +616,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		// Under a scope of its own: the vault's closing signal lasts as long as the process (abort-scope.ts).
 		return withAbortScope(this.#closing.signal, async (signal) => {
 			if (this.#closed || !this.#bank) return;
-			const answer = record(
+			const answer = parseRecord(
 				await withAbortScopes([signal], (dueSignal) => this.#principal.bankSyncsDue(dueSignal), DEADLINE_MS),
 				"Shared vault bank syncs",
 			);
@@ -643,7 +638,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		// Under a scope of its own: the vault's closing signal lasts as long as the process (abort-scope.ts).
 		return withAbortScope(this.#closing.signal, async (signal) => {
 			if (this.#closed || !this.#digitalPost) return;
-			const answer = record(
+			const answer = parseRecord(
 				await withAbortScopes([signal], (dueSignal) => this.#principal.digitalPostSyncsDue(dueSignal), DEADLINE_MS),
 				"Shared vault Digital Post syncs",
 			);

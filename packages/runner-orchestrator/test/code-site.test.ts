@@ -1191,23 +1191,35 @@ describe("the drop on the machine", { timeout: 60_000 }, () => {
 	});
 });
 
+function createMachinePool(size: number, startSeq: number) {
+	let nextSlot = 0;
+	const slots = Array.from({ length: size }, (_, idx) => ({
+		machinePromise: undefined as Promise<Machine> | undefined,
+		seq: startSeq + idx * 1000,
+		tail: Promise.resolve() as Promise<unknown>,
+	}));
+	const run = <T>(fn: (m: Machine, name: string) => Promise<T>): Promise<T> => {
+		const slot = slots[nextSlot++ % slots.length]!;
+		const task = slot.tail.then(async () => {
+			slot.machinePromise ??= machine();
+			const m = await slot.machinePromise;
+			return fn(m, runName(slot.seq++));
+		});
+		slot.tail = task.catch(() => {});
+		return task;
+	};
+	return { run };
+}
+
 describe("the collect's rules on the machine, as the tree's", { timeout: 180_000 }, () => {
-	let shared: Promise<Machine> | undefined;
-	const machineOnce = () => {
-		shared ??= machine();
-		return shared;
-	};
-	let sequence = 100;
-	/** A site in a run of its own: the collect's answer, and the tree's rules on what it would list. */
-	const judged = async (files: Record<string, Content>, folder = "dist") => {
-		const m = await machineOnce();
-		const name = runName(sequence++);
-		await m.site(name, files, folder);
-		const run = await m.collected(name, { QORPERA_SITE_FOLDER: folder });
-		const answer = codeSiteCollectAnswer(run.output, run.code);
-		return { run, answer, name };
-	};
-	/** The tree's rules agree on what the collect lists. */
+	const pool = createMachinePool(4, 100);
+	const judged = (files: Record<string, Content>, folder = "dist") =>
+		pool.run(async (m, name) => {
+			await m.site(name, files, folder);
+			const run = await m.collected(name, { QORPERA_SITE_FOLDER: folder });
+			const answer = codeSiteCollectAnswer(run.output, run.code);
+			return { run, answer, name, m };
+		});
 	const agree = (files: Record<string, Content>, answer: ReturnType<typeof codeSiteCollectAnswer>) => {
 		const listed = Object.entries(files)
 			.filter(([, content]) => typeof content === "string" || Buffer.isBuffer(content))
@@ -1229,10 +1241,9 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 				...Object.entries(index),
 				...Array.from({ length: count - 1 }, (_, i) => [`f${i % 50}/${i}.js`, `${i}`]),
 			]);
-		const taken = await judged(files(500));
+		const [taken, refused] = await Promise.all([judged(files(500)), judged(files(501))]);
 		expect(taken.answer).toEqual({ made: { tree: expect.any(String), files: 500, bytes: expect.any(Number) } });
 		agree(files(500), taken.answer);
-		const refused = await judged(files(501));
 		expect(refused.run).toEqual({ code: 3, signal: null, output: "SITE_TOO_MANY_FILES\n" });
 		agree(files(501), refused.answer);
 	});
@@ -1244,34 +1255,33 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 				["n/m/deep.js", "deep"],
 				...Array.from({ length: count - 2 }, (_, i) => [`f${i}/a.js`, "a"]),
 			]);
-		const taken = await judged(files(100));
+		const [taken, refused] = await Promise.all([judged(files(100)), judged(files(101))]);
 		expect(taken.run.code).toBe(0);
-		const m = await machineOnce();
-		expect([...(await m.treeOf(treeIn(taken.run.output))).keys()]).toHaveLength(100);
-		const refused = await judged(files(101));
+		expect([...(await taken.m.treeOf(treeIn(taken.run.output))).keys()]).toHaveLength(100);
 		expect(refused.run).toEqual({ code: 3, signal: null, output: "SITE_TOO_MANY_FOLDERS\n" });
 		agree(files(101), refused.answer);
 	});
 
 	it("takes a file of 10 MiB and a site of 25 MiB, and refuses one byte more of either", async () => {
 		const big = randomBytes(10 * MiB);
-		const taken = await judged({ ...index, "big.png": big });
-		expect(taken.run.code).toBe(0);
-		const m = await machineOnce();
-		expect((await m.treeOf(treeIn(taken.run.output))).get("big.png")?.content.equals(big)).toBe(true);
 		const over = { ...index, "a/big.png": Buffer.concat([big, Buffer.from([1])]) };
-		const refused = await judged(over);
-		expect(refused.run).toEqual({ code: 3, signal: null, output: "SITE_FILE_TOO_LARGE a/big.png\n" });
-		agree(over, refused.answer);
 		const total = (extra: number) => ({
 			"index.html": "x".repeat(1000),
 			"a.png": big,
 			"b.png": big,
 			"c.mp4": Buffer.alloc(5 * MiB - 1000 + extra, 7),
 		});
-		const whole = await judged(total(0));
+		const [taken, refused, whole, past] = await Promise.all([
+			judged({ ...index, "big.png": big }),
+			judged(over),
+			judged(total(0)),
+			judged(total(1)),
+		]);
+		expect(taken.run.code).toBe(0);
+		expect((await taken.m.treeOf(treeIn(taken.run.output))).get("big.png")?.content.equals(big)).toBe(true);
+		expect(refused.run).toEqual({ code: 3, signal: null, output: "SITE_FILE_TOO_LARGE a/big.png\n" });
+		agree(over, refused.answer);
 		expect(whole.run.output).toMatch(/\nfiles 4\nbytes 26214400\n$/);
-		const past = await judged(total(1));
 		expect(past.run).toEqual({ code: 3, signal: null, output: "SITE_TOO_LARGE\n" });
 		agree(total(1), past.answer);
 	});
@@ -1279,10 +1289,7 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 	it("refuses a web file whose name a site cannot serve, naming it on one line", async () => {
 		const deep = (parts: number) => `${Array.from({ length: parts - 1 }, () => "d").join("/")}/x.js`;
 		const long = (length: number) => `${"a".repeat(200)}/${"b".repeat(200)}/${"c".repeat(length - 405)}.js`;
-		expect(
-			(await judged({ ...index, [deep(16)]: "x", [long(512)]: "x", [`${"p".repeat(197)}.js`]: "x" })).run.code,
-		).toBe(0);
-		for (const [path, shownAs] of [
+		const badNames: [string, string][] = [
 			["a b.html", "a b.html"],
 			["café.html", "caf\\xc3\\xa9.html"],
 			["-x.js", "-x.js"],
@@ -1291,68 +1298,80 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 			[deep(17), deep(17)],
 			[long(513), long(513)],
 			[`${"p".repeat(198)}.js`, `${"p".repeat(198)}.js`],
-		]) {
-			const files = { ...index, [path as string]: "x" };
-			const refused = await judged(files);
+		];
+		const [valid, ...refusedList] = await Promise.all([
+			judged({ ...index, [deep(16)]: "x", [long(512)]: "x", [`${"p".repeat(197)}.js`]: "x" }),
+			...badNames.map(([path]) => judged({ ...index, [path]: "x" })),
+		]);
+		expect(valid.run.code).toBe(0);
+		for (let i = 0; i < badNames.length; i++) {
+			const [path, shownAs] = badNames[i]!;
+			const files = { ...index, [path]: "x" };
+			const refused = refusedList[i]!;
 			expect(refused.run, path).toEqual({ code: 3, signal: null, output: `SITE_FILE_NAME ${shownAs}\n` });
-			expect(refused.answer).toEqual({ problem: problem("SITE_FILE_NAME", path as string) });
-			if (!path?.includes("\n")) agree(files, refused.answer);
+			expect(refused.answer).toEqual({ problem: problem("SITE_FILE_NAME", path) });
+			if (!path.includes("\n")) agree(files, refused.answer);
 		}
 	});
 
 	it("needs index.html at the top, a regular file", async () => {
-		for (const files of [
+		const cases: Record<string, Content>[] = [
 			{ "a.html": "x" },
 			{ "sub/index.html": "x" },
 			{ "INDEX.HTML": "x" },
 			{ "index.html": { link: "a.html" }, "a.html": "x" },
 			{ "index.html/a.css": "x" },
 			{},
-		] as Record<string, Content>[]) {
-			const refused = await judged(files);
-			expect(refused.run).toEqual({ code: 3, signal: null, output: "SITE_NO_INDEX\n" });
-			agree(files, refused.answer);
+		];
+		const results = await Promise.all(cases.map((files) => judged(files)));
+		for (let i = 0; i < cases.length; i++) {
+			expect(results[i]!.run).toEqual({ code: 3, signal: null, output: "SITE_NO_INDEX\n" });
+			agree(cases[i]!, results[i]!.answer);
 		}
 	});
 
 	it("needs the folder to be one, with no link on its way; '.' is the copy's top", async () => {
-		const { run } = await judged(index, "out");
-		expect(run.output).toMatch(/^tree /);
-		const m = await machineOnce();
-		const missing = runName(sequence++);
-		await mkdir(join(m.root, missing, "src"), { recursive: true });
-		expect(await m.collected(missing, { QORPERA_SITE_FOLDER: "dist" })).toEqual({
-			code: 3,
-			signal: null,
-			output: "SITE_FOLDER_MISSING\n",
-		});
-		// A file, a link to a folder of the copy, and a link on the folder's way.
-		for (const [files, folder] of [
+		const badFolders = [
 			[{ dist: "x" }, "dist"],
 			[{ dist: "x" }, "dist/x"],
 			[{ "real/index.html": "x", dist: { link: "real" } }, "dist"],
 			[{ "real/dist/index.html": "x", web: { link: "real" } }, "web/dist"],
-		] as const) {
-			const name = runName(sequence++);
-			await m.site(name, files, ".");
-			expect(await m.collected(name, { QORPERA_SITE_FOLDER: folder }), folder).toEqual({
+		] as const;
+		const [outRun, missingRun, wholeRun, recipeResults, ...badResults] = await Promise.all([
+			judged(index, "out"),
+			pool.run(async (m, name) => {
+				await mkdir(join(m.root, name, "src"), { recursive: true });
+				return m.collected(name, { QORPERA_SITE_FOLDER: "dist" });
+			}),
+			judged({ "index.html": "x", ".git/config": "x", "app.js": "y" }, "."),
+			pool.run(async (m, name) => {
+				await m.site(name, index);
+				const out: Array<[string, Awaited<ReturnType<Machine["collected"]>>]> = [];
+				for (const folder of ["", "../x", "a//b", "/abs"]) {
+					out.push([folder, await m.collected(name, { QORPERA_SITE_FOLDER: folder })]);
+				}
+				return out;
+			}),
+			...badFolders.map(([files, folder]) =>
+				pool.run(async (m, name) => {
+					await m.site(name, files, ".");
+					return m.collected(name, { QORPERA_SITE_FOLDER: folder });
+				}),
+			),
+		]);
+		expect(outRun.run.output).toMatch(/^tree /);
+		expect(missingRun).toEqual({ code: 3, signal: null, output: "SITE_FOLDER_MISSING\n" });
+		for (let i = 0; i < badFolders.length; i++) {
+			expect(badResults[i], badFolders[i]![1]).toEqual({
 				code: 3,
 				signal: null,
 				output: "SITE_FOLDER_MISSING\n",
 			});
 		}
-		// The copy's top: its .git and other hidden parts are left out.
-		const whole = await judged({ "index.html": "x", ".git/config": "x", "app.js": "y" }, ".");
-		expect(whole.run.output).toMatch(/\nfiles 2\nbytes 2\n$/);
-		// A recipe that is not as the host makes it is not the code's fault.
-		const recipe = runName(sequence++);
-		await m.site(recipe, index);
-		for (const folder of ["", "../x", "a//b", "/abs"])
-			expect(await m.collected(recipe, { QORPERA_SITE_FOLDER: folder }), folder).toEqual({
-				code: 2,
-				signal: null,
-				output: "",
-			});
+		expect(wholeRun.run.output).toMatch(/\nfiles 2\nbytes 2\n$/);
+		for (const [folder, res] of recipeResults) {
+			expect(res, folder).toEqual({ code: 2, signal: null, output: "" });
+		}
 	});
 
 	it("finds a secret value byte for byte in a listed file, by its variable, and never prints it", async () => {
@@ -1376,40 +1395,43 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 			MULTI: multiline,
 			STRIPE_KEY: value,
 		};
-		const m = await machineOnce();
-		const name = runName(sequence++);
-		await m.site(name, files);
-		const before = await m.loose();
-		const found = await m.collected(name, environment);
-		expect(found).toEqual({ code: 3, signal: null, output: "SITE_HOLDS_SECRET MULTI a.txt\n" });
-		expect(codeSiteCollectAnswer(found.output, found.code)).toEqual({
+		const [first, nextRun, cleanRun] = await Promise.all([
+			pool.run(async (m, name) => {
+				await m.site(name, files);
+				const before = await m.loose();
+				const found = await m.collected(name, environment);
+				const err = await readFile(join(m.root, name, "site.err"), "utf8");
+				const after = await m.loose();
+				const wrote = await m.wrote(name);
+				const gitExists = await exists(join(m.root, name, "site.git"));
+				return { before, found, err, after, wrote, gitExists };
+			}),
+			pool.run(async (m, name) => {
+				await m.site(name, files);
+				return m.collected(name, { ...environment, MULTI: "nowhere in it" });
+			}),
+			pool.run(async (m, name) => {
+				await m.site(name, files);
+				return m.collected(name, { ...environment, MULTI: `${multiline}\n`, STRIPE_KEY: `${value}\n` });
+			}),
+		]);
+		expect(first.found).toEqual({ code: 3, signal: null, output: "SITE_HOLDS_SECRET MULTI a.txt\n" });
+		expect(codeSiteCollectAnswer(first.found.output, first.found.code)).toEqual({
 			problem: { code: "SITE_HOLDS_SECRET", path: "a.txt", variable: "MULTI" },
 		});
-		const err = await readFile(join(m.root, name, "site.err"), "utf8");
 		for (const secret of [value, multiline, "line two of it"]) {
-			expect(found.output).not.toContain(secret);
-			expect(err).not.toContain(secret);
+			expect(first.found.output).not.toContain(secret);
+			expect(first.err).not.toContain(secret);
 		}
-		expect(await m.loose()).toEqual(before);
-		expect(await m.wrote(name)).toEqual([]);
-		expect(await exists(join(m.root, name, "site.git"))).toBe(false);
-		// Without the multi-line value, the next: the key in app.js.
-		const next = runName(sequence++);
-		await m.site(next, files);
-		expect((await m.collected(next, { ...environment, MULTI: "nowhere in it" })).output).toBe(
-			"SITE_HOLDS_SECRET STRIPE_KEY js/app.js\n",
-		);
-		// Byte for byte: the value with a line break after it is not in the file, a seven-byte one is never looked for,
-		// and a value only a hidden or an unserved file holds is no part of the site.
-		const clean = runName(sequence++);
-		await m.site(clean, files);
-		const made = await m.collected(clean, { ...environment, MULTI: `${multiline}\n`, STRIPE_KEY: `${value}\n` });
-		expect(made.code).toBe(0);
-		expect(made.output).toMatch(/\nfiles 4\n/);
+		expect(first.after).toEqual(first.before);
+		expect(first.wrote).toEqual([]);
+		expect(first.gitExists).toBe(false);
+		expect(nextRun.output).toBe("SITE_HOLDS_SECRET STRIPE_KEY js/app.js\n");
+		expect(cleanRun.code).toBe(0);
+		expect(cleanRun.output).toMatch(/\nfiles 4\n/);
 	});
 
 	it("never names a path that holds a secret value, whatever rule it met: only the variable (release review, F1)", async () => {
-		const m = await machineOnce();
 		const environment = {
 			QORPERA_SITE_SECRET_NAMES: "FIRST_KEY BACKSLASH_KEY UNICODE_KEY PLAIN_KEY",
 			FIRST_KEY: "first-secret-0001",
@@ -1417,22 +1439,25 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 			UNICODE_KEY: "cl\u00e9-secr\u00e8te-42",
 			PLAIN_KEY: "token-abcdefgh12",
 		};
-		for (const [files, output] of [
-			// A name a site cannot serve, with a backslash or a byte outside printable ASCII the answer would spell \xHH.
+		const cases = [
 			[{ ...index, "assets/live_key\\foo-1234.js": "x" }, "SITE_HOLDS_SECRET BACKSLASH_KEY\n"],
 			[{ ...index, "cl\u00e9-secr\u00e8te-42.css": "x" }, "SITE_HOLDS_SECRET UNICODE_KEY\n"],
-			// A file over 10 MiB whose path holds a value.
 			[{ ...index, "big/token-abcdefgh12.mp4": Buffer.alloc(10 * MiB + 1) }, "SITE_HOLDS_SECRET PLAIN_KEY\n"],
-			// A path a site serves that holds a value, its bytes clean: the scan reads the paths too.
 			[{ ...index, "js/token-abcdefgh12.js": "clean" }, "SITE_HOLDS_SECRET PLAIN_KEY\n"],
-			// A file whose bytes hold one value and whose path holds another: the bytes' variable, no path.
 			[{ ...index, "token-abcdefgh12.txt": "first-secret-0001" }, "SITE_HOLDS_SECRET FIRST_KEY\n"],
-			// The bytes hold a value and the path holds none: named as before.
 			[{ ...index, "js/app.js": "token-abcdefgh12" }, "SITE_HOLDS_SECRET PLAIN_KEY js/app.js\n"],
-		] as const) {
-			const name = runName(sequence++);
-			await m.site(name, files);
-			const run = await m.collected(name, environment);
+		] as const;
+		const runs = await Promise.all(
+			cases.map(([files]) =>
+				pool.run(async (m, name) => {
+					await m.site(name, files);
+					return m.collected(name, environment);
+				}),
+			),
+		);
+		for (let i = 0; i < cases.length; i++) {
+			const [, output] = cases[i]!;
+			const run = runs[i]!;
 			expect(run, output).toEqual({ code: 3, signal: null, output });
 			const answer = codeSiteCollectAnswer(run.output, run.code);
 			expect(answer).not.toBeNull();
@@ -1444,43 +1469,37 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 	});
 
 	it("leaves out a name whose spelling would not fit whole, never cuts it (review of #1691, F1)", async () => {
-		// Five parts of 100 two-byte characters: 4,000 bytes spelled. A cut at 1,000 would carry the name's start, and a
-		// value only the host's mask knows could begin there: the answer is the code alone.
 		const path = `a${"/".concat("\u00e9".repeat(100)).repeat(5)}.js`;
-		const { run, answer } = await judged({ ...index, [path]: "x" });
-		expect(run).toEqual({ code: 3, signal: null, output: "SITE_FILE_NAME\n" });
-		expect(answer).toEqual({ problem: problem("SITE_FILE_NAME") });
-		// One of 1,000 bytes spelled is named whole; one byte more and it is left out.
 		const name = `${"\u00e9".repeat(124)}.js`;
-		expect((await judged({ ...index, [`abcd/${name}`]: "x" })).run.output).toBe(
-			`SITE_FILE_NAME abcd/${"\\xc3\\xa9".repeat(124)}.js\n`,
-		);
-		expect((await judged({ ...index, [`abcde/${name}`]: "x" })).run.output).toBe("SITE_FILE_NAME\n");
+		const [tooLong, fits, overByOne] = await Promise.all([
+			judged({ ...index, [path]: "x" }),
+			judged({ ...index, [`abcd/${name}`]: "x" }),
+			judged({ ...index, [`abcde/${name}`]: "x" }),
+		]);
+		expect(tooLong.run).toEqual({ code: 3, signal: null, output: "SITE_FILE_NAME\n" });
+		expect(tooLong.answer).toEqual({ problem: problem("SITE_FILE_NAME") });
+		expect(fits.run.output).toBe(`SITE_FILE_NAME abcd/${"\\xc3\\xa9".repeat(124)}.js\n`);
+		expect(overByOne.run.output).toBe("SITE_FILE_NAME\n");
 	});
 });
 
 // The first live site (Wristband, 11 November 2026) loaded /src/style.css and /src/app.js from the top of the sites'
 // domain, where no site is served: its page showed with no design and no script. -----------------------------------------
 describe("the links from the root, on the machine", { timeout: 180_000 }, () => {
-	let shared: Promise<Machine> | undefined;
-	let sequence = 300;
-	/** The collect over a site of `files` in a run of its own, with `environment`. */
-	const collectOf = async (files: Record<string, Content>, environment: Record<string, string> = {}) => {
-		shared ??= machine();
-		const m = await shared;
-		const name = runName(sequence++);
-		await m.site(name, files);
-		const started = performance.now();
-		const run = await m.collected(name, environment);
-		return { ...run, ms: performance.now() - started, m, name };
-	};
+	const pool = createMachinePool(6, 5000);
+	const collectOf = (files: Record<string, Content>, environment: Record<string, string> = {}) =>
+		pool.run(async (m, name) => {
+			await m.site(name, files);
+			const started = performance.now();
+			const run = await m.collected(name, environment);
+			return { ...run, ms: performance.now() - started, m, name };
+		});
 	const refusedWith = async (files: Record<string, Content>, line: string) =>
 		expect(await collectOf(files), line).toMatchObject({ code: 3, signal: null, output: line });
 	const page = (body: string) => `<!doctype html><html><head><title>t</title></head><body>${body}</body></html>`;
 
 	it("refuses a page that links from the root in any attribute that loads or leads somewhere, naming its file", async () => {
-		// Each with the link it holds (review round 3 of #1691: the answer names the file and how many, never a link).
-		for (const [body] of [
+		const bodies = [
 			['<link rel="stylesheet" href="/src/style.css">', "/src/style.css"],
 			['<script type="module" src="/src/app.js"></script>', "/src/app.js"],
 			['<img src="a.png" srcset="small.png 1x, /big.png 2x">', "/big.png"],
@@ -1578,31 +1597,36 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 				'<math><mi><b><mglyph><style><img src="/mglyph-under-b.png"></style></mglyph></b></mi></math>',
 				"/mglyph-under-b.png",
 			],
-		])
-			await refusedWith({ "index.html": page(body as string) }, "SITE_LINKS_FROM_ROOT index.html 1\n");
-		// A sheet the page ends inside is still read: an HTML <style> and an SVG one.
-		for (const content of ["<style>a { b: url(/never-closed.png) }", "<svg><style>a { b: url(/never-closed.png) }"])
-			await refusedWith({ "index.html": content }, "SITE_LINKS_FROM_ROOT index.html 1\n");
+		];
+		await Promise.all([
+			...bodies.map(([body]) =>
+				refusedWith({ "index.html": page(body as string) }, "SITE_LINKS_FROM_ROOT index.html 1\n"),
+			),
+			...["<style>a { b: url(/never-closed.png) }", "<svg><style>a { b: url(/never-closed.png) }"].map((content) =>
+				refusedWith({ "index.html": content }, "SITE_LINKS_FROM_ROOT index.html 1\n"),
+			),
+		]);
 	});
 
 	it("never names a link: its file and how many it has (review round 3 of #1691)", async () => {
-		// The review of round 1's case, a long link ending in 32 bytes of ASCII, and three links in one page.
-		await refusedWith(
-			{ "index.html": page(`<a href="/${"é".repeat(120)}OLDsecret-0123456789abcdefghijKL">x</a>`) },
-			"SITE_LINKS_FROM_ROOT index.html 1\n",
-		);
-		await refusedWith(
-			{ "index.html": page('<link href="/a.css"><a href="b.html">b</a><img src="/c.png"><a href="/">home</a>') },
-			"SITE_LINKS_FROM_ROOT index.html 3\n",
-		);
-		await refusedWith(
-			{ "index.html": page("x"), "a.css": "a { background: url(/a.png) } @import '/b.css'; b { c: url(c.png) }" },
-			"SITE_LINKS_FROM_ROOT a.css 2\n",
-		);
+		await Promise.all([
+			refusedWith(
+				{ "index.html": page(`<a href="/${"é".repeat(120)}OLDsecret-0123456789abcdefghijKL">x</a>`) },
+				"SITE_LINKS_FROM_ROOT index.html 1\n",
+			),
+			refusedWith(
+				{ "index.html": page('<link href="/a.css"><a href="b.html">b</a><img src="/c.png"><a href="/">home</a>') },
+				"SITE_LINKS_FROM_ROOT index.html 3\n",
+			),
+			refusedWith(
+				{ "index.html": page("x"), "a.css": "a { background: url(/a.png) } @import '/b.css'; b { c: url(c.png) }" },
+				"SITE_LINKS_FROM_ROOT a.css 2\n",
+			),
+		]);
 	});
 
 	it("refuses a style sheet that links from the root, in url() or @import", async () => {
-		for (const [css] of [
+		const sheets = [
 			['@import "/base.css";', "/base.css"],
 			["@import '/print.css' print;", "/print.css"],
 			["@import url(/u.css);", "/u.css"],
@@ -1642,17 +1666,23 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			['a { background: url("/fn\\', "/fn"],
 			["a { background: url(/x\\", "/x�"],
 			["a { background: url(  /spaces-at-the-end.png  ", "/spaces-at-the-end.png"],
-		])
-			await refusedWith({ "index.html": page("x"), "css/site.css": css }, "SITE_LINKS_FROM_ROOT css/site.css 1\n");
-		// A page of any case of its extension; the first link in C order of the files: a.css before index.html.
-		await refusedWith(
-			{ "index.html": page("x"), "Page.HTM": page('<a href="/x">x</a>') },
-			"SITE_LINKS_FROM_ROOT Page.HTM 1\n",
-		);
-		await refusedWith(
-			{ "index.html": page('<link href="/i.css">'), "a.css": "b { background: url(/a.png) }" },
-			"SITE_LINKS_FROM_ROOT a.css 1\n",
-		);
+		];
+		await Promise.all([
+			...sheets.map(([css]) =>
+				refusedWith(
+					{ "index.html": page("x"), "css/site.css": css as string },
+					"SITE_LINKS_FROM_ROOT css/site.css 1\n",
+				),
+			),
+			refusedWith(
+				{ "index.html": page("x"), "Page.HTM": page('<a href="/x">x</a>') },
+				"SITE_LINKS_FROM_ROOT Page.HTM 1\n",
+			),
+			refusedWith(
+				{ "index.html": page('<link href="/i.css">'), "a.css": "b { background: url(/a.png) }" },
+				"SITE_LINKS_FROM_ROOT a.css 1\n",
+			),
+		]);
 	});
 
 	it("takes every link that is not from the root, and what is no link at all", async () => {
@@ -1763,17 +1793,16 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			LINK_KEY: "link-secret-4242",
 			ESCAPED_KEY: "prefix-secret-1234)tail-5678",
 		};
-		// Written plainly the file's bytes hold it, and the scan of the bytes names the file as before.
-		const plain = await collectOf({ "index.html": page('<a href="/k/link-secret-4242">x</a>') }, environment);
+		const [plain, spelled, escaped] = await Promise.all([
+			collectOf({ "index.html": page('<a href="/k/link-secret-4242">x</a>') }, environment),
+			collectOf({ "index.html": page('<a href="/k/&#108;ink-secret-4242">x</a>') }, environment),
+			collectOf(
+				{ "index.html": page("x"), "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
+				environment,
+			),
+		]);
 		expect(plain.output).toBe("SITE_HOLDS_SECRET LINK_KEY index.html\n");
-		// By character references, or by a CSS escape (the review's case: the URL token takes the escaped parenthesis,
-		// and the bytes never hold the value): a link from the root, with no byte of it printed.
-		const spelled = await collectOf({ "index.html": page('<a href="/k/&#108;ink-secret-4242">x</a>') }, environment);
 		expect(spelled).toMatchObject({ code: 3, output: "SITE_LINKS_FROM_ROOT index.html 1\n" });
-		const escaped = await collectOf(
-			{ "index.html": page("x"), "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
-			environment,
-		);
 		expect(escaped).toMatchObject({ code: 3, output: "SITE_LINKS_FROM_ROOT a.css 1\n" });
 		for (const run of [plain, spelled, escaped]) {
 			const err = await readFile(join(run.m.root, run.name, "site.err"), "utf8");
@@ -1793,42 +1822,36 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			"src/style.css": "body { background: url(/img/bg.png) }",
 			"src/app.js": "import '/src/x.js';",
 		};
-		// Refused as before: the host's `refused`, no variable at all (a host before step 5), and every other value.
 		const refusing: Record<string, string>[] = [
 			{ QORPERA_SITE_ROOT_LINKS: "refused" },
 			{},
 			...["ALLOWED", "allowed ", " allowed", "yes", "1", ""].map((v) => ({ QORPERA_SITE_ROOT_LINKS: v })),
 		];
-		for (const value of refusing)
-			expect(await collectOf(rooted, value), JSON.stringify(value)).toMatchObject({
-				code: 3,
-				signal: null,
-				output: "SITE_LINKS_FROM_ROOT index.html 2\n",
-			});
-		// Allowed: the site is made, its files whole.
-		const made = await collectOf(rooted, { QORPERA_SITE_ROOT_LINKS: "allowed" });
-		expect(made).toMatchObject({ code: 0, signal: null });
-		expect(made.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\nbytes \d+\n$/);
-		const tree = await made.m.treeOf(treeIn(made.output));
-		expect([...tree.keys()].sort()).toEqual(Object.keys(rooted).sort());
-		// Every other rule still holds: a secret value, a missing index, a missing folder.
 		const environment = {
 			QORPERA_SITE_ROOT_LINKS: "allowed",
 			QORPERA_SITE_SECRET_NAMES: "LINK_KEY",
 			LINK_KEY: "link-secret-4242",
 		};
-		expect(await collectOf({ ...rooted, "a.js": "link-secret-4242" }, environment)).toMatchObject({
-			code: 3,
-			output: "SITE_HOLDS_SECRET LINK_KEY a.js\n",
-		});
-		expect(await collectOf({ "a.html": page('<a href="/">x</a>') }, environment)).toMatchObject({
-			code: 3,
-			output: "SITE_NO_INDEX\n",
-		});
-		expect(await collectOf(rooted, { ...environment, QORPERA_SITE_FOLDER: CODE_SITE_DRILL_FOLDER })).toMatchObject({
-			code: 3,
-			output: "SITE_FOLDER_MISSING\n",
-		});
+		const [made, secretRes, noIndexRes, missingFolderRes, ...refusedRuns] = await Promise.all([
+			collectOf(rooted, { QORPERA_SITE_ROOT_LINKS: "allowed" }),
+			collectOf({ ...rooted, "a.js": "link-secret-4242" }, environment),
+			collectOf({ "a.html": page('<a href="/">x</a>') }, environment),
+			collectOf(rooted, { ...environment, QORPERA_SITE_FOLDER: CODE_SITE_DRILL_FOLDER }),
+			...refusing.map((value) => collectOf(rooted, value)),
+		]);
+		for (let i = 0; i < refusing.length; i++)
+			expect(refusedRuns[i], JSON.stringify(refusing[i])).toMatchObject({
+				code: 3,
+				signal: null,
+				output: "SITE_LINKS_FROM_ROOT index.html 2\n",
+			});
+		expect(made).toMatchObject({ code: 0, signal: null });
+		expect(made.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\nbytes \d+\n$/);
+		const tree = await made.m.treeOf(treeIn(made.output));
+		expect([...tree.keys()].sort()).toEqual(Object.keys(rooted).sort());
+		expect(secretRes).toMatchObject({ code: 3, output: "SITE_HOLDS_SECRET LINK_KEY a.js\n" });
+		expect(noIndexRes).toMatchObject({ code: 3, output: "SITE_NO_INDEX\n" });
+		expect(missingFolderRes).toMatchObject({ code: 3, output: "SITE_FOLDER_MISSING\n" });
 	});
 
 	it("reads 25 MiB of pages and styles within the collect's time", async () => {
@@ -1840,10 +1863,6 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			"b.html": fill(10 * MiB, unit),
 			"c.css": fill(5 * MiB - 10_000, "a { background: url(i/a.png) } /* c */ b { content: 'x' }\n"),
 		};
-		const made = await collectOf(dense);
-		expect(made.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
-		// Shapes the parser must not take long over: a comment never closed, a tag never closed, a value never closed,
-		// a page of angle brackets; and a style sheet of unclosed strings and comments.
 		const odd = {
 			"index.html": `<p>x</p><!--${"a<b>".repeat(MiB)}`,
 			"a.html": `<a href="x" title="${"&amp;<".repeat(MiB / 2)}`,
@@ -1852,39 +1871,37 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			"d.css": `"${"x/*".repeat(MiB)}`,
 			"e.css": `/*${"url(".repeat(MiB)}`,
 		};
-		const slow = await collectOf(odd);
-		expect(slow.output).toMatch(/^tree [0-9a-f]{40}\nfiles 6\n/);
-		// Style sheets of as many tokens as bytes: the tokenizer stays linear.
-		const tokens = await collectOf({
-			"index.html": "<p>x</p>",
-			"t.css": "a/".repeat(5 * MiB),
-			"u.css": "(".repeat(5 * MiB),
-			"v.css": '"x" '.repeat((9 * MiB) / 4),
-		});
-		expect(tokens.output).toMatch(/^tree [0-9a-f]{40}\nfiles 4\n/);
-		// Scripts the escaped states must not take long over: dashes, angle brackets, nested script openings.
-		const scripts = await collectOf({
-			"index.html": `<script>${"-".repeat(8 * MiB)}</script>`,
-			"a.html": `<script><!--${"<s".repeat(4 * MiB)}`,
-			"b.html": `<script><!--${"<script>-".repeat(MiB / 2)}`,
-		});
-		expect(scripts.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
-		// Foreign content: a million open SVG elements and as many end tags that match none, a quarter million SVG
-		// sheets, and breakouts that leave a MathML element open each time.
-		const foreign = await collectOf({
-			"index.html": `<svg>${"<g>".repeat(MiB)}${"</x>".repeat(MiB)}`,
-			"a.html": "<svg><style>a</style>".repeat(MiB / 4),
-			"b.html": "<math><mi><svg><g><p>".repeat(MiB / 4),
-		});
-		expect(foreign.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
-		// HTML inside an integration point: a million open elements an end tag pops at once, and CDATA read again as
-		// markup, in one long section and in half a million short ones.
 		const doubt = "<svg><foreignObject><div></foreignObject>";
-		const html = await collectOf({
-			"index.html": `<svg><foreignObject>${"<div>".repeat(MiB)}</svg>`,
-			"a.html": `${doubt}<![CDATA[>${"<img src=a>".repeat(MiB / 2)}]]>`,
-			"b.html": `${doubt}${"<![CDATA[>a]]>".repeat(MiB / 2)}`,
-		});
+		const [made, slow, tokens, scripts, foreign, html] = await Promise.all([
+			collectOf(dense),
+			collectOf(odd),
+			collectOf({
+				"index.html": "<p>x</p>",
+				"t.css": "a/".repeat(5 * MiB),
+				"u.css": "(".repeat(5 * MiB),
+				"v.css": '"x" '.repeat((9 * MiB) / 4),
+			}),
+			collectOf({
+				"index.html": `<script>${"-".repeat(8 * MiB)}</script>`,
+				"a.html": `<script><!--${"<s".repeat(4 * MiB)}`,
+				"b.html": `<script><!--${"<script>-".repeat(MiB / 2)}`,
+			}),
+			collectOf({
+				"index.html": `<svg>${"<g>".repeat(MiB)}${"</x>".repeat(MiB)}`,
+				"a.html": "<svg><style>a</style>".repeat(MiB / 4),
+				"b.html": "<math><mi><svg><g><p>".repeat(MiB / 4),
+			}),
+			collectOf({
+				"index.html": `<svg><foreignObject>${"<div>".repeat(MiB)}</svg>`,
+				"a.html": `${doubt}<![CDATA[>${"<img src=a>".repeat(MiB / 2)}]]>`,
+				"b.html": `${doubt}${"<![CDATA[>a]]>".repeat(MiB / 2)}`,
+			}),
+		]);
+		expect(made.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		expect(slow.output).toMatch(/^tree [0-9a-f]{40}\nfiles 6\n/);
+		expect(tokens.output).toMatch(/^tree [0-9a-f]{40}\nfiles 4\n/);
+		expect(scripts.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		expect(foreign.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
 		expect(html.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
 		console.log(
 			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms, style sheets of a token a byte ${Math.round(tokens.ms)} ms, scripts ${Math.round(scripts.ms)} ms, foreign content ${Math.round(foreign.ms)} ms, HTML in foreign content ${Math.round(html.ms)} ms`,

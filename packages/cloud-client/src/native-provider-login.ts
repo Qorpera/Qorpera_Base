@@ -1,4 +1,4 @@
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, parseRecord, UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import type { NativeProviderLoginAuthorization } from "./cloud-native-subscription-control.ts";
 import { readBoundedCloudResponse } from "./cloud-request.ts";
 
@@ -6,7 +6,6 @@ const BRIDGE_LOGIN_REQUEST_SCHEMA = "qorpera.native-provider-login/v1";
 const BRIDGE_LOGIN_RESPONSE_SCHEMA = "qorpera.native-provider-login-result/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BRIDGE_RESPONSE_BYTES = 64 * 1024;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface NativeProviderLoginPrompt {
 	loginId: string;
@@ -18,11 +17,6 @@ export interface NativeProviderLoginPrompt {
 
 export interface NativeProviderIdentityBridge {
 	beginLogin(authorization: NativeProviderLoginAuthorization): Promise<NativeProviderLoginPrompt>;
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
 }
 
 function bridgeUrl(value: string): URL {
@@ -111,7 +105,7 @@ export class HttpNativeProviderIdentityBridge implements NativeProviderIdentityB
 			clearTimeout(timer);
 			this.#signal?.removeEventListener("abort", onAbort);
 		}
-		const value = record(raw, "Native provider login response");
+		const value = parseRecord(raw, "Native provider login response");
 		if (
 			value.schema !== BRIDGE_LOGIN_RESPONSE_SCHEMA ||
 			value.login_id !== authorization.loginId ||

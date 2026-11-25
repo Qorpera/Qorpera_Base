@@ -1,4 +1,5 @@
 import { osRelative } from "@qorpera/cloud-client/company-state-files";
+import { isUuidAnyCase } from "@qorpera/contracts";
 import { CloudControlRpcRefused, cloudControlPause } from "./cloud-control-errors.ts";
 import {
 	type CloudNativeToolBinding,
@@ -36,7 +37,6 @@ export const REQUIRED_CLOUD_WAKE_POLICY: CloudWakePolicy = Object.freeze({
 	maxPublicSends: null,
 });
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** A folder version's op, as a file wake's change names it (folder core P29). */
 const FOLDER_FILE_WAKE_OPS: ReadonlySet<string> = new Set(["write", "mkdir", "delete", "move_out", "move_in", "copy"]);
 /** Why a human task woke its agent (H2c, migration 20260930065000): a change by someone else, or its due passing. */
@@ -111,18 +111,18 @@ function codingScope(value: unknown, sequence: unknown): boolean {
 	);
 }
 
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error("Invalid cloud wake identity");
+function wakeUuid(value: unknown): string {
+	if (!isUuidAnyCase(value)) throw new Error("Invalid cloud wake identity");
 	return value;
 }
 
 function nullableUuid(value: unknown): string | null {
-	return value === null ? null : uuid(value);
+	return value === null ? null : wakeUuid(value);
 }
 
 /** UUID accepts either case, so a check that two ids differ (or none repeats) compares these. */
 function uuidKey(value: unknown): string {
-	return uuid(value).toLowerCase();
+	return wakeUuid(value).toLowerCase();
 }
 
 /** A validator for cloud-derived immutable policy, never a job/prompt flag resolver. */
@@ -330,7 +330,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		policy.kind === null ||
 		policy.kind !== wake.kind ||
 		(["runId", "companyId", "environmentId", "staffAgentId", "requesterUserId"] as const).some(
-			(key) => uuid(wake[key]) !== identity[key],
+			(key) => wakeUuid(wake[key]) !== identity[key],
 		) ||
 		audience.kind !== identity.audienceKind ||
 		nullableUuid(audience.userId) !== identity.audienceUserId ||
@@ -359,13 +359,13 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		causal.agentIds.at(-1) !== identity.staffAgentId
 	)
 		throw new Error("Cloud wake does not match its admitted run");
-	const id = uuid(wake.id);
+	const id = wakeUuid(wake.id);
 	const actorStaffId = nullableUuid(wake.actorStaffId);
 	const actorUserId = nullableUuid(wake.actorUserId);
 	const parentRunId = nullableUuid(wake.parentRunId);
-	uuid(source.id);
+	wakeUuid(source.id);
 	nullableUuid(pins.companySnapshotId);
-	uuid(causal.rootId);
+	wakeUuid(causal.rootId);
 	// Messages coworkers left for this agent with priority false since it last
 	// ran ride on any wake as data; the per-kind payload rules see the rest.
 	const { heldMessages, ...payloadBody } = (
@@ -385,8 +385,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				uuidKey(line.staffAgentId) === uuidKey(identity.staffAgentId)
 			)
 				throw new Error("Invalid held coworker messages");
-			uuid(line.eventId);
-			uuid(line.pairSessionId);
+			wakeUuid(line.eventId);
+			wakeUuid(line.pairSessionId);
 		}
 	}
 	let routine: CloudWakeEnvelope["routine"] = null;
@@ -405,7 +405,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		)
 			throw new Error("Invalid stored routine");
 		routine = Object.freeze({
-			id: uuid(stored.id),
+			id: wakeUuid(stored.id),
 			version: stored.version as number,
 			intent: stored.intent,
 			...(stored.dynamic === true ? { dynamic: true as const, routineKey: stored.routineKey as string } : {}),
@@ -444,8 +444,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 							Buffer.byteLength(one.from) > 4096))
 				)
 					throw new Error("Invalid file wake metadata");
-				uuid(one.version);
-				if (Object.hasOwn(one, "priorVersion")) uuid(one.priorVersion);
+				wakeUuid(one.version);
+				if (Object.hasOwn(one, "priorVersion")) wakeUuid(one.priorVersion);
 			}
 		} else if (source.kind === "event") {
 			// Events from one of the company's hooks (W2): outside content, at most 20 a wake.
@@ -466,7 +466,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				actorStaffId !== null
 			)
 				throw new Error("Invalid event wake");
-			uuid(batch.firstDeliveryId);
+			wakeUuid(batch.firstDeliveryId);
 			const seen = new Set<string>();
 			for (const item of batch.events) {
 				const event = closedWithOptional(
@@ -563,8 +563,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			source.kind !== "room" ||
 			!Array.isArray(post.inputIds) ||
 			post.inputIds.length !== 1 ||
-			uuid(post.inputIds[0]) !== source.id ||
-			uuid(post.recipientStaffId) !== identity.staffAgentId ||
+			wakeUuid(post.inputIds[0]) !== source.id ||
+			wakeUuid(post.recipientStaffId) !== identity.staffAgentId ||
 			parentRunId !== null ||
 			actorStaffId !== null ||
 			actorUserId === null ||
@@ -572,7 +572,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			audience.sessionId === null
 		)
 			throw new Error("Invalid room wake");
-		uuid(post.roomId);
+		wakeUuid(post.roomId);
 	} else if (wake.kind === "agent" && source.kind === "office-activation") {
 		const activation = closed(payloadBody, [
 			"schema",
@@ -595,12 +595,12 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			wake.routine !== null ||
 			!Number.isSafeInteger(activation.computerGeneration) ||
 			(activation.computerGeneration as number) < 1 ||
-			source.occurrenceKey !== `office-activation:${uuid(activation.intentId)}:${parentRunId}`
+			source.occurrenceKey !== `office-activation:${wakeUuid(activation.intentId)}:${parentRunId}`
 		)
 			throw new Error("Invalid office activation wake");
-		uuid(activation.activationId);
-		uuid(activation.companyComputerId);
-		uuid(activation.receiptId);
+		wakeUuid(activation.activationId);
+		wakeUuid(activation.companyComputerId);
+		wakeUuid(activation.receiptId);
 	} else if (wake.kind === "agent" && source.kind === "worker-dispatch") {
 		// Contract 13: a blank child with a complete dispatch, no conversation and no sender.
 		// A coding session (13.1) carries its scope under "coding"; an in-house child never does.
@@ -642,9 +642,9 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		if (surfaceSessionNamed) {
 			if (!coding) throw new Error("Invalid worker dispatch wake");
 			const surfaceSession = closed(work.surfaceSession, ["sessionId", "surfaceId", "surfaceSlug", "leaseToken"]);
-			uuid(surfaceSession.sessionId);
-			uuid(surfaceSession.surfaceId);
-			uuid(surfaceSession.leaseToken);
+			wakeUuid(surfaceSession.sessionId);
+			wakeUuid(surfaceSession.surfaceId);
+			wakeUuid(surfaceSession.leaseToken);
 			if (
 				typeof surfaceSession.surfaceSlug !== "string" ||
 				!/^[a-z0-9][a-z0-9-]{0,63}$/.test(surfaceSession.surfaceSlug)
@@ -656,10 +656,10 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			? parentRunId === null && work.parentRunId === null
 			: parentRunId !== null &&
 				uuidKey(parentRunId) !== uuidKey(identity.runId) &&
-				uuid(work.parentRunId) === parentRunId;
+				wakeUuid(work.parentRunId) === parentRunId;
 		if (
 			work.schema !== "qorpera.worker-dispatch/v1" ||
-			uuid(work.workerId) !== source.id ||
+			wakeUuid(work.workerId) !== source.id ||
 			(work.species !== "in-house" && work.species !== "coding") ||
 			(work.access !== "read" && work.access !== "write") ||
 			(coding && (work.access !== "read" || !codingScope(work.coding, work.sequence))) ||
@@ -694,7 +694,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			done.schema !== "qorpera.worker-completion/v1" ||
 			parentRunId === null ||
 			uuidKey(parentRunId) === uuidKey(identity.runId) ||
-			uuid(done.parentRunId) !== parentRunId ||
+			wakeUuid(done.parentRunId) !== parentRunId ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
 			audience.kind !== "company" ||
@@ -735,7 +735,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			events.schema !== "qorpera.machine-event/v1" ||
 			parentRunId === null ||
 			uuidKey(parentRunId) === uuidKey(identity.runId) ||
-			uuid(events.parentRunId) !== parentRunId ||
+			wakeUuid(events.parentRunId) !== parentRunId ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
 			audience.kind !== "company" ||
@@ -764,11 +764,11 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			if (
 				typeof event.machine !== "string" ||
 				(event.kind !== "running" && event.kind !== "stopped" && event.kind !== "command") ||
-				(event.kind === "command" && (typeof event.command !== "string" || uuid(event.commandId) === null)) ||
+				(event.kind === "command" && (typeof event.command !== "string" || wakeUuid(event.commandId) === null)) ||
 				(event.outputTail !== null && typeof event.outputTail !== "string")
 			)
 				throw new Error("Invalid machine event wake");
-			uuid(event.machineId);
+			wakeUuid(event.machineId);
 		}
 	} else if (wake.kind === "agent" && source.kind === "machine-checkin") {
 		// A typed internal continuation of the agent's own run: a program it started has kept a machine busy for hours
@@ -784,7 +784,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			asked.schema !== "qorpera.machine-checkin/v1" ||
 			parentRunId === null ||
 			uuidKey(parentRunId) === uuidKey(identity.runId) ||
-			uuid(asked.parentRunId) !== parentRunId ||
+			wakeUuid(asked.parentRunId) !== parentRunId ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
 			audience.kind !== "company" ||
@@ -802,7 +802,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			if ((item as { machineKind?: unknown } | null)?.machineKind === "always-on") {
 				const weekly = closed(item, ["checkinId", "machineKind", "since", "askedAt", "machine", "weeks"]);
 				if (
-					(index === 0 && uuid(weekly.checkinId) !== source.id) ||
+					(index === 0 && wakeUuid(weekly.checkinId) !== source.id) ||
 					typeof weekly.since !== "string" ||
 					typeof weekly.askedAt !== "string" ||
 					typeof weekly.machine !== "string" ||
@@ -810,7 +810,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 					(weekly.weeks as number) < 1
 				)
 					throw new Error("Invalid machine check-in wake");
-				uuid(weekly.checkinId);
+				wakeUuid(weekly.checkinId);
 				continue;
 			}
 			const coding = (item as { machineKind?: unknown } | null)?.machineKind === "coding";
@@ -827,7 +827,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				...(coding ? ["todoKey", "workerKey"] : []),
 			]);
 			if (
-				(index === 0 && uuid(checkin.checkinId) !== source.id) ||
+				(index === 0 && wakeUuid(checkin.checkinId) !== source.id) ||
 				!["computer", "machine", "coding"].includes(checkin.machineKind as string) ||
 				(coding &&
 					(typeof checkin.todoKey !== "string" ||
@@ -845,7 +845,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				checkin.running.length > 8
 			)
 				throw new Error("Invalid machine check-in wake");
-			uuid(checkin.checkinId);
+			wakeUuid(checkin.checkinId);
 			for (const running of checkin.running) {
 				// A session that read files only some agents may read names each command by its commandId alone (W6a).
 				const narrow =
@@ -862,7 +862,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 						: typeof program.startedAt !== "string")
 				)
 					throw new Error("Invalid machine check-in wake");
-				if (machine || narrow) uuid(program.commandId);
+				if (machine || narrow) wakeUuid(program.commandId);
 			}
 		}
 	} else if (wake.kind === "agent" && source.kind === "light-ask") {
@@ -907,7 +907,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		if (
 			session.schema !== CLOUD_SURFACE_SESSION_WAKE_SCHEMA ||
 			uuidKey(session.surfaceSessionId) !== uuidKey(source.id) ||
-			uuid(session.surfaceId) === null ||
+			wakeUuid(session.surfaceId) === null ||
 			uuidKey(session.profileId) !== uuidKey(identity.companyId) ||
 			source.occurrenceKey.toLowerCase() !==
 				`surface-session:${uuidKey(source.id)}:${uuidKey(session.leaseToken)}` ||
@@ -926,7 +926,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			policy.final !== "forbidden"
 		)
 			throw new Error("Invalid surface session wake");
-		uuid(session.surfaceId);
+		wakeUuid(session.surfaceId);
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:
 		// the task itself, when the run may read its file, says what to do next.
@@ -980,7 +980,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			source.id !== id ||
 			parentRunId === null ||
 			actorStaffId === null ||
-			uuid(message.senderStaffId) !== actorStaffId ||
+			wakeUuid(message.senderStaffId) !== actorStaffId ||
 			typeof message.text !== "string" ||
 			!message.text.trim() ||
 			Buffer.byteLength(message.text) > 4096 ||
@@ -991,9 +991,9 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(message.pairEventId === undefined) !== (message.pairSessionId === undefined)
 		)
 			throw new Error("Invalid coworker wake");
-		uuid(message.receiptId);
-		if (message.pairSessionId !== undefined) uuid(message.pairSessionId);
-		if (message.pairEventId !== undefined) uuid(message.pairEventId);
+		wakeUuid(message.receiptId);
+		if (message.pairSessionId !== undefined) wakeUuid(message.pairSessionId);
+		if (message.pairEventId !== undefined) wakeUuid(message.pairEventId);
 		if (message.transcript !== undefined) {
 			if (!Array.isArray(message.transcript) || message.transcript.length > 24)
 				throw new Error("Invalid coworker transcript");
@@ -1006,8 +1006,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 					!Number.isFinite(Date.parse(line.at))
 				)
 					throw new Error("Invalid coworker transcript");
-				uuid(line.eventId);
-				uuid(line.staffAgentId);
+				wakeUuid(line.eventId);
+				wakeUuid(line.staffAgentId);
 			}
 		}
 	} else {
@@ -1059,7 +1059,7 @@ export interface CloudCoworkerMessage {
 
 function parseCoworkerMessage(value: unknown): CloudCoworkerMessage {
 	const message = closedWithOptional(value, ["recipientStaffId", "operationKey", "text"], ["priority"]);
-	const recipientStaffId = uuid(message.recipientStaffId).toLowerCase();
+	const recipientStaffId = wakeUuid(message.recipientStaffId).toLowerCase();
 	if (
 		typeof message.operationKey !== "string" ||
 		!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(message.operationKey) ||
@@ -1162,7 +1162,7 @@ async function sendCoworkerMessage(
 		(receipt.status === "queued") !== (nullableUuid(receipt.occurrenceId) !== null)
 	)
 		throw new Error("Invalid coworker delivery receipt");
-	uuid(receipt.receiptId);
+	wakeUuid(receipt.receiptId);
 	return Object.freeze({ ...receipt }) as unknown as CloudCoworkerReceipt;
 }
 

@@ -1,4 +1,4 @@
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 
 export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
 /** How an agent links a file of the company folder in a message: a markdown link whose target is `folder:` and the

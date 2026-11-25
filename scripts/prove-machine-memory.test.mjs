@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -337,7 +337,6 @@ test("a part ends, and the proof fails, when its machine could not be deleted, m
 		// The proof wants root; the stand-in needs none.
 		await writeFile(join(bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o755 });
 		let number = 0;
-		/** One run of the proof: the parts, the stand-in's calls that fail ("verb n"), what a machine says it has. */
 		const prove = async (parts, { fails = [], saysKb, legClicks, killProbeAt, stallAtReading, pauseProbeAt, pauseBesideAt, legEndsWhileStopped, pause = "0.01" } = {}) => {
 			number += 1;
 			const state = join(temporary, `state-${number}`);
@@ -350,28 +349,83 @@ test("a part ends, and the proof fails, when its machine could not be deleted, m
 			if (pauseProbeAt) await writeFile(join(state, "pause-probe-at"), `${pauseProbeAt}\n`);
 			if (pauseBesideAt) await writeFile(join(state, "pause-beside-at"), `${pauseBesideAt}\n`);
 			if (legEndsWhileStopped) await writeFile(join(state, "leg-ends-while-stopped"), `${legEndsWhileStopped}\n`);
-			const result = spawnSync(
-				"bash",
-				[join(repositoryRoot, "scripts/prove-machine-memory.sh"), "0".repeat(64), "qorpera-build", "qorpera0", "qorpera-vm", ...parts],
-				// The probe asks without its second's pause, so a probed leg takes seconds here, not minutes.
-				{ encoding: "utf8", timeout: 120_000, env: { PATH: `${bin}:${process.env.PATH}`, STUB: state, MEMORY_PROOF_PROBE_PAUSE: pause } },
-			);
+			const result = await new Promise((resolveRun, rejectRun) => {
+				const child = spawn(
+					"bash",
+					[join(repositoryRoot, "scripts/prove-machine-memory.sh"), "0".repeat(64), "qorpera-build", "qorpera0", "qorpera-vm", ...parts],
+					{ stdio: ["ignore", "pipe", "pipe"], env: { PATH: `${bin}:${process.env.PATH}`, STUB: state, MEMORY_PROOF_PROBE_PAUSE: pause } },
+				);
+				const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+				let stdout = "";
+				let stderr = "";
+				child.stdout.setEncoding("utf8").on("data", (chunk) => {
+					stdout += chunk;
+				});
+				child.stderr.setEncoding("utf8").on("data", (chunk) => {
+					stderr += chunk;
+				});
+				child.on("error", (error) => {
+					clearTimeout(timer);
+					rejectRun(error);
+				});
+				child.on("close", (status) => {
+					clearTimeout(timer);
+					resolveRun({ status, stdout, stderr });
+				});
+			});
 			let legs = "";
 			try {
 				legs = readFileSync(join(state, "legs"), "utf8");
 			} catch {}
 			return { status: result.status, out: result.stdout + result.stderr, legs, left: readdirSync(join(state, "machines")) };
 		};
-		/** The proof failed, said so, never said it passed, and left no machine. */
 		const failed = (run, why) => {
 			assert.equal(run.status, 1, run.out);
 			assert.match(run.out, why);
 			assert.doesNotMatch(run.out, /PROOF PASSED/);
 			assert.deepEqual(run.left, [], run.out);
 		};
+		const clicksHole = (word) => new RegExp(`\\nCHECK ${word}past the edge there was no hole in the clicks from the leg's start to its end \\(the longest time with none in flight: (\\d+\\.\\d\\d) s; `);
+		const besideHole = (word) => new RegExp(`\\nCHECK ${word}past the edge there was no hole in the readings and looks beside them from the leg's start to its end \\(the longest time with none in flight: (\\d+\\.\\d\\d) s; `);
+		const ends = /\nCHECK ok {3}past the edge the clicks' loop and the loop beside it ran from the leg's start to its end \((?:clicks rounds=\d+ beside rounds=\d+|beside rounds=\d+ clicks rounds=\d+)\)\n/;
+		const answered = /\nCHECK ok {3}past the edge the machine kept answering desktop clicks \(/;
+		const looks = /\nCHECK ok {3}past the edge the guest helper answered every look with an observation \(\d+ looks\)\n/;
+		const oneFailed = /\nchecks: 8 ok, 1 failed; parts ended: 1 of 1; the parts' own status: 0; [^\n]+\nPROOF FAILED\n/;
 
-		// Healthy: each part on a machine of its own size, and the proof passes.
-		const healthy = await prove(["numbers", "small"]);
+		const [
+			healthy,
+			leftBehind,
+			init2,
+			start2,
+			filePush8,
+			list3,
+			restart,
+			wrongSize,
+			probedLeg,
+			probeEnded,
+			stalled,
+			stoodStill,
+			overTheEnd,
+			besideStoodStill,
+			unread,
+		] = await Promise.all([
+			prove(["numbers", "small"]),
+			prove(["numbers", "small"], { fails: ["delete 1", "init 2", "start 2"] }),
+			prove(["numbers", "small"], { fails: ["init 2"] }),
+			prove(["numbers", "small"], { fails: ["start 2"] }),
+			prove(["numbers", "small"], { fails: ["file-push 8"] }),
+			prove(["numbers", "small"], { fails: ["list 3"] }),
+			prove(["checks"], { fails: ["restart 1"] }),
+			prove(["small"], { saysKb: 3925216 }),
+			prove(["edge"], { legClicks: 70 }),
+			prove(["edge"], { legClicks: 90, killProbeAt: 75 }),
+			prove(["edge"], { legClicks: 70, stallAtReading: "30 4" }),
+			prove(["edge"], { legClicks: 62, pauseProbeAt: "20 2.5", pause: "0.05" }),
+			prove(["edge"], { legClicks: 500, pauseProbeAt: "65 4", legEndsWhileStopped: "2", pause: "0.05" }),
+			prove(["edge"], { legClicks: 62, pauseBesideAt: "1 3", pause: "0.05" }),
+			prove(["small"], { fails: ["list 1"] }),
+		]);
+
 		assert.equal(healthy.status, 0, healthy.out);
 		assert.match(healthy.out, /\nchecks: 8 ok, 0 failed; parts ended: 2 of 2; the parts' own status: 0; [^\n]+\nPROOF PASSED\n/);
 		assert.equal(healthy.out.match(/\nCHECK ok {3}the part's machine is the one it asked for: 2 processors, [24]GiB /g).length, 2);
@@ -381,89 +435,54 @@ test("a part ends, and the proof fails, when its machine could not be deleted, m
 		);
 		assert.deepEqual(healthy.left, []);
 
-		// The reviewer's case: the delete after `numbers` fails, so making and starting the machine of `small` fail too,
-		// while the machine left behind (4 GiB) still answers. Not one leg of `small` may run, and the proof fails.
-		const leftBehind = await prove(["numbers", "small"], { fails: ["delete 1", "init 2", "start 2"] });
 		failed(leftBehind, /\nFAIL: the machine \S+ could not be deleted\n(?:[^]*\n)?checks: 5 ok, 0 failed; parts ended: 0 of 2; the parts' own status: 1; [^\n]+\nPROOF FAILED\n/);
 		assert.equal(leftBehind.legs, "4GiB mix nothing-else-running\n4GiB mix all-processors-busy busy\n4GiB load 1500 stop 24\n4GiB after stop\n");
 
-		// Each step alone: making, starting, a file put in place, the list of the build space after a delete.
-		for (const [fails, why] of [
-			[["init 2"], /\nFAIL: the machine could not be made\n/],
-			[["start 2"], /\nFAIL: the machine could not be started\n/],
-			[["file-push 8"], /\nFAIL: guest\.sh could not be put into the machine\n/],
-			[["list 3"], /\nFAIL: the build space qorpera-build could not be listed\n/],
+		for (const [run, failLabel, why] of [
+			[init2, "init 2", /\nFAIL: the machine could not be made\n/],
+			[start2, "start 2", /\nFAIL: the machine could not be started\n/],
+			[filePush8, "file-push 8", /\nFAIL: guest\.sh could not be put into the machine\n/],
+			[list3, "list 3", /\nFAIL: the build space qorpera-build could not be listed\n/],
 		]) {
-			const run = await prove(["numbers", "small"], { fails });
 			failed(run, why);
 			assert.match(run.out, /\nchecks: \d+ ok, 0 failed; parts ended: [01] of 2; the parts' own status: 1; [^\n]+\nPROOF FAILED\n/);
-			assert.doesNotMatch(run.legs, /load 600/, fails[0]);
+			assert.doesNotMatch(run.legs, /load 600/, failLabel);
 		}
 
-		// A restart that fails ends the part before the legs that need the new boot.
-		const restart = await prove(["checks"], { fails: ["restart 1"] });
 		failed(restart, /\nFAIL: the machine could not be restarted\n[^]*\nPROOF FAILED\n/);
 		assert.equal(restart.legs, "4GiB boot\n4GiB quiet\n4GiB pointer\n4GiB hide\n");
 
-		// A machine that is not the size the part asked for (here: one of 4 GiB under the 2 GiB part) is a failed check,
-		// and no leg runs on it.
-		const wrongSize = await prove(["small"], { saysKb: 3925216 });
 		failed(wrongSize, /\nCHECK FAIL the part's machine is the one it asked for: 2 processors, 2GiB \(it has \[2\] processors, \[3925216\] kB\)\n/);
 		assert.match(wrongSize.out, /\nchecks: 0 ok, 1 failed; parts ended: 0 of 1; the parts' own status: 1; /);
 		assert.equal(wrongSize.legs, "");
 
-		// Review rounds 3 to 5 of #1692: a probed leg. Healthy: one loop asks clicks and nothing else, another beside it
-		// reads the memory numbers and takes the looks, both from the leg's start to its end and without a hole, and
-		// the proof passes on the five checks of the two loops and the legs' own.
-		const clicksHole = (word) => new RegExp(`\\nCHECK ${word}past the edge there was no hole in the clicks from the leg's start to its end \\(the longest time with none in flight: (\\d+\\.\\d\\d) s; `);
-		const besideHole = (word) => new RegExp(`\\nCHECK ${word}past the edge there was no hole in the readings and looks beside them from the leg's start to its end \\(the longest time with none in flight: (\\d+\\.\\d\\d) s; `);
-		const ends = /\nCHECK ok {3}past the edge the clicks' loop and the loop beside it ran from the leg's start to its end \((?:clicks rounds=\d+ beside rounds=\d+|beside rounds=\d+ clicks rounds=\d+)\)\n/;
-		const answered = /\nCHECK ok {3}past the edge the machine kept answering desktop clicks \(/;
-		const looks = /\nCHECK ok {3}past the edge the guest helper answered every look with an observation \(\d+ looks\)\n/;
-		const oneFailed = /\nchecks: 8 ok, 1 failed; parts ended: 1 of 1; the parts' own status: 0; [^\n]+\nPROOF FAILED\n/;
-		const probedLeg = await prove(["edge"], { legClicks: 70 });
 		assert.equal(probedLeg.status, 0, probedLeg.out);
 		assert.match(probedLeg.out, /\nM past the edge clicks=(?:[7-9]\d|\d{3,}) failed=0 at_or_over_1s=0 at_or_over_2s=0 at_or_over_3s=0 longest_without_a_click_s=0\.\d\d longest_without_a_reading_or_look_s=0\.\d\d /);
 		for (const check of [ends, answered, clicksHole("ok {3}"), besideHole("ok {3}"), looks]) assert.match(probedLeg.out, check);
 		assert.match(probedLeg.out, /\nchecks: 9 ok, 0 failed; parts ended: 1 of 1; the parts' own status: 0; [^\n]+\nPROOF PASSED\n/);
-		// Round 3: the clicks' loop is ended half way through the leg, after more good clicks than the bar wants (60).
-		// What it left behind passes the other checks; the proof fails on the loop's own end.
-		const probeEnded = await prove(["edge"], { legClicks: 90, killProbeAt: 75 });
+
 		failed(probeEnded, /\nCHECK FAIL past the edge the clicks' loop and the loop beside it ran from the leg's start to its end \(the clicks' loop ended with 137, the one beside it with 0; the last lines they left: \[P-END beside [^\n|]*\|\]\)\n/);
 		assert.match(probeEnded.out, /\nM past the edge clicks=7[0-4] failed=0 /);
 		for (const check of [answered, clicksHole("ok {3}"), besideHole("ok {3}"), looks, oneFailed]) assert.match(probeEnded.out, check);
-		// Round 4, the reviewer's case: the machine stalls for 4 s at the moment its memory numbers are being read (the
-		// 30th reading), and answers again after. The clicks have a loop of their own, so one of them meets the stall
-		// and takes 3 s or more: the proof fails on the clicks. (With the reading in the clicks' loop, as it was, the
-		// stall fell between two clicks and everything passed.)
-		const stalled = await prove(["edge"], { legClicks: 70, stallAtReading: "30 4" });
+
 		failed(stalled, /\nCHECK FAIL past the edge the machine kept answering desktop clicks \(\d+ clicks, at least 60 wanted: 0 failed, 1 took 3 s or more, 1 took 2 s or more where 1 may\)\n/);
 		assert.match(stalled.out, /\nM past the edge clicks=(?:[7-9]\d|\d{3,}) failed=0 at_or_over_1s=1 at_or_over_2s=1 at_or_over_3s=1 /);
 		for (const check of [ends, clicksHole("ok {3}"), besideHole("ok {3}"), looks, oneFailed]) assert.match(stalled.out, check);
-		// A clicks' loop that stood still: stopped for 2.5 s between two clicks, then let go on. No click was slow
-		// and none failed, but for 2.5 s nothing was asked of the machine: the proof fails on the hole.
-		const stoodStill = await prove(["edge"], { legClicks: 62, pauseProbeAt: "20 2.5", pause: "0.05" });
+
 		failed(stoodStill, clicksHole("FAIL "));
 		assert.ok(Number(stoodStill.out.match(clicksHole("FAIL "))[1]) >= 2.5, stoodStill.out);
 		assert.match(stoodStill.out, /\nM past the edge clicks=(?:6[2-9]|[7-9]\d|\d{3,}) failed=0 at_or_over_1s=0 at_or_over_2s=0 at_or_over_3s=0 /);
 		for (const check of [ends, answered, besideHole("ok {3}"), looks, oneFailed]) assert.match(stoodStill.out, check);
-		// Round 5, the reviewer's case: the clicks' loop stands still OVER THE LEG'S END. It is stopped after 65 good
-		// clicks, the leg goes on for 2 s and ends, and only then is the loop let go on: it finds it is told to stop,
-		// says so and ends well, without another click. No two clicks lie far apart; the hole is the leg's last 2 s.
-		const overTheEnd = await prove(["edge"], { legClicks: 500, pauseProbeAt: "65 4", legEndsWhileStopped: "2", pause: "0.05" });
+
 		failed(overTheEnd, clicksHole("FAIL "));
 		assert.ok(Number(overTheEnd.out.match(clicksHole("FAIL "))[1]) >= 2, overTheEnd.out);
 		assert.match(overTheEnd.out, /\nM past the edge clicks=(?:6[5-9]|7\d) failed=0 at_or_over_1s=0 at_or_over_2s=0 at_or_over_3s=0 /);
 		for (const check of [ends, answered, besideHole("ok {3}"), looks, oneFailed]) assert.match(overTheEnd.out, check);
-		// The same for the loop beside the clicks: stopped for 3 s after its first look. The clicks go on untouched,
-		// and every look that was taken was answered; the proof fails on the hole in the readings and looks.
-		const besideStoodStill = await prove(["edge"], { legClicks: 62, pauseBesideAt: "1 3", pause: "0.05" });
+
 		failed(besideStoodStill, besideHole("FAIL "));
 		assert.ok(Number(besideStoodStill.out.match(besideHole("FAIL "))[1]) >= 3, besideStoodStill.out);
 		for (const check of [ends, answered, clicksHole("ok {3}"), looks, oneFailed]) assert.match(besideStoodStill.out, check);
 
-		// A build space whose list cannot be read is not an empty one: the proof does not start.
-		const unread = await prove(["small"], { fails: ["list 1"] });
 		assert.equal(unread.status, 1, unread.out);
 		assert.match(unread.out, /^FAIL: the build space qorpera-build could not be listed\n/m);
 		assert.doesNotMatch(unread.out, /PROOF-START|PROOF PASSED/);

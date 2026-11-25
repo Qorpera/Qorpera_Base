@@ -160,7 +160,9 @@ test("the tests run beside the release build, its check and the program against 
 	assert.equal(tests.at(-1), "cargo clean --locked -p qorpera-folder && cargo test --locked");
 	const build = call(ran.calls, "build");
 	assert.ok(flags(build, "-v").includes(`${out}:/out`));
-	assert.equal(build.at(-1), `cargo clean --locked -p qorpera-folder --release && ${CARGO_BUILD} && cp /tmp/target/release/qorpera-folder /out/`);
+	assert.ok(flags(build, "-e").some((entry) => /^SRC_HASH=[0-9a-f]{64}$/.test(entry)));
+	assert.ok(build.at(-1).includes(`cargo clean --locked -p qorpera-folder --release && ${CARGO_BUILD}`));
+	assert.ok(build.at(-1).includes("/tmp/target/cached-release/$SRC_HASH/qorpera-folder"));
 	// The check and the run against the service read the program from the run's own volume, in Node.
 	for (const kind of ["check", "e2e"]) {
 		const args = call(ran.calls, kind);
@@ -172,9 +174,11 @@ test("the tests run beside the release build, its check and the program against 
 	assert.equal(call(ran.calls, "check").at(-1), "node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder");
 	const e2e = call(ran.calls, "e2e");
 	assert.ok(flags(e2e, "--device").includes("/dev/fuse"));
+	assert.ok(flags(e2e, "-e").includes("VITEST_MAX_WORKERS=4"));
+	assert.ok(flags(e2e, "--tmpfs").includes("/repo/node_modules/.vite-temp:rw,size=64m"));
 	assert.equal(
 		e2e.at(-1),
-		"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts test/folder-search-e2e.test.ts",
+		"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-grace-e2e.test.ts test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts test/folder-search-e2e.test.ts",
 	);
 	// The runs with real git read the pinned git from its volume, built once per test machine and checked against its
 	// digest first.
@@ -236,7 +240,7 @@ test("a build from kept crates that fails the check is built again from clean, a
 	const again = step(tree({ check: [1, 0] }));
 	assert.ok(again.passed, again.output);
 	assert.deepEqual(again.kinds.filter((kind) => ["build", "clean build", "check", "e2e"].includes(kind)), ["build", "check", "clean build", "check", "e2e"]);
-	assert.equal(call(again.calls, "clean build").at(-1), `rm -rf /tmp/target/release && ${CARGO_BUILD} && cp /tmp/target/release/qorpera-folder /out/`);
+	assert.ok(call(again.calls, "clean build").at(-1).includes(`rm -rf /tmp/target/release /tmp/target/cached-release && ${CARGO_BUILD}`));
 	assert.match(again.output, /not the recorded one; building again from clean/);
 	const still = step(tree({ check: [1, 1] }));
 	assert.equal(still.passed, false);

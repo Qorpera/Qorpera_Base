@@ -1,4 +1,4 @@
-import { type CloudCodingSessionLayout, cloudCodingSessionLayout } from "@qorpera/contracts";
+import { type CloudCodingSessionLayout, cloudCodingSessionLayout, isUuid } from "@qorpera/contracts";
 
 /** Only a storage bound: how much of one command's output the NAS keeps. A
  * command has no time, memory, CPU or task limit of its own (Jonas,
@@ -37,7 +37,6 @@ export type CodingGuestFolders = Pick<
  * other `folders`. This parser cannot prove their NAS backing. */
 export function parseCodingGuestConfiguration(value: unknown, folders?: CodingGuestFolders): CodingGuestConfiguration {
 	const input = value as Record<string, unknown>;
-	const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 	if (
 		!input ||
 		typeof input !== "object" ||
@@ -45,7 +44,7 @@ export function parseCodingGuestConfiguration(value: unknown, folders?: CodingGu
 		Object.keys(input).sort().join() !==
 			"bootId,cachePath,gid,homePath,outputRoot,resourceProfile,schema,uid,vmId,workerId,workspacePath" ||
 		input.schema !== "qorpera.coding-command-guest/v4" ||
-		![input.workerId, input.vmId, input.bootId].every((id) => typeof id === "string" && uuid.test(id)) ||
+		![input.workerId, input.vmId, input.bootId].every(isUuid) ||
 		![input.uid, input.gid].every((id) => Number.isSafeInteger(id) && Number(id) >= 1000 && Number(id) < 4294967295)
 	)
 		throw new Error("INVALID_CODING_GUEST_CONFIGURATION");

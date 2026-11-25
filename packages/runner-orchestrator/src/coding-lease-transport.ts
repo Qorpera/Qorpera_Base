@@ -1,11 +1,10 @@
 import { performance } from "node:perf_hooks";
-import { type CloudCodingCommandScope, cloudCodingSessionLayout } from "@qorpera/contracts";
+import { type CloudCodingCommandScope, cloudCodingSessionLayout, UUID_PATTERN } from "@qorpera/contracts";
 import { type CodingCommandGuestPins, inspectCodingCommandGuest } from "./coding-command-transport.ts";
 import { lxdCodingMachineName, lxdCodingMachinePlan } from "./coding-machine.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Trusted host only: renewing this callback must validate the session's
  * current attachment (its token and deadline from SQL) and exact physical
  * placement. No attachment or queue token enters the guest. The hash is a
@@ -36,9 +35,9 @@ export class LxdCodingLeaseTransport {
 		const machine = lxdCodingMachinePlan(options.machine).binding;
 		if (
 			Object.keys(options.scope).sort().join() !== "requestId,turn,vmId,workerId" ||
-			!UUID.test(options.scope.workerId) ||
+			!UUID_PATTERN.test(options.scope.workerId) ||
 			options.scope.vmId !== machine.machineId ||
-			!UUID.test(options.scope.requestId) ||
+			!UUID_PATTERN.test(options.scope.requestId) ||
 			!Number.isSafeInteger(options.scope.turn) ||
 			options.scope.turn < 1 ||
 			typeof options.open !== "boolean"

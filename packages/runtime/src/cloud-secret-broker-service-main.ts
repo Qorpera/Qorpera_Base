@@ -2,6 +2,7 @@ import { constants, realpathSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isRecord, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import { Pool } from "pg";
 import { CloudBankSyncs, CloudBankSyncUpkeep } from "./cloud-bank-sync.ts";
 import { ChatGptPlanOAuth, parseChatGptPlanClient } from "./cloud-chatgpt-plan.ts";
@@ -40,22 +41,19 @@ import { databaseTls } from "./database-ca.ts";
 import type { DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
 
-function record(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+function closedPlainRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
 	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
+		!isRecord(value) ||
 		Object.getPrototypeOf(value) !== Object.prototype ||
 		Object.keys(value).sort().join() !== [...keys].sort().join()
 	)
 		throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function brokerDatabase(value: string): {
@@ -159,7 +157,11 @@ async function readCredentialBytes(directory: string, name: string): Promise<Buf
 }
 
 function parseLoginHelper(value: string): { socketPath: string; token: string } {
-	const input = record(JSON.parse(value), ["schema", "socketPath", "token"], "Cloud secret broker login helper");
+	const input = closedPlainRecord(
+		JSON.parse(value),
+		["schema", "socketPath", "token"],
+		"Cloud secret broker login helper",
+	);
 	if (
 		input.schema !== "qorpera.model-login-helper-client/v1" ||
 		typeof input.socketPath !== "string" ||
@@ -175,7 +177,7 @@ function parseLoginHelper(value: string): { socketPath: string; token: string } 
 /** A company's own keys (`qorpera.cloud-secret-keyring/v1`), or the shared vault's master keys
  * (`qorpera.cloud-secret-master-keys/v1`), from which each company's key is derived. */
 function parseKeyring(value: string, masterKeys = false): CloudSecretKeyring {
-	const input = record(JSON.parse(value), ["schema", "keys"], "Cloud secret keyring");
+	const input = closedPlainRecord(JSON.parse(value), ["schema", "keys"], "Cloud secret keyring");
 	if (
 		input.schema !== (masterKeys ? "qorpera.cloud-secret-master-keys/v1" : "qorpera.cloud-secret-keyring/v1") ||
 		!Array.isArray(input.keys)
@@ -187,7 +189,7 @@ function parseKeyring(value: string, masterKeys = false): CloudSecretKeyring {
 	const opened: Buffer[] = [];
 	try {
 		for (const item of input.keys) {
-			const entry = record(item, ["keyId", "keyBase64url"], "Cloud secret keyring entry");
+			const entry = closedPlainRecord(item, ["keyId", "keyBase64url"], "Cloud secret keyring entry");
 			if (
 				typeof entry.keyId !== "string" ||
 				!KEY_ID.test(entry.keyId) ||
@@ -231,7 +233,7 @@ export async function runCloudSecretBrokerServiceMain(
 		typeof configValue === "object" &&
 		(configValue as Record<string, unknown>).schema === "qorpera.cloud-secret-broker-service/v3";
 	const identityKey = shared ? "principalId" : "brokerAuthorityId";
-	const config = record(
+	const config = closedPlainRecord(
 		configValue,
 		withOrigins ? ["schema", identityKey, "port", "memberOrigins"] : ["schema", identityKey, "port"],
 		"Cloud secret broker configuration",

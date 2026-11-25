@@ -1,7 +1,7 @@
 /* Hash routes. Company routes carry the profile UUID so a reload rebuilds the
  * same view from cloud state alone (runtime contract §14.5). */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 
 /** "member" is this member's chat with another member of the company, `#/c/{id}/member/{userId}` (Jonas, 10 November
  * 2026). "interface" is a page in the rail's Interfaces tab, `#/c/{id}/i/{name}` (contract, 2026-10-02 interfaces amendment).

@@ -5,13 +5,13 @@ import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
+	closedFolderRecord,
 	drainPlatformClaims,
 	mapBounded,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
 	platformFolderProblem,
 	platformFolderProblemCode,
-	record,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -91,7 +91,7 @@ const version = (value: unknown): string | null =>
 /** A claim answer (`qorpera.digital-post-letter-claim/v1`), checked field by field; null when nothing is due. */
 export function parseDigitalPostLetterClaim(value: unknown): DigitalPostLetterClaim | null {
 	if (value === null) return null;
-	const input = record(value, CLAIM_KEYS, "claim_invalid");
+	const input = closedFolderRecord(value, CLAIM_KEYS, "claim_invalid");
 	const attempt = Number.isSafeInteger(input.attempt) && (input.attempt as number) >= 1 ? input.attempt : null;
 	const folder = typeof input.folder === "string" ? input.folder : "";
 	if (
@@ -119,7 +119,7 @@ export function parseDigitalPostLetterClaim(value: unknown): DigitalPostLetterCl
 		problem("claim_invalid");
 	}
 	const files = (input.files as unknown[]).map((item) => {
-		const file = record(item, FILE_KEYS, "claim_invalid");
+		const file = closedFolderRecord(item, FILE_KEYS, "claim_invalid");
 		if (
 			typeof file.name !== "string" ||
 			file.name.includes("/") ||

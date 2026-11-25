@@ -1,4 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { isUuid, parseRecord, UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { isChatGptPlanHostId } from "./cloud-chatgpt-plan.ts";
 import type { ChatGptPlanSignInAuthority, ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
@@ -36,7 +37,6 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * completes the sign-in as the member's Claude login (coding sessions only; nothing that runs agents reads it).
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SIGN_IN_SCHEMA = "qorpera.native-provider-login/v1";
@@ -162,15 +162,14 @@ interface SignInDescription extends Ownership {
 	modelLoginId: string | null;
 }
 
-function record(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	const input = value as Record<string, unknown>;
+function closedObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+	const input = parseRecord(value, label);
 	if (Object.keys(input).sort().join() !== [...keys].sort().join()) throw new Error(`${label} is invalid`);
 	return input;
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error(`${label} is invalid`);
+function strictUuid(value: unknown, label: string): string {
+	if (!isUuid(value)) throw new Error(`${label} is invalid`);
 	return value;
 }
 
@@ -182,7 +181,7 @@ function nullableText(value: unknown, label: string): string | null {
 }
 
 function parseRequest(value: unknown, capability: string): SignInRequest {
-	const input = record(value, REQUEST_KEYS, "Vault sign-in request");
+	const input = closedObject(value, REQUEST_KEYS, "Vault sign-in request");
 	const claude = input.provider === "anthropic" && input.native_harness === "claude-code";
 	if (
 		input.schema !== SIGN_IN_SCHEMA ||
@@ -196,15 +195,15 @@ function parseRequest(value: unknown, capability: string): SignInRequest {
 	const expiresAt = Date.parse(input.expires_at);
 	if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error("Vault sign-in request has expired");
 	return {
-		loginId: uuid(input.login_id, "Vault sign-in id"),
+		loginId: strictUuid(input.login_id, "Vault sign-in id"),
 		claude,
-		clientConnectionId: uuid(input.client_connection_id, "Vault sign-in connection id"),
-		computeIdentityId: uuid(input.compute_identity_id, "Vault sign-in Compute Identity id"),
+		clientConnectionId: strictUuid(input.client_connection_id, "Vault sign-in connection id"),
+		computeIdentityId: strictUuid(input.compute_identity_id, "Vault sign-in Compute Identity id"),
 		kind: nullableText(input.compute_identity_ownership_kind, "Vault sign-in ownership") ?? "",
 		userId:
 			input.compute_identity_owner_user_id === null
 				? null
-				: uuid(input.compute_identity_owner_user_id, "Vault sign-in owner"),
+				: strictUuid(input.compute_identity_owner_user_id, "Vault sign-in owner"),
 		scopeKey: nullableText(input.compute_identity_owner_scope_key, "Vault sign-in owner scope"),
 		expiresAt,
 	};
@@ -213,7 +212,7 @@ function parseRequest(value: unknown, capability: string): SignInRequest {
 function parseDescription(value: unknown): SignInDescription {
 	const account =
 		Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value as object, "scope");
-	const input = record(
+	const input = closedObject(
 		value,
 		account ? [...DESCRIPTION_KEYS, "scope"] : DESCRIPTION_KEYS,
 		"Vault sign-in description",
@@ -241,18 +240,18 @@ function parseDescription(value: unknown): SignInDescription {
 	)
 		throw new Error("Vault sign-in description is invalid");
 	return {
-		loginId: uuid(input.loginId, "Vault sign-in id"),
+		loginId: strictUuid(input.loginId, "Vault sign-in id"),
 		loginKind: input.loginKind,
 		account,
 		hostId: input.hostId as string | null,
-		companyId: uuid(input.profileId, "Vault sign-in company"),
-		clientConnectionId: uuid(input.clientConnectionId, "Vault sign-in connection id"),
-		computeIdentityId: uuid(input.computeIdentityId, "Vault sign-in Compute Identity id"),
+		companyId: strictUuid(input.profileId, "Vault sign-in company"),
+		clientConnectionId: strictUuid(input.clientConnectionId, "Vault sign-in connection id"),
+		computeIdentityId: strictUuid(input.computeIdentityId, "Vault sign-in Compute Identity id"),
 		kind: nullableText(input.computeIdentityOwnershipKind, "Vault sign-in ownership") ?? "",
 		userId:
 			input.computeIdentityOwnerUserId === null
 				? null
-				: uuid(input.computeIdentityOwnerUserId, "Vault sign-in owner"),
+				: strictUuid(input.computeIdentityOwnerUserId, "Vault sign-in owner"),
 		scopeKey: nullableText(input.computeIdentityOwnerScopeKey, "Vault sign-in owner scope"),
 		status: input.status as SignInDescription["status"],
 		expiresAt: input.expiresAt,
@@ -286,7 +285,7 @@ export class ClaudeCodeRefused extends Error {
  * seal-back must have, 20260930771000). */
 export function checkClaudeLoginFiles(text: string): void {
 	const value: unknown = JSON.parse(text);
-	const input = record(value, ["schema", "files"], "Claude login files");
+	const input = closedObject(value, ["schema", "files"], "Claude login files");
 	const files = input.files;
 	if (input.schema !== CLAUDE_LOGIN_FILES_SCHEMA || !files || typeof files !== "object" || Array.isArray(files))
 		throw new Error("Claude login files are invalid");
@@ -376,7 +375,7 @@ export class CloudModelLoginSignIns {
 		const helper = this.#helper;
 		if (!helper) return;
 		try {
-			this.#company ??= uuid(
+			this.#company ??= strictUuid(
 				await this.#authority.modelLoginBrokerCompany(AbortSignal.timeout(SAVE_DEADLINE_MS)),
 				"Vault broker company",
 			);
@@ -462,13 +461,13 @@ export class CloudModelLoginSignIns {
 		const helper = this.#helper;
 		if (!helper?.submitCode) throw new Error("Vault Claude sign-ins are not served here");
 		if (!TOKEN.test(request.capability)) throw new Error("Vault sign-in capability is invalid");
-		const body = record(request.body, ["schema", "login_id", "code"], "Claude sign-in code");
+		const body = closedObject(request.body, ["schema", "login_id", "code"], "Claude sign-in code");
 		if (body.schema !== CLAUDE_CODE_SCHEMA || typeof body.code !== "string")
 			throw new Error("Claude sign-in code is invalid");
 		// Pasted text may carry spaces or a line end around the code; nothing else is changed.
 		const code = body.code.trim();
 		if (!CLAUDE_CODE.test(code)) throw new ClaudeCodeRefused();
-		const loginId = uuid(body.login_id, "Claude sign-in id");
+		const loginId = strictUuid(body.login_id, "Claude sign-in id");
 		const capabilitySha256 = createHash("sha256").update(request.capability).digest("hex");
 		const description = parseDescription(
 			await this.#authority.describeModelLoginSignIn({ loginId, capabilitySha256 }, signal),
@@ -553,9 +552,9 @@ export class CloudModelLoginSignIns {
 		const plan = this.#plan;
 		if (!plan) throw new Error("Vault ChatGPT plan sign-ins are not served here");
 		if (!TOKEN.test(input.capability)) throw new Error("Vault sign-in capability is invalid");
-		const body = record(input.body, ["schema", "login_id", "confirmation"], "ChatGPT plan confirmation");
+		const body = closedObject(input.body, ["schema", "login_id", "confirmation"], "ChatGPT plan confirmation");
 		if (body.schema !== "qorpera.chatgpt-plan-confirm/v1") throw new Error("ChatGPT plan confirmation is invalid");
-		const loginId = uuid(body.login_id, "ChatGPT plan sign-in id");
+		const loginId = strictUuid(body.login_id, "ChatGPT plan sign-in id");
 		await plan.confirm(
 			{ companyId: input.companyId, loginId, capability: input.capability, confirmation: body.confirmation },
 			signal,

@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { isRecord } from "@qorpera/contracts";
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const MAX_RESPONSE_BYTES = 256 * 1024;
@@ -24,12 +25,6 @@ export interface NativeProviderAccountUsage {
 	credits?: NativeProviderAccountCredits;
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
-}
-
 function resetAt(value: unknown): string | undefined {
 	const milliseconds =
 		typeof value === "number" ? value * 1000 : typeof value === "string" ? Date.parse(value) : Number.NaN;
@@ -38,11 +33,15 @@ function resetAt(value: unknown): string | undefined {
 }
 
 function usageWindows(value: unknown): NativeProviderAccountUsage["windows"] {
-	const root = record(value);
-	const limits = record(root?.rate_limit) ?? record(root?.rate_limits);
+	const root = isRecord(value) ? value : undefined;
+	const rateLimit = root?.rate_limit;
+	const rateLimits = root?.rate_limits;
+	const limits = isRecord(rateLimit) ? rateLimit : isRecord(rateLimits) ? rateLimits : undefined;
 	const windows: Array<NativeProviderAccountUsage["windows"][number]> = [];
 	for (const id of ["primary", "secondary"] as const) {
-		const window = record(limits?.[`${id}_window`]) ?? record(limits?.[id]);
+		const primaryWindow = limits?.[`${id}_window`];
+		const fallbackWindow = limits?.[id];
+		const window = isRecord(primaryWindow) ? primaryWindow : isRecord(fallbackWindow) ? fallbackWindow : undefined;
 		const usedPercent = window?.used_percent;
 		// Missing and invalid readings are unknown; they must never become a full or empty bar.
 		if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100)
@@ -84,7 +83,8 @@ function numericCredit(value: unknown): number | undefined {
 }
 
 function usageCredits(value: unknown): NativeProviderAccountCredits | undefined {
-	const credits = record(record(value)?.credits);
+	const rawCredits = isRecord(value) ? value.credits : undefined;
+	const credits = isRecord(rawCredits) ? rawCredits : undefined;
 	if (!credits) return undefined;
 	const hasCredits = typeof credits.has_credits === "boolean" ? credits.has_credits : undefined;
 	const unlimited = typeof credits.unlimited === "boolean" ? credits.unlimited : undefined;
@@ -124,7 +124,9 @@ export async function readNativeProviderAccountUsage(
 ): Promise<NativeProviderAccountUsage | undefined> {
 	try {
 		if (metadata.length > MAX_RESPONSE_BYTES) return undefined;
-		const tokens = record(record(JSON.parse(metadata))?.tokens);
+		const parsedMetadata: unknown = JSON.parse(metadata);
+		const rawTokens = isRecord(parsedMetadata) ? parsedMetadata.tokens : undefined;
+		const tokens = isRecord(rawTokens) ? rawTokens : undefined;
 		const token = tokens?.access_token;
 		const accountId = tokens?.account_id;
 		if (

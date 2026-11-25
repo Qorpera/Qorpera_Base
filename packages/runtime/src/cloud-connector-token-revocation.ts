@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes } from "./abort-scope.ts";
 import { cloudConnector } from "./cloud-connector-catalog.ts";
 import { type EnableBankingClient, EnableBankingSessionEnded } from "./cloud-connector-enable-banking.ts";
@@ -39,7 +40,6 @@ export interface ConnectorTokenRevocationAuthority {
 	): Promise<unknown>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
