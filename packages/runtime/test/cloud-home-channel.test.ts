@@ -776,10 +776,10 @@ describe("coding machine channels share /v1/home-session with qorpera-coding-ses
 		const codingLine = cloudCodingChannelHandshake({ binding, scope, kind: "exec" });
 		const homeLine = cloudHomeChannelHandshake({ binding, machineId: randomUUID(), sessionId: randomUUID() });
 
-		expect(await sendHandshake(undefined, codingLine)).toContain('{"ok":false,"reason":"unavailable"}');
-		expect(await sendHandshake("malformed-header", codingLine)).toContain('{"ok":false,"reason":"unavailable"}');
-		expect(await sendHandshake(undefined, homeLine)).toContain('{"ok":false,"reason":"unavailable"}');
-		expect(await sendHandshake("malformed-header", homeLine)).toContain('{"ok":false,"reason":"unavailable"}');
+		expect(await sendHandshake(undefined, codingLine)).toContain("HTTP/1.1 403 Forbidden");
+		expect(await sendHandshake("malformed-header", codingLine)).toContain("HTTP/1.1 403 Forbidden");
+		expect(await sendHandshake(undefined, homeLine)).toContain("HTTP/1.1 403 Forbidden");
+		expect(await sendHandshake("malformed-header", homeLine)).toContain("HTTP/1.1 403 Forbidden");
 		expect(proveBinding).not.toHaveBeenCalled();
 		expect(codingAuthorize).not.toHaveBeenCalled();
 		expect(homeAuthorize).not.toHaveBeenCalled();

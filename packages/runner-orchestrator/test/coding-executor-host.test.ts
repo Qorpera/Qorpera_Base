@@ -11115,7 +11115,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(forwarded.params.env.HOME).toMatch(/^\/home\/qorpera-2\d{5}$/);
 		expect(forwarded.params.env.CLAUDECODE).toBe("1");
 		expect(forwarded.params.env.GIT_CONFIG_COUNT).toBeDefined();
-		expect(forwarded.params.env.NPM_CONFIG_CACHE).toBeDefined();
+		expect(forwarded.params.env.GIT_AUTHOR_EMAIL).toBe(`${f.claim.workerId}@coding.qorpera.com`);
 		expect(lastChannelRequest?.command.length).toBeLessThanOrEqual(64);
 
 		const received: string[] = [];

@@ -297,7 +297,9 @@ describe("maskCodingChannelExecLines", () => {
 			JSON.stringify({
 				id: 20,
 				result: {
-					chunks: [{ seq: 4, stream: "stdout", tag: "keep", chunk: Buffer.from("prefix top-sec").toString("base64") }],
+					chunks: [
+						{ seq: 4, stream: "stdout", tag: "keep", chunk: Buffer.from("prefix top-sec").toString("base64") },
+					],
 					closed: false,
 				},
 			}),
@@ -416,10 +418,7 @@ describe("maskCodingChannelExecLines", () => {
 			const parsed = JSON.parse(line) as { method?: string; params?: { processId: string; chunk: string } };
 			if (parsed.method === "process/output" && parsed.params) {
 				const prev = byProc.get(parsed.params.processId) ?? "";
-				byProc.set(
-					parsed.params.processId,
-					prev + Buffer.from(parsed.params.chunk, "base64").toString("utf8"),
-				);
+				byProc.set(parsed.params.processId, prev + Buffer.from(parsed.params.chunk, "base64").toString("utf8"));
 			}
 		}
 		expect(byProc.get("s-0")).toBe("top-sec");

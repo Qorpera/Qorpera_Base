@@ -1470,7 +1470,7 @@ export const CODING_MACHINE_CHANNEL = Object.freeze({
 
 const CODING_CHANNEL_ON_BOOT =
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; ' +
-	'worker=$1; uid=$2; make_codex=$3; shift 3; ' +
+	"worker=$1; uid=$2; make_codex=$3; shift 3; " +
 	`user_file="${CODING_GUEST.state}/sessions/$worker/user.json"; ` +
 	'[ -f "$user_file" ] || exit 94; ' +
 	'awk -v u="$uid" \'BEGIN { all = "" } { gsub(/[[:space:]]/, ""); all = all $0 } END { ok = (index(all, "\\"uid\\":" u ",") || index(all, "\\"uid\\":" u "}")) && (index(all, "\\"gid\\":" u ",") || index(all, "\\"gid\\":" u "}")); exit(ok ? 0 : 1) }\' "$user_file" || exit 94; ' +
@@ -6953,7 +6953,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 							else ended();
 						}
 					: (line) =>
-							toMachine.push(Buffer.from(`${injectCodingChannelExecEnv(line, execEnv, readProcessById)}\n`, "utf8")),
+							toMachine.push(
+								Buffer.from(`${injectCodingChannelExecEnv(line, execEnv, readProcessById)}\n`, "utf8"),
+							),
 			lines,
 			close: async () => {
 				ended();
