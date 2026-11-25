@@ -192,6 +192,7 @@ const agentDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mo
 const groupDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.groupDetails));
 
 export function registerLazyApplicationModules(modules: {
+	readonly secondaryViews?: typeof import("./views/lazy-secondary.ts");
 	readonly interfaceView?: typeof import("./views/interface.ts");
 	readonly surfaceView?: typeof import("./views/surface-view.ts");
 	readonly companyFolder?: typeof import("./views/company-folder.ts");
@@ -216,6 +217,32 @@ export function registerLazyApplicationModules(modules: {
 	readonly agentDetails?: typeof import("./views/agent-details.ts");
 	readonly groupDetails?: typeof import("./views/group-details.ts");
 }): void {
+	if (modules.secondaryViews) {
+		const mod = modules.secondaryViews;
+		secondaryViewsModule.set(mod);
+		interfaceViewModule.set(mod.interfaceView);
+		companyFolderModule.set(mod.companyFolder);
+		foundingModule.set({
+			FoundingController: mod.foundingController.FoundingController,
+			FoundingView: mod.foundingView.FoundingView,
+		});
+		conceptsModule.set(mod.concepts);
+		newProgramModule.set(mod.newProgram);
+		siteViewModule.set(mod.siteView);
+		settingsViewModule.set(mod.settingsView);
+		friendsWindowModule.set(mod.friendsWindow);
+		feedbackViewModule.set(mod.feedbackView);
+		accountViewModule.set({
+			renderAccount: mod.account.renderAccount,
+			MyGoodWillView: mod.goodWill.MyGoodWillView,
+		});
+		teamViewModule.set(mod.teamView);
+		memberChatModule.set(mod.memberChat);
+		newConversationModule.set(mod.newConversation);
+		whatsNewModule.set(mod.whatsNew);
+		agentDetailsModule.set(mod.agentDetails);
+		groupDetailsModule.set(mod.groupDetails);
+	}
 	if (modules.interfaceView) interfaceViewModule.set(modules.interfaceView);
 	if (modules.surfaceView) surfaceViewModule.set(modules.surfaceView);
 	if (modules.companyFolder) companyFolderModule.set(modules.companyFolder);
@@ -1315,11 +1342,20 @@ export function mountApplication(
 								if (auth.userId !== userId) throw new Error("The account changed.");
 							},
 						);
-						void secondaryViewsModule
-							.load()
-							.then(({ settingsConnections: { finishPlanSignIn, memberPlanSignIn } }) =>
-								finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome),
+						const loadedSecondary = secondaryViewsModule.get();
+						if (loadedSecondary) {
+							loadedSecondary.settingsConnections.finishPlanSignIn(
+								loadedSecondary.settingsConnections.memberPlanSignIn(userId, profile.profileId),
+								plan,
+								outcome,
 							);
+						} else {
+							void secondaryViewsModule
+								.load()
+								.then(({ settingsConnections: { finishPlanSignIn, memberPlanSignIn } }) =>
+									finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome),
+								);
+						}
 						queueMicrotask(() => {
 							if (disposed || company !== controller) return;
 							const route = currentRoute();
@@ -1332,7 +1368,9 @@ export function mountApplication(
 				// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
 				if (connectorReturn?.connector === "bank") {
 					const bankReturn = connectorReturn;
-					void secondaryViewsModule.load().then(({ bank: { noteBankReturn } }) => noteBankReturn(bankReturn));
+					const loadedSecondary = secondaryViewsModule.get();
+					if (loadedSecondary) loadedSecondary.bank.noteBankReturn(bankReturn);
+					else void secondaryViewsModule.load().then(({ bank: { noteBankReturn } }) => noteBankReturn(bankReturn));
 				}
 				connectorReturn = undefined;
 				computerPanels = new LazyComputerPanels(
