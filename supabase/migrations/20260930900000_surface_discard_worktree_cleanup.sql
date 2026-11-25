@@ -622,12 +622,10 @@ select pg_temp.sdwc_patch(
 	'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure,
 	array[
 $old$	v_merges jsonb := '[]'::jsonb;
-	v_publishes jsonb := '[]'::jsonb;
-begin$old$,
+	v_publishes jsonb := '[]'::jsonb;$old$,
 $new$	v_merges jsonb := '[]'::jsonb;
 	v_publishes jsonb := '[]'::jsonb;
-	v_cleanups jsonb := '[]'::jsonb;
-begin$new$,
+	v_cleanups jsonb := '[]'::jsonb;$new$,
 $old$			'merges', '[]'::jsonb,
 			'publishes', '[]'::jsonb,
 			'automations', '[]'::jsonb$old$,
