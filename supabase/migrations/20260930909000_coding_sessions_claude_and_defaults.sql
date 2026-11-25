@@ -45,40 +45,13 @@ set harnesses = array['codex', 'claude-code'],
 	updated_at = clock_timestamp()
 where enabled and harnesses = array['codex'];
 
-create or replace function public.qorpera_coding_executor_enroll(p_environment_id uuid, p_harness text)
-returns void language plpgsql volatile security definer set search_path = '' as $$
-declare
-	v_owner text;
-	v_like public.qorpera_coding_executors%rowtype;
-begin
-	if exists (select 1 from public.qorpera_coding_executors where environment_id = p_environment_id) then
-		return;
-	end if;
-	select executor.owner into v_owner
-	from public.qorpera_coding_executors executor
-	where executor.enabled and p_harness = any(executor.harnesses)
-	group by executor.owner
-	order by count(*), executor.owner
-	limit 1;
-	if v_owner is null then
-		return;
-	end if;
-	select * into v_like
-	from public.qorpera_coding_executors executor
-	where executor.owner = v_owner and executor.enabled and p_harness = any(executor.harnesses)
-	order by executor.updated_at desc, executor.environment_id
-	limit 1;
-	insert into public.qorpera_coding_executors(
-		environment_id, owner, enabled, harnesses, vm_policy, nas_policy,
-		nas_machine_id_sha256, machine_sleep_after_seconds, machine_remove_after_seconds, session_archive_after_seconds
-	)
-	values (
-		p_environment_id, v_owner, true, v_like.harnesses, v_like.vm_policy, v_like.nas_policy,
-		v_like.nas_machine_id_sha256, v_like.machine_sleep_after_seconds, v_like.machine_remove_after_seconds,
-		v_like.session_archive_after_seconds
-	)
-	on conflict (environment_id, owner) do nothing;
-end $$;
+select pg_temp.ccd_patch(
+	'public.qorpera_coding_executor_enroll(uuid,text)'::regprocedure,
+	array[
+$old$	values (p_environment_id, v_owner, true, case when p_harness is null then v_like.harnesses else array[p_harness] end,$old$,
+$new$	values (p_environment_id, v_owner, true, v_like.harnesses,$new$
+	]
+);
 
 create function public.qorpera_coding_claude_driver_ready()
 returns boolean language sql stable security definer set search_path = '' as $$
@@ -1110,7 +1083,6 @@ $new$		if v_worker.harness_default then
 drop function pg_temp.ccd_patch(regprocedure, text[]);
 
 revoke all on function
-	public.qorpera_coding_executor_enroll(uuid, text),
 	public.qorpera_coding_claude_driver_ready(),
 	public.qorpera_claude_worker_active_count(uuid, uuid),
 	public.qorpera_claude_worker_waits(public.qorpera_runtime_workers),
