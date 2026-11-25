@@ -1062,7 +1062,13 @@ describe("review round 1 of #1835", () => {
 			),
 		).toEqual(["a.md", "last.pdf"]);
 		expect(reads).toBe(3);
-		expect(sleeps).toEqual([2000, 2000, 2000]);
+		expect(sleeps).toEqual([250, 250, 500]);
+		// WHY: Already-settled outputs settle in 500 ms (250 + 250) instead of sleeping 4000 ms.
+		sleeps.length = 0;
+		expect(
+			await claudeWorkerSettledOutputs(async () => ["done.md"], new AbortController().signal, { sleep }),
+		).toEqual(["done.md"]);
+		expect(sleeps).toEqual([250, 250]);
 		// A read that fails keeps the list before it; a list that never stands still ends at the bound.
 		reads = 0;
 		const failing = async () => {
@@ -1070,9 +1076,14 @@ describe("review round 1 of #1835", () => {
 			if (reads === 2) throw new Error("database busy");
 			return [`f${reads}`];
 		};
-		expect(await claudeWorkerSettledOutputs(failing, new AbortController().signal, { sleep, untilMs: 6000 })).toEqual(
-			["f4"],
-		);
+		expect(
+			await claudeWorkerSettledOutputs(failing, new AbortController().signal, {
+				sleep,
+				firstMs: 2000,
+				stepMs: 2000,
+				untilMs: 6000,
+			}),
+		).toEqual(["f4"]);
 		const stopped = new AbortController();
 		stopped.abort();
 		await expect(claudeWorkerSettledOutputs(async () => [], stopped.signal, { sleep })).rejects.toThrow();

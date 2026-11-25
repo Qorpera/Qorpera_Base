@@ -3964,6 +3964,8 @@ export class CloudRunnerOrchestrator {
 			slow: false,
 			/** When the last claim batch a wake-up brought forward started; those stay pollIntervalMs apart. */
 			lastWokenClaimAt: Number.NEGATIVE_INFINITY,
+			emptyWokenClaims: 0,
+			lastEmptyWokenAt: Number.NEGATIVE_INFINITY,
 			/** A backstop claim found new work no wake-up had announced, at this time. Realtime delivers a
 			 * wake-up just after the enqueue commits, so one may still be on its way for WAKE_GRACE_MS. */
 			unannouncedSince: undefined as number | undefined,
@@ -4055,10 +4057,22 @@ export class CloudRunnerOrchestrator {
 					wakes.announced = false;
 					const reconciled = reconcile.succeeded;
 					const includeRetained = reconciled > reconcile.retainedRead;
-					if (announced) wakes.lastWokenClaimAt = performance.now();
+					const claimStartedAt = performance.now();
 					const { claims, fresh } = await this.#claimBatch(available, signal, inFlightClaimIds, includeRetained);
 					if (includeRetained) reconcile.retainedRead = Math.max(reconcile.retainedRead, reconciled);
-					if (claims.length > 0) wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
+					if (claims.length > 0) {
+						wakes.emptyWokenClaims = 0;
+						if (announced) wakes.lastWokenClaimAt = claimStartedAt;
+						wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
+					} else if (announced) {
+						// WHY: Do not throttle Wake #2 (job insert) behind an empty Wake #1 (pre-materialization), while still bounding repeated empty wake bursts to one claim per poll interval.
+						if (claimStartedAt - wakes.lastEmptyWokenAt >= pollIntervalMs) wakes.emptyWokenClaims = 0;
+						wakes.emptyWokenClaims += 1;
+						wakes.lastEmptyWokenAt = claimStartedAt;
+						if (wakes.emptyWokenClaims >= 2) wakes.lastWokenClaimAt = claimStartedAt;
+					} else {
+						wakes.emptyWokenClaims = 0;
+					}
 					if (wake && fresh > 0 && wakes.slow && !announced && wakes.sequence === sequence)
 						wakes.unannouncedSince ??= performance.now();
 					for (const claim of claims) {

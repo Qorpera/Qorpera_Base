@@ -221,8 +221,10 @@ const outputOf = (message) => answered.push({ kind: "function_call_output", call
 // Auto-review (v130): a reviewer thread started while the agent's tool call is open.
 const reviewThreadId = "thread_review";
 const reviewTurnId = "turn_review";
+const reviewThreadIds = [];
+let reviewTurnCount = 0;
 let reviewClosingFence;
-const reviewEvidence = { reviewerThread: null, reviewerTurn: null, prewarm: null, verdictReply: null, closingFence: null, interrupt: null };
+const reviewEvidence = { reviewerThread: null, reviewerTurn: null, prewarm: null, verdictReply: null, closingFence: null, interrupt: null, threads: [], turns: [] };
 const usage = (total = {}, last = {}) => ({
 	total: { inputTokens: 23, outputTokens: 7, cachedInputTokens: 3, cacheWriteInputTokens: 5, reasoningOutputTokens: 2, totalTokens: 30, ...total },
 	last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 3, ...last },
@@ -390,47 +392,60 @@ async function handle(message) {
 		write({ id: message.id, result: { thread: { id } } });
 	} else if (message.method === "thread/start" && mode.startsWith("review") && threadParameters) {
 		reviewEvidence.reviewerThread = message.params;
+		const id = mode === "review-reuse" ? `thread_review_${reviewThreadIds.length + 1}` : reviewThreadId;
+		reviewThreadIds.push(id);
+		reviewEvidence.threads.push(id);
 		if (mode === "review-compact") writeFileSync(`${evidencePath}.review-started`, "");
-		else reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });
-		write({ id: message.id, result: { thread: { id: reviewThreadId } } });
-	} else if (message.method === "turn/start" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
+		else reviewEvidence.prewarm = await fence([], { threadId: id, turnId: "", purpose: "prewarm" });
+		write({ id: message.id, result: { thread: { id } } });
+	} else if (
+		message.method === "turn/start" &&
+		mode.startsWith("review") &&
+		(message.params.threadId === reviewThreadId || reviewThreadIds.includes(message.params.threadId))
+	) {
+		const activeThreadId = message.params.threadId;
+		const activeTurnId = mode === "review-reuse" ? `turn_review_${++reviewTurnCount}` : reviewTurnId;
 		reviewEvidence.reviewerTurn = message.params;
+		reviewEvidence.turns.push({ threadId: activeThreadId, turnId: activeTurnId });
 		if (mode === "review-turn-start-stalled") {
 			writeFileSync(`${evidencePath}.review-turn-start`, "");
-			setTimeout(() => write({ id: message.id, result: { turn: { id: reviewTurnId } } }), 350);
+			setTimeout(() => write({ id: message.id, result: { turn: { id: activeTurnId } } }), 350);
 			return;
 		}
-		write({ id: message.id, result: { turn: { id: reviewTurnId } } });
-		write({ method: "turn/started", params: { threadId: reviewThreadId, turn: { id: reviewTurnId } } });
-		if (mode === "review-context") contextEvidence.reviewer = await compose({ threadId: reviewThreadId, turnId: reviewTurnId });
-		await fence([], { threadId: reviewThreadId, turnId: reviewTurnId });
+		write({ id: message.id, result: { turn: { id: activeTurnId } } });
+		write({ method: "turn/started", params: { threadId: activeThreadId, turn: { id: activeTurnId } } });
+		if (mode === "review-context") contextEvidence.reviewer = await compose({ threadId: activeThreadId, turnId: activeTurnId });
+		await fence([], { threadId: activeThreadId, turnId: activeTurnId });
 		// The reviewer's text never matters; only its verdict tool call does.
-		write({ method: "item/agentMessage/delta", params: { threadId: reviewThreadId, turnId: reviewTurnId, delta: "PRIVATE_REVIEW_CANARY" } });
+		write({ method: "item/agentMessage/delta", params: { threadId: activeThreadId, turnId: activeTurnId, delta: "PRIVATE_REVIEW_CANARY" } });
 		if (mode === "review-no-verdict") {
-			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
+			write({ method: "turn/completed", params: { threadId: activeThreadId, turn: { id: activeTurnId, status: "completed", error: null } } });
 			return;
 		}
 		if (mode === "review-busy-notice" || mode === "review-busy-retrying") {
 			const codexErrorInfo = { responseTooManyFailedAttempts: { httpStatusCode: 429 } };
 			const retrying = mode === "review-busy-retrying";
-			write({ method: "error", params: { threadId: reviewThreadId, turnId: reviewTurnId, willRetry: retrying, error: { message: "Too many requests", codexErrorInfo } } });
-			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: retrying ? "completed" : "failed", error: null } } });
+			write({ method: "error", params: { threadId: activeThreadId, turnId: activeTurnId, willRetry: retrying, error: { message: "Too many requests", codexErrorInfo } } });
+			write({ method: "turn/completed", params: { threadId: activeThreadId, turn: { id: activeTurnId, status: retrying ? "completed" : "failed", error: null } } });
 			return;
 		}
 		if (mode === "review-busy-turn") {
-			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "failed", error: { message: "Usage limit", codexErrorInfo: "usageLimitExceeded" } } } });
+			write({ method: "turn/completed", params: { threadId: activeThreadId, turn: { id: activeTurnId, status: "failed", error: { message: "Usage limit", codexErrorInfo: "usageLimitExceeded" } } } });
 			return;
 		}
 		if (mode === "review-wrong-tool") {
 			// The reviewer reaches for the agent's tool: refused, and no verdict follows.
 			write({ id: "reviewer_wrong_tool", method: "item/tool/call", params: {
-				threadId: reviewThreadId, turnId: reviewTurnId, callId: "wrong_1", namespace: "qorpera", tool: "send_email", arguments: { to: "x@evil.test" },
+				threadId: activeThreadId, turnId: activeTurnId, callId: "wrong_1", namespace: "qorpera", tool: "send_email", arguments: { to: "x@evil.test" },
 			} });
 			return;
 		}
-		write({ id: "verdict_request", method: "item/tool/call", params: {
-			threadId: reviewThreadId, turnId: reviewTurnId, callId: "verdict_1", namespace: "qorpera", tool: "review_verdict",
-			arguments: { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" },
+		const promptText = String(message.params.input?.[0]?.text ?? "");
+		const decision = mode === "review-reuse" && promptText.includes("DENY_ME") ? "deny" : "allow";
+		const callId = mode === "review-reuse" ? `verdict_${reviewTurnCount}` : "verdict_1";
+		write({ id: mode === "review-reuse" ? `verdict_request_${reviewTurnCount}` : "verdict_request", method: "item/tool/call", params: {
+			threadId: activeThreadId, turnId: activeTurnId, callId, namespace: "qorpera", tool: "review_verdict",
+			arguments: { decision, ruleIds: [], builtIn: decision === "deny" ? "not_requested" : "none", reason: decision === "deny" ? "Denied." : "Fine.", proposedRule: "" },
 		} });
 	} else if (message.method === "turn/start" && compacting && compactThreadIds.includes(message.params.threadId)) {
 		const turn = compactEvidence.compactTurns.push(message.params);
@@ -993,11 +1008,15 @@ async function handle(message) {
 			if (sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
 			done();
 		}
-	} else if (message.method === "turn/interrupt" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
+	} else if (
+		message.method === "turn/interrupt" &&
+		mode.startsWith("review") &&
+		(message.params.threadId === reviewThreadId || reviewThreadIds.includes(message.params.threadId))
+	) {
 		reviewEvidence.interrupt = message.params;
 		if (mode === "review-turn-start-stalled") writeFileSync(`${evidencePath}.review-interrupt`, JSON.stringify(message.params));
 		write({ id: message.id, result: {} });
-		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "interrupted", error: null } } });
+		write({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: message.params.turnId ?? reviewTurnId, status: "interrupted", error: null } } });
 	} else if (message.id === "reviewer_wrong_tool") {
 		reviewEvidence.wrongTool = message;
 		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });

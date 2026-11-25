@@ -482,12 +482,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
 	readonly #spareEfforts = new Map<
 		string,
-		{ reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier }
+		{ reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier; home: boolean }
 	>();
 
 	#rememberSpareEffort(
 		identityRoot: string,
-		settings: { reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier },
+		settings: { reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier; home: boolean },
 	): void {
 		this.#spareEfforts.delete(identityRoot);
 		this.#spareEfforts.set(identityRoot, settings);
@@ -508,6 +508,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				reasoningEffort: settings.reasoningEffort,
 				serviceTier: settings.serviceTier,
 				identityRoot,
+				...(settings.home ? { home: true } : {}),
 				...(this.#isolation ? { isolation: this.#isolation } : {}),
 				...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 			},
@@ -1896,6 +1897,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					this.#rememberSpareEffort(identityRoot, {
 						reasoningEffort: context.identity.reasoningEffort,
 						serviceTier,
+						home: Boolean(home && this.#homeChannel),
 					});
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
@@ -2060,7 +2062,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			timeoutMs: this.#timeoutMs,
 		});
 		if (usageSignal) await this.#recordUsageSignalKind(binding, usageSignal);
-		this.#rememberSpareEffort(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+		this.#rememberSpareEffort(identityRoot, {
+			reasoningEffort: identity.reasoningEffort,
+			serviceTier,
+			home: false,
+		});
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
@@ -2737,7 +2743,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				await this.#recordUsageSignalKind(binding, sessionResult.usageSignal);
 			}
 			if (!isGeminiRun) {
-				this.#rememberSpareEffort(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+				this.#rememberSpareEffort(identityRoot, {
+					reasoningEffort: identity.reasoningEffort,
+					serviceTier,
+					home: false,
+				});
 			}
 			const outcome = captured as SurfaceSessionTurnExecutionOutcome | null;
 			const mergedNotes = [...new Set([...stagedNotePaths, ...(outcome?.notePaths ?? [])])];

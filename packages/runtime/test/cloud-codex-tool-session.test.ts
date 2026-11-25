@@ -13,6 +13,7 @@ import {
 	CloudActionReviewChannel,
 	CloudActionReviewGate,
 } from "@qorpera/runtime/cloud-action-review";
+import { CloudCodexHome } from "@qorpera/runtime/cloud-codex-home";
 import {
 	CLOUD_CODEX_BOUNDARY_CONFIG,
 	CodexLineReader,
@@ -83,6 +84,7 @@ function run(
 		signal?: AbortSignal;
 		binarySha256?: string;
 		isolation?: nativeIsolation.NativeIsolationConfiguration;
+		home?: CloudCodexHome;
 		chatGptPlanAuth?: "command" | "environment";
 		beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 		observability?: CloudRuntimeObservability;
@@ -3012,6 +3014,73 @@ describe("warm conversations: spare Codex processes", () => {
 		const bootstrap = JSON.parse(await readFile(evidence, "utf8")) as { bootstrap: string };
 		expect(bootstrap.bootstrap).toContain("Spare-run law");
 	});
+
+	it("reuses a warm spare in home mode and never mixes home and non-home spares", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "bootstrap", evidence] as const;
+		const homeAbort = new AbortController();
+		const home = new CloudCodexHome({
+			channel: {
+				open: async () => {
+					throw new Error("unused");
+				},
+			},
+			sessionId: randomUUID(),
+			machine: { id: randomUUID(), name: "Home" },
+			signal: homeAbort.signal,
+		});
+		prepareCloudCodexSpare({ command, binarySha256, home: true }, 60_000);
+		await spareReady(evidence);
+		await expect(run("bootstrap", { home }).result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence)).toBe(1);
+		await home.close();
+
+		// WHY: A non-home spare must not be taken by a home run (key includes homeEnabled).
+		const evidence2 = join(root, "evidence2.json");
+		const command2 = [process.execPath, rpcFixture, "bootstrap", evidence2] as const;
+		const home2 = new CloudCodexHome({
+			channel: {
+				open: async () => {
+					throw new Error("unused");
+				},
+			},
+			sessionId: randomUUID(),
+			machine: { id: randomUUID(), name: "Home" },
+			signal: homeAbort.signal,
+		});
+		prepareCloudCodexSpare({ command: command2, binarySha256 }, 60_000);
+		await spareReady(evidence2);
+		const boundarySignal = new AbortController().signal;
+		const boundary = new CloudNativeToolBoundary({
+			companyId: randomUUID(),
+			runId: randomUUID(),
+			signal: boundarySignal,
+			assertActive: async () => undefined,
+			tools: [
+				{
+					name: "read_document",
+					description: "Read",
+					source: "company_file",
+					inputSchema: { type: "object", properties: {}, additionalProperties: false },
+					parseArguments: () => ({}),
+					execute: async () => ({ kind: "text", value: "ok" }),
+				},
+			],
+		});
+		await expect(
+			runCloudCodexToolSession({
+				command: command2,
+				binarySha256,
+				boundary,
+				home: home2,
+				model: "offline-probe",
+				prompt: "Private test input",
+				signal: boundarySignal,
+			}),
+		).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence2)).toBe(2);
+		await home2.close();
+	});
 });
 
 describe("side-thread turn/start cancellation", () => {
@@ -3074,5 +3143,52 @@ describe("side-thread turn/start cancellation", () => {
 		expect((abortedError as Error).message).toBe("Native review cancelled");
 		const interrupt = JSON.parse(await readFile(`${evidence}.review-interrupt`, "utf8")) as Record<string, unknown>;
 		expect(interrupt).toEqual({ threadId: "thread_review", turnId: "turn_review" });
+	});
+
+	it("reuses one Codex reviewer thread across allow verdicts and retires it immediately on deny", async () => {
+		const reviewer = new CloudActionReviewChannel();
+		const decisions: unknown[] = [];
+		const started = run("review-reuse", {
+			reviewer,
+			tools: [
+				{
+					name: "send_email",
+					description: "Send an email",
+					source: "connector",
+					inputSchema: { type: "object", properties: { to: { type: "string" } }, additionalProperties: false },
+					parseArguments: (value) => value,
+					execute: async (_args, context) => {
+						const base = {
+							instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
+							effort: "low" as const,
+							model: "gpt-6-luna",
+						};
+						decisions.push(await reviewer.review({ ...base, prompt: "Allow action 1" }, context.signal));
+						decisions.push(await reviewer.review({ ...base, prompt: "Allow action 2" }, context.signal));
+						decisions.push(await reviewer.review({ ...base, prompt: "DENY_ME action 3" }, context.signal));
+						decisions.push(await reviewer.review({ ...base, prompt: "Allow action 4" }, context.signal));
+						return { kind: "text", value: "Done." };
+					},
+				},
+			],
+		});
+		await expect(started.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 1 });
+		expect(decisions.map((item) => (item as { decision: string }).decision)).toEqual([
+			"allow",
+			"allow",
+			"deny",
+			"allow",
+		]);
+		const recorded = JSON.parse(await readFile(started.evidence, "utf8")) as {
+			threads: string[];
+			turns: Array<{ threadId: string; turnId: string }>;
+		};
+		expect(recorded.threads).toEqual(["thread_review_1", "thread_review_2"]);
+		expect(recorded.turns).toEqual([
+			{ threadId: "thread_review_1", turnId: "turn_review_1" },
+			{ threadId: "thread_review_1", turnId: "turn_review_2" },
+			{ threadId: "thread_review_1", turnId: "turn_review_3" },
+			{ threadId: "thread_review_2", turnId: "turn_review_4" },
+		]);
 	});
 });

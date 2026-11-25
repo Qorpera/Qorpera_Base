@@ -709,10 +709,20 @@ export function claudeWorkerReportedOutputs(paths: unknown, resultsFile: string)
 export async function claudeWorkerSettledOutputs(
 	read: (signal: AbortSignal) => Promise<readonly string[]>,
 	signal: AbortSignal,
-	options: { firstMs?: number; stepMs?: number; untilMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+	options: {
+		firstMs?: number;
+		stepMs?: number;
+		maxStepMs?: number;
+		untilMs?: number;
+		sleep?: (ms: number) => Promise<void>;
+	} = {},
 ): Promise<readonly string[]> {
 	const sleep = options.sleep ?? ((ms: number) => delay(ms, undefined, { signal, ref: false }));
-	const step = options.stepMs ?? 2_000;
+	// WHY: Fast adaptive polling settles already-flushed worker outputs in 500 ms instead of sleeping >= 4 s unconditionally while preserving the 12 s bound for late flushes.
+	const fixedStep = options.stepMs !== undefined;
+	const first = options.firstMs ?? 250;
+	let step = options.stepMs ?? 250;
+	const maxStep = options.maxStepMs ?? 1_000;
 	const until = options.untilMs ?? 12_000;
 	// A read that fails answers nothing: it neither agrees with the read before it nor replaces it.
 	const attempt = async (): Promise<readonly string[] | undefined> => {
@@ -723,16 +733,22 @@ export async function claudeWorkerSettledOutputs(
 			return undefined;
 		}
 	};
-	await sleep(options.firstMs ?? 2_000);
+	await sleep(first);
 	signal.throwIfAborted();
 	let last = await attempt();
-	for (let waited = 0; waited < until; waited += step) {
-		await sleep(step);
+	for (let waited = 0; waited < until; ) {
+		const wait = Math.min(step, until - waited);
+		await sleep(wait);
+		waited += wait;
 		signal.throwIfAborted();
 		const next = await attempt();
-		if (next === undefined) continue;
+		if (next === undefined) {
+			if (!fixedStep) step = Math.min(step * 2, maxStep);
+			continue;
+		}
 		if (last && next.join("\n") === last.join("\n")) return next;
 		last = next;
+		if (!fixedStep) step = Math.min(step * 2, maxStep);
 	}
 	return last ?? [];
 }

@@ -1,5 +1,9 @@
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { CLOUD_ACTION_REVIEW_INSTRUCTIONS } from "@qorpera/runtime/cloud-action-review";
 import {
 	CLAUDE_ACTION_REVIEW_ANSWER,
@@ -22,6 +26,9 @@ import {
 	claudeReviewerArguments,
 	claudeReviewerInvocation,
 	claudeReviewerVerdict,
+	claudeWarmReviewerArguments,
+	claudeWarmReviewerInvocation,
+	WarmClaudeReviewer,
 } from "@qorpera/runtime/cloud-claude-box";
 import { expect, it, vi } from "vitest";
 
@@ -439,4 +446,177 @@ it("splits stdout chunks linearly, notifies on trailing unterminated lines, and 
 	}
 	expect(beforeOverflow).toEqual(["ok"]);
 	expect(overflowed).toBe(1);
+});
+
+it("keeps a warm stream-json reviewer alive across allow verdicts, recycles on deny/ask or config change, and falls back once on early exit", async () => {
+	const warmArgs = claudeWarmReviewerArguments("haiku");
+	expect(warmArgs).toEqual([
+		"-p",
+		"--input-format",
+		"stream-json",
+		"--output-format",
+		"stream-json",
+		"--verbose",
+		"--tools",
+		"",
+		"--settings",
+		"/opt/qorpera/settings.json",
+		"--setting-sources",
+		"user",
+		"--strict-mcp-config",
+		"--system-prompt-file",
+		"/opt/qorpera/system-note.md",
+		"--model",
+		"haiku",
+	]);
+	expect(warmArgs).not.toContain("--max-turns");
+	expect(() => claudeWarmReviewerArguments("haiku --tools Bash")).toThrow("Invalid Claude model");
+	const inv = claudeWarmReviewerInvocation({
+		configuration: CLAUDE_BOX_CONFIGURATION,
+		root: `${scratch}/rw1`,
+		relayPath: `${scratch}/egress.sock`,
+		login: { folder: "/var/lib/qorpera-claude-logins/m1" },
+		model: "haiku",
+	});
+	expect(inv.slice(inv.indexOf("--") + 1)).toEqual([
+		"/usr/bin/node",
+		"/opt/qorpera/native-entry.mjs",
+		`${scratch}/egress.sock`,
+		"/opt/claude/claude",
+		...warmArgs,
+	]);
+
+	const temp = await mkdtemp(join(tmpdir(), "qorpera-warm-claude-reviewer-"));
+	try {
+		const spawnedArgs: string[][] = [];
+		let failFirstWarm = false;
+		const spawnBox = vi.fn((_cmd: string, args: readonly string[]) => {
+			spawnedArgs.push([...args]);
+			const child = new EventEmitter() as EventEmitter & {
+				pid: number;
+				exitCode: number | null;
+				signalCode: NodeJS.Signals | null;
+				stdio: [PassThrough, PassThrough, PassThrough, PassThrough | null];
+				kill: (sig?: NodeJS.Signals) => boolean;
+			};
+			const stdin = new PassThrough();
+			const stdout = new PassThrough();
+			const stderr = new PassThrough();
+			const fd3 = new PassThrough();
+			child.pid = 999_999;
+			child.exitCode = null;
+			child.signalCode = null;
+			child.stdio = [stdin, stdout, stderr, fd3];
+			child.kill = () => {
+				if (child.exitCode === null) {
+					child.exitCode = 137;
+					stdout.end();
+					child.emit("close", 137, "SIGKILL");
+				}
+				return true;
+			};
+			const isWarm = args.includes("--input-format");
+			let buffer = "";
+			stdin.setEncoding("utf8");
+			stdin.on("data", (chunk: string) => {
+				buffer += chunk;
+				if (!isWarm) return;
+				while (buffer.includes("\n")) {
+					const idx = buffer.indexOf("\n");
+					const line = buffer.slice(0, idx);
+					buffer = buffer.slice(idx + 1);
+					if (failFirstWarm) {
+						failFirstWarm = false;
+						child.exitCode = 1;
+						stdout.end();
+						child.emit("close", 1, null);
+						return;
+					}
+					const msg = JSON.parse(line) as { message: { content: string } };
+					const decision = msg.message.content.includes("DENY")
+						? "deny"
+						: msg.message.content.includes("ASK")
+							? "ask"
+							: "allow";
+					stdout.write(`${JSON.stringify({ type: "assistant", message: {} })}\n`);
+					stdout.write(
+						`${JSON.stringify({
+							type: "result",
+							is_error: false,
+							result: JSON.stringify({
+								decision,
+								ruleIds: [],
+								builtIn: "none",
+								reason: decision,
+								proposedRule: "",
+							}),
+						})}\n`,
+					);
+				}
+			});
+			stdin.on("end", () => {
+				if (isWarm) return;
+				stdout.end(
+					`${JSON.stringify({
+						type: "result",
+						is_error: false,
+						result: JSON.stringify({
+							decision: "allow",
+							ruleIds: [],
+							builtIn: "none",
+							reason: "cold-fallback",
+							proposedRule: "",
+						}),
+					})}\n`,
+				);
+				child.exitCode = 0;
+				child.emit("close", 0, null);
+			});
+			return child as never;
+		});
+
+		const warm = new WarmClaudeReviewer({
+			configuration: CLAUDE_BOX_CONFIGURATION,
+			scratchRoot: temp,
+			relayPath: join(temp, "egress.sock"),
+			login: { folder: temp },
+			spawnBox: spawnBox as never,
+		});
+		const signal = new AbortController().signal;
+		const baseInput = { instructions: "rule-set-1", model: "haiku", effort: "low" as const };
+		// WHY: Two consecutive allow verdicts reuse a single warm process.
+		expect(await warm.review({ ...baseInput, prompt: "allow-1" }, signal)).toMatchObject({ decision: "allow" });
+		expect(await warm.review({ ...baseInput, prompt: "allow-2" }, signal)).toMatchObject({ decision: "allow" });
+		expect(spawnBox).toHaveBeenCalledTimes(1);
+		// WHY: Deny verdict recycles the process immediately so refusal context never leaks into the next review.
+		expect(await warm.review({ ...baseInput, prompt: "DENY-3" }, signal)).toMatchObject({ decision: "deny" });
+		expect(spawnBox).toHaveBeenCalledTimes(1);
+		expect(await warm.review({ ...baseInput, prompt: "allow-4" }, signal)).toMatchObject({ decision: "allow" });
+		expect(spawnBox).toHaveBeenCalledTimes(2);
+		// WHY: Changing instructions recycles the warm process.
+		expect(await warm.review({ ...baseInput, instructions: "rule-set-2", prompt: "allow-5" }, signal)).toMatchObject({
+			decision: "allow",
+		});
+		expect(spawnBox).toHaveBeenCalledTimes(3);
+		// WHY: If a warm process exits before emitting a result, it falls back once to single-shot cold review.
+		await warm.close();
+		const warmFallback = new WarmClaudeReviewer({
+			configuration: CLAUDE_BOX_CONFIGURATION,
+			scratchRoot: temp,
+			relayPath: join(temp, "egress.sock"),
+			login: { folder: temp },
+			spawnBox: spawnBox as never,
+		});
+		failFirstWarm = true;
+		expect(await warmFallback.review({ ...baseInput, prompt: "fallback-6" }, signal)).toMatchObject({
+			decision: "allow",
+			reason: "cold-fallback",
+		});
+		expect(spawnBox).toHaveBeenCalledTimes(5);
+		expect(spawnedArgs.at(-2)).toContain("--input-format");
+		expect(spawnedArgs.at(-1)).toContain("--max-turns");
+		await warmFallback.close();
+	} finally {
+		await rm(temp, { recursive: true, force: true });
+	}
 });

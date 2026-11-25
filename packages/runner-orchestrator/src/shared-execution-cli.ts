@@ -25,6 +25,20 @@ function required(name: string, environment: NodeJS.ProcessEnv = process.env): s
 	return value;
 }
 
+const DEFAULT_WARM_IDLE_MS = 300_000;
+const MAX_WARM_IDLE_MS = 5 * 60_000;
+
+// WHY: Warm conversation slots default to 5 minutes in production while supporting explicit 0 or "off" opt-out.
+export function warmIdleMs(environment: NodeJS.ProcessEnv = process.env): number | undefined {
+	const raw = environment.QORPERA_SHARED_EXECUTION_WARM_IDLE_MS?.trim();
+	if (raw === undefined || raw === "") return DEFAULT_WARM_IDLE_MS;
+	if (raw === "0" || raw === "off") return undefined;
+	const value = Number(raw);
+	if (!Number.isSafeInteger(value) || value < 1 || value > MAX_WARM_IDLE_MS)
+		throw new Error("QORPERA_SHARED_EXECUTION_WARM_IDLE_MS is invalid");
+	return value;
+}
+
 /** QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: each slot's native host gets the node's folder search unless an operator set
  * it "off" (keyholes S4: search for every run; it was off unless "on" until then). */
 export function folderSearch(environment: NodeJS.ProcessEnv = process.env): boolean {
@@ -140,10 +154,8 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 		claudePath: process.env.QORPERA_CLAUDE_PATH ?? "/usr/local/bin/claude",
 		nativeCompanyRuntime,
 		startTimeoutMs: integer("QORPERA_SHARED_EXECUTION_START_TIMEOUT_MS", 30_000, 1000, 600_000),
-		// Warm conversations (2026-09-27): off unless set.
-		...(process.env.QORPERA_SHARED_EXECUTION_WARM_IDLE_MS
-			? { warmIdleMs: integer("QORPERA_SHARED_EXECUTION_WARM_IDLE_MS", 300_000, 1, 5 * 60_000) }
-			: {}),
+		// WHY: Default warm conversation slots to 300000 ms unless explicitly set to 0 or off.
+		...(warmIdleMs() !== undefined ? { warmIdleMs: warmIdleMs() } : {}),
 		// The node's folder search (F3): on unless an operator set it off.
 		...(folderSearch() ? { folderSearch: true } : {}),
 	};

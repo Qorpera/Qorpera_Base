@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { sharedExecutionConfigFromEnvironment } from "../src/shared-execution-cli.ts";
+import { sharedExecutionConfigFromEnvironment, warmIdleMs } from "../src/shared-execution-cli.ts";
 
 const roots: string[] = [];
 
@@ -46,4 +46,14 @@ it("refuses a service key in its environment, as a systemd credential, or left i
 	await expect(sharedExecutionConfigFromEnvironment()).rejects.toThrow(
 		"Shared execution requires the governed company-path-v1 runtime",
 	);
+});
+
+it("defaults warm slots to 300000 ms and supports explicit opt-out via 0 or off", () => {
+	expect(warmIdleMs({})).toBe(300_000);
+	expect(warmIdleMs({ QORPERA_SHARED_EXECUTION_WARM_IDLE_MS: "" })).toBe(300_000);
+	expect(warmIdleMs({ QORPERA_SHARED_EXECUTION_WARM_IDLE_MS: "0" })).toBeUndefined();
+	expect(warmIdleMs({ QORPERA_SHARED_EXECUTION_WARM_IDLE_MS: "off" })).toBeUndefined();
+	expect(warmIdleMs({ QORPERA_SHARED_EXECUTION_WARM_IDLE_MS: "60000" })).toBe(60_000);
+	expect(() => warmIdleMs({ QORPERA_SHARED_EXECUTION_WARM_IDLE_MS: "300001" })).toThrow("is invalid");
+	expect(() => warmIdleMs({ QORPERA_SHARED_EXECUTION_WARM_IDLE_MS: "-1" })).toThrow("is invalid");
 });
