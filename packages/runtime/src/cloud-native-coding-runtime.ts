@@ -622,6 +622,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		const initial = await codingTurnRead(authorize, signal);
 		if (initial.coding.submission !== null && initial.coding.submission !== undefined)
 			throw new Error("CODING_TURN_ALREADY_SUBMITTED");
+		// WHY: Fail closed before the Codex driver is invoked so Claude coding turns never silently run on GPT/Codex.
+		if (initial.coding.harness === "claude-code") throw new Error("CODING_CLAUDE_DRIVER_UNAVAILABLE");
 		const scope = initial.scope;
 		// The session's own record of its turns, read once: earlier turns never change.
 		const turn = parseCloudCodingTurnContext(

@@ -777,6 +777,49 @@ describe("worker dispatch and completion envelopes", () => {
 				parseCloudWakeEnvelope({ ...claude, payload: { ...claude.payload, claude: bad } }, identity),
 			).toThrow("Invalid worker dispatch wake");
 	});
+	it("admits a Claude Code coding wake when top-level harness and coding scope agree, and rejects mismatches", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const workerId = wake.source.id;
+		const pick = { model: "claude-opus-5-5", effort: "high" };
+		const codingScope = {
+			harness: "claude-code",
+			repository: { host: "qorpera", owner: "company", name: "app", baseBranch: "main" },
+			branch: `qorpera/coding/${workerId}`,
+			sequence: 1,
+		};
+		const claudeCoding = {
+			...wake,
+			payload: {
+				...wake.payload,
+				species: "coding",
+				access: "read",
+				harness: "claude-code",
+				claude: pick,
+				coding: codingScope,
+			},
+		};
+		const parsed = parseCloudWakeEnvelope(claudeCoding, identity);
+		expect(parsed.payload.harness).toBe("claude-code");
+		expect(parsed.payload.claude).toEqual(pick);
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{
+					...claudeCoding,
+					payload: { ...claudeCoding.payload, coding: { ...codingScope, harness: "codex" } },
+				},
+				identity,
+			),
+		).toThrow("Invalid worker dispatch wake");
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{
+					...claudeCoding,
+					payload: { ...claudeCoding.payload, harness: "codex" },
+				},
+				identity,
+			),
+		).toThrow("Invalid worker dispatch wake");
+	});
 	it("admits a completion as an internal continuation that may speak in its parent's conversation", () => {
 		const { identity, wake } = workerWakeFixture("worker-completion");
 		const parsed = parseCloudWakeEnvelope(wake, identity);

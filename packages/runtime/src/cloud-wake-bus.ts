@@ -663,7 +663,9 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(work.species !== "in-house" && work.species !== "coding") ||
 			(work.access !== "read" && work.access !== "write") ||
 			(coding && (work.access !== "read" || !codingScope(work.coding, work.sequence))) ||
-			(harnessNamed && (coding || work.harness !== "claude-code")) ||
+			(harnessNamed &&
+				(work.harness !== "claude-code" ||
+					(coding && (work.coding as Record<string, unknown>).harness !== "claude-code"))) ||
 			(claudeNamed && (!harnessNamed || !isCloudRuntimeClaudeChoice(work.claude))) ||
 			!Number.isSafeInteger(work.sequence) ||
 			(work.sequence as number) < 1 ||

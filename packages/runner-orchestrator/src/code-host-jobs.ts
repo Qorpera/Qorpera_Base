@@ -1198,17 +1198,19 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 			]);
 		let startSha = baseSha;
 		if (!head) {
-			if (!(await run.isCommit(run.repo, baseSha))) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
+			const shouldCheckBase = preferCurrentBase && repository.host === "qorpera";
+			const [baseOk, currentBase] = await Promise.all([
+				run.isCommit(run.repo, baseSha),
+				shouldCheckBase ? run.ref(`refs/heads/${repository.baseBranch}`) : Promise.resolve(null),
+			]);
+			if (!baseOk) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
 			// WHY: a follow-up reopened after prune deleted its merged branch must start from current main
 			// rather than its stale initial baseSha, so it sees its own landed work and later main changes.
-			if (preferCurrentBase && repository.host === "qorpera") {
-				const currentBase = await run.ref(`refs/heads/${repository.baseBranch}`);
-				if (currentBase && currentBase !== baseSha) {
-					const ancestor = await run.git(run.repo, ["merge-base", "--is-ancestor", baseSha, currentBase]);
-					if (ancestor.status !== 0 && ancestor.status !== 1)
-						throw new CodeHostJobFailure("CODE_HOST_WORKTREE_FAILED", tail(ancestor.stderr));
-					if (ancestor.status === 0) startSha = currentBase;
-				}
+			if (currentBase && currentBase !== baseSha) {
+				const ancestor = await run.git(run.repo, ["merge-base", "--is-ancestor", baseSha, currentBase]);
+				if (ancestor.status !== 0 && ancestor.status !== 1)
+					throw new CodeHostJobFailure("CODE_HOST_WORKTREE_FAILED", tail(ancestor.stderr));
+				if (ancestor.status === 0) startSha = currentBase;
 			}
 		}
 		// The names of what the worktree would hold, by the code host's rules and then the company folder's where this
@@ -1234,9 +1236,10 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 				: ["worktree", "add", "--quiet", "--lock", "--reason", WORKTREE_LOCK, "-b", branch, tree, startSha],
 			"CODE_HOST_WORKTREE_FAILED",
 		);
-		if (!(await run.read(`${tree}/.git`))?.equals(Buffer.from(`gitdir: ${admin}\n`)))
+		const [linkBytes, branchHead] = await Promise.all([run.read(`${tree}/.git`), run.ref(`refs/heads/${branch}`)]);
+		if (!linkBytes?.equals(Buffer.from(`gitdir: ${admin}\n`)))
 			throw new CodeHostJobFailure("CODE_HOST_WORKTREE_FAILED", "the worktree did not get its own admin directory");
-		return { state: "added", headSha: await run.ref(`refs/heads/${branch}`), restored: run.restored };
+		return { state: "added", headSha: branchHead, restored: run.restored };
 	});
 }
 
@@ -1900,15 +1903,30 @@ export async function landCodeBranchBatch(
 		const rejected: CodeBranchBatchRejected[] = [];
 		const unchanged: CodeBranchBatchUnchanged[] = [];
 		const deferred: number[] = [];
+		// WHY: Batch commit existence checks for all moved batch candidates in one cat-file --batch-check call instead of serial cat-file -t execs.
+		const headsToVerify = [
+			...new Set(
+				candidates
+					.filter((candidate, index) => {
+						const branch = named(branchRefs[index] as string);
+						return Boolean(branch && branch !== candidate.headSha);
+					})
+					.map((candidate) => candidate.headSha),
+			),
+		];
+		const verifiedCommits = new Map<string, boolean>();
+		if (headsToVerify.length > 0) {
+			const results = await run.areCommits(run.repo, headsToVerify);
+			headsToVerify.forEach((commitSha, index) => {
+				verifiedCommits.set(commitSha, results[index] === true);
+			});
+		}
 		let tip = mainStart;
 		for (let i = 0; i < candidates.length; i += 1) {
 			const { workerId, headSha } = candidates[i] as { workerId: string; headSha: string };
 			const ref = branchRefs[i] as string;
 			const branch = named(ref);
-			if (
-				!branch ||
-				(branch !== headSha && (!(await run.isCommit(run.repo, headSha)) || !(await ancestor(headSha, branch))))
-			) {
+			if (!branch || (branch !== headSha && (!verifiedCommits.get(headSha) || !(await ancestor(headSha, branch))))) {
 				rejected.push({
 					index: i,
 					workerId,

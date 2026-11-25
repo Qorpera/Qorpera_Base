@@ -15,11 +15,12 @@
 // The handshake is the first line ON the socket, never the URL or a header: a run's holder and its binding are not
 // things to put in a request line that proxies and logs keep.
 
-import { type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
+import { type CloudCodingCommandScope, type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
 export const CLOUD_HOME_CHANNEL_PATH = "/v1/home-session";
 export const CLOUD_HOME_CHANNEL_PROTOCOL = "qorpera-home-session/1";
+export const CLOUD_CODING_CHANNEL_PROTOCOL = "qorpera-coding-session/1";
 /** The handshake, and each line after it. A command's output chunk is far below this; a line over it ends the channel. */
 export const CLOUD_HOME_CHANNEL_LINE_BYTES = 8 * 1024 * 1024;
 /** How long the ingress waits for the handshake line after the upgrade. */
@@ -240,6 +241,98 @@ export function parseCloudHomeChannelHandshake(line: string): CloudHomeChannelHa
 		binding: record.binding as CloudNativeToolBinding,
 		machineId: record.machineId,
 		sessionId: record.sessionId,
+		kind: (record.kind as CloudHomeChannelKind | undefined) ?? "exec",
+	};
+}
+
+export interface CloudCodingChannelHandshake {
+	schema: typeof CLOUD_CODING_CHANNEL_PROTOCOL;
+	binding: CloudNativeToolBinding;
+	scope: CloudCodingCommandScope;
+	kind?: CloudHomeChannelKind;
+}
+
+export type CloudCodingChannelReady =
+	| { readonly ok: true; readonly workerId: string; readonly vmId: string }
+	| { readonly ok: false; readonly reason: string };
+
+export interface CloudCodingChannelAuthorized {
+	readonly state: "authorized";
+	readonly workerId: string;
+	readonly vmId: string;
+	readonly requestId: string;
+	readonly turn: number;
+	readonly executorOwner: string;
+	readonly providerId: string;
+}
+
+export type CloudCodingChannelAnswer =
+	| CloudCodingChannelAuthorized
+	| { readonly state: "refused"; readonly reason: string };
+
+export interface CloudCodingChannelRequest {
+	readonly binding: CloudNativeToolBinding;
+	readonly scope: CloudCodingCommandScope;
+	readonly holder: string | undefined;
+	readonly kind: CloudHomeChannelKind;
+}
+
+function validCodingScope(value: unknown): value is CloudCodingCommandScope {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const scope = value as Record<string, unknown>;
+	if (Object.keys(scope).sort().join() !== "requestId,turn,vmId,workerId") return false;
+	return (
+		typeof scope.workerId === "string" &&
+		POSTGRES_UUID_PATTERN.test(scope.workerId) &&
+		typeof scope.vmId === "string" &&
+		POSTGRES_UUID_PATTERN.test(scope.vmId) &&
+		typeof scope.requestId === "string" &&
+		POSTGRES_UUID_PATTERN.test(scope.requestId) &&
+		typeof scope.turn === "number" &&
+		Number.isSafeInteger(scope.turn) &&
+		scope.turn >= 1
+	);
+}
+
+export function cloudCodingChannelHandshake(input: {
+	binding: CloudNativeToolBinding;
+	scope: CloudCodingCommandScope;
+	kind?: CloudHomeChannelKind;
+}): string {
+	if (!validCodingScope(input.scope) || (input.kind !== undefined && !CLOUD_HOME_CHANNEL_KINDS.includes(input.kind)))
+		throw new Error("Invalid coding channel identity");
+	return JSON.stringify({
+		schema: CLOUD_CODING_CHANNEL_PROTOCOL,
+		binding: input.binding,
+		scope: input.scope,
+		...(input.kind === "sftp" ? { kind: input.kind } : {}),
+	} satisfies CloudCodingChannelHandshake);
+}
+
+export function parseCloudCodingChannelHandshake(line: string): CloudCodingChannelHandshake | undefined {
+	let value: JsonValue;
+	try {
+		value = JSON.parse(line) as JsonValue;
+	} catch {
+		return undefined;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	const keys = Object.keys(record).sort().join();
+	if (
+		(keys !== "binding,schema,scope" && keys !== "binding,kind,schema,scope") ||
+		(record.kind !== undefined && !(CLOUD_HOME_CHANNEL_KINDS as readonly unknown[]).includes(record.kind)) ||
+		record.schema !== CLOUD_CODING_CHANNEL_PROTOCOL ||
+		!validCodingScope(record.scope) ||
+		!record.binding ||
+		typeof record.binding !== "object" ||
+		Array.isArray(record.binding)
+	)
+		return undefined;
+	return {
+		schema: CLOUD_CODING_CHANNEL_PROTOCOL,
+		binding: record.binding as CloudNativeToolBinding,
+		scope: record.scope,
 		kind: (record.kind as CloudHomeChannelKind | undefined) ?? "exec",
 	};
 }

@@ -30,7 +30,11 @@ import type {
 	CompleteSurfacePreviewInput,
 	CompleteSurfacePublishInput,
 } from "./orchestrator.ts";
-import { approveAndSyncSurfaceChanges } from "./surface-change-dispatcher.ts";
+import {
+	approveAndSyncSurfaceChanges,
+	type PeerOpenSessionInput,
+	syncPeerSurfaceSessions,
+} from "./surface-change-dispatcher.ts";
 import { buildCompositeSurfacePreview } from "./surface-preview-runner.ts";
 import type {
 	ClaimedSurfaceMergeJob,
@@ -174,6 +178,16 @@ export interface SurfaceExecutionBridgePorts {
 		},
 		signal: AbortSignal,
 	) => Promise<void> | void;
+	readonly schedulePeerSessionSync?: (input: {
+		readonly jobId: string;
+		readonly surfaceId: string;
+		readonly profileId: string;
+		readonly environmentId: string | null;
+		readonly repository: CloudCodingRepository;
+		readonly mainBefore: string;
+		readonly mainAfter: string;
+		readonly peerSessions: readonly PeerOpenSessionInput[];
+	}) => void;
 	readonly undoCodeRepoChange?: (
 		input: {
 			readonly jobId: string;
@@ -935,6 +949,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			signal,
 		);
 		await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
+		// WHY: Defer peer session rebases off the Approve critical path so landing main and completing the merge never block on K peer worktrees.
 		const outcome = await approveAndSyncSurfaceChanges(codeHostJob, {
 			surfaceId: job.surfaceId,
 			sessionId: job.sessionId ?? job.jobId,
@@ -954,7 +969,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				approvedChanges.map((change) => ({ changeId: change.changeId, status: "merging" as const })),
 			approvedChanges,
 			siblingRemainingChanges,
-			peerSessions: job.peerSessions ?? [],
+			peerSessions: [],
 		});
 
 		if (outcome.status === "conflicted") {
@@ -981,6 +996,43 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			},
 			signal,
 		);
+		const activePeerSessions = (job.peerSessions ?? []).filter((peer) => peer.remainingChanges.length > 0);
+		if (ports.schedulePeerSessionSync) {
+			await ports.onSessionChangesRebased?.(
+				{
+					jobId: job.jobId,
+					surfaceId: job.surfaceId,
+					sessionId: job.sessionId,
+					mainBefore: outcome.mainBefore,
+					mainAfter: outcome.mainAfter,
+					nextSessionState: outcome.nextSessionState,
+					siblingRebase: outcome.siblingRebase,
+					peerSync: [],
+				},
+				signal,
+			);
+			if (activePeerSessions.length > 0) {
+				ports.schedulePeerSessionSync({
+					jobId: job.jobId,
+					surfaceId: job.surfaceId,
+					profileId: job.profileId,
+					environmentId: job.environmentId ?? null,
+					repository,
+					mainBefore: outcome.mainBefore,
+					mainAfter: outcome.mainAfter,
+					peerSessions: activePeerSessions,
+				});
+			}
+			return;
+		}
+		const peerSync =
+			activePeerSessions.length > 0
+				? await syncPeerSurfaceSessions(codeHostJob, {
+						repository,
+						ontoSha: outcome.mainAfter,
+						peerSessions: activePeerSessions,
+					})
+				: [];
 		await ports.onSessionChangesRebased?.(
 			{
 				jobId: job.jobId,
@@ -990,7 +1042,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				mainAfter: outcome.mainAfter,
 				nextSessionState: outcome.nextSessionState,
 				siblingRebase: outcome.siblingRebase,
-				peerSync: outcome.peerSync,
+				peerSync,
 			},
 			signal,
 		);

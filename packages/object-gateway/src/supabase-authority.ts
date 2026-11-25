@@ -203,6 +203,8 @@ export class SupabaseObjectAuthority
 	readonly #auth: ObjectDependency;
 	readonly #failedProbes = new Set<"api" | "storage" | "auth">();
 	readonly #readingLegacy = new Map<string, Promise<Uint8Array>>();
+	readonly #now: () => number;
+	#memberFenceUnsupportedUntil = 0;
 
 	constructor(options: SupabaseObjectAuthorityOptions) {
 		let url: URL;
@@ -235,9 +237,10 @@ export class SupabaseObjectAuthority
 		if (options.fetch && caTransport) caTransport.close();
 		const transport = options.fetch ?? caTransport?.fetch ?? fetch;
 		this.#fetch = (input, init) => transport(input, { ...init, redirect: "error" });
-		this.#api = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
-		this.#storage = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
-		this.#auth = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
+		this.#now = options.now ?? Date.now;
+		this.#api = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, this.#now);
+		this.#storage = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, this.#now);
+		this.#auth = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, this.#now);
 	}
 
 	close(): void {
@@ -430,25 +433,129 @@ export class SupabaseObjectAuthority
 		environmentId: string,
 		sha256: string,
 		signal?: AbortSignal,
-	): Promise<{ profileId: string; bytes: number }> {
-		const value = (await this.#rpc(
-			"qorpera_member_folder_object",
-			{ p_environment_id: environmentId, p_sha256: sha256 },
-			userToken,
-			this.#publishableKey,
-			"folder",
-			signal,
-		)) as Record<string, unknown> | null;
+	): Promise<{ profileId: string; bytes: number; fence?: FolderDownloadFence }> {
+		let value: Record<string, unknown> | null;
+		let usedAuthorizeRpc = this.#now() >= this.#memberFenceUnsupportedUntil;
+		if (usedAuthorizeRpc) {
+			try {
+				value = (await this.#rpc(
+					"qorpera_member_folder_object_authorize",
+					{ p_environment_id: environmentId, p_sha256: sha256 },
+					userToken,
+					this.#publishableKey,
+					"folder",
+					signal,
+				)) as Record<string, unknown> | null;
+			} catch (error) {
+				// WHY: Fall back to legacy qorpera_member_folder_object on HTTP 404 during rolling deploys before the new RPC is live.
+				if (error instanceof ObjectDependencyError && error.status === 404) {
+					this.#memberFenceUnsupportedUntil = this.#now() + 60_000;
+					usedAuthorizeRpc = false;
+					value = (await this.#rpc(
+						"qorpera_member_folder_object",
+						{ p_environment_id: environmentId, p_sha256: sha256 },
+						userToken,
+						this.#publishableKey,
+						"folder",
+						signal,
+					)) as Record<string, unknown> | null;
+				} else {
+					throw error;
+				}
+			}
+		} else {
+			value = (await this.#rpc(
+				"qorpera_member_folder_object",
+				{ p_environment_id: environmentId, p_sha256: sha256 },
+				userToken,
+				this.#publishableKey,
+				"folder",
+				signal,
+			)) as Record<string, unknown> | null;
+		}
 		if (
 			!value ||
 			typeof value !== "object" ||
-			Object.keys(value).length !== 3 ||
+			Array.isArray(value) ||
 			value.schema !== "qorpera.folder-object-download/v1" ||
 			typeof value.profileId !== "string" ||
 			!UUID_PATTERN.test(value.profileId) ||
 			!Number.isSafeInteger(value.bytes) ||
 			(value.bytes as number) < 0 ||
 			(value.bytes as number) > 8 * 1024 * 1024
+		)
+			throw new ObjectDependencyError(403);
+		const keys = Object.keys(value);
+		if (keys.length === 3) {
+			return { profileId: value.profileId, bytes: value.bytes as number };
+		}
+		if (
+			usedAuthorizeRpc &&
+			keys.length === 6 &&
+			Number.isSafeInteger(value.authoritySeq) &&
+			(value.authoritySeq as number) >= 0 &&
+			typeof value.checkedAt === "string" &&
+			value.checkedAt.length > 0 &&
+			typeof value.viaActive === "boolean"
+		) {
+			return {
+				profileId: value.profileId,
+				bytes: value.bytes as number,
+				fence: {
+					authoritySeq: value.authoritySeq as number,
+					checkedAt: value.checkedAt,
+					viaActive: value.viaActive,
+				},
+			};
+		}
+		throw new ObjectDependencyError(403);
+	}
+
+	// WHY: Re-check member access after NAS I/O via the lightweight authoritySeq fence RPC, falling back to full auth on rolling-deploy 404.
+	async recheckMemberFolderObjectFence(
+		userToken: string,
+		environmentId: string,
+		sha256: string,
+		fence: FolderDownloadFence,
+		signal?: AbortSignal,
+	): Promise<{ profileId: string; bytes: number }> {
+		let value: Record<string, unknown> | null;
+		try {
+			value = (await this.#rpc(
+				"qorpera_member_folder_object_fence",
+				{
+					p_environment_id: environmentId,
+					p_sha256: sha256,
+					p_authority_seq: fence.authoritySeq,
+					p_checked_at: fence.checkedAt,
+					p_via_active: fence.viaActive,
+				},
+				userToken,
+				this.#publishableKey,
+				"folder",
+				signal,
+			)) as Record<string, unknown> | null;
+		} catch (error) {
+			if (error instanceof ObjectDependencyError && error.status === 404) {
+				this.#memberFenceUnsupportedUntil = this.#now() + 60_000;
+				return this.authorizeMemberFolderObject(userToken, environmentId, sha256, signal);
+			}
+			throw error;
+		}
+		if (
+			!value ||
+			typeof value !== "object" ||
+			Array.isArray(value) ||
+			Object.keys(value).length !== 5 ||
+			value.schema !== "qorpera.folder-object-download/v1" ||
+			typeof value.profileId !== "string" ||
+			!UUID_PATTERN.test(value.profileId) ||
+			!Number.isSafeInteger(value.bytes) ||
+			(value.bytes as number) < 0 ||
+			(value.bytes as number) > 8 * 1024 * 1024 ||
+			!Number.isSafeInteger(value.authoritySeq) ||
+			(value.authoritySeq as number) < 0 ||
+			typeof value.rechecked !== "boolean"
 		)
 			throw new ObjectDependencyError(403);
 		return { profileId: value.profileId, bytes: value.bytes as number };

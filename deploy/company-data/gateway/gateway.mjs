@@ -155,8 +155,8 @@ export const LIMITS = Object.freeze({
 	watchAgainMs: 500,
 	listenIdleMs: 45_000,
 	readPoolIdleMs: 45_000,
-	/** How long a member's folder read is kept. */
-	proofMs: 10_000,
+	// WHY: Keep member folder read proofs longer than watchMs (20 s) so /watch reconnect cycles hit the cache.
+	proofMs: 25_000,
 	/** A request's body. */
 	bodyBytes: 1024 * 1024,
 	parameterBytes: 64 * 1024,

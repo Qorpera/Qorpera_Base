@@ -710,7 +710,7 @@ function projectPath(path: string, project: string): string {
 
 /** At most 64 arguments and 256 environment variables, nothing with a NUL, each argument and value at most 64 KiB and
  * all of them together at most 256 KiB (well under the kernel's limit for a new program). */
-function validExecPipe(request: LxdExecPipeRequest): boolean {
+export function validExecPipe(request: LxdExecPipeRequest): boolean {
 	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, user, group } = request;
 	for (const id of [user, group])
 		if (id !== undefined && (!Number.isSafeInteger(id) || id < 0 || id > 65535)) return false;

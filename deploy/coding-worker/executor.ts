@@ -56,6 +56,7 @@ import {
 	InstanceDesktop, runDesktopStreamInstance,
 } from "../../packages/runner-orchestrator/src/company-machine-stream-process.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
+import { authorizeCodingChannel } from "./coding-channel-authority.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, authorizeCodingCommandV2, proveNativeBinding } from "./command-authority.ts";
 import { authorizeHomeSession } from "./home-session-authority.ts";
@@ -842,6 +843,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			return codingCommandExecution(transport, request.input.commandId, request.action === "start" ? transport.start(request.scope, request.input, signal) :
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
+		openChannelLocal: (_authority, request, signal) => host.openCodingChannel(request.scope, request.kind, signal),
 	});
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
@@ -860,6 +862,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			authorize: (request, signal) => authorizeHomeSession(control, request, signal),
 			open: (authority, request, signal) => machineRouter.execServer(authority, request, signal),
 		},
+		codingChannel: {
+			authorize: (request, signal) => authorizeCodingChannel(control, request, signal),
+			open: (authority, request, signal) => router.openChannel(authority, request, signal),
+		},
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
 		token: peerToken, port: config.peerCommandPort,
@@ -874,6 +880,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		home: {
 			authorize: (request, signal) => authorizeHomeSession(control, request, signal),
 			open: (authority, request, signal) => machineRouter.execServer(authority, request, signal, true),
+		},
+		codingChannel: {
+			authorize: (request, signal) => authorizeCodingChannel(control, request, signal),
+			open: (authority, request, signal) => router.openChannel(authority, request, signal, true),
 		},
 	});
 	// The member listener: loopback only; a failed look is logged by its fixed code, never with the member's token.

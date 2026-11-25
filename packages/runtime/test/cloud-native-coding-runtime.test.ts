@@ -192,6 +192,15 @@ function fixture() {
 }
 
 describe("the coding composition of a native turn", () => {
+	it("fails closed on claude-code coding turns instead of falling back to Codex", async () => {
+		const f = fixture();
+		f.coding.harness = "claude-code";
+		(f.turn.wake.payload as Record<string, unknown>).coding = { harness: "claude-code" };
+		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			"CODING_CLAUDE_DRIVER_UNAVAILABLE",
+		);
+		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+	});
 	it("aborts a streaming native session when the session lease is revoked between tools", async () => {
 		vi.useFakeTimers();
 		const f = fixture();
