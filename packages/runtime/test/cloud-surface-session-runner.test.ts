@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CloudNativeCodingDriver, CloudNativeCodingTurnContext } from "../src/cloud-native-coding-runtime.ts";
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
 import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
+import { CloudPictureChannel } from "../src/cloud-picture-channel.ts";
 import {
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
@@ -14,6 +15,7 @@ import {
 	type SurfaceFolderTextReader,
 } from "../src/cloud-surface-session-runner.ts";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
+import { pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
 
 function toolContext(companyId: string = randomUUID()): CloudToolContext {
 	return {
@@ -1565,5 +1567,98 @@ describe("cloud surface session runner", () => {
 			},
 		);
 		expect(normalStage).not.toHaveBeenCalled();
+	});
+
+	it("wires make_picture into non-internal folder Studio turns and omits it during internal reconciliation", async () => {
+		const png = pngFile(pngHeader(1, 1, 8, 2), pngRows([[200, 100, 50]]));
+		const pictures = new CloudPictureChannel();
+		pictures.attach(async () => ({ png }));
+		const staged: unknown[] = [];
+		let capturedInstructions = "";
+		let sawMakePictureOnNormal = false;
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				companyId: randomUUID(),
+				surfaceSlug: "product-studio",
+				surfaceTitle: "Product Studio",
+				sourceKind: "folder",
+				folderRoot: "product",
+				prompt: "Create a hero render.",
+				imageModel: "gemini-3-pro-image",
+			},
+			{
+				surfaceTools: {
+					stageSurfacePatch: async (_sid, req) => {
+						staged.push(req);
+						return { changeId: randomUUID(), seq: 1, openChangeCount: 1 };
+					},
+				},
+				makePicture: {
+					pictures,
+					stageBytes: async (bytes, mediaType) => ({
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: bytes.byteLength,
+						mediaType,
+					}),
+				},
+				executeTurn: async (req) => {
+					capturedInstructions = req.instructions;
+					const picTool = req.tools.find((tool) => tool.name === "make_picture");
+					sawMakePictureOnNormal = Boolean(picTool);
+					if (picTool) {
+						await picTool.execute(
+							picTool.parseArguments({ path: "pictures/hero.png", prompt: "Minimal ceramic speaker." }),
+							toolContext(),
+						);
+					}
+					return { state: "ready", replyText: "Generated hero render." };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+
+		expect(sawMakePictureOnNormal).toBe(true);
+		expect(capturedInstructions).toContain("Use make_picture to generate bespoke PNG visuals");
+		expect(staged).toHaveLength(1);
+
+		let sawMakePictureOnInternal = true;
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				companyId: randomUUID(),
+				surfaceSlug: "product-studio",
+				surfaceTitle: "Product Studio",
+				sourceKind: "folder",
+				folderRoot: "product",
+				state: "reconciling",
+				isInternal: true,
+				prompt: "Reconcile patches",
+			},
+			{
+				surfaceTools: {
+					stageSurfacePatch: async () => ({ changeId: randomUUID(), seq: 1, openChangeCount: 1 }),
+				},
+				makePicture: {
+					pictures,
+					stageBytes: async (bytes, mediaType) => ({
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: bytes.byteLength,
+						mediaType,
+					}),
+				},
+				executeTurn: async (req) => {
+					sawMakePictureOnInternal = req.tools.some((tool) => tool.name === "make_picture");
+					return { state: "ready", replyText: "Reconciled." };
+				},
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+			},
+		);
+		expect(sawMakePictureOnInternal).toBe(false);
 	});
 });

@@ -3526,14 +3526,13 @@ it("lists a company run's tool catalog, and the tools more_tools opens, in their
 	]);
 });
 
-it("offers make_picture to a run on a Codex login, and never to one on a member's ChatGPT plan (20260930746000)", async () => {
+it("offers make_picture to both Codex login and ChatGPT plan runs with a token", async () => {
 	const codex = await fixture("company-runtime");
 	await codex.runtime.execute(codex.request, codex.identityRoot, new AbortController().signal);
 	const offered = offeredNames(JSON.parse(await readFile(codex.evidence, "utf8")));
 	expect(offered).toContain("make_picture");
 	await rm(codex.identityRoot, { recursive: true, force: true });
 	await rm(codex.companyRoot, { recursive: true, force: true });
-	// A plan run's identity root holds the plan's token and an empty Codex home.
 	const plan = await fixture("company-runtime");
 	await rm(join(plan.identityRoot, "codex", "auth.json"));
 	await mkdir(join(plan.identityRoot, "chatgpt-plan"), { mode: 0o700 });
@@ -3541,7 +3540,7 @@ it("offers make_picture to a run on a Codex login, and never to one on a member'
 	await plan.runtime.execute(plan.request, plan.identityRoot, new AbortController().signal);
 	const names = offeredNames(JSON.parse(await readFile(plan.evidence, "utf8")));
 	expect(names).toContain("save_app");
-	expect(names).not.toContain("make_picture");
+	expect(names).toContain("make_picture");
 });
 
 it("offers narrate_app to a Codex login's run with machines, on demand, and to no run without a voice lane", async () => {
@@ -4001,10 +4000,17 @@ describe("Gemini 4 Neon conversation runs", () => {
 		expect(result.providerSessionId).toMatch(/^gemini:gemini-4-neon:/);
 		expect(result.delivery.messageCount).toBe(1);
 		expect(seenBodies).toHaveLength(2);
-		const tools = seenBodies[0]?.tools as Array<{ functionDeclarations?: Array<{ name: string }> }>;
-		const offered = (tools[0]?.functionDeclarations ?? []).map((decl) => decl.name);
+		const tools = seenBodies[0]?.tools as Array<{
+			functionDeclarations?: Array<{ name: string; description?: string }>;
+		}>;
+		const decls = tools[0]?.functionDeclarations ?? [];
+		const more = decls.find((decl) => decl.name === "more_tools");
+		const listed = more
+			? [...(more.description ?? "").matchAll(/^- ([a-z][a-z0-9_]*)(?::|$)/gm)].map((match) => match[1])
+			: [];
+		const offered = [...decls.map((decl) => decl.name), ...listed];
 		expect(offered).toContain("send_message");
-		expect(offered).not.toContain("make_picture");
+		expect(offered).toContain("make_picture");
 		expect(offered).not.toContain("narrate_app");
 		expect(offered).not.toContain("home");
 		expect(rpcCalls(f, "qorpera_record_gemini_run_usage")).toHaveLength(2);

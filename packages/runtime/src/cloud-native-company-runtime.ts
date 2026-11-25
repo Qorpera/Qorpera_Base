@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue, StudioPatchOp, SurfaceSessionQuestion, SurfaceSourceKind } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -21,6 +19,7 @@ import {
 } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { cloudNarrateAppTool } from "./cloud-app-narrate-tool.ts";
+import { hasChatGptPlanDirectory, hasChatGptPlanToken } from "./cloud-chatgpt-plan-image.ts";
 import {
 	CLAUDE_ACTION_REVIEW_MODEL,
 	CLAUDE_CODE_PIN,
@@ -144,7 +143,7 @@ import {
 } from "./cloud-native-company-context.ts";
 import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
 import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
-import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
@@ -177,7 +176,6 @@ import {
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
 import { cloudToolsOnDemand } from "./cloud-native-tools-on-demand.ts";
-import { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { cloudRecordReflectionTool, readCloudPlatformUpdates } from "./cloud-platform-updates.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
@@ -185,6 +183,12 @@ import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { CloudRunLogCompanyFolder } from "./cloud-run-log-folder.ts";
 import { openCloudRunLog } from "./cloud-run-log-open.ts";
 import { CloudRunLogRpcProtection } from "./cloud-run-log-protection.ts";
+import {
+	createChatGptPlanImageLane,
+	createGeminiImageLane,
+	type ResolvedRunPictureLane,
+	resolveRunPictureLane,
+} from "./cloud-run-picture-lane.ts";
 import { CloudRunResumeRpc } from "./cloud-run-resume.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
@@ -195,8 +199,10 @@ import {
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import {
+	type CloudRuntimeImageModel,
 	type CloudRuntimeReasoningEffort,
 	type CloudRuntimeServiceTier,
+	isCloudRuntimeImageModel,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
 import { type ClaudeLoginRunClient, type GeminiKeyRunClient, openGeminiKeyForRun } from "./cloud-secret-broker-http.ts";
@@ -305,17 +311,6 @@ function confirmNativeAdmission(answer: unknown, expected: Readonly<Record<strin
 		throw new Error("Native execution admission was not confirmed");
 }
 
-/** Whether an identity root is a ChatGPT plan run's: its host wrote the plan's token directory there. Anything but a
- * clear absence counts as one, so a run is never offered pictures it cannot make. */
-async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
-	try {
-		await lstat(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ENOENT";
-	}
-}
-
 export { type ControlPlaneSurfaceToolsPortOptions, createControlPlaneSurfaceToolsPort, type SurfaceToolsRpcClient };
 
 type CloudRuntimeSurfaceToolsPort = Pick<CloudSurfaceToolsPort, "proposeSurface" | "startSurfaceSession"> &
@@ -389,6 +384,9 @@ export interface CloudNativeCompanyRuntimeOptions {
 	geminiApiBaseUrl?: string;
 	geminiAllowLoopback?: boolean;
 	geminiFetch?: typeof fetch;
+	chatGptPlanApiBaseUrl?: string;
+	chatGptPlanAllowLoopback?: boolean;
+	chatGptPlanFetch?: typeof fetch;
 	/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
 	 * save_coding_value. */
 	codingValues?: CloudMachineCodingValues;
@@ -429,6 +427,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #geminiApiBaseUrl: string | undefined;
 	readonly #geminiAllowLoopback: boolean | undefined;
 	readonly #geminiFetch: typeof fetch | undefined;
+	readonly #chatGptPlanApiBaseUrl: string | undefined;
+	readonly #chatGptPlanAllowLoopback: boolean | undefined;
+	readonly #chatGptPlanFetch: typeof fetch | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #companyData: CloudCompanyDataDoor | undefined;
@@ -459,6 +460,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#geminiApiBaseUrl = options.geminiApiBaseUrl;
 		this.#geminiAllowLoopback = options.geminiAllowLoopback;
 		this.#geminiFetch = options.geminiFetch;
+		this.#chatGptPlanApiBaseUrl = options.chatGptPlanApiBaseUrl;
+		this.#chatGptPlanAllowLoopback = options.chatGptPlanAllowLoopback;
+		this.#chatGptPlanFetch = options.chatGptPlanFetch;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#codingValues = options.codingValues;
@@ -648,15 +652,35 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					signal,
 				);
 				if (this.#coding.supportsFolderWrites) getFolder();
+				const codingPictureLane = this.#coding.supportsFolderWrites
+					? await this.#pictureLane({
+							binding,
+							identity: context.identity,
+							identityRoot,
+							preferredModel: context.imageModel,
+							usesPrimaryCodexSession: !isGeminiRun,
+							signal,
+						})
+					: undefined;
 				composition.finish("succeeded", { outputBytes: 0 });
-				return await this.#coding.execute(request, identityRoot, signal, {
-					binding,
-					identity: context.identity,
-					wake,
-					observability,
-					...(folder ? { folder } : {}),
-					...(surfaceSession ? { surfaceSession } : {}),
-				});
+				try {
+					return await this.#coding.execute(request, identityRoot, signal, {
+						binding,
+						identity: context.identity,
+						wake,
+						observability,
+						...(folder ? { folder } : {}),
+						...(surfaceSession ? { surfaceSession } : {}),
+						...(codingPictureLane?.channel
+							? {
+									pictures: codingPictureLane.channel,
+									attachPicturesToCodex: codingPictureLane.attachToCodex,
+								}
+							: {}),
+					});
+				} finally {
+					await codingPictureLane?.close();
+				}
 			}
 			// A plain worker Claude Code does (20260930770000) is never a Codex turn: its run is the Claude Code worker's own
 			// composition (slice C4c), in its own stage. A node without it refuses the run, and nothing runs on Codex.
@@ -1137,19 +1161,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return { kind: "text", value: text, completesTurn: true };
 				},
 			};
+			let pictureLane: ResolvedRunPictureLane | undefined;
 			try {
 				stage = "native-tools";
-				// The run's own offline commands (F3 4d): its computer tools add each one it starts, and its action review
-				// lets input to them through as it lets their start through.
 				const offlineShells = new Set<string>();
-				// A worker's report, once the folder saved it: its run's closing act (turnCorrection, below).
 				let workerReported = false;
-				// Pictures are made on the run's own Codex sign-in (cloud-picture-channel.ts), which a run on a member's
-				// ChatGPT plan has not: it gets no picture lane and is not offered make_picture. Its identity root says so, as
-				// the session reads it.
-				const pictures =
-					isGeminiRun || (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
-				const voice = pictures ? new CloudVoiceChannel() : undefined;
 				let geminiSession:
 					| {
 							readonly model: NonNullable<CloudNativeCompanyContext["gemini"]>["model"];
@@ -1232,6 +1248,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						},
 					};
 				}
+				pictureLane = await this.#pictureLane({
+					binding,
+					identity: context.identity,
+					identityRoot,
+					preferredModel: context.imageModel,
+					usesPrimaryCodexSession: !isGeminiRun,
+					...(geminiSession ? { existingGeminiApiKey: geminiSession.apiKey } : {}),
+					geminiFallbackAllowed: isGeminiRun,
+					signal,
+				});
+				const pictures = pictureLane.channel;
+				const voice =
+					!isGeminiRun && !(await hasChatGptPlanDirectory(identityRoot)) ? new CloudVoiceChannel() : undefined;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -1272,7 +1301,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					opening,
 					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
 					compactor,
-					...(pictures ? { pictures } : {}),
+					...(pictures && pictureLane.attachToCodex ? { pictures } : {}),
 					...(voice ? { voice } : {}),
 					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
 					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
@@ -1807,6 +1836,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
+				await pictureLane?.close();
 				await mouth.close();
 			}
 		} catch (error) {
@@ -2165,6 +2195,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			typeof sessionTurnRaw.voiceName === "string" && sessionTurnRaw.voiceName.trim()
 				? sessionTurnRaw.voiceName.trim()
 				: null;
+		const imageModel: CloudRuntimeImageModel | undefined = isCloudRuntimeImageModel(sessionTurnRaw.imageModel)
+			? sessionTurnRaw.imageModel
+			: context.imageModel;
 		const openScenesOps: StudioPatchOp[] = [];
 		if (Array.isArray(sessionTurnRaw.openScenesOps)) {
 			for (const entry of sessionTurnRaw.openScenesOps) {
@@ -2224,6 +2257,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(openChanges.length > 0 ? { openChanges } : {}),
 			...(voiceModel ? { voiceModel } : {}),
 			...(voiceName ? { voiceName } : {}),
+			...(imageModel ? { imageModel } : {}),
 			...(openScenesOps.length > 0 ? { openScenesOps } : {}),
 			leaseToken,
 		};
@@ -2337,6 +2371,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 			};
 		}
+
+		const studioPictureLane =
+			sourceKind === "folder" && !(turnInput.isInternal === true && turnInput.state === "reconciling")
+				? await this.#pictureLane({
+						binding,
+						identity,
+						identityRoot,
+						preferredModel: imageModel,
+						usesPrimaryCodexSession: !isGeminiRun,
+						...(geminiSession ? { existingGeminiApiKey: geminiSession.apiKey } : {}),
+						geminiFallbackAllowed: isGeminiRun,
+						signal,
+					})
+				: undefined;
 
 		let lastProviderSessionId = `surface-session:${sessionId}`;
 		const runModelTurn = async (spec: {
@@ -2505,6 +2553,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				serviceTier,
 				controlPlane: this.#control,
 				...(geminiSession ? { gemini: geminiSession } : {}),
+				...(studioPictureLane?.channel && studioPictureLane.attachToCodex
+					? { pictures: studioPictureLane.channel }
+					: {}),
 				beginExecution: async (specification, requestSignal) => {
 					const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 					const answer = await this.#paths.call(
@@ -2665,107 +2716,128 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			return cachedVoiceKey;
 		};
 
-		const turnResult = await runSurfaceSessionTurn(turnInput, {
-			folder: folderClient,
-			readStudioFiles: cloudStudioFileReader(folderClient),
-			surfaceTools,
-			narrateExplainer: {
-				stageBytes: async (bytes, mediaType, reqSignal) => {
-					const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
-					return {
-						manifestSha256: ref.manifestSha256,
-						fileSha256: ref.fileSha256,
-						bytes: ref.bytes,
-						mediaType: ref.mediaType,
-					};
-				},
-				synthesizeGemini: async ({ model, voiceName: ttsVoice, text, signal: reqSignal }) => {
-					if (voiceCapReached) {
-						throw new GeminiCapReachedError(
-							voiceCapReached.monthlyCapCents ?? 0,
-							voiceCapReached.monthSpendMicrodollars,
-						);
-					}
-					const apiKey = await openVoiceApiKey();
-					reqSignal.throwIfAborted();
-					let speech: Awaited<ReturnType<typeof synthesizeGeminiSpeech>>;
-					try {
-						speech = await synthesizeGeminiSpeech({
-							apiKey,
-							model,
-							voiceName: ttsVoice,
-							text,
-							...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
-							...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
-							...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
-							signal: reqSignal,
-						});
-					} catch (error) {
-						if (error instanceof GeminiProviderError && error.code === "key_rejected") {
-							throw new GeminiKeyRevokedError();
-						}
-						throw error;
-					}
-					const recorded = (await this.#paths.call(
-						"qorpera_record_gemini_voice_usage",
-						{ p_binding: binding, p_model: model, p_usage: speech.usage },
-						signal,
-					)) as {
-						monthSpendMicrodollars?: unknown;
-						monthlyCapCents?: unknown;
-						capReached?: unknown;
-					} | null;
-					if (recorded?.capReached === true) {
-						voiceCapReached = {
-							monthlyCapCents: typeof recorded.monthlyCapCents === "number" ? recorded.monthlyCapCents : null,
-							monthSpendMicrodollars:
-								typeof recorded.monthSpendMicrodollars === "number" ? recorded.monthSpendMicrodollars : 0,
+		let turnResult: Awaited<ReturnType<typeof runSurfaceSessionTurn>>;
+		try {
+			turnResult = await runSurfaceSessionTurn(turnInput, {
+				folder: folderClient,
+				readStudioFiles: cloudStudioFileReader(folderClient),
+				surfaceTools,
+				narrateExplainer: {
+					stageBytes: async (bytes, mediaType, reqSignal) => {
+						const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
+						return {
+							manifestSha256: ref.manifestSha256,
+							fileSha256: ref.fileSha256,
+							bytes: ref.bytes,
+							mediaType: ref.mediaType,
 						};
-					}
-					return speech;
+					},
+					synthesizeGemini: async ({ model, voiceName: ttsVoice, text, signal: reqSignal }) => {
+						if (voiceCapReached) {
+							throw new GeminiCapReachedError(
+								voiceCapReached.monthlyCapCents ?? 0,
+								voiceCapReached.monthSpendMicrodollars,
+							);
+						}
+						const apiKey = await openVoiceApiKey();
+						reqSignal.throwIfAborted();
+						let speech: Awaited<ReturnType<typeof synthesizeGeminiSpeech>>;
+						try {
+							speech = await synthesizeGeminiSpeech({
+								apiKey,
+								model,
+								voiceName: ttsVoice,
+								text,
+								...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+								...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+								...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
+								signal: reqSignal,
+							});
+						} catch (error) {
+							if (error instanceof GeminiProviderError && error.code === "key_rejected") {
+								throw new GeminiKeyRevokedError();
+							}
+							throw error;
+						}
+						const recorded = (await this.#paths.call(
+							"qorpera_record_gemini_voice_usage",
+							{ p_binding: binding, p_model: model, p_usage: speech.usage },
+							signal,
+						)) as {
+							monthSpendMicrodollars?: unknown;
+							monthlyCapCents?: unknown;
+							capReached?: unknown;
+						} | null;
+						if (recorded?.capReached === true) {
+							voiceCapReached = {
+								monthlyCapCents: typeof recorded.monthlyCapCents === "number" ? recorded.monthlyCapCents : null,
+								monthSpendMicrodollars:
+									typeof recorded.monthSpendMicrodollars === "number" ? recorded.monthSpendMicrodollars : 0,
+							};
+						}
+						return speech;
+					},
 				},
-			},
-			executeTurn: async (turnReq) =>
-				runModelTurn({
-					instructions: turnReq.instructions,
-					turnBrief: turnReq.turnBrief,
-					prompt: turnReq.input.prompt,
-					isInternal: turnReq.input.isInternal === true,
-					turnSignal: turnReq.signal,
-					buildTools: (runIdentity, operations) => {
-						const folderTools =
-							turnReq.mode === "folder"
-								? [
-										...cloudFolderFileTools({
+				...(studioPictureLane?.channel
+					? {
+							makePicture: {
+								stageBytes: async (bytes, mediaType, reqSignal) => {
+									const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
+									return {
+										manifestSha256: ref.manifestSha256,
+										fileSha256: ref.fileSha256,
+										bytes: ref.bytes,
+										mediaType: ref.mediaType,
+									};
+								},
+								pictures: studioPictureLane.channel,
+							},
+						}
+					: {}),
+				executeTurn: async (turnReq) =>
+					runModelTurn({
+						instructions: turnReq.instructions,
+						turnBrief: turnReq.turnBrief,
+						prompt: turnReq.input.prompt,
+						isInternal: turnReq.input.isInternal === true,
+						turnSignal: turnReq.signal,
+						buildTools: (runIdentity, operations) => {
+							const folderTools =
+								turnReq.mode === "folder"
+									? [
+											...cloudFolderFileTools({
+												folder: folderClient,
+												operations,
+												identity: runIdentity,
+												surfaceFilePolicy: {
+													mode: "surface_worker",
+													writableRoots: turnReq.writableRoots,
+													stagedRoots: turnReq.stagedRoots,
+												},
+											}),
+											...notebooks.tools(
+												(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
+												operations,
+											),
+										]
+									: cloudFolderFileTools({
 											folder: folderClient,
 											operations,
 											identity: runIdentity,
-											surfaceFilePolicy: {
-												mode: "surface_worker",
-												writableRoots: turnReq.writableRoots,
-												stagedRoots: turnReq.stagedRoots,
-											},
-										}),
-										...notebooks.tools(
-											(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
-											operations,
-										),
-									]
-								: cloudFolderFileTools({
-										folder: folderClient,
-										operations,
-										identity: runIdentity,
-									}).filter((tool) => readOnlyNames.has(tool.name));
-						return [...turnReq.tools, ...folderTools];
-					},
-				}),
-			executeCodeRepoTurn: async () => {
-				throw new Error("Code repository surface sessions run through the coding executor; retry this session.");
-			},
-			completeSessionTurn: completionPort.completeSessionTurn,
-			renewSessionLease: leaseRenewalPort.renewSessionLease,
-			signal,
-		});
+										}).filter((tool) => readOnlyNames.has(tool.name));
+							return [...turnReq.tools, ...folderTools];
+						},
+					}),
+				executeCodeRepoTurn: async () => {
+					throw new Error("Code repository surface sessions run through the coding executor; retry this session.");
+				},
+				completeSessionTurn: completionPort.completeSessionTurn,
+				renewSessionLease: leaseRenewalPort.renewSessionLease,
+				signal,
+			});
+		} finally {
+			await studioPictureLane?.close();
+		}
 
 		if (turnResult.cause !== undefined) {
 			throw turnResult.cause;
@@ -2924,10 +2996,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						timeZone: wake.time.timeZone,
 					},
 				});
+				const geminiWorkerLane = createGeminiImageLane({
+					binding,
+					paths: this.#paths,
+					...(this.#geminiKeys ? { geminiKeys: this.#geminiKeys } : {}),
+					...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+					...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+					...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
+					signal: runSignal,
+				});
+				const chatGptPlanWorkerLane =
+					home !== undefined && (await hasChatGptPlanToken(identityRoot))
+						? createChatGptPlanImageLane({
+								identityRoot,
+								model: binding.model,
+								...(this.#chatGptPlanApiBaseUrl ? { apiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
+								...(this.#chatGptPlanAllowLoopback ? { allowLoopback: true } : {}),
+								...(this.#chatGptPlanFetch ? { fetcher: this.#chatGptPlanFetch } : {}),
+							})
+						: undefined;
 				const chosen = await claudeWorkerPictures({
 					facts,
 					home: home !== undefined,
+					...(input.context.imageModel ? { preferredModel: input.context.imageModel } : {}),
 					...(host.pictures ? { given: host.pictures(identityRoot) } : {}),
+					...(geminiWorkerLane ? { gemini: geminiWorkerLane } : {}),
+					...(chatGptPlanWorkerLane ? { chatGptPlan: chatGptPlanWorkerLane } : {}),
 					lane: () => this.#claudePictureLane(identityRoot, binding, identity, runSignal),
 					foreignOwner: (path, ownerSignal) =>
 						cloudPictureForeignOwner(folder, path, identity.staffAgentId, ownerSignal),
@@ -3113,6 +3207,45 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				run.close();
 			}
 		}
+	}
+
+	#pictureLane(options: {
+		readonly binding: CloudNativeToolBinding;
+		readonly identity: CloudNativeToolIdentity;
+		readonly identityRoot: string;
+		readonly preferredModel?: CloudRuntimeImageModel;
+		readonly usesPrimaryCodexSession: boolean;
+		readonly allowChatGptSubscription?: boolean;
+		readonly existingGeminiApiKey?: string;
+		readonly geminiFallbackAllowed?: boolean;
+		readonly signal: AbortSignal;
+	}): Promise<ResolvedRunPictureLane> {
+		const geminiLane = createGeminiImageLane({
+			binding: options.binding,
+			paths: this.#paths,
+			...(this.#geminiKeys ? { geminiKeys: this.#geminiKeys } : {}),
+			...(options.existingGeminiApiKey ? { existingApiKey: options.existingGeminiApiKey } : {}),
+			...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+			...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+			...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
+			signal: options.signal,
+		});
+		return resolveRunPictureLane({
+			...(options.preferredModel ? { preferredModel: options.preferredModel } : {}),
+			identityRoot: options.identityRoot,
+			usesPrimaryCodexSession: options.usesPrimaryCodexSession,
+			...(options.allowChatGptSubscription === undefined
+				? {}
+				: { allowChatGptSubscription: options.allowChatGptSubscription }),
+			...(geminiLane ? { geminiLane } : {}),
+			...(options.geminiFallbackAllowed ? { geminiFallbackAllowed: true } : {}),
+			startCodexSideLane: () =>
+				this.#claudePictureLane(options.identityRoot, options.binding, options.identity, options.signal),
+			chatGptPlanModel: options.binding.model,
+			...(this.#chatGptPlanApiBaseUrl ? { chatGptPlanApiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
+			...(this.#chatGptPlanAllowLoopback ? { chatGptPlanAllowLoopback: true } : {}),
+			...(this.#chatGptPlanFetch ? { chatGptPlanFetch: this.#chatGptPlanFetch } : {}),
+		});
 	}
 
 	#claudePictureLane(

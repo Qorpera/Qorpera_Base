@@ -63,6 +63,8 @@ export type CloudPictureFailureReason =
 	| "picture_limit"
 	/** The member's ChatGPT usage limit stopped the picture's model turn. */
 	| "usage_limit"
+	| "spend_cap"
+	| "billing_required"
 	/** The image tool was called, and the generator refused the prompt or failed. */
 	| "refused"
 	/** The image tool was never called, and Codex said the member's plan is Free, which has none. */

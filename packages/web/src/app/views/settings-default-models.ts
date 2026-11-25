@@ -3,6 +3,7 @@ import {
 	DefaultModelsUnavailableError,
 	defaultModelEfforts,
 	defaultVoiceProfiles,
+	imageModelName,
 	type MemberDefaultModels,
 	voiceModelName,
 	type WebDefaultModels,
@@ -180,6 +181,7 @@ export class DefaultModelsView {
 		codingEffort?: SessionEffort;
 		voiceModel?: string;
 		voiceName?: string;
+		imageModel?: string;
 	}): Promise<void> {
 		const current = this.#state;
 		if (!current || this.#saving || this.#lifetime.signal.aborted) return;
@@ -481,8 +483,45 @@ export class DefaultModelsView {
 			h("div", { class: "default-model-controls" }, voiceModelSelect, voiceNameSelect, voiceTestButton),
 		);
 
+		const imageUnavailable = state.storedImageModel !== null && !state.imageModels.includes(state.storedImageModel);
+		const shownImageModel = imageUnavailable ? state.storedImageModel! : state.imageModel;
+		const imageModelOptions: { value: string; label: string; disabled?: boolean }[] = [
+			...(imageUnavailable
+				? [
+						{
+							value: state.storedImageModel!,
+							label: t("{model} (unavailable here)", { model: imageModelName(state.storedImageModel!) }),
+							disabled: true,
+						},
+					]
+				: []),
+			...state.imageModels.map((id) => ({ value: id, label: imageModelName(id) })),
+		];
+		const imageModelSelect = this.#select(
+			"image-model",
+			t("Image generation model"),
+			imageModelOptions,
+			shownImageModel,
+			(value) => {
+				void this.#save({ imageModel: value });
+			},
+		);
+		const imageRow = h(
+			"div",
+			{ class: "settings-preference-row default-model-row" },
+			h(
+				"div",
+				{ class: "settings-copy" },
+				h("strong", null, t("Image generation")),
+				h("small", null, t("Default model for generated images across chats, coding, workers, and Studio.")),
+			),
+			h("div", { class: "default-model-controls" }, imageModelSelect),
+		);
+
 		const missingExtraProviders =
-			!convModels.includes("gemini-4-neon") || !state.codingModels.includes("claude-opus-5-5");
+			!convModels.includes("gemini-4-neon") ||
+			!state.imageModels.includes("gemini-3-pro-image") ||
+			!state.codingModels.includes("claude-opus-5-5");
 
 		const refocusRole =
 			document.activeElement instanceof HTMLElement && this.el.contains(document.activeElement)
@@ -523,6 +562,7 @@ export class DefaultModelsView {
 					h("div", { class: "default-model-controls" }, codingModelSelect, codingEffortSelect),
 				),
 				voiceRow,
+				imageRow,
 			),
 			missingExtraProviders
 				? h(

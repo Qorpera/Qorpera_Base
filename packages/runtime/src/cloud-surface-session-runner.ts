@@ -48,9 +48,11 @@ import type { NativeCompanyExecutionRequest } from "./cloud-native-provider-host
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkill, type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
+import { createStudioPictureTool } from "./cloud-surface-picture-tool.ts";
 import {
 	chainFolderPreviewOverlays,
 	createSurfaceFolderPreviewOverlay,
@@ -153,6 +155,7 @@ export interface SurfaceSessionTurnInput {
 	readonly leaseToken?: string | null;
 	readonly voiceModel?: string | null;
 	readonly voiceName?: string | null;
+	readonly imageModel?: string | null;
 	readonly openScenesOps?: readonly StudioPatchOp[];
 }
 
@@ -244,6 +247,11 @@ export interface SurfaceSessionNarratePort {
 	}) => Promise<GeminiTtsSpeechResult>;
 }
 
+export interface SurfaceSessionPicturePort {
+	readonly stageBytes: (bytes: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<StudioBinaryRef>;
+	readonly pictures: CloudPictureChannel;
+}
+
 export interface SurfaceSessionRunnerPorts {
 	readonly folder?: SurfaceFolderTextReader;
 	readonly readStudioFiles?: (roots: readonly string[], signal: AbortSignal) => Promise<SurfaceFolderContents>;
@@ -252,6 +260,7 @@ export interface SurfaceSessionRunnerPorts {
 		Pick<CloudSurfaceToolsPort, "recordChange"> & SurfacePatchToolPort & SurfaceOpsActionToolPort
 	>;
 	readonly narrateExplainer?: SurfaceSessionNarratePort;
+	readonly makePicture?: SurfaceSessionPicturePort;
 	readonly extraTools?: readonly CloudNativeTool[];
 	readonly executeTurn?: (request: SurfaceFolderOrOpsTurnRequest) => Promise<SurfaceSessionTurnExecutionOutcome>;
 	readonly executeCodeRepoTurn?: (request: SurfaceCodeRepoTurnRequest) => Promise<SurfaceSessionTurnExecutionOutcome>;
@@ -695,7 +704,7 @@ function buildFolderSurfaceInstructions(
 	notesRoot: string,
 	view: SurfaceStudioPageView,
 	skill: CloudStudioSkill | null,
-	options?: { readonly chainMode?: boolean; readonly hasOmittedBases?: boolean },
+	options?: { readonly chainMode?: boolean; readonly hasOmittedBases?: boolean; readonly hasMakePicture?: boolean },
 ): string {
 	if (input.isInternal && input.state === "reconciling") {
 		if (options?.hasOmittedBases) {
@@ -730,7 +739,11 @@ function buildFolderSurfaceInstructions(
 		"When a follow-up revises an existing open change in this session, pass its changeId to stage_surface_patch to update it in place instead of creating a duplicate change (use replaceAll: true only when replacing the whole change from scratch, and createNew: true only when adding a separate new deliverable). " +
 		"Write reports, analyses, essays, and blog posts as structured *.report.json articles (or self-contained .html files when custom visual presentation is asked for), not raw .md files; keep .md for brief working notes. " +
 		"When the founder asks for multiple design, layout, or copy directions to flick through inside this session, stage each complete standalone alternative with stage_surface_patch using the same optionGroup slug (and optional optionGroupTitle) so they appear as a single multiple-choice picker in Changes — never embed a concept switcher or design-question UI into the real page or module. " +
-		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.\n\n` +
+		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.` +
+		(options?.hasMakePicture
+			? " Use make_picture to generate bespoke PNG visuals (hero scenes, product concepts, illustrations) directly into Preview as staged changes, inspect each image inline, and pass changeId if regenerating to update it in place."
+			: "") +
+		"\n\n" +
 		describeStudioPage(view, folderRoot, input.voiceModel, input.voiceName) +
 		describeStudioSkill(view, skill)
 	);
@@ -1204,6 +1217,18 @@ export async function runSurfaceSessionTurn(
 							}),
 						]
 					: [];
+			const pictureTool =
+				!isInternalReconciliation && ports.makePicture
+					? [
+							createStudioPictureTool({
+								sessionId: input.sessionId,
+								folderRoot,
+								stageBytes: ports.makePicture.stageBytes,
+								surfacePatch: trackedSurfacePatch,
+								pictures: ports.makePicture.pictures,
+							}),
+						]
+					: [];
 			const tools: CloudNativeTool[] = [
 				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
 					deferSessionCompletion: true,
@@ -1213,6 +1238,7 @@ export async function runSurfaceSessionTurn(
 					isInternalReconciliation,
 				}),
 				...narrateTool,
+				...pictureTool,
 				...folderTools,
 				...(ports.extraTools ?? []),
 			];
@@ -1251,6 +1277,7 @@ export async function runSurfaceSessionTurn(
 				instructions: buildFolderSurfaceInstructions(input, folderRoot, notesRoot, view, skill, {
 					chainMode,
 					hasOmittedBases: omittedBaseChanges.length > 0,
+					hasMakePicture: pictureTool.length > 0,
 				}),
 				turnBrief,
 				tools,

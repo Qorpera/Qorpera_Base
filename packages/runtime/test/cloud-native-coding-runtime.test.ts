@@ -2349,6 +2349,51 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			expect(planInstructions).not.toContain("Use make_picture to generate bespoke PNG imagery");
 			expect(planInstructions).toContain("multiple scrolled viewport-sized slices");
 			expect(planInstructions).toContain("1920x1200");
+
+			const externalPictures = new CloudPictureChannel();
+			externalPictures.attach(async () => ({ png, revisedPrompt: "External lane" }));
+			f.coding.submission = null;
+			let externalCodexPictures: CloudPictureChannel | undefined;
+			let externalOffered: string[] = [];
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				externalCodexPictures = options.pictures;
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						f.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					externalOffered = adapters.tools.map((tool) => tool.name);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "external-pic-finish",
+							summary: "Done with external picture lane.",
+							headSha: "c".repeat(40),
+						}),
+						f.context,
+					);
+					return {
+						providerSessionId: "native-external-pic-thread",
+						toolCalls: 1,
+						codexVersion: "pinned",
+						fencedRequests: 1,
+					};
+				} finally {
+					run.close();
+				}
+			});
+
+			await runtime.execute(f.request, identityRoot, f.context.signal, {
+				...f.turn,
+				folder: fw.folder,
+				pictures: externalPictures,
+				attachPicturesToCodex: false,
+			});
+
+			expect(externalCodexPictures).toBeUndefined();
+			expect(externalOffered).toContain("make_picture");
 		} finally {
 			fw.run.close();
 			await rm(identityRoot, { recursive: true, force: true });

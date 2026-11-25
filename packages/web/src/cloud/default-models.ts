@@ -79,6 +79,15 @@ export function voiceModelName(modelId: string): string {
 	return VOICE_MODELS.find((model) => model.id === modelId)?.name ?? modelId;
 }
 
+export const IMAGE_MODELS = [
+	{ id: "gemini-3-pro-image", name: "Gemini 3 Pro Image", provider: "google" },
+	{ id: "chatgpt-image", name: "ChatGPT Image", provider: "openai" },
+] as const satisfies ReadonlyArray<{ id: string; name: string; provider: SessionProvider }>;
+
+export function imageModelName(modelId: string): string {
+	return IMAGE_MODELS.find((model) => model.id === modelId)?.name ?? modelId;
+}
+
 export interface MemberDefaultModels {
 	conversationModel: string;
 	conversationEffort: SessionEffort;
@@ -86,13 +95,16 @@ export interface MemberDefaultModels {
 	codingEffort: SessionEffort;
 	voiceModel: string;
 	voiceName: string;
+	imageModel: string;
 	storedConversationModel: string | null;
 	storedCodingModel: string | null;
 	storedVoiceModel: string | null;
 	storedVoiceName: string | null;
+	storedImageModel: string | null;
 	conversationModels: readonly string[];
 	codingModels: readonly string[];
 	voiceModels: readonly string[];
+	imageModels: readonly string[];
 	conversationEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
 	codingEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
 	voiceProfiles: Readonly<Record<string, readonly string[]>>;
@@ -106,6 +118,7 @@ export interface MemberDefaultModelsUpdate {
 	codingEffort?: SessionEffort;
 	voiceModel?: string;
 	voiceName?: string;
+	imageModel?: string;
 	expectedVersion: number;
 }
 
@@ -235,13 +248,16 @@ export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
 		codingEffort: parseEffort(input.codingEffort, "coding default effort"),
 		voiceModel: nonEmptyString(input.voiceModel, "voice default model", 128),
 		voiceName: nonEmptyString(input.voiceName, "voice default profile", 128),
+		imageModel: nonEmptyString(input.imageModel, "image default model", 128),
 		storedConversationModel: parseOptionalModel(input.storedConversationModel, "stored conversation model"),
 		storedCodingModel: parseOptionalModel(input.storedCodingModel, "stored coding model"),
 		storedVoiceModel: parseOptionalModel(input.storedVoiceModel, "stored voice model"),
 		storedVoiceName: parseOptionalModel(input.storedVoiceName, "stored voice profile"),
+		storedImageModel: parseOptionalModel(input.storedImageModel, "stored image model"),
 		conversationModels: parseModelList(input.conversationModels, "conversation models"),
 		codingModels: parseModelList(input.codingModels, "coding models"),
 		voiceModels: parseModelList(input.voiceModels, "voice models"),
+		imageModels: parseModelList(input.imageModels, "image models"),
 		conversationEfforts: parseEffortMap(input.conversationEfforts, "conversation model efforts"),
 		codingEfforts: parseEffortMap(input.codingEfforts, "coding model efforts"),
 		voiceProfiles: parseVoiceProfileMap(input.voiceProfiles, "voice model profiles"),
@@ -353,6 +369,7 @@ export function createWebDefaultModels(
 				throw new Error("Invalid default models version.");
 			}
 			const hasVoicePatch = update.voiceModel !== undefined || update.voiceName !== undefined;
+			const hasImagePatch = update.imageModel !== undefined;
 			const raw = await rpc(
 				"qorpera_set_member_default_models",
 				{
@@ -368,6 +385,7 @@ export function createWebDefaultModels(
 								p_voice_name: update.voiceName ?? null,
 							}
 						: {}),
+					...(hasImagePatch ? { p_image_model: update.imageModel ?? null } : {}),
 				},
 				signal,
 			);

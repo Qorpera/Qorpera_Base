@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import {
 	type CloudCodingCommandScope,
@@ -12,6 +10,7 @@ import {
 	parseCloudCodingRepository,
 	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
+import { hasChatGptPlanDirectory, hasChatGptPlanToken } from "./cloud-chatgpt-plan-image.ts";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
 import { CODING_INSPECT_IMAGE_SCHEMA } from "./cloud-coding-image-inspect.ts";
@@ -23,7 +22,7 @@ import {
 	cloudControlPause,
 	cloudControlRetryable,
 } from "./cloud-control-errors.ts";
-import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { NativeCloudExecutionDriver, NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import {
@@ -46,6 +45,7 @@ import {
 	observedCloudToolAuthority,
 } from "./cloud-native-tool-operations.ts";
 import { CloudPictureChannel } from "./cloud-picture-channel.ts";
+import { createChatGptPlanImageLane } from "./cloud-run-picture-lane.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
@@ -81,6 +81,8 @@ export interface CloudNativeCodingTurnContext {
 	observability?: CloudRuntimeObservability;
 	folder?: CloudCompanyFolderClient;
 	surfaceSession?: SurfaceCodingTurnBinding;
+	pictures?: CloudPictureChannel;
+	attachPicturesToCodex?: boolean;
 }
 export interface CloudNativeCodingDriver {
 	readonly supportsFolderWrites?: boolean;
@@ -172,15 +174,6 @@ const NEW_DISK =
 	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh.";
 const CODING_PICTURE_INSTRUCTIONS =
 	"Use make_picture to generate bespoke PNG imagery (hero scenes, product concept shots, lifestyle compositions, editorial visuals, or illustrations) directly into the repository worktree (for example assets/hero.png) when the design calls for original visuals beyond existing company files or SVGs. Inspect each returned image inline and iterate with expectedVersion if it does not match the quality, lighting, and framing of the layout; never present generated images as photos of real people, places, or competitors.";
-
-async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
-	try {
-		await lstat(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ENOENT";
-	}
-}
 
 // WHY: Trims UTF-8 text to a byte cap on codepoint boundaries so surface brief truncation never emits invalid surrogates.
 function trimUtf8ToBytes(text: string, maxBytes: number): string {
@@ -534,6 +527,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 	readonly #binarySha256: string;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #chatGptPlanAuth: CloudChatGptPlanAuth | undefined;
+	readonly #chatGptPlanApiBaseUrl: string | undefined;
+	readonly #chatGptPlanAllowLoopback: boolean | undefined;
+	readonly #chatGptPlanFetch: typeof fetch | undefined;
 	readonly #timeoutMs: number | undefined;
 	constructor(options: {
 		control: CloudCodingNativeControl;
@@ -542,6 +538,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		binarySha256: string;
 		isolation?: NativeIsolationConfiguration;
 		chatGptPlanAuth?: CloudChatGptPlanAuth;
+		chatGptPlanApiBaseUrl?: string;
+		chatGptPlanAllowLoopback?: boolean;
+		chatGptPlanFetch?: typeof fetch;
 		timeoutMs?: number;
 	}) {
 		if (!SHA.test(options.binarySha256)) throw new Error("Invalid coding native configuration");
@@ -551,6 +550,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		this.#binarySha256 = options.binarySha256;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#chatGptPlanAuth = options.chatGptPlanAuth;
+		this.#chatGptPlanApiBaseUrl = options.chatGptPlanApiBaseUrl;
+		this.#chatGptPlanAllowLoopback = options.chatGptPlanAllowLoopback;
+		this.#chatGptPlanFetch = options.chatGptPlanFetch;
 		this.#timeoutMs = options.timeoutMs;
 	}
 	get supportsFolderWrites(): boolean {
@@ -851,10 +853,26 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				};
 			},
 		};
-		const pictures =
-			context.folder && this.#control.completeFolderToolOperation && !(await chatGptPlanRun(identityRoot))
-				? new CloudPictureChannel()
-				: undefined;
+		let pictures = context.pictures;
+		let attachPicturesToCodex = context.attachPicturesToCodex ?? (pictures !== undefined && !pictures.attached);
+		if (!pictures && context.folder && this.#control.completeFolderToolOperation) {
+			if (await hasChatGptPlanToken(identityRoot)) {
+				pictures = new CloudPictureChannel();
+				pictures.attach(
+					createChatGptPlanImageLane({
+						identityRoot,
+						model: binding.model,
+						...(this.#chatGptPlanApiBaseUrl ? { apiBaseUrl: this.#chatGptPlanApiBaseUrl } : {}),
+						...(this.#chatGptPlanAllowLoopback ? { allowLoopback: true } : {}),
+						...(this.#chatGptPlanFetch ? { fetcher: this.#chatGptPlanFetch } : {}),
+					}),
+				);
+				attachPicturesToCodex = false;
+			} else if (!(await hasChatGptPlanDirectory(identityRoot))) {
+				pictures = new CloudPictureChannel();
+				attachPicturesToCodex = true;
+			}
+		}
 		const instructionParts = surfaceSession
 			? [
 					SURFACE_BASE_INSTRUCTIONS,
@@ -897,7 +915,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			identityRoot,
 			isolation: this.#isolation,
 			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
-			...(pictures ? { pictures } : {}),
+			...(pictures && attachPicturesToCodex ? { pictures } : {}),
 			prompt: effectivePrompt,
 			runtimeInstructions,
 			signal,

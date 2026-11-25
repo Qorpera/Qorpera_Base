@@ -71,6 +71,10 @@ function pictureRefusal(error: unknown): never {
 		}; nothing was saved. Do not retry before then: continue without the picture or tell the member.`,
 		usage_limit:
 			"USAGE_LIMIT_REACHED: the member's ChatGPT usage limit stopped the picture; nothing was saved. Try again later or continue without it.",
+		spend_cap:
+			"GEMINI_SPEND_CAP_REACHED: the member's monthly Gemini API spend cap was reached; nothing was saved. Continue without the picture and note this briefly.",
+		billing_required:
+			"GEMINI_BILLING_REQUIRED: the member's Gemini API key does not have billing or credits enabled for image generation; nothing was saved. Continue without the picture and note this briefly.",
 		refused:
 			"PICTURE_REFUSED: the picture generator refused this prompt or could not draw it; nothing was saved. Revise the prompt (remove real people, brands, or disallowed content) and call again with a new operationKey; if it fails again, continue without it.",
 		free_plan:
