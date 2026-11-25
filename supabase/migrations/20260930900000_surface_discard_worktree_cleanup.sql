@@ -17,10 +17,10 @@ do $$ begin
 		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null
 		or to_regprocedure('public.qorpera_archive_coding_worker(public.qorpera_runtime_workers,text,uuid,uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_lock_coding_workers(uuid[])') is null then
-		raise exception '20260930898000 requires prior surface and coding-session migrations';
+		raise exception '20260930900000 requires prior surface and coding-session migrations';
 	end if;
 	if to_regprocedure('public.qorpera_surface_complete_cleanup(uuid,text,text,uuid)') is not null then
-		raise exception '20260930898000 is already applied';
+		raise exception '20260930900000 is already applied';
 	end if;
 end $$;
 
@@ -36,12 +36,12 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930898000: invalid replacement pairs for %', p_target;
+		raise exception '20260930900000: invalid replacement pairs for %', p_target;
 	end if;
 	while v_i <= array_length(p_pairs, 1) loop
 		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
 		if v_hits <> 1 then
-			raise exception '20260930898000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
+			raise exception '20260930900000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
 		end if;
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
@@ -782,7 +782,7 @@ begin
 	where p.pronamespace = 'public'::regnamespace
 		and b.fields is distinct from (to_jsonb(p) - 'prosrc');
 	if v_bad is not null then
-		raise exception '20260930898000 changed function metadata on: %', v_bad;
+		raise exception '20260930900000 changed function metadata on: %', v_bad;
 	end if;
 end $$;
 

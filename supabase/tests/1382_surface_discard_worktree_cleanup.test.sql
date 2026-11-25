@@ -84,10 +84,10 @@ do $$
 declare
 	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
 	v_anna constant uuid := '85600000-0000-4000-8000-000000000001';
-	v_other_owner constant uuid := '13800000-0000-4000-8000-000000000098';
-	v_company_b constant uuid := '13800000-0000-4000-8000-000000000011';
-	v_env_b constant uuid := '13800000-0000-4000-8000-000000000021';
-	v_machine_id constant uuid := '13800000-0000-4000-8000-0000000000d1';
+	v_other_owner constant uuid := '13820000-0000-4000-8000-000000000098';
+	v_company_b constant uuid := '13820000-0000-4000-8000-000000000011';
+	v_env_b constant uuid := '13820000-0000-4000-8000-000000000021';
+	v_machine_id constant uuid := '13820000-0000-4000-8000-0000000000d1';
 	v_company uuid := (v_claim ->> 'profileId')::uuid;
 	v_env uuid;
 	v_site uuid;
@@ -118,7 +118,7 @@ declare
 	v_del_worker uuid;
 	v_opt_session uuid;
 	v_opt_worker uuid;
-	v_del_land_job uuid := '13800000-0000-4000-8000-000000000031';
+	v_del_land_job uuid := '13820000-0000-4000-8000-000000000031';
 	v_enq jsonb;
 	v_claimed jsonb;
 	v_cleanup jsonb;
@@ -134,7 +134,7 @@ begin
 	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 	values (v_env_b, v_company_b, 'Executor Template Env', 1, v_other_owner);
 	perform pg_temp.as_service();
-	perform public.qorpera_configure_coding_executor(v_env_b, 'exec-1380', true, array['codex', 'claude-code']);
+	perform public.qorpera_configure_coding_executor(v_env_b, 'exec-1382', true, array['codex', 'claude-code']);
 
 	perform pg_temp.sdwc_assert(
 		has_function_privilege('service_role', 'public.qorpera_surface_complete_cleanup(uuid,text,text,uuid)', 'EXECUTE')
@@ -154,7 +154,7 @@ begin
 	);
 
 	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
-	values (v_machine_id, 'member', v_company, v_env, v_anna, 'exec-1380', repeat('7', 64), '{}');
+	values (v_machine_id, 'member', v_company, v_env, v_anna, 'exec-1382', repeat('7', 64), '{}');
 
 	perform pg_temp.sdwc_as(v_anna);
 	set local role authenticated;
