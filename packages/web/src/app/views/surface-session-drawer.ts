@@ -50,6 +50,26 @@ const DISCARDED_OPTIONS_NOTE = "Discarded options: ";
 const SELECTED_OPTION_NOTE = "Selected option: ";
 const RESTORED_CHANGE_NOTE = "Restored change: ";
 export const APPROVE_ARM_MS = 4_500;
+const MARKDOWN_CACHE_MAX = 128;
+// WHY: Reuse parsed markdown DOM trees across streaming ticks so unchanged turns never re-parse markdown.
+const parsedMarkdownCache = new Map<string, HTMLElement>();
+
+function cachedMarkdown(text: string): HTMLElement {
+	const cached = parsedMarkdownCache.get(text);
+	if (cached) {
+		parsedMarkdownCache.delete(text);
+		parsedMarkdownCache.set(text, cached);
+		return cached.cloneNode(true) as HTMLElement;
+	}
+	const rendered = markdown(text);
+	parsedMarkdownCache.set(text, rendered);
+	while (parsedMarkdownCache.size > MARKDOWN_CACHE_MAX) {
+		const oldest = parsedMarkdownCache.keys().next().value;
+		if (oldest === undefined) break;
+		parsedMarkdownCache.delete(oldest);
+	}
+	return rendered.cloneNode(true) as HTMLElement;
+}
 
 interface QuotedChangeRef {
 	readonly sessionId: string;
@@ -276,7 +296,7 @@ function messageRow(
 		return h(
 			"div",
 			{ class: "surface-message is-session", title: fmtTime(message.createdAt) },
-			markdown(message.text),
+			cachedMarkdown(message.text),
 		);
 	return memberBubble(message.text, "", fmtTime(message.createdAt), author, images, to);
 }
@@ -400,6 +420,10 @@ export class SurfaceSessionDrawer {
 	#dragged = false;
 	#surfaceId = "";
 	#shown: readonly unknown[] | undefined;
+	#focusedHeadDeps: readonly unknown[] | undefined;
+	#focusedPinnedDeps: readonly unknown[] | undefined;
+	#bodyMode: "none" | "overview" | "thread" = "none";
+	readonly #renderedThread = new Map<string, { readonly key: string; readonly el: HTMLElement }>();
 	#sessionId = "";
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
@@ -736,7 +760,13 @@ export class SurfaceSessionDrawer {
 			},
 			{ signal },
 		);
-		window.addEventListener("resize", () => this.#applyWidth(), { signal });
+		window.addEventListener(
+			"resize",
+			() => {
+				if (this.el.isConnected) this.#applyWidth();
+			},
+			{ signal },
+		);
 	}
 
 	#setWidth(width: number, persist: boolean): void {
@@ -780,6 +810,8 @@ export class SurfaceSessionDrawer {
 
 	#redraw(): void {
 		this.#shown = undefined;
+		this.#focusedHeadDeps = undefined;
+		this.#focusedPinnedDeps = undefined;
 		const current = this.#store.state.surfaces.find(
 			(item) => item.id === (this.#store.state.drawer?.surfaceId ?? this.#surfaceId),
 		);
@@ -930,6 +962,10 @@ export class SurfaceSessionDrawer {
 		this.el.inert = !open;
 		if (!open) {
 			this.#shown = undefined;
+			this.#focusedHeadDeps = undefined;
+			this.#focusedPinnedDeps = undefined;
+			this.#bodyMode = "none";
+			this.#renderedThread.clear();
 			this.#sessionId = "";
 			this.#messages = 0;
 			this.#disarm(false);
@@ -982,6 +1018,10 @@ export class SurfaceSessionDrawer {
 		];
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
+		this.#focusedHeadDeps = undefined;
+		this.#focusedPinnedDeps = undefined;
+		this.#bodyMode = "overview";
+		this.#renderedThread.clear();
 		const explorations = openExplorations(workspace);
 		const plainSessions = rankSessions(
 			(workspace?.activeSessions ?? []).filter((session) => !isOpenVariant(session, workspace)),
@@ -1232,7 +1272,7 @@ export class SurfaceSessionDrawer {
 				h(
 					"div",
 					{ class: "surface-question is-compact" },
-					h("div", { class: "surface-question-text" }, markdown(session.question.text)),
+					h("div", { class: "surface-question-text" }, cachedMarkdown(session.question.text)),
 					h(
 						"div",
 						{ class: "surface-question-options" },
@@ -1487,6 +1527,8 @@ export class SurfaceSessionDrawer {
 		if (picked && state.unseenNotes[picked.id]) store.seeNotes(picked.id);
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
+		this.#focusedHeadDeps = undefined;
+		this.#focusedPinnedDeps = undefined;
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
@@ -1510,7 +1552,6 @@ export class SurfaceSessionDrawer {
 		this.#crew.settle();
 
 		const pinned: HTMLElement[] = [];
-		const parts: HTMLElement[] = [];
 		if (resolvedSurface) pinned.push(...this.#noteButtons(ownedNotes));
 		if (variants.length > 0)
 			pinned.push(
@@ -1583,9 +1624,14 @@ export class SurfaceSessionDrawer {
 					}),
 				),
 			);
-		if (picked) parts.push(...this.#thread(picked, notes));
 		this.#setPinned(pinned);
-		this.#body.replaceChildren(...parts);
+		if (picked) {
+			this.#reconcileThread(picked, notes);
+		} else {
+			this.#bodyMode = "thread";
+			this.#renderedThread.clear();
+			this.#body.replaceChildren();
+		}
 		const activeId = picked?.id ?? exploration.id;
 		const count = (picked ? picked.messages.length || (picked.prompt ? 1 : 0) : 0) + notes.length;
 		if (activeId !== this.#sessionId || count !== this.#messages) {
@@ -1633,25 +1679,64 @@ export class SurfaceSessionDrawer {
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
-		this.#head.className = "surface-drawer-head";
-		this.#head.replaceChildren(
-			h(
-				"button",
-				{
-					type: "button",
-					class: "icon-button surface-drawer-back",
-					"aria-label": t("All changes"),
-					title: t("All changes"),
-					"data-act": "back-overview",
-				},
-				icon("back"),
-			),
-			this.#crew.take(session, 43, "is-large", store.turnHolder(session)),
-			h("div", { class: "surface-drawer-title" }, h("h2", null, session.title)),
-		);
-		this.#crew.settle();
-		this.#setPinned(this.#content(session, resolvedSurface, look, ownedNotes));
-		this.#body.replaceChildren(...this.#thread(session, notes));
+		const turnHolder = store.turnHolder(session);
+		const headDeps: readonly unknown[] = [
+			session.id,
+			session.title,
+			session.state,
+			session.workerId,
+			session.changes.length,
+			turnHolder?.userId,
+			turnHolder?.name,
+		];
+		if (!sameDeps(this.#focusedHeadDeps, headDeps)) {
+			this.#focusedHeadDeps = headDeps;
+			this.#head.className = "surface-drawer-head";
+			this.#head.replaceChildren(
+				h(
+					"button",
+					{
+						type: "button",
+						class: "icon-button surface-drawer-back",
+						"aria-label": t("All changes"),
+						title: t("All changes"),
+						"data-act": "back-overview",
+					},
+					icon("back"),
+				),
+				this.#crew.take(session, 43, "is-large", turnHolder),
+				h("div", { class: "surface-drawer-title" }, h("h2", null, session.title)),
+			);
+			this.#crew.settle();
+		}
+		const pinnedDeps: readonly unknown[] = [
+			session.id,
+			session.state,
+			session.changes,
+			session.question,
+			resolvedSurface,
+			state.mode,
+			state.activeReportSlug,
+			state.hiddenChanges,
+			state.optionPick,
+			state.busy,
+			state.studioPatches,
+			resolvedSurface ? state.localStudioBase[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.cloudSurfaceFiles[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.localStudioBinaries[resolvedSurface.id] : undefined,
+			resolvedSurface ? state.cloudSurfaceBinaries[resolvedSurface.id] : undefined,
+			look?.kind,
+			look?.accent,
+			this.#armedApprove,
+			this.#unfolded,
+			this.#openChange,
+			ownedNotes,
+		];
+		if (!sameDeps(this.#focusedPinnedDeps, pinnedDeps)) {
+			this.#focusedPinnedDeps = pinnedDeps;
+			this.#setPinned(this.#content(session, resolvedSurface, look, ownedNotes));
+		}
+		this.#reconcileThread(session, notes);
 		const count = (session.messages.length || (session.prompt ? 1 : 0)) + notes.length;
 		if (session.id !== this.#sessionId || count !== this.#messages) {
 			this.#sessionId = session.id;
@@ -1757,7 +1842,7 @@ export class SurfaceSessionDrawer {
 				h(
 					"div",
 					{ class: "surface-question" },
-					h("div", { class: "surface-question-text" }, markdown(session.question.text)),
+					h("div", { class: "surface-question-text" }, cachedMarkdown(session.question.text)),
 					h(
 						"div",
 						{ class: "surface-question-options" },
@@ -2109,12 +2194,26 @@ export class SurfaceSessionDrawer {
 		this.#pinned.hidden = parts.length === 0;
 	}
 
-	#thread(session: SurfaceSession, notes: readonly SurfaceNote[]): HTMLElement[] {
+	// WHY: Reconcile thread turns in place by message id so streaming updates never tear down or re-parse unchanged turns.
+	#reconcileThread(session: SurfaceSession, notes: readonly SurfaceNote[]): void {
+		if (this.#bodyMode !== "thread") {
+			this.#bodyMode = "thread";
+			this.#renderedThread.clear();
+		}
 		const store = this.#store;
 		store.ensureSessionImages(session);
 		const sent = store.state.sessionImages[session.id]?.messages ?? [];
-		const keep = new Set<string>();
+		const keepImages = new Set<string>();
+		const activeIds = new Set<string>();
 		const parts: HTMLElement[] = [];
+		const take = (id: string, key: string, build: () => HTMLElement): HTMLElement => {
+			activeIds.add(id);
+			const existing = this.#renderedThread.get(id);
+			if (existing && existing.key === key) return existing.el;
+			const el = build();
+			this.#renderedThread.set(id, { key, el });
+			return el;
+		};
 		if (session.messages.length > 0) {
 			for (const message of session.messages) {
 				if (
@@ -2125,37 +2224,57 @@ export class SurfaceSessionDrawer {
 					continue;
 				const attached =
 					message.authorKind === "member" ? sent.find((item) => item.messageId === message.id) : undefined;
+				let imgKey = "";
 				let images: HTMLElement | undefined;
 				if (attached?.images.length) {
 					const key = `${session.id}:${attached.clientInputId}`;
-					keep.add(key);
+					keepImages.add(key);
+					imgKey = `${key}:${attached.images.length}`;
 					images = this.#sentImageView(key, session.id, attached).el;
 				}
+				const author = this.#person(message.authorUserId);
 				const to =
 					message.authorKind === "note"
 						? (message.noteTo ?? []).flatMap((userId) => this.#person(userId) ?? [])
 						: undefined;
-				parts.push(messageRow(message, this.#person(message.authorUserId), images, to));
+				const id = `msg:${session.id}:${message.id}`;
+				const contentKey = JSON.stringify([
+					message.authorKind,
+					message.text,
+					message.createdAt,
+					message.changeId ?? "",
+					author?.userId ?? "",
+					author?.name ?? "",
+					imgKey,
+					to?.map((who) => `${who.userId}:${who.name}`) ?? null,
+				]);
+				parts.push(take(id, contentKey, () => messageRow(message, author, images, to)));
 			}
 		} else if (session.prompt) {
-			parts.push(memberBubble(session.prompt, "", undefined, this.#person(session.createdByUserId)));
+			const creator = this.#person(session.createdByUserId);
+			parts.push(
+				take(
+					`prompt:${session.id}`,
+					JSON.stringify([session.prompt, creator?.userId ?? "", creator?.name ?? ""]),
+					() => memberBubble(session.prompt, "", undefined, creator),
+				),
+			);
 		}
 		for (const [key, view] of this.#sentImages)
-			if (!keep.has(key)) {
+			if (!keepImages.has(key)) {
 				view.dispose();
 				this.#sentImages.delete(key);
 			}
 		const sending = new Set<File>();
 		for (const note of notes) {
 			for (const file of note.files ?? []) sending.add(file);
+			const to = note.to?.flatMap((userId) => this.#person(userId) ?? []);
+			const fileKey = (note.files ?? []).map((file) => `${file.name}:${file.size}:${file.lastModified}`);
 			parts.push(
-				memberBubble(
-					note.text,
-					"is-pending",
-					undefined,
-					undefined,
-					this.#localImages(note.files),
-					note.to?.flatMap((userId) => this.#person(userId) ?? []),
+				take(
+					`note:${note.id}`,
+					JSON.stringify([note.text, to?.map((who) => `${who.userId}:${who.name}`) ?? null, fileKey]),
+					() => memberBubble(note.text, "is-pending", undefined, undefined, this.#localImages(note.files), to),
 				),
 			);
 		}
@@ -2164,7 +2283,19 @@ export class SurfaceSessionDrawer {
 				URL.revokeObjectURL(url);
 				this.#localImageUrls.delete(file);
 			}
-		return parts;
+		for (const id of [...this.#renderedThread.keys()]) {
+			if (!activeIds.has(id)) this.#renderedThread.delete(id);
+		}
+		const kept = new Set<Element>(parts);
+		for (const child of [...this.#body.children]) {
+			if (!kept.has(child)) child.remove();
+		}
+		for (let i = 0; i < parts.length; i++) {
+			const node = parts[i]!;
+			if (this.#body.children[i] !== node) {
+				this.#body.insertBefore(node, this.#body.children[i] ?? null);
+			}
+		}
 	}
 
 	#person(userId: string | null | undefined): SurfaceTeammate | undefined {

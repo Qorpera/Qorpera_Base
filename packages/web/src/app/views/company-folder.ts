@@ -60,6 +60,12 @@ export interface CompanyFolderPeople {
 	readonly staff: readonly { readonly id: string; readonly displayName: string }[];
 }
 
+export interface CachedFolderListing {
+	readonly entries: readonly CloudMemberFolderEntry[];
+	readonly next: string | null;
+	readonly asOfSeq: number;
+}
+
 export interface CompanyFolderBrowserOptions {
 	/** Choose mode (Open's "A file…" on an agent's computer, 20260930758000): the same rows, where a file's row picks it
 	 * (again: unpicks it) and a folder's still opens it; the folder open is the pick while no file is. Nothing that
@@ -67,6 +73,7 @@ export interface CompanyFolderBrowserOptions {
 	 * import, and a link is shown but not picked. Told every pick, null at the top with nothing picked. */
 	readonly choose?: (pick: CompanyFolderPick | null) => void;
 	readonly usage?: () => Promise<{ readonly storageUsedBytes: number }>;
+	readonly listingCache?: Map<string, CachedFolderListing>;
 }
 
 /** What choose mode picked: a file, or the folder open. */
@@ -106,6 +113,7 @@ const MAX_PREVIEW_TEXT_BYTES = 1024 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
+const LISTING_CACHE_MAX = 64;
 /** How many newest Recents pages a refresh reads to reach the changes already shown. */
 const RECENTS_CATCH_UP_PAGES = 5;
 /** HTML pages: shown live, in a locked-down frame (ui/page-frame.ts), or as their source. */
@@ -196,6 +204,7 @@ export class CompanyFolderBrowser {
 	readonly #source: CompanyFolderSource;
 	readonly #people: () => CompanyFolderPeople;
 	readonly #options: CompanyFolderBrowserOptions;
+	readonly #listingCache: Map<string, CachedFolderListing>;
 	readonly #stop: AbortController;
 	readonly #locale = presentationLocale();
 	readonly #root = h("div", { class: "files-root" });
@@ -279,6 +288,7 @@ export class CompanyFolderBrowser {
 		this.#source = source;
 		this.#people = people;
 		this.#options = options;
+		this.#listingCache = options.listingCache ?? new Map<string, CachedFolderListing>();
 		this.#view = options.choose ? "list" : "grid";
 		this.#search = h("input", {
 			type: "search",
@@ -452,8 +462,11 @@ export class CompanyFolderBrowser {
 
 	/** Opens the top of the folder, then follows its hint. */
 	async open(): Promise<void> {
-		replace(this.#status, h("span", { class: "visually-hidden" }, t("Opening Company File")));
-		replace(this.#root, listSkeleton(t("Opening Company File"), 4));
+		const cachedRoot = this.#readCache("");
+		if (!cachedRoot) {
+			replace(this.#status, h("span", { class: "visually-hidden" }, t("Opening Company File")));
+			replace(this.#root, listSkeleton(t("Opening Company File"), 4));
+		}
 		this.#client = this.#source.folder();
 		void this.#options.usage?.().then(
 			(file) => {
@@ -483,6 +496,7 @@ export class CompanyFolderBrowser {
 				code: this.#code,
 				open: (path) => this.reveal(path),
 				changed: (path) => {
+					this.#invalidatePath(path);
 					this.#changed.add(path);
 					this.#navigate();
 				},
@@ -516,10 +530,19 @@ export class CompanyFolderBrowser {
 			),
 		);
 		replace(this.#root, this.#documents, this.#recents);
-		await this.#load("");
-		replace(this.#status);
+		if (cachedRoot) {
+			// WHY: Render cached root immediately without a skeleton flash, then revalidate quietly in the background.
+			await this.#applyListing("", cachedRoot, false, false);
+			replace(this.#status);
+		} else {
+			await this.#load("");
+			replace(this.#status);
+		}
 		try {
-			this.#hints ??= this.#source.folderHints(() => this.#scheduleSync());
+			this.#hints ??= this.#source.folderHints(() => {
+				this.#listingCache.clear();
+				this.#scheduleSync();
+			});
 		} catch {
 			/* The hint is a nudge; the slow poll keeps the page current without it. */
 		}
@@ -538,6 +561,13 @@ export class CompanyFolderBrowser {
 		}
 		this.#ready = true;
 		this.#navigate();
+		if (cachedRoot) {
+			void this.#run(
+				() => this.#load("", false, true),
+				() => this.#load(""),
+				true,
+			);
+		}
 	}
 
 	/** Whether the folder's top has been read: from then on, what reveal is handed is shown. */
@@ -701,11 +731,38 @@ export class CompanyFolderBrowser {
 
 	// ---- the folder -------------------------------------------------------------
 
-	/** `quiet`: the open folder read again for an import (code-import.ts); when it holds what is shown, nothing is drawn
-	 * again, so no row fades in twice and focus stays where it is. */
-	async #load(dir: string, append = false, quiet = false): Promise<void> {
-		const page = await this.#client!.list(dir || null, append ? this.#next : null, PAGE, this.#signal());
-		this.#live();
+	#readCache(dir: string): CachedFolderListing | undefined {
+		const hit = this.#listingCache.get(dir);
+		if (!hit) return undefined;
+		this.#listingCache.delete(dir);
+		this.#listingCache.set(dir, hit);
+		return hit;
+	}
+
+	#writeCache(dir: string, page: CachedFolderListing): void {
+		this.#listingCache.delete(dir);
+		this.#listingCache.set(dir, { entries: [...page.entries], next: page.next, asOfSeq: page.asOfSeq });
+		while (this.#listingCache.size > LISTING_CACHE_MAX) {
+			const oldest = this.#listingCache.keys().next().value;
+			if (oldest === undefined) break;
+			this.#listingCache.delete(oldest);
+		}
+	}
+
+	#invalidatePath(path: string): void {
+		if (!path) {
+			this.#listingCache.clear();
+			return;
+		}
+		this.#listingCache.delete(path);
+		this.#listingCache.delete(parentOf(path));
+		const prefix = `${path}/`;
+		for (const key of [...this.#listingCache.keys()]) {
+			if (key.startsWith(prefix)) this.#listingCache.delete(key);
+		}
+	}
+
+	async #applyListing(dir: string, page: CachedFolderListing, append: boolean, quiet: boolean): Promise<void> {
 		// A place's mark is left out while its import runs (code-import.ts), so the count says what is shown.
 		const entries = page.entries.filter((entry) => !this.#import?.hidden(entry.path));
 		if (
@@ -740,6 +797,15 @@ export class CompanyFolderBrowser {
 		if (jumped) await this.#refreshOpened();
 	}
 
+	/** `quiet`: the open folder read again for an import (code-import.ts); when it holds what is shown, nothing is drawn
+	 * again, so no row fades in twice and focus stays where it is. */
+	async #load(dir: string, append = false, quiet = false): Promise<void> {
+		const page = await this.#client!.list(dir || null, append ? this.#next : null, PAGE, this.#signal());
+		this.#live();
+		if (!append) this.#writeCache(dir, page);
+		await this.#applyListing(dir, page, append, quiet);
+	}
+
 	/** Choose mode: a file's row picks it, or unpicks it when it is the pick; the rows are marked where they stand. */
 	#pick(path: string): void {
 		this.#picked = this.#picked === path ? null : path;
@@ -763,6 +829,15 @@ export class CompanyFolderBrowser {
 
 	async #enter(dir: string): Promise<void> {
 		this.#close();
+		const cached = this.#readCache(dir);
+		if (cached) {
+			// WHY: Paint cached folder entries at 0ms on navigation, then revalidate quietly so updates still land.
+			await this.#applyListing(dir, cached, false, false);
+			this.#setSection("documents");
+			this.#list.querySelector<HTMLElement>("button.files-row-main")?.focus();
+			await this.#load(dir, false, true);
+			return;
+		}
 		await this.#load(dir);
 		this.#setSection("documents");
 		this.#list.querySelector<HTMLElement>("button.files-row-main")?.focus();
@@ -974,6 +1049,7 @@ export class CompanyFolderBrowser {
 			for (const event of page.events) {
 				// An authority change may change what this member may read anywhere.
 				if (event.kind === "authority") {
+					this.#listingCache.clear();
 					touchedFolder = true;
 					touchedFile = this.#opened !== null;
 					// What this member may read may have changed: Recents read before goes at once, before any read
@@ -983,6 +1059,8 @@ export class CompanyFolderBrowser {
 					continue;
 				}
 				for (const change of event.changes) {
+					this.#listingCache.delete(parentOf(change.path));
+					this.#listingCache.delete(change.path);
 					if (parentOf(change.path) === this.#dir || change.path === this.#dir) touchedFolder = true;
 					if (change.path === this.#opened?.path) touchedFile = true;
 				}
@@ -992,6 +1070,7 @@ export class CompanyFolderBrowser {
 			if (!page.more) break;
 		}
 		if (reset) {
+			this.#listingCache.clear();
 			this.#position = null;
 			await this.#reload();
 			return;
@@ -1602,6 +1681,7 @@ export class CompanyFolderBrowser {
 		this.#drawRetries();
 		const result = answer.units[0];
 		if (result?.outcome === "saved") {
+			this.#listingCache.delete(parentOf(path));
 			this.#say(t("Restored {name}.", { name }));
 			await this.#reopen(path);
 		} else if (result?.outcome === "conflict") {

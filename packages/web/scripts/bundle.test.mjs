@@ -81,6 +81,36 @@ test("the first screen never downloads the figures' motion data or Danish dictio
 		),
 	];
 	assert.deepEqual(inputsOf(layout, surfaceStatic).filter((path) => /surface-local-sandbox\.ts$/.test(path)), []);
+	// WHY: Keep boot preloads bounded and ensure Cmd+K's lazy-quick barrel never drags in settings, founding, or heavy ops views.
+	assert.ok(layout.preload.length <= 15, `expected <= 15 preload chunks, got ${layout.preload.length}`);
+	for (const barrel of ["lazy-quick", "lazy-ops", "lazy-settings", "lazy-founding"]) {
+		assert.equal(
+			layout.lazy.filter((file) => new RegExp(`^build/${barrel}-[A-Z0-9]+\\.js$`).test(file)).length,
+			1,
+			`missing ${barrel} lazy barrel`,
+		);
+	}
+	const quickChunk = layout.lazy.find((file) => /^build\/lazy-quick-[A-Z0-9]+\.js$/.test(file));
+	assert.ok(quickChunk);
+	const quickLazyFiles = [
+		quickChunk,
+		...(layout.outputs[quickChunk]?.imports ?? [])
+			.filter((item) => item.kind !== "dynamic-import")
+			.map((item) => item.path.slice(item.path.indexOf("build/")))
+			.filter((file) => !layout.preload.includes(file)),
+	];
+	assert.deepEqual(
+		inputsOf(layout, quickLazyFiles).filter((path) =>
+			/\/(?:settings|settings-connections|founding|company-folder|mailbox|bank|data|program-page|agent-routines)\.ts$/.test(
+				path,
+			),
+		),
+		[],
+	);
+	// WHY: Surface view-only CSS stays in deferred.css while boot-critical rail rules remain in app.css.
+	assert.deepEqual(inputsOf(layout, [layout.style]).filter((path) => /src\/styles\/surfaces\.css$/.test(path)), []);
+	assert.ok(inputsOf(layout, [layout.style]).some((path) => /src\/styles\/surface-rail\.css$/.test(path)));
+	assert.ok(inputsOf(layout, [layout.deferredStyle]).some((path) => /src\/styles\/surfaces\.css$/.test(path)));
 });
 
 test("the first screen never downloads the sample 3D model; the sandbox fetches its file only when its stage asks", async () => {

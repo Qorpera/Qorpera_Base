@@ -51,9 +51,26 @@ export class AtComputerWatch {
 	#again = false;
 	#owed = false;
 	#done = false;
+	#paused = false;
 
 	constructor(options: AtComputerWatchOptions) {
 		this.#options = options;
+	}
+
+	// WHY: Parked company controllers stop background computer polling while inactive and resume cleanly on return.
+	pause(): void {
+		if (this.#done || this.#paused) return;
+		this.#paused = true;
+		clearTimeout(this.#timer);
+		clearTimeout(this.#hint);
+		this.#timer = this.#hint = undefined;
+		this.#again = false;
+	}
+
+	resume(): void {
+		if (this.#done || !this.#paused) return;
+		this.#paused = false;
+		this.read();
 	}
 
 	get agents(): AgentsAtComputers {
@@ -66,7 +83,7 @@ export class AtComputerWatch {
 
 	/** Reads the list now (one read at a time; a call meanwhile reads once more after it). */
 	read(): void {
-		if (this.#done) return;
+		if (this.#done || this.#paused) return;
 		if (this.#options.resting?.()) {
 			this.#owed = true;
 			this.#expire();
@@ -81,14 +98,14 @@ export class AtComputerWatch {
 		void this.#options.read().then(
 			(answer) => {
 				this.#reading = false;
-				if (this.#done) return;
+				if (this.#done || this.#paused) return;
 				this.#failures = 0;
 				this.#take(answer);
 				this.#next();
 			},
 			(error: unknown) => {
 				this.#reading = false;
-				if (this.#done) return;
+				if (this.#done || this.#paused) return;
 				if (error instanceof CloudRpcError && error.missing) {
 					this.dispose();
 					this.#agents = {};
@@ -104,7 +121,7 @@ export class AtComputerWatch {
 
 	/** A `machines` hint: an agent may have begun a stretch. */
 	hinted(): void {
-		if (this.#done || this.#hint) return;
+		if (this.#done || this.#paused || this.#hint) return;
 		this.#hint = setTimeout(() => {
 			this.#hint = undefined;
 			this.read();
@@ -113,7 +130,7 @@ export class AtComputerWatch {
 
 	/** The page is shown again: a read it skipped while hidden is made now. */
 	returned(): void {
-		if (this.#owed) this.read();
+		if (!this.#paused && this.#owed) this.read();
 	}
 
 	dispose(): void {
@@ -157,6 +174,7 @@ export class AtComputerWatch {
 	#next(retry?: number): void {
 		clearTimeout(this.#timer);
 		this.#timer = undefined;
+		if (this.#done || this.#paused) return;
 		if (this.#again) {
 			this.#again = false;
 			this.read();

@@ -10,7 +10,7 @@ import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
 import darkCss from "../src/styles/dark.css?raw";
 import settingsCss from "../src/styles/settings.css?raw";
-import surfacesCss from "../src/styles/surfaces.css?raw";
+import surfaceRailCss from "../src/styles/surface-rail.css?raw";
 import tokensCss from "../src/styles/tokens.css?raw";
 import { h } from "../src/ui/dom.ts";
 import {
@@ -239,7 +239,7 @@ describe("rail selection and grey appearance styles", () => {
 	});
 
 	it("styles active rail surfaces and agent rows with the settings selection tokens like the Co-Founder", () => {
-		const surfaceRules = cssRulesOf(surfacesCss);
+		const surfaceRules = cssRulesOf(surfaceRailCss);
 		const activeSurface = surfaceRules.find(
 			(rule) => rule.selectorText === ".rail-surface.active, .rail-surface.active:hover",
 		);

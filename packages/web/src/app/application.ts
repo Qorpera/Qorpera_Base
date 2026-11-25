@@ -34,6 +34,7 @@ import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { companyInSentence, companyNameText } from "../ui/company-name.ts";
+import { waitForDeferredStyles } from "../ui/deferred-styles.ts";
 import { button, h, icon, notice, replace } from "../ui/dom.ts";
 import { installHoverGlides } from "../ui/hover-glide.ts";
 import { disposeCardPictures, type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
@@ -93,7 +94,7 @@ import type { AccountViewState } from "./views/account.ts";
 import type { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
-import type { CompanyFolderBrowser } from "./views/company-folder.ts";
+import type { CachedFolderListing, CompanyFolderBrowser } from "./views/company-folder.ts";
 import { type ComputerPanelsLike, LazyComputerPanels } from "./views/computer-lazy.ts";
 import type { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -104,6 +105,7 @@ import type { FriendsWindow } from "./views/friends-window.ts";
 import { takeGoodWillReturn } from "./views/good-will-format.ts";
 import type { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
+import { _bootHub } from "./views/lazy-boot-hub.ts";
 import type { MemberChatView } from "./views/member-chat.ts";
 import {
 	hasWebsiteIdea,
@@ -123,6 +125,7 @@ import {
 	appLook,
 	clearShellCompanyState,
 	installSearchShortcut,
+	invalidateShellSearchFiles,
 	renderRail,
 	renderTopbar,
 	type ShellContext,
@@ -162,38 +165,58 @@ function lazyModule<T>(load: () => Promise<T>): {
 	};
 }
 
-const surfaceViewModule = lazyModule(() => import("./views/surface-view.ts"));
-// WHY: Grouping secondary views behind one dynamic import collapses esbuild's combinatorial preload chunk explosion.
-const secondaryViewsModule = lazyModule(() => import("./views/lazy-secondary.ts"));
-const interfaceViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.interfaceView));
-const companyFolderModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.companyFolder));
+// WHY: Keep lazy-boot-hub anchored in main's static graph so lazy barrels never emit a separate hub chunk.
+void _bootHub;
+
+// WHY: Wait for deferred view stylesheets alongside lazy bundles so Surface and secondary views paint without FOUC.
+const surfaceViewModule = lazyModule(() =>
+	Promise.all([import("./views/surface-view.ts"), waitForDeferredStyles()]).then(([mod]) => mod),
+);
+// WHY: Splitting secondary views into four domain barrels keeps Cmd+K small without exploding boot preload chunks.
+const lazyQuickModule = lazyModule(() =>
+	Promise.all([import("./views/lazy-quick.ts"), waitForDeferredStyles()]).then(([mod]) => mod),
+);
+const lazyOpsModule = lazyModule(() =>
+	Promise.all([import("./views/lazy-ops.ts"), waitForDeferredStyles()]).then(([mod]) => mod),
+);
+const lazySettingsModule = lazyModule(() =>
+	Promise.all([import("./views/lazy-settings.ts"), waitForDeferredStyles()]).then(([mod]) => mod),
+);
+const lazyFoundingModule = lazyModule(() =>
+	Promise.all([import("./views/lazy-founding.ts"), waitForDeferredStyles()]).then(([mod]) => mod),
+);
+const interfaceViewModule = lazyModule(() => lazyOpsModule.load().then((mod) => mod.interfaceView));
+const companyFolderModule = lazyModule(() => lazyOpsModule.load().then((mod) => mod.companyFolder));
 const foundingModule = lazyModule(() =>
-	secondaryViewsModule.load().then((mod) => ({
+	lazyFoundingModule.load().then((mod) => ({
 		FoundingController: mod.foundingController.FoundingController,
 		FoundingView: mod.foundingView.FoundingView,
 	})),
 );
-const conceptsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.concepts));
-const newProgramModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.newProgram));
-const siteViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.siteView));
-const settingsViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.settingsView));
-const friendsWindowModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.friendsWindow));
-const feedbackViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.feedbackView));
+const conceptsModule = lazyModule(() => lazyOpsModule.load().then((mod) => mod.concepts));
+const newProgramModule = lazyModule(() => lazyOpsModule.load().then((mod) => mod.newProgram));
+const siteViewModule = lazyModule(() => lazyOpsModule.load().then((mod) => mod.siteView));
+const settingsViewModule = lazyModule(() => lazySettingsModule.load().then((mod) => mod.settingsView));
+const friendsWindowModule = lazyModule(() => lazySettingsModule.load().then((mod) => mod.friendsWindow));
+const feedbackViewModule = lazyModule(() => lazySettingsModule.load().then((mod) => mod.feedbackView));
 const accountViewModule = lazyModule(() =>
-	secondaryViewsModule.load().then((mod) => ({
+	lazySettingsModule.load().then((mod) => ({
 		renderAccount: mod.account.renderAccount,
 		MyGoodWillView: mod.goodWill.MyGoodWillView,
 	})),
 );
-const teamViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.teamView));
-const memberChatModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.memberChat));
-const newConversationModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.newConversation));
-const whatsNewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.whatsNew));
-const agentDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.agentDetails));
-const groupDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.groupDetails));
+const teamViewModule = lazyModule(() => lazySettingsModule.load().then((mod) => mod.teamView));
+const memberChatModule = lazyModule(() => lazyQuickModule.load().then((mod) => mod.memberChat));
+const newConversationModule = lazyModule(() => lazyQuickModule.load().then((mod) => mod.newConversation));
+const whatsNewModule = lazyModule(() => lazyOpsModule.load().then((mod) => mod.whatsNew));
+const agentDetailsModule = lazyModule(() => lazyOpsModule.load().then((mod) => mod.agentDetails));
+const groupDetailsModule = lazyModule(() => lazyQuickModule.load().then((mod) => mod.groupDetails));
 
 export function registerLazyApplicationModules(modules: {
-	readonly secondaryViews?: typeof import("./views/lazy-secondary.ts");
+	readonly lazyQuick?: typeof import("./views/lazy-quick.ts");
+	readonly lazyOps?: typeof import("./views/lazy-ops.ts");
+	readonly lazySettings?: typeof import("./views/lazy-settings.ts");
+	readonly lazyFounding?: typeof import("./views/lazy-founding.ts");
 	readonly interfaceView?: typeof import("./views/interface.ts");
 	readonly surfaceView?: typeof import("./views/surface-view.ts");
 	readonly companyFolder?: typeof import("./views/company-folder.ts");
@@ -218,18 +241,27 @@ export function registerLazyApplicationModules(modules: {
 	readonly agentDetails?: typeof import("./views/agent-details.ts");
 	readonly groupDetails?: typeof import("./views/group-details.ts");
 }): void {
-	if (modules.secondaryViews) {
-		const mod = modules.secondaryViews;
-		secondaryViewsModule.set(mod);
+	if (modules.lazyQuick) {
+		const mod = modules.lazyQuick;
+		lazyQuickModule.set(mod);
+		memberChatModule.set(mod.memberChat);
+		newConversationModule.set(mod.newConversation);
+		groupDetailsModule.set(mod.groupDetails);
+	}
+	if (modules.lazyOps) {
+		const mod = modules.lazyOps;
+		lazyOpsModule.set(mod);
 		interfaceViewModule.set(mod.interfaceView);
 		companyFolderModule.set(mod.companyFolder);
-		foundingModule.set({
-			FoundingController: mod.foundingController.FoundingController,
-			FoundingView: mod.foundingView.FoundingView,
-		});
 		conceptsModule.set(mod.concepts);
 		newProgramModule.set(mod.newProgram);
 		siteViewModule.set(mod.siteView);
+		whatsNewModule.set(mod.whatsNew);
+		agentDetailsModule.set(mod.agentDetails);
+	}
+	if (modules.lazySettings) {
+		const mod = modules.lazySettings;
+		lazySettingsModule.set(mod);
 		settingsViewModule.set(mod.settingsView);
 		friendsWindowModule.set(mod.friendsWindow);
 		feedbackViewModule.set(mod.feedbackView);
@@ -238,11 +270,14 @@ export function registerLazyApplicationModules(modules: {
 			MyGoodWillView: mod.goodWill.MyGoodWillView,
 		});
 		teamViewModule.set(mod.teamView);
-		memberChatModule.set(mod.memberChat);
-		newConversationModule.set(mod.newConversation);
-		whatsNewModule.set(mod.whatsNew);
-		agentDetailsModule.set(mod.agentDetails);
-		groupDetailsModule.set(mod.groupDetails);
+	}
+	if (modules.lazyFounding) {
+		const mod = modules.lazyFounding;
+		lazyFoundingModule.set(mod);
+		foundingModule.set({
+			FoundingController: mod.foundingController.FoundingController,
+			FoundingView: mod.foundingView.FoundingView,
+		});
 	}
 	if (modules.interfaceView) interfaceViewModule.set(modules.interfaceView);
 	if (modules.surfaceView) surfaceViewModule.set(modules.surfaceView);
@@ -600,57 +635,112 @@ export function mountApplication(
 	// thread, in an app's page and in the Concepts viewer's dock, all on this page, and without redrawing the card, so
 	// a pick or an answer being typed stays (ui/interaction-card.ts refreshAppPreviews; review r1 of #1763, F1).
 	const APP_CARD_SELECTOR = ".app-card[data-app-name], [data-preview-app]";
-	const hasDecoratableCard = (records: readonly MutationRecord[]): boolean => {
+	const pendingCardRoots = new Set<Element>();
+	let observedCardTarget: Element | undefined;
+	const isDirectAppCard = (node: Element): boolean =>
+		(node.classList.contains("app-card") && node.hasAttribute("data-app-name")) ||
+		node.hasAttribute("data-preview-app");
+	const collectDecoratableRoots = (records: readonly MutationRecord[]): boolean => {
+		let found = false;
 		for (const record of records) {
 			for (const node of record.addedNodes) {
 				if (!(node instanceof Element)) continue;
-				if (node.matches(APP_CARD_SELECTOR) || node.querySelector(APP_CARD_SELECTOR) !== null) return true;
+				if (isDirectAppCard(node)) {
+					pendingCardRoots.add(node);
+					found = true;
+					continue;
+				}
+				// WHY: Skip leaf streaming nodes in O(1) instead of running DOM selector scans across the tree.
+				if (node.childElementCount === 0) continue;
+				if (node.querySelector(APP_CARD_SELECTOR) !== null) {
+					pendingCardRoots.add(node);
+					found = true;
+				}
 			}
 		}
-		return false;
+		return found;
 	};
-	const decorateAppCards = () => {
-		const apps = company?.store.get().apps;
-		if (!company || !apps) return;
+	const decorateCardElement = (
+		card: HTMLElement,
+		activeCompany: CompanyController,
+		byName: Map<string, CompanyApp>,
+	): void => {
+		const app = card.dataset.appName ? byName.get(card.dataset.appName) : undefined;
+		const look = app && appLook(activeCompany, app);
+		if (!app?.manifest || !look) return;
+		const about = app.manifest.about ?? "";
+		const shown = JSON.stringify([look.key, about, app.manifest.name]);
+		if (card.dataset.shown === shown) return;
+		card.dataset.shown = shown;
+		card.querySelector(".app-card-emblem")?.replaceChildren(look.emblem());
+		if (look.colour) card.style.setProperty("--app-colour", look.colour);
+		else card.style.removeProperty("--app-colour");
+		if (card.classList.contains("is-note")) {
+			const title = card.querySelector<HTMLElement>(".app-card-title");
+			if (title) title.textContent = app.manifest.name;
+			return;
+		}
+		const note = card.querySelector<HTMLElement>(".app-card-note");
+		if (!note) return;
+		note.textContent = about || t("App");
+		if (about) note.title = about;
+		else note.removeAttribute("title");
+	};
+	const decorateAppCards = (roots?: readonly Element[]) => {
+		const activeCompany = company;
+		const apps = activeCompany?.store.get().apps;
+		if (!activeCompany || !apps?.length) return;
+		const targets = roots ?? (observedCardTarget ? [observedCardTarget] : []);
+		if (!targets.length) return;
 		const byName = appsByName(apps);
-		refreshAppPreviews(main, (name) => cardAppOf(apps, name), cardImages.get(company));
-		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
-			const app = card.dataset.appName ? byName.get(card.dataset.appName) : undefined;
-			const look = app && appLook(company, app);
-			if (!app?.manifest || !look) continue;
-			const about = app.manifest.about ?? "";
-			const shown = JSON.stringify([look.key, about, app.manifest.name]);
-			if (card.dataset.shown === shown) continue;
-			card.dataset.shown = shown;
-			card.querySelector(".app-card-emblem")?.replaceChildren(look.emblem());
-			if (look.colour) card.style.setProperty("--app-colour", look.colour);
-			else card.style.removeProperty("--app-colour");
-			if (card.classList.contains("is-note")) {
-				const title = card.querySelector<HTMLElement>(".app-card-title");
-				if (title) title.textContent = app.manifest.name;
+		const reader = cardImages.get(activeCompany);
+		for (const target of targets) {
+			if (!target.isConnected) continue;
+			refreshAppPreviews(target, (name) => cardAppOf(apps, name), reader);
+			if (target instanceof HTMLElement && target.classList.contains("app-card") && target.dataset.appName) {
+				decorateCardElement(target, activeCompany, byName);
 				continue;
 			}
-			const note = card.querySelector<HTMLElement>(".app-card-note");
-			if (!note) continue;
-			note.textContent = about || t("App");
-			if (about) note.title = about;
-			else note.removeAttribute("title");
+			for (const card of target.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
+				decorateCardElement(card, activeCompany, byName);
+			}
 		}
 	};
 	let decorating = false;
+	// WHY: Observe only the active chat/app/concepts container when legacy apps exist so Surface/Files/streaming pay zero observer cost.
 	const appCardObserver = new MutationObserver((records) => {
-		if (decorating || !company || !company.store.get().apps?.length || !hasDecoratableCard(records)) return;
+		if (decorating || !company || !company.store.get().apps?.length || !collectDecoratableRoots(records)) return;
 		decorating = true;
 		queueMicrotask(() => {
 			try {
-				if (!disposed) decorateAppCards();
+				const roots = [...pendingCardRoots];
+				pendingCardRoots.clear();
+				if (!disposed && roots.length) decorateAppCards(roots);
 			} finally {
 				appCardObserver.takeRecords();
 				decorating = false;
 			}
 		});
 	});
-	appCardObserver.observe(main, { childList: true, subtree: true });
+	const activeCardTarget = (): Element | undefined => {
+		const route = currentRoute();
+		if (route.name !== "company") return undefined;
+		if (route.section === "chat" && conversation?.el.isConnected) return conversation.el;
+		if (route.section === "app" && appPage?.el.isConnected) return appPage.el;
+		if (route.section === "concepts" && conceptsView?.el.isConnected) return conceptsView.el;
+		return undefined;
+	};
+	const syncAppCardObserver = (target: Element | undefined = activeCardTarget()): void => {
+		const nextTarget =
+			!disposed && company && !company.store.get().accessLost && (company.store.get().apps?.length ?? 0) > 0
+				? target
+				: undefined;
+		if (nextTarget === observedCardTarget) return;
+		appCardObserver.disconnect();
+		pendingCardRoots.clear();
+		observedCardTarget = nextTarget;
+		if (nextTarget) appCardObserver.observe(nextTarget, { childList: true, subtree: true });
+	};
 	let routeRevision = 0;
 	let accountRevision = 0;
 	holdWebsiteIdea();
@@ -718,6 +808,11 @@ export function mountApplication(
 	window.addEventListener("keydown", onEscape);
 	window.addEventListener("resize", syncNavigation);
 
+	const WARM_COMPANIES_MAX = 3;
+	const WARM_SURFACES_MAX = 3;
+	const warmCompanies = new Map<string, CompanyController>();
+	const warmSurfaces = new Map<string, SurfaceView>();
+	let companyActiveAbort: AbortController | undefined;
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
 	/** Which of the open company's two pages are on (Interfaces C6a), read with its folder. */
@@ -773,6 +868,35 @@ export function mountApplication(
 		pendingSurfaceDisposals.add(finish);
 		cancel = deferOffFrame(finish);
 	};
+	const disposeWarmSurfaces = (): void => {
+		for (const view of warmSurfaces.values()) view.dispose();
+		warmSurfaces.clear();
+	};
+	const stopWarmCompany = (profileId: string): void => {
+		const cached = warmCompanies.get(profileId);
+		if (!cached) return;
+		warmCompanies.delete(profileId);
+		cached.stop();
+	};
+	const clearWarmCompanies = (): void => {
+		for (const cached of warmCompanies.values()) cached.stop();
+		warmCompanies.clear();
+	};
+	const warmCompanyFor = (profileId: string): CompanyController | undefined => {
+		const cached = warmCompanies.get(profileId);
+		if (!cached) return undefined;
+		if (
+			disposed ||
+			cached.userId !== auth.userId ||
+			cached.signal.aborted ||
+			cached.store.get().accessLost ||
+			!profiles.some((item) => item.profileId === profileId)
+		) {
+			stopWarmCompany(profileId);
+			return undefined;
+		}
+		return cached;
+	};
 	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
@@ -784,6 +908,22 @@ export function mountApplication(
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
+	// WHY: Scope folder listing SWR caches per company and authority so role changes never reuse stale listings.
+	const folderListingCaches = new WeakMap<
+		CompanyController,
+		{ authority: string; cache: Map<string, CachedFolderListing> }
+	>();
+	const folderListingCacheFor = (
+		controller: CompanyController,
+		authority: string,
+	): Map<string, CachedFolderListing> => {
+		const existing = folderListingCaches.get(controller);
+		if (existing && existing.authority === authority) return existing.cache;
+		existing?.cache.clear();
+		const created = new Map<string, CachedFolderListing>();
+		folderListingCaches.set(controller, { authority, cache: created });
+		return created;
+	};
 	/** Each company's What's new reads and writes, as the apps drawer, What's new's page and the threads' "a change is
 	 * ready" cards make them: numbered as they start, one shared read out at a time for the drawer and the threads, never
 	 * across a write from any of them, and the latest-started answer as the company's last read (app/release-reads.ts). */
@@ -835,7 +975,14 @@ export function mountApplication(
 		const currentHub = hub;
 		hub.store.subscribe(() => {
 			if (hub !== currentHub) return;
-			profiles = currentHub.store.get().profiles;
+			const hubState = currentHub.store.get();
+			profiles = hubState.profiles;
+			if (hubState.loaded) {
+				const valid = new Set(profiles.map((item) => item.profileId));
+				for (const profileId of [...warmCompanies.keys()]) {
+					if (!valid.has(profileId)) stopWarmCompany(profileId);
+				}
+			}
 			settings?.updateProfiles(profiles);
 			render();
 		});
@@ -863,7 +1010,7 @@ export function mountApplication(
 			wordmarks.setAccount(userId, switchingAccount);
 			accountRevision++;
 			routeRevision++;
-			teardownCompany();
+			teardownCompany(true);
 			teardownFounding();
 			hub.dispose();
 			profiles = [];
@@ -994,6 +1141,7 @@ export function mountApplication(
 		newProgramPage = undefined;
 		surfaceView?.view.dispose();
 		surfaceView = undefined;
+		disposeWarmSurfaces();
 		flushPendingSurfaceDisposals();
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
@@ -1030,6 +1178,7 @@ export function mountApplication(
 		newProgramPage = undefined;
 		surfaceView?.view.dispose();
 		surfaceView = undefined;
+		disposeWarmSurfaces();
 		flushPendingSurfaceDisposals();
 		conceptsView?.dispose();
 		conceptsView = undefined;
@@ -1047,14 +1196,17 @@ export function mountApplication(
 		computerPanels = undefined;
 	}
 
-	function teardownCompany(): void {
+	function detachCompany(park: boolean): void {
+		const active = company;
+		syncAppCardObserver(undefined);
 		settingsAfterHome = undefined;
-		clearShellCompanyState(company);
+		clearShellCompanyState(active);
 		disposeCompanyViews();
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		unsubscribeCompany = undefined;
-		company?.stop();
+		companyActiveAbort?.abort();
+		companyActiveAbort = undefined;
 		pendingCompany = undefined;
 		company = undefined;
 		sitesRead = undefined;
@@ -1064,6 +1216,38 @@ export function mountApplication(
 		agentPage = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
+		if (!active) return;
+		const state = active.store.get();
+		const cacheable =
+			park &&
+			!disposed &&
+			!active.signal.aborted &&
+			!state.accessLost &&
+			!state.loading &&
+			active.userId === auth.userId &&
+			profiles.some((item) => item.profileId === active.profile.profileId);
+		if (cacheable) {
+			active.suspend();
+			surfacesOf(active)?.suspend();
+			warmCompanies.delete(active.profile.profileId);
+			warmCompanies.set(active.profile.profileId, active);
+			while (warmCompanies.size > WARM_COMPANIES_MAX) {
+				const oldestKey = warmCompanies.keys().next().value;
+				if (!oldestKey) break;
+				stopWarmCompany(oldestKey);
+			}
+			return;
+		}
+		active.stop();
+	}
+
+	function parkCompany(): void {
+		detachCompany(true);
+	}
+
+	function teardownCompany(clearWarm = false): void {
+		detachCompany(false);
+		if (clearWarm) clearWarmCompanies();
 	}
 
 	function companyRemovedHandler(): (profileId: string) => void {
@@ -1071,6 +1255,7 @@ export function mountApplication(
 		return (profileId) => {
 			if (disposed || hub !== currentHub) return;
 			wordmarks.forget(profileId);
+			stopWarmCompany(profileId);
 			void currentHub.companyRemoved(profileId);
 			const route = currentRoute();
 			if (route.name === "company" && route.profileId === profileId) {
@@ -1081,13 +1266,81 @@ export function mountApplication(
 		};
 	}
 
+	function createComputerPanels(
+		controller: CompanyController,
+		profile: HostedProfile,
+		userId: string,
+	): ComputerPanelsLike {
+		return new LazyComputerPanels(
+			(WebComputer) =>
+				new WebComputer(cloud, profile, userId, controller.signal, () => {
+					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+						throw new Error(t("Company access is unavailable."));
+				}),
+			controller.signal,
+			{
+				hints: (listener) => controller.onInvalidate(listener),
+				// The machine's clock and backdrop follow the company's time zone (20260930739000).
+				timeZone: () => controller.store.get().team?.timeZone,
+				// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
+				// folder when the page is its index.html (the helper serves the folder), else the page itself.
+				apps: () =>
+					controller.store
+						.get()
+						.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
+						.map((app) => ({
+							name: app.manifest?.name ?? app.name,
+							path:
+								app.manifest === null || app.manifest.entry === "index.html"
+									? app.path
+									: `${app.path}/${app.manifest.entry}`,
+						})),
+				// Open's "A file…": the company folder's own browser in choose mode, read as the member.
+				chooseFile: (signal) => {
+					const role = controller.store.get().team?.role;
+					if (!role) return Promise.resolve(null);
+					return lazyOpsModule.load().then(({ companyFolderChoose: { chooseInCompanyFolder } }) =>
+						chooseInCompanyFolder(
+							new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
+								if (
+									disposed ||
+									company !== controller ||
+									auth.userId !== userId ||
+									controller.store.get().accessLost
+								)
+									throw new Error(t("Company access changed."));
+							}),
+							signal,
+						),
+					);
+				},
+			},
+		);
+	}
+
 	async function ensureCompany(profileId: string): Promise<CompanyController | undefined> {
 		if (company?.profile.profileId === profileId) return company;
+		const warm = warmCompanyFor(profileId);
+		if (warm) {
+			parkCompany();
+			warmCompanies.delete(profileId);
+			const latest = profiles.find((item) => item.profileId === profileId);
+			if (latest && JSON.stringify(latest) !== JSON.stringify(warm.profile)) {
+				warm.store.set({ profile: latest });
+			}
+			company = warm;
+			companyActiveAbort = new AbortController();
+			computerPanels = createComputerPanels(warm, warm.profile, warm.userId);
+			unsubscribeCompany = warm.store.subscribe(() => render());
+			warm.resume();
+			surfacesOf(warm)?.resume();
+			return warm;
+		}
 		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision) {
 			if (!profiles.some((item) => item.profileId === profileId)) return pendingCompany.promise;
 			pendingCompany = undefined;
 		}
-		teardownCompany();
+		parkCompany();
 		const current = captureRoute();
 		const currentHub = hub;
 		if (!profiles.find((item) => item.profileId === profileId) && currentHub.store.get().connectionLost)
@@ -1149,6 +1402,7 @@ export function mountApplication(
 					online,
 				);
 				company = controller;
+				companyActiveAbort = new AbortController();
 				const localDev =
 					typeof location !== "undefined" &&
 					(location.hostname === "127.0.0.1" || location.hostname === "localhost");
@@ -1320,10 +1574,19 @@ export function mountApplication(
 					},
 				});
 				attachSurfaces(controller, surfaces);
-				surfaces.store.subscribe(() => render());
-				controller.store.subscribe(() => surfaces.resynthesize());
+				// WHY: Guard store listeners against parked warm companies so background updates never render an inactive company.
+				surfaces.store.subscribe(() => {
+					if (company === controller) render();
+				});
+				controller.store.subscribe(() => {
+					if (company === controller) surfaces.resynthesize();
+				});
 				const stopSurfaceHints = controller.onInvalidate((resource) => {
 					if (resource === "surfaces" || resource === "company-file") surfaces.onRealtimeHint(resource);
+					if (resource === "company-file") {
+						folderListingCaches.get(controller)?.cache.clear();
+						invalidateShellSearchFiles(profile.profileId);
+					}
 				});
 				controller.signal.addEventListener("abort", stopSurfaceHints, { once: true });
 				void surfaces.load();
@@ -1399,15 +1662,15 @@ export function mountApplication(
 								if (auth.userId !== userId) throw new Error("The account changed.");
 							},
 						);
-						const loadedSecondary = secondaryViewsModule.get();
-						if (loadedSecondary) {
-							loadedSecondary.settingsConnections.finishPlanSignIn(
-								loadedSecondary.settingsConnections.memberPlanSignIn(userId, profile.profileId),
+						const loadedSettings = lazySettingsModule.get();
+						if (loadedSettings) {
+							loadedSettings.settingsConnections.finishPlanSignIn(
+								loadedSettings.settingsConnections.memberPlanSignIn(userId, profile.profileId),
 								plan,
 								outcome,
 							);
 						} else {
-							void secondaryViewsModule
+							void lazySettingsModule
 								.load()
 								.then(({ settingsConnections: { finishPlanSignIn, memberPlanSignIn } }) =>
 									finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome),
@@ -1425,61 +1688,12 @@ export function mountApplication(
 				// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
 				if (connectorReturn?.connector === "bank") {
 					const bankReturn = connectorReturn;
-					const loadedSecondary = secondaryViewsModule.get();
-					if (loadedSecondary) loadedSecondary.bank.noteBankReturn(bankReturn);
-					else void secondaryViewsModule.load().then(({ bank: { noteBankReturn } }) => noteBankReturn(bankReturn));
+					const loadedOps = lazyOpsModule.get();
+					if (loadedOps) loadedOps.bank.noteBankReturn(bankReturn);
+					else void lazyOpsModule.load().then(({ bank: { noteBankReturn } }) => noteBankReturn(bankReturn));
 				}
 				connectorReturn = undefined;
-				computerPanels = new LazyComputerPanels(
-					(WebComputer) =>
-						new WebComputer(cloud, profile, userId, controller.signal, () => {
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== userId ||
-								controller.store.get().accessLost
-							)
-								throw new Error(t("Company access is unavailable."));
-						}),
-					controller.signal,
-					{
-						hints: (listener) => controller.onInvalidate(listener),
-						// The machine's clock and backdrop follow the company's time zone (20260930739000).
-						timeZone: () => controller.store.get().team?.timeZone,
-						// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
-						// folder when the page is its index.html (the helper serves the folder), else the page itself.
-						apps: () =>
-							controller.store
-								.get()
-								.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
-								.map((app) => ({
-									name: app.manifest?.name ?? app.name,
-									path:
-										app.manifest === null || app.manifest.entry === "index.html"
-											? app.path
-											: `${app.path}/${app.manifest.entry}`,
-								})),
-						// Open's "A file…": the company folder's own browser in choose mode, read as the member.
-						chooseFile: (signal) => {
-							const role = controller.store.get().team?.role;
-							if (!role) return Promise.resolve(null);
-							return secondaryViewsModule.load().then(({ companyFolderChoose: { chooseInCompanyFolder } }) =>
-								chooseInCompanyFolder(
-									new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
-										if (
-											disposed ||
-											company !== controller ||
-											auth.userId !== userId ||
-											controller.store.get().accessLost
-										)
-											throw new Error(t("Company access changed."));
-									}),
-									signal,
-								),
-							);
-						},
-					},
-				);
+				computerPanels = createComputerPanels(controller, profile, userId);
 				unsubscribeCompany = controller.store.subscribe(() => render());
 				void controller.start();
 				return controller;
@@ -1572,7 +1786,7 @@ export function mountApplication(
 			return;
 		}
 		if (!authState.session || (authState.step.name === "reset" && authState.step.verified)) {
-			teardownCompany();
+			teardownCompany(true);
 			let container = root!.querySelector<HTMLElement>(':scope > .auth:not([data-step="name"])');
 			if (!container) {
 				container = h("div", { class: "brand-field" });
@@ -1582,7 +1796,7 @@ export function mountApplication(
 			return;
 		}
 		if (!accountName(authState.user)) {
-			teardownCompany();
+			teardownCompany(true);
 			if (root!.querySelector(':scope > .auth[data-step="name"]')) return;
 			const container = h("div", { class: "brand-field" });
 			replace(root!, container);
@@ -1590,7 +1804,7 @@ export function mountApplication(
 			return;
 		}
 		if (needsPassword(authState.user)) {
-			teardownCompany();
+			teardownCompany(true);
 			if (root!.querySelector(':scope > .auth[data-step="password"]')) return;
 			const container = h("div", { class: "brand-field" });
 			replace(root!, container);
@@ -1613,7 +1827,7 @@ export function mountApplication(
 		// The Concepts viewer is full screen: no rail and no top bar, its own side panel instead.
 		frame.classList.toggle("has-concepts", route.name === "company" && route.section === "concepts");
 		if (route.name !== "company") {
-			teardownCompany();
+			parkCompany();
 			rail.hidden = true;
 			syncRailReopen();
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
@@ -1707,7 +1921,7 @@ export function mountApplication(
 			return;
 		}
 		teardownFounding();
-		if (company?.profile.profileId !== route.profileId) {
+		if (company?.profile.profileId !== route.profileId && !warmCompanyFor(route.profileId)) {
 			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
 			// as placeholders, never a blank frame or the page it came from.
 			topbar.classList.remove("topbar-plain");
@@ -2221,6 +2435,7 @@ export function mountApplication(
 			});
 		// The drawer may draw an app otherwise now (the member's icon or colour for it, its group's colour): its cards
 		// in the messages follow.
+		syncAppCardObserver();
 		decorateAppCards();
 		if (navigationFocus) {
 			const target =
@@ -2233,6 +2448,7 @@ export function mountApplication(
 		}
 		const state = controller.store.get();
 		if (state.accessLost) {
+			syncAppCardObserver(undefined);
 			disposeCompanyViews();
 			closeSettings(false);
 			navigationOpen = false;
@@ -2400,6 +2616,7 @@ export function mountApplication(
 				(next) => {
 					if (companyApps !== apps) return;
 					controller.store.set({ apps: next });
+					syncAppCardObserver();
 					decorateAppCards();
 					// The apps changed: the icons read for some of them may have too (an agent drew new ones).
 					controller.refreshAppIcons();
@@ -2453,21 +2670,24 @@ export function mountApplication(
 		agentNotes?.agentsChanged();
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
+			const activeSignal = companyActiveAbort
+				? AbortSignal.any([controller.signal, companyActiveAbort.signal])
+				: controller.signal;
 			const sites = createWebSites(cloud, controller.profile);
 			let sitesInFlight = false;
 			let sitesPending = false;
 			const readSites = () => {
-				if (controller.signal.aborted) return;
+				if (activeSignal.aborted || company !== controller) return;
 				if (sitesInFlight) {
 					sitesPending = true;
 					return;
 				}
 				sitesInFlight = true;
 				void sites
-					.list(controller.signal)
+					.list(activeSignal)
 					.then(
 						async (list) => {
-							if (controller.signal.aborted) return;
+							if (activeSignal.aborted) return;
 							const prevList = controller.store.get().siteList;
 							if (prevList === undefined || JSON.stringify(prevList) !== JSON.stringify(list))
 								controller.store.set(sitesListed(list));
@@ -2475,8 +2695,8 @@ export function mountApplication(
 							// WHY: ask for taken-down sites only while a live files site exists; keep the last set on failure.
 							if (list.some((site) => site.kind === "files" && site.state === "live")) {
 								try {
-									const access = await sites.access(controller.signal);
-									if (controller.signal.aborted) return;
+									const access = await sites.access(activeSignal);
+									if (activeSignal.aborted) return;
 									const nextTaken = new Set(access.takenDown.keys());
 									const prevTaken = controller.store.get().sitesTakenDown;
 									if (
@@ -2489,15 +2709,15 @@ export function mountApplication(
 								const notePublic = startPublicRead(controller.store);
 								let hosting: CompanySiteHostingState | undefined;
 								try {
-									hosting = await createWebSiteHosting(cloud, controller.profile).read(controller.signal);
+									hosting = await createWebSiteHosting(cloud, controller.profile).read(activeSignal);
 								} catch {
 									hosting = undefined;
 								}
-								if (!controller.signal.aborted) notePublic(hosting);
+								if (!activeSignal.aborted) notePublic(hosting);
 							}
 						},
 						() => {
-							if (controller.signal.aborted) return;
+							if (activeSignal.aborted) return;
 							controller.store.set({
 								siteListUnread: true,
 								...(controller.store.get().siteList === undefined ? { siteList: [] } : {}),
@@ -2506,14 +2726,14 @@ export function mountApplication(
 					)
 					.finally(() => {
 						sitesInFlight = false;
-						if (sitesPending && !controller.signal.aborted) {
+						if (sitesPending && !activeSignal.aborted && company === controller) {
 							sitesPending = false;
 							readSites();
 						}
 					});
 			};
 			readSites();
-			window.addEventListener("focus", readSites, { signal: controller.signal });
+			window.addEventListener("focus", readSites, { signal: activeSignal });
 			sitesOncePublished = readSitesOncePublished(readSites);
 		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)
 			// A member the company's sites are never read for: a site's own page says it can't be shown, not waits.
@@ -2524,28 +2744,27 @@ export function mountApplication(
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
 			releasesRead = controller;
+			const activeSignal = companyActiveAbort
+				? AbortSignal.any([controller.signal, companyActiveAbort.signal])
+				: controller.signal;
 			const releases = companyReleases(controller).shared;
 			let releasesInFlight = false;
 			let releasesPending = false;
 			const readReleases = () => {
-				if (controller.signal.aborted) return;
+				if (activeSignal.aborted || company !== controller) return;
 				if (releasesInFlight) {
 					releasesPending = true;
 					return;
 				}
 				releasesInFlight = true;
 				void releases
-					.list(controller.signal)
+					.list(activeSignal)
 					.then(
 						(read) => {
-							if (!controller.signal.aborted) showReleases(controller, read);
+							if (!activeSignal.aborted) showReleases(controller, read);
 						},
 						(error: unknown) => {
-							if (
-								!controller.signal.aborted &&
-								error instanceof CloudRpcError &&
-								(error.missing || error.denied)
-							) {
+							if (!activeSignal.aborted && error instanceof CloudRpcError && (error.missing || error.denied)) {
 								if (controller.store.get().whatsNew !== undefined)
 									controller.store.set({ whatsNew: undefined });
 							}
@@ -2553,14 +2772,14 @@ export function mountApplication(
 					)
 					.finally(() => {
 						releasesInFlight = false;
-						if (releasesPending && !controller.signal.aborted) {
+						if (releasesPending && !activeSignal.aborted && company === controller) {
 							releasesPending = false;
 							readReleases();
 						}
 					});
 			};
 			readReleases();
-			window.addEventListener("focus", readReleases, { signal: controller.signal });
+			window.addEventListener("focus", readReleases, { signal: activeSignal });
 		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
 		if (mail && !state.team?.capabilities.read) {
@@ -2660,7 +2879,24 @@ export function mountApplication(
 			newProgramPage = undefined;
 		}
 		if (route.section !== "surface" || surfaceView?.company !== controller || surfaceView.view.slug !== route.id) {
-			if (surfaceView) deferSurfaceDisposal(surfaceView.view);
+			if (surfaceView) {
+				if (surfaceView.company === controller && !state.accessLost && !disposed) {
+					// WHY: Keep recently visited surfaces warm so switching back paints instantly without skeleton flash.
+					surfaceView.view.park();
+					const key = `${controller.profile.profileId}:${surfaceView.view.slug}`;
+					warmSurfaces.delete(key);
+					warmSurfaces.set(key, surfaceView.view);
+					while (warmSurfaces.size > WARM_SURFACES_MAX) {
+						const oldestKey = warmSurfaces.keys().next().value;
+						if (!oldestKey) break;
+						const evicted = warmSurfaces.get(oldestKey);
+						warmSurfaces.delete(oldestKey);
+						if (evicted) deferSurfaceDisposal(evicted);
+					}
+				} else {
+					deferSurfaceDisposal(surfaceView.view);
+				}
+			}
 			surfaceView = undefined;
 		}
 		if (route.section !== "new") {
@@ -2812,7 +3048,13 @@ export function mountApplication(
 					team && !controller.store.get().accessLost
 						? JSON.stringify([team.role, team.capabilities.read, team.capabilities.write])
 						: "";
-				if (shown?.authority === authority) return;
+				if (shown?.authority === authority) {
+					if (filesPending?.owner === controller) {
+						shown.browser.reveal(filesPending.path);
+						filesPending = undefined;
+					}
+					return;
+				}
 				if (shown) {
 					if (filesShown?.browser === shown.browser) filesShown = undefined;
 					shown.stop.abort();
@@ -2845,7 +3087,10 @@ export function mountApplication(
 						members: controller.store.get().team?.members ?? [],
 						staff: controller.store.get().staff,
 					}),
-					{ usage: () => api.getCompanyFile(controller.profile.environmentId) },
+					{
+						usage: () => api.getCompanyFile(controller.profile.environmentId),
+						listingCache: folderListingCacheFor(controller, authority),
+					},
 				);
 				shown = { browser, stop, authority };
 				filesShown = { owner: controller, browser };
@@ -3146,9 +3391,14 @@ export function mountApplication(
 						() => setNavigationOpen(!navigationOpen),
 					);
 					replace(main, conversation.el);
+					syncAppCardObserver(conversation.el);
+					decorateAppCards([conversation.el]);
 					// Not while Settings covers the frame (a redraw behind it after a language change).
 					if (!frame.inert) conversation.focus();
-				} else conversation.update();
+				} else {
+					conversation.update();
+					syncAppCardObserver(conversation.el);
+				}
 				conversation.setNavigationOpen(navigationOpen);
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
 				if (
@@ -3238,6 +3488,8 @@ export function mountApplication(
 					},
 				);
 				replace(main, appPage.el);
+				syncAppCardObserver(appPage.el);
+				decorateAppCards([appPage.el]);
 				if (!frame.inert) appPage.focus();
 				return;
 			}
@@ -3298,6 +3550,8 @@ export function mountApplication(
 					route.id,
 				);
 				replace(main, conceptsView.el);
+				syncAppCardObserver(conceptsView.el);
+				decorateAppCards([conceptsView.el]);
 				if (!frame.inert) conceptsView.focus();
 				return;
 			}
@@ -3401,6 +3655,16 @@ export function mountApplication(
 					return;
 				}
 				if (!surfaceView) {
+					const slug = route.id ?? "";
+					const warmKey = `${controller.profile.profileId}:${slug}`;
+					const cachedView = warmSurfaces.get(warmKey);
+					if (cachedView) {
+						warmSurfaces.delete(warmKey);
+						cachedView.activate();
+						surfaceView = { company: controller, view: cachedView };
+					}
+				}
+				if (!surfaceView) {
 					const loadedSurface = surfaceViewModule.get();
 					if (!loadedSurface) {
 						if (!main.querySelector(":scope > .page > .skeleton-page"))
@@ -3465,7 +3729,7 @@ export function mountApplication(
 								return false;
 							},
 							openMigration: () => {
-								void secondaryViewsModule
+								void lazyQuickModule
 									.load()
 									.then(({ surfaceMigrationSheet: { openMigrationSheet } }) => openMigrationSheet(surfaces));
 							},
@@ -3618,7 +3882,7 @@ export function mountApplication(
 		auth.dispose();
 		hub.dispose();
 		teardownFounding();
-		teardownCompany();
+		teardownCompany(true);
 		clearShellCompanyState();
 		accountPayments?.dispose();
 		pictures.reset();

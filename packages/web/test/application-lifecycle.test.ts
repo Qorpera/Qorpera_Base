@@ -2473,4 +2473,46 @@ describe("cold-boot waterfall optimizations", () => {
 		await draw();
 		expect(root.querySelector(".frame")).not.toBeNull();
 	});
+
+	it("keeps recently visited companies warm across A -> B -> A switches, suspends parked Realtime, and disposes on sign-out", async () => {
+		const startSpy = vi.spyOn(CompanyController.prototype, "start");
+		const suspendSpy = vi.spyOn(CompanyController.prototype, "suspend");
+		const resumeSpy = vi.spyOn(CompanyController.prototype, "resume");
+		const stopSpy = vi.spyOn(CompanyController.prototype, "stop");
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		await draw();
+		await draw();
+		expect(startSpy).toHaveBeenCalledTimes(1);
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileA.profileName);
+
+		location.hash = `#/c/${profileB.profileId}/team`;
+		await draw();
+		await draw();
+		expect(suspendSpy).toHaveBeenCalledTimes(1);
+		expect(startSpy).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileB.profileName);
+
+		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+		await draw();
+		expect(f.root.querySelector(".thread-skeleton")).toBeNull();
+		expect(resumeSpy).toHaveBeenCalledTimes(1);
+		expect(startSpy).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileA.profileName);
+
+		const stopsBeforeSignOut = stopSpy.mock.calls.length;
+		f.auth(null);
+		await draw();
+		expect(stopSpy.mock.calls.length - stopsBeforeSignOut).toBeGreaterThanOrEqual(2);
+	});
+
+	it("keeps the app-card MutationObserver disconnected when a company has no legacy apps", async () => {
+		const observeSpy = vi.spyOn(MutationObserver.prototype, "observe");
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const mainEl = f.root.querySelector<HTMLElement>("main")!;
+		const mainObserved = observeSpy.mock.calls.some(([target]) => target === mainEl);
+		expect(mainObserved).toBe(false);
+	});
 });

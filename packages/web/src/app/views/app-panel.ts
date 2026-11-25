@@ -623,7 +623,7 @@ export class AppPanel {
 		if (this.#program?.busy) return;
 		const {
 			programPage: { ProgramPage, readProgram },
-		} = await import("./lazy-secondary.ts");
+		} = await import("./lazy-ops.ts");
 		if (signal.aborted) return;
 		const read = await readProgram(this.#host.folder(), app.path, signal);
 		if (signal.aborted) return;

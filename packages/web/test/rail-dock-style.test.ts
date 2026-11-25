@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import appCss from "../src/styles/app.css?raw";
-import surfacesCss from "../src/styles/surfaces.css?raw";
+import surfaceRailCss from "../src/styles/surface-rail.css?raw";
 import { h } from "../src/ui/dom.ts";
 
 afterEach(() => {
@@ -56,7 +56,8 @@ describe("the rail's Agents and Members dock", () => {
 
 describe("the Agents and Members folds", () => {
 	const declarations = (selector: string) =>
-		new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`, "m").exec(surfacesCss)?.[1] ?? "";
+		new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`, "m").exec(surfaceRailCss)?.[1] ??
+		"";
 	const px = (selector: string, property: string) =>
 		Number(new RegExp(`${property}: (\\d+)px`).exec(declarations(selector))?.[1]);
 

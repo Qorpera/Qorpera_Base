@@ -1555,6 +1555,7 @@ export class SurfacesStore {
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
 	#folderHintTimer: ReturnType<typeof setTimeout> | undefined;
 	#retryLoadTimer: ReturnType<typeof setTimeout> | undefined;
+	#suspended = false;
 	#pendingHintFiles = false;
 	#undoSeq = 0;
 	#noteSeq = 0;
@@ -1823,6 +1824,48 @@ export class SurfacesStore {
 
 	isSurfaceUpdating(surfaceId: string): boolean {
 		return this.surfaceUpdatePhase(surfaceId) !== null;
+	}
+
+	// WHY: Parked company controllers hibernate surface timers without discarding warm workspace state.
+	suspend(): void {
+		if (this.#options.signal.aborted || this.#suspended) return;
+		this.#suspended = true;
+		this.#activeSurfaceId = undefined;
+		if (this.#pollTimer) clearInterval(this.#pollTimer);
+		if (this.#hintTimer) clearTimeout(this.#hintTimer);
+		if (this.#folderHintTimer) clearTimeout(this.#folderHintTimer);
+		if (this.#retryLoadTimer) clearTimeout(this.#retryLoadTimer);
+		this.#pollTimer = undefined;
+		this.#pollIntervalMs = 0;
+		this.#hintTimer = undefined;
+		this.#folderHintTimer = undefined;
+		this.#retryLoadTimer = undefined;
+		for (const timer of this.#previewSyncRetryTimers.values()) clearTimeout(timer);
+		this.#previewSyncRetryTimers.clear();
+		for (const timer of this.#previewSyncDebounceTimers.values()) clearTimeout(timer);
+		this.#previewSyncDebounceTimers.clear();
+		for (const waiters of this.#previewSyncDebounceWaiters.values()) {
+			for (const resolve of waiters) resolve();
+		}
+		this.#previewSyncDebounceWaiters.clear();
+	}
+
+	resume(): void {
+		if (this.#options.signal.aborted || !this.#suspended) return;
+		this.#suspended = false;
+		if (this.state.source === "loading" && !this.#loaded) {
+			void this.load();
+			return;
+		}
+		this.#syncPolling();
+		if (this.state.source === "cloud") {
+			void this.refreshSurfaces();
+			const client = this.#options.client;
+			if (client) {
+				void this.#loadAutomations(client);
+				void this.#loadUnseenNotes(client);
+			}
+		}
 	}
 
 	dispose(): void {
@@ -3109,11 +3152,11 @@ export class SurfacesStore {
 	}
 
 	onFolderHint(): void {
-		if (this.#options.signal.aborted || !this.#options.loadCloudFiles) return;
+		if (this.#options.signal.aborted || this.#suspended || !this.#options.loadCloudFiles) return;
 		if (this.#folderHintTimer) return;
 		this.#folderHintTimer = setTimeout(() => {
 			this.#folderHintTimer = undefined;
-			if (this.#options.signal.aborted || this.state.source !== "cloud") return;
+			if (this.#options.signal.aborted || this.#suspended || this.state.source !== "cloud") return;
 			const workspaces = Object.values(this.state.workspaces).filter(
 				(workspace) => !isLocalSurfaceId(workspace.surface.id),
 			);
@@ -3156,12 +3199,12 @@ export class SurfacesStore {
 	}
 
 	onRealtimeHint(resource: "surfaces" | "company-file"): void {
-		if (this.#options.signal.aborted) return;
+		if (this.#options.signal.aborted || this.#suspended) return;
 		if (resource === "company-file") this.#pendingHintFiles = true;
 		if (this.#hintTimer) return;
 		this.#hintTimer = setTimeout(() => {
 			this.#hintTimer = undefined;
-			if (this.#options.signal.aborted) return;
+			if (this.#options.signal.aborted || this.#suspended) return;
 			const reloadFiles = this.#pendingHintFiles;
 			this.#pendingHintFiles = false;
 			if (this.state.source === "loading" && !this.#loaded) {
@@ -3246,6 +3289,14 @@ export class SurfacesStore {
 	}
 
 	#syncPolling(): void {
+		if (this.#suspended) {
+			if (this.#pollTimer) {
+				clearInterval(this.#pollTimer);
+				this.#pollTimer = undefined;
+				this.#pollIntervalMs = 0;
+			}
+			return;
+		}
 		const workspaces = Object.values(this.state.workspaces);
 		const fast = workspaces.some(
 			(workspace) =>
