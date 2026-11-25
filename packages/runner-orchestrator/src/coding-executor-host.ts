@@ -1670,6 +1670,15 @@ export async function* maskCodingChannelExecLines(
 		lastReadChunk?: Record<string, unknown>;
 	}
 	const streams = new Map<string, TrackedStream>();
+	const maxSeqByProc = new Map<string, number>();
+	const noteProcSeq = (procId: string, seq: number): void => {
+		const prev = maxSeqByProc.get(procId);
+		if (prev === undefined && maxSeqByProc.size >= 1024) {
+			const oldest = maxSeqByProc.keys().next().value;
+			if (oldest !== undefined) maxSeqByProc.delete(oldest);
+		}
+		if (prev === undefined || seq > prev) maxSeqByProc.set(procId, seq);
+	};
 	const flushTracked = (entry: TrackedStream): string | undefined => {
 		const tail = entry.mask.end();
 		if (tail.byteLength === 0) return undefined;
@@ -1757,6 +1766,7 @@ export async function* maskCodingChannelExecLines(
 			const touchedKeys = new Set<string>();
 			const lastChunkIndexByStream = new Map<string, number>();
 			const chunks: unknown[] = [];
+			if (typeof maskedResult.nextSeq === "number") noteProcSeq(procId, maskedResult.nextSeq - 1);
 			for (const entry of parsed.result.chunks) {
 				if (isRecord(entry) && typeof entry.chunk === "string") {
 					const streamName = String(entry.stream ?? "stdout");
@@ -1765,6 +1775,7 @@ export async function* maskCodingChannelExecLines(
 					if (taken.evicted) yield taken.evicted;
 					touchedKeys.add(streamKey);
 					const maskedEntry = maskJsonStrings(entry, createMask) as Record<string, unknown>;
+					if (typeof maskedEntry.seq === "number") noteProcSeq(procId, maskedEntry.seq);
 					taken.entry.lastReadChunk = maskedEntry;
 					const maskedChunk = taken.mask.push(Buffer.from(entry.chunk, "base64"));
 					lastChunkIndexByStream.set(streamName, chunks.length);
@@ -1787,11 +1798,21 @@ export async function* maskCodingChannelExecLines(
 							chunks[lastIdx!] = { ...lastChunk, chunk: merged.toString("base64") };
 						} else {
 							const base = entry.lastReadChunk ? { ...entry.lastReadChunk } : {};
-							if (typeof base.seq === "number") base.seq += 1;
+							if (typeof base.seq === "number" || maxSeqByProc.has(procId)) {
+								const prevSeq = maxSeqByProc.get(procId) ?? (typeof base.seq === "number" ? base.seq : 0);
+								const nextSeq = prevSeq + 1;
+								noteProcSeq(procId, nextSeq);
+								base.seq = nextSeq;
+							}
 							chunks.push({ ...base, stream: entry.stream, chunk: Buffer.from(tail).toString("base64") });
 						}
 					}
 				}
+				const highestSeq = maxSeqByProc.get(procId);
+				if (typeof maskedResult.nextSeq === "number" && highestSeq !== undefined) {
+					maskedResult.nextSeq = Math.max(maskedResult.nextSeq, highestSeq + 1);
+				}
+				maxSeqByProc.delete(procId);
 			}
 			yield JSON.stringify({ ...maskedMessage, result: { ...maskedResult, chunks } });
 			continue;

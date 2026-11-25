@@ -333,6 +333,63 @@ describe("maskCodingChannelExecLines", () => {
 		expect(res2.chunks[0]).toMatchObject({ seq: 5, stream: "stdout", tag: "keep" });
 	});
 
+	it("assigns distinct process-wide seq numbers and advances nextSeq when flushing two streams on an empty closed read", async () => {
+		const secret = "top-secret-token-12345678";
+		const mask = new CodingSecretMask([secret]);
+		const readProcessById = new Map<string, string>([
+			["30", "p-two-stream"],
+			["31", "p-two-stream"],
+		]);
+		const rawLines = [
+			JSON.stringify({
+				id: 30,
+				result: {
+					chunks: [
+						{ seq: 4, stream: "stdout", chunk: Buffer.from("out top-sec").toString("base64") },
+						{ seq: 5, stream: "stderr", chunk: Buffer.from("err top-sec").toString("base64") },
+					],
+					nextSeq: 6,
+					closed: false,
+				},
+			}),
+			JSON.stringify({
+				id: 31,
+				result: {
+					chunks: [],
+					nextSeq: 6,
+					closed: true,
+				},
+			}),
+		];
+		const collected: Record<string, unknown>[] = [];
+		for await (const line of maskCodingChannelExecLines(
+			(async function* () {
+				for (const l of rawLines) yield l;
+			})(),
+			() => mask.stream(),
+			readProcessById,
+		)) {
+			collected.push(JSON.parse(line) as Record<string, unknown>);
+		}
+		const res1 = collected.find((m) => m.id === 30)?.result as {
+			chunks: { seq: number; stream: string; chunk: string }[];
+		};
+		const res2 = collected.find((m) => m.id === 31)?.result as {
+			chunks: { seq: number; stream: string; chunk: string }[];
+			nextSeq: number;
+		};
+		const byStream = (stream: string) =>
+			[...res1.chunks, ...res2.chunks]
+				.filter((c) => c.stream === stream)
+				.map((c) => Buffer.from(c.chunk, "base64").toString("utf8"))
+				.join("");
+		expect(byStream("stdout")).toBe("out top-sec");
+		expect(byStream("stderr")).toBe("err top-sec");
+		expect(res2.chunks).toHaveLength(2);
+		expect(res2.chunks.map((c) => c.seq)).toEqual([6, 7]);
+		expect(res2.nextSeq).toBe(8);
+	});
+
 	it("flushes oldest held-back stream bytes cleanly when more than 1024 streams are opened", async () => {
 		const secret = "top-secret-token-12345678";
 		const mask = new CodingSecretMask([secret]);
