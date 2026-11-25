@@ -731,6 +731,16 @@ $new$	if p_change_id is not null then
 		where id = v_existing.id
 		returning * into v_change;
 
+		if v_group_title is not null and v_existing.option_group_key is not null then
+			update public.qorpera_surface_changes
+			set option_group_title = v_group_title
+			where session_id = p_session_id
+				and profile_id = v_session.profile_id
+				and option_group_key = v_existing.option_group_key
+				and status in ('staged', 'conflicted')
+				and id <> v_existing.id;
+		end if;
+
 		v_conflicted_downstream_ids := '{}'::uuid[];
 		if v_existing.kind = 'git_range'
 			and v_existing.head_sha is not null

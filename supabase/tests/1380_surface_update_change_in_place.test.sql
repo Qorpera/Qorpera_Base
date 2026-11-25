@@ -828,7 +828,8 @@ begin
 	perform pg_temp.suci_assert(
 		v_opt_change.status = 'staged'
 		and v_opt_change.head_sha = repeat('4', 40)
-		and v_opt_change.option_group_title = 'Updated directions',
-		'updating conflicted option sibling succeeds without false predecessor block from its sibling'
+		and v_opt_change.option_group_title = 'Updated directions'
+		and (select option_group_title from public.qorpera_surface_changes where id = v_opt_o1) = 'Updated directions',
+		'updating conflicted option sibling succeeds without false predecessor block and syncs option_group_title across open group rows'
 	);
 end $$;
