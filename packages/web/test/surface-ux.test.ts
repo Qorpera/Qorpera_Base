@@ -418,6 +418,22 @@ describe("creating surfaces", () => {
 		expect(desk.folderRoot).toBe("surfaces/support-desk");
 		expect(store.lookOf(desk)).toEqual({ kind: "custom" });
 		expect(store.workspace(desk.id)?.briefSummary).toBe("Answers for customers.");
+
+		openCreateSurfaceSheet(store);
+		const strategySheet = document.querySelector(".surface-create-sheet")!;
+		strategySheet.querySelector<HTMLElement>('[data-preset="strategy"]')!.click();
+		const strategyName = strategySheet.querySelector<HTMLInputElement>(".surface-create-name")!;
+		strategyName.value = "EU Expansion";
+		strategyName.dispatchEvent(new Event("input", { bubbles: true }));
+		strategySheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const euStrategy = store.state.surfaces.find((item) => item.slug === "eu-expansion")!;
+		expect(euStrategy).toBeDefined();
+		expect(euStrategy.archetype).toBe("studio");
+		expect(euStrategy.folderRoot).toBe("surfaces/eu-expansion");
+		expect(euStrategy.folderRoot).not.toBe("surfaces/strategy");
 		store.dispose();
 	});
 

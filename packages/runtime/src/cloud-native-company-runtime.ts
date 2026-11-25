@@ -220,7 +220,6 @@ import {
 	composeCloudAgentSkills,
 	unavailableCloudAgentSkills,
 } from "./cloud-skill-tools.ts";
-import { recordStudioChatGptVoiceClips } from "./cloud-studio-voice-recorder.ts";
 import {
 	parseNativeSurfaceSessionImages,
 	readSurfaceMemberImage,
@@ -267,7 +266,7 @@ import {
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
-import { CloudVoiceChannel, type CloudVoiceName } from "./cloud-voice-channel.ts";
+import { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import {
 	type CloudWakeControl,
 	type CloudWakeEnvelope,
@@ -2219,25 +2218,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				}
 				return speech;
 			},
-			...(studioVoice
-				? {
-						synthesizeChatGptVoice: ({
-							voiceName: chatVoice,
-							captions,
-							signal: reqSignal,
-						}: {
-							readonly voiceName?: CloudVoiceName;
-							readonly captions: readonly { readonly hash: string; readonly text: string }[];
-							readonly signal: AbortSignal;
-						}) =>
-							recordStudioChatGptVoiceClips({
-								voice: studioVoice,
-								...(chatVoice ? { voiceName: chatVoice } : {}),
-								captions,
-								signal: reqSignal,
-							}),
-					}
-				: {}),
+			...(studioVoice ? { voiceChannel: studioVoice } : {}),
 		};
 	}
 
@@ -2333,9 +2314,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 		}
 		const folderClient = getFolder();
-		const readBrief = async (): Promise<string | null> => {
+		const readOptionalText = async (path: string): Promise<string | null> => {
 			try {
-				const found = await folderClient.readText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`, 16_384, signal);
+				const found = await folderClient.readText(path, 16_384, signal);
 				const text = found?.text.trim();
 				return text ? text : null;
 			} catch (error) {
@@ -2344,8 +2325,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 		};
 		// WHY: loadSurfaceSharedAssets already reads brief.md, voice.md, and tokens.json; derive identityContext instead of reading them twice.
-		const [briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
-			readBrief(),
+		const [visionMarkdown, readingMarkdown, briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
+			readOptionalText("QorperaOS/vision/vision.md"),
+			readOptionalText("QorperaOS/vision/reading.md"),
+			readOptionalText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`),
 			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
@@ -2398,6 +2381,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				? { previewReconciliations: previewContext.previewReconciliations }
 				: {}),
 			isInternalReconciliation: sessionTurnRaw.isInternal === true && sessionTurnRaw.state === "reconciling",
+			visionMarkdown,
+			readingMarkdown,
 			briefMarkdown:
 				briefMarkdown ?? (typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null),
 			fullPrompt: sessionTurnRaw.prompt,

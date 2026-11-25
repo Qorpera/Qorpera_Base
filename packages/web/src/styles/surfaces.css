@@ -2691,3 +2691,14 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 		animation: none; box-shadow: 0 0 0 2px var(--studio-accent, var(--tour-accent));
 	}
 }
+.studio-tell-bar {
+	position: sticky; bottom: 16px; z-index: 32; max-width: 560px; margin: 16px auto 0; padding: 14px 16px;
+	display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 14px;
+	background: var(--bg-elevated, var(--bg)); box-shadow: 0 14px 36px rgba(18, 18, 17, 0.16);
+}
+.studio-tell-head { font-size: 13px; color: var(--text); }
+.studio-tell-input {
+	width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px;
+	background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px; resize: vertical;
+}
+.studio-tell-actions { display: flex; justify-content: flex-end; gap: 8px; }

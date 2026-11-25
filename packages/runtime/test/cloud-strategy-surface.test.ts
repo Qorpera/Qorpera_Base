@@ -234,7 +234,7 @@ describe("strategy surface and custom studio runtime integration", () => {
 				manifestSha256: "c".repeat(64),
 				fileSha256: "d".repeat(64),
 				bytes: 2400,
-				mediaType: "audio/webm",
+				mediaType: "audio/mp4",
 			}),
 			surfacePatch: {
 				stageSurfacePatch: async (_sessionId, input) => {
@@ -248,8 +248,8 @@ describe("strategy surface and custom studio runtime integration", () => {
 					clips: captions.map((caption) => ({
 						hash: caption.hash,
 						audio: new Uint8Array([1, 2, 3]),
-						mediaType: "audio/webm" as const,
-						fileExtension: "webm" as const,
+						mediaType: "audio/mp4" as const,
+						fileExtension: "mp4" as const,
 						seconds: 1.8,
 					})),
 					stopReason: null,

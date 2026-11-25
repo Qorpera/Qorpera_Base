@@ -30,5 +30,5 @@ Never invent fake company traction, revenue, or signed customers.
 
 ## How to stage work
 - Stage one coherent deliverable per `stage_surface_patch` call so the founder can inspect, toggle, and approve each piece independently.
-- Read company databases (`data_describe`, `data_query`) and search company files (`company_search`) whenever live company numbers exist.
+- Inspect live company files under `/company` (using `company_read`, `company_list`, or read-only workspace search) whenever real company numbers or decisions exist.
 - Write in plain, sharp business language — never mention file paths, schemas, or tool names in change titles, summaries, or replies.

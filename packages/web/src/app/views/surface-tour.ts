@@ -298,11 +298,7 @@ export class StudioTourController {
 		this.#audio.preload = "auto";
 	}
 
-	#stopMedia(): void {
-		if (this.#timer) {
-			clearTimeout(this.#timer);
-			this.#timer = undefined;
-		}
+	#clearAudio(): void {
 		if (this.#audio) {
 			this.#audio.onended = null;
 			this.#audio.onerror = null;
@@ -313,6 +309,14 @@ export class StudioTourController {
 			URL.revokeObjectURL(this.#audioUrl);
 			this.#audioUrl = null;
 		}
+	}
+
+	#stopMedia(): void {
+		if (this.#timer) {
+			clearTimeout(this.#timer);
+			this.#timer = undefined;
+		}
+		this.#clearAudio();
 	}
 
 	#clearFocus(): void {
@@ -378,8 +382,11 @@ export class StudioTourController {
 	}
 
 	async #speakOrWait(text: string, seq: number): Promise<void> {
+		let advanced = false;
 		const advance = () => {
-			if (seq !== this.#beatSeq || !this.#playing || this.#options.signal.aborted) return;
+			if (advanced || seq !== this.#beatSeq || !this.#playing || this.#options.signal.aborted) return;
+			advanced = true;
+			this.#timer = undefined;
 			if (!this.#doc || this.#index + 1 >= this.#doc.beats.length) {
 				this.pause();
 				return;
@@ -387,6 +394,11 @@ export class StudioTourController {
 			this.#index += 1;
 			this.#render();
 			void this.#enterBeat(this.#index);
+		};
+		const schedule = (delayMs: number) => {
+			if (advanced || seq !== this.#beatSeq || !this.#playing || this.#options.signal.aborted) return;
+			if (this.#timer) clearTimeout(this.#timer);
+			this.#timer = setTimeout(advance, delayMs);
 		};
 
 		if (!this.#muted) {
@@ -397,6 +409,7 @@ export class StudioTourController {
 				try {
 					const bytes = await this.#options.readBinary(ref, this.#options.signal);
 					if (seq !== this.#beatSeq || !this.#playing || this.#options.signal.aborted) return;
+					this.#clearAudio();
 					const blob = new Blob([bytes.slice()], { type: audioMime(clip.file, ref.mediaType) });
 					const url = URL.createObjectURL(blob);
 					const audio = this.#audio ?? new Audio();
@@ -404,20 +417,22 @@ export class StudioTourController {
 					this.#audio = audio;
 					audio.src = url;
 					audio.onended = () => {
-						this.#timer = setTimeout(advance, 500);
+						schedule(500);
 					};
 					audio.onerror = () => {
-						this.#timer = setTimeout(advance, readingDurationMs(text));
+						this.#clearAudio();
+						schedule(readingDurationMs(text));
 					};
 					await audio.play();
 					return;
 				} catch {
+					this.#clearAudio();
 					if (seq !== this.#beatSeq || !this.#playing) return;
 				}
 			}
 		}
 
-		this.#timer = setTimeout(advance, readingDurationMs(text));
+		schedule(readingDurationMs(text));
 	}
 
 	#render(): void {
@@ -506,8 +521,16 @@ export class StudioTourController {
 						title: this.#muted ? t("Unmute voice") : t("Mute voice"),
 						onclick: () => {
 							this.#muted = !this.#muted;
-							if (this.#playing) void this.#enterBeat(this.#index);
-							else this.#render();
+							if (!this.#muted) this.#primeAudio();
+							this.#stopMedia();
+							this.#render();
+							if (this.#playing && this.#doc) {
+								const currentBeat = this.#doc.beats[this.#index];
+								if (currentBeat) {
+									const seq = ++this.#beatSeq;
+									void this.#speakOrWait(resolveTourSay(currentBeat.say, presentationLocale()), seq);
+								}
+							}
 						},
 					},
 					this.#muted ? t("Silent") : t("Voice"),

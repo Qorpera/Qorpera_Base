@@ -332,10 +332,12 @@ export function mountMoneyFlowChart(
 	};
 	const build = (theme: ChartTheme): Option => {
 		const useHub = data.left.length > 1;
-		const nodeOf = (stream: FlowStream, side: "left" | "right") => {
+		const leftKeys = data.left.map((_, index) => `L:${index}`);
+		const rightKeys = data.right.map((_, index) => `R:${index}`);
+		const nodeOf = (stream: FlowStream, side: "left" | "right", key: string) => {
 			const color = streamColor(theme, stream.kind);
 			return {
-				name: stream.id,
+				name: key,
 				stream,
 				depth: side === "left" ? 0 : useHub ? 2 : 1,
 				itemStyle: { color, borderColor: color, borderWidth: 0, borderRadius: 3 },
@@ -363,8 +365,8 @@ export function mountMoneyFlowChart(
 			};
 		};
 		const nodes: object[] = [
-			...data.left.map((stream) => nodeOf(stream, "left")),
-			...data.right.map((stream) => nodeOf(stream, "right")),
+			...data.left.map((stream, index) => nodeOf(stream, "left", leftKeys[index]!)),
+			...data.right.map((stream, index) => nodeOf(stream, "right", rightKeys[index]!)),
 		];
 		const links: object[] = [];
 		if (useHub) {
@@ -381,13 +383,21 @@ export function mountMoneyFlowChart(
 					rich: { amount: { color: theme.muted, fontSize: 11.5, fontWeight: 650, fontFamily: theme.font } },
 				},
 			});
-			for (const stream of data.left) links.push({ source: stream.id, target: HUB, value: stream.size, stream });
-			for (const stream of data.right) links.push({ source: HUB, target: stream.id, value: stream.size, stream });
+			for (let index = 0; index < data.left.length; index++) {
+				const stream = data.left[index]!;
+				links.push({ source: leftKeys[index]!, target: HUB, value: stream.size, stream });
+			}
+			for (let index = 0; index < data.right.length; index++) {
+				const stream = data.right[index]!;
+				links.push({ source: HUB, target: rightKeys[index]!, value: stream.size, stream });
+			}
 		} else {
-			const source = data.left[0];
-			if (source) {
-				for (const stream of data.right)
-					links.push({ source: source.id, target: stream.id, value: stream.size, stream });
+			const sourceKey = leftKeys[0];
+			if (sourceKey) {
+				for (let index = 0; index < data.right.length; index++) {
+					const stream = data.right[index]!;
+					links.push({ source: sourceKey, target: rightKeys[index]!, value: stream.size, stream });
+				}
 			}
 		}
 		return {

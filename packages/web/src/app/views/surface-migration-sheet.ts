@@ -196,7 +196,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Strategy & Planning"),
 		line: phrase("Grand plan, competing bets, unit economics & hypotheses"),
 		archetype: "studio",
-		folderRoot: "surfaces/strategy",
 	},
 	{
 		id: "identity",
@@ -457,7 +456,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 			archetype: selected.archetype,
 			icon: surfaceFigureIcon(figure),
 			kind: selected.kind,
-			folderRoot: selected.folderRoot,
+			folderRoot: selected.kind === "identity" ? selected.folderRoot : undefined,
 			description: selected.kind === "custom" ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
 		});

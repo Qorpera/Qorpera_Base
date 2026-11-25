@@ -31,7 +31,7 @@ import type {
 	SurfaceSessionOpenChange,
 } from "./cloud-surface-preview-overlay.ts";
 import type { CloudSurfaceToolsPort, SurfaceOpsActionToolPort, SurfacePatchToolPort } from "./cloud-surface-tools.ts";
-import type { CloudVoiceName } from "./cloud-voice-channel.ts";
+import type { CloudVoiceChannel, CloudVoiceName } from "./cloud-voice-channel.ts";
 
 export interface SurfaceIdentityContext {
 	readonly briefMarkdown?: string | null;
@@ -258,7 +258,9 @@ export interface SurfaceCodingNarratePort {
 		readonly text: string;
 		readonly signal: AbortSignal;
 	}) => Promise<GeminiTtsSpeechResult>;
+	readonly voiceChannel?: Pick<CloudVoiceChannel, "open" | "usage">;
 	readonly synthesizeChatGptVoice?: (input: {
+		readonly callId?: string;
 		readonly voiceName?: CloudVoiceName;
 		readonly captions: readonly { readonly hash: string; readonly text: string }[];
 		readonly signal: AbortSignal;

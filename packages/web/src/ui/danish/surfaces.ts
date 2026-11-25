@@ -538,4 +538,11 @@ export const SURFACES: Record<string, string> = {
 	Silent: "Lydløs",
 	Captions: "Undertekster",
 	"Close walkthrough": "Luk gennemgangen",
+	"Finish or cancel the note already waiting.": "Afslut eller annuller den note, der allerede venter.",
+	"A note was sent a moment ago: try again in a few seconds.":
+		"En note blev sendt for et øjeblik siden: prøv igen om et par sekunder.",
+	"Note to send": "Note til afsendelse",
+	"Send note from {title}": "Send note fra {title}",
+	"Send note from {title}: {about}": "Send note fra {title}: {about}",
+	"Cancelled.": "Annulleret.",
 };

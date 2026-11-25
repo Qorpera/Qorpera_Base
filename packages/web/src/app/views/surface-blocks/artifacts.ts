@@ -51,6 +51,7 @@ export interface StudioHtmlFrame {
 	readonly title: string;
 	readonly files: Readonly<Record<string, string>>;
 	readonly className: string;
+	readonly moduleBridge?: boolean;
 	readonly listen?: (data: unknown) => void;
 	readonly owned?: (dispose: () => void) => void;
 }

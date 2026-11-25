@@ -717,6 +717,7 @@ function economicsBoard(
 		chartHost.classList.remove("is-loading");
 		chartHost.dataset.chart = next.view;
 	};
+	const chartSignal = ctx.renderSignal ?? ctx.signal;
 	const ready = (): typeof StrategyCharts | null => {
 		if (charts) return charts;
 		unmount();
@@ -726,12 +727,12 @@ function economicsBoard(
 		waiting = true;
 		loadCharts().then(
 			(lib) => {
-				if (ctx.signal.aborted) return;
+				if (chartSignal.aborted) return;
 				charts = lib;
 				paintStage();
 			},
 			() => {
-				if (ctx.signal.aborted) return;
+				if (chartSignal.aborted) return;
 				chartsFailed = true;
 				paintStage();
 			},
@@ -771,7 +772,7 @@ function economicsBoard(
 				unmount();
 				reveal({
 					view: "flow",
-					mount: lib.mountMoneyFlowChart(chartHost, ctx.signal, latest, {
+					mount: lib.mountMoneyFlowChart(chartHost, chartSignal, latest, {
 						hub: t("Money in"),
 						money,
 						percent: (ratio) => percentAmount(ratio * 100),
@@ -796,7 +797,7 @@ function economicsBoard(
 			unmount();
 			reveal({
 				view: "waterfall",
-				mount: lib.mountWaterfallChart(chartHost, ctx.signal, steps, { money, axisMoney: money, share: shareOf }),
+				mount: lib.mountWaterfallChart(chartHost, chartSignal, steps, { money, axisMoney: money, share: shareOf }),
 			});
 			return;
 		}
@@ -823,7 +824,7 @@ function economicsBoard(
 		unmount();
 		reveal({
 			view: "curve",
-			mount: lib.mountBreakEvenChart(chartHost, ctx.signal, data, {
+			mount: lib.mountBreakEvenChart(chartHost, chartSignal, data, {
 				xText,
 				yText,
 				xTitle: xInput?.label ?? "",

@@ -232,6 +232,7 @@ export class SurfaceLayoutView {
 	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
 	readonly #economics = new Map<string, EconomicsPick>();
+	#renderLife: AbortController | null = null;
 	#swatches = new Map<string, SwatchLink>();
 	#apart: readonly string[] = [];
 	#postTabs: readonly {
@@ -261,7 +262,22 @@ export class SurfaceLayoutView {
 		});
 	}
 
+	#abortRender(): void {
+		if (!this.#renderLife) return;
+		this.#renderLife.abort();
+		this.#renderLife = null;
+	}
+
 	plan(input: SurfaceLayoutInput): SurfaceLayoutPlan {
+		this.#abortRender();
+		const renderLife = new AbortController();
+		this.#renderLife = renderLife;
+		if (this.#options.signal.aborted) renderLife.abort();
+		else
+			this.#options.signal.addEventListener("abort", () => renderLife.abort(), {
+				once: true,
+				signal: renderLife.signal,
+			});
 		const layoutPath = surfaceLayoutPath(input.surface.folderRoot);
 		const text = input.files[layoutPath];
 		const read = text === undefined ? undefined : readSurfaceLayout(text);
@@ -276,6 +292,7 @@ export class SurfaceLayoutView {
 			company: input.company,
 			briefSummary: input.briefSummary,
 			signal: this.#options.signal,
+			renderSignal: renderLife.signal,
 			fromStarter: own === undefined,
 			...(this.#options.askSurface ? { askSurface: this.#options.askSurface } : {}),
 		});
@@ -366,7 +383,7 @@ export class SurfaceLayoutView {
 		}
 		const scope: TabScope = { ctx, input, claimed, swatches, tinting, stageIds: ids };
 		const alone = tab.blocks.length === 1;
-		return tab.blocks.map((node, index) =>
+		const nodes: PreparedNode[] = tab.blocks.map((node, index) =>
 			node.type === "row"
 				? {
 						cells: node.blocks.map((block, slot) =>
@@ -375,6 +392,20 @@ export class SurfaceLayoutView {
 					}
 				: this.#prepareBlock(node, nodeKey(node, `${tab.id}/${index}`), scope, alone),
 		);
+		const hasPieces = nodes.some((node) =>
+			isRow(node) ? node.cells.some((cell) => cell.pieces.length > 0) : node.pieces.length > 0,
+		);
+		if (!hasPieces && tab.blocks.length > 0) {
+			const lead = tab.blocks[0]!;
+			const leadBlock = lead.type === "row" ? lead.blocks[0] : lead;
+			if (leadBlock) {
+				const leadKey =
+					lead.type === "row" ? nodeKey(leadBlock, `${tab.id}/0.0`) : nodeKey(leadBlock, `${tab.id}/0`);
+				const fallback = this.#prepareBlock(leadBlock, leadKey, scope, true);
+				if (fallback.pieces.length > 0) return [fallback];
+			}
+		}
+		return nodes;
 	}
 
 	#selected(key: string, count: number): number {
@@ -537,12 +568,14 @@ export class SurfaceLayoutView {
 	}
 
 	deactivate(): void {
+		this.#abortRender();
 		this.#fullscreen.close(false);
 		this.#reports.deactivate();
 		this.#explainers.deactivate();
 	}
 
 	dispose(): void {
+		this.#abortRender();
 		this.#fullscreen.close(false);
 		this.#reports.dispose();
 		this.#explainers.dispose();

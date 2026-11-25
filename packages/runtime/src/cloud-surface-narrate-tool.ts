@@ -52,6 +52,7 @@ export interface StudioNarrateToolOptions {
 		readonly signal: AbortSignal;
 	}) => Promise<GeminiTtsSpeechResult>;
 	readonly synthesizeChatGptVoice?: (input: {
+		readonly callId?: string;
 		readonly voiceName?: CloudVoiceName;
 		readonly captions: readonly { readonly hash: string; readonly text: string }[];
 		readonly signal: AbortSignal;
@@ -334,6 +335,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 				}
 				const batch = missing.slice(0, MAX_CLIPS_PER_CALL);
 				const voiceResult = await options.synthesizeChatGptVoice({
+					callId: context.callId,
 					...(resolvedChatGptVoice ? { voiceName: resolvedChatGptVoice } : {}),
 					captions: batch,
 					signal,
@@ -378,6 +380,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 								voiceResult.stopReason === "limit_reached"
 									? "The connected ChatGPT voice usage limit was reached before recording new clips. Try again after the reset."
 									: `ChatGPT Voice could not record clips (${voiceResult.errorMessage ?? "voice unavailable"}). The walkthrough plays with captions alone.`,
+							...(voiceResult.silent?.length ? { silent: voiceResult.silent } : {}),
 						}),
 					};
 				}
@@ -431,6 +434,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 						scenesPath: args.scenesPath,
 						clipsPath,
 						changeId: staged.changeId,
+						...(voiceResult.silent?.length ? { silent: voiceResult.silent } : {}),
 					}),
 				};
 			}

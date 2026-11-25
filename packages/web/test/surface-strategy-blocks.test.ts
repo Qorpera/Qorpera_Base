@@ -2,9 +2,11 @@
 import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
 import { getInstanceByDom } from "echarts/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mountMoneyFlowChart } from "../src/app/views/surface-blocks/strategy-charts.ts";
 import { SurfaceLayoutView } from "../src/app/views/surface-layout-view.ts";
 import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
+import { PAGE_READY } from "../src/ui/page-frame.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { fakeClient, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
@@ -1461,5 +1463,256 @@ describe("Surface links in messages", () => {
 			.find(Boolean);
 		expect(card?.dataset.surfaceTab).toBe("economics");
 		expect(bubbles.some((bubble) => bubble.querySelector(".surface-link"))).toBe(false);
+	});
+});
+
+describe("Studio module bridge security, empty tabs, chart lifecycle, tour recovery, and sankey key safety", () => {
+	function callFrame(iframe: HTMLIFrameElement, method: string, params: Record<string, unknown>): Promise<unknown> {
+		const postSpy = vi.spyOn(iframe.contentWindow!, "postMessage");
+		const readyEvt = new MessageEvent("message", { data: { type: PAGE_READY } });
+		Object.defineProperty(readyEvt, "source", { value: iframe.contentWindow });
+		window.dispatchEvent(readyEvt);
+		const lastCall = postSpy.mock.calls.at(-1) as unknown[] | undefined;
+		const port = (lastCall?.[2] as MessagePort[] | undefined)?.[0];
+		if (!port) throw new Error("AppFrame did not transfer a MessagePort");
+		return new Promise((resolve) => {
+			port.onmessage = (event) => resolve((event.data as { answer?: unknown }).answer);
+			port.postMessage({ type: "qorpera-app-call", id: 1, method, params });
+		});
+	}
+
+	it("gates module tell behind member confirmation, scopes list by path, and blocks non-module HTML frames", async () => {
+		const surface = strategySurface();
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+			}),
+		);
+		await store.load();
+		await store.openSurface(surface.slug);
+		const startSession = vi.spyOn(store, "startSession").mockResolvedValue(undefined);
+		const life = new AbortController();
+		const files: Record<string, string> = {
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				version: 1,
+				tabs: [
+					{
+						id: "lab",
+						title: "Lab",
+						blocks: [
+							{ type: "module", from: "sketch", heading: "Sketchpad" },
+							{ type: "artifacts", heading: "Pages" },
+						],
+					},
+				],
+			}),
+			[`${ROOT}/sketch/index.html`]: "<!doctype html><p>Sketch module</p>",
+			[`${ROOT}/sketches/a.json`]: '{"a":1}',
+			[`${ROOT}/sketches/b.json`]: '{"b":2}',
+			[`${ROOT}/other.txt`]: "outside",
+			[`${ROOT}/memo.html`]: "<!doctype html><p>Standalone HTML artifact</p>",
+		};
+		const view = new SurfaceStudioView({
+			store,
+			surface,
+			signal: life.signal,
+			baseFiles: files,
+			timeSlice: false,
+		});
+		document.body.append(view.el);
+
+		const moduleFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
+		expect(moduleFrame).not.toBeNull();
+
+		const listRes = (await callFrame(moduleFrame, "list", { path: "sketches" })) as {
+			ok: boolean;
+			value?: { name: string; path: string; kind: string; bytes: number }[];
+		};
+		expect(listRes.ok).toBe(true);
+		expect(listRes.value?.map((e) => e.path)).toEqual(["sketches/a.json", "sketches/b.json"]);
+		expect(listRes.value?.[0]).toMatchObject({ name: "a.json", kind: "file", bytes: 7 });
+
+		const traversalRes = (await callFrame(moduleFrame, "list", { path: "../identity" })) as { ok: boolean };
+		expect(traversalRes.ok).toBe(false);
+
+		const readRes = (await callFrame(moduleFrame, "read", { path: "sketches/a.json" })) as {
+			ok: boolean;
+			value?: string;
+		};
+		expect(readRes).toEqual({ ok: true, value: '{"a":1}' });
+
+		const tellPromise = callFrame(moduleFrame, "tell", { about: "Sketch", text: "Refine the pricing ladder" });
+		await vi.waitFor(() => expect(view.el.querySelector(".studio-tell-bar")).not.toBeNull());
+		expect(startSession).not.toHaveBeenCalled();
+
+		const concurrent = (await callFrame(moduleFrame, "tell", { text: "Second note" })) as { ok: boolean };
+		expect(concurrent.ok).toBe(false);
+
+		view.el.querySelector<HTMLButtonElement>('[data-tell-act="cancel"]')!.click();
+		expect(await tellPromise).toMatchObject({ ok: false });
+		expect(startSession).not.toHaveBeenCalled();
+		expect(view.el.querySelector(".studio-tell-bar")).toBeNull();
+
+		const tellPromise2 = callFrame(moduleFrame, "tell", { about: "Sketch", text: "Draft note" });
+		await vi.waitFor(() => expect(view.el.querySelector(".studio-tell-bar")).not.toBeNull());
+		const textarea = view.el.querySelector<HTMLTextAreaElement>(".studio-tell-input")!;
+		textarea.value = "Confirmed member note";
+		view.el.querySelector<HTMLButtonElement>('[data-tell-act="send"]')!.click();
+		expect(await tellPromise2).toEqual({ ok: true, value: { sent: true } });
+		expect(startSession).toHaveBeenCalledTimes(1);
+		expect(startSession).toHaveBeenCalledWith(surface.id, "Confirmed member note", {
+			originKind: "member",
+			originLabel: "Sketch",
+		});
+
+		const cooldownRes = (await callFrame(moduleFrame, "tell", { text: "Too soon" })) as { ok: boolean };
+		expect(cooldownRes.ok).toBe(false);
+
+		const artifactFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-html-frame")!;
+		expect(artifactFrame).not.toBeNull();
+		expect(await callFrame(artifactFrame, "tell", { text: "Sneaky prompt" })).toMatchObject({ ok: false });
+		expect(await callFrame(artifactFrame, "read", { path: "sketches/a.json" })).toMatchObject({ ok: false });
+		expect(await callFrame(artifactFrame, "list", { path: "sketches" })).toMatchObject({ ok: false });
+		expect(startSession).toHaveBeenCalledTimes(1);
+
+		life.abort();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders empty-state guidance on the fresh Strategy Breakdowns tab instead of a blank grid", async () => {
+		const { view, done } = await studio({});
+		view.el.querySelector<HTMLButtonElement>('[data-tab="breakdowns"]')!.click();
+		const grid = view.el.querySelector(".studio-grid");
+		expect(grid).not.toBeNull();
+		expect(grid!.children.length).toBeGreaterThan(0);
+		done();
+	});
+
+	it("disposes active ECharts hosts when switching tabs in SurfaceLayoutView", async () => {
+		const { view, done } = await studio(strategyFiles());
+		view.el.querySelector<HTMLButtonElement>('[data-tab="economics"]')!.click();
+		await vi.waitFor(() => {
+			const host = view.el.querySelector<HTMLElement>(".studio-econ-chart-host");
+			expect(host && getInstanceByDom(host)).toBeTruthy();
+		});
+		const oldHost = view.el.querySelector<HTMLElement>(".studio-econ-chart-host")!;
+		expect(getInstanceByDom(oldHost)).toBeTruthy();
+
+		view.el.querySelector<HTMLButtonElement>('[data-tab="plan"]')!.click();
+		expect(getInstanceByDom(oldHost)).toBeUndefined();
+		done();
+	});
+
+	it("does not double-advance when audio.play rejects alongside audio.onerror and does not re-run actions on unmute", async () => {
+		vi.useFakeTimers();
+		try {
+			const caption1 = "First beat text.";
+			let hash = 0x811c9dc5;
+			for (const byte of new TextEncoder().encode(caption1)) {
+				hash ^= byte;
+				hash = Math.imul(hash, 0x01000193) >>> 0;
+			}
+			const clipHash = hash.toString(16).padStart(8, "0");
+			const clipRef: StudioBinaryRef = {
+				manifestSha256: "a".repeat(64),
+				fileSha256: "b".repeat(64),
+				bytes: 16,
+				mediaType: "audio/mp4",
+			};
+			const revokeObjectURL = vi.fn();
+			vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:tour"), revokeObjectURL }));
+			let failPlay = true;
+			vi.stubGlobal(
+				"Audio",
+				class {
+					preload = "";
+					src = "";
+					onended: (() => void) | null = null;
+					onerror: (() => void) | null = null;
+					play = vi.fn(() => {
+						if (failPlay) {
+							this.onerror?.();
+							return Promise.reject(new Error("blocked"));
+						}
+						return Promise.resolve();
+					});
+					pause = vi.fn();
+					removeAttribute = vi.fn();
+				},
+			);
+			const tourDoc = {
+				title: "Walkthrough",
+				beats: [
+					{ id: "b1", tab: "plan", focus: "plays:verdict", say: caption1, action: { expand: "dealer-led" } },
+					{ id: "b2", tab: "plan", focus: "play:dealer-led", say: "Second beat." },
+					{ id: "b3", tab: "plan", focus: "play:buyer-paid", say: "Third beat." },
+				],
+			};
+			const { view, tour, control, done } = await studio(
+				{
+					...strategyFiles(),
+					...file("tour.json", tourDoc),
+					...file("voice/clips.json", { clips: [{ caption: clipHash, file: `${clipHash}.mp4`, seconds: 2 }] }),
+				},
+				{
+					baseBinaries: { [`${ROOT}/voice/${clipHash}.mp4`]: clipRef },
+					readBinary: async () => new Uint8Array([1, 2]),
+				},
+			);
+			const toggleBtn = view.el.querySelector<HTMLButtonElement>('[data-play="dealer-led"] .studio-play-toggle')!;
+			const toggleSpy = vi.spyOn(toggleBtn, "click");
+			tour().querySelector<HTMLButtonElement>(".studio-tour-launch")!.click();
+			await vi.advanceTimersByTimeAsync(100);
+			expect(revokeObjectURL).toHaveBeenCalled();
+			expect(toggleSpy).toHaveBeenCalledTimes(1);
+
+			failPlay = false;
+			control("Mute voice").click();
+			control("Unmute voice").click();
+			await vi.advanceTimersByTimeAsync(50);
+			expect(toggleSpy).toHaveBeenCalledTimes(1);
+
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(text(tour().querySelector(".studio-tour-step"))).toContain("2/3");
+			done();
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("mounts Money Flow Sankey cleanly even with colliding or duplicate stream IDs", () => {
+		const host = document.createElement("div");
+		document.body.append(host);
+		const life = new AbortController();
+		const mount = mountMoneyFlowChart(
+			host,
+			life.signal,
+			{
+				revenue: 100,
+				left: [
+					{ id: "__hub__", label: "Gross revenue", kind: "income", size: 80, signed: 80 },
+					{ id: "shortfall", label: "Shortfall", kind: "shortfall", size: 20, signed: -20 },
+				],
+				right: [
+					{ id: "shortfall", label: "Platform cost", kind: "cost", size: 40, signed: 40 },
+					{ id: "net", label: "Fulfillment", kind: "cost", size: 30, signed: 30 },
+					{ id: "net", label: "Other cost", kind: "cost", size: 30, signed: 30 },
+				],
+			},
+			{
+				hub: "Money in",
+				money: (v) => `${v}`,
+				percent: (r) => `${Math.round(r * 100)}%`,
+				share: (r) => `${Math.round(r * 100)}%`,
+			},
+		);
+		expect(mount.disposed()).toBe(false);
+		expect(getInstanceByDom(host)).toBeTruthy();
+		mount.dispose();
+		expect(mount.disposed()).toBe(true);
+		life.abort();
 	});
 });

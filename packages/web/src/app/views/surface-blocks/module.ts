@@ -75,6 +75,7 @@ export function prepareModule(
 							title,
 							files,
 							className: fits ? "studio-module-frame is-fitted" : "studio-module-frame",
+							moduleBridge: true,
 							...(fits
 								? {
 										listen: (data: unknown) => {
@@ -100,6 +101,7 @@ export function prepareModule(
 											title,
 											files,
 											className: "studio-module-frame is-fullscreen",
+											moduleBridge: true,
 											owned: onClose,
 										}),
 									"frame",

@@ -187,7 +187,10 @@ begin
 	set local role authenticated;
 	v_list := public.qorpera_bootstrap_company_surfaces(v_profile);
 	reset role;
-	perform pg_temp.sf_assert(jsonb_array_length(v_list) = 4, 'bootstrap without databases creates identity + 3 ops surfaces');
+	perform pg_temp.sf_assert(
+		jsonb_array_length(v_list) = 5,
+		'bootstrap without databases creates identity + strategy + 3 ops surfaces'
+	);
 	perform pg_temp.sf_assert(
 		not exists (select 1 from public.qorpera_surfaces where profile_id = v_profile and slug = 'data'),
 		'bootstrap without databases skips data ops surface'

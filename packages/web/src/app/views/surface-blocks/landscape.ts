@@ -81,11 +81,12 @@ function positioningMap(
 		"aria-label": t("Positioning map: {x} against {y}", { x: axes.xLabel, y: axes.yLabel }),
 	});
 	let mount: LandscapeMount | null = null;
+	const chartSignal = ctx.renderSignal ?? ctx.signal;
 	loadCharts().then(
 		(lib) => {
-			if (ctx.signal.aborted) return;
+			if (chartSignal.aborted) return;
 			host.classList.remove("is-loading");
-			mount = lib.mountLandscapeChart(host, ctx.signal, mapData(axes, placed), {
+			mount = lib.mountLandscapeChart(host, chartSignal, mapData(axes, placed), {
 				active: active(),
 				labels: { category: t("Category"), pricing: t("Pricing"), ourEdge: t("Our edge"), us: t("Us") },
 				onHover: (key) => steer.hover(key),
@@ -94,6 +95,7 @@ function positioningMap(
 			host.dataset.chart = "landscape";
 		},
 		() => {
+			if (chartSignal.aborted) return;
 			host.classList.remove("is-loading");
 			host.replaceChildren(h("p", { class: "studio-land-chart-note" }, t("The chart couldn't load.")));
 		},

@@ -1269,7 +1269,12 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			: undefined;
 		const buildPlatformTools = (operations: CloudNativeToolOperations, guarded: CloudCodingCommandGateway) => {
 			if (preparedSurface) {
-				const surfaceTools = preparedSurface.buildTools(initial.identity, operations);
+				const surfaceTools = preparedSurface.buildTools(initial.identity, operations, {
+					scope,
+					identity: initial.identity,
+					operations,
+					gateway: guarded,
+				});
 				return {
 					surfaceTools,
 					recordChangeTool: [] as CloudNativeTool[],

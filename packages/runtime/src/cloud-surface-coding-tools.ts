@@ -8,6 +8,7 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
+import { recordStudioChatGptVoiceClips, type StudioChatGptVoiceMachine } from "./cloud-studio-voice-recorder.ts";
 import { createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import { createStudioPictureTool } from "./cloud-surface-picture-tool.ts";
@@ -35,6 +36,7 @@ import {
 	type SurfacePatchToolPort,
 } from "./cloud-surface-tools.ts";
 import { buildSurfaceTurnBrief, type SurfaceCodingTurnBinding } from "./cloud-surface-turn-context.ts";
+import type { CloudVoiceName } from "./cloud-voice-channel.ts";
 
 export type CodingWorkspaceKind = "git_repo" | "surface_folder" | "surface_ops";
 
@@ -67,6 +69,7 @@ export interface PreparedSurfaceCodingWorkspace {
 	readonly buildTools: (
 		identity: CloudNativeToolIdentity,
 		operations: CloudNativeToolOperations,
+		codingMachine?: StudioChatGptVoiceMachine,
 	) => readonly CloudNativeTool[];
 }
 
@@ -347,7 +350,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 		claudeSystemNote,
 		turnBrief,
 		turnCorrection,
-		buildTools: (identity, operations) => {
+		buildTools: (identity, operations, codingMachine) => {
 			const stagePatchTool = createStageSurfacePatchTool(
 				surfaceSession.sessionId,
 				trackedSurfacePatch,
@@ -360,8 +363,32 @@ export async function prepareSurfaceCodingWorkspace(options: {
 					isInternalReconciliation,
 				},
 			);
+			const voicePort = surfaceSession.narrateExplainer;
+			const synthesizeChatGptVoice =
+				voicePort?.synthesizeChatGptVoice ??
+				(voicePort?.voiceChannel && codingMachine
+					? ({
+							callId,
+							voiceName: chatVoice,
+							captions,
+							signal: reqSignal,
+						}: {
+							readonly callId?: string;
+							readonly voiceName?: CloudVoiceName;
+							readonly captions: readonly { readonly hash: string; readonly text: string }[];
+							readonly signal: AbortSignal;
+						}) =>
+							recordStudioChatGptVoiceClips({
+								voice: voicePort.voiceChannel!,
+								machine: codingMachine,
+								callId: callId ?? "narrate",
+								...(chatVoice ? { voiceName: chatVoice } : {}),
+								captions,
+								signal: reqSignal,
+							})
+					: undefined);
 			const narrateTool =
-				!isInternalReconciliation && surfaceSession.narrateExplainer
+				!isInternalReconciliation && voicePort
 					? [
 							createNarrateExplainerTool({
 								sessionId: surfaceSession.sessionId,
@@ -369,14 +396,10 @@ export async function prepareSurfaceCodingWorkspace(options: {
 								voiceModel: surfaceSession.voiceModel?.trim() || "chatgpt-voice",
 								voiceName: surfaceSession.voiceName?.trim() || "cove",
 								readStudioText,
-								stageBytes: surfaceSession.narrateExplainer.stageBytes,
+								stageBytes: voicePort.stageBytes,
 								surfacePatch: trackedSurfacePatch,
-								...(surfaceSession.narrateExplainer.synthesizeGemini
-									? { synthesizeGemini: surfaceSession.narrateExplainer.synthesizeGemini }
-									: {}),
-								...(surfaceSession.narrateExplainer.synthesizeChatGptVoice
-									? { synthesizeChatGptVoice: surfaceSession.narrateExplainer.synthesizeChatGptVoice }
-									: {}),
+								...(voicePort.synthesizeGemini ? { synthesizeGemini: voicePort.synthesizeGemini } : {}),
+								...(synthesizeChatGptVoice ? { synthesizeChatGptVoice } : {}),
 								onStagedOps: (ops) => applyStudioTextOps(stagedText, ops, folderRoot),
 							}),
 						]

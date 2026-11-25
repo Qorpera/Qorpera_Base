@@ -49,6 +49,7 @@ export interface SurfaceBlockContext extends SurfaceFileLayer {
 	readonly folderRoot: string;
 	readonly briefSummary: string;
 	readonly signal: AbortSignal;
+	readonly renderSignal?: AbortSignal;
 	readonly words: (text: string) => string;
 	readonly read: (source: SurfaceSource | undefined) => SurfaceBlockRead;
 	readonly companyPath: (bindingPath: string) => string | undefined;
@@ -69,6 +70,7 @@ export interface SurfaceBlockContextInput extends SurfaceFileLayer {
 	readonly company?: SurfaceFileLayer | undefined;
 	readonly briefSummary: string;
 	readonly signal: AbortSignal;
+	readonly renderSignal?: AbortSignal;
 	readonly fromStarter: boolean;
 	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
@@ -292,6 +294,7 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 		baseBinaries: input.baseBinaries,
 		briefSummary: input.briefSummary,
 		signal: input.signal,
+		renderSignal: input.renderSignal ?? input.signal,
 		words: input.fromStarter ? (text) => (STARTER_WORDS.has(text) ? t(text) : text) : (text) => text,
 		read: (source) => {
 			if (source === undefined) return { found: false, value: undefined, base: undefined, changed: false };

@@ -230,6 +230,8 @@ export class SurfaceStudioView {
 	#appliedIdentityVars: string[] = [];
 	#wasUpdating = false;
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
+	#pendingTell: { readonly bar: HTMLElement; readonly cancel: () => void } | null = null;
+	#lastTellAt = Number.NEGATIVE_INFINITY;
 
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
@@ -279,12 +281,14 @@ export class SurfaceStudioView {
 		this.#renderSeq++;
 		this.#renderedTab = null;
 		this.#renderedGrid = null;
+		this.#cancelPendingTell();
 		this.#tour.deactivate();
 		this.#layout?.deactivate();
 	}
 
 	dispose(): void {
 		this.#renderSeq += 1;
+		this.#cancelPendingTell();
 		this.#disposeHtmlFrames();
 		if (this.#settleTimer) {
 			clearTimeout(this.#settleTimer);
@@ -336,10 +340,86 @@ export class SurfaceStudioView {
 		if (session) this.#options.store.openDrawer(this.#options.surface.id, session.id);
 	}
 
+	#cancelPendingTell(): void {
+		const pending = this.#pendingTell;
+		if (!pending) return;
+		this.#pendingTell = null;
+		pending.cancel();
+	}
+
+	#confirmModuleTell(moduleTitle: string, draftText: string, about?: string): Promise<AppAnswer> {
+		if (this.#pendingTell) {
+			return Promise.resolve({ ok: false, error: t("Finish or cancel the note already waiting.") });
+		}
+		if (Date.now() - this.#lastTellAt < 3000) {
+			return Promise.resolve({
+				ok: false,
+				error: t("A note was sent a moment ago: try again in a few seconds."),
+			});
+		}
+		return new Promise((resolve) => {
+			let settled = false;
+			const input = h("textarea", {
+				class: "studio-tell-input",
+				rows: 2,
+				"aria-label": t("Note to send"),
+			});
+			input.value = draftText;
+			const sendBtn = h(
+				"button",
+				{ type: "button", class: "btn btn-primary btn-small", "data-tell-act": "send" },
+				t("Send"),
+			);
+			const cancelBtn = h(
+				"button",
+				{ type: "button", class: "btn btn-small", "data-tell-act": "cancel" },
+				t("Cancel"),
+			);
+			const labelText = about
+				? t("Send note from {title}: {about}", { title: moduleTitle, about })
+				: t("Send note from {title}", { title: moduleTitle });
+			const bar = h(
+				"div",
+				{ class: "studio-tell-bar", role: "region", "aria-label": labelText },
+				h("div", { class: "studio-tell-head" }, h("strong", null, labelText)),
+				input,
+				h("div", { class: "studio-tell-actions" }, cancelBtn, sendBtn),
+			);
+			const finish = (answer: AppAnswer) => {
+				if (settled) return;
+				settled = true;
+				if (this.#pendingTell?.bar === bar) this.#pendingTell = null;
+				bar.remove();
+				resolve(answer);
+			};
+			cancelBtn.addEventListener("click", () => finish({ ok: false, error: t("Cancelled.") }));
+			sendBtn.addEventListener("click", async () => {
+				const finalText = input.value.trim();
+				if (!finalText || finalText.length > 4000) {
+					input.focus();
+					return;
+				}
+				sendBtn.disabled = true;
+				cancelBtn.disabled = true;
+				try {
+					await this.#askSurface(finalText, about);
+					this.#lastTellAt = Date.now();
+					finish({ ok: true, value: { sent: true } });
+				} catch {
+					finish({ ok: false, error: t("That didn't work. Try again.") });
+				}
+			});
+			this.#pendingTell = { bar, cancel: () => finish({ ok: false, error: t("Cancelled.") }) };
+			this.el.append(bar);
+			sendBtn.focus?.({ preventScroll: true });
+		});
+	}
+
 	async #handleModuleCall(
 		call: AppCall,
 		files: Readonly<Record<string, string>>,
 		folderRoot: string,
+		moduleTitle: string,
 	): Promise<AppAnswer> {
 		if (call.method === "read") {
 			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
@@ -358,22 +438,48 @@ export class SurfaceStudioView {
 			return { ok: false, error: t("This file isn't available.") };
 		}
 		if (call.method === "list") {
-			const prefix =
-				typeof call.params.prefix === "string" ? call.params.prefix.trim().replace(/^\/+|\/+$/g, "") : "";
-			const rootPrefix = folderRoot ? `${folderRoot.replace(/^\/+|\/+$/g, "")}/` : "";
-			const entries = Object.keys(files)
-				.filter((path) => !rootPrefix || path.startsWith(rootPrefix))
-				.map((path) => (rootPrefix ? path.slice(rootPrefix.length) : path))
-				.filter((rel) => !prefix || rel === prefix || rel.startsWith(`${prefix}/`))
-				.sort();
+			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
+			if (rawPath.length > 512 || rawPath.includes("\\") || rawPath.includes("\0")) {
+				return { ok: false, error: t("This file isn't available.") };
+			}
+			const cleanRoot = folderRoot.replace(/^\/+|\/+$/g, "");
+			let targetPrefix = cleanRoot;
+			if (rawPath) {
+				const stripped = rawPath.replace(/^\/+|\/+$/g, "");
+				const parts = stripped ? stripped.split("/") : [];
+				if (parts.some((part) => !part || part === "." || part === "..")) {
+					return { ok: false, error: t("This file isn't available.") };
+				}
+				if (stripped) {
+					try {
+						targetPrefix = cleanRoot ? surfaceCompanyPath(cleanRoot, stripped) : stripped;
+					} catch {
+						return { ok: false, error: t("This file isn't available.") };
+					}
+					if (cleanRoot && targetPrefix !== cleanRoot && !targetPrefix.startsWith(`${cleanRoot}/`)) {
+						return { ok: false, error: t("This file isn't available.") };
+					}
+				}
+			}
+			const dirPrefix = targetPrefix ? `${targetPrefix}/` : "";
+			const encoder = new TextEncoder();
+			const entries = Object.entries(files)
+				.filter(([path]) => (!dirPrefix ? true : path === targetPrefix || path.startsWith(dirPrefix)))
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([path, content]) => ({
+					name: path.slice(path.lastIndexOf("/") + 1),
+					path: cleanRoot && path.startsWith(`${cleanRoot}/`) ? path.slice(cleanRoot.length + 1) : path,
+					kind: "file" as const,
+					bytes: encoder.encode(content).byteLength,
+				}));
 			return { ok: true, value: entries };
 		}
 		if (call.method === "tell") {
 			const text = typeof call.params.text === "string" ? call.params.text.trim() : "";
-			const about = typeof call.params.about === "string" ? call.params.about.trim() : undefined;
+			const aboutRaw = typeof call.params.about === "string" ? call.params.about.trim() : "";
+			const about = aboutRaw ? aboutRaw.slice(0, 160) : undefined;
 			if (!text || text.length > 4000) return { ok: false, error: t("Write a short note first.") };
-			await this.#askSurface(text, about);
-			return { ok: true, value: { sent: true } };
+			return this.#confirmModuleTell(moduleTitle, text, about);
 		}
 		return { ok: false, error: t("This page can't be shown here.") };
 	}
@@ -388,6 +494,7 @@ export class SurfaceStudioView {
 		listen?: (data: unknown) => void,
 		owned?: (dispose: () => void) => void,
 		allFiles?: Readonly<Record<string, string>>,
+		moduleBridge = false,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
@@ -399,7 +506,9 @@ export class SurfaceStudioView {
 			{ html: live },
 			t("Page: {name}", { name: title }),
 			className,
-			(call) => this.#handleModuleCall(call, readable, folderRoot),
+			moduleBridge
+				? (call) => this.#handleModuleCall(call, readable, folderRoot, title)
+				: async () => ({ ok: false, error: t("This page can't be shown here.") }),
 			() => undefined,
 			{ again: true },
 		);
@@ -660,10 +769,14 @@ export class SurfaceStudioView {
 		);
 		if (!this.#isRenderActive(params.seq)) return;
 		this.#disposeHtmlFrames();
+		const tail = [
+			...(this.#tour.el.hidden ? [] : [this.#tour.el]),
+			...(this.#pendingTell ? [this.#pendingTell.bar] : []),
+		];
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
 			this.#renderedGrid = null;
-			this.el.replaceChildren(...plan.children, ...(this.#tour.el.hidden ? [] : [this.#tour.el]));
+			this.el.replaceChildren(...plan.children, ...tail);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
@@ -672,7 +785,6 @@ export class SurfaceStudioView {
 		this.#renderedTab = this.#tab;
 		this.#renderedGrid = grid;
 		const tasks = plan.gridTasks;
-		const tail = this.#tour.el.hidden ? [] : [this.#tour.el];
 		if (reuseGrid) {
 			reconcileChildren(this.el, [...plan.children, grid, ...tail]);
 			const built: HTMLElement[] = [];
@@ -763,7 +875,10 @@ export class SurfaceStudioView {
 			parsed,
 		);
 		this.#disposeHtmlFrames();
-		const tail = this.#tour.el.hidden ? [] : [this.#tour.el];
+		const tail = [
+			...(this.#tour.el.hidden ? [] : [this.#tour.el]),
+			...(this.#pendingTell ? [this.#pendingTell.bar] : []),
+		];
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
 			this.#renderedGrid = null;
@@ -1218,6 +1333,7 @@ export class SurfaceStudioView {
 						frame.listen,
 						frame.owned,
 						files,
+						frame.moduleBridge === true,
 					),
 				linksChanged: (html, path) =>
 					studioHtmlDependencyChanged(
