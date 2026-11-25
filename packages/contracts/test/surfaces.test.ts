@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
 	countOpenSurfaceChanges,
+	isSurfaceOptionGroupKey,
 	nextSurfaceSessionLifecycleState,
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
@@ -11,6 +12,7 @@ import {
 	parseSurfaceWorkspace,
 	STUDIO_BINARY_MAX_BYTES,
 	STUDIO_BINARY_MEDIA_TYPES,
+	SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
 } from "../src/surfaces.ts";
 
 describe("surfaces contracts", () => {
@@ -588,5 +590,92 @@ describe("surfaces contracts", () => {
 				closedAt: null,
 			}),
 		).toThrow("session.changes[0].previewBaseChangeIds[0]");
+	});
+
+	it("parses optional optionGroupKey and optionGroupTitle on surface changes and rejects invalid slugs", () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const now = "2026-11-24T08:00:00Z";
+		const baseChange = {
+			id: changeId,
+			sessionId,
+			surfaceId,
+			seq: 1,
+			title: "Editorial direction",
+			summary: "Warm editorial homepage.",
+			kind: "git_range",
+			status: "staged",
+			parentSha: "a".repeat(40),
+			headSha: "b".repeat(40),
+			dependsOnChangeIds: [],
+			affectedPaths: ["index.html"],
+			diffStats: { filesChanged: 1, additions: 10, deletions: 2 },
+			conflictPaths: null,
+			landedChangeNumber: null,
+			canUndo: false,
+			createdAt: now,
+			resolvedAt: null,
+		};
+		const baseSession = {
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Homepage directions",
+			prompt: "Show 3 directions",
+			state: "ready",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: null,
+			hasActiveChat: false,
+			question: null,
+			changes: [baseChange],
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		};
+
+		expect(isSurfaceOptionGroupKey("homepage-direction")).toBe(true);
+		expect(isSurfaceOptionGroupKey("a")).toBe(true);
+		expect(isSurfaceOptionGroupKey("Bad_Key")).toBe(false);
+		expect(isSurfaceOptionGroupKey("-leading")).toBe(false);
+
+		const grouped = parseSurfaceSession({
+			...baseSession,
+			changes: [{ ...baseChange, optionGroupKey: "homepage-direction", optionGroupTitle: "Homepage direction" }],
+		});
+		expect(grouped.changes[0]?.optionGroupKey).toBe("homepage-direction");
+		expect(grouped.changes[0]?.optionGroupTitle).toBe("Homepage direction");
+
+		const cleared = parseSurfaceSession({
+			...baseSession,
+			changes: [{ ...baseChange, optionGroupKey: null, optionGroupTitle: null }],
+		});
+		expect(cleared.changes[0]?.optionGroupKey).toBeNull();
+		expect(cleared.changes[0]?.optionGroupTitle).toBeNull();
+
+		const omitted = parseSurfaceSession(baseSession);
+		expect("optionGroupKey" in (omitted.changes[0] ?? {})).toBe(false);
+
+		expect(() =>
+			parseSurfaceSession({
+				...baseSession,
+				changes: [{ ...baseChange, optionGroupKey: "Not Valid" }],
+			}),
+		).toThrow("session.changes[0].optionGroupKey");
+		expect(() =>
+			parseSurfaceSession({
+				...baseSession,
+				changes: [
+					{
+						...baseChange,
+						optionGroupKey: "homepage-direction",
+						optionGroupTitle: "x".repeat(SURFACE_MAX_OPTION_GROUP_TITLE_CHARS + 1),
+					},
+				],
+			}),
+		).toThrow("session.changes[0].optionGroupTitle");
 	});
 });

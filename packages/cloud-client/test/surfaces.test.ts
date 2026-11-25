@@ -319,3 +319,86 @@ describe("cloud-client surface automation owners", () => {
 		);
 	});
 });
+
+describe("cloud-client surface change option groups", () => {
+	const surfaceId = "13740000-0000-4000-8000-000000000001";
+	const sessionId = "13740000-0000-4000-8000-000000000002";
+	const changeA = "13740000-0000-4000-8000-000000000003";
+	const changeB = "13740000-0000-4000-8000-000000000004";
+	const now = "2026-11-24T08:00:00Z";
+
+	function makeChange(id: string, seq: number, status: "staged" | "discarded", groupKey: string | null) {
+		return {
+			id,
+			sessionId,
+			surfaceId,
+			seq,
+			title: `Option ${seq}`,
+			summary: `Summary ${seq}`,
+			kind: "git_range",
+			status,
+			parentSha: "a".repeat(40),
+			headSha: `${seq}`.repeat(40),
+			dependsOnChangeIds: [],
+			affectedPaths: ["index.html"],
+			diffStats: { filesChanged: 1, additions: 4, deletions: 1 },
+			conflictPaths: null,
+			landedChangeNumber: null,
+			canUndo: false,
+			optionGroupKey: groupKey,
+			optionGroupTitle: groupKey ? "Homepage direction" : null,
+			createdAt: now,
+			resolvedAt: status === "discarded" ? now : null,
+		};
+	}
+
+	it("calls qorpera_choose_surface_change_option and qorpera_discard_surface_option_group", async () => {
+		const chosenSession = {
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Homepage directions",
+			prompt: "Try two directions",
+			state: "ready",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: null,
+			hasActiveChat: false,
+			question: null,
+			changes: [makeChange(changeA, 1, "discarded", "homepage-direction"), makeChange(changeB, 2, "staged", null)],
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		};
+		const discardedSession = {
+			...chosenSession,
+			state: "discarded",
+			changes: [
+				makeChange(changeA, 1, "discarded", "homepage-direction"),
+				makeChange(changeB, 2, "discarded", "homepage-direction"),
+			],
+			closedAt: now,
+		};
+		const rpc = vi
+			.fn()
+			.mockResolvedValueOnce({ data: chosenSession, error: null })
+			.mockResolvedValueOnce({ data: discardedSession, error: null });
+		const client = new CloudSurfacesClient({ rpc } as unknown as SupabaseClient);
+
+		const chosen = await client.chooseSurfaceChangeOption(changeB);
+		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_choose_surface_change_option", { p_change_id: changeB });
+		expect(chosen.openChangeCount).toBe(1);
+		expect(chosen.changes[1]?.optionGroupKey).toBeNull();
+		expect(chosen.changes[0]?.status).toBe("discarded");
+
+		const discarded = await client.discardSurfaceOptionGroup(sessionId, "homepage-direction");
+		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_discard_surface_option_group", {
+			p_session_id: sessionId,
+			p_option_group_key: "homepage-direction",
+		});
+		expect(discarded.state).toBe("discarded");
+		expect(discarded.openChangeCount).toBe(0);
+	});
+});

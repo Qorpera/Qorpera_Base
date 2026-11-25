@@ -2663,6 +2663,251 @@ describe("a website's rail row", () => {
 	});
 });
 
+describe("single-session change option groups", () => {
+	it("renders a mutually exclusive option list in Changes, allows unselecting all, and graduates the chosen option to Tier 2", async () => {
+		const opt1 = change(CHANGES[0], 1, "staged", {
+			title: "Broker",
+			summary: "Editorial layout",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt2 = change(CHANGES[1], 2, "staged", {
+			title: "Showcase",
+			summary: "Product-led direction",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt3 = change(CHANGES[2], 3, "staged", {
+			title: "Trading desk",
+			summary: "Compact market table",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const initialSession = session([], {
+			title: "Homepage directions",
+			changes: [opt1, opt2, opt3],
+			openChangeCount: 3,
+		});
+		const graduatedSession = session([], {
+			title: "Homepage directions",
+			changes: [
+				{ ...opt1, status: "discarded" },
+				{ ...opt2, optionGroupKey: null, optionGroupTitle: null },
+				{ ...opt3, status: "discarded" },
+			],
+			openChangeCount: 1,
+		});
+		let currentSession = initialSession;
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chooseSurfaceChangeOption = vi.fn(async () => {
+			currentSession = graduatedSession;
+			return graduatedSession;
+		});
+		const discardSurfaceOptionGroup = vi.fn(async () => {
+			currentSession = session([], {
+				title: "Homepage directions",
+				state: "discarded",
+				changes: initialSession.changes.map((item) => ({ ...item, status: "discarded" as const })),
+				openChangeCount: 0,
+			});
+			return currentSession;
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([currentSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		const optionButtons = () => [...drawer.querySelectorAll<HTMLButtonElement>('[data-act="pick-option"]')];
+		expect(optionButtons()).toHaveLength(3);
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
+		expect(drawer.querySelector('[data-act="approve"]')).toBeNull();
+		expect(drawer.querySelector('[data-act="approve-shown"]')).toBeNull();
+		expect(drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')?.disabled).toBe(false);
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [opt2.id],
+			explorationSessionId: null,
+		});
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		expect(optionButtons().map((btn) => btn.getAttribute("aria-pressed"))).toEqual(["false", "false", "false"]);
+		expect(drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')?.disabled).toBe(true);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [],
+			explorationSessionId: null,
+		});
+
+		optionButtons()[1]!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>('[data-act="choose-option"]')!.click();
+		await flush();
+		view.update();
+
+		expect(chooseSurfaceChangeOption).toHaveBeenCalledWith(opt2.id);
+		expect(drawer.querySelectorAll('[data-act="pick-option"]')).toHaveLength(0);
+		const toggleSwitch = drawer.querySelector<HTMLButtonElement>('[data-act="toggle"]');
+		expect(toggleSwitch?.getAttribute("aria-checked")).toBe("true");
+		expect(drawer.querySelector('[data-act="approve"]')?.textContent).toBe("Approve");
+		expect(drawer.querySelector('[data-act="approve-shown"]')?.textContent).toContain("Approve all 1");
+
+		view.dispose();
+		store.dispose();
+
+		currentSession = initialSession;
+		const focusedStore = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([currentSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await focusedStore.load();
+		const focusedView = new SurfaceView(
+			{ store: focusedStore, mount: () => undefined, openMigration: () => undefined },
+			"website",
+		);
+		document.body.append(focusedView.el);
+		await flush();
+		focusedStore.openDrawer(SURFACE, SESSION);
+		focusedView.update();
+
+		const focusedDrawer = focusedView.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(focusedDrawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(focusedDrawer.querySelectorAll('[data-act="pick-option"]')).toHaveLength(3);
+		const focusedDiscard = focusedDrawer.querySelector<HTMLButtonElement>('[data-act="discard-option-group-armed"]')!;
+		expect(focusedDiscard.textContent).toBe("Discard");
+		focusedDiscard.click();
+		await flush();
+		expect(discardSurfaceOptionGroup).not.toHaveBeenCalled();
+		const armedFocusedDiscard = focusedDrawer.querySelector<HTMLButtonElement>(
+			'[data-act="discard-option-group-armed"]',
+		)!;
+		expect(armedFocusedDiscard.textContent).toBe("Confirm");
+		expect(armedFocusedDiscard.dataset.armed).toBe("true");
+		armedFocusedDiscard.click();
+		await flush();
+		expect(discardSurfaceOptionGroup).toHaveBeenCalledWith(SESSION, "concept");
+		focusedView.dispose();
+		focusedStore.dispose();
+	});
+
+	it("keeps multiple option groups and standalone changes independent in one session until every group is resolved", async () => {
+		const s1 = change("44444444-4444-4444-8444-444444444450", 1, "staged", { title: "Fix favicon" });
+		const a1 = change("44444444-4444-4444-8444-444444444451", 2, "staged", {
+			title: "Hero A",
+			optionGroupKey: "hero",
+			optionGroupTitle: "Hero layout",
+		});
+		const a2 = change("44444444-4444-4444-8444-444444444452", 3, "staged", {
+			title: "Hero B",
+			optionGroupKey: "hero",
+			optionGroupTitle: "Hero layout",
+		});
+		const b1 = change("44444444-4444-4444-8444-444444444453", 4, "staged", {
+			title: "Pricing A",
+			optionGroupKey: "pricing",
+			optionGroupTitle: "Pricing table",
+		});
+		const b2 = change("44444444-4444-4444-8444-444444444454", 5, "staged", {
+			title: "Pricing B",
+			optionGroupKey: "pricing",
+			optionGroupTitle: "Pricing table",
+		});
+		let current = session([], { title: "Full redesign", changes: [s1, a1, a2, b1, b2], openChangeCount: 5 });
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chooseSurfaceChangeOption = vi.fn(async (changeId: string) => {
+			const picked = current.changes.find((c) => c.id === changeId)!;
+			const nextChanges = current.changes.map((c) => {
+				if (c.id === changeId) return { ...c, optionGroupKey: null, optionGroupTitle: null };
+				if (c.optionGroupKey === picked.optionGroupKey) return { ...c, status: "discarded" as const };
+				return c;
+			});
+			current = {
+				...current,
+				changes: nextChanges,
+				openChangeCount: nextChanges.filter((c) => c.status === "staged").length,
+			};
+			return current;
+		});
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([current])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+			}),
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(drawer.querySelectorAll('[data-option-group="hero"] [data-act="pick-option"]')).toHaveLength(2);
+		expect(drawer.querySelectorAll('[data-option-group="pricing"] [data-act="pick-option"]')).toHaveLength(2);
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a1.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-option"][data-change="${a1.id}"]`)!.click();
+		await flush();
+		view.update();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-option"][data-change="${a2.id}"]`)!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="choose-option"][data-change="${a2.id}"]`)!.click();
+		await flush();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
+		expect(drawer.querySelector('[data-act="approve-all"]')).toBeNull();
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
+
+		drawer.querySelector<HTMLButtonElement>(`[data-act="choose-option"][data-change="${b1.id}"]`)!.click();
+		await flush();
+		view.update();
+		expect(drawer.querySelector('[data-act="approve-all"]')?.textContent).toBe("Approve all");
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
+		view.dispose();
+		store.dispose();
+	});
+});
+
 describe("the rail's empty-space menu with interfaces (20260930892000)", () => {
 	it("offers the interfaces' New section in the list, never in the Agents and Members dock", async () => {
 		stubFigureMotion();

@@ -16,6 +16,7 @@ import {
 	compiledCompanyIdentity,
 	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
+	groupSessionChanges,
 	isOpenVariant,
 	MAX_CACHED_BINARY_BYTES,
 	migrationPending,
@@ -2716,6 +2717,264 @@ describe("SurfacesStore", () => {
 		expect(cachedIds).toContain(extra[0]!.id);
 		expect(cachedIds).toContain(extra.at(-1)!.id);
 		store.dispose();
+	});
+
+	it("manages single-session option groups across preview picking, unselecting all, choosing Tier 2, and discarding", async () => {
+		const opt1 = change(CHANGES[0], 1, "staged", {
+			title: "Broker",
+			summary: "Calm editorial layout",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt2 = change(CHANGES[1], 2, "staged", {
+			title: "Showcase",
+			summary: "Product-led showcase",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const opt3 = change(CHANGES[2], 3, "staged", {
+			title: "Trading desk",
+			summary: "Structured live feed",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage concept",
+		});
+		const groupedSession = session([], { changes: [opt1, opt2, opt3], openChangeCount: 3 });
+
+		const entries = groupSessionChanges(groupedSession.changes);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({
+			kind: "option_group",
+			group: { key: "concept", title: "Homepage concept", options: [opt1, opt2, opt3] },
+		});
+
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+				toggledChangeIds: selection.toggledChangeIds,
+			}),
+			compareFrames: [],
+		}));
+		const chosenSession = session([], {
+			changes: [
+				{ ...opt1, status: "discarded" },
+				{ ...opt2, optionGroupKey: null, optionGroupTitle: null },
+				{ ...opt3, status: "discarded" },
+			],
+			openChangeCount: 1,
+		});
+		const discardedSession = session([], {
+			state: "discarded",
+			changes: [
+				{ ...opt1, status: "discarded" },
+				{ ...opt2, status: "discarded" },
+				{ ...opt3, status: "discarded" },
+			],
+			openChangeCount: 0,
+		});
+		const chooseSurfaceChangeOption = vi.fn(async () => chosenSession);
+		const discardSurfaceOptionGroup = vi.fn(async () => discardedSession);
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([groupedSession])),
+				setPreviewSelection,
+				chooseSurfaceChangeOption,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+
+		expect(store.pickedOption(groupedSession, "concept")).toBe(opt1.id);
+		expect(store.isChangeShown(opt1.id)).toBe(true);
+		expect(store.isChangeShown(opt2.id)).toBe(false);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt1.id]);
+
+		setPreviewSelection.mockClear();
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(store.pickedOption(groupedSession, "concept")).toBe(opt2.id);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt2.id]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [opt2.id],
+			explorationSessionId: null,
+		});
+
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(store.pickedOption(groupedSession, "concept")).toBeNull();
+		expect(store.isChangeShown(opt1.id)).toBe(false);
+		expect(store.isChangeShown(opt2.id)).toBe(false);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [],
+			explorationSessionId: null,
+		});
+
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(await store.chooseOption(SESSION, opt2.id)).toBe(true);
+		expect(chooseSurfaceChangeOption).toHaveBeenCalledWith(opt2.id);
+		expect(store.isChangeShown(opt2.id)).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt2.id]);
+		expect(groupSessionChanges(store.session(SESSION)!.changes.filter((c) => c.status === "staged"))).toEqual([
+			{ kind: "change", change: expect.objectContaining({ id: opt2.id, optionGroupKey: null }) },
+		]);
+
+		store.dispose();
+
+		const discardStore = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([groupedSession])),
+				setPreviewSelection,
+				discardSurfaceOptionGroup,
+			}),
+		);
+		await discardStore.load();
+		await discardStore.openSurface("website");
+		expect(await discardStore.discardOptionGroup(SESSION, "concept")).toBe(true);
+		expect(discardSurfaceOptionGroup).toHaveBeenCalledWith(SESSION, "concept");
+		expect(discardStore.workspace(SURFACE)?.activeSessions).toHaveLength(0);
+		discardStore.dispose();
+	});
+
+	it("handles rapid out-of-order option picking, Studio identity option switching, and previewBaseChangeIds lineage cleanly", async () => {
+		const opt1 = change(CHANGES[0], 1, "staged", {
+			title: "Direction A",
+			summary: "Editorial",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Concept",
+		});
+		const opt2 = change(CHANGES[1], 2, "staged", {
+			title: "Direction B",
+			summary: "Showcase",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Concept",
+		});
+		const opt3 = change(CHANGES[2], 3, "staged", {
+			title: "Direction C",
+			summary: "Trading board",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Concept",
+		});
+		const groupedSession = session([], { changes: [opt1, opt2, opt3], openChangeCount: 3 });
+
+		const firstCall = deferred<ReturnType<typeof workspace>["previewState"]>();
+		const secondCall = deferred<ReturnType<typeof workspace>["previewState"]>();
+		let previewCalls = 0;
+		const setPreviewSelection = vi.fn(async (_surfaceId: string, selection: { toggledChangeIds: string[] }) => {
+			previewCalls += 1;
+			if (previewCalls === 1) return firstCall.promise;
+			if (previewCalls === 2) return secondCall.promise;
+			return {
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary: previewFrame({
+					status: selection.toggledChangeIds.length > 0 ? "ready" : "live_baseline",
+					toggledChangeIds: selection.toggledChangeIds,
+				}),
+				compareFrames: [],
+			};
+		});
+		const startSurfaceSession = vi.fn(async (_surfaceId: string, prompt: string) =>
+			session(["staged"], { id: "77777777-7777-4777-8777-777777777778", prompt }),
+		);
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([groupedSession])),
+				setPreviewSelection,
+				startSurfaceSession,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+
+		const p1 = store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		const p2 = store.pickOption(SURFACE, SESSION, "concept", opt3.id);
+		const p3 = store.pickOption(SURFACE, SESSION, "concept", opt3.id);
+		const p4 = store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+
+		secondCall.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ status: "ready", toggledChangeIds: [opt2.id] }),
+			compareFrames: [],
+		});
+		firstCall.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ status: "ready", toggledChangeIds: [opt1.id] }),
+			compareFrames: [],
+		});
+		await Promise.all([p1, p2, p3, p4]);
+
+		expect(store.pickedOption(groupedSession, "concept")).toBe(opt2.id);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([opt2.id]);
+		expect(store.workspace(SURFACE)?.previewState.primary.toggledChangeIds).toEqual([opt2.id]);
+
+		await store.startSession(SURFACE, "Refine the picked option");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(
+			SURFACE,
+			"Refine the picked option",
+			expect.objectContaining({ previewBaseChangeIds: [opt2.id] }),
+		);
+
+		await store.pickOption(SURFACE, SESSION, "concept", opt2.id);
+		expect(store.pickedOption(groupedSession, "concept")).toBeNull();
+		await store.startSession(SURFACE, "Start fresh from base");
+		expect(startSurfaceSession).toHaveBeenLastCalledWith(SURFACE, "Start fresh from base", {});
+		store.dispose();
+
+		const identityId = "22222222-2222-4222-8222-222222222288";
+		const identity = summary({
+			id: identityId,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const idOpt1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			title: "Terracotta",
+			optionGroupKey: "palette",
+			optionGroupTitle: "Palette",
+			patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+		});
+		const idOpt2 = change(CHANGES[1], 2, "staged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			title: "Cobalt",
+			optionGroupKey: "palette",
+			optionGroupTitle: "Palette",
+			patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#2563eb" } }],
+		});
+		const idSession = session([], { surfaceId: identityId, changes: [idOpt1, idOpt2], openChangeCount: 2 });
+		const idStore = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [identity]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([idSession], { surface: identity })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () => folderContents({ "identity/tokens.json": '{"accent":"#111111"}' })),
+			},
+		);
+		await idStore.load();
+		await idStore.openSurface("identity");
+		await idStore.refreshCloudFiles(identity);
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).toContain("#d76f45");
+
+		await idStore.pickOption(identityId, SESSION, "palette", idOpt2.id);
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).toContain("#2563eb");
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).not.toContain("#d76f45");
+
+		await idStore.pickOption(identityId, SESSION, "palette", idOpt2.id);
+		expect(idStore.companyIdentityFiles()?.files["identity/tokens.json"]).toContain("#111111");
+		idStore.dispose();
 	});
 
 	it("captures visible preview change IDs when starting a session in preview mode and omits them in live mode", async () => {

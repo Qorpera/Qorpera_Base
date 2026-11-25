@@ -13,10 +13,13 @@ import {
 export const SURFACE_SCHEMA_VERSION = "qorpera.surface/v1";
 
 export const SURFACE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const SURFACE_OPTION_GROUP_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SURFACE_MAX_TITLE_CHARS = 80;
 export const SURFACE_MAX_PROMPT_CHARS = 16_000;
 export const SURFACE_MAX_CHANGE_TITLE_CHARS = 160;
 export const SURFACE_MAX_CHANGE_SUMMARY_CHARS = 2_000;
+export const SURFACE_MAX_OPTION_GROUP_KEY_CHARS = 80;
+export const SURFACE_MAX_OPTION_GROUP_TITLE_CHARS = 160;
 export const SURFACE_MAX_COMPARE_VARIANTS = 3;
 
 export const SURFACE_GROUPS = ["products", "operations"] as const;
@@ -310,6 +313,8 @@ export interface SurfaceChangeUnit {
 	readonly summary: string;
 	readonly kind: SurfaceChangeKind;
 	readonly status: SurfaceChangeStatus;
+	readonly optionGroupKey?: string | null;
+	readonly optionGroupTitle?: string | null;
 	readonly parentSha: string | null;
 	readonly headSha: string | null;
 	readonly dependsOnChangeIds: readonly string[];
@@ -610,6 +615,15 @@ export function isSurfaceSlug(value: unknown): value is string {
 	return typeof value === "string" && value.length >= 1 && value.length <= 64 && SURFACE_SLUG_PATTERN.test(value);
 }
 
+export function isSurfaceOptionGroupKey(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length >= 1 &&
+		value.length <= SURFACE_MAX_OPTION_GROUP_KEY_CHARS &&
+		SURFACE_OPTION_GROUP_KEY_PATTERN.test(value)
+	);
+}
+
 export function parseSurfaceSlug(value: unknown, label = "surface.slug"): string {
 	if (!isSurfaceSlug(value)) throw new WireValueError(label);
 	return value;
@@ -753,6 +767,20 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		raw.approvedByUserId === undefined
 			? undefined
 			: parseOptionalUuid(raw.approvedByUserId, `${label}.approvedByUserId`);
+	const optionGroupKey =
+		raw.optionGroupKey === undefined
+			? undefined
+			: raw.optionGroupKey === null
+				? null
+				: isSurfaceOptionGroupKey(raw.optionGroupKey)
+					? raw.optionGroupKey
+					: (() => {
+							throw new WireValueError(`${label}.optionGroupKey`);
+						})();
+	const optionGroupTitle =
+		raw.optionGroupTitle === undefined
+			? undefined
+			: parseOptionalText(raw.optionGroupTitle, `${label}.optionGroupTitle`, SURFACE_MAX_OPTION_GROUP_TITLE_CHARS);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
@@ -762,6 +790,8 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		summary: parseBoundedText(raw.summary, `${label}.summary`, SURFACE_MAX_CHANGE_SUMMARY_CHARS, 0),
 		kind: parseEnum(raw.kind, SURFACE_CHANGE_KINDS, `${label}.kind`),
 		status: parseEnum(raw.status, SURFACE_CHANGE_STATUSES, `${label}.status`),
+		...(optionGroupKey !== undefined ? { optionGroupKey } : {}),
+		...(optionGroupTitle !== undefined ? { optionGroupTitle } : {}),
 		parentSha: parseOptionalText(raw.parentSha, `${label}.parentSha`, 64),
 		headSha: parseOptionalText(raw.headSha, `${label}.headSha`, 64),
 		dependsOnChangeIds: parseUuidArray(raw.dependsOnChangeIds ?? [], `${label}.dependsOnChangeIds`, 64),

@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Added single-session change option group fields (`optionGroupKey`, `optionGroupTitle`) to `SurfaceChangeUnit` and `parseSurfaceChangeUnit`, alongside `SURFACE_OPTION_GROUP_KEY_PATTERN`, `SURFACE_MAX_OPTION_GROUP_KEY_CHARS`, `SURFACE_MAX_OPTION_GROUP_TITLE_CHARS`, and `isSurfaceOptionGroupKey`.
 - Preview-aware session lineage for dependent interface changes (migration `20260930890000_surface_preview_lineage.sql`): added optional `previewBaseChangeIds` on `SurfaceChangeUnit` and `StudioPatchChange` (validated as up to 64 UUIDs in `parseSurfaceChangeUnit`).
 - Silent background reconciliation for overlapping interface changes (migration `20260930888000_surface_silent_reconciliation.sql`): added deterministic 3-way line and JSON object merge helpers (`mergeTextThreeWay`, `mergeJsonThreeWay`, `mergeStudioTextContent` in `surface-merge.ts`), `"reconciling"` to `SURFACE_PREVIEW_STATUSES`, `SurfaceReconciliation` / `SURFACE_RECONCILIATION_STATUSES` / `parseSurfaceReconciliation`, optional `baseFiles` on `StudioPatchChange` and `SurfaceChangeUnit`, optional `folderRevision` on `SurfaceSummary`, and optional `reconciliations` on `SurfaceWorkspace`.
 - `surfaces` and `surface-layout`: admitted `application/pdf` in `STUDIO_BINARY_MEDIA_TYPES` and documented PDFs in the `artifacts` block summary for PDF deliverables.

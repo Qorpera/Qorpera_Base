@@ -845,6 +845,14 @@ describe("the surface page", () => {
 			sessionMessage(MESSAGE_IDS[2], "system", "Staged change: Skarpere hero-tekst — Kortere og roligere.", {
 				changeId: CHANGES[0],
 			}),
+			sessionMessage(
+				"77777777-7777-4777-8777-777777777778",
+				"system",
+				"Staged option: Editorial hero — Clean look.",
+				{
+					changeId: CHANGES[1],
+				},
+			),
 			sessionMessage("77777777-7777-4777-8777-777777777779", "system", "Merge conflicted. Reconcile to resolve.", {
 				changeId: CHANGES[0],
 			}),

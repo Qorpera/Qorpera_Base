@@ -1,4 +1,5 @@
 import {
+	isSurfaceOptionGroupKey,
 	isSurfaceSlug,
 	isUuid,
 	type JsonValue,
@@ -21,6 +22,8 @@ import {
 	SURFACE_MAX_CHANGE_SUMMARY_CHARS,
 	SURFACE_MAX_CHANGE_TITLE_CHARS,
 	SURFACE_MAX_COMPARE_VARIANTS,
+	SURFACE_MAX_OPTION_GROUP_KEY_CHARS,
+	SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
 	SURFACE_MAX_PROMPT_CHARS,
 	SURFACE_MAX_TITLE_CHARS,
 	SURFACE_PREVIEW_MODES,
@@ -144,6 +147,8 @@ export interface CodingRecordChangeRequest {
 	readonly commitSha: string;
 	readonly parentSha?: string | null;
 	readonly dependsOnChangeIds: readonly string[];
+	readonly optionGroup?: string | null;
+	readonly optionGroupTitle?: string | null;
 }
 
 export interface ProposeSurfaceRequest {
@@ -179,6 +184,8 @@ export interface StageSurfacePatchRequest {
 	readonly baseFiles?: Readonly<Record<string, string | null>>;
 	readonly notePaths: readonly string[];
 	readonly finishSession: boolean;
+	readonly optionGroup?: string | null;
+	readonly optionGroupTitle?: string | null;
 }
 
 export interface StageSurfaceOpsActionRequest {
@@ -523,6 +530,8 @@ export function createControlPlaneSurfaceToolsPort(
 					p_patch_manifest: null,
 					p_finish_session: false,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
+					...(request.optionGroup !== undefined ? { p_option_group_key: request.optionGroup } : {}),
+					...(request.optionGroupTitle !== undefined ? { p_option_group_title: request.optionGroupTitle } : {}),
 				},
 				context.signal,
 			);
@@ -610,6 +619,8 @@ export function createControlPlaneSurfaceToolsPort(
 					p_patch_manifest: patchManifest,
 					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
+					...(request.optionGroup !== undefined ? { p_option_group_key: request.optionGroup } : {}),
+					...(request.optionGroupTitle !== undefined ? { p_option_group_title: request.optionGroupTitle } : {}),
 				},
 				context.signal,
 			);
@@ -674,6 +685,51 @@ export function createControlPlaneSurfaceToolsPort(
 	};
 }
 
+function parseOptionGroupArgs(raw: Record<string, unknown>): {
+	readonly optionGroup?: string;
+	readonly optionGroupTitle?: string;
+} {
+	const rawGroup = raw.optionGroup;
+	const rawTitle = raw.optionGroupTitle;
+	let optionGroup: string | undefined;
+	if (rawGroup !== undefined && rawGroup !== null) {
+		if (typeof rawGroup !== "string") {
+			throw new CloudToolArgumentRefusal("optionGroup must be a lower-case hyphenated string");
+		}
+		const normalized = rawGroup.trim().toLowerCase();
+		if (normalized.length > 0) {
+			if (!isSurfaceOptionGroupKey(normalized)) {
+				throw new CloudToolArgumentRefusal(
+					`optionGroup must be 1..${SURFACE_MAX_OPTION_GROUP_KEY_CHARS} lower-case letters, digits, and single hyphens`,
+				);
+			}
+			optionGroup = normalized;
+		}
+	}
+	let optionGroupTitle: string | undefined;
+	if (rawTitle !== undefined && rawTitle !== null) {
+		if (typeof rawTitle !== "string") {
+			throw new CloudToolArgumentRefusal("optionGroupTitle must be a string");
+		}
+		const trimmed = rawTitle.trim();
+		if (trimmed.length > 0) {
+			if (trimmed.length > SURFACE_MAX_OPTION_GROUP_TITLE_CHARS) {
+				throw new CloudToolArgumentRefusal(
+					`optionGroupTitle must be at most ${SURFACE_MAX_OPTION_GROUP_TITLE_CHARS} characters`,
+				);
+			}
+			optionGroupTitle = trimmed;
+		}
+	}
+	if (optionGroupTitle !== undefined && optionGroup === undefined) {
+		throw new CloudToolArgumentRefusal("optionGroupTitle requires optionGroup");
+	}
+	return {
+		...(optionGroup !== undefined ? { optionGroup } : {}),
+		...(optionGroupTitle !== undefined ? { optionGroupTitle } : {}),
+	};
+}
+
 export function createCodingRecordChangeTool(
 	sessionId: string,
 	port: Pick<CloudSurfaceToolsPort, "recordChange">,
@@ -682,7 +738,7 @@ export function createCodingRecordChangeTool(
 		name: "coding_record_change",
 		source: "worker",
 		description:
-			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before coding_finish.",
+			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before coding_finish. To propose 2-4 mutually exclusive design/website options as a sidebar multiple choice inside this single session (never as an in-page switcher), record each standalone option commit with the same optionGroup slug (and optional optionGroupTitle) and the same shared parentSha (resetting the working tree cleanly to that base commit with git read-tree --reset -u <baseSha> between option commits so each option is a clean publishable site).",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -693,13 +749,24 @@ export function createCodingRecordChangeTool(
 				parentSha: {
 					type: "string",
 					description:
-						"Optional 40-hex Git parent commit SHA before this change unit (e.g. git rev-parse <commitSha>~1); defaults to the previous recorded change head or session base SHA.",
+						"Optional 40-hex Git parent commit SHA before this change unit (e.g. git rev-parse <commitSha>~1); defaults to the shared optionGroup parentSha or previous recorded change head or session base SHA.",
 				},
 				commitSha: { type: "string", description: "40-hex Git commit SHA on the session branch." },
 				dependsOnChangeIds: {
 					type: "array",
 					items: { type: "string" },
 					description: "Optional IDs of earlier ChangeUnits in this session that must merge before this one.",
+				},
+				optionGroup: {
+					type: "string",
+					maxLength: SURFACE_MAX_OPTION_GROUP_KEY_CHARS,
+					description:
+						"Optional lower-case hyphenated key (e.g. 'homepage-direction') grouping mutually exclusive real options into one multiple-choice block in Changes. Every option in the same optionGroup must share the same parentSha.",
+				},
+				optionGroupTitle: {
+					type: "string",
+					maxLength: SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
+					description: "Optional plain founder-facing heading for the optionGroup multiple-choice block.",
 				},
 			},
 		},
@@ -710,7 +777,7 @@ export function createCodingRecordChangeTool(
 					value,
 					"coding_record_change",
 					["title", "summary", "commitSha"],
-					["parentSha", "dependsOnChangeIds"],
+					["parentSha", "dependsOnChangeIds", "optionGroup", "optionGroupTitle"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -737,12 +804,14 @@ export function createCodingRecordChangeTool(
 			if (!Array.isArray(depsRaw) || depsRaw.length > 32 || depsRaw.some((item) => !isUuid(item))) {
 				throw new CloudToolArgumentRefusal("dependsOnChangeIds must be an array of change UUIDs");
 			}
+			const groupArgs = parseOptionGroupArgs(raw);
 			return {
 				title,
 				summary,
 				commitSha: raw.commitSha,
 				...(parentSha !== undefined ? { parentSha } : {}),
 				dependsOnChangeIds: [...(depsRaw as string[])],
+				...groupArgs,
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
@@ -1312,6 +1381,17 @@ export function createStageSurfacePatchTool(
 			items: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
 			description: "Optional supporting rationale note paths under the surface notes folder.",
 		},
+		optionGroup: {
+			type: "string",
+			maxLength: SURFACE_MAX_OPTION_GROUP_KEY_CHARS,
+			description:
+				"Optional lower-case hyphenated key (e.g. 'palette-direction') grouping mutually exclusive real options into one multiple-choice block in Changes.",
+		},
+		optionGroupTitle: {
+			type: "string",
+			maxLength: SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
+			description: "Optional plain founder-facing heading for the optionGroup multiple-choice block.",
+		},
 	};
 	if (!options.deferSessionCompletion) {
 		schemaProperties.finishSession = {
@@ -1324,7 +1404,7 @@ export function createStageSurfacePatchTool(
 		source: "worker",
 		description: options.allowMultipleDeliverables
 			? "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session covering all requested paths in a single call. Write reports as valid *.report.json articles when updating report deliverables."
-			: "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session. Call this tool once per independent deliverable (for example, one call per report, article, blog post, or page section) so members can toggle, preview, and approve each piece individually; never bundle multiple reports or standalone HTML documents into one call. Write reports and blog posts as *.report.json articles (or self-contained .html when bespoke layout is needed) rather than raw .md files.",
+			: "Stage one cohesive folder_patch ChangeUnit on a Studio, Report, or Identity Surface session. Call this tool once per independent deliverable (for example, one call per report, article, blog post, or page section) so members can toggle, preview, and approve each piece individually; never bundle multiple reports or standalone HTML documents into one call. Write reports and blog posts as *.report.json articles (or self-contained .html when bespoke layout is needed) rather than raw .md files. To offer 2-4 mutually exclusive design or content options inside this session as a sidebar multiple choice, pass the same optionGroup slug (and optional optionGroupTitle) on each standalone option patch.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1338,7 +1418,7 @@ export function createStageSurfacePatchTool(
 					value,
 					"stage_surface_patch",
 					["title", "summary", "ops"],
-					["notePaths", "finishSession"],
+					["notePaths", "finishSession", "optionGroup", "optionGroupTitle"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -1380,12 +1460,14 @@ export function createStageSurfacePatchTool(
 			const notePaths = parseOptionalNotePathsArg(raw.notePaths);
 			const parsedFinishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
 			const finishSession = options.deferSessionCompletion ? false : parsedFinishSession;
+			const groupArgs = parseOptionGroupArgs(raw);
 			return {
 				title,
 				summary,
 				ops: normalizedOps as unknown as JsonValue,
 				notePaths,
 				finishSession,
+				...groupArgs,
 			};
 		},
 		async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
@@ -1405,7 +1487,7 @@ export function createStageSurfacePatchTool(
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as StageSurfacePatchRequest & { readonly layoutUnchecked?: boolean };
 			const result = await port.stageSurfacePatch(sessionId, parsed, context);
-			stagedThisTurn.push(...parsed.ops);
+			if (!parsed.optionGroup) stagedThisTurn.push(...parsed.ops);
 			return {
 				kind: "text",
 				value: cloudToolJsonText({
