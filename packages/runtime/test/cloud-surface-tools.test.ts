@@ -4167,6 +4167,45 @@ describe("cloud surface runtime tools", () => {
 		expect(briefAfterTipDiscard).toContain("#2 Superpower-inspired sketches — discarded by member");
 		expect(briefAfterTipDiscard).toContain("removed by the member and are no longer staged or shown in Preview");
 
+		const briefAfterOptionDiscard = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			surfaceSlug: "website",
+			surfaceTitle: "Hjemmeside",
+			repositoryKey: "thetaband/website",
+			briefMarkdown: "Danish presale site.",
+			mainSha,
+			branchHeadSha: c2Head,
+			openChanges: [
+				{
+					id: c1Id,
+					seq: 1,
+					title: "Editorial direction",
+					parentSha: mainSha,
+					headSha: c1Head,
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Homepage direction",
+				},
+			],
+			resolvedChanges: [
+				{
+					id: c2Id,
+					seq: 2,
+					title: "Bold direction",
+					status: "discarded",
+					parentSha: mainSha,
+					headSha: c2Head,
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Homepage direction",
+					discardedByExploration: false,
+				},
+			],
+		});
+		expect(briefAfterOptionDiscard).toContain("IMPORTANT — Worktree Out of Sync");
+		expect(briefAfterOptionDiscard).toContain(`git read-tree --reset -u ${mainSha}`);
+		expect(briefAfterOptionDiscard).toContain(`optionGroup: "homepage-direction"`);
+		expect(briefAfterOptionDiscard).toContain(`parentSha: "${mainSha}"`);
+		expect(briefAfterOptionDiscard).not.toContain(`git read-tree --reset -u ${c1Head}`);
+
 		const briefAfterBaseDiscard = buildSurfaceTurnBrief({
 			sessionId: randomUUID(),
 			surfaceSlug: "website",

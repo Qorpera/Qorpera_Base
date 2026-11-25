@@ -52,6 +52,10 @@ declare
 	v_c5_sha constant text := repeat('8', 40);
 	v_opt1_sha constant text := repeat('6', 40);
 	v_opt2_sha constant text := repeat('7', 40);
+	v_opt3_sha constant text := repeat('9', 40);
+	v_opt4_sha constant text := repeat('a', 40);
+	v_opt3 uuid;
+	v_opt4 uuid;
 	v_lease_1 constant uuid := '13840000-0000-4000-8000-000000000101';
 	v_lease_2 constant uuid := '13840000-0000-4000-8000-000000000102';
 	v_lease_3 constant uuid := '13840000-0000-4000-8000-000000000103';
@@ -420,18 +424,92 @@ begin
 		null, null, false, v_lease_6, 'hero-style', 'Hero directions'
 	);
 	perform public.qorpera_native_surface_record_change(
-		v_company, v_opt_session, 'Bold Hero', 'High-contrast hero.',
+		v_company, v_opt_session, 'Studio Hero', 'Balanced studio hero.',
 		'git_range', v_main_sha, v_opt2_sha, '{}'::uuid[], array['index.html'],
 		null, null, false, v_lease_6, 'hero-style', 'Hero directions'
 	);
+	v_opt3 := (public.qorpera_native_surface_record_change(
+		v_company, v_opt_session, 'Bold Hero', 'High-contrast hero.',
+		'git_range', v_main_sha, v_opt3_sha, '{}'::uuid[], array['index.html'],
+		null, null, false, v_lease_6, 'hero-style', 'Hero directions'
+	) ->> 'changeId')::uuid;
 	perform public.qorpera_native_surface_complete_turn(
-		v_company, v_opt_session, 'ready', 'Prepared two hero directions.', null, null, v_opt2_sha, v_lease_6
+		v_company, v_opt_session, 'ready', 'Prepared three hero directions.', null, null, v_opt3_sha, v_lease_6
 	);
 	reset role;
 
 	perform pg_temp.sdaa_as(v_anna);
 	set local role authenticated;
 	perform public.qorpera_set_session_chat_open(v_opt_session, true);
+	perform public.qorpera_discard_surface_change(v_opt3);
+	reset role;
+
+	perform pg_temp.sdaa_open_turn(v_opt_session, '13840000-0000-4000-8000-00000000010b');
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_company, v_opt_session, 'Minimal Hero', 'Replacement option without parentSha.',
+			'git_range', null, v_opt4_sha, '{}'::uuid[], array['index.html'],
+			null, null, false, '13840000-0000-4000-8000-00000000010b', 'hero-style', 'Hero directions'
+		);
+		v_err_state := null;
+	exception when others then
+		v_err_state := sqlstate;
+		v_err_msg := sqlerrm;
+	end;
+	reset role;
+	perform pg_temp.sdaa_assert(
+		v_err_state = '22023'
+			and position('optionGroup "hero-style" base' in v_err_msg) > 0
+			and position('git read-tree --reset -u ' || v_main_sha in v_err_msg) > 0
+			and position('parentSha "' || v_main_sha || '"' in v_err_msg) > 0
+			and position(v_opt1_sha in v_err_msg) = 0
+			and position(v_opt2_sha in v_err_msg) = 0,
+		'omitted parentSha for optionGroup on discarded option tip advises shared group parentSha, not sibling headSha, got ' || coalesce(v_err_state, 'none') || ': ' || coalesce(v_err_msg, '')
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_company, v_opt_session, 'Minimal Hero on discarded', 'Explicit discarded parent.',
+			'git_range', v_opt3_sha, v_opt4_sha, '{}'::uuid[], array['index.html'],
+			null, null, false, '13840000-0000-4000-8000-00000000010b', 'hero-style', 'Hero directions'
+		);
+		v_err_state := null;
+	exception when others then
+		v_err_state := sqlstate;
+		v_err_msg := sqlerrm;
+	end;
+	reset role;
+	perform pg_temp.sdaa_assert(
+		v_err_state = '22023'
+			and position('optionGroup "hero-style" base' in v_err_msg) > 0
+			and position('git read-tree --reset -u ' || v_main_sha in v_err_msg) > 0
+			and position(v_opt1_sha in v_err_msg) = 0
+			and position(v_opt2_sha in v_err_msg) = 0,
+		'explicit discarded parentSha for optionGroup advises shared group parentSha, got ' || coalesce(v_err_state, 'none') || ': ' || coalesce(v_err_msg, '')
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_opt4 := (public.qorpera_native_surface_record_change(
+		v_company, v_opt_session, 'Minimal Hero', 'Clean replacement option.',
+		'git_range', v_main_sha, v_opt4_sha, '{}'::uuid[], array['index.html'],
+		null, null, false, '13840000-0000-4000-8000-00000000010b', 'hero-style', 'Hero directions'
+	) ->> 'changeId')::uuid;
+	perform public.qorpera_native_surface_complete_turn(
+		v_company, v_opt_session, 'ready', 'Added replacement hero option.', null, null, v_opt4_sha, '13840000-0000-4000-8000-00000000010b'
+	);
+	reset role;
+	perform pg_temp.sdaa_assert(
+		(select parent_sha from public.qorpera_surface_changes where id = v_opt4) = v_main_sha,
+		'adding a replacement option with explicit shared group parentSha succeeds'
+	);
+
+	perform pg_temp.sdaa_as(v_anna);
+	set local role authenticated;
 	perform public.qorpera_discard_surface_option_group(v_opt_session, 'hero-style');
 	reset role;
 
@@ -442,7 +520,7 @@ begin
 				and m.author_kind = 'system'
 				and m.author_user_id = v_anna
 				and m.change_id is null
-				and m.body = 'Discarded options: Editorial Hero, Bold Hero'
+				and m.body = 'Discarded options: Editorial Hero, Studio Hero, Minimal Hero'
 		),
 		'discarding an option group records a single Discarded options system message'
 	);
@@ -464,9 +542,9 @@ begin
 	v_turn := pg_temp.sdaa_read_turn(v_company, v_opt_session, v_lease_7);
 	perform pg_temp.sdaa_assert(
 		jsonb_array_length(v_turn -> 'openChanges') = 0
-			and jsonb_array_length(v_turn -> 'resolvedChanges') = 2
+			and jsonb_array_length(v_turn -> 'resolvedChanges') = 4
 			and (v_turn -> 'resolvedChanges' -> 0 ->> 'optionGroupKey') = 'hero-style'
-			and (v_turn -> 'resolvedChanges' -> 1 ->> 'status') = 'discarded',
+			and (v_turn -> 'resolvedChanges' -> 3 ->> 'status') = 'discarded',
 		'option group discard appears in resolvedChanges'
 	);
 

@@ -289,6 +289,7 @@ $new$	v_group_key text := nullif(lower(btrim(coalesce(p_option_group_key, ''))),
 	v_branch_head_sha text;
 	v_discarded_parent_title text;
 	v_active_target_sha text;
+	v_is_group_base boolean := false;
 	v_result jsonb;
 begin$new$,
 $old$	if coalesce(p_kind, 'git_range') = 'git_range' and p_change_id is null then
@@ -345,14 +346,33 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 					limit 1;
 					if v_discarded_parent_title is not null then
 						v_discarded_parent_title := btrim(regexp_replace(left(v_discarded_parent_title, 100), E'[^\\x20-\\x7E\\xC0-\\xFF]+', ' ', 'g'));
-						select nullif(btrim(oc.head_sha), '') into v_active_target_sha
-						from public.qorpera_surface_changes oc
-						where oc.session_id = p_session_id
-							and oc.head_sha is not null
-							and oc.status in ('staged', 'conflicted')
-						order by oc.seq desc
-						limit 1;
-						if v_active_target_sha is not null then
+						v_active_target_sha := null;
+						v_is_group_base := false;
+						if v_group_key is not null then
+							select nullif(btrim(oc.parent_sha), '') into v_active_target_sha
+							from public.qorpera_surface_changes oc
+							where oc.session_id = p_session_id
+								and oc.option_group_key = v_group_key
+								and oc.parent_sha is not null
+								and oc.status in ('staged', 'conflicted')
+							order by oc.seq asc
+							limit 1;
+							v_is_group_base := v_active_target_sha is not null;
+						end if;
+						if v_active_target_sha is null then
+							select nullif(btrim(oc.head_sha), '') into v_active_target_sha
+							from public.qorpera_surface_changes oc
+							where oc.session_id = p_session_id
+								and oc.head_sha is not null
+								and oc.status in ('staged', 'conflicted')
+							order by oc.seq desc
+							limit 1;
+						end if;
+						if v_active_target_sha is not null and v_is_group_base then
+							raise exception 'parentSha is required while branch tip % is discarded change "%". Reset your working tree to optionGroup "%" base with `git read-tree --reset -u %` (keeping HEAD on the branch tip), commit, and pass parentSha "%".',
+								v_branch_head_sha, v_discarded_parent_title, left(v_group_key, 48), v_active_target_sha, v_active_target_sha
+								using errcode = '22023';
+						elsif v_active_target_sha is not null then
 							raise exception 'parentSha is required while branch tip % is discarded change "%". Reset your working tree with `git read-tree --reset -u %` (keeping HEAD on the branch tip), commit, and pass parentSha "%".',
 								v_branch_head_sha, v_discarded_parent_title, v_active_target_sha, v_active_target_sha
 								using errcode = '22023';
@@ -423,14 +443,33 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 			limit 1;
 			if v_discarded_parent_title is not null then
 				v_discarded_parent_title := btrim(regexp_replace(left(v_discarded_parent_title, 100), E'[^\\x20-\\x7E\\xC0-\\xFF]+', ' ', 'g'));
-				select nullif(btrim(oc.head_sha), '') into v_active_target_sha
-				from public.qorpera_surface_changes oc
-				where oc.session_id = p_session_id
-					and oc.head_sha is not null
-					and oc.status in ('staged', 'conflicted')
-				order by oc.seq desc
-				limit 1;
-				if v_active_target_sha is not null then
+				v_active_target_sha := null;
+				v_is_group_base := false;
+				if v_group_key is not null then
+					select nullif(btrim(oc.parent_sha), '') into v_active_target_sha
+					from public.qorpera_surface_changes oc
+					where oc.session_id = p_session_id
+						and oc.option_group_key = v_group_key
+						and oc.parent_sha is not null
+						and oc.status in ('staged', 'conflicted')
+					order by oc.seq asc
+					limit 1;
+					v_is_group_base := v_active_target_sha is not null;
+				end if;
+				if v_active_target_sha is null then
+					select nullif(btrim(oc.head_sha), '') into v_active_target_sha
+					from public.qorpera_surface_changes oc
+					where oc.session_id = p_session_id
+						and oc.head_sha is not null
+						and oc.status in ('staged', 'conflicted')
+					order by oc.seq desc
+					limit 1;
+				end if;
+				if v_active_target_sha is not null and v_is_group_base then
+					raise exception 'parentSha % belongs to discarded change "%". Reset your working tree to optionGroup "%" base with `git read-tree --reset -u %` (keeping HEAD on the branch tip), commit, and pass parentSha "%".',
+						v_parent_sha, v_discarded_parent_title, left(v_group_key, 48), v_active_target_sha, v_active_target_sha
+						using errcode = '22023';
+				elsif v_active_target_sha is not null then
 					raise exception 'parentSha % belongs to discarded change "%". Reset your working tree with `git read-tree --reset -u %` (keeping HEAD on the branch tip), commit on top of the active staged state, and pass parentSha "%".',
 						v_parent_sha, v_discarded_parent_title, v_active_target_sha, v_active_target_sha
 						using errcode = '22023';

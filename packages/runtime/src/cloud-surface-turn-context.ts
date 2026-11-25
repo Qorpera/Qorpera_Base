@@ -494,11 +494,21 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 						(ch) => ch.headSha === branchHeadSha || (typeof ch.seq === "number" && ch.seq > latestOpen.seq),
 					);
 					const discardedNames = discardedAtTip.map((ch) => `"${ch.title.slice(0, 120)}"`).join(", ");
-					lines.push(
-						discardedNames
-							? `IMPORTANT — Worktree Out of Sync: the session branch tip (\`${branchHeadSha}\`) still holds discarded change(s) (${discardedNames}), which are past the latest active staged commit (\`${latestOpen.headSha}\`). The files currently checked out in your worktree reflect \`${branchHeadSha}\`, NOT the active staged state. Before reading or editing files, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip and removing any untracked scratch files) so your new commit builds cleanly on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`
-							: `Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option or change was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`,
-					);
+					if (latestOpen.optionGroupKey && latestOpen.parentSha) {
+						const groupKey = latestOpen.optionGroupKey;
+						const groupBase = latestOpen.parentSha;
+						lines.push(
+							discardedNames
+								? `IMPORTANT — Worktree Out of Sync: the session branch tip (\`${branchHeadSha}\`) still holds discarded change(s) (${discardedNames}), which are past the latest active option (\`${latestOpen.headSha}\` in optionGroup \`${groupKey}\`, shared base \`${groupBase}\`). The files currently checked out in your worktree reflect \`${branchHeadSha}\`, NOT the active staged state. Before reading or editing files: to add another option in \`${groupKey}\`, run \`git read-tree --reset -u ${groupBase}\` (keeping HEAD on the branch tip and removing any untracked scratch files) and pass \`optionGroup: "${groupKey}"\` with \`parentSha: "${groupBase}"\`; to revise an existing open option in place, run \`git read-tree --reset -u <option headSha>\` and pass its \`changeId\` with \`parentSha: "${groupBase}"\`.`
+								: `Note: the session branch tip (\`${branchHeadSha}\`) is past the latest active option (\`${latestOpen.headSha}\` in optionGroup \`${groupKey}\`, shared base \`${groupBase}\`), likely because a later option was discarded. Before making follow-up edits: to add another option in \`${groupKey}\`, run \`git read-tree --reset -u ${groupBase}\` (keeping HEAD on the branch tip) and pass \`optionGroup: "${groupKey}"\` with \`parentSha: "${groupBase}"\`; to revise an existing open option in place, run \`git read-tree --reset -u <option headSha>\` and pass its \`changeId\` with \`parentSha: "${groupBase}"\`.`,
+						);
+					} else {
+						lines.push(
+							discardedNames
+								? `IMPORTANT — Worktree Out of Sync: the session branch tip (\`${branchHeadSha}\`) still holds discarded change(s) (${discardedNames}), which are past the latest active staged commit (\`${latestOpen.headSha}\`). The files currently checked out in your worktree reflect \`${branchHeadSha}\`, NOT the active staged state. Before reading or editing files, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip and removing any untracked scratch files) so your new commit builds cleanly on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`
+								: `Note: the session branch tip (\`${branchHeadSha}\`) is past the active chosen commit (\`${latestOpen.headSha}\`), likely because a later option or change was discarded. Before making follow-up edits, run \`git read-tree --reset -u ${latestOpen.headSha}\` (keeping HEAD on the branch tip) so your new commit builds on the active staged change, and pass \`parentSha: "${latestOpen.headSha}"\` (or its \`changeId\` to update it in place) to \`coding_record_change\`.`,
+						);
+					}
 				}
 				const activeOrMergedHeads = new Set(
 					[
