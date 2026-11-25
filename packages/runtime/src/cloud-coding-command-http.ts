@@ -32,6 +32,12 @@ import {
 	parseCloudHomeChannelHandshake,
 } from "./cloud-home-channel.ts";
 import {
+	isValidBase64UrlToken,
+	parseTrustedOrigin,
+	readBoundedJsonBody,
+	writeJsonResponse,
+} from "./cloud-http-server-kit.ts";
+import {
 	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
 	CloudMachineAccountFillRefusal,
@@ -74,7 +80,6 @@ import {
 } from "./cloud-native-tool-authority.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
-const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const RESULT_LIMIT = 128 * 1024;
@@ -144,25 +149,10 @@ function parseRequest(value: unknown, action: string): CloudCodingCommandHttpReq
 	}) as CloudCodingCommandHttpRequest;
 }
 export function parseCloudCodingCommandUrl(value: string, allowLoopback = false): string {
-	const url = new URL(value);
-	if (
-		(url.protocol !== "https:" &&
-			!(allowLoopback && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname))) ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.pathname !== "/"
-	)
-		throw new Error(ERROR);
-	return url.origin;
+	return parseTrustedOrigin(value, allowLoopback, ERROR);
 }
 function validToken(value: string): boolean {
-	return (
-		TOKEN.test(value) &&
-		Buffer.from(value, "base64url").length === 32 &&
-		Buffer.from(value, "base64url").toString("base64url") === value
-	);
+	return isValidBase64UrlToken(value);
 }
 
 /** The receipt with nothing of its command (F3 5g-5): none of its output, nor how much it printed or lost, nor whether
@@ -385,40 +375,21 @@ export interface CloudCodingCommandServiceOptions {
 }
 
 async function readRequest(request: IncomingMessage, signal: AbortSignal): Promise<unknown> {
-	const declared = request.headers["content-length"];
-	if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > REQUEST_LIMIT)) throw new Error(ERROR);
-	const chunks: Buffer[] = [];
-	let count = 0;
-	const abort = (): void => {
-		request.destroy();
-	};
-	signal.addEventListener("abort", abort, { once: true });
-	try {
-		for await (const value of request) {
-			signal.throwIfAborted();
-			const bytes = Buffer.from(value);
-			count += bytes.length;
-			if (count > REQUEST_LIMIT) throw new Error(ERROR);
-			chunks.push(bytes);
-		}
-		return JSON.parse(UTF8.decode(Buffer.concat(chunks, count)));
-	} finally {
-		signal.removeEventListener("abort", abort);
-	}
+	return readBoundedJsonBody(request, {
+		maxBytes: REQUEST_LIMIT,
+		signal,
+		checkContentLength: true,
+		tooLargeError: ERROR,
+	});
 }
 /** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). Each says
  * what a page of a command's log may ask this executor for (keyholes S1). */
 function replyJson(reply: ServerResponse, status: number, value: unknown, limit = RESULT_LIMIT): void {
-	const body = JSON.stringify(value);
-	if (Buffer.byteLength(body) > limit) throw new Error(ERROR);
-	reply.writeHead(status, {
-		"content-type": "application/json",
-		"content-length": Buffer.byteLength(body),
-		"cache-control": "no-store",
-		"x-content-type-options": "nosniff",
-		[CLOUD_COMMAND_PAGE_HEADER]: String(CLOUD_CODING_COMMAND_PAGE_BYTES),
+	writeJsonResponse(reply, status, value, {
+		maxBytes: limit,
+		maxBytesError: ERROR,
+		headers: { [CLOUD_COMMAND_PAGE_HEADER]: String(CLOUD_CODING_COMMAND_PAGE_BYTES) },
 	});
-	reply.end(body);
 }
 /** Loopback-only backend for a separately configured TLS proxy; the bearer
  * credential comes from private systemd credential provisioning. */

@@ -14,6 +14,7 @@ import {
 	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
 import { CloudCommandPages } from "./cloud-command-pages.ts";
+import { isValidBase64UrlToken, parseTrustedOrigin } from "./cloud-http-server-kit.ts";
 import { MACHINE_ACCOUNT_FILL_REFUSALS } from "./cloud-machine-account-fill.ts";
 import { MACHINE_CODING_VALUE_REFUSALS } from "./cloud-machine-coding-value.ts";
 import {
@@ -46,7 +47,6 @@ import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./clou
 /** The machine tools' operation version: receipts and the executor's check both use it. */
 export const CLOUD_MACHINE_TOOL_VERSION = "qorpera.machine-tools/v1";
 const HASH = /^[0-9a-f]{64}$/;
-const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
 const RESULT_LIMIT = 128 * 1024;
 const ERROR = "Machine command gateway unavailable";
@@ -1397,25 +1397,10 @@ export function parseCloudMachineScreenAnswer(
 	});
 }
 function validToken(value: string): boolean {
-	return (
-		TOKEN.test(value) &&
-		Buffer.from(value, "base64url").length === 32 &&
-		Buffer.from(value, "base64url").toString("base64url") === value
-	);
+	return isValidBase64UrlToken(value);
 }
 function origin(value: string, allowLoopback: boolean): string {
-	const url = new URL(value);
-	if (
-		(url.protocol !== "https:" &&
-			!(allowLoopback && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname))) ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.pathname !== "/"
-	)
-		throw new Error(ERROR);
-	return url.origin;
+	return parseTrustedOrigin(value, allowLoopback, ERROR);
 }
 /** The receipt answers exactly the request: its machine, its command and, for
  * a start, the command's input digest; a read page stays within its limit. */

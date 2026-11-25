@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { UUID_PATTERN } from "@qorpera/contracts";
+import { isRecord, UUID_PATTERN } from "@qorpera/contracts";
+import { readBoundedJsonBody, writeJsonResponse } from "./cloud-http-server-kit.ts";
 import {
 	type CloudMemberMachineAct,
 	CloudMemberMachineActRefusal,
@@ -188,6 +189,21 @@ export interface CloudMemberMachineScreenServiceOptions {
  * made under that lease generation, 20260930738000) and nothing else, the action one of machine_screen's but `open`
  * and the epoch, the seat and the generation safe whole numbers, 0 or more (never guessed: an epoch without a seat, a
  * generation beside them, or anything else, is undefined, a bad request). Nothing of the body is kept or told. */
+async function readJsonObject(
+	request: IncomingMessage,
+	signal: AbortSignal,
+	maxBytes: number,
+): Promise<Record<string, unknown> | undefined> {
+	if (request.headers["content-type"] !== "application/json") return undefined;
+	try {
+		const body = await readBoundedJsonBody(request, { maxBytes, signal });
+		return isRecord(body) ? body : undefined;
+	} catch (error) {
+		if (signal.aborted) throw error;
+		return undefined;
+	}
+}
+
 async function readAction(
 	request: IncomingMessage,
 	signal: AbortSignal,
@@ -196,41 +212,28 @@ async function readAction(
 	| { action: MachineScreenAction; shared: true; generation?: number }
 	| undefined
 > {
-	if (request.headers["content-type"] !== "application/json") return undefined;
-	const chunks: Buffer[] = [];
-	let bytes = 0;
-	for await (const chunk of request) {
-		signal.throwIfAborted();
-		bytes += (chunk as Buffer).length;
-		if (bytes > ACT_BODY_BYTES) return undefined;
-		chunks.push(chunk as Buffer);
+	const body = await readJsonObject(request, signal, ACT_BODY_BYTES);
+	if (!body) return undefined;
+	const keys = Object.keys(body).sort().join();
+	const whole = (value: unknown): value is number =>
+		typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+	// Shared (20260930734000): the action alone.
+	if (keys === "action") {
+		const parsed = parseCloudMemberMachineAction((body as { action: unknown }).action);
+		return parsed === undefined ? undefined : { action: parsed, shared: true };
 	}
-	try {
-		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
-		const keys = Object.keys(body).sort().join();
-		const whole = (value: unknown): value is number =>
-			typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-		// Shared (20260930734000): the action alone.
-		if (keys === "action") {
-			const parsed = parseCloudMemberMachineAction((body as { action: unknown }).action);
-			return parsed === undefined ? undefined : { action: parsed, shared: true };
-		}
-		// Shared, with the lease generation the input was made under (20260930738000).
-		if (keys === "action,generation") {
-			const { action, generation } = body as { action: unknown; generation: unknown };
-			if (!whole(generation)) return undefined;
-			const parsed = parseCloudMemberMachineAction(action);
-			return parsed === undefined ? undefined : { action: parsed, shared: true, generation };
-		}
-		if (keys !== "action,epoch,seat") return undefined;
-		const { action, epoch, seat } = body as { action: unknown; epoch: unknown; seat: unknown };
-		if (!whole(epoch) || !whole(seat)) return undefined;
+	// Shared, with the lease generation the input was made under (20260930738000).
+	if (keys === "action,generation") {
+		const { action, generation } = body as { action: unknown; generation: unknown };
+		if (!whole(generation)) return undefined;
 		const parsed = parseCloudMemberMachineAction(action);
-		return parsed === undefined ? undefined : { action: parsed, epoch, seat };
-	} catch {
-		return undefined;
+		return parsed === undefined ? undefined : { action: parsed, shared: true, generation };
 	}
+	if (keys !== "action,epoch,seat") return undefined;
+	const { action, epoch, seat } = body as { action: unknown; epoch: unknown; seat: unknown };
+	if (!whole(epoch) || !whole(seat)) return undefined;
+	const parsed = parseCloudMemberMachineAction(action);
+	return parsed === undefined ? undefined : { action: parsed, epoch, seat };
 }
 
 /** A pointer pass's begin, `{"begin": {"generation": g}}` or `{"begin": {"epoch": e, "seat": s}}`, or a move, `{"pass":
@@ -245,76 +248,50 @@ async function readPointer(
 	| { stream: { pass: string; hold: { generation: number } | { epoch: number; seat: number } } }
 	| undefined
 > {
-	if (request.headers["content-type"] !== "application/json") return undefined;
-	const chunks: Buffer[] = [];
-	let bytes = 0;
-	for await (const chunk of request) {
-		signal.throwIfAborted();
-		bytes += (chunk as Buffer).length;
-		if (bytes > POINTER_BODY_BYTES) return undefined;
-		chunks.push(chunk as Buffer);
-	}
-	try {
-		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
-		const whole = (value: unknown): value is number =>
-			typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-		const keys = Object.keys(body).sort().join();
-		if (keys === "pass,x,y") {
-			const { pass, x, y } = body as { pass: unknown; x: unknown; y: unknown };
-			if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !isCloudMemberMachinePointerPosition(x, y))
-				return undefined;
-			return { pass: pass.toLowerCase(), x: x as number, y: y as number };
-		}
-		const holdOf = (hold: unknown) => {
-			if (!hold || typeof hold !== "object" || Array.isArray(hold)) return undefined;
-			const form = Object.keys(hold).sort().join();
-			const { generation, epoch, seat } = hold as { generation?: unknown; epoch?: unknown; seat?: unknown };
-			if (form === "generation" && whole(generation)) return { generation };
-			if (form === "epoch,seat" && whole(epoch) && whole(seat)) return { epoch, seat };
+	const body = await readJsonObject(request, signal, POINTER_BODY_BYTES);
+	if (!body) return undefined;
+	const whole = (value: unknown): value is number =>
+		typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+	const keys = Object.keys(body).sort().join();
+	if (keys === "pass,x,y") {
+		const { pass, x, y } = body as { pass: unknown; x: unknown; y: unknown };
+		if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !isCloudMemberMachinePointerPosition(x, y))
 			return undefined;
-		};
-		if (keys === "stream") {
-			// A live picture's ticket (20260930745000): `{"stream": {"pass": p, "hold": {...}}}`.
-			const stream = (body as { stream: unknown }).stream;
-			if (!stream || typeof stream !== "object" || Array.isArray(stream)) return undefined;
-			if (Object.keys(stream).sort().join() !== "hold,pass") return undefined;
-			const { pass, hold } = stream as { pass: unknown; hold: unknown };
-			const held = holdOf(hold);
-			if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !held) return undefined;
-			return { stream: { pass: pass.toLowerCase(), hold: held } };
-		}
-		if (keys !== "begin") return undefined;
-		const begin = holdOf((body as { begin: unknown }).begin);
-		return begin ? { begin } : undefined;
-	} catch {
-		return undefined;
+		return { pass: pass.toLowerCase(), x: x as number, y: y as number };
 	}
+	const holdOf = (hold: unknown) => {
+		if (!isRecord(hold)) return undefined;
+		const form = Object.keys(hold).sort().join();
+		const { generation, epoch, seat } = hold as { generation?: unknown; epoch?: unknown; seat?: unknown };
+		if (form === "generation" && whole(generation)) return { generation };
+		if (form === "epoch,seat" && whole(epoch) && whole(seat)) return { epoch, seat };
+		return undefined;
+	};
+	if (keys === "stream") {
+		// A live picture's ticket (20260930745000): `{"stream": {"pass": p, "hold": {...}}}`.
+		const stream = (body as { stream: unknown }).stream;
+		if (!isRecord(stream)) return undefined;
+		if (Object.keys(stream).sort().join() !== "hold,pass") return undefined;
+		const { pass, hold } = stream as { pass: unknown; hold: unknown };
+		const held = holdOf(hold);
+		if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !held) return undefined;
+		return { stream: { pass: pass.toLowerCase(), hold: held } };
+	}
+	if (keys !== "begin") return undefined;
+	const begin = holdOf((body as { begin: unknown }).begin);
+	return begin ? { begin } : undefined;
 }
 
 /** The member's start: a JSON body of at most START_BODY_BYTES that is exactly `{}`, or `{"open": path}` with a path the
  * plain rule takes (20260930758000): `{}` for the one, the path for the other, null for anything else (never guessed: a
  * bad request). */
 async function readStart(request: IncomingMessage, signal: AbortSignal): Promise<{ open?: string } | null> {
-	if (request.headers["content-type"] !== "application/json") return null;
-	const chunks: Buffer[] = [];
-	let bytes = 0;
-	for await (const chunk of request) {
-		signal.throwIfAborted();
-		bytes += (chunk as Buffer).length;
-		if (bytes > START_BODY_BYTES) return null;
-		chunks.push(chunk as Buffer);
-	}
-	try {
-		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-		const keys = Object.keys(body);
-		if (keys.length === 0) return {};
-		const open = (body as { open?: unknown }).open;
-		return keys.length === 1 && keys[0] === "open" && cloudMemberMachineOpenPathValid(open) ? { open } : null;
-	} catch {
-		return null;
-	}
+	const body = await readJsonObject(request, signal, START_BODY_BYTES);
+	if (!body) return null;
+	const keys = Object.keys(body);
+	if (keys.length === 0) return {};
+	const open = (body as { open?: unknown }).open;
+	return keys.length === 1 && keys[0] === "open" && cloudMemberMachineOpenPathValid(open) ? { open } : null;
 }
 
 function replyJson(
@@ -322,14 +299,7 @@ function replyJson(
 	status: number,
 	value: Record<string, string | number | boolean | null>,
 ): void {
-	const body = JSON.stringify(value);
-	reply.writeHead(status, {
-		"content-type": "application/json",
-		"content-length": Buffer.byteLength(body),
-		"cache-control": "no-store",
-		"x-content-type-options": "nosniff",
-	});
-	reply.end(body);
+	writeJsonResponse(reply, status, value);
 }
 
 /** Loopback only, behind the node's mux. Each request is bounded at 30 s and ends with its client. */
