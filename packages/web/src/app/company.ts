@@ -212,7 +212,9 @@ export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
 	staff: HostedStaffAgent[];
+	staffLoaded?: boolean;
 	sessions: HostedSession[];
+	sessionsLoaded?: boolean;
 	sessionsError?: string;
 	connectionLost?: boolean;
 	groups?: Record<string, GroupChatDetails>;
@@ -1375,10 +1377,14 @@ export class CompanyController {
 		try {
 			const staff = await this.#api.listStaff(this.profile.profileId, this.signal);
 			if (this.#stopped || version !== this.#versions.staff) return;
-			this.store.set((state) => ({ staff, hierarchy: buildCompanyHierarchy(state.organization, staff) }));
+			this.store.set((state) => ({
+				staff,
+				staffLoaded: true,
+				hierarchy: buildCompanyHierarchy(state.organization, staff),
+			}));
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.staff) return;
-			if (!this.#lost(error)) this.store.set({ error: describeError(error) });
+			if (!this.#lost(error)) this.store.set({ staffLoaded: true, error: describeError(error) });
 		}
 	}
 
@@ -1394,11 +1400,14 @@ export class CompanyController {
 				this.#sessionsCursor = newestSession(sessions);
 				this.#sessionsReadAt = started;
 				this.#sessionsWholeReads += 1;
-				this.store.set({ sessions, sessionsError: undefined });
+				this.store.set({ sessions, sessionsLoaded: true, sessionsError: undefined });
 				if (!this.store.get().loading) await this.refreshGroups();
 			} catch (error) {
 				if (this.#stopped || version !== this.#versions.sessions) return;
-				this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
+				this.store.set({
+					sessionsLoaded: true,
+					sessionsError: this.#lost(error) ? undefined : describeError(error),
+				});
 			}
 		})();
 		this.#sessionsFullRead = read;
@@ -3007,11 +3016,12 @@ export class CompanyController {
 				]);
 				const pending = full ? read : store.get().pending;
 				if (this.#stopped || !complete || !pending) return;
-				// Another generation than the events reflect (or, first found, above 0, which may have come after a read
-				// that ran beside it): the events read so far are read again, and each erased copy replaces its event.
 				const reflected = store.get().memoryGeneration;
+				// WHY: Cold open just fetched the current transcript; only re-read when previously cached events may predate an erase.
+				const hadEvents = known.events.length > 0;
 				const reread =
-					generation !== undefined && (reflected === undefined ? generation > 0 : generation !== reflected)
+					generation !== undefined &&
+					(reflected === undefined ? hadEvents && generation > 0 : generation !== reflected)
 						? current()[0]?.sequence
 						: undefined;
 				if (reread !== undefined && !(await readForward(reread - 1))) return;
@@ -3872,7 +3882,8 @@ export class CompanyController {
 			});
 			this.roomDrafts.settle(sessionId);
 			this.#dismissFailureFor(sessionId);
-			await this.loadConversation(sessionId);
+			// WHY: Reconcile transcript in the background so the composer unlocks immediately once the post succeeds.
+			void this.loadConversation(sessionId);
 			void this.refreshActivity();
 			// The run is admitted a moment after the message; watch for it to appear.
 			this.#watchWork(20_000);

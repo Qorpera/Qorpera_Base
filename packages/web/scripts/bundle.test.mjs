@@ -69,6 +69,18 @@ test("the first screen never downloads the figures' motion data or Danish dictio
 		layout.lazy.filter((file) => /^build\/figure-motion-data-[A-Z0-9]+\.js$/.test(file)).length,
 		1,
 	);
+	// WHY: surface-view must not statically pull dev-only surface-local-sandbox into production surface loads.
+	const surfaceViews = layout.lazy.filter((file) => /^build\/surface-view-[A-Z0-9]+\.js$/.test(file));
+	assert.equal(surfaceViews.length, 1);
+	const surfaceStatic = [
+		...surfaceViews,
+		...surfaceViews.flatMap((file) =>
+			(layout.outputs[file]?.imports ?? [])
+				.filter((item) => item.kind !== "dynamic-import")
+				.map((item) => item.path.slice(item.path.indexOf("build/"))),
+		),
+	];
+	assert.deepEqual(inputsOf(layout, surfaceStatic).filter((path) => /surface-local-sandbox\.ts$/.test(path)), []);
 });
 
 test("the first screen never downloads the sample 3D model; the sandbox fetches its file only when its stage asks", async () => {

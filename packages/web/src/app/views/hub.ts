@@ -103,6 +103,7 @@ export class HubController {
 		return !this.store.get().connectionLost;
 	}, this.#abort.signal);
 	#refresh: Promise<void> | undefined;
+	#profilesRefresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
 	readonly #renames = new Map<string, { name: string; stale: Set<string>; staleKnown: boolean }>();
@@ -150,6 +151,7 @@ export class HubController {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#profilesRefresh = undefined;
 		this.#abort.abort();
 		this.store.dispose();
 	}
@@ -160,6 +162,15 @@ export class HubController {
 			this.#refresh = undefined;
 		});
 		return this.#refresh;
+	}
+
+	// WHY: Company boot only needs the member's profile list, not incoming invitations or founding tables.
+	ensureProfiles(): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
+		if (this.#profilesRefresh) return this.#profilesRefresh;
+		if (this.#refresh) return Promise.resolve();
+		void this.refresh();
+		return this.#profilesRefresh ?? Promise.resolve();
 	}
 
 	/** A read that starts after any read already out, so it sees what changed meanwhile (a company just made). */
@@ -252,9 +263,33 @@ export class HubController {
 	async #load(): Promise<void> {
 		this.store.set({ loading: true, error: undefined });
 		const revision = this.#membershipRevision;
+		let profilesFailed = false;
+		const profilesTask = this.#api.listProfiles(this.#abort.signal);
+		// WHY: Publish profiles as soon as listProfiles resolves so company routes do not wait on invitations or founding.
+		const profilesSettled = profilesTask
+			.then(
+				(profiles) => {
+					if (this.#disposed || revision !== this.#membershipRevision) return;
+					this.store.set({ profiles: this.#withRenames(profiles), connectionLost: undefined });
+				},
+				(error) => {
+					profilesFailed = true;
+					if (this.#disposed || revision !== this.#membershipRevision) return;
+					if (!connectionLost(error)) {
+						this.store.set({ connectionLost: undefined, error: describeError(error) });
+						return;
+					}
+					this.store.set({ connectionLost: true });
+					this.#reconnect.lost();
+				},
+			)
+			.finally(() => {
+				if (this.#profilesRefresh === profilesSettled) this.#profilesRefresh = undefined;
+			});
+		this.#profilesRefresh = profilesSettled;
 		try {
 			const [profiles, invitations, founding] = await Promise.all([
-				this.#api.listProfiles(this.#abort.signal),
+				profilesTask,
 				this.#api.listIncomingInvitations(),
 				this.#readFounding(),
 			]);
@@ -269,6 +304,10 @@ export class HubController {
 				});
 		} catch (error) {
 			if (this.#disposed || revision !== this.#membershipRevision) return;
+			if (profilesFailed) {
+				this.store.set({ loading: false });
+				return;
+			}
 			if (!connectionLost(error)) {
 				this.store.set({ loading: false, connectionLost: undefined, error: describeError(error) });
 				return;

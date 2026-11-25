@@ -441,7 +441,7 @@ export class CompanyMail {
 					return;
 				}
 				if (read.entry.version === this.#indexVersion) return;
-				const bytes = await folder.readFile(file, signal, DIGITAL_POST_INDEX_MAX_BYTES);
+				const bytes = await folder.readFile(file, signal, DIGITAL_POST_INDEX_MAX_BYTES, { cached: true });
 				const letters = parseDigitalPostLetters(new TextDecoder().decode(bytes));
 				if (seq < this.#indexApplied) return;
 				this.#indexApplied = seq;
@@ -482,7 +482,7 @@ export class CompanyMail {
 						put({ status: "large" });
 						return;
 					}
-					const bytes = await folder.readFile(file, signal, DIGITAL_POST_LETTER_MAX_BYTES);
+					const bytes = await folder.readFile(file, signal, DIGITAL_POST_LETTER_MAX_BYTES, { cached: true });
 					put({ status: "ready", letter: parseDigitalPostLetterText(new TextDecoder().decode(bytes)) });
 				});
 			} catch (error) {

@@ -1059,7 +1059,7 @@ export class CompanyFolderBrowser {
 		const waiting = this.#viewer !== null && !refresh;
 		if (waiting) this.#drawLoading(entry.path);
 		try {
-			await this.#show({ path: entry.path, file: entry.file, target: entry.target });
+			await this.#show({ path: entry.path, file: entry.file, target: entry.target }, refresh);
 		} catch (error) {
 			if (waiting && this.#loading) {
 				this.#loading = false;
@@ -1077,7 +1077,7 @@ export class CompanyFolderBrowser {
 	}
 
 	/** Reads what has a preview, and draws the preview. A link's is its target: nothing is read. */
-	async #show(opened: Opened): Promise<void> {
+	async #show(opened: Opened, cached = false): Promise<void> {
 		const type = IMAGE_TYPES[extension(opened.path)];
 		if (
 			opened.file &&
@@ -1085,7 +1085,13 @@ export class CompanyFolderBrowser {
 				? opened.file.bytes <= MAX_PREVIEW_IMAGE_BYTES
 				: opened.file.bytes <= MAX_PREVIEW_TEXT_BYTES && !BINARY.has(extension(opened.path)))
 		) {
-			const bytes = await this.#client!.readFile(opened.file, this.#signal());
+			// WHY: Only reuse the content-addressed file cache when the caller just read the entry live as this member.
+			const bytes = await this.#client!.readFile(
+				opened.file,
+				this.#signal(),
+				undefined,
+				cached ? { cached: true } : undefined,
+			);
 			this.#live();
 			if (type) opened.image = URL.createObjectURL(new Blob([bytes.slice()], { type }));
 			else opened.text = decodeText(bytes);
@@ -1427,7 +1433,7 @@ export class CompanyFolderBrowser {
 			this.#say(t("{name} is no longer in this folder.", { name: baseName(path) }));
 			return;
 		}
-		await this.#show({ path, file: entry.file, target: entry.target });
+		await this.#show({ path, file: entry.file, target: entry.target }, true);
 	}
 
 	/** Reads the file piece by piece and hands it to the browser as one file. A large one says how far it is. Then it is
@@ -1793,7 +1799,7 @@ export class CompanyFolderBrowser {
 		}
 		if (parentOf(path) !== this.#dir) await this.#load(parentOf(path));
 		else this.#drawList(false);
-		await this.#show({ path, file: entry.file, target: entry.target });
+		await this.#show({ path, file: entry.file, target: entry.target }, true);
 	}
 
 	/** Opens a file's or a link's folder and the file or link, when it is still there. */
@@ -1810,6 +1816,6 @@ export class CompanyFolderBrowser {
 		this.#filter.value = "all";
 		this.#drawList(false);
 		this.#setSection("documents");
-		await this.#show({ path, file: entry.file, target: entry.target });
+		await this.#show({ path, file: entry.file, target: entry.target }, true);
 	}
 }

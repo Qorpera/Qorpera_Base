@@ -83,7 +83,7 @@ export async function readStateFile(
 	if (!read.entry) return null;
 	if (read.entry.kind !== "file" || !read.entry.file || read.entry.file.bytes > COMPANY_STATE_FILE_MAX_BYTES)
 		throw new Error(`${path} is not a company state file`);
-	const bytes = await folder.readFile(read.entry.file, signal, COMPANY_STATE_FILE_MAX_BYTES);
+	const bytes = await folder.readFile(read.entry.file, signal, COMPANY_STATE_FILE_MAX_BYTES, { cached: true });
 	return { entry: read.entry, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) };
 }
 

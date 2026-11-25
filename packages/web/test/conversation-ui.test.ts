@@ -367,14 +367,13 @@ describe("conversation UI boundaries", () => {
 		await f.company.loadConversation(session.sessionId);
 		expect(vi.mocked(f.api.readSessionEvents).mock.calls.map((call) => call[1])).toEqual([2]);
 	});
-	it("reads a thread again when its first read finds a generation an erase may have raised meanwhile", async () => {
+	it("does not double-fetch on cold open when memoryGeneration is already above 0, but re-reads on later erases", async () => {
 		const before = event(1, "Before");
 		const f = fixture();
-		// The first read of the history is from before the erase; the generation read beside it is from after.
 		vi.mocked(f.api.readSessionEvents)
 			.mockResolvedValueOnce([before])
 			.mockResolvedValue([erasedCopy(before)]);
-		vi.mocked(f.api.readSessionMemoryGeneration).mockResolvedValue(1);
+		vi.mocked(f.api.readSessionMemoryGeneration).mockResolvedValueOnce(1).mockResolvedValue(2);
 		const company = new CompanyController(f.api, profileA, userA.id);
 		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
 		const view = new ConversationView(company, session.sessionId, {});
@@ -384,10 +383,15 @@ describe("conversation UI boundaries", () => {
 			company.stop();
 		};
 		await settle();
+		expect(vi.mocked(f.api.readSessionEvents)).toHaveBeenCalledTimes(1);
+		expect([...view.el.querySelectorAll(".message .bubble")].map((bubble) => bubble.textContent)).toEqual(["Before"]);
+		expect(company.conversation(session.sessionId).get().memoryGeneration).toBe(1);
+		await company.loadConversation(session.sessionId);
+		await settle();
 		expect([...view.el.querySelectorAll(".message .bubble")].map((bubble) => bubble.textContent)).toEqual([
 			"(erased)",
 		]);
-		expect(company.conversation(session.sessionId).get().memoryGeneration).toBe(1);
+		expect(company.conversation(session.sessionId).get().memoryGeneration).toBe(2);
 	});
 	it.each([
 		["after the thread was read again", false],
@@ -3164,43 +3168,75 @@ describe("the composer at a scale that makes one line fractional", () => {
 		document.head.append(style);
 		return style;
 	}
+	async function flushFrame(): Promise<void> {
+		if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(20);
+		else await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+	}
 	/** Types a draft whose field reports `scrollHeight` as Chrome rounds it, and lays the field out at the height it is given. */
-	function typeDraft(view: ConversationView, scrollHeight: number) {
+	async function typeDraft(view: ConversationView, scrollHeight: number) {
 		const field = view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
 		Object.defineProperty(field, "scrollHeight", { configurable: true, get: () => scrollHeight });
 		field.getBoundingClientRect = () => ({ height: Number.parseFloat(field.style.height) || 0 }) as DOMRect;
 		field.value = "draft";
 		field.dispatchEvent(new Event("input", { bubbles: true }));
+		await flushFrame();
 		const shell = view.el.querySelector<HTMLElement>(".composer-shell")!;
 		return { field, shell, expanded: shell.classList.contains("is-expanded") };
 	}
 
-	it("keeps one line on one row, grows for more and scrolls past the tallest draft", () => {
+	it("keeps one line on one row, grows for more and scrolls past the tallest draft", async () => {
 		const style = drawAt125();
 		try {
 			const f = setup();
 			// One line is 34 × 1.25 = 42.5 pixels, which Chrome reports as 43. The empty composer once
 			// opened in its two-row shape here, because 43 > 42.5.
-			const one = typeDraft(f.view, 43);
+			const one = await typeDraft(f.view, 43);
 			expect(one.expanded).toBe(false);
 			expect(one.field.style.height).toBe("43px");
 			expect(one.shell.style.height).toBe("45px");
 			// Two lines: the shell adds its expanded padding (8 + 32, at 125%) and its 1px borders.
-			const two = typeDraft(f.view, 69);
+			const two = await typeDraft(f.view, 69);
 			expect(two.expanded).toBe(true);
 			expect(two.shell.style.height).toBe("121px");
 			// Back to one line: the shell is measured compact again, so it folds back to one row.
-			const again = typeDraft(f.view, 43);
+			const again = await typeDraft(f.view, 43);
 			expect(again.expanded).toBe(false);
 			expect(again.shell.style.height).toBe("45px");
 			// The tallest draft is 112 × 1.25 = 140 pixels; past it the field scrolls.
-			const tall = typeDraft(f.view, 400);
+			const tall = await typeDraft(f.view, 400);
 			expect(tall.field.style.height).toBe("140px");
 			expect(tall.field.style.overflowY).toBe("auto");
 			// A file keeps the shell expanded, even under one line of text: measured expanded, one
 			// line is the expanded field's 26 × 1.25 = 32.5, read as 33, under the compact 42.5.
 			attach(f.view.el, [new File(["notes"], "notes.txt", { type: "text/plain" })]);
-			expect(typeDraft(f.view, 33).expanded).toBe(true);
+			expect((await typeDraft(f.view, 33)).expanded).toBe(true);
+		} finally {
+			style.remove();
+		}
+	});
+
+	it("coalesces rapid composer inputs into one animation-frame layout pass", async () => {
+		const style = drawAt125();
+		try {
+			const f = setup();
+			const field = f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+			let reads = 0;
+			Object.defineProperty(field, "scrollHeight", {
+				configurable: true,
+				get: () => {
+					reads += 1;
+					return 43;
+				},
+			});
+			await flushFrame();
+			reads = 0;
+			for (const text of ["a", "ab", "abc", "abcd", "abcde"]) {
+				field.value = text;
+				field.dispatchEvent(new Event("input", { bubbles: true }));
+			}
+			expect(reads).toBe(0);
+			await flushFrame();
+			expect(reads).toBe(1);
 		} finally {
 			style.remove();
 		}

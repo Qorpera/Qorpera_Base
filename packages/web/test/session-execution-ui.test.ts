@@ -332,7 +332,7 @@ describe("room startup usage refresh", () => {
 		await settle();
 		expect(f.send().disabled).toBe(true);
 	});
-	it("does not send when the note's line changes during the account check", async () => {
+	it("does not send when the note's line changes during an explicit account check", async () => {
 		const f = setup();
 		await settle();
 		f.company.conversation(session.sessionId).set({ answering: "app:orders-board#1043 · Lund, A" });
@@ -340,7 +340,8 @@ describe("room startup usage refresh", () => {
 		await settle();
 		const pending = deferred<NativeExecutionConnections>();
 		f.listConnections.mockImplementationOnce(() => pending.promise);
-		f.send().click();
+		refresh();
+		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		f.company.conversation(session.sessionId).set({ answering: "app:orders-board#1044 · Berg, B" });
 		pending.resolve(connections());
 		await settle();
@@ -668,7 +669,7 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello team", expect.any(AbortSignal));
-		expect(f.listConnections).toHaveBeenCalledTimes(4);
+		expect(f.listConnections).toHaveBeenCalledTimes(3);
 		expect(f.read).not.toHaveBeenCalled();
 		expect(f.cancel).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
@@ -1383,14 +1384,9 @@ describe("conversation execution account", () => {
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 	});
 
-	it("restores the server's sticky room account before reading its current binding", async () => {
-		let selected = false;
-		const selectAccount = vi.fn(async () => {
-			selected = true;
-			return id(90);
-		});
-		const f = setup(true, withUsage([20, 90]), selectAccount);
-		f.listConnections.mockImplementation(async () => withSponsorVersion(withUsage([20, 90]), selected ? 2 : 1));
+	it("reads the server's sticky room account and connections in parallel and picks the server's choice", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withSponsorVersion(withUsage([20, 90]), 2), selectAccount);
 		await settle();
 		expect(selectAccount).toHaveBeenCalledExactlyOnceWith(session.sessionId, expect.any(AbortSignal));
 		expect(f.sponsor()).toMatchObject({ connectionId: id(90), sponsorVersion: 2 });
@@ -1444,61 +1440,68 @@ describe("conversation execution account", () => {
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 	});
 
-	it("checks the latest room account before send and suppresses duplicate submissions", async () => {
+	it("sends immediately with the cached room account, suppresses duplicates, and refreshes in the background", async () => {
 		const selectAccount = vi.fn(async () => id(90));
 		const f = setup(true, withUsage([80, 90]), selectAccount);
 		await settle();
 		type(f.view, "Hello");
 		await settle();
-		const selection = deferred<string>();
-		selectAccount.mockReturnValueOnce(selection.promise);
 		const sending = deferred<boolean>();
 		let sentAccount: string | undefined;
 		f.sendMessage.mockImplementation(async () => {
 			sentAccount = f.sponsor()?.connectionId;
 			return sending.promise;
 		});
+		const postRefresh = deferred<string>();
+		selectAccount.mockReturnValueOnce(postRefresh.promise);
 		f.send().click();
 		f.send().click();
 		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-		await settle();
-		expect(selectAccount).toHaveBeenCalledTimes(2);
-		expect(f.sendMessage).not.toHaveBeenCalled();
-		selection.resolve(id(91));
-		await settle();
+		expect(selectAccount).toHaveBeenCalledTimes(1);
 		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello", expect.any(AbortSignal));
-		expect(sentAccount).toBe(id(91));
+		expect(sentAccount).toBe(id(90));
 		expect(f.send().disabled).toBe(true);
 		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		expect(f.sendMessage).toHaveBeenCalledOnce();
 		sending.resolve(true);
 		await settle();
-	});
-
-	it.each(["draft", "attachments"])("cancels submission when %s change during account preflight", async (change) => {
-		const selectAccount = vi.fn(async () => id(90));
-		const f = setup(false, withUsage([80, 90]), selectAccount);
-		await settle();
-		const state = f.company.conversation(session.sessionId);
-		const originalFile = new File(["first"], "first.png", { type: "image/png" });
-		state.set({ draft: "Original", attachments: change === "attachments" ? [originalFile] : [] });
-		await settle();
-		const selection = deferred<string>();
-		selectAccount.mockReturnValueOnce(selection.promise);
-		f.send().click();
-		const editedFile = new File(["second"], "second.png", { type: "image/png" });
-		if (change === "draft") type(f.view, "Edited draft");
-		else state.set({ attachments: [editedFile] });
-		await settle();
-		selection.resolve(id(91));
-		await settle();
-		expect(f.sendMessage).not.toHaveBeenCalled();
-		expect(state.get().draft).toBe(change === "draft" ? "Edited draft" : "Original");
-		if (change === "attachments") expect(state.get().attachments?.[0]).toBe(editedFile);
+		expect(selectAccount).toHaveBeenCalledTimes(2);
 		expect(f.send().disabled).toBe(false);
+		postRefresh.resolve(id(91));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 	});
 
-	it("never sends after the conversation is disposed during account preflight", async () => {
+	it.each(["draft", "attachments"])(
+		"cancels queued submission when %s change during an account refresh",
+		async (change) => {
+			const selectAccount = vi.fn(async () => id(90));
+			const f = setup(false, withUsage([80, 90]), selectAccount);
+			await settle();
+			const state = f.company.conversation(session.sessionId);
+			const originalFile = new File(["first"], "first.png", { type: "image/png" });
+			state.set({ draft: "Original", attachments: change === "attachments" ? [originalFile] : [] });
+			await settle();
+			const selection = deferred<string>();
+			selectAccount.mockReturnValueOnce(selection.promise);
+			refresh();
+			f.view.el
+				.querySelector("textarea")!
+				.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+			const editedFile = new File(["second"], "second.png", { type: "image/png" });
+			if (change === "draft") type(f.view, "Edited draft");
+			else state.set({ attachments: [editedFile] });
+			await settle();
+			selection.resolve(id(91));
+			await settle();
+			expect(f.sendMessage).not.toHaveBeenCalled();
+			expect(state.get().draft).toBe(change === "draft" ? "Edited draft" : "Original");
+			if (change === "attachments") expect(state.get().attachments?.[0]).toBe(editedFile);
+			expect(f.send().disabled).toBe(false);
+		},
+	);
+
+	it("never sends after the conversation is disposed during an account refresh", async () => {
 		const selectAccount = vi.fn(async () => id(90));
 		const f = setup(true, withUsage([80, 90]), selectAccount);
 		await settle();
@@ -1506,7 +1509,8 @@ describe("conversation execution account", () => {
 		await settle();
 		const selection = deferred<string>();
 		selectAccount.mockReturnValueOnce(selection.promise);
-		f.send().click();
+		refresh();
+		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		f.view.dispose();
 		selection.resolve(id(91));
 		await settle();
@@ -1514,21 +1518,22 @@ describe("conversation execution account", () => {
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep draft");
 	});
 
-	it("does not send when account preflight fails and keeps the draft intact", async () => {
+	it("refreshes account state and keeps the draft intact when a send fails due to an unavailable account", async () => {
 		const selectAccount = vi.fn(async () => id(90));
 		const f = setup(true, withUsage([80, 90]), selectAccount);
 		await settle();
 		type(f.view, "Keep draft");
 		await settle();
+		f.sendMessage.mockResolvedValueOnce(false);
 		selectAccount.mockRejectedValue(new Error("unavailable"));
 		f.send().click();
 		await settle();
-		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.sendMessage).toHaveBeenCalledOnce();
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep draft");
 		expect(f.send().disabled).toBe(true);
 	});
 
-	it.each(["access lost", "write revoked", "company stopped"])("cancels account preflight when %s", async (change) => {
+	it.each(["access lost", "write revoked", "company stopped"])("cancels queued submission when %s", async (change) => {
 		const selectAccount = vi.fn(async () => id(90));
 		const f = setup(true, withUsage([80, 90]), selectAccount);
 		await settle();
@@ -1536,7 +1541,8 @@ describe("conversation execution account", () => {
 		await settle();
 		const selection = deferred<string>();
 		selectAccount.mockReturnValueOnce(selection.promise);
-		f.send().click();
+		refresh();
+		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		if (change === "access lost") f.company.store.set({ accessLost: true });
 		else if (change === "write revoked")
 			f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
@@ -1549,7 +1555,7 @@ describe("conversation execution account", () => {
 			expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep draft");
 	});
 
-	it("does not replace a retry that appears while account preflight is pending", async () => {
+	it("does not replace a retry that appears while an account refresh is pending", async () => {
 		const selectAccount = vi.fn(async () => id(90));
 		const f = setup(true, withUsage([80, 90]), selectAccount);
 		await settle();
@@ -1564,7 +1570,8 @@ describe("conversation execution account", () => {
 		};
 		const selection = deferred<string>();
 		selectAccount.mockReturnValueOnce(selection.promise);
-		f.send().click();
+		refresh();
+		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		f.company.conversation(session.sessionId).set({ retrySend: retained });
 		selection.resolve(id(91));
 		await settle();
@@ -2831,5 +2838,50 @@ describe("the chat's card when the Claude login in use is used up", () => {
 		expect(observedSignal?.aborted).toBe(true);
 		pendingLogins.resolve({ signInOpen: true, logins: [{ ...work }, { ...home }] });
 		await settle();
+	});
+
+	it("reuses cached company connections across thread switches and unlocks Send at 0 ms when returning to a visited thread", async () => {
+		const sessionB = { ...session, sessionId: id(170), title: "Second thread" };
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(false, withUsage([80, 90]), selectAccount);
+		f.company.store.set({
+			sessions: [
+				{ ...session, staffAgentId: staff.id },
+				{ ...sessionB, staffAgentId: staff.id },
+			],
+		});
+		await settle();
+		expect(f.listConnections).toHaveBeenCalledTimes(1);
+		expect(selectAccount).toHaveBeenCalledTimes(1);
+
+		f.view.dispose();
+		const viewB = new ConversationView(f.company, sessionB.sessionId, {
+			sendMessage: f.sendMessage,
+			nativeSubscription: f.native,
+		});
+		document.body.append(viewB.el);
+		await settle();
+		expect(f.listConnections).toHaveBeenCalledTimes(1);
+		expect(selectAccount).toHaveBeenCalledTimes(2);
+
+		viewB.dispose();
+		f.company.conversation(session.sessionId).set({ draft: "Instant reply" });
+		const backgroundCheck = deferred<string>();
+		selectAccount.mockReturnValueOnce(backgroundCheck.promise);
+		const viewA2 = new ConversationView(f.company, session.sessionId, {
+			sendMessage: f.sendMessage,
+			nativeSubscription: f.native,
+		});
+		document.body.append(viewA2.el);
+		dispose = () => {
+			viewA2.dispose();
+			f.company.stop();
+		};
+		const sendA2 = viewA2.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+		expect(sendA2.disabled).toBe(false);
+		expect(f.listConnections).toHaveBeenCalledTimes(1);
+		backgroundCheck.resolve(id(90));
+		await settle();
+		expect(sendA2.disabled).toBe(false);
 	});
 });
