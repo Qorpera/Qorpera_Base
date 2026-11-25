@@ -42,8 +42,16 @@ export class CompanyInterfacePages {
 		if (this.#stop.signal.aborted || this.#poll) return;
 		const listen = { signal: this.#stop.signal };
 		const shows = () => document.visibilityState === "visible";
-		window.addEventListener("focus", () => void this.refresh(), listen);
-		document.addEventListener("visibilitychange", () => void (shows() && this.refresh()), listen);
+		let lastFrontAt: number | undefined;
+		const onFront = () => {
+			if (!shows()) return;
+			const now = Date.now();
+			if (lastFrontAt !== undefined && now - lastFrontAt < 250) return;
+			lastFrontAt = now;
+			void this.refresh();
+		};
+		window.addEventListener("focus", onFront, listen);
+		document.addEventListener("visibilitychange", onFront, listen);
 		this.#poll = setInterval(() => void (shows() && this.refresh()), POLL_MS);
 		void this.refresh();
 	}
