@@ -2540,8 +2540,8 @@ export class Gateway {
 				this.#bumpSchemaEpoch(ready.database, schema);
 			} catch (error) {
 				if (error instanceof Refusal) throw error;
-				if (atHasNoOperator(ready, error)) refuse(400, AT_NO_OPERATOR);
-				if (
+				if (atHasNoOperator(ready, error)) this.#relations.delete(relKey);
+				else if (
 					error?.code === "42P01" ||
 					error?.code === "42703" ||
 					error?.code === "0A000" ||

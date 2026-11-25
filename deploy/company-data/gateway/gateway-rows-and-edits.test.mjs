@@ -1021,6 +1021,9 @@ create trigger nap before update on slowed for each row execute function nap();
 		assert.deepEqual(await at("priced", { home: "(3,4)" }), [400, "at names a column whose values cannot be compared"], "a type with no equals behind a domain");
 		assert.deepEqual(await at("priced", { home: "(3,4)" }), [400, "at names a column whose values cannot be compared"], "the same from the kept shape");
 		assert.deepEqual(await at("priced", { id: 1 }), [1], "and the table's shape is still kept after a refusal");
+		await inE("alter table ledger.priced alter column tag type int using 7");
+		assert.deepEqual(await at("priced", { tag: 7 }), [1], "a kept shape that names the column's old type is read again, not refused");
+		assert.deepEqual(await at("priced", { tag: [7, 8] }), [1]);
 	});
 
 	it("lets an actor's line go with its rows' lines at the watcher's sweep, and keeps a running write's", async () => {
