@@ -1148,10 +1148,23 @@ describe("SurfaceStudioView", () => {
 		);
 		expect(launch?.getAttribute("aria-selected")).toBe("true");
 
-		await store.openChangeDeliverable(headband.id, "change-2", surfaceDocSlug(flyerPath), flyerPath);
-		await flush();
-		expect(store.state.mode).toBe("preview");
-		expect(onTab()).toBe("overview");
+		const scrolled: Element[] = [];
+		const scrollIntoView = vi.fn(function (this: Element) {
+			scrolled.push(this);
+		});
+		Object.assign(Element.prototype, { scrollIntoView });
+		try {
+			await store.openChangeDeliverable(headband.id, "change-2", surfaceDocSlug(flyerPath), flyerPath);
+			await flush();
+			expect(store.state.mode).toBe("preview");
+			expect(onTab()).toBe("overview");
+			await vi.waitFor(() =>
+				expect(scrolled.map((card) => (card as HTMLElement).dataset.file)).toEqual([flyerPath]),
+			);
+			expect(scrolled[0]?.classList.contains("is-revealed")).toBe(true);
+		} finally {
+			Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+		}
 
 		view.dispose();
 		store.dispose();

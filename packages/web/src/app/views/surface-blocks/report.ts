@@ -31,6 +31,19 @@ export interface SurfaceReportsOptions {
 export function reportFiles(
 	block: SurfaceReportBlock,
 	ctx: SurfaceBlockContext,
+	apart: readonly string[] = [],
+): { readonly signature: string; readonly include: (path: string) => boolean } {
+	const own = postFiles(block, ctx);
+	if (!apart.length) return own;
+	return {
+		signature: `${own.signature}|apart:${apart.join(",")}`,
+		include: (path) => own.include(path) && !apart.some((folder) => path.startsWith(`${folder}/`)),
+	};
+}
+
+function postFiles(
+	block: SurfaceReportBlock,
+	ctx: SurfaceBlockContext,
 ): { readonly signature: string; readonly include: (path: string) => boolean } {
 	if ("match" in block) {
 		const glob = block.match;
@@ -55,8 +68,8 @@ export class SurfaceReports {
 		this.#options = options;
 	}
 
-	prepare(block: SurfaceReportBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
-		const { signature, include } = reportFiles(block, ctx);
+	prepare(block: SurfaceReportBlock, ctx: SurfaceBlockContext, apart: readonly string[]): SurfaceBlockPrepared {
+		const { signature, include } = reportFiles(block, ctx, apart);
 		const filled = Object.keys(ctx.files).some(include) || Object.keys(ctx.binaries).some(include);
 		const pieces: StudioSectionTask[] = [];
 		if (block.heading) {
