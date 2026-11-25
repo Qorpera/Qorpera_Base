@@ -348,7 +348,13 @@ export class SurfaceStudioView {
 		pending.cancel();
 	}
 
-	#confirmModuleTell(moduleTitle: string, draftText: string, owner: symbol, about?: string): Promise<AppAnswer> {
+	#confirmModuleTell(
+		moduleTitle: string,
+		draftText: string,
+		owner: symbol,
+		hostEl: HTMLElement,
+		about?: string,
+	): Promise<AppAnswer> {
 		if (this.#pendingTell) {
 			return Promise.resolve({ ok: false, error: t("Finish or cancel the note already waiting.") });
 		}
@@ -386,13 +392,17 @@ export class SurfaceStudioView {
 				input,
 				h("div", { class: "studio-tell-actions" }, cancelBtn, sendBtn),
 			);
+			const hostDialog = hostEl instanceof HTMLDialogElement ? hostEl : null;
+			const onDialogClose = () => finish({ ok: false, error: t("Cancelled.") });
 			const finish = (answer: AppAnswer) => {
 				if (settled) return;
 				settled = true;
+				hostDialog?.removeEventListener("close", onDialogClose);
 				if (this.#pendingTell?.bar === bar) this.#pendingTell = null;
 				bar.remove();
 				resolve(answer);
 			};
+			hostDialog?.addEventListener("close", onDialogClose, { once: true });
 			cancelBtn.addEventListener("click", () => finish({ ok: false, error: t("Cancelled.") }));
 			sendBtn.addEventListener("click", async () => {
 				const finalText = input.value.trim();
@@ -411,8 +421,7 @@ export class SurfaceStudioView {
 				}
 			});
 			this.#pendingTell = { bar, owner, cancel: () => finish({ ok: false, error: t("Cancelled.") }) };
-			const topDialog = document.querySelector<HTMLDialogElement>("dialog[open]");
-			(topDialog ?? this.el).append(bar);
+			hostEl.append(bar);
 			sendBtn.focus?.({ preventScroll: true });
 		});
 	}
@@ -423,6 +432,7 @@ export class SurfaceStudioView {
 		folderRoot: string,
 		moduleTitle: string,
 		frameOwner: symbol,
+		resolveTellHost: () => HTMLElement,
 	): Promise<AppAnswer> {
 		if (call.method === "read") {
 			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
@@ -482,7 +492,7 @@ export class SurfaceStudioView {
 			const aboutRaw = typeof call.params.about === "string" ? call.params.about.trim() : "";
 			const about = aboutRaw ? aboutRaw.slice(0, 160) : undefined;
 			if (!text || text.length > 4000) return { ok: false, error: t("Write a short note first.") };
-			return this.#confirmModuleTell(moduleTitle, text, frameOwner, about);
+			return this.#confirmModuleTell(moduleTitle, text, frameOwner, resolveTellHost(), about);
 		}
 		return { ok: false, error: t("This page can't be shown here.") };
 	}
@@ -511,7 +521,15 @@ export class SurfaceStudioView {
 			t("Page: {name}", { name: title }),
 			className,
 			moduleBridge
-				? (call) => this.#handleModuleCall(call, readable, folderRoot, title, frameOwner)
+				? (call) =>
+						this.#handleModuleCall(
+							call,
+							readable,
+							folderRoot,
+							title,
+							frameOwner,
+							() => frame.frame.closest("dialog") ?? this.el,
+						)
 				: async () => ({ ok: false, error: t("This page can't be shown here.") }),
 			() => undefined,
 			{ again: true },

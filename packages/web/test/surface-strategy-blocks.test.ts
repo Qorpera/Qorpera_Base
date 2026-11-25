@@ -1506,7 +1506,7 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		const life = new AbortController();
 		const files: Record<string, string> = {
 			[`${ROOT}/layout.json`]: JSON.stringify({
-				layout: 1,
+				schema: "qorpera.surface-layout/v1",
 				tabs: [
 					{
 						id: "lab",
@@ -1589,6 +1589,103 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		life.abort();
 		view.dispose();
 		store.dispose();
+	});
+
+	it("mounts fullscreen module tell bar inside its dialog, cancels on close, and keeps inline tell out of unrelated dialogs", async () => {
+		const origShowModal = HTMLDialogElement.prototype.showModal;
+		const origShow = HTMLDialogElement.prototype.show;
+		const origClose = HTMLDialogElement.prototype.close;
+		HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+			this.setAttribute("open", "");
+		};
+		HTMLDialogElement.prototype.show = HTMLDialogElement.prototype.showModal;
+		HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+			this.removeAttribute("open");
+			this.dispatchEvent(new Event("close"));
+		};
+		const surface = strategySurface();
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+			}),
+		);
+		const life = new AbortController();
+		let view: SurfaceStudioView | undefined;
+		try {
+			await store.load();
+			await store.openSurface(surface.slug);
+			const startSession = vi.spyOn(store, "startSession").mockResolvedValue(undefined);
+			const files: Record<string, string> = {
+				[`${ROOT}/layout.json`]: JSON.stringify({
+					schema: "qorpera.surface-layout/v1",
+					tabs: [
+						{
+							id: "lab",
+							title: "Lab",
+							blocks: [{ type: "module", from: "sketch", heading: "Sketchpad" }],
+						},
+					],
+				}),
+				[`${ROOT}/sketch/index.html`]: "<!doctype html><p>Sketch module</p>",
+			};
+			view = new SurfaceStudioView({
+				store,
+				surface,
+				signal: life.signal,
+				baseFiles: files,
+				timeSlice: false,
+			});
+			document.body.append(view.el);
+
+			const unrelatedDialog = document.createElement("dialog");
+			unrelatedDialog.setAttribute("open", "");
+			document.body.append(unrelatedDialog);
+
+			const inlineFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
+			expect(inlineFrame).not.toBeNull();
+			const callInline = connectFrame(inlineFrame);
+
+			const inlineTell = callInline("tell", { about: "Inline", text: "Inline note while other dialog open" });
+			await vi.waitFor(() => expect(view!.el.querySelector(".studio-tell-bar")).not.toBeNull());
+			expect(unrelatedDialog.querySelector(".studio-tell-bar")).toBeNull();
+			view.el.querySelector<HTMLButtonElement>('[data-tell-act="cancel"]')!.click();
+			expect(await inlineTell).toMatchObject({ ok: false });
+			unrelatedDialog.remove();
+
+			const expandBtn = view.el.querySelector<HTMLButtonElement>('[data-block="module"] button.studio-expand-btn')!;
+			expect(expandBtn).not.toBeNull();
+			expandBtn.click();
+
+			const fsDialog = document.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog")!;
+			expect(fsDialog).not.toBeNull();
+			const fsFrame = fsDialog.querySelector<HTMLIFrameElement>("iframe.studio-module-frame.is-fullscreen")!;
+			expect(fsFrame).not.toBeNull();
+			const callFullscreen = connectFrame(fsFrame);
+
+			void callFullscreen("tell", { about: "Fullscreen", text: "Draft from expanded view" });
+			await vi.waitFor(() => expect(fsDialog.querySelector(".studio-tell-bar")).not.toBeNull());
+			expect(view.el.querySelector(".studio-tell-bar")).toBeNull();
+			expect(await callInline("tell", { text: "Blocked while fullscreen note is open" })).toMatchObject({
+				ok: false,
+			});
+
+			fsDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+			expect(document.querySelector(".studio-tell-bar")).toBeNull();
+			expect(startSession).not.toHaveBeenCalled();
+
+			const afterCloseTell = callInline("tell", { about: "Inline", text: "Allowed after fullscreen close" });
+			await vi.waitFor(() => expect(view!.el.querySelector(".studio-tell-bar")).not.toBeNull());
+			view.el.querySelector<HTMLButtonElement>('[data-tell-act="cancel"]')!.click();
+			expect(await afterCloseTell).toMatchObject({ ok: false });
+		} finally {
+			life.abort();
+			view?.dispose();
+			store.dispose();
+			HTMLDialogElement.prototype.showModal = origShowModal;
+			HTMLDialogElement.prototype.show = origShow;
+			HTMLDialogElement.prototype.close = origClose;
+		}
 	});
 
 	it("renders empty-state guidance on the fresh Strategy Breakdowns tab instead of a blank grid", async () => {

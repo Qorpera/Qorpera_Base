@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -355,7 +355,7 @@ describe("recordStudioChatGptVoiceClips", () => {
 					};
 				}
 				if (rewritten.includes("voice-encode.cjs")) {
-					const outDirMatch = /voice-encode\.cjs\s+\S+\s+(\S+)\s+(.+)$/m.exec(rewritten);
+					const outDirMatch = /node\s+\S+\/voice-encode\.cjs\s+\S+\s+(\S+)\s+(.+)$/m.exec(rewritten);
 					const outDir = outDirMatch?.[1] ?? join(workSandbox, "out");
 					const pairs = [...(outDirMatch?.[2] ?? "").matchAll(/\b([1-9][0-9]*):([0-9a-f]{8})\b/g)];
 					const lines: string[] = [];
@@ -489,45 +489,396 @@ describe("recordStudioChatGptVoiceClips", () => {
 		expect(result.clips[0]!.audio).toEqual(fakeMp4);
 	});
 
-	it("uses the CDP peer and WAV encoder on stock coding machines without playwright or ffmpeg", async () => {
-		const fakeWav = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]);
-		const fake = makeFakeMachine({ hasFfmpeg: false, hasPlaywright: false, audioPayload: fakeWav });
-		const line = "Stock coding machine records trimmed wav audio cleanly.";
-		const voice = {
-			usage: vi.fn(async (): Promise<CloudVoiceUsage> => ({ windows: [{ usedPercent: 15 }] })),
-			open: vi.fn(
-				async (): Promise<CloudVoiceCall> => ({
-					answerSdp: "v=0\r\ns=answer\r\n",
-					speak: vi.fn(async () => {
-						fake.recordTurn();
-						return { transcript: line };
-					}),
-					close: vi.fn(async () => undefined),
-				}),
-			),
+	it("runs the real CDP peer and WAV encoder scripts end-to-end against a stub chromium DevTools server", async () => {
+		const workSandbox = await mkdtemp(join(tmpdir(), "qorpera-voice-cdp-test-"));
+		tempDirs.push(workSandbox);
+		const stubPath = join(workSandbox, "chromium-stub.cjs");
+		const cdpStubSource = [
+			`#!${process.execPath}`,
+			'const crypto = require("node:crypto");',
+			'const fs = require("node:fs");',
+			'const http = require("node:http");',
+			'const path = require("node:path");',
+			'const scenario = process.env.QORPERA_CDP_SCENARIO || "happy";',
+			'const tracePath = process.env.QORPERA_CDP_TRACE || "";',
+			'const triggerPath = process.env.QORPERA_CDP_TRIGGER || "";',
+			'const userDataArg = process.argv.find((a) => a.startsWith("--user-data-dir=")) || "";',
+			'const userData = userDataArg.slice("--user-data-dir=".length);',
+			"const workDir = userData ? path.dirname(userData) : process.cwd();",
+			'const turnPayload = Buffer.from("cdp-webm-turn-1", "utf8");',
+			"const log = (event) => { if (tracePath) fs.appendFileSync(tracePath, JSON.stringify(event) + '\\n'); };",
+			"function sendFrame(socket, text) {",
+			"  const data = Buffer.from(text, 'utf8');",
+			"  let head;",
+			"  if (data.length < 126) { head = Buffer.from([0x81, data.length]); }",
+			"  else if (data.length < 65536) { head = Buffer.alloc(4); head[0] = 0x81; head[1] = 126; head.writeUInt16BE(data.length, 2); }",
+			"  else { head = Buffer.alloc(10); head[0] = 0x81; head[1] = 127; head.writeBigUInt64BE(BigInt(data.length), 2); }",
+			"  socket.write(Buffer.concat([head, data]));",
+			"}",
+			"let port = 0;",
+			"const server = http.createServer((req, res) => {",
+			"  if (req.url === '/json/list') {",
+			"    res.writeHead(200, { 'content-type': 'application/json' });",
+			"    res.end(JSON.stringify([{ type: 'page', webSocketDebuggerUrl: 'ws://127.0.0.1:' + port + '/devtools/page/1' }]));",
+			"    return;",
+			"  }",
+			"  res.writeHead(404); res.end();",
+			"});",
+			"server.on('upgrade', (req, socket) => {",
+			"  const key = req.headers['sec-websocket-key'] || '';",
+			"  const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');",
+			"  socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: ' + accept + '\\r\\n\\r\\n');",
+			"  let buf = Buffer.alloc(0);",
+			"  let connected = false;",
+			"  let turnSent = false;",
+			"  let ackWaiter = null;",
+			"  const emitTurn = () => {",
+			"    if (turnSent) return;",
+			"    turnSent = true;",
+			"    sendFrame(socket, JSON.stringify({ method: 'Runtime.bindingCalled', params: { name: 'qorperaTurn', payload: JSON.stringify({ seq: 1, ms: 420, b64: turnPayload.toString('base64') }) } }));",
+			"  };",
+			"  const handle = (msg) => {",
+			"    const reply = (value) => sendFrame(socket, JSON.stringify({ id: msg.id, result: { result: { value } } }));",
+			"    if (msg.method === 'Runtime.enable' || msg.method === 'Runtime.addBinding') { sendFrame(socket, JSON.stringify({ id: msg.id, result: {} })); return; }",
+			"    if (msg.method !== 'Runtime.evaluate') { sendFrame(socket, JSON.stringify({ id: msg.id, result: {} })); return; }",
+			"    const expr = String((msg.params && msg.params.expression) || '');",
+			"    if (expr.includes('createOffer')) { reply('v=0\\r\\ns=cdp-offer\\r\\n'); return; }",
+			"    if (expr.includes('setRemoteDescription')) {",
+			"      connected = true;",
+			"      log({ kind: 'remote' });",
+			"      reply(null);",
+			"      if (scenario === 'happy') {",
+			"        const waitTrigger = () => {",
+			"          if (!triggerPath || fs.existsSync(triggerPath)) emitTurn();",
+			"          else setTimeout(waitTrigger, 15);",
+			"        };",
+			"        setTimeout(waitTrigger, 15);",
+			"      }",
+			"      return;",
+			"    }",
+			"    if (expr.includes('pc.connectionState')) { reply({ state: connected ? 'connected' : 'connecting', stream: connected, closed: false }); return; }",
+			"    if (expr.includes('window.qorperaCall.failed')) {",
+			"      if (scenario === 'socket-close') { log({ kind: 'closing-socket' }); socket.destroy(); return; }",
+			"      reply({ closed: false, failed: null }); return;",
+			"    }",
+			"    if (expr.includes('window.qorperaTurnAck')) {",
+			"      const diskPath = path.join(workDir, '1.webm');",
+			"      const existsAtAck = fs.existsSync(diskPath);",
+			"      const bytesMatch = existsAtAck && fs.readFileSync(diskPath).equals(turnPayload);",
+			"      log({ kind: 'ack', existsAtAck, bytesMatch });",
+			"      reply(1);",
+			"      if (ackWaiter) { const w = ackWaiter; ackWaiter = null; w(); }",
+			"      return;",
+			"    }",
+			"    if (expr.includes('window.qorperaCall.settle')) {",
+			"      log({ kind: 'settle-start' });",
+			"      if (scenario === 'stop-during-finish' && !turnSent) {",
+			"        ackWaiter = () => { log({ kind: 'settle-after-ack' }); reply({ busy: false, failed: null }); };",
+			"        emitTurn();",
+			"        return;",
+			"      }",
+			"      reply({ busy: false, failed: null }); return;",
+			"    }",
+			"    if (expr.includes('decodeAudioData')) {",
+			"      const floats = new Float32Array(7200);",
+			"      for (let i = 0; i < floats.length; i++) floats[i] = Math.sin((2 * Math.PI * 440 * i) / 24000) * 0.25;",
+			"      const b64 = Buffer.from(floats.buffer, floats.byteOffset, floats.byteLength).toString('base64');",
+			"      log({ kind: 'decode' });",
+			"      reply({ rate: 24000, b64, seconds: floats.length / 24000 });",
+			"      return;",
+			"    }",
+			"    reply(null);",
+			"  };",
+			"  socket.on('data', (chunk) => {",
+			"    buf = Buffer.concat([buf, chunk]);",
+			"    while (buf.length >= 2) {",
+			"      const opcode = buf[0] & 0x0f;",
+			"      const masked = (buf[1] & 0x80) !== 0;",
+			"      let len = buf[1] & 0x7f;",
+			"      let off = 2;",
+			"      if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }",
+			"      else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }",
+			"      const need = off + (masked ? 4 : 0) + len;",
+			"      if (buf.length < need) return;",
+			"      const payload = Buffer.alloc(len);",
+			"      if (masked) {",
+			"        const mask = buf.subarray(off, off + 4);",
+			"        const src = buf.subarray(off + 4, need);",
+			"        for (let i = 0; i < len; i++) payload[i] = src[i] ^ mask[i & 3];",
+			"      } else {",
+			"        buf.copy(payload, 0, off, need);",
+			"      }",
+			"      buf = buf.subarray(need);",
+			"      if (opcode === 0x8) { socket.end(); return; }",
+			"      if (opcode === 0x1) handle(JSON.parse(payload.toString('utf8')));",
+			"    }",
+			"  });",
+			"});",
+			"server.listen(0, '127.0.0.1', () => {",
+			"  port = server.address().port;",
+			"  process.stderr.write('DevTools listening on ws://127.0.0.1:' + port + '/devtools/browser/stub\\n');",
+			"});",
+		].join("\n");
+		await writeFile(stubPath, cdpStubSource, "utf8");
+		await chmod(stubPath, 0o755);
+
+		const makeVmGateway = (envOverrides: Record<string, string>): CloudCodingCommandGateway => {
+			const procs = new Map<
+				string,
+				{
+					readonly sha: string;
+					output: string;
+					state: "running" | "succeeded" | "failed";
+					exitCode: number | null;
+					readonly child?: ReturnType<typeof spawn>;
+				}
+			>();
+			return {
+				authorize: async () => undefined,
+				start: async (_scope, input) => {
+					const rewritten = input.command.replaceAll("/tmp/qorpera-studio-voice", join(workSandbox, "cdp"));
+					if (rewritten.includes("out = { ffmpeg: false")) {
+						const text = `${MARK}${JSON.stringify({ ffmpeg: false, pw: "" })}\n`;
+						procs.set(input.commandId, { sha: input.inputSha256, output: text, state: "succeeded", exitCode: 0 });
+						return {
+							schema: "qorpera.coding-command-result/v2",
+							workerId: WORKER_ID,
+							commandId: input.commandId,
+							inputSha256: input.inputSha256,
+							state: "succeeded",
+							exitCode: 0,
+							output: text,
+							truncated: false,
+							log: {
+								offset: 0,
+								nextOffset: Buffer.byteLength(text),
+								totalBytes: Buffer.byteLength(text),
+								limitBytes: 64 * 1024 * 1024,
+								limitReached: false,
+							},
+						};
+					}
+					const child = spawn("bash", ["-lc", rewritten], {
+						env: { ...process.env, ...envOverrides },
+						stdio: ["ignore", "pipe", "pipe"],
+					});
+					const entry = {
+						sha: input.inputSha256,
+						output: "",
+						state: "running" as "running" | "succeeded" | "failed",
+						exitCode: null as number | null,
+						child,
+					};
+					procs.set(input.commandId, entry);
+					child.stdout.setEncoding("utf8");
+					child.stdout.on("data", (chunk: string) => {
+						entry.output += chunk;
+					});
+					child.stderr.resume();
+					child.on("close", (code) => {
+						entry.exitCode = code ?? 1;
+						entry.state = code === 0 ? "succeeded" : "failed";
+					});
+					return {
+						schema: "qorpera.coding-command-result/v2",
+						workerId: WORKER_ID,
+						commandId: input.commandId,
+						inputSha256: input.inputSha256,
+						state: entry.state,
+						exitCode: entry.exitCode,
+						output: "",
+						truncated: false,
+						log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 64 * 1024 * 1024, limitReached: false },
+					};
+				},
+				read: async (_scope, input) => {
+					const entry = procs.get(input.commandId)!;
+					const buf = Buffer.from(entry.output, "utf8");
+					const offset = Number(input.offset);
+					const limit = Number(input.limit);
+					const slice = buf.subarray(offset, offset + limit);
+					return {
+						schema: "qorpera.coding-command-result/v2",
+						workerId: WORKER_ID,
+						commandId: input.commandId,
+						inputSha256: entry.sha,
+						state: entry.state,
+						exitCode: entry.exitCode,
+						output: slice.toString("utf8"),
+						truncated: offset + slice.length < buf.length,
+						log: {
+							offset,
+							nextOffset: offset + slice.length,
+							totalBytes: buf.length,
+							limitBytes: 64 * 1024 * 1024,
+							limitReached: false,
+						},
+					};
+				},
+				cancel: async (_scope, commandId) => {
+					const entry = procs.get(commandId);
+					if (entry?.child && entry.state === "running") {
+						entry.child.kill("SIGKILL");
+						entry.state = "succeeded";
+					}
+					return {
+						schema: "qorpera.coding-command-result/v2",
+						workerId: WORKER_ID,
+						commandId,
+						inputSha256: entry?.sha ?? "c".repeat(64),
+						state: "succeeded",
+						exitCode: 0,
+						output: "",
+						truncated: false,
+						log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 64 * 1024 * 1024, limitReached: false },
+					};
+				},
+			};
 		};
 
-		const result = await recordStudioChatGptVoiceClips({
-			voice,
-			machine: fake.machine,
-			callId: "call-cdp-wav",
+		const happyTrace = join(workSandbox, "trace-happy.jsonl");
+		const happyTrigger = join(workSandbox, "trigger-happy");
+		const line = "Stock coding machine records trimmed wav audio cleanly.";
+		const happy = await recordStudioChatGptVoiceClips({
+			voice: {
+				usage: async () => ({ windows: [{ usedPercent: 10 }] }),
+				open: async ({ offerSdp }) => {
+					expect(offerSdp).toContain("s=cdp-offer");
+					return {
+						answerSdp: "v=0\r\ns=cdp-answer\r\n",
+						speak: async () => {
+							await writeFile(happyTrigger, "go", "utf8");
+							return { transcript: line };
+						},
+						close: async () => undefined,
+					};
+				},
+			},
+			machine: {
+				scope: SCOPE,
+				identity: IDENTITY,
+				operations: makeOperations(),
+				gateway: makeVmGateway({
+					QORPERA_VOICE_CHROMIUM: stubPath,
+					QORPERA_CDP_SCENARIO: "happy",
+					QORPERA_CDP_TRACE: happyTrace,
+					QORPERA_CDP_TRIGGER: happyTrigger,
+				}),
+			},
+			callId: "call-cdp-happy",
 			captions: [{ hash: captionHash(line), text: line }],
 			signal: new AbortController().signal,
-			timing: { pollMs: 5 },
+			timing: { pollMs: 25 },
 		});
 
-		expect(result.stopReason).toBeNull();
-		expect(result.clips).toHaveLength(1);
-		expect(result.clips[0]!.mediaType).toBe("audio/wav");
-		expect(result.clips[0]!.fileExtension).toBe("wav");
-		expect(result.clips[0]!.audio).toEqual(fakeWav);
-		const peerCmd = fake.commands.find((cmd) => cmd.includes("voice-cdp-peer.cjs")) ?? "";
-		expect(peerCmd).toContain("st.state === 'connected' && st.stream");
-		expect(peerCmd).toContain("qorperaTurnAck");
-		expect(peerCmd).toContain("proc.on('error'");
-		const encCmd = fake.commands.find((cmd) => cmd.includes("voice-wav-encode.cjs")) ?? "";
-		expect(encCmd).toContain("decodeAudioData");
-		expect(encCmd).toContain("proc.on('error'");
+		expect({ stopReason: happy.stopReason, errorMessage: happy.errorMessage }).toEqual({
+			stopReason: null,
+			errorMessage: undefined,
+		});
+		expect(happy.clips).toHaveLength(1);
+		expect(happy.clips[0]!.hash).toBe(captionHash(line));
+		expect(happy.clips[0]!.mediaType).toBe("audio/wav");
+		expect(happy.clips[0]!.fileExtension).toBe("wav");
+		expect(happy.clips[0]!.seconds).toBe(0.3);
+		const wav = happy.clips[0]!.audio;
+		expect(Buffer.from(wav.subarray(0, 4)).toString("ascii")).toBe("RIFF");
+		expect(Buffer.from(wav.subarray(8, 12)).toString("ascii")).toBe("WAVE");
+		expect(wav.byteLength).toBe(44 + 7200 * 2);
+		const happyEvents = (await readFile(happyTrace, "utf8"))
+			.trim()
+			.split("\n")
+			.map((row) => JSON.parse(row) as Record<string, unknown>);
+		expect(happyEvents).toContainEqual({ kind: "ack", existsAtAck: true, bytesMatch: true });
+		expect(happyEvents).toContainEqual({ kind: "decode" });
+
+		const stopTrace = join(workSandbox, "trace-stop.jsonl");
+		const stopResult = await recordStudioChatGptVoiceClips({
+			voice: {
+				usage: async () => ({ windows: [{ usedPercent: 10 }] }),
+				open: async () => ({
+					answerSdp: "v=0\r\ns=cdp-answer\r\n",
+					speak: async () => {
+						throw new Error("call dropped while turn finishing");
+					},
+					close: async () => undefined,
+				}),
+			},
+			machine: {
+				scope: SCOPE,
+				identity: IDENTITY,
+				operations: makeOperations(),
+				gateway: makeVmGateway({
+					QORPERA_VOICE_CHROMIUM: stubPath,
+					QORPERA_CDP_SCENARIO: "stop-during-finish",
+					QORPERA_CDP_TRACE: stopTrace,
+				}),
+			},
+			callId: "call-cdp-stop-finish",
+			captions: [{ hash: captionHash(line), text: line }],
+			signal: new AbortController().signal,
+			timing: { pollMs: 25 },
+		});
+		expect(stopResult.stopReason).toBe("error");
+		const stopEvents = (await readFile(stopTrace, "utf8"))
+			.trim()
+			.split("\n")
+			.map((row) => JSON.parse(row) as Record<string, unknown>);
+		expect(stopEvents).toContainEqual({ kind: "ack", existsAtAck: true, bytesMatch: true });
+		expect(stopEvents).toContainEqual({ kind: "settle-after-ack" });
+
+		const spawnMissing = await recordStudioChatGptVoiceClips({
+			voice: {
+				usage: async () => ({ windows: [{ usedPercent: 10 }] }),
+				open: vi.fn(),
+			},
+			machine: {
+				scope: SCOPE,
+				identity: IDENTITY,
+				operations: makeOperations(),
+				gateway: makeVmGateway({
+					QORPERA_VOICE_CHROMIUM: join(workSandbox, "does-not-exist-chromium"),
+				}),
+			},
+			callId: "call-cdp-spawn-err",
+			captions: [{ hash: captionHash(line), text: line }],
+			signal: new AbortController().signal,
+			timing: { pollMs: 25 },
+		});
+		expect(spawnMissing.stopReason).toBe("error");
+		expect(spawnMissing.errorMessage).toContain("ENOENT");
+
+		const socketCloseTrace = join(workSandbox, "trace-close.jsonl");
+		const socketClosed = await recordStudioChatGptVoiceClips({
+			voice: {
+				usage: async () => ({ windows: [{ usedPercent: 10 }] }),
+				open: async () => ({
+					answerSdp: "v=0\r\ns=cdp-answer\r\n",
+					speak: async () => ({ transcript: line }),
+					close: async () => undefined,
+				}),
+			},
+			machine: {
+				scope: SCOPE,
+				identity: IDENTITY,
+				operations: makeOperations(),
+				gateway: makeVmGateway({
+					QORPERA_VOICE_CHROMIUM: stubPath,
+					QORPERA_CDP_SCENARIO: "socket-close",
+					QORPERA_CDP_TRACE: socketCloseTrace,
+				}),
+			},
+			callId: "call-cdp-socket-close",
+			captions: [{ hash: captionHash(line), text: line }],
+			signal: new AbortController().signal,
+			timing: { pollMs: 25 },
+		});
+		expect(socketClosed.stopReason).toBe("error");
+		expect(socketClosed.errorMessage).toBe("the recorder ended");
+		const closeEvents = (await readFile(socketCloseTrace, "utf8"))
+			.trim()
+			.split("\n")
+			.map((row) => JSON.parse(row) as Record<string, unknown>);
+		expect(closeEvents).toContainEqual({ kind: "closing-socket" });
 	});
 });
 
