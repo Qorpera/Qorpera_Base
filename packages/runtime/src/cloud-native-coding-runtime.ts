@@ -1236,12 +1236,29 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								for (const bytes of login.files.values()) bytes.fill(0);
 							}
 							const refresher = new ClaudeWorkerLoginRefresher(logins, loginFolder, login);
-							mcpBridge = new CloudClaudeMcpBridge({ boundary, signal: turnSignal });
+							let submittedClosed = false;
+							const stopAfterSubmit = (): void => {
+								if (!submittedClosed && box) {
+									submittedClosed = true;
+									void box.close().catch(() => undefined);
+								}
+							};
+							mcpBridge = new CloudClaudeMcpBridge({
+								boundary,
+								signal: turnSignal,
+								onBeforeToolCall: () => (submitted ? "CODING_COMMAND_AFTER_SUBMISSION" : undefined),
+								onAfterToolCall: () => {
+									// WHY: Close the box and its exec/sftp channels immediately on durable submission so Claude cannot mutate the worktree while the executor publishes.
+									if (submitted) stopAfterSubmit();
+								},
+							});
 							await mcpBridge.listen(scratchRoot);
 							const codingChannel = claudeHost.channel(binding);
 							const boxChannel: CloudClaudeHomeChannel = {
-								open: ({ kind }, channelSignal) =>
-									codingChannel.open({ scope, ...(kind ? { kind } : {}) }, channelSignal),
+								open: ({ kind }, channelSignal) => {
+									if (submitted) return Promise.reject(new Error("CODING_COMMAND_AFTER_SUBMISSION"));
+									return codingChannel.open({ scope, ...(kind ? { kind } : {}) }, channelSignal);
+								},
 							};
 							const systemNote = [
 								surfaceSession ? CLAUDE_SURFACE_CODING_SYSTEM_NOTE : CLAUDE_CODING_SYSTEM_NOTE,
@@ -1271,6 +1288,11 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								turnSignal.throwIfAborted();
 								throw new Error(`CODING_CLAUDE_BOX_FAILED:${claudeBoxFailureCode(error)}`, { cause: error });
 							}
+							const closeOnAbort = (): void => {
+								void box?.close().catch(() => undefined);
+							};
+							if (turnSignal.aborted) closeOnAbort();
+							else turnSignal.addEventListener("abort", closeOnAbort, { once: true });
 							const watching = new AbortController();
 							const watch = (async () => {
 								const every = claudeHost.refreshMs ?? 60_000;
@@ -1310,12 +1332,17 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 										toolsWrong = true;
 										break;
 									}
+									if (submitted) {
+										stopAfterSubmit();
+										break;
+									}
 								}
 								overflowed = box.overflowed?.() === true;
-								if (!toolsWrong && !overflowed) completed = true;
+								if (!toolsWrong && !overflowed && !submittedClosed) completed = true;
 							} finally {
+								turnSignal.removeEventListener("abort", closeOnAbort);
 								watching.abort();
-								if (toolsWrong || !completed) {
+								if (toolsWrong || submittedClosed || !completed) {
 									await box.close().catch(() => undefined);
 									let exitTimer: ReturnType<typeof setTimeout> | undefined;
 									await Promise.race([
@@ -1336,9 +1363,6 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									await flushUsage(finalUsage);
 								}
 							}
-							if (timeoutController?.signal.aborted && !signal.aborted && !run.signal.aborted)
-								throw new Error("CODING_TURN_TIMED_OUT");
-							turnSignal.throwIfAborted();
 							if (toolsWrong) throw new Error("CODING_CLAUDE_TOOLS_WRONG");
 							if (submitted) {
 								return {
@@ -1349,6 +1373,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									delivery: { messageCount: 0, finalMessageId: null },
 								};
 							}
+							if (timeoutController?.signal.aborted && !signal.aborted && !run.signal.aborted)
+								throw new Error("CODING_TURN_TIMED_OUT");
+							turnSignal.throwIfAborted();
 							if (overflowed) throw new Error("CODING_CLAUDE_OUTPUT_LIMIT");
 							if (stream.signedOut) throw new Error("CODING_CLAUDE_SIGNED_OUT");
 							if (stream.limit) throw new Error(`CODING_CLAUDE_RATE_LIMITED: ${stream.limit.words}`);

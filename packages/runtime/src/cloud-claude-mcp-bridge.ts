@@ -8,7 +8,12 @@ import type { CloudDynamicToolResponse, CloudNativeToolBoundary } from "./cloud-
 export const CLOUD_CLAUDE_MCP_SOCKET_NAME = "mcp.sock";
 export const CLOUD_CLAUDE_MCP_SERVER_NAME = "qorpera";
 const DEFAULT_PROTOCOL_VERSION = "2024-11-05";
-const PROTOCOL_VERSION_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const SUPPORTED_PROTOCOL_VERSIONS: ReadonlySet<string> = new Set([
+	"2024-11-05",
+	"2025-03-26",
+	"2025-06-18",
+	"2025-11-25",
+]);
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
 const MAX_CONNECTIONS = 8;
 const DATA_IMAGE_URL = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/;
@@ -70,15 +75,24 @@ function responseToMcpContent(response: CloudDynamicToolResponse): McpContentBlo
 export class CloudClaudeMcpBridge {
 	readonly #boundary: CloudNativeToolBoundary;
 	readonly #signal: AbortSignal;
+	readonly #onBeforeToolCall?: (name: string) => string | undefined;
+	readonly #onAfterToolCall?: (name: string, response: CloudDynamicToolResponse) => void;
 	readonly #sockets = new Set<Socket>();
 	readonly #tools: readonly CloudClaudeMcpToolDescriptor[];
 	#server?: Server;
 	#path?: string;
 	#seq = 0;
 
-	constructor(options: { readonly boundary: CloudNativeToolBoundary; readonly signal: AbortSignal }) {
+	constructor(options: {
+		readonly boundary: CloudNativeToolBoundary;
+		readonly signal: AbortSignal;
+		readonly onBeforeToolCall?: (name: string) => string | undefined;
+		readonly onAfterToolCall?: (name: string, response: CloudDynamicToolResponse) => void;
+	}) {
 		this.#boundary = options.boundary;
 		this.#signal = options.signal;
+		this.#onBeforeToolCall = options.onBeforeToolCall;
+		this.#onAfterToolCall = options.onAfterToolCall;
 		this.#tools = Object.freeze(boundaryTools(options.boundary));
 	}
 
@@ -195,7 +209,7 @@ export class CloudClaudeMcpBridge {
 			const requestedVersion =
 				isRecord(request.params) &&
 				typeof request.params.protocolVersion === "string" &&
-				PROTOCOL_VERSION_PATTERN.test(request.params.protocolVersion)
+				SUPPORTED_PROTOCOL_VERSIONS.has(request.params.protocolVersion)
 					? request.params.protocolVersion
 					: DEFAULT_PROTOCOL_VERSION;
 			if (hasId) {
@@ -243,6 +257,18 @@ export class CloudClaudeMcpBridge {
 				send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Missing tool name" } });
 				return;
 			}
+			const blockedReason = this.#onBeforeToolCall?.(name);
+			if (blockedReason !== undefined) {
+				send({
+					jsonrpc: "2.0",
+					id,
+					result: {
+						content: [{ type: "text", text: blockedReason }],
+						isError: true,
+					},
+				});
+				return;
+			}
 			const callId = `mcp_${++this.#seq}_${randomBytes(4).toString("hex")}`;
 			try {
 				const response = await this.#boundary.invoke(callId, CLOUD_CLAUDE_MCP_SERVER_NAME, name, args);
@@ -255,6 +281,7 @@ export class CloudClaudeMcpBridge {
 						isError: !response.success,
 					},
 				});
+				this.#onAfterToolCall?.(name, response);
 			} catch {
 				if (this.#signal.aborted) return;
 				send({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool execution unavailable" } });

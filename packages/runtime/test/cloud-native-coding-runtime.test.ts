@@ -2762,44 +2762,13 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 				observedMcpSocket = options.mcp?.socketPath ?? "";
 				const credsStat = await stat(join(observedLoginFolder, ".credentials.json"));
 				expect(credsStat.mode & 0o777).toBe(0o600);
-				const mcpAnswers = await sendMcp(observedMcpSocket, [
-					{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } },
-					{ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
-					{
-						jsonrpc: "2.0",
-						id: 3,
-						method: "tools/call",
-						params: {
-							name: "coding_record_change",
-							arguments: {
-								title: "Refresh hero",
-								summary: "Updated landing hero",
-								parentSha: "a".repeat(40),
-								commitSha: "b".repeat(40),
-							},
-						},
-					},
-					{
-						jsonrpc: "2.0",
-						id: 4,
-						method: "tools/call",
-						params: {
-							name: "coding_finish",
-							arguments: {
-								operationKey: "fin-1",
-								summary: "Committed refreshed hero.",
-								headSha: "b".repeat(40),
-							},
-						},
-					},
-				]);
-				expect((mcpAnswers[1]?.result as { tools: { name: string }[] }).tools.map((t) => t.name)).toEqual([
-					"coding_record_change",
-					"coding_finish",
-					"coding_ask",
-				]);
-				expect((mcpAnswers[2]?.result as { isError: boolean }).isError).toBe(false);
-				expect((mcpAnswers[3]?.result as { isError: boolean }).isError).toBe(false);
+				let finishExit!: (code: number) => void;
+				const exited = new Promise<number>((resolve) => {
+					finishExit = resolve;
+				});
+				const close = vi.fn(async () => {
+					finishExit(0);
+				});
 				return {
 					lines: (async function* () {
 						yield JSON.stringify({
@@ -2825,13 +2794,51 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 								},
 							},
 						});
+						const mcpAnswers = await sendMcp(observedMcpSocket, [
+							{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+							{ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+							{
+								jsonrpc: "2.0",
+								id: 3,
+								method: "tools/call",
+								params: {
+									name: "coding_record_change",
+									arguments: {
+										title: "Refresh hero",
+										summary: "Updated landing hero",
+										parentSha: "a".repeat(40),
+										commitSha: "b".repeat(40),
+									},
+								},
+							},
+							{
+								jsonrpc: "2.0",
+								id: 4,
+								method: "tools/call",
+								params: {
+									name: "coding_finish",
+									arguments: {
+										operationKey: "fin-1",
+										summary: "Committed refreshed hero.",
+										headSha: "b".repeat(40),
+									},
+								},
+							},
+						]);
+						expect((mcpAnswers[1]?.result as { tools: { name: string }[] }).tools.map((t) => t.name)).toEqual([
+							"coding_record_change",
+							"coding_finish",
+							"coding_ask",
+						]);
+						expect((mcpAnswers[2]?.result as { isError: boolean }).isError).toBe(false);
+						expect((mcpAnswers[3]?.result as { isError: boolean }).isError).toBe(false);
 						yield JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Done." });
 					})(),
-					exited: Promise.resolve(0),
+					exited,
 					stderr: () => "",
 					overflowed: () => false,
 					shell: {} as ClaudeCodeBox["shell"],
-					close: vi.fn().mockResolvedValue(undefined),
+					close,
 				} satisfies ClaudeCodeBox;
 			});
 			const runtime = new CloudNativeCodingRuntime({
@@ -2993,6 +3000,254 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 				mismatch.runtime.execute(mismatch.f.request, identityRoot, mismatch.f.context.signal, mismatch.f.turn),
 			).rejects.toThrow("CODING_TURN_SCOPE_DIFFERS");
 
+			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+		} finally {
+			await rm(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("stops the Claude box immediately after durable submission and refuses post-submission channel opens", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "qcc-stop-"));
+		const identityRoot = join(parent, "id");
+		await mkdir(identityRoot, { mode: 0o700 });
+		try {
+			const f = fixture();
+			f.coding.harness = "claude-code";
+			f.coding.model = "claude-opus-5-5";
+			(f.coding as Record<string, unknown>).claude = { model: "claude-opus-5-5", effort: "high" };
+			(f.turn.wake.payload as Record<string, unknown>).harness = "claude-code";
+			(f.turn.wake.payload as Record<string, unknown>).coding = { harness: "claude-code" };
+			const logins: ClaudeWorkerLogins = {
+				open: vi.fn().mockResolvedValue({
+					claudeLoginId: randomUUID(),
+					version: 1,
+					envelopeSha256: "d".repeat(64),
+					files: new Map([[".credentials.json", Buffer.from("{}")]]),
+					fileSha256: {},
+				}),
+			};
+			let postSubmitChannelError: unknown;
+			let extraLinesYielded = 0;
+			let closeCalls = 0;
+			const launch = vi.fn(async (options) => {
+				let resolveClosed!: () => void;
+				const closed = new Promise<void>((resolve) => {
+					resolveClosed = resolve;
+				});
+				const close = vi.fn(async () => {
+					closeCalls += 1;
+					resolveClosed();
+				});
+				const socketPath = options.mcp?.socketPath ?? "";
+				return {
+					lines: (async function* () {
+						yield JSON.stringify({
+							type: "system",
+							subtype: "init",
+							session_id: "claude-stop-1",
+							model: "claude-opus-5-5",
+							tools: [...CLAUDE_BOX_TOOLS, "mcp__qorpera__coding_finish", "mcp__qorpera__coding_ask"],
+						});
+						const sock = connect(socketPath);
+						await new Promise<void>((resolve, reject) => {
+							sock.once("connect", resolve);
+							sock.once("error", reject);
+						});
+						await new Promise<void>((resolve, reject) => {
+							sock.once("data", () => resolve());
+							sock.once("error", reject);
+							sock.write(
+								`${JSON.stringify({
+									jsonrpc: "2.0",
+									id: 1,
+									method: "tools/call",
+									params: {
+										name: "coding_finish",
+										arguments: {
+											operationKey: "fin-stop",
+											summary: "Submitted cleanly.",
+											headSha: "b".repeat(40),
+										},
+									},
+								})}\n`,
+							);
+						});
+						sock.destroy();
+						await closed;
+						try {
+							await options.channel.open(
+								{ sessionId: options.sessionId, machineId: options.machineId, kind: "exec" },
+								options.signal,
+							);
+						} catch (error) {
+							postSubmitChannelError = error;
+						}
+						yield JSON.stringify({
+							type: "assistant",
+							message: {
+								content: [{ type: "tool_use", id: "late-1", name: "Bash", input: { command: "rm -rf ." } }],
+							},
+						});
+						extraLinesYielded += 1;
+					})(),
+					exited: closed.then(() => 137),
+					stderr: () => "",
+					overflowed: () => false,
+					shell: {} as ClaudeCodeBox["shell"],
+					close,
+				} satisfies ClaudeCodeBox;
+			});
+			const runtime = new CloudNativeCodingRuntime({
+				control: f.control,
+				gateway: f.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				timeoutMs: 2_000,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins,
+					launch,
+				},
+			});
+			const out = await runtime.execute(f.request, identityRoot, f.context.signal, f.turn);
+			expect(out.providerSessionId).toContain("claude-stop-1");
+			expect(closeCalls).toBeGreaterThanOrEqual(1);
+			expect(extraLinesYielded).toBe(0);
+			expect(postSubmitChannelError).toBeInstanceOf(Error);
+			expect((postSubmitChannelError as Error).message).toBe("CODING_COMMAND_AFTER_SUBMISSION");
+			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+		} finally {
+			await rm(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("cleans up login and scratch files on Claude box start failure, timeout, and abort without invoking Codex", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "qcc-clean-"));
+		const identityRoot = join(parent, "id");
+		await mkdir(identityRoot, { mode: 0o700 });
+		const validLogins = (): ClaudeWorkerLogins => ({
+			open: vi.fn().mockResolvedValue({
+				claudeLoginId: randomUUID(),
+				version: 1,
+				envelopeSha256: "e".repeat(64),
+				files: new Map([[".credentials.json", Buffer.from('{"token":"x"}')]]),
+				fileSha256: {},
+			}),
+		});
+		const prepClaude = () => {
+			const f = fixture();
+			f.coding.harness = "claude-code";
+			f.coding.model = "claude-opus-5-5";
+			(f.coding as Record<string, unknown>).claude = { model: "claude-opus-5-5", effort: "high" };
+			(f.turn.wake.payload as Record<string, unknown>).harness = "claude-code";
+			(f.turn.wake.payload as Record<string, unknown>).coding = { harness: "claude-code" };
+			return f;
+		};
+		try {
+			let startLoginFolder = "";
+			let startScratchRoot = "";
+			let startMcpSocket = "";
+			const fFail = prepClaude();
+			const startFailRuntime = new CloudNativeCodingRuntime({
+				control: fFail.control,
+				gateway: fFail.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins: validLogins(),
+					launch: vi.fn(async (options) => {
+						startLoginFolder = "folder" in options.login ? options.login.folder : "";
+						startScratchRoot = options.scratchRoot;
+						startMcpSocket = options.mcp?.socketPath ?? "";
+						const err = new Error("spawn failed") as NodeJS.ErrnoException;
+						err.code = "ENOENT";
+						throw err;
+					}),
+				},
+			});
+			await expect(
+				startFailRuntime.execute(fFail.request, identityRoot, fFail.context.signal, fFail.turn),
+			).rejects.toThrow("CODING_CLAUDE_BOX_FAILED:box-unknown:ENOENT");
+			expect(existsSync(startLoginFolder)).toBe(false);
+			expect(existsSync(startScratchRoot)).toBe(false);
+			expect(existsSync(startMcpSocket)).toBe(false);
+
+			const hangingBox = () => {
+				let stop!: () => void;
+				const stopped = new Promise<void>((resolve) => {
+					stop = resolve;
+				});
+				const close = vi.fn(async () => {
+					stop();
+				});
+				return {
+					box: {
+						lines: (async function* () {
+							yield JSON.stringify({
+								type: "system",
+								subtype: "init",
+								session_id: "claude-hang",
+								model: "claude-opus-5-5",
+								tools: [...CLAUDE_BOX_TOOLS, "mcp__qorpera__coding_finish", "mcp__qorpera__coding_ask"],
+							});
+							await stopped;
+						})(),
+						exited: stopped.then(() => 137),
+						stderr: () => "",
+						overflowed: () => false,
+						shell: {} as ClaudeCodeBox["shell"],
+						close,
+					} satisfies ClaudeCodeBox,
+					close,
+				};
+			};
+
+			const fTimeout = prepClaude();
+			const hangTimeout = hangingBox();
+			let timeoutScratchRoot = "";
+			const timeoutRuntime = new CloudNativeCodingRuntime({
+				control: fTimeout.control,
+				gateway: fTimeout.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				timeoutMs: 30,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins: validLogins(),
+					launch: vi.fn(async (options) => {
+						timeoutScratchRoot = options.scratchRoot;
+						return hangTimeout.box;
+					}),
+				},
+			});
+			await expect(
+				timeoutRuntime.execute(fTimeout.request, identityRoot, fTimeout.context.signal, fTimeout.turn),
+			).rejects.toThrow("CODING_TURN_TIMED_OUT");
+			expect(hangTimeout.close).toHaveBeenCalled();
+			expect(existsSync(timeoutScratchRoot)).toBe(false);
+
+			const fAbort = prepClaude();
+			const hangAbort = hangingBox();
+			const abortController = new AbortController();
+			const abortRuntime = new CloudNativeCodingRuntime({
+				control: fAbort.control,
+				gateway: fAbort.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins: validLogins(),
+					launch: vi.fn(async () => {
+						setTimeout(() => abortController.abort(new Error("caller_stopped")), 15);
+						return hangAbort.box;
+					}),
+				},
+			});
+			await expect(
+				abortRuntime.execute(fAbort.request, identityRoot, abortController.signal, fAbort.turn),
+			).rejects.toThrow("caller_stopped");
+			expect(hangAbort.close).toHaveBeenCalled();
 			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
 		} finally {
 			await rm(parent, { recursive: true, force: true });

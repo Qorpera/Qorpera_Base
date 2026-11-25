@@ -153,9 +153,15 @@ describe("CloudClaudeMcpBridge", () => {
 						params: { name: "coding_finish", arguments: { summary: "" } },
 					}),
 					JSON.stringify({ jsonrpc: "2.0", id: 6, method: "unknown/method" }),
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: 7,
+						method: "initialize",
+						params: { protocolVersion: "2099-01-01" },
+					}),
 					"{not-json",
 				],
-				7,
+				8,
 			)) as Array<{ id: unknown; result?: Record<string, unknown>; error?: { code: number; message: string } }>;
 
 			expect(replies[0]).toMatchObject({
@@ -190,7 +196,11 @@ describe("CloudClaudeMcpBridge", () => {
 			expect(refusedContent[0]?.text).toContain("summary is required");
 
 			expect(replies[5]?.error).toMatchObject({ code: -32601 });
-			expect(replies[6]?.error).toMatchObject({ code: -32700 });
+			expect(replies[6]).toMatchObject({
+				id: 7,
+				result: { protocolVersion: "2024-11-05" },
+			});
+			expect(replies[7]?.error).toMatchObject({ code: -32700 });
 		} finally {
 			const socketPath = bridge.socketPath;
 			await bridge.close();
