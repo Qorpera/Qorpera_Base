@@ -144,13 +144,12 @@ test("the tests run beside the release build, its check and the program against 
 	// Every container carries the runner's target volume in its label.
 	for (const kind of ["prepare", "test", "build", "check", "git", "e2e"])
 		assert.deepEqual(flags(call(ran.calls, kind), "--label"), ["qorpera.folder-program-target=qorpera-folder-target-ci07"], kind);
-	// Every Rust container has the runner's target volume, the crates' cache and the source read-only.
 	for (const kind of ["prepare", "test", "build"]) {
 		const args = call(ran.calls, kind);
 		assert.ok(flags(args, "-v").includes("qorpera-folder-target-ci07:/tmp/target"), kind);
 		assert.ok(flags(args, "-v").includes("qorpera-cargo-registry:/usr/local/cargo/registry"), kind);
 		assert.ok(flags(args, "-v").includes(`${crate}:/src:ro`), kind);
-		assert.ok(flags(args, "-e").includes("CARGO_TARGET_DIR=/tmp/target"), kind);
+		assert.ok(flags(args, "-e").includes(kind === "test" ? "CARGO_TARGET_DIR=/tmp/target/test" : "CARGO_TARGET_DIR=/tmp/target"), kind);
 		assert.equal(args.at(-4), RUST_IMAGE, kind);
 	}
 	assert.match(RUST_IMAGE, /^rust:1\.95\.0-slim-bookworm@sha256:[0-9a-f]{64}$/);
