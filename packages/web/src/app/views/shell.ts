@@ -4551,7 +4551,7 @@ function withSurfaceMigrationSheet(run: (mod: typeof SurfaceMigrationSheetMod) =
 		run(preloadedSurfaceMigrationSheet);
 		return;
 	}
-	void import("./surface-migration-sheet.ts").then((mod) => {
+	void import("./lazy-secondary.ts").then(({ surfaceMigrationSheet: mod }) => {
 		preloadedSurfaceMigrationSheet = mod;
 		run(mod);
 	});
@@ -4566,7 +4566,7 @@ function openSearchWindow(company: CompanyController, context: ShellContext | un
 	};
 	if (preloadedSearchWindow) mount(preloadedSearchWindow);
 	else
-		void import("./search-window.ts").then(({ SearchWindow: Loaded }) => {
+		void import("./lazy-secondary.ts").then(({ searchWindow: { SearchWindow: Loaded } }) => {
 			preloadedSearchWindow = Loaded;
 			mount(Loaded);
 		});

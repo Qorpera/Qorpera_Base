@@ -12,6 +12,7 @@ import { CompanyFoundingApi, parseCompanyFounding } from "../src/cloud/company-f
 import { companyDisplayName, companyInSentence, isUnnamed } from "../src/ui/company-name.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, settle, userA, userB, visibleText } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 const table = id(900);
 const me = userA.id;

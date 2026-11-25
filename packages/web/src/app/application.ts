@@ -161,22 +161,21 @@ function lazyModule<T>(load: () => Promise<T>): {
 	};
 }
 
-const interfaceViewModule = lazyModule(() => import("./views/interface.ts"));
 const surfaceViewModule = lazyModule(() => import("./views/surface-view.ts"));
-const companyFolderModule = lazyModule(() => import("./views/company-folder.ts"));
-const foundingModule = lazyModule(async () => {
-	const [{ FoundingController }, { FoundingView }] = await Promise.all([
-		import("./founding.ts"),
-		import("./views/founding.ts"),
-	]);
-	return { FoundingController, FoundingView };
-});
-// WHY: Grouping small secondary views behind one dynamic import collapses esbuild's combinatorial preload chunk explosion.
+// WHY: Grouping secondary views behind one dynamic import collapses esbuild's combinatorial preload chunk explosion.
 const secondaryViewsModule = lazyModule(() => import("./views/lazy-secondary.ts"));
+const interfaceViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.interfaceView));
+const companyFolderModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.companyFolder));
+const foundingModule = lazyModule(() =>
+	secondaryViewsModule.load().then((mod) => ({
+		FoundingController: mod.foundingController.FoundingController,
+		FoundingView: mod.foundingView.FoundingView,
+	})),
+);
 const conceptsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.concepts));
 const newProgramModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.newProgram));
 const siteViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.siteView));
-const settingsViewModule = lazyModule(() => import("./views/settings.ts"));
+const settingsViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.settingsView));
 const friendsWindowModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.friendsWindow));
 const feedbackViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.feedbackView));
 const accountViewModule = lazyModule(() =>
@@ -193,6 +192,7 @@ const agentDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mo
 const groupDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.groupDetails));
 
 export function registerLazyApplicationModules(modules: {
+	readonly secondaryViews?: typeof import("./views/lazy-secondary.ts");
 	readonly interfaceView?: typeof import("./views/interface.ts");
 	readonly surfaceView?: typeof import("./views/surface-view.ts");
 	readonly companyFolder?: typeof import("./views/company-folder.ts");
@@ -217,6 +217,32 @@ export function registerLazyApplicationModules(modules: {
 	readonly agentDetails?: typeof import("./views/agent-details.ts");
 	readonly groupDetails?: typeof import("./views/group-details.ts");
 }): void {
+	if (modules.secondaryViews) {
+		const mod = modules.secondaryViews;
+		secondaryViewsModule.set(mod);
+		interfaceViewModule.set(mod.interfaceView);
+		companyFolderModule.set(mod.companyFolder);
+		foundingModule.set({
+			FoundingController: mod.foundingController.FoundingController,
+			FoundingView: mod.foundingView.FoundingView,
+		});
+		conceptsModule.set(mod.concepts);
+		newProgramModule.set(mod.newProgram);
+		siteViewModule.set(mod.siteView);
+		settingsViewModule.set(mod.settingsView);
+		friendsWindowModule.set(mod.friendsWindow);
+		feedbackViewModule.set(mod.feedbackView);
+		accountViewModule.set({
+			renderAccount: mod.account.renderAccount,
+			MyGoodWillView: mod.goodWill.MyGoodWillView,
+		});
+		teamViewModule.set(mod.teamView);
+		memberChatModule.set(mod.memberChat);
+		newConversationModule.set(mod.newConversation);
+		whatsNewModule.set(mod.whatsNew);
+		agentDetailsModule.set(mod.agentDetails);
+		groupDetailsModule.set(mod.groupDetails);
+	}
 	if (modules.interfaceView) interfaceViewModule.set(modules.interfaceView);
 	if (modules.surfaceView) surfaceViewModule.set(modules.surfaceView);
 	if (modules.companyFolder) companyFolderModule.set(modules.companyFolder);
@@ -1316,9 +1342,20 @@ export function mountApplication(
 								if (auth.userId !== userId) throw new Error("The account changed.");
 							},
 						);
-						void import("./views/settings-connections.ts").then(({ finishPlanSignIn, memberPlanSignIn }) =>
-							finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome),
-						);
+						const loadedSecondary = secondaryViewsModule.get();
+						if (loadedSecondary) {
+							loadedSecondary.settingsConnections.finishPlanSignIn(
+								loadedSecondary.settingsConnections.memberPlanSignIn(userId, profile.profileId),
+								plan,
+								outcome,
+							);
+						} else {
+							void secondaryViewsModule
+								.load()
+								.then(({ settingsConnections: { finishPlanSignIn, memberPlanSignIn } }) =>
+									finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome),
+								);
+						}
 						queueMicrotask(() => {
 							if (disposed || company !== controller) return;
 							const route = currentRoute();
@@ -1331,7 +1368,9 @@ export function mountApplication(
 				// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
 				if (connectorReturn?.connector === "bank") {
 					const bankReturn = connectorReturn;
-					void import("./views/bank.ts").then(({ noteBankReturn }) => noteBankReturn(bankReturn));
+					const loadedSecondary = secondaryViewsModule.get();
+					if (loadedSecondary) loadedSecondary.bank.noteBankReturn(bankReturn);
+					else void secondaryViewsModule.load().then(({ bank: { noteBankReturn } }) => noteBankReturn(bankReturn));
 				}
 				connectorReturn = undefined;
 				computerPanels = new LazyComputerPanels(
@@ -1367,7 +1406,7 @@ export function mountApplication(
 						chooseFile: (signal) => {
 							const role = controller.store.get().team?.role;
 							if (!role) return Promise.resolve(null);
-							return import("./views/company-folder-choose.ts").then(({ chooseInCompanyFolder }) =>
+							return secondaryViewsModule.load().then(({ companyFolderChoose: { chooseInCompanyFolder } }) =>
 								chooseInCompanyFolder(
 									new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
 										if (
@@ -3363,9 +3402,9 @@ export function mountApplication(
 								return false;
 							},
 							openMigration: () => {
-								void import("./views/surface-migration-sheet.ts").then(({ openMigrationSheet }) =>
-									openMigrationSheet(surfaces),
-								);
+								void secondaryViewsModule
+									.load()
+									.then(({ surfaceMigrationSheet: { openMigrationSheet } }) => openMigrationSheet(surfaces));
 							},
 							loadStudioFiles,
 						},
