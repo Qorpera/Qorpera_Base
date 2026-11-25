@@ -1769,6 +1769,11 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: color-mix(in srgb, var(--text) 1.5%, var(--bg));
 }
 .studio-svg-card.is-changed { border-color: color-mix(in srgb, var(--accent) 36%, transparent); }
+[data-file].is-revealed { animation: studio-file-revealed 1.8s ease-out; }
+@keyframes studio-file-revealed {
+	from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent); }
+	to { box-shadow: 0 0 0 3px transparent; }
+}
 .studio-svg-stage {
 	display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; width: 100%; min-width: 0;
 	box-sizing: border-box; overflow: hidden; min-height: 112px; padding: 16px; border: 0; border-radius: 10px;
