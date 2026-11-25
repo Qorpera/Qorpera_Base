@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-	CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
 	type JsonValue,
@@ -129,7 +129,11 @@ const STUDIO_CDP_VOICE_PEER_CJS = [
 	"    call.recorder = null;",
 	'    const bytes = new Uint8Array(await new Blob(call.chunks, { type: "audio/webm" }).arrayBuffer());',
 	'    let bin = ""; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));',
-	"    window.qorperaTurn(JSON.stringify({ ms: Math.round(performance.now() - call.began), b64: btoa(bin) }));",
+	"    const seq = (window.qorperaTurnSeq = (window.qorperaTurnSeq || 0) + 1);",
+	"    window.qorperaTurn(JSON.stringify({ seq, ms: Math.round(performance.now() - call.began), b64: btoa(bin) }));",
+	"    const ackBy = performance.now() + 15000;",
+	"    while ((window.qorperaTurnAck || 0) < seq && performance.now() < ackBy) await new Promise((r) => setTimeout(r, 25));",
+	"    if ((window.qorperaTurnAck || 0) < seq) throw new Error('turn write did not settle');",
 	"  };",
 	"  events.onmessage = (event) => {",
 	"    let type; try { type = JSON.parse(event.data).type; } catch { return; }",
@@ -150,11 +154,13 @@ const STUDIO_CDP_VOICE_PEER_CJS = [
 	"  const until = Date.now() + seconds * 1000;",
 	"  const userData = path.join(work, 'chrome');",
 	'  const proc = spawn(bin, ["--headless=new", "--disable-gpu", "--autoplay-policy=no-user-gesture-required", "--mute-audio", "--remote-debugging-port=0", "--user-data-dir=" + userData, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });',
-	"  let wsUrl = null, errBuf = '';",
+	"  let wsUrl = null, errBuf = '', spawnErr = null;",
+	"  proc.on('error', (err) => { spawnErr = err; });",
 	"  proc.stderr.setEncoding('utf8');",
 	"  proc.stderr.on('data', (c) => { errBuf = (errBuf + c).slice(-4096); const m = /DevTools listening on (ws:\\/\\/[^\\s]+)/.exec(errBuf); if (m) wsUrl = m[1]; });",
 	"  const bootBy = Date.now() + 20000;",
-	"  while (!wsUrl && proc.exitCode === null && Date.now() < bootBy) await sleep(50);",
+	"  while (!wsUrl && !spawnErr && proc.exitCode === null && Date.now() < bootBy) await sleep(50);",
+	"  if (spawnErr) throw spawnErr;",
 	'  if (!wsUrl) throw new Error("chromium did not open devtools");',
 	"  const base = wsUrl.replace(/^ws:\\/\\//, 'http://').replace(/\\/devtools\\/.*/, '');",
 	"  let targetWs = null;",
@@ -165,8 +171,12 @@ const STUDIO_CDP_VOICE_PEER_CJS = [
 	"  }",
 	'  if (!targetWs) throw new Error("no browser page target");',
 	"  const ws = new WebSocket(targetWs);",
-	"  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });",
+	"  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('devtools socket failed')); });",
 	"  let nextId = 0, turns = 0; const pending = new Map();",
+	"  const rejectAll = (msg) => { for (const p of pending.values()) p.rej(new Error(msg)); pending.clear(); };",
+	"  ws.onclose = () => rejectAll('devtools socket closed');",
+	"  ws.onerror = () => rejectAll('devtools socket error');",
+	"  const send = (method, params = {}) => new Promise((res, rej) => { if (ws.readyState !== 1) return rej(new Error('devtools socket not open')); const id = ++nextId; pending.set(id, { res, rej }); ws.send(JSON.stringify({ id, method, params })); });",
 	"  ws.onmessage = (ev) => {",
 	"    const msg = JSON.parse(String(ev.data));",
 	"    if (msg.id && pending.has(msg.id)) { const p = pending.get(msg.id); pending.delete(msg.id); if (msg.error) p.rej(new Error(msg.error.message)); else p.res(msg.result); }",
@@ -175,9 +185,9 @@ const STUDIO_CDP_VOICE_PEER_CJS = [
 	"      turns += 1; const file = turns + '.webm'; const bytes = Buffer.from(payload.b64, 'base64');",
 	"      fs.writeFileSync(path.join(work, file), bytes);",
 	"      say({ turn: turns, file, ms: payload.ms, bytes: bytes.length });",
+	"      if (typeof payload.seq === 'number') send('Runtime.evaluate', { expression: 'window.qorperaTurnAck = ' + payload.seq }).catch(() => {});",
 	"    }",
 	"  };",
-	"  const send = (method, params = {}) => new Promise((res, rej) => { const id = ++nextId; pending.set(id, { res, rej }); ws.send(JSON.stringify({ id, method, params })); });",
 	"  const evalJs = async (expression) => {",
 	"    const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });",
 	"    if (r.exceptionDetails) throw new Error(r.exceptionDetails.text || 'eval failed');",
@@ -200,18 +210,31 @@ const STUDIO_CDP_VOICE_PEER_CJS = [
 	"    if (fs.existsSync(answerPath) && ended === 'time') {",
 	"      const sdp = fs.readFileSync(answerPath, 'utf8');",
 	"      await evalJs('window.qorperaCall.pc.setRemoteDescription({ type: \"answer\", sdp: ' + JSON.stringify(sdp) + ' })');",
-	"      say({ connected: true });",
-	"      while (Date.now() < until) {",
+	"      const connectBy = Math.min(until, Date.now() + 25000);",
+	"      let ready = false;",
+	"      while (Date.now() < connectBy) {",
 	"        if (fs.existsSync(stopPath)) { ended = 'stop'; break; }",
-	"        const state = await evalJs('({ closed: window.qorperaCall.closed, failed: window.qorperaCall.failed })');",
-	"        if (state && state.failed) { ended = state.failed; break; }",
-	"        if (state && state.closed) { ended = 'closed'; break; }",
-	"        await sleep(150);",
+	"        const st = await evalJs('({ state: window.qorperaCall.pc.connectionState, stream: Boolean(window.qorperaCall.stream), closed: window.qorperaCall.closed })');",
+	"        if (st && st.closed) { ended = 'closed'; break; }",
+	"        if (st && st.state === 'connected' && st.stream) { ready = true; break; }",
+	"        await sleep(100);",
 	"      }",
-	"      const waitMs = Math.max(2000, Math.min(40000, (Number(finishing) || 20) * 1000));",
-	"      const settled = await evalJs('window.qorperaCall.settle(' + waitMs + ')').catch(() => ({ busy: false, failed: null }));",
-	"      if (settled && settled.failed) ended = settled.failed;",
-	"      else if (settled && settled.busy) ended = 'turn stalled';",
+	"      if (ready) {",
+	"        say({ connected: true });",
+	"        while (Date.now() < until) {",
+	"          if (fs.existsSync(stopPath)) { ended = 'stop'; break; }",
+	"          const state = await evalJs('({ closed: window.qorperaCall.closed, failed: window.qorperaCall.failed })');",
+	"          if (state && state.failed) { ended = state.failed; break; }",
+	"          if (state && state.closed) { ended = 'closed'; break; }",
+	"          await sleep(150);",
+	"        }",
+	"        const waitMs = Math.max(2000, Math.min(40000, (Number(finishing) || 20) * 1000));",
+	"        const settled = await evalJs('window.qorperaCall.settle(' + waitMs + ')').catch(() => ({ busy: false, failed: null }));",
+	"        if (settled && settled.failed) ended = settled.failed;",
+	"        else if (settled && settled.busy) ended = 'turn stalled';",
+	"      } else if (ended === 'time') {",
+	"        ended = 'not connected';",
+	"      }",
 	"    }",
 	"  } finally {",
 	"    try { ws.close(); } catch {}",
@@ -246,11 +269,13 @@ const STUDIO_CDP_WAV_ENCODE_CJS = [
 	"  fs.mkdirSync(outDir, { recursive: true });",
 	"  const userData = path.join(work, 'chrome-enc');",
 	'  const proc = spawn(bin, ["--headless=new", "--disable-gpu", "--autoplay-policy=no-user-gesture-required", "--mute-audio", "--remote-debugging-port=0", "--user-data-dir=" + userData, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });',
-	"  let wsUrl = null, errBuf = '';",
+	"  let wsUrl = null, errBuf = '', spawnErr = null;",
+	"  proc.on('error', (err) => { spawnErr = err; });",
 	"  proc.stderr.setEncoding('utf8');",
 	"  proc.stderr.on('data', (c) => { errBuf = (errBuf + c).slice(-4096); const m = /DevTools listening on (ws:\\/\\/[^\\s]+)/.exec(errBuf); if (m) wsUrl = m[1]; });",
 	"  const bootBy = Date.now() + 20000;",
-	"  while (!wsUrl && proc.exitCode === null && Date.now() < bootBy) await sleep(50);",
+	"  while (!wsUrl && !spawnErr && proc.exitCode === null && Date.now() < bootBy) await sleep(50);",
+	"  if (spawnErr) throw spawnErr;",
 	'  if (!wsUrl) throw new Error("chromium did not open devtools");',
 	"  const base = wsUrl.replace(/^ws:\\/\\//, 'http://').replace(/\\/devtools\\/.*/, '');",
 	"  let targetWs = null;",
@@ -261,10 +286,13 @@ const STUDIO_CDP_WAV_ENCODE_CJS = [
 	"  }",
 	'  if (!targetWs) throw new Error("no browser page target");',
 	"  const ws = new WebSocket(targetWs);",
-	"  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });",
+	"  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('devtools socket failed')); });",
 	"  let nextId = 0, failed = false; const pending = new Map();",
+	"  const rejectAll = (msg) => { for (const p of pending.values()) p.rej(new Error(msg)); pending.clear(); };",
+	"  ws.onclose = () => rejectAll('devtools socket closed');",
+	"  ws.onerror = () => rejectAll('devtools socket error');",
 	"  ws.onmessage = (ev) => { const msg = JSON.parse(String(ev.data)); if (msg.id && pending.has(msg.id)) { const p = pending.get(msg.id); pending.delete(msg.id); if (msg.error) p.rej(new Error(msg.error.message)); else p.res(msg.result); } };",
-	"  const send = (method, params = {}) => new Promise((res, rej) => { const id = ++nextId; pending.set(id, { res, rej }); ws.send(JSON.stringify({ id, method, params })); });",
+	"  const send = (method, params = {}) => new Promise((res, rej) => { if (ws.readyState !== 1) return rej(new Error('devtools socket not open')); const id = ++nextId; pending.set(id, { res, rej }); ws.send(JSON.stringify({ id, method, params })); });",
 	"  const evalJs = async (expression) => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.text || 'eval failed'); return r.result ? r.result.value : undefined; };",
 	"  try {",
 	"    await send('Runtime.enable');",
@@ -439,6 +467,7 @@ export async function recordStudioChatGptVoiceClips(input: {
 		step: string,
 		command: string,
 		timeoutMs: number | null,
+		cmdSignal: AbortSignal = signal,
 	): Promise<CloudCodingCommandReceipt> => {
 		const key = `studio-voice.${tag}.${step}`;
 		const content = await operations.execute({
@@ -472,7 +501,7 @@ export async function recordStudioChatGptVoiceClips(input: {
 				);
 				return { content: { kind: "json", value: started as unknown as JsonValue } };
 			},
-			signal,
+			signal: cmdSignal,
 		});
 		if (content.kind !== "json") throw new Error("Studio voice command receipt differs");
 		return parseCloudCodingCommandReceipt(content.value);
@@ -532,7 +561,7 @@ export async function recordStudioChatGptVoiceClips(input: {
 								parseCloudCodingCommandRead({
 									commandId: initialReceipt.commandId,
 									offset: state.offset,
-									limit: CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
+									limit: CLOUD_CODING_COMMAND_PAGE_BYTES,
 								}),
 								requestSignal,
 							),
@@ -776,7 +805,7 @@ export async function recordStudioChatGptVoiceClips(input: {
 					);
 			const encoder = watch(await startCommand("encode", encodeCmd, ENCODE_MS + 30_000));
 			const wanted = new Set(encodable.map((each) => each.caption.hash));
-			await encoder.finish(Math.max(by(ENCODE_MS), now() + 1));
+			await encoder.finish(now() + ENCODE_MS);
 			for (const line of encoder.lines) {
 				if (typeof line.clip !== "string" || !wanted.has(line.clip) || "problem" in line) continue;
 				const file = typeof line.file === "string" ? line.file : "";
@@ -802,7 +831,7 @@ export async function recordStudioChatGptVoiceClips(input: {
 					READ_CLIP_MS,
 				),
 			);
-			await reader.finish(Math.max(by(READ_CLIP_MS), now() + 1));
+			await reader.finish(now() + READ_CLIP_MS);
 			const bytes = decodeClipPayload(reader.state.raw);
 			if (!bytes) continue;
 			const isWav = meta.file.endsWith(".wav");
@@ -833,9 +862,11 @@ export async function recordStudioChatGptVoiceClips(input: {
 			);
 		}
 		if (worked) {
-			await withAbortScopes([], () => startCommand("clean", `rm -rf ${work}`, 15_000), 15_000).catch(
-				() => undefined,
-			);
+			await withAbortScopes(
+				[],
+				(cleanSignal) => startCommand("clean", `rm -rf ${work}`, 15_000, cleanSignal),
+				15_000,
+			).catch(() => undefined);
 		}
 	}
 

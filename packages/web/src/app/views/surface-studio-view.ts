@@ -230,7 +230,7 @@ export class SurfaceStudioView {
 	#appliedIdentityVars: string[] = [];
 	#wasUpdating = false;
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
-	#pendingTell: { readonly bar: HTMLElement; readonly cancel: () => void } | null = null;
+	#pendingTell: { readonly bar: HTMLElement; readonly owner: symbol; readonly cancel: () => void } | null = null;
 	#lastTellAt = Number.NEGATIVE_INFINITY;
 
 	constructor(options: SurfaceStudioOptions) {
@@ -340,14 +340,15 @@ export class SurfaceStudioView {
 		if (session) this.#options.store.openDrawer(this.#options.surface.id, session.id);
 	}
 
-	#cancelPendingTell(): void {
+	#cancelPendingTell(owner?: symbol): void {
 		const pending = this.#pendingTell;
 		if (!pending) return;
+		if (owner !== undefined && pending.owner !== owner) return;
 		this.#pendingTell = null;
 		pending.cancel();
 	}
 
-	#confirmModuleTell(moduleTitle: string, draftText: string, about?: string): Promise<AppAnswer> {
+	#confirmModuleTell(moduleTitle: string, draftText: string, owner: symbol, about?: string): Promise<AppAnswer> {
 		if (this.#pendingTell) {
 			return Promise.resolve({ ok: false, error: t("Finish or cancel the note already waiting.") });
 		}
@@ -409,8 +410,9 @@ export class SurfaceStudioView {
 					finish({ ok: false, error: t("That didn't work. Try again.") });
 				}
 			});
-			this.#pendingTell = { bar, cancel: () => finish({ ok: false, error: t("Cancelled.") }) };
-			this.el.append(bar);
+			this.#pendingTell = { bar, owner, cancel: () => finish({ ok: false, error: t("Cancelled.") }) };
+			const topDialog = document.querySelector<HTMLDialogElement>("dialog[open]");
+			(topDialog ?? this.el).append(bar);
 			sendBtn.focus?.({ preventScroll: true });
 		});
 	}
@@ -420,6 +422,7 @@ export class SurfaceStudioView {
 		files: Readonly<Record<string, string>>,
 		folderRoot: string,
 		moduleTitle: string,
+		frameOwner: symbol,
 	): Promise<AppAnswer> {
 		if (call.method === "read") {
 			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
@@ -479,7 +482,7 @@ export class SurfaceStudioView {
 			const aboutRaw = typeof call.params.about === "string" ? call.params.about.trim() : "";
 			const about = aboutRaw ? aboutRaw.slice(0, 160) : undefined;
 			if (!text || text.length > 4000) return { ok: false, error: t("Write a short note first.") };
-			return this.#confirmModuleTell(moduleTitle, text, about);
+			return this.#confirmModuleTell(moduleTitle, text, frameOwner, about);
 		}
 		return { ok: false, error: t("This page can't be shown here.") };
 	}
@@ -502,18 +505,25 @@ export class SurfaceStudioView {
 		}
 		const folderRoot = this.#options.surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
 		const readable = allFiles ?? files;
+		const frameOwner = Symbol(title);
 		const frame = new AppFrame(
 			{ html: live },
 			t("Page: {name}", { name: title }),
 			className,
 			moduleBridge
-				? (call) => this.#handleModuleCall(call, readable, folderRoot, title)
+				? (call) => this.#handleModuleCall(call, readable, folderRoot, title, frameOwner)
 				: async () => ({ ok: false, error: t("This page can't be shown here.") }),
 			() => undefined,
 			{ again: true },
 		);
-		if (owned) owned(() => frame.dispose());
-		else this.#htmlFrames.push(frame);
+		if (owned) {
+			owned(() => {
+				this.#cancelPendingTell(frameOwner);
+				frame.dispose();
+			});
+		} else {
+			this.#htmlFrames.push(frame);
+		}
 		if (listen) {
 			window.addEventListener(
 				"message",
@@ -771,7 +781,7 @@ export class SurfaceStudioView {
 		this.#disposeHtmlFrames();
 		const tail = [
 			...(this.#tour.el.hidden ? [] : [this.#tour.el]),
-			...(this.#pendingTell ? [this.#pendingTell.bar] : []),
+			...(this.#pendingTell && this.#pendingTell.bar.parentElement === this.el ? [this.#pendingTell.bar] : []),
 		];
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
@@ -877,7 +887,7 @@ export class SurfaceStudioView {
 		this.#disposeHtmlFrames();
 		const tail = [
 			...(this.#tour.el.hidden ? [] : [this.#tour.el]),
-			...(this.#pendingTell ? [this.#pendingTell.bar] : []),
+			...(this.#pendingTell && this.#pendingTell.bar.parentElement === this.el ? [this.#pendingTell.bar] : []),
 		];
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
@@ -1055,10 +1065,12 @@ export class SurfaceStudioView {
 
 		if (filePaths.length === 0 && (mode !== "compare" || allChangedPaths.length === 0)) {
 			if (initialLoading) {
+				this.#layout?.deactivate();
 				this.#showingSkeleton = true;
 				return { children: [surfaceSkeleton(t("Opening studio…"), "studio")], leavingSkeleton: false };
 			}
 			if (mode === "compare") {
+				this.#layout?.deactivate();
 				const leavingSkeleton = this.#showingSkeleton;
 				this.#showingSkeleton = false;
 				children.push(
@@ -1083,6 +1095,7 @@ export class SurfaceStudioView {
 		const gridTasks: StudioSectionTask[] = [];
 
 		if (mode === "compare") {
+			this.#layout?.deactivate();
 			const changedSpecs = specs.filter((spec) => spec.changed);
 			const changedDocs = docs.filter((doc) => doc.changed);
 			const changedSvgs = svgs.filter((asset) => asset.changed);

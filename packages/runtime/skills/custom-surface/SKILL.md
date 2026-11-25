@@ -9,7 +9,7 @@ A custom Studio surface is a living workspace tailored to a goal that product or
 
 ## Shape freely first
 - Read the member's goal, company vision, brief, and relevant company files under `/company` (`company_read`, `company_list`, or read-only workspace search).
-- Shape the layout file freely with the tabs and blocks this workspace needs (`explainer` videos, `report` articles and posts, `artifacts` images and diagrams, `module` custom tools, and strategy or data blocks on any tab). When structure is a genuine taste choice, offer two or three concrete options via `coding_ask` once early, then build on the answer.
+- Shape the layout file freely with the tabs and blocks this workspace needs (`explainer` videos, `report` articles and posts, `artifacts` images and diagrams, `module` custom tools, and strategy or data blocks on any tab). When structure is a genuine taste choice, offer two or three concrete options by asking once early, then build on the answer.
 - Fill the layout one coherent deliverable per `stage_surface_patch` call so each piece lands and approves cleanly on its own.
 
 ## Show, narrate, don't dump text

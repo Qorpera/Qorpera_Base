@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,12 +87,14 @@ function makeOperations(): Pick<CloudNativeToolOperations, "execute"> {
 
 function makeFakeMachine(options?: {
 	readonly hasFfmpeg?: boolean;
-	readonly mp4Payload?: Uint8Array;
+	readonly hasPlaywright?: boolean;
+	readonly audioPayload?: Uint8Array;
 	readonly extraTurnAfter?: number;
 }) {
 	const hasFfmpeg = options?.hasFfmpeg ?? true;
-	const mp4Bytes =
-		options?.mp4Payload ?? new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+	const hasPlaywright = options?.hasPlaywright ?? true;
+	const audioBytes =
+		options?.audioPayload ?? new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
 	const logs = new Map<string, { step: string; text: string; state: "running" | "succeeded" | "failed" }>();
 	const commands: string[] = [];
 	let peerId = "";
@@ -105,7 +107,7 @@ function makeFakeMachine(options?: {
 		const buf = Buffer.from(log.text, "utf8");
 		const slice = buf.subarray(offset, offset + limit);
 		return {
-			schema: "qorpera.coding-command-result/v1" as const,
+			schema: "qorpera.coding-command-result/v2" as const,
 			workerId: WORKER_ID,
 			commandId,
 			inputSha256,
@@ -131,8 +133,8 @@ function makeFakeMachine(options?: {
 			let text = "";
 			let state: "running" | "succeeded" | "failed" = "succeeded";
 			if (input.command.includes("out = { ffmpeg: false")) {
-				text = emit({ ffmpeg: hasFfmpeg, pw: "playwright" });
-			} else if (input.command.includes("voice-peer.cjs")) {
+				text = emit({ ffmpeg: hasFfmpeg, pw: hasPlaywright ? "playwright" : "" });
+			} else if (input.command.includes("voice-peer.cjs") || input.command.includes("voice-cdp-peer.cjs")) {
 				peerId = input.commandId;
 				text = emit({ offer: "v=0 offer" });
 				state = "running";
@@ -148,9 +150,12 @@ function makeFakeMachine(options?: {
 			} else if (input.command.includes("voice-encode.cjs")) {
 				const pairs = [...input.command.matchAll(/\b([1-9][0-9]*):([0-9a-f]{8})\b/g)];
 				text = pairs.map((m) => emit({ clip: m[2]!, file: `${m[2]!}.mp4`, seconds: 2.35 })).join("");
+			} else if (input.command.includes("voice-wav-encode.cjs")) {
+				const pairs = [...input.command.matchAll(/\b([1-9][0-9]*):([0-9a-f]{8})\b/g)];
+				text = pairs.map((m) => emit({ clip: m[2]!, file: `${m[2]!}.wav`, seconds: 2.15 })).join("");
 			} else if (input.command.includes("QORPERA_CLIP:")) {
-				const hash = createHash("sha256").update(mp4Bytes).digest("hex");
-				text = `QORPERA_CLIP:${mp4Bytes.byteLength}:${hash}:\n${Buffer.from(mp4Bytes).toString("base64")}`;
+				const hash = createHash("sha256").update(audioBytes).digest("hex");
+				text = `QORPERA_CLIP:${audioBytes.byteLength}:${hash}:\n${Buffer.from(audioBytes).toString("base64")}`;
 			}
 			logs.set(input.commandId, { step: input.command.slice(0, 32), text, state });
 			return receiptOf(input.commandId, input.inputSha256, 0, 16_384);
@@ -328,12 +333,32 @@ describe("recordStudioChatGptVoiceClips", () => {
 			authorize: async () => undefined,
 			start: async (_scope, input) => {
 				const rewritten = input.command.replaceAll("/tmp/qorpera-studio-voice", join(workSandbox, "voice"));
+				if (rewritten.includes("out = { ffmpeg: false")) {
+					const text = `${MARK}${JSON.stringify({ ffmpeg: true, pw: PLAYWRIGHT_STUB })}\n`;
+					procs.set(input.commandId, { sha: input.inputSha256, output: text, state: "succeeded", exitCode: 0 });
+					return {
+						schema: "qorpera.coding-command-result/v2",
+						workerId: WORKER_ID,
+						commandId: input.commandId,
+						inputSha256: input.inputSha256,
+						state: "succeeded",
+						exitCode: 0,
+						output: text,
+						truncated: false,
+						log: {
+							offset: 0,
+							nextOffset: Buffer.byteLength(text),
+							totalBytes: Buffer.byteLength(text),
+							limitBytes: 64 * 1024 * 1024,
+							limitReached: false,
+						},
+					};
+				}
 				if (rewritten.includes("voice-encode.cjs")) {
 					const outDirMatch = /voice-encode\.cjs\s+\S+\s+(\S+)\s+(.+)$/m.exec(rewritten);
 					const outDir = outDirMatch?.[1] ?? join(workSandbox, "out");
 					const pairs = [...(outDirMatch?.[2] ?? "").matchAll(/\b([1-9][0-9]*):([0-9a-f]{8})\b/g)];
 					const lines: string[] = [];
-					const { mkdir } = await import("node:fs/promises");
 					await mkdir(outDir, { recursive: true });
 					for (const pair of pairs) {
 						const hash = pair[2]!;
@@ -343,7 +368,7 @@ describe("recordStudioChatGptVoiceClips", () => {
 					const text = lines.join("");
 					procs.set(input.commandId, { sha: input.inputSha256, output: text, state: "succeeded", exitCode: 0 });
 					return {
-						schema: "qorpera.coding-command-result/v1",
+						schema: "qorpera.coding-command-result/v2",
 						workerId: WORKER_ID,
 						commandId: input.commandId,
 						inputSha256: input.inputSha256,
@@ -382,7 +407,7 @@ describe("recordStudioChatGptVoiceClips", () => {
 					entry.state = code === 0 ? "succeeded" : "failed";
 				});
 				return {
-					schema: "qorpera.coding-command-result/v1",
+					schema: "qorpera.coding-command-result/v2",
 					workerId: WORKER_ID,
 					commandId: input.commandId,
 					inputSha256: input.inputSha256,
@@ -400,7 +425,7 @@ describe("recordStudioChatGptVoiceClips", () => {
 				const limit = Number(input.limit);
 				const slice = buf.subarray(offset, offset + limit);
 				return {
-					schema: "qorpera.coding-command-result/v1",
+					schema: "qorpera.coding-command-result/v2",
 					workerId: WORKER_ID,
 					commandId: input.commandId,
 					inputSha256: entry.sha,
@@ -424,7 +449,7 @@ describe("recordStudioChatGptVoiceClips", () => {
 					entry.state = "succeeded";
 				}
 				return {
-					schema: "qorpera.coding-command-result/v1",
+					schema: "qorpera.coding-command-result/v2",
 					workerId: WORKER_ID,
 					commandId,
 					inputSha256: entry?.sha ?? "c".repeat(64),
@@ -462,6 +487,47 @@ describe("recordStudioChatGptVoiceClips", () => {
 		expect(result.clips[0]!.hash).toBe(captionHash(line));
 		expect(result.clips[0]!.mediaType).toBe("audio/mp4");
 		expect(result.clips[0]!.audio).toEqual(fakeMp4);
+	});
+
+	it("uses the CDP peer and WAV encoder on stock coding machines without playwright or ffmpeg", async () => {
+		const fakeWav = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]);
+		const fake = makeFakeMachine({ hasFfmpeg: false, hasPlaywright: false, audioPayload: fakeWav });
+		const line = "Stock coding machine records trimmed wav audio cleanly.";
+		const voice = {
+			usage: vi.fn(async (): Promise<CloudVoiceUsage> => ({ windows: [{ usedPercent: 15 }] })),
+			open: vi.fn(
+				async (): Promise<CloudVoiceCall> => ({
+					answerSdp: "v=0\r\ns=answer\r\n",
+					speak: vi.fn(async () => {
+						fake.recordTurn();
+						return { transcript: line };
+					}),
+					close: vi.fn(async () => undefined),
+				}),
+			),
+		};
+
+		const result = await recordStudioChatGptVoiceClips({
+			voice,
+			machine: fake.machine,
+			callId: "call-cdp-wav",
+			captions: [{ hash: captionHash(line), text: line }],
+			signal: new AbortController().signal,
+			timing: { pollMs: 5 },
+		});
+
+		expect(result.stopReason).toBeNull();
+		expect(result.clips).toHaveLength(1);
+		expect(result.clips[0]!.mediaType).toBe("audio/wav");
+		expect(result.clips[0]!.fileExtension).toBe("wav");
+		expect(result.clips[0]!.audio).toEqual(fakeWav);
+		const peerCmd = fake.commands.find((cmd) => cmd.includes("voice-cdp-peer.cjs")) ?? "";
+		expect(peerCmd).toContain("st.state === 'connected' && st.stream");
+		expect(peerCmd).toContain("qorperaTurnAck");
+		expect(peerCmd).toContain("proc.on('error'");
+		const encCmd = fake.commands.find((cmd) => cmd.includes("voice-wav-encode.cjs")) ?? "";
+		expect(encCmd).toContain("decodeAudioData");
+		expect(encCmd).toContain("proc.on('error'");
 	});
 });
 

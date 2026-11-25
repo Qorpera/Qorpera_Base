@@ -578,18 +578,18 @@ describe("The economics block", () => {
 		expect(at(sankey, "lineStyle", "curveness")).toBe(0.48);
 		expect(at(sankey, "lineStyle", "color")).toBe("gradient");
 		expect(at(sankey, "lineStyle", "opacity")).toBe(0.42);
-		expect(nodeNames(host)).toEqual(["revenue", "labor_cost", "fixed_costs", "contribution"]);
+		expect(nodeNames(host)).toEqual(["L:0", "R:0", "R:1", "R:2"]);
 		expect(linksOf(host)).toEqual([
-			["revenue", "labor_cost", 30000],
-			["revenue", "fixed_costs", 20000],
-			["revenue", "contribution", 0],
+			["L:0", "R:0", 30000],
+			["L:0", "R:1", 20000],
+			["L:0", "R:2", 0],
 		]);
 		const clean = (value: unknown) => String(value).replace(/\u00a0/g, " ");
-		expect(clean(nodeLabel(host, "revenue"))).toBe("{name|Revenue}\n{amount|DKK 50K}");
-		expect(clean(nodeLabel(host, "labor_cost"))).toBe("{name|Delivery}\n{amount|DKK 30K · 60%}");
-		expect(clean(nodeLabel(host, "contribution"))).toBe("{name|Contribution}\n{amount|DKK 0 · 0%}");
-		const total = list(at(sankey, "data")).find((node) => at(node, "name") === "contribution");
-		const rent = list(at(sankey, "data")).find((node) => at(node, "name") === "fixed_costs");
+		expect(clean(nodeLabel(host, "L:0"))).toBe("{name|Revenue}\n{amount|DKK 50K}");
+		expect(clean(nodeLabel(host, "R:0"))).toBe("{name|Delivery}\n{amount|DKK 30K · 60%}");
+		expect(clean(nodeLabel(host, "R:2"))).toBe("{name|Contribution}\n{amount|DKK 0 · 0%}");
+		const total = list(at(sankey, "data")).find((node) => at(node, "stream", "id") === "contribution");
+		const rent = list(at(sankey, "data")).find((node) => at(node, "stream", "id") === "fixed_costs");
 		expect(at(total, "itemStyle", "color")).not.toBe(at(rent, "itemStyle", "color"));
 		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => string;
 		const delivery = list(at(sankey, "links"))[0];
@@ -669,18 +669,16 @@ describe("The economics block", () => {
 		expect(line.hidden).toBe(false);
 		expect(text(line)).toBe("Losing money Each month burns cash.");
 		expect(getInstanceByDom(host)).toBe(chart);
-		expect(nodeNames(host)).toEqual(["revenue", "shortfall", "__hub__", "labor_cost", "fixed_costs"]);
+		expect(nodeNames(host)).toEqual(["L:0", "L:1", "__hub__", "R:0", "R:1"]);
 		expect(linksOf(host)).toEqual([
-			["revenue", "__hub__", 20000],
-			["shortfall", "__hub__", 12000],
-			["__hub__", "labor_cost", 12000],
-			["__hub__", "fixed_costs", 20000],
+			["L:0", "__hub__", 20000],
+			["L:1", "__hub__", 12000],
+			["__hub__", "R:0", 12000],
+			["__hub__", "R:1", 20000],
 		]);
-		expect(String(nodeLabel(host, "shortfall")).replace(/\u00a0/g, " ")).toBe(
-			"{name|Shortfall}\n{amount|-DKK 12K · 60%}",
-		);
-		const fixedNode = list(at(seriesOf(host), "data")).find((node) => at(node, "name") === "fixed_costs");
-		const gapNode = list(at(seriesOf(host), "data")).find((node) => at(node, "name") === "shortfall");
+		expect(String(nodeLabel(host, "L:1")).replace(/\u00a0/g, " ")).toBe("{name|Shortfall}\n{amount|-DKK 12K · 60%}");
+		const fixedNode = list(at(seriesOf(host), "data")).find((node) => at(node, "stream", "id") === "fixed_costs");
+		const gapNode = list(at(seriesOf(host), "data")).find((node) => at(node, "stream", "id") === "shortfall");
 		expect(at(gapNode, "itemStyle", "color")).not.toBe(at(fixedNode, "itemStyle", "color"));
 		expect(card(null).querySelector(".studio-econ-scenario-dot.is-bad")).not.toBeNull();
 		expect(text(card(null).querySelector(".studio-econ-scenario-value"))).toBe("-DKK 12K");
@@ -833,7 +831,7 @@ describe("The economics block", () => {
 		expect(premium.getAttribute("aria-pressed")).toBe("true");
 		expect(card(null).classList.contains("is-on")).toBe(false);
 		expect(getInstanceByDom(host)).toBe(chart);
-		expect(linksOf(host)[0]).toEqual(["revenue", "labor_cost", 18000]);
+		expect(linksOf(host)[0]).toEqual(["L:0", "R:0", 18000]);
 		expect(text(premium.querySelector(".studio-econ-scenario-value"))).toBe("+DKK 6,850");
 		card("volume").click();
 		expect(hero()).toBe("DKK 8,000");
@@ -1467,7 +1465,7 @@ describe("Surface links in messages", () => {
 });
 
 describe("Studio module bridge security, empty tabs, chart lifecycle, tour recovery, and sankey key safety", () => {
-	function callFrame(iframe: HTMLIFrameElement, method: string, params: Record<string, unknown>): Promise<unknown> {
+	function connectFrame(iframe: HTMLIFrameElement) {
 		const postSpy = vi.spyOn(iframe.contentWindow!, "postMessage");
 		const readyEvt = new MessageEvent("message", { data: { type: PAGE_READY } });
 		Object.defineProperty(readyEvt, "source", { value: iframe.contentWindow });
@@ -1475,10 +1473,23 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		const lastCall = postSpy.mock.calls.at(-1) as unknown[] | undefined;
 		const port = (lastCall?.[2] as MessagePort[] | undefined)?.[0];
 		if (!port) throw new Error("AppFrame did not transfer a MessagePort");
-		return new Promise((resolve) => {
-			port.onmessage = (event) => resolve((event.data as { answer?: unknown }).answer);
-			port.postMessage({ type: "qorpera-app-call", id: 1, method, params });
-		});
+		let nextId = 0;
+		const waiting = new Map<number, (answer: Record<string, unknown>) => void>();
+		port.onmessage = (event) => {
+			const data = event.data as Record<string, unknown>;
+			const id = typeof data.id === "number" ? data.id : 0;
+			const resolve = waiting.get(id);
+			if (resolve) {
+				waiting.delete(id);
+				resolve(data);
+			}
+		};
+		return (method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> =>
+			new Promise((resolve) => {
+				const id = ++nextId;
+				waiting.set(id, resolve);
+				port.postMessage({ type: "qorpera-app-call", id, method, params });
+			});
 	}
 
 	it("gates module tell behind member confirmation, scopes list by path, and blocks non-module HTML frames", async () => {
@@ -1495,7 +1506,7 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		const life = new AbortController();
 		const files: Record<string, string> = {
 			[`${ROOT}/layout.json`]: JSON.stringify({
-				version: 1,
+				layout: 1,
 				tabs: [
 					{
 						id: "lab",
@@ -1524,8 +1535,9 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 
 		const moduleFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
 		expect(moduleFrame).not.toBeNull();
+		const callModule = connectFrame(moduleFrame);
 
-		const listRes = (await callFrame(moduleFrame, "list", { path: "sketches" })) as {
+		const listRes = (await callModule("list", { path: "sketches" })) as {
 			ok: boolean;
 			value?: { name: string; path: string; kind: string; bytes: number }[];
 		};
@@ -1533,20 +1545,17 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		expect(listRes.value?.map((e) => e.path)).toEqual(["sketches/a.json", "sketches/b.json"]);
 		expect(listRes.value?.[0]).toMatchObject({ name: "a.json", kind: "file", bytes: 7 });
 
-		const traversalRes = (await callFrame(moduleFrame, "list", { path: "../identity" })) as { ok: boolean };
+		const traversalRes = await callModule("list", { path: "../identity" });
 		expect(traversalRes.ok).toBe(false);
 
-		const readRes = (await callFrame(moduleFrame, "read", { path: "sketches/a.json" })) as {
-			ok: boolean;
-			value?: string;
-		};
-		expect(readRes).toEqual({ ok: true, value: '{"a":1}' });
+		const readRes = await callModule("read", { path: "sketches/a.json" });
+		expect(readRes).toMatchObject({ ok: true, value: '{"a":1}' });
 
-		const tellPromise = callFrame(moduleFrame, "tell", { about: "Sketch", text: "Refine the pricing ladder" });
+		const tellPromise = callModule("tell", { about: "Sketch", text: "Refine the pricing ladder" });
 		await vi.waitFor(() => expect(view.el.querySelector(".studio-tell-bar")).not.toBeNull());
 		expect(startSession).not.toHaveBeenCalled();
 
-		const concurrent = (await callFrame(moduleFrame, "tell", { text: "Second note" })) as { ok: boolean };
+		const concurrent = await callModule("tell", { text: "Second note" });
 		expect(concurrent.ok).toBe(false);
 
 		view.el.querySelector<HTMLButtonElement>('[data-tell-act="cancel"]')!.click();
@@ -1554,26 +1563,27 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		expect(startSession).not.toHaveBeenCalled();
 		expect(view.el.querySelector(".studio-tell-bar")).toBeNull();
 
-		const tellPromise2 = callFrame(moduleFrame, "tell", { about: "Sketch", text: "Draft note" });
+		const tellPromise2 = callModule("tell", { about: "Sketch", text: "Draft note" });
 		await vi.waitFor(() => expect(view.el.querySelector(".studio-tell-bar")).not.toBeNull());
 		const textarea = view.el.querySelector<HTMLTextAreaElement>(".studio-tell-input")!;
 		textarea.value = "Confirmed member note";
 		view.el.querySelector<HTMLButtonElement>('[data-tell-act="send"]')!.click();
-		expect(await tellPromise2).toEqual({ ok: true, value: { sent: true } });
+		expect(await tellPromise2).toMatchObject({ ok: true, value: { sent: true } });
 		expect(startSession).toHaveBeenCalledTimes(1);
 		expect(startSession).toHaveBeenCalledWith(surface.id, "Confirmed member note", {
 			originKind: "member",
 			originLabel: "Sketch",
 		});
 
-		const cooldownRes = (await callFrame(moduleFrame, "tell", { text: "Too soon" })) as { ok: boolean };
+		const cooldownRes = await callModule("tell", { text: "Too soon" });
 		expect(cooldownRes.ok).toBe(false);
 
 		const artifactFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-html-frame")!;
 		expect(artifactFrame).not.toBeNull();
-		expect(await callFrame(artifactFrame, "tell", { text: "Sneaky prompt" })).toMatchObject({ ok: false });
-		expect(await callFrame(artifactFrame, "read", { path: "sketches/a.json" })).toMatchObject({ ok: false });
-		expect(await callFrame(artifactFrame, "list", { path: "sketches" })).toMatchObject({ ok: false });
+		const callArtifact = connectFrame(artifactFrame);
+		expect(await callArtifact("tell", { text: "Sneaky prompt" })).toMatchObject({ ok: false });
+		expect(await callArtifact("read", { path: "sketches/a.json" })).toMatchObject({ ok: false });
+		expect(await callArtifact("list", { path: "sketches" })).toMatchObject({ ok: false });
 		expect(startSession).toHaveBeenCalledTimes(1);
 
 		life.abort();
@@ -1590,8 +1600,26 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		done();
 	});
 
-	it("disposes active ECharts hosts when switching tabs in SurfaceLayoutView", async () => {
-		const { view, done } = await studio(strategyFiles());
+	it("disposes active ECharts hosts when switching tabs or entering Compare mode", async () => {
+		const surface = strategySurface();
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+			}),
+		);
+		await store.load();
+		await store.openSurface(surface.slug);
+		const life = new AbortController();
+		const view = new SurfaceStudioView({
+			store,
+			surface,
+			signal: life.signal,
+			baseFiles: strategyFiles(),
+			timeSlice: false,
+		});
+		document.body.append(view.el);
+
 		view.el.querySelector<HTMLButtonElement>('[data-tab="economics"]')!.click();
 		await vi.waitFor(() => {
 			const host = view.el.querySelector<HTMLElement>(".studio-econ-chart-host");
@@ -1602,7 +1630,20 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 
 		view.el.querySelector<HTMLButtonElement>('[data-tab="plan"]')!.click();
 		expect(getInstanceByDom(oldHost)).toBeUndefined();
-		done();
+
+		view.el.querySelector<HTMLButtonElement>('[data-tab="economics"]')!.click();
+		await vi.waitFor(() => {
+			const host = view.el.querySelector<HTMLElement>(".studio-econ-chart-host");
+			expect(host && getInstanceByDom(host)).toBeTruthy();
+		});
+		const compareHost = view.el.querySelector<HTMLElement>(".studio-econ-chart-host")!;
+		store.setMode("compare");
+		view.update();
+		expect(getInstanceByDom(compareHost)).toBeUndefined();
+
+		life.abort();
+		view.dispose();
+		store.dispose();
 	});
 
 	it("does not double-advance when audio.play rejects alongside audio.onerror and does not re-run actions on unmute", async () => {
@@ -1624,6 +1665,7 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 			const revokeObjectURL = vi.fn();
 			vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:tour"), revokeObjectURL }));
 			let failPlay = true;
+			const audioRef: { current: { onended: (() => void) | null } | null } = { current: null };
 			vi.stubGlobal(
 				"Audio",
 				class {
@@ -1632,6 +1674,7 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 					onended: (() => void) | null = null;
 					onerror: (() => void) | null = null;
 					play = vi.fn(() => {
+						audioRef.current = this;
 						if (failPlay) {
 							this.onerror?.();
 							return Promise.reject(new Error("blocked"));
@@ -1645,9 +1688,9 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 			const tourDoc = {
 				title: "Walkthrough",
 				beats: [
-					{ id: "b1", tab: "plan", focus: "plays:verdict", say: caption1, action: { expand: "dealer-led" } },
-					{ id: "b2", tab: "plan", focus: "play:dealer-led", say: "Second beat." },
-					{ id: "b3", tab: "plan", focus: "play:buyer-paid", say: "Third beat." },
+					{ id: "b1", tab: "plan", focus: "plays:verdict", say: caption1, action: { expand: "dealers" } },
+					{ id: "b2", tab: "plan", focus: "play:dealers", say: "Second beat." },
+					{ id: "b3", tab: "plan", focus: "play:drivers", say: "Third beat." },
 				],
 			};
 			const { view, tour, control, done } = await studio(
@@ -1661,20 +1704,26 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 					readBinary: async () => new Uint8Array([1, 2]),
 				},
 			);
-			const toggleBtn = view.el.querySelector<HTMLButtonElement>('[data-play="dealer-led"] .studio-play-toggle')!;
+			const toggleBtn = view.el.querySelector<HTMLButtonElement>('[data-play="dealers"] .studio-play-toggle')!;
 			const toggleSpy = vi.spyOn(toggleBtn, "click");
 			tour().querySelector<HTMLButtonElement>(".studio-tour-launch")!.click();
 			await vi.advanceTimersByTimeAsync(100);
 			expect(revokeObjectURL).toHaveBeenCalled();
 			expect(toggleSpy).toHaveBeenCalledTimes(1);
 
+			await vi.advanceTimersByTimeAsync(4500);
+			expect(text(tour().querySelector(".studio-tour-step"))).toContain("2/3");
+
 			failPlay = false;
+			control("Previous step").click();
+			await vi.advanceTimersByTimeAsync(100);
+			const clicksBeforeToggle = toggleSpy.mock.calls.length;
 			control("Mute voice").click();
 			control("Unmute voice").click();
 			await vi.advanceTimersByTimeAsync(50);
-			expect(toggleSpy).toHaveBeenCalledTimes(1);
-
-			await vi.advanceTimersByTimeAsync(5000);
+			expect(toggleSpy).toHaveBeenCalledTimes(clicksBeforeToggle);
+			audioRef.current?.onended?.();
+			await vi.advanceTimersByTimeAsync(600);
 			expect(text(tour().querySelector(".studio-tour-step"))).toContain("2/3");
 			done();
 		} finally {
