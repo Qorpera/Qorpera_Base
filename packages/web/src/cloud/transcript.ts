@@ -539,9 +539,22 @@ function erasedMessage(event: HostedSessionEvent): TranscriptMessage {
 	};
 }
 
+const pureEventProjectionCache = new WeakMap<HostedSessionEvent, TranscriptItem | null>();
+const itemJsonMemo = new WeakMap<TranscriptItem, string>();
+
+function stableItemJson(item: TranscriptItem): string {
+	let encoded = itemJsonMemo.get(item);
+	if (encoded === undefined) {
+		encoded = JSON.stringify(item);
+		itemJsonMemo.set(item, encoded);
+	}
+	return encoded;
+}
+
 export function projectTranscript(
 	events: readonly HostedSessionEvent[],
 	pending: readonly PendingSessionInput[] = [],
+	previous?: TranscriptProjection,
 ): TranscriptProjection {
 	const items: TranscriptItem[] = [];
 	let hiddenCount = 0;
@@ -556,8 +569,16 @@ export function projectTranscript(
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
 		if (event.sessionInputId) inputIds.add(event.sessionInputId);
+		const cached = pureEventProjectionCache.get(event);
+		if (cached !== undefined) {
+			if (cached !== null) items.push(cached);
+			else hiddenCount++;
+			continue;
+		}
 		if (isErased(event.body)) {
-			items.push(erasedMessage(event));
+			const erased = erasedMessage(event);
+			pureEventProjectionCache.set(event, erased);
+			items.push(erased);
 			continue;
 		}
 		if (event.eventType === "authorization_request" || event.eventType === "authorization_decision") {
@@ -571,6 +592,7 @@ export function projectTranscript(
 				createdAt: event.createdAt,
 			};
 			if (event.eventType === "authorization_request") cards.set(event.eventId.toLowerCase(), card);
+			else pureEventProjectionCache.set(event, card);
 			items.push(card);
 			continue;
 		}
@@ -609,8 +631,8 @@ export function projectTranscript(
 					UUID.test(info.counterpartStaffId) &&
 					typeof info.pairSessionId === "string" &&
 					UUID.test(info.pairSessionId)
-				)
-					items.push({
+				) {
+					const link: TranscriptPeerLink = {
 						kind: "peer_link",
 						id: event.eventId,
 						sequence: event.sequence,
@@ -619,40 +641,52 @@ export function projectTranscript(
 						counterpartStaffId: info.counterpartStaffId,
 						pairSessionId: info.pairSessionId,
 						createdAt: event.createdAt,
-					});
-				else if (info?.schema === CHAIN_STOPPED_SCHEMA && Array.isArray(info.cardIds)) {
+					};
+					pureEventProjectionCache.set(event, link);
+					items.push(link);
+				} else if (info?.schema === CHAIN_STOPPED_SCHEMA && Array.isArray(info.cardIds)) {
 					// Drawn on its cards, which may be anywhere above it; a card not loaded is left alone.
 					for (const cardId of info.cardIds)
 						if (typeof cardId === "string" && UUID.test(cardId)) stoppedCards.add(cardId.toLowerCase());
-				} else if (info?.schema === PEER_BUDGET_SCHEMA && typeof info.text === "string" && info.text.trim())
-					items.push({
+				} else if (info?.schema === PEER_BUDGET_SCHEMA && typeof info.text === "string" && info.text.trim()) {
+					const note: TranscriptNote = {
 						kind: "note",
 						id: event.eventId,
 						sequence: event.sequence,
 						text: info.text.slice(0, 512),
 						createdAt: event.createdAt,
-					});
-				else {
+					};
+					pureEventProjectionCache.set(event, note);
+					items.push(note);
+				} else {
 					const change = parseInterfaceChange(info);
-					if (change)
-						items.push({
+					if (change) {
+						const item: TranscriptInterfaceChange = {
 							kind: "interface_change",
 							id: event.eventId,
 							sequence: event.sequence,
 							change,
 							createdAt: event.createdAt,
-						});
+						};
+						pureEventProjectionCache.set(event, item);
+						items.push(item);
+					}
 				}
-			} else hiddenCount++;
+			} else {
+				pureEventProjectionCache.set(event, null);
+				hiddenCount++;
+			}
 			continue;
 		}
 		const body = asRecord(event.body);
 		if (!body) {
+			pureEventProjectionCache.set(event, null);
 			hiddenCount++;
 			continue;
 		}
 		if (body.schema === RUNNER_ENTRY_SCHEMA) {
 			const message = messageFromEntry((asRecord(body.entry) ?? {}) as Entry, event, false);
+			pureEventProjectionCache.set(event, message ?? null);
 			if (message) items.push(message);
 			else hiddenCount++;
 			continue;
@@ -767,6 +801,31 @@ export function projectTranscript(
 		while (at < items.length && !(items[at]!.kind === "member" && Date.parse(items[at]!.createdAt) > sent)) at++;
 		items.splice(at, 0, message);
 		from = at + 1;
+	}
+	if (previous && previous.items.length > 0 && (interactions.size > 0 || cards.size > 0 || waiting.length > 0)) {
+		// WHY: Preserve object identity for unchanged cards and queued items so WeakMap JSON caches stay warm.
+		const prevMutable = new Map<string, TranscriptItem>();
+		for (const item of previous.items) {
+			if (
+				item.kind === "interaction" ||
+				item.kind === "authorization_request" ||
+				(item.kind === "member" && item.pending !== undefined)
+			)
+				prevMutable.set(`${item.kind}:${item.id}`, item);
+		}
+		if (prevMutable.size > 0) {
+			for (let index = 0; index < items.length; index++) {
+				const item = items[index]!;
+				if (
+					item.kind !== "interaction" &&
+					item.kind !== "authorization_request" &&
+					!(item.kind === "member" && item.pending !== undefined)
+				)
+					continue;
+				const prev = prevMutable.get(`${item.kind}:${item.id}`);
+				if (prev && stableItemJson(prev) === stableItemJson(item)) items[index] = prev;
+			}
+		}
 	}
 	return { items, hiddenCount, lastSequence };
 }

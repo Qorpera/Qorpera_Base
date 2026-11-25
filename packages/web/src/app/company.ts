@@ -823,6 +823,7 @@ export class CompanyController {
 	readonly #reconnect = new Reconnect(() => this.#tryAgain(), this.#abort.signal);
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
+	#connectedHeartbeatTick = 0;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean; full: boolean }>();
 	/** The newest conversation read (updated_at, id): a sessions hint reads only what changed since. */
@@ -1041,7 +1042,7 @@ export class CompanyController {
 					this.#hiddenAt = undefined;
 					if (!away && !this.#skippedWhileHidden) return;
 					this.#skippedWhileHidden = false;
-					void this.#tick();
+					void this.#tick(true);
 				},
 				{ signal: this.signal },
 			);
@@ -3037,7 +3038,7 @@ export class CompanyController {
 				const nextPending = pendingChanged ? pending : latest.pending;
 				const projection =
 					!eventsUnchanged || pendingChanged || !latest.complete
-						? projectTranscript(merged, nextPending)
+						? projectTranscript(merged, nextPending, latest.projection)
 						: latest.projection;
 				const optimistic =
 					!eventsUnchanged || pendingChanged || latest.optimistic.length > 0
@@ -4044,13 +4045,15 @@ export class CompanyController {
 		}
 	}
 
-	async #tick(): Promise<void> {
+	async #tick(forceFull = false): Promise<void> {
 		if (this.#stopped || this.#polling || this.#restsWhileHidden()) return;
 		this.#polling = true;
 		try {
+			const connected = this.store.get().realtime === "connected";
 			// Polling is the recovery path when Realtime is degraded; a light
 			// heartbeat otherwise keeps activity and the open transcript honest.
-			if (this.store.get().realtime !== "connected") {
+			if (!connected) {
+				this.#connectedHeartbeatTick = 0;
 				await this.refreshTeam();
 				await Promise.all([this.refreshSessions(), this.refreshStaff(), this.refreshOrganization()]);
 				if (!this.#stopped)
@@ -4061,18 +4064,24 @@ export class CompanyController {
 				if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 			} else if (Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS)
 				await (this.#sessionsFullRead ?? this.refreshSessions());
-			// Proposal comments/rejections do not all touch the Company File head.
-			// Refresh this surface even with a healthy Realtime channel.
-			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
-			if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
-			await Promise.all([
-				this.refreshActivity(),
-				this.refreshSidebar(),
-				this.refreshMentions(),
-				this.refreshHoursWait(),
-				// The member chats and the open one, whole: what a missed hint would have brought.
-				this.memberChats.poll(),
-			]);
+			// WHY: While Realtime is healthy, spread redundant fallback polls across every 4th heartbeat (2m) while keeping activity/hours at 30s.
+			const runFallback = !connected || forceFull || ++this.#connectedHeartbeatTick % 4 === 0;
+			if (runFallback) {
+				// Proposal comments/rejections do not all touch the Company File head.
+				// Refresh this surface even with a healthy Realtime channel.
+				if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
+				if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
+				await Promise.all([
+					this.refreshActivity(),
+					this.refreshSidebar(),
+					this.refreshMentions(),
+					this.refreshHoursWait(),
+					// The member chats and the open one, whole: what a missed hint would have brought.
+					this.memberChats.poll(),
+				]);
+			} else {
+				await Promise.all([this.refreshActivity(), this.refreshHoursWait()]);
+			}
 		} finally {
 			this.#polling = false;
 		}

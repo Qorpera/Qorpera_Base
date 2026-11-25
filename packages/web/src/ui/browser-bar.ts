@@ -78,6 +78,7 @@ export function watchBrowserBar(root: Element): () => void {
 	// The sidebar shows, hides or moves through `hidden` and classes; its colour follows the
 	// theme and, in Safari, the window going behind (ui/appearance.ts applyBrowserChrome).
 	const observer = new MutationObserver((records) => {
+		if (frame !== undefined) return;
 		for (const record of records) {
 			const target = record.target;
 			if (target === document.documentElement) {

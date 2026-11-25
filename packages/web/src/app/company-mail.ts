@@ -262,8 +262,13 @@ export class CompanyMail {
 		return this.#disposed || this.#company.signal.aborted;
 	}
 
-	readonly #onFront = () => {
+	#lastFront: { type: string; at: number } | undefined;
+
+	readonly #onFront = (event: Event) => {
 		if (document.visibilityState !== "visible") return;
+		const now = Date.now();
+		if (this.#lastFront && this.#lastFront.type !== event.type && now - this.#lastFront.at < 250) return;
+		this.#lastFront = { type: event.type, at: now };
 		void this.#refreshCompany();
 		if (this.#watched.shown()) void this.#refreshPage();
 	};

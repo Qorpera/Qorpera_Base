@@ -2302,6 +2302,7 @@ export class CompanyApps {
 	readonly #source: CompanyAppsSource;
 	readonly #publish: (apps: readonly CompanyApp[]) => void;
 	readonly #publishGroups: ((groups: readonly AppTreeNode[] | undefined) => void) | undefined;
+	readonly #shouldWarm: () => boolean;
 	#shownGroups: string | undefined;
 	readonly #stop = new AbortController();
 	readonly #listeners = new Set<() => void>();
@@ -2322,10 +2323,12 @@ export class CompanyApps {
 		publish: (apps: readonly CompanyApp[]) => void,
 		/** The company's groups of apps, read with the apps (apps/groups.md), when they change. */
 		publishGroups?: (groups: readonly AppTreeNode[] | undefined) => void,
+		shouldWarm: () => boolean = () => true,
 	) {
 		this.#source = source;
 		this.#publish = publish;
 		this.#publishGroups = publishGroups;
+		this.#shouldWarm = shouldWarm;
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 	}
 
@@ -2461,8 +2464,13 @@ export class CompanyApps {
 
 	/** Reads the apps' pages ahead (`warmApps`), a moment after they changed, so the company's own first reads go
 	 * first; one round at a time, and the latest apps when it starts. */
-	#warm(): void {
+	warmIfNeeded(): void {
+		this.#warm(true);
+	}
+
+	#warm(force = false): void {
 		if (this.#stop.signal.aborted) return;
+		if (!force && !this.#shouldWarm()) return;
 		if (this.#warming !== undefined) {
 			this.#warmAgain = true;
 			return;

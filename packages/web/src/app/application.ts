@@ -607,7 +607,7 @@ export function mountApplication(
 	};
 	let decorating = false;
 	const appCardObserver = new MutationObserver((records) => {
-		if (decorating || !hasDecoratableCard(records)) return;
+		if (decorating || !company || !company.store.get().apps?.length || !hasDecoratableCard(records)) return;
 		decorating = true;
 		queueMicrotask(() => {
 			try {
@@ -2311,6 +2311,8 @@ export function mountApplication(
 					if (companyApps !== apps) return;
 					controller.store.set({ appGroups: groups });
 				},
+				// WHY: Skip 24 MiB legacy app prefetch on boot while the surface rail hides the legacy apps drawer.
+				() => !rail.classList.contains("has-surface-rail"),
 			);
 			companyApps = apps;
 			controller.appIconReader = (app) => apps.icons(app);
@@ -2539,6 +2541,7 @@ export function mountApplication(
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
 		if (route.section === "chat") appReturn = routeHash(route);
+		if (route.section === "app" || route.section === "concepts") companyApps?.warmIfNeeded();
 		if (route.section !== "app" || (appPage && !sameTarget(appPage.target, { kind: "app", name: route.id ?? "" }))) {
 			appPage?.dispose();
 			appPage = undefined;

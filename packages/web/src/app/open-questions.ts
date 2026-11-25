@@ -385,8 +385,16 @@ export class OpenQuestions {
 		const stopHints = this.#company.onInvalidate((resource) => {
 			if (resource === "sessions") this.#readSoon();
 		});
+		let connectedTick = 0;
 		const clock = setInterval(() => {
-			if (typeof document === "undefined" || document.visibilityState !== "hidden") void this.refresh();
+			if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+			// WHY: Sessions Realtime hints drive live updates; back off connected fallback polls from 30s to 2m.
+			if (this.#company.store.get().realtime === "connected") {
+				if (++connectedTick % 4 !== 0) return;
+			} else {
+				connectedTick = 0;
+			}
+			void this.refresh();
 		}, HEARTBEAT_MS);
 		const mayWrite = () => {
 			const capabilities = this.#company.store.get().team?.capabilities;
