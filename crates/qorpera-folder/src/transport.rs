@@ -2,6 +2,7 @@
 //! to its service, and local tests).
 
 use std::io::{self, IoSlice, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
@@ -73,6 +74,22 @@ impl Stream {
 			Stream::Vsock(s) => s.shutdown(std::net::Shutdown::Write),
 			Stream::Unix(s) => s.shutdown(std::net::Shutdown::Write),
 		};
+	}
+
+	pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+		match self {
+			Stream::Vsock(s) => s.set_nonblocking(nonblocking),
+			Stream::Unix(s) => s.set_nonblocking(nonblocking),
+		}
+	}
+}
+
+impl AsRawFd for Stream {
+	fn as_raw_fd(&self) -> RawFd {
+		match self {
+			Stream::Vsock(s) => s.as_raw_fd(),
+			Stream::Unix(s) => s.as_raw_fd(),
+		}
 	}
 }
 

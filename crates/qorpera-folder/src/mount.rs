@@ -453,18 +453,9 @@ impl Shared {
 
 	fn children_inner(&self, dir: u64, hold: Option<&str>, hold_all: bool) -> Result<(Arc<Vec<Child>>, bool, Vec<u64>), i32> {
 		loop {
-			let (path, started) = if !hold_all && hold.is_none() {
+			let (path, started) = {
+				// WHY: Node.lookups is atomic, so cached lookup and opendir hold paths stay on a shared read lock.
 				let tree = self.tree.read().unwrap();
-				let Some(path) = tree.path(dir).map(str::to_string) else { return Err(libc::ENOENT) };
-				if tree.attr(dir).is_some_and(|a| a.kind != EntryKind::Folder) {
-					return Err(libc::ENOTDIR);
-				}
-				if let Some(listing) = tree.listing(dir) {
-					return Ok((listing, true, Vec::new()));
-				}
-				(path, tree.changes())
-			} else {
-				let mut tree = self.tree.write().unwrap();
 				let Some(path) = tree.path(dir).map(str::to_string) else { return Err(libc::ENOENT) };
 				if tree.attr(dir).is_some_and(|a| a.kind != EntryKind::Folder) {
 					return Err(libc::ENOTDIR);
@@ -1197,7 +1188,7 @@ impl Filesystem for FolderFs {
 				}
 				DirPlus::Node { attr, kept } => {
 					let (held, use_attr, ttl) = {
-						let mut tree = self.s.tree.write().unwrap();
+						let tree = self.s.tree.read().unwrap();
 						let held = tree.hold(item.ino);
 						if held && prime_node && *kept && !node_ttl.is_zero() {
 							let fresh = self.s.writable && tree.path(item.ino).is_some_and(on_disk::fresh);

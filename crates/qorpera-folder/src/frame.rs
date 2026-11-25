@@ -64,30 +64,54 @@ pub fn write_frame_parts(w: &mut impl Write, kind: u8, parts: &[&[u8]]) -> io::R
 	let mut head = [0u8; 5];
 	head[..4].copy_from_slice(&len.to_be_bytes());
 	head[4] = kind;
-	let mut slices: Vec<IoSlice<'_>> = Vec::with_capacity(parts.len() + 1);
-	slices.push(IoSlice::new(&head));
-	for p in parts {
-		if !p.is_empty() {
-			slices.push(IoSlice::new(p));
+	// WHY: Use stack slice arrays on the common <=7-part frame path to avoid per-frame Vec allocations on write.
+	let mut stack_bufs: [&[u8]; 8] = [&[]; 8];
+	let mut heap_bufs: Vec<&[u8]>;
+	let bufs: &mut [&[u8]] = if parts.len() < stack_bufs.len() {
+		stack_bufs[0] = &head;
+		let mut count = 1usize;
+		for p in parts {
+			if !p.is_empty() {
+				stack_bufs[count] = p;
+				count += 1;
+			}
 		}
-	}
+		&mut stack_bufs[..count]
+	} else {
+		heap_bufs = Vec::with_capacity(parts.len() + 1);
+		heap_bufs.push(&head);
+		for p in parts {
+			if !p.is_empty() {
+				heap_bufs.push(p);
+			}
+		}
+		heap_bufs.as_mut_slice()
+	};
+	let mut stack_io = [IoSlice::new(&[]); 8];
+	let mut heap_io: Vec<IoSlice<'_>> = Vec::new();
 	let mut idx = 0usize;
-	let mut off = 0usize;
-	while idx < slices.len() {
-		let rem: Vec<IoSlice<'_>> = std::iter::once(IoSlice::new(&slices[idx][off..]))
-			.chain(slices[idx + 1..].iter().copied())
-			.collect();
-		match w.write_vectored(&rem) {
+	while idx < bufs.len() {
+		let rem = bufs.len() - idx;
+		let io_slices: &[IoSlice<'_>] = if rem <= stack_io.len() {
+			for (slot, b) in stack_io[..rem].iter_mut().zip(&bufs[idx..]) {
+				*slot = IoSlice::new(b);
+			}
+			&stack_io[..rem]
+		} else {
+			heap_io.clear();
+			heap_io.extend(bufs[idx..].iter().map(|b| IoSlice::new(b)));
+			&heap_io
+		};
+		match w.write_vectored(io_slices) {
 			Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write frame")),
 			Ok(mut wrote) => {
-				while wrote > 0 && idx < slices.len() {
-					let left = slices[idx].len() - off;
+				while wrote > 0 && idx < bufs.len() {
+					let left = bufs[idx].len();
 					if wrote >= left {
 						wrote -= left;
 						idx += 1;
-						off = 0;
 					} else {
-						off += wrote;
+						bufs[idx] = &bufs[idx][wrote..];
 						wrote = 0;
 					}
 				}
