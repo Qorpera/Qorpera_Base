@@ -44,7 +44,7 @@ import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.t
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
-import { companyDisplayName, companyInSentence, showCompanyName } from "../../ui/company-name.ts";
+import { companyDisplayName, companyInSentence } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { friendsCount } from "../../ui/friends-count.ts";
@@ -79,6 +79,7 @@ import {
 	isPrimaryStaffSession,
 	siteAnswer,
 } from "../company.ts";
+import { CompanyWordmarkSlot } from "../company-wordmark.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
@@ -413,7 +414,7 @@ export function renderTopbar(
 interface RailParts {
 	/** The company's name at the start of the top row; it opens the menu of the member's companies (Jonas, 5 Nov 2026). */
 	readonly company: HTMLButtonElement;
-	readonly companyName: HTMLElement;
+	readonly companyWordmark: CompanyWordmarkSlot;
 	/** The four-windows button: it opens the company's interfaces as icons under the top row, and stays open until
 	 * pressed again (Jonas, 5 Nov 2026; it replaced the Agents | Interfaces tabs). */
 	readonly apps: HTMLButtonElement;
@@ -768,12 +769,20 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
 		const dock = h("div", { class: "rail-dock" });
 		const companyName = h("span", { class: "rail-company-name" });
+		const companyWordmarkImage = h("img", {
+			class: "rail-company-wordmark",
+			alt: "",
+			draggable: "false",
+			hidden: true,
+		});
 		const companyButton = h(
 			"button",
 			{ type: "button", class: "rail-company", "aria-haspopup": "menu", "aria-expanded": "false" },
+			companyWordmarkImage,
 			companyName,
 			h("span", { class: "rail-company-chevron", "aria-hidden": "true" }, icon("chevron-down")),
 		);
+		const companyWordmark = new CompanyWordmarkSlot(companyButton, companyName, companyWordmarkImage, company.signal);
 		const apps = h(
 			"button",
 			{
@@ -795,7 +804,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const members = membersSection();
 		const created: RailParts = {
 			company: companyButton,
-			companyName,
+			companyWordmark,
 			apps,
 			appsDrawer,
 			appsOwed,
@@ -1436,8 +1445,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.appsDrawer.inert = !appsOpen;
 	// WHY: Surfaces lists Inbox, Money, Members and Databases in the rail itself; the old icon drawer above the
 	// Co-Founder duplicated them, so a surface-first rail folds it (and its grid button) away visually.
-	container.classList.toggle("has-surface-rail", surfacesOf(company) !== undefined);
-	showCompanyName(parts.companyName, company.profile.profileName);
+	const surfaces = surfacesOf(company);
+	container.classList.toggle("has-surface-rail", surfaces !== undefined);
+	parts.companyWordmark.update(company.profile.profileName, surfaces);
 	const searchLabel = `${t("Search")} (${shortcutLabel()})`;
 	parts.searchToggle.setAttribute("aria-label", t("Search"));
 	parts.searchToggle.setAttribute("aria-keyshortcuts", SEARCH_SHORTCUT);
