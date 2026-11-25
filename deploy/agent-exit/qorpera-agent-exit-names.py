@@ -339,6 +339,41 @@ def table_handle(text, name):
     return None
 
 
+def parse_table(text, table):
+    handle, chains, mapped, allowed, reach = None, set(), {}, set(), {}
+    for item in json.loads(text).get("nftables", []):
+        if "table" in item:
+            found = item["table"] or {}
+            if found.get("name") == table:
+                handle = found.get("handle")
+        elif "chain" in item:
+            chain = item["chain"] or {}
+            m = re.fullmatch(r"only_([0-9]{5})", str(chain.get("name", "")))
+            if chain.get("table") == table and m:
+                chains.add(int(m.group(1)))
+        elif "map" in item:
+            mp = item["map"] or {}
+            name = mp.get("name")
+            if name == "dns_port":
+                for elem in mp.get("elem", []) or []:
+                    if isinstance(elem, list) and len(elem) == 2:
+                        mapped[str(elem[0])] = elem[1]
+            elif name == "reach":
+                for elem in mp.get("elem", []) or []:
+                    if isinstance(elem, list) and len(elem) == 2 and isinstance(elem[1], dict):
+                        verdict = elem[1].get("goto") or {}
+                        if isinstance(verdict, dict) and isinstance(verdict.get("target"), str):
+                            reach[str(elem[0])] = verdict["target"]
+        elif "set" in item:
+            s = item["set"] or {}
+            if s.get("name") == "dns_allowed":
+                for elem in s.get("elem", []) or []:
+                    parts = elem.get("concat") if isinstance(elem, dict) else None
+                    if isinstance(parts, list) and len(parts) == 2:
+                        allowed.add((str(parts[0]), parts[1]))
+    return handle, chains, mapped, allowed, reach
+
+
 class Names:
     def __init__(self, args):
         self.args = args
@@ -664,9 +699,20 @@ class Names:
         self.owed = {port: cut for port, cut in self.owed.items() if port in wanted}
         self.cut &= wanted
 
+    def read_table(self):
+        family, table = plug.EXIT_TABLE
+        # WHY: One `nft -j list table` returns handle, chains, maps, and sets, cutting 6 forks/pass to 1.
+        answer = self.in_exit("nft", "-j", "list", "table", family, table)
+        if answer.returncode != 0:
+            return None, ("read", answer.stderr.strip()[:200])
+        try:
+            return parse_table(answer.stdout, table), None
+        except ValueError as error:
+            return None, ("parse", str(error)[:200])
+
     # --- the map ---
 
-    def sync_map(self, mapped, waiting=frozenset(), reach=None):
+    def sync_map(self, mapped, waiting=frozenset(), reach=None, snapshot=None):
         """Makes dns_port and dns_allowed hold `mapped` and the reach map `reach` (None: empty, every machine refused),
         in one transaction, and ends the DNS connections of every machine whose resolver changed or went, and of every
         machine once in each table not seen before; and every connection of a machine whose reach element went (the
@@ -679,28 +725,13 @@ class Names:
         if not self.kernel:
             self.reach_right, self.reach_now = True, reach
             return mapped
-        family, table = plug.EXIT_TABLE
-        tables_answer = self.in_exit("nft", "-j", "list", "tables", family)
-        if tables_answer.returncode != 0:
-            self.problems.append(f"cannot read the exit's DNS map: {tables_answer.stderr.strip()[:200]}")
+        parsed, err = self.read_table() if snapshot is None else snapshot
+        if err is not None:
+            kind, detail = err
+            self.problems.append(f"cannot {kind} the exit's DNS map: {detail}")
             return {}
-        try:
-            handle = table_handle(tables_answer.stdout, table)
-        except ValueError as error:
-            self.problems.append(f"cannot parse the exit's DNS map: {error}"[:200])
-            return {}
-        answers = [self.in_exit("nft", "-j", "list", what, family, table, name)
-                   for what, name in (("map", "dns_port"), ("set", "dns_allowed"), ("map", "reach"))]
-        failed = [a for a in answers if a.returncode != 0]
-        if failed:
-            self.problems.append(f"cannot read the exit's DNS map: {failed[0].stderr.strip()[:200]}")
-            return {}
-        try:
-            loaded, allowed = loaded_map(answers[0].stdout, answers[1].stdout)
-            reached = self.reach_now = loaded_reach(answers[2].stdout)
-        except ValueError as error:
-            self.problems.append(f"cannot parse the exit's DNS map: {error}"[:200])
-            return {}
+        handle, _, loaded, allowed, reached = parsed
+        self.reach_now = reached
         if handle != self.table:
             # Connections made before this table may still go where an older map sent them, to the main dnsmasq
             # before a company had rules (an exit upgraded to E8b-2 included).
@@ -747,7 +778,7 @@ class Names:
 
     # --- "only listed" (E8c): each such company's set and chain ---
 
-    def sync_objects(self, needed):
+    def sync_objects(self, needed, snapshot=None):
         """Makes the exit's table hold allow_P and only_P for each port in `needed`, before its resolver starts and its
         machines' reach elements go to only_P. A table not seen before (one `up` made again, with its sets empty) has
         those resolvers reloaded, so they ask again (a reload empties dnsmasq's cache; an answer from it fills no set).
@@ -755,18 +786,12 @@ class Names:
         when the table cannot be read (which ports have a set is not known then)."""
         if not self.kernel:
             return set(needed), set()
-        family, table = plug.EXIT_TABLE
-        answers = [self.in_exit("nft", "-j", "list", what, family) for what in ("tables", "chains")]
-        failed = [a for a in answers if a.returncode != 0]
-        if failed:
-            self.problems.append(f"cannot read the exit's chains: {failed[0].stderr.strip()[:200]}")
+        parsed, err = self.read_table() if snapshot is None else snapshot
+        if err is not None:
+            kind, detail = err
+            self.problems.append(f"cannot {kind} the exit's chains: {detail}")
             return None, set()
-        try:
-            handle = table_handle(answers[0].stdout, table)
-            have = only_chains(answers[1].stdout, table)
-        except ValueError as error:
-            self.problems.append(f"cannot parse the exit's chains: {error}"[:200])
-            return None, set()
+        handle, have, _, _, _ = parsed
         if needed - have:
             lines = [line for port in sorted(needed - have) for line in object_lines(port)]
             result = self.in_exit("nft", "-f", "-", input="\n".join(lines) + "\n")
@@ -814,15 +839,20 @@ class Names:
                     f"{company}: not in the rules file for {int(mono - since)}s; its machines get no DNS and no way out")
         wanted = {c for c in clients.values() if rules.get(c)}
         units = self.units()
+        table_snapshot = self.read_table() if self.kernel else None
         if units is None:
             # Without systemd's view no port is handed out or given back (one may still have a resolver): the
             # machines of the companies with a port keep it, and nothing is started or stopped.
             ports = {c: p for c, p in read_ports(self.ports_path).items() if c in wanted}
-            present, _ = self.sync_objects({p for c, p in ports.items() if rules[c]["mode"] == "only-listed"})
-            return self.write_status(at, ports, self.sync_map(wanted_map(clients, rules, ports),
-                                                              reach=wanted_reach(clients, rules, ports, present or set())))
+            present, _ = self.sync_objects(
+                {p for c, p in ports.items() if rules[c]["mode"] == "only-listed"}, snapshot=table_snapshot)
+            return self.write_status(at, ports, self.sync_map(
+                wanted_map(clients, rules, ports),
+                reach=wanted_reach(clients, rules, ports, present or set()),
+                snapshot=table_snapshot))
         ports = self.assign_ports(wanted, set(units))
-        present, extra = self.sync_objects({p for c, p in ports.items() if rules[c]["mode"] == "only-listed"})
+        present, extra = self.sync_objects(
+            {p for c, p in ports.items() if rules[c]["mode"] == "only-listed"}, snapshot=table_snapshot)
         self.write_servers(ports, rules, units)
         self.restart_owed(ports, units, None if present is None else present | extra)
         for port in sorted(set(ports.values())):
@@ -845,7 +875,7 @@ class Names:
                 if units.get(port) == "active":
                     self.start(port, mono, again=True)
         mapped = self.sync_map(wanted_map(clients, rules, ports), waiting,
-                               wanted_reach(clients, rules, ports, present or set()))
+                               wanted_reach(clients, rules, ports, present or set()), snapshot=table_snapshot)
         self.cut_owed(clients, ports)
         self.stop_unwanted(ports, units)
         self.drop_objects(extra)
