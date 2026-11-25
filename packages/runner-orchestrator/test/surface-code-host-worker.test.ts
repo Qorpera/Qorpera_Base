@@ -1207,6 +1207,128 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 		expect(String(failed?.args.p_error_detail).split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
 		expect(g.calls.some((c) => c.method === "qorpera_surface_request_build")).toBe(false);
 	});
+
+	it("skips duplicate compose on Pass 2 after a parked preview build and passes readOnly for read-only passes", async () => {
+		const f = await createCodeHostFixture();
+		const output = await commitFiles(f, { "dist/index.html": "<!doctype html><h1>Cached Plan</h1>\n" }, "Output");
+		const builtTree = await f.git(join(f.code, "repo.git"), "rev-parse", `${output.commit}:dist`);
+		const source = await commitFiles(
+			f,
+			{ ".qorpera/checks.json": RECIPE_CHECKS, "package.json": "{}\n", "src/main.tsx": "export {};\n" },
+			"Source",
+		);
+		const buildId = randomUUID();
+		const previewId = randomUUID();
+		const lease = randomUUID();
+		const buildAnswers: Record<string, unknown>[] = [
+			{ state: "waiting", buildId },
+			{ state: "built", buildId, builtTreeSha: builtTree },
+			{ state: "built", buildId, builtTreeSha: builtTree },
+		];
+		const runOpts: { yields?: boolean; readOnly?: boolean }[] = [];
+		const calls: { method: SurfaceCodeHostRpc; args: Record<string, unknown> }[] = [];
+		let pendingClaim: Record<string, unknown> = {
+			sessions: [],
+			previews: [],
+			merges: [],
+			publishes: [],
+			automations: [],
+		};
+		const worker = new SurfaceCodeHostWorker({
+			control: {
+				async call(method, args) {
+					calls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						const res = pendingClaim;
+						pendingClaim = { sessions: [], previews: [], merges: [], publishes: [], automations: [] };
+						return res;
+					}
+					if (method === "qorpera_surface_request_build") return buildAnswers.shift()!;
+					if (method === "qorpera_surface_site_version_begin") {
+						return {
+							state: "uploading",
+							versionId: randomUUID(),
+							siteId: randomUUID(),
+							siteSlug: "shop",
+							listed: false,
+						};
+					}
+					if (method === "qorpera_surface_site_version_list") return { state: "listed", missing: 0 };
+					if (method === "qorpera_surface_site_version_put") return { state: "kept" };
+					if (method === "qorpera_surface_site_version_finish") {
+						return { state: args.p_promote_live === true ? "live" : "ready" };
+					}
+					if (method === "qorpera_surface_renew_lease") return { renewed: true };
+					if (method === "qorpera_surface_shared_product_folder_roots") return [];
+					return {};
+				},
+			},
+			hosts: {
+				async run(_c, _e, _s, fn, opts) {
+					runOpts.push({ yields: opts?.yields, readOnly: opts?.readOnly });
+					return await fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const preview = previewClaim(source.commit, previewId, lease);
+		pendingClaim = { ...pendingClaim, ...preview };
+		expect(await worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			cleanups: 0,
+			failed: 0,
+		});
+		expect(runOpts).toEqual([{ yields: true, readOnly: true }]);
+
+		pendingClaim = { ...pendingClaim, ...preview };
+		expect(await worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			cleanups: 0,
+			failed: 0,
+		});
+		// WHY: Pass 2 reuses the cached Pass 1 compose plan, so hosts.run only executes once to read the built tree.
+		expect(runOpts).toEqual([
+			{ yields: true, readOnly: true },
+			{ yields: true, readOnly: true },
+		]);
+
+		runOpts.length = 0;
+		pendingClaim = {
+			sessions: [],
+			previews: [],
+			merges: [],
+			automations: [],
+			publishes: [
+				{
+					jobId: randomUUID(),
+					surfaceId: randomUUID(),
+					profileId: randomUUID(),
+					environmentId: randomUUID(),
+					sourceKind: "code_repo",
+					liveHeadSha: source.commit,
+					leaseToken: randomUUID(),
+					repositoryKey: "thetaband/website",
+					siteId: randomUUID(),
+					payload: {},
+				},
+			],
+		};
+		expect(await worker.pass(new AbortController().signal)).toEqual({
+			previews: 0,
+			merges: 0,
+			publishes: 1,
+			cleanups: 0,
+			failed: 0,
+		});
+		expect(runOpts).toEqual([
+			{ yields: true, readOnly: true },
+			{ yields: true, readOnly: true },
+		]);
+	});
 });
 
 describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {

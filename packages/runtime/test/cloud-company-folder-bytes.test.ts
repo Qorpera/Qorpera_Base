@@ -282,7 +282,8 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 	cleanups.push(async () => {
 		server.closeAllConnections();
 		await new Promise<void>((resolve) => server.close(() => resolve()));
-		await rm(root, { recursive: true, force: true });
+		// WHY: Parallel chunk/manifest PUT handlers may still be unwinding temp writes briefly after socket close.
+		await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
 	});
 	/** Minutes each gateway request takes, on the adapter's clock. */
 	let requestMinutes = 0;
@@ -586,16 +587,19 @@ it("refuses a read whose authority is revoked while the gateway reads it", async
 it("reads a stop, a lock conflict and a lock timeout at confirm as the run's", async () => {
 	const { bytes, sql, authority, gatewayCalls } = await fixture();
 	const signal = new AbortController().signal;
+	// WHY: Empty-file puts upload a single manifest object so parallel sibling PUTs cannot steal the next loop iteration's injected confirm failure.
 	sql.confirmFailures.push("55000");
-	await expect(bytes.put(Buffer.from("s"), "text/plain", false, signal)).rejects.toMatchObject({ failure: "stopped" });
+	await expect(bytes.put(new Uint8Array(0), "text/x-stop", false, signal)).rejects.toMatchObject({
+		failure: "stopped",
+	});
 	for (const code of ["40001", "40P01", "55P03"]) {
 		sql.confirmFailures.push(code);
-		await expect(bytes.put(Buffer.from(code), "text/plain", false, signal)).rejects.toMatchObject({
+		await expect(bytes.put(new Uint8Array(0), `text/x-${code.toLowerCase()}`, false, signal)).rejects.toMatchObject({
 			failure: "contended",
 		});
 	}
 	expect(authority.health().api.status).toBe("healthy");
-	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object").length).toBeGreaterThanOrEqual(4);
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(4);
 });
 
 it("reads an object folder GC holds as contended, at the control and at the gateway", async () => {

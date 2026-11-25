@@ -683,7 +683,7 @@ const CODE_CHECKS_COPY = [
 	'git clone --quiet --shared --no-checkout -- "$QORPERA_CHECKS_REPOSITORY" "$d/src"',
 	'git -C "$d/src" -c advice.detachedHead=false checkout --quiet --detach "$QORPERA_CHECKS_COMMIT"',
 	'test "$(git -C "$d/src" rev-parse HEAD)" = "$QORPERA_CHECKS_COMMIT"',
-	`if [ -n "\${QORPERA_CHECKS_CACHES:-}" ] && [ -n "\${QORPERA_CHECKS_CACHE_ROOT:-}" ]; then`,
+	`if [ -n "\${QORPERA_CHECKS_CACHE_ROOT:-}" ] && { [ -n "\${QORPERA_CHECKS_CACHES:-}" ] || [ -n "\${QORPERA_CHECKS_BLESSED_CACHES_BRANCH:-}" ]; }; then`,
 	'python3 -I - "$d/src" <<\x27QORPERA_CACHE_RESTORE_EOF\x27 || true',
 	"import hashlib,json,os,re,stat,subprocess,sys",
 	"TOK=re.compile(r\"\\$\\{hash\\('([^']*)'\\)\\}|hash\\('([^']*)'\\)\")",
@@ -694,6 +694,24 @@ const CODE_CHECKS_COPY = [
 	'\treturn all(x not in ("",".","..") and x.lower()!=".git" for x in p.split("/"))',
 	"def safe_cache_path(p):",
 	'\treturn safe_rel(p) and p.split("/")[0].lower()!=".qorpera"',
+	"def load_blessed_specs(repo,branch):",
+	"\tif not repo or not branch:return []",
+	'\tenv={"PATH":os.environ.get("PATH","/usr/bin:/bin"),"GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":"/dev/null","GIT_TERMINAL_PROMPT":"0"}',
+	'\tr=subprocess.run(["git","--git-dir",repo,"-c","core.fsmonitor=false","-c","core.hooksPath=/dev/null","show","refs/heads/"+branch+":.qorpera/checks.json"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=env,check=False)',
+	"\tif r.returncode!=0 or not r.stdout or len(r.stdout)>65536:return []",
+	'\ttext=r.stdout.decode("utf-8",errors="strict")',
+	'\tif text.startswith("\\ufeff"):text=text[1:]',
+	"\tdoc=json.loads(text)",
+	'\tif not isinstance(doc,dict) or not isinstance(doc.get("caches"),list):return []',
+	"\tout=[]",
+	'\tfor raw in doc["caches"][:8]:',
+	"\t\tif not isinstance(raw,dict):continue",
+	'\t\tkey=raw.get("key");paths=raw.get("paths");rks=raw.get("restoreKeys")',
+	"\t\tif not isinstance(key,str) or not (1<=len(key)<=200) or not isinstance(paths,list) or not (1<=len(paths)<=16):continue",
+	"\t\tif not all(safe_cache_path(p) for p in paths):continue",
+	"\t\tif rks is not None and (not isinstance(rks,list) or len(rks)>8 or not all(isinstance(k,str) and 1<=len(k)<=200 for k in rks)):continue",
+	'\t\tout.append({"key":key,"paths":paths,"restoreKeys":rks or []})',
+	"\treturn out",
 	"def no_link(root,rel):",
 	"\tcur=root",
 	'\tfor part in rel.split("/"):',
@@ -748,34 +766,37 @@ const CODE_CHECKS_COPY = [
 	"try:",
 	'\tsrc=sys.argv[1];root=os.environ.get("QORPERA_CHECKS_CACHE_ROOT","")',
 	'\trepo=os.environ.get("QORPERA_CHECKS_REPOSITORY","");commit=os.environ.get("QORPERA_CHECKS_COMMIT","")',
-	'\tspecs=json.loads(os.environ.get("QORPERA_CHECKS_CACHES","[]"))',
-	"\tif root and not os.path.islink(root) and os.path.isdir(root) and isinstance(specs,list):",
-	"\t\tsrc_fd=os.open(src,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)",
-	"\t\ttry:",
-	"\t\t\tfor spec in specs:",
-	'\t\t\t\tkey=eval_key(spec.get("key",""),src_fd)',
-	"\t\t\t\tif not key:continue",
-	"\t\t\t\thit=os.path.join(root,key)",
-	"\t\t\t\tif not valid_entry(hit):",
-	"\t\t\t\t\thit=None",
-	"\t\t\t\t\ttry:names=os.listdir(root)",
-	"\t\t\t\t\texcept OSError:names=[]",
-	'\t\t\t\t\tfor rk in spec.get("restoreKeys") or []:',
-	"\t\t\t\t\t\tpref=eval_key(rk,src_fd)",
-	"\t\t\t\t\t\tif not pref:continue",
-	"\t\t\t\t\t\tms=[os.path.join(root,n) for n in names if n.startswith(pref) and valid_entry(os.path.join(root,n))]",
-	"\t\t\t\t\t\tif ms:",
-	"\t\t\t\t\t\t\tms.sort(key=used_t,reverse=True);hit=ms[0];break",
-	"\t\t\t\tif not hit:continue",
-	'\t\t\t\tfor rel in spec.get("paths") or []:',
-	"\t\t\t\t\tif not safe_cache_path(rel):continue",
-	'\t\t\t\t\tsp=no_link(os.path.join(hit,"data"),rel)',
-	"\t\t\t\t\tif not sp or not os.path.lexists(sp):continue",
-	"\t\t\t\t\tdp=no_link(src,rel)",
-	"\t\t\t\t\tif not dp or os.path.lexists(dp) or not parent_ok(src,rel) or is_tracked(repo,commit,rel):continue",
-	"\t\t\t\t\tos.makedirs(os.path.dirname(dp),exist_ok=True)",
-	'\t\t\t\t\tsubprocess.run(["cp","-R","-P","--preserve=mode,timestamps","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)',
-	"\t\tfinally:os.close(src_fd)",
+	'\traw_specs=os.environ.get("QORPERA_CHECKS_CACHES","")',
+	'\tblessed_branch=os.environ.get("QORPERA_CHECKS_BLESSED_CACHES_BRANCH","")',
+	"\tif root and not os.path.islink(root) and os.path.isdir(root):",
+	"\t\tspecs=json.loads(raw_specs) if raw_specs else (load_blessed_specs(repo,blessed_branch) if blessed_branch else [])",
+	"\t\tif isinstance(specs,list) and specs:",
+	"\t\t\tsrc_fd=os.open(src,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)",
+	"\t\t\ttry:",
+	"\t\t\t\tfor spec in specs:",
+	'\t\t\t\t\tkey=eval_key(spec.get("key",""),src_fd)',
+	"\t\t\t\t\tif not key:continue",
+	"\t\t\t\t\thit=os.path.join(root,key)",
+	"\t\t\t\t\tif not valid_entry(hit):",
+	"\t\t\t\t\t\thit=None",
+	"\t\t\t\t\t\ttry:names=os.listdir(root)",
+	"\t\t\t\t\t\texcept OSError:names=[]",
+	'\t\t\t\t\t\tfor rk in spec.get("restoreKeys") or []:',
+	"\t\t\t\t\t\t\tpref=eval_key(rk,src_fd)",
+	"\t\t\t\t\t\t\tif not pref:continue",
+	"\t\t\t\t\t\t\tms=[os.path.join(root,n) for n in names if n.startswith(pref) and valid_entry(os.path.join(root,n))]",
+	"\t\t\t\t\t\t\tif ms:",
+	"\t\t\t\t\t\t\t\tms.sort(key=used_t,reverse=True);hit=ms[0];break",
+	"\t\t\t\t\tif not hit:continue",
+	'\t\t\t\t\tfor rel in spec.get("paths") or []:',
+	"\t\t\t\t\t\tif not safe_cache_path(rel):continue",
+	'\t\t\t\t\t\tsp=no_link(os.path.join(hit,"data"),rel)',
+	"\t\t\t\t\t\tif not sp or not os.path.lexists(sp):continue",
+	"\t\t\t\t\t\tdp=no_link(src,rel)",
+	"\t\t\t\t\t\tif not dp or os.path.lexists(dp) or not parent_ok(src,rel) or is_tracked(repo,commit,rel):continue",
+	"\t\t\t\t\t\tos.makedirs(os.path.dirname(dp),exist_ok=True)",
+	'\t\t\t\t\t\tsubprocess.run(["cp","-R","-P","--preserve=mode,timestamps","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)',
+	"\t\t\tfinally:os.close(src_fd)",
 	"except Exception:",
 	"\tpass",
 	"QORPERA_CACHE_RESTORE_EOF",
@@ -2961,6 +2982,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				maxParallel: 1,
 				failFast: true,
 				caches: [],
+				// WHY: Restore blessed check caches read-only from the default branch so preview builds reuse node_modules without poisoning shared caches.
+				blessedCachesBranch: claim.repository.baseBranch,
+				allowCacheSave: false,
 			},
 			signal,
 		);
@@ -3005,6 +3029,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			maxParallel?: number;
 			failFast?: boolean;
 			caches?: readonly CodeCheckCache[];
+			blessedCachesBranch?: string;
+			allowCacheSave?: boolean;
 			changedPaths?: readonly string[];
 			checksChanged?: boolean;
 		},
@@ -3019,8 +3045,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const maxParallel = Math.max(1, Math.min(8, input.maxParallel ?? meta?.maxParallel ?? MAX_PARALLEL_CHECKS));
 		const failFast = input.failFast ?? meta?.failFast ?? true;
 		const caches = input.caches ?? meta?.caches ?? [];
+		const blessedCachesBranch = caches.length === 0 ? input.blessedCachesBranch : undefined;
 		const checksChanged = input.checksChanged ?? meta?.checksChanged ?? false;
-		const allowCacheSave = meta?.allowCacheSave ?? true;
+		const allowCacheSave = input.allowCacheSave ?? meta?.allowCacheSave ?? true;
 		const answer = (run: CodeChecksRun): CodeChecksRun => {
 			this.#checksReport({
 				event: "code-checks",
@@ -3111,6 +3138,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					(recipe === null ? 0 : CODE_SITE_BUDGET_MS),
 		);
 		const cacheEnabled = caches.length > 0 && ready.folder.packageCaches;
+		const cacheRestoreEnabled =
+			(caches.length > 0 || blessedCachesBranch !== undefined) && ready.folder.packageCaches;
 		const repoCacheRoot = `${CODING_CHECK_CACHES.root}/${digest(areaPath).slice(0, 24)}`;
 		let copyTransport: LxdCodingFolderCommandTransport;
 		try {
@@ -3120,9 +3149,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					...base,
 					QORPERA_CHECKS_REPOSITORY: repository,
 					QORPERA_CHECKS_COMMIT: input.commit,
-					...(cacheEnabled
+					...(cacheRestoreEnabled
 						? {
-								QORPERA_CHECKS_CACHES: JSON.stringify(caches),
+								...(caches.length > 0
+									? { QORPERA_CHECKS_CACHES: JSON.stringify(caches) }
+									: { QORPERA_CHECKS_BLESSED_CACHES_BRANCH: blessedCachesBranch as string }),
 								QORPERA_CHECKS_CACHE_ROOT: repoCacheRoot,
 							}
 						: {}),

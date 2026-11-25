@@ -122,9 +122,12 @@ export async function readCodeSiteTree(
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		// The place as the step 2b jobs take it, without the default branch: the tree is read by its id alone.
-		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
-			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		if (job.preparedKeptArea !== run.area) {
+			if (!(await run.prepare(undefined, { readOnly: true })).seeded)
+				throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
 		// git answers `missing` for an object it does not have and fails only when it cannot look.
 		const kind = (
 			await run.gitOk(run.repo, ["cat-file", "--batch-check"], READ_FAILED, { stdin: Buffer.from(`${tree}\n`) })
@@ -332,11 +335,7 @@ async function readSurfaceChecksText(run: Run, rootEntries: readonly ParsedGitTr
 	return (blobs.get(checksEntry.id) as Buffer).toString("utf8");
 }
 
-async function readSurfaceChecksSiteFolder(
-	run: Run,
-	rootEntries: readonly ParsedGitTreeEntry[],
-): Promise<string | null> {
-	const text = await readSurfaceChecksText(run, rootEntries);
+function parseChecksSiteFolder(text: string | null): string | null {
 	if (text === null) return null;
 	let parsed: unknown;
 	try {
@@ -351,6 +350,13 @@ async function readSurfaceChecksSiteFolder(
 	if (typeof folder !== "string") return null;
 	const trimmed = folder.trim();
 	return codeSiteFolderValid(trimmed) ? trimmed : null;
+}
+
+async function readSurfaceChecksSiteFolder(
+	run: Run,
+	rootEntries: readonly ParsedGitTreeEntry[],
+): Promise<string | null> {
+	return parseChecksSiteFolder(await readSurfaceChecksText(run, rootEntries));
 }
 
 async function resolveFallbackWebTree(
@@ -409,6 +415,113 @@ async function resolveMonorepoAppSiteTree(
 	return matches.length === 1 ? (matches[0] as string) : null;
 }
 
+async function readSurfaceSiteTreeInRun(
+	run: Run,
+	repository: CloudCodingRepository,
+	tree: string,
+	rootEntries: readonly ParsedGitTreeEntry[],
+	configuredFolder: string | null,
+): Promise<{ files: CodeSiteTreeFile[]; manifestSha256: string }> {
+	let siteTreeId = tree;
+	if (configuredFolder && configuredFolder !== ".") {
+		const resolved = await resolveTreeFolder(run, tree, configuredFolder);
+		if (!resolved) {
+			throw new CodeSiteTreeInvalid({ code: "SITE_FOLDER_MISSING", path: configuredFolder, variable: null });
+		}
+		siteTreeId = resolved;
+	} else if (!configuredFolder && !hasIndexHtml(rootEntries)) {
+		const fallbackTree =
+			(await resolveFallbackWebTree(run, rootEntries, "")) ??
+			(await resolveMonorepoAppSiteTree(run, rootEntries, repository.name));
+		if (fallbackTree) siteTreeId = fallbackTree;
+	}
+
+	const servingRepoRoot = siteTreeId === tree;
+	const entries: { mode: string; type: string; name: string; path: string; bytes: number }[] = [];
+	let level = [{ id: siteTreeId, path: "" }],
+		walkedFolders = 0;
+	while (level.length) {
+		const paths = new Map(level.map((folder) => [folder.id, folder.path || siteTreeId]));
+		const trees = await readObjects(run, "tree", [...paths.keys()], MAX_LISTING, (id) => paths.get(id) ?? id);
+		const next: typeof level = [];
+		for (const folder of level) {
+			for (const item of parseGitTreeEntries(trees.get(folder.id) as Buffer, folder.path || siteTreeId)) {
+				if (item.name.startsWith(".")) continue;
+				if (item.mode === "40000") {
+					if (SURFACE_SKIP_DIRS.has(item.name)) continue;
+					next.push({ id: item.id, path: folder.path ? `${folder.path}/${item.name}` : item.name });
+					continue;
+				}
+				if (!isRegularBlobMode(item.mode)) continue;
+				if (
+					servingRepoRoot &&
+					folder.path === "" &&
+					(SURFACE_ROOT_CONFIG_FILES.has(item.name.toLowerCase()) || SURFACE_TSCONFIG_FILE.test(item.name))
+				)
+					continue;
+				const path = folder.path ? `${folder.path}/${item.name}` : item.name;
+				const extension = SURFACE_EXTENSION.exec(item.name)?.[1]?.toLowerCase();
+				if (
+					!extension ||
+					!SURFACE_SITE_EXTENSIONS.has(extension) ||
+					path.length > 512 ||
+					!CODE_SITE_PATH.test(path)
+				)
+					continue;
+				entries.push({ mode: item.mode, type: "blob", name: item.id, path, bytes: 0 });
+			}
+		}
+		walkedFolders += next.length;
+		if (walkedFolders > MAX_SURFACE_WALK_FOLDERS)
+			throw new CodeSiteTreeInvalid({ code: "SITE_TOO_MANY_FOLDERS", path: null, variable: null });
+		level = next;
+	}
+
+	entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+	if (entries.length) {
+		const sized = (
+			await run.gitOk(run.repo, ["cat-file", "--batch-check"], READ_FAILED, {
+				stdin: Buffer.from(entries.map((entry) => `${entry.name}\n`).join("")),
+				maximumOutputBytes: MAX_LISTING,
+			})
+		)
+			.toString("latin1")
+			.split("\n");
+		if (sized.pop() !== "" || sized.length !== entries.length)
+			throw new CodeHostJobFailure(READ_FAILED, "cat-file's lines are not git's");
+		entries.forEach((entry, index) => {
+			const size = (sized[index] as string).startsWith(`${entry.name} blob `)
+				? (sized[index] as string).slice(entry.name.length + 6)
+				: "";
+			if (!/^\d{1,10}$/.test(size))
+				throw new CodeHostJobFailure(READ_FAILED, `${entry.path}: its file version is not here`);
+			entry.bytes = Number(size);
+		});
+	}
+	const problem = codeSiteTreeProblem(entries);
+	if (problem) throw new CodeSiteTreeInvalid(problem);
+	const versions = [...new Map(entries.map((entry) => [entry.name, entry.bytes])).entries()],
+		length = versions.reduce((sum, [name, bytes]) => sum + `${name} blob ${bytes}\n`.length + bytes + 1, 0);
+	const read = await readObjects(
+		run,
+		"blob",
+		versions.map(([name]) => name),
+		length,
+		(id) => id,
+	);
+	const digests = new Map([...read].map(([name, bytes]) => [name, createHash("sha256").update(bytes).digest("hex")]));
+	const files = entries.map(({ name, path, bytes }): CodeSiteTreeFile => {
+		const content = read.get(name) as Buffer;
+		return {
+			path,
+			bytes,
+			sha256: digests.get(name) as string,
+			content: new Uint8Array(content.buffer, content.byteOffset, content.length),
+		};
+	});
+	return { files, manifestSha256: codeSiteManifest(files) };
+}
+
 // WHY: Surface previews and publishes compose a full repository tree (including .qorpera/checks.json and non-web source files); filter to servable web assets under the resolved site folder while keeping cryptographic git object verification.
 export async function readSurfaceSiteTree(
 	job: CodeHostJob,
@@ -419,9 +532,12 @@ export async function readSurfaceSiteTree(
 		tree = input.tree;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
-		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
-			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		if (job.preparedKeptArea !== run.area) {
+			if (!(await run.prepare(undefined, { readOnly: true })).seeded)
+				throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
 		const kind = (
 			await run.gitOk(run.repo, ["cat-file", "--batch-check"], READ_FAILED, { stdin: Buffer.from(`${tree}\n`) })
 		).toString("latin1");
@@ -432,106 +548,7 @@ export async function readSurfaceSiteTree(
 		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
 		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
 		const configuredFolder = await readSurfaceChecksSiteFolder(run, rootEntries);
-		let siteTreeId = tree;
-		if (configuredFolder && configuredFolder !== ".") {
-			const resolved = await resolveTreeFolder(run, tree, configuredFolder);
-			if (!resolved) {
-				throw new CodeSiteTreeInvalid({ code: "SITE_FOLDER_MISSING", path: configuredFolder, variable: null });
-			}
-			siteTreeId = resolved;
-		} else if (!configuredFolder && !hasIndexHtml(rootEntries)) {
-			const fallbackTree =
-				(await resolveFallbackWebTree(run, rootEntries, "")) ??
-				(await resolveMonorepoAppSiteTree(run, rootEntries, repository.name));
-			if (fallbackTree) siteTreeId = fallbackTree;
-		}
-
-		const servingRepoRoot = siteTreeId === tree;
-		const entries: { mode: string; type: string; name: string; path: string; bytes: number }[] = [];
-		let level = [{ id: siteTreeId, path: "" }],
-			walkedFolders = 0;
-		while (level.length) {
-			const paths = new Map(level.map((folder) => [folder.id, folder.path || siteTreeId]));
-			const trees = await readObjects(run, "tree", [...paths.keys()], MAX_LISTING, (id) => paths.get(id) ?? id);
-			const next: typeof level = [];
-			for (const folder of level) {
-				for (const item of parseGitTreeEntries(trees.get(folder.id) as Buffer, folder.path || siteTreeId)) {
-					if (item.name.startsWith(".")) continue;
-					if (item.mode === "40000") {
-						if (SURFACE_SKIP_DIRS.has(item.name)) continue;
-						next.push({ id: item.id, path: folder.path ? `${folder.path}/${item.name}` : item.name });
-						continue;
-					}
-					if (!isRegularBlobMode(item.mode)) continue;
-					if (
-						servingRepoRoot &&
-						folder.path === "" &&
-						(SURFACE_ROOT_CONFIG_FILES.has(item.name.toLowerCase()) || SURFACE_TSCONFIG_FILE.test(item.name))
-					)
-						continue;
-					const path = folder.path ? `${folder.path}/${item.name}` : item.name;
-					const extension = SURFACE_EXTENSION.exec(item.name)?.[1]?.toLowerCase();
-					if (
-						!extension ||
-						!SURFACE_SITE_EXTENSIONS.has(extension) ||
-						path.length > 512 ||
-						!CODE_SITE_PATH.test(path)
-					)
-						continue;
-					entries.push({ mode: item.mode, type: "blob", name: item.id, path, bytes: 0 });
-				}
-			}
-			walkedFolders += next.length;
-			if (walkedFolders > MAX_SURFACE_WALK_FOLDERS)
-				throw new CodeSiteTreeInvalid({ code: "SITE_TOO_MANY_FOLDERS", path: null, variable: null });
-			level = next;
-		}
-
-		entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-		if (entries.length) {
-			const sized = (
-				await run.gitOk(run.repo, ["cat-file", "--batch-check"], READ_FAILED, {
-					stdin: Buffer.from(entries.map((entry) => `${entry.name}\n`).join("")),
-					maximumOutputBytes: MAX_LISTING,
-				})
-			)
-				.toString("latin1")
-				.split("\n");
-			if (sized.pop() !== "" || sized.length !== entries.length)
-				throw new CodeHostJobFailure(READ_FAILED, "cat-file's lines are not git's");
-			entries.forEach((entry, index) => {
-				const size = (sized[index] as string).startsWith(`${entry.name} blob `)
-					? (sized[index] as string).slice(entry.name.length + 6)
-					: "";
-				if (!/^\d{1,10}$/.test(size))
-					throw new CodeHostJobFailure(READ_FAILED, `${entry.path}: its file version is not here`);
-				entry.bytes = Number(size);
-			});
-		}
-		const problem = codeSiteTreeProblem(entries);
-		if (problem) throw new CodeSiteTreeInvalid(problem);
-		const versions = [...new Map(entries.map((entry) => [entry.name, entry.bytes])).entries()],
-			length = versions.reduce((sum, [name, bytes]) => sum + `${name} blob ${bytes}\n`.length + bytes + 1, 0);
-		const read = await readObjects(
-			run,
-			"blob",
-			versions.map(([name]) => name),
-			length,
-			(id) => id,
-		);
-		const digests = new Map(
-			[...read].map(([name, bytes]) => [name, createHash("sha256").update(bytes).digest("hex")]),
-		);
-		const files = entries.map(({ name, path, bytes }): CodeSiteTreeFile => {
-			const content = read.get(name) as Buffer;
-			return {
-				path,
-				bytes,
-				sha256: digests.get(name) as string,
-				content: new Uint8Array(content.buffer, content.byteOffset, content.length),
-			};
-		});
-		return { files, manifestSha256: codeSiteManifest(files) };
+		return readSurfaceSiteTreeInRun(run, repository, tree, rootEntries, configuredFolder);
 	});
 }
 
@@ -544,9 +561,12 @@ export async function readSurfacePreviewPlan(
 		tree = input.tree;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
-		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
-			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		if (job.preparedKeptArea !== run.area) {
+			if (!(await run.prepare(undefined, { readOnly: true })).seeded)
+				throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
 		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
 		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
 		const read = readSurfacePreviewRecipe(await readSurfaceChecksText(run, rootEntries));
@@ -562,6 +582,54 @@ export async function readSurfacePreviewPlan(
 		return cwdEntries.some((entry) => entry.name === "package.json" && isRegularBlobMode(entry.mode))
 			? { kind: "build", recipe: read.recipe }
 			: { kind: "static" };
+	});
+}
+
+export type SurfacePreviewPlanAndTree =
+	| { readonly kind: "invalid"; readonly detail: string }
+	| { readonly kind: "build"; readonly recipe: Extract<SurfacePreviewPlan, { readonly kind: "build" }>["recipe"] }
+	| { readonly kind: "static"; readonly files: CodeSiteTreeFile[]; readonly manifestSha256: string };
+
+// WHY: Reads the preview plan and static site tree in one withJob pass so .qorpera/checks.json and the root git tree are never fetched twice.
+export async function readSurfacePreviewPlanAndTree(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; tree: string },
+): Promise<SurfacePreviewPlanAndTree> {
+	const input = closed(value, ["repository", "tree"]);
+	const repository = keptRepositoryOf(input.repository),
+		tree = input.tree;
+	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
+	return withJob(job, repository, async (run) => {
+		if (job.preparedKeptArea !== run.area) {
+			if (!(await run.prepare(undefined, { readOnly: true })).seeded)
+				throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
+		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
+		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
+		const checksText = await readSurfaceChecksText(run, rootEntries);
+		const read = readSurfacePreviewRecipe(checksText);
+		if (read.kind === "invalid") return read;
+		if (read.kind === "recipe") {
+			let cwdEntries = rootEntries;
+			let hasCwd = true;
+			if (read.recipe.cwd !== ".") {
+				const cwdTree = await resolveTreeFolder(run, tree, read.recipe.cwd);
+				if (!cwdTree) {
+					hasCwd = false;
+				} else {
+					const cwdTrees = await readObjects(run, "tree", [cwdTree], MAX_LISTING, () => read.recipe.cwd);
+					cwdEntries = parseGitTreeEntries(cwdTrees.get(cwdTree) as Buffer, read.recipe.cwd);
+				}
+			}
+			if (hasCwd && cwdEntries.some((entry) => entry.name === "package.json" && isRegularBlobMode(entry.mode))) {
+				return { kind: "build", recipe: read.recipe };
+			}
+		}
+		const configuredFolder = parseChecksSiteFolder(checksText);
+		const siteTree = await readSurfaceSiteTreeInRun(run, repository, tree, rootEntries, configuredFolder);
+		return { kind: "static", ...siteTree };
 	});
 }
 

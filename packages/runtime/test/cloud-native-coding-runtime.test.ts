@@ -2399,4 +2399,243 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			await rm(identityRoot, { recursive: true, force: true });
 		}
 	});
+
+	it("returns warm conflict feedback from coding_finish on direct Qorpera repos without submitting until resolved", async () => {
+		const f = fixture();
+		f.coding.repository = { host: "qorpera", owner: "acme", name: "app", baseBranch: "main" };
+		const identityRoot = await mkdtemp(join(tmpdir(), "coding-preflight-finish-"));
+		const baseSha = "a".repeat(40);
+		const conflictSha = "b".repeat(40);
+		const resolvedSha = "c".repeat(40);
+		const startMock = vi.mocked(f.gateway.start);
+		let preflightCount = 0;
+		const ledger = new Map<string, { receiptId: string; result: unknown }>();
+		f.control.beginToolOperation.mockImplementation(async (b, input) => {
+			let row = ledger.get(input.logicalOperationKey);
+			if (!row) {
+				row = { receiptId: input.receiptId, result: null };
+				ledger.set(input.logicalOperationKey, row);
+			}
+			return {
+				run_id: b.runId,
+				receipt_id: row.receiptId,
+				state: row.result === null ? "executing" : "completed",
+				result: row.result,
+				output_snapshot_id: null,
+				proposal_id: null,
+				folder_commit_id: null,
+			};
+		});
+		f.control.completeToolOperation.mockImplementation(async (b, input) => {
+			const row = [...ledger.values()].find((r) => r.receiptId === input.receiptId);
+			if (row) row.result = structuredClone(input.result);
+			return { run_id: b.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+		});
+		startMock.mockImplementation(async (scope, req) => {
+			preflightCount += 1;
+			const payload =
+				preflightCount === 1
+					? {
+							baseRef: "refs/heads/main",
+							baseSha,
+							headSha: conflictSha,
+							mergeClean: false,
+							conflictedPaths: ["src/app.ts"],
+							conflictMessages: ["CONFLICT (content): Merge conflict in src/app.ts"],
+						}
+					: {
+							baseRef: "refs/heads/main",
+							baseSha,
+							headSha: resolvedSha,
+							mergeClean: true,
+							conflictedPaths: [],
+							conflictMessages: [],
+						};
+			const output = `QORPERA_FINISH_PREFLIGHT:${JSON.stringify(payload)}\n`;
+			const bytes = Buffer.byteLength(output, "utf8");
+			return {
+				schema: "qorpera.coding-command-result/v2",
+				workerId: scope.workerId,
+				commandId: req.commandId,
+				inputSha256: req.inputSha256,
+				state: "succeeded",
+				exitCode: 0,
+				output,
+				truncated: false,
+				log: {
+					offset: 0,
+					nextOffset: bytes,
+					totalBytes: bytes,
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			};
+		});
+
+		let firstFinishValue = "";
+		let secondFinishValue = "";
+		try {
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						f.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					const first = await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "finish-conflict-1",
+							summary: "First attempt.",
+							headSha: conflictSha,
+						}),
+						f.context,
+					);
+					firstFinishValue = first.kind === "text" ? first.value : "";
+					expect(f.coding.submission).toBeNull();
+					const second = await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "finish-resolved-2",
+							summary: "Resolved merge conflict.",
+							headSha: resolvedSha,
+						}),
+						f.context,
+					);
+					secondFinishValue = second.kind === "text" ? second.value : "";
+					return {
+						providerSessionId: "native-preflight-thread",
+						toolCalls: 2,
+						codexVersion: "pinned",
+						fencedRequests: 2,
+					};
+				} finally {
+					run.close();
+				}
+			});
+
+			await f.runtime.execute(f.request, identityRoot, f.context.signal, f.turn);
+
+			const parsedConflict = JSON.parse(firstFinishValue) as Record<string, unknown>;
+			expect(parsedConflict).toMatchObject({
+				schema: "qorpera.coding-finish-conflict/v1",
+				state: "conflict",
+				baseBranch: "main",
+				baseSha,
+				headSha: conflictSha,
+				conflictedPaths: ["src/app.ts"],
+			});
+			expect(parsedConflict.conflictMessages).toContain("CONFLICT (content): Merge conflict in src/app.ts");
+			expect(JSON.parse(secondFinishValue)).toMatchObject({ state: "submitted", headSha: resolvedSha });
+			expect(f.coding.submission).toMatchObject({ headSha: resolvedSha, operationKey: "finish-resolved-2" });
+			expect(startMock).toHaveBeenCalledTimes(2);
+		} finally {
+			await rm(identityRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("fails open on preflight transport error and skips preflight for unchanged headSha and GitHub repos", async () => {
+		const identityRoot = await mkdtemp(join(tmpdir(), "coding-preflight-skip-"));
+		try {
+			const fTransport = fixture();
+			fTransport.coding.repository = { host: "qorpera", owner: "acme", name: "app", baseBranch: "main" };
+			fTransport.control.beginToolOperation.mockImplementation(async (b, input) => ({
+				run_id: b.runId,
+				receipt_id: input.receiptId,
+				state: "executing",
+				result: null,
+				output_snapshot_id: null,
+				proposal_id: null,
+				folder_commit_id: null,
+			}));
+			fTransport.control.completeToolOperation.mockImplementation(async (b, input) => ({
+				run_id: b.runId,
+				receipt_id: input.receiptId,
+				state: "completed",
+				result: input.result,
+			}));
+			vi.mocked(fTransport.gateway.start).mockRejectedValueOnce(new Error("transient guest unavailable"));
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				const run = await CloudNativeToolRun.open(fTransport.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						fTransport.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "finish-failopen",
+							summary: "Proceeds when preflight fails.",
+							headSha: "d".repeat(40),
+						}),
+						fTransport.context,
+					);
+					return { providerSessionId: "t1", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+				} finally {
+					run.close();
+				}
+			});
+			await fTransport.runtime.execute(fTransport.request, identityRoot, fTransport.context.signal, fTransport.turn);
+			expect(fTransport.coding.submission).toMatchObject({ state: "submitted", headSha: "d".repeat(40) });
+			expect(fTransport.gateway.start).toHaveBeenCalledTimes(1);
+
+			const fUnchanged = fixture();
+			fUnchanged.coding.repository = { host: "qorpera", owner: "acme", name: "app", baseBranch: "main" };
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				const run = await CloudNativeToolRun.open(fUnchanged.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						fUnchanged.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "finish-unchanged",
+							summary: "No commits.",
+							headSha: fUnchanged.coding.baseSha,
+						}),
+						fUnchanged.context,
+					);
+					return { providerSessionId: "t2", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+				} finally {
+					run.close();
+				}
+			});
+			await fUnchanged.runtime.execute(fUnchanged.request, identityRoot, fUnchanged.context.signal, fUnchanged.turn);
+			expect(fUnchanged.coding.submission).toMatchObject({ state: "submitted", headSha: fUnchanged.coding.baseSha });
+			expect(fUnchanged.gateway.start).not.toHaveBeenCalled();
+
+			const fGithub = fixture();
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				const run = await CloudNativeToolRun.open(fGithub.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						fGithub.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "finish-github",
+							summary: "GitHub draft PR.",
+							headSha: "e".repeat(40),
+						}),
+						fGithub.context,
+					);
+					return { providerSessionId: "t3", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+				} finally {
+					run.close();
+				}
+			});
+			await fGithub.runtime.execute(fGithub.request, identityRoot, fGithub.context.signal, fGithub.turn);
+			expect(fGithub.gateway.start).not.toHaveBeenCalled();
+		} finally {
+			await rm(identityRoot, { recursive: true, force: true });
+		}
+	});
 });

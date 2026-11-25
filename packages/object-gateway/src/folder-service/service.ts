@@ -3008,6 +3008,7 @@ export class FolderService {
 		if (answer.seq !== null) {
 			view.gitUnsettled.push({ seq: answer.seq, made: settled });
 			await this.#gitCatchUpTo(view, answer.seq);
+			this.#nudgeSiblings(view, answer.seq);
 		}
 		return answer;
 	}
@@ -4897,7 +4898,26 @@ export class FolderService {
 				);
 				return;
 			}
-		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written, moved);
+		if (view.unsettled === settlement) {
+			this.#finishSettle(view, settlement, written, moved);
+			this.#nudgeSiblings(view, seq);
+		}
+	}
+
+	// WHY: Advance sibling views of the same environment on this node immediately after a commit settles so coding VMs see new commits over FUSE without waiting for the poll timer.
+	#nudgeSiblings(source: View, seq: number): void {
+		for (const sibling of this.#views.values()) {
+			if (
+				sibling === source ||
+				sibling.environmentId !== source.environmentId ||
+				!sibling.tree ||
+				sibling.closed ||
+				sibling.moving ||
+				sibling.seq >= seq
+			)
+				continue;
+			this.#queue(sibling, () => this.#advance(sibling));
+		}
 	}
 
 	async #changeSets(

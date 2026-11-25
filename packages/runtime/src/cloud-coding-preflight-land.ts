@@ -21,14 +21,20 @@ import {
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 
 export const CODING_PREFLIGHT_LAND_SCHEMA = "qorpera.coding-preflight-land/v1";
+export const CODING_FINISH_CONFLICT_SCHEMA = "qorpera.coding-finish-conflict/v1";
 
 const PREFLIGHT_TIMEOUT_MS = 30_000;
+const FINISH_PREFLIGHT_TIMEOUT_MS = 10_000;
 const DEFAULT_POLL_MS = 250;
+const FINISH_PREFLIGHT_POLL_MS = 50;
 const MAX_POLL_MS = 1000;
+const FINISH_PREFLIGHT_MAX_POLL_MS = 500;
 const DEFAULT_TIMEOUT_GRACE_MS = 5000;
 const CANCEL_ON_ABORT_MS = 5000;
 const MAX_PREFLIGHT_OUTPUT_BYTES = 128 * 1024;
 const PAYLOAD_PREFIX = "QORPERA_PREFLIGHT_LAND:";
+const FINISH_PAYLOAD_PREFIX = "QORPERA_FINISH_PREFLIGHT:";
+const SHA40 = /^[0-9a-f]{40}$/;
 const CODE_FOLDER_KEY_BYTES = 2600;
 const CODE_FOLDER_ANY_SESSION = "worktrees/00000000-0000-0000-0000-000000000000";
 // WHY: Reserve worst-case code/<39-byte owner>/<100-byte name>/worktrees/<36-byte uuid>/ prefix when repositoryArea is omitted.
@@ -373,4 +379,294 @@ export async function runCodingPreflightLand(options: {
 		}),
 	);
 	return { kind: "text", value: resultText };
+}
+
+function buildFinishConflictPreflightScript(baseBranch: string, headSha: string): string {
+	return [
+		'const cp=require("node:child_process"),fs=require("node:fs"),os=require("node:os"),path=require("node:path");',
+		'const git=(args,gitDir)=>cp.spawnSync("git",gitDir?["--git-dir="+gitDir,...args]:args,{maxBuffer:64*1024*1024});',
+		"const shaRe=/^[0-9a-f]{40}$/;",
+		`const baseBranch=${JSON.stringify(baseBranch)};`,
+		`const headSha=${JSON.stringify(headSha)};`,
+		'const emit=(obj)=>process.stdout.write("QORPERA_FINISH_PREFLIGHT:"+JSON.stringify(obj)+"\\n");',
+		'const headRes=git(["rev-parse","--verify","--quiet",headSha+"^{commit}"]);',
+		"if(headRes.status!==0){emit({mergeClean:true,baseSha:headSha,headSha,conflictedPaths:[],conflictMessages:[]});process.exit(0);}",
+		'let baseSha="";',
+		'for(const ref of ["refs/heads/"+baseBranch,"refs/remotes/origin/"+baseBranch]){',
+		'const r=git(["rev-parse","--verify","--quiet",ref+"^{commit}"]);',
+		'if(r.status===0){const s=r.stdout.toString("utf8").trim();if(shaRe.test(s)){baseSha=s;break;}}}',
+		"if(!baseSha||baseSha===headSha){emit({mergeClean:true,baseSha:baseSha||headSha,headSha,conflictedPaths:[],conflictMessages:[]});process.exit(0);}",
+		'if(git(["merge-base","--is-ancestor",baseSha,headSha]).status===0||git(["merge-base","--is-ancestor",headSha,baseSha]).status===0){emit({mergeClean:true,baseSha,headSha,conflictedPaths:[],conflictMessages:[]});process.exit(0);}',
+		'const commonRes=git(["rev-parse","--git-common-dir"]);',
+		"if(commonRes.status!==0)process.exit(44);",
+		'const commonDir=path.resolve(commonRes.stdout.toString("utf8").trim());',
+		'const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"qorpera-finish-preflight-"));',
+		"try{",
+		'const scratch=path.join(tmp,"scratch.git");',
+		'const initRes=git(["init","--quiet","--bare","--template=",scratch]);',
+		"if(initRes.status!==0)process.exit(44);",
+		'fs.writeFileSync(path.join(scratch,"objects","info","alternates"),path.join(commonDir,"objects")+"\\n");',
+		'const mt=git(["merge-tree","--write-tree","-z","--name-only","--messages",baseSha,headSha],scratch);',
+		"if(mt.status===0){emit({mergeClean:true,baseSha,headSha,conflictedPaths:[],conflictMessages:[]});}",
+		"else if(mt.status===1){",
+		'const f=mt.stdout.toString("utf8").split("\\0");const pset=new Set();let i=1;',
+		'while(i<f.length&&f[i]!==""){pset.add(f[i]);i++;}i++;',
+		"const mset=new Set(),conflictMessages=[];let mb=0;",
+		'while(i<f.length&&f[i]!==""){const cnt=Number(f[i]);if(!Number.isSafeInteger(cnt)||cnt<0||i+cnt+2>=f.length)break;',
+		'const t=f[i+cnt+1]||"",m=f[i+cnt+2]||"";i+=cnt+3;',
+		'if(!t.startsWith("CONFLICT")&&!m.includes("CONFLICT"))continue;',
+		'const c=m.replace(/[\\r\\n\\t]+/g," ").replace(/[\\x00-\\x1f\\x7f]/g,"").trim().slice(0,300);',
+		"if(!c||mset.has(c))continue;if(conflictMessages.length>=20||mb+Buffer.byteLength(c)>2048)break;",
+		"mset.add(c);conflictMessages.push(c);mb+=Buffer.byteLength(c);}",
+		"const conflictedPaths=[...pset].slice(0,50);",
+		"emit({mergeClean:false,baseSha,headSha,conflictedPaths,conflictMessages});",
+		"}else{process.exit(45);}",
+		"}finally{fs.rmSync(tmp,{recursive:true,force:true});}",
+	].join("");
+}
+
+export function buildFinishConflictPreflightCommand(baseBranch: string, headSha: string): string {
+	if (!baseBranch.trim() || !SHA40.test(headSha)) throw new Error("Invalid finish preflight arguments");
+	const script = buildFinishConflictPreflightScript(baseBranch, headSha);
+	return `if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" -e ${shellQuote(script)} 2>/dev/null`;
+}
+
+export interface CodingFinishConflictPreflightDecoded {
+	readonly mergeClean: boolean;
+	readonly baseSha: string;
+	readonly headSha: string;
+	readonly conflictedPaths: readonly string[];
+	readonly conflictMessages: readonly string[];
+}
+
+export function decodeFinishConflictPreflightOutput(rawOutput: string): CodingFinishConflictPreflightDecoded | null {
+	const line = rawOutput.split(/\r?\n/).find((entry) => entry.startsWith(FINISH_PAYLOAD_PREFIX));
+	if (!line) return null;
+	try {
+		const parsed = JSON.parse(line.slice(FINISH_PAYLOAD_PREFIX.length)) as Record<string, unknown>;
+		if (
+			typeof parsed.mergeClean !== "boolean" ||
+			typeof parsed.baseSha !== "string" ||
+			typeof parsed.headSha !== "string" ||
+			!Array.isArray(parsed.conflictedPaths) ||
+			!Array.isArray(parsed.conflictMessages)
+		)
+			return null;
+		return {
+			mergeClean: parsed.mergeClean,
+			baseSha: parsed.baseSha,
+			headSha: parsed.headSha,
+			conflictedPaths: parsed.conflictedPaths.filter((p): p is string => typeof p === "string"),
+			conflictMessages: parsed.conflictMessages.filter((m): m is string => typeof m === "string"),
+		};
+	} catch {
+		return null;
+	}
+}
+
+export type CodingFinishConflictPreflightResult =
+	| { readonly conflicted: false }
+	| {
+			readonly conflicted: true;
+			readonly baseBranch: string;
+			readonly baseSha: string;
+			readonly headSha: string;
+			readonly conflictedPaths: readonly string[];
+			readonly conflictMessages: readonly string[];
+	  };
+
+function formatConflictPaths(paths: readonly string[]): string {
+	const shown: string[] = [];
+	let used = 0;
+	for (const path of paths.slice(0, 20)) {
+		const quoted = JSON.stringify(path);
+		const size = Buffer.byteLength(quoted) + 2;
+		if (used + size > 1500) break;
+		shown.push(quoted);
+		used += size;
+	}
+	const more = paths.length - shown.length;
+	if (!shown.length) return more ? `${more} path${more === 1 ? "" : "s"}` : "";
+	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
+}
+
+export function formatCodingFinishConflictFeedback(
+	conflict: Extract<CodingFinishConflictPreflightResult, { readonly conflicted: true }>,
+): string {
+	const named = formatConflictPaths(conflict.conflictedPaths);
+	const details =
+		conflict.conflictMessages.length > 0
+			? ` Conflict details: ${conflict.conflictMessages.join("; ").slice(0, 1200)}.`
+			: "";
+	const summary = `Cannot finish yet: ${conflict.headSha.slice(0, 12)} conflicts with ${conflict.baseBranch}${named ? ` in ${named}` : ""}.${details} Run \`git merge ${conflict.baseBranch}\` on this session's branch, resolve the conflicts, re-run the checks, commit, and call coding_finish again with a new operationKey and the new headSha.`;
+	return redactCloudWebhookSecrets(
+		cloudToolJsonText({
+			schema: CODING_FINISH_CONFLICT_SCHEMA,
+			state: "conflict",
+			baseBranch: conflict.baseBranch,
+			baseSha: conflict.baseSha,
+			headSha: conflict.headSha,
+			conflictedPaths: [...conflict.conflictedPaths],
+			conflictMessages: [...conflict.conflictMessages],
+			summary,
+		}),
+	);
+}
+
+const FINISH_PREFLIGHT_FATAL_ERRORS = new Set([
+	"CODING_TURN_AUTHORITY_CHANGED",
+	"CODING_COMMAND_AFTER_SUBMISSION",
+	"CODING_COMMAND_SCOPE_DIFFERS",
+	"CODING_SUBMISSION_IDENTITY_DIFFERS",
+]);
+
+export async function runCodingFinishConflictPreflight(options: {
+	scope: CloudCodingCommandScope;
+	operations: Pick<CloudNativeToolOperations, "execute">;
+	gateway: CloudCodingCommandGateway;
+	checkAuthority: (context: CloudToolContext) => Promise<void>;
+	baseBranch: string;
+	headSha: string;
+	operationKey: string;
+	context: CloudToolContext;
+	pollMs?: number;
+	timeoutMs?: number;
+}): Promise<CodingFinishConflictPreflightResult> {
+	const { scope, operations, gateway, checkAuthority, baseBranch, headSha, operationKey, context } = options;
+	const target = { schema: "qorpera.coding-command-target/v1", ...scope };
+	const timeoutMs = options.timeoutMs ?? FINISH_PREFLIGHT_TIMEOUT_MS;
+	const basePollMs = options.pollMs ?? FINISH_PREFLIGHT_POLL_MS;
+	const maxPollMs = Math.max(basePollMs, Math.min(FINISH_PREFLIGHT_MAX_POLL_MS, basePollMs * 4));
+	const command = buildFinishConflictPreflightCommand(baseBranch, headSha);
+	const subKey = preflightSubOperationKey(`${operationKey}:${headSha}`, "finish-conflict");
+	const subArgs = { operationKey: subKey, command, timeoutMs };
+
+	const cancelBestEffort = async (commandId: string): Promise<void> => {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), CANCEL_ON_ABORT_MS);
+		timer.unref?.();
+		try {
+			await gateway.cancel(scope, commandId, controller.signal);
+		} catch {
+			undefined;
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+
+	try {
+		const childObservation = context.observation?.child("coding_run_command");
+		const content = await operations.execute({
+			operation: {
+				tool: "coding_run_command",
+				toolVersion: "v1",
+				logicalOperationKey: subKey,
+				arguments: subArgs,
+				target,
+				requiresCompanyRevision: false,
+			},
+			authorize: (_operation, admitted, signal) => gateway.authorize(scope, admitted, signal),
+			perform: async (_operation, receipt) => {
+				const started = parseCloudCodingCommandReceipt(
+					await gateway.start(
+						scope,
+						{
+							commandId: receipt.receiptId,
+							inputSha256: receipt.inputSha256,
+							command,
+							timeoutMs,
+						},
+						receipt.signal,
+					),
+				);
+				if (
+					started.workerId !== scope.workerId ||
+					started.commandId !== receipt.receiptId ||
+					started.inputSha256 !== receipt.inputSha256
+				)
+					throw new Error("Coding command result differs");
+				const fitted = fitCloudCommandPage(started, false, cloudCommandFits);
+				const stored =
+					fitted && "page" in fitted
+						? fitted.page
+						: {
+								...started,
+								output: "",
+								log: { ...started.log, nextOffset: started.log.offset },
+								truncated: started.log.offset < started.log.totalBytes || started.log.limitReached,
+							};
+				return { content: { kind: "text", value: cloudToolJsonText(stored) } };
+			},
+			signal: context.signal,
+			...(childObservation ? { observation: childObservation } : {}),
+		});
+		if (content.kind !== "text") return { conflicted: false };
+		let receipt = parseCloudCodingCommandReceipt(JSON.parse(content.value));
+		const deadline = Date.now() + timeoutMs + DEFAULT_TIMEOUT_GRACE_MS;
+		let pollDelay = basePollMs;
+		while (receipt.state === "running") {
+			if (Date.now() >= deadline) {
+				await cancelBestEffort(receipt.commandId);
+				return { conflicted: false };
+			}
+			await cloudControlPause(Math.min(pollDelay, Math.max(1, deadline - Date.now())), context.signal);
+			pollDelay = Math.min(maxPollMs, pollDelay * 2);
+			receipt = parseCloudCodingCommandReceipt(
+				await cloudToolRequest(
+					(signal) =>
+						gateway.read(
+							scope,
+							parseCloudCodingCommandRead({
+								commandId: receipt.commandId,
+								offset: 0,
+								limit: CLOUD_CODING_COMMAND_PAGE_BYTES,
+							}),
+							signal,
+						),
+					context.signal,
+				),
+			);
+			await checkAuthority(context);
+		}
+		if (receipt.state !== "succeeded") return { conflicted: false };
+		let rawOutput = receipt.log.offset === 0 ? receipt.output : "";
+		let offset = receipt.log.offset === 0 ? receipt.log.nextOffset : 0;
+		while (offset < receipt.log.totalBytes && rawOutput.length < MAX_PREFLIGHT_OUTPUT_BYTES) {
+			const page = parseCloudCodingCommandReceipt(
+				await cloudToolRequest(
+					(signal) =>
+						gateway.read(
+							scope,
+							parseCloudCodingCommandRead({
+								commandId: receipt.commandId,
+								offset,
+								limit: CLOUD_CODING_COMMAND_PAGE_BYTES,
+							}),
+							signal,
+						),
+					context.signal,
+				),
+			);
+			await checkAuthority(context);
+			if (page.log.nextOffset <= offset) break;
+			rawOutput += page.output;
+			offset = page.log.nextOffset;
+		}
+		const decoded = decodeFinishConflictPreflightOutput(rawOutput);
+		if (!decoded || decoded.mergeClean) return { conflicted: false };
+		if (decoded.conflictedPaths.length === 0 && decoded.conflictMessages.length === 0) return { conflicted: false };
+		return {
+			conflicted: true,
+			baseBranch,
+			baseSha: decoded.baseSha,
+			headSha: decoded.headSha,
+			conflictedPaths: decoded.conflictedPaths,
+			conflictMessages: decoded.conflictMessages,
+		};
+	} catch (error) {
+		if (context.signal.aborted) throw error;
+		if (error instanceof Error && FINISH_PREFLIGHT_FATAL_ERRORS.has(error.message)) throw error;
+		// WHY: Fail open on preflight transport/environment errors so the authoritative code-host landing check still governs submission.
+		return { conflicted: false };
+	}
 }

@@ -15,6 +15,11 @@ import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
 import { CODING_INSPECT_IMAGE_SCHEMA } from "./cloud-coding-image-inspect.ts";
 import { CODING_MAKE_PICTURE_SCHEMA, createCodingPictureTool } from "./cloud-coding-picture-tool.ts";
+import {
+	CODING_FINISH_CONFLICT_SCHEMA,
+	formatCodingFinishConflictFeedback,
+	runCodingFinishConflictPreflight,
+} from "./cloud-coding-preflight-land.ts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import {
 	cloudControlBackoffMs,
@@ -729,6 +734,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				operationKey: receipt.operationKey,
 			});
 		};
+		let finishPreflight:
+			| ((input: Record<string, JsonValue>, toolContext: CloudToolContext) => Promise<string | null>)
+			| undefined;
 		const finish: CloudNativeTool = {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,
 			source: "worker",
@@ -801,8 +809,28 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					...(picture === undefined ? {} : { picture }),
 				};
 			},
+			refused(content) {
+				if (content.kind !== "text") return undefined;
+				try {
+					const parsed = JSON.parse(content.value) as { schema?: unknown };
+					return parsed?.schema === CODING_FINISH_CONFLICT_SCHEMA ? "stale_version" : undefined;
+				} catch {
+					return undefined;
+				}
+			},
 			execute: async (value, toolContext) => {
 				const input = finish.parseArguments(value) as Record<string, JsonValue>;
+				if (
+					!toolContext.identity ||
+					cloudToolJsonText(toolContext.identity) !== cloudToolJsonText(initial.identity)
+				)
+					throw new Error("CODING_SUBMISSION_IDENTITY_DIFFERS");
+				if (finishPreflight) {
+					const conflictFeedback = await finishPreflight(input, toolContext);
+					if (conflictFeedback !== null) {
+						return { kind: "text", value: conflictFeedback };
+					}
+				}
 				return {
 					kind: "text",
 					value: await submit({ kind: "finish", ...input }, toolContext),
@@ -978,6 +1006,26 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					read: (...input) => gateway.read(...input),
 					cancel: (...input) => gateway.cancel(...input),
 				};
+				// WHY: Dry-run merge-tree in coding_finish on direct Qorpera-hosted repos so merge conflicts return to the warm coding agent instead of tearing down the turn.
+				finishPreflight =
+					!surfaceSession && initial.repository.host === "qorpera"
+						? async (input, toolContext) => {
+								const headSha = typeof input.headSha === "string" ? input.headSha : "";
+								if (!headSha || headSha === initial.coding.baseSha) return null;
+								const checked = await runCodingFinishConflictPreflight({
+									scope,
+									operations,
+									gateway: guarded,
+									checkAuthority: (ctx) =>
+										observedCloudToolAuthority(ctx.observation, () => assertContext(ctx.signal), ctx.signal),
+									baseBranch: initial.repository.baseBranch,
+									headSha,
+									operationKey: String(input.operationKey),
+									context: toolContext,
+								});
+								return checked.conflicted ? formatCodingFinishConflictFeedback(checked) : null;
+							}
+						: undefined;
 				const recordChangeTool = surfaceSession
 					? [
 							createCodingRecordChangeTool(

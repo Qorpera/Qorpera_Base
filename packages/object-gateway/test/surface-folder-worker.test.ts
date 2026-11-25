@@ -2337,4 +2337,130 @@ describe("SurfaceFolderWorker", () => {
 		expect(hIncomplete.completedMerges[0]?.p_error_detail).toContain("SURFACE_RECONCILIATION_INCOMPLETE");
 		expect(hIncomplete.getCommitCount()).toBe(0);
 	});
+
+	it("retries once on benign CAS conflict for non-overlapping 3-way text and JSON edits while preserving true conflicts", async () => {
+		const initialDoc = "line 1\nline 2\nline 3\nline 4\nline 5\n";
+		const initialJson = `${JSON.stringify({ palette: { primary: "#111111" }, typography: { font: "Inter" } }, null, 2)}\n`;
+		let raced = false;
+		const hSafe = createHarness(
+			{ "identity/guide.md": initialDoc, "identity/settings.json": initialJson },
+			{
+				onBeforeCommit: () => {
+					if (!raced) {
+						raced = true;
+						hSafe.putFile("identity/guide.md", "line 1 concurrent\nline 2\nline 3\nline 4\nline 5\n");
+						hSafe.putFile(
+							"identity/settings.json",
+							`${JSON.stringify({ palette: { primary: "#222222" }, typography: { font: "Inter" } }, null, 2)}\n`,
+						);
+					}
+				},
+			},
+		);
+		const safeJobId = randomUUID();
+		const safeChangeId = randomUUID();
+		hSafe.setPendingClaim({
+			merges: [
+				{
+					jobId: safeJobId,
+					kind: "land_change",
+					surfaceId: hSafe.surfaceId,
+					profileId: hSafe.profileId,
+					environmentId: hSafe.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [safeChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: safeChangeId,
+							kind: "folder_patch",
+							title: "Non-overlapping guide & typography edit",
+							summary: "Updates bottom line and typography key",
+							affectedPaths: ["identity/guide.md", "identity/settings.json"],
+							baseFiles: { "identity/guide.md": initialDoc },
+							patchManifest: [
+								{
+									op: "write_text",
+									path: "identity/guide.md",
+									content: "line 1\nline 2\nline 3\nline 4\nline 5 patch\n",
+								},
+								{
+									op: "merge_json",
+									path: "identity/settings.json",
+									patch: { typography: { font: "Newsreader" } },
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(await hSafe.worker.processDue(8)).toBe(1);
+		expect(hSafe.completedMerges[0]).toMatchObject({ p_job_id: safeJobId, p_status: "landed" });
+		expect(hSafe.getCommitCount()).toBe(2);
+		expect(hSafe.readText("identity/guide.md")).toBe("line 1 concurrent\nline 2\nline 3\nline 4\nline 5 patch\n");
+		expect(JSON.parse(hSafe.readText("identity/settings.json") ?? "{}")).toEqual({
+			palette: { primary: "#222222" },
+			typography: { font: "Newsreader" },
+		});
+		const snapshot = hSafe.completedMerges[0]?.p_pre_merge_snapshot as {
+			filesBefore?: Record<string, string>;
+		} | null;
+		expect(snapshot?.filesBefore?.["identity/guide.md"]).toBe("line 1 concurrent\nline 2\nline 3\nline 4\nline 5\n");
+
+		let racedOverlap = false;
+		const hOverlap = createHarness(
+			{ "identity/guide.md": initialDoc },
+			{
+				onBeforeCommit: () => {
+					if (!racedOverlap) {
+						racedOverlap = true;
+						hOverlap.putFile("identity/guide.md", "line 1\nline 2\nline 3\nline 4\nline 5 concurrent\n");
+					}
+				},
+			},
+		);
+		const overlapJobId = randomUUID();
+		const overlapChangeId = randomUUID();
+		hOverlap.setPendingClaim({
+			merges: [
+				{
+					jobId: overlapJobId,
+					kind: "land_change",
+					surfaceId: hOverlap.surfaceId,
+					profileId: hOverlap.profileId,
+					environmentId: hOverlap.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [overlapChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: overlapChangeId,
+							kind: "folder_patch",
+							title: "Overlapping bottom line edit",
+							summary: "Edits line 5 concurrently",
+							affectedPaths: ["identity/guide.md"],
+							baseFiles: { "identity/guide.md": initialDoc },
+							patchManifest: [
+								{
+									op: "write_text",
+									path: "identity/guide.md",
+									content: "line 1\nline 2\nline 3\nline 4\nline 5 patch\n",
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(await hOverlap.worker.processDue(8)).toBe(1);
+		expect(hOverlap.completedMerges[0]).toMatchObject({
+			p_job_id: overlapJobId,
+			p_status: "conflicted",
+			p_conflict_paths: ["identity/guide.md"],
+		});
+		expect(hOverlap.readText("identity/guide.md")).toBe("line 1\nline 2\nline 3\nline 4\nline 5 concurrent\n");
+	});
 });

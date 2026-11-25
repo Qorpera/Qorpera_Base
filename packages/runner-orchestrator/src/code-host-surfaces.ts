@@ -168,16 +168,42 @@ function assertChangeRange(value: CodeHostChangeRange): void {
 	}
 }
 
-async function prepareKeptArea(run: Run) {
-	const area = await run.prepare();
+async function prepareKeptArea(run: Run, options: { readOnly?: boolean } = {}) {
+	const area = await run.prepare(undefined, { readOnly: options.readOnly === true });
 	if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-	if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
+	const base = `refs/heads/${run.repository.baseBranch}`;
+	const refs = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base]);
+	if (refs(CODE_AREA_IN_QORPERA_REF) === null) {
 		throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 	}
-	const base = `refs/heads/${run.repository.baseBranch}`;
-	const mainSha = await run.ref(base);
+	const mainSha = refs(base);
 	if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
 	return { area, base, mainSha };
+}
+
+async function prepareKeptBaseSha(
+	run: Run,
+	options: { readOnly?: boolean; skipMainRef?: boolean } = {},
+): Promise<string> {
+	const base = `refs/heads/${run.repository.baseBranch}`;
+	if (run.job.preparedKeptArea === run.area) {
+		if (options.skipMainRef) return "";
+		const mainSha = await run.ref(base);
+		if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+		return mainSha;
+	}
+	const area = await run.prepare(undefined, { readOnly: options.readOnly === true });
+	if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+	const refs = await run.refsNamed(
+		options.skipMainRef ? [CODE_AREA_IN_QORPERA_REF] : [CODE_AREA_IN_QORPERA_REF, base],
+	);
+	if (refs(CODE_AREA_IN_QORPERA_REF) === null) {
+		throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+	}
+	if (options.skipMainRef) return "";
+	const mainSha = refs(base);
+	if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+	return mainSha;
 }
 
 async function treeOfCommit(run: Run, commitSha: string, errorCode: string): Promise<string> {
@@ -694,8 +720,16 @@ export async function composePreviewTree(
 		throw new Error("INVALID_CODE_HOST_JOB");
 	}
 
+	const isReadOnlyCompose =
+		input.changes.length === 0 &&
+		(!input.exploration || input.exploration.baseSha === input.exploration.headSha) &&
+		input.previewRefId === undefined;
+
 	return withJob(job, repository, async (run) => {
-		const { mainSha } = await prepareKeptArea(run);
+		const mainSha = await prepareKeptBaseSha(run, {
+			readOnly: isReadOnlyCompose,
+			skipMainRef: input.baseSha !== undefined,
+		});
 		const baseSha = input.baseSha ?? mainSha;
 		if (input.reconciledCommitSha && !input.exploration) {
 			const [hasBase, hasReconciled] = await run.areCommits(run.repo, [baseSha, input.reconciledCommitSha]);
@@ -997,8 +1031,9 @@ export async function ensureSurfaceStarterRepository(
 			if (area.made) run.restored.push(run.relative(`${run.repo}/HEAD`));
 		}
 
-		let kept = await run.ref(CODE_AREA_IN_QORPERA_REF);
-		const head = await run.ref(base);
+		const refs = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base]);
+		let kept = refs(CODE_AREA_IN_QORPERA_REF);
+		const head = refs(base);
 		if (kept === null && head !== null) {
 			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 		}
