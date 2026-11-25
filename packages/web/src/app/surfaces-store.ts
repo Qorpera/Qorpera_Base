@@ -920,6 +920,7 @@ export function identityWordmarkStatus(store: SurfacesStore | undefined, disable
 	if (!store) return "loading";
 	const state = store.state;
 	if (state.source === "loading") return "loading";
+	if (state.source === "local" && state.error) return "loading";
 	if (state.source !== "cloud") return "settled";
 	const identity = findIdentitySurface(state);
 	if (!identity) return "settled";

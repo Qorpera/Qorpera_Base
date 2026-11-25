@@ -1070,6 +1070,85 @@ describe("sidepanel company selector wordmark", () => {
 		expect(img2.getAttribute("src")).toBe("blob:cached-bin-2");
 	});
 
+	it("preserves MRU order across reload so eviction drops the oldest company instead of a recently used one", () => {
+		const cache1 = new CompanyWordmarkCache("test-lru");
+		cache1.setAccount(userA.id);
+		for (let index = 0; index < 16; index++) {
+			const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><title>c${index}</title></svg>`;
+			cache1.set(`company-${index}`, { light: svgUrl(svg) }, "live");
+		}
+		cache1.dispose();
+
+		const cache2 = new CompanyWordmarkCache("test-lru");
+		cache2.setAccount(userA.id);
+		const newestSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><title>c16</title></svg>`;
+		cache2.set("company-16", { light: svgUrl(newestSvg) }, "live");
+		cache2.dispose();
+
+		const cache3 = new CompanyWordmarkCache("test-lru");
+		cache3.setAccount(userA.id);
+		cleanup.push(() => cache3.dispose());
+		expect(cache3.get("company-0")).toBeUndefined();
+		expect(cache3.get("company-1")).toBeDefined();
+		expect(cache3.get("company-14")).toBeDefined();
+		expect(cache3.get("company-15")).toBeDefined();
+		expect(cache3.get("company-16")).toBeDefined();
+	});
+
+	it("preserves cached wordmarks in memory and localStorage when listSurfaces fails and falls back to local", async () => {
+		const cache = new CompanyWordmarkCache("test-fallback");
+		cache.setAccount(userA.id);
+		cache.set(profileA.profileId, { light: svgUrl(LIGHT_SVG) }, "live");
+		setCompanyWordmarks(cache);
+		cleanup.push(() => cache.dispose());
+
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ loading: false, staff: [staff], sessions: [session], team });
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => {
+					throw new Error("network unavailable");
+				}),
+			}),
+		);
+		attachSurfaces(company, store);
+		cleanup.push(() => {
+			store.dispose();
+			company.stop();
+		});
+		const rail = h("aside", { class: "rail" });
+		document.body.append(rail);
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const draw = () =>
+			renderRail(rail, company, {
+				profiles: [profileA],
+				user: userA,
+				route: { name: "company", profileId: profileA.profileId, section: "home" },
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+			});
+		cleanup.push(store.store.subscribe(draw));
+		draw();
+
+		await store.load();
+		draw();
+
+		const img = rail.querySelector<HTMLImageElement>(".rail-company-wordmark")!;
+		expect(store.state.source).toBe("local");
+		expect(store.state.error).toBe("network unavailable");
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
+		expect(cache.get(profileA.profileId)?.light).toBe(svgUrl(LIGHT_SVG));
+		expect(localStorage.getItem(`qorpera.web.company-wordmarks.v1:test-fallback:${userA.id}`)).toContain(
+			profileA.profileId,
+		);
+	});
+
 	it("loads identity files once when refreshSurfaces activates a proposed identity surface", async () => {
 		const proposed = identitySummary({ status: "proposed" });
 		const active = identitySummary({ status: "active" });

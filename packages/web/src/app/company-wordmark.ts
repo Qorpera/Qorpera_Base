@@ -50,8 +50,9 @@ const WORDMARK_RE = /wordmark|\bordmærke\b/i;
 const PICTURE_EXTENSIONS = [".svg", ".png", ".webp", ".jpg", ".jpeg"] as const;
 const BINARY_RETRY_MS = 60_000;
 const MAX_WORDMARK_TEXT_BYTES = 256 * 1024;
-const MAX_CACHED_BINARY_BYTES = 128 * 1024;
+// WHY: Larger SVGs stay cached in memory for this session; localStorage persists URLs up to this cap and binaries derive from it so every cached raster survives reload.
 const MAX_STORED_URL_CHARS = 64 * 1024;
+const MAX_CACHED_BINARY_BYTES = Math.floor(((MAX_STORED_URL_CHARS - 32) * 3) / 4);
 const MAX_STORED_TOTAL_CHARS = 512 * 1024;
 const MAX_MEMORY_COMPANIES = 32;
 const MAX_STORED_COMPANIES = 16;
@@ -585,14 +586,19 @@ export class CompanyWordmarkCache {
 			}
 			return;
 		}
-		const payload: Record<string, CachedCompanyWordmarks> = {};
+		const kept: [string, CachedCompanyWordmarks][] = [];
 		let totalChars = 2;
 		for (let index = recent.length - 1; index >= 0; index--) {
 			const [id, marks] = recent[index]!;
 			const cost = id.length + (marks.light?.length ?? 0) + (marks.dark?.length ?? 0) + 32;
 			if (totalChars + cost > MAX_STORED_TOTAL_CHARS) continue;
-			payload[id] = marks;
+			kept.push([id, marks]);
 			totalChars += cost;
+		}
+		const payload: Record<string, CachedCompanyWordmarks> = {};
+		for (let index = kept.length - 1; index >= 0; index--) {
+			const [id, marks] = kept[index]!;
+			payload[id] = marks;
 		}
 		try {
 			if (Object.keys(payload).length === 0) localStorage.removeItem(key);
