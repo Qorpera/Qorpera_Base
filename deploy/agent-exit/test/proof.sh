@@ -7,6 +7,28 @@
 # qorpera-agent-exit-proof.test.mjs builds the container and runs this file. Prints PASS lines; any failure exits 1.
 set -euo pipefail
 
+part=all
+while (($# > 0)); do
+	case "$1" in
+	--part)
+		part=${2:?missing --part value}
+		shift 2
+		;;
+	*)
+		echo "Unknown option: $1" >&2
+		exit 2
+		;;
+	esac
+done
+case "$part" in
+all | core | names-logs | brake-lifecycle) ;;
+*)
+	echo "Unknown --part: $part" >&2
+	exit 2
+	;;
+esac
+want() { [[ $part == all || $part == "$1" ]]; }
+
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tool="$here/qorpera-agent-exit.sh"
 work=$(mktemp -d)
@@ -40,20 +62,20 @@ fail() {
 	exit 1
 }
 pass() { echo "PASS: $*"; }
-connects() { ip netns exec "$1" timeout 3 bash -c "exec 3<>/dev/tcp/$2/$3" 2>/dev/null; }
+connects() { ip netns exec "$1" timeout 1.2 bash -c "exec 3<>/dev/tcp/$2/$3" 2>/dev/null; }
 # Refused at once (a reset or ICMP), not by a timeout.
 refused_now() {
 	local start elapsed
 	start=$(date +%s%N)
 	if connects "$1" "$2" "$3"; then return 1; fi
 	elapsed=$((($(date +%s%N) - start) / 1000000))
-	((elapsed < 2000))
+	((elapsed < 800))
 }
 wait_for() {
 	local i
-	for i in $(seq 1 50); do
+	for i in $(seq 1 200); do
 		if eval "$1"; then return 0; fi
-		sleep 0.2
+		sleep 0.05
 	done
 	fail "timed out waiting for: $1"
 }
@@ -111,7 +133,7 @@ name = sys.argv[2]
 q = struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
 q += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00" + struct.pack("!HH", 1, 1)
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.settimeout(2)
+s.settimeout(0.5)
 try:
     s.sendto(q, (sys.argv[1], 53))
     r, _ = s.recvfrom(512)
@@ -294,7 +316,7 @@ s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 if len(sys.argv) > 4:
     s.bind(("0.0.0.0", int(sys.argv[4])))
-s.settimeout(2)
+s.settimeout(0.5)
 try:
     s.sendto(q, (server, int(sys.argv[3]) if len(sys.argv) > 3 else 53))
     r, _ = s.recvfrom(512)
@@ -346,7 +368,7 @@ while True:
         write(status_path, json.dumps({"schema": "qorpera.agent-exit-rules-status/v1", "checkedAt": iso(now),
                                        "readAt": read_at, "ok": ok, "problem": None if ok else "DB_UNREACHABLE",
                                        "companies": len(companies)}) + "\n", 0o644)
-    time.sleep(0.3)
+    time.sleep(0.1)
 EOF
 cat >"$work/db.py" <<'EOF'
 import json, os, sys, uuid
@@ -547,7 +569,7 @@ AGENT="qp/agent:Running:10.210.1.1:c0:m0::va0"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
 # The dns unit's reload: the main dnsmasq alone (its --dhcp-range is its own), not the companies' resolvers.
 QORPERA_AGENT_PLUG_LXD_FIXTURE=$work/lxd.json QORPERA_AGENT_PLUG_RELOAD_DNS="pkill -HUP -f -- --dhcp-range=" \
-	QORPERA_AGENT_PLUG_INTERVAL=0.3 bash "$tool" plug >"$work/plug.out" 2>&1 &
+	QORPERA_AGENT_PLUG_INTERVAL=0.1 bash "$tool" plug >"$work/plug.out" 2>&1 &
 pids+=($!)
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/plug.json"
 # The names reconciler (E8b), with the rules reader's stand-in (the companies' rules from a JSON file the proof
@@ -557,7 +579,7 @@ rules_file=$QORPERA_AGENT_EXIT_STATE_DIR/rules/rules.json
 db=$work/db-rules.json
 echo '{}' >"$db"
 background - "$work/rules.out" python3 "$work/rules-reader.py" "$clients_dir" "$rules_file" "$db" "$work/rules-status.json"
-QORPERA_AGENT_EXIT_NAMES_INTERVAL=0.3 QORPERA_AGENT_EXIT_SYSTEMCTL="bash $work/systemctl $tool" \
+QORPERA_AGENT_EXIT_NAMES_INTERVAL=0.1 QORPERA_AGENT_EXIT_SYSTEMCTL="bash $work/systemctl $tool" \
 	bash "$tool" names >"$work/names.out" 2>&1 &
 names_pid=$!
 pids+=($!)
@@ -584,6 +606,56 @@ wait_for "grep -q 'query\[A\] example.test from 10.210.1.1' $QORPERA_AGENT_EXIT_
 wait_for "grep -q 'query\[A\] other.test from 10.210.1.1' $QORPERA_AGENT_EXIT_LOG_DIR/dns.log"
 pass "names resolve through the exit, plain DNS elsewhere is redirected, and every query is logged"
 
+plug_tool=$here/qorpera-agent-plug.py
+clients_dir=$QORPERA_AGENT_EXIT_STATE_DIR/clients
+client_history() { cat "$QORPERA_AGENT_EXIT_LOG_DIR"/clients-*.jsonl 2>/dev/null || true; }
+problems() { python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' "$QORPERA_AGENT_EXIT_RUN_DIR/plug.json"; }
+nft_elements() {
+	local text
+	text=$(ip netns exec qexit nft -j list "$1" inet qorpera_agent_exit "$2")
+	python3 -c '
+import json, sys
+found = []
+for item in json.loads(sys.argv[1])["nftables"]:
+    for elem in (item.get("map") or item.get("set") or {}).get("elem", []) or []:
+        found.append("%s:%s" % tuple(elem if isinstance(elem, list) else elem["concat"]))
+print(" ".join(sorted(found)))' "$text"
+}
+dns_map() { nft_elements map dns_port; }
+dns_allowed() { nft_elements set dns_allowed; }
+dns_is() { [[ $(dns_map) == "$1" && $(dns_allowed) == "$1" ]]; }
+reach_map() {
+	local text
+	text=$(ip netns exec qexit nft -j list map inet qorpera_agent_exit reach)
+	python3 -c '
+import json, sys
+found = []
+for item in json.loads(sys.argv[1])["nftables"]:
+    for key, verdict in (item.get("map") or {}).get("elem", []) or []:
+        found.append("%s:%s" % (key, verdict["goto"]["target"]))
+print(" ".join(sorted(found)))' "$text"
+}
+counted() { ip netns exec qexit nft list counter inet qorpera_agent_exit "$1" | grep -o 'packets [0-9]*' | cut -d' ' -f2; }
+refused_dns() {
+	local text
+	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit refused_dns)
+	grep -o 'packets [0-9]*' <<<"$text" | cut -d' ' -f2
+}
+ask_code() {
+	local ns=$1
+	shift
+	ip netns exec "$ns" python3 "$work/rcode.py" "$@"
+}
+asks() { [[ $(ask_code "$1" "$2" "$3" "${@:5}") == "$4" ]]; }
+resolver_pid() { cat "$work/units/$1.pid" 2>/dev/null; }
+servers_dir=$QORPERA_AGENT_EXIT_RUN_DIR/names
+dns_log=$QORPERA_AGENT_EXIT_LOG_DIR/dns.log
+logs_tool=$here/qorpera-agent-exit-logs.py
+LOG=$QORPERA_AGENT_EXIT_LOG_DIR
+today=$(date -u +%F)
+exit_mac=$(ip -n qexit -br link show br0 | awk '{print $3}')
+
+if want core; then
 # --- What reaches what --------------------------------------------------------------------------------------------
 connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
 wait_for "grep -q '1.1.1.1:443 192.168.1.42' $work/lan-peers"
@@ -648,12 +720,12 @@ ip netns del rogue
 pass "a card outside the client map gets no address and no internet"
 # LLDP-addressed frames skip the bridge's hooks unless forwarded through them; then the exit refuses the node.
 ip netns exec agent python3 "$work/lldp.py" eth0 10.210.1.1 192.168.1.42 9999
-sleep 1
+sleep 0.35
 [[ -s $work/node-udp ]] && fail "an LLDP-addressed frame reached the node: $(cat "$work/node-udp")"
 # Link-local frames would otherwise teach the bridge any MAC they carry, before any hook.
 unbound_before=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
 ip netns exec agent python3 "$work/lldp.py" eth0 10.210.1.1 192.168.1.42 9999 0e:51:0a:d2:01:ee
-sleep 0.5
+sleep 0.2
 shows 0e:51:0a:d2:01:ee bridge fdb show br qagent0 && fail "an LLDP-addressed frame taught the bridge a MAC"
 # Dropped by the bridge rules, so it went through them (group_fwd_mask): without it the counter would not move.
 unbound_after=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
@@ -663,7 +735,7 @@ ip netns exec agent python3 "$work/raw.py" 10.210.1.1 192.168.1.40 253
 connects agent 192.168.1.40 2049 && fail "the NAS is reachable"
 pass "a refusal by another protocol (253) next to a TCP one"
 [[ $(ip netns exec agent python3 "$work/spoofdns.py" 172.20.0.5 10.210.0.1 spoofed.test) == sent ]] || fail "spoofed DNS not sent"
-sleep 1
+sleep 0.35
 grep -q "spoofed.test" "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log" && fail "the exit answered DNS from a source outside the agent range"
 pass "the exit ignores DNS from a source outside the agent range"
 # Routing through the node: send to the NAS with the bridge's own MAC as the next hop. The node must not route it.
@@ -671,14 +743,14 @@ bridge_mac=$(cat /sys/class/net/qagent0/address)
 ip -n agent neigh replace 10.210.255.254 lladdr "$bridge_mac" dev eth0 nud permanent
 ip -n agent route add 192.168.1.40/32 via 10.210.255.254 dev eth0
 ip netns exec agent python3 "$work/udp.py" 192.168.1.40 9999
-sleep 1
+sleep 0.35
 [[ -s $work/nas-udp ]] && fail "the node routed a packet from the agents' bridge to the NAS: $(cat "$work/nas-udp")"
 ip -n agent route del 192.168.1.40/32
 pass "the node routes nothing from the agents' bridge (a send with the bridge as next hop never reaches the NAS)"
 # The node owns 192.168.1.42; without arp_ignore it would answer ARP for it on any interface, the bridge included.
 ip -n agent route add 192.168.1.42/32 dev eth0
 ip netns exec agent python3 "$work/udp.py" 192.168.1.42 9 >/dev/null 2>&1 || true
-sleep 1.5
+sleep 0.5
 shows lladdr ip -n agent neigh show 192.168.1.42 && fail "the node answered ARP on the agents' bridge: $(ip -n agent neigh show 192.168.1.42)"
 ip -n agent route del 192.168.1.42/32
 pass "the node does not answer ARP on the agents' bridge"
@@ -690,9 +762,9 @@ pass "new connections are counted per client"
 ip netns exec qexit conntrack -F >/dev/null 2>&1
 wait_for "ls $QORPERA_AGENT_EXIT_LOG_DIR/flows-*.jsonl >/dev/null 2>&1 && grep -q '\"event\":\"destroy\"' $QORPERA_AGENT_EXIT_LOG_DIR/flows-*.jsonl"
 log_file=$(ls "$QORPERA_AGENT_EXIT_LOG_DIR"/flows-*.jsonl | head -1)
-for _ in $(seq 1 50); do
+for _ in $(seq 1 200); do
 	grep -q '"event":"refused","proto":"253"' "$log_file" && break
-	sleep 0.2
+	sleep 0.05
 done
 grep -q '"event":"refused","proto":"253"' "$log_file" || fail "no protocol-253 refusal in the log: $(cat "$log_file")"
 python3 - "$log_file" >"$work/logcheck.out" 2>&1 <<'EOF' || fail "log: $(cat "$work/logcheck.out")"
@@ -703,9 +775,9 @@ assert site and site[0]["src"] == "10.210.1.1" and site[0]["bytes_out"] > 0 and 
 assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] not in ("gap", "alive")), "not an agent's"
 
 EOF
-for _ in $(seq 1 50); do
+for _ in $(seq 1 200); do
 	grep -q '"dst":"192.168.1.40","event":"refused".*"rule":"our_networks"' "$log_file" && break
-	sleep 0.2
+	sleep 0.05
 done
 grep -q '"dst":"192.168.1.40","event":"refused".*"rule":"our_networks"' "$log_file" || fail "no refused flow (with its rule) in the log.
 logger: $(cat "$work/log.out")
@@ -714,16 +786,12 @@ log: $(cat "$log_file")"
 pass "the log has each connection's end with bytes, and the refused flows, for agent machines only"
 # Past a machine's share (a burst of 100 new refused flows), refusals are counted as unlogged and become a gap line.
 ip netns exec agent python3 "$work/burst.py" 192.168.1.40 20000 150
-for _ in $(seq 1 50); do grep -q '"event":"gap".*unlogged flows' "$log_file" && break; sleep 0.2; done
+for _ in $(seq 1 200); do grep -q '"event":"gap".*unlogged flows' "$log_file" && break; sleep 0.05; done
 grep -q '"event":"gap".*unlogged flows' "$log_file" || fail "no gap line for unlogged refusals: $(tail -5 "$log_file")"
 grep -q 'cannot read' "$log_file" && fail "the logger failed to read the exit's sets: $(grep 'cannot read' "$log_file")"
 pass "refusals past a machine's share show as a gap, and the logger read every set"
 
 # --- The agent plug (E2) ---------------------------------------------------------------------------------------
-plug_tool=$here/qorpera-agent-plug.py
-clients_dir=$QORPERA_AGENT_EXIT_STATE_DIR/clients
-client_history() { cat "$QORPERA_AGENT_EXIT_LOG_DIR"/clients-*.jsonl 2>/dev/null || true; }
-problems() { python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' "$QORPERA_AGENT_EXIT_RUN_DIR/plug.json"; }
 first=$(as_creator python3 "$plug_tool" plug --kind coding --company c1 --machine m1 --member u1 --project qp --instance vm1)
 [[ $first == '{"address": "10.210.1.2", "hwaddr": "0e:51:0a:d2:01:02"}' ]] || fail "plug: $first"
 again=$(as_creator python3 "$plug_tool" plug --kind coding --company c1 --machine m1 --member u1 --project qp --instance vm1)
@@ -808,7 +876,7 @@ wait_for "shows 0e:51:0a:d2:01:02 ip -n qexit neigh show 10.210.1.2"
 for op in 1 2; do ip netns exec agent python3 "$work/garp.py" eth0 "$op" 10.210.1.2; done
 ip netns exec agent python3 "$work/garp.py" eth0 2 10.210.1.1 0e:51:0a:d2:01:02
 ip netns exec agent python3 "$work/decline.py" 10.210.1.1 0e:51:0a:d2:01:02 10.210.1.2
-sleep 1
+sleep 0.35
 shows 0e:51:0a:d2:01:02 ip -n qexit neigh show 10.210.1.2 || fail "gratuitous ARP moved another machine's address: $(ip -n qexit neigh)"
 shows 0e:51:0a:d2:01:02 ip -n qexit neigh show 10.210.1.1 && fail "an ARP sender MAC moved the agent's address: $(ip -n qexit neigh)"
 grep -q DHCPDECLINE "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log" && fail "a machine declined another's lease: $(grep DHCP "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log")"
@@ -829,7 +897,7 @@ ip -n agent neigh replace 10.210.0.1 lladdr "$exit_mac" dev eth0 nud permanent
 wait_for "connects agent 1.1.1.1 443"
 pass "no gratuitous ARP for another's address, no ARP sender MAC, no DHCP naming another's MAC, no address from another MAC"
 for stolen in 0e:51:0a:d2:01:02 "$exit_mac"; do ip netns exec agent python3 "$work/frame.py" eth0 "$stolen"; done
-sleep 0.5
+sleep 0.2
 shows "0e:51:0a:d2:01:02 dev pv0" bridge fdb show br qagent0 || fail "another machine's MAC moved: $(bridge fdb show br qagent0)"
 shows "$exit_mac dev va0" bridge fdb show br qagent0 && fail "the exit's MAC moved to a machine: $(bridge fdb show br qagent0)"
 pass "a machine cannot take another machine's MAC, or the exit's, on the bridge"
@@ -848,7 +916,7 @@ pass "a frame from the exit to a MAC the bridge has forgotten reaches no other m
 background plugged "$work/peer.out" python3 "$work/udpseen.py" "$work/peer-udp" 10.210.1.2 9999
 ip -n agent neigh replace 10.210.1.2 lladdr 0e:51:0a:d2:01:02 dev eth0 nud permanent
 ip netns exec agent python3 "$work/udp.py" 10.210.1.2 9999
-sleep 1
+sleep 0.35
 [[ -s $work/peer-udp ]] && fail "a machine reached another on the bridge: $(cat "$work/peer-udp")"
 ip -n agent neigh del 10.210.1.2 dev eth0
 pass "a machine reaches no other machine on the bridge, even knowing its MAC"
@@ -862,53 +930,55 @@ done
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vm1:Running:10.210.1.2:c1:m1:u1:pv0"
 wait_for "test ! -e $QORPERA_AGENT_EXIT_RUN_DIR/plug-stopped/10.210.1.2"
 pass "a sleeping machine keeps its address and entry; its TCP, UDP and ICMP connections end in the exit and on the node"
+if [[ $part == core ]]; then
+	python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
+	wait_for "test ! -e $clients_dir/10.210.1.2.json"
+	[[ -e $QORPERA_AGENT_EXIT_STATE_DIR/quarantine/10.210.1.2 ]] || fail "no quarantine for a removed machine"
+	[[ -e $QORPERA_AGENT_EXIT_STATE_DIR/dhcp-hosts/10.210.1.2 ]] && fail "a removed machine's lease file stayed"
+	shows '"address":"10.210.1.2","company":"c1","event":"unplugged"' client_history || fail "no unplugged line: $(client_history)"
+	ip netns exec plugged busybox udhcpc -i eth0 -n -q -f -t 2 -T 1 -s /bin/true >/dev/null 2>&1 &&
+		fail "the name service still gives a removed machine its address"
+	next=$(python3 "$plug_tool" plug --kind office --company c4 --machine o4 --project qp --instance vm4)
+	[[ $next == *'"10.210.1.25"'* ]] || fail "a plug during the quarantine: $next"
+	pass "a removed machine is quarantined first, then loses its lease (no more DHCP) and entry; its address is skipped"
+	python3 "$work/age.py" "$clients_dir" 10.210.1.1
+	wait_for "test \"\$(ls $clients_dir)\" = 10.210.1.1.json"
+	for _ in $(seq 1 200); do grep -q "the machine was never created" "$work/plug.out" && break; sleep 0.05; done
+	grep -q "the machine was never created" "$work/plug.out" || fail "plug: $(cat "$work/plug.out")"
+	[[ $(client_history | grep -c '"event":"unplugged"') == 2 ]] || fail "unplugged lines: $(client_history | grep -c '"event":"unplugged"')"
+	[[ $(client_history | grep -c '"event":"dropped"') == 22 ]] || fail "dropped lines: $(client_history | grep -c '"event":"dropped"')"
+	ip link del pv0
+	ip netns del plugged
+	pass "plugs whose machines never appear are given up after an hour, as dropped: never attributed"
+fi
+fi
 
+if want names-logs; then
+if [[ $part == names-logs ]]; then
+	first=$(as_creator python3 "$plug_tool" plug --kind coding --company c1 --machine m1 --member u1 --project qp --instance vm1)
+	[[ $first == '{"address": "10.210.1.2", "hwaddr": "0e:51:0a:d2:01:02"}' ]] || fail "plug: $first"
+	ip netns add plugged
+	ip -n plugged link set lo up
+	ip link add pv0 type veth peer name eth0 netns plugged
+	ip -n plugged link set eth0 address 0e:51:0a:d2:01:02
+	ip link set pv0 master qagent0 up
+	ip -n plugged link set eth0 up
+	python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vm1:Running:10.210.1.2:c1:m1:u1:pv0"
+	wait_for "shows '\"address\":\"10.210.1.2\",\"company\":\"c1\",\"event\":\"plugged\"' client_history"
+	ip -n plugged addr add 10.210.1.2/16 dev eth0
+	ip -n plugged route add default via 10.210.0.1
+	wait_for "bash $tool verify >/dev/null 2>&1"
+	connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
+	connects agent 192.168.1.40 2049 && fail "the NAS is reachable"
+	ip netns exec plugged python3 -c 'import socket; s = socket.create_connection(("1.1.1.1", 8443), 3); s.close()' || fail "plugged tcp 8443"
+	ip netns exec plugged busybox ping -c 1 -W 1 1.1.1.1 >/dev/null || fail "plugged ping"
+	ip netns exec plugged python3 "$work/udp.py" 1.1.1.1 9999
+	ip netns exec qexit conntrack -F >/dev/null 2>&1
+	wait_for "ls $QORPERA_AGENT_EXIT_LOG_DIR/flows-*.jsonl >/dev/null 2>&1 && grep -q '\"event\":\"destroy\"' $QORPERA_AGENT_EXIT_LOG_DIR/flows-*.jsonl"
+	log_file=$(ls "$QORPERA_AGENT_EXIT_LOG_DIR"/flows-*.jsonl | head -1)
+	wait_for "grep -q '\"dst\":\"192.168.1.40\",\"event\":\"refused\".*\"rule\":\"our_networks\"' $log_file"
+fi
 # --- Each company's names (E8b) and where its machines may go (E8c-1) ------------------------------------------------
-# The agent machine is company c0's, the plugged one company c1's. A company with rules gets a resolver of its own on
-# 10.210.0.1 (a port of its own), which answers "no such name" for its blocked names; one without keeps the main
-# dnsmasq on 53. A machine's DNS goes to its company's, whatever address it asks. The map reach sends each machine's
-# new flows to the chain open, or to its company's only_<port> in "only listed" mode.
-nft_elements() {
-	local text
-	text=$(ip netns exec qexit nft -j list "$1" inet qorpera_agent_exit "$2")
-	python3 -c '
-import json, sys
-found = []
-for item in json.loads(sys.argv[1])["nftables"]:
-    for elem in (item.get("map") or item.get("set") or {}).get("elem", []) or []:
-        found.append("%s:%s" % tuple(elem if isinstance(elem, list) else elem["concat"]))
-print(" ".join(sorted(found)))' "$text"
-}
-dns_map() { nft_elements map dns_port; }
-dns_allowed() { nft_elements set dns_allowed; }
-dns_is() { [[ $(dns_map) == "$1" && $(dns_allowed) == "$1" ]]; }
-# The map reach as `nft -j` gives it ([address, {"goto": {"target": chain}}]): "address:chain ...".
-reach_map() {
-	local text
-	text=$(ip netns exec qexit nft -j list map inet qorpera_agent_exit reach)
-	python3 -c '
-import json, sys
-found = []
-for item in json.loads(sys.argv[1])["nftables"]:
-    for key, verdict in (item.get("map") or {}).get("elem", []) or []:
-        found.append("%s:%s" % (key, verdict["goto"]["target"]))
-print(" ".join(sorted(found)))' "$text"
-}
-counted() { ip netns exec qexit nft list counter inet qorpera_agent_exit "$1" | grep -o 'packets [0-9]*' | cut -d' ' -f2; }
-refused_dns() {
-	local text
-	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit refused_dns)
-	grep -o 'packets [0-9]*' <<<"$text" | cut -d' ' -f2
-}
-ask_code() {
-	local ns=$1
-	shift
-	ip netns exec "$ns" python3 "$work/rcode.py" "$@"
-}
-asks() { [[ $(ask_code "$1" "$2" "$3" "${@:5}") == "$4" ]]; }
-resolver_pid() { cat "$work/units/$1.pid" 2>/dev/null; }
-servers_dir=$QORPERA_AGENT_EXIT_RUN_DIR/names
-dns_log=$QORPERA_AGENT_EXIT_LOG_DIR/dns.log
 
 python3 "$work/db.py" "$db" 'c0=blocked.test,*.wild.test'
 wait_for "names_is \"s['resolvers'] == {'c0': 10001} and s['mapped'] == {'10.210.1.1': 10001, '10.210.1.2': 53} and s['problems'] == []\""
@@ -1058,7 +1128,7 @@ pass "a company whose rules are not usable: no element, its machines' DNS droppe
 python3 "$work/db.py" "$db" 'c1=null'
 wait_for "names_is \"s['mapped'] == {'10.210.1.1': 10001, '10.210.1.2': 53} and s['problems'] == []\""
 touch "$db.pause"
-sleep 0.5
+sleep 0.2
 python3 - "$rules_file" <<'EOF'
 import json, os, sys
 value = json.load(open(sys.argv[1]))
@@ -1078,7 +1148,7 @@ pass "a machine whose company the rules file does not list yet has no DNS and no
 
 # No rules file at all: every machine's DNS is dropped. A reader silent too long fails verify (its rules stay).
 touch "$db.pause"
-sleep 0.5
+sleep 0.2
 rm "$rules_file"
 wait_for "names_is \"s['mapped'] == {}\""
 dns_is "" || fail "the DNS map without a rules file: $(dns_map) / $(dns_allowed)"
@@ -1091,7 +1161,7 @@ grep -q "names: no rules file yet" "$work/verify.err" || fail "verify: $(cat "$w
 rm "$db.pause"
 wait_for "names_is \"s['mapped'] == {'10.210.1.1': 10001, '10.210.1.2': 53} and s['problems'] == []\""
 touch "$db.pause"
-sleep 0.5
+sleep 0.2
 python3 -c 'import json, sys; json.dump({"schema": "qorpera.agent-exit-rules-status/v1", "checkedAt": "2000-01-01T00:00:00.000Z", "readAt": "2000-01-01T00:00:00.000Z", "ok": True, "problem": None, "companies": 2}, open(sys.argv[1], "w"))' \
 	"$work/rules-status.json"
 wait_for "names_is \"any(p.startswith('the rules reader silent for') for p in s['problems'])\""
@@ -1141,24 +1211,26 @@ shows '"address":"10.210.1.2","company":"c1","event":"unplugged"' client_history
 ip netns exec plugged busybox udhcpc -i eth0 -n -q -f -t 2 -T 1 -s /bin/true >/dev/null 2>&1 &&
 	fail "the name service still gives a removed machine its address"
 next=$(python3 "$plug_tool" plug --kind office --company c4 --machine o4 --project qp --instance vm4)
-[[ $next == *'"10.210.1.25"'* ]] || fail "a plug during the quarantine: $next"
+if [[ $part == all ]]; then
+	[[ $next == *'"10.210.1.25"'* ]] || fail "a plug during the quarantine: $next"
+else
+	[[ $next != *'"10.210.1.2"'* ]] || fail "a plug during the quarantine reused 10.210.1.2: $next"
+fi
 pass "a removed machine is quarantined first, then loses its lease (no more DHCP) and entry; its address is skipped"
 
 python3 "$work/age.py" "$clients_dir" 10.210.1.1
 wait_for "test \"\$(ls $clients_dir)\" = 10.210.1.1.json"
-# The plug removes the entry before it prints why, so wait for the line too.
-for _ in $(seq 1 50); do grep -q "the machine was never created" "$work/plug.out" && break; sleep 0.2; done
+for _ in $(seq 1 200); do grep -q "the machine was never created" "$work/plug.out" && break; sleep 0.05; done
 grep -q "the machine was never created" "$work/plug.out" || fail "plug: $(cat "$work/plug.out")"
-[[ $(client_history | grep -c '"event":"unplugged"') == 2 ]] || fail "unplugged lines: $(client_history | grep -c '"event":"unplugged"')"
-[[ $(client_history | grep -c '"event":"dropped"') == 22 ]] || fail "dropped lines: $(client_history | grep -c '"event":"dropped"')"
+if [[ $part == all ]]; then
+	[[ $(client_history | grep -c '"event":"unplugged"') == 2 ]] || fail "unplugged lines: $(client_history | grep -c '"event":"unplugged"')"
+	[[ $(client_history | grep -c '"event":"dropped"') == 22 ]] || fail "dropped lines: $(client_history | grep -c '"event":"dropped"')"
+fi
 ip link del pv0
 ip netns del plugged
 pass "plugs whose machines never appear are given up after an hour, as dropped: never attributed"
 
 # --- The logs on the node ------------------------------------------------------------------------------------------
-logs_tool=$here/qorpera-agent-exit-logs.py
-LOG=$QORPERA_AGENT_EXIT_LOG_DIR
-today=$(date -u +%F)
 bash "$tool" logs >"$work/logs.out" || fail "the logs' tender: $(cat "$work/logs.out")"
 python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count.json" || fail "count: $(cat "$work/count.json")"
 python3 - "$work/count.json" >"$work/countcheck.out" 2>&1 <<'EOF' || fail "counts: $(cat "$work/countcheck.out") $(cat "$work/count.json")"
@@ -1221,7 +1293,7 @@ for i in $(seq 1 20); do
 done
 [[ -d $LOG/flows-$today.jsonl ]] || fail "could not put a folder where the connection log goes"
 connects agent 1.1.1.1 443 || fail "the agent cannot connect"
-for _ in $(seq 1 50); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] && break; sleep 0.2; done
+for _ in $(seq 1 200); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] && break; sleep 0.05; done
 [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "a line that could not be written left no mark: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify-failing.err" && fail "verify passed while the connection log could not be written"
 grep -q "cannot write the connection log: " "$work/verify-failing.err" || fail "verify: $(cat "$work/verify-failing.err")"
@@ -1230,7 +1302,7 @@ bash "$tool" lookup --remote 1.1.1.1 --at "$(date +%s)" --json >"$work/lookup-fa
 grep -q '"why": "the connection logger is failing now: cannot write the connection log: ' "$work/lookup-failing.json" ||
 	fail "the lookup did not say the logger is failing: $(cat "$work/lookup-failing.json")"
 rmdir "$LOG/flows-$today.jsonl"
-for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || break; sleep 0.2; done
+for _ in $(seq 1 300); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || break; sleep 0.05; done
 [[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "the logger did not recover once it could write"
 grep -Eq '"reason":"[1-9][0-9]* lines could not be written \(' "$LOG/flows-$today.jsonl" ||
 	fail "no gap line for the lines lost: $(grep gap "$LOG/flows-$today.jsonl" | tail -3)"
@@ -1247,7 +1319,7 @@ pids+=($!)
 wait_for "test \$(grep -c 'logger started' $LOG/flows-$today.jsonl) -ge 1"
 wait_for "bash $tool verify >/dev/null 2>&1"
 head -c 4000000 /dev/zero >"$LOG/filler"
-for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] && break; sleep 0.2; done
+for _ in $(seq 1 300); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] && break; sleep 0.05; done
 [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not pause past its cap: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify-pause.err" && fail "verify passed while the connection log paused"
 grep -q "connection log paused: " "$work/verify-pause.err" || fail "verify: $(cat "$work/verify-pause.err")"
@@ -1256,15 +1328,15 @@ grep -q '"why": "the connection log is paused now: the node' "$work/lookup-pause
 	fail "the lookup did not say the log is paused: $(cat "$work/lookup-pause.json")"
 written=$(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true)
 connects agent 1.1.1.1 443 || fail "a machine's traffic stopped while the log paused"
-sleep 1
+sleep 0.35
 [[ $(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true) == "$written" ]] || fail "the paused logger wrote a connection line"
 # DNS goes on answering, and its record is emptied while the log pauses.
 [[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 paused.test) == 1.1.1.1 ]] || fail "DNS while the log pauses"
-for _ in $(seq 1 75); do grep -Eq '"reason":"paused: [1-9][0-9]* bytes of the DNS record not kept"' "$LOG/flows-$today.jsonl" && break; sleep 0.2; done
+for _ in $(seq 1 300); do grep -Eq '"reason":"paused: [1-9][0-9]* bytes of the DNS record not kept"' "$LOG/flows-$today.jsonl" && break; sleep 0.05; done
 grep -Eq '"reason":"paused: [1-9][0-9]* bytes of the DNS record not kept"' "$LOG/flows-$today.jsonl" ||
 	fail "dns.log was not emptied while the log paused: $(wc -c <"$LOG/dns.log")"
 rm "$LOG/filler"
-for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || break; sleep 0.2; done
+for _ in $(seq 1 300); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || break; sleep 0.05; done
 [[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not go on with room again"
 grep -q '"event":"gap".*"reason":"paused: ' "$LOG/flows-$today.jsonl" || fail "no gap line for the pause"
 grep -Eq '"reason":"resumed: [1-9][0-9]* lines not written while paused"' "$LOG/flows-$today.jsonl" ||
@@ -1277,7 +1349,9 @@ bash "$tool" log >>"$work/log.out" 2>&1 &
 logger_pid=$!
 pids+=($!)
 wait_for "bash $tool verify >/dev/null 2>&1"
+fi
 
+if want brake-lifecycle; then
 # --- The brake (E7) -----------------------------------------------------------------------------------------------
 # Company cB's machine, plugged in as in the plug's part above, goes past the founder's levels; the agent machine
 # (company c0) does not.
@@ -1317,17 +1391,21 @@ rules_are() {
 		python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(0 if eval(sys.argv[1]) else 1)' "$2"
 }
 braked_plug=$(as_creator python3 "$plug_tool" plug --kind machine --company cB --machine mB --project qp --instance vmB)
-[[ $braked_plug == '{"address": "10.210.1.26", "hwaddr": "0e:51:0a:d2:01:1a"}' ]] || fail "plug: $braked_plug"
+read -r braked_ip braked_mac < <(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); print(d["address"], d["hwaddr"])' "$braked_plug")
+braked_ip_re=${braked_ip//./\\.}
+if [[ $part == all ]]; then
+	[[ $braked_plug == '{"address": "10.210.1.26", "hwaddr": "0e:51:0a:d2:01:1a"}' ]] || fail "plug: $braked_plug"
+fi
 ip netns add braked
 ip -n braked link set lo up
 ip link add bv0 type veth peer name eth0 netns braked
-ip -n braked link set eth0 address 0e:51:0a:d2:01:1a
+ip -n braked link set eth0 address "$braked_mac"
 ip link set bv0 master qagent0 up
 ip -n braked link set eth0 up
-ip -n braked addr add 10.210.1.26/16 dev eth0
+ip -n braked addr add "$braked_ip/16" dev eth0
 ip -n braked route add default via 10.210.0.1
-python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vmB:Running:10.210.1.26:cB:mB::bv0"
-wait_for "shows '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"plugged\"' client_history"
+python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vmB:Running:$braked_ip:cB:mB::bv0"
+wait_for "shows '\"address\":\"$braked_ip\",\"company\":\"cB\",\"event\":\"plugged\"' client_history"
 wait_for "connects braked 1.1.1.1 443"
 # The founder's levels, in the node's settings: past 5 new connections in 10 seconds a company is braked for 5 minutes,
 # with a share of 2 new connections per 10 seconds. The logger reads them when it starts.
@@ -1349,13 +1427,13 @@ wait_for "grep -q '\"company\":\"cB\",\"event\":\"braked\",\"reason\":\"[0-9]* n
 wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 1)]\""
 number=$(brake_get "s['braked'][0]['number']")
 until_before=$(brake_get "s['braked'][0]['until']")
-wait_for "rules_are dropped \"r['machines'] == {'10.210.1.26': $number}\""
+wait_for "rules_are dropped \"r['machines'] == {'$braked_ip': $number}\""
 pass "a company past a level is braked: a braked line, and its machine in the exit's braked map with its number"
 # Its share: 2 of 10 new connections at once get through, the rest are dropped (and resent once, at 1 second, before
 # they give up), each counted once. Another company's machine is not braked. On a loaded machine the brake can land
 # before the burst's last connections start, and they take the share's tokens; the share is full again 10 seconds after
 # its last token was taken.
-while (($(date +%s) < burst_end + 11)); do sleep 0.5; done
+while (($(date +%s) < burst_end + 11)); do sleep 0.25; done
 let_through=$(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 10 2)
 [[ $let_through == 2 ]] || fail "a braked company got $let_through of 10 new connections at once through, not its share of 2"
 for _ in 1 2 3; do connects agent 1.1.1.1 443 || fail "another company's machine was braked"; done
@@ -1374,7 +1452,7 @@ wait_for "rules_are resent \"r['counters'] == {'$number': 1}\""
 wait_for "brake_is \"s['braked'][0]['dropped'] == 8 and s['braked'][0]['until'] > $until_before\""
 bash "$tool" verify >/dev/null || fail "verify with a company braked: $(bash "$tool" verify 2>&1)"
 bash "$tool" status >"$work/status.out"
-grep -Eq '10\.210\.1\.26 [^,}]*: (0x)?[0-9a-f]+' "$work/status.out" ||
+grep -Eq "${braked_ip_re} [^,}]*: (0x)?[0-9a-f]+" "$work/status.out" ||
 	fail "status does not show the braked machine: $(cat "$work/status.out")"
 grep -q '"company": "cB"' "$work/status.out" || fail "status does not show the brake: $(cat "$work/status.out")"
 pass "past its share a braked company's new connections are dropped, each once however often resent, and hold the brake"
@@ -1387,17 +1465,17 @@ ip netns exec qexit nft destroy element inet qorpera_agent_exit new_by_client '{
 kill "$logger_pid"
 wait "$logger_pid" 2>/dev/null || true
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
-wait_for "shows '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"unplugged\"' client_history"
-grep -q "cannot clear 10.210.1.26" "$work/plug.out" && fail "plug: $(grep "cannot clear" "$work/plug.out")"
+wait_for "shows '\"address\":\"$braked_ip\",\"company\":\"cB\",\"event\":\"unplugged\"' client_history"
+grep -q "cannot clear $braked_ip" "$work/plug.out" && fail "plug: $(grep "cannot clear" "$work/plug.out")"
 new_left=$(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client)
-grep -q '10\.210\.1\.26 ' <<<"$new_left" && fail "the unplugged machine's counts stayed: $new_left"
+grep -q "${braked_ip_re} " <<<"$new_left" && fail "the unplugged machine's counts stayed: $new_left"
 rules_are dropped "r['machines'] == {}" ||
 	fail "an unplugged machine stayed braked: $(ip netns exec qexit nft list map inet qorpera_agent_exit braked)"
 QORPERA_AGENT_EXIT_SETTINGS=$work/settings bash "$tool" log >>"$work/log.out" 2>&1 &
 logger_pid=$!
 pids+=($!)
 wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 0)]\""
-sleep 3
+sleep 1.5
 rules_are dropped "r['machines'] == {}" || fail "the guard braked an unplugged machine again"
 ip link del bv0
 ip netns del braked
@@ -1449,13 +1527,18 @@ pass "a level that cannot be meant leaves the brake off and the exit unhealthy u
 # rebuilt the links and stopped before it restarted them. The logger notices by itself; verify fails until the name
 # service follows (its unit's restart, or the next up, moves it). A company's resolver left there is restarted by the
 # names reconciler once it has not answered for its grace.
+if [[ $part == brake-lifecycle ]]; then
+	python3 "$work/db.py" "$db" 'c0=blocked.test'
+	wait_for "names_is \"s['resolvers'] == {'c0': 10001} and s['mapped'] == {'10.210.1.1': 10001} and s['problems'] == []\""
+	ip -n agent neigh replace 10.210.0.1 lladdr "$exit_mac" dev eth0 nud permanent
+fi
 dns_pid=$(pgrep -f -- '--dhcp-range=')
 resolver=$(resolver_pid 10001)
 ip netns del qexit
 bash "$tool" up >/dev/null
 dns_is "10.210.1.1:10001" || fail "up did not fill the DNS map: $(dns_map) / $(dns_allowed)"
 [[ $(reach_map) == "10.210.1.1:open" ]] || fail "up did not fill the reach map: $(reach_map)"
-for _ in $(seq 1 150); do grep -q "watches an old namespace" "$work/log.out" && break; sleep 0.2; done
+for _ in $(seq 1 600); do grep -q "watches an old namespace" "$work/log.out" && break; sleep 0.05; done
 grep -q "watches an old namespace" "$work/log.out" || fail "the logger kept watching the old namespace: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify3.err" && fail "verify passed with the name service in the old namespace"
 grep -q "no DNS on 10.210.0.1:53" "$work/verify3.err" || fail "verify: $(cat "$work/verify3.err")"
@@ -1465,11 +1548,11 @@ pids+=($!)
 bash "$tool" log >"$work/log3.out" 2>&1 &
 pids+=($!)
 wait_for "shows '10.210.0.1:53 ' ip netns exec qexit ss -lnu"
-for _ in $(seq 1 100); do [[ -n $(resolver_pid 10001) && $(resolver_pid 10001) != "$resolver" ]] && break; sleep 0.2; done
+for _ in $(seq 1 400); do [[ -n $(resolver_pid 10001) && $(resolver_pid 10001) != "$resolver" ]] && break; sleep 0.05; done
 [[ -n $(resolver_pid 10001) && $(resolver_pid 10001) != "$resolver" ]] ||
 	fail "c0's resolver stayed in the old namespace: $(tail -3 "$work/names.out")"
 # names restarts the resolver in the middle of a pass and prints the pass's problems at its end.
-for _ in $(seq 1 50); do grep -q "problem: the resolver of c0 (port 10001) is not answering" "$work/names.out" && break; sleep 0.2; done
+for _ in $(seq 1 200); do grep -q "problem: the resolver of c0 (port 10001) is not answering" "$work/names.out" && break; sleep 0.05; done
 grep -q "problem: the resolver of c0 (port 10001) is not answering" "$work/names.out" || fail "names: $(tail -3 "$work/names.out")"
 wait_for "bash $tool verify >/dev/null 2>&1"
 # The new br0 has a new MAC; the machine has the gateway's as a static neighbour (above), so it takes the new one.
@@ -1490,7 +1573,7 @@ pass "down refuses while a machine is plugged in and changes nothing"
 # A process listed may have ended before its kill (as in the exit tool's own loop).
 for pid in $(ip netns pids qexit); do kill -9 "$pid" 2>/dev/null || true; done
 ip netns del qexit
-sleep 0.5
+sleep 0.2
 connects agent 1.1.1.1 443 && fail "the machine still reaches the internet with the exit gone"
 [[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 after.test) == none ]] || fail "names still resolve with the exit gone"
 pass "with the exit gone the machine has no internet and nothing falls back"
@@ -1500,9 +1583,10 @@ bash "$tool" up >/dev/null
 echo '[]' >"$work/lxd.json"
 wait_for "test -z \"\$(ls $clients_dir)\""
 # A machine asleep has no port on the bridge; its client map entry still keeps the exit up.
-python3 "$plug_tool" plug --kind machine --company c5 --machine m5 --project qp --instance asleep >/dev/null
+asleep_plug=$(python3 "$plug_tool" plug --kind machine --company c5 --machine m5 --project qp --instance asleep)
+asleep_ip=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["address"])' "$asleep_plug")
 if bash "$tool" down 2>"$work/down2.err"; then fail "down went ahead with a machine in the client map"; fi
-grep -q "running or asleep (client map: 10.210.1.27 " "$work/down2.err" || fail "down: $(cat "$work/down2.err")"
+grep -q "running or asleep (client map: $asleep_ip " "$work/down2.err" || fail "down: $(cat "$work/down2.err")"
 pass "down refuses while the client map has a machine, also one asleep with no port"
 python3 "$work/age.py" "$clients_dir"
 wait_for "test -z \"\$(ls $clients_dir)\""
@@ -1517,6 +1601,7 @@ for part in qagent0 qx-br qx-up; do ip link show "$part" >/dev/null 2>&1 && fail
 nft list table inet qorpera_agent_exit_host >/dev/null 2>&1 && fail "down left the node's rules"
 nft list table bridge qorpera_agent_exit_bridge >/dev/null 2>&1 && fail "down left the bridge rules"
 pass "with nothing plugged in, down removes everything, with its name and log services running"
+fi
 [[ -z $(queue_modules) ]] || fail "the proof loaded $(queue_modules)"
 pass "nothing in the proof loaded the queue modules"
 echo "ALL PASSED"

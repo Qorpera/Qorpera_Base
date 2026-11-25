@@ -24,6 +24,7 @@ import {
 import {
 	bestSnapshot,
 	CLUSTER_ENV,
+	FAST_POSTGRES_ARGS,
 	HostedDbCluster,
 	MIGRATED,
 	newestBundleActivation,
@@ -443,17 +444,21 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"000_schema_smoke.test.sql",
 		"040_account_separation.test.sql",
 		"200_deleted_profile_object_gc.test.sql",
-		"529_last.test.sql",
-		"530_first.test.sql",
-		"684_last.test.sql",
-		"685_first.test.sql",
-		"824_last.test.sql",
-		"825_first.test.sql",
+		"506_last.test.sql",
+		"508_first.test.sql",
+		"509_last.test.sql",
+		"510_first.test.sql",
+		"675_last.test.sql",
+		"676_first.test.sql",
+		"839_last.test.sql",
+		"840_first.test.sql",
 		"964_last.test.sql",
 		"965_first.test.sql",
 		"1100_four_digit.test.sql",
-		"1244_last.test.sql",
-		"1245_first.test.sql",
+		"1210_last.test.sql",
+		"1211_first.test.sql",
+		"1250_last.test.sql",
+		"1251_first.test.sql",
 		"company_end.test.sql",
 	];
 	const split = splitTests(tests, null);
@@ -462,8 +467,10 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		["qorpera_test_2", tests.slice(4, 6)],
 		["qorpera_test_3", tests.slice(6, 8)],
 		["qorpera_test_4", tests.slice(8, 10)],
-		["qorpera_test_5", tests.slice(10, 13)],
-		["qorpera_test_6", tests.slice(13)],
+		["qorpera_test_5", tests.slice(10, 12)],
+		["qorpera_test_6", tests.slice(12, 15)],
+		["qorpera_test_7", tests.slice(15, 17)],
+		["qorpera_test_8", tests.slice(17)],
 	]);
 	// Every test runs once, in its usual order.
 	assert.deepEqual(split.flatMap(([, part]) => part), tests);
@@ -477,14 +484,23 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 9)],
-			["c", tests.slice(9)],
+			["b", tests.slice(2, 11)],
+			["c", tests.slice(11)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");
 	assert.equal(SQL_TEST_DATABASES[0][1], "");
 	for (let i = 2; i < SQL_TEST_DATABASES.length; i++)
 		assert.ok(compareTestNames(SQL_TEST_DATABASES[i - 1][1], SQL_TEST_DATABASES[i][1]) < 0);
+});
+
+test("FAST_POSTGRES_ARGS keeps wal_level compatible with pg_basebackup", () => {
+	assert.ok(FAST_POSTGRES_ARGS.includes("fsync=off"));
+	assert.ok(FAST_POSTGRES_ARGS.includes("jit=off"));
+	assert.equal(
+		FAST_POSTGRES_ARGS.some((arg) => arg.startsWith("wal_level=")),
+		false,
+	);
 });
 
 test("the tests that keep rows for later tests stay in the first database", () => {

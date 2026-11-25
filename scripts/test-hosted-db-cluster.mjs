@@ -51,7 +51,24 @@ const WARM_OUT = "/qorpera-warm-out";
 /** A warm start copies the data directory in and starts PostgreSQL on it. A copy that cannot be read leaves an empty
  * data directory, so the image initializes a fresh cluster, and `startBuilt` finds no build there. A container restarted
  * with its data on disk (`restartable`) keeps that data: the copy is taken only into an empty directory. */
-export const WARM_START = `if [ -d ${WARM_IN}/data ] && [ ! -s "$PGDATA/PG_VERSION" ]; then cp -a ${WARM_IN}/data/. "$PGDATA"/ || find "$PGDATA" -mindepth 1 -delete; fi; exec docker-entrypoint.sh postgres`;
+export const WARM_START = `if [ -d ${WARM_IN}/data ] && [ ! -s "$PGDATA/PG_VERSION" ]; then cp -a ${WARM_IN}/data/. "$PGDATA"/ || find "$PGDATA" -mindepth 1 -delete; fi; exec docker-entrypoint.sh postgres "$@"`;
+
+export const FAST_POSTGRES_ARGS = [
+	"-c",
+	"fsync=off",
+	"-c",
+	"synchronous_commit=off",
+	"-c",
+	"full_page_writes=off",
+	"-c",
+	"jit=off",
+	"-c",
+	"shared_buffers=256MB",
+	"-c",
+	"work_mem=16MB",
+	"-c",
+	"max_wal_size=512MB",
+];
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 
@@ -231,22 +248,27 @@ export class HostedDbCluster {
 	static async start({ restartable = false, admin = "postgres", warm = null, keepIn = null } = {}) {
 		run("docker", ["info", "--format", "{{.ServerVersion}}"]);
 		const container = buildContainerName(process.pid, randomBytes(4).toString("hex"));
+		const postgresArgs = restartable ? ["-c", "jit=off", "-c", "work_mem=16MB"] : FAST_POSTGRES_ARGS;
 		run("docker", [
 			"run",
 			"--detach",
 			"--rm",
 			"--network",
 			"none",
+			"--shm-size",
+			"512m",
 			"--name",
 			container,
 			"--env",
 			`POSTGRES_PASSWORD=${PASSWORD}`,
 			...POSTGRES_LOCALE,
 			...(admin === "postgres" ? [] : ["--env", `POSTGRES_USER=${checkDatabase(admin)}`]),
-			...(restartable ? [] : ["--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=2g"]),
+			...(restartable ? [] : ["--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=4g"]),
 			...(warm ? ["--volume", `${checkWarmVolume(warm)}:${WARM_IN}:ro`] : []),
 			...(keepIn ? ["--volume", `${checkWarmVolume(keepIn)}:${WARM_OUT}`] : []),
-			...(warm ? ["--entrypoint", "/bin/sh", POSTGRES_IMAGE, "-c", WARM_START] : [POSTGRES_IMAGE]),
+			...(warm
+				? ["--entrypoint", "/bin/sh", POSTGRES_IMAGE, "-c", WARM_START, "--", ...postgresArgs]
+				: [POSTGRES_IMAGE, ...postgresArgs]),
 		]);
 		const cluster = new HostedDbCluster(container, [], true, admin);
 		try {
