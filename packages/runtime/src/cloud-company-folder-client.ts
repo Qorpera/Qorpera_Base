@@ -46,6 +46,7 @@ const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** The commit's bound on units in one change set. */
 const MAX_UNITS = 1000;
 const STAGE_CONCURRENCY = 4;
+const UTF8_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 /** One listing page. SQL accepts up to 1000. An entry with its receipt is about 550 bytes plus its path (at most
  * 4096, twice that escaped) and a link's target (at most 4095, six times that escaped): about 33 KB, so 200 fit the
  * control's 8 MiB bound for listings. */
@@ -714,6 +715,7 @@ export interface CloudCompanyFolderPage {
  * `get` returns against the entry. `put` must return the same reference for the same bytes and media type: a retried
  * commit sends the same units, and SQL refuses an operation key reused for a different change set (22023). */
 export interface CloudCompanyFolderBytes {
+	readonly verifiesBytes?: true;
 	/** Stages one file; its version-2 manifest carries the media type and the executable bit (C1D §2). */
 	put(bytes: Uint8Array, mediaType: string, executable: boolean, signal: AbortSignal): Promise<CloudFileReference>;
 	get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array>;
@@ -2828,11 +2830,15 @@ export class CloudCompanyFolderClient {
 		if (found.file.bytes > maxBytes)
 			throw new CloudCompanyPathNotText("Company folder file is larger than text here");
 		const bytes = await this.#bytes.get(found.file, signal);
-		if (bytes.byteLength !== found.file.bytes || sha256(bytes) !== found.file.fileSha256)
+		// WHY: HttpCloudCompanyFolderBytes.get already verified sha256(bytes) === found.file.fileSha256; skip rehashing.
+		if (
+			bytes.byteLength !== found.file.bytes ||
+			(!this.#bytes.verifiesBytes && sha256(bytes) !== found.file.fileSha256)
+		)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 		let text: string;
 		try {
-			text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+			text = UTF8_TEXT.decode(bytes);
 		} catch {
 			throw new CloudCompanyPathNotText("Company folder file is not UTF-8 text");
 		}

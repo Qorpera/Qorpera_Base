@@ -919,3 +919,35 @@ it("preserves timeout cause when assertActive uses a signal derived from run.sig
 		vi.useRealTimers();
 	}
 });
+
+it("coalesces concurrent assertActive callers into one RPC and batches mid-flight arrivals into one follow-up RPC", async () => {
+	const { run, reader, authority } = await admit();
+	reader.describeToolAuthority.mockClear();
+	let releaseFirst!: () => void;
+	reader.describeToolAuthority.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				releaseFirst = () => resolve(structuredClone(authority));
+			}),
+	);
+	const firstWave = Array.from({ length: 6 }, () => run.assertActive(new AbortController().signal));
+	await vi.waitFor(() => expect(releaseFirst).toBeDefined());
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(1);
+
+	const abortedCaller = new AbortController();
+	const survivingCaller = new AbortController();
+	const secondWave = [
+		run.assertActive(abortedCaller.signal),
+		run.assertActive(survivingCaller.signal),
+		run.assertActive(new AbortController().signal),
+	];
+	abortedCaller.abort(new Error("SINGLE_CALLER_CANCEL"));
+	await expect(secondWave[0]).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(false);
+
+	releaseFirst();
+	await Promise.all(firstWave);
+	await Promise.all([secondWave[1], secondWave[2]]);
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(2);
+	expect(run.signal.aborted).toBe(false);
+});

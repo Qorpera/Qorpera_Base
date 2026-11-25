@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
 	CLOUD_ACTION_REVIEW_TOOL,
@@ -405,36 +406,6 @@ function pauseAbortable(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-async function withScopedSignal<T>(
-	parents: readonly AbortSignal[],
-	timeoutMs: number | undefined,
-	use: (signal: AbortSignal) => Promise<T>,
-	timeoutMessage = "Operation timed out",
-): Promise<T> {
-	const controller = new AbortController();
-	const listeners: Array<readonly [AbortSignal, () => void]> = [];
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	for (const parent of parents) {
-		if (parent.aborted) {
-			controller.abort(parent.reason);
-			break;
-		}
-		const onAbort = (): void => controller.abort(parent.reason);
-		parent.addEventListener("abort", onAbort, { once: true });
-		listeners.push([parent, onAbort]);
-	}
-	if (!controller.signal.aborted && timeoutMs !== undefined) {
-		timer = setTimeout(() => controller.abort(new DOMException(timeoutMessage, "TimeoutError")), timeoutMs);
-		timer.unref?.();
-	}
-	try {
-		return await use(controller.signal);
-	} finally {
-		if (timer !== undefined) clearTimeout(timer);
-		for (const [parent, onAbort] of listeners) parent.removeEventListener("abort", onAbort);
-	}
-}
-
 async function generateGeminiContent(options: {
 	baseUrl: string;
 	model: string;
@@ -819,11 +790,10 @@ export async function runCloudGeminiToolSession(options: {
 				outputTokens: totalOutputTokens,
 			};
 			try {
-				const receipt = await withScopedSignal(
+				const receipt = await withAbortScopes(
 					flushSignal ? [flushSignal] : [],
-					10_000,
 					(signal) => onUsage(snapshot, signal),
-					"Gemini usage flush timed out",
+					10_000,
 				);
 				if (!receipt) return false;
 				monthSpendMicrodollars = receipt.monthSpendMicrodollars;
@@ -885,7 +855,7 @@ export async function runCloudGeminiToolSession(options: {
 			options.reviewer.attach({
 				review: async (input, reviewSignal) => {
 					assertWithinCap();
-					const response = await withScopedSignal([sessionSignal, reviewSignal], undefined, (combinedSignal) =>
+					const response = await withAbortScopes([sessionSignal, reviewSignal], (combinedSignal) =>
 						generateGeminiContent({
 							baseUrl,
 							model: options.model,
@@ -999,12 +969,13 @@ export async function runCloudGeminiToolSession(options: {
 						},
 					},
 				});
-				await recordUsage(response.usage);
-
 				const visibleText = extractVisibleText(response.parts);
 				if (visibleText) options.boundary.runLog?.agentText(visibleText);
 
 				const functionCalls = extractFunctionCalls(response.parts);
+				// WHY: overlap cumulative usage flush with tool batch execution; total spend updates synchronously first.
+				const usageFlush = functionCalls.length > 0 ? recordUsage(response.usage) : null;
+				if (!usageFlush) await recordUsage(response.usage);
 				const assignedCallIds = functionCalls.map((call, index) =>
 					call.id !== undefined && CALL_ID.test(call.id) ? call.id : `gemini-${fencedRequests}-${index + 1}`,
 				);
@@ -1058,22 +1029,27 @@ export async function runCloudGeminiToolSession(options: {
 
 				if (functionCalls.length > 0) {
 					let stopAfterBatch = false;
-					sessionSignal.throwIfAborted();
-					const batchResults =
-						functionCalls.length === 1
-							? [
-									await options.boundary.invoke(
-										assignedCallIds[0],
-										"qorpera",
-										functionCalls[0].name,
-										functionCalls[0].args,
-									),
-								]
-							: await Promise.all(
-									functionCalls.map((call, index) =>
-										options.boundary.invoke(assignedCallIds[index], "qorpera", call.name, call.args),
-									),
-								);
+					let batchResults: Awaited<ReturnType<typeof options.boundary.invoke>>[];
+					try {
+						sessionSignal.throwIfAborted();
+						batchResults =
+							functionCalls.length === 1
+								? [
+										await options.boundary.invoke(
+											assignedCallIds[0],
+											"qorpera",
+											functionCalls[0].name,
+											functionCalls[0].args,
+										),
+									]
+								: await Promise.all(
+										functionCalls.map((call, index) =>
+											options.boundary.invoke(assignedCallIds[index], "qorpera", call.name, call.args),
+										),
+									);
+					} finally {
+						await usageFlush;
+					}
 					sessionSignal.throwIfAborted();
 					for (const [index, call] of functionCalls.entries()) {
 						const callId = assignedCallIds[index];
@@ -1087,7 +1063,9 @@ export async function runCloudGeminiToolSession(options: {
 						const callParts: GeminiPart[] = [];
 						if (imageItem) {
 							const base64 = imageItem.imageUrl.slice(PNG_DATA_URL_PREFIX.length);
-							const imageSha256 = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
+							const imageSha256 =
+								options.boundary.shownImageSha256(result) ??
+								createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
 							pendingFenceInputs.push({
 								kind: "function_call_output",
 								callId,
@@ -1191,6 +1169,6 @@ export async function runCloudGeminiToolSession(options: {
 		}
 	};
 	return options.timeoutMs !== undefined
-		? withScopedSignal([options.signal], options.timeoutMs, runWithSession, "Gemini session timed out")
+		? withAbortScopes([options.signal], runWithSession, options.timeoutMs)
 		: runWithSession(options.signal);
 }

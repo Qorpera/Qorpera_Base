@@ -32,7 +32,7 @@ export async function openCloudRunLog(options: {
 	readonly folder: CloudRunLogFolder;
 	readonly log: Omit<
 		ConstructorParameters<typeof CloudRunLog>[0],
-		"folder" | "conversationId" | "parent" | "continues" | "narrow" | "firstStep"
+		"folder" | "conversationId" | "parent" | "continues" | "narrow" | "firstStep" | "initialPlace"
 	>;
 	readonly lines: Omit<CloudRunStepLinesOptions, "log" | "firstStep" | "signal">;
 }): Promise<CloudRunLogOpened | null> {
@@ -73,6 +73,7 @@ export async function openCloudRunLog(options: {
 		...(origin.parent === null ? {} : { parent: { runId: origin.parent, step: origin.step! } }),
 		...(origin.continues === null ? {} : { continues: origin.continues }),
 		narrow: origin.narrow,
+		initialPlace: place,
 	});
 	const lines = new CloudRunStepLines({ ...options.lines, log, signal });
 	return { log, lines, composeContext: lines.composeContext() };
