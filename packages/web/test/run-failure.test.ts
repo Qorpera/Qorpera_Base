@@ -856,67 +856,71 @@ describe("Gemini API run failures", () => {
 describe("Claude Code coding session failures", () => {
 	const WORDS = "The coding turn stopped. The files the turn wrote stay in the session's workspace as it left them.";
 
-	it("names Claude rather than ChatGPT for Claude Code outages, refusals, rate limits, and sign-in failures", () => {
-		const signedOutMine = codingFailureReason(
-			WORDS,
-			{ mine: true, harness: "claude-code" },
-			"CODING_CLAUDE_SIGNED_OUT",
-		);
+	it("translates runtime-emitted Claude Code failure codes without naming ChatGPT or leaking codes", () => {
+		const signedOutMine = codingFailureReason(WORDS, { mine: true }, "CODING_CLAUDE_SIGNED_OUT");
 		expect(signedOutMine).toBe(
 			"Claude no longer accepts the sign-in of the login that pays for this session. Sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 		);
-		const signedOutOther = codingFailureReason(
-			WORDS,
-			{ mine: false, harness: "claude-code" },
-			"CODING_CLAUDE_SIGNED_OUT",
-		);
+		const signedOutOther = codingFailureReason(WORDS, { mine: false }, "CODING_CLAUDE_SIGNED_OUT");
 		expect(signedOutOther).toBe(
 			"Claude no longer accepts the sign-in of the login that pays for this session. The member whose login it is can sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 		);
 		expect(codingFailureReason(`${WORDS} [code=CODING_CLAUDE_SIGNED_OUT]`, { mine: true })).toBe(signedOutMine);
 
-		expect(codingFailureReason(WORDS, { mine: true, harness: "claude-code" }, "CODING_CLAUDE_RATE_LIMITED")).toBe(
-			"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+		const rateLimited = codingFailureReason(WORDS, { mine: true }, "CODING_CLAUDE_RATE_LIMITED");
+		expect(rateLimited).toBe(
+			"The Claude account paying for this session reached its usage limit. The workspace is kept; try a follow-up once the limit resets.",
 		);
-		expect(
-			codingFailureReason(WORDS, { mine: true, harness: "claude-code" }, "CODING_CLAUDE_LOGIN_UNAVAILABLE"),
-		).toBe(
+		expect(codingFailureReason(`${WORDS} [code=CODING_CLAUDE_RATE_LIMITED]`, { mine: true })).toBe(rateLimited);
+
+		const loginUnavailableMine = codingFailureReason(WORDS, { mine: true }, "CODING_CLAUDE_LOGIN_UNAVAILABLE");
+		expect(loginUnavailableMine).toBe(
 			"The session could not load the login that pays for it. Check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 		);
-		expect(
-			codingFailureReason(WORDS, { mine: false, harness: "claude-code" }, "CODING_CLAUDE_LOGIN_UNAVAILABLE"),
-		).toBe(
+		const loginUnavailableOther = codingFailureReason(WORDS, { mine: false }, "CODING_CLAUDE_LOGIN_UNAVAILABLE");
+		expect(loginUnavailableOther).toBe(
 			"The session could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 		);
-		expect(codingFailureReason(WORDS, { mine: true, harness: "claude-code" }, "CODING_CLAUDE_NOT_OPEN")).toBe(
+
+		const notOpenMine = codingFailureReason(WORDS, { mine: true }, "CODING_CLAUDE_NOT_OPEN");
+		expect(notOpenMine).toBe(
 			"Claude is not enabled for your account in this company. Ask an owner or admin to enable it, or choose another default model in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 		);
-		expect(codingFailureReason(WORDS, { mine: false, harness: "claude-code" }, "CODING_CLAUDE_NOT_OPEN")).toBe(
+		const notOpenOther = codingFailureReason(WORDS, { mine: false }, "CODING_CLAUDE_NOT_OPEN");
+		expect(notOpenOther).toBe(
 			"Claude is not enabled for the session owner in this company. An owner or admin can enable it, or they can choose another default model in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 		);
-		expect(codingFailureReason(WORDS, { mine: true, harness: "claude-code" }, "provider_outage")).toBe(
-			"Claude was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
+
+		const outputLimit = codingFailureReason(WORDS, { mine: true }, "CODING_CLAUDE_OUTPUT_LIMIT");
+		expect(outputLimit).toBe(
+			"The session's output grew too large for one turn. The workspace is kept; a follow-up continues it.",
 		);
-		expect(
-			codingFailureReason(
-				WORDS,
-				{ mine: true, harness: "claude-code" },
-				"NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED",
-			),
-		).toBe(
-			"Claude refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
-		);
-		expect(
-			codingFailureReason(
-				WORDS,
-				{ mine: false, harness: "claude-code" },
-				"NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED",
-			),
-		).toBe(
-			"Claude refused or could not answer the session's request. The member whose login pays for it can check that login in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
-		);
-		for (const reason of [signedOutMine, signedOutOther]) {
-			expect(reason).not.toMatch(/ChatGPT|code=|CODING_CLAUDE/i);
+		expect(codingFailureReason(`${WORDS} [code=CODING_CLAUDE_OUTPUT_LIMIT]`, { mine: true })).toBe(outputLimit);
+
+		const internalCodes = [
+			"CODING_CLAUDE_TOOLS_WRONG",
+			"CODING_CLAUDE_DRIVER_UNAVAILABLE",
+			"CODING_CLAUDE_BOX_FAILED:EXIT_1",
+		];
+		const internalReasons = internalCodes.map((code) => codingFailureReason(WORDS, { mine: true }, code));
+		for (const reason of internalReasons) {
+			expect(reason).toBe(
+				"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+			);
+		}
+
+		for (const reason of [
+			signedOutMine,
+			signedOutOther,
+			rateLimited,
+			loginUnavailableMine,
+			loginUnavailableOther,
+			notOpenMine,
+			notOpenOther,
+			outputLimit,
+			...internalReasons,
+		]) {
+			expect(reason).not.toMatch(/ChatGPT|code=|CODING_CLAUDE|goes on by itself/i);
 		}
 	});
 });

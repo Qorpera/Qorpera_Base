@@ -42,40 +42,31 @@ describe("a run ChatGPT no longer accepts the login's sign-in for, in Danish", (
 });
 
 describe("Claude Code coding session failures, in Danish", () => {
-	it("translates Claude outage, sign-out, refusal, and not-enabled messages cleanly", () => {
+	it("translates runtime-emitted Claude coding failure messages cleanly", () => {
 		expect(setLanguagePreference("da")).toBe(true);
-		expect(codingFailureReason("Stopped", { mine: true, harness: "claude-code" }, "CODING_CLAUDE_SIGNED_OUT")).toBe(
+		expect(codingFailureReason("Stopped", { mine: true }, "CODING_CLAUDE_SIGNED_OUT")).toBe(
 			"Claude godtager ikke længere det login, der betaler for sessionen. Log ind igen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 		);
-		expect(codingFailureReason("Stopped", { mine: false, harness: "claude-code" }, "CODING_CLAUDE_SIGNED_OUT")).toBe(
+		expect(codingFailureReason("Stopped", { mine: false }, "CODING_CLAUDE_SIGNED_OUT")).toBe(
 			"Claude godtager ikke længere det login, der betaler for sessionen. Det medlem, der ejer loginnet, kan logge ind igen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 		);
-		expect(codingFailureReason("Stopped", { mine: true, harness: "claude-code" }, "provider_outage")).toBe(
-			"Claude var overbelastet eller havde en serverfejl, mens sessionen arbejdede. Det går som regel hurtigt over, og loginnet er i orden. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+		expect(codingFailureReason("Stopped", { mine: true }, "CODING_CLAUDE_RATE_LIMITED")).toBe(
+			"Claude-kontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; prøv en opfølgning, når grænsen er nulstillet.",
 		);
-		expect(
-			codingFailureReason(
-				"Stopped",
-				{ mine: true, harness: "claude-code" },
-				"NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED",
-			),
-		).toBe(
-			"Claude afviste eller kunne ikke besvare sessionens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+		expect(codingFailureReason("Stopped", { mine: true }, "CODING_CLAUDE_LOGIN_UNAVAILABLE")).toBe(
+			"Sessionen kunne ikke hente det login, der betaler for den. Tjek loginnet under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 		);
-		expect(
-			codingFailureReason(
-				"Stopped",
-				{ mine: false, harness: "claude-code" },
-				"NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED",
-			),
-		).toBe(
-			"Claude afviste eller kunne ikke besvare sessionens forespørgsel. Det medlem, hvis login betaler for den, kan tjekke loginnet under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+		expect(codingFailureReason("Stopped", { mine: false }, "CODING_CLAUDE_LOGIN_UNAVAILABLE")).toBe(
+			"Sessionen kunne ikke hente det login, der betaler for den. Det medlem, der ejer loginnet, kan tjekke det under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 		);
-		expect(codingFailureReason("Stopped", { mine: true, harness: "claude-code" }, "CODING_CLAUDE_NOT_OPEN")).toBe(
+		expect(codingFailureReason("Stopped", { mine: true }, "CODING_CLAUDE_NOT_OPEN")).toBe(
 			"Claude er ikke slået til for din konto i denne virksomhed. Bed en ejer eller administrator om at slå det til, eller vælg en anden standardmodel under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 		);
-		expect(codingFailureReason("Stopped", { mine: false, harness: "claude-code" }, "CODING_CLAUDE_NOT_OPEN")).toBe(
+		expect(codingFailureReason("Stopped", { mine: false }, "CODING_CLAUDE_NOT_OPEN")).toBe(
 			"Claude er ikke slået til for sessionens ejer i denne virksomhed. En ejer eller administrator kan slå det til, eller de kan vælge en anden standardmodel under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+		);
+		expect(codingFailureReason("Stopped", { mine: true }, "CODING_CLAUDE_OUTPUT_LIMIT")).toBe(
+			"Sessionens output blev for stort til én tur. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 		);
 		expect(untranslated()).toEqual([]);
 	});

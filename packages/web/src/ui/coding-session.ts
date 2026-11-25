@@ -855,7 +855,6 @@ export class CodingSessionElement {
 		const introKey = JSON.stringify([
 			session.title,
 			session.harness,
-			session.workspaceKind,
 			session.repository?.host,
 			session.repository?.name,
 			session.branch,
@@ -1129,7 +1128,6 @@ export class CodingSessionElement {
 						usageLimit: flag(event.body, "usageLimit"),
 						paidByChatgptPlan: flag(event.body, "paidByChatgptPlan"),
 						mine: this.#options.viewerOwns(this.#session),
-						harness: this.#session.harness,
 					};
 					note(
 						h(
@@ -1276,14 +1274,7 @@ export class CodingSessionElement {
 		const session = this.#session;
 		const branch =
 			session.repository && session.repository.host !== "qorpera" ? shortBranch(session.branch) : undefined;
-		const workspace =
-			session.repository?.name ??
-			(session.workspaceKind === "surface_folder"
-				? t("Studio")
-				: session.workspaceKind === "surface_ops"
-					? t("Ops")
-					: undefined);
-		const meta = [workspace, branch, session.model ? modelName(session.model) : undefined].filter(
+		const meta = [session.repository?.name, branch, session.model ? modelName(session.model) : undefined].filter(
 			Boolean,
 		) as string[];
 		const mark = harnessBadge(session.harness);

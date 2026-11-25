@@ -22,6 +22,7 @@ import {
 } from "../src/cloud-native-coding-runtime.ts";
 import { CHATGPT_PLAN_DIRECTORY } from "../src/cloud-native-isolation.ts";
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
+import { nativeProviderFailureCode } from "../src/cloud-native-provider-service.ts";
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
 import { CLOUD_RUN_ROW_READ_MS, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import {
@@ -2921,16 +2922,23 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 				fileSha256: {},
 			}),
 		});
+		const expectClaudeFailureCode = async (fixture: ReturnType<typeof makeClaudeFixture>, expectedCode: string) => {
+			let thrown: unknown;
+			try {
+				await fixture.runtime.execute(fixture.f.request, identityRoot, fixture.f.context.signal, fixture.f.turn);
+			} catch (error) {
+				thrown = error;
+			}
+			expect(thrown).toBeInstanceOf(Error);
+			expect((thrown as Error).message).toBe(expectedCode);
+			expect(nativeProviderFailureCode(thrown)).toBe(expectedCode);
+		};
 		try {
 			const signedOut = makeClaudeFixture({ open: vi.fn().mockResolvedValue({ refused: "SIGNED_OUT" }) });
-			await expect(
-				signedOut.runtime.execute(signedOut.f.request, identityRoot, signedOut.f.context.signal, signedOut.f.turn),
-			).rejects.toThrow("CODING_CLAUDE_SIGNED_OUT");
+			await expectClaudeFailureCode(signedOut, "CODING_CLAUDE_SIGNED_OUT");
 
 			const notOpen = makeClaudeFixture({ open: vi.fn().mockResolvedValue({ refused: "NOT_OPEN" }) });
-			await expect(
-				notOpen.runtime.execute(notOpen.f.request, identityRoot, notOpen.f.context.signal, notOpen.f.turn),
-			).rejects.toThrow("CODING_CLAUDE_NOT_OPEN");
+			await expectClaudeFailureCode(notOpen, "CODING_CLAUDE_NOT_OPEN");
 
 			const limited = makeClaudeFixture(validLogins(), [
 				JSON.stringify({
@@ -2952,9 +2960,7 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 					api_error_status: 429,
 				}),
 			]);
-			await expect(
-				limited.runtime.execute(limited.f.request, identityRoot, limited.f.context.signal, limited.f.turn),
-			).rejects.toThrow("CODING_CLAUDE_RATE_LIMITED");
+			await expectClaudeFailureCode(limited, "CODING_CLAUDE_RATE_LIMITED");
 
 			const wrongTools = makeClaudeFixture(validLogins(), [
 				JSON.stringify({
@@ -2965,14 +2971,7 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 					tools: [...CLAUDE_BOX_TOOLS, "mcp__evil__exec"],
 				}),
 			]);
-			await expect(
-				wrongTools.runtime.execute(
-					wrongTools.f.request,
-					identityRoot,
-					wrongTools.f.context.signal,
-					wrongTools.f.turn,
-				),
-			).rejects.toThrow("CODING_CLAUDE_TOOLS_WRONG");
+			await expectClaudeFailureCode(wrongTools, "CODING_CLAUDE_TOOLS_WRONG");
 			expect(wrongTools.close).toHaveBeenCalled();
 
 			const unsubmitted = makeClaudeFixture(validLogins(), [
