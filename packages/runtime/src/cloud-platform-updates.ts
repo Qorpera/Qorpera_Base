@@ -447,6 +447,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Image generation with Gemini and ChatGPT plans",
 		text: "Members can now pick their default image generation model under Settings, AI subscriptions, Default models: Gemini 3 Pro Image (using their Gemini API key and monthly spend cap) or ChatGPT Image (using either a Codex sign-in or a Sign in with ChatGPT subscription). Image generation now works across company chats, Gemini 4 Neon conversations, coding sessions, Claude Code workers, and Studio interface sessions, where make_picture stages PNG assets directly for Preview.",
 	},
+	{
+		id: "coding-sessions-on-claude-code",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Coding sessions run on Claude Code",
+		text: "Members whose Coding & working default uses Claude (Opus 5.5 or Fable 5.2) now run their coding sessions and code-backed interface sessions on Claude Code directly in the coding machine, using Claude's own shell and file tools over the governed workspace channels alongside the platform's finish, ask, change-recording, attachment, and picture tools. When Claude is chosen explicitly as the Coding & working default, missing logins, sign-outs, or plan limits fail clearly on Claude and never silently fall back to GPT or Codex.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

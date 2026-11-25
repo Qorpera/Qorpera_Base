@@ -291,12 +291,28 @@ export class ClaudeWorkerStream {
 		return [];
 	}
 
-	/** Whether the init line names exactly the box's tools (C2: `--tools` is the exclusive list). */
-	toolsAsAllowed(): boolean {
+	toolsAsAllowed(allowedMcpTools?: readonly string[]): boolean {
 		const tools = this.init?.tools ?? [];
+		if (!allowedMcpTools || allowedMcpTools.length === 0) {
+			return (
+				tools.length === CLAUDE_BOX_TOOLS.length &&
+				[...tools].sort().join() === [...(CLAUDE_BOX_TOOLS as readonly string[])].sort().join()
+			);
+		}
+		const mcpSet = new Set(allowedMcpTools);
+		const seenMcp = new Set<string>();
+		const builtin: string[] = [];
+		for (const tool of tools) {
+			if (tool.startsWith("mcp__")) {
+				if (!mcpSet.has(tool) || seenMcp.has(tool)) return false;
+				seenMcp.add(tool);
+			} else {
+				builtin.push(tool);
+			}
+		}
 		return (
-			tools.length === CLAUDE_BOX_TOOLS.length &&
-			[...tools].sort().join() === [...(CLAUDE_BOX_TOOLS as readonly string[])].sort().join()
+			builtin.length === CLAUDE_BOX_TOOLS.length &&
+			[...builtin].sort().join() === [...(CLAUDE_BOX_TOOLS as readonly string[])].sort().join()
 		);
 	}
 }
@@ -353,10 +369,10 @@ export { wipeClaudeLoginFolder };
 const BUSY_RETRY_MS = 5_000;
 const BUSY_RETRIES = 6;
 
-async function openWhenRenewed(
+export async function openClaudeLoginWhenRenewed(
 	logins: ClaudeWorkerLogins,
 	signal: AbortSignal,
-	retryMs: number,
+	retryMs = BUSY_RETRY_MS,
 ): Promise<Awaited<ReturnType<ClaudeWorkerLogins["open"]>>> {
 	for (let attempt = 0; ; attempt += 1) {
 		try {
@@ -368,7 +384,7 @@ async function openWhenRenewed(
 	}
 }
 
-class ClaudeWorkerLoginRefresher {
+export class ClaudeWorkerLoginRefresher {
 	readonly #logins: ClaudeWorkerLogins;
 	readonly #folder: string;
 	readonly #loginId: string;
@@ -498,7 +514,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 	signal.throwIfAborted();
 	let opened: Awaited<ReturnType<ClaudeWorkerLogins["open"]>>;
 	try {
-		opened = await openWhenRenewed(options.logins, signal, options.busyRetryMs ?? BUSY_RETRY_MS);
+		opened = await openClaudeLoginWhenRenewed(options.logins, signal, options.busyRetryMs ?? BUSY_RETRY_MS);
 	} catch {
 		// The vault unreachable, or an answer out of shape: nothing of Claude Code ran. Only a stop throws.
 		signal.throwIfAborted();
