@@ -260,16 +260,12 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 
 // WHY: Injects global company Identity assets, Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
 export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
-	const headerLines = [
-		`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`,
-		`Session ID: ${binding.sessionId}`,
-	];
+	const headerLines = [`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`];
 	const repositoryKey = binding.repositoryKey?.trim();
 	const folderRoot = binding.folderRoot?.trim();
 	const explorationVariantLabel = binding.explorationVariantLabel?.trim();
 	if (repositoryKey) headerLines.push(`Repository: code/${repositoryKey}`);
 	if (folderRoot) headerLines.push(`Folder root: ${folderRoot}`);
-	if (explorationVariantLabel) headerLines.push(`Exploration direction: ${explorationVariantLabel}`);
 
 	const isFolderOnly = Boolean(folderRoot && !repositoryKey);
 	const sections: string[] = [
@@ -287,17 +283,6 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
 				"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
-
-	if (explorationVariantLabel) {
-		sections.push(
-			`## Exploration Direction: ${explorationVariantLabel}\nDeliver ONLY this single direction as a real, publishable page so founders can compare side-by-side variants cleanly in Preview. Never embed an in-page concept switcher, A/B/C bar, or option picker even if the prompt mentions comparing multiple ideas.`,
-		);
-	}
-
-	const fullPrompt = binding.fullPrompt?.trim();
-	if (fullPrompt && fullPrompt.length > 1400) {
-		sections.push(`## Full Surface Request\n${fullPrompt.slice(0, 16000)}`);
-	}
 
 	const identity = binding.identityContext;
 	if (identity) {
@@ -375,6 +360,18 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const brief = binding.briefMarkdown?.trim();
 	if (brief) {
 		sections.push(`## Surface Brief (QorperaOS/surfaces/${binding.surfaceSlug}/brief.md)\n${brief.slice(0, 8000)}`);
+	}
+
+	// WHY: Place per-turn request and session metadata after static identity/shared/brief sections for KV cache hits.
+	if (explorationVariantLabel) {
+		sections.push(
+			`## Exploration Direction: ${explorationVariantLabel}\nExploration direction: ${explorationVariantLabel}\nDeliver ONLY this single direction as a real, publishable page so founders can compare side-by-side variants cleanly in Preview. Never embed an in-page concept switcher, A/B/C bar, or option picker even if the prompt mentions comparing multiple ideas.`,
+		);
+	}
+
+	const fullPrompt = binding.fullPrompt?.trim();
+	if (fullPrompt && fullPrompt.length > 1400) {
+		sections.push(`## Full Surface Request\n${fullPrompt.slice(0, 16000)}`);
 	}
 
 	const target = binding.pointToChangeTarget;
@@ -878,6 +875,8 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		binding.viewAttachment ? "coding_view_attachment" : "company_read",
 	);
 	if (images) sections.push(images);
+
+	sections.push(`Session ID: ${binding.sessionId}`);
 
 	return sections.join("\n\n");
 }

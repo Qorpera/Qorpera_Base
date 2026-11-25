@@ -1172,4 +1172,70 @@ describe("cloud-owned native tool boundary", () => {
 			boundary.close();
 		}
 	});
+
+	it("runs action-aware parallelRead predicates concurrently for read actions while serializing mutations", async () => {
+		const events: string[] = [];
+		let inFlightReads = 0;
+		let peakReads = 0;
+		const resolvers: Array<() => void> = [];
+		const todoTool: CloudNativeTool = {
+			name: "manage_todo",
+			description: "Manage todos",
+			source: "runtime",
+			parallelRead: (value) =>
+				value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "list",
+			inputSchema: {
+				type: "object",
+				properties: { action: { type: "string" }, label: { type: "string" } },
+				required: ["action"],
+				additionalProperties: false,
+			},
+			parseArguments: (value) => value,
+			execute: async (args) => {
+				const { action, label } = args as { action: string; label?: string };
+				if (action === "list") {
+					events.push(`list-start:${label}`);
+					inFlightReads += 1;
+					peakReads = Math.max(peakReads, inFlightReads);
+					await new Promise<void>((resolve) => {
+						resolvers.push(resolve);
+					});
+					inFlightReads -= 1;
+					events.push(`list-end:${label}`);
+					return { kind: "text", value: `listed:${label}` };
+				}
+				events.push(`write:${label}`);
+				return { kind: "text", value: `wrote:${label}` };
+			},
+		};
+		const boundary = new CloudNativeToolBoundary({
+			companyId,
+			runId,
+			tools: [todoTool],
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+		});
+		try {
+			const l1 = boundary.invoke("c_l1", "qorpera", "manage_todo", { action: "list", label: "a" });
+			const l2 = boundary.invoke("c_l2", "qorpera", "manage_todo", { action: "list", label: "b" });
+			const w1 = boundary.invoke("c_w1", "qorpera", "manage_todo", { action: "upsert", label: "u1" });
+			const l3 = boundary.invoke("c_l3", "qorpera", "manage_todo", { action: "list", label: "c" });
+			await vi.waitFor(() => expect(resolvers.length).toBe(2));
+			expect(peakReads).toBe(2);
+			expect(events).not.toContain("write:u1");
+			expect(events).not.toContain("list-start:c");
+
+			for (const done of resolvers.splice(0)) done();
+			await vi.waitFor(() => expect(resolvers.length).toBe(1));
+			expect(events.indexOf("write:u1")).toBeGreaterThan(events.indexOf("list-end:a"));
+			expect(events.indexOf("write:u1")).toBeGreaterThan(events.indexOf("list-end:b"));
+			expect(events.indexOf("list-start:c")).toBeGreaterThan(events.indexOf("write:u1"));
+
+			for (const done of resolvers.splice(0)) done();
+			const settled = await Promise.all([l1, l2, w1, l3]);
+			expect(settled.every((item) => item.success)).toBe(true);
+		} finally {
+			boundary.close();
+		}
+	});
 });

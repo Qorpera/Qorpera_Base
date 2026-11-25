@@ -21,8 +21,8 @@ export const OVERFLOW = 1.25;
 /** Attempts to bring a compactor line under NODE (§7.2). */
 export const TRIES = 3;
 // HEAD, the company head and the agent head together (§5.6), is CLOUD_AGENT_HEAD_BYTES in cloud-agent-head.ts.
-/** The run's own work: folded lines plus raw steps (§5.7). */
-export const RUN_VIEW = 64_000;
+// WHY: Keep recent raw tool steps in-prefix up to 96 KB (RUN_VIEW / 2) to prevent mid-loop KV-cache invalidation.
+export const RUN_VIEW = 192_000;
 /** The compactor's window: the previous group of WINDOW messages plus the current group up to the message (§7.3). */
 export const WINDOW = 16;
 /** The most raw text in that window, and the most of one event in it (§7.3). */
@@ -30,10 +30,9 @@ export const COMPACT_CONTEXT = 32_000;
 export const COMPACT_EVENT = 1_024;
 /** Compactor threads at once in one run (§7). */
 export const JOBS = 4;
-/** The longest wait at run start for missing lines (§5.4). */
-export const SETTLE_MS = 20_000;
-/** The longest a run spends building lines after its last send (§7.1). */
-export const CLOSE_MS = 60_000;
+// WHY: Cap live mid-loop fold wait and post-turn derived summary compaction to avoid multi-second user stalls.
+export const SETTLE_MS = 1_500;
+export const CLOSE_MS = 5_000;
 /** The most a line's text takes as stored in its block, JSON escaping included (§4.2). */
 export const LINE_BYTES = 2_048;
 /** What a line that is not built yet shows (§5.4). */

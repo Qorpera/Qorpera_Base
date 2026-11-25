@@ -27,6 +27,11 @@ import {
 	cloudControlPause,
 	cloudControlRetryable,
 } from "./cloud-control-errors.ts";
+import {
+	cloudNativeContextIdentity,
+	cloudNativeContextWithPromptCacheKey,
+	cloudNativePromptCacheKey,
+} from "./cloud-native-context-composition.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { NativeCloudExecutionDriver, NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
@@ -946,6 +951,18 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			...(pictures && attachPicturesToCodex ? { pictures } : {}),
 			prompt: effectivePrompt,
 			runtimeInstructions,
+			composeContext: (request) =>
+				cloudNativeContextWithPromptCacheKey(
+					cloudNativeContextIdentity(request),
+					cloudNativePromptCacheKey(
+						"coding",
+						initial.identity.companyId,
+						initial.identity.staffAgentId,
+						`${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`,
+						surfaceSession ? `surface:${surfaceSession.surfaceSlug}` : "standard",
+						request.model,
+					),
+				),
 			signal,
 			timeoutMs: this.#timeoutMs,
 			observability: context.observability,

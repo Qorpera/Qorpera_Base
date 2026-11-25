@@ -1,4 +1,5 @@
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
 import { type CloudCodexHome, type CloudCodexHomeReview, cloudHomeActionReview } from "./cloud-codex-home.ts";
 import {
@@ -52,6 +53,22 @@ import type {
 import type { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
+import { CLOSE_MS } from "./memory-tree/tree.ts";
+
+async function finishRunLogLines(lines: Pick<CloudRunStepLines, "finish">, closeSignal: AbortSignal): Promise<void> {
+	// WHY: Bound derived step-summary compaction to CLOSE_MS after durable log.close so slow summaries never stall turn release.
+	const deadline = new AbortController();
+	const timer = setTimeout(() => deadline.abort(new Error("Run log summary finish deadline reached")), CLOSE_MS);
+	timer.unref?.();
+	try {
+		await withAbortScopes([closeSignal, deadline.signal], (finishSignal) => lines.finish(finishSignal));
+	} catch (error) {
+		if (deadline.signal.aborted && !closeSignal.aborted) return;
+		throw error;
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 async function withTimeoutSignal<T>(timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
 	const controller = new AbortController();
@@ -359,7 +376,7 @@ export async function runCloudNativeRunToolSession(options: {
 								hasLogError = true;
 							}
 							const settled = await Promise.allSettled([
-								runLog.lines.finish(closeSignal),
+								finishRunLogLines(runLog.lines, closeSignal),
 								...(options.closing ? [options.closing(closeSignal)] : []),
 							]);
 							if (hasLogError) throw logError;

@@ -284,7 +284,7 @@ export interface CloudNativeTool {
 	readonly inputSchema: { [key: string]: JsonValue };
 	/** Its answers may show the model an image (`CloudToolContent.image`): the native session must then carry images. */
 	readonly images?: true;
-	readonly parallelRead?: true;
+	readonly parallelRead?: true | ((argumentsValue: JsonValue) => boolean);
 	/** Its arguments' bound as escaped JSON, when larger than every tool's 64 KiB, up to MAX_TOOL_ARGUMENT_BYTES: a file
 	 * write's text. */
 	readonly maxArgumentBytes?: number;
@@ -310,6 +310,19 @@ export interface CloudNativeTool {
 	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
 	 * denial. It never runs the call; if it fails, the denial stands as it is. */
 	denied?(argumentsValue: JsonValue, context: CloudToolContext & { readonly actionReviewId: string }): Promise<string>;
+}
+
+export function isCloudParallelReadCall(
+	tool: Pick<CloudNativeTool, "parallelRead">,
+	argumentsValue: JsonValue,
+): boolean {
+	if (tool.parallelRead === true) return true;
+	if (typeof tool.parallelRead !== "function") return false;
+	try {
+		return tool.parallelRead(argumentsValue) === true;
+	} catch {
+		return false;
+	}
 }
 
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
@@ -1061,11 +1074,17 @@ export class CloudNativeToolBoundary {
 			if (executed.answered) this.#answers.add(digest);
 			return executed;
 		};
-		const canParallelRead =
-			tool.parallelRead === true &&
-			!tool.prepare &&
-			!this.#folderReports &&
-			!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name);
+		let canParallelRead = false;
+		if (!tool.prepare && !this.#folderReports) {
+			if (tool.parallelRead === true) canParallelRead = true;
+			else if (typeof tool.parallelRead === "function") {
+				try {
+					canParallelRead = tool.parallelRead(JSON.parse(argumentsText) as JsonValue) === true;
+				} catch {
+					canParallelRead = false;
+				}
+			}
+		}
 		let result: Promise<CloudDynamicToolResponse>;
 		if (previous) {
 			result = previous.result;

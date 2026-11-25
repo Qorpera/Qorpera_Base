@@ -615,7 +615,9 @@ it("shows the changes waiting for review just before the skills, only when the r
 		composeCloudNativeCompanyPrompt(context, null, undefined, undefined, undefined, undefined, proposals),
 	);
 	expect(prompt.proposals).toEqual(proposals);
-	expect(Object.keys(prompt).slice(-4)).toEqual(["proposals", "skills", "memory", "hireOverlay"]);
+	const proposalKeys = Object.keys(prompt);
+	expect(proposalKeys.indexOf("proposals")).toBeGreaterThan(proposalKeys.indexOf("hireOverlay"));
+	expect(proposalKeys.indexOf("observedAt")).toBeGreaterThan(proposalKeys.indexOf("proposals"));
 	expect(JSON.parse(composeCloudNativeCompanyPrompt(context))).not.toHaveProperty("proposals");
 	const instructions = compileCloudNativeCompanyInstructions(context);
 	expect(instructions).toContain(
@@ -969,11 +971,15 @@ it.each(["cofounder", "employee"] as const)(
 			expect(encoded).toContain(id);
 		}
 		const prompt = JSON.parse(encoded);
-		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
-		// Contract 15.1: the agent's notebook is composed before the hire overlay, unavailable when not supplied.
-		expect(Object.keys(prompt).at(-2)).toBe("memory");
-		// Contract 15.2: the skill catalog comes just before the notebook, unavailable when not supplied.
-		expect(Object.keys(prompt).at(-3)).toBe("skills");
+		const keys = Object.keys(prompt);
+		expect(keys.slice(keys.indexOf("skills"), keys.indexOf("skills") + 3)).toEqual([
+			"skills",
+			"memory",
+			"hireOverlay",
+		]);
+		expect(keys.indexOf("observedAt")).toBeGreaterThan(keys.indexOf("hireOverlay"));
+		expect(keys.indexOf("wake")).toBeGreaterThan(keys.indexOf("hireOverlay"));
+		expect(keys.indexOf("currentInputs")).toBeGreaterThan(keys.indexOf("hireOverlay"));
 		expect(prompt.skills).toMatchObject({
 			schema: "qorpera.agent-skills/v1",
 			trust: "guidance_not_authority",
@@ -2931,4 +2937,22 @@ it("parses optional imageModel preference on company context and rejects unknown
 	expect(() => parseCloudNativeCompanyContext({ ...f.context, imageModel: "dall-e-2" }, f.binding)).toThrow(
 		"Invalid cloud company context",
 	);
+});
+
+it("keeps stable company/agent/skills/memory prefix identical across runs with different observedAt and wake occurrenceId", () => {
+	const f = nativeCompanyContextFixture();
+	const c1 = parseCloudNativeCompanyContext(f.context, f.binding);
+	const c2 = parseCloudNativeCompanyContext(
+		{ ...structuredClone(f.context), observedAt: "2026-11-25T12:34:56.789Z" },
+		f.binding,
+	);
+	const p1 = composeCloudNativeCompanyPrompt(c1);
+	const p2 = composeCloudNativeCompanyPrompt(c2);
+	const marker = '"hireOverlay":';
+	const endOfStable1 = p1.indexOf('"observedAt":');
+	const endOfStable2 = p2.indexOf('"observedAt":');
+	expect(p1.indexOf(marker)).toBeGreaterThan(0);
+	expect(endOfStable1).toBeGreaterThan(p1.indexOf(marker));
+	expect(endOfStable1).toBe(endOfStable2);
+	expect(p1.slice(0, endOfStable1)).toBe(p2.slice(0, endOfStable2));
 });

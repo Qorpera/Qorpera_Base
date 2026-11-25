@@ -40,6 +40,7 @@ import {
 	CHATGPT_PLAN_TOKEN_ENVIRONMENT,
 	CHATGPT_PLAN_TOKEN_FILE,
 	launchIsolatedNativeProcess,
+	NATIVE_ISOLATION_WORKSPACE,
 	type NativeChatGptPlanAccess,
 	type NativeIsolationConfiguration,
 } from "./cloud-native-isolation.ts";
@@ -2980,6 +2981,7 @@ interface CloudCodexProcess {
 	readonly key: string;
 	readonly identityRoot?: string;
 	readonly workspace: string;
+	readonly hostWorkspace: string;
 	/** The process's CODEX_HOME, as the host names it: where Codex saves a picture it made. */
 	readonly codexHome: string;
 	readonly rpc: CodexBoundaryRpc;
@@ -3093,10 +3095,10 @@ async function startCloudCodexProcess(
 			: undefined;
 		if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
 			throw new Error("Invalid ChatGPT plan access token");
-		const workspace = join(root, "workspace");
+		const hostWorkspace = join(root, "workspace");
 		const home = join(root, "home");
 		await Promise.all(
-			[workspace, home, join(root, "config"), join(root, "data"), join(root, "cache")].map((path) =>
+			[hostWorkspace, home, join(root, "config"), join(root, "data"), join(root, "cache")].map((path) =>
 				mkdir(path, { mode: 0o700 }),
 			),
 		);
@@ -3185,6 +3187,7 @@ async function startCloudCodexProcess(
 				scratchRoot: root,
 				codexHome,
 				fenceSocket: fence.path,
+				workspaceMount: NATIVE_ISOLATION_WORKSPACE,
 				...(inputs.home ? { homeSocket: inputs.home.socketPath } : {}),
 				...(planAccess ? { chatGptPlan: planAccess } : {}),
 				signal: lifetime.signal,
@@ -3192,7 +3195,7 @@ async function startCloudCodexProcess(
 			child = isolated.child;
 		} else
 			child = spawn(command, commandArgs, {
-				cwd: workspace,
+				cwd: hostWorkspace,
 				env: {
 					HOME: home,
 					CODEX_HOME: codexHome,
@@ -3207,6 +3210,7 @@ async function startCloudCodexProcess(
 				stdio: ["pipe", "pipe", "pipe"],
 				detached: true,
 			});
+		const workspace = isolated?.workspace ?? hostWorkspace;
 		rpc = new CodexBoundaryRpc(child, undefined, undefined, isolated?.allowRealtime, isolated?.allowLongWaits);
 		rpc.chatGptPlan = plan !== undefined;
 		rpc.home = inputs.home;
@@ -3265,6 +3269,7 @@ async function startCloudCodexProcess(
 			key: cloudCodexProcessKey(inputs),
 			...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
 			workspace,
+			hostWorkspace,
 			codexHome,
 			rpc: handshake,
 			userAgent,
@@ -3715,7 +3720,7 @@ export async function runCloudCodexToolSession(options: {
 						.filter(Boolean)
 						.join("\n"),
 				);
-				await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
+				await writeFile(join(started.hostWorkspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 				stage = "codex-thread-start";
 				await rpc.startThread();
 				const thread = object(

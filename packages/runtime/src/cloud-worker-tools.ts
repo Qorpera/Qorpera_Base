@@ -290,6 +290,8 @@ export function cloudWorkerTools(
 	const todo: CloudNativeTool = {
 		name: "manage_todo" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "list",
 		description: CLOUD_TODO_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
@@ -378,6 +380,8 @@ export function cloudWorkerTools(
 	const worker: CloudNativeTool = {
 		name: "manage_worker" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "status",
 		description: options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
 		inputSchema: {
 			type: "object",

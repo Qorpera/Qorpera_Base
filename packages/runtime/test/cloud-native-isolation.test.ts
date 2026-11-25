@@ -5,6 +5,7 @@ import { NATIVE_CHATGPT_PLAN_EGRESS_HOSTS, NATIVE_CODEX_EGRESS_HOSTS } from "@qo
 import {
 	CHATGPT_PLAN_TOKEN_ENVIRONMENT,
 	NATIVE_CLAUDE_TERMINAL,
+	NATIVE_ISOLATION_WORKSPACE,
 	nativeIsolationEgressHosts,
 	nativeIsolationInvocation,
 	nativeTerminalCommand,
@@ -200,6 +201,23 @@ it("lets a Claude read reach Anthropic's API alone, with its own switches, and d
 		`'/usr/lib/cargo/bin/coreutils/stty' rows ${NATIVE_CLAUDE_TERMINAL.rows} cols ${NATIVE_CLAUDE_TERMINAL.cols} && exec '/usr/bin/bwrap' '--x' 'it'\\''s'`,
 		"/dev/null",
 	]);
+});
+
+it("bind-mounts workspace to a fixed virtual path when workspaceMount is configured", () => {
+	const mounted = nativeIsolationInvocation({ ...base, workspaceMount: NATIVE_ISOLATION_WORKSPACE });
+	const bindIdx = mounted.args.indexOf(`${scratch}/workspace`);
+	expect(bindIdx).toBeGreaterThan(0);
+	expect(mounted.args.slice(bindIdx - 1, bindIdx + 2)).toEqual([
+		"--bind",
+		`${scratch}/workspace`,
+		NATIVE_ISOLATION_WORKSPACE,
+	]);
+	const chdirIdx = mounted.args.indexOf("--chdir");
+	expect(mounted.args[chdirIdx + 1]).toBe(NATIVE_ISOLATION_WORKSPACE);
+	for (const bad of ["/", "/usr", "/tmp", "workspace", "/work space", "/workspace/.."])
+		expect(() => nativeIsolationInvocation({ ...base, workspaceMount: bad })).toThrow(
+			"Invalid native isolation workspace mount",
+		);
 });
 
 it.runIf(process.platform === "linux")(

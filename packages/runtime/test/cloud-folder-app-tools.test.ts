@@ -201,7 +201,16 @@ it("keeps save_app's schema small enough that the model receives its fields' des
 it("answers a guide's text, and nothing of the company", async () => {
 	const f = await fixture({}, true);
 	const tool = f.tool("app_guide");
-	expect((tool.inputSchema as { properties: { about: { enum: string[] } } }).properties.about.enum).toEqual([
+	const aboutSchema = (
+		tool.inputSchema as {
+			properties: {
+				about: {
+					oneOf: [{ type: string; enum: string[] }, { type: string; items: { type: string; enum: string[] } }];
+				};
+			};
+		}
+	).properties.about;
+	const expectedGuides = [
 		"look",
 		"model",
 		"board",
@@ -219,7 +228,9 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"reads",
 		"writes",
 		"icons",
-	]);
+	];
+	expect(aboutSchema.oneOf[0].enum).toEqual(expectedGuides);
+	expect(aboutSchema.oneOf[1].items.enum).toEqual(expectedGuides);
 	for (const about of APP_GUIDES) expect(tool.description, about).toContain(about);
 	refusesArguments(
 		tool,
@@ -317,6 +328,33 @@ it("saves a kit's file only in a run that has read the kit's guide", async () =>
 	expect(
 		read(
 			await f.call("save_app", save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), scenes)),
+		),
+	).toMatchObject({ state: "applied", created: true });
+});
+
+it("accepts a list of topics in app_guide and marks all shown kits as read in one turn", async () => {
+	const f = await fixture({}, true);
+	const tool = f.tool("app_guide");
+	refusesArguments(tool, { about: [] }, "about list must have 1 to 6 topics");
+	refusesArguments(
+		tool,
+		{ about: ["look", "model", "board", "path", "object", "curve", "stack"] },
+		"about list must have 1 to 6 topics",
+	);
+	refusesArguments(tool, { about: ["look", "unknown"] }, "about must be one of look");
+	const batch = await f.call("app_guide", { about: ["look", "explainer", "look"] });
+	expect(batch.kind).toBe("text");
+	const text = (batch as { kind: "text"; value: string }).value;
+	expect(text).toContain(appGuide("look"));
+	expect(text).toContain(appGuide("explainer"));
+	expect(
+		read(
+			await f.call(
+				"save_app",
+				save("fee", "make-batch", manifest("How the fee works", { kit: "explainer" }), [
+					{ path: "scenes.js", text: SCENES },
+				]),
+			),
 		),
 	).toMatchObject({ state: "applied", created: true });
 });

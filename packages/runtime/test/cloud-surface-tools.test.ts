@@ -485,6 +485,20 @@ describe("cloud surface runtime tools", () => {
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("qorpera-identity.css");
 		expect(text).toContain("surfaceGate");
 		expect(text).toContain("runChecks: true");
+		expect(text.trimEnd().endsWith(`Session ID: ${sessionId}`)).toBe(true);
+		const secondSessionId = randomUUID();
+		const secondText = buildSurfaceTurnBrief({
+			sessionId: secondSessionId,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			briefMarkdown: "Warm Danish editorial tone. Terracotta accent #d76f45.",
+			recordChange: vi.fn(),
+		});
+		const marker = "## Surface Brief (QorperaOS/surfaces/website/brief.md)";
+		const prefixEnd = text.indexOf(marker) + marker.length;
+		expect(prefixEnd).toBeGreaterThan(marker.length);
+		expect(secondText.slice(0, prefixEnd)).toBe(text.slice(0, prefixEnd));
+		expect(secondText.trimEnd().endsWith(`Session ID: ${secondSessionId}`)).toBe(true);
 	});
 
 	it("formats structured conflictDetails and mainSha in buildSurfaceTurnBrief", () => {

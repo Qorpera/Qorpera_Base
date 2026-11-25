@@ -606,6 +606,7 @@ it("hashes again when the artifact changed after its early hash", async () => {
 it("nests private runtime scratch below its temporary allocation and cleans it after failed containment", async () => {
 	let allocation: string | undefined;
 	vi.spyOn(nativeIsolation, "launchIsolatedNativeProcess").mockImplementation(async (options) => {
+		expect(options.workspaceMount).toBe(nativeIsolation.NATIVE_ISOLATION_WORKSPACE);
 		expect(basename(options.scratchRoot)).toBe("runtime");
 		allocation = dirname(options.scratchRoot);
 		expect(basename(allocation)).toMatch(/^qorpera-codex-boundary-/);
