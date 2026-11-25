@@ -39,9 +39,7 @@ export function reportFiles(
 			signature: `match:${glob}`,
 			include: (path) => {
 				const relative = folderRelative(root, path);
-				return (
-					isPost(path, root) && surfaceGlobFinds(glob, relative === undefined ? { path } : { path, relative })
-				);
+				return isPost(path, root) && surfaceGlobFinds(glob, relative === undefined ? { path } : { path, relative });
 			},
 		};
 	}

@@ -1106,7 +1106,8 @@ describe("SurfaceStudioView", () => {
 		await store.load();
 		const launchPath = "hardware/headband/story/launch.html";
 		const flyerPath = "hardware/headband/flyer.html";
-		const page = (title: string) => `<!doctype html><html><head><title>${title}</title></head><body><p>${title}</p></body></html>`;
+		const page = (title: string) =>
+			`<!doctype html><html><head><title>${title}</title></head><body><p>${title}</p></body></html>`;
 		const view = new SurfaceStudioView({
 			store,
 			surface: headband,
@@ -1115,7 +1116,11 @@ describe("SurfaceStudioView", () => {
 				"hardware/headband/layout.json": JSON.stringify({
 					schema: "qorpera.surface-layout/v1",
 					tabs: [
-						{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "artifacts", heading: "Files" }] },
+						{
+							id: "overview",
+							title: "Overview",
+							blocks: [{ type: "title" }, { type: "artifacts", heading: "Files" }],
+						},
 						{ id: "story", title: "Story", blocks: [{ type: "report", match: "story/**" }] },
 					],
 				}),

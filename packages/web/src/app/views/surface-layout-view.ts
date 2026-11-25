@@ -153,9 +153,7 @@ function artifactsHold(block: SurfaceArtifactsBlock, ctx: SurfaceBlockContext): 
 		const relative = folderRelative(ctx.folderRoot, path);
 		const file = relative === undefined ? { path } : { path, relative };
 		const listed =
-			block.match === undefined
-				? relative !== undefined
-				: block.match.some((glob) => surfaceGlobFinds(glob, file));
+			block.match === undefined ? relative !== undefined : block.match.some((glob) => surfaceGlobFinds(glob, file));
 		return listed && !block.skip?.some((glob) => surfaceGlobFinds(glob, file));
 	};
 }
