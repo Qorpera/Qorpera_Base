@@ -275,7 +275,10 @@ test("in parts, the checks' part builds the packages too, though no other step i
 	assert.deepEqual(parts.map((part) => part.build), parts.map((part) => part.steps.some((step) => step.build)));
 	// Node imports the built packages for these steps; the other vitest steps (runtime, cloud-client and the rest) read
 	// the packages' sources (vitest.base.ts), so a part of only those has no build.
-	assert.deepEqual(STEPS.filter((step) => step.build).map((step) => step.name), ["checks", "web", "scripts", "hosted-db"]);
+	assert.deepEqual(
+		STEPS.filter((step) => step.build).map((step) => step.name),
+		["checks", "web", "scripts", ...RUNNER_ORCHESTRATOR, "hosted-db"],
+	);
 	assert.match(STEPS.find((step) => step.name === "checks").alone.join("\n"), /check:connector-catalog/);
 	// The part with the checks builds in 2, 3 or 5 parts: these files, a runtime change and the full plan.
 	for (const changed of [files, ["packages/runtime/src/cloud-identity-recovery-filesystems.ts"], ["package-lock.json"]])

@@ -237,6 +237,7 @@ export const STEPS = [
 		name: `runner-orchestrator-${half}`,
 		why: `packages/runner-orchestrator (half ${half} of its test files) and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest`,
 		seconds: 294,
+		build: true,
 		paths: [
 			/^packages\/runner-orchestrator\//,
 			/^deploy\//,
