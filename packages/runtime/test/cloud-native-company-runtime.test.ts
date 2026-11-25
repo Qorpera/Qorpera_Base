@@ -4358,7 +4358,11 @@ describe("Gemini 4 Neon conversation runs", () => {
 	});
 
 	it("overlaps openGeminiKeyForRun with Wave 2 context reads", async () => {
-		let folderReadInFlight = 0;
+		let releaseVault!: () => void;
+		const vaultGate = new Promise<void>((resolve) => {
+			releaseVault = resolve;
+		});
+		let vaultStarted = false;
 		let overlapped = false;
 		let geminiCalls = 0;
 		const geminiFetch = vi.fn<typeof fetch>(async () => {
@@ -4390,7 +4394,8 @@ describe("Gemini 4 Neon conversation runs", () => {
 			});
 		});
 		const vaultFetch = vi.fn<typeof fetch>(async () => {
-			if (folderReadInFlight > 0) overlapped = true;
+			vaultStarted = true;
+			await vaultGate;
 			return Response.json({
 				schema: "qorpera.gemini-key-for-run/v1",
 				state: "open",
@@ -4424,14 +4429,9 @@ describe("Gemini 4 Neon conversation runs", () => {
 		f.context.gemini = { model: "gemini-4-neon", effort: "low", keyId: GEMINI_KEY_ID };
 		const original = f.pathCall.getMockImplementation()!;
 		f.pathCall.mockImplementation(async (method, args, signal) => {
-			if (method === "qorpera_folder_read") {
-				folderReadInFlight++;
-				try {
-					await new Promise((resolve) => setTimeout(resolve, 30));
-					return await original(method, args, signal);
-				} finally {
-					folderReadInFlight--;
-				}
+			if (method === "qorpera_folder_read" && vaultStarted && !overlapped) {
+				overlapped = true;
+				releaseVault();
 			}
 			if (method === "qorpera_record_gemini_run_usage") {
 				return {
