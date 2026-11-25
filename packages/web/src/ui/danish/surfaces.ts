@@ -44,7 +44,6 @@ export const SURFACES: Record<string, string> = {
 	"Resize preview panel": "Tilpas bredden på forhåndsvisningspanelet",
 	Changes: "Ændringer",
 	"Remove change reference": "Fjern ændringsreference",
-	"Discard all": "Kassér alle",
 	"Remove {title}? The agent stops and its unapproved changes are dropped.":
 		"Fjern {title}? Agenten stopper, og dens ikke-godkendte ændringer kasseres.",
 	"Remove {title}? Its unapproved changes are dropped.": "Fjern {title}? Dens ikke-godkendte ændringer kasseres.",
@@ -61,6 +60,10 @@ export const SURFACES: Record<string, string> = {
 	"They are in Base. Publish when you're ready.": "De er i Base. Udgiv, når du er klar.",
 	"Approve all {count}": "Godkend alle {count}",
 	"{count} changes": "{count} ændringer",
+	"1 change": "1 ændring",
+	"Approve all": "Godkend alle",
+	"Show the changes": "Vis ændringerne",
+	"Hide the changes": "Skjul ændringerne",
 	"Composing preview…": "Sammensætter forhåndsvisning…",
 	"Updating preview…": "Opdaterer forhåndsvisning…",
 	"Couldn't update preview": "Kunne ikke opdatere forhåndsvisningen",

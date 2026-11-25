@@ -267,6 +267,8 @@ describe("operational surfaces", () => {
 		store.openDrawer(SURFACE, SESSION);
 		view.update();
 		const drawer = view.el.querySelector(".surface-drawer")!;
+		expect(drawer.querySelectorAll(".surface-switch")).toHaveLength(0);
+		drawer.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
 		expect(drawer.querySelectorAll(".surface-switch")).toHaveLength(3);
 		expect(drawer.querySelector(".surface-action-card")).toBeNull();
 		expect(view.el.querySelector<HTMLTextAreaElement>(".surface-input")?.placeholder).toBe(
@@ -667,6 +669,11 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(drawer.querySelector('[data-act="choose-variant"]')).toBeNull();
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
 		expect(drawer.classList.contains("is-overview")).toBe(false);
+		const foldToggle = drawer.querySelector<HTMLButtonElement>(".surface-drawer-pinned .surface-changes-toggle")!;
+		expect(foldToggle.getAttribute("aria-expanded")).toBe("false");
+		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)")).toHaveLength(0);
+		foldToggle.click();
+		expect(drawer.querySelector(".surface-changes-toggle")?.getAttribute("aria-expanded")).toBe("true");
 		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)").length).toBe(waiting.length);
 		expect(drawer.querySelectorAll(".surface-drawer-pinned .surface-drawer-change:not(.is-option)").length).toBe(
 			waiting.length,
@@ -712,14 +719,21 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();
 		expect(drawer.querySelector<HTMLFormElement>(".surface-drawer-foot")?.hidden).toBe(false);
-		const firstChange = drawer.querySelector<HTMLElement>(".surface-drawer-change")!;
-		expect(firstChange.querySelector(".surface-drawer-change-title")?.textContent).toBe(
+		const unfold = drawer.querySelector<HTMLButtonElement>('.surface-changes-toggle[aria-expanded="false"]');
+		unfold?.click();
+		const firstRow = drawer.querySelector<HTMLElement>(".surface-drawer-change")!;
+		expect(firstRow.querySelector(".surface-drawer-change-title")?.textContent).toBe(
 			"Tydelig pris: 1.995 kr. inkl. fragt",
 		);
+		expect(firstRow.querySelector(".surface-drawer-change-acts")).toBeNull();
+		expect(firstRow.querySelector('.surface-drawer-change-top [role="switch"]')).not.toBeNull();
+		firstRow.querySelector<HTMLButtonElement>('[data-act="open-change"]')!.click();
+		const firstChange = drawer.querySelector<HTMLElement>(".surface-drawer-change.is-expanded")!;
+		expect(firstChange.dataset.change).toBe(firstRow.dataset.change);
 		const rowActions = [...firstChange.querySelectorAll<HTMLButtonElement>(".surface-drawer-change-acts button")].map(
-			(btn) => btn.getAttribute("role") ?? btn.textContent,
+			(btn) => btn.textContent,
 		);
-		expect(rowActions).toEqual(["switch", "Approve", "Change", "Discard"]);
+		expect(rowActions).toEqual(["Approve", "Change", "Discard"]);
 		expect(drawer.querySelector(".surface-drawer-title p")).toBeNull();
 		expect(drawer.textContent).not.toContain("toggle to preview");
 
@@ -743,7 +757,11 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(document.querySelector(".surface-publish-sheet")).toBeNull();
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
 
-		const remainingChange = drawer.querySelector<HTMLElement>(".surface-drawer-change:not(.is-closed)")!;
+		drawer
+			.querySelector<HTMLElement>(".surface-drawer-change:not(.is-closed)")!
+			.querySelector<HTMLButtonElement>('[data-act="open-change"]')!
+			.click();
+		const remainingChange = drawer.querySelector<HTMLElement>(".surface-drawer-change.is-expanded:not(.is-closed)")!;
 		remainingChange.querySelector<HTMLButtonElement>('[data-act="quote-change"]')!.click();
 		const replyStrip = drawer.querySelector<HTMLElement>(".surface-drawer-reply")!;
 		expect(replyStrip.hidden).toBe(false);
@@ -1641,7 +1659,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		store.openDrawer(site.id, SESSION);
 		view.update();
-		const drawerChange = view.el.querySelector<HTMLElement>(".surface-drawer-change");
+		view.el.querySelector<HTMLButtonElement>(".surface-changes-toggle")!.click();
+		const drawerChange = view.el.querySelector<HTMLElement>(".surface-drawer-change.is-expanded");
 		expect(drawerChange?.querySelector(".surface-drawer-change-title")?.textContent).toBe("Refine hero & tokens");
 		expect(drawerChange?.textContent).not.toContain("src/Hero.tsx");
 		expect(drawerChange?.querySelector("a")).toBeNull();
