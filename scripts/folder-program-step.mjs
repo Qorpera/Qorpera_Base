@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -215,7 +215,18 @@ export async function folderProgramStep({
 			checked = built && (await run(docker, node(CHECK))) === 0;
 		}
 		const gitReady = checked && (await run(docker, node(GIT, ["-v", `${GIT_VOLUME}:/git`]))) === 0;
-		const gitRuns = ["-e", `QORPERA_GIT_BIN=/git/${GIT_VERSION}/bin/git`, "-e", "VITEST_MAX_WORKERS=4", "-v", `${GIT_VOLUME}:/git:ro`];
+		// WHY: Pre-create .vite-temp as the runner user and mount tmpfs over it so Docker never leaves it root-owned.
+		if (gitReady && existsSync(join(root, "node_modules"))) mkdirSync(join(root, "node_modules", ".vite-temp"), { recursive: true });
+		const gitRuns = [
+			"-e",
+			`QORPERA_GIT_BIN=/git/${GIT_VERSION}/bin/git`,
+			"-e",
+			"VITEST_MAX_WORKERS=4",
+			"-v",
+			`${GIT_VOLUME}:/git:ro`,
+			"--tmpfs",
+			"/repo/node_modules/.vite-temp:rw,size=64m",
+		];
 		const served = gitReady && (await run(docker, node(E2E, [...FUSE, ...gitRuns]))) === 0;
 		const testCode = await tested;
 		closeSync(testLog);

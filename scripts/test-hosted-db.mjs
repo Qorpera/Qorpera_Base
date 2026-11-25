@@ -35,11 +35,11 @@ export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
 	["qorpera_test_2", "508"],
 	["qorpera_test_3", "510"],
-	["qorpera_test_4", "661"],
-	["qorpera_test_5", "786"],
-	["qorpera_test_6", "896"],
+	["qorpera_test_4", "676"],
+	["qorpera_test_5", "840"],
+	["qorpera_test_6", "965"],
 	["qorpera_test_7", "1211"],
-	["qorpera_test_8", "1266"],
+	["qorpera_test_8", "1251"],
 ];
 
 export function compareTestNames(a, b) {

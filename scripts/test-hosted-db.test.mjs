@@ -448,17 +448,17 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"508_first.test.sql",
 		"509_last.test.sql",
 		"510_first.test.sql",
-		"660_last.test.sql",
-		"661_first.test.sql",
-		"785_last.test.sql",
-		"786_first.test.sql",
-		"889_last.test.sql",
-		"896_first.test.sql",
+		"675_last.test.sql",
+		"676_first.test.sql",
+		"839_last.test.sql",
+		"840_first.test.sql",
+		"964_last.test.sql",
+		"965_first.test.sql",
 		"1100_four_digit.test.sql",
 		"1210_last.test.sql",
 		"1211_first.test.sql",
-		"1265_last.test.sql",
-		"1266_first.test.sql",
+		"1250_last.test.sql",
+		"1251_first.test.sql",
 		"company_end.test.sql",
 	];
 	const split = splitTests(tests, null);
@@ -484,8 +484,8 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 13)],
-			["c", tests.slice(13)],
+			["b", tests.slice(2, 11)],
+			["c", tests.slice(11)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");

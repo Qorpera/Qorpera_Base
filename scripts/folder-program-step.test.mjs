@@ -175,6 +175,7 @@ test("the tests run beside the release build, its check and the program against 
 	const e2e = call(ran.calls, "e2e");
 	assert.ok(flags(e2e, "--device").includes("/dev/fuse"));
 	assert.ok(flags(e2e, "-e").includes("VITEST_MAX_WORKERS=4"));
+	assert.ok(flags(e2e, "--tmpfs").includes("/repo/node_modules/.vite-temp:rw,size=64m"));
 	assert.equal(
 		e2e.at(-1),
 		"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-grace-e2e.test.ts test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts test/folder-search-e2e.test.ts",
