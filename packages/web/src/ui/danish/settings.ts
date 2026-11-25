@@ -386,6 +386,7 @@ export const SETTINGS: Record<string, string> = {
 	"Connect Claude or add a Gemini API key below to choose their models here.":
 		"Forbind Claude eller tilføj en Gemini-API-nøgle nedenfor for at vælge deres modeller her.",
 	"{model} (unavailable here)": "{model} (ikke tilgængelig her)",
+	"{model} (no preview)": "{model} (ingen forhåndsvisning)",
 	"API credits": "API-kredit",
 	Unlimited: "Ubegrænset",
 	"{balance} left of {limit}": "{balance} tilbage af {limit}",

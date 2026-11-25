@@ -170,11 +170,7 @@ export class DefaultModelsView {
 	async #testVoice(url: string, key: string): Promise<void> {
 		if (this.#saving || this.#lifetime.signal.aborted) return;
 		this.#error = undefined;
-		const started = await this.#voicePreview.play(url, key);
-		if (!started && !this.#lifetime.signal.aborted) {
-			this.#error = t("Voice sample could not be played. Try again.");
-			this.#draw();
-		}
+		await this.#voicePreview.play(url, key);
 	}
 
 	async #save(patch: {
@@ -384,24 +380,28 @@ export class DefaultModelsView {
 
 		const previewableVoiceModels = state.voiceModels.filter(hasVoiceModelPreview);
 		const availableVoiceModels = previewableVoiceModels.length > 0 ? previewableVoiceModels : ["chatgpt-voice"];
-		const voiceUnavailable =
-			state.storedVoiceModel !== null && !availableVoiceModels.includes(state.storedVoiceModel);
-		const shownVoiceModel = voiceUnavailable
+		const voiceUnavailable = state.storedVoiceModel !== null && !state.voiceModels.includes(state.storedVoiceModel);
+		const voiceWithoutPreview =
+			state.storedVoiceModel !== null && !voiceUnavailable && !availableVoiceModels.includes(state.storedVoiceModel);
+		const voiceUnselectable = voiceUnavailable || voiceWithoutPreview;
+		const shownVoiceModel = voiceUnselectable
 			? state.storedVoiceModel!
 			: availableVoiceModels.includes(state.voiceModel)
 				? state.voiceModel
 				: availableVoiceModels[0]!;
 		const voiceProfiles = defaultVoiceProfiles(state, shownVoiceModel);
 		const currentVoice =
-			voiceUnavailable && state.storedVoiceName !== null
+			voiceUnselectable && state.storedVoiceName !== null
 				? clampVoice(state.storedVoiceName, voiceProfiles)
 				: clampVoice(state.voiceName, voiceProfiles);
 		const voiceModelOptions: { value: string; label: string; disabled?: boolean }[] = [
-			...(voiceUnavailable
+			...(voiceUnselectable
 				? [
 						{
 							value: state.storedVoiceModel!,
-							label: t("{model} (unavailable here)", { model: voiceModelName(state.storedVoiceModel!) }),
+							label: voiceUnavailable
+								? t("{model} (unavailable here)", { model: voiceModelName(state.storedVoiceModel!) })
+								: t("{model} (no preview)", { model: voiceModelName(state.storedVoiceModel!) }),
 							disabled: true,
 						},
 					]
@@ -441,7 +441,7 @@ export class DefaultModelsView {
 						: { voiceName: value },
 				);
 			},
-			voiceUnavailable,
+			voiceUnselectable,
 		);
 		const voiceLocale = presentationLocale();
 		const sampleUrl = voiceSampleUrl(shownVoiceModel, currentVoice, voiceLocale);
@@ -457,7 +457,7 @@ export class DefaultModelsView {
 				"aria-label": isTestingVoice
 					? t("Stop voice sample")
 					: t("Test {voice} voice", { voice: voiceProfileLabel(currentVoice) }),
-				disabled: this.#saving || sampleUrl === null,
+				disabled: !isTestingVoice && (this.#saving || sampleUrl === null),
 				onclick: () => {
 					if (isTestingVoice) {
 						this.#voicePreview.stop();

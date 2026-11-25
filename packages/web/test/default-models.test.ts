@@ -471,6 +471,33 @@ describe("DefaultModelsView", () => {
 		controller.abort();
 	});
 
+	it("labels an active stored Gemini voice model as having no preview rather than unavailable", async () => {
+		const state = sampleDefaults({
+			voiceModel: "gemini-3.8-flash-tts",
+			voiceName: "Kore",
+			storedVoiceModel: "gemini-3.8-flash-tts",
+			storedVoiceName: "Kore",
+			voiceModels: ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "chatgpt-voice"],
+		});
+		const client: WebDefaultModels = {
+			read: vi.fn(async () => state),
+			set: vi.fn(async () => state),
+		};
+		const controller = new AbortController();
+		const view = new DefaultModelsView(client, controller.signal);
+		document.body.append(view.el);
+		await settle();
+
+		const voiceModel = view.el.querySelector<HTMLSelectElement>('[data-role="voice-model"]')!;
+		expect(voiceModel.value).toBe("gemini-3.8-flash-tts");
+		expect(voiceModel.selectedOptions[0]?.disabled).toBe(true);
+		expect(voiceModel.selectedOptions[0]?.textContent).toBe("Gemini 3.8 Flash TTS (no preview)");
+		expect([...voiceModel.options].map((option) => option.value)).toEqual(["gemini-3.8-flash-tts", "chatgpt-voice"]);
+		expect(view.el.querySelector<HTMLSelectElement>('[data-role="voice-name"]')!.disabled).toBe(true);
+		expect(view.el.querySelector<HTMLButtonElement>('[data-role="voice-test"]')!.disabled).toBe(true);
+		controller.abort();
+	});
+
 	it("translates legacy stored Gemini voice profile tone descriptors in Danish", async () => {
 		setLanguagePreference("da");
 		const state = sampleDefaults({
@@ -536,11 +563,22 @@ describe("DefaultModelsView", () => {
 			storedVoiceModel: "chatgpt-voice",
 			storedVoiceName: "cove",
 		});
+		let holdSave: (() => void) | undefined;
 		const client: WebDefaultModels = {
 			read: vi.fn(async () => state),
 			set: vi.fn(async (update) => {
+				if (holdSave) {
+					await new Promise<void>((resolve) => {
+						const release = holdSave!;
+						holdSave = () => {
+							release();
+							resolve();
+						};
+					});
+				}
 				state = sampleDefaults({
 					...state,
+					conversationEffort: update.conversationEffort ?? state.conversationEffort,
 					voiceModel: update.voiceModel ?? state.voiceModel,
 					voiceName: update.voiceName ?? state.voiceName,
 					storedVoiceModel: update.voiceModel ?? state.storedVoiceModel,
@@ -631,6 +669,27 @@ describe("DefaultModelsView", () => {
 		expect(view.el.textContent).not.toContain("Voice sample could not be played. Try again.");
 
 		nextPlayResult = undefined;
+		testBtn().click();
+		await settle();
+		expect(testBtn().textContent).toBe("Stop");
+		const playingDuringSave = created[created.length - 1]!;
+		holdSave = () => {};
+		const convEffort = view.el.querySelector<HTMLSelectElement>('[data-role="conversation-effort"]')!;
+		convEffort.value = "medium";
+		convEffort.dispatchEvent(new Event("change"));
+		await settle();
+		expect(testBtn().textContent).toBe("Stop");
+		expect(testBtn().disabled).toBe(false);
+		testBtn().click();
+		await settle();
+		expect(playingDuringSave.paused).toBe(true);
+		expect(testBtn().textContent).toBe("Test");
+		expect(testBtn().disabled).toBe(true);
+		holdSave();
+		holdSave = undefined;
+		await settle();
+		expect(testBtn().disabled).toBe(false);
+
 		testBtn().click();
 		await settle();
 		expect(testBtn().textContent).toBe("Stop");

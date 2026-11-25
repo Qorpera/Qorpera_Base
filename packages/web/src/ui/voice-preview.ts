@@ -68,22 +68,17 @@ export class VoicePreviewPlayer {
 		this.#release();
 	}
 
-	async play(url: string, key: string): Promise<boolean> {
-		if (this.#disposed) return false;
+	async play(url: string, key: string): Promise<void> {
+		if (this.#disposed) return;
 		this.#release();
 		const audio = this.#createAudio(url);
 		audio.preload = "auto";
-		let settledError = false;
 		const finish = (failed: boolean): void => {
 			if (this.#audio !== audio) return;
 			this.#release();
 			if (this.#disposed) return;
-			if (failed) {
-				settledError = true;
-				this.#onError();
-			} else {
-				this.#onStateChange();
-			}
+			if (failed) this.#onError();
+			else this.#onStateChange();
 		};
 		const onEnded = () => finish(false);
 		const onError = () => finish(true);
@@ -102,12 +97,8 @@ export class VoicePreviewPlayer {
 		this.#onStateChange();
 		try {
 			await audio.play();
-			return !settledError;
 		} catch {
-			if (this.#audio !== audio) return !settledError;
-			this.#release();
-			if (!this.#disposed) this.#onStateChange();
-			return false;
+			finish(true);
 		}
 	}
 
