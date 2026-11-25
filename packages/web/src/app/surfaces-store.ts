@@ -2562,6 +2562,19 @@ export class SurfacesStore {
 		return Boolean(this.state.previewSyncing[surfaceId]);
 	}
 
+	readonly #requestedStudioTabs = new Map<string, string>();
+
+	requestStudioTab(slug: string, tab: string): void {
+		this.#requestedStudioTabs.set(slug.toLowerCase(), tab.toLowerCase());
+	}
+
+	consumeRequestedStudioTab(slug: string): string | undefined {
+		const key = slug.toLowerCase();
+		const tab = this.#requestedStudioTabs.get(key);
+		if (tab !== undefined) this.#requestedStudioTabs.delete(key);
+		return tab;
+	}
+
 	setActiveSurface(surfaceId: string | undefined): void {
 		const changed = this.#activeSurfaceId !== surfaceId;
 		this.#activeSurfaceId = surfaceId;
@@ -2581,6 +2594,10 @@ export class SurfacesStore {
 			this.#clearPreviewSyncRetry(surfaceId, false);
 		}
 		if (this.state.opsPanelSurfaceId === surfaceId) this.store.set({ opsPanelSurfaceId: undefined });
+	}
+
+	isActiveSurface(surfaceId: string): boolean {
+		return this.#activeSurfaceId === surfaceId;
 	}
 
 	async openSurface(slug: string): Promise<SurfaceWorkspace | undefined> {

@@ -1,28 +1,29 @@
 ---
 name: custom-surface
-description: How to shape and fill a custom interface, a page for a goal no template covers, and when a small app is the right tool. Use in every session on a custom interface.
+description: How to shape and fill a custom Studio surface for planning, sketching, calculators, trackers, GTM rooms, or any bespoke workspace. Use in every session on a custom interface.
 ---
 
-# Custom interface
+# Custom Studio surface
 
-A custom interface is a page for a goal no template covers. Its starter layout is nearly empty on purpose: you shape the page first, then fill it. The layout you are shown is where its shape lives.
+A custom Studio surface is a living workspace tailored to a goal that product or identity surfaces do not cover: a pricing lab, GTM room, launch tracker, sketching board, supplier matrix, or investor room. Shape the page freely first, then fill it piece by piece.
 
-## Shape first
-- Read the member's goal, the brief and the company's files. Then stage a layout whose tabs and blocks name the homes that goal needs, each with a heading that says what goes there, and nothing filled. The member judges the shape on its empty homes before any content exists.
-- Where the shape is a matter of taste (one long page or a few tabs, a board of cards or one table, figures first or the story first), offer two or three layout directions as options with surface_ask, each named in a few concrete words, and shape the one the member picks.
-- Then fill the homes piece by piece.
+## Shape freely first
+- Read the member's goal, company vision, brief, and relevant company files under `/company` (`company_read`, `company_list`, or read-only workspace search).
+- Shape the layout file freely with the tabs and blocks this workspace needs (`explainer` videos, `report` articles and posts, `artifacts` images and diagrams, `module` custom tools, and strategy or data blocks on any tab). When structure is a genuine taste choice, offer two or three concrete options by asking once early, then build on the answer.
+- Fill the layout one coherent deliverable per `stage_surface_patch` call so each piece lands and approves cleanly on its own.
+
+## Show, narrate, don't dump text
+- Never build a text-only page. Lead each tab with a visual model, diagram, imagery, interactive simulator, or narrated animated `explainer` video (recorded with `narrate_explainer`).
+- For multi-section or multi-tab workspaces, add a guided Studio voice tour and record its spoken clips with `narrate_explainer` so a real voice walks the founder across sections and tabs with spotlight, pulse, and smooth scroll effects.
+- Keep text light and scannable: one-line takeaways, concise labels, and progressive disclosure for detail rather than walls of paragraphs or dense spreadsheets.
 
 ## How to work
-- Fill the homes the layout names, one piece per change, so the member sees each piece land on its own. Never stage the whole page at once.
-- Write reports, analyses, essays and blog posts as structured reports, standalone HTML pages or PDFs, never plain Markdown notes; stage each piece in its own change with stage_surface_patch so the member can open, toggle and approve each deliverable independently. Any tab can hold them: add or widen a report block there to match.
-- An unknown stays an empty home. Never invent a figure, a name or a date to make the page look full; say in your reply what is still missing and who could know it.
-- Settle what you can yourself by reading. Ask the member only questions of taste, with surface_ask and a few concrete options, never questions you can answer from the company's files. Ask once, early, and then build on the answer; never stop the work for a question you could settle yourself, and never ask the same thing twice.
-- Keep the page's homes. When the work needs another shape, change the layout file in its own change and say in plain words what moved and why.
-- Never draw a stand-in for something that must be made: no clipart, no drawn picture in place of a model or a photo. If it cannot be made in this session, leave its home empty and say so.
-- Write to the member about the page, not about files or steps: no paths, file names or tool names in a change's title, its summary or your reply.
+- Write reports, analyses, memos, and blog posts as structured report articles, standalone HTML pages, or PDFs — never plain Markdown notes; stage each piece in its own change.
+- Use three-tier epistemics: distinguish verified company facts (files, databases, confirmed decisions), benchmark market facts (taxes, fees, rival prices with cited sources), and hypothesis working bets (with test and kill criteria). Never invent company traction, revenue, or signed customers; never draw stand-in clipart in place of real art or photos.
+- For commercial or pricing rooms, pressure-test real incentives, rivals, margins, and capacity ceilings instead of passive worksheets.
+- Write to the member about the workspace and decisions — never mention file paths, schemas, or tool names in change titles, summaries, or replies.
 
-## Blocks first, a module when blocks cannot
-- Prefer a native block. Figures, a table, cards, a list of values, a report, a 3D stage and artifacts are blocks, and they wear the company look on their own. Add an artifacts block to any tab that should show vector art, pictures, notes, pages, PDFs or extra structured files.
-- A module is a small app built for this page. It is the right tool for what no block can do: a calculator, a planner the member drags, a chart that answers what the member types.
-- Know what a module cannot do: it has no network, it sees only its own folder (and the company stylesheet it may link), and a module that sizes itself to its content must not size itself by the viewport. Data it needs goes in its own folder; anything from elsewhere is a block's job.
-- Link the company stylesheet so a module wears the company look; never copy colours or fonts into it.
+## Native blocks first, module when blocks cannot
+- Prefer native blocks (they inherit company Identity tokens and light or dark themes automatically): `plays`, `economics`, `hypotheses`, `landscape`, `explainer`, `title`, `facts`, `spec_list`, `table`, `cards`, `report`, `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts`.
+- Use a `module` block (an interactive app inside its own subfolder) only when no native block fits — for example a custom sketchpad, funnel tool, or drag-and-drop planner.
+- Link the company Identity tokens stylesheet inside modules so they wear the company look; never hardcode brand colors or fonts. Modules have no network access, read files through the built-in read and list bridge, and hand founder inputs back through the built-in tell bridge. Auto-height modules must not lock to viewport height.

@@ -32,6 +32,12 @@ const KIND_SPECS: Readonly<Record<SurfaceKind, KindSpec>> = {
 		tint: "#d76f45",
 		subtitle: phrase("Brand, voice, design & philosophy"),
 	},
+	strategy: {
+		emblem: "map",
+		figure: "lighthouse",
+		tint: "#0f766e",
+		subtitle: phrase("Grand plan, bets, economics & hypotheses"),
+	},
 	website: { emblem: "globe", figure: "browser", tint: "#2a9ae0", subtitle: phrase("Marketing site") },
 	web_app: { emblem: "spark", figure: "pointer", tint: "#5a5fe0", subtitle: phrase("Interactive web app") },
 	mobile_app: { emblem: "phone", figure: "phone", tint: "#8b5cf6", subtitle: phrase("iOS & Android app") },

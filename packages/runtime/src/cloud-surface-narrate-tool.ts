@@ -1,4 +1,9 @@
-import type { StudioBinaryRef, StudioPatchOp } from "@qorpera/contracts";
+import {
+	parseStudioTourDocument,
+	type StudioBinaryRef,
+	type StudioPatchOp,
+	studioTourCaptionTexts,
+} from "@qorpera/contracts";
 import { captionHash, explainerSaid } from "./cloud-app-kit-explainer.ts";
 import { GeminiCapReachedError, GeminiKeyRevokedError } from "./cloud-gemini-tool-session.ts";
 import {
@@ -15,8 +20,9 @@ import {
 	type CloudToolContext,
 	CloudToolRefusal,
 } from "./cloud-native-tool-boundary.ts";
+import type { StudioChatGptVoiceBatchResult } from "./cloud-studio-voice-recorder.ts";
 import type { SurfacePatchToolPort } from "./cloud-surface-tools.ts";
-import { CLOUD_VOICE_NAMES } from "./cloud-voice-channel.ts";
+import { CLOUD_VOICE_NAMES, type CloudVoiceName, isCloudVoiceName } from "./cloud-voice-channel.ts";
 
 const MAX_UNIQUE_CAPTIONS = 120;
 const MAX_CLIPS_PER_CALL = 48;
@@ -45,6 +51,12 @@ export interface StudioNarrateToolOptions {
 		readonly text: string;
 		readonly signal: AbortSignal;
 	}) => Promise<GeminiTtsSpeechResult>;
+	readonly synthesizeChatGptVoice?: (input: {
+		readonly callId?: string;
+		readonly voiceName?: CloudVoiceName;
+		readonly captions: readonly { readonly hash: string; readonly text: string }[];
+		readonly signal: AbortSignal;
+	}) => Promise<StudioChatGptVoiceBatchResult>;
 	readonly onStagedOps?: (ops: readonly StudioPatchOp[]) => void;
 }
 
@@ -69,9 +81,11 @@ function normalizeRelativeScenesPath(raw: unknown, folderRoot: string): string {
 	if (parts.some((part) => !part || part === "." || part === "..")) {
 		throw new CloudToolArgumentRefusal("scenesPath must be a clean relative path inside the interface folder");
 	}
-	if (!trimmed.toLowerCase().endsWith(".js")) {
+	const lower = trimmed.toLowerCase();
+	const isTour = lower === "tour.json" || lower.endsWith("/tour.json");
+	if (!lower.endsWith(".js") && !isTour) {
 		throw new CloudToolArgumentRefusal(
-			"scenesPath must point to a .js scenes file (for example breakdowns/ux/scenes.js)",
+			"scenesPath must point to a .js scenes file or tour.json (for example breakdowns/ux/scenes.js or tour.json)",
 		);
 	}
 	return trimmed;
@@ -191,7 +205,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 		name: "narrate_explainer",
 		source: "runtime",
 		description:
-			"Synthesize spoken narration clips for an animated breakdown's scenes.js using the member's configured Voice model and voice profile, and stage the audio clips plus voice/clips.json into the interface's Preview. Only captions missing clips are synthesized; existing clips are reused by caption hash.",
+			"Synthesize spoken narration clips for an animated breakdown (scenes.js) or guided Studio voice tour (tour.json) using the member's configured Voice model and voice profile, and stage the audio clips plus voice/clips.json into the interface's Preview. Only captions missing clips are synthesized; existing clips are reused by caption hash.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -202,7 +216,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					minLength: 4,
 					maxLength: 256,
 					description:
-						"Relative path to scenes.js inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js).",
+						"Relative path to scenes.js or tour.json inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js or tour.json).",
 				},
 				title: {
 					type: "string",
@@ -243,10 +257,23 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					`SCENES_NOT_FOUND: ${args.scenesPath} was not found; stage it with stage_surface_patch before calling narrate_explainer`,
 				);
 			}
-			const captions = extractExplainerCaptionEntries(scenesJs);
+			const isTour = args.scenesPath.toLowerCase().endsWith(".json");
+			const captions = isTour
+				? (() => {
+						const doc = parseStudioTourDocument(scenesJs);
+						if (!doc) {
+							throw new CloudToolRefusal(
+								`INVALID_TOUR: ${args.scenesPath} is not a valid tour.json document with spoken beats`,
+							);
+						}
+						return studioTourCaptionTexts(doc).map((text) => ({ hash: captionHash(text), text }));
+					})()
+				: extractExplainerCaptionEntries(scenesJs);
 			if (captions.length === 0) {
 				throw new CloudToolRefusal(
-					'NO_CAPTIONS: no s.say("...") captions were found in scenes.js; add spoken captions and stage scenes.js first',
+					isTour
+						? 'NO_CAPTIONS: no spoken "say" beats were found in tour.json; add beats and stage tour.json first'
+						: 'NO_CAPTIONS: no s.say("...") captions were found in scenes.js; add spoken captions and stage scenes.js first',
 				);
 			}
 			if (captions.length > MAX_UNIQUE_CAPTIONS) {
@@ -280,27 +307,134 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 			}
 
 			if (!isGeminiTtsModel(options.voiceModel)) {
-				const validChatgpt = args.voiceName
-					? (CLOUD_VOICE_NAMES as readonly string[]).includes(args.voiceName)
-					: true;
-				if (!validChatgpt) {
+				const requestedVoice = args.voiceName ?? options.voiceName;
+				if (args.voiceName && !isCloudVoiceName(args.voiceName)) {
 					throw new CloudToolArgumentRefusal(
 						`voiceName must be one of ${CLOUD_VOICE_NAMES.join(", ")} for ${options.voiceModel}`,
 					);
 				}
+				const resolvedChatGptVoice: CloudVoiceName | undefined = isCloudVoiceName(requestedVoice)
+					? requestedVoice
+					: undefined;
+				if (!options.synthesizeChatGptVoice) {
+					return {
+						kind: "text",
+						value: JSON.stringify({
+							ok: false,
+							state: "unsupported_in_studio",
+							voiceModel: options.voiceModel,
+							voiceName: resolvedChatGptVoice ?? requestedVoice,
+							spokenNow: 0,
+							reused,
+							left: missing.length,
+							total: captions.length,
+							message:
+								"ChatGPT Voice is unavailable in this session because no connected Codex voice lane is active. The walkthrough plays with captions alone; connect a Codex/ChatGPT subscription voice or switch Settings → Default models → Voice to a Gemini TTS model.",
+						}),
+					};
+				}
+				const batch = missing.slice(0, MAX_CLIPS_PER_CALL);
+				const voiceResult = await options.synthesizeChatGptVoice({
+					callId: context.callId,
+					...(resolvedChatGptVoice ? { voiceName: resolvedChatGptVoice } : {}),
+					captions: batch,
+					signal,
+				});
+				if (signal.aborted) throw signal.reason;
+				const recorded = new Map<
+					string,
+					{ readonly clip: StudioExplainerClipRecord; readonly op: StudioPatchOp }
+				>();
+				for (const item of voiceResult.clips) {
+					const ref = await options.stageBytes(item.audio, item.mediaType, signal);
+					const closedRef: StudioBinaryRef = {
+						manifestSha256: ref.manifestSha256,
+						fileSha256: ref.fileSha256,
+						bytes: ref.bytes,
+						mediaType: ref.mediaType,
+					};
+					const file = `${item.hash}.${item.fileExtension}`;
+					const clipPath = joinRel(dir, `voice/${file}`);
+					recorded.set(item.hash, {
+						clip: {
+							caption: item.hash,
+							file,
+							seconds: Math.min(CLIP_MAX_SECONDS, Math.max(0.01, Math.round(item.seconds * 100) / 100)),
+						},
+						op: { op: "write_file", path: clipPath, file: closedRef },
+					});
+				}
+				if (recorded.size === 0) {
+					return {
+						kind: "text",
+						value: JSON.stringify({
+							ok: false,
+							state: voiceResult.stopReason ?? "unavailable",
+							voiceModel: options.voiceModel,
+							voiceName: resolvedChatGptVoice ?? requestedVoice,
+							spokenNow: 0,
+							reused,
+							left: missing.length,
+							total: captions.length,
+							message:
+								voiceResult.stopReason === "limit_reached"
+									? "The connected ChatGPT voice usage limit was reached before recording new clips. Try again after the reset."
+									: `ChatGPT Voice could not record clips (${voiceResult.errorMessage ?? "voice unavailable"}). The walkthrough plays with captions alone.`,
+							...(voiceResult.silent?.length ? { silent: voiceResult.silent } : {}),
+						}),
+					};
+				}
+				const finalClips: StudioExplainerClipRecord[] = [];
+				const ops: StudioPatchOp[] = [];
+				for (const caption of captions) {
+					const added = recorded.get(caption.hash);
+					if (added) {
+						finalClips.push(added.clip);
+						ops.push(added.op);
+						continue;
+					}
+					const kept = existing.get(caption.hash);
+					if (kept) finalClips.push(kept);
+				}
+				ops.push({
+					op: "write_text",
+					path: clipsPath,
+					content: `${JSON.stringify({ clips: finalClips }, null, 2)}\n`,
+				});
+				const staged = await options.surfacePatch.stageSurfacePatch(
+					options.sessionId,
+					{
+						title: args.title,
+						summary: args.summary,
+						ops,
+						notePaths: [],
+						finishSession: false,
+					},
+					context,
+				);
+				options.onStagedOps?.(ops);
+				const left = captions.length - finalClips.length;
+				const state =
+					voiceResult.stopReason === "limit_reached"
+						? "limit_reached"
+						: voiceResult.stopReason === "error" || left > 0
+							? "partly_spoken"
+							: "spoken";
 				return {
 					kind: "text",
 					value: JSON.stringify({
-						ok: false,
-						state: "unsupported_in_studio",
+						ok: true,
+						state,
 						voiceModel: options.voiceModel,
-						voiceName: args.voiceName ?? options.voiceName,
-						spokenNow: 0,
+						voiceName: resolvedChatGptVoice ?? requestedVoice,
+						spokenNow: recorded.size,
 						reused,
-						left: missing.length,
+						left,
 						total: captions.length,
-						message:
-							"ChatGPT Voice requires a running company machine and is not available in Studio sessions. The breakdown still plays cleanly with on-screen captions; switch Settings → Default models → Voice to a Gemini TTS model for instant Studio narration.",
+						scenesPath: args.scenesPath,
+						clipsPath,
+						changeId: staged.changeId,
+						...(voiceResult.silent?.length ? { silent: voiceResult.silent } : {}),
 					}),
 				};
 			}

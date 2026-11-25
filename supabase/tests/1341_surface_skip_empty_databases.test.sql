@@ -182,7 +182,7 @@ begin
 	v_list := public.qorpera_bootstrap_company_surfaces(v_base_profile);
 	reset role;
 	perform pg_temp.ssed_assert(
-		jsonb_array_length(v_list) = 4
+		jsonb_array_length(v_list) = 5
 		and not exists (select 1 from public.qorpera_surfaces where profile_id = v_base_profile and slug = 'data'),
 		'bootstrap skips Databases surface when company has no database'
 	);
@@ -191,7 +191,7 @@ begin
 	perform pg_temp.base_claims('service_role');
 	perform public.qorpera_service_bootstrap_company_surfaces(v_co_cofounder, null);
 	perform pg_temp.ssed_assert(
-		(select count(*) from public.qorpera_surfaces where profile_id = v_co_cofounder) = 4
+		(select count(*) from public.qorpera_surfaces where profile_id = v_co_cofounder) = 5
 		and not exists (select 1 from public.qorpera_surfaces where profile_id = v_co_cofounder and slug = 'data'),
 		'service bootstrap skips Databases surface for new company without a database'
 	);
@@ -288,7 +288,7 @@ begin
 	v_list := public.qorpera_bootstrap_company_surfaces(v_co_preseeded);
 	reset role;
 	perform pg_temp.ssed_assert(
-		jsonb_array_length(v_list) = 5
+		jsonb_array_length(v_list) = 6
 		and exists (select 1 from public.qorpera_surfaces where profile_id = v_co_preseeded and slug = 'data' and status = 'active'),
 		'bootstrap includes Databases surface when company already has a database'
 	);

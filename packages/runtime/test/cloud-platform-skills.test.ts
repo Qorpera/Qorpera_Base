@@ -10,8 +10,12 @@ const STUDIO_TOOLS = [
 	"stage_surface_patch",
 	"surface_reply",
 	"surface_ask",
+	"narrate_explainer",
 	"company_read",
 	"company_list",
+	"company_search",
+	"data_describe",
+	"data_query",
 	"read_skill",
 	"search_skills",
 ];

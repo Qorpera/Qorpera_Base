@@ -461,6 +461,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Studio and Ops interfaces run on coding machines",
 		text: "Studio, Identity, and Ops interface sessions now run as coding agents on your coding machines under the hood, respecting your Coding & working default model (including Claude Opus 5.5 and Fable 5.2 with no silent GPT fallback) while preserving Preview patch staging, layout and report checks, narration, image generation, and Action cards. Studio and Ops sessions share a coding machine with read-only access to Company Files and a writable scratch workspace for scripts, analysis, and visual checks.",
 	},
+	{
+		id: "strategy-surface-and-custom-studios",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Strategy surface, custom studios and narrated voice tours",
+		text: "Every company now has a Strategy Studio surface (surfaces/strategy) for the grand plan, competing plays, interactive unit economics and market maps, falsifiable hypotheses, animated breakdowns, and guided voice tours narrated with connected ChatGPT Voice or Gemini TTS. Put custom planning rooms or calculators in Custom Studio surfaces (archetype studio, folder-backed) instead of legacy apps/ widgets, and link any surface tab in chat with [Title](surface:<slug>#<tab>).",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

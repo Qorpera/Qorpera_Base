@@ -1394,9 +1394,17 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .site-card .app-card-note.is-error { color: var(--danger); }
 .site-card-key { position: relative; z-index: 1; margin: -4px -6px -4px 0; }
 .site-card-key svg { width: 15px; height: 15px; }
+.surface-card .app-card-emblem { width: 34px; height: 34px; overflow: visible; }
+.surface-card .app-card-emblem .surface-tile.is-rail {
+	--tile-size: 34px;
+	transform-origin: 50% 60%; transition: transform var(--motion-base) var(--ease-spring);
+}
+.surface-card:hover .app-card-emblem .surface-tile.is-rail { transform: scale(1.1); }
+.message-prose .folder-link.surface-link { color: inherit; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
-	.app-card, .app-card-emblem .interface-emblem, .app-card-go { transition: none; }
-	.app-card:hover .app-card-emblem .interface-emblem, .app-card:hover .app-card-go { transform: none; }
+	.app-card, .app-card-emblem .interface-emblem, .app-card-go, .surface-card .app-card-emblem .surface-tile.is-rail { transition: none; }
+	.app-card:hover .app-card-emblem .interface-emblem, .app-card:hover .app-card-go,
+	.surface-card:hover .app-card-emblem .surface-tile.is-rail { transform: none; }
 }
 
 /* Two agents' transcript: a sheet that slides in from the right over the thread, which waits dimmed behind it

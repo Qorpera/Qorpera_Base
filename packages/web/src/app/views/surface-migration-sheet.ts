@@ -186,8 +186,16 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: null,
 		kind: "custom",
 		title: phrase("Custom Surface"),
-		line: phrase("Anything else: an inventory tracker, investor room, support desk…"),
-		archetype: "live_build",
+		line: phrase("A custom planning room, pricing lab, tracker, or sketching space…"),
+		archetype: "studio",
+	},
+	{
+		id: "strategy",
+		slug: "strategy",
+		kind: "strategy",
+		title: phrase("Strategy & Planning"),
+		line: phrase("Grand plan, competing bets, unit economics & hypotheses"),
+		archetype: "studio",
 	},
 	{
 		id: "identity",

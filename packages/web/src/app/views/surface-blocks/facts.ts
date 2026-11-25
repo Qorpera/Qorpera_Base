@@ -56,11 +56,16 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 		const read = ctx.read(block.from);
 		facts = factsFrom(read.value, read.base, block.skip).filter(fitsAsFigure).slice(0, block.take);
 		if (facts.length === 0) {
-			const labels = [t("Size"), t("Weight"), t("Made of"), t("Price")];
+			const isStrategy = ctx.surface.kind === "strategy" || ctx.surface.slug === "strategy";
+			const labels = isStrategy
+				? [t("North Star"), t("Unit margin"), t("Payback"), t("Break-even")]
+				: [t("Size"), t("Weight"), t("Made of"), t("Price")];
 			facts = Array.from({ length: block.take }, (_, index) => ({ label: labels[index] ?? "", changed: false }));
 		}
 	}
 	const filled = facts.some((fact) => fact.value !== undefined);
+	const isStrategy = ctx.surface.kind === "strategy" || ctx.surface.slug === "strategy";
+	const emptyMark = isStrategy ? "–" : "?";
 	return {
 		filled,
 		hero: "facts",
@@ -75,7 +80,9 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 								"div",
 								{ class: `studio-fact${fact.changed ? " is-changed" : ""}` },
 								h("dt", null, fact.label),
-								fact.value !== undefined ? h("dd", { title: fact.value }, fact.value) : h("dd", null, "?"),
+								fact.value !== undefined
+									? h("dd", { title: fact.value }, fact.value)
+									: h("dd", null, emptyMark),
 							),
 						),
 					);

@@ -49,6 +49,7 @@ export interface SurfaceBlockContext extends SurfaceFileLayer {
 	readonly folderRoot: string;
 	readonly briefSummary: string;
 	readonly signal: AbortSignal;
+	readonly renderSignal?: AbortSignal;
 	readonly words: (text: string) => string;
 	readonly read: (source: SurfaceSource | undefined) => SurfaceBlockRead;
 	readonly companyPath: (bindingPath: string) => string | undefined;
@@ -61,6 +62,7 @@ export interface SurfaceBlockContext extends SurfaceFileLayer {
 		globs: readonly string[] | undefined,
 		skip?: readonly string[] | undefined,
 	) => readonly SurfaceFolderFile[];
+	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
 
 export interface SurfaceBlockContextInput extends SurfaceFileLayer {
@@ -68,7 +70,9 @@ export interface SurfaceBlockContextInput extends SurfaceFileLayer {
 	readonly company?: SurfaceFileLayer | undefined;
 	readonly briefSummary: string;
 	readonly signal: AbortSignal;
+	readonly renderSignal?: AbortSignal;
 	readonly fromStarter: boolean;
+	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
 
 const STARTER_WORDS: ReadonlySet<string> = new Set([
@@ -93,6 +97,26 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Voice"),
 	phrase("Design system"),
 	phrase("Tokens"),
+	phrase("Grand plan"),
+	phrase("Strategy walkthrough"),
+	phrase("Competing plays"),
+	phrase("Briefings & posts"),
+	phrase("Sketches & visuals"),
+	phrase("Economics"),
+	phrase("How the money works"),
+	phrase("Unit economics"),
+	phrase("Financial memos"),
+	phrase("Market"),
+	phrase("Market & wedge"),
+	phrase("Competitive landscape"),
+	phrase("Market research"),
+	phrase("Market visuals"),
+	phrase("Hypotheses"),
+	phrase("Critical bets"),
+	phrase("Assumptions & kill criteria"),
+	phrase("Video breakdowns"),
+	phrase("Written breakdowns"),
+	phrase("Deep dives"),
 ]);
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -270,6 +294,7 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 		baseBinaries: input.baseBinaries,
 		briefSummary: input.briefSummary,
 		signal: input.signal,
+		renderSignal: input.renderSignal ?? input.signal,
 		words: input.fromStarter ? (text) => (STARTER_WORDS.has(text) ? t(text) : text) : (text) => text,
 		read: (source) => {
 			if (source === undefined) return { found: false, value: undefined, base: undefined, changed: false };
@@ -299,5 +324,6 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 			(globs === undefined ? folderFiles : allFiles.filter((file) => finds(globs, file))).filter(
 				(file) => !skip || !finds(skip, file),
 			),
+		...(input.askSurface ? { askSurface: input.askSurface } : {}),
 	};
 }

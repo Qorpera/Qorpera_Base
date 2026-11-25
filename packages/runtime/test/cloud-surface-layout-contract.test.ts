@@ -66,6 +66,15 @@ const IDENTITY: Interface = {
 	surfaceArchetype: "studio",
 	folderRoot: "identity",
 };
+const STRATEGY: Interface = {
+	surfaceSlug: "strategy",
+	surfaceTitle: "Strategy",
+	surfaceKind: "strategy",
+	surfaceIcon: "figure:lighthouse",
+	surfaceIsGlobal: false,
+	surfaceArchetype: "studio",
+	folderRoot: "surfaces/strategy",
+};
 const CUSTOM: Interface = {
 	surfaceSlug: "field-notes",
 	surfaceTitle: "Field Notes",
@@ -241,6 +250,7 @@ describe("the skill a Studio session works by", () => {
 		const cases = [
 			[PRODUCT, "product-studio"],
 			[IDENTITY, "identity-studio"],
+			[STRATEGY, "strategy-studio"],
 			[CUSTOM, "custom-surface"],
 		] as const;
 		for (const [surface, name] of cases) {
@@ -263,7 +273,7 @@ describe("the skill a Studio session works by", () => {
 			surfaceKind: "product",
 		});
 		expect(unknown).toContain(
-			"## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: product-studio for a product, identity-studio for the company's Identity, custom-surface for any other page.",
+			"## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: product-studio for a product, identity-studio for the company's Identity, strategy-studio for Strategy, custom-surface for any other page.",
 		);
 		expect(unknown).not.toContain("## Skill: ");
 	});

@@ -19,6 +19,7 @@ import type { GeminiTtsModel, GeminiTtsSpeechResult, GeminiTtsVoice } from "./cl
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import type { StudioChatGptVoiceBatchResult } from "./cloud-studio-voice-recorder.ts";
 import {
 	type SurfaceAttachmentReader,
 	type SurfaceMemberImage,
@@ -30,6 +31,7 @@ import type {
 	SurfaceSessionOpenChange,
 } from "./cloud-surface-preview-overlay.ts";
 import type { CloudSurfaceToolsPort, SurfaceOpsActionToolPort, SurfacePatchToolPort } from "./cloud-surface-tools.ts";
+import type { CloudVoiceChannel, CloudVoiceName } from "./cloud-voice-channel.ts";
 
 export interface SurfaceIdentityContext {
 	readonly briefMarkdown?: string | null;
@@ -218,6 +220,8 @@ export interface SurfaceTurnBriefInput {
 	readonly surfaceTitle: string;
 	readonly sourceKind?: SurfaceSourceKind;
 	readonly isInternalReconciliation?: boolean;
+	readonly visionMarkdown?: string | null;
+	readonly readingMarkdown?: string | null;
 	readonly briefMarkdown: string | null;
 	readonly fullPrompt?: string | null;
 	readonly repositoryKey?: string | null;
@@ -254,6 +258,13 @@ export interface SurfaceCodingNarratePort {
 		readonly text: string;
 		readonly signal: AbortSignal;
 	}) => Promise<GeminiTtsSpeechResult>;
+	readonly voiceChannel?: Pick<CloudVoiceChannel, "open" | "usage">;
+	readonly synthesizeChatGptVoice?: (input: {
+		readonly callId?: string;
+		readonly voiceName?: CloudVoiceName;
+		readonly captions: readonly { readonly hash: string; readonly text: string }[];
+		readonly signal: AbortSignal;
+	}) => Promise<StudioChatGptVoiceBatchResult>;
 }
 
 export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
@@ -320,6 +331,15 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
+	const vision = binding.visionMarkdown?.trim();
+	if (vision) {
+		sections.push(`## Company Vision (QorperaOS/vision/vision.md)\n${vision.slice(0, 6000)}`);
+	}
+
+	const reading = binding.readingMarkdown?.trim();
+	if (reading) {
+		sections.push(`## Company Reading (QorperaOS/vision/reading.md)\n${reading.slice(0, 4096)}`);
+	}
 	const identity = binding.identityContext;
 	if (identity) {
 		const identityParts: string[] = [];

@@ -6,11 +6,12 @@ import {
 	type StudioPatchOp,
 	type SurfaceStarterKind,
 	type SurfaceSummary,
+	surfaceCompanyPath,
 	surfaceFilesHaveModel,
 	surfaceLegacyModelKey,
 	surfaceStarterKind,
 } from "@qorpera/contracts";
-import { AppFrame } from "../../ui/app-frame.ts";
+import { type AppAnswer, type AppCall, AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { playOnce } from "../../ui/motion.ts";
@@ -49,6 +50,8 @@ import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { compiledTokensCssFrom, prepareStudioHtmlPreview, studioHtmlDependencyChanged } from "./surface-studio-html.ts";
+import type { StudioBinaryReader } from "./surface-studio-stage.ts";
+import { StudioTourController } from "./surface-tour.ts";
 
 export { prepareStudioHtmlPreview };
 
@@ -57,6 +60,8 @@ export interface SurfaceStudioOptions {
 	readonly surface: SurfaceSummary;
 	readonly signal: AbortSignal;
 	readonly baseFiles?: Readonly<Record<string, string>>;
+	readonly baseBinaries?: Readonly<Record<string, StudioBinaryRef>>;
+	readonly readBinary?: StudioBinaryReader;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
 	readonly timeSlice?: boolean;
@@ -215,6 +220,7 @@ export class SurfaceStudioView {
 	#renderSeq = 0;
 	#pendingRetryTarget: { readonly changeIds: readonly string[]; readonly paths: readonly string[] } | null = null;
 	#layout: SurfaceLayoutView | undefined;
+	readonly #tour: StudioTourController;
 	readonly #htmlFrames: AppFrame[] = [];
 	#tab = "overview";
 	#renderedTab: string | null = null;
@@ -224,10 +230,25 @@ export class SurfaceStudioView {
 	#appliedIdentityVars: string[] = [];
 	#wasUpdating = false;
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
+	#pendingTell: { readonly bar: HTMLElement; readonly owner: symbol; readonly cancel: () => void } | null = null;
+	#lastTellAt = Number.NEGATIVE_INFINITY;
+	#active = true;
 
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
+		this.#tour = new StudioTourController({
+			root: this.el,
+			signal: this.#lifetime.signal,
+			readBinary: options.readBinary ?? ((file, signal) => options.store.readStudioBinary(file, signal)),
+			switchTab: (tab) => {
+				if (tab && tab !== this.#tab) {
+					this.#tab = tab;
+					this.update();
+				}
+			},
+			currentTab: () => this.#tab,
+		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		const dropHost = options.store.hostDeliverables(options.surface.id, (path) => this.#revealDeliverable(path));
@@ -258,19 +279,25 @@ export class SurfaceStudioView {
 	}
 
 	deactivate(): void {
+		this.#active = false;
 		this.#renderSeq++;
 		this.#renderedTab = null;
 		this.#renderedGrid = null;
+		this.#cancelPendingTell();
+		this.#tour.deactivate();
 		this.#layout?.deactivate();
 	}
 
 	dispose(): void {
+		this.#active = false;
 		this.#renderSeq += 1;
+		this.#cancelPendingTell();
 		this.#disposeHtmlFrames();
 		if (this.#settleTimer) {
 			clearTimeout(this.#settleTimer);
 			this.#settleTimer = undefined;
 		}
+		this.#tour.dispose();
 		this.#layout?.dispose();
 		this.#lifetime.abort();
 	}
@@ -306,6 +333,218 @@ export class SurfaceStudioView {
 		this.#htmlFrames.length = 0;
 	}
 
+	async #askSurface(prompt: string, title?: string): Promise<boolean> {
+		const trimmed = prompt.trim();
+		if (!trimmed) return false;
+		const session = await this.#options.store.startSession(this.#options.surface.id, trimmed, {
+			originKind: "member",
+			...(title?.trim() ? { originLabel: title.trim().slice(0, 160) } : {}),
+		});
+		if (!session) return false;
+		if (
+			this.#active &&
+			!this.#lifetime.signal.aborted &&
+			this.#options.store.isActiveSurface(this.#options.surface.id)
+		) {
+			this.#options.store.openDrawer(this.#options.surface.id, session.id);
+		}
+		return true;
+	}
+
+	#cancelPendingTell(owner?: symbol): void {
+		const pending = this.#pendingTell;
+		if (!pending) return;
+		if (owner !== undefined && pending.owner !== owner) return;
+		pending.cancel();
+	}
+
+	#confirmModuleTell(
+		moduleTitle: string,
+		draftText: string,
+		owner: symbol,
+		hostEl: HTMLElement,
+		about?: string,
+	): Promise<AppAnswer> {
+		if (this.#pendingTell) {
+			return Promise.resolve({ ok: false, error: t("Finish or cancel the note already waiting.") });
+		}
+		if (Date.now() - this.#lastTellAt < 3000) {
+			return Promise.resolve({
+				ok: false,
+				error: t("A note was sent a moment ago: try again in a few seconds."),
+			});
+		}
+		return new Promise((resolve) => {
+			let settled = false;
+			let sending = false;
+			let dismissed = false;
+			const input = h("textarea", {
+				class: "studio-tell-input",
+				rows: 2,
+				"aria-label": t("Note to send"),
+			});
+			input.value = draftText;
+			const errorLine = h("p", { class: "studio-tell-error", role: "alert", hidden: true });
+			const sendBtn = h(
+				"button",
+				{ type: "button", class: "btn btn-primary btn-small", "data-tell-act": "send" },
+				t("Send"),
+			);
+			const cancelBtn = h(
+				"button",
+				{ type: "button", class: "btn btn-small", "data-tell-act": "cancel" },
+				t("Cancel"),
+			);
+			const labelText = about
+				? t("Send note from {title}: {about}", { title: moduleTitle, about })
+				: t("Send note from {title}", { title: moduleTitle });
+			const bar = h(
+				"div",
+				{ class: "studio-tell-bar", role: "region", "aria-label": labelText },
+				h("div", { class: "studio-tell-head" }, h("strong", null, labelText)),
+				input,
+				errorLine,
+				h("div", { class: "studio-tell-actions" }, cancelBtn, sendBtn),
+			);
+			const hostDialog = hostEl instanceof HTMLDialogElement ? hostEl : null;
+			const finish = (answer: AppAnswer) => {
+				if (settled) return;
+				settled = true;
+				hostDialog?.removeEventListener("close", onDialogClose);
+				if (this.#pendingTell?.bar === bar) this.#pendingTell = null;
+				bar.remove();
+				resolve(answer);
+			};
+			const dismiss = () => {
+				if (settled) return;
+				if (sending) {
+					dismissed = true;
+					hostDialog?.removeEventListener("close", onDialogClose);
+					bar.remove();
+					return;
+				}
+				finish({ ok: false, error: t("Cancelled.") });
+			};
+			const onDialogClose = () => dismiss();
+			hostDialog?.addEventListener("close", onDialogClose, { once: true });
+			cancelBtn.addEventListener("click", () => {
+				if (sending || settled) return;
+				finish({ ok: false, error: t("Cancelled.") });
+			});
+			sendBtn.addEventListener("click", async () => {
+				if (sending || settled) return;
+				const finalText = input.value.trim();
+				if (!finalText || finalText.length > 4000) {
+					input.focus();
+					return;
+				}
+				sending = true;
+				input.disabled = true;
+				sendBtn.disabled = true;
+				cancelBtn.disabled = true;
+				errorLine.hidden = true;
+				errorLine.textContent = "";
+				let started = false;
+				try {
+					started = await this.#askSurface(finalText, about);
+				} catch {
+					started = false;
+				}
+				sending = false;
+				if (started) {
+					this.#lastTellAt = Date.now();
+					finish({ ok: true, value: { sent: true } });
+					return;
+				}
+				const message = this.#options.store.state.error ?? t("That didn't work. Try again.");
+				if (dismissed || !bar.isConnected) {
+					finish({ ok: false, error: message });
+					return;
+				}
+				input.disabled = false;
+				sendBtn.disabled = false;
+				cancelBtn.disabled = false;
+				errorLine.textContent = message;
+				errorLine.hidden = false;
+				sendBtn.focus?.({ preventScroll: true });
+			});
+			this.#pendingTell = { bar, owner, cancel: dismiss };
+			hostEl.append(bar);
+			sendBtn.focus?.({ preventScroll: true });
+		});
+	}
+
+	async #handleModuleCall(
+		call: AppCall,
+		files: Readonly<Record<string, string>>,
+		folderRoot: string,
+		moduleTitle: string,
+		frameOwner: symbol,
+		resolveTellHost: () => HTMLElement,
+	): Promise<AppAnswer> {
+		if (call.method === "read") {
+			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
+			if (!rawPath || rawPath.length > 512) return { ok: false, error: t("This file isn't available.") };
+			let resolved: string;
+			try {
+				resolved = folderRoot ? surfaceCompanyPath(folderRoot, rawPath) : rawPath.replace(/^\/+/, "");
+			} catch {
+				return { ok: false, error: t("This file isn't available.") };
+			}
+			const ownText = files[resolved];
+			if (ownText !== undefined) return { ok: true, value: ownText };
+			const identityFiles = this.#options.store.companyIdentityFiles();
+			const sharedText = identityFiles?.files[resolved];
+			if (sharedText !== undefined) return { ok: true, value: sharedText };
+			return { ok: false, error: t("This file isn't available.") };
+		}
+		if (call.method === "list") {
+			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
+			if (rawPath.length > 512 || rawPath.includes("\\") || rawPath.includes("\0")) {
+				return { ok: false, error: t("This file isn't available.") };
+			}
+			const cleanRoot = folderRoot.replace(/^\/+|\/+$/g, "");
+			let targetPrefix = cleanRoot;
+			if (rawPath) {
+				const stripped = rawPath.replace(/^\/+|\/+$/g, "");
+				const parts = stripped ? stripped.split("/") : [];
+				if (parts.some((part) => !part || part === "." || part === "..")) {
+					return { ok: false, error: t("This file isn't available.") };
+				}
+				if (stripped) {
+					try {
+						targetPrefix = cleanRoot ? surfaceCompanyPath(cleanRoot, stripped) : stripped;
+					} catch {
+						return { ok: false, error: t("This file isn't available.") };
+					}
+					if (cleanRoot && targetPrefix !== cleanRoot && !targetPrefix.startsWith(`${cleanRoot}/`)) {
+						return { ok: false, error: t("This file isn't available.") };
+					}
+				}
+			}
+			const dirPrefix = targetPrefix ? `${targetPrefix}/` : "";
+			const encoder = new TextEncoder();
+			const entries = Object.entries(files)
+				.filter(([path]) => (!dirPrefix ? true : path === targetPrefix || path.startsWith(dirPrefix)))
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([path, content]) => ({
+					name: path.slice(path.lastIndexOf("/") + 1),
+					path: cleanRoot && path.startsWith(`${cleanRoot}/`) ? path.slice(cleanRoot.length + 1) : path,
+					kind: "file" as const,
+					bytes: encoder.encode(content).byteLength,
+				}));
+			return { ok: true, value: entries };
+		}
+		if (call.method === "tell") {
+			const text = typeof call.params.text === "string" ? call.params.text.trim() : "";
+			const aboutRaw = typeof call.params.about === "string" ? call.params.about.trim() : "";
+			const about = aboutRaw ? aboutRaw.slice(0, 160) : undefined;
+			if (!text || text.length > 4000) return { ok: false, error: t("Write a short note first.") };
+			return this.#confirmModuleTell(moduleTitle, text, frameOwner, resolveTellHost(), about);
+		}
+		return { ok: false, error: t("This page can't be shown here.") };
+	}
+
 	#createHtmlFrame(
 		html: string,
 		htmlPath: string,
@@ -315,21 +554,42 @@ export class SurfaceStudioView {
 		className: string,
 		listen?: (data: unknown) => void,
 		owned?: (dispose: () => void) => void,
+		allFiles?: Readonly<Record<string, string>>,
+		moduleBridge = false,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
 			return h("p", { class: "studio-html-fallback" }, t("This page can't be shown live."));
 		}
-		const frame = new AppFrame(
+		const folderRoot = this.#options.surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
+		const readable = allFiles ?? files;
+		const frameOwner = Symbol(title);
+		const frame: AppFrame = new AppFrame(
 			{ html: live },
 			t("Page: {name}", { name: title }),
 			className,
-			async () => ({ ok: false, error: t("This page can't be shown here.") }),
+			moduleBridge
+				? (call) =>
+						this.#handleModuleCall(
+							call,
+							readable,
+							folderRoot,
+							title,
+							frameOwner,
+							() => frame.frame.closest("dialog") ?? this.el,
+						)
+				: async () => ({ ok: false, error: t("This page can't be shown here.") }),
 			() => undefined,
 			{ again: true },
 		);
-		if (owned) owned(() => frame.dispose());
-		else this.#htmlFrames.push(frame);
+		if (owned) {
+			owned(() => {
+				this.#cancelPendingTell(frameOwner);
+				frame.dispose();
+			});
+		} else {
+			this.#htmlFrames.push(frame);
+		}
 		if (listen) {
 			window.addEventListener(
 				"message",
@@ -389,6 +649,11 @@ export class SurfaceStudioView {
 		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
+	#effectiveBaseBinaries(surfaceId: string): Readonly<Record<string, StudioBinaryRef>> {
+		const storeBase = effectiveStudioBaseBinaries(this.#options.store.state, surfaceId);
+		return this.#options.baseBinaries ? { ...this.#options.baseBinaries, ...storeBase } : storeBase;
+	}
+
 	#applyIdentityVars(isIdentity: boolean, tokens: CompiledIdentityTokens | null): void {
 		const nextVars = !isIdentity && tokens ? tokens.vars : {};
 		const nextKeys = Object.keys(nextVars);
@@ -445,6 +710,8 @@ export class SurfaceStudioView {
 			}, 600);
 		}
 		this.#wasUpdating = updating;
+		const requestedTab = store.consumeRequestedStudioTab(surface.slug);
+		if (requestedTab) this.#tab = requestedTab;
 		const identityFiles = store.companyIdentityFiles();
 		const companyFiles = identityFiles && identityFiles.surfaceId !== surface.id ? identityFiles : undefined;
 		const deps: readonly unknown[] = [
@@ -496,7 +763,7 @@ export class SurfaceStudioView {
 			identityTokens,
 			workspace,
 			baseFiles,
-			baseBinaries: effectiveStudioBaseBinaries(state, surface.id),
+			baseBinaries: this.#effectiveBaseBinaries(surface.id),
 			ordered,
 			initialLoading,
 			updatingPhase,
@@ -578,10 +845,14 @@ export class SurfaceStudioView {
 		);
 		if (!this.#isRenderActive(params.seq)) return;
 		this.#disposeHtmlFrames();
+		const tail = [
+			...(this.#tour.el.hidden ? [] : [this.#tour.el]),
+			...(this.#pendingTell && this.#pendingTell.bar.parentElement === this.el ? [this.#pendingTell.bar] : []),
+		];
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
 			this.#renderedGrid = null;
-			this.el.replaceChildren(...plan.children);
+			this.el.replaceChildren(...plan.children, ...tail);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
@@ -591,7 +862,7 @@ export class SurfaceStudioView {
 		this.#renderedGrid = grid;
 		const tasks = plan.gridTasks;
 		if (reuseGrid) {
-			reconcileChildren(this.el, [...plan.children, grid]);
+			reconcileChildren(this.el, [...plan.children, grid, ...tail]);
 			const built: HTMLElement[] = [];
 			budget.reset();
 			for (let i = 0; i < tasks.length; i++) {
@@ -613,7 +884,7 @@ export class SurfaceStudioView {
 			grid.append(tasks[0].build());
 			start = 1;
 		}
-		this.el.replaceChildren(...plan.children, grid);
+		this.el.replaceChildren(...plan.children, grid, ...tail);
 		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 		budget.reset();
 		for (let i = start; i < tasks.length; i++) {
@@ -680,10 +951,14 @@ export class SurfaceStudioView {
 			parsed,
 		);
 		this.#disposeHtmlFrames();
+		const tail = [
+			...(this.#tour.el.hidden ? [] : [this.#tour.el]),
+			...(this.#pendingTell && this.#pendingTell.bar.parentElement === this.el ? [this.#pendingTell.bar] : []),
+		];
 		if (!plan.gridTasks) {
 			this.#renderedTab = null;
 			this.#renderedGrid = null;
-			this.el.replaceChildren(...plan.children);
+			this.el.replaceChildren(...plan.children, ...tail);
 			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
@@ -693,12 +968,12 @@ export class SurfaceStudioView {
 		this.#renderedGrid = grid;
 		if (reuseGrid) {
 			const built = plan.gridTasks.map((task) => task.build());
-			reconcileChildren(this.el, [...plan.children, grid]);
+			reconcileChildren(this.el, [...plan.children, grid, ...tail]);
 			reconcileChildren(grid, built);
 			return;
 		}
 		for (const task of plan.gridTasks) grid.append(task.build());
-		this.el.replaceChildren(...plan.children, grid);
+		this.el.replaceChildren(...plan.children, grid, ...tail);
 		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
 	}
 
@@ -856,10 +1131,12 @@ export class SurfaceStudioView {
 
 		if (filePaths.length === 0 && (mode !== "compare" || allChangedPaths.length === 0)) {
 			if (initialLoading) {
+				this.#layout?.deactivate();
 				this.#showingSkeleton = true;
 				return { children: [surfaceSkeleton(t("Opening studio…"), "studio")], leavingSkeleton: false };
 			}
 			if (mode === "compare") {
+				this.#layout?.deactivate();
 				const leavingSkeleton = this.#showingSkeleton;
 				this.#showingSkeleton = false;
 				children.push(
@@ -884,6 +1161,7 @@ export class SurfaceStudioView {
 		const gridTasks: StudioSectionTask[] = [];
 
 		if (mode === "compare") {
+			this.#layout?.deactivate();
 			const changedSpecs = specs.filter((spec) => spec.changed);
 			const changedDocs = docs.filter((doc) => doc.changed);
 			const changedSvgs = svgs.filter((asset) => asset.changed);
@@ -1106,6 +1384,10 @@ export class SurfaceStudioView {
 			surface: this.#options.surface,
 			signal: this.#lifetime.signal,
 			baseFiles: () => this.#baseFiles,
+			askSurface: async (prompt, title) => {
+				await this.#askSurface(prompt, title);
+			},
+			...(this.#options.readBinary ? { readBinary: this.#options.readBinary } : {}),
 			...(this.#options.patches ? { patches: this.#options.patches } : {}),
 			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
 		});
@@ -1131,6 +1413,8 @@ export class SurfaceStudioView {
 						frame.className,
 						frame.listen,
 						frame.owned,
+						files,
+						frame.moduleBridge === true,
 					),
 				linksChanged: (html, path) =>
 					studioHtmlDependencyChanged(
@@ -1144,6 +1428,7 @@ export class SurfaceStudioView {
 			},
 		});
 		this.#tab = plan.tab;
+		this.#tour.sync(files, binaries, params.surface.folderRoot);
 		if (plan.tabBar) children.push(plan.tabBar);
 		const leavingSkeleton = this.#showingSkeleton;
 		this.#showingSkeleton = false;

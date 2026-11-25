@@ -887,7 +887,10 @@ describe("the platform's skills through the skill tools", () => {
 		});
 		try {
 			const platform = await f.call("search_skills", { scope: "platform" });
-			expect(platform).toMatchObject({ total: CLOUD_PLATFORM_SKILLS.size, searched: { platform: 3 } });
+			expect(platform).toMatchObject({
+				total: CLOUD_PLATFORM_SKILLS.size,
+				searched: { platform: CLOUD_PLATFORM_SKILLS.size },
+			});
 			expect(platform.skills).toEqual(
 				[...CLOUD_PLATFORM_SKILLS.values()].map((skill) => ({
 					name: skill.name,

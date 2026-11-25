@@ -51,6 +51,7 @@ export interface StudioHtmlFrame {
 	readonly title: string;
 	readonly files: Readonly<Record<string, string>>;
 	readonly className: string;
+	readonly moduleBridge?: boolean;
 	readonly listen?: (data: unknown) => void;
 	readonly owned?: (dispose: () => void) => void;
 }
@@ -359,7 +360,8 @@ export function prepareArtifacts(
 	}
 	docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
 	const filled = visuals.length + docs.length + cards.length + pages.length + (pdfs ? pdfDocs.length : 0) > 0;
-	if (!filled && !block.heading && !place.alone) return { filled, pieces: [] };
+	const catchAll = !block.match?.length || block.match.includes("**");
+	if (!filled && !place.alone && (!block.heading || !catchAll)) return { filled, pieces: [] };
 	const pieces: StudioSectionTask[] = [];
 	if (block.heading) {
 		const heading = ctx.words(block.heading);

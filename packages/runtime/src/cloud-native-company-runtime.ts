@@ -654,12 +654,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 					return folder;
 				};
+				const usesPrimaryCodexCoding = !isGeminiRun && wake.payload.harness !== "claude-code";
+				const codingStudioVoice =
+					usesPrimaryCodexCoding && !(await hasChatGptPlanDirectory(identityRoot))
+						? new CloudVoiceChannel()
+						: undefined;
 				const surfaceSession = await this.#loadSurfaceCodingBinding(
 					binding,
 					context,
 					wake.payload,
 					getFolder,
 					signal,
+					codingStudioVoice,
 				);
 				if (this.#coding.supportsFolderWrites) getFolder();
 				const wantsCodingPictures =
@@ -677,10 +683,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							identity: context.identity,
 							identityRoot,
 							preferredModel: preferredCodingImageModel,
-							usesPrimaryCodexSession: !isGeminiRun && wake.payload.harness !== "claude-code",
+							usesPrimaryCodexSession: usesPrimaryCodexCoding,
 							signal,
 						})
 					: undefined;
+				const attachCodingVoice =
+					codingStudioVoice && surfaceSession?.sourceKind === "folder" && !surfaceSession.isInternalReconciliation
+						? codingStudioVoice
+						: undefined;
 				composition.finish("succeeded", { outputBytes: 0 });
 				try {
 					return await this.#coding.execute(request, identityRoot, signal, {
@@ -690,6 +700,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						observability,
 						...(folder ? { folder } : {}),
 						...(surfaceSession ? { surfaceSession } : {}),
+						...(attachCodingVoice ? { voice: attachCodingVoice } : {}),
 						...(codingPictureLane?.channel
 							? {
 									pictures: codingPictureLane.channel,
@@ -1533,11 +1544,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								? this.#machines(binding)
 								: undefined;
 						const surfaceFilePolicy: SurfaceFilePolicy | undefined =
-							this.#surfaceFirst && !work.isWorker && identity.audienceKind === "company"
-								? {
-										mode: "cofounder",
-										allowExplicitMemberDoc: memberExplicitlyRequestedDocument(context, wake),
-									}
+							this.#surfaceFirst && identity.audienceKind === "company"
+								? work.isWorker
+									? { mode: "worker" }
+									: {
+											mode: "cofounder",
+											allowExplicitMemberDoc: memberExplicitlyRequestedDocument(context, wake),
+										}
 								: undefined;
 						const runTools: CloudNativeTool[] = [
 							// A run's file tools act through the folder core with its own authority (P19), and so do the
@@ -2085,6 +2098,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		folderClient: CloudCompanyFolderClient,
 		signal: AbortSignal,
 		existingGeminiApiKey?: string,
+		studioVoice?: CloudVoiceChannel,
 	) {
 		let cachedVoiceKey: Promise<string> | null = null;
 		let voiceCapReached: { readonly monthlyCapCents: number | null; readonly monthSpendMicrodollars: number } | null =
@@ -2204,6 +2218,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				}
 				return speech;
 			},
+			...(studioVoice ? { voiceChannel: studioVoice } : {}),
 		};
 	}
 
@@ -2213,6 +2228,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		payload: Record<string, unknown>,
 		getFolder: () => CloudCompanyFolderClient,
 		signal: AbortSignal,
+		studioVoice?: CloudVoiceChannel,
 	): Promise<SurfaceCodingTurnBinding | undefined> {
 		const identity = context.identity;
 		const rawSurface = payload.surfaceSession;
@@ -2298,9 +2314,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 		}
 		const folderClient = getFolder();
-		const readBrief = async (): Promise<string | null> => {
+		const readOptionalText = async (path: string): Promise<string | null> => {
 			try {
-				const found = await folderClient.readText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`, 16_384, signal);
+				const found = await folderClient.readText(path, 16_384, signal);
 				const text = found?.text.trim();
 				return text ? text : null;
 			} catch (error) {
@@ -2309,8 +2325,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 		};
 		// WHY: loadSurfaceSharedAssets already reads brief.md, voice.md, and tokens.json; derive identityContext instead of reading them twice.
-		const [briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
-			readBrief(),
+		const [visionMarkdown, readingMarkdown, briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
+			readOptionalText("QorperaOS/vision/vision.md"),
+			readOptionalText("QorperaOS/vision/reading.md"),
+			readOptionalText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`),
 			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
@@ -2342,7 +2360,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			runId: binding.runId,
 			agentFolder: cloudAgentFolder(identity.companyId, identity.staffAgentId, agentFolders),
 		});
-		const narratePort = sourceKind === "folder" ? this.#studioNarratePort(binding, folderClient, signal) : undefined;
+		const narratePort =
+			sourceKind === "folder"
+				? this.#studioNarratePort(binding, folderClient, signal, undefined, studioVoice)
+				: undefined;
 		return {
 			sessionId,
 			surfaceSlug,
@@ -2360,6 +2381,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				? { previewReconciliations: previewContext.previewReconciliations }
 				: {}),
 			isInternalReconciliation: sessionTurnRaw.isInternal === true && sessionTurnRaw.state === "reconciling",
+			visionMarkdown,
+			readingMarkdown,
 			briefMarkdown:
 				briefMarkdown ?? (typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null),
 			fullPrompt: sessionTurnRaw.prompt,
@@ -2670,6 +2693,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 		}
 
+		const studioVoice =
+			!isGeminiRun && !(await hasChatGptPlanDirectory(identityRoot)) ? new CloudVoiceChannel() : undefined;
 		const studioPictureLane =
 			sourceKind === "folder" && !(turnInput.isInternal === true && turnInput.state === "reconciling")
 				? await this.#pictureLane({
@@ -2683,7 +2708,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						signal,
 					})
 				: undefined;
-
 		let lastProviderSessionId = `surface-session:${sessionId}`;
 		const runModelTurn = async (spec: {
 			instructions: string;
@@ -2851,6 +2875,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				serviceTier,
 				controlPlane: this.#control,
 				...(geminiSession ? { gemini: geminiSession } : {}),
+				...(studioVoice ? { voice: studioVoice } : {}),
 				...(studioPictureLane?.channel && studioPictureLane.attachToCodex
 					? { pictures: studioPictureLane.channel }
 					: {}),
@@ -2976,7 +3001,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		};
 
 		const readOnlyNames = new Set(["company_read", "company_list"]);
-		const narratePort = this.#studioNarratePort(binding, folderClient, signal, geminiSession?.apiKey);
+		const readOnlyDataNames = new Set(["data_describe", "data_query"]);
+		const surfaceFolderSearch = this.#folderSearch
+			? new CloudFolderSearch({
+					socketPath: this.#folderSearch.socketPath,
+					folder: folderClient,
+					environmentId: identity.environmentId,
+				})
+			: undefined;
+		const narratePort = this.#studioNarratePort(binding, folderClient, signal, geminiSession?.apiKey, studioVoice);
 
 		let turnResult: Awaited<ReturnType<typeof runSurfaceSessionTurn>>;
 		try {
@@ -3032,7 +3065,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											operations,
 											identity: runIdentity,
 										}).filter((tool) => readOnlyNames.has(tool.name));
-							return [...turnReq.tools, ...folderTools];
+							const searchTools = surfaceFolderSearch
+								? [
+										cloudFolderSearchTool({
+											search: surfaceFolderSearch,
+											folder: folderClient,
+											runId: runIdentity.runId,
+										}),
+									]
+								: [];
+							const dataTools = this.#companyData
+								? cloudDataTools({
+										folder: folderClient,
+										door: this.#companyData,
+										apply: false,
+									}).filter((tool) => readOnlyDataNames.has(tool.name))
+								: [];
+							return [...turnReq.tools, ...folderTools, ...searchTools, ...dataTools];
 						},
 					}),
 				executeCodeRepoTurn: async () => {
@@ -3043,6 +3092,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				signal,
 			});
 		} finally {
+			surfaceFolderSearch?.close();
 			await studioPictureLane?.close();
 		}
 

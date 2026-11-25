@@ -30,6 +30,7 @@ export type SurfaceArchetype = (typeof SURFACE_ARCHETYPES)[number];
 
 export const SURFACE_KINDS = [
 	"identity",
+	"strategy",
 	"website",
 	"web_app",
 	"mobile_app",
@@ -627,6 +628,27 @@ export function isSurfaceOptionGroupKey(value: unknown): value is string {
 export function parseSurfaceSlug(value: unknown, label = "surface.slug"): string {
 	if (!isSurfaceSlug(value)) throw new WireValueError(label);
 	return value;
+}
+
+export interface SurfaceLinkTarget {
+	readonly slug: string;
+	readonly tab?: string;
+}
+
+const SURFACE_TAB_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export function surfaceLinkTarget(href: string): SurfaceLinkTarget | undefined {
+	const trimmed = href.trim();
+	if (!trimmed.toLowerCase().startsWith("surface:")) return undefined;
+	const rest = trimmed.slice("surface:".length).trim();
+	if (!rest) return undefined;
+	const hash = rest.indexOf("#");
+	const slug = (hash < 0 ? rest : rest.slice(0, hash)).toLowerCase();
+	if (!isSurfaceSlug(slug)) return undefined;
+	if (hash < 0) return { slug };
+	const tab = rest.slice(hash + 1).toLowerCase();
+	if (!tab || tab.length > 40 || !SURFACE_TAB_PATTERN.test(tab)) return undefined;
+	return { slug, tab };
 }
 
 function parseSurfacePublishAsk(value: unknown, label: string): SurfacePublishAsk {
@@ -1300,6 +1322,8 @@ export function inferSurfaceKind(surface: Pick<SurfaceKindFacts, "slug" | "icon"
 	if (surface.archetype === "studio") {
 		if (/identity|manifesto/.test(slug)) return "identity";
 		if (icon === "book" || /report|journal|essay|analysis|blog|research|philosophy/.test(slug)) return "report";
+		if (icon === "figure:lighthouse" || /(^|-)(strategy|plan|planning|war-room|roadmap|thesis)(-|$)/.test(slug))
+			return "strategy";
 		if (icon === "database" || /(^|-)(data|database|tables|crm)(-|$)/.test(slug)) return "database";
 		if (icon === "box" || icon === "board" || /product|hardware|spec|headband/.test(slug)) return "product";
 		if (icon === "spark" || /brand/.test(slug)) return "brand";
@@ -1346,6 +1370,7 @@ export function surfaceStarterKind(facts: SurfaceStarterFacts): SurfaceStarterKi
 	) {
 		return "identity";
 	}
+	if (facts.lookKind === "strategy" || facts.slug === "strategy") return "strategy";
 	return facts.lookKind === "product" || facts.hasModel ? "product" : "custom";
 }
 
@@ -1402,7 +1427,7 @@ export function surfaceStudioPage(facts: SurfaceStudioFacts): SurfaceStudioPage 
 	return { page, starter: surfaceStarterKind({ ...facts, lookKind }) };
 }
 
-const SURFACE_STUDIO_ICONS_THAT_DECIDE = ["", "book", "database", "box", "board", "spark"];
+const SURFACE_STUDIO_ICONS_THAT_DECIDE = ["", "book", "database", "box", "board", "spark", "figure:lighthouse"];
 
 export function surfaceStudioPageWhenKnown(
 	facts: Omit<SurfaceStudioFacts, "icon" | "isGlobal"> & {

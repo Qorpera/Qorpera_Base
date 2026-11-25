@@ -42,8 +42,8 @@ begin
 	);
 	perform pg_temp.rms_assert(
 		(select array_agg(slug order by slug) from public.qorpera_surfaces where profile_id = v_company)
-			= array['files', 'identity', 'inbox', 'money'],
-		'a new company keeps identity, Inbox, Money and Files'
+			= array['files', 'identity', 'inbox', 'money', 'strategy'],
+		'a new company keeps identity, Strategy, Inbox, Money and Files'
 	);
 	perform pg_temp.rms_assert(
 		not exists (select 1 from public.qorpera_surfaces where profile_id = v_company and surface_kind = 'members'),

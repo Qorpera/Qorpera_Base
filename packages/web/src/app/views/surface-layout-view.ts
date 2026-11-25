@@ -1,5 +1,6 @@
 import {
 	readSurfaceLayout,
+	STUDIO_TOUR_PATH,
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_LAYOUT_PATH,
@@ -31,18 +32,23 @@ import {
 	sourceFile,
 	surfaceGlobFinds,
 } from "./surface-blocks/context.ts";
+import { type EconomicsPick, prepareEconomics } from "./surface-blocks/economics.ts";
 import { explainerClaimedPaths, SurfaceExplainers } from "./surface-blocks/explainer.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
 import { StudioFullscreen } from "./surface-blocks/fullscreen.ts";
+import { prepareHypotheses } from "./surface-blocks/hypotheses.ts";
+import { prepareLandscape } from "./surface-blocks/landscape.ts";
 import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
 import { SurfacePdfViewer } from "./surface-blocks/pdf.ts";
+import { preparePlays } from "./surface-blocks/plays.ts";
 import { reportFiles, SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
 import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts";
 import { prepareTitle } from "./surface-blocks/title.ts";
 import { prepareTypeSpecimen } from "./surface-blocks/type-specimen.ts";
 import { prepareUnknown } from "./surface-blocks/unknown.ts";
+import type { StudioBinaryReader } from "./surface-studio-stage.ts";
 
 export interface SurfaceLayoutOptions {
 	readonly store: SurfacesStore;
@@ -50,7 +56,9 @@ export interface SurfaceLayoutOptions {
 	readonly signal: AbortSignal;
 	readonly baseFiles: () => Readonly<Record<string, string>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
+	readonly readBinary?: StudioBinaryReader;
 	readonly timeSlice?: boolean;
+	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
 
 export interface SurfaceLayoutInput {
@@ -121,6 +129,11 @@ function claimedFiles(
 	apart: readonly string[],
 ): Set<string> {
 	const claimed = new Set([layoutPath]);
+	const tourPath = ctx.companyPath(STUDIO_TOUR_PATH);
+	if (tourPath) claimed.add(tourPath);
+	const tourVoicePrefix = ctx.companyPath("voice") ? `${ctx.companyPath("voice")}/` : "voice/";
+	for (const path of Object.keys(ctx.files)) if (path.startsWith(tourVoicePrefix)) claimed.add(path);
+	for (const path of Object.keys(ctx.binaries)) if (path.startsWith(tourVoicePrefix)) claimed.add(path);
 	const leaves = layout.tabs.flatMap((tab) =>
 		tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])),
 	);
@@ -218,6 +231,8 @@ export class SurfaceLayoutView {
 	readonly #pictures: SurfacePictures;
 	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
+	readonly #economics = new Map<string, EconomicsPick>();
+	#renderLife: AbortController | null = null;
 	#swatches = new Map<string, SwatchLink>();
 	#apart: readonly string[] = [];
 	#postTabs: readonly {
@@ -229,7 +244,9 @@ export class SurfaceLayoutView {
 
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
-		const read = (file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal);
+		const read =
+			options.readBinary ??
+			((file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal));
 		this.#fullscreen = new StudioFullscreen(options.signal);
 		this.#stages = new SurfaceStages(read, options.signal, this.#fullscreen);
 		this.#pictures = new SurfacePictures(read, options.signal);
@@ -245,7 +262,22 @@ export class SurfaceLayoutView {
 		});
 	}
 
+	#abortRender(): void {
+		if (!this.#renderLife) return;
+		this.#renderLife.abort();
+		this.#renderLife = null;
+	}
+
 	plan(input: SurfaceLayoutInput): SurfaceLayoutPlan {
+		this.#abortRender();
+		const renderLife = new AbortController();
+		this.#renderLife = renderLife;
+		if (this.#options.signal.aborted) renderLife.abort();
+		else
+			this.#options.signal.addEventListener("abort", () => renderLife.abort(), {
+				once: true,
+				signal: renderLife.signal,
+			});
 		const layoutPath = surfaceLayoutPath(input.surface.folderRoot);
 		const text = input.files[layoutPath];
 		const read = text === undefined ? undefined : readSurfaceLayout(text);
@@ -260,7 +292,9 @@ export class SurfaceLayoutView {
 			company: input.company,
 			briefSummary: input.briefSummary,
 			signal: this.#options.signal,
+			renderSignal: renderLife.signal,
 			fromStarter: own === undefined,
+			...(this.#options.askSurface ? { askSurface: this.#options.askSurface } : {}),
 		});
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
@@ -349,7 +383,7 @@ export class SurfaceLayoutView {
 		}
 		const scope: TabScope = { ctx, input, claimed, swatches, tinting, stageIds: ids };
 		const alone = tab.blocks.length === 1;
-		return tab.blocks.map((node, index) =>
+		const nodes: PreparedNode[] = tab.blocks.map((node, index) =>
 			node.type === "row"
 				? {
 						cells: node.blocks.map((block, slot) =>
@@ -358,6 +392,20 @@ export class SurfaceLayoutView {
 					}
 				: this.#prepareBlock(node, nodeKey(node, `${tab.id}/${index}`), scope, alone),
 		);
+		const hasPieces = nodes.some((node) =>
+			isRow(node) ? node.cells.some((cell) => cell.pieces.length > 0) : node.pieces.length > 0,
+		);
+		if (!hasPieces && tab.blocks.length > 0) {
+			const lead = tab.blocks[0]!;
+			const leadBlock = lead.type === "row" ? lead.blocks[0] : lead;
+			if (leadBlock) {
+				const leadKey =
+					lead.type === "row" ? nodeKey(leadBlock, `${tab.id}/0.0`) : nodeKey(leadBlock, `${tab.id}/0`);
+				const fallback = this.#prepareBlock(leadBlock, leadKey, scope, true);
+				if (fallback.pieces.length > 0) return [fallback];
+			}
+		}
+		return nodes;
 	}
 
 	#selected(key: string, count: number): number {
@@ -368,6 +416,23 @@ export class SurfaceLayoutView {
 	}
 
 	#prepareBlock(block: SurfaceReadBlock, key: string, scope: TabScope, alone: boolean): SurfaceBlockPrepared {
+		const prepared = this.#prepareBlockInner(block, key, scope, alone);
+		if (block.type === "unknown" || !block.id || prepared.pieces.length === 0) return prepared;
+		const blockId = block.id;
+		return {
+			...prepared,
+			pieces: prepared.pieces.map((piece) => ({
+				...piece,
+				build: () => {
+					const el = piece.build();
+					if (!el.hasAttribute("data-block-id")) el.dataset.blockId = blockId;
+					return el;
+				},
+			})),
+		};
+	}
+
+	#prepareBlockInner(block: SurfaceReadBlock, key: string, scope: TabScope, alone: boolean): SurfaceBlockPrepared {
 		const { ctx } = scope;
 		switch (block.type) {
 			case "stage_3d": {
@@ -404,9 +469,9 @@ export class SurfaceLayoutView {
 			case "cards":
 				return prepareCards(block, ctx);
 			case "report":
-				return this.#reports.prepare(block, ctx, this.#apart);
+				return this.#reports.prepare(block, ctx, this.#apart, alone);
 			case "explainer":
-				return this.#explainers.prepare(key, block, ctx);
+				return this.#explainers.prepare(key, block, ctx, alone);
 			case "artifacts":
 				return prepareArtifacts(
 					block,
@@ -419,6 +484,17 @@ export class SurfaceLayoutView {
 				);
 			case "module":
 				return prepareModule(block, ctx, scope.input.htmlPages, this.#fullscreen, { alone });
+			case "plays":
+				return preparePlays(block, ctx);
+			case "economics":
+				return prepareEconomics(block, ctx, {
+					get: () => this.#economics.get(key),
+					set: (pick) => this.#economics.set(key, pick),
+				});
+			case "hypotheses":
+				return prepareHypotheses(block, ctx);
+			case "landscape":
+				return prepareLandscape(block, ctx);
 			default:
 				return prepareUnknown();
 		}
@@ -492,12 +568,14 @@ export class SurfaceLayoutView {
 	}
 
 	deactivate(): void {
+		this.#abortRender();
 		this.#fullscreen.close(false);
 		this.#reports.deactivate();
 		this.#explainers.deactivate();
 	}
 
 	dispose(): void {
+		this.#abortRender();
 		this.#fullscreen.close(false);
 		this.#reports.dispose();
 		this.#explainers.dispose();

@@ -20,6 +20,7 @@ import {
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
 	readSurfaceLayout,
+	STUDIO_TOUR_FORMAT,
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
@@ -51,6 +52,7 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkill, type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
+import type { StudioChatGptVoiceBatchResult } from "./cloud-studio-voice-recorder.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import { createStudioPictureTool } from "./cloud-surface-picture-tool.ts";
 import {
@@ -81,6 +83,7 @@ import {
 	type SurfaceTurnOpenChange,
 	type SurfaceTurnResolvedChange,
 } from "./cloud-surface-turn-context.ts";
+import type { CloudVoiceName } from "./cloud-voice-channel.ts";
 
 const MAX_IDENTITY_BRIEF_BYTES = 16_384;
 const MAX_IDENTITY_VOICE_BYTES = 8_192;
@@ -247,6 +250,11 @@ export interface SurfaceSessionNarratePort {
 		readonly text: string;
 		readonly signal: AbortSignal;
 	}) => Promise<GeminiTtsSpeechResult>;
+	readonly synthesizeChatGptVoice?: (input: {
+		readonly voiceName?: CloudVoiceName;
+		readonly captions: readonly { readonly hash: string; readonly text: string }[];
+		readonly signal: AbortSignal;
+	}) => Promise<StudioChatGptVoiceBatchResult>;
 }
 
 export interface SurfaceSessionPicturePort {
@@ -673,7 +681,7 @@ function describeStudioPage(
 	}
 	if (view.page === "unknown") {
 		const explainerBlock = voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA;
-		return `${rules}\n\n${blocks}\n\n## This page\nIts layout is not known for this turn; read ${layoutFile} if it exists before you change the page's shape.\n\n## File formats\n${explainerBlock}`;
+		return `${rules}\n\n${blocks}\n\n## This page\nIts layout is not known for this turn; read ${layoutFile} if it exists before you change the page's shape.\n\n## File formats\n${explainerBlock}\n${STUDIO_TOUR_FORMAT}`;
 	}
 	const source = view.own
 		? `Drawn from ${layoutFile}:`
@@ -683,6 +691,7 @@ function describeStudioPage(
 	const formats = [
 		...describeSurfaceFormats(view.layout),
 		voiceGuidance ? `${STUDIO_EXPLAINER_SCHEMA} ${voiceGuidance}` : STUDIO_EXPLAINER_SCHEMA,
+		STUDIO_TOUR_FORMAT,
 	];
 	return (
 		`${rules}\n\n${blocks}\n\n## This page\n${source}\n${JSON.stringify(view.layout)}` +
@@ -692,7 +701,7 @@ function describeStudioPage(
 
 function describeStudioSkill(view: SurfaceStudioPageView, skill: CloudStudioSkill | null): string {
 	if (view.page === "unknown")
-		return `\n\n## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: ${SURFACE_STARTER_SKILLS.product} for a product, ${SURFACE_STARTER_SKILLS.identity} for the company's Identity, ${SURFACE_STARTER_SKILLS.custom} for any other page.`;
+		return `\n\n## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: ${SURFACE_STARTER_SKILLS.product} for a product, ${SURFACE_STARTER_SKILLS.identity} for the company's Identity, ${SURFACE_STARTER_SKILLS.strategy} for Strategy, ${SURFACE_STARTER_SKILLS.custom} for any other page.`;
 	if (!skill) return "";
 	const source = skill.path
 		? `The company's own ${skill.name} skill (${skill.path}), used in place of the platform's`
@@ -1056,7 +1065,7 @@ export async function runSurfaceSessionTurn(
 			turnReadOverlay && folderReader ? turnReadOverlay.wrapTextReader(folderReader) : folderReader;
 
 		const explicitBrief = input.briefMarkdown?.trim() || null;
-		const [loaded, folderBrief] = effectiveFolderReader
+		const [loaded, folderBrief, visionMarkdown, readingMarkdown] = effectiveFolderReader
 			? await Promise.all([
 					loadSurfaceSharedAssets(effectiveFolderReader, signal, input.productFolderRoots),
 					explicitBrief === null
@@ -1067,8 +1076,20 @@ export async function runSurfaceSessionTurn(
 								signal,
 							)
 						: Promise.resolve(null),
+					readOptionalFolderText(
+						effectiveFolderReader,
+						"QorperaOS/vision/vision.md",
+						MAX_SURFACE_BRIEF_BYTES,
+						signal,
+					),
+					readOptionalFolderText(
+						effectiveFolderReader,
+						"QorperaOS/vision/reading.md",
+						MAX_SURFACE_BRIEF_BYTES,
+						signal,
+					),
 				])
-			: [null, null];
+			: [null, null, null, null];
 		if (loaded) {
 			if (input.surfaceSlug !== "identity" && (loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)) {
 				identityContext = {
@@ -1102,6 +1123,8 @@ export async function runSurfaceSessionTurn(
 			surfaceTitle: input.surfaceTitle,
 			sourceKind: input.sourceKind,
 			isInternalReconciliation,
+			visionMarkdown,
+			readingMarkdown,
 			briefMarkdown,
 			repositoryKey: input.repositoryKey ?? null,
 			folderRoot: normalizedFolderRoot,
@@ -1215,6 +1238,9 @@ export async function runSurfaceSessionTurn(
 								surfacePatch: trackedSurfacePatch,
 								...(ports.narrateExplainer.synthesizeGemini
 									? { synthesizeGemini: ports.narrateExplainer.synthesizeGemini }
+									: {}),
+								...(ports.narrateExplainer.synthesizeChatGptVoice
+									? { synthesizeChatGptVoice: ports.narrateExplainer.synthesizeChatGptVoice }
 									: {}),
 								onStagedOps: (ops) => applyStudioTextOps(stagedText, ops, folderRoot),
 							}),

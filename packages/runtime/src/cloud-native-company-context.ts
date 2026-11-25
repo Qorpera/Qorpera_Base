@@ -143,14 +143,17 @@ If you hit a decision or input only your parent can give, report blocked with th
 export const CLOUD_ACKNOWLEDGEMENT_LINE =
 	'When beforeWork is acknowledge (and initialAcknowledgementSatisfied is false), make your very first call a short, natural progress send naming what you are about to do ("On it — checking the refund log now."), without repeating the request: it lets the member know you have picked it up. You may emit read-only tool calls (such as company_read, company_list, read_skill, or read_context) in parallel in the same turn so you do not burn a whole round-trip just to acknowledge, before any writes or mutations. initialAcknowledgementSatisfied means this run has already acknowledged.';
 
-function membersSee(has: CloudOfferedTool): string {
+function membersSee(has: CloudOfferedTool, surfaceFirst = false): string {
 	const after = [...CLOUD_AFTER_ANSWER_TOOLS].filter(has);
 	const bookkeeping = after.length
 		? `; only ${after.join(", ").replace(/, ([^,]*)$/, " and $1")} run after it, so do that bookkeeping then and the member is not kept waiting`
 		: "";
+	const surfaceOrApp = surfaceFirst
+		? "Members see your messages, cards, Surfaces, and linked files, and they can read threads between agents. They never see your private reasoning, tool calls, or raw results, and do not want to: they follow the company by its outcomes, in seconds. Show rather than bury them in prose — a linked Surface or visual preview beats a long message. Never turn a thread into a study hall or hand founders homework the team can do."
+		: "Members see your messages, cards, apps, and linked files, and they can read threads between agents. They never see your private reasoning, tool calls, or raw results, and do not want to: they follow the company by its outcomes, in seconds. Show rather than bury them in prose — a visual app, picture, or linked file beats a long message. Never turn a thread into a study hall or hand founders homework the team can do.";
 	return `
 # What members see
-Members see your messages, cards, apps, and linked files, and they can read threads between agents. They never see your private reasoning, tool calls, or raw results, and do not want to: they follow the company by its outcomes, in seconds. Show rather than bury them in prose — a visual app, picture, or linked file beats a long message. Never turn a thread into a study hall or hand founders homework the team can do.
+${surfaceOrApp}
 send_message is your one public voice, bound to this conversation and speaker. delivery in your context is this run's platform-enforced reply policy: initial and final say whether a progress send and final send are required, optional, or forbidden; silenceAllowed lets you finish quietly; maxPublicSends 0 means no public sends in this run; beforeWork sets your first move (read_continuation means read the whole continuation first; work means begin).
 ${CLOUD_ACKNOWLEDGEMENT_LINE}
 Your final send carries the turn's real outcome: the answer, finished result, concrete blocker, or decision — never put the answer in a progress send, even when it is short. Make it last, after every file change, check, and coworker message${bookkeeping}. When background work continues after your turn, name what carries it (a worker, a routine, or a todo) instead of a vague "I'll do it".
@@ -220,7 +223,16 @@ const keepToolLines = (section: string, has: CloudOfferedTool, lines: readonly (
 		})
 		.join("\n");
 
-function protocolFront(has: CloudOfferedTool, worker: boolean): string[] {
+function writingSection(surfaceFirst = false): string {
+	return surfaceFirst
+		? WRITING.replace(
+				`files as ${CLOUD_FOLDER_LINK_EXAMPLE}, apps as [Title](app:<name>).`,
+				`Surfaces as [Title](surface:<slug>) or [Title](surface:<slug>#<tab>) and files as ${CLOUD_FOLDER_LINK_EXAMPLE} (never app:<name>).`,
+			)
+		: WRITING;
+}
+
+function protocolFront(has: CloudOfferedTool, worker: boolean, surfaceFirst = false): string[] {
 	if (worker)
 		return [
 			cloudRuntimeWorkerConstitution(has),
@@ -230,16 +242,30 @@ function protocolFront(has: CloudOfferedTool, worker: boolean): string[] {
 			]),
 			COMPANY_FILES,
 		];
-	const work = keepToolLines(HOW_WORK_GETS_DONE, has, WORK_TOOL_LINES);
+	const work = keepToolLines(
+		surfaceFirst
+			? HOW_WORK_GETS_DONE.replace(
+					"Reversible work (files, apps, machines, routines, todos, workers)",
+					"Reversible work (Surfaces, files, machines, routines, todos, workers)",
+				)
+			: HOW_WORK_GETS_DONE,
+		has,
+		WORK_TOOL_LINES,
+	);
 	return [
-		cloudRuntimeConstitution(has),
-		WRITING,
+		cloudRuntimeConstitution(has, surfaceFirst),
+		writingSection(surfaceFirst),
 		has("more_tools") ? work.replace(TOOLS_EXIST, TOOLS_EXIST_ON_DEMAND) : work,
 	];
 }
 
 function protocolMiddle(has: CloudOfferedTool, surfaceFirst = false): string[] {
-	return [membersSee(has), CARDS, GOING_LIVE, surfaceFirst ? surfaceFirstCompanyFiles(has) : COMPANY_FILES];
+	return [
+		membersSee(has, surfaceFirst),
+		CARDS,
+		GOING_LIVE,
+		surfaceFirst ? surfaceFirstCompanyFiles(has) : COMPANY_FILES,
+	];
 }
 
 function protocolGuard(has: CloudOfferedTool, worker: boolean, surfaceFirst = false): string[] {
@@ -373,18 +399,18 @@ function surfacesAndIdentitySection(has: CloudOfferedTool): string {
 	return `
 # Surfaces & Identity
 ${sentences(
-	"The company's live work is organized into primary Surfaces alongside a global Identity surface (brand, voice, design tokens, and philosophy) whose assets automatically feed every downstream surface.",
-	"Every Surface directly projects its underlying Company Files folder or git codebase, and multiple unmerged staged Changes from concurrent sessions can be toggled on and off simultaneously in live Preview before approving or publishing.",
+	"The company's live work is organized into primary Surfaces alongside a global Identity surface (brand, voice, design tokens, and philosophy) whose assets automatically feed every downstream surface, and a pre-seeded Strategy Studio surface (slug: strategy, surfaces/strategy) for the grand plan, competing strategic plays, competitive landscape, interactive unit economics, sketching, and falsifiable hypotheses.",
+	"Every Surface directly projects its underlying Company Files folder or git codebase, and multiple unmerged staged Changes from concurrent sessions can be toggled on and off simultaneously in live Preview before approving or publishing. Link surfaces in chat with [Title](surface:<slug>) or [Title](surface:<slug>#<tab>) — never use legacy app: links or write under apps/.",
 	'For code-backed Surfaces, Preview serves site.folder from .qorpera/checks.json, root index.html, dist/build/out/public, or apps/<repo>*/index.html (commit the built output folder when using a bundler). Simple static Surfaces do not need .qorpera/checks.json; for larger multi-file Surfaces, instruct sessions to run fast checks pre-flight (runChecks: true) and verify UI visually with Playwright screenshots, or opt into "surfaceGate": "stage" in .qorpera/checks.json when you want automated CI enforcement before staging.',
 	"Read senses.surfaces in your context to inspect live surfaces, open sessions, conflicts, and unpublished work before starting new sessions.",
 	"On Day-0 founding, populate Identity first so every product surface starts from a coherent brand, voice, and design token foundation.",
 	has("propose_surface") &&
-		"Use propose_surface to create 1 to 2 tailored product surfaces for what the company is building with activateImmediately: true on Day 0; for later sidebar additions after founding, omit activateImmediately so they arrive in proposed status for founder approval.",
+		'Use propose_surface to create 1 to 2 tailored product surfaces for what the company is building with activateImmediately: true on Day 0; for later sidebar additions after founding — including dedicated Custom Studio Surfaces (archetype: "studio", sourceKind: "folder", kind: "custom") for pricing labs, GTM trackers, sketching rooms, or investor rooms — omit activateImmediately so they arrive in proposed status for founder approval.',
 	has("start_surface_session") &&
-		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose. When asking a single session to propose multiple design or website directions, instruct it to stage each real, publishable version as a separate option in one optionGroup — never embed an in-page concept switcher or design-question UI into a publishable website.",
+		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose. When asking a single session to propose multiple design or website directions, instruct it to stage each real, publishable version as a separate option in one optionGroup — never embed an in-page concept switcher or design-question UI into a publishable website. When a founder opens strategy, business planning, pricing, or GTM work, launch a high-effort session on the Strategy surface (or a dedicated Custom Studio Surface) so it researches real rivals, contrasts competing plays, stress-tests honest unit economics with capacity ceilings and 3-tier epistemics (verified / benchmark / hypothesis), and records falsifiable kill criteria rather than one-shotting a shallow summary in chat.",
 	has("manage_surface_automation") &&
 		"Use manage_surface_automation to schedule recurring work onto a target Surface instead of creating standalone org-chart roles.",
-	"Keep primary navigation focused: fold research analyses, audits, and reports as Notes on the owning agent or session (under QorperaOS/surfaces/<slug>/notes/) rather than creating standalone report surfaces or loose markdown folders.",
+	"Keep primary navigation focused: strategic work belongs in the Strategy surface (or a dedicated Custom Studio Surface), and supporting session rationale lives as Notes under QorperaOS/surfaces/<slug>/notes/ rather than loose markdown folders or legacy apps/.",
 )}`;
 }
 
@@ -553,7 +579,7 @@ export function cloudCompanyRuntimeInstructions(
 	const worker = wake?.source.kind === "worker-dispatch";
 	const surfaceFirst = !worker && isSurfaceFirstTools(base);
 	return [
-		...protocolFront(base, worker),
+		...protocolFront(base, worker, surfaceFirst),
 		...(worker ? [] : protocolMiddle(base, surfaceFirst)),
 		...situationSections(base, worker, !worker),
 		...protocolGuard(base, worker, surfaceFirst),
@@ -1337,7 +1363,7 @@ export function cloudNativeStableInstructions(
 	const has = standing(cloudOfferedTools(parts?.tools));
 	const surfaceFirst = !worker && (parts?.surfaceFirst ?? isSurfaceFirstTools(has));
 	return [
-		...protocolFront(has, worker),
+		...protocolFront(has, worker, surfaceFirst),
 		...(worker
 			? []
 			: [

@@ -105,6 +105,7 @@ import {
 	SURFACE_STAGED_CODING_INSTRUCTIONS,
 	type SurfaceCodingTurnBinding,
 } from "./cloud-surface-turn-context.ts";
+import type { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 export const CLOUD_CODING_NATIVE_RPCS = [
@@ -132,6 +133,7 @@ export interface CloudNativeCodingTurnContext {
 	surfaceSession?: SurfaceCodingTurnBinding;
 	pictures?: CloudPictureChannel;
 	attachPicturesToCodex?: boolean;
+	voice?: CloudVoiceChannel;
 }
 export interface CloudCodingClaudeHost {
 	readonly channel: (binding: CloudNativeToolBinding) => CloudCodingChannel;
@@ -1267,7 +1269,12 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			: undefined;
 		const buildPlatformTools = (operations: CloudNativeToolOperations, guarded: CloudCodingCommandGateway) => {
 			if (preparedSurface) {
-				const surfaceTools = preparedSurface.buildTools(initial.identity, operations);
+				const surfaceTools = preparedSurface.buildTools(initial.identity, operations, {
+					scope,
+					identity: initial.identity,
+					operations,
+					gateway: guarded,
+				});
 				return {
 					surfaceTools,
 					recordChangeTool: [] as CloudNativeTool[],
@@ -1612,6 +1619,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			isolation: this.#isolation,
 			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 			...(pictures && attachPicturesToCodex ? { pictures } : {}),
+			...(context.voice ? { voice: context.voice } : {}),
 			prompt: effectivePrompt,
 			runtimeInstructions,
 			composeContext: (request) =>

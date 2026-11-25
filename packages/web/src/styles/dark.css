@@ -246,3 +246,41 @@
 :root[data-theme="dark"] .bank-year-in { background: #1f6b4c; }
 :root[data-theme="dark"] .bank-year-out { background: #7a3530; }
 :root[data-theme="dark"] .figure-dust { background: rgb(255 255 255 / 24%); }
+
+/* ---- Strategy blocks (surfaces.css) ---------------------------------------------------- */
+:root[data-theme="dark"] :is(.studio-plays, .studio-econ, .studio-hyp-block, .studio-land) {
+	--studio-good: #5ed6a9; --studio-warn: #f2c35d; --studio-bad: #ff9084; --studio-info: #8fb0ff;
+	--studio-mist: color-mix(in srgb, var(--text) 34%, var(--bg));
+}
+:root[data-theme="dark"] :is(.studio-play-status.is-recommended, .studio-land-us) { color: #1b1b1a; }
+:root[data-theme="dark"] .studio-play.is-recommended { box-shadow: 0 16px 36px -26px rgb(0 0 0 / 80%); }
+:root[data-theme="dark"] .studio-econ-view.is-on { box-shadow: 0 0 0 1px var(--border-strong); }
+:root[data-theme="dark"] .studio-econ-scenario { background: color-mix(in srgb, var(--text) 2.5%, var(--bg)); }
+:root[data-theme="dark"] .studio-econ-scenario.is-on {
+	background: color-mix(in srgb, var(--studio-accent) 10%, var(--bg));
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--studio-accent) 40%, transparent), 0 16px 32px -22px rgb(0 0 0 / 80%);
+}
+:root[data-theme="dark"] :is(.studio-econ-board, .studio-land-map) {
+	background: linear-gradient(180deg, color-mix(in srgb, var(--text) 3.5%, var(--bg)), var(--bg) 75%);
+}
+:root[data-theme="dark"] .studio-econ-range::-webkit-slider-thumb { box-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
+:root[data-theme="dark"] .studio-econ-range::-moz-range-thumb { box-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
+:root[data-theme="dark"] .studio-hyp-node-check { stroke: #1b1b1a; }
+:root[data-theme="dark"] .surface-card:hover .app-card-emblem .surface-tile.is-rail { filter: brightness(1.06); }
+:root[data-theme="dark"] .studio-tour-launch {
+	border-color: color-mix(in srgb, var(--tour-accent) 34%, rgb(255 255 255 / 14%));
+	background: color-mix(in srgb, var(--bg) 72%, transparent); color: var(--text);
+	box-shadow: 0 0 0 1px rgb(255 255 255 / 4%), 0 0 28px color-mix(in srgb, var(--tour-accent) 22%, transparent), 0 14px 36px rgb(0 0 0 / 55%);
+}
+:root[data-theme="dark"] .studio-tour-launch:hover {
+	box-shadow: 0 0 0 1px rgb(255 255 255 / 6%), 0 0 36px color-mix(in srgb, var(--tour-accent) 30%, transparent), 0 16px 40px rgb(0 0 0 / 60%);
+}
+:root[data-theme="dark"] .studio-tour-launch-meta { color: var(--text-soft); }
+:root[data-theme="dark"] .studio-tour-bar {
+	border-color: rgb(255 255 255 / 11%); background: color-mix(in srgb, var(--bg) 74%, transparent);
+	box-shadow: 0 0 0 1px rgb(255 255 255 / 3%), 0 22px 56px rgb(0 0 0 / 55%);
+}
+:root[data-theme="dark"] .is-tour-focus.is-tour-effect-spotlight {
+	box-shadow: 0 0 0 2px var(--studio-accent, var(--tour-accent)),
+		0 16px 44px color-mix(in srgb, var(--studio-accent, var(--tour-accent)) 24%, transparent);
+}

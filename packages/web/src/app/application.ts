@@ -86,6 +86,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { surfaceKindSubtitle } from "./surface-kinds.ts";
 import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
@@ -133,6 +134,7 @@ import {
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
 import type { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
+import { surfaceTile } from "./views/surface-rail.ts";
 import type { SurfaceMount, SurfaceView } from "./views/surface-view.ts";
 import type { TeamFeedback } from "./views/team.ts";
 import type { WhatsNewView } from "./views/whats-new.ts";
@@ -600,6 +602,21 @@ export function mountApplication(
 			openApp(app.dataset.appName);
 			return;
 		}
+		const surfaceTarget =
+			event.target instanceof Element ? event.target.closest<HTMLElement>("[data-surface-slug]") : null;
+		if (surfaceTarget?.dataset.surfaceSlug && company && !event.defaultPrevented) {
+			event.preventDefault();
+			const slug = surfaceTarget.dataset.surfaceSlug;
+			const tab = surfaceTarget.dataset.surfaceTab;
+			if (tab) surfacesOf(company)?.requestStudioTab(slug, tab);
+			if (settings) closeSettings(false);
+			if (surfaceView?.company === company && surfaceView.view.slug === slug) {
+				surfaceView.view.update();
+			} else {
+				navigate({ name: "company", profileId: company.profile.profileId, section: "surface", id: slug });
+			}
+			return;
+		}
 		// A link to the page of the app that is already open (its icon in the rail) leads nowhere new, and the app's page
 		// has no Reload of its own: an ordinary press on it reads the app again, which also lets it ask again (§5). A
 		// modified click stays the link's own (a new tab), and a link to any other place goes there by itself.
@@ -634,11 +651,12 @@ export function mountApplication(
 	// A question card's option that previews an app gets the app's cover, or its emblem and title, the same way: in a
 	// thread, in an app's page and in the Concepts viewer's dock, all on this page, and without redrawing the card, so
 	// a pick or an answer being typed stays (ui/interaction-card.ts refreshAppPreviews; review r1 of #1763, F1).
-	const APP_CARD_SELECTOR = ".app-card[data-app-name], [data-preview-app]";
+	const APP_CARD_SELECTOR = ".app-card[data-app-name], .surface-card[data-surface-slug], [data-preview-app]";
 	const pendingCardRoots = new Set<Element>();
 	let observedCardTarget: Element | undefined;
 	const isDirectAppCard = (node: Element): boolean =>
 		(node.classList.contains("app-card") && node.hasAttribute("data-app-name")) ||
+		(node.classList.contains("surface-card") && node.hasAttribute("data-surface-slug")) ||
 		node.hasAttribute("data-preview-app");
 	const collectDecoratableRoots = (records: readonly MutationRecord[]): boolean => {
 		let found = false;
@@ -659,6 +677,28 @@ export function mountApplication(
 			}
 		}
 		return found;
+	};
+	const decorateSurfaceCardElement = (
+		card: HTMLElement,
+		surfaces: SurfacesStore,
+		bySlug: Map<string, SurfaceSummary>,
+	): void => {
+		const slug = card.dataset.surfaceSlug?.toLowerCase();
+		const surface = slug ? bySlug.get(slug) : undefined;
+		if (!surface) return;
+		const look = surfaces.lookOf(surface);
+		const tab = card.dataset.surfaceTab ?? "";
+		const subtitle = surfaceKindSubtitle(look.kind);
+		const shown = JSON.stringify([surface.id, surface.title, surface.icon, look.kind, tab, subtitle]);
+		if (card.dataset.shown === shown) return;
+		card.dataset.shown = shown;
+		card.querySelector(".app-card-emblem")?.replaceChildren(surfaceTile(surface, look, "is-rail"));
+		const note = card.querySelector<HTMLElement>(".app-card-note");
+		if (note) {
+			const label = tab ? `${surface.title} · ${tab}` : subtitle;
+			note.textContent = label;
+			note.title = label;
+		}
 	};
 	const decorateCardElement = (
 		card: HTMLElement,
@@ -688,10 +728,29 @@ export function mountApplication(
 	};
 	const decorateAppCards = (roots?: readonly Element[]) => {
 		const activeCompany = company;
-		const apps = activeCompany?.store.get().apps;
-		if (!activeCompany || !apps?.length) return;
+		if (!activeCompany) return;
 		const targets = roots ?? (observedCardTarget ? [observedCardTarget] : []);
 		if (!targets.length) return;
+		const surfaces = surfacesOf(activeCompany);
+		if (surfaces?.state.surfaces.length) {
+			const bySlug = new Map(surfaces.state.surfaces.map((item) => [item.slug.toLowerCase(), item]));
+			for (const target of targets) {
+				if (!target.isConnected) continue;
+				if (
+					target instanceof HTMLElement &&
+					target.classList.contains("surface-card") &&
+					target.dataset.surfaceSlug
+				) {
+					decorateSurfaceCardElement(target, surfaces, bySlug);
+					continue;
+				}
+				for (const card of target.querySelectorAll<HTMLElement>(".surface-card[data-surface-slug]")) {
+					decorateSurfaceCardElement(card, surfaces, bySlug);
+				}
+			}
+		}
+		const apps = activeCompany.store.get().apps;
+		if (!apps?.length) return;
 		const byName = appsByName(apps);
 		const reader = cardImages.get(activeCompany);
 		for (const target of targets) {
@@ -706,10 +765,14 @@ export function mountApplication(
 			}
 		}
 	};
+	const hasDecoratableTargets = (): boolean =>
+		Boolean(
+			company &&
+				((company.store.get().apps?.length ?? 0) > 0 || (surfacesOf(company)?.state.surfaces.length ?? 0) > 0),
+		);
 	let decorating = false;
-	// WHY: Observe only the active chat/app/concepts container when legacy apps exist so Surface/Files/streaming pay zero observer cost.
 	const appCardObserver = new MutationObserver((records) => {
-		if (decorating || !company || !company.store.get().apps?.length || !collectDecoratableRoots(records)) return;
+		if (decorating || !hasDecoratableTargets() || !collectDecoratableRoots(records)) return;
 		decorating = true;
 		queueMicrotask(() => {
 			try {
@@ -732,9 +795,7 @@ export function mountApplication(
 	};
 	const syncAppCardObserver = (target: Element | undefined = activeCardTarget()): void => {
 		const nextTarget =
-			!disposed && company && !company.store.get().accessLost && (company.store.get().apps?.length ?? 0) > 0
-				? target
-				: undefined;
+			!disposed && company && !company.store.get().accessLost && hasDecoratableTargets() ? target : undefined;
 		if (nextTarget === observedCardTarget) return;
 		appCardObserver.disconnect();
 		pendingCardRoots.clear();
