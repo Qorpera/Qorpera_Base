@@ -352,16 +352,28 @@ it("stages a file's chunks and manifest under an intent, seals it, and reads it 
 	expect(puts).toHaveLength(4);
 	expect(calls.map((call) => call.method)).toEqual(["qorpera_folder_open_upload", "qorpera_folder_seal_upload"]);
 	// Each put is authorized, authorized again inside the gateway's journal lane, and confirmed.
-	expect(gatewayCalls).toEqual(
-		Array.from({ length: 4 }, () => [
-			"qorpera_folder_authorize_object_upload",
-			"qorpera_folder_authorize_object_upload",
-			"qorpera_folder_confirm_object",
-		]).flat(),
-	);
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_authorize_object_upload")).toHaveLength(8);
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(4);
+	expect(gatewayCalls).toHaveLength(12);
 	sql.readable.add(reference.manifestSha256);
 	const read = await bytes.get({ ...reference, executable: false }, new AbortController().signal);
 	expect(Buffer.from(read).equals(content)).toBe(true);
+});
+
+it("skips the manifest HTTP fetch when a single-chunk file matches its canonical manifest hash", async () => {
+	const { bytes, sql, gatewayCalls } = await fixture();
+	const signal = new AbortController().signal;
+	const content = Buffer.from("canonical single-chunk file");
+	const reference = await bytes.put(content, "text/plain", false, signal);
+	sql.readable.add(reference.manifestSha256);
+	gatewayCalls.length = 0;
+	const read = await bytes.get({ ...reference, executable: false }, signal);
+	expect(Buffer.from(read).equals(content)).toBe(true);
+	// WHY: 1 object download (chunk only, authorized twice by gateway) proves the manifest GET was bypassed.
+	expect(gatewayCalls).toEqual([
+		"qorpera_folder_authorize_object_download",
+		"qorpera_folder_authorize_object_download",
+	]);
 });
 
 it("reads a window of a file from only the chunks it falls in", async () => {

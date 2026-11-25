@@ -269,6 +269,15 @@ export class CloudCompanyPathGateway {
 	/** The one-call run check: the database lacks it (a runtime ahead of 20260930618000), or it has answered this run. */
 	#checkUnavailable = false;
 	#checkAnswered = false;
+	readonly #contextOutputCache = new Map<
+		string,
+		{
+			readonly raw: string;
+			readonly kind: CloudNativeFencedResult["kind"];
+			readonly imageSha256: string | undefined;
+			readonly entry: Record<string, unknown>;
+		}
+	>();
 
 	constructor(options: {
 		binding: CloudNativeToolBinding;
@@ -413,6 +422,16 @@ export class CloudCompanyPathGateway {
 			turnId: frame.turnId || null,
 			purpose: frame.purpose,
 			outputs: outputs.map((output) => {
+				if (output.capture === undefined) {
+					const cached = this.#contextOutputCache.get(output.callId);
+					if (
+						cached &&
+						cached.raw === output.output &&
+						cached.kind === output.kind &&
+						cached.imageSha256 === output.imageSha256
+					)
+						return cached.entry;
+				}
 				const envelope = JSON.parse(output.output) as {
 					status?: string;
 					provenance?: {
@@ -470,7 +489,7 @@ export class CloudCompanyPathGateway {
 						envelope.content.includedBytes !== Buffer.byteLength(envelope.content.text))
 				)
 					throw new Error("Company File output provenance changed");
-				return {
+				const entry: Record<string, unknown> = {
 					...(capture ? { capture } : {}),
 					callId: output.callId,
 					kind: output.kind,
@@ -481,6 +500,19 @@ export class CloudCompanyPathGateway {
 					includedBytes: readId ? envelope.content!.includedBytes! : null,
 					includedSha256: readId ? createHash("sha256").update(envelope.content!.text!).digest("hex") : null,
 				};
+				if (output.capture === undefined) {
+					this.#contextOutputCache.set(output.callId, {
+						raw: output.output,
+						kind: output.kind,
+						imageSha256: output.imageSha256,
+						entry,
+					});
+					if (this.#contextOutputCache.size > 8_192) {
+						const oldest = this.#contextOutputCache.keys().next().value;
+						if (oldest !== undefined) this.#contextOutputCache.delete(oldest);
+					}
+				}
+				return entry;
 			}),
 		};
 	}

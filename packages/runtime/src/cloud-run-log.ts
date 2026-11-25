@@ -557,6 +557,7 @@ export class CloudRunLog {
 		effectful?: (tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue) => boolean;
 		/** The first step of this run's log: 0, or where a resumed run continues. */
 		firstStep?: number;
+		initialPlace?: CloudRunLogPlace;
 		now?: () => Date;
 		commitMs?: number;
 	}) {
@@ -592,6 +593,20 @@ export class CloudRunLog {
 		this.#now = options.now ?? (() => new Date());
 		this.#commitMs = options.commitMs ?? CLOUD_RUN_LOG_COMMIT_MS;
 		this.#first = options.firstStep ?? 0;
+		if (options.initialPlace) {
+			this.#place = options.initialPlace;
+			if (options.initialPlace.exists) this.#root = options.initialPlace.path;
+			this.#generation = options.initialPlace.generation;
+			if (options.initialPlace.exists && options.initialPlace.last !== null) {
+				this.#blocks.set(options.initialPlace.last, {
+					first: options.initialPlace.last,
+					version: null,
+					lines: [],
+					bytes: 0,
+					stale: true,
+				});
+			}
+		}
 	}
 
 	get runId(): string {
@@ -1189,16 +1204,6 @@ export class CloudRunLog {
 			readPaths: snapshot.readPaths,
 			resultPaths: snapshot.resultPaths,
 		}));
-		let classifications: readonly CloudRunLogStepClassification[];
-		if (this.#protection.narrowBatch) {
-			classifications = await this.#protection.narrowBatch(this.#runId, inputs, signal);
-			if (!Array.isArray(classifications) || classifications.length !== candidates.length)
-				throw new CloudRunLogUnavailable("protection_invalid");
-		} else {
-			const single: CloudRunLogStepClassification[] = [];
-			for (const input of inputs) single.push(await this.#protection.narrow(this.#runId, input, signal));
-			classifications = single;
-		}
 		let narrowFrom = this.#narrowFrom;
 		const digests: string[] = [];
 		const digestIndexes = new Map<string, number>();
@@ -1211,6 +1216,34 @@ export class CloudRunLog {
 			}
 			return index;
 		};
+		// WHY: all-pending batches (every precommit) need only argsDigests, so narrow and hashes can overlap in one RTT.
+		const overlapPendingHashes = candidates.every((candidate) => candidate.pending);
+		const preArgsDigestIndexes = overlapPendingHashes
+			? candidates.map(({ step }) =>
+					step.argsHash === undefined && step.argsDigest !== null ? internDigest(step.argsDigest) : -1,
+				)
+			: null;
+		const classifyPromise = (async (): Promise<readonly CloudRunLogStepClassification[]> => {
+			if (this.#protection.narrowBatch) {
+				const out = await this.#protection.narrowBatch(this.#runId, inputs, signal);
+				if (!Array.isArray(out) || out.length !== candidates.length)
+					throw new CloudRunLogUnavailable("protection_invalid");
+				return out;
+			}
+			const single: CloudRunLogStepClassification[] = [];
+			for (const input of inputs) single.push(await this.#protection.narrow(this.#runId, input, signal));
+			return single;
+		})();
+		let classifications: readonly CloudRunLogStepClassification[];
+		let prefetchedHashes: readonly string[] | null = null;
+		if (overlapPendingHashes && digests.length > 0) {
+			[classifications, prefetchedHashes] = await Promise.all([
+				classifyPromise,
+				this.#protection.hashes(this.#runId, digests, signal),
+			]);
+		} else {
+			classifications = await classifyPromise;
+		}
 		const planned: {
 			readonly step: Step;
 			readonly snapshot: Step;
@@ -1236,14 +1269,22 @@ export class CloudRunLog {
 			)
 				narrowFrom = Math.min(narrowFrom, step.j);
 			const narrow = step.j >= narrowFrom;
-			const argsDigestIndex =
-				step.argsHash === undefined && step.argsDigest !== null ? internDigest(step.argsDigest) : -1;
+			const argsDigestIndex = preArgsDigestIndexes
+				? preArgsDigestIndexes[index]!
+				: step.argsHash === undefined && step.argsDigest !== null
+					? internDigest(step.argsDigest)
+					: -1;
 			// WHY: result_hash keys SHA-256 of the exact delivered envelope's UTF-8 bytes, never the larger raw result (§4.5).
 			const resultDigestIndex =
 				narrow && !pending ? internDigest(createHash("sha256").update(snapshot.result!).digest("hex")) : -1;
 			planned.push({ step, snapshot, pending, paths, narrow, argsDigestIndex, resultDigestIndex });
 		}
-		const hashes = digests.length ? await this.#protection.hashes(this.#runId, digests, signal) : [];
+		const hashes =
+			prefetchedHashes !== null
+				? prefetchedHashes
+				: digests.length
+					? await this.#protection.hashes(this.#runId, digests, signal)
+					: [];
 		if (!Array.isArray(hashes) || hashes.length !== digests.length)
 			throw new CloudRunLogUnavailable("protection_invalid");
 		for (let index = 0; index < digests.length; index++) {
