@@ -171,25 +171,26 @@ const foundingModule = lazyModule(async () => {
 	]);
 	return { FoundingController, FoundingView };
 });
-const conceptsModule = lazyModule(() => import("./views/concepts.ts"));
-const newProgramModule = lazyModule(() => import("./views/program-add.ts"));
-const siteViewModule = lazyModule(() => import("./views/site-view.ts"));
+// WHY: Grouping small secondary views behind one dynamic import collapses esbuild's combinatorial preload chunk explosion.
+const secondaryViewsModule = lazyModule(() => import("./views/lazy-secondary.ts"));
+const conceptsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.concepts));
+const newProgramModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.newProgram));
+const siteViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.siteView));
 const settingsViewModule = lazyModule(() => import("./views/settings.ts"));
-const friendsWindowModule = lazyModule(() => import("./views/friends-window.ts"));
-const feedbackViewModule = lazyModule(() => import("./views/feedback.ts"));
-const accountViewModule = lazyModule(async () => {
-	const [{ renderAccount }, { MyGoodWillView }] = await Promise.all([
-		import("./views/account.ts"),
-		import("./views/settings-good-will.ts"),
-	]);
-	return { renderAccount, MyGoodWillView };
-});
-const teamViewModule = lazyModule(() => import("./views/team.ts"));
-const memberChatModule = lazyModule(() => import("./views/member-chat.ts"));
-const newConversationModule = lazyModule(() => import("./views/new-conversation.ts"));
-const whatsNewModule = lazyModule(() => import("./views/whats-new.ts"));
-const agentDetailsModule = lazyModule(() => import("./views/agent-details.ts"));
-const groupDetailsModule = lazyModule(() => import("./views/group-details.ts"));
+const friendsWindowModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.friendsWindow));
+const feedbackViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.feedbackView));
+const accountViewModule = lazyModule(() =>
+	secondaryViewsModule.load().then((mod) => ({
+		renderAccount: mod.account.renderAccount,
+		MyGoodWillView: mod.goodWill.MyGoodWillView,
+	})),
+);
+const teamViewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.teamView));
+const memberChatModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.memberChat));
+const newConversationModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.newConversation));
+const whatsNewModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.whatsNew));
+const agentDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.agentDetails));
+const groupDetailsModule = lazyModule(() => secondaryViewsModule.load().then((mod) => mod.groupDetails));
 
 export function registerLazyApplicationModules(modules: {
 	readonly interfaceView?: typeof import("./views/interface.ts");
