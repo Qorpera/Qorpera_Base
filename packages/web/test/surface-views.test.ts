@@ -859,6 +859,13 @@ describe("the surface page", () => {
 			sessionMessage("77777777-7777-4777-8777-77777777777a", "system", "Merged “Ny pris” into Base", {
 				changeId: CHANGES[1],
 			}),
+			sessionMessage("77777777-7777-4777-8777-77777777777b", "system", "Discarded change: Superpower-udkast", {
+				changeId: CHANGES[0],
+			}),
+			sessionMessage("77777777-7777-4777-8777-77777777777c", "system", "Discarded options: A, B"),
+			sessionMessage("77777777-7777-4777-8777-77777777777d", "system", "Restored change: Ny pris", {
+				changeId: CHANGES[1],
+			}),
 		];
 		const replyDeferred = deferred<ReturnType<typeof session>>();
 		const client = fakeClient({
@@ -880,8 +887,18 @@ describe("the surface page", () => {
 			["surface-message is-session", "Jeg strammer typografien og fjerner støj i hero-sektionen."],
 			["surface-message is-system", expect.stringContaining("Merge conflicted. Reconcile to resolve.")],
 			["surface-message is-system", expect.stringContaining("Merged “Ny pris” into Base")],
+			["surface-message is-system", expect.stringContaining("Discarded “Superpower-udkast”")],
+			["surface-message is-system", expect.stringContaining("Discarded options: A, B")],
+			["surface-message is-system", expect.stringContaining("Restored “Ny pris”")],
 		]);
-		expect(drawer.querySelector(".surface-message.is-system")?.getAttribute("data-change-id")).toBe(CHANGES[0]);
+		const systemRows = [...drawer.querySelectorAll(".surface-message.is-system")];
+		expect(systemRows[0]?.getAttribute("data-change-id")).toBe(CHANGES[0]);
+		expect(systemRows[0]?.querySelector(".surface-system-dot")).not.toBeNull();
+		expect(systemRows[1]?.querySelector(".surface-system-mark")).not.toBeNull();
+		expect(systemRows[2]?.querySelector(".surface-system-dot")).not.toBeNull();
+		expect(systemRows[2]?.querySelector(".surface-system-mark")).toBeNull();
+		expect(systemRows[3]?.querySelector(".surface-system-dot")).not.toBeNull();
+		expect(systemRows[4]?.querySelector(".surface-system-mark")).not.toBeNull();
 
 		const input = drawer.querySelector<HTMLInputElement>(".surface-drawer-input")!;
 		input.value = "Gør prisen lidt tydeligere";

@@ -49,6 +49,7 @@ import {
 	type CloudToolContext,
 	CloudToolRefusal,
 	cloudToolJsonText,
+	relayControlRefusal,
 } from "./cloud-native-tool-boundary.ts";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -816,7 +817,12 @@ export function createCodingRecordChangeTool(
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
 			const parsed = argumentsValue as unknown as CodingRecordChangeRequest;
-			const result = await port.recordChange(sessionId, parsed, context);
+			let result: { readonly changeId: string; readonly seq: number; readonly openChangeCount: number };
+			try {
+				result = await port.recordChange(sessionId, parsed, context);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
 			return {
 				kind: "text",
 				value: cloudToolJsonText({

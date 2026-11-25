@@ -4992,6 +4992,9 @@ export class SurfacesStore {
 		if (this.isLocalInteractive && isLocalSurfaceId(found.workspace.surface.id)) {
 			const drawerOpen = this.drawerOpenOn(sessionId);
 			const now = new Date().toISOString();
+			const dropped = found.session.changes.filter(
+				(change) => change.optionGroupKey === optionGroupKey && isOpenChange(change),
+			);
 			const changes = found.session.changes.map((change) =>
 				change.optionGroupKey === optionGroupKey && isOpenChange(change)
 					? { ...change, status: "discarded" as const, resolvedAt: now }
@@ -5008,6 +5011,23 @@ export class SurfacesStore {
 				hasActiveChat: stillRunning ? found.session.hasActiveChat : !allDiscarded && drawerOpen,
 				changes,
 				openChangeCount: openCount,
+				messages:
+					dropped.length > 0
+						? [
+								...found.session.messages,
+								{
+									id: `local-message-${++this.#localSeq}`,
+									sessionId,
+									authorKind: "system",
+									text:
+										dropped.length === 1
+											? t("Discarded option “{title}”", { title: dropped[0]!.title })
+											: t("Discarded options: {titles}", { titles: dropped.map((c) => c.title).join(", ") }),
+									changeId: dropped.length === 1 ? dropped[0]!.id : null,
+									createdAt: now,
+								},
+							]
+						: found.session.messages,
 				updatedAt: now,
 				closedAt: allDiscarded || closes ? now : null,
 			};

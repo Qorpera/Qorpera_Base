@@ -44,6 +44,11 @@ const DRAWER_MAX = 560;
 const DRAWER_MAX_SHARE = 0.56;
 const STAGED_NOTE = "Staged change: ";
 const STAGED_OPTION_NOTE = "Staged option: ";
+const DISCARDED_CHANGE_NOTE = "Discarded change: ";
+const DISCARDED_OPTION_NOTE = "Discarded option: ";
+const DISCARDED_OPTIONS_NOTE = "Discarded options: ";
+const SELECTED_OPTION_NOTE = "Selected option: ";
+const RESTORED_CHANGE_NOTE = "Restored change: ";
 export const APPROVE_ARM_MS = 4_500;
 
 interface QuotedChangeRef {
@@ -213,13 +218,43 @@ function memberBubble(
 	);
 }
 
+function formatSystemMessage(text: string): { readonly text: string; readonly positive: boolean } {
+	if (text.startsWith(DISCARDED_CHANGE_NOTE)) {
+		return { text: t("Discarded “{title}”", { title: text.slice(DISCARDED_CHANGE_NOTE.length) }), positive: false };
+	}
+	if (text.startsWith(DISCARDED_OPTION_NOTE)) {
+		return {
+			text: t("Discarded option “{title}”", { title: text.slice(DISCARDED_OPTION_NOTE.length) }),
+			positive: false,
+		};
+	}
+	if (text.startsWith(DISCARDED_OPTIONS_NOTE)) {
+		return {
+			text: t("Discarded options: {titles}", { titles: text.slice(DISCARDED_OPTIONS_NOTE.length) }),
+			positive: false,
+		};
+	}
+	if (text.startsWith(SELECTED_OPTION_NOTE)) {
+		return {
+			text: t("Selected option: {title}", { title: text.slice(SELECTED_OPTION_NOTE.length) }),
+			positive: true,
+		};
+	}
+	if (text.startsWith(RESTORED_CHANGE_NOTE)) {
+		return { text: t("Restored “{title}”", { title: text.slice(RESTORED_CHANGE_NOTE.length) }), positive: true };
+	}
+	const negative = /^(?:Discarded\b|Kasserede\b|Merge conflicted\b|Merge failed\b|Undo failed\b)/i.test(text);
+	return { text, positive: !negative };
+}
+
 function messageRow(
 	message: SurfaceSessionMessage,
 	author?: SurfaceTeammate,
 	images?: HTMLElement | null,
 	to?: readonly SurfaceTeammate[],
 ): HTMLElement {
-	if (message.authorKind === "system")
+	if (message.authorKind === "system") {
+		const formatted = formatSystemMessage(message.text);
 		return h(
 			"div",
 			{ class: "surface-message-group is-system" },
@@ -230,12 +265,13 @@ function messageRow(
 					class: "surface-message is-system",
 					...(message.changeId ? { "data-change-id": message.changeId } : {}),
 				},
-				message.changeId
+				message.changeId && formatted.positive
 					? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
 					: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
-				h("span", { class: "surface-system-text" }, message.text),
+				h("span", { class: "surface-system-text" }, formatted.text),
 			),
 		);
+	}
 	if (message.authorKind === "session")
 		return h(
 			"div",
