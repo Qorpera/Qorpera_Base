@@ -1851,10 +1851,16 @@ export function cloudMachineTools(options: {
 			const { window: _window, ...args } = value as Record<string, JsonValue>;
 			const named = String(args.machine);
 			const cached = runningMachines.get(named);
-			const machine = cached ?? (await find(named, context.signal));
-			if (!machine) return screenRefusal(named, "MACHINE_NOT_FOUND", `no machine is named ${named}`);
-			if (!cached && machine.state !== "running")
-				return screenRefusal(machine.name, "MACHINE_NOT_RUNNING", `${machine.name} is ${machine.state}`);
+			let machine: { readonly machineId: string; readonly name: string };
+			if (cached) {
+				machine = cached;
+			} else {
+				const found = await find(named, context.signal);
+				if (!found) return screenRefusal(named, "MACHINE_NOT_FOUND", `no machine is named ${named}`);
+				if (found.state !== "running")
+					return screenRefusal(found.name, "MACHINE_NOT_RUNNING", `${found.name} is ${found.state}`);
+				machine = found;
+			}
 			if (!screenGateway) throw new Error("Machine screens are unavailable");
 			const scope = { machineId: machine.machineId };
 			const settleMs = Number(args.settleMs);

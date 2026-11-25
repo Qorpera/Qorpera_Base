@@ -4010,11 +4010,6 @@ export class LxdCompanyMachineHost {
 		cache: { cycles: number; verifiedAt: number; generation: number; hasFolder: boolean },
 		signal: AbortSignal,
 	): ReturnType<DesktopStreamRelease> {
-		const observedGeneration = this.#generations.get(stream.placementId) ?? 0;
-		if (observedGeneration > stream.generation)
-			return { end: stream.epoch === null ? "DESKTOP_HELD_SINCE" : "DESKTOP_CONTROL_ENDED" };
-		const knownBoot = this.#guests.get(stream.placementId)?.bootId ?? this.#folders.get(stream.placementId)?.bootId;
-		if (knownBoot !== undefined && knownBoot !== stream.bootId) return { end: "MACHINE_NOT_RUNNING" };
 		// No picture while an older move could still run (as a look: review r2 and r3 of #1733).
 		await this.#confirmFence(pipe, stream.placementId, stream.bootId, signal);
 		const folder = this.#options.folder;
@@ -4023,13 +4018,15 @@ export class LxdCompanyMachineHost {
 		const hasFolder = folder !== undefined && boot?.state !== "none";
 		const asked = async (): Promise<"ok" | { readonly end: string }> => {
 			const currentGeneration = this.#generations.get(stream.placementId) ?? 0;
-			if (currentGeneration > stream.generation)
-				return { end: stream.epoch === null ? "DESKTOP_HELD_SINCE" : "DESKTOP_CONTROL_ENDED" };
+			const knownBoot =
+				this.#guests.get(stream.placementId)?.bootId ?? this.#folders.get(stream.placementId)?.bootId;
+			const bootMatches = knownBoot === undefined || knownBoot === stream.bootId;
 			const nowMs = (this.#options.now ?? Date.now)();
 			const cacheMs = this.#options.streamReleaseCacheMs ?? STREAM_RELEASE_CACHE_MS;
 			if (
 				cache.cycles >= 2 &&
 				cacheMs > 0 &&
+				bootMatches &&
 				nowMs - cache.verifiedAt < cacheMs &&
 				cache.generation === currentGeneration &&
 				cache.hasFolder === hasFolder

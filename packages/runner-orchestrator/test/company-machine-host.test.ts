@@ -165,6 +165,7 @@ async function fixture(
 		/** How far apart instances start (default here: no wait). */
 		desktopStartGapMs?: number | undefined;
 		nodeStartGapMs?: number | undefined;
+		streamReleaseCacheMs?: number | undefined;
 	} = {},
 ) {
 	const { folder: withFolder, guestPageBytes, ...pins } = options;
@@ -6090,8 +6091,7 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 
 	it("caches stream release heartbeats across frames within streamReleaseCacheMs, honors expiry and generation revocation immediately, and evicts idle streams at capacity", async () => {
 		let nowMs = 10_000;
-		const { f, relays, update } = await relayed();
-		const pipe = f.client.execInstancePipe as ReturnType<typeof vi.fn>;
+		const { f, pipe, relays, update } = await relayed();
 		f.restart({
 			now: () => nowMs,
 			streamReleaseCacheMs: 1000,
@@ -6128,7 +6128,12 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		await vi.waitFor(() => expect(secondSink.messages).toHaveLength(1));
 		relays.at(-1)!.out(update([10, 20, 30]));
 		await vi.waitFor(() => expect(secondSink.messages).toHaveLength(2));
-		// WHY: Observing a newer generation on the same placement immediately revokes cached shared streams without waiting for heartbeat expiry.
+		// WHY: Observing a newer generation on the same placement invalidates the cached heartbeat immediately so SQL runs without waiting for expiry.
+		f.streamReleases.push({
+			schema: "qorpera.member-machine-stream-release/v1",
+			state: "refused",
+			reason: "DESKTOP_HELD_SINCE",
+		});
 		f.host.memberPointer({
 			placementId: id(6),
 			bootId: id(7),

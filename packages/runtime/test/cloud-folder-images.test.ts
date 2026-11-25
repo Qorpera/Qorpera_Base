@@ -687,13 +687,13 @@ it("fast-paths clean bounded 8-bit RGB PNGs when requested and falls back on uns
 	expect(fast.sha256).toBe(createHash("sha256").update(raw).digest("hex"));
 	const withSrgb = Buffer.concat([
 		raw.subarray(0, 8 + 12 + 13),
-		chunk("sRGB", Buffer.from([0])),
+		pngChunk("sRGB", Buffer.from([0])),
 		raw.subarray(8 + 12 + 13),
 	]);
 	expect(folderImageView(withSrgb, { fastPathValidPng: true }).png.equals(withSrgb)).toBe(true);
 	const withText = Buffer.concat([
 		raw.subarray(0, 8 + 12 + 13),
-		chunk("tEXt", Buffer.from("Comment\0secret")),
+		pngChunk("tEXt", Buffer.from("Comment\0secret")),
 		raw.subarray(8 + 12 + 13),
 	]);
 	const stripped = folderImageView(withText, { fastPathValidPng: true });

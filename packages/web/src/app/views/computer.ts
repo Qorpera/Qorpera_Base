@@ -2222,7 +2222,7 @@ export class ComputerPanel {
 			this.#wantTakeOver === undefined &&
 			this.#heldSince === undefined &&
 			!this.#handBackFailed &&
-			machine.generation !== undefined
+			typeof machine.generation === "number"
 		) {
 			if (
 				this.#shared?.machineId === machine.machineId &&

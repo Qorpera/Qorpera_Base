@@ -314,12 +314,13 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 	}, 90_000);
 
 	it("keeps the stream instance warm during idleGraceMs for a quick reopen and ends once the grace elapses", async () => {
-		const { watched, spawned } = await instances(fixture());
-		const { desktop, ended } = watched("warm", { idleGraceMs: 250 });
+		const src = await tcpDesktop();
+		const { watched, started } = await instances(fixture(""));
+		const { desktop, endings } = watched(`tcp:${src.port}`, { idleGraceMs: 250 });
 		const firstStop = new AbortController();
 		const firstSink = sinkOf();
 		const firstWatch = desktop.watch(async () => "ok", firstSink, firstStop.signal);
-		await vi.waitFor(() => expect(firstSink.messages.length).toBeGreaterThanOrEqual(1));
+		await vi.waitFor(() => expect(firstSink.types()).toEqual([STREAM_SIZE]));
 		firstStop.abort();
 		expect(await firstWatch).toBe("closed");
 		expect(desktop.ended).toBeNull();
@@ -330,12 +331,12 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		const secondSink = sinkOf();
 		const secondWatch = desktop.watch(async () => "ok", secondSink, secondStop.signal);
 		expect(desktop.idle).toBe(false);
-		await vi.waitFor(() => expect(secondSink.messages.length).toBeGreaterThanOrEqual(1));
-		expect(spawned).toHaveLength(1);
+		await vi.waitFor(() => expect(secondSink.types()).toEqual([STREAM_SIZE]));
+		expect(started).toHaveLength(1);
 		secondStop.abort();
 		expect(await secondWatch).toBe("closed");
 		expect(desktop.idle).toBe(true);
 		await vi.waitFor(() => expect(desktop.ended).toBe("idle"), { timeout: 2000 });
-		expect(ended).toHaveBeenCalledTimes(1);
+		expect(endings()).toBe(1);
 	});
 });

@@ -2685,8 +2685,14 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 		};
 		const memberPointerBegin = vi.fn(async () => passId);
 		const memberStreamLocal = vi.fn(async () => "closed");
+		let sqlActAnswer: () => Record<string, unknown> = () => ({
+			...f.answer("mx-a", { type: "click", x: 10, y: 20 }),
+			seat: 4,
+			shared: true,
+		});
 		const controlCall = vi.fn(async (method: string, args: Record<string, unknown>) => {
 			if (method === "qorpera_member_machine_desktop_pointer_authority") return pointerAnswer;
+			if (method === "qorpera_member_machine_desktop_act_authority") return sqlActAnswer();
 			return f.call(method, args);
 		});
 		const router = new MachineCommandRouter({
@@ -2766,6 +2772,7 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 		await expect(router.memberAct(sharedAct, f.signal)).rejects.toMatchObject({ code: "DESKTOP_ACTIONS_TOO_FAST" });
 
 		// WHY: Private holds also reuse a matching live pass and require exact epoch + seat match.
+		sqlActAnswer = () => f.answer("mx-a");
 		const privPass = randomUUID();
 		memberPointerBegin.mockResolvedValueOnce(privPass);
 		pointerAnswer = { ...pointerAnswer, passId: privPass, private: true, generation: 9 };
