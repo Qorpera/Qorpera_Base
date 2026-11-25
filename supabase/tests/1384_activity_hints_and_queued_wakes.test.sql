@@ -172,7 +172,7 @@ rollback to savepoint ah_blocked_wake;
 savepoint ah_stale_wake;
 set local session_replication_role = replica;
 update public.qorpera_wake_occurrences
-set created_at = statement_timestamp() - interval '10 minutes'
+set created_at = clock_timestamp() - interval '10 minutes'
 where id = current_setting('qorpera_test.ah_wake_id')::uuid;
 set local session_replication_role = origin;
 select pg_temp.base_assert(
@@ -184,7 +184,7 @@ rollback to savepoint ah_stale_wake;
 savepoint ah_future_wake;
 set local session_replication_role = replica;
 update public.qorpera_wake_occurrences
-set not_before = statement_timestamp() + interval '5 minutes'
+set not_before = clock_timestamp() + interval '5 minutes'
 where id = current_setting('qorpera_test.ah_wake_id')::uuid;
 set local session_replication_role = origin;
 select pg_temp.base_assert(

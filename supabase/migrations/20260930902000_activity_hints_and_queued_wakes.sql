@@ -153,11 +153,11 @@ $new$				coalesce(job.finished_at, job.started_at, job.created_at) as updated_at
 						and newer_wake.blocked_reason is null
 						and newer_wake.wake_kind in ('room', 'agent', 'routine')
 						and newer_wake.source_kind <> 'surface-session'
-						and newer_wake.not_before <= statement_timestamp()
-						and newer_wake.created_at >= statement_timestamp() - interval '5 minutes'
+						and newer_wake.not_before <= clock_timestamp()
+						and newer_wake.created_at >= clock_timestamp() - interval '5 minutes'
 						and newer_wake.created_at > coalesce(job.finished_at, job.started_at, job.created_at)
 						and not public.qorpera_company_execution_paused(v_profile_id)
-						and not public.qorpera_company_at_zero(v_profile_id, statement_timestamp())
+						and not public.qorpera_company_at_zero(v_profile_id, clock_timestamp())
 						and (newer_wake.sponsor_binding_id is null
 							or not public.qorpera_sponsor_waits_for_usage_limit(
 								newer_wake.sponsor_binding_id, newer_wake.sponsor_version))
@@ -188,10 +188,10 @@ $new$			)
 				and wake.blocked_reason is null
 				and wake.wake_kind in ('room', 'agent', 'routine')
 				and wake.source_kind <> 'surface-session'
-				and wake.not_before <= statement_timestamp()
-				and wake.created_at >= statement_timestamp() - interval '5 minutes'
+				and wake.not_before <= clock_timestamp()
+				and wake.created_at >= clock_timestamp() - interval '5 minutes'
 				and not public.qorpera_company_execution_paused(v_profile_id)
-				and not public.qorpera_company_at_zero(v_profile_id, statement_timestamp())
+				and not public.qorpera_company_at_zero(v_profile_id, clock_timestamp())
 				and (wake.sponsor_binding_id is null
 					or not public.qorpera_sponsor_waits_for_usage_limit(wake.sponsor_binding_id, wake.sponsor_version))
 		), current_activity as (
