@@ -847,7 +847,9 @@ $old$				and (not public.qorpera_coding_session_waits_for_usage_limit(session.wo
 					or public.qorpera_surface_is_preview_builder(session.worker_id))$old$,
 $new$				and (not public.qorpera_coding_session_waits_for_usage_limit(session.worker_id)
 					or public.qorpera_surface_is_preview_builder(session.worker_id))
-				and (session.harness <> 'claude-code' or public.qorpera_coding_claude_driver_ready())
+				and (session.harness <> 'claude-code'
+					or public.qorpera_coding_claude_driver_ready()
+					or public.qorpera_surface_is_preview_builder(session.worker_id))
 				and (not exists (
 					select 1 from public.qorpera_runtime_workers cw
 					where cw.id = session.worker_id
@@ -856,7 +858,9 @@ $new$				and (not public.qorpera_coding_session_waits_for_usage_limit(session.wo
 						and public.qorpera_claude_worker_waits(cw)
 				) or public.qorpera_surface_is_preview_builder(session.worker_id))$new$,
 $old$			update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = p_owner,$old$,
-$new$			if v_session.harness = 'claude-code' and not public.qorpera_coding_claude_driver_ready() then
+$new$			if v_session.harness = 'claude-code'
+				and not public.qorpera_coding_claude_driver_ready()
+				and not public.qorpera_surface_is_preview_builder(v_worker.id) then
 				raise exception 'Coding candidate skipped' using errcode = 'QSK01';
 			end if;
 			if v_worker.harness = 'claude-code' and v_worker.claude_login_id is not null
