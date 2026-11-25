@@ -1,6 +1,6 @@
 import type { StudioPatchOp, SurfaceReportBlock, SurfaceSummary } from "@qorpera/contracts";
 import { t } from "../../../ui/preferences.ts";
-import type { SurfacesStore } from "../../surfaces-store.ts";
+import { isStandaloneHtmlDeliverablePath, type SurfacesStore } from "../../surfaces-store.ts";
 import { SurfaceReportView } from "../surface-report-view.ts";
 import {
 	folderRelative,
@@ -13,6 +13,11 @@ import {
 } from "./context.ts";
 
 const REPORT_FILE_RE = /\.report\.json$/i;
+const PDF_POST_RE = /\.pdf$/i;
+
+function isPost(path: string, folderRoot: string): boolean {
+	return REPORT_FILE_RE.test(path) || PDF_POST_RE.test(path) || isStandaloneHtmlDeliverablePath(path, folderRoot);
+}
 
 export interface SurfaceReportsOptions {
 	readonly store: SurfacesStore;
@@ -35,8 +40,7 @@ export function reportFiles(
 			include: (path) => {
 				const relative = folderRelative(root, path);
 				return (
-					REPORT_FILE_RE.test(path) &&
-					surfaceGlobFinds(glob, relative === undefined ? { path } : { path, relative })
+					isPost(path, root) && surfaceGlobFinds(glob, relative === undefined ? { path } : { path, relative })
 				);
 			},
 		};
@@ -55,7 +59,7 @@ export class SurfaceReports {
 
 	prepare(block: SurfaceReportBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
 		const { signature, include } = reportFiles(block, ctx);
-		const filled = Object.keys(ctx.files).some(include);
+		const filled = Object.keys(ctx.files).some(include) || Object.keys(ctx.binaries).some(include);
 		const pieces: StudioSectionTask[] = [];
 		if (block.heading) {
 			const heading = ctx.words(block.heading);

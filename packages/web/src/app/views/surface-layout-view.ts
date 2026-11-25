@@ -3,6 +3,7 @@ import {
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_LAYOUT_PATH,
+	type SurfaceArtifactsBlock,
 	type SurfaceLayoutRead,
 	type SurfaceReadBlock,
 	type SurfaceReadNode,
@@ -21,12 +22,14 @@ import { type ColorToken, prepareSwatchRow, readSwatches } from "./surface-block
 import {
 	cleanFolderRoot,
 	createBlockContext,
+	folderRelative,
 	isPlainRecord,
 	type StudioSectionTask,
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
 	type SurfaceFileLayer,
 	sourceFile,
+	surfaceGlobFinds,
 } from "./surface-blocks/context.ts";
 import { explainerClaimedPaths, SurfaceExplainers } from "./surface-blocks/explainer.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
@@ -112,6 +115,7 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 		if (block.type === "report") {
 			const { include } = reportFiles(block, ctx);
 			for (const path of Object.keys(ctx.files)) if (include(path)) claimed.add(path);
+			for (const path of Object.keys(ctx.binaries)) if (include(path)) claimed.add(path);
 			continue;
 		}
 		if (block.type === "explainer") {
@@ -140,6 +144,20 @@ function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layou
 		}
 	}
 	return claimed;
+}
+
+type PathTest = (path: string) => boolean;
+
+function artifactsHold(block: SurfaceArtifactsBlock, ctx: SurfaceBlockContext): PathTest {
+	return (path) => {
+		const relative = folderRelative(ctx.folderRoot, path);
+		const file = relative === undefined ? { path } : { path, relative };
+		const listed =
+			block.match === undefined
+				? relative !== undefined
+				: block.match.some((glob) => surfaceGlobFinds(glob, file));
+		return listed && !block.skip?.some((glob) => surfaceGlobFinds(glob, file));
+	};
 }
 
 function isRow(node: PreparedNode): node is PreparedRow {
@@ -189,7 +207,7 @@ export class SurfaceLayoutView {
 	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
-	#reportTabs: readonly { readonly id: string; readonly holds: (path: string) => boolean }[] = [];
+	#postTabs: readonly { readonly id: string; readonly posts: PathTest; readonly files: PathTest }[] = [];
 
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
@@ -229,11 +247,15 @@ export class SurfaceLayoutView {
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
 		const claimed = claimedFiles(layout, ctx, layoutPath);
-		this.#reportTabs = layout.tabs.map((tab) => {
-			const includes = tab.blocks
-				.flatMap((node) => (node.type === "row" ? node.blocks : [node]))
-				.flatMap((block) => (block.type === "report" ? [reportFiles(block, ctx).include] : []));
-			return { id: tab.id, holds: (path: string) => includes.some((include) => include(path)) };
+		this.#postTabs = layout.tabs.map((tab) => {
+			const blocks = tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node]));
+			const posts = blocks.flatMap((block) => (block.type === "report" ? [reportFiles(block, ctx).include] : []));
+			const files = blocks.flatMap((block) => (block.type === "artifacts" ? [artifactsHold(block, ctx)] : []));
+			return {
+				id: tab.id,
+				posts: (path: string) => posts.some((include) => include(path)),
+				files: (path: string) => files.some((hold) => hold(path)),
+			};
 		});
 		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
 		this.#stages.keep(stageKeys);
@@ -412,7 +434,7 @@ export class SurfaceLayoutView {
 	}
 
 	tabFor(path: string): string | undefined {
-		return this.#reportTabs.find((tab) => tab.holds(path))?.id;
+		return (this.#postTabs.find((tab) => tab.posts(path)) ?? this.#postTabs.find((tab) => tab.files(path)))?.id;
 	}
 
 	click(target: HTMLElement, root: HTMLElement): boolean {

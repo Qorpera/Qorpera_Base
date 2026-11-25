@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `surface-layout`: the `report` block holds posts of every kind (Jonas, 25 Nov 2026: "the HTML/PDF's should be able to be posted in any tab"): `from` may name a `.json` report, an `.html`/`.htm` page or a `.pdf`, `match` finds all three, and the block reference says it goes in any tab. The Product starter's Reports tab matches `**/*` so a product's HTML and PDF posts have a home.
 - Preview-aware session lineage for dependent interface changes (migration `20260930890000_surface_preview_lineage.sql`): added optional `previewBaseChangeIds` on `SurfaceChangeUnit` and `StudioPatchChange` (validated as up to 64 UUIDs in `parseSurfaceChangeUnit`).
 - Silent background reconciliation for overlapping interface changes (migration `20260930888000_surface_silent_reconciliation.sql`): added deterministic 3-way line and JSON object merge helpers (`mergeTextThreeWay`, `mergeJsonThreeWay`, `mergeStudioTextContent` in `surface-merge.ts`), `"reconciling"` to `SURFACE_PREVIEW_STATUSES`, `SurfaceReconciliation` / `SURFACE_RECONCILIATION_STATUSES` / `parseSurfaceReconciliation`, optional `baseFiles` on `StudioPatchChange` and `SurfaceChangeUnit`, optional `folderRevision` on `SurfaceSummary`, and optional `reconciliations` on `SurfaceWorkspace`.
 - `surfaces` and `surface-layout`: admitted `application/pdf` in `STUDIO_BINARY_MEDIA_TYPES` and documented PDFs in the `artifacts` block summary for PDF deliverables.

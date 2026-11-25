@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import type { StudioBinaryRef, SurfaceSummary, SurfaceWorkspace } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { surfaceDocSlug } from "../src/app/surfaces-store.ts";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { frameParsedPage } from "../src/ui/page-frame.ts";
@@ -1087,6 +1088,66 @@ describe("SurfaceStudioView", () => {
 		expect(fills).toEqual(["100%", "4%"]);
 		const pathD = view.el.querySelector("svg.report-line-svg path")?.getAttribute("d") ?? "";
 		expect(pathD).not.toContain("NaN");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("opens HTML posts in whichever tab holds them: a posts block first, else a files block", async () => {
+		const headband = summary({
+			id: HEADBAND_ID,
+			slug: "headband",
+			title: "Headband",
+			archetype: "studio",
+			folderRoot: "hardware/headband",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [headband]) }));
+		await store.load();
+		const launchPath = "hardware/headband/story/launch.html";
+		const flyerPath = "hardware/headband/flyer.html";
+		const page = (title: string) => `<!doctype html><html><head><title>${title}</title></head><body><p>${title}</p></body></html>`;
+		const view = new SurfaceStudioView({
+			store,
+			surface: headband,
+			signal: new AbortController().signal,
+			loadFiles: async () => ({
+				"hardware/headband/layout.json": JSON.stringify({
+					schema: "qorpera.surface-layout/v1",
+					tabs: [
+						{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "artifacts", heading: "Files" }] },
+						{ id: "story", title: "Story", blocks: [{ type: "report", match: "story/**" }] },
+					],
+				}),
+				"hardware/headband/story/why.report.json": JSON.stringify({
+					slug: "why",
+					headline: "Why a headband",
+					sections: [{ id: "s1", heading: "Body", paragraphs: ["Why"] }],
+				}),
+				[launchPath]: page("Launch post"),
+				[flyerPath]: page("Flyer"),
+			}),
+		});
+		document.body.append(view.el);
+		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+		await flush();
+		const onTab = () => view.el.querySelector<HTMLElement>(".studio-tab.is-on")?.dataset.tab;
+
+		expect(onTab()).toBe("overview");
+		await store.openChangeDeliverable(headband.id, "change-1", surfaceDocSlug(launchPath), launchPath);
+		await flush();
+		expect(store.state.mode).toBe("preview");
+		expect(onTab()).toBe("story");
+		const launch = view.el.querySelector<HTMLElement>(
+			`[data-act="report-select"][data-slug="${surfaceDocSlug(launchPath)}"]`,
+		);
+		expect(launch?.getAttribute("aria-selected")).toBe("true");
+
+		await store.openChangeDeliverable(headband.id, "change-2", surfaceDocSlug(flyerPath), flyerPath);
+		await flush();
+		expect(store.state.mode).toBe("preview");
+		expect(onTab()).toBe("overview");
+
 		view.dispose();
 		store.dispose();
 	});
