@@ -55,6 +55,8 @@ export async function bundleNodeEntries({
 			platform: "node",
 			format,
 			target,
+			minifyWhitespace: true,
+			minifySyntax: true,
 			...(banner ? { banner } : {}),
 			...(external ? { external } : {}),
 			...extraOptions,

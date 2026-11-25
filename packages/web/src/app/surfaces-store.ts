@@ -291,6 +291,7 @@ export interface SurfacesState {
 	readonly mode: SurfacePreviewMode;
 	readonly activeReportSlug?: string;
 	readonly previewPanel: SurfacePreviewPanelState;
+	readonly opsPanelSurfaceId?: string;
 	readonly compareTargetId?: string;
 	readonly compareFocusSessionId?: string;
 	readonly compareExcludedSessions: Readonly<Record<string, true>>;
@@ -516,6 +517,10 @@ export function activeTaskSessions(state: Pick<SurfacesState, "surfaces" | "work
 
 export function openExplorations(workspace: SurfaceWorkspace | undefined): SurfaceExplorationSet[] {
 	return workspace?.explorations.filter((set) => set.status === "open") ?? [];
+}
+
+function workspaceHasOpenWork(workspace: SurfaceWorkspace | undefined): boolean {
+	return Boolean(workspace && (workspace.activeSessions.length > 0 || openExplorations(workspace).length > 0));
 }
 
 export function isOpenVariant(
@@ -2265,6 +2270,7 @@ export class SurfacesStore {
 
 	clearActiveSurface(surfaceId: string): void {
 		if (this.#activeSurfaceId === surfaceId) this.#activeSurfaceId = undefined;
+		if (this.state.opsPanelSurfaceId === surfaceId) this.store.set({ opsPanelSurfaceId: undefined });
 	}
 
 	async openSurface(slug: string): Promise<SurfaceWorkspace | undefined> {
@@ -2546,12 +2552,14 @@ export class SurfacesStore {
 				existingSurface !== undefined && JSON.stringify(existingSurface) === JSON.stringify(workspace.surface);
 			const patchesChanged =
 				nextPatches !== state.studioPatches && JSON.stringify(nextPatches) !== JSON.stringify(state.studioPatches);
+			const clearOpsPanel = state.opsPanelSurfaceId === surfaceId && !workspaceHasOpenWork(mergedWorkspace);
 			if (
 				workspaceUnchanged &&
 				surfaceUnchanged &&
 				!patchesChanged &&
 				nextPendingStudioPatches === state.pendingStudioPatches &&
-				notes.length === state.notes.length
+				notes.length === state.notes.length &&
+				!clearOpsPanel
 			) {
 				return {};
 			}
@@ -2569,6 +2577,7 @@ export class SurfacesStore {
 					? { pendingStudioPatches: nextPendingStudioPatches }
 					: {}),
 				...(notes.length !== state.notes.length ? { notes } : {}),
+				...(clearOpsPanel ? { opsPanelSurfaceId: undefined } : {}),
 			};
 		});
 		const stored = this.state.workspaces[surfaceId];
@@ -3190,32 +3199,57 @@ export class SurfacesStore {
 		}
 	}
 
-	openPreviewPanel(): void {
+	openPreviewPanel(surfaceId?: string): void {
+		const targetId = surfaceId ?? this.state.drawer?.surfaceId ?? this.#activeSurfaceId;
+		const target = targetId ? this.state.surfaces.find((item) => item.id === targetId) : undefined;
 		if (this.state.drawer) this.closeDrawer();
-		this.store.set({ previewPanel: "open" });
+		if (target?.archetype === "ops") {
+			this.store.set({
+				opsPanelSurfaceId: workspaceHasOpenWork(this.state.workspaces[target.id]) ? target.id : undefined,
+			});
+			return;
+		}
+		this.store.set({ previewPanel: "open", opsPanelSurfaceId: undefined });
 	}
 
-	closePanel(): void {
+	returnToOverview(surfaceId?: string): void {
+		const targetId = surfaceId ?? this.state.drawer?.surfaceId ?? this.#activeSurfaceId;
 		if (this.state.drawer) this.closeDrawer();
-		this.store.set({ previewPanel: "closed" });
+		if (!targetId) {
+			this.store.set({ previewPanel: "open", opsPanelSurfaceId: undefined });
+			return;
+		}
+		if (this.isPreviewPanelOpen(targetId)) return;
+		this.openPreviewPanel(targetId);
+	}
+
+	closePanel(surfaceId?: string): void {
+		const targetId = surfaceId ?? this.state.drawer?.surfaceId ?? this.#activeSurfaceId;
+		const target = targetId ? this.state.surfaces.find((item) => item.id === targetId) : undefined;
+		if (this.state.drawer) this.closeDrawer();
+		if (target?.archetype === "ops") {
+			if (this.state.opsPanelSurfaceId !== undefined) this.store.set({ opsPanelSurfaceId: undefined });
+			return;
+		}
+		this.store.set({ previewPanel: "closed", opsPanelSurfaceId: undefined });
 	}
 
 	isPreviewPanelOpen(surfaceId: string): boolean {
 		const state = this.state;
+		const surface = state.surfaces.find((item) => item.id === surfaceId);
+		if (!surface) return false;
 		if (state.drawer?.surfaceId === surfaceId) return true;
+		const hasWork = workspaceHasOpenWork(state.workspaces[surfaceId]);
+		if (surface.archetype === "ops") return hasWork && state.opsPanelSurfaceId === surfaceId;
 		if (state.previewPanel === "closed") return false;
 		if (state.previewPanel === "open") return true;
 		if (state.mode === "live") return false;
-		const surface = state.surfaces.find((item) => item.id === surfaceId);
-		if (!surface || surface.archetype === "ops") return false;
-		const workspace = state.workspaces[surfaceId];
-		if (!workspace) return false;
-		return workspace.activeSessions.length > 0 || openExplorations(workspace).length > 0;
+		return hasWork;
 	}
 
 	togglePreviewPanel(surfaceId: string): void {
-		if (this.isPreviewPanelOpen(surfaceId)) this.closePanel();
-		else this.openPreviewPanel();
+		if (this.isPreviewPanelOpen(surfaceId)) this.closePanel(surfaceId);
+		else this.openPreviewPanel(surfaceId);
 	}
 
 	navigateSurface(slug: string): void {

@@ -333,9 +333,30 @@
 				if (coverage[index] === 1 && !(eyes && eyes[index])) lights[count++] = stops[index];
 			}
 			if (count) {
-				const used = lights.subarray(0, count);
-				used.sort();
-				median = used[count >> 1];
+				// WHY: Iterative quickselect finds the exact median in O(N) instead of O(N log N) Float32Array.sort on 262k floats.
+				const k = count >> 1;
+				let left = 0;
+				let right = count - 1;
+				while (left < right) {
+					const mid = (left + right) >> 1;
+					const pivot = lights[mid];
+					let i = left;
+					let j = right;
+					while (i <= j) {
+						while (lights[i] < pivot) i++;
+						while (lights[j] > pivot) j--;
+						if (i <= j) {
+							const tmp = lights[i];
+							lights[i] = lights[j];
+							lights[j] = tmp;
+							i++;
+							j--;
+						}
+					}
+					if (j < k) left = i;
+					if (k < i) right = j;
+				}
+				median = lights[k];
 			}
 		}
 		canvas.width = canvas.height = 0;

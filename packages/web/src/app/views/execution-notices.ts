@@ -264,9 +264,17 @@ export class ExecutionNotices {
 			return;
 		}
 		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
-		for (const event of ["focus", "online"])
-			window.addEventListener(event, () => void this.refresh(), { signal: this.#lifetime.signal });
-		document.addEventListener("visibilitychange", () => void this.refresh(), { signal: this.#lifetime.signal });
+		let lastFront: { type: string; at: number } | undefined;
+		const onFront = (event: Event) => {
+			if (document.visibilityState === "hidden") return;
+			const now = Date.now();
+			if (lastFront && lastFront.type !== event.type && now - lastFront.at < 250) return;
+			lastFront = { type: event.type, at: now };
+			void this.refresh();
+		};
+		window.addEventListener("focus", onFront, { signal: this.#lifetime.signal });
+		window.addEventListener("online", () => void this.refresh(), { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", onFront, { signal: this.#lifetime.signal });
 		this.#timer = setInterval(() => void this.refresh(), 30_000);
 		void this.refresh();
 	}

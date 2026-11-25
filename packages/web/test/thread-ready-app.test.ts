@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import { fixture, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 /* "A change is ready" in the app (own code storage, thread pieces): the agent's thread starts from the company's last
  * read of What's new, whichever desk made it, so a change put live on What's new's page is no card in the thread

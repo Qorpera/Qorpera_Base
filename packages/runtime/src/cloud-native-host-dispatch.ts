@@ -1,6 +1,6 @@
 import { supabaseServiceHeaders } from "@qorpera/cloud-client/cloud-request";
 import { UUID_PATTERN } from "@qorpera/contracts";
-import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
+import type { WebSocketLikeConstructor } from "@supabase/realtime-js";
 
 /** G2-2 to G2-5: the native host reaches the database, Storage and Realtime without the service key, and holds none
  * (G2-5). A call it makes inside a job goes through the entry points of migration 20260928409985 with the publishable

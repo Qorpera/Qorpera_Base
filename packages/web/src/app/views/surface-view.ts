@@ -1080,7 +1080,7 @@ export class SurfaceView {
 		}
 
 		const panelLabel = panelOpen ? t("Close panel") : t("Preview panel");
-		this.#panelToggle.hidden = !(surface.archetype !== "ops" || hasAgents);
+		this.#panelToggle.hidden = !(surface.archetype !== "ops" || hasAgents || panelOpen);
 		this.#panelToggle.setAttribute("aria-pressed", String(panelOpen));
 		this.#panelToggle.setAttribute("aria-label", panelLabel);
 		this.#panelToggle.title = panelLabel;

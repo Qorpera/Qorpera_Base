@@ -1914,11 +1914,11 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 
 describe("What's new's live row at every width", () => {
 	const css = readFileSync(resolve("src/styles/sites.css"), "utf8");
-	const app = readFileSync(resolve("src/styles/app.css"), "utf8");
+	const deferred = readFileSync(resolve("src/styles/deferred.css"), "utf8");
 
 	it("lays its rows out by its own width, not the window's", () => {
 		expect(css).toMatch(/\.whats-new \{[^}]*container: site-rows \/ inline-size;/);
-		expect(app).toContain('@import "./sites.css";');
+		expect(deferred).toContain('@import "./sites.css";');
 	});
 
 	it("puts its buttons under its line on a narrow page", () => {

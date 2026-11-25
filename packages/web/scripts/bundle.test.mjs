@@ -179,6 +179,8 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	for (const file of layout.lazy) assert.ok(!html.includes(file), file);
 	assert.ok(head.includes(`<script src="./${layout.theme}"></script>`));
 	assert.ok(head.includes(`<link rel="stylesheet" href="./${layout.style}">`));
+	assert.ok(head.includes(`<meta name="qorpera-deferred-css" content="./${layout.deferredStyle}">`));
+	assert.ok(!head.includes(`<link rel="stylesheet" href="./${layout.deferredStyle}">`));
 	assert.ok(html.includes(`<script type="module" src="./${layout.script}"></script>`));
 	// The avatar globals still come before the module that uses them, each
 	// fetched by its content hash: /assets/ is cached for a day.
@@ -192,7 +194,7 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 
 test("the deployment manifest checksums every script and stylesheet the build made", async () => {
 	const { layout } = await built;
-	const expected = [layout.script, layout.style, layout.theme, ...layout.preload, ...layout.lazy];
+	const expected = [layout.script, layout.style, layout.deferredStyle, layout.theme, ...layout.preload, ...layout.lazy];
 	for (const file of expected) assert.ok(layout.files.includes(file), file);
 	assert.deepEqual(
 		layout.files,

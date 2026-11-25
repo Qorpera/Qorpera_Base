@@ -4,6 +4,7 @@ import { mountApplication } from "../src/app/application.ts";
 import { SITE_DOOR_URL, SiteView } from "../src/app/views/site-view.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { deferred, fixture, id, profileA, settle, team, timestamp, userA, userB } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 /* A company's website in the app (company views step 4, V2): the route #/c/<id>/site/<slug> waits for the company's
  * sites, shows a live website with a member's pass, says so for one it can't show, follows the member to another
