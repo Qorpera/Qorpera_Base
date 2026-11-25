@@ -1101,11 +1101,10 @@ export class SurfaceReportView {
 		const items =
 			structuredItems.length > 0 ? [...structuredItems, ...pdfItems] : [...fallbackMarkdownItems, ...pdfItems];
 
-		if (activeReportSlug !== this.#lastStoreSlug) {
+		const storeSlugListed = Boolean(activeReportSlug && items.some((item) => item.slug === activeReportSlug));
+		if (activeReportSlug !== this.#lastStoreSlug && (!activeReportSlug || storeSlugListed)) {
 			this.#lastStoreSlug = activeReportSlug;
-			if (activeReportSlug && items.some((item) => item.slug === activeReportSlug)) {
-				this.#activeSlug = activeReportSlug;
-			}
+			if (activeReportSlug) this.#activeSlug = activeReportSlug;
 		}
 		if (items.length && !items.some((item) => item.slug === this.#activeSlug)) {
 			this.#activeSlug =
@@ -1703,7 +1702,7 @@ export class SurfaceReportView {
 			if (slug !== this.#activeSlug) {
 				this.#activeSlug = slug;
 				this.#lastStoreSlug = slug;
-				if (!this.#options.embedded) this.#options.store.selectReport(slug);
+				this.#options.store.selectReport(slug);
 				this.update();
 			}
 			return;

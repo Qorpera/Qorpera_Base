@@ -773,7 +773,7 @@ export class SurfaceSessionDrawer {
 		const state = this.#store.state;
 		if (!this.#store.isChangeShown(changeId)) return false;
 		if (look?.kind === "report") return state.mode !== "live" && state.activeReportSlug === slug;
-		return state.mode === "report" && state.activeReportSlug === slug;
+		return (state.mode === "report" || state.mode === "preview") && state.activeReportSlug === slug;
 	}
 
 	#overviewDeliverablePill(
@@ -795,6 +795,7 @@ export class SurfaceSessionDrawer {
 				"data-act": "open-deliverable",
 				"data-change": change.id,
 				"data-report": item.slug,
+				"data-path": item.path,
 			},
 			icon("file"),
 			h("span", null, label),
@@ -822,6 +823,7 @@ export class SurfaceSessionDrawer {
 						"data-act": "open-deliverable",
 						"data-change": change.id,
 						"data-report": item.slug,
+						"data-path": item.path,
 					},
 					h("span", { class: "surface-agent-note-icon", "aria-hidden": "true" }, icon("file")),
 					h("span", { class: "surface-agent-note-copy" }, h("small", null, meta), h("strong", null, item.title)),
@@ -1924,7 +1926,7 @@ export class SurfaceSessionDrawer {
 				store.openReport(surfaceId, report);
 				return;
 			case "open-deliverable":
-				if (change && report) void store.openChangeDeliverable(surfaceId, change, report);
+				if (change && report) void store.openChangeDeliverable(surfaceId, change, report, target.dataset.path);
 				return;
 			case "focus-session":
 				if (session) store.openDrawer(surfaceId, session);
