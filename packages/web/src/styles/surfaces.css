@@ -2568,7 +2568,7 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .studio-econ-kpi.is-short .studio-econ-kpi-sub { color: var(--studio-warn); }
 .studio-econ-canvas { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; gap: 18px; min-width: 0; }
 .studio-econ-canvas.is-single { grid-template-columns: minmax(0, 1fr); }
-@container studio-econ (max-width: 880px) {
+@container studio-econ (max-width: 62em) {
 	.studio-econ-canvas { grid-template-columns: minmax(0, 1fr); }
 }
 .studio-econ-levers { display: grid; gap: 14px; min-width: 0; }
