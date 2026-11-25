@@ -61,16 +61,6 @@
       "sha256": "627db070d2b195f74813a63dd0d0e78589c19716fa1498ec58e8fd07808c2124"
     },
     {
-      "file": "native-company/LICENSE",
-      "bytes": 10926,
-      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
-    },
-    {
-      "file": "native-company/NOTICE",
-      "bytes": 242,
-      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
-    },
-    {
       "file": "native-company/artifact.json",
       "bytes": 1816,
       "sha256": "117a5f2e6faca21a4cab044c5b35fd53cfe4e928bb60c9bfb45d4f0f43ba6894"
@@ -79,6 +69,16 @@
       "file": "native-company/codex",
       "bytes": 398449416,
       "sha256": "9d6a86ec6e280e43d76653d9514aa92769ec67ec157e4ff3bb598fb4a4b48211"
+    },
+    {
+      "file": "native-company/LICENSE",
+      "bytes": 10926,
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    {
+      "file": "native-company/NOTICE",
+      "bytes": 242,
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
     },
     {
       "file": "qorpera-claude-box-ns.apparmor",
