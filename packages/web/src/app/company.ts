@@ -822,6 +822,7 @@ export class CompanyController {
 	#hiddenAt: number | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
+	#suspended = false;
 	#connectionFailures = 0;
 	readonly #abort = new AbortController();
 	readonly #reconnect = new Reconnect(() => this.#tryAgain(), this.#abort.signal);
@@ -1006,15 +1007,19 @@ export class CompanyController {
 		return this.#abort.signal;
 	}
 
-	async start(): Promise<void> {
-		if (this.#stopped || this.#realtime) return;
+	get suspended(): boolean {
+		return this.#suspended;
+	}
+
+	#subscribeRealtime(): void {
+		if (this.#stopped || this.#suspended || this.#realtime) return;
 		this.#realtime = subscribeCompanyRealtime(
 			this.#api.cloud,
 			this.profile.profileId,
 			this.#userId,
 			(resource) => this.#onHint(resource),
 			(phase, error, recovered) => {
-				if (this.#stopped) return;
+				if (this.#stopped || this.#suspended) return;
 				// Back after a failure, also one the badge never showed (a hidden tab's, inside the grace): read again
 				// what the hints may have missed.
 				const back =
@@ -1026,14 +1031,20 @@ export class CompanyController {
 				if (back) this.#catchUp();
 			},
 		);
+	}
+
+	async start(): Promise<void> {
+		if (this.#stopped || this.#realtime) return;
+		this.#subscribeRealtime();
 		await this.refreshAll();
-		if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
-		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
+		if (!this.#stopped && !this.#suspended && this.store.get().team?.capabilities.read) this.#atComputers.read();
+		if (!this.#stopped && !this.#suspended) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
 		if (!this.#stopped && typeof document !== "undefined") {
 			if (document.visibilityState === "hidden") this.#hiddenAt = Date.now();
 			document.addEventListener(
 				"visibilitychange",
 				() => {
+					if (this.#stopped || this.#suspended) return;
 					this.#seeMentions();
 					this.memberChats.seen();
 					if (document.visibilityState === "hidden") {
@@ -1051,6 +1062,63 @@ export class CompanyController {
 				{ signal: this.signal },
 			);
 		}
+	}
+
+	// WHY: Park inactive companies in the warm LRU by pausing Realtime, presence, and timers without discarding warm state.
+	suspend(): void {
+		if (this.#stopped || this.#suspended) return;
+		this.#suspended = true;
+		this.#realtime?.stop();
+		this.#realtime = undefined;
+		this.#sidebarRealtime?.stop();
+		this.#sidebarRealtime = undefined;
+		clearTimeout(this.#hiddenPresenceTimer);
+		this.#hiddenPresenceTimer = undefined;
+		void this.#presence?.stop().catch(() => {});
+		this.#presence = undefined;
+		this.#tracked = null;
+		this.#present = false;
+		clearInterval(this.#iconWatch);
+		this.#iconWatch = undefined;
+		if (this.#poll) {
+			clearInterval(this.#poll);
+			this.#poll = undefined;
+		}
+		clearTimeout(this.#watching);
+		this.#watching = undefined;
+		this.#watchUntil = 0;
+		this.#watchSince = 0;
+		clearTimeout(this.#openFullTimer);
+		this.#openFullTimer = undefined;
+		this.#reconnect.pause();
+		this.#atComputers.pause();
+		this.memberChats.pause();
+		this.setOpenSession(undefined);
+		this.#openPlace = undefined;
+	}
+
+	resume(): void {
+		if (this.#stopped || !this.#suspended) return;
+		this.#suspended = false;
+		this.#subscribeRealtime();
+		if (this.store.get().sidebar?.own) {
+			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
+		}
+		if (!this.#poll) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
+		this.#reconnect.resume();
+		this.memberChats.resume();
+		if (this.store.get().team?.capabilities.read) this.#atComputers.resume();
+		if (this.#presenceWatching) this.#syncPresence();
+		if (Object.keys(this.store.get().appIconsDrawing ?? {}).length > 0) this.#watchIcons();
+		// WHY: Quietly revalidate state in the background after instant restore without flashing loading skeletons.
+		void this.refreshTeam();
+		void this.#sessionsChanged();
+		void this.refreshStaff();
+		void this.refreshActivity();
+		void this.refreshSidebar();
+		void this.refreshMentions();
+		void this.refreshHoursWait();
+		void this.memberChats.refresh();
 	}
 
 	/** A hidden tab with live hints reads on no clock: nobody is looking, the hints still land and read what they name, and
@@ -2844,7 +2912,7 @@ export class CompanyController {
 	}
 
 	#syncPresence(): void {
-		if (this.#stopped || !this.#presenceWatching) return;
+		if (this.#stopped || this.#suspended || !this.#presenceWatching) return;
 		const visible = typeof document === "undefined" || document.visibilityState !== "hidden";
 		if (!visible) {
 			this.#trackOpen();
@@ -2884,7 +2952,7 @@ export class CompanyController {
 
 	/** Say which conversation this tab shows, and where it is in the rail: nothing while the tab is hidden. */
 	#trackOpen(): void {
-		if (!this.#presence || this.#stopped) return;
+		if (!this.#presence || this.#stopped || this.#suspended) return;
 		const visible = typeof document === "undefined" || document.visibilityState !== "hidden";
 		const active = visible && this.#activity?.active === true;
 		const sessionId = this.#openSessionId;
@@ -3973,14 +4041,14 @@ export class CompanyController {
 	#watchUntil = 0;
 	#watchSince = 0;
 	#watchWork(forMs: number): void {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		this.#watchUntil = Math.max(this.#watchUntil, Date.now() + forMs);
 		if (this.#watching) return;
 		if (!this.#watchSince) this.#watchSince = Date.now();
 		const wait = Date.now() - this.#watchSince < 120_000 ? 2_000 : 5_000;
 		this.#watching = setTimeout(() => {
 			this.#watching = undefined;
-			if (this.#stopped) return;
+			if (this.#stopped || this.#suspended) return;
 			if (Date.now() >= this.#watchUntil) {
 				this.#watchSince = 0;
 				return;
@@ -4006,20 +4074,25 @@ export class CompanyController {
 	}
 
 	/** Hints about one change arrive together (a move, then another member's echo). */
-	readonly #refreshSidebarSoon = debounce(() => void this.refreshSidebar(), 250);
+	readonly #refreshSidebarSoon = debounce(() => {
+		if (!this.#suspended) void this.refreshSidebar();
+	}, 250);
 
 	/** A room's new messages may name the member: the badges are read again, at most every few
 	 * seconds while a room is busy. */
-	readonly #refreshMentionsSoon = throttle(() => void this.refreshMentions(), 5_000);
+	readonly #refreshMentionsSoon = throttle(() => {
+		if (!this.#suspended) void this.refreshMentions();
+	}, 5_000);
 
 	/** A change to the open conversation is read as a hint says (readOnHint). */
 	#triggerOpenConversationRead(open: string): void {
+		if (this.#suspended) return;
 		const due = (this.#conversationReadAt.get(open)?.full ?? 0) + OPEN_FULL_MS - Date.now();
 		void this.loadConversation(open, { eventsOnly: due > 0 });
 		if (due > 0 && !this.#openFullTimer)
 			this.#openFullTimer = setTimeout(() => {
 				this.#openFullTimer = undefined;
-				if (this.#stopped || this.#openSessionId !== open) return;
+				if (this.#stopped || this.#suspended || this.#openSessionId !== open) return;
 				if (Date.now() - (this.#conversationReadAt.get(open)?.full ?? 0) >= OPEN_FULL_MS)
 					void this.loadConversation(open);
 			}, due);
@@ -4027,13 +4100,13 @@ export class CompanyController {
 
 	readonly #refreshOpenConversation = readOnHint(() => {
 		const open = this.#openSessionId;
-		if (!open) return;
+		if (!open || this.#suspended) return;
 		this.#triggerOpenConversationRead(open);
 	}, 400);
 
 	/** Realtime is back after an error: what changed while hints could not arrive is read once. */
 	#catchUp(): void {
-		if (this.#stopped || this.store.get().loading) return;
+		if (this.#stopped || this.#suspended || this.store.get().loading) return;
 		void this.#sessionsChanged();
 		void this.refreshActivity();
 		void this.refreshMentions();
@@ -4045,23 +4118,29 @@ export class CompanyController {
 
 	/** A burst of transcript events is at most one read an interval, plus the first at once where someone is looking
 	 * (readOnHint). */
-	readonly #sessionsChangedSoon = readOnHint(() => void this.#sessionsChanged(), 250);
+	readonly #sessionsChangedSoon = readOnHint(() => {
+		if (!this.#suspended) void this.#sessionsChanged();
+	}, 250);
 
 	/** The agents' activity moves with their events: read at most every few seconds while they write. */
-	readonly #refreshActivitySoon = throttle(() => void this.refreshActivity(), 3_000);
+	readonly #refreshActivitySoon = throttle(() => {
+		if (!this.#suspended) void this.refreshActivity();
+	}, 3_000);
 	// WHY: Dedicated activity hint cadence prevents a user's own sessions hint from starving real Working/Writing transitions for 3 s.
-	readonly #refreshActivityOnHint = readOnHint(() => void this.refreshActivity(), ACTIVITY_HINT_COALESCE_MS);
+	readonly #refreshActivityOnHint = readOnHint(() => {
+		if (!this.#suspended) void this.refreshActivity();
+	}, ACTIVITY_HINT_COALESCE_MS);
 	readonly #refreshStaffSoon = readOnHint(() => {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		void this.refreshStaff();
 		void this.refreshOrganization();
 	}, 250);
 	readonly #refreshTeamSoon = readOnHint(() => {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		void this.refreshTeam();
 	}, 250);
 	readonly #refreshCompanyFileSoon = readOnHint(() => {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		void this.refreshGroups();
 		const waiting = Object.values(this.store.get().recoveries).filter((recovery) => recovery.proposalId);
 		for (const recovery of waiting) this.#recheckRecovery(recovery.runId);
@@ -4069,7 +4148,7 @@ export class CompanyController {
 	}, 250);
 
 	#onHint(resource: RealtimeResource): void {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		for (const listener of this.#invalidations) listener(resource);
 		if (resource === "sessions") {
 			// Every transcript event touches its conversation: read what changed, and the agents'
@@ -4095,7 +4174,7 @@ export class CompanyController {
 	}
 
 	async #tick(forceFull = false): Promise<void> {
-		if (this.#stopped || this.#polling || this.#restsWhileHidden()) return;
+		if (this.#stopped || this.#suspended || this.#polling || this.#restsWhileHidden()) return;
 		this.#polling = true;
 		try {
 			const connected = this.store.get().realtime === "connected";

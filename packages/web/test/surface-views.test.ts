@@ -15,6 +15,7 @@ import { previewStatusText, publishFailureText, SurfaceDoorStage } from "../src/
 import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
+import { SurfaceSessionDrawer } from "../src/app/views/surface-session-drawer.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
@@ -2477,6 +2478,92 @@ describe("removing an agent from the Changes list", () => {
 		expect(view.el.querySelector(".skeleton-surface")).toBeNull();
 		expect(view.el.querySelectorAll("iframe.surface-frame")).toHaveLength(1);
 		view.dispose();
+		store.dispose();
+	});
+
+	it("skips the deferred skeleton flash when returning to a surface whose workspace is warm and supports park()/activate()", async () => {
+		const inbox = summary({
+			id: "22222222-2222-4222-8222-222222222245",
+			slug: "inbox",
+			title: "Inbox",
+			archetype: "ops",
+			icon: "mail",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [inbox]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: inbox })),
+			}),
+		);
+		await store.load();
+		await store.openSurface("inbox");
+
+		const mounted = document.createElement("div");
+		mounted.className = "warm-inbox-mount";
+		const mountUpdate = vi.fn();
+		const mountDispose = vi.fn();
+		const mount = vi.fn(() => ({ el: mounted, update: mountUpdate, dispose: mountDispose }));
+		const view = new SurfaceView({ store, mount, openMigration: () => undefined }, "inbox");
+		document.body.append(view.el);
+		view.update();
+
+		expect(view.el.querySelector(".skeleton-surface")).toBeNull();
+		expect(mount).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".warm-inbox-mount")).toBe(mounted);
+
+		view.park();
+		const updatesWhileParked = mountUpdate.mock.calls.length;
+		view.update();
+		expect(mountUpdate).toHaveBeenCalledTimes(updatesWhileParked);
+		expect(mountDispose).not.toHaveBeenCalled();
+
+		view.activate();
+		expect(mountUpdate.mock.calls.length).toBeGreaterThan(updatesWhileParked);
+		expect(view.el.querySelector(".warm-inbox-mount")).toBe(mounted);
+
+		view.dispose();
+		expect(mountDispose).toHaveBeenCalledTimes(1);
+		store.dispose();
+	});
+
+	it("reconciles SurfaceSessionDrawer thread turns in place so earlier turns keep DOM identity during streaming", async () => {
+		const firstMsg = sessionMessage(MESSAGE_IDS[0], "session", "First **completed** reply");
+		const streamingMsg = sessionMessage(MESSAGE_IDS[1], "session", "Streaming chunk 1");
+		let currentMessages = [firstMsg, streamingMsg];
+		const baseSession = session([], { state: "running", messages: currentMessages });
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([{ ...baseSession, messages: currentMessages }])),
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+		store.openDrawer(SURFACE, SESSION);
+
+		const stop = new AbortController();
+		const drawer = new SurfaceSessionDrawer(store, stop.signal);
+		document.body.append(drawer.el);
+		drawer.update(store.state.surfaces[0]);
+
+		const initialRows = [...drawer.el.querySelectorAll<HTMLElement>(".surface-drawer-body > *")];
+		const initialHeadBtn = drawer.el.querySelector(".surface-drawer-head .surface-drawer-back");
+		expect(initialRows).toHaveLength(2);
+		expect(initialRows[0]!.textContent).toContain("First completed reply");
+		expect(initialRows[1]!.textContent).toContain("Streaming chunk 1");
+
+		currentMessages = [firstMsg, sessionMessage(MESSAGE_IDS[1], "session", "Streaming chunk 1 + chunk 2")];
+		await store.refreshWorkspace(SURFACE);
+		drawer.update(store.state.surfaces[0]);
+
+		const nextRows = [...drawer.el.querySelectorAll<HTMLElement>(".surface-drawer-body > *")];
+		expect(nextRows).toHaveLength(2);
+		expect(nextRows[0]).toBe(initialRows[0]);
+		expect(drawer.el.querySelector(".surface-drawer-head .surface-drawer-back")).toBe(initialHeadBtn);
+		expect(nextRows[1]!.textContent).toContain("Streaming chunk 1 + chunk 2");
+
+		stop.abort();
 		store.dispose();
 	});
 });

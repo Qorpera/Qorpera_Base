@@ -150,7 +150,7 @@ export class SurfaceView {
 	readonly el = h("section", { class: "page surface-page" });
 	readonly slug: string;
 	readonly #host: SurfaceViewHost;
-	readonly #active = new AbortController();
+	#active = new AbortController();
 	readonly #lifetime = new AbortController();
 	readonly #bar = h("header", { class: "surface-bar" });
 	readonly #barTitle = h("h1", { class: "visually-hidden surface-title" });
@@ -227,6 +227,7 @@ export class SurfaceView {
 	#loadingKind: SurfaceSkeletonKind | "" = "";
 	#contentReady = false;
 	#deactivated = false;
+	#parked = false;
 	#disposed = false;
 	#cancelReady: (() => void) | undefined;
 	#mountedFor = "";
@@ -259,19 +260,20 @@ export class SurfaceView {
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
-		const signal = this.#active.signal;
-		this.#images = new SurfaceComposerImages(this.#shell, signal, () => this.#syncSend());
+		const lifetimeSignal = this.#lifetime.signal;
+		const activeSignal = this.#active.signal;
+		this.#images = new SurfaceComposerImages(this.#shell, lifetimeSignal, () => this.#syncSend());
 		this.#shell.insertBefore(this.#images.button, this.#input);
 		this.#composer.insertBefore(this.#images.tray.el, this.#shell);
 		this.#composer.append(this.#images.tray.status);
 		this.#images.setAvailable(host.store.canAttachImages);
-		this.#drawer = new SurfaceSessionDrawer(host.store, signal);
+		this.#drawer = new SurfaceSessionDrawer(host.store, lifetimeSignal);
 		this.#primaryDoor = new SurfaceDoorStage(this.#lifetime.signal, {
 			onPick: (target) => {
-				if (!this.#deactivated) this.#onPick(target);
+				if (!this.#deactivated && !this.#parked) this.#onPick(target);
 			},
 			onShownChange: () => {
-				if (this.#deactivated) return;
+				if (this.#deactivated || this.#parked) return;
 				const surface = this.surface;
 				if (surface) this.#drawChrome(surface);
 			},
@@ -282,7 +284,7 @@ export class SurfaceView {
 			isPassUsable: (previewId, pass) => host.store.isPreviewPassUsable(previewId, pass),
 			onPassSent: (previewId, pass) => host.store.markPreviewPassConsumed(previewId, pass),
 			onNeedFreshPass: (previewId, stalePass) => {
-				if (this.#deactivated) return Promise.resolve(false);
+				if (this.#deactivated || this.#parked) return Promise.resolve(false);
 				const surface = this.surface;
 				return surface ? host.store.remintPreviewPass(surface.id, previewId, stalePass) : Promise.resolve(false);
 			},
@@ -296,7 +298,7 @@ export class SurfaceView {
 			canManage: () => host.managesSites?.() === true,
 			changed: () => {
 				const surface = this.surface;
-				if (!surface || this.#deactivated) return;
+				if (!surface || this.#deactivated || this.#parked) return;
 				this.#drawBar(surface);
 				this.#drawToast();
 			},
@@ -311,21 +313,116 @@ export class SurfaceView {
 				this.#autoPublishOffOwed.delete(surface.id);
 				if (!surface.autoPublish) void host.store.setAutoPublish(surface.id, true, { quiet: true });
 			},
-			signal,
+			signal: lifetimeSignal,
 		});
 		this.#stage.append(this.#canvas, this.#drawer.el);
 		this.el.append(this.#stage, this.#panelToggle);
-		this.#wireBar(signal);
-		if (typeof ResizeObserver !== "undefined") {
-			this.#viewportResizeObserver = new ResizeObserver(() => this.#syncPhoneViewport());
-			this.#viewportResizeObserver.observe(this.#viewport);
-			this.#notchResizeObserver = new ResizeObserver(() => {
-				this.el.style.setProperty("--surface-drawer-shown", `${this.#drawer.el.offsetWidth}px`);
-				this.#fitNotch();
-			});
-			for (const box of [this.#bar, this.#notchPill, this.#notchBar, this.#drawer.el])
-				this.#notchResizeObserver.observe(box);
-		}
+		this.#notchBar.addEventListener("scroll", () => this.#markNotchCut(), { passive: true, signal: lifetimeSignal });
+		this.#bar.addEventListener(
+			"focusout",
+			(event) => {
+				if (this.#deactivated || this.#parked) return;
+				const next = event.relatedTarget;
+				if (!(next instanceof Element) || this.#bar.contains(next)) return;
+				if (next.closest(".context-menu, dialog, .surface-address-sheet")) return;
+				this.#closeBar();
+			},
+			{ signal: lifetimeSignal },
+		);
+		this.#wireActive(activeSignal);
+		this.#attachObservers();
+		this.#composer.addEventListener(
+			"submit",
+			(event) => {
+				event.preventDefault();
+				if (this.#deactivated || this.#parked) return;
+				void this.#submit();
+			},
+			{ signal: lifetimeSignal },
+		);
+		this.#input.addEventListener(
+			"input",
+			() => {
+				if (this.#deactivated || this.#parked) return;
+				growToText(this.#input);
+				this.#syncSend();
+			},
+			{ signal: lifetimeSignal },
+		);
+		this.#input.addEventListener(
+			"blur",
+			() => {
+				if (this.#deactivated || this.#parked) return;
+				if (!this.#input.value.trim()) this.#host.store.keepOptions();
+			},
+			{ signal: lifetimeSignal },
+		);
+		this.#input.addEventListener(
+			"keydown",
+			(event) => {
+				if (this.#deactivated || this.#parked) return;
+				if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+					event.preventDefault();
+					void this.#submit();
+				}
+			},
+			{ signal: lifetimeSignal },
+		);
+		this.el.addEventListener(
+			"click",
+			(event) => {
+				if (this.#deactivated || this.#parked) return;
+				this.#click(event);
+			},
+			{ signal: lifetimeSignal },
+		);
+		// WHY: Skip the deferred skeleton flash when returning to a surface whose workspace is already warm in SurfacesStore.
+		const warmSurface = surfaceBySlug(host.store.state, slug);
+		const warmReady = Boolean(
+			warmSurface && host.store.state.workspaces[warmSurface.id] && host.isMountLoading?.(warmSurface) !== true,
+		);
+		void host.store.openSurface(slug);
+		if (warmReady) this.#contentReady = true;
+		else this.#scheduleContentReady();
+	}
+
+	#attachObservers(): void {
+		if (typeof ResizeObserver === "undefined") return;
+		this.#viewportResizeObserver ??= new ResizeObserver(() => this.#syncPhoneViewport());
+		this.#viewportResizeObserver.observe(this.#viewport);
+		this.#notchResizeObserver ??= new ResizeObserver(() => {
+			this.el.style.setProperty("--surface-drawer-shown", `${this.#drawer.el.offsetWidth}px`);
+			this.#fitNotch();
+		});
+		for (const box of [this.#bar, this.#notchPill, this.#notchBar, this.#drawer.el])
+			this.#notchResizeObserver.observe(box);
+	}
+
+	#wireActive(signal: AbortSignal): void {
+		document.addEventListener(
+			"pointerdown",
+			(event) => {
+				if (event.target instanceof Node && this.#bar.contains(event.target)) return;
+				this.#closeBar();
+			},
+			{ capture: true, signal },
+		);
+		window.addEventListener(
+			"blur",
+			() => {
+				setTimeout(() => {
+					const focused = document.activeElement;
+					if (
+						!this.#deactivated &&
+						!this.#parked &&
+						focused instanceof HTMLIFrameElement &&
+						this.el.contains(focused)
+					)
+						this.#closeBar();
+				}, 0);
+			},
+			{ signal },
+		);
 		window.addEventListener("resize", () => this.#syncPhoneViewport(), { signal });
 		window.addEventListener(
 			"message",
@@ -338,49 +435,13 @@ export class SurfaceView {
 			},
 			{ signal },
 		);
-		this.#composer.addEventListener(
-			"submit",
-			(event) => {
-				event.preventDefault();
-				void this.#submit();
-			},
-			{ signal },
-		);
-		this.#input.addEventListener(
-			"input",
-			() => {
-				growToText(this.#input);
-				this.#syncSend();
-			},
-			{ signal },
-		);
-		this.#input.addEventListener(
-			"blur",
-			() => {
-				if (!this.#input.value.trim()) this.#host.store.keepOptions();
-			},
-			{ signal },
-		);
-		this.#input.addEventListener(
-			"keydown",
-			(event) => {
-				if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-					event.preventDefault();
-					void this.#submit();
-				}
-			},
-			{ signal },
-		);
 		window.addEventListener("keydown", (event) => this.#keydown(event), { signal });
-		this.el.addEventListener("click", (event) => this.#click(event), { signal });
-		void host.store.openSurface(slug);
-		this.#scheduleContentReady();
 	}
 
 	#scheduleContentReady(): void {
 		this.#cancelReady = afterPaint(() => {
 			this.#cancelReady = undefined;
-			if (this.#deactivated || this.#disposed || this.#contentReady) return;
+			if (this.#deactivated || this.#parked || this.#disposed || this.#contentReady) return;
 			this.#contentReady = true;
 			this.update();
 		}, this.#active.signal);
@@ -444,39 +505,6 @@ export class SurfaceView {
 
 	get surface(): SurfaceSummary | undefined {
 		return surfaceBySlug(this.#host.store.state, this.slug);
-	}
-
-	#wireBar(signal: AbortSignal): void {
-		this.#notchBar.addEventListener("scroll", () => this.#markNotchCut(), { passive: true, signal });
-		document.addEventListener(
-			"pointerdown",
-			(event) => {
-				if (event.target instanceof Node && this.#bar.contains(event.target)) return;
-				this.#closeBar();
-			},
-			{ capture: true, signal },
-		);
-		this.#bar.addEventListener(
-			"focusout",
-			(event) => {
-				const next = event.relatedTarget;
-				if (!(next instanceof Element) || this.#bar.contains(next)) return;
-				if (next.closest(".context-menu, dialog, .surface-address-sheet")) return;
-				this.#closeBar();
-			},
-			{ signal },
-		);
-		window.addEventListener(
-			"blur",
-			() => {
-				setTimeout(() => {
-					const focused = document.activeElement;
-					if (!this.#deactivated && focused instanceof HTMLIFrameElement && this.el.contains(focused))
-						this.#closeBar();
-				}, 0);
-			},
-			{ signal },
-		);
 	}
 
 	#barHeld(): boolean {
@@ -567,9 +595,44 @@ export class SurfaceView {
 		if (!this.#input.disabled) this.#input.focus({ preventScroll: true });
 	}
 
+	// WHY: Park a warm SurfaceView in the LRU without tearing down its DOM/iframe mount, detaching global listeners while inactive.
+	park(): void {
+		if (this.#deactivated || this.#disposed || this.#parked) return;
+		this.#parked = true;
+		this.#cancelReady?.();
+		this.#cancelReady = undefined;
+		this.#address.close();
+		if (this.#pointing) this.#setPointing(false);
+		this.#clearLocalLoadTimer();
+		this.#viewportResizeObserver?.disconnect();
+		this.#viewportResizeObserver = undefined;
+		this.#notchResizeObserver?.disconnect();
+		this.#notchResizeObserver = undefined;
+		this.#active.abort();
+		const ownSurfaceId = this.#lastSurfaceId || this.surface?.id;
+		if (ownSurfaceId) {
+			this.#host.store.clearActiveSurface(ownSurfaceId);
+			if (this.#host.store.state.drawer?.surfaceId === ownSurfaceId) {
+				this.#host.store.closeDrawer();
+			}
+		}
+	}
+
+	activate(): void {
+		if (this.#deactivated || this.#disposed || !this.#parked) return;
+		this.#parked = false;
+		this.#active = new AbortController();
+		this.#wireActive(this.#active.signal);
+		this.#attachObservers();
+		this.#contentReady = true;
+		void this.#host.store.openSurface(this.slug);
+		this.update();
+	}
+
 	deactivate(): void {
 		if (this.#deactivated) return;
 		this.#deactivated = true;
+		this.#parked = false;
 		this.#cancelReady?.();
 		this.#cancelReady = undefined;
 		this.#address.close();
@@ -604,7 +667,7 @@ export class SurfaceView {
 	}
 
 	update(): void {
-		if (this.#deactivated || this.#disposed) return;
+		if (this.#deactivated || this.#parked || this.#disposed) return;
 		const store = this.#host.store;
 		const state = store.state;
 		const surface = this.surface;

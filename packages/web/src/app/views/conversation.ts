@@ -1363,7 +1363,7 @@ export class ConversationView {
 			const cached = preloadedAgentDetails;
 			if (cached) openDetails(cached, undefined);
 			else
-				void import("./lazy-secondary.ts").then(({ agentDetails: { AgentDetails: Loaded } }) => {
+				void import("./lazy-ops.ts").then(({ agentDetails: { AgentDetails: Loaded } }) => {
 					preloadedAgentDetails = Loaded;
 					openDetails(Loaded, undefined);
 				});
@@ -1371,7 +1371,7 @@ export class ConversationView {
 			const cached = preloadedGroupDetails;
 			if (cached) openDetails(undefined, cached);
 			else
-				void import("./lazy-secondary.ts").then(({ groupDetails: { GroupDetails: Loaded } }) => {
+				void import("./lazy-quick.ts").then(({ groupDetails: { GroupDetails: Loaded } }) => {
 					preloadedGroupDetails = Loaded;
 					openDetails(undefined, Loaded);
 				});

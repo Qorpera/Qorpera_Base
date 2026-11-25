@@ -168,6 +168,13 @@ interface FileAnswer {
 	readonly failed: boolean;
 }
 
+interface CachedFileQuery {
+	readonly limit: number;
+	readonly hits: readonly SearchHit[];
+}
+
+const QUERY_CACHE_MAX = 24;
+
 interface Group {
 	readonly label?: string;
 	readonly hits: readonly SearchHit[];
@@ -213,6 +220,11 @@ export class SearchWindow {
 	#shown: SearchHit[] = [];
 	#files: FileAnswer | null = null;
 	#recentFiles: SearchHit[] = [];
+	// WHY: Keep company-scoped SWR file caches across close/reopen so Cmd+K shows recent files and repeat queries at 0ms.
+	#cacheProfileId: string | undefined;
+	#cachedRecentFiles: SearchHit[] = [];
+	readonly #cachedQueries = new Map<string, CachedFileQuery>();
+	readonly #freshQueries = new Set<string>();
 	#fileSearch: AbortController | null = null;
 	#fileTimer: ReturnType<typeof setTimeout> | undefined;
 	#opener: HTMLElement | null = null;
@@ -274,13 +286,17 @@ export class SearchWindow {
 	}
 
 	open(sources: SearchSources, opener: HTMLElement | null = null): void {
-		const changed = this.#sources?.profileId !== sources.profileId;
+		const companyChanged = this.#cacheProfileId !== sources.profileId;
+		if (companyChanged) {
+			this.#cacheProfileId = sources.profileId;
+			this.#cachedRecentFiles = [];
+			this.#cachedQueries.clear();
+			this.#freshQueries.clear();
+		}
 		this.#sources = sources;
 		this.#opener = opener;
-		if (changed) {
-			this.#files = null;
-			this.#recentFiles = [];
-		}
+		this.#files = null;
+		this.#recentFiles = sources.files ? [...this.#cachedRecentFiles] : [];
 		if (!this.el.isConnected) document.body.append(this.el);
 		this.#input.value = "";
 		this.#only = null;
@@ -293,11 +309,27 @@ export class SearchWindow {
 		this.#loadRecentFiles();
 	}
 
+	invalidateFiles(profileId?: string): void {
+		if (profileId && this.#cacheProfileId !== profileId) return;
+		this.#cachedRecentFiles = [];
+		this.#cachedQueries.clear();
+		this.#freshQueries.clear();
+		if (this.el.open && this.#sources && (!profileId || this.#sources.profileId === profileId)) {
+			this.#files = null;
+			this.#loadRecentFiles();
+			if (searchWords(this.#input.value.trim()).length) this.#askFiles();
+		}
+	}
+
 	close(): void {
 		if (this.el.open) this.el.close();
 	}
 
 	reset(): void {
+		this.#cacheProfileId = undefined;
+		this.#cachedRecentFiles = [];
+		this.#cachedQueries.clear();
+		this.#freshQueries.clear();
 		this.close();
 		this.#settle();
 	}
@@ -312,6 +344,7 @@ export class SearchWindow {
 		this.#sources = undefined;
 		this.#files = null;
 		this.#recentFiles = [];
+		this.#freshQueries.clear();
 		this.#shown = [];
 		this.#list.replaceChildren();
 		this.#glide.moveTo(undefined);
@@ -450,14 +483,15 @@ export class SearchWindow {
 	}
 
 	#loadRecentFiles(): void {
-		const files = this.#sources?.files;
-		if (!files) return;
 		const sources = this.#sources;
+		const files = sources?.files;
+		if (!sources || !files) return;
 		const stop = new AbortController();
 		this.el.addEventListener("close", () => stop.abort(), { once: true });
 		files.recent(stop.signal).then(
 			(hits) => {
 				if (stop.signal.aborted || this.#sources !== sources) return;
+				if (this.#cacheProfileId === sources.profileId) this.#cachedRecentFiles = [...hits];
 				this.#recentFiles = hits;
 				if (!this.#input.value.trim()) this.#draw();
 			},
@@ -469,22 +503,48 @@ export class SearchWindow {
 		clearTimeout(this.#fileTimer);
 		this.#fileSearch?.abort();
 		this.#fileSearch = null;
-		const files = this.#sources?.files;
+		const sources = this.#sources;
+		const files = sources?.files;
 		const query = this.#input.value.trim();
-		if (!files || !searchWords(query).length) return;
+		if (!sources || !files || !searchWords(query).length) return;
 		const limit = this.#manyFiles() ? SHOWN_NARROWED : SHOWN_PER_KIND;
-		if (this.#files && !this.#files.failed && this.#files.query === query && this.#files.limit >= limit) return;
+		const cacheKey = query.toLocaleLowerCase();
+		const freshKey = `${cacheKey}:${limit}`;
+		const cached = this.#cachedQueries.get(cacheKey);
+		if (cached && cached.limit >= limit) {
+			this.#cachedQueries.delete(cacheKey);
+			this.#cachedQueries.set(cacheKey, cached);
+			if (!this.#files || this.#files.failed || this.#files.query !== query || this.#files.limit < limit) {
+				this.#files = { query, limit: cached.limit, hits: cached.hits, failed: false };
+				this.#draw();
+			}
+			if (this.#freshQueries.has(freshKey)) return;
+		} else if (this.#files && !this.#files.failed && this.#files.query === query && this.#files.limit >= limit) {
+			return;
+		}
 		this.#fileTimer = setTimeout(() => {
 			const stop = new AbortController();
 			this.#fileSearch = stop;
 			files.search(query, limit, stop.signal).then(
 				({ hits }) => {
-					if (stop.signal.aborted) return;
+					if (stop.signal.aborted || this.#sources !== sources) return;
 					this.#files = { query, limit, hits, failed: false };
+					if (this.#cacheProfileId === sources.profileId) {
+						this.#cachedQueries.delete(cacheKey);
+						this.#cachedQueries.set(cacheKey, { limit, hits });
+						while (this.#cachedQueries.size > QUERY_CACHE_MAX) {
+							const oldest = this.#cachedQueries.keys().next().value;
+							if (oldest === undefined) break;
+							this.#cachedQueries.delete(oldest);
+						}
+						this.#freshQueries.add(freshKey);
+					}
 					this.#draw();
 				},
 				() => {
-					if (stop.signal.aborted) return;
+					if (stop.signal.aborted || this.#sources !== sources) return;
+					this.#cachedQueries.delete(cacheKey);
+					this.#freshQueries.delete(freshKey);
 					this.#files = { query, limit, hits: [], failed: true };
 					this.#draw();
 				},

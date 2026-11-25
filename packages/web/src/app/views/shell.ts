@@ -46,6 +46,7 @@ import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
 import { companyDisplayName, companyInSentence } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
+import { waitForDeferredStyles } from "../../ui/deferred-styles.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { friendsCount } from "../../ui/friends-count.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -4584,7 +4585,7 @@ function withSurfaceMigrationSheet(run: (mod: typeof SurfaceMigrationSheetMod) =
 		run(preloadedSurfaceMigrationSheet);
 		return;
 	}
-	void import("./lazy-secondary.ts").then(({ surfaceMigrationSheet: mod }) => {
+	void Promise.all([import("./lazy-quick.ts"), waitForDeferredStyles()]).then(([{ surfaceMigrationSheet: mod }]) => {
 		preloadedSurfaceMigrationSheet = mod;
 		run(mod);
 	});
@@ -4599,10 +4600,16 @@ function openSearchWindow(company: CompanyController, context: ShellContext | un
 	};
 	if (preloadedSearchWindow) mount(preloadedSearchWindow);
 	else
-		void import("./lazy-secondary.ts").then(({ searchWindow: { SearchWindow: Loaded } }) => {
-			preloadedSearchWindow = Loaded;
-			mount(Loaded);
-		});
+		void Promise.all([import("./lazy-quick.ts"), waitForDeferredStyles()]).then(
+			([
+				{
+					searchWindow: { SearchWindow: Loaded },
+				},
+			]) => {
+				preloadedSearchWindow = Loaded;
+				mount(Loaded);
+			},
+		);
 }
 
 function anotherModalOpen(): boolean {
@@ -4612,6 +4619,10 @@ function anotherModalOpen(): boolean {
 			!element.closest(".is-leaving") &&
 			(!(element instanceof HTMLDialogElement) || element.open),
 	);
+}
+
+export function invalidateShellSearchFiles(profileId: string): void {
+	searchWindow?.invalidateFiles(profileId);
 }
 
 export function clearShellCompanyState(company?: CompanyController): void {
