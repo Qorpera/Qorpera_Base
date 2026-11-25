@@ -2258,6 +2258,19 @@ export class SurfacesStore {
 		return this.#inFlightWorkspaceRefreshes.has(surfaceId);
 	}
 
+	readonly #requestedStudioTabs = new Map<string, string>();
+
+	requestStudioTab(slug: string, tab: string): void {
+		this.#requestedStudioTabs.set(slug.toLowerCase(), tab.toLowerCase());
+	}
+
+	consumeRequestedStudioTab(slug: string): string | undefined {
+		const key = slug.toLowerCase();
+		const tab = this.#requestedStudioTabs.get(key);
+		if (tab !== undefined) this.#requestedStudioTabs.delete(key);
+		return tab;
+	}
+
 	setActiveSurface(surfaceId: string | undefined): void {
 		this.#activeSurfaceId = surfaceId;
 	}

@@ -574,6 +574,7 @@ export function wallCheck(path: string, text: string): void {
 
 export type SurfaceFilePolicy =
 	| { readonly mode: "cofounder"; readonly allowExplicitMemberDoc?: boolean }
+	| { readonly mode: "worker" }
 	| {
 			readonly mode: "surface_worker";
 			readonly writableRoots: readonly string[];
@@ -591,6 +592,8 @@ const COFOUNDER_DOC_SPRAWL_ROOTS = new Set([
 	"meetings",
 	"marketing",
 	"sales",
+	"business",
+	"company",
 ]);
 
 function normalizePolicyPath(targetPath: string): string {
@@ -600,12 +603,18 @@ function normalizePolicyPath(targetPath: string): string {
 function enforceSurfaceFilePolicy(policy: SurfaceFilePolicy | undefined, targetPath: string): void {
 	if (!policy) return;
 	const normalized = normalizePolicyPath(targetPath);
+	const root = normalized.split("/")[0] ?? "";
+	if ((policy.mode === "cofounder" || policy.mode === "worker") && root === APPS_FOLDER) {
+		throw new CloudToolRefusal(
+			'SURFACE_FILE_POLICY_REFUSED: legacy "apps/" interfaces are retired in Surface-First mode. Use the Strategy surface (surfaces/strategy) or propose a Custom Studio Surface via propose_surface (archetype: "studio", sourceKind: "folder") and stage work via start_surface_session instead.',
+		);
+	}
+	if (policy.mode === "worker") return;
 	if (policy.mode === "cofounder") {
 		if (policy.allowExplicitMemberDoc) return;
-		const root = normalized.split("/")[0] ?? "";
 		if (COFOUNDER_DOC_SPRAWL_ROOTS.has(root)) {
 			throw new CloudToolRefusal(
-				`SURFACE_FILE_POLICY_REFUSED: writing under "${root}/" is blocked in Surface-First mode to prevent doc sprawl. Stage a tangible Surface Change via start_surface_session or place a concise Note under QorperaOS/surfaces/<slug>/notes/ instead of creating loose markdown documents.`,
+				`SURFACE_FILE_POLICY_REFUSED: writing under "${root}/" is blocked in Surface-First mode to prevent doc sprawl. Stage strategic or planning work in the Strategy surface (or a Custom Studio Surface) via start_surface_session, or place a concise Note under QorperaOS/surfaces/<slug>/notes/.`,
 			);
 		}
 		return;

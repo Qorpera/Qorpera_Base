@@ -28,12 +28,16 @@ import {
 	type SurfaceFileLayer,
 	sourceFile,
 } from "./surface-blocks/context.ts";
+import { type EconomicsPick, prepareEconomics } from "./surface-blocks/economics.ts";
 import { explainerClaimedPaths, SurfaceExplainers } from "./surface-blocks/explainer.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
 import { StudioFullscreen } from "./surface-blocks/fullscreen.ts";
+import { prepareHypotheses } from "./surface-blocks/hypotheses.ts";
+import { prepareLandscape } from "./surface-blocks/landscape.ts";
 import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
 import { SurfacePdfViewer } from "./surface-blocks/pdf.ts";
+import { preparePlays } from "./surface-blocks/plays.ts";
 import { reportFiles, SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
 import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts";
@@ -48,6 +52,7 @@ export interface SurfaceLayoutOptions {
 	readonly baseFiles: () => Readonly<Record<string, string>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly timeSlice?: boolean;
+	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
 
 export interface SurfaceLayoutInput {
@@ -188,6 +193,7 @@ export class SurfaceLayoutView {
 	readonly #pictures: SurfacePictures;
 	readonly #pdfs: SurfacePdfViewer;
 	readonly #colorways = new Map<string, number>();
+	readonly #economics = new Map<string, EconomicsPick>();
 	#swatches = new Map<string, SwatchLink>();
 
 	constructor(options: SurfaceLayoutOptions) {
@@ -224,6 +230,7 @@ export class SurfaceLayoutView {
 			briefSummary: input.briefSummary,
 			signal: this.#options.signal,
 			fromStarter: own === undefined,
+			...(this.#options.askSurface ? { askSurface: this.#options.askSurface } : {}),
 		});
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
@@ -364,6 +371,17 @@ export class SurfaceLayoutView {
 				);
 			case "module":
 				return prepareModule(block, ctx, scope.input.htmlPages, this.#fullscreen, { alone });
+			case "plays":
+				return preparePlays(block, ctx);
+			case "economics":
+				return prepareEconomics(block, ctx, {
+					get: () => this.#economics.get(key),
+					set: (pick) => this.#economics.set(key, pick),
+				});
+			case "hypotheses":
+				return prepareHypotheses(block, ctx);
+			case "landscape":
+				return prepareLandscape(block, ctx);
 			default:
 				return prepareUnknown();
 		}

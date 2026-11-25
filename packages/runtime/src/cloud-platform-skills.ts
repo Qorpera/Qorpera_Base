@@ -30,6 +30,7 @@ export const CLOUD_PLATFORM_SKILLS: ReadonlyMap<string, CloudPlatformSkill> = ne
 export const SURFACE_STARTER_SKILLS: Readonly<Record<SurfaceStarterKind, string>> = {
 	product: "product-studio",
 	identity: "identity-studio",
+	strategy: "strategy-studio",
 	custom: "custom-surface",
 };
 

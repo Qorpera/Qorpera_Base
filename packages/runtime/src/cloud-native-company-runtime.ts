@@ -1409,11 +1409,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								? this.#machines(binding)
 								: undefined;
 						const surfaceFilePolicy: SurfaceFilePolicy | undefined =
-							this.#surfaceFirst && !work.isWorker && identity.audienceKind === "company"
-								? {
-										mode: "cofounder",
-										allowExplicitMemberDoc: memberExplicitlyRequestedDocument(context, wake),
-									}
+							this.#surfaceFirst && identity.audienceKind === "company"
+								? work.isWorker
+									? { mode: "worker" }
+									: {
+											mode: "cofounder",
+											allowExplicitMemberDoc: memberExplicitlyRequestedDocument(context, wake),
+										}
 								: undefined;
 						const runTools: CloudNativeTool[] = [
 							// A run's file tools act through the folder core with its own authority (P19), and so do the
@@ -2574,6 +2576,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		};
 
 		const readOnlyNames = new Set(["company_read", "company_list"]);
+		const readOnlyDataNames = new Set(["data_describe", "data_query"]);
+		const surfaceFolderSearch = this.#folderSearch
+			? new CloudFolderSearch({
+					socketPath: this.#folderSearch.socketPath,
+					folder: folderClient,
+					environmentId: identity.environmentId,
+				})
+			: undefined;
 		let cachedVoiceKey: Promise<string> | null = null;
 		let voiceCapReached: { readonly monthlyCapCents: number | null; readonly monthSpendMicrodollars: number } | null =
 			null;
@@ -2628,107 +2638,128 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			return cachedVoiceKey;
 		};
 
-		const turnResult = await runSurfaceSessionTurn(turnInput, {
-			folder: folderClient,
-			readStudioFiles: cloudStudioFileReader(folderClient),
-			surfaceTools,
-			narrateExplainer: {
-				stageBytes: async (bytes, mediaType, reqSignal) => {
-					const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
-					return {
-						manifestSha256: ref.manifestSha256,
-						fileSha256: ref.fileSha256,
-						bytes: ref.bytes,
-						mediaType: ref.mediaType,
-					};
-				},
-				synthesizeGemini: async ({ model, voiceName: ttsVoice, text, signal: reqSignal }) => {
-					if (voiceCapReached) {
-						throw new GeminiCapReachedError(
-							voiceCapReached.monthlyCapCents ?? 0,
-							voiceCapReached.monthSpendMicrodollars,
-						);
-					}
-					const apiKey = await openVoiceApiKey();
-					reqSignal.throwIfAborted();
-					let speech: Awaited<ReturnType<typeof synthesizeGeminiSpeech>>;
-					try {
-						speech = await synthesizeGeminiSpeech({
-							apiKey,
-							model,
-							voiceName: ttsVoice,
-							text,
-							...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
-							...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
-							...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
-							signal: reqSignal,
-						});
-					} catch (error) {
-						if (error instanceof GeminiProviderError && error.code === "key_rejected") {
-							throw new GeminiKeyRevokedError();
-						}
-						throw error;
-					}
-					const recorded = (await this.#paths.call(
-						"qorpera_record_gemini_voice_usage",
-						{ p_binding: binding, p_model: model, p_usage: speech.usage },
-						signal,
-					)) as {
-						monthSpendMicrodollars?: unknown;
-						monthlyCapCents?: unknown;
-						capReached?: unknown;
-					} | null;
-					if (recorded?.capReached === true) {
-						voiceCapReached = {
-							monthlyCapCents: typeof recorded.monthlyCapCents === "number" ? recorded.monthlyCapCents : null,
-							monthSpendMicrodollars:
-								typeof recorded.monthSpendMicrodollars === "number" ? recorded.monthSpendMicrodollars : 0,
+		let turnResult: Awaited<ReturnType<typeof runSurfaceSessionTurn>>;
+		try {
+			turnResult = await runSurfaceSessionTurn(turnInput, {
+				folder: folderClient,
+				readStudioFiles: cloudStudioFileReader(folderClient),
+				surfaceTools,
+				narrateExplainer: {
+					stageBytes: async (bytes, mediaType, reqSignal) => {
+						const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
+						return {
+							manifestSha256: ref.manifestSha256,
+							fileSha256: ref.fileSha256,
+							bytes: ref.bytes,
+							mediaType: ref.mediaType,
 						};
-					}
-					return speech;
+					},
+					synthesizeGemini: async ({ model, voiceName: ttsVoice, text, signal: reqSignal }) => {
+						if (voiceCapReached) {
+							throw new GeminiCapReachedError(
+								voiceCapReached.monthlyCapCents ?? 0,
+								voiceCapReached.monthSpendMicrodollars,
+							);
+						}
+						const apiKey = await openVoiceApiKey();
+						reqSignal.throwIfAborted();
+						let speech: Awaited<ReturnType<typeof synthesizeGeminiSpeech>>;
+						try {
+							speech = await synthesizeGeminiSpeech({
+								apiKey,
+								model,
+								voiceName: ttsVoice,
+								text,
+								...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+								...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+								...(this.#geminiFetch ? { fetcher: this.#geminiFetch } : {}),
+								signal: reqSignal,
+							});
+						} catch (error) {
+							if (error instanceof GeminiProviderError && error.code === "key_rejected") {
+								throw new GeminiKeyRevokedError();
+							}
+							throw error;
+						}
+						const recorded = (await this.#paths.call(
+							"qorpera_record_gemini_voice_usage",
+							{ p_binding: binding, p_model: model, p_usage: speech.usage },
+							signal,
+						)) as {
+							monthSpendMicrodollars?: unknown;
+							monthlyCapCents?: unknown;
+							capReached?: unknown;
+						} | null;
+						if (recorded?.capReached === true) {
+							voiceCapReached = {
+								monthlyCapCents: typeof recorded.monthlyCapCents === "number" ? recorded.monthlyCapCents : null,
+								monthSpendMicrodollars:
+									typeof recorded.monthSpendMicrodollars === "number" ? recorded.monthSpendMicrodollars : 0,
+							};
+						}
+						return speech;
+					},
 				},
-			},
-			executeTurn: async (turnReq) =>
-				runModelTurn({
-					instructions: turnReq.instructions,
-					turnBrief: turnReq.turnBrief,
-					prompt: turnReq.input.prompt,
-					isInternal: turnReq.input.isInternal === true,
-					turnSignal: turnReq.signal,
-					buildTools: (runIdentity, operations) => {
-						const folderTools =
-							turnReq.mode === "folder"
-								? [
-										...cloudFolderFileTools({
+				executeTurn: async (turnReq) =>
+					runModelTurn({
+						instructions: turnReq.instructions,
+						turnBrief: turnReq.turnBrief,
+						prompt: turnReq.input.prompt,
+						isInternal: turnReq.input.isInternal === true,
+						turnSignal: turnReq.signal,
+						buildTools: (runIdentity, operations) => {
+							const folderTools =
+								turnReq.mode === "folder"
+									? [
+											...cloudFolderFileTools({
+												folder: folderClient,
+												operations,
+												identity: runIdentity,
+												surfaceFilePolicy: {
+													mode: "surface_worker",
+													writableRoots: turnReq.writableRoots,
+													stagedRoots: turnReq.stagedRoots,
+												},
+											}),
+											...notebooks.tools(
+												(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
+												operations,
+											),
+										]
+									: cloudFolderFileTools({
 											folder: folderClient,
 											operations,
 											identity: runIdentity,
-											surfaceFilePolicy: {
-												mode: "surface_worker",
-												writableRoots: turnReq.writableRoots,
-												stagedRoots: turnReq.stagedRoots,
-											},
+										}).filter((tool) => readOnlyNames.has(tool.name));
+							const searchTools = surfaceFolderSearch
+								? [
+										cloudFolderSearchTool({
+											search: surfaceFolderSearch,
+											folder: folderClient,
+											runId: runIdentity.runId,
 										}),
-										...notebooks.tools(
-											(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
-											operations,
-										),
 									]
-								: cloudFolderFileTools({
+								: [];
+							const dataTools = this.#companyData
+								? cloudDataTools({
 										folder: folderClient,
-										operations,
-										identity: runIdentity,
-									}).filter((tool) => readOnlyNames.has(tool.name));
-						return [...turnReq.tools, ...folderTools];
-					},
-				}),
-			executeCodeRepoTurn: async () => {
-				throw new Error("Code repository surface sessions run through the coding executor; retry this session.");
-			},
-			completeSessionTurn: completionPort.completeSessionTurn,
-			renewSessionLease: leaseRenewalPort.renewSessionLease,
-			signal,
-		});
+										door: this.#companyData,
+										apply: false,
+									}).filter((tool) => readOnlyDataNames.has(tool.name))
+								: [];
+							return [...turnReq.tools, ...folderTools, ...searchTools, ...dataTools];
+						},
+					}),
+				executeCodeRepoTurn: async () => {
+					throw new Error("Code repository surface sessions run through the coding executor; retry this session.");
+				},
+				completeSessionTurn: completionPort.completeSessionTurn,
+				renewSessionLease: leaseRenewalPort.renewSessionLease,
+				signal,
+			});
+		} finally {
+			surfaceFolderSearch?.close();
+		}
 
 		if (turnResult.cause !== undefined) {
 			throw turnResult.cause;

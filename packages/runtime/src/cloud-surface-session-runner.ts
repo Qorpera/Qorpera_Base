@@ -673,7 +673,7 @@ function describeStudioPage(
 
 function describeStudioSkill(view: SurfaceStudioPageView, skill: CloudStudioSkill | null): string {
 	if (view.page === "unknown")
-		return `\n\n## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: ${SURFACE_STARTER_SKILLS.product} for a product, ${SURFACE_STARTER_SKILLS.identity} for the company's Identity, ${SURFACE_STARTER_SKILLS.custom} for any other page.`;
+		return `\n\n## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: ${SURFACE_STARTER_SKILLS.product} for a product, ${SURFACE_STARTER_SKILLS.identity} for the company's Identity, ${SURFACE_STARTER_SKILLS.strategy} for Strategy, ${SURFACE_STARTER_SKILLS.custom} for any other page.`;
 	if (!skill) return "";
 	const source = skill.path
 		? `The company's own ${skill.name} skill (${skill.path}), used in place of the platform's`
@@ -1010,7 +1010,7 @@ export async function runSurfaceSessionTurn(
 			previewOverlay && folderReader ? previewOverlay.wrapTextReader(folderReader) : folderReader;
 
 		const explicitBrief = input.briefMarkdown?.trim() || null;
-		const [loaded, folderBrief] = effectiveFolderReader
+		const [loaded, folderBrief, visionMarkdown, readingMarkdown] = effectiveFolderReader
 			? await Promise.all([
 					loadSurfaceSharedAssets(effectiveFolderReader, signal, input.productFolderRoots),
 					explicitBrief === null
@@ -1021,8 +1021,20 @@ export async function runSurfaceSessionTurn(
 								signal,
 							)
 						: Promise.resolve(null),
+					readOptionalFolderText(
+						effectiveFolderReader,
+						"QorperaOS/vision/vision.md",
+						MAX_SURFACE_BRIEF_BYTES,
+						signal,
+					),
+					readOptionalFolderText(
+						effectiveFolderReader,
+						"QorperaOS/vision/reading.md",
+						MAX_SURFACE_BRIEF_BYTES,
+						signal,
+					),
 				])
-			: [null, null];
+			: [null, null, null, null];
 		if (loaded) {
 			if (input.surfaceSlug !== "identity" && (loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)) {
 				identityContext = {
@@ -1056,6 +1068,8 @@ export async function runSurfaceSessionTurn(
 			surfaceTitle: input.surfaceTitle,
 			sourceKind: input.sourceKind,
 			isInternalReconciliation,
+			visionMarkdown,
+			readingMarkdown,
 			briefMarkdown,
 			repositoryKey: input.repositoryKey ?? null,
 			folderRoot: normalizedFolderRoot,

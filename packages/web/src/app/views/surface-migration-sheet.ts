@@ -186,8 +186,17 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: null,
 		kind: "custom",
 		title: phrase("Custom Surface"),
-		line: phrase("Anything else: an inventory tracker, investor room, support desk…"),
-		archetype: "live_build",
+		line: phrase("A custom planning room, pricing lab, tracker, or sketching space…"),
+		archetype: "studio",
+	},
+	{
+		id: "strategy",
+		slug: "strategy",
+		kind: "strategy",
+		title: phrase("Strategy & Planning"),
+		line: phrase("Grand plan, competing bets, unit economics & hypotheses"),
+		archetype: "studio",
+		folderRoot: "surfaces/strategy",
 	},
 	{
 		id: "identity",
@@ -448,7 +457,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 			archetype: selected.archetype,
 			icon: surfaceFigureIcon(figure),
 			kind: selected.kind,
-			folderRoot: selected.kind === "identity" ? selected.folderRoot : undefined,
+			folderRoot: selected.folderRoot,
 			description: selected.kind === "custom" ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
 		});

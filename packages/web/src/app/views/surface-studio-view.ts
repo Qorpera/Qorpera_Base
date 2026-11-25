@@ -6,11 +6,12 @@ import {
 	type StudioPatchOp,
 	type SurfaceStarterKind,
 	type SurfaceSummary,
+	surfaceCompanyPath,
 	surfaceFilesHaveModel,
 	surfaceLegacyModelKey,
 	surfaceStarterKind,
 } from "@qorpera/contracts";
-import { AppFrame } from "../../ui/app-frame.ts";
+import { type AppAnswer, type AppCall, AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { playOnce } from "../../ui/motion.ts";
@@ -272,6 +273,58 @@ export class SurfaceStudioView {
 		this.#htmlFrames.length = 0;
 	}
 
+	async #askSurface(prompt: string, title?: string): Promise<void> {
+		const trimmed = prompt.trim();
+		if (!trimmed) return;
+		const session = await this.#options.store.startSession(this.#options.surface.id, trimmed, {
+			originKind: "member",
+			...(title?.trim() ? { originLabel: title.trim().slice(0, 160) } : {}),
+		});
+		if (session) this.#options.store.openDrawer(this.#options.surface.id, session.id);
+	}
+
+	async #handleModuleCall(
+		call: AppCall,
+		files: Readonly<Record<string, string>>,
+		folderRoot: string,
+	): Promise<AppAnswer> {
+		if (call.method === "read") {
+			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
+			if (!rawPath || rawPath.length > 512) return { ok: false, error: t("This file isn't available.") };
+			let resolved: string;
+			try {
+				resolved = folderRoot ? surfaceCompanyPath(folderRoot, rawPath) : rawPath.replace(/^\/+/, "");
+			} catch {
+				return { ok: false, error: t("This file isn't available.") };
+			}
+			const ownText = files[resolved];
+			if (ownText !== undefined) return { ok: true, value: ownText };
+			const identityFiles = this.#options.store.companyIdentityFiles();
+			const sharedText = identityFiles?.files[resolved];
+			if (sharedText !== undefined) return { ok: true, value: sharedText };
+			return { ok: false, error: t("This file isn't available.") };
+		}
+		if (call.method === "list") {
+			const prefix =
+				typeof call.params.prefix === "string" ? call.params.prefix.trim().replace(/^\/+|\/+$/g, "") : "";
+			const rootPrefix = folderRoot ? `${folderRoot.replace(/^\/+|\/+$/g, "")}/` : "";
+			const entries = Object.keys(files)
+				.filter((path) => !rootPrefix || path.startsWith(rootPrefix))
+				.map((path) => (rootPrefix ? path.slice(rootPrefix.length) : path))
+				.filter((rel) => !prefix || rel === prefix || rel.startsWith(`${prefix}/`))
+				.sort();
+			return { ok: true, value: entries };
+		}
+		if (call.method === "tell") {
+			const text = typeof call.params.text === "string" ? call.params.text.trim() : "";
+			const about = typeof call.params.about === "string" ? call.params.about.trim() : undefined;
+			if (!text || text.length > 4000) return { ok: false, error: t("Write a short note first.") };
+			await this.#askSurface(text, about);
+			return { ok: true, value: { sent: true } };
+		}
+		return { ok: false, error: t("This page can't be shown here.") };
+	}
+
 	#createHtmlFrame(
 		html: string,
 		htmlPath: string,
@@ -281,16 +334,19 @@ export class SurfaceStudioView {
 		className: string,
 		listen?: (data: unknown) => void,
 		owned?: (dispose: () => void) => void,
+		allFiles?: Readonly<Record<string, string>>,
 	): HTMLElement {
 		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
 		if (live === null) {
 			return h("p", { class: "studio-html-fallback" }, t("This page can't be shown live."));
 		}
+		const folderRoot = this.#options.surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
+		const readable = allFiles ?? files;
 		const frame = new AppFrame(
 			{ html: live },
 			t("Page: {name}", { name: title }),
 			className,
-			async () => ({ ok: false, error: t("This page can't be shown here.") }),
+			(call) => this.#handleModuleCall(call, readable, folderRoot),
 			() => undefined,
 			{ again: true },
 		);
@@ -411,6 +467,8 @@ export class SurfaceStudioView {
 			}, 600);
 		}
 		this.#wasUpdating = updating;
+		const requestedTab = store.consumeRequestedStudioTab(surface.slug);
+		if (requestedTab) this.#tab = requestedTab;
 		const identityFiles = store.companyIdentityFiles();
 		const companyFiles = identityFiles && identityFiles.surfaceId !== surface.id ? identityFiles : undefined;
 		const deps: readonly unknown[] = [
@@ -1072,6 +1130,7 @@ export class SurfaceStudioView {
 			surface: this.#options.surface,
 			signal: this.#lifetime.signal,
 			baseFiles: () => this.#baseFiles,
+			askSurface: (prompt, title) => this.#askSurface(prompt, title),
 			...(this.#options.patches ? { patches: this.#options.patches } : {}),
 			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
 		});
@@ -1097,6 +1156,7 @@ export class SurfaceStudioView {
 						frame.className,
 						frame.listen,
 						frame.owned,
+						files,
 					),
 				linksChanged: (html, path) =>
 					studioHtmlDependencyChanged(

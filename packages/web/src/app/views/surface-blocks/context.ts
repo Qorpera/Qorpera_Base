@@ -61,6 +61,7 @@ export interface SurfaceBlockContext extends SurfaceFileLayer {
 		globs: readonly string[] | undefined,
 		skip?: readonly string[] | undefined,
 	) => readonly SurfaceFolderFile[];
+	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
 
 export interface SurfaceBlockContextInput extends SurfaceFileLayer {
@@ -69,6 +70,7 @@ export interface SurfaceBlockContextInput extends SurfaceFileLayer {
 	readonly briefSummary: string;
 	readonly signal: AbortSignal;
 	readonly fromStarter: boolean;
+	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 }
 
 const STARTER_WORDS: ReadonlySet<string> = new Set([
@@ -93,6 +95,17 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Voice"),
 	phrase("Design system"),
 	phrase("Tokens"),
+	phrase("Grand plan"),
+	phrase("Competing plays"),
+	phrase("Sketches & notes"),
+	phrase("Economics"),
+	phrase("Unit economics & scenarios"),
+	phrase("Market"),
+	phrase("Competitive landscape"),
+	phrase("Market research"),
+	phrase("Hypotheses"),
+	phrase("Assumptions & kill criteria"),
+	phrase("Deep dives"),
 ]);
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -299,5 +312,6 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 			(globs === undefined ? folderFiles : allFiles.filter((file) => finds(globs, file))).filter(
 				(file) => !skip || !finds(skip, file),
 			),
+		...(input.askSurface ? { askSurface: input.askSurface } : {}),
 	};
 }

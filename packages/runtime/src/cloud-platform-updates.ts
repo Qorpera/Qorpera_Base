@@ -426,6 +426,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Studio tabs use an artifacts section instead of a Files tab",
 		text: "Product and Identity interfaces no longer have a catch-all Files tab. When a tab needs vector art, pictures, notes, briefs, pages or extra structured files, the session working on that interface adds an artifacts block to the tab in its layout. Members can expand every artifact fullscreen without seeing raw filepaths.",
 	},
+	{
+		id: "strategy-surface-and-custom-studios",
+		kind: "capability",
+		date: "2026-11-25",
+		title: "Strategy surface, custom studios and live surface links",
+		text: "Every company now has a Strategy Studio surface (surfaces/strategy) for the grand plan, competing strategic plays, unit economics simulator, competitive landscape, and falsifiable hypotheses — and custom planning rooms or calculators belong in Custom Studio surfaces (archetype studio, sourceKind folder), never legacy apps/ widgets. Studio sessions now read company vision, reading, folder search, and read-only databases, and support plays, economics, hypotheses, and landscape blocks. Link surfaces directly in chat with [Title](surface:<slug>) or [Title](surface:<slug>#<tab>).",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

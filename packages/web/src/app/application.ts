@@ -84,6 +84,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { surfaceKindSubtitle } from "./surface-kinds.ts";
 import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
@@ -129,6 +130,7 @@ import {
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
 import type { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
+import { surfaceTile } from "./views/surface-rail.ts";
 import type { SurfaceMount, SurfaceView } from "./views/surface-view.ts";
 import type { TeamFeedback } from "./views/team.ts";
 import type { WhatsNewView } from "./views/whats-new.ts";
@@ -533,6 +535,21 @@ export function mountApplication(
 			openApp(app.dataset.appName);
 			return;
 		}
+		const surfaceTarget =
+			event.target instanceof Element ? event.target.closest<HTMLElement>("[data-surface-slug]") : null;
+		if (surfaceTarget?.dataset.surfaceSlug && company && !event.defaultPrevented) {
+			event.preventDefault();
+			const slug = surfaceTarget.dataset.surfaceSlug;
+			const tab = surfaceTarget.dataset.surfaceTab;
+			if (tab) surfacesOf(company)?.requestStudioTab(slug, tab);
+			if (settings) closeSettings(false);
+			if (surfaceView?.company === company && surfaceView.view.slug === slug) {
+				surfaceView.view.update();
+			} else {
+				navigate({ name: "company", profileId: company.profile.profileId, section: "surface", id: slug });
+			}
+			return;
+		}
 		// A link to the page of the app that is already open (its icon in the rail) leads nowhere new, and the app's page
 		// has no Reload of its own: an ordinary press on it reads the app again, which also lets it ask again (§5). A
 		// modified click stays the link's own (a new tab), and a link to any other place goes there by itself.
@@ -567,7 +584,7 @@ export function mountApplication(
 	// A question card's option that previews an app gets the app's cover, or its emblem and title, the same way: in a
 	// thread, in an app's page and in the Concepts viewer's dock, all on this page, and without redrawing the card, so
 	// a pick or an answer being typed stays (ui/interaction-card.ts refreshAppPreviews; review r1 of #1763, F1).
-	const APP_CARD_SELECTOR = ".app-card[data-app-name], [data-preview-app]";
+	const APP_CARD_SELECTOR = ".app-card[data-app-name], .surface-card[data-surface-slug], [data-preview-app]";
 	const hasDecoratableCard = (records: readonly MutationRecord[]): boolean => {
 		for (const record of records) {
 			for (const node of record.addedNodes) {
@@ -578,8 +595,31 @@ export function mountApplication(
 		return false;
 	};
 	const decorateAppCards = () => {
-		const apps = company?.store.get().apps;
-		if (!company || !apps) return;
+		if (!company) return;
+		const surfaces = surfacesOf(company);
+		if (surfaces) {
+			const bySlug = new Map(surfaces.state.surfaces.map((item) => [item.slug.toLowerCase(), item]));
+			for (const card of main.querySelectorAll<HTMLElement>(".surface-card[data-surface-slug]")) {
+				const slug = card.dataset.surfaceSlug?.toLowerCase();
+				const surface = slug ? bySlug.get(slug) : undefined;
+				if (!surface) continue;
+				const look = surfaces.lookOf(surface);
+				const tab = card.dataset.surfaceTab ?? "";
+				const subtitle = surfaceKindSubtitle(look.kind);
+				const shown = JSON.stringify([surface.id, surface.title, surface.icon, look.kind, tab, subtitle]);
+				if (card.dataset.shown === shown) continue;
+				card.dataset.shown = shown;
+				card.querySelector(".app-card-emblem")?.replaceChildren(surfaceTile(surface, look, "is-rail"));
+				const note = card.querySelector<HTMLElement>(".app-card-note");
+				if (note) {
+					const label = tab ? `${surface.title} · ${tab}` : subtitle;
+					note.textContent = label;
+					note.title = label;
+				}
+			}
+		}
+		const apps = company.store.get().apps;
+		if (!apps) return;
 		const byName = appsByName(apps);
 		refreshAppPreviews(main, (name) => cardAppOf(apps, name), cardImages.get(company));
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {

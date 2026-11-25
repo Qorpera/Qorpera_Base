@@ -118,6 +118,8 @@ export interface SurfaceTurnBriefInput {
 	readonly surfaceTitle: string;
 	readonly sourceKind?: SurfaceSourceKind;
 	readonly isInternalReconciliation?: boolean;
+	readonly visionMarkdown?: string | null;
+	readonly readingMarkdown?: string | null;
 	readonly briefMarkdown: string | null;
 	readonly fullPrompt?: string | null;
 	readonly repositoryKey?: string | null;
@@ -193,6 +195,16 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const fullPrompt = binding.fullPrompt?.trim();
 	if (fullPrompt && fullPrompt.length > 1400) {
 		sections.push(`## Full Surface Request\n${fullPrompt.slice(0, 16000)}`);
+	}
+
+	const vision = binding.visionMarkdown?.trim();
+	if (vision) {
+		sections.push(`## Company Vision (QorperaOS/vision/vision.md)\n${vision.slice(0, 6000)}`);
+	}
+
+	const reading = binding.readingMarkdown?.trim();
+	if (reading) {
+		sections.push(`## Company Reading (QorperaOS/vision/reading.md)\n${reading.slice(0, 4096)}`);
 	}
 
 	const identity = binding.identityContext;

@@ -1,4 +1,5 @@
 import { appLinkName } from "@qorpera/cloud-client/interface-apps";
+import { surfaceLinkTarget } from "@qorpera/contracts";
 import { Lexer, type MarkedToken, type Tokens } from "marked";
 import { h, icon } from "./dom.ts";
 import { folderLinkPath } from "./folder-links.ts";
@@ -258,6 +259,27 @@ function placeCells(layer: Layer, cells: Tokens.Table["header"], line: string, b
  * its own colour, and what the app is about in one line (app/application.ts).
  * A member's note sent from an app's page (§5 "tell") opens with the same card (views/conversation.ts), with what the
  * note is about as its line (`about`), which stays: once the apps are read, its title becomes the app's own name. */
+export function surfaceCard(slug: string, name: string | Node[], tab?: string): HTMLElement {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "app-card surface-card",
+			"data-surface-slug": slug,
+			...(tab ? { "data-surface-tab": tab } : {}),
+			title: t("Open {name}", { name: slug }),
+		},
+		h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", 34)),
+		h(
+			"span",
+			{ class: "app-card-copy" },
+			h("strong", { class: "app-card-title" }, name),
+			h("small", { class: "app-card-note" }, tab ? `${t("Surface")} · ${tab}` : t("Surface")),
+		),
+		h("span", { class: "app-card-go", "aria-hidden": "true" }, icon("chevron")),
+	);
+}
+
 export function appCard(app: string, name: string | Node[], about?: string): HTMLElement {
 	return h(
 		"button",
@@ -317,37 +339,69 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 				const parts = ("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[];
 				const appOf = (part: MarkedToken) =>
 					links && part.type === "link" ? appLinkName(decodeEntities(part.href)) : undefined;
+				const surfaceOf = (part: MarkedToken) =>
+					links && part.type === "link" ? surfaceLinkTarget(decodeEntities(part.href)) : undefined;
 				const inner = (part: MarkedToken) =>
 					renderTokens(("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[], depth + 1, links, sites);
-				const named = new Set<string>();
+				const namedApps = new Set<string>();
+				const namedSurfaces = new Set<string>();
 				const cards = parts.flatMap((part) => {
 					const app = appOf(part);
-					if (app === undefined || named.has(app)) return [];
-					named.add(app);
-					return [appCard(app, inner(part))];
+					if (app !== undefined) {
+						if (namedApps.has(app)) return [];
+						namedApps.add(app);
+						return [appCard(app, inner(part))];
+					}
+					const surface = surfaceOf(part);
+					if (surface !== undefined) {
+						const key = surface.tab ? `${surface.slug}#${surface.tab}` : surface.slug;
+						if (namedSurfaces.has(key)) return [];
+						namedSurfaces.add(key);
+						return [surfaceCard(surface.slug, inner(part), surface.tab)];
+					}
+					return [];
 				});
 				if (!cards.length) return [h("p", null, children())];
 				const row = h("div", { class: "app-cards" }, cards);
-				if (parts.every((part) => appOf(part) !== undefined || !part.raw.trim())) return [row];
+				if (parts.every((part) => appOf(part) !== undefined || surfaceOf(part) !== undefined || !part.raw.trim()))
+					return [row];
 				return [
 					h(
 						"p",
 						null,
 						parts.flatMap((part): Node[] => {
 							const app = appOf(part);
-							if (app === undefined) return renderTokens([part], depth + 1, links, sites);
-							return [
-								h(
-									"button",
-									{
-										type: "button",
-										class: "folder-link app-link",
-										"data-app-name": app,
-										title: t("Open {name}", { name: app }),
-									},
-									inner(part),
-								),
-							];
+							if (app !== undefined) {
+								return [
+									h(
+										"button",
+										{
+											type: "button",
+											class: "folder-link app-link",
+											"data-app-name": app,
+											title: t("Open {name}", { name: app }),
+										},
+										inner(part),
+									),
+								];
+							}
+							const surface = surfaceOf(part);
+							if (surface !== undefined) {
+								return [
+									h(
+										"button",
+										{
+											type: "button",
+											class: "folder-link surface-link",
+											"data-surface-slug": surface.slug,
+											...(surface.tab ? { "data-surface-tab": surface.tab } : {}),
+											title: t("Open {name}", { name: surface.slug }),
+										},
+										inner(part),
+									),
+								];
+							}
+							return renderTokens([part], depth + 1, links, sites);
 						}),
 					),
 					row,
@@ -426,6 +480,8 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 				// An agent's interface app where no paragraph placed it (a list's item, a table's cell): its card, in place.
 				const app = token.type === "link" ? appLinkName(decodeEntities(token.href)) : undefined;
 				if (app !== undefined) return [appCard(app, content)];
+				const surface = token.type === "link" ? surfaceLinkTarget(decodeEntities(token.href)) : undefined;
+				if (surface !== undefined) return [surfaceCard(surface.slug, content, surface.tab)];
 				const path = folderLinkPath(decodeEntities(token.href));
 				if (path !== undefined)
 					return [

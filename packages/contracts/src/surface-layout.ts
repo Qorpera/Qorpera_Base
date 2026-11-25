@@ -47,6 +47,10 @@ export const SURFACE_BLOCK_TYPES = [
 	"spec_list",
 	"table",
 	"cards",
+	"plays",
+	"economics",
+	"hypotheses",
+	"landscape",
 	"report",
 	"explainer",
 	"artifacts",
@@ -163,6 +167,30 @@ export interface SurfaceCardsItemsBlock extends SurfaceBlockBase {
 
 export type SurfaceCardsBlock = SurfaceCardsFromBlock | SurfaceCardsItemsBlock;
 
+export interface SurfacePlaysBlock extends SurfaceBlockBase {
+	readonly type: "plays";
+	readonly from: SurfaceSource;
+	readonly heading?: string;
+}
+
+export interface SurfaceEconomicsBlock extends SurfaceBlockBase {
+	readonly type: "economics";
+	readonly from: SurfaceSource;
+	readonly heading?: string;
+}
+
+export interface SurfaceHypothesesBlock extends SurfaceBlockBase {
+	readonly type: "hypotheses";
+	readonly from: SurfaceSource;
+	readonly heading?: string;
+}
+
+export interface SurfaceLandscapeBlock extends SurfaceBlockBase {
+	readonly type: "landscape";
+	readonly from: SurfaceSource;
+	readonly heading?: string;
+}
+
 export interface SurfaceReportFileBlock extends SurfaceBlockBase {
 	readonly type: "report";
 	readonly from: string;
@@ -216,6 +244,10 @@ export type SurfaceBlock =
 	| SurfaceSpecListBlock
 	| SurfaceTableBlock
 	| SurfaceCardsBlock
+	| SurfacePlaysBlock
+	| SurfaceEconomicsBlock
+	| SurfaceHypothesesBlock
+	| SurfaceLandscapeBlock
 	| SurfaceReportBlock
 	| SurfaceExplainerBlock
 	| SurfaceArtifactsBlock
@@ -396,6 +428,30 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 			{ name: "badge", kind: "key", required: false, note: "a key shown as a badge" },
 			HEADING_FIELD,
 		],
+	},
+	{
+		type: "plays",
+		family: "strategy",
+		summary: "competing bets side by side",
+		fields: [{ name: "from", kind: "source", required: true, note: "plays.json" }, HEADING_FIELD],
+	},
+	{
+		type: "economics",
+		family: "strategy",
+		summary: "unit economics simulator",
+		fields: [{ name: "from", kind: "source", required: true, note: "economics.json" }, HEADING_FIELD],
+	},
+	{
+		type: "hypotheses",
+		family: "strategy",
+		summary: "bets & kill criteria",
+		fields: [{ name: "from", kind: "source", required: true, note: "hypotheses.json" }, HEADING_FIELD],
+	},
+	{
+		type: "landscape",
+		family: "strategy",
+		summary: "rivals map & matrix",
+		fields: [{ name: "from", kind: "source", required: true, note: "landscape.json" }, HEADING_FIELD],
 	},
 	{
 		type: "report",
@@ -1120,7 +1176,7 @@ export function readSurfaceLayout(text: string): SurfaceLayoutReadResult {
 	return { layout: { schema: SURFACE_LAYOUT_SCHEMA, tabs } };
 }
 
-export const SURFACE_STARTER_KINDS = ["product", "identity", "custom"] as const;
+export const SURFACE_STARTER_KINDS = ["product", "identity", "strategy", "custom"] as const;
 export type SurfaceStarterKind = (typeof SURFACE_STARTER_KINDS)[number];
 
 const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
@@ -1340,6 +1396,81 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 	],
 };
 
+const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
+	schema: SURFACE_LAYOUT_SCHEMA,
+	tabs: [
+		{
+			id: "plan",
+			title: "Grand plan",
+			blocks: [
+				{
+					type: "title",
+					id: "thesis",
+					name: ["plan.json#/title", "plan.json#/name"],
+					line: ["plan.json#/thesis", "plan.json#/summary", "plan.json#/northStar"],
+				},
+				{
+					type: "facts",
+					id: "targets",
+					from: ["plan.json#/targets", "plan.json#/metrics"],
+					take: 4,
+					skip: [],
+				},
+				{
+					type: "plays",
+					id: "plays",
+					from: "plays.json",
+					heading: "Competing plays",
+				},
+				{
+					type: "artifacts",
+					id: "sketches",
+					match: ["sketches/**", "*.md", "*.svg", "*.html"],
+					heading: "Sketches & notes",
+				},
+			],
+		},
+		{
+			id: "economics",
+			title: "Economics",
+			blocks: [{ type: "economics", id: "model", from: "economics.json", heading: "Unit economics & scenarios" }],
+		},
+		{
+			id: "market",
+			title: "Market",
+			blocks: [
+				{
+					type: "landscape",
+					id: "rivals",
+					from: ["landscape.json", "market.json"],
+					heading: "Competitive landscape",
+				},
+				{ type: "report", id: "market-reports", match: "market/**/*.report.json", heading: "Market research" },
+			],
+		},
+		{
+			id: "hypotheses",
+			title: "Hypotheses",
+			blocks: [
+				{
+					type: "hypotheses",
+					id: "bets",
+					from: "hypotheses.json",
+					heading: "Assumptions & kill criteria",
+				},
+			],
+		},
+		{
+			id: "reports",
+			title: "Deep dives",
+			blocks: [
+				{ type: "report", id: "deep-dives", match: "**/*.report.json" },
+				{ type: "explainer", id: "breakdowns", match: "breakdowns/**/scenes.js" },
+			],
+		},
+	],
+};
+
 const CUSTOM_STARTER_LAYOUT: SurfaceLayout = {
 	schema: SURFACE_LAYOUT_SCHEMA,
 	tabs: [
@@ -1351,6 +1482,7 @@ const CUSTOM_STARTER_LAYOUT: SurfaceLayout = {
 export const SURFACE_STARTER_LAYOUTS: Readonly<Record<SurfaceStarterKind, SurfaceLayout>> = {
 	product: PRODUCT_STARTER_LAYOUT,
 	identity: IDENTITY_STARTER_LAYOUT,
+	strategy: STRATEGY_STARTER_LAYOUT,
 	custom: CUSTOM_STARTER_LAYOUT,
 };
 
@@ -1361,6 +1493,18 @@ export function starterSurfaceLayout(kind: SurfaceStarterKind): SurfaceLayout {
 export const SURFACE_REPORT_FORMAT =
 	'A report file (*.report.json) is {"category","headline","subtitle","author","date","readingTime","keyMetrics":[{"label","value","delta"}],"sections":[{"id","kicker","heading","paragraphs":["..."],"blocks":[...]}]}. Section blocks: bar_chart {heading, subtitle, max, items:[{label, value, display, note, highlight}]}; line_chart {heading, subtitle, xLabels, series:[{name, color, values}]}; table {heading, caption, columns, rows, highlightRow}; callout {tone:"thesis"|"decision"|"tradeoff", heading, body, bullets}; quote {text, attribution}; figure {heading, caption, panels:[{label, heading, body, accent}]}.';
 
+export const SURFACE_PLAYS_FORMAT =
+	'A plays file (plays.json) is {"summary","verdict","plays":[{"id","name","thesis","status":"recommended"|"active"|"exploring"|"parked"|"rejected","revenueModel","whoPays","unitMargin","capacityCeiling","moat","killRisk","nextMove","pros":["..."],"cons":["..."],"tier":"verified"|"benchmark"|"hypothesis","source"}]}.';
+
+export const SURFACE_ECONOMICS_FORMAT =
+	'An economics file (economics.json) is {"title","subtitle","currency","period","verdict","inputs":[{"id","label","group","unit","value","min","max","step","tier":"verified"|"benchmark"|"hypothesis","source","note","marks":[{"value","label"}]}],"computed":[{"id","expr","label","unit"}],"headlines":[{"id","label","unit","format":"currency"|"number"|"percent"|"hours","emphasis":"primary"|"secondary","toneWhenNegative":"danger"|"neutral"}],"waterfall":[{"id","label","kind":"income"|"cost"|"total"}],"curve":{"xInput","yOutput","xMin","xMax","label","yLabel","capacityExpr","capacityLabel"},"constraints":[{"label","expr","severity":"fatal"|"warning","message"}],"scenarios":[{"id","name","thesis","values":{"<inputId>":0}}]}. Percent values use percentage points (e.g. 35 for 35%). Expressions support +, -, *, /, (), <, <=, >, >=, ==, !=, min, max, abs, round, floor, ceil, clamp, if(cond, a, b).';
+
+export const SURFACE_HYPOTHESES_FORMAT =
+	'A hypotheses file (hypotheses.json) is {"summary","hypotheses":[{"id","bet","tier":"verified"|"benchmark"|"hypothesis","status":"untested"|"testing"|"proven"|"falsified","impact":"fatal"|"high"|"medium","cheapestTest","killCriteria","evidence","source","owner","playId"}]}.';
+
+export const SURFACE_LANDSCAPE_FORMAT =
+	'A landscape file (landscape.json) is {"summary","wedge","axes":{"xLabel","yLabel","xLow","xHigh","yLow","yHigh"},"players":[{"id","name","isUs":false,"url","category","positioning","pricing","target","strength","weakness","ourEdge","tier":"verified"|"benchmark"|"hypothesis","source","x":0,"y":0}]} (x and y are 0-100 coordinates on axes).';
+
 const SURFACE_OBJECT_FORMAT = `A stage_3d model file (default ${SURFACE_STAGE_DEFAULT_MODEL}) is {"model":"<name>.glb","view":{"yaw","pitch"},"parts":[{"id","node","pull":[x,y,z]}],"tint":["<material>"]}, the .glb beside it. With no .glb in the folder, a top-level "model" object in a JSON file, {"kind":"headband"|"device","dimensions","layers":["..."]}, draws a stand-in tinted by the tab's swatch_row.`;
 
 const SURFACE_TOKENS_FORMAT =
@@ -1370,6 +1514,10 @@ const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>>
 	stage_3d: SURFACE_OBJECT_FORMAT,
 	palette: SURFACE_TOKENS_FORMAT,
 	type_specimen: SURFACE_TOKENS_FORMAT,
+	plays: SURFACE_PLAYS_FORMAT,
+	economics: SURFACE_ECONOMICS_FORMAT,
+	hypotheses: SURFACE_HYPOTHESES_FORMAT,
+	landscape: SURFACE_LANDSCAPE_FORMAT,
 	report: SURFACE_REPORT_FORMAT,
 	module: SURFACE_TOKENS_FORMAT,
 };

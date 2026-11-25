@@ -1,28 +1,29 @@
 ---
 name: custom-surface
-description: How to shape and fill a custom interface, a page for a goal no template covers, and when a small app is the right tool. Use in every session on a custom interface.
+description: How to shape and fill a custom Studio surface for planning, sketching, calculators, trackers, GTM rooms, or any bespoke workspace no template covers. Use in every session on a custom interface.
 ---
 
-# Custom interface
+# Custom Studio surface
 
-A custom interface is a page for a goal no template covers. Its starter layout is nearly empty on purpose: you shape the page first, then fill it. The layout you are shown is where its shape lives.
+A custom Studio surface is a living workspace tailored to a specific goal that product or identity surfaces do not cover — such as a pricing lab, GTM war room, launch tracker, sketching board, supplier matrix, or investor room. Its starter layout is nearly empty on purpose: shape the page first, then fill it.
 
 ## Shape first
-- Read the member's goal, the brief and the company's files. Then stage a layout whose tabs and blocks name the homes that goal needs, each with a heading that says what goes there, and nothing filled. The member judges the shape on its empty homes before any content exists.
-- Where the shape is a matter of taste (one long page or a few tabs, a board of cards or one table, figures first or the story first), offer two or three layout directions as options with surface_ask, each named in a few concrete words, and shape the one the member picks.
+- Read the member's goal, the company vision, the brief, and relevant company files (use `company_search` and read-only `data_describe` / `data_query` when live records exist).
+- Stage a `layout.json` whose tabs and blocks create the exact homes this workspace needs, each with a clear heading. Where structure is a genuine taste choice, offer 2 or 3 concrete layout directions via `surface_ask` and build the one the member picks.
 - Then fill the homes piece by piece.
 
 ## How to work
-- Fill the homes the layout names, one piece per change, so the member sees each piece land on its own. Never stage the whole page at once.
-- Write reports, analyses, essays and blog posts as structured reports (or standalone HTML pages when a custom layout is asked for), never plain Markdown notes; stage each piece in its own change with stage_surface_patch so the member can open, toggle and approve each deliverable independently.
-- An unknown stays an empty home. Never invent a figure, a name or a date to make the page look full; say in your reply what is still missing and who could know it.
-- Settle what you can yourself by reading. Ask the member only questions of taste, with surface_ask and a few concrete options, never questions you can answer from the company's files. Ask once, early, and then build on the answer; never stop the work for a question you could settle yourself, and never ask the same thing twice.
-- Keep the page's homes. When the work needs another shape, change the layout file in its own change and say in plain words what moved and why.
-- Never draw a stand-in for something that must be made: no clipart, no drawn picture in place of a model or a photo. If it cannot be made in this session, leave its home empty and say so.
-- Write to the member about the page, not about files or steps: no paths, file names or tool names in a change's title, its summary or your reply.
+- Stage one cohesive deliverable per `stage_surface_patch` call so the member sees and approves each piece independently. Never dump the whole workspace in one giant patch.
+- Write reports, analyses, memos, and essays as structured `*.report.json` articles (or self-contained `.html` pages when custom visual presentation is asked for), never loose raw Markdown notes; stage each piece in its own change.
+- Use three-tier epistemics instead of leaving everything blank: distinguish `verified` company facts (files, databases, confirmed decisions), `benchmark` public/market facts (statutory taxes, payment fees, competitor list prices — always with `source`), and `hypothesis` working bets (clearly labeled with what test confirms or kills them). Never invent company traction, revenue, or signed customers; never leave publicly researchable benchmarks blank.
+- For strategic, commercial, or pricing workspaces, pressure-test the real market incentives, rival alternatives, margins, and capacity ceilings instead of building a passive worksheet.
+- Settle what you can by reading and researching. Use `surface_ask` only for genuine founder calls or taste choices, with concrete options.
+- Write to the member about the workspace and decisions, never about file paths, schemas, or tool names in change titles, summaries, or replies.
 
-## Blocks first, a module when blocks cannot
-- Prefer a native block. Figures, a table, cards, a list of values, a report, a 3D stage and artifacts are blocks, and they wear the company look on their own. Add an artifacts block to any tab that should show vector art, pictures, notes, pages, PDFs or extra structured files.
-- A module is a small app built for this page. It is the right tool for what no block can do: a calculator, a planner the member drags, a chart that answers what the member types.
-- Know what a module cannot do: it has no network, it sees only its own folder (and the company stylesheet it may link), and a module that sizes itself to its content must not size itself by the viewport. Data it needs goes in its own folder; anything from elsewhere is a block's job.
-- Link the company stylesheet so a module wears the company look; never copy colours or fonts into it.
+## Native blocks first, module when blocks cannot
+- Prefer native blocks — they inherit the company's Identity tokens and light/dark themes automatically:
+  - Strategy & decision blocks: `plays` (competing strategic bets side by side), `economics` (interactive unit economics simulator with 3-tier inputs, waterfall, break-even & capacity curve, constraints, and scenarios), `hypotheses` (load-bearing assumptions & kill-criteria ledger), and `landscape` (rivals positioning map & competitive matrix).
+  - General blocks: `title`, `facts`, `spec_list`, `table`, `cards`, `report`, `explainer`, `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts` (for sketches, SVGs, HTML boards, PDFs, or images).
+- Use a `module` block (an interactive HTML/JS app inside its own subfolder) only when no native block fits — for example, a bespoke interactive sketchpad, funnel simulator, drag-and-drop planner, or custom visual calculator.
+- Link `/identity/tokens.css` inside modules so they wear the company look; never hardcode brand colors or fonts. Modules have no network access, can read company/surface files via `qorpera.read(path)` and `qorpera.list(prefix)`, and can hand founder inputs or decisions back into a Surface session via `qorpera.tell(text, about)`.
+- A module with `height: "auto"` sizes itself to its content and must not lock itself to `100vh`.

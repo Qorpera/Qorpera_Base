@@ -94,6 +94,7 @@ describe("surface kinds", () => {
 		expect(inferSurfaceKind({ slug: "brand", icon: "spark", archetype: "studio" })).toBe("brand");
 		expect(inferSurfaceKind({ slug: "headband", icon: "box", archetype: "studio" })).toBe("product");
 		expect(inferSurfaceKind({ slug: "database", icon: "database", archetype: "studio" })).toBe("database");
+		expect(inferSurfaceKind({ slug: "strategy", icon: "figure:lighthouse", archetype: "studio" })).toBe("strategy");
 		expect(opsComposerPlaceholder("inbox")).toBe("Ask an agent to draft, follow up, or summarize mail…");
 		expect(opsComposerPlaceholder("files")).toBe("Ask an agent to organize, summarize, or create files…");
 	});
@@ -278,7 +279,7 @@ describe("operational surfaces", () => {
 });
 
 describe("creating surfaces", () => {
-	it("offers nine kinds, a figure for each, a custom surface with a brief, and opens a Mobile App in the phone frame", async () => {
+	it("offers ten kinds, a figure for each, a custom studio surface with a brief, and opens a Mobile App in the phone frame", async () => {
 		const navigated: string[] = [];
 		const store = storeWith(undefined, {
 			companyName: "Brooks",
@@ -298,6 +299,7 @@ describe("creating surfaces", () => {
 		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-kind")].map((row) => row.dataset.preset);
 		expect(presets).toEqual([
 			"custom",
+			"strategy",
 			"identity",
 			"website",
 			"web_app",
@@ -410,7 +412,8 @@ describe("creating surfaces", () => {
 			.dispatchEvent(new Event("submit", { cancelable: true }));
 		await flush();
 		const desk = store.state.surfaces.find((item) => item.slug === "support-desk")!;
-		expect(desk.archetype).toBe("live_build");
+		expect(desk.archetype).toBe("studio");
+		expect(desk.folderRoot).toBe("surfaces/support-desk");
 		expect(store.lookOf(desk)).toEqual({ kind: "custom" });
 		expect(store.workspace(desk.id)?.briefSummary).toBe("Answers for customers.");
 		store.dispose();
@@ -438,9 +441,9 @@ describe("creating surfaces", () => {
 		expect(row("custom").getAttribute("aria-pressed")).toBe("true");
 		expect(sheet.querySelector<HTMLElement>(".surface-create-custom")!.hidden).toBe(false);
 		press(row("custom"), "ArrowRight");
-		expect(document.activeElement).toBe(row("identity"));
-		expect(row("identity").getAttribute("aria-pressed")).toBe("true");
-		press(row("identity"), "ArrowLeft");
+		expect(document.activeElement).toBe(row("strategy"));
+		expect(row("strategy").getAttribute("aria-pressed")).toBe("true");
+		press(row("strategy"), "ArrowLeft");
 		expect(document.activeElement).toBe(row("custom"));
 
 		const avatar = sheet.querySelector<HTMLButtonElement>(".surface-create-avatar")!;

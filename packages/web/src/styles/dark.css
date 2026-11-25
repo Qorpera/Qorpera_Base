@@ -244,3 +244,17 @@
 :root[data-theme="dark"] .bank-year-in { background: #1f6b4c; }
 :root[data-theme="dark"] .bank-year-out { background: #7a3530; }
 :root[data-theme="dark"] .figure-dust { background: rgb(255 255 255 / 24%); }
+
+/* ---- Strategy blocks (surfaces.css) ---------------------------------------------------- */
+:root[data-theme="dark"] :is(.studio-plays, .studio-econ, .studio-hyp-block, .studio-land) {
+	--studio-good: #5ed6a9; --studio-warn: #f2c35d; --studio-bad: #ff9084; --studio-info: #8fb0ff;
+}
+:root[data-theme="dark"] :is(.studio-play-status.is-recommended, .studio-hyp-impact.is-fatal, .studio-land-us) { color: #1b1b1a; }
+:root[data-theme="dark"] .studio-econ-breakeven.is-impossible .studio-econ-pill-text { fill: #1b1b1a; }
+:root[data-theme="dark"] .studio-play:is(.is-recommended, .is-active) { box-shadow: 0 16px 36px -26px rgb(0 0 0 / 80%); }
+:root[data-theme="dark"] .studio-econ-scenario.is-on { box-shadow: 0 0 0 1px var(--border-strong); }
+:root[data-theme="dark"] .studio-econ-range::-webkit-slider-thumb { box-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
+:root[data-theme="dark"] .studio-econ-range::-moz-range-thumb { box-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
+:root[data-theme="dark"] .studio-econ-wf-bar.is-income { fill: color-mix(in srgb, var(--studio-good) 70%, var(--bg)); }
+:root[data-theme="dark"] .studio-econ-capacity { fill: color-mix(in srgb, var(--studio-bad) 12%, transparent); }
+:root[data-theme="dark"] .surface-card:hover .app-card-emblem .surface-tile.is-rail { filter: brightness(1.06); }
