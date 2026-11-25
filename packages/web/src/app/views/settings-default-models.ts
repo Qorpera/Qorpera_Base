@@ -8,8 +8,14 @@ import {
 	type WebDefaultModels,
 } from "../../cloud/default-models.ts";
 import { modelName, modelProvider, type SessionEffort } from "../../cloud/session-model.ts";
-import { button, h, notice, replace } from "../../ui/dom.ts";
-import { phrase, t } from "../../ui/preferences.ts";
+import { button, h, icon, notice, replace } from "../../ui/dom.ts";
+import { phrase, presentationLocale, t } from "../../ui/preferences.ts";
+import {
+	hasVoiceModelPreview,
+	type VoiceAudioFactory,
+	VoicePreviewPlayer,
+	voiceSampleUrl,
+} from "../../ui/voice-preview.ts";
 
 const GEMINI_VOICE_TONES: Readonly<Record<string, string>> = {
 	Charon: phrase("Informative"),
@@ -92,6 +98,7 @@ export class DefaultModelsView {
 	readonly el = h("section", { class: "settings-group default-models-section" });
 	readonly #client: WebDefaultModels;
 	readonly #lifetime = new AbortController();
+	readonly #voicePreview: VoicePreviewPlayer;
 	#state: MemberDefaultModels | undefined;
 	#loading = true;
 	#loadError = false;
@@ -99,10 +106,22 @@ export class DefaultModelsView {
 	#error: string | undefined;
 	#status: string | undefined;
 
-	constructor(client: WebDefaultModels, signal: AbortSignal) {
+	constructor(client: WebDefaultModels, signal: AbortSignal, createAudio?: VoiceAudioFactory) {
 		this.#client = client;
+		this.#voicePreview = new VoicePreviewPlayer(
+			() => {
+				if (!this.#lifetime.signal.aborted) this.#draw();
+			},
+			() => {
+				if (this.#lifetime.signal.aborted) return;
+				this.#error = t("Voice sample could not be played. Try again.");
+				this.#draw();
+			},
+			createAudio,
+		);
 		if (signal.aborted) {
 			this.#lifetime.abort();
+			this.#voicePreview.dispose();
 			return;
 		}
 		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
@@ -112,6 +131,7 @@ export class DefaultModelsView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#voicePreview.dispose();
 		this.el.replaceChildren();
 		this.el.remove();
 	}
@@ -122,8 +142,18 @@ export class DefaultModelsView {
 		this.#loadError = false;
 		if (!this.#state) this.#draw();
 		try {
+			const previous = this.#state;
 			const next = await this.#client.read(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
+			if (
+				previous &&
+				(previous.voiceModel !== next.voiceModel ||
+					previous.voiceName !== next.voiceName ||
+					previous.storedVoiceModel !== next.storedVoiceModel ||
+					previous.storedVoiceName !== next.storedVoiceName)
+			) {
+				this.#voicePreview.stop();
+			}
 			this.#state = next;
 			this.#loadError = false;
 		} catch {
@@ -134,6 +164,16 @@ export class DefaultModelsView {
 				this.#loading = false;
 				this.#draw();
 			}
+		}
+	}
+
+	async #testVoice(url: string, key: string): Promise<void> {
+		if (this.#saving || this.#lifetime.signal.aborted) return;
+		this.#error = undefined;
+		const started = await this.#voicePreview.play(url, key);
+		if (!started && !this.#lifetime.signal.aborted) {
+			this.#error = t("Voice sample could not be played. Try again.");
+			this.#draw();
 		}
 	}
 
@@ -191,6 +231,7 @@ export class DefaultModelsView {
 		options: readonly { value: string; label: string; disabled?: boolean }[],
 		selected: string,
 		onChange: (value: string) => void,
+		disabled = false,
 	): HTMLSelectElement {
 		const select = h(
 			"select",
@@ -198,7 +239,7 @@ export class DefaultModelsView {
 				class: role.endsWith("-effort") || role === "voice-name" ? "default-effort-select" : "default-model-select",
 				"aria-label": ariaLabel,
 				dataset: { role },
-				disabled: this.#saving,
+				disabled: this.#saving || disabled,
 				onchange: (event: Event) => {
 					onChange((event.currentTarget as HTMLSelectElement).value);
 				},
@@ -341,8 +382,15 @@ export class DefaultModelsView {
 			},
 		);
 
-		const voiceUnavailable = state.storedVoiceModel !== null && !state.voiceModels.includes(state.storedVoiceModel);
-		const shownVoiceModel = voiceUnavailable ? state.storedVoiceModel! : state.voiceModel;
+		const previewableVoiceModels = state.voiceModels.filter(hasVoiceModelPreview);
+		const availableVoiceModels = previewableVoiceModels.length > 0 ? previewableVoiceModels : ["chatgpt-voice"];
+		const voiceUnavailable =
+			state.storedVoiceModel !== null && !availableVoiceModels.includes(state.storedVoiceModel);
+		const shownVoiceModel = voiceUnavailable
+			? state.storedVoiceModel!
+			: availableVoiceModels.includes(state.voiceModel)
+				? state.voiceModel
+				: availableVoiceModels[0]!;
 		const voiceProfiles = defaultVoiceProfiles(state, shownVoiceModel);
 		const currentVoice =
 			voiceUnavailable && state.storedVoiceName !== null
@@ -358,7 +406,7 @@ export class DefaultModelsView {
 						},
 					]
 				: []),
-			...state.voiceModels.map((id) => ({ value: id, label: voiceModelName(id) })),
+			...availableVoiceModels.map((id) => ({ value: id, label: voiceModelName(id) })),
 		];
 		const voiceProfileOptions = voiceProfiles.map((profile) => ({
 			value: profile,
@@ -370,6 +418,7 @@ export class DefaultModelsView {
 			voiceModelOptions,
 			shownVoiceModel,
 			(value) => {
+				this.#voicePreview.stop();
 				const allowed = defaultVoiceProfiles(state, value);
 				const nextVoice = clampVoice(currentVoice, allowed);
 				void this.#save(
@@ -385,12 +434,40 @@ export class DefaultModelsView {
 			voiceProfileOptions,
 			currentVoice,
 			(value) => {
+				this.#voicePreview.stop();
 				void this.#save(
-					state.storedVoiceModel === null
-						? { voiceModel: state.voiceModel, voiceName: value }
+					state.storedVoiceModel !== shownVoiceModel
+						? { voiceModel: shownVoiceModel, voiceName: value }
 						: { voiceName: value },
 				);
 			},
+			voiceUnavailable,
+		);
+		const voiceLocale = presentationLocale();
+		const sampleUrl = voiceSampleUrl(shownVoiceModel, currentVoice, voiceLocale);
+		const previewKey = `${shownVoiceModel}:${currentVoice}:${voiceLocale}`;
+		const isTestingVoice = this.#voicePreview.isPlaying(previewKey);
+		const voiceTestButton = h(
+			"button",
+			{
+				type: "button",
+				class: isTestingVoice ? "btn default-voice-test is-playing" : "btn default-voice-test",
+				dataset: { role: "voice-test" },
+				"aria-pressed": isTestingVoice ? "true" : "false",
+				"aria-label": isTestingVoice
+					? t("Stop voice sample")
+					: t("Test {voice} voice", { voice: voiceProfileLabel(currentVoice) }),
+				disabled: this.#saving || sampleUrl === null,
+				onclick: () => {
+					if (isTestingVoice) {
+						this.#voicePreview.stop();
+						return;
+					}
+					if (sampleUrl) void this.#testVoice(sampleUrl, previewKey);
+				},
+			},
+			icon(isTestingVoice ? "stop" : "volume"),
+			isTestingVoice ? t("Stop") : t("Test"),
 		);
 		const voiceRow = h(
 			"div",
@@ -401,11 +478,16 @@ export class DefaultModelsView {
 				h("strong", null, t("Voice")),
 				h("small", null, t("Default model and voice profile for narrated Studio breakdowns.")),
 			),
-			h("div", { class: "default-model-controls" }, voiceModelSelect, voiceNameSelect),
+			h("div", { class: "default-model-controls" }, voiceModelSelect, voiceNameSelect, voiceTestButton),
 		);
 
 		const missingExtraProviders =
 			!convModels.includes("gemini-4-neon") || !state.codingModels.includes("claude-opus-5-5");
+
+		const refocusRole =
+			document.activeElement instanceof HTMLElement && this.el.contains(document.activeElement)
+				? document.activeElement.dataset.role
+				: undefined;
 
 		replace(
 			this.el,
@@ -450,5 +532,9 @@ export class DefaultModelsView {
 					)
 				: null,
 		);
+
+		if (refocusRole === "voice-test") {
+			this.el.querySelector<HTMLButtonElement>('[data-role="voice-test"]')?.focus({ preventScroll: true });
+		}
 	}
 }

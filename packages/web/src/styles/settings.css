@@ -468,6 +468,10 @@
 .default-model-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex: none; }
 .default-model-select, .default-effort-select { height: 32px; padding: 0 10px; border: 1px solid #d7d7d3; border-radius: 9px; background: #e7e7e4; color: inherit; font: inherit; font-size: 12.5px; cursor: default; }
 .default-model-select:disabled, .default-effort-select:disabled { opacity: .6; cursor: default; }
+.settings-content .default-voice-test { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 72px; height: 32px; padding: 0 11px; }
+.settings-content .default-voice-test .icon { width: 14px; height: 14px; flex: none; }
+.settings-content .default-voice-test.is-playing { border-color: #1d1d1b; background: #1d1d1b; color: #fff; }
+.settings-content .default-voice-test.is-playing:hover:not(:disabled) { background: #3a3a37; }
 .gemini-key-section > .notice { margin-bottom: 10px; }
 .gemini-key-form { padding-top: 12px; border-top: 1px solid #dededb; }
 .gemini-cap-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12.5px; font-weight: 500; }

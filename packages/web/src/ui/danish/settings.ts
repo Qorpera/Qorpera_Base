@@ -357,6 +357,10 @@ export const SETTINGS: Record<string, string> = {
 	"Voice profile": "Stemmeprofil",
 	"Default model and voice profile for narrated Studio breakdowns.":
 		"Standardmodel og stemmeprofil til indtalte Studio-gennemgange.",
+	Test: "Test",
+	"Test {voice} voice": "Test stemmen {voice}",
+	"Stop voice sample": "Stop stemmeprøve",
+	"Voice sample could not be played. Try again.": "Stemmeprøven kunne ikke afspilles. Prøv igen.",
 	Informative: "Informativ",
 	Firm: "Bestemt",
 	Upbeat: "Opløftende",
