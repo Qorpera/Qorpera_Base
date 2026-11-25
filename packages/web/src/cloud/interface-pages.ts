@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { array, CloudShapeError, oneOf, record } from "./parse.ts";
+import { array, CloudShapeError, cloudRecord, oneOf } from "./parse.ts";
 
 export const INTERFACE_PAGES = ["mailbox", "members", "bank", "data"] as const;
 export type InterfacePageName = (typeof INTERFACE_PAGES)[number];
@@ -23,11 +23,11 @@ export interface InterfacePageCalls {
 }
 
 export function parseInterfacePages(value: unknown): MemberInterfacePages {
-	const input = record(value, "pages");
+	const input = cloudRecord(value, "pages");
 	if (input.schema !== "qorpera.member-interface-pages/v1" || typeof input.mayChange !== "boolean")
 		throw new CloudShapeError("pages");
 	const pages = array(input.pages, "pages").map((entry) => {
-		const item = record(entry, "page");
+		const item = cloudRecord(entry, "page");
 		if (typeof item.on !== "boolean" || (item.hidden !== undefined && typeof item.hidden !== "boolean"))
 			throw new CloudShapeError("page");
 		const page = oneOf(item.page, INTERFACE_PAGES, "page name");

@@ -1,11 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import type { CloudRunnerAssignmentAcceptance } from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import { UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import type { CloudRunnerAssignmentSource } from "./cloud-runner-worker.ts";
 
 const ASSIGNMENT_SCHEMA = "qorpera.runner-assignment-delivery/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_REQUEST_BYTES = 16 * 1024;
 
 interface PendingNext {

@@ -2,13 +2,12 @@ import { lstat, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import type { CloudRunnerModelRequest } from "@qorpera/cloud-client/cloud-runner-model";
 import { validateCloudRunnerModelRequest } from "@qorpera/cloud-client/cloud-runner-model";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, parseRecord, UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import { requestCloudRunnerModelSocket } from "./cloud-runner-model-socket.ts";
 
 const REQUEST_SCHEMA = "qorpera.ephemeral-container-request/v1";
 const RESULT_SCHEMA = "qorpera.sandbox-probe-result/v1";
 const PROOF_SCHEMA = "qorpera.sandbox-probe-proof/v1";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_ARTIFACT_INDEX_BYTES = 1024 * 1024;
@@ -53,11 +52,6 @@ interface SandboxProbeRequest {
 	};
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 function safeInteger(value: unknown, label: string): number {
 	if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(`${label} is invalid`);
 	return value as number;
@@ -75,16 +69,16 @@ function assertion(value: unknown, label: string): boolean {
 }
 
 function parseRequest(value: unknown): SandboxProbeRequest {
-	const input = record(value, "Container request");
+	const input = parseRecord(value, "Container request");
 	if (input.schema !== REQUEST_SCHEMA) throw new Error("Container request schema is unsupported");
-	const job = record(input.job, "Container job");
-	const substrate = record(input.substrate, "Container substrate");
-	const paths = record(input.paths, "Container paths");
-	const limits = record(input.limits, "Container limits");
-	const payload = record(job.payload, "Container job payload");
+	const job = parseRecord(input.job, "Container job");
+	const substrate = parseRecord(input.substrate, "Container substrate");
+	const paths = parseRecord(input.paths, "Container paths");
+	const limits = parseRecord(input.limits, "Container limits");
+	const payload = parseRecord(job.payload, "Container job payload");
 	exactKeys(payload, ["assertions", "model_request"], "Container job payload");
 	const requestedAssertions =
-		payload.assertions === undefined ? {} : record(payload.assertions, "Container assertions");
+		payload.assertions === undefined ? {} : parseRecord(payload.assertions, "Container assertions");
 	exactKeys(
 		requestedAssertions,
 		[
@@ -155,7 +149,7 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 	const modelBrokerAssertion = assertion(requestedAssertions.model_broker, "Model broker assertion");
 	let modelRequest: CloudRunnerModelRequest | undefined;
 	if (payload.model_request !== undefined) {
-		const requestedModel = record(payload.model_request, "Container model request");
+		const requestedModel = parseRecord(payload.model_request, "Container model request");
 		exactKeys(
 			requestedModel,
 			["request_id", "provider", "model", "input", "max_output_tokens"],
@@ -219,7 +213,7 @@ async function jsonFile(path: string, maximumBytes: number, label: string): Prom
 	} catch (error) {
 		throw new Error(`${label} contains invalid JSON`, { cause: error });
 	}
-	return record(value, label);
+	return parseRecord(value, label);
 }
 
 async function assertWriteDenied(path: string, label: string): Promise<void> {

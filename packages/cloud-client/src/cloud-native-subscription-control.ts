@@ -1,8 +1,7 @@
-import type { JsonValue } from "@qorpera/contracts";
+import { isRecord, isUuidAnyCase, type JsonValue } from "@qorpera/contracts";
 
 const randomUUID = (): string => globalThis.crypto.randomUUID();
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 export type NativeProviderHarness = "codex-cli" | "claude-code";
@@ -170,15 +169,15 @@ export interface NativeSubscriptionControlTransport {
 	rpc(name: NativeControlRpc, args: Readonly<Record<string, JsonValue>>): Promise<unknown>;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
+function controlRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) {
 		throw new Error(`Native subscription control returned invalid ${label}`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+function controlUuid(value: unknown, label: string): string {
+	if (!isUuidAnyCase(value)) {
 		throw new Error(`Native subscription control returned invalid ${label}`);
 	}
 	return value;
@@ -206,7 +205,7 @@ function timestamp(value: unknown, label: string): string {
 }
 
 function optionalUuid(value: unknown, label: string): string | undefined {
-	return value === null || value === undefined ? undefined : uuid(value, label);
+	return value === null || value === undefined ? undefined : controlUuid(value, label);
 }
 
 function optionalText(value: unknown, label: string, maximum = 512): string | undefined {
@@ -240,11 +239,11 @@ function parseAccountCredits(value: unknown): NativeProviderAccountCredits | und
 function parseAccountUsage(value: unknown): NativeProviderAccountUsage | undefined {
 	if (value === null || value === undefined) return undefined;
 	try {
-		const usage = record(value, "account usage");
+		const usage = controlRecord(value, "account usage");
 		if (!Array.isArray(usage.windows) || usage.windows.length < 1 || usage.windows.length > 2) return undefined;
 		const ids = new Set<string>();
 		const windows = usage.windows.map((entry) => {
-			const window = record(entry, "usage window");
+			const window = controlRecord(entry, "usage window");
 			if (
 				(window.id !== "primary" && window.id !== "secondary") ||
 				ids.has(window.id) ||
@@ -311,7 +310,7 @@ function parseOwnershipKind(value: unknown): ComputeIdentityOwnershipKind {
 }
 
 function parseComputeIdentity(value: unknown): NativeComputeIdentity {
-	const identity = record(value, "compute identity");
+	const identity = controlRecord(value, "compute identity");
 	if (!Array.isArray(identity.capabilities)) {
 		throw new Error("Native subscription control returned invalid compute capabilities");
 	}
@@ -329,7 +328,7 @@ function parseComputeIdentity(value: unknown): NativeComputeIdentity {
 		throw new Error("Native subscription control returned inconsistent compute identity ownership");
 	}
 	return {
-		computeIdentityId: uuid(identity.compute_identity_id, "compute identity id"),
+		computeIdentityId: controlUuid(identity.compute_identity_id, "compute identity id"),
 		ownershipKind,
 		...(ownerUserId ? { ownerUserId } : {}),
 		...(ownerScopeKey ? { ownerScopeKey } : {}),
@@ -380,7 +379,7 @@ export class NativeSubscriptionControlPlane {
 	}
 
 	async createMemberComputeIdentity(input: CreateMemberComputeIdentityInput): Promise<NativeMemberComputeIdentity> {
-		const value = record(
+		const value = controlRecord(
 			await this.#transport.rpc("qorpera_upsert_member_compute_identity", {
 				p_profile_id: input.profileId,
 				p_client_identity_id: input.clientIdentityId ?? randomUUID(),
@@ -407,7 +406,7 @@ export class NativeSubscriptionControlPlane {
 		const capabilitySha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 		const clientLoginId = input.clientLoginId ?? randomUUID();
 		const clientConnectionId = input.clientConnectionId ?? randomUUID();
-		const value = record(
+		const value = controlRecord(
 			await this.#transport.rpc("qorpera_begin_native_provider_login", {
 				p_profile_id: input.profileId,
 				p_client_login_id: clientLoginId,
@@ -431,10 +430,10 @@ export class NativeSubscriptionControlPlane {
 			throw new Error("Native subscription control returned inconsistent native login ownership");
 		}
 		return {
-			loginId: uuid(value.login_id, "native login id"),
+			loginId: controlUuid(value.login_id, "native login id"),
 			clientLoginId,
 			clientConnectionId,
-			computeIdentityId: uuid(value.compute_identity_id, "native login compute identity id"),
+			computeIdentityId: controlUuid(value.compute_identity_id, "native login compute identity id"),
 			computeIdentityOwnershipKind: ownershipKind,
 			...(ownerUserId ? { computeIdentityOwnerUserId: ownerUserId } : {}),
 			...(ownerScopeKey ? { computeIdentityOwnerScopeKey: ownerScopeKey } : {}),
@@ -446,7 +445,7 @@ export class NativeSubscriptionControlPlane {
 	}
 
 	async createMemberSponsor(input: CreateMemberSponsorInput): Promise<{ bindingId: string; version: number }> {
-		const value = record(
+		const value = controlRecord(
 			await this.#transport.rpc("qorpera_create_member_execution_sponsor", {
 				p_profile_id: input.profileId,
 				p_client_binding_id: input.clientBindingId ?? randomUUID(),
@@ -457,7 +456,7 @@ export class NativeSubscriptionControlPlane {
 			"member sponsor",
 		);
 		return {
-			bindingId: uuid(value.binding_id, "member sponsor binding id"),
+			bindingId: controlUuid(value.binding_id, "member sponsor binding id"),
 			version: integer(value.version, "member sponsor version"),
 		};
 	}
@@ -465,7 +464,7 @@ export class NativeSubscriptionControlPlane {
 	async revokeConnection(
 		input: RevokeNativeProviderConnectionInput,
 	): Promise<{ connectionId: string; status: "revoked" }> {
-		const value = record(
+		const value = controlRecord(
 			await this.#transport.rpc("qorpera_revoke_native_provider_connection", {
 				p_profile_id: input.profileId,
 				p_connection_id: input.providerConnectionId,
@@ -476,7 +475,7 @@ export class NativeSubscriptionControlPlane {
 			throw new Error("Native subscription control returned invalid revocation status");
 		}
 		return {
-			connectionId: uuid(value.connection_id, "revoked connection id"),
+			connectionId: controlUuid(value.connection_id, "revoked connection id"),
 			status: "revoked",
 		};
 	}
@@ -485,7 +484,7 @@ export class NativeSubscriptionControlPlane {
 		// A member's login pays only for that member's own work (2026-09-28): nobody is asked to pay.
 		if (input.sponsorMode === "sponsorship_request")
 			throw new Error("A turn is paid by the member who sends it or by a company account");
-		const value = record(
+		const value = controlRecord(
 			await this.#transport.rpc("qorpera_request_session_turn_v2", {
 				p_session_id: input.sessionId,
 				p_client_input_id: input.clientInputId ?? randomUUID(),
@@ -507,15 +506,15 @@ export class NativeSubscriptionControlPlane {
 			"session turn request",
 		);
 		return {
-			turnRequestId: uuid(value.turn_request_id, "turn request id"),
-			inputId: uuid(value.input_id, "turn input id"),
+			turnRequestId: controlUuid(value.turn_request_id, "turn request id"),
+			inputId: controlUuid(value.input_id, "turn input id"),
 			status: parseTurnStatus(value.status),
 			sponsorMode: parseSponsorMode(value.sponsor_mode),
 		};
 	}
 
 	async listConnections(profileId: string): Promise<NativeExecutionConnections> {
-		const value = record(
+		const value = controlRecord(
 			await this.#transport.rpc("qorpera_list_member_native_execution_connections", {
 				p_profile_id: profileId,
 			}),
@@ -530,8 +529,8 @@ export class NativeSubscriptionControlPlane {
 		return {
 			...(computeIdentity ? { computeIdentity } : {}),
 			connections: value.connections.map((entry) => {
-				const connection = record(entry, "native connection");
-				const policy = record(connection.policy, "native provider policy");
+				const connection = controlRecord(entry, "native connection");
+				const policy = controlRecord(connection.policy, "native provider policy");
 				const usage = parseAccountUsage(connection.provider_account_usage);
 				if (
 					(connection.authorization_state !== "active" &&
@@ -548,8 +547,8 @@ export class NativeSubscriptionControlPlane {
 					throw new Error("Native subscription control returned invalid connection authority");
 				}
 				return {
-					connectionId: uuid(connection.connection_id, "native connection id"),
-					clientConnectionId: uuid(connection.client_connection_id, "native client connection id"),
+					connectionId: controlUuid(connection.connection_id, "native connection id"),
+					clientConnectionId: controlUuid(connection.client_connection_id, "native client connection id"),
 					connectionVersion: integer(connection.connection_version, "native connection version"),
 					provider: text(connection.provider, "native connection provider", 64),
 					nativeHarness: parseHarness(connection.native_harness),
@@ -581,7 +580,7 @@ export class NativeSubscriptionControlPlane {
 					consentedAt: timestamp(connection.consented_at, "native consent time"),
 					connectionStatus: connection.connection_status,
 					...(optionalUuid(connection.sponsor_binding_id, "member sponsor binding id")
-						? { sponsorBindingId: uuid(connection.sponsor_binding_id, "member sponsor binding id") }
+						? { sponsorBindingId: controlUuid(connection.sponsor_binding_id, "member sponsor binding id") }
 						: {}),
 					...(connection.sponsor_version === null || connection.sponsor_version === undefined
 						? {}

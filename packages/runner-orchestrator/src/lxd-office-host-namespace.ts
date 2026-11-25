@@ -1,9 +1,9 @@
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm } from "node:fs/promises";
+import { UUID_PATTERN } from "@qorpera/contracts";
 
 export const OFFICE_HOST_NAMESPACE_RECORD = "/run/qorpera-office-provider/host-mount-namespace.json";
 const directory = "/run/qorpera-office-provider";
-const bootPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const namespacePattern = /^mnt:\[[1-9][0-9]{0,19}\]$/;
 
 export function parseLxdOfficeHostNamespace(value: unknown): { bootId: string; namespace: string } {
@@ -14,7 +14,7 @@ export function parseLxdOfficeHostNamespace(value: unknown): { bootId: string; n
 		Object.keys(r).sort().join(",") !== "bootId,namespace,schema" ||
 		r.schema !== "qorpera.lxd-office-host-namespace/v1" ||
 		typeof r.bootId !== "string" ||
-		!bootPattern.test(r.bootId) ||
+		!UUID_PATTERN.test(r.bootId) ||
 		typeof r.namespace !== "string" ||
 		!namespacePattern.test(r.namespace)
 	)

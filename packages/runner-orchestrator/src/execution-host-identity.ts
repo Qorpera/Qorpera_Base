@@ -13,11 +13,12 @@
  * these devices out of the host's enrolled digest and reports them instead;
  * anything else under such a name, or with any other key, stays enrollment. */
 
+import { UUID_PATTERN } from "@qorpera/contracts";
+
 export const EXECUTION_HOST_IDENTITY_ROOT = "/var/lib/qorpera/identities";
 
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const IDENTITY = new RegExp(`^${UUID}$`);
-const DEVICE = new RegExp(`^identity-(${UUID})$`);
+const IDENTITY = UUID_PATTERN;
+const DEVICE = new RegExp(`^identity-(${UUID_PATTERN.source.slice(1, -1)})$`);
 /** The LXD pool and volume-prefix rules of the login gateway that creates the volumes. */
 const POOL = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const PREFIX = /^[a-z][a-z0-9-]{0,31}$/;

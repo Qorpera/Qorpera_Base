@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { chmod, chown, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { parseRecord, UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { LxdNativeCompanyRuntimeConfig } from "./lxd-company-runtime.ts";
 import { validateLxdNativeCompanyRuntime } from "./lxd-company-runtime.ts";
@@ -15,9 +16,8 @@ import {
 	ProviderAdmissionRefused,
 	ProviderRpcFailed,
 	providerRpcErrorCode,
-	record,
 	runAttemptAcquisitionId,
-	sha256,
+	sha256Hex,
 	token,
 	workSha256,
 } from "./provider-shared.ts";
@@ -51,7 +51,6 @@ import {
  * the control plane keeps the job queued and lets the right provider claim it. */
 
 const JOURNAL_SCHEMA = "qorpera.shared-execution-journal/v1";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ADAPTER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const IMAGE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 const UNIT_PREFIX_PATTERN = /^[a-z][a-z0-9-]{0,48}@$/;
@@ -80,7 +79,7 @@ const REFUSAL_RETIRING = "SANDBOX_RETIRING";
 const REFUSAL_IDENTITY_ABSENT = "NODE_IDENTITY_ELSEWHERE";
 /** Stands in a warm record's key digest for a host that holds no key: its identity's login is
  * kept by the vault. */
-const VAULT_LOGIN_MARKER = sha256("qorpera.model-login-vault/v1");
+const VAULT_LOGIN_MARKER = sha256Hex("qorpera.model-login-vault/v1");
 /** How long a run attempt waits for its identity volume before that becomes a counted
  * failure: the deferral has no bound of its own (the run deadline is a century). */
 const IDENTITY_WAIT_MS = 120_000;
@@ -187,7 +186,7 @@ function timedSignal(ms: number, parent?: AbortSignal): { signal: AbortSignal; c
  */
 function warmConversationKey(work: CloudRunnerWork): string | undefined {
 	if (!work.sessionId || (work.sourceKind !== "session_turn" && work.sourceKind !== "room_delivery")) return undefined;
-	return sha256(
+	return sha256Hex(
 		JSON.stringify([
 			work.computeIdentityId ?? null,
 			work.profileId,
@@ -767,7 +766,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				}
 				// A warm slot keeps the native bridge its running host was started with.
 				const credentials = await this.#slotCredentials(slot, true, warm !== undefined);
-				if (warm && sha256(credentials.nativeBridgeToken) !== warm.nativeBridgeSha256) {
+				if (warm && sha256Hex(credentials.nativeBridgeToken) !== warm.nativeBridgeSha256) {
 					await this.#evict(warm.slot, signal);
 					throw new Error("Warm slot bridge credential differs from its record");
 				}
@@ -786,7 +785,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 							p_run_id: work.runId,
 							p_client_runner_id: acquisitionId,
 							p_provider_adapter: this.adapterId,
-							p_activation_token_sha256: sha256(credentials.activationToken),
+							p_activation_token_sha256: sha256Hex(credentials.activationToken),
 						},
 						signal,
 					);
@@ -795,7 +794,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						cause: error,
 					});
 				}
-				if (record(provisioned, "Provisioned runner").status === "active")
+				if (parseRecord(provisioned, "Provisioned runner").status === "active")
 					throw new Error(
 						"Shared execution acquisition cannot be replayed after its sandbox retired: runner already active",
 					);
@@ -815,7 +814,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					inboxPort: this.#config.portBase + slot * 2 + 1,
 					// The machine key names the attempt: the key of a released allocation stays taken, so a later
 					// attempt of the same run on the same slot needs its own.
-					instanceSha256: sha256(
+					instanceSha256: sha256Hex(
 						JSON.stringify(
 							canonical({
 								host: this.#config.hostId,
@@ -823,7 +822,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 								acquisition: acquisitionId,
 								slot,
 								work: digest,
-								runtime: sha256(JSON.stringify(canonical(this.#config.nativeCompanyRuntime))),
+								runtime: sha256Hex(JSON.stringify(canonical(this.#config.nativeCompanyRuntime))),
 							}),
 						),
 					),
@@ -836,10 +835,10 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						? { reusedHost: true, hostIdentity: { epoch: warm.epoch, masterKeySha256: warm.masterKeySha256 } }
 						: {}),
 					credentials: {
-						activationSha256: sha256(credentials.activationToken),
-						assignmentSha256: sha256(credentials.assignmentToken),
-						nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
-						nativeIdentitySha256: sha256(credentials.nativeIdentityToken),
+						activationSha256: sha256Hex(credentials.activationToken),
+						assignmentSha256: sha256Hex(credentials.assignmentToken),
+						nativeBridgeSha256: sha256Hex(credentials.nativeBridgeToken),
+						nativeIdentitySha256: sha256Hex(credentials.nativeIdentityToken),
 					},
 					createdAt: now,
 					updatedAt: now,
@@ -880,7 +879,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			return journal;
 		});
 		const credentials = await this.#slotCredentials(current.slot, false);
-		if (sha256(credentials.assignmentToken) !== current.credentials.assignmentSha256)
+		if (sha256Hex(credentials.assignmentToken) !== current.credentials.assignmentSha256)
 			throw new Error("Shared execution slot credentials differ from the sandbox journal");
 		const deliverTimeout = timedSignal(10_000, signal);
 		let status: number;
@@ -1044,7 +1043,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			});
 			if (alreadyAdvanced) return;
 		}
-		const result = record(
+		const result = parseRecord(
 			await this.#rpc(
 				"qorpera_reserve_runtime_machine",
 				{
@@ -1153,7 +1152,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (current.capacityReleased || (!current.capacityRequested && !current.capacityRegistered)) return;
 		let result: Record<string, unknown>;
 		try {
-			result = record(
+			result = parseRecord(
 				await this.#rpc(
 					"qorpera_release_runtime_machine",
 					{
@@ -1439,10 +1438,10 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const runtime = this.#config.nativeCompanyRuntime;
 		const credentials = await this.#slotCredentials(current.slot, false);
 		if (
-			sha256(credentials.activationToken) !== current.credentials.activationSha256 ||
-			sha256(credentials.assignmentToken) !== current.credentials.assignmentSha256 ||
-			sha256(credentials.nativeBridgeToken) !== current.credentials.nativeBridgeSha256 ||
-			sha256(credentials.nativeIdentityToken) !== current.credentials.nativeIdentitySha256
+			sha256Hex(credentials.activationToken) !== current.credentials.activationSha256 ||
+			sha256Hex(credentials.assignmentToken) !== current.credentials.assignmentSha256 ||
+			sha256Hex(credentials.nativeBridgeToken) !== current.credentials.nativeBridgeSha256 ||
+			sha256Hex(credentials.nativeIdentityToken) !== current.credentials.nativeIdentitySha256
 		)
 			throw new Error("Shared execution slot credentials differ from the sandbox journal");
 		const office = runtime.offices?.find(
@@ -1612,7 +1611,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			[join(credentialDirectory, "qorpera-native-identity-epoch"), identity ? identity.epochCredential : ""],
 		];
 		await settleAll([...baseWrites, ...files.map(([path, content]) => replacePrivate(path, content))]);
-		if (identity) return { epoch: identity.epoch, masterKeySha256: sha256(identity.masterKey) };
+		if (identity) return { epoch: identity.epoch, masterKeySha256: sha256Hex(identity.masterKey) };
 		return { epoch: (vaultState as SharedExecutionIdentityState).epoch, masterKeySha256: VAULT_LOGIN_MARKER };
 	}
 
@@ -1731,7 +1730,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					mountInfoPath: this.#mountInfoPath,
 					...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
 				});
-				if (identity.epoch !== warm.epoch || sha256(identity.masterKey) !== warm.masterKeySha256)
+				if (identity.epoch !== warm.epoch || sha256Hex(identity.masterKey) !== warm.masterKeySha256)
 					throw new Error("Warm slot identity changed");
 			}
 		} catch {
@@ -1844,7 +1843,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	}
 
 	async #readJournal(acquisitionId: string): Promise<SharedExecutionJournal | undefined> {
-		if (!UUID_PATTERN.test(acquisitionId)) return undefined;
+		if (!UUID_ANY_CASE_PATTERN.test(acquisitionId)) return undefined;
 		const path = this.#journalPath(acquisitionId);
 		let encoded: string;
 		try {

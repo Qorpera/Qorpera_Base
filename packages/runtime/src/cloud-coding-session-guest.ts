@@ -40,7 +40,7 @@ async function protectedDirectory(path: string, owner: number, create: boolean):
 		throw new Error("CODING_GUEST_SESSION_PATH_UNPROTECTED");
 }
 /** A record file is published once per boot and afterwards only compared. */
-async function record(directory: string, name: string, content: string, owner: number): Promise<void> {
+async function writeRecordFile(directory: string, name: string, content: string, owner: number): Promise<void> {
 	const path = join(directory, name);
 	try {
 		const info = await lstat(path);
@@ -101,7 +101,7 @@ export async function registerCodingSessionUser(
 		owner = ports.protectedUid ?? 0,
 		name = `qorpera-coding-${guest.uid}`;
 	await protectedDirectory(directory, owner, true);
-	await record(
+	await writeRecordFile(
 		directory,
 		`${name}.user`,
 		JSON.stringify({
@@ -114,7 +114,7 @@ export async function registerCodingSessionUser(
 		}),
 		owner,
 	);
-	await record(
+	await writeRecordFile(
 		directory,
 		`${name}.group`,
 		JSON.stringify({ groupName: name, gid: guest.gid, disposition: "regular" }),

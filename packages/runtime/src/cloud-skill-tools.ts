@@ -31,7 +31,7 @@ import {
 	renderCloudSkillFile,
 } from "@qorpera/cloud-client/cloud-skill-file";
 import { osPath } from "@qorpera/cloud-client/company-state-files";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, POSTGRES_UUID_ANY_CASE_PATTERN as VERSION } from "@qorpera/contracts";
 import type { CloudCompanyPathResult } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
@@ -80,7 +80,6 @@ const SEARCH_MAX_FILES = 400;
 /** Skill files read at once, for the catalog and a search. */
 const READ_CONCURRENCY = 16;
 const DISTINCTIVE_WORD_CHARS = 3;
-const VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The characters the result fence and prompt escape as six-byte \uXXXX sequences. */
 const FENCE_ESCAPED = new RegExp(`[<>&${String.fromCodePoint(0x2028, 0x2029)}]`, "g");
 

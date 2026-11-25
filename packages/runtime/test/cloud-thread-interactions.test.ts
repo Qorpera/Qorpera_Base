@@ -1,3 +1,4 @@
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { PLATFORM_UPDATES } from "@qorpera/runtime/cloud-platform-updates";
@@ -91,9 +92,10 @@ describe("thread interaction requests", () => {
 		expect(input.data.surface).toBe("secret");
 		expect(cloudInteractionEventId(RUN, "slack")).toBe(cloudInteractionEventId(RUN, "slack"));
 		expect(cloudInteractionEventId(RUN, "slack")).not.toBe(cloudInteractionEventId(RUN, "slack-2"));
-		expect(cloudInteractionEventId(RUN, "slack")).toMatch(
-			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/,
-		);
+		const eventId = cloudInteractionEventId(RUN, "slack");
+		expect(eventId).toMatch(UUID_PATTERN);
+		expect(eventId[14]).toBe("4");
+		expect(eventId[19]).toBe("a");
 	});
 	it("derives a final-send key the send accepts for every key ask_member accepts", () => {
 		const card = {

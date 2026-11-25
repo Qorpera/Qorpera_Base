@@ -2,7 +2,7 @@
  * a harness runs it. The thread renders each session from the kernel's own view
  * and event stream (qorpera_list_coding_sessions, qorpera_read_coding_session),
  * never from the agent's prose. Shapes follow qorpera.coding-session/v1. */
-import { array, boundedInteger, jsonValue, nonEmptyString, oneOf, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, cloudRecord, cloudUuid, jsonValue, nonEmptyString, oneOf, timestamp } from "./parse.ts";
 import type { JsonValue } from "./types.ts";
 
 export const CODING_HARNESSES = ["codex", "claude-code"] as const;
@@ -171,7 +171,7 @@ function optionalTimestamp(value: unknown, label: string): string | undefined {
 }
 
 function parseRepository(value: unknown): CodingRepository {
-	const item = record(value, "Coding repository");
+	const item = cloudRecord(value, "Coding repository");
 	return {
 		host: nonEmptyString(item.host, "Repository host", 253),
 		owner: nonEmptyString(item.owner, "Repository owner", 100),
@@ -182,7 +182,7 @@ function parseRepository(value: unknown): CodingRepository {
 
 function parsePullRequest(value: unknown): CodingPullRequest | undefined {
 	if (value === null || value === undefined) return undefined;
-	const item = record(value, "Pull request");
+	const item = cloudRecord(value, "Pull request");
 	const number = boundedInteger(item.number, "Pull request number", 1, Number.MAX_SAFE_INTEGER);
 	return {
 		url: nonEmptyString(item.url, "Pull request url", 2048),
@@ -207,13 +207,13 @@ function parseChecks(value: unknown): CodingCheck[] {
 
 /** `askedAt`: when the request that returned it was sent. */
 export function parseCodingSession(value: unknown, askedAt = performance.now()): CodingSession {
-	const item = record(value, "Coding session");
+	const item = cloudRecord(value, "Coding session");
 	const session: CodingSession = {
-		workerId: uuid(item.workerId, "Coding session worker id"),
+		workerId: cloudUuid(item.workerId, "Coding session worker id"),
 		workerKey: nonEmptyString(item.workerKey, "Coding session worker key", 64),
 		title: nonEmptyString(item.title, "Coding session title", 400),
-		agentId: uuid(item.agentId, "Coding session agent id"),
-		ownerUserId: uuid(item.ownerUserId, "Coding session owner id"),
+		agentId: cloudUuid(item.agentId, "Coding session agent id"),
+		ownerUserId: cloudUuid(item.ownerUserId, "Coding session owner id"),
 		harness: oneOf(item.harness, CODING_HARNESSES, "Coding session harness"),
 		repository: parseRepository(item.repository),
 		branch: nonEmptyString(item.branch, "Coding session branch", 250),
@@ -250,7 +250,8 @@ export function parseCodingSession(value: unknown, askedAt = performance.now()):
 	if (startedAt) session.startedAt = startedAt;
 	const finishedAt = optionalTimestamp(item.finishedAt, "Coding session finished at");
 	if (finishedAt) session.finishedAt = finishedAt;
-	if (typeof item.sessionId === "string") session.sessionId = uuid(item.sessionId, "Coding session conversation id");
+	if (typeof item.sessionId === "string")
+		session.sessionId = cloudUuid(item.sessionId, "Coding session conversation id");
 	if (typeof item.isOwner === "boolean") session.isOwner = item.isOwner;
 	if ((CODING_LOGIN_STATES as readonly unknown[]).includes(item.loginState))
 		session.loginState = item.loginState as CodingLoginState;
@@ -261,12 +262,12 @@ export function parseCodingSession(value: unknown, askedAt = performance.now()):
 
 /** qorpera_list_coding_sessions: the sessions dispatched from one conversation, oldest first. */
 export function parseCodingSessions(value: unknown, askedAt = performance.now()): CodingSession[] {
-	const page = record(value, "Coding sessions");
+	const page = cloudRecord(value, "Coding sessions");
 	return array(page.sessions, "Coding sessions").map((session) => parseCodingSession(session, askedAt));
 }
 
 export function parseCodingSessionEvent(value: unknown): CodingSessionEvent {
-	const item = record(value, "Coding session event");
+	const item = cloudRecord(value, "Coding session event");
 	return {
 		id: boundedInteger(item.id, "Coding session event id", 1, Number.MAX_SAFE_INTEGER),
 		sequence: boundedInteger(item.sequence, "Coding session event sequence", 1, Number.MAX_SAFE_INTEGER),
@@ -279,7 +280,7 @@ export function parseCodingSessionEvent(value: unknown): CodingSessionEvent {
 
 /** qorpera_read_coding_session: the view plus the events after a cursor. */
 export function parseCodingSessionRead(value: unknown, askedAt = performance.now()): CodingSessionRead {
-	const item = record(value, "Coding session read");
+	const item = cloudRecord(value, "Coding session read");
 	return {
 		session: parseCodingSession(item.session, askedAt),
 		isOwner: item.isOwner === true,
@@ -301,23 +302,23 @@ export interface CodingSessionLogins {
 }
 
 export function parseCodingSessionLogins(value: unknown): CodingSessionLogins {
-	const item = record(value, "Coding session logins");
+	const item = cloudRecord(value, "Coding session logins");
 	if (item.schema !== "qorpera.coding-session-logins/v1") throw new Error("Invalid coding session logins");
-	const current = record(item.current, "Coding session login");
+	const current = cloudRecord(item.current, "Coding session login");
 	return {
 		current: {
 			...(typeof current.connectionId === "string"
-				? { connectionId: uuid(current.connectionId, "Coding session login id") }
+				? { connectionId: cloudUuid(current.connectionId, "Coding session login id") }
 				: {}),
 			...((CODING_LOGIN_STATES as readonly unknown[]).includes(current.state)
 				? { state: current.state as CodingLoginState }
 				: {}),
 		},
 		logins: array(item.logins, "Coding session logins").map((entry) => {
-			const login = record(entry, "Coding session login");
+			const login = cloudRecord(entry, "Coding session login");
 			const email = optionalString(login.email, 254);
 			return {
-				connectionId: uuid(login.connectionId, "Coding session login id"),
+				connectionId: cloudUuid(login.connectionId, "Coding session login id"),
 				...(email ? { email } : {}),
 				current: login.current === true,
 			};

@@ -15,8 +15,10 @@ import {
 	type CloudMachineCommandReceipt,
 	type CloudMachineCommandRequest,
 	idleRuleProcessIoBytes,
+	isUuid,
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandRequest,
+	UUID_PATTERN as UUID,
 } from "@qorpera/contracts";
 import { collectCodingCommandOutput, readCodingCommandLog } from "./cloud-coding-command-log.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
@@ -35,7 +37,6 @@ import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts"
 // executor treats everything it reads back as untrusted, bounded data.
 
 const executeFile = promisify(execFile);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PATHS = CLOUD_MACHINE_GUEST_PATHS;
 /** 64 MiB of output per command; later output is dropped after one marker. */
 export const MACHINE_GUEST_MAX_LOG_BYTES = 67108864;
@@ -107,8 +108,8 @@ interface Completion {
 	exitCode: number | null;
 }
 
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error("INVALID_MACHINE_GUEST_ID");
+function guestUuid(value: unknown): string {
+	if (!isUuid(value)) throw new Error("INVALID_MACHINE_GUEST_ID");
 	return value;
 }
 function roots(ports: MachineGuestPorts) {
@@ -148,7 +149,7 @@ async function uptimeMs(): Promise<number> {
 	return Math.floor(seconds * 1000);
 }
 async function currentBoot(): Promise<string> {
-	return uuid((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim());
+	return guestUuid((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim());
 }
 async function readJson(path: string, maxBytes: number): Promise<unknown> {
 	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -218,8 +219,9 @@ async function identity(ports: MachineGuestPorts): Promise<Identity> {
 		Number(value.generation) < 1
 	)
 		throw new Error("MACHINE_GUEST_IDENTITY_INVALID");
-	uuid(value.machineId);
-	if (uuid(value.bootId) !== (await (ports.bootId ?? currentBoot)())) throw new Error("MACHINE_GUEST_BOOT_CHANGED");
+	guestUuid(value.machineId);
+	if (guestUuid(value.bootId) !== (await (ports.bootId ?? currentBoot)()))
+		throw new Error("MACHINE_GUEST_BOOT_CHANGED");
 	return value as unknown as Identity;
 }
 
@@ -234,7 +236,7 @@ export async function prepareMachineGuest(
 	ports: MachineGuestPorts = {},
 ): Promise<Identity & { pageBytes: number }> {
 	requireRoot(ports);
-	uuid(machineId);
+	guestUuid(machineId);
 	if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("MACHINE_GUEST_GENERATION_INVALID");
 	const r = roots(ports);
 	for (const [path, mode] of [
@@ -306,7 +308,7 @@ export async function runMachineWatchdog(ports: MachineGuestPorts = {}): Promise
 }
 
 function commandPaths(ports: MachineGuestPorts, commandId: string) {
-	const directory = join(roots(ports).commands, uuid(commandId));
+	const directory = join(roots(ports).commands, guestUuid(commandId));
 	return {
 		directory,
 		intent: join(directory, "intent.json"),
@@ -335,7 +337,7 @@ async function readIntent(ports: MachineGuestPorts, commandId: string): Promise<
 		throw new Error("MACHINE_GUEST_INTENT_INVALID");
 	const request = parseCloudMachineCommandRequest(value.request);
 	if (request.commandId !== commandId) throw new Error("MACHINE_GUEST_INTENT_INVALID");
-	return { schema: "qorpera.machine-command-intent/v1", request, bootId: uuid(value.bootId) };
+	return { schema: "qorpera.machine-command-intent/v1", request, bootId: guestUuid(value.bootId) };
 }
 async function readCompletion(ports: MachineGuestPorts, commandId: string): Promise<Completion | undefined> {
 	const value = (await missing(() => readJson(commandPaths(ports, commandId).completion, 4096))) as
@@ -456,7 +458,7 @@ export async function startMachineCommand(
 	ports: MachineGuestPorts = {},
 ): Promise<CloudMachineCommandReceipt> {
 	requireRoot(ports);
-	uuid(commandId);
+	guestUuid(commandId);
 	const guest = await identity(ports);
 	const request = parseCloudMachineCommandRequest(
 		await readJson(join(roots(ports).inbox, `${commandId}.json`), 131072),
@@ -520,7 +522,7 @@ export async function readMachineCommand(
 	ports: MachineGuestPorts = {},
 ): Promise<CloudMachineCommandReceipt> {
 	requireRoot(ports);
-	return receipt(ports, await identity(ports), uuid(commandId), read);
+	return receipt(ports, await identity(ports), guestUuid(commandId), read);
 }
 
 export async function cancelMachineCommand(
@@ -529,7 +531,7 @@ export async function cancelMachineCommand(
 ): Promise<CloudMachineCommandReceipt> {
 	requireRoot(ports);
 	const guest = await identity(ports);
-	const paths = commandPaths(ports, uuid(commandId));
+	const paths = commandPaths(ports, guestUuid(commandId));
 	const intent = await readIntent(ports, commandId);
 	if (!intent) throw new Error("MACHINE_COMMAND_UNKNOWN");
 	if (intent.bootId === guest.bootId && !(await readCompletion(ports, commandId))) {
@@ -729,7 +731,7 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 		let current: CloudMachineCommandReceipt;
 		try {
 			// A read takes at least 4 bytes; below, the tail is cut to what is left of the budget as JSON writes it.
-			current = await receipt(ports, guest, uuid(commandId), {
+			current = await receipt(ports, guest, guestUuid(commandId), {
 				tail: true,
 				limit: Math.max(4, Math.min(2000, tailBytes)),
 			});
@@ -1623,7 +1625,7 @@ export async function stopMachineApp(slug: string, ports: MachineGuestPorts = {}
 }
 
 async function readInboxOnce(p: MachineGuestPorts, id: string, max: number) {
-	const f = join(roots(p).inbox, `${uuid(id)}.json`);
+	const f = join(roots(p).inbox, `${guestUuid(id)}.json`);
 	const v = await readJson(f, max);
 	await rm(f, { force: true }).catch(() => undefined);
 	return v;
@@ -1640,7 +1642,7 @@ async function reply(ports: MachineGuestPorts, nonce: string, value: unknown): P
 			const stat = await lstat(join(directory, name)).catch(() => undefined);
 			if (stat && now - stat.mtimeMs > 300000) await rm(join(directory, name), { force: true });
 		}
-	await writeJson(join(directory, `${uuid(nonce)}.json`), value);
+	await writeJson(join(directory, `${guestUuid(nonce)}.json`), value);
 }
 
 export async function runMachineGuestCli(argv: readonly string[], ports: MachineGuestPorts = {}): Promise<number> {
@@ -1651,11 +1653,11 @@ export async function runMachineGuestCli(argv: readonly string[], ports: Machine
 		await runMachineWatchdog(ports);
 		return 0;
 	}
-	const nonce = uuid(first);
+	const nonce = guestUuid(first);
 	let result: unknown;
 	try {
 		const [a, b, c] = rest;
-		if (second === "prepare" && rest.length === 2) result = await prepareMachineGuest(uuid(a), Number(b), ports);
+		if (second === "prepare" && rest.length === 2) result = await prepareMachineGuest(guestUuid(a), Number(b), ports);
 		else if (second === "refresh-lease" && rest.length === 1 && /^[1-9][0-9]{4,6}$/.test(a))
 			result = await refreshMachineLease(Number(a), ports);
 		else if (second === "start" && rest.length === 1) result = await startMachineCommand(a, ports);

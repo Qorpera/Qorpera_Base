@@ -1,4 +1,4 @@
-const SCREENSHOT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { isRecord, UUID_ANY_CASE_PATTERN as SCREENSHOT_UUID } from "@qorpera/contracts";
 
 export interface CompanyComputerScreenshotAsset {
 	assetId: string;
@@ -16,14 +16,13 @@ export interface CloudCompanyComputerScreenshots {
 	assertReadable(values: readonly CompanyComputerScreenshotAsset[], signal: AbortSignal): Promise<void>;
 }
 
-function record(value: unknown, keys: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
-		throw new Error("INVALID_OFFICE_CAPTURE");
-	return value as Record<string, unknown>;
+function screenshotObject(value: unknown, keys: string): Record<string, unknown> {
+	if (!isRecord(value) || Object.keys(value).sort().join() !== keys) throw new Error("INVALID_OFFICE_CAPTURE");
+	return value;
 }
 
 export function parseCompanyComputerScreenshotAsset(value: unknown): CompanyComputerScreenshotAsset {
-	const asset = record(value, "assetId,bytes,height,mediaType,screenId,sha256,surface,width");
+	const asset = screenshotObject(value, "assetId,bytes,height,mediaType,screenId,sha256,surface,width");
 	if (
 		typeof asset.assetId !== "string" ||
 		!SCREENSHOT_UUID.test(asset.assetId) ||

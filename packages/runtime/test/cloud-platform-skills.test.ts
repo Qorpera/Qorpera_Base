@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
-import { SURFACE_BLOCK_TYPES, SURFACE_STARTER_KINDS } from "@qorpera/contracts";
+import { SURFACE_BLOCK_TYPES, SURFACE_STARTER_KINDS, UUID_PATTERN } from "@qorpera/contracts";
 import { describe, expect, it } from "vitest";
 import { CLOUD_PLATFORM_SKILLS, PLATFORM_SKILL_FILES, SURFACE_STARTER_SKILLS } from "../src/cloud-platform-skills.ts";
 import { cloudStudioSkill } from "../src/cloud-skill-tools.ts";
@@ -47,8 +47,9 @@ describe("the platform's skills", () => {
 				name,
 				description: document.description,
 				body: document.body,
-				version: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+				version: expect.stringMatching(UUID_PATTERN),
 			});
+			expect(CLOUD_PLATFORM_SKILLS.get(name)?.version[14]).toBe("4");
 		}
 	});
 });

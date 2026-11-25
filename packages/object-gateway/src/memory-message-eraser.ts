@@ -4,11 +4,11 @@ import type { MemberCompanyAuthority, MemberCompanyPublisherRpc } from "./member
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
+	closedFolderRecord,
 	type PlatformFileReference,
 	PlatformFolderWriter,
 	platformFolderProblem,
 	platformFolderProblemCode,
-	record,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -91,7 +91,7 @@ const encoder = new TextEncoder();
 function dueErases(value: unknown): DueErase[] {
 	if (!Array.isArray(value)) return problem("due_invalid");
 	return value.map((item) => {
-		const row = record(item, DUE_KEYS, "due_invalid");
+		const row = closedFolderRecord(item, DUE_KEYS, "due_invalid");
 		if (
 			typeof row.environment_id !== "string" ||
 			!UUID.test(row.environment_id) ||
@@ -111,7 +111,7 @@ function dueErases(value: unknown): DueErase[] {
 
 /** A step's answer (`qorpera.memory-message-erase/v1`) for `eraseId`: the state the step left the erase in. */
 function stepState(value: unknown, eraseId: string): EraseState {
-	const reply = record(value, REPLY_KEYS, "reply_invalid");
+	const reply = closedFolderRecord(value, REPLY_KEYS, "reply_invalid");
 	if (
 		reply.schema !== "qorpera.memory-message-erase/v1" ||
 		reply.eraseId !== eraseId ||
@@ -130,7 +130,7 @@ function stepState(value: unknown, eraseId: string): EraseState {
 
 /** Step 2's plan (`qorpera.memory-message-erase-plan/v1`) for `eraseId`, checked block by block. */
 function erasePlan(value: unknown, eraseId: string): { planSha256: string; blocks: PlanBlock[] } {
-	const plan = record(value, PLAN_KEYS, "plan_invalid");
+	const plan = closedFolderRecord(value, PLAN_KEYS, "plan_invalid");
 	if (
 		plan.schema !== "qorpera.memory-message-erase-plan/v1" ||
 		plan.eraseId !== eraseId ||
@@ -140,7 +140,7 @@ function erasePlan(value: unknown, eraseId: string): { planSha256: string; block
 	)
 		problem("plan_invalid");
 	const blocks = (plan.blocks as unknown[]).map((item) => {
-		const block = record(item, BLOCK_KEYS, "plan_invalid");
+		const block = closedFolderRecord(item, BLOCK_KEYS, "plan_invalid");
 		if (
 			typeof block.path !== "string" ||
 			typeof block.text !== "string" ||

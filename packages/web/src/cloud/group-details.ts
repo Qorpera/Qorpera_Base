@@ -1,6 +1,6 @@
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { Cloud } from "./client.ts";
-import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, cloudRecord, cloudUuid, nonEmptyString, oneOf } from "./parse.ts";
 import type { HostedSession } from "./types.ts";
 
 export interface GroupChatDetails {
@@ -31,7 +31,7 @@ export async function listGroupChatDetails(
 	// An archived room can be created before it ever owns a conversation. It
 	// has no avatar to render; malformed non-null session identities still fail.
 	const rooms = array(response, "group chats")
-		.map((value) => record(value, "group chat"))
+		.map((value) => cloudRecord(value, "group chat"))
 		.filter((room) => room.sessionId !== null)
 		.map(parseGroupChatDetails);
 	if (new Set(rooms.map((room) => room.roomId)).size !== rooms.length)
@@ -45,7 +45,7 @@ export async function readGroupChatDetails(
 	session: HostedSession,
 	signal: AbortSignal,
 ): Promise<GroupChatDetails> {
-	const roomId = uuid(session.executionScope?.roomId, "group chat id");
+	const roomId = cloudUuid(session.executionScope?.roomId, "group chat id");
 	const matches = (await listGroupChatDetails(cloud, session.profileId, signal)).filter(
 		(room) => room.roomId === roomId,
 	);
@@ -61,23 +61,23 @@ export async function readGroupChatDetails(
 }
 
 function parseGroupChatDetails(value: unknown): GroupChatDetails {
-	const room = record(value, "group chat");
+	const room = cloudRecord(value, "group chat");
 	if (typeof room.purpose !== "string") throw new CloudShapeError("group description");
 	if (room.subtitle !== undefined && (typeof room.subtitle !== "string" || [...room.subtitle].length > 256))
 		throw new CloudShapeError("group subtitle");
 	const members = array(room.members, "group participants").map((value) => {
-		const member = record(value, "group participant");
+		const member = cloudRecord(value, "group participant");
 		return {
 			kind: oneOf(member.kind, ["member", "staff_agent"], "participant kind"),
-			id: uuid(member.id, "participant id"),
+			id: cloudUuid(member.id, "participant id"),
 		};
 	});
 	if (new Set(members.map((member) => `${member.kind}:${member.id}`)).size !== members.length)
 		throw new CloudShapeError("group participants");
 	return {
-		roomId: uuid(room.roomId, "group chat id"),
-		sessionId: uuid(room.sessionId, "group chat session id"),
-		environmentId: uuid(room.environmentId, "group chat environment id"),
+		roomId: cloudUuid(room.roomId, "group chat id"),
+		sessionId: cloudUuid(room.sessionId, "group chat session id"),
+		environmentId: cloudUuid(room.environmentId, "group chat environment id"),
 		version: boundedInteger(room.version, "group chat revision", 1, Number.MAX_SAFE_INTEGER),
 		name: nonEmptyString(room.name, "group name"),
 		...(room.subtitle !== undefined ? { subtitle: room.subtitle } : {}),

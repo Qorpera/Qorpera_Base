@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { array, CloudShapeError, nonEmptyString, record, timestamp, uuid } from "./parse.ts";
+import { array, CloudShapeError, cloudRecord, cloudUuid, nonEmptyString, timestamp } from "./parse.ts";
 
 /* Friends' last online time and the friends leaderboard (migration 20260930690000). The web app marks the account
  * online while a tab is in front (qorpera_mark_online); accepted friends read that time on their friends list. The
@@ -52,7 +52,7 @@ function optionalTime(value: unknown, label: string): string | null {
 }
 
 export function parseLeaderboard(value: unknown): Leaderboard {
-	const input = record(value, "leaderboard");
+	const input = cloudRecord(value, "leaderboard");
 	if (typeof input.hidden !== "boolean") throw new CloudShapeError("leaderboard hidden");
 	return {
 		since: timestamp(input.since, "leaderboard since"),
@@ -60,9 +60,9 @@ export function parseLeaderboard(value: unknown): Leaderboard {
 		week: amount(input.week, "leaderboard week"),
 		hidden: input.hidden,
 		people: array(input.people, "leaderboard people").map((item) => {
-			const row = record(item, "leaderboard person");
+			const row = cloudRecord(item, "leaderboard person");
 			return {
-				userId: uuid(row.user_id, "leaderboard person id"),
+				userId: cloudUuid(row.user_id, "leaderboard person id"),
 				displayName: nonEmptyString(row.display_name, "leaderboard person name", 256),
 				me: row.me === true,
 				lastSeenAt: optionalTime(row.last_seen_at, "leaderboard person last online"),
@@ -73,14 +73,14 @@ export function parseLeaderboard(value: unknown): Leaderboard {
 			};
 		}),
 		companies: array(input.companies, "leaderboard companies").map((item) => {
-			const row = record(item, "leaderboard company");
+			const row = cloudRecord(item, "leaderboard company");
 			return {
-				profileId: uuid(row.profile_id, "leaderboard company id"),
+				profileId: cloudUuid(row.profile_id, "leaderboard company id"),
 				name: nonEmptyString(row.name, "leaderboard company name", 256),
 				members:
 					row.members == null
 						? []
-						: array(row.members, "leaderboard company members").map((id) => uuid(id, "member id")),
+						: array(row.members, "leaderboard company members").map((id) => cloudUuid(id, "member id")),
 				tasks: amount(row.tasks, "leaderboard company tasks"),
 				lastWeekTasks: amount(row.last_week_tasks, "leaderboard company last week tasks"),
 				revenueOre: amount(row.revenue_ore, "leaderboard company revenue"),

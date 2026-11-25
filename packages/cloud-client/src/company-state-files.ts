@@ -19,6 +19,8 @@ import {
 	IDENTITY_TOKENS_JSON_PATH,
 	parseCloudCodingBranch,
 	parseCloudCodingRepository,
+	POSTGRES_UUID_PATTERN as UUID,
+	POSTGRES_UUID_ANY_CASE_PATTERN as UUID_ANY_CASE,
 } from "@qorpera/contracts";
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import {
@@ -117,8 +119,6 @@ export const COMPANY_STATE_NAME_MAX_CHARS = 64;
  * rules a parse was made under. */
 export const COMPANY_STATE_PARSER_VERSION = 1;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const UUID_ANY_CASE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const KEY = /^[a-z][a-z0-9_]*$/;
 /** Characters a one-line value never holds: C0 and C1 controls (tab included, as Postgres

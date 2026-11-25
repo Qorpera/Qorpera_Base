@@ -2,15 +2,16 @@ import { setTimeout } from "node:timers/promises";
 import {
 	type CloudCodingPullRequest,
 	type CloudCodingRepository,
+	isRecord,
 	parseCloudCodingPullRequest,
 	parseCloudCodingRepository,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import { type AppAutoRedeployHooks, parseAppDeployConfig, runPostLandAppAutoRedeploy } from "./app-auto-redeploy.ts";
 import type { CompanyMachineSecretsManager } from "./company-machine-secrets.ts";
 import type { SurfacePreviewBuildOutcome, SurfacePreviewRecipe } from "./surface-preview-runner.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
 const PREVIEW_BUILDER_KIND = "surface-preview-build";
 /** Failure-path cleanup: the custody lookups (normally well under a second)
@@ -368,11 +369,11 @@ export interface CodingPreviewBuild {
 }
 
 export function parseCodingPreviewBuild(value: unknown): CodingPreviewBuild {
-	const item = record(value, "Invalid preview build");
-	const recipe = record(item.recipe, "Invalid preview build");
+	const item = codingRecord(value, "Invalid preview build");
+	const recipe = codingRecord(item.recipe, "Invalid preview build");
 	if (
 		typeof item.buildId !== "string" ||
-		!UUID.test(item.buildId) ||
+		!UUID_PATTERN.test(item.buildId) ||
 		typeof item.commitSha !== "string" ||
 		!SHA40.test(item.commitSha) ||
 		typeof item.treeSha !== "string" ||
@@ -504,9 +505,9 @@ export interface CodingExecutorHost {
 	): Promise<CodingAutoRedeployContext | null>;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
-	return value as Record<string, unknown>;
+function codingRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(label);
+	return value;
 }
 function text(value: unknown, maximum = 8192): string {
 	if (typeof value !== "string" || Buffer.byteLength(value) > maximum) throw new Error("Invalid coding claim");
@@ -517,12 +518,12 @@ function optionalText(value: unknown, maximum = 8192): string | null {
 }
 
 export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
-	const item = record(value, "Invalid coding claim");
-	const dispatch = record(item.dispatch, "Invalid coding claim");
+	const item = codingRecord(value, "Invalid coding claim");
+	const dispatch = codingRecord(item.dispatch, "Invalid coding claim");
 	if (
 		item.schema !== "qorpera.coding-session-claim/v1" ||
 		![item.workerId, item.leaseToken, item.profileId, item.environmentId, item.agentId, item.ownerUserId].every(
-			(id) => typeof id === "string" && UUID.test(id),
+			(id) => typeof id === "string" && UUID_PATTERN.test(id),
 		) ||
 		typeof item.leaseUntil !== "string" ||
 		!Number.isFinite(Date.parse(item.leaseUntil)) ||
@@ -539,12 +540,12 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		throw new Error("Invalid coding claim");
 	let surfaceSession: CodingSurfaceSessionClaim | undefined;
 	if (item.surfaceSession !== undefined && item.surfaceSession !== null) {
-		const rawSurface = record(item.surfaceSession, "Invalid coding claim");
+		const rawSurface = codingRecord(item.surfaceSession, "Invalid coding claim");
 		if (
 			typeof rawSurface.sessionId !== "string" ||
-			!UUID.test(rawSurface.sessionId) ||
+			!UUID_PATTERN.test(rawSurface.sessionId) ||
 			typeof rawSurface.surfaceId !== "string" ||
-			!UUID.test(rawSurface.surfaceId) ||
+			!UUID_PATTERN.test(rawSurface.surfaceId) ||
 			typeof rawSurface.slug !== "string" ||
 			!/^[a-z0-9][a-z0-9-]{0,63}$/.test(rawSurface.slug) ||
 			typeof rawSurface.title !== "string" ||
@@ -596,7 +597,7 @@ const PICTURE_PATH =
 
 export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 	if (value === null || value === undefined) return null;
-	const item = record(value, "Invalid coding submission");
+	const item = codingRecord(value, "Invalid coding submission");
 	if (
 		item.schema !== "qorpera.coding-submission/v1" ||
 		item.state !== "submitted" ||
@@ -634,9 +635,9 @@ export function parseCodingTurnState(
 	value: unknown,
 	claim: Pick<CodingSessionClaim, "workerId" | "sequence" | "repository">,
 ): CodingTurnState {
-	const item = record(value, "Invalid coding turn state");
+	const item = codingRecord(value, "Invalid coding turn state");
 	const optionalUuid = (v: unknown) =>
-		v === null || v === undefined ? null : UUID.test(String(v)) ? String(v) : undefined;
+		v === null || v === undefined ? null : UUID_PATTERN.test(String(v)) ? String(v) : undefined;
 	const vmAllocationId = optionalUuid(item.vmAllocationId);
 	const storageVolumeId = optionalUuid(item.storageVolumeId);
 	const occurrenceId = optionalUuid(item.occurrenceId);
@@ -646,7 +647,7 @@ export function parseCodingTurnState(
 		item.workerId !== claim.workerId ||
 		item.sequence !== claim.sequence ||
 		typeof item.turnId !== "string" ||
-		!UUID.test(item.turnId) ||
+		!UUID_PATTERN.test(item.turnId) ||
 		typeof item.phase !== "string" ||
 		typeof item.workerState !== "string" ||
 		[vmAllocationId, storageVolumeId, occurrenceId, runId].includes(undefined) ||
@@ -953,7 +954,7 @@ export class CloudCodingExecutor {
 							}
 							continue;
 						}
-						const view = record(answer, "Coding completion unconfirmed");
+						const view = codingRecord(answer, "Coding completion unconfirmed");
 						if (view.workerId !== claimed.workerId) throw new Error("Coding completion unconfirmed");
 						return;
 					}
@@ -979,7 +980,7 @@ export class CloudCodingExecutor {
 					});
 				};
 				const checkBuild = async () =>
-					record(await again("qorpera_check_surface_preview_build", args), "Preview build check unconfirmed")
+					codingRecord(await again("qorpera_check_surface_preview_build", args), "Preview build check unconfirmed")
 						.state;
 				if (claimed.previewBuilder) {
 					const held = await checkBuild();
@@ -1056,7 +1057,7 @@ export class CloudCodingExecutor {
 					return "deferred";
 				}
 				if (claimed.previewBuilder) {
-					const begun = record(
+					const begun = codingRecord(
 						await again("qorpera_begin_surface_preview_build", args),
 						"Preview build begin unconfirmed",
 					);
@@ -1117,7 +1118,7 @@ export class CloudCodingExecutor {
 							},
 						],
 					});
-					begun = record(
+					begun = codingRecord(
 						await again("qorpera_begin_coding_turn", admission, admitBy),
 						"Coding turn admission unconfirmed",
 					);

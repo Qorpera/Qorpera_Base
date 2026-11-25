@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { isRecord } from "@qorpera/contracts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
@@ -145,9 +146,9 @@ async function sha256Hex(text: string): Promise<string> {
 
 const CONNECTOR_IDS = new Set<string>([...HOSTED_CONNECTORS.map((connector) => connector.id), "bank"]);
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}.`);
-	return value as Record<string, unknown>;
+function connectorRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(`Invalid ${label}.`);
+	return value;
 }
 
 function text(value: unknown, label: string): string {
@@ -158,7 +159,7 @@ function text(value: unknown, label: string): string {
 export function parseConnectorConnections(value: unknown): HostedConnectorConnection[] {
 	if (!Array.isArray(value)) throw new Error("Invalid connections.");
 	return value.map((item) => {
-		const input = record(item, "connection");
+		const input = connectorRecord(item, "connection");
 		if (input.schema !== "qorpera.cloud-secret-descriptor/v1") throw new Error("Invalid connection.");
 		const status = input.status === "revoked" ? "revoked" : "active";
 		return {
@@ -184,7 +185,7 @@ export function parseConnectorConnections(value: unknown): HostedConnectorConnec
 }
 
 function parseTicket(value: unknown): HostedConnectorCaptureTicket {
-	const input = record(value, "capture ticket");
+	const input = connectorRecord(value, "capture ticket");
 	if (input.schema !== "qorpera.cloud-secret-capture/v1") throw new Error("Invalid capture ticket.");
 	const origin = new URL(text(input.serviceOrigin, "broker origin"));
 	if (origin.protocol !== "https:" || origin.origin !== origin.href.replace(/\/$/, ""))
@@ -460,7 +461,7 @@ export function createWebConnectors(
 			// This tab's proof: only its hash goes to the broker now; the proof
 			// itself only with the confirmation after the provider sends us back.
 			const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
-			const started = record(
+			const started = connectorRecord(
 				await capture.post(
 					`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
 					{

@@ -1,5 +1,5 @@
 import { createPrivateKey } from "node:crypto";
-import { POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
+import { POSTGRES_UUID_PATTERN, parseRecord } from "@qorpera/contracts";
 import { type DigitalPostApp, DigitalPostClient, parseDigitalPostApp } from "./cloud-connector-digital-post.ts";
 import { type EnableBankingApp, EnableBankingClient } from "./cloud-connector-enable-banking.ts";
 import { createGitHubConnectorAdapters } from "./cloud-connector-github.ts";
@@ -62,14 +62,9 @@ export interface CloudConnectorService {
 	readonly digitalPostPdfText?: DigitalPostPdfTextReader;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 function client(value: unknown, label: string): GoogleOAuthClient | undefined {
 	if (value === undefined) return undefined;
-	const input = record(value, label);
+	const input = parseRecord(value, label);
 	if (
 		Object.keys(input).sort().join() !== "clientId,clientSecret" ||
 		typeof input.clientId !== "string" ||
@@ -83,7 +78,7 @@ function client(value: unknown, label: string): GoogleOAuthClient | undefined {
 
 function enableBankingApp(value: unknown): EnableBankingApp | undefined {
 	if (value === undefined) return undefined;
-	const input = record(value, "Enable Banking application");
+	const input = parseRecord(value, "Enable Banking application");
 	if (
 		Object.keys(input).sort().join() !== "applicationId,privateKeyPem" ||
 		typeof input.applicationId !== "string" ||
@@ -104,7 +99,7 @@ function enableBankingApp(value: unknown): EnableBankingApp | undefined {
 }
 
 export function parseCloudConnectorServiceConfig(text: string): CloudConnectorServiceConfig {
-	const input = record(JSON.parse(text), "Cloud connector service configuration");
+	const input = parseRecord(JSON.parse(text), "Cloud connector service configuration");
 	const keys = Object.keys(input).sort();
 	if (
 		input.schema !== "qorpera.cloud-connector-service/v1" ||

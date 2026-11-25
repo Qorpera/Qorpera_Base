@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import type { JsonValue } from "@qorpera/contracts";
+import { isRecord, type JsonValue, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
@@ -108,7 +108,6 @@ import {
 	cloudVaultFailureClass,
 } from "./cloud-vault-database-failure.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
 const IDENTIFIER = /^[a-z][a-z0-9_-]{0,63}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -127,16 +126,11 @@ const GIT_RELAY_IDLE_MS = 2 * 60_000;
 /** The request headers an MCP client's streamable HTTP needs, the only ones the relay passes on. */
 const MCP_RELAY_HEADERS = ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"];
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.getPrototypeOf(value) !== Object.prototype
-	) {
+function plainRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value) || Object.getPrototypeOf(value) !== Object.prototype) {
 		throw new Error(`${label} is invalid`);
 	}
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function exact(value: Record<string, unknown>, keys: readonly string[], label: string): void {
@@ -160,7 +154,7 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 }
 
 function parseFields(value: unknown): Record<string, string> {
-	const input = record(value, "Cloud secret fields");
+	const input = plainRecord(value, "Cloud secret fields");
 	if (Object.keys(input).length < 1 || Object.keys(input).length > 16)
 		throw new Error("Cloud secret fields are invalid");
 	const output: Record<string, string> = {};
@@ -174,7 +168,7 @@ function parseFields(value: unknown): Record<string, string> {
 }
 
 function parseCapture(value: unknown, ticketId: string): CloudSecretCaptureRequest {
-	const input = record(value, "Cloud secret capture request");
+	const input = plainRecord(value, "Cloud secret capture request");
 	exact(input, ["schema", "captureCapability", "fields"], "Cloud secret capture request");
 	if (
 		input.schema !== "qorpera.cloud-secret-capture-request/v1" ||
@@ -186,7 +180,7 @@ function parseCapture(value: unknown, ticketId: string): CloudSecretCaptureReque
 }
 
 function parseOperation(value: unknown): CloudSecretOperationRequest {
-	const input = record(value, "Cloud secret operation request");
+	const input = plainRecord(value, "Cloud secret operation request");
 	exact(
 		input,
 		[
@@ -245,7 +239,7 @@ function parseOperation(value: unknown): CloudSecretOperationRequest {
 }
 
 function parseRepositoryCredentialRequest(value: unknown): CodingRepositoryCredentialRequest {
-	const input = record(value, "Coding repository credential request");
+	const input = plainRecord(value, "Coding repository credential request");
 	exact(
 		input,
 		["schema", "workerId", "leaseToken", "executorOwner", "repository"],
@@ -262,7 +256,7 @@ function parseRepositoryCredentialRequest(value: unknown): CodingRepositoryCrede
 }
 
 function parseCodingEnvironmentHttpRequest(value: unknown): CodingEnvironmentRequest {
-	const input = record(value, "Coding environment request");
+	const input = plainRecord(value, "Coding environment request");
 	exact(input, ["schema", "workerId", "leaseToken", "executorOwner"], "Coding environment request");
 	if (input.schema !== "qorpera.coding-environment-request/v1")
 		throw new Error("Coding environment request is invalid");
@@ -274,7 +268,7 @@ function parseCodingEnvironmentHttpRequest(value: unknown): CodingEnvironmentReq
 }
 
 function parseAppSecretsHttpRequest(value: unknown): AppSecretsRequest {
-	const input = record(value, "App secrets request");
+	const input = plainRecord(value, "App secrets request");
 	const allowed = ["schema", "siteId", "scope", "targetEnv", "executorOwner", "machineIdSha256", "deploymentId"];
 	const required = ["schema", "siteId", "scope", "targetEnv", "executorOwner", "machineIdSha256"];
 	if (
@@ -414,7 +408,7 @@ function relayAnswerHeader(answer: IncomingMessage, name: string): string | unde
 }
 
 function parseModelLoginRequest(value: unknown): ModelLoginIssueRequest {
-	const input = record(value, "Model login request");
+	const input = plainRecord(value, "Model login request");
 	exact(input, ["schema", "binding", "knownVersion"], "Model login request");
 	if (
 		input.schema !== "qorpera.model-login-request/v1" ||
@@ -428,7 +422,7 @@ function parseModelLoginRequest(value: unknown): ModelLoginIssueRequest {
 }
 
 function parseClaudeLoginOpenRequest(value: unknown): { binding: ModelLoginRunBinding; knownVersion?: number } {
-	const input = record(value, "Claude login request");
+	const input = plainRecord(value, "Claude login request");
 	exact(
 		input,
 		input.knownVersion === undefined ? ["schema", "binding"] : ["schema", "binding", "knownVersion"],
@@ -455,7 +449,7 @@ function parseClaudeLoginSealRequest(value: unknown): {
 	baseEnvelopeSha256: string;
 	files: Record<string, string>;
 } {
-	const input = record(value, "Claude login seal-back");
+	const input = plainRecord(value, "Claude login seal-back");
 	exact(
 		input,
 		["schema", "binding", "claudeLoginId", "baseVersion", "baseEnvelopeSha256", "files"],
@@ -485,7 +479,7 @@ function parseGeminiKeySaveRequest(
 	value: unknown,
 	ticketId: string,
 ): { ticketId: string; capability: string; apiKey: string } {
-	const input = record(value, "Gemini key save request");
+	const input = plainRecord(value, "Gemini key save request");
 	exact(input, ["schema", "capability", "apiKey"], "Gemini key save request");
 	if (
 		input.schema !== "qorpera.gemini-key-save-request/v1" ||
@@ -499,7 +493,7 @@ function parseGeminiKeySaveRequest(
 }
 
 function parseGeminiKeyCheckRequest(value: unknown, ticketId: string): { ticketId: string; capability: string } {
-	const input = record(value, "Gemini key check request");
+	const input = plainRecord(value, "Gemini key check request");
 	exact(input, ["schema", "capability"], "Gemini key check request");
 	if (
 		input.schema !== "qorpera.gemini-key-check-request/v1" ||
@@ -511,14 +505,14 @@ function parseGeminiKeyCheckRequest(value: unknown, ticketId: string): { ticketI
 }
 
 function parseGeminiKeyOpenRequest(value: unknown): ModelLoginRunBinding {
-	const input = record(value, "Gemini key open request");
+	const input = plainRecord(value, "Gemini key open request");
 	exact(input, ["schema", "binding"], "Gemini key open request");
 	if (input.schema !== "qorpera.gemini-key-open-request/v1") throw new Error("Gemini key open request is invalid");
 	return parseModelLoginRunBinding(input.binding);
 }
 
 function parseModelLogin(value: unknown): ModelLoginIssue {
-	const input = record(value, "Model login");
+	const input = plainRecord(value, "Model login");
 	// A ChatGPT plan login: the access token alone (null while the host holds this version).
 	if (input.loginKind !== undefined) {
 		exact(input, ["schema", "loginKind", "version", "accessExpiresAt", "accessToken"], "Model login");
@@ -562,7 +556,7 @@ function parseModelLogin(value: unknown): ModelLoginIssue {
 }
 
 function parseContent(value: unknown): CloudToolContent {
-	const input = record(value, "Cloud secret broker response");
+	const input = plainRecord(value, "Cloud secret broker response");
 	exact(input, ["kind", "value"], "Cloud secret broker response");
 	if ((input.kind !== "text" && input.kind !== "json") || (input.kind === "text" && typeof input.value !== "string"))
 		throw new Error("Cloud secret broker response is invalid");
@@ -576,9 +570,9 @@ function parseOAuthStart(value: unknown): {
 	browserProofSha256: string;
 	bank?: CloudBankChoice;
 } {
-	const input = record(value, "Connector authorization start");
+	const input = plainRecord(value, "Connector authorization start");
 	// A bank connection also names the bank the member picked; the flows check it.
-	const bank = Object.hasOwn(input, "bank") ? record(input.bank, "Connector authorization start") : undefined;
+	const bank = Object.hasOwn(input, "bank") ? plainRecord(input.bank, "Connector authorization start") : undefined;
 	exact(
 		input,
 		["schema", "captureCapability", "returnTo", "browserProofSha256", ...(bank ? ["bank"] : [])],
@@ -604,7 +598,7 @@ function parseOAuthStart(value: unknown): {
 }
 
 function parseOAuthConfirm(value: unknown): { confirmation: string; browserProof: string } {
-	const input = record(value, "Connector authorization confirmation");
+	const input = plainRecord(value, "Connector authorization confirmation");
 	exact(input, ["schema", "confirmation", "browserProof"], "Connector authorization confirmation");
 	if (
 		input.schema !== "qorpera.cloud-connector-oauth-confirm/v1" ||
@@ -1189,7 +1183,7 @@ export class HttpCloudSecretBrokerService {
 				return;
 			}
 			if (emailDraft && UUID.test(emailDraft[1])) {
-				const input = record(await readRequest(request), "Email draft action");
+				const input = plainRecord(await readRequest(request), "Email draft action");
 				exact(input, ["schema", "capability"], "Email draft action");
 				if (input.schema !== "qorpera.email-draft-action/v1" || typeof input.capability !== "string")
 					throw new Error("Email draft action invalid");
@@ -1444,7 +1438,7 @@ export class HttpCloudSecretBrokerService {
 			// callback Edge Function. The state is the only authority; the answer is a one-time confirmation
 			// id the Edge Function hands the returning browser (in the page fragment), never a code or token.
 			if (planCallback && UUID.test(planCallback[1]) && scope.modelLoginSignIns !== undefined) {
-				const input = record(await readRequest(request), "ChatGPT plan callback");
+				const input = plainRecord(await readRequest(request), "ChatGPT plan callback");
 				exact(input, ["schema", "state", "code", "error", "clientId"], "ChatGPT plan callback");
 				if (input.schema !== "qorpera.chatgpt-plan-callback/v1")
 					throw new Error("ChatGPT plan callback is invalid");
@@ -2236,7 +2230,7 @@ export async function openClaudeLoginForRun(
 > {
 	if (knownVersion !== undefined && (!Number.isSafeInteger(knownVersion) || knownVersion < 1))
 		throw new Error("Claude login version is invalid");
-	const answer = record(
+	const answer = plainRecord(
 		await claudeLoginCall(
 			options,
 			"open",
@@ -2354,7 +2348,7 @@ export async function sealClaudeLoginBack(
 		return { state: "unchanged", opened: request.opened };
 	const files: Record<string, string> = {};
 	for (const [name, bytes] of request.files) files[name] = Buffer.from(bytes).toString("base64");
-	const answer = record(
+	const answer = plainRecord(
 		await claudeLoginCall(
 			options,
 			"seal",
@@ -2466,7 +2460,7 @@ export async function openGeminiKeyForRun(
 			25_000,
 			signal,
 		);
-		const answer = record(raw, "Gemini key");
+		const answer = plainRecord(raw, "Gemini key");
 		if (answer.schema !== "qorpera.gemini-key-for-run/v1") throw new Error("Gemini key is invalid");
 		if (answer.state === "refused") {
 			if (answer.reason === "REVOKED") {

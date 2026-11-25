@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
+import { isRecord, UUID_ANY_CASE_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
 import { SupabaseCloudRunnerControlTransport } from "@qorpera/runtime/cloud-runner-control";
 import { HttpNativeProviderComputerBridge, type NativeProviderExecutionBoundary } from "./cloud-native-provider.ts";
 import { HttpCloudRunnerAssignmentInbox } from "./cloud-runner-assignment-inbox.ts";
@@ -19,7 +20,6 @@ const NATIVE_BRIDGE_CREDENTIAL_NAME = "qorpera-native-bridge";
 const ASSIGNMENT_CREDENTIAL_NAME = "qorpera-runner-assignment";
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_BYTES = 256;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export interface EphemeralCloudRunnerServiceConfig {
@@ -59,9 +59,9 @@ export interface RunEphemeralCloudRunnerServiceOptions {
 	runWorker?: (worker: EphemeralCloudRunnerWorker, signal: AbortSignal) => Promise<void>;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
-	return value as Record<string, unknown>;
+function configObject(value: unknown, label: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(`${label} must be an object`);
+	return value;
 }
 
 function exactKeys(input: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -92,7 +92,7 @@ function optionalInteger(value: unknown, label: string, minimum: number, maximum
 
 function environment(value: unknown): Readonly<Record<string, string>> {
 	if (value === undefined) return Object.freeze({});
-	const input = record(value, "Runner environment");
+	const input = configObject(value, "Runner environment");
 	const parsed: Record<string, string> = {};
 	for (const [key, entry] of Object.entries(input)) {
 		if (
@@ -111,7 +111,7 @@ function environment(value: unknown): Readonly<Record<string, string>> {
 
 function limits(value: unknown): Partial<CloudRunnerSandboxLimits> | undefined {
 	if (value === undefined) return undefined;
-	const input = record(value, "Runner limits");
+	const input = configObject(value, "Runner limits");
 	exactKeys(
 		input,
 		[
@@ -153,7 +153,7 @@ function limits(value: unknown): Partial<CloudRunnerSandboxLimits> | undefined {
 }
 
 export function parseEphemeralCloudRunnerServiceConfig(value: unknown): EphemeralCloudRunnerServiceConfig {
-	const input = record(value, "Runner service configuration");
+	const input = configObject(value, "Runner service configuration");
 	// `image`, `podman_path`, `entrypoint`, `capabilities` and `job_types` configured the removed Podman lane (legacy
 	// sweep step C, C-R1). Providers still write them, so they are accepted and ignored.
 	exactKeys(

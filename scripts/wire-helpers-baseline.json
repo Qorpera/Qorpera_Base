@@ -1,8 +1,8 @@
 {
 	"cloud-client": {
-		"uuidPatterns": 15,
-		"recordHelpers": 8,
-		"uuidHelpers": 5,
+		"uuidPatterns": 0,
+		"recordHelpers": 0,
+		"uuidHelpers": 0,
 		"sha256Helpers": 0
 	},
 	"contracts": {
@@ -12,27 +12,27 @@
 		"sha256Helpers": 0
 	},
 	"object-gateway": {
-		"uuidPatterns": 1,
-		"recordHelpers": 3,
+		"uuidPatterns": 0,
+		"recordHelpers": 0,
 		"uuidHelpers": 0,
 		"sha256Helpers": 0
 	},
 	"runner-orchestrator": {
-		"uuidPatterns": 32,
-		"recordHelpers": 14,
-		"uuidHelpers": 4,
-		"sha256Helpers": 4
+		"uuidPatterns": 0,
+		"recordHelpers": 0,
+		"uuidHelpers": 0,
+		"sha256Helpers": 0
 	},
 	"runtime": {
-		"uuidPatterns": 57,
-		"recordHelpers": 27,
-		"uuidHelpers": 11,
-		"sha256Helpers": 3
+		"uuidPatterns": 0,
+		"recordHelpers": 0,
+		"uuidHelpers": 0,
+		"sha256Helpers": 0
 	},
 	"web": {
-		"uuidPatterns": 2,
-		"recordHelpers": 7,
-		"uuidHelpers": 3,
+		"uuidPatterns": 0,
+		"recordHelpers": 0,
+		"uuidHelpers": 0,
 		"sha256Helpers": 0
 	}
 }

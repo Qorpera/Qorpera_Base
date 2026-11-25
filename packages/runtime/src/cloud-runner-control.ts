@@ -18,12 +18,12 @@ import {
 	optionalUuid,
 	parseCloudRunner,
 	parseCloudRunnerJob,
-	record,
 	requiredToken,
 	runnerActivationTokenSha256,
+	runnerRecord,
+	runnerUuid,
 	SHA256_PATTERN,
 	UUID_PATTERN,
-	uuid,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
 import { type CloudRunnerBrokerTransport, CloudRunnerJobBroker, type CloudRunnerStart } from "./cloud-runner-broker.ts";
@@ -147,8 +147,11 @@ function storedJob(job: CloudRunnerJob): JsonValue {
 }
 
 function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRunnerAuthority {
-	const input = record(value, "authority state");
-	if (input.schema !== "qorpera.runner-authority/v3" || uuid(input.runner_id, "authority runner id") !== runnerId) {
+	const input = runnerRecord(value, "authority state");
+	if (
+		input.schema !== "qorpera.runner-authority/v3" ||
+		runnerUuid(input.runner_id, "authority runner id") !== runnerId
+	) {
 		throw new Error("Runner authority state has an invalid identity");
 	}
 	const activationToken = optionalToken(input.activation_token, "activation token");
@@ -156,18 +159,18 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 	const pendingActivationToken = optionalToken(input.pending_activation_token, "pending activation token");
 	let pendingHeartbeat: PendingHeartbeat | undefined;
 	if (input.pending_heartbeat !== null && input.pending_heartbeat !== undefined) {
-		const pending = record(input.pending_heartbeat, "pending heartbeat");
+		const pending = runnerRecord(input.pending_heartbeat, "pending heartbeat");
 		pendingHeartbeat = {
 			nextToken: stateToken(pending.next_token, "pending heartbeat token"),
-			renewalId: uuid(pending.renewal_id, "pending heartbeat renewal id"),
+			renewalId: runnerUuid(pending.renewal_id, "pending heartbeat renewal id"),
 		};
 	}
 	let pendingAssignment: PendingAssignment | undefined;
 	if (input.pending_assignment !== null && input.pending_assignment !== undefined) {
-		const pending = record(input.pending_assignment, "pending assignment");
+		const pending = runnerRecord(input.pending_assignment, "pending assignment");
 		pendingAssignment = {
-			assignmentId: uuid(pending.assignment_id, "pending assignment id"),
-			jobId: uuid(pending.job_id, "pending assignment job id"),
+			assignmentId: runnerUuid(pending.assignment_id, "pending assignment id"),
+			jobId: runnerUuid(pending.job_id, "pending assignment job id"),
 			capability: stateToken(pending.capability, "pending assignment capability"),
 		};
 	}
@@ -181,15 +184,15 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 	const runner = input.runner === null || input.runner === undefined ? undefined : parseCloudRunner(input.runner);
 	if (!Array.isArray(input.leases)) throw new Error("Runner authority state contains invalid leases");
 	const leases = input.leases.map((value): ActiveRunnerLease => {
-		const lease = record(value, "stored lease");
+		const lease = runnerRecord(value, "stored lease");
 		const job = parseCloudRunnerJob(lease.job);
 		let pendingCompletion: CloudRunnerCompletion | undefined;
 		if (lease.pending_completion !== null && lease.pending_completion !== undefined) {
-			const pending = record(lease.pending_completion, "stored completion");
+			const pending = runnerRecord(lease.pending_completion, "stored completion");
 			pendingCompletion = {
 				result: objectJson(pending.result, "stored completion result"),
 				...(optionalUuid(pending.output_snapshot_id, "stored completion snapshot id")
-					? { outputSnapshotId: uuid(pending.output_snapshot_id, "stored completion snapshot id") }
+					? { outputSnapshotId: runnerUuid(pending.output_snapshot_id, "stored completion snapshot id") }
 					: {}),
 			};
 		}
@@ -207,7 +210,7 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 	const recoveries = input.recoveries === undefined ? [] : input.recoveries;
 	if (!Array.isArray(recoveries)) throw new Error("Runner recovery state is invalid");
 	const parsedRecoveries = recoveries.map((value): CloudRunnerRecovery => {
-		const recovery = record(value, "recovery record");
+		const recovery = runnerRecord(value, "recovery record");
 		const job = parseCloudRunnerJob(recovery.job);
 		if (
 			job.runnerId !== runnerId ||
@@ -219,7 +222,7 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 			throw new Error("Runner recovery identity is invalid");
 		let completion: CloudRunnerCompletion | undefined;
 		if (recovery.completion !== null && recovery.completion !== undefined) {
-			const pending = record(recovery.completion, "recovery completion");
+			const pending = runnerRecord(recovery.completion, "recovery completion");
 			const snapshot = optionalUuid(pending.outputSnapshotId, "recovery snapshot");
 			completion = {
 				result: objectJson(pending.result, "recovery result"),
@@ -279,7 +282,7 @@ export interface DisposableCloudRunnerSnapshot {
 }
 
 function parseFailure(value: unknown): CloudRunnerFailure {
-	const failure = record(value, "staged failure");
+	const failure = runnerRecord(value, "staged failure");
 	if (
 		typeof failure.error !== "string" ||
 		!failure.error.trim() ||
@@ -552,7 +555,7 @@ export class DisposableCloudRunner {
 		let started: CloudRunnerStart | undefined;
 		let accepted = value;
 		if (start) {
-			const receipt = record(value, "runner start");
+			const receipt = runnerRecord(value, "runner start");
 			const description = receipt.description ?? undefined;
 			const nativeAuthority = receipt.native_authority ?? undefined;
 			if (
@@ -875,7 +878,7 @@ export class DisposableCloudRunner {
 		if (action === "complete") {
 			// The server appends its own durable publication receipts. Compare
 			// the exact submitted result, allowing only those two reserved fields.
-			const echoed = { ...record(job.result, "completion result") };
+			const echoed = { ...runnerRecord(job.result, "completion result") };
 			delete echoed.output_substrate;
 			delete echoed.company_file;
 			if (!isDeepStrictEqual(echoed, (extra as CloudRunnerCompletion).result)) {
@@ -1007,7 +1010,7 @@ export class SupabaseCloudRunnerControlTransport implements CloudRunnerControlTr
 				} catch {
 					throw new Error("Runner control returned invalid JSON");
 				}
-				const envelope = record(value, "response");
+				const envelope = runnerRecord(value, "response");
 				return envelope.value;
 			},
 			this.#requestTimeoutMs,

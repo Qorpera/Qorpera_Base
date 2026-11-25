@@ -102,7 +102,6 @@ export interface CloudMachineCodingValues {
 // operations (exactly once per operationKey); stopping and deleting are
 // desired states the machine's executor carries out.
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 /** How long machine_run's start may take, in all, with its sends again: the limit of one tool request. */
@@ -449,7 +448,8 @@ export function cloudMachineTools(options: {
 	};
 	const find = async (name: string, signal: AbortSignal): Promise<MachineView | undefined> =>
 		(await list(signal)).find(
-			(machine) => machine.name === name && typeof machine.machineId === "string" && UUID.test(machine.machineId),
+			(machine) =>
+				machine.name === name && typeof machine.machineId === "string" && UUID_PATTERN.test(machine.machineId),
 		);
 	const refused = (reason: string, message: string, extra: Record<string, JsonValue> = {}) => ({
 		kind: "text" as const,
@@ -737,7 +737,7 @@ export function cloudMachineTools(options: {
 	};
 	const operationKey = { type: "string", pattern: KEY.source };
 	const machineName = { type: "string", pattern: NAME.source };
-	const commandId = { type: "string", pattern: UUID.source };
+	const commandId = { type: "string", pattern: UUID_PATTERN.source };
 
 	const start: CloudNativeTool = {
 		name: "machine_start" satisfies CloudRuntimeToolOperation,
@@ -1327,7 +1327,7 @@ export function cloudMachineTools(options: {
 			const input = closed(value, ["operationKey", "machine", "commandId"]);
 			key(input.operationKey);
 			name(input.machine);
-			if (typeof input.commandId !== "string" || !UUID.test(input.commandId))
+			if (typeof input.commandId !== "string" || !UUID_PATTERN.test(input.commandId))
 				throw new Error("Invalid command handle");
 			return input;
 		},

@@ -12,7 +12,7 @@ import {
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderFileEntry,
-	sha256,
+	sha256Hex,
 } from "./cloud-company-folder-client.ts";
 import { invalidMessage } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -204,7 +204,7 @@ export class CloudFolderRoutineDecision {
 		) {
 			const settled = this.#settled(located);
 			const output = String(settled.content.value);
-			const outputSha256 = sha256(new TextEncoder().encode(output));
+			const outputSha256 = sha256Hex(new TextEncoder().encode(output));
 			await this.#folder.release(
 				releaseIdFor(this.#identity.runId, context.callId, outputSha256),
 				[
@@ -370,7 +370,7 @@ export class CloudFolderRoutineDecision {
 								fileSha256: found.entry.file.fileSha256,
 							},
 						],
-						sha256(new TextEncoder().encode(output)),
+						sha256Hex(new TextEncoder().encode(output)),
 						performSignal,
 					);
 				return { content: { kind: "text", value: output }, folderCommitId: committed.commitId };

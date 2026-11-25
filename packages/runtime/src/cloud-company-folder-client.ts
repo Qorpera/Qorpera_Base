@@ -7,7 +7,7 @@ import {
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
-import type { CloudCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, isRecord, POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import {
 	type CloudCompanyPathControl,
@@ -37,7 +37,6 @@ import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
  * company row); until then the object store refuses a folder-v2 run's uploads and downloads (C1c-1).
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 /** The commit's rule for an operation key (C1B §4: unique within the run). */
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{8,200}$/;
@@ -960,7 +959,7 @@ const nullableString = (value: unknown): value is string | null => value === nul
 
 /** One worker of the worker index (`qorpera_worker_view` with its folder), checked key by key. */
 function folderWorker(value: unknown): CloudCompanyFolderWorker {
-	const worker = record(
+	const worker = folderRecord(
 		value,
 		[
 			"workerKey",
@@ -987,7 +986,7 @@ function folderWorker(value: unknown): CloudCompanyFolderWorker {
 					: null,
 			)
 		: null;
-	const decision = worker.decision === null ? null : record(worker.decision, ["decision", "note", "at"]);
+	const decision = worker.decision === null ? null : folderRecord(worker.decision, ["decision", "note", "at"]);
 	if (
 		typeof worker.workerKey !== "string" ||
 		typeof worker.title !== "string" ||
@@ -1029,16 +1028,18 @@ function folderWorker(value: unknown): CloudCompanyFolderWorker {
 	};
 }
 
-function record(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
+function folderRecord(
+	value: unknown,
+	keys: readonly string[],
+	optional: readonly string[] = [],
+): Record<string, unknown> {
 	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
+		!isRecord(value) ||
 		keys.some((key) => !Object.hasOwn(value, key)) ||
 		Object.keys(value).some((key) => !keys.includes(key) && !optional.includes(key))
 	)
 		invalid();
-	return value as Record<string, unknown>;
+	return value;
 }
 
 function counter(value: unknown): number {
@@ -1046,7 +1047,7 @@ function counter(value: unknown): number {
 	return value as number;
 }
 
-function uuid(value: unknown): string {
+function folderUuid(value: unknown): string {
 	if (typeof value !== "string" || !UUID.test(value)) invalid();
 	return value;
 }
@@ -1065,7 +1066,7 @@ function lookTime(value: unknown): string | null {
  * when there is one, at most 10 shown and never more than there are, each with at least one change main lacks and no
  * more than all of them. */
 function importLines(value: unknown, kept: number): NonNullable<CloudCompanyCodeImportLook["lines"]> {
-	const lines = record(value, ["count", "changes", "shown"]);
+	const lines = folderRecord(value, ["count", "changes", "shown"]);
 	const count = counter(lines.count);
 	const changes = counter(lines.changes);
 	if (
@@ -1076,7 +1077,7 @@ function importLines(value: unknown, kept: number): NonNullable<CloudCompanyCode
 	)
 		invalid();
 	const shown = lines.shown.map((item) => {
-		const line = record(item, ["name", "ahead", "behind", "lastAt", "fits"]);
+		const line = folderRecord(item, ["name", "ahead", "behind", "lastAt", "fits"]);
 		const ahead = counter(line.ahead);
 		if (
 			!nullableString(line.name) ||
@@ -1100,7 +1101,7 @@ function importLines(value: unknown, kept: number): NonNullable<CloudCompanyCode
  * reads it: at most 10 refused paths and 30 key-like strings, each path a string or null, and `fits` exactly when
  * nothing stops it. `lines` is optional: a look from before 20260930741000 has none. */
 function importLook(value: unknown): CloudCompanyCodeImportLook {
-	const look = record(
+	const look = folderRecord(
 		value,
 		[
 			"schema",
@@ -1127,15 +1128,15 @@ function importLook(value: unknown): CloudCompanyCodeImportLook {
 		["lines"],
 	);
 	const pair = (part: unknown) => {
-		const counts = record(part, ["seen", "kept"]);
+		const counts = folderRecord(part, ["seen", "kept"]);
 		return { seen: counter(counts.seen), kept: counter(counts.kept) };
 	};
 	const branches = pair(look.branches);
 	const lines = Object.hasOwn(look, "lines") ? importLines(look.lines, branches.kept) : undefined;
-	const biggest = record(look.biggest, ["path", "bytes"]);
-	const refused = record(look.refused, ["code", "paths", "more"]);
-	const secrets = record(look.secrets, ["found", "shown", "scan"]);
-	const scan = record(secrets.scan, ["blobs", "bytes", "all"]);
+	const biggest = folderRecord(look.biggest, ["path", "bytes"]);
+	const refused = folderRecord(look.refused, ["code", "paths", "more"]);
+	const secrets = folderRecord(look.secrets, ["found", "shown", "scan"]);
+	const scan = folderRecord(secrets.scan, ["blobs", "bytes", "all"]);
 	if (
 		look.schema !== "qorpera.code-import-look/v1" ||
 		!nullableString(look.defaultBranch) ||
@@ -1155,12 +1156,12 @@ function importLook(value: unknown): CloudCompanyCodeImportLook {
 	)
 		invalid();
 	const shown = secrets.shown.map((hit) => {
-		const found = record(hit, ["kind", "path", "inMain"]);
+		const found = folderRecord(hit, ["kind", "path", "inMain"]);
 		const kind = CODE_IMPORT_KEY_KINDS.find((known) => known === found.kind);
 		if (kind === undefined || !nullableString(found.path) || typeof found.inMain !== "boolean") invalid();
 		return { kind, path: found.path, inMain: found.inMain };
 	});
-	const lfs = record(look.lfs, ["pointers"]);
+	const lfs = folderRecord(look.lfs, ["pointers"]);
 	return {
 		bytes: counter(look.bytes),
 		defaultBranch: look.defaultBranch,
@@ -1194,17 +1195,17 @@ function importLook(value: unknown): CloudCompanyCodeImportLook {
 }
 
 /** A byte string's SHA-256, as lower-case hex. */
-export function sha256(bytes: Uint8Array): string {
+export function sha256Hex(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
 function authority(value: unknown): CloudCompanyFolderAuthority {
-	const input = record(value, ["resourceId", "resourceRevision", "grantId", "grantRevision"]);
+	const input = folderRecord(value, ["resourceId", "resourceRevision", "grantId", "grantRevision"]);
 	if ((input.grantId === null) !== (input.grantRevision === null)) invalid();
 	return {
-		resourceId: uuid(input.resourceId),
+		resourceId: folderUuid(input.resourceId),
 		resourceRevision: counter(input.resourceRevision),
-		grantId: input.grantId === null ? null : uuid(input.grantId),
+		grantId: input.grantId === null ? null : folderUuid(input.grantId),
 		grantRevision: input.grantRevision === null ? null : counter(input.grantRevision),
 	};
 }
@@ -1219,14 +1220,14 @@ function linkTarget(value: unknown): value is string {
 
 function entry(value: unknown): CloudCompanyFolderEntry {
 	const kind = (value as { kind?: unknown } | null)?.kind;
-	const input = record(
+	const input = folderRecord(
 		value,
 		kind === "file" ? [...ENTRY_KEYS, ...FILE_KEYS] : kind === "symlink" ? [...ENTRY_KEYS, "target"] : ENTRY_KEYS,
 	);
 	if (typeof input.path !== "string" || !input.path || typeof input.updatedAt !== "string") invalid();
 	const base = {
 		path: input.path,
-		version: uuid(input.version),
+		version: folderUuid(input.version),
 		seq: counter(input.seq),
 		updatedAt: input.updatedAt,
 		authority: authority(input.authority),
@@ -1266,7 +1267,7 @@ function problems(value: unknown): CompanyStateProblem[] {
 	// The commit strips nulls from each outcome, nested ones included: a problem without a line or key comes back
 	// without those keys.
 	return value.map((item) => {
-		const problem = record(item, ["code", "message"], ["line", "key"]);
+		const problem = folderRecord(item, ["code", "message"], ["line", "key"]);
 		const line = problem.line ?? null;
 		const key = problem.key ?? null;
 		if (
@@ -1286,7 +1287,7 @@ const OPS: readonly CloudCompanyFolderOp[] = ["write", "mkdir", "new_folder", "d
 
 /** A commit's answer for one unit, whose op is the one sent (undefined: a proposal's unit past its list, any op). */
 function unitResult(value: unknown, index: number, op: CloudCompanyFolderOp | undefined): CloudCompanyFolderUnitResult {
-	const input = record(value, ["unit", "op", "path", "outcome"], ["to", "version", "reason", "problems"]);
+	const input = folderRecord(value, ["unit", "op", "path", "outcome"], ["to", "version", "reason", "problems"]);
 	if (
 		input.unit !== index + 1 ||
 		!OPS.includes(input.op as CloudCompanyFolderOp) ||
@@ -1303,7 +1304,7 @@ function unitResult(value: unknown, index: number, op: CloudCompanyFolderOp | un
 		op: input.op as CloudCompanyFolderOp,
 		path: input.path,
 		to: (input.to as string | undefined) ?? null,
-		version: input.version === undefined ? null : uuid(input.version),
+		version: input.version === undefined ? null : folderUuid(input.version),
 		outcome: input.outcome as CloudCompanyFolderOutcome,
 		reason: (input.reason as string | undefined) ?? null,
 		problems: problems(input.problems),
@@ -1567,12 +1568,10 @@ export class CloudCompanyFolderClient {
 
 	/** The entry at a path, as SQL found it by the path's key (its stored spelling may differ), or none. */
 	async read(path: string, signal: AbortSignal): Promise<CloudCompanyFolderReadResult> {
-		const input = record(await this.#once("qorpera_folder_read", { p_path: parseCloudCompanyPath(path) }, signal), [
-			"schema",
-			"asOfSeq",
-			"found",
-			"entry",
-		]);
+		const input = folderRecord(
+			await this.#once("qorpera_folder_read", { p_path: parseCloudCompanyPath(path) }, signal),
+			["schema", "asOfSeq", "found", "entry"],
+		);
 		if (input.schema !== "qorpera.folder-read/v1" || typeof input.found !== "boolean") invalid();
 		if (!input.found) {
 			if (input.entry !== null) invalid();
@@ -1585,7 +1584,7 @@ export class CloudCompanyFolderClient {
 	 * search: the folder service serves and renews it by its pass, and the run's end closes it. Opening again in the
 	 * same job closes the earlier one. */
 	async openRunView(signal: AbortSignal): Promise<CloudCompanyFolderRunView> {
-		const input = record(await this.#once("qorpera_folder_run_view_open", {}, signal), [
+		const input = folderRecord(await this.#once("qorpera_folder_run_view_open", {}, signal), [
 			"schema",
 			"viewId",
 			"pass",
@@ -1650,7 +1649,7 @@ export class CloudCompanyFolderClient {
 			}
 			throw error;
 		}
-		const input = record(value, ["schema", "pass", "expiresAt", "files"]);
+		const input = folderRecord(value, ["schema", "pass", "expiresAt", "files"]);
 		if (
 			input.schema !== "qorpera.data-pass/v1" ||
 			typeof input.pass !== "string" ||
@@ -1681,7 +1680,7 @@ export class CloudCompanyFolderClient {
 		request: { includeClosed?: boolean; state?: string; search?: string; cursor?: string },
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderTodoPage> {
-		const input = record(await this.#once("qorpera_folder_agent_todos", { p_request: request }, signal), [
+		const input = folderRecord(await this.#once("qorpera_folder_agent_todos", { p_request: request }, signal), [
 			"schema",
 			"todos",
 			"moreTodos",
@@ -1690,7 +1689,7 @@ export class CloudCompanyFolderClient {
 		if (input.schema !== "qorpera.folder-agent-todos/v1" || !Array.isArray(input.todos) || input.todos.length > 32)
 			invalid();
 		const todos = input.todos.map((value) => {
-			const todo = record(
+			const todo = folderRecord(
 				value,
 				["todoKey", "title", "state", "detail", "path", "version", "updatedAt", "cursor"],
 				["detailTruncated"],
@@ -1712,13 +1711,13 @@ export class CloudCompanyFolderClient {
 				detail: todo.detail,
 				...(todo.detailTruncated ? { detailTruncated: true as const } : {}),
 				path: todo.path,
-				version: uuid(todo.version),
+				version: folderUuid(todo.version),
 				updatedAt: todo.updatedAt,
-				cursor: uuid(todo.cursor),
+				cursor: folderUuid(todo.cursor),
 			};
 		});
 		const moreTodos = counter(input.moreTodos);
-		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		const nextCursor = input.nextCursor === null ? null : folderUuid(input.nextCursor);
 		if (moreTodos > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== todos.at(-1)?.cursor))
 			invalid();
 		return { todos, moreTodos, nextCursor };
@@ -1737,7 +1736,7 @@ export class CloudCompanyFolderClient {
 		},
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderWorkerPage> {
-		const input = record(await this.#once("qorpera_folder_agent_workers", { p_request: request }, signal), [
+		const input = folderRecord(await this.#once("qorpera_folder_agent_workers", { p_request: request }, signal), [
 			"schema",
 			"todoKey",
 			"workers",
@@ -1753,10 +1752,10 @@ export class CloudCompanyFolderClient {
 			invalid();
 		const workers = input.workers.map((value) => {
 			const worker = folderWorker(value);
-			return { ...worker, cursor: uuid((value as { cursor?: unknown }).cursor) };
+			return { ...worker, cursor: folderUuid((value as { cursor?: unknown }).cursor) };
 		});
 		const moreWorkers = counter(input.moreWorkers);
-		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		const nextCursor = input.nextCursor === null ? null : folderUuid(input.nextCursor);
 		if (moreWorkers > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== workers.at(-1)?.cursor))
 			invalid();
 		return { workers, moreWorkers, nextCursor };
@@ -1770,7 +1769,7 @@ export class CloudCompanyFolderClient {
 		request: { readonly folder: string; readonly operationKey: string },
 		signal: AbortSignal,
 	): Promise<{ readonly receiptId: string; readonly worker: CloudCompanyFolderWorker }> {
-		const input = record(
+		const input = folderRecord(
 			await this.#retried(
 				"qorpera_folder_cancel_agent_worker",
 				{ p_binding: this.#binding, p_request: { folder: request.folder, operationKey: request.operationKey } },
@@ -1788,7 +1787,7 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return {
-			receiptId: uuid(input.receiptId),
+			receiptId: folderUuid(input.receiptId),
 			worker: folderWorker({ ...(input.worker as Record<string, unknown>), folder: request.folder }),
 		};
 	}
@@ -1814,7 +1813,7 @@ export class CloudCompanyFolderClient {
 		// Without the company's secret broker a signed hook cannot be opened: nothing is sent.
 		if (signed && !this.#signedHooks) throw new CloudCompanyFolderError("unavailable");
 		try {
-			const input = record(
+			const input = folderRecord(
 				await (signed
 					? this.#resent((trySignal) => this.#signedHook(signed, trySignal), RELEASE_RETRY, signal, kept)
 					: this.#retried(
@@ -1827,7 +1826,7 @@ export class CloudCompanyFolderClient {
 				["schema", "runId", "receiptId", "action", "hook"],
 				signed ? ["secretSite"] : [],
 			);
-			const hook = record(input.hook, HOOK_KEYS, HOOK_OPTIONAL);
+			const hook = folderRecord(input.hook, HOOK_KEYS, HOOK_OPTIONAL);
 			const { address, path, url, signingSecret } = hook;
 			if (
 				input.schema !== "qorpera.agent-hook-receipt/v1" ||
@@ -1871,9 +1870,9 @@ export class CloudCompanyFolderClient {
 							(typeof url !== "string" || !url.endsWith(`/functions/v1/event-intake/${address}`))))
 			)
 				invalid();
-			uuid(hook.id);
+			folderUuid(hook.id);
 			return {
-				receiptId: uuid(input.receiptId),
+				receiptId: folderUuid(input.receiptId),
 				action: request.action,
 				hook,
 				...(signed ? { secretSite: signed.site } : {}),
@@ -1899,7 +1898,7 @@ export class CloudCompanyFolderClient {
 		readonly phase: string;
 		readonly worker: CloudCompanyFolderWorker;
 	}> {
-		const input = record(
+		const input = folderRecord(
 			await this.#retried(
 				"qorpera_folder_archive_coding_worker",
 				{ p_binding: this.#binding, p_request: { folder: request.folder, operationKey: request.operationKey } },
@@ -1919,7 +1918,7 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return {
-			receiptId: uuid(input.receiptId),
+			receiptId: folderUuid(input.receiptId),
 			archived: input.archived,
 			phase: input.phase,
 			worker: folderWorker({ ...(input.worker as Record<string, unknown>), folder: request.folder }),
@@ -1999,7 +1998,7 @@ export class CloudCompanyFolderClient {
 			signal,
 			(answer): CloudCompanyCodeUndo => {
 				const state = (answer as { state?: unknown } | null)?.state;
-				const input = record(
+				const input = folderRecord(
 					answer,
 					state === "queued"
 						? ["schema", "state", "requestId"]
@@ -2008,7 +2007,7 @@ export class CloudCompanyFolderClient {
 							: ["schema", "state", "reason"],
 				);
 				if (input.schema !== "qorpera.code-request/v1") invalid();
-				if (state === "queued") return { state, requestId: uuid(input.requestId) };
+				if (state === "queued") return { state, requestId: folderUuid(input.requestId) };
 				if (state === "already") {
 					if (counter(input.undoneBy) < 1) invalid();
 					return { state, undoneBy: input.undoneBy as number };
@@ -2021,10 +2020,10 @@ export class CloudCompanyFolderClient {
 	}
 
 	async codeRequestV2(requestId: string, signal: AbortSignal): Promise<CloudCompanyCodeRequestV2> {
-		const input = record(
+		const input = folderRecord(
 			await this.#once(
 				"qorpera_folder_code_request_v2",
-				{ p_binding: this.#binding, p_request_id: uuid(requestId) },
+				{ p_binding: this.#binding, p_request_id: folderUuid(requestId) },
 				signal,
 			),
 			["schema", "requestId", "kind", "state", "result", "change", "code", "paths", "messages", "data"],
@@ -2068,7 +2067,7 @@ export class CloudCompanyFolderClient {
 		name: string,
 		signal: AbortSignal,
 	): Promise<CloudCompanyCodeRepositoryStatus> {
-		const input = record(
+		const input = folderRecord(
 			await this.#once(
 				"qorpera_folder_code_status",
 				{ p_binding: this.#binding, p_owner: owner, p_name: name },
@@ -2142,7 +2141,7 @@ export class CloudCompanyFolderClient {
 		},
 		signal: AbortSignal,
 	): Promise<readonly CloudCompanyCodeClaimOverlap[]> {
-		const input = record(
+		const input = folderRecord(
 			await this.#once(
 				"qorpera_folder_code_claim_overlaps",
 				{
@@ -2159,7 +2158,7 @@ export class CloudCompanyFolderClient {
 		);
 		if (input.schema !== "qorpera.code-claim-overlaps/v1" || !Array.isArray(input.overlaps)) invalid();
 		for (const item of input.overlaps) {
-			const row = record(item, [
+			const row = folderRecord(item, [
 				"workerId",
 				"workerKey",
 				"title",
@@ -2168,7 +2167,7 @@ export class CloudCompanyFolderClient {
 				"claimedPaths",
 				"matchedPaths",
 			]);
-			uuid(row.workerId);
+			folderUuid(row.workerId);
 			if (
 				typeof row.workerKey !== "string" ||
 				typeof row.title !== "string" ||
@@ -2196,7 +2195,7 @@ export class CloudCompanyFolderClient {
 		},
 		signal: AbortSignal,
 	): Promise<CloudCompanyCodeHistoryPage> {
-		const input = record(
+		const input = folderRecord(
 			await this.#once(
 				"qorpera_folder_code_history",
 				{
@@ -2242,12 +2241,12 @@ export class CloudCompanyFolderClient {
 				signal,
 			);
 			const state = (raw as { state?: unknown } | null)?.state;
-			const input = record(
+			const input = folderRecord(
 				raw,
 				state === "queued" ? ["schema", "state", "requestId"] : ["schema", "state", "reason"],
 			);
 			if (input.schema !== "qorpera.code-query/v1") invalid();
-			if (state === "queued") return { state, requestId: uuid(input.requestId) };
+			if (state === "queued") return { state, requestId: folderUuid(input.requestId) };
 			if (state === "refused" && (input.reason === "no_executor" || input.reason === "restoring"))
 				return { state: "refused", reason: input.reason };
 			invalid();
@@ -2268,7 +2267,7 @@ export class CloudCompanyFolderClient {
 			signal,
 			(answer): CloudCompanyCodeLifecycleAnswer => {
 				const state = (answer as { state?: unknown } | null)?.state;
-				const input = record(
+				const input = folderRecord(
 					answer,
 					state === "queued"
 						? ["schema", "state", "requestId"]
@@ -2280,7 +2279,7 @@ export class CloudCompanyFolderClient {
 					state === "already" ? ["archivedAt"] : [],
 				);
 				if (input.schema !== "qorpera.code-lifecycle/v1") invalid();
-				if (state === "queued") return { state, requestId: uuid(input.requestId) };
+				if (state === "queued") return { state, requestId: folderUuid(input.requestId) };
 				if (
 					state === "done" &&
 					(input.result === "archived" || input.result === "unarchived") &&
@@ -2339,7 +2338,7 @@ export class CloudCompanyFolderClient {
 			signal,
 			(answer): CloudCompanyCodeDescribed => {
 				const saved = (answer as { state?: unknown } | null)?.state === "saved";
-				const input = record(
+				const input = folderRecord(
 					answer,
 					saved ? ["schema", "state", "change", "notice", "picture"] : ["schema", "state", "reason"],
 				);
@@ -2390,12 +2389,12 @@ export class CloudCompanyFolderClient {
 			signal,
 			(answer): CloudCompanyCodeImportAsked => {
 				const state = (answer as { state?: unknown } | null)?.state;
-				const input = record(
+				const input = folderRecord(
 					answer,
 					state === "queued" ? ["schema", "state", "requestId"] : ["schema", "state", "reason"],
 				);
 				if (input.schema !== "qorpera.code-import/v1") invalid();
-				if (state === "queued") return { state, requestId: uuid(input.requestId) };
+				if (state === "queued") return { state, requestId: folderUuid(input.requestId) };
 				const reason = CODE_IMPORT_REASONS.find((known) => known === input.reason);
 				if (state !== "refused" || reason === undefined) invalid();
 				return { state: "refused", reason };
@@ -2407,10 +2406,10 @@ export class CloudCompanyFolderClient {
 	 * receipt. A request that is not this company's import is SQL's P0002. A result comes only with `done`. The twelfth
 	 * key, `file` (20260930741000), is optional: SQL from before it answers eleven. */
 	async codeImport(requestId: string, signal: AbortSignal): Promise<CloudCompanyCodeImport> {
-		const input = record(
+		const input = folderRecord(
 			await this.#once(
 				"qorpera_folder_code_import",
-				{ p_binding: this.#binding, p_request_id: uuid(requestId) },
+				{ p_binding: this.#binding, p_request_id: folderUuid(requestId) },
 				signal,
 			),
 			["schema", "requestId", "owner", "name", "state", "step", "waiting", "look", "result", "change", "code"],
@@ -2419,7 +2418,7 @@ export class CloudCompanyFolderClient {
 		let file: CloudCompanyCodeImport["file"];
 		if (input.file === null) file = null;
 		else if (Object.hasOwn(input, "file")) {
-			const bundle = record(input.file, ["path", "version"]);
+			const bundle = folderRecord(input.file, ["path", "version"]);
 			if (
 				typeof bundle.path !== "string" ||
 				bundle.path === "" ||
@@ -2467,7 +2466,7 @@ export class CloudCompanyFolderClient {
 		request: { routineKey?: string; cursor?: string },
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderRoutinePage> {
-		const input = record(await this.#once("qorpera_folder_agent_routines", { p_request: request }, signal), [
+		const input = folderRecord(await this.#once("qorpera_folder_agent_routines", { p_request: request }, signal), [
 			"schema",
 			"routines",
 			"moreRoutines",
@@ -2481,7 +2480,7 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		const routines = input.routines.map((value) => {
-			const routine = record(value, ROUTINE_KEYS, ["instructionsTruncated"]);
+			const routine = folderRecord(value, ROUTINE_KEYS, ["instructionsTruncated"]);
 			if (
 				typeof routine.routineKey !== "string" ||
 				(request.routineKey !== undefined && routine.routineKey !== request.routineKey) ||
@@ -2497,20 +2496,20 @@ export class CloudCompanyFolderClient {
 				invalid();
 			return {
 				routineKey: routine.routineKey,
-				routineId: uuid(routine.routineId),
+				routineId: folderUuid(routine.routineId),
 				status: routine.status as CloudCompanyFolderRoutine["status"],
 				pauseReason: routine.pauseReason as string | null,
 				nextRunAt: routine.nextRunAt as string | null,
 				occurrences: counter(routine.occurrences),
 				path: routine.path,
-				folderVersion: uuid(routine.folderVersion),
+				folderVersion: folderUuid(routine.folderVersion),
 				file: routine.file as Readonly<Record<string, unknown>> | null,
 				...(routine.instructionsTruncated ? { instructionsTruncated: true as const } : {}),
-				cursor: uuid(routine.cursor),
+				cursor: folderUuid(routine.cursor),
 			};
 		});
 		const moreRoutines = counter(input.moreRoutines);
-		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		const nextCursor = input.nextCursor === null ? null : folderUuid(input.nextCursor);
 		if (moreRoutines > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== routines.at(-1)?.cursor))
 			invalid();
 		return { routines, moreRoutines, nextCursor };
@@ -2535,18 +2534,18 @@ export class CloudCompanyFolderClient {
 			if (refused) return { refused };
 			throw error;
 		}
-		const input = record(value, ["schema", "runId", "login"]);
+		const input = folderRecord(value, ["schema", "runId", "login"]);
 		if (input.schema !== "qorpera.routine-login/v1" || input.runId !== this.#binding.runId) invalid();
 		if (input.login === null) return { login: null };
-		const login = record(input.login, ["bindingId", "version"]);
-		return { login: { bindingId: uuid(login.bindingId), version: counter(login.version) } };
+		const login = folderRecord(input.login, ["bindingId", "version"]);
+		return { login: { bindingId: folderUuid(login.bindingId), version: counter(login.version) } };
 	}
 
 	/** A page of the open proposals of the run's agent for the run's member (P40a, `qorpera_folder_agent_proposals`):
 	 * oldest first, 4 at most, each with its first 50 units. SQL lists them only to a run that can raise a card, and
 	 * only while the run may read every path one names. */
 	async agentProposals(request: { cursor?: string }, signal: AbortSignal): Promise<CloudCompanyFolderProposalPage> {
-		const input = record(await this.#once("qorpera_folder_agent_proposals", { p_request: request }, signal), [
+		const input = folderRecord(await this.#once("qorpera_folder_agent_proposals", { p_request: request }, signal), [
 			"schema",
 			"proposals",
 			"moreProposals",
@@ -2559,7 +2558,7 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		const proposals = input.proposals.map((value): CloudCompanyFolderProposal => {
-			const proposal = record(value, [
+			const proposal = folderRecord(value, [
 				"proposalId",
 				"createdAt",
 				"viewKind",
@@ -2583,7 +2582,7 @@ export class CloudCompanyFolderClient {
 			)
 				invalid();
 			const units = proposal.units.map((item, index): CloudCompanyFolderProposalUnit => {
-				const unit = record(item, ["unit", "op", "path"], ["to", "items", "contains", "structured"]);
+				const unit = folderRecord(item, ["unit", "op", "path"], ["to", "items", "contains", "structured"]);
 				if (
 					unit.unit !== index + 1 ||
 					!OPS.includes(unit.op as CloudCompanyFolderOp) ||
@@ -2600,7 +2599,7 @@ export class CloudCompanyFolderClient {
 					to: (unit.to as string | undefined) ?? null,
 					items: unit.items === undefined ? null : counter(unit.items),
 					contains: ((unit.contains as unknown[] | undefined) ?? []).map((entry) => {
-						const contained = record(entry, ["path", "kind"], ["target"]);
+						const contained = folderRecord(entry, ["path", "kind"], ["target"]);
 						if (
 							typeof contained.path !== "string" ||
 							!contained.path ||
@@ -2614,7 +2613,7 @@ export class CloudCompanyFolderClient {
 							: { path: contained.path, kind: contained.kind };
 					}),
 					structured: ((unit.structured as unknown[] | undefined) ?? []).map((file) => {
-						const entry = record(file, ["path", "kind", "parse"]);
+						const entry = folderRecord(file, ["path", "kind", "parse"]);
 						if (
 							typeof entry.path !== "string" ||
 							typeof entry.kind !== "string" ||
@@ -2636,12 +2635,12 @@ export class CloudCompanyFolderClient {
 			if (unitCount !== units.length + moreUnits) invalid();
 			// Each path it names, with the authority the list was decided on: no file was read, so no version.
 			const reads = (proposal.reads as unknown[]).map((item): CloudCompanyFolderRelease => {
-				const read = record(item, ["path", "authority"]);
+				const read = folderRecord(item, ["path", "authority"]);
 				if (typeof read.path !== "string" || !read.path) invalid();
 				return { path: read.path, version: null, authority: authority(read.authority) };
 			});
 			return {
-				proposalId: uuid(proposal.proposalId),
+				proposalId: folderUuid(proposal.proposalId),
 				createdAt: proposal.createdAt,
 				viewKind: proposal.viewKind,
 				effect: proposal.effect,
@@ -2653,7 +2652,7 @@ export class CloudCompanyFolderClient {
 			};
 		});
 		const moreProposals = counter(input.moreProposals);
-		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		const nextCursor = input.nextCursor === null ? null : folderUuid(input.nextCursor);
 		if (
 			moreProposals > 0 !== (nextCursor !== null) ||
 			(nextCursor !== null && nextCursor !== proposals.at(-1)?.proposalId)
@@ -2696,14 +2695,14 @@ export class CloudCompanyFolderClient {
 			if (notOpen(error)) return null;
 			throw error;
 		}
-		const input = record(value, ["schema", "reviewId", "approvedBy", "units"]);
+		const input = folderRecord(value, ["schema", "reviewId", "approvedBy", "units"]);
 		if (
 			input.schema !== "qorpera.folder-review/v1" ||
 			input.units !== proposal.unitCount ||
 			(input.approvedBy !== null && (typeof input.approvedBy !== "string" || !UUID.test(input.approvedBy)))
 		)
 			invalid();
-		return uuid(input.reviewId);
+		return folderUuid(input.reviewId);
 	}
 
 	/** Applies an open proposal's units as the run, with the review `recordProposalReview` made of them (P40a,
@@ -2733,7 +2732,7 @@ export class CloudCompanyFolderClient {
 			signal,
 		);
 		if ((answer as { schema?: unknown } | null)?.schema === "qorpera.folder-proposal-unapplied/v1") {
-			const unapplied = record(answer, ["schema", "proposalId", "status", "receiptId"]);
+			const unapplied = folderRecord(answer, ["schema", "proposalId", "status", "receiptId"]);
 			const status = unapplied.status as CloudCompanyFolderProposalUnapplied["unapplied"];
 			if (
 				unapplied.proposalId !== proposal.proposalId ||
@@ -2743,7 +2742,7 @@ export class CloudCompanyFolderClient {
 				invalid();
 			return { unapplied: status };
 		}
-		const input = record(answer, ["schema", "commitId", "seq", "replay", "units"]);
+		const input = folderRecord(answer, ["schema", "commitId", "seq", "replay", "units"]);
 		if (
 			input.schema !== "qorpera.folder-commit/v1" ||
 			typeof input.replay !== "boolean" ||
@@ -2754,7 +2753,7 @@ export class CloudCompanyFolderClient {
 		const results = input.units.map((value, index) => unitResult(value, index, proposal.units[index]?.op));
 		const seq = input.seq === null ? null : counter(input.seq);
 		if ((seq === null) !== results.every((unit) => unit.outcome !== "saved")) invalid();
-		return { commitId: uuid(input.commitId), seq, replay: input.replay, units: results };
+		return { commitId: folderUuid(input.commitId), seq, replay: input.replay, units: results };
 	}
 
 	/** Closes an open proposal of the run's agent for its member (P40a, `qorpera_folder_close_proposal`, a run effect):
@@ -2784,7 +2783,7 @@ export class CloudCompanyFolderClient {
 			if (unavailable(error)) return null;
 			throw error;
 		}
-		const input = record(value, ["schema", "proposalId", "status"]);
+		const input = folderRecord(value, ["schema", "proposalId", "status"]);
 		if (
 			input.schema !== "qorpera.folder-proposal/v1" ||
 			input.proposalId !== proposalId ||
@@ -2805,7 +2804,7 @@ export class CloudCompanyFolderClient {
 			RECORD_RETRY,
 			signal,
 		);
-		const input = record(value, ["schema", "noted"]);
+		const input = folderRecord(value, ["schema", "noted"]);
 		if (
 			input.schema !== "qorpera.interface-change-notes/v1" ||
 			!Number.isSafeInteger(input.noted) ||
@@ -2830,10 +2829,10 @@ export class CloudCompanyFolderClient {
 		if (found.file.bytes > maxBytes)
 			throw new CloudCompanyPathNotText("Company folder file is larger than text here");
 		const bytes = await this.#bytes.get(found.file, signal);
-		// WHY: HttpCloudCompanyFolderBytes.get already verified sha256(bytes) === found.file.fileSha256; skip rehashing.
+		// WHY: HttpCloudCompanyFolderBytes.get already verified sha256Hex(bytes) === found.file.fileSha256; skip rehashing.
 		if (
 			bytes.byteLength !== found.file.bytes ||
-			(!this.#bytes.verifiesBytes && sha256(bytes) !== found.file.fileSha256)
+			(!this.#bytes.verifiesBytes && sha256Hex(bytes) !== found.file.fileSha256)
 		)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 		let text: string;
@@ -2871,7 +2870,7 @@ export class CloudCompanyFolderClient {
 		const limit = options.limit ?? LIST_PAGE;
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > LIST_PAGE)
 			throw new Error("Invalid Company folder page");
-		const input = record(
+		const input = folderRecord(
 			await this.#once(
 				"qorpera_folder_list",
 				{
@@ -2926,7 +2925,7 @@ export class CloudCompanyFolderClient {
 
 	async stageBytes(bytes: Uint8Array, mediaType: string, signal: AbortSignal): Promise<CloudFileReference> {
 		if (!bytes.byteLength) throw new Error("Cannot stage empty binary file");
-		const hash = sha256(bytes);
+		const hash = sha256Hex(bytes);
 		return this.#stageUnique({ path: "staged-binary", bytes, mediaType, executable: false }, hash, signal);
 	}
 
@@ -3099,7 +3098,7 @@ export class CloudCompanyFolderClient {
 	): Promise<CloudCompanyFolderCommitResult> {
 		checkCommit(operationKey, options);
 		const { units, sent } = this.#staged(changeSet);
-		const input = record(
+		const input = folderRecord(
 			await this.#retried(
 				method,
 				{
@@ -3124,7 +3123,7 @@ export class CloudCompanyFolderClient {
 		const results = input.units.map((value, index) => unitResult(value, index, units[index]!.op));
 		const seq = input.seq === null ? null : counter(input.seq);
 		if ((seq === null) !== results.every((unit) => unit.outcome !== "saved")) invalid();
-		return { commitId: uuid(input.commitId), seq, replay: input.replay, units: results };
+		return { commitId: folderUuid(input.commitId), seq, replay: input.replay, units: results };
 	}
 
 	/** Stages a change set's bytes for one commit (core §3): every unit is checked before any bytes are staged, each
@@ -3143,7 +3142,7 @@ export class CloudCompanyFolderClient {
 		const seen = new Set<string>();
 		const fileKeys = new Map<PlannedFile, string>();
 		const track = (file: PlannedFile): void => {
-			const hash = sha256(file.bytes);
+			const hash = sha256Hex(file.bytes);
 			const key = `${hash}:${file.mediaType}:${file.executable}`;
 			fileKeys.set(file, key);
 			if (!seen.has(key)) {
@@ -3229,7 +3228,7 @@ export class CloudCompanyFolderClient {
 		)
 			throw new Error("Invalid action review");
 		const { sent } = this.#staged(changeSet);
-		const input = record(
+		const input = folderRecord(
 			await this.#retried(
 				"qorpera_folder_record_review",
 				{
@@ -3252,7 +3251,7 @@ export class CloudCompanyFolderClient {
 			(input.approvedBy !== null && (typeof input.approvedBy !== "string" || !UUID.test(input.approvedBy)))
 		)
 			invalid();
-		return uuid(input.reviewId);
+		return folderUuid(input.reviewId);
 	}
 
 	/** Records the reads a tool result shows the model, before the result leaves the tool (C1B §C1b-2 3; one release
@@ -3291,7 +3290,7 @@ export class CloudCompanyFolderClient {
 				...(read.fileSha256 === undefined ? {} : { fileSha256: read.fileSha256 }),
 			};
 		});
-		const input = record(
+		const input = folderRecord(
 			await this.#retried(
 				"qorpera_folder_record_release",
 				{ p_release_id: releaseId, p_reads: sent, p_output_sha256: outputSha256 },

@@ -1,4 +1,5 @@
 import { osPath } from "@qorpera/cloud-client/company-state-files";
+import { POSTGRES_UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import type { CloudFolderSidebar, CloudFolderSidebarRequest } from "./cloud-folder-sidebar.ts";
 import {
 	type CloudNativeToolBinding,
@@ -10,7 +11,6 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 const ACTIONS = ["list", "create_section", "rename_section", "delete_section", "move_agent"] as const;
 type SidebarAction = (typeof ACTIONS)[number];
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The fields each action takes; the cloud refuses anything else as well. */
 const FIELDS: Record<SidebarAction, { required: readonly string[]; optional: readonly string[] }> = {
 	list: { required: [], optional: [] },

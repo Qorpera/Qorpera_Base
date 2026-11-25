@@ -1,3 +1,4 @@
+import { isRecord } from "@qorpera/contracts";
 import { UUID_PATTERN } from "./parse.ts";
 
 /* The company sidebar (2026-09-24): sections are the company's, shared by every
@@ -93,9 +94,9 @@ export function sidebarItem(request: SidebarRequest): string | undefined {
 export const SECTION_NAME_LIMIT = 60;
 export const PIN_LIMIT = 24;
 
-function record(value: unknown, what: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${what}`);
-	return value as Record<string, unknown>;
+function sidebarRecord(value: unknown, what: string): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error(`Invalid ${what}`);
+	return value;
 }
 function id(value: unknown, what: string): string {
 	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`Invalid ${what}`);
@@ -107,11 +108,11 @@ function ids(value: unknown, what: string): string[] {
 }
 
 export function parseCompanySidebar(value: unknown): CompanySidebar {
-	const input = record(value, "company sidebar");
+	const input = sidebarRecord(value, "company sidebar");
 	if (input.schema !== "qorpera.company-sidebar/v1") throw new Error("Invalid company sidebar");
 	if (!Array.isArray(input.sections) || !Array.isArray(input.placements)) throw new Error("Invalid company sidebar");
 	const sections = input.sections.map((item) => {
-		const section = record(item, "sidebar section");
+		const section = sidebarRecord(item, "sidebar section");
 		if (typeof section.name !== "string" || !section.name.trim()) throw new Error("Invalid sidebar section");
 		return {
 			sectionId: id(section.sectionId, "sidebar section"),
@@ -123,7 +124,7 @@ export function parseCompanySidebar(value: unknown): CompanySidebar {
 	if (groupChats && !Array.isArray(input.roomPlacements)) throw new Error("Invalid company sidebar");
 	const placements: Record<string, SidebarPlacement> = {};
 	const place = (item: unknown, key: "staffAgentId" | "roomId") => {
-		const placement = record(item, "sidebar placement");
+		const placement = sidebarRecord(item, "sidebar placement");
 		const position = placement.position;
 		if (typeof position !== "number" || !Number.isSafeInteger(position) || position < 0)
 			throw new Error("Invalid sidebar placement");
@@ -151,13 +152,13 @@ function count(value: unknown, what: string): number {
 }
 
 function parseOwnChanges(value: unknown): SidebarOwnChanges {
-	const own = record(value, "own sidebar changes");
+	const own = sidebarRecord(value, "own sidebar changes");
 	if (!Array.isArray(own.sections)) throw new Error("Invalid own sidebar changes");
 	return {
 		changes: count(own.changes, "own sidebar changes"),
 		moved: ids(own.moved, "own sidebar move"),
 		sections: own.sections.map((item) => {
-			const entry = record(item, "own sidebar section");
+			const entry = sidebarRecord(item, "own sidebar section");
 			if (entry.change !== "added" && entry.change !== "renamed" && entry.change !== "removed")
 				throw new Error("Invalid own sidebar section");
 			if (typeof entry.name !== "string" || (entry.from !== undefined && typeof entry.from !== "string"))

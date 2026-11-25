@@ -4,8 +4,10 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
 	type CloudCodingPullRequest,
 	type CloudCodingRepository,
+	isRecord,
 	parseCloudCodingPullRequest,
 	parseGitHubCodingRepository,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 
 export interface CloudCodingDraftPublication {
@@ -31,10 +33,9 @@ export interface CloudCodingPublisherOptions {
 	signal: AbortSignal;
 }
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value))
-		throw new Error("CODING_PUBLICATION_INVALID_RESPONSE");
-	return value as Record<string, unknown>;
+function responseRecord(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("CODING_PUBLICATION_INVALID_RESPONSE");
+	return value;
 }
 
 async function responseJson(response: Response): Promise<unknown> {
@@ -78,7 +79,7 @@ export async function publishCloudCodingDraftPullRequest(
 	});
 	if (
 		Object.keys(input).sort().join() !== "body,headSha,repository,title,workerId" ||
-		!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.workerId) ||
+		!UUID_PATTERN.test(input.workerId) ||
 		!/^[0-9a-f]{40}$/.test(input.headSha) ||
 		typeof input.title !== "string" ||
 		!input.title.trim() ||
@@ -209,9 +210,9 @@ export async function publishCloudCodingDraftPullRequest(
 		}
 	};
 	const validatePull = (value: unknown): CloudCodingPullRequest => {
-		const pr = record(value),
-			head = record(pr.head),
-			base = record(pr.base);
+		const pr = responseRecord(value),
+			head = responseRecord(pr.head),
+			base = responseRecord(pr.base);
 		if (
 			pr.state !== "open" ||
 			pr.draft !== true ||
@@ -220,8 +221,8 @@ export async function publishCloudCodingDraftPullRequest(
 			head.ref !== branch ||
 			head.sha !== input.headSha ||
 			base.ref !== input.repository.baseBranch ||
-			record(head.repo).full_name !== fullName ||
-			record(base.repo).full_name !== fullName
+			responseRecord(head.repo).full_name !== fullName ||
+			responseRecord(base.repo).full_name !== fullName
 		)
 			throw new Error("CODING_PUBLICATION_TARGET_MISMATCH");
 		return parseCloudCodingPullRequest({ url: pr.html_url, number: pr.number, headSha: head.sha }, input.repository);
@@ -240,11 +241,11 @@ export async function publishCloudCodingDraftPullRequest(
 		return result;
 	}
 	if (claimed) throw new Error("CODING_PUBLICATION_RECONCILIATION_REQUIRED");
-	const ref = record(await request(new URL(`${endpoint}/git/ref/heads/${encodeURIComponent(branch)}`), "GET"));
+	const ref = responseRecord(await request(new URL(`${endpoint}/git/ref/heads/${encodeURIComponent(branch)}`), "GET"));
 	if (
 		ref.ref !== `refs/heads/${branch}` ||
-		record(ref.object).type !== "commit" ||
-		record(ref.object).sha !== input.headSha
+		responseRecord(ref.object).type !== "commit" ||
+		responseRecord(ref.object).sha !== input.headSha
 	)
 		throw new Error("CODING_PUBLICATION_HEAD_MISMATCH");
 	await authorize();

@@ -1,7 +1,7 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { isRecord, isUuidAnyCase } from "@qorpera/contracts";
 import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
-import { UUID_PATTERN } from "./parse.ts";
 import { type MessageQuote, parseQuotes } from "./quotes.ts";
 
 export interface RoomMessageInput {
@@ -28,12 +28,12 @@ export interface WebRoomMessages {
 	post(input: RoomMessageInput, signal?: AbortSignal): Promise<RoomMessageReceipt>;
 }
 
-function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid room response.");
-	return value as Record<string, unknown>;
+function roomRecord(value: unknown): Record<string, unknown> {
+	if (!isRecord(value)) throw new Error("Invalid room response.");
+	return value;
 }
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error("Invalid room identity.");
+function roomUuid(value: unknown): string {
+	if (!isUuidAnyCase(value)) throw new Error("Invalid room identity.");
 	return value;
 }
 
@@ -47,8 +47,8 @@ export function createWebRoomMessages(
 	companySignal: AbortSignal,
 	current: (sessionId: string) => void,
 ): WebRoomMessages {
-	uuid(profileId);
-	uuid(memberId);
+	roomUuid(profileId);
+	roomUuid(memberId);
 	const origin = new URL(cloud.config.projectUrl);
 	if (
 		origin.protocol !== "https:" ||
@@ -107,7 +107,7 @@ export function createWebRoomMessages(
 						request.clientInputId,
 						request.sponsorBindingId,
 					])
-						uuid(value);
+						roomUuid(value);
 					if (
 						typeof request.text !== "string" ||
 						!request.text.trim() ||
@@ -173,7 +173,7 @@ export function createWebRoomMessages(
 					check();
 					if (!Array.isArray(rooms)) throw new Error("Invalid room discovery.");
 					const matches = rooms
-						.map((value: unknown) => record(value))
+						.map((value: unknown) => roomRecord(value))
 						.filter((room) => room.roomId === request.roomId);
 					if (matches.length !== 1) throw new Error("Room is unavailable.");
 					const room = matches[0]!;
@@ -185,15 +185,15 @@ export function createWebRoomMessages(
 					)
 						throw new Error("Room scope changed.");
 					const members = room.members.map((value: unknown) => {
-						const member = record(value);
+						const member = roomRecord(value);
 						if (member.kind !== "member" && member.kind !== "staff_agent")
 							throw new Error("Invalid room member.");
-						return { kind: member.kind, id: uuid(member.id) };
+						return { kind: member.kind, id: roomUuid(member.id) };
 					});
 					if (members.filter((member) => member.kind === "member" && member.id === memberId).length !== 1)
 						throw new Error("Room membership changed.");
 					check();
-					const value = record(
+					const value = roomRecord(
 						await rpc("qorpera_post_company_room_message", {
 							p_room_id: request.roomId,
 							p_client_input_id: request.clientInputId,
@@ -217,8 +217,8 @@ export function createWebRoomMessages(
 						)
 					)
 						throw new Error("Room receipt does not match the request.");
-					const inputId = uuid(value.inputId),
-						occurrenceIds = value.occurrenceIds.map((id: unknown) => uuid(id));
+					const inputId = roomUuid(value.inputId),
+						occurrenceIds = value.occurrenceIds.map((id: unknown) => roomUuid(id));
 					if (new Set(occurrenceIds).size !== occurrenceIds.length) throw new Error("Invalid room occurrences.");
 					check();
 					return {

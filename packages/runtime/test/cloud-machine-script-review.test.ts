@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { sha256 } from "../src/cloud-company-folder-client.ts";
+import { sha256Hex } from "../src/cloud-company-folder-client.ts";
 import {
 	CLOUD_COMMAND_NOT_PLAIN,
 	CLOUD_SCRIPT_LATER,
@@ -18,7 +18,7 @@ import {
 	parseCloudScriptRead,
 } from "../src/cloud-machine-script-review.ts";
 
-const digest = (text: string) => sha256(Buffer.from(text));
+const digest = (text: string) => sha256Hex(Buffer.from(text));
 const later = (word: string) => `${word}: ${CLOUD_SCRIPT_LATER}`;
 const paths = (command: string) => cloudCommandScripts(command).files.map((file) => file.path);
 

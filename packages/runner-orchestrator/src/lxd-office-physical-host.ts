@@ -3,6 +3,7 @@ import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, readlink, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { isUuid } from "@qorpera/contracts";
 import { OFFICE_HOST_NAMESPACE_RECORD, parseLxdOfficeHostNamespace } from "./lxd-office-host-namespace.ts";
 import { type LxdOfficeMountPolicy, officePhysicalPath } from "./lxd-office-physical-policy.ts";
 
@@ -246,8 +247,7 @@ export async function inspectLxdHostInventorySocket(
 	signal.throwIfAborted();
 	officePhysicalPath(host.socketPath);
 	const bootId = await metadata("/proc/sys/kernel/random/boot_id", 64);
-	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n$/.test(bootId))
-		throw new Error("NODE_OBSERVER_BOOT_UNCONFIRMED");
+	if (!bootId.endsWith("\n") || !isUuid(bootId.slice(0, -1))) throw new Error("NODE_OBSERVER_BOOT_UNCONFIRMED");
 	const namespace = await assertLxdOfficeHostNamespace(bootId.trim());
 	const machine = new TextDecoder("utf8", { fatal: true }).decode(
 		await readLxdOfficeProtectedFile("/etc/machine-id", 64),

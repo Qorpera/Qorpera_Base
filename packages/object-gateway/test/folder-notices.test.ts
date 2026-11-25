@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { NOTICE_PATHS, NOTICES_KEPT, noticeOf, pageOfNotices } from "../src/folder-service/notices.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
@@ -36,7 +37,6 @@ const hello: Hello = { protocol: 2, environmentId: ENV, viewId: VIEW, pass: PASS
 const noticesHello: Hello = { protocol: 4, environmentId: ENV, viewId: VIEW, pass: PASS, role: "notices" };
 const AT_OFFICE: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
 const AT_EXEC: BridgeInfo = { cid: 77, lookup: "found", machine: EXEC_HOST };
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** The answer for a view the service does not hold. */
 const NONE = { nonce: null, notices: [], last: 0, more: false };
 const FIRST = { after: 0, nonce: null };
