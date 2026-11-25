@@ -11260,11 +11260,10 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			workspaceKind: "surface_folder",
 			repository: null,
 		};
-		await expect(
-			nasHost.prepareWorkspace(nasSurfaceClaim, nas.turnOf(nasSurfaceClaim), nas.signal),
-		).rejects.toMatchObject({
-			name: "CodingWorkspaceFailed",
-			message: "CODING_SURFACE_FOLDER_MODEL_REQUIRED",
-		});
+		const nasError = await nasHost
+			.prepareWorkspace(nasSurfaceClaim, nas.turnOf(nasSurfaceClaim), nas.signal)
+			.catch((error: unknown) => error);
+		expect(nasError).toBeInstanceOf(CodingWorkspaceFailed);
+		expect((nasError as CodingWorkspaceFailed).message).toBe("CODING_SURFACE_FOLDER_MODEL_REQUIRED");
 	});
 });

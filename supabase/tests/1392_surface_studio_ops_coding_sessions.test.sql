@@ -157,6 +157,9 @@ declare
 	v_complete_ops jsonb;
 	v_surf_row public.qorpera_surface_sessions%rowtype;
 	v_view_id uuid := '13920000-0000-4000-8000-0000000000e1';
+	v_ctrl_repo jsonb := jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'data-pass-control', 'baseBranch', 'main');
+	v_data_pass jsonb;
+	v_redeemed jsonb;
 	v_commit_res jsonb;
 	v_refusal text;
 	v_payer_problem text;
@@ -407,6 +410,36 @@ begin
 			and (v_commit_res -> 'seq') = 'null'::jsonb,
 		'VM FUSE coding_session view writes are denied on surface_folder: ' || coalesce(v_commit_res::text, 'null')
 	);
+
+	insert into public.qorpera_coding_repository_grants(environment_id, staff_agent_id, repository, enabled)
+	values (v_env_a, v_worker_studio.staff_agent_id, v_ctrl_repo, true);
+	update public.qorpera_coding_sessions
+	set workspace_kind = 'git_repo', repository = v_ctrl_repo
+	where worker_id = v_worker_studio.id;
+
+	perform pg_temp.as_service();
+	set local role service_role;
+	v_data_pass := public.qorpera_machine_data_pass(
+		v_env_a,
+		jsonb_build_object('kind', 'view', 'viewId', v_view_id, 'pass', repeat('A', 43)),
+		null
+	);
+	reset role;
+	perform pg_temp.ssoc_assert(
+		nullif(coalesce(v_data_pass ->> 'pass', ''), '') is not null,
+		'positive control: git_repo coding view on the same machine obtains a company-data pass: ' || coalesce(v_data_pass::text, 'null')
+	);
+	v_redeemed := public.qorpera_data_pass_redeem(v_data_pass ->> 'pass');
+	perform pg_temp.ssoc_assert(
+		v_redeemed ->> 'kind' = 'machine' and (v_redeemed ->> 'viewId')::uuid = v_view_id,
+		'positive control: git_repo coding view data pass redeems cleanly: ' || coalesce(v_redeemed::text, 'null')
+	);
+
+	update public.qorpera_coding_sessions
+	set workspace_kind = 'surface_folder', repository = null
+	where worker_id = v_worker_studio.id;
+	delete from public.qorpera_coding_repository_grants
+	where environment_id = v_env_a and staff_agent_id = v_worker_studio.staff_agent_id and repository = v_ctrl_repo;
 
 	v_errcode := null;
 	perform pg_temp.as_service();

@@ -745,8 +745,11 @@ command has the other three verbs.
 ### Who the command is
 
 - A machine's identity is its folder view: each company machine boot whose starter's agent and member read the company
-  folder's root has one open `test_machine` view (`RUNTIME-FOLDER-TEST-MACHINES.md`), and each attached coding session
-  has one open `coding_session` view (`RUNTIME-FOLDER-CODING-MACHINES.md`, migration `20260930829000`). The node serves
+  folder's root has one open `test_machine` view (`RUNTIME-FOLDER-TEST-MACHINES.md`), and each attached `git_repo`
+  coding session has one open `coding_session` view (`RUNTIME-FOLDER-CODING-MACHINES.md`, migrations `20260930829000`
+  and `20260930910000`). Non-git surface coding sessions (`workspace_kind` in `surface_folder`, `surface_ops`) do not
+  receive machine data passes because their changes must go through surface staging (`stage_surface_patch` /
+  `stage_surface_ops_action`) for approval rather than mutating live database rows directly. The node serves
   each view to its own CID-authenticated machine only. The command acts as that view: what it may read under
   `data/<name>/` is what the view may read (`coding_agent ∩ member` for a coding session, company audience). A machine
   without `/company` has no databases to reach, and `data` says so.
@@ -754,15 +757,18 @@ command has the other three verbs.
   and bind-mounts each session's `/run/qorpera-folder/views/<worker32>.json` read-only at `/run/qorpera-folder/view.json`
   in every session command unit and `user@<uid>.service`, giving each session its own default view with no environment
   variable and zero database credentials on disk. Sessions on one coding machine share root (`%qorpera-coding` has
-  `NOPASSWD: ALL`), and a coding machine holds one member's sessions for one coding agent, repository, and setup digest
+  `NOPASSWD: ALL`), and a coding machine holds one member's sessions for one coding agent, repository (or the reserved
+  `qorpera/surface-workspace` key for Studio/Ops sessions), and setup digest
   (`RUNTIME-FOLDER-CODING-MACHINES.md`), so the security boundary is the CID-authenticated machine rather than the
   session.
-- So a program on a company machine or in a coding session reaches the company's databases as it reaches the company's
+- So a program on a company machine or in a `git_repo` coding session reaches the company's databases as it reaches the company's
   files, and no further. Root on a company machine is the agent's, where every command started there is reviewed as an
-  outside effect (`machine_run`); root on a coding VM is the member's, where shell commands are not reviewed one by one
+  outside effect (`machine_run`); root on a `git_repo` coding VM is the member's, where shell commands are not reviewed one by one
   and allowing `data` matches a run's `data_change` / `data_apply` tools and the session's own `/company` writes (with
   destructive schema steps still held for a member's yes through `data_apply`, and every read recorded in the coding
-  machine's provenance set). The files of every readable database folder are already in `/company`. What is new: a
+  machine's provenance set). Studio (`surface_folder`) and Ops (`surface_ops`) coding VMs have both direct `/company`
+  commits and machine data passes refused so every change is staged for founder approval. The files of every readable
+  database folder are already in `/company`. What is new: a
   program there can read rows and run changes, where before it could only read and write the files that define them. A
   database in a folder the view does not show (such as a member's private folder, or a folder either the coding agent or
   member may not read) is not reached.
@@ -817,18 +823,20 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 
 ### The pass
 
-- `qorpera_machine_data_pass(p_environment_id, p_actor, p_database)` (migrations `20260930775000`, `20260930829000`),
-  for the service role: `p_actor` is `{"kind":"view", viewId, pass}`, and the view must be an open, valid `test_machine`
-  or `coding_session` view (for `coding_session`, the session must not be archived and its coding machine must not be
-  marked for restart or removal). It lists and keeps the files as `qorpera_run_data_pass` does (one listing, used by
-  both), as the view may read them now, with the view, its machine, its agent and its member. `qorpera_data_passes.kind`
-  keeps `machine`; such a pass names no run and no job. It answers the pass and the entries it kept (above). It is
-  refused while the company's execution is paused or deleting, as a run's pass is: a machine that keeps running through
-  a pause reads and writes no rows.
+- `qorpera_machine_data_pass(p_environment_id, p_actor, p_database)` (migrations `20260930775000`, `20260930829000`,
+  `20260930910000`), for the service role: `p_actor` is `{"kind":"view", viewId, pass}`, and the view must be an open,
+  valid `test_machine` or `coding_session` view (for `coding_session`, the session's `workspace_kind` must be `git_repo`
+  — Studio and Ops sessions are refused because their changes must go through staging — the session must not be archived,
+  and its coding machine must not be marked for restart or removal). It lists and keeps the files as
+  `qorpera_run_data_pass` does (one listing, used by both), as the view may read them now, with the view, its machine,
+  its agent and its member. `qorpera_data_passes.kind` keeps `machine`; such a pass names no run and no job. It answers
+  the pass and the entries it kept (above). It is refused while the company's execution is paused or deleting, as a run's
+  pass is: a machine that keeps running through a pause reads and writes no rows.
 - `qorpera_data_pass_redeem` answers a machine's pass once, within its 60 s, while its `test_machine` or
-  `coding_session` view is open and valid (and for `coding_session`, neither archived nor restarting/removing), the
-  company is not paused or deleting, and the agent and member still stand, with `kind: "machine"`. The gateway takes it
-  at the run door as it takes a run's, with an agent's limits. A machine's pass never carries an `allow`.
+  `coding_session` view is open and valid (and, for `coding_session`, the session's `workspace_kind` is `git_repo` per
+  migration `20260930910000` and it is neither archived nor restarting/removing), the company is not paused or deleting,
+  and the agent and member still stand, with `kind: "machine"`. The gateway takes it at the run door as it takes a run's,
+  with an agent's limits. A machine's pass never carries an `allow`.
 
 ### Limits
 
@@ -846,8 +854,9 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 - It gives no yes for a held step and deletes no database folder.
 - It adds no listener in a machine and none on a node: the folder service stays the one host service on vsock, and
   `security.devlxd` stays off.
-- The Company Computer's desktop (`computer_shell`), `run_box`, and `code_host` views get no `data`: only
-  `test_machine` and `coding_session` views are taken.
+- The Company Computer's desktop (`computer_shell`), `run_box`, `code_host`, and non-git surface `coding_session`
+  (`surface_folder`, `surface_ops`) views get no `data`: only `test_machine` and `git_repo` `coding_session` views are
+  taken.
 - No call is reviewed by itself. On a company machine, starting a command (`machine_run`) is reviewed; on a coding
   machine, shell commands are not reviewed one by one, and `data` matches a run's `data_change` / `data_apply` tools
   and the session's own folder writes. What a command writes, to the folder or to rows, is the command's.
