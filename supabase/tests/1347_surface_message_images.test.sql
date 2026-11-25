@@ -323,7 +323,7 @@ begin
 		('public.qorpera_surface_image_begin(uuid,uuid,text,bigint,text)', true, false),
 		('public.qorpera_surface_image_download(uuid,uuid,text)', true, false),
 		('public.qorpera_start_surface_session_with_images(uuid,text,text,text,text,jsonb,integer,text,text[],uuid,jsonb)', true, false),
-		('public.qorpera_reply_surface_session_with_images(uuid,text,boolean,uuid,jsonb)', true, false),
+		('public.qorpera_reply_surface_session_with_images(uuid,text,boolean,uuid,jsonb,uuid)', true, false),
 		('public.qorpera_surface_session_images(uuid)', true, false),
 		('public.qorpera_surface_image_commit(uuid,uuid,uuid,jsonb)', false, true),
 		('public.qorpera_native_surface_session_images(uuid,uuid,uuid)', false, true),

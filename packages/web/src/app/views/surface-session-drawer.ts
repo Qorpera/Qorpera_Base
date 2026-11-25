@@ -53,7 +53,7 @@ export const APPROVE_ARM_MS = 4_500;
 
 interface QuotedChangeRef {
 	readonly sessionId: string;
-	readonly changeId: string;
+	readonly changeId: string | undefined;
 	readonly title: string;
 }
 
@@ -490,10 +490,11 @@ export class SurfaceSessionDrawer {
 				if (this.#images.problem) return;
 				const payload = quoted ? `Re: [${quoted.title}]\n${text}` : text;
 				const files = this.#images.files;
+				const targetChangeId = quoted?.changeId;
 				this.#input.value = "";
 				this.#images.set([]);
 				this.#setQuotedChange(undefined);
-				void store.reply(sessionId, payload, files).then((ok) => {
+				void store.reply(sessionId, payload, files, targetChangeId).then((ok) => {
 					if (!ok && !this.#input.value) {
 						this.#input.value = text;
 						if (quoted) this.#setQuotedChange(quoted);
@@ -1560,7 +1561,7 @@ export class SurfaceSessionDrawer {
 												class: "surface-change-btn",
 												"data-act": "quote-change",
 												"data-session": variant.id,
-												"data-change": primaryChange?.id ?? variant.id,
+												...(primaryChange ? { "data-change": primaryChange.id } : {}),
 												"data-change-title": label,
 											},
 											t("Change"),
@@ -2321,8 +2322,8 @@ export class SurfaceSessionDrawer {
 				if (sessionId) void store.retrySession(sessionId);
 				return;
 			case "quote-change": {
-				if (sessionId && change && changeTitle) {
-					this.#setQuotedChange({ sessionId, changeId: change, title: changeTitle });
+				if (sessionId && changeTitle) {
+					this.#setQuotedChange({ sessionId, changeId: change || undefined, title: changeTitle });
 					this.#input.focus({ preventScroll: true });
 				}
 				return;

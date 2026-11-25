@@ -10,9 +10,9 @@ begin
 		or to_regprocedure('public.qorpera_discard_surface_option_group(uuid,text)') is null
 		or to_regprocedure('public.qorpera_undo_surface_change(uuid)') is null
 		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null
-		or to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text)') is null
+		or to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions,public.qorpera_runtime_workers,text,text,text,jsonb,jsonb)') is null then
-		raise exception '20260930902000 requires prior surface migrations through 20260930900000';
+		raise exception '20260930902000 requires prior surface migrations through 20260930901000';
 	end if;
 	v_read_turn := pg_get_functiondef('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)'::regprocedure);
 	if position('''resolvedChanges''' in v_read_turn) > 0 then
@@ -279,7 +279,7 @@ $new$		'openChanges', coalesce(
 );
 
 select pg_temp.sdaa_patch(
-	'public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text)'::regprocedure,
+	'public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text,uuid)'::regprocedure,
 	array[
 $old$	v_group_key text := nullif(lower(btrim(coalesce(p_option_group_key, ''))), '');
 	v_result jsonb;
@@ -289,7 +289,7 @@ $new$	v_group_key text := nullif(lower(btrim(coalesce(p_option_group_key, ''))),
 	v_active_target_sha text;
 	v_result jsonb;
 begin$new$,
-$old$	if coalesce(p_kind, 'git_range') = 'git_range' then
+$old$	if coalesce(p_kind, 'git_range') = 'git_range' and p_change_id is null then
 		if v_parent_sha is null then
 			select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id;
 			if v_group_key is not null then
@@ -322,56 +322,68 @@ $old$	if coalesce(p_kind, 'git_range') = 'git_range' then
 	end if;$old$,
 $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 		select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id;
-		if v_parent_sha is null then
-			if v_group_key is not null then
-				select nullif(btrim(c.parent_sha), '')
-				into v_parent_sha
-				from public.qorpera_surface_changes c
-				where c.session_id = p_session_id
-					and c.option_group_key = v_group_key
-					and c.parent_sha is not null
-					and c.status in ('staged', 'conflicted')
-				order by c.seq asc
-				limit 1;
-			end if;
+		if p_change_id is null then
 			if v_parent_sha is null then
-				v_parent_sha := coalesce(
-					(select nullif(btrim(c.head_sha), '') from public.qorpera_surface_changes c
-						where c.session_id = p_session_id and c.head_sha is not null
-							and c.status in ('staged', 'conflicted')
-						order by c.seq desc limit 1),
-					case
-						when nullif(btrim(coalesce(v_session.branch_head_sha, '')), '') is not null
-							and not exists (
+				if v_group_key is not null then
+					select nullif(btrim(c.parent_sha), '')
+					into v_parent_sha
+					from public.qorpera_surface_changes c
+					where c.session_id = p_session_id
+						and c.option_group_key = v_group_key
+						and c.parent_sha is not null
+						and c.status in ('staged', 'conflicted')
+					order by c.seq asc
+					limit 1;
+				end if;
+				if v_parent_sha is null then
+					v_parent_sha := coalesce(
+						(select nullif(btrim(c.head_sha), '') from public.qorpera_surface_changes c
+							where c.session_id = p_session_id and c.head_sha is not null
+								and c.status in ('staged', 'conflicted')
+							order by c.seq desc limit 1),
+						case
+							when nullif(btrim(coalesce(v_session.branch_head_sha, '')), '') is not null
+								and not exists (
+									select 1 from public.qorpera_surface_changes dc
+									where dc.session_id = p_session_id
+										and dc.status = 'discarded'
+										and dc.head_sha = btrim(v_session.branch_head_sha)
+								)
+							then nullif(btrim(coalesce(v_session.branch_head_sha, '')), '')
+							when exists (
 								select 1 from public.qorpera_surface_changes dc
 								where dc.session_id = p_session_id
 									and dc.status = 'discarded'
-									and dc.head_sha = btrim(v_session.branch_head_sha)
+									and dc.head_sha = btrim(coalesce(v_session.branch_head_sha, ''))
 							)
-						then nullif(btrim(coalesce(v_session.branch_head_sha, '')), '')
-						when exists (
-							select 1 from public.qorpera_surface_changes dc
-							where dc.session_id = p_session_id
-								and dc.status = 'discarded'
-								and dc.head_sha = btrim(coalesce(v_session.branch_head_sha, ''))
-						)
-						then coalesce(
-							nullif(btrim(coalesce(v_surface.live_head_sha, '')), ''),
-							nullif(btrim(coalesce(v_session.base_sha, '')), '')
-						)
-						else null
-					end,
-					nullif(btrim(coalesce(v_session.base_sha, '')), ''),
-					nullif(btrim(coalesce(v_surface.live_head_sha, '')), '')
-				);
+							then coalesce(
+								nullif(btrim(coalesce(v_surface.live_head_sha, '')), ''),
+								nullif(btrim(coalesce(v_session.base_sha, '')), '')
+							)
+							else null
+						end,
+						nullif(btrim(coalesce(v_session.base_sha, '')), ''),
+						nullif(btrim(coalesce(v_surface.live_head_sha, '')), '')
+					);
+				end if;
+			end if;
+			if v_parent_sha is null or v_parent_sha !~ '^[0-9a-f]{40}$'
+				or v_head_sha is null or v_head_sha !~ '^[0-9a-f]{40}$' then
+				raise exception 'Git range change requires valid 40-hex parent and head commit SHAs' using errcode = '22023';
 			end if;
 		end if;
-		if v_parent_sha is null or v_parent_sha !~ '^[0-9a-f]{40}$'
-			or v_head_sha is null or v_head_sha !~ '^[0-9a-f]{40}$' then
-			raise exception 'Git range change requires valid 40-hex parent and head commit SHAs' using errcode = '22023';
-		end if;
-		if v_parent_sha is distinct from nullif(btrim(coalesce(v_session.base_sha, '')), '')
+		if v_parent_sha is not null
+			and v_parent_sha is distinct from nullif(btrim(coalesce(v_session.base_sha, '')), '')
 			and v_parent_sha is distinct from nullif(btrim(coalesce(v_surface.live_head_sha, '')), '')
+			and (
+				p_change_id is null
+				or not exists (
+					select 1 from public.qorpera_surface_changes ec
+					where ec.id = p_change_id
+						and ec.session_id = p_session_id
+						and ec.parent_sha = v_parent_sha
+				)
+			)
 			and not exists (
 				select 1 from public.qorpera_surface_changes ac
 				where ac.session_id = p_session_id
@@ -386,6 +398,7 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 			order by dc.seq desc
 			limit 1;
 			if v_discarded_parent_title is not null then
+				v_discarded_parent_title := btrim(regexp_replace(left(v_discarded_parent_title, 120), E'[^\\x20-\\x7E\\xC0-\\xFF]+', ' ', 'g'));
 				select nullif(btrim(oc.head_sha), '') into v_active_target_sha
 				from public.qorpera_surface_changes oc
 				where oc.session_id = p_session_id
@@ -416,9 +429,9 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 select pg_temp.sdaa_patch(
 	'public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions,public.qorpera_runtime_workers,text,text,text,jsonb,jsonb)'::regprocedure,
 	array[
-$old$			v_prev_sha := coalesce(v_prev_sha, v_base_sha);
+$old$			v_prev_sha := coalesce(nullif(btrim(v_tip_change.head_sha), ''), v_base_sha);
 			if v_head_sha <> v_prev_sha then$old$,
-$new$			v_prev_sha := coalesce(v_prev_sha, v_base_sha);
+$new$			v_prev_sha := coalesce(nullif(btrim(v_tip_change.head_sha), ''), v_base_sha);
 			if v_head_sha <> v_prev_sha
 				and v_head_sha is distinct from nullif(btrim(coalesce(v_surf_session.branch_head_sha, '')), '')
 				and not exists (
@@ -442,7 +455,7 @@ begin
 			'public.qorpera_discard_surface_option_group(uuid,text)'::regprocedure,
 			'public.qorpera_undo_surface_change(uuid)'::regprocedure,
 			'public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)'::regprocedure,
-			'public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text)'::regprocedure,
+			'public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text,uuid)'::regprocedure,
 			'public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions,public.qorpera_runtime_workers,text,text,text,jsonb,jsonb)'::regprocedure
 		])
 	loop

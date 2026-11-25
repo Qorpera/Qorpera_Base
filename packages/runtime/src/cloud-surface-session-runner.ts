@@ -52,10 +52,13 @@ import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkill, type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import {
+	chainFolderPreviewOverlays,
 	createSurfaceFolderPreviewOverlay,
+	createSurfaceSessionOwnOverlay,
 	parseSurfaceOmittedBaseChanges,
 	type SurfaceOmittedBaseChange,
 	type SurfacePreviewBaseChange,
+	type SurfaceSessionOpenChange,
 } from "./cloud-surface-preview-overlay.ts";
 import {
 	type CloudSurfaceToolsPort,
@@ -141,6 +144,8 @@ export interface SurfaceSessionTurnInput {
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly previewBaseChanges?: readonly SurfacePreviewBaseChange[] | null;
 	readonly previewReconciliations?: readonly StudioPreviewReconciliation[] | null;
+	readonly sessionOpenChanges?: readonly SurfaceSessionOpenChange[] | null;
+	readonly replyChangeId?: string | null;
 	readonly chainMode?: boolean;
 	readonly omittedBaseChanges?: readonly SurfaceOmittedBaseChange[] | null;
 	readonly mainSha?: string | null;
@@ -724,6 +729,7 @@ function buildFolderSurfaceInstructions(
 		`This session works on the interface "${input.surfaceTitle}" (${input.surfaceSlug}); its page shows ${folderRoot}/ from Company Files. ` +
 		"Members preview staged patches, any of them on or off together, before they approve one. " +
 		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), calling stage_surface_patch once per independent deliverable (one change per report, blog post, article, or distinct section update — never bundle multiple deliverables into one change). ` +
+		"When a follow-up revises an existing open change in this session, pass its changeId to stage_surface_patch to update it in place instead of creating a duplicate change (use replaceAll: true only when replacing the whole change from scratch, and createNew: true only when adding a separate new deliverable). " +
 		"Write reports, analyses, essays, and blog posts as structured *.report.json articles (or self-contained .html files when custom visual presentation is asked for), not raw .md files; keep .md for brief working notes. " +
 		"When the founder asks for multiple design, layout, or copy directions to flick through inside this session, stage each complete standalone alternative with stage_surface_patch using the same optionGroup slug (and optional optionGroupTitle) so they appear as a single multiple-choice picker in Changes — never embed a concept switcher or design-question UI into the real page or module. " +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.\n\n` +
@@ -778,7 +784,8 @@ async function readStudioContents(
 function buildOpsSurfaceInstructions(input: SurfaceSessionTurnInput): string {
 	return (
 		`This session is scoped to the operational Surface "${input.surfaceTitle}" (${input.surfaceSlug}). ` +
-		"Inspect Company Files read-only when helpful, and use stage_surface_ops_action to stage a clear, structured action (draft email, payment preparation, record update, or file organization) that founders can review and approve directly from the Action card."
+		"Inspect Company Files read-only when helpful, and use stage_surface_ops_action to stage a clear, structured action (draft email, payment preparation, record update, or file organization) that founders can review and approve directly from the Action card. " +
+		"When a follow-up revises an existing open action in this session, pass its changeId to update that Action card in place instead of creating a duplicate card."
 	);
 }
 
@@ -998,7 +1005,9 @@ export async function runSurfaceSessionTurn(
 		const omittedBaseChanges =
 			input.omittedBaseChanges ?? parseSurfaceOmittedBaseChanges(originRefRecord?.omittedBaseChanges);
 		const previewBaseChanges = input.previewBaseChanges ?? [];
-		const previewOverlay =
+		const sessionOpenChanges = input.sessionOpenChanges ?? [];
+		const replyChangeId = input.replyChangeId?.trim() || null;
+		const externalPreviewOverlay =
 			!isInternalReconciliation &&
 			input.sourceKind === "folder" &&
 			normalizedFolderRoot &&
@@ -1011,9 +1020,27 @@ export async function runSurfaceSessionTurn(
 						liveReader: folderReader,
 					})
 				: null;
-		const previewOverlayStatus = previewOverlay ? await previewOverlay.prepare(signal) : null;
+		const previewOverlayStatus = externalPreviewOverlay ? await externalPreviewOverlay.prepare(signal) : null;
+		// WHY: Keep patch baseFiles and layout validation anchored to external preview state so updating an open change never captures this session's own prior draft as its base.
+		const baseReaderForPatch =
+			externalPreviewOverlay && folderReader ? externalPreviewOverlay.wrapTextReader(folderReader) : folderReader;
+		const ownSessionOverlay =
+			!isInternalReconciliation &&
+			input.sourceKind === "folder" &&
+			normalizedFolderRoot &&
+			baseReaderForPatch &&
+			sessionOpenChanges.some((change) => change.kind === "folder_patch")
+				? createSurfaceSessionOwnOverlay({
+						folderRoot: normalizedFolderRoot,
+						sessionOpenChanges,
+						baseReader: baseReaderForPatch,
+						replyChangeId,
+					})
+				: null;
+		const ownOverlayStatus = ownSessionOverlay ? await ownSessionOverlay.prepare(signal) : null;
+		const turnReadOverlay = chainFolderPreviewOverlays(externalPreviewOverlay, ownSessionOverlay);
 		const effectiveFolderReader =
-			previewOverlay && folderReader ? previewOverlay.wrapTextReader(folderReader) : folderReader;
+			turnReadOverlay && folderReader ? turnReadOverlay.wrapTextReader(folderReader) : folderReader;
 
 		const explicitBrief = input.briefMarkdown?.trim() || null;
 		const [loaded, folderBrief] = effectiveFolderReader
@@ -1074,6 +1101,10 @@ export async function runSurfaceSessionTurn(
 			previewBaseChanges,
 			previewOverlayStatus: previewOverlayStatus?.status ?? null,
 			previewSkippedPaths: previewOverlayStatus?.skippedPaths ?? null,
+			sessionOpenChanges,
+			replyChangeId,
+			sessionOverlayStatus: ownOverlayStatus?.status ?? null,
+			sessionOverlaySkippedPaths: ownOverlayStatus?.skippedPaths ?? null,
 			chainMode,
 			omittedBaseChanges,
 			mainSha: input.mainSha ?? null,
@@ -1103,9 +1134,9 @@ export async function runSurfaceSessionTurn(
 			const trackedSurfacePatch: SurfacePatchToolPort = {
 				async stageSurfacePatch(sessionIdArg, request, context) {
 					let effectiveRequest = request;
-					if (!input.isInternal && request.baseFiles === undefined && effectiveFolderReader) {
+					if (!input.isInternal && request.baseFiles === undefined && baseReaderForPatch) {
 						const baseFiles = await collectFolderPatchBaseFiles(
-							effectiveFolderReader,
+							baseReaderForPatch,
 							folderRoot,
 							request.ops,
 							context.signal,
@@ -1115,7 +1146,12 @@ export async function runSurfaceSessionTurn(
 						}
 					}
 					const result = await boundStageSurfacePatch(sessionIdArg, effectiveRequest, context);
-					if (!request.optionGroup) applyStudioTextOps(stagedText, request.ops, folderRoot);
+					const targetOpen = request.changeId
+						? sessionOpenChanges.find((ch) => ch.changeId === request.changeId)
+						: undefined;
+					if (!request.optionGroup && (!targetOpen?.optionGroupKey || targetOpen.changeId === replyChangeId)) {
+						applyStudioTextOps(stagedText, request.ops, folderRoot);
+					}
 					return result;
 				},
 			};
@@ -1137,16 +1173,16 @@ export async function runSurfaceSessionTurn(
 						operations: ports.folderToolsContext.operations,
 						identity: ports.folderToolsContext.identity,
 						surfaceFilePolicy: { mode: "surface_worker", writableRoots, stagedRoots },
-						...(previewOverlay ? { previewOverlay } : {}),
+						...(turnReadOverlay ? { previewOverlay: turnReadOverlay } : {}),
 					})
 				: [];
-			const layoutStaging: SurfaceLayoutStaging | undefined = effectiveFolderReader
+			const layoutStaging: SurfaceLayoutStaging | undefined = baseReaderForPatch
 				? {
 						folderRoot,
 						waitingOps: input.openLayoutOps ?? null,
 						readLayout: (readSignal) =>
 							folderText(
-								effectiveFolderReader,
+								baseReaderForPatch,
 								`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
 								MAX_STAGED_LAYOUT_READ_BYTES,
 								readSignal,
@@ -1175,6 +1211,9 @@ export async function runSurfaceSessionTurn(
 				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
 					deferSessionCompletion: true,
 					allowMultipleDeliverables: isInternalReconciliation,
+					openChanges: sessionOpenChanges,
+					replyChangeId,
+					isInternalReconciliation,
 				}),
 				...narrateTool,
 				...folderTools,
@@ -1186,9 +1225,9 @@ export async function runSurfaceSessionTurn(
 			let contents = readStudioFiles
 				? await readStudioContents(readStudioFiles, { folderRoot, slug: input.surfaceSlug }, signal)
 				: null;
-			if (contents && previewOverlay) {
+			if (contents && turnReadOverlay) {
 				const layoutPath = `${folderRoot}/${SURFACE_LAYOUT_PATH}`;
-				const overlaidLayout = await previewOverlay.lookup(layoutPath, signal);
+				const overlaidLayout = await turnReadOverlay.lookup(layoutPath, signal);
 				if (overlaidLayout?.kind === "file") {
 					contents = {
 						...contents,
@@ -1240,9 +1279,17 @@ export async function runSurfaceSessionTurn(
 					}).filter((tool) => READ_ONLY_FOLDER_TOOLS.has(tool.name))
 				: [];
 			const tools: CloudNativeTool[] = [
-				createStageSurfaceOpsActionTool(input.sessionId, {
-					stageSurfaceOpsAction: stageSurfaceOpsAction.bind(ports.surfaceTools),
-				}),
+				createStageSurfaceOpsActionTool(
+					input.sessionId,
+					{
+						stageSurfaceOpsAction: stageSurfaceOpsAction.bind(ports.surfaceTools),
+					},
+					{
+						openChanges: sessionOpenChanges,
+						replyChangeId,
+						isInternalReconciliation,
+					},
+				),
 				...readOnlyFolderTools,
 				...(ports.extraTools ?? []),
 			];
@@ -1279,6 +1326,8 @@ export async function runSurfaceSessionTurn(
 				conflictPaths: input.conflictPaths ?? null,
 				conflictDetails: input.conflictDetails ?? null,
 				previewBaseChanges,
+				sessionOpenChanges,
+				replyChangeId,
 				chainMode,
 				omittedBaseChanges,
 				mainSha: input.mainSha ?? null,

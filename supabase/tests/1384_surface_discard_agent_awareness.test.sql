@@ -221,6 +221,26 @@ begin
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_company, v_code_session, 'Accidental rebase onto discarded change', 'Should fail.',
+			'git_range', v_c2_sha, v_c3_sha, '{}'::uuid[], array['index.html'],
+			null, '{"rebase": true}'::jsonb, false, v_lease_3, null, null, v_c1
+		);
+		v_err_state := null;
+	exception when others then
+		v_err_state := sqlstate;
+		v_err_msg := sqlerrm;
+	end;
+	reset role;
+	perform pg_temp.sdaa_assert(
+		v_err_state = '22023'
+			and position('Superpower-inspired sketches' in v_err_msg) > 0,
+		'rebasing an open change onto a discarded change parentSha is refused, got ' || coalesce(v_err_state, 'none') || ': ' || coalesce(v_err_msg, '')
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
 	v_res := public.qorpera_native_surface_record_change(
 		v_company, v_code_session, 'Tighter hero spacing', 'Tightened hero padding on top of first sketch.',
 		'git_range', v_c1_sha, v_c3_sha, '{}'::uuid[], array['styles.css'],
@@ -240,6 +260,7 @@ begin
 	perform pg_temp.sdaa_open_turn(v_code_session, v_lease_4);
 	v_cs.surface_session_id := v_code_session;
 	v_cs.base_sha := v_main_sha;
+	v_worker.sequence := 3;
 	perform public.qorpera_surface_sync_coding_completion(
 		v_cs,
 		v_worker,
@@ -251,8 +272,9 @@ begin
 	);
 	perform pg_temp.sdaa_assert(
 		(select count(*) from public.qorpera_surface_changes where session_id = v_code_session and status in ('staged', 'conflicted')) = 1
-			and (select count(*) from public.qorpera_surface_changes where session_id = v_code_session) = 3,
-		'coding completion at an already-discarded branch tip does not resurrect the discarded change'
+			and (select count(*) from public.qorpera_surface_changes where session_id = v_code_session) = 3
+			and (select head_sha from public.qorpera_surface_changes where id = v_c1) = v_c1_sha,
+		'coding completion at an already-discarded branch tip does not resurrect the discarded change or overwrite open change'
 	);
 
 	perform pg_temp.sdaa_as(v_anna);

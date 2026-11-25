@@ -2262,6 +2262,147 @@ describe("removing an agent from the Changes list", () => {
 		store.dispose();
 	});
 
+	it("forwards the targeted changeId when replying via Change (including option groups) and omits it on an exploration variant without a staged change", async () => {
+		const explorationId = "88888888-8888-4888-8888-888888888891";
+		const emptyVariantId = "33333333-3333-4333-8333-333333333392";
+		const optionSessionId = "33333333-3333-4333-8333-333333333393";
+		const targetedSession = session(["staged", "staged"], {
+			id: SESSION,
+			changes: [
+				change(CHANGES[0], 1, "staged", { title: "Hero direction" }),
+				change(CHANGES[1], 2, "staged", { title: "Pricing section" }),
+			],
+		});
+		const optionSession = session(["staged", "staged"], {
+			id: optionSessionId,
+			changes: [
+				change(CHANGES[0], 1, "staged", {
+					title: "Stille ritual",
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Forside",
+				}),
+				change(CHANGES[1], 2, "staged", {
+					title: "Appen først",
+					optionGroupKey: "homepage-direction",
+					optionGroupTitle: "Forside",
+				}),
+			],
+		});
+		const variantWithChange = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333391",
+			explorationId,
+			explorationVariantLabel: "Aftenlys",
+			changes: [change(CHANGES[0], 1, "staged", { title: "Aftenlys hero" })],
+		});
+		const variantWithoutChange = session([], {
+			id: emptyVariantId,
+			explorationId,
+			explorationVariantLabel: "Varmt studie",
+			changes: [],
+		});
+		const replySurfaceSession = vi.fn(async (sessionId: string) =>
+			sessionId === emptyVariantId
+				? variantWithoutChange
+				: sessionId === optionSessionId
+					? optionSession
+					: targetedSession,
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([targetedSession, optionSession, variantWithChange, variantWithoutChange], {
+					explorations: [
+						{
+							id: explorationId,
+							surfaceId: SURFACE,
+							title: "Forsidens udtryk",
+							status: "open",
+							chosenSessionId: null,
+							variantSessionIds: [variantWithChange.id, variantWithoutChange.id],
+							createdAt: "2026-11-21T10:00:00.000Z",
+							resolvedAt: null,
+						},
+					],
+				}),
+			),
+			replySurfaceSession,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+		const drawer = view.el.querySelector(".surface-drawer")!;
+		drawer.querySelector<HTMLButtonElement>('[data-act="fold-changes"]')!.click();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="open-change"][data-change="${CHANGES[1]}"]`)!.click();
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="quote-change"][data-change="${CHANGES[1]}"]`)!.click();
+		view.update();
+		const input = drawer.querySelector<HTMLInputElement>(".surface-drawer-input")!;
+		input.value = "Gør prisen strammere";
+		drawer
+			.querySelector<HTMLFormElement>(".surface-drawer-foot")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		expect(replySurfaceSession).toHaveBeenNthCalledWith(
+			1,
+			SESSION,
+			"Re: [Pricing section]\nGør prisen strammere",
+			true,
+			undefined,
+			CHANGES[1],
+		);
+
+		store.openDrawer(SURFACE, optionSessionId);
+		view.update();
+		drawer
+			.querySelector<HTMLButtonElement>(
+				`[data-act="quote-change"][data-session="${optionSessionId}"][data-change="${CHANGES[0]}"]`,
+			)!
+			.click();
+		view.update();
+		input.value = "Gør overskriften mørkere";
+		drawer
+			.querySelector<HTMLFormElement>(".surface-drawer-foot")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		expect(replySurfaceSession).toHaveBeenNthCalledWith(
+			2,
+			optionSessionId,
+			"Re: [Stille ritual]\nGør overskriften mørkere",
+			true,
+			undefined,
+			CHANGES[0],
+		);
+
+		store.openExplorationDrawer(SURFACE, explorationId);
+		view.update();
+		drawer.querySelector<HTMLButtonElement>(`[data-act="pick-variant"][data-session="${emptyVariantId}"]`)!.click();
+		await flush();
+		view.update();
+		const variantQuote = drawer.querySelector<HTMLButtonElement>(
+			`[data-act="quote-change"][data-session="${emptyVariantId}"]`,
+		)!;
+		expect(variantQuote.getAttribute("data-change")).toBeNull();
+		variantQuote.click();
+		view.update();
+		input.value = "Start i en roligere retning";
+		drawer
+			.querySelector<HTMLFormElement>(".surface-drawer-foot")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		expect(replySurfaceSession).toHaveBeenNthCalledWith(
+			3,
+			emptyVariantId,
+			"Re: [Varmt studie]\nStart i en roligere retning",
+		);
+		view.dispose();
+		store.dispose();
+	});
+
 	it("shows the primary preview door instead of the live mount when mode stayed on report or compare from another surface", async () => {
 		const ready = previewFrame({
 			previewId: PREVIEW_IDS[0],
