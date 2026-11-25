@@ -1,4 +1,4 @@
-import { crc32, deflateSync } from "node:zlib";
+import { constants, crc32, createInflate, deflateSync, type Inflate } from "node:zlib";
 import { withAbortScopes } from "./abort-scope.ts";
 
 /**
@@ -160,8 +160,17 @@ export function rfbSetPixelFormat(): Buffer {
 	message.set([16, 8, 0], 14);
 	return message;
 }
-/** Raw (0), the cursor's shape (-239) and the desktop's size (-223): nothing the module could not read. */
-export const RFB_ENCODINGS: readonly number[] = Object.freeze([0, -239, -223]);
+export const RFB_ENCODING_RAW = 0;
+export const RFB_ENCODING_ZLIB = 6;
+export const RFB_ENCODING_ZRLE = 16;
+// WHY: Prefer RFC 6143 ZRLE (supported by TigerVNC Xvnc) and Zlib over Raw to cut full-screen VNC traffic from ~6.4 MB to tens of KB.
+export const RFB_ENCODINGS: readonly number[] = Object.freeze([
+	RFB_ENCODING_ZRLE,
+	RFB_ENCODING_ZLIB,
+	RFB_ENCODING_RAW,
+	-239,
+	-223,
+]);
 export function rfbSetEncodings(): Buffer {
 	const message = Buffer.alloc(4 + 4 * RFB_ENCODINGS.length);
 	message[0] = 2;
@@ -186,6 +195,14 @@ export interface RfbRect {
 	readonly height: number;
 	readonly pixels: Buffer;
 }
+export interface RfbCompressedRect {
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+	readonly encoding: typeof RFB_ENCODING_ZLIB | typeof RFB_ENCODING_ZRLE;
+	readonly compressed: Buffer;
+}
 /** The pointer's shape: its hot spot, its pixels, and which of them it shows (one bit each, rows to whole bytes). */
 export interface RfbCursor {
 	readonly hotX: number;
@@ -200,9 +217,237 @@ export type RfbEvent =
 	| {
 			readonly kind: "update";
 			readonly rects: readonly RfbRect[];
+			readonly items?: readonly (RfbRect | RfbCompressedRect)[];
 			readonly cursor: RfbCursor | null;
 			readonly size: { readonly width: number; readonly height: number } | null;
 	  };
+
+export function maxZrleBytes(width: number, height: number): number {
+	if (width <= 0 || height <= 0) return 0;
+	const tiles = Math.ceil(width / 64) * Math.ceil(height / 64);
+	return width * height * 4 + tiles * 382;
+}
+
+export class RfbZlibStream {
+	#inflate: Inflate | null = null;
+	#closed = false;
+	inflate(compressed: Buffer, maxBytes: number): Promise<Buffer> {
+		if (this.#closed) return Promise.reject(new Error("RFB_ZLIB_CLOSED"));
+		if (!this.#inflate) this.#inflate = createInflate({ chunkSize: 16384 });
+		const inf = this.#inflate;
+		return new Promise<Buffer>((resolve, reject) => {
+			const chunks: Buffer[] = [];
+			let total = 0;
+			let settled = false;
+			const cleanup = () => {
+				inf.off("data", onData);
+				inf.off("error", onError);
+				inf.off("close", onClose);
+			};
+			const fail = (error: Error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				this.close();
+				reject(error);
+			};
+			const onData = (chunk: Buffer) => {
+				total += chunk.byteLength;
+				if (total > maxBytes) {
+					fail(new Error("RFB_UPDATE_TOO_LARGE"));
+					return;
+				}
+				chunks.push(chunk);
+			};
+			const onError = () => fail(new Error("RFB_INVALID"));
+			const onClose = () => fail(new Error("RFB_INVALID"));
+			inf.on("data", onData);
+			inf.on("error", onError);
+			inf.on("close", onClose);
+			inf.write(compressed);
+			inf.flush(constants.Z_SYNC_FLUSH, () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(chunks.length === 1 ? (chunks[0] as Buffer) : Buffer.concat(chunks, total));
+			});
+		});
+	}
+	close(): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		const inf = this.#inflate;
+		this.#inflate = null;
+		if (inf) {
+			inf.removeAllListeners();
+			inf.on("error", () => {});
+			inf.destroy();
+		}
+	}
+}
+
+export function decodeZlibRect(width: number, height: number, data: Buffer): Buffer {
+	const expected = width * height * 4;
+	if (data.byteLength !== expected) throw new Error("RFB_INVALID");
+	return data;
+}
+
+export function decodeZrleRect(width: number, height: number, data: Buffer): Buffer {
+	const out = Buffer.allocUnsafe(width * height * 4);
+	let pos = 0;
+	const len = data.byteLength;
+	const need = (n: number): void => {
+		if (pos + n > len) throw new Error("RFB_INVALID");
+	};
+	for (let ty = 0; ty < height; ty += 64) {
+		const th = Math.min(64, height - ty);
+		for (let tx = 0; tx < width; tx += 64) {
+			const tw = Math.min(64, width - tx);
+			const tilePixels = tw * th;
+			need(1);
+			const sub = data[pos++] as number;
+			if (sub === 0) {
+				need(tilePixels * 3);
+				for (let ly = 0; ly < th; ly++) {
+					let o = ((ty + ly) * width + tx) * 4;
+					for (let lx = 0; lx < tw; lx++) {
+						out[o++] = data[pos++] as number;
+						out[o++] = data[pos++] as number;
+						out[o++] = data[pos++] as number;
+						out[o++] = 0;
+					}
+				}
+			} else if (sub === 1) {
+				need(3);
+				const b = data[pos++] as number;
+				const g = data[pos++] as number;
+				const r = data[pos++] as number;
+				for (let ly = 0; ly < th; ly++) {
+					let o = ((ty + ly) * width + tx) * 4;
+					for (let lx = 0; lx < tw; lx++) {
+						out[o++] = b;
+						out[o++] = g;
+						out[o++] = r;
+						out[o++] = 0;
+					}
+				}
+			} else if (sub >= 2 && sub <= 16) {
+				const palSize = sub;
+				need(palSize * 3);
+				const palOff = pos;
+				pos += palSize * 3;
+				const bpp = palSize === 2 ? 1 : palSize <= 4 ? 2 : 4;
+				const ppb = 8 / bpp;
+				const mask = (1 << bpp) - 1;
+				const rowBytes = Math.ceil(tw / ppb);
+				need(rowBytes * th);
+				for (let ly = 0; ly < th; ly++) {
+					let o = ((ty + ly) * width + tx) * 4;
+					const rowStart = pos;
+					pos += rowBytes;
+					for (let lx = 0; lx < tw; lx++) {
+						const packed = data[rowStart + Math.floor(lx / ppb)] as number;
+						const shift = 8 - bpp * ((lx % ppb) + 1);
+						const idx = (packed >> shift) & mask;
+						if (idx >= palSize) throw new Error("RFB_INVALID");
+						const po = palOff + idx * 3;
+						out[o++] = data[po] as number;
+						out[o++] = data[po + 1] as number;
+						out[o++] = data[po + 2] as number;
+						out[o++] = 0;
+					}
+				}
+			} else if (sub === 128) {
+				let drawn = 0;
+				let lx = 0;
+				let ly = 0;
+				while (drawn < tilePixels) {
+					need(4);
+					const b = data[pos++] as number;
+					const g = data[pos++] as number;
+					const r = data[pos++] as number;
+					let run = 1;
+					let lb = data[pos++] as number;
+					while (lb === 255) {
+						run += 255;
+						need(1);
+						lb = data[pos++] as number;
+					}
+					run += lb;
+					if (drawn + run > tilePixels) throw new Error("RFB_INVALID");
+					drawn += run;
+					while (run > 0) {
+						const span = Math.min(run, tw - lx);
+						let o = ((ty + ly) * width + tx + lx) * 4;
+						for (let k = 0; k < span; k++) {
+							out[o++] = b;
+							out[o++] = g;
+							out[o++] = r;
+							out[o++] = 0;
+						}
+						lx += span;
+						if (lx === tw) {
+							lx = 0;
+							ly++;
+						}
+						run -= span;
+					}
+				}
+			} else if (sub >= 130 && sub <= 255) {
+				const palSize = sub - 128;
+				need(palSize * 3);
+				const palOff = pos;
+				pos += palSize * 3;
+				let drawn = 0;
+				let lx = 0;
+				let ly = 0;
+				while (drawn < tilePixels) {
+					need(1);
+					const tag = data[pos++] as number;
+					const idx = tag & 0x7f;
+					if (idx >= palSize) throw new Error("RFB_INVALID");
+					let run = 1;
+					if ((tag & 0x80) !== 0) {
+						need(1);
+						let lb = data[pos++] as number;
+						while (lb === 255) {
+							run += 255;
+							need(1);
+							lb = data[pos++] as number;
+						}
+						run += lb;
+					}
+					if (drawn + run > tilePixels) throw new Error("RFB_INVALID");
+					drawn += run;
+					const po = palOff + idx * 3;
+					const b = data[po] as number;
+					const g = data[po + 1] as number;
+					const r = data[po + 2] as number;
+					while (run > 0) {
+						const span = Math.min(run, tw - lx);
+						let o = ((ty + ly) * width + tx + lx) * 4;
+						for (let k = 0; k < span; k++) {
+							out[o++] = b;
+							out[o++] = g;
+							out[o++] = r;
+							out[o++] = 0;
+						}
+						lx += span;
+						if (lx === tw) {
+							lx = 0;
+							ly++;
+						}
+						run -= span;
+					}
+				}
+			} else {
+				throw new Error("RFB_INVALID");
+			}
+		}
+	}
+	if (pos !== len) throw new Error("RFB_INVALID");
+	return out;
+}
 
 /** What an emptied slot of a ByteQueue holds. */
 const NO_BYTES = Buffer.alloc(0);
@@ -389,7 +634,7 @@ export class RfbReader {
 	#width = 0;
 	#height = 0;
 	/** How far the sizes of an update's rectangles were walked while its bytes come: one header a unit. */
-	#walk: { count: number; index: number; at: number } | null = null;
+	#walk: { count: number; index: number; at: number; decodedBytes: number } | null = null;
 	/** An update whose bytes are all here, being taken out a unit at a time: what is taken so far, and the area that is
 	 * part taken (its buffer and how much of it is filled). */
 	#taking: {
@@ -398,6 +643,8 @@ export class RfbReader {
 		/** Bytes of this update still in the queue. */
 		left: number;
 		readonly rects: RfbRect[];
+		readonly items: (RfbRect | RfbCompressedRect)[];
+		hasCompressed: boolean;
 		cursor: RfbCursor | null;
 		size: { width: number; height: number } | null;
 		width: number;
@@ -575,7 +822,7 @@ export class RfbReader {
 		if (!this.#taking) {
 			if (!this.#walk) {
 				if (queue.length < 4) return null;
-				const walk = { count: queue.peek(4).readUInt16BE(2), index: 0, at: 4 };
+				const walk = { count: queue.peek(4).readUInt16BE(2), index: 0, at: 4, decodedBytes: 0 };
 				if (walk.count > MAX_RECTS) throw new Error("RFB_UPDATE_TOO_LARGE");
 				this.#walk = walk;
 				this.#taken += RFB_UNIT_COST + 4;
@@ -589,14 +836,23 @@ export class RfbReader {
 				const h = head.readUInt16BE(6);
 				const encoding = head.readInt32BE(8);
 				if (w > MAX_WIDTH || h > MAX_HEIGHT) throw new Error("RFB_INVALID");
-				if (encoding === 0) walk.at += 12 + w * h * 4;
-				else if (encoding === -239) walk.at += 12 + w * h * 4 + Math.ceil(w / 8) * h;
+				let headerBytes = 12;
+				if (encoding === RFB_ENCODING_RAW) {
+					walk.at += 12 + w * h * 4;
+					walk.decodedBytes += w * h * 4;
+				} else if (encoding === RFB_ENCODING_ZLIB || encoding === RFB_ENCODING_ZRLE) {
+					if (queue.length < walk.at + 16) return null;
+					const compressedLen = queue.peekAt(walk.at + 12, 4).readUInt32BE(0);
+					walk.at += 16 + compressedLen;
+					walk.decodedBytes += w * h * 4;
+					headerBytes = 16;
+				} else if (encoding === -239) walk.at += 12 + w * h * 4 + Math.ceil(w / 8) * h;
 				else if (encoding === -223) walk.at += 12;
 				else throw new Error("RFB_UNKNOWN_ENCODING");
 				// The whole update's size is known as its headers are walked: refused before any more of it is buffered.
-				if (walk.at > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
+				if (walk.at > this.#budget || walk.decodedBytes > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
 				walk.index++;
-				this.#taken += RFB_UNIT_COST + 12;
+				this.#taken += RFB_UNIT_COST + headerBytes;
 				return [];
 			}
 			if (queue.length < walk.at) return null;
@@ -608,6 +864,8 @@ export class RfbReader {
 				index: 0,
 				left: walk.at - 4,
 				rects: [],
+				items: [],
+				hasCompressed: false,
 				cursor: null,
 				size: null,
 				// A size change in this update bounds its later areas.
@@ -637,10 +895,34 @@ export class RfbReader {
 					// dropped here, so one update — and so one ring entry — never holds pixels of two sizes (review r5 F3
 					// of #1746). The server sends the whole screen of the new size right after, which this module asks for.
 					taking.rects.length = 0;
+					taking.items.length = 0;
+					taking.hasCompressed = false;
 					taking.index++;
 					return [];
 				}
-				const bytes = w * h * 4 + (encoding === -239 ? Math.ceil(w / 8) * h : 0);
+				let bytes: number;
+				if (encoding === RFB_ENCODING_ZLIB || encoding === RFB_ENCODING_ZRLE) {
+					bytes = queue.take(4).readUInt32BE(0);
+					taking.left -= 4;
+					this.#taken += 4;
+				} else {
+					bytes = w * h * 4 + (encoding === -239 ? Math.ceil(w / 8) * h : 0);
+				}
+				if (bytes === 0) {
+					taking.index++;
+					const x = head.readUInt16BE(0);
+					const y = head.readUInt16BE(2);
+					if (encoding === -239) {
+						taking.cursor = { hotX: x, hotY: y, width: w, height: h, pixels: NO_BYTES, mask: NO_BYTES };
+					} else if (w > 0 && h > 0) {
+						if (x + w > taking.width || y + h > taking.height) throw new Error("RFB_INVALID");
+						if (encoding === RFB_ENCODING_ZLIB || encoding === RFB_ENCODING_ZRLE) {
+							taking.hasCompressed = true;
+							taking.items.push({ x, y, width: w, height: h, encoding, compressed: NO_BYTES });
+						}
+					}
+					return [];
+				}
 				taking.part = { head, pixels: Buffer.allocUnsafe(bytes), filled: 0 };
 				return [];
 			}
@@ -658,7 +940,8 @@ export class RfbReader {
 			const y = part.head.readUInt16BE(2);
 			const w = part.head.readUInt16BE(4);
 			const h = part.head.readUInt16BE(6);
-			if (part.head.readInt32BE(8) === -239) {
+			const encoding = part.head.readInt32BE(8);
+			if (encoding === -239) {
 				taking.cursor = {
 					hotX: x,
 					hotY: y,
@@ -667,14 +950,26 @@ export class RfbReader {
 					pixels: part.pixels.subarray(0, w * h * 4),
 					mask: part.pixels.subarray(w * h * 4),
 				};
-			} else if (w > 0 && h > 0 && x + w <= taking.width && y + h <= taking.height)
-				taking.rects.push({ x, y, width: w, height: h, pixels: part.pixels });
-			else if (w > 0 && h > 0) throw new Error("RFB_INVALID");
+			} else if (encoding === RFB_ENCODING_ZLIB || encoding === RFB_ENCODING_ZRLE) {
+				if (w > 0 && h > 0 && (x + w > taking.width || y + h > taking.height)) throw new Error("RFB_INVALID");
+				taking.hasCompressed = true;
+				taking.items.push({ x, y, width: w, height: h, encoding, compressed: part.pixels });
+			} else if (w > 0 && h > 0 && x + w <= taking.width && y + h <= taking.height) {
+				const rect: RfbRect = { x, y, width: w, height: h, pixels: part.pixels };
+				taking.rects.push(rect);
+				taking.items.push(rect);
+			} else if (w > 0 && h > 0) throw new Error("RFB_INVALID");
 			return [];
 		}
 		this.#taking = null;
 		this.#taken += RFB_UNIT_COST;
-		this.#onEvent({ kind: "update", rects: taking.rects, cursor: taking.cursor, size: taking.size });
+		this.#onEvent({
+			kind: "update",
+			rects: taking.rects,
+			...(taking.hasCompressed ? { items: taking.items } : {}),
+			cursor: taking.cursor,
+			size: taking.size,
+		});
 		return [];
 	}
 }
@@ -687,8 +982,8 @@ const PNG_IEND_CHUNK = (() => {
 	buf.writeUInt32BE(crc32(buf.subarray(4, 8)), 8);
 	return buf;
 })();
-// WHY: stay single-threaded under CPUQuota=100% (avoiding libuv CFS throttling) while yielding before level-3 deflateSync (~0.1-1.9 ms up to MAX_AREA_PIXELS).
-const PNG_DEFLATE_LEVEL = 3;
+// WHY: Use level-1 deflateSync to lower per-frame PNG CPU latency while staying single-threaded under CPUQuota=100%.
+const PNG_DEFLATE_LEVEL = 1;
 
 function writeChunk(target: Buffer, offset: number, type: string, data: Buffer): number {
 	target.writeUInt32BE(data.byteLength, offset);
@@ -827,6 +1122,7 @@ export interface DesktopStreamOptions {
 	maxCycleFailures?: number;
 	/** No stream lasts longer than this (8 h): the window asks for a new one. */
 	maxMs?: number;
+	idleGraceMs?: number;
 	/** Called once the relay is gone and every member's stream has ended. */
 	ended?(): void;
 	now?(): number;
@@ -1117,6 +1413,11 @@ export class DesktopStream {
 	 * updates past the reader's bound within seconds, review r11 of #1746). */
 	#wantWhole = false;
 	#wholeInFlight = false;
+	#idleTimer: ReturnType<typeof setTimeout> | null = null;
+	#zrleInflater: RfbZlibStream | null = null;
+	#zlibInflater: RfbZlibStream | null = null;
+	#decodeTail: Promise<void> = Promise.resolve();
+	#pendingDecode = 0;
 	#ended: string | null = null;
 	#relay: Promise<void> = Promise.resolve();
 	constructor(options: DesktopStreamOptions) {
@@ -1125,6 +1426,9 @@ export class DesktopStream {
 	/** Why it ended, or null while it lives. */
 	get ended(): string | null {
 		return this.#ended;
+	}
+	get idle(): boolean {
+		return this.#ended === null && this.#watchers.size === 0;
 	}
 
 	/** What the stream holds right now, in entries: the ring's updates and the messages waiting for the VNC server.
@@ -1144,6 +1448,10 @@ export class DesktopStream {
 	 * answers why it ended (`closed` when the signal aborted). */
 	async watch(release: DesktopStreamRelease, sink: DesktopStreamSink, signal: AbortSignal): Promise<string> {
 		if (this.#ended) return this.#ended;
+		if (this.#idleTimer) {
+			clearTimeout(this.#idleTimer);
+			this.#idleTimer = null;
+		}
 		const now = this.#options.now ?? Date.now;
 		const watcher: Watcher = {
 			sentSeq: this.#seq,
@@ -1212,7 +1520,18 @@ export class DesktopStream {
 				done.removeEventListener("abort", wakeOnEnd);
 				this.#watchers.delete(watcher);
 				this.#trim();
-				if (this.#watchers.size === 0) this.#end("idle");
+				if (this.#watchers.size === 0) {
+					const grace = Math.max(0, this.#options.idleGraceMs ?? 0);
+					if (grace > 0) {
+						if (!this.#idleTimer && !this.#ended) {
+							this.#idleTimer = setTimeout(() => {
+								this.#idleTimer = null;
+								if (this.#watchers.size === 0) this.#end("idle");
+							}, grace);
+							this.#idleTimer.unref?.();
+						}
+					} else this.#end("idle");
+				}
 			}
 		});
 	}
@@ -1221,23 +1540,24 @@ export class DesktopStream {
 	#start(): void {
 		if (this.#started) return;
 		this.#started = true;
-		const reader = new RfbReader((event) => {
-			if (event.kind === "init") {
-				this.#width = event.width;
-				this.#height = event.height;
-				this.#wholeInFlight = true;
-				// The members already here get the size from their first update; the screen is asked whole by the reader.
-				this.#push({ rects: [], cursor: null, size: { width: event.width, height: event.height } });
-				return;
-			}
-			if (event.size) {
-				this.#width = event.size.width;
-				this.#height = event.size.height;
+		const deliverUpdate = (
+			rects: readonly RfbRect[],
+			cursor: RfbCursor | null,
+			size: { readonly width: number; readonly height: number } | null,
+		): void => {
+			if (this.#ended) return;
+			if (size) {
+				this.#width = size.width;
+				this.#height = size.height;
 				this.#wantWhole = true;
 			}
 			// An update with no areas, no pointer shape and no size changes nothing a member sees: it is not kept (review
 			// r10 of #1746), and only asks for the next one.
-			if (event.rects.length > 0 || event.cursor || event.size) this.#push(event);
+			if (rects.length > 0 || cursor || size) this.#push({ rects, cursor, size });
+			if (this.#watchers.size === 0) {
+				this.#wholeInFlight = false;
+				return;
+			}
 			// Keep the changes coming: ONE request for this update, at once — the whole screen when members need it anew,
 			// what changed otherwise (it replaces any of its kind still waiting: O(1)).
 			if (this.#wantWhole) {
@@ -1248,6 +1568,63 @@ export class DesktopStream {
 				this.#wholeInFlight = false;
 				this.#outbox.push(rfbUpdateRequest(true, this.#width, this.#height));
 			}
+		};
+		const reader = new RfbReader((event) => {
+			if (event.kind === "init") {
+				this.#width = event.width;
+				this.#height = event.height;
+				this.#wholeInFlight = true;
+				// The members already here get the size from their first update; the screen is asked whole by the reader.
+				this.#push({ rects: [], cursor: null, size: { width: event.width, height: event.height } });
+				return;
+			}
+			if (!event.items && this.#pendingDecode === 0) {
+				deliverUpdate(event.rects, event.cursor, event.size);
+				return;
+			}
+			const items = event.items ?? event.rects;
+			this.#pendingDecode++;
+			this.#decodeTail = this.#decodeTail
+				.then(async () => {
+					if (this.#ended) return;
+					const rects: RfbRect[] = [];
+					for (const item of items) {
+						if (this.#ended) return;
+						if ("compressed" in item) {
+							let inflater: RfbZlibStream;
+							if (item.encoding === RFB_ENCODING_ZRLE) {
+								if (!this.#zrleInflater) this.#zrleInflater = new RfbZlibStream();
+								inflater = this.#zrleInflater;
+							} else {
+								if (!this.#zlibInflater) this.#zlibInflater = new RfbZlibStream();
+								inflater = this.#zlibInflater;
+							}
+							const maxBytes =
+								item.encoding === RFB_ENCODING_ZRLE
+									? maxZrleBytes(item.width, item.height)
+									: item.width * item.height * 4;
+							const inflated = await inflater.inflate(item.compressed, maxBytes);
+							if (this.#ended) return;
+							if (item.width > 0 && item.height > 0) {
+								const pixels =
+									item.encoding === RFB_ENCODING_ZRLE
+										? decodeZrleRect(item.width, item.height, inflated)
+										: decodeZlibRect(item.width, item.height, inflated);
+								rects.push({ x: item.x, y: item.y, width: item.width, height: item.height, pixels });
+							}
+							await new Promise<void>((resolve) => setImmediate(resolve));
+						} else {
+							rects.push(item);
+						}
+					}
+					deliverUpdate(rects, event.cursor, event.size);
+				})
+				.catch(() => {
+					this.#end("STREAM_UNAVAILABLE");
+				})
+				.finally(() => {
+					this.#pendingDecode--;
+				});
 		});
 		// What the server sends is taken in as it comes (bounded at once), and read in turns of at most about
 		// RFB_TAKE_PER_TURN bytes of charged work — every message, header and piece counted (review r10 of #1746) — each
@@ -1452,6 +1829,14 @@ export class DesktopStream {
 	#end(reason: string): void {
 		if (this.#ended) return;
 		this.#ended = reason;
+		if (this.#idleTimer) {
+			clearTimeout(this.#idleTimer);
+			this.#idleTimer = null;
+		}
+		this.#zrleInflater?.close();
+		this.#zrleInflater = null;
+		this.#zlibInflater?.close();
+		this.#zlibInflater = null;
 		this.#stop.abort();
 		this.#outbox.close();
 		this.#ring.clear();

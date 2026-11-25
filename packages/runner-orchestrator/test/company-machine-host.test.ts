@@ -6087,6 +6087,80 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		await settle();
 		expect(made).toHaveLength(MAX_WATCHED_DESKTOPS + 1);
 	});
+
+	it("caches stream release heartbeats across frames within streamReleaseCacheMs, honors expiry and generation revocation immediately, and evicts idle streams at capacity", async () => {
+		let nowMs = 10_000;
+		const { f, relays, update } = await relayed();
+		const pipe = f.client.execInstancePipe as ReturnType<typeof vi.fn>;
+		f.restart({
+			now: () => nowMs,
+			streamReleaseCacheMs: 1000,
+			desktopStreams: (spec, ended) =>
+				new DesktopStream({ run: desktopRelay(f.client as never, spec), cycleEveryMs: 0, ended }),
+		});
+		const sink = sinkOf();
+		const stop = new AbortController();
+		const watching = f.host.memberStream(stream({ generation: 4 }), sink, stop.signal);
+		await settle();
+		const releaseCount = () =>
+			f.calls.filter((call) => call.method === "qorpera_member_machine_stream_release").length;
+		await vi.waitFor(() => expect(sink.messages).toHaveLength(1));
+		expect(releaseCount()).toBe(1);
+		for (let i = 0; i < 5; i++) {
+			relays[0]!.out(update([i * 40, 10, 20]));
+			await vi.waitFor(() => expect(sink.messages.length).toBeGreaterThanOrEqual(2 + i));
+		}
+		expect(releaseCount()).toBe(2);
+		nowMs += 1000;
+		f.streamReleases.push({
+			schema: "qorpera.member-machine-stream-release/v1",
+			state: "refused",
+			reason: "STREAM_NOT_ALLOWED",
+		});
+		relays[0]!.out(update([1, 2, 3]));
+		expect(await watching).toBe("STREAM_NOT_ALLOWED");
+		expect(releaseCount()).toBe(3);
+
+		const secondStop = new AbortController();
+		const secondSink = sinkOf();
+		const secondWatch = f.host.memberStream(stream({ generation: 4 }), secondSink, secondStop.signal);
+		await settle();
+		await vi.waitFor(() => expect(secondSink.messages).toHaveLength(1));
+		relays.at(-1)!.out(update([10, 20, 30]));
+		await vi.waitFor(() => expect(secondSink.messages).toHaveLength(2));
+		// WHY: Observing a newer generation on the same placement immediately revokes cached shared streams without waiting for heartbeat expiry.
+		f.host.memberPointer({
+			placementId: id(6),
+			bootId: id(7),
+			userId: id(22),
+			generation: 5,
+			private: true,
+			x: 1,
+			y: 1,
+		});
+		relays.at(-1)!.out(update([40, 50, 60]));
+		expect(await secondWatch).toBe("DESKTOP_HELD_SINCE");
+		expect(pipe).toHaveBeenCalled();
+
+		const closed: string[] = [];
+		f.restart({
+			desktopStreams: (spec, ended) => ({
+				ended: null as string | null,
+				idle: spec.name === lxdCompanyMachineName(id(100)),
+				watch: () => new Promise<string>(() => {}),
+				close: () => {
+					closed.push(spec.name);
+					ended();
+				},
+			}),
+		});
+		for (let n = 0; n < MAX_WATCHED_DESKTOPS; n++)
+			void f.host.memberStream(stream({ placementId: id(100 + n) }), sinkOf(), f.signal);
+		await settle();
+		void f.host.memberStream(stream({ placementId: id(200) }), sinkOf(), f.signal);
+		await settle();
+		expect(closed).toEqual([lxdCompanyMachineName(id(100))]);
+	});
 });
 
 describe("a member's action on a desktop (20260930713000)", () => {
@@ -6285,6 +6359,38 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			const one = await piped(async () => answer(exitCode));
 			expect(await one.f.host.memberAct(act({ type: "type", text: "abc" }), one.f.signal)).toEqual(outcome);
 		}
+	});
+
+	it("skips qorpera_machine_desktop_picture_check for passVerified memberAct while still enforcing observed generation bumps", async () => {
+		const { f } = await piped(async () => answer(0, output("click")));
+		expect(
+			await f.host.memberAct(
+				{ ...act({ type: "click", x: 10, y: 20 }), seat: 4, shared: true, passVerified: true },
+				f.signal,
+			),
+		).toEqual({ done: { exitCode: 0 } });
+		expect(f.calls.filter((call) => call.method === "qorpera_machine_desktop_picture_check")).toHaveLength(0);
+		f.host.memberPointer({
+			placementId: id(6),
+			bootId: id(7),
+			userId: id(22),
+			generation: 5,
+			private: true,
+			x: 1,
+			y: 1,
+		});
+		expect(
+			await f.host.memberAct(
+				{ ...act({ type: "click", x: 10, y: 20 }, id(41)), seat: 4, shared: true, passVerified: true },
+				f.signal,
+			),
+		).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		expect(
+			await f.host.memberAct(
+				{ ...act({ type: "click", x: 10, y: 20 }, id(42)), seat: 4, shared: false, passVerified: true },
+				f.signal,
+			),
+		).toEqual({ refused: "DESKTOP_CONTROL_ENDED" });
 	});
 
 	it("clears the selections after a pasted text that failed or was cut off too, and logs only a fixed word when the clear fails", async () => {
@@ -7029,7 +7135,7 @@ describe("a member's action on a desktop (20260930713000)", () => {
 				spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_MEMBER_TYPE, bootId, mode], { env: { PATH }, input: text });
 			expect(run("hunter2 $HOME `id`", "type").status).toBe(0);
 			expect(readFileSync(log, "utf8").split("\n")).toEqual([
-				"xdotool type --delay 12 --file - DISPLAY=:1",
+				"xdotool type --delay 2 --file - DISPLAY=:1",
 				"stdin: [hunter2 $HOME `id`x]",
 				"",
 			]);

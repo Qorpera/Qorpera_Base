@@ -537,6 +537,8 @@ export interface MemberMachineActAuthority {
 	/** A shared action (20260930734000): begun with no hold of the member's; the host's fence then names no member, so a
 	 * private hold by anyone since stops it. */
 	shared: boolean;
+	// WHY: True when authorized locally via a live 10s desktop pass so the host can check its in-memory generation fence without an extra SQL round trip.
+	passVerified?: boolean;
 }
 
 /** The action's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_desktop_act_authority)

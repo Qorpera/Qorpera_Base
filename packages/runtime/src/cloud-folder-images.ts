@@ -135,13 +135,121 @@ export async function oneImageAtATime<T>(signal: AbortSignal, task: () => Promis
 	}
 }
 
+export interface FolderImageViewOptions {
+	readonly fastPathValidPng?: boolean;
+}
+
+const MAX_FAST_PNG_CHUNKS = 64;
+const FAST_PNG_SAFE_ANCILLARY: Readonly<Record<string, number>> = Object.freeze({
+	sRGB: 1,
+	gAMA: 4,
+	cHRM: 32,
+	pHYs: 9,
+});
+
+// WHY: Clean opaque 8-bit RGB PNGs (like scrot output) already satisfy fence bounds and can skip pure-JS filter+deflate re-encoding after full chunk, CRC, and zlib verification.
+export function tryFastPathValidPng(bytes: Uint8Array): FolderImageView | null {
+	if (folderImageFormat(bytes) !== "png") return null;
+	if (bytes.byteLength < 8 + 12 + 13 + 12 || bytes.byteLength > SHOWN_MAX_BYTES) return null;
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	let at = 8;
+	let width = 0;
+	let height = 0;
+	let seenIhdr = false;
+	let seenIdat = false;
+	let idatEnded = false;
+	let seenIend = false;
+	let chunks = 0;
+	let idatBytes = 0;
+	const idats: Uint8Array[] = [];
+	while (at < bytes.byteLength) {
+		if (++chunks > MAX_FAST_PNG_CHUNKS || at + 12 > bytes.byteLength) return null;
+		const length = view.getUint32(at, false);
+		if (length > bytes.byteLength - at - 12) return null;
+		const dataOff = at + 8;
+		const crcOff = dataOff + length;
+		if (crc32(bytes.subarray(at + 4, crcOff)) >>> 0 !== view.getUint32(crcOff, false)) return null;
+		const type = String.fromCharCode(bytes[at + 4]!, bytes[at + 5]!, bytes[at + 6]!, bytes[at + 7]!);
+		at = crcOff + 4;
+		if (!seenIhdr) {
+			if (type !== "IHDR" || length !== 13) return null;
+			width = view.getUint32(dataOff, false);
+			height = view.getUint32(dataOff + 4, false);
+			const bitDepth = bytes[dataOff + 8];
+			const colorType = bytes[dataOff + 9];
+			const compression = bytes[dataOff + 10];
+			const filter = bytes[dataOff + 11];
+			const interlace = bytes[dataOff + 12];
+			if (
+				width < 1 ||
+				width > SHOWN_MAX_WIDTH ||
+				height < 1 ||
+				height > SHOWN_MAX_HEIGHT ||
+				bitDepth !== 8 ||
+				colorType !== 2 ||
+				compression !== 0 ||
+				filter !== 0 ||
+				interlace !== 0
+			)
+				return null;
+			seenIhdr = true;
+			continue;
+		}
+		if (type === "IDAT") {
+			if (idatEnded) return null;
+			seenIdat = true;
+			if (length > 0) {
+				idats.push(bytes.subarray(dataOff, crcOff));
+				idatBytes += length;
+			}
+			continue;
+		}
+		if (type === "IEND") {
+			if (length !== 0 || !seenIdat || idatBytes === 0 || at !== bytes.byteLength) return null;
+			seenIend = true;
+			break;
+		}
+		if (seenIdat) idatEnded = true;
+		const expectedLen = FAST_PNG_SAFE_ANCILLARY[type];
+		if (expectedLen === undefined || length !== expectedLen || seenIdat) return null;
+	}
+	if (!seenIend || idatBytes === 0) return null;
+	const stride = width * 3 + 1;
+	const expectedRaw = stride * height;
+	const idat = idats.length === 1 ? (idats[0] as Uint8Array) : Buffer.concat(idats, idatBytes);
+	let raw: Buffer;
+	try {
+		raw = inflateSync(idat, { maxOutputLength: expectedRaw });
+	} catch {
+		return null;
+	}
+	if (raw.byteLength !== expectedRaw) return null;
+	for (let y = 0; y < height; y++) {
+		if ((raw[y * stride] as number) > 4) return null;
+	}
+	const png = Buffer.from(bytes);
+	return {
+		format: "png",
+		width,
+		height,
+		shownWidth: width,
+		shownHeight: height,
+		png,
+		sha256: createHash("sha256").update(png).digest("hex"),
+	};
+}
+
 /** The PNG the model sees of an image file. Throws FolderImageRefusal for anything it does not show. */
-export function folderImageView(bytes: Uint8Array): FolderImageView {
+export function folderImageView(bytes: Uint8Array, options?: FolderImageViewOptions): FolderImageView {
 	const format = folderImageFormat(bytes);
 	if (format === undefined)
 		throw new FolderImageRefusal("unreadable", "the file is not a PNG, JPEG, GIF or WebP image");
 	if (bytes.byteLength > MAX_FOLDER_IMAGE_BYTES)
 		throw new FolderImageRefusal("too_large", `the file is larger than ${MAX_FOLDER_IMAGE_BYTES / 1024 / 1024} MiB`);
+	if (options?.fastPathValidPng === true && format === "png") {
+		const fast = tryFastPathValidPng(bytes);
+		if (fast !== null) return fast;
+	}
 	try {
 		const raster = RASTERS[format](bytes);
 		const scale = Math.min(1, SHOWN_MAX_WIDTH / raster.width, SHOWN_MAX_HEIGHT / raster.height);

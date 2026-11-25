@@ -431,18 +431,18 @@ type)
 		xdotool key --clearmodifiers shift+Insert
 		sleep 0.2
 	else
-		xdotool type --delay 12 -- "$text"
+		xdotool type --delay 2 -- "$text"
 	fi
 	;;
 key)
 	(( $# > 0 )) || fail "desktop key KEY..." 2
-	# xdotool runs any of its own commands that follows the keys, whatever its case (`key exec id` runs id as root): none
-	# is a key. The list is the installed xdotool's own, so a newer one's commands are refused too; without it (xdotool
-	# may want the display for its help), no keys.
-	commands=$(xdotool help 2>/dev/null | awk 'NR > 1 && NF == 1 { print tolower($1) }' || true)
-	[[ -n $commands ]] || { need; fail "cannot read xdotool's commands, so no key is pressed"; }
+	# WHY: Static allowlist check matches MACHINE_SCREEN_XDOTOOL_COMMANDS without spawning xdotool help on every keypress.
 	for name in "$@"; do
-		if grep -qxF -- "${name,,}" <<<"$commands"; then fail "not a key: $name (it is an xdotool command)" 2; fi
+		case "${name,,}" in
+		act|behave|behave_screen_edge|click|exec|get_desktop|get_desktop_for_window|get_desktop_viewport|get_num_desktops|getactivewindow|getdisplaygeometry|getmouselocation|getwindowclassname|getwindowfocus|getwindowgeometry|getwindowname|getwindowpid|getwindowstack|help|key|keydown|keyup|mousedown|mousemove|mousemove_relative|mouseup|search|selectwindow|set_desktop|set_desktop_for_window|set_desktop_viewport|set_num_desktops|set_window|sleep|type|version|windowactivate|windowclose|windowfocus|windowkill|windowmap|windowminimize|windowmove|windowquit|windowraise|windowreparent|windowsize|windowstate|windowunmap)
+			fail "not a key: $name (it is an xdotool command)" 2
+			;;
+		esac
 	done
 	need
 	# xdotool skips a key name it does not know with a word on stderr, and exits 0: say so rather than that it pressed it.
@@ -453,10 +453,19 @@ key)
 	;;
 scroll)
 	need
-	case ${1:-} in up) button=4 ;; down) button=5 ;; *) fail "desktop scroll up|down [N]" 2 ;; esac
+	case ${1:-} in up) button=4 ;; down) button=5 ;; *) fail "desktop scroll up|down [N] [X Y]" 2 ;; esac
 	steps=${2:-3}
 	[[ $steps =~ ^[0-9]{1,3}$ ]] || fail "N is a number of steps" 2
-	xdotool click --repeat "$steps" --delay 30 "$button"
+	if (( $# == 4 )); then
+		number "${3:-}"; number "${4:-}"
+		find_pointer
+		move_to "$pointer_x" "$pointer_y" "$3" "$4"
+		xdotool "${move[@]}" click --repeat "$steps" --delay 30 "$button"
+	elif (( $# <= 2 )); then
+		xdotool click --repeat "$steps" --delay 30 "$button"
+	else
+		fail "desktop scroll up|down [N] [X Y]" 2
+	fi
 	;;
 windows)
 	need

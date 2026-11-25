@@ -458,6 +458,50 @@ describe("a member's pointer through the executor's member listener (20260930744
 		expect(s.pointed.mock.calls.length).toBe(calls);
 	});
 
+	it("accepts combined begin+withStreamTicket with a valid Origin and returns both pass and ticket", async () => {
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			undefined,
+			async (request) =>
+				"begin" in request && request.withStreamTicket === true
+					? { pass, milliseconds: 9900, ticket: "T".repeat(43), seconds: 30 }
+					: { pass, milliseconds: 10000 },
+		);
+		const ok = await post(
+			s.url("/pointer"),
+			{ begin: { generation: 7 }, withStreamTicket: true },
+			{ origin: "https://app.qorpera.com" },
+		);
+		expect(ok.status).toBe(200);
+		expect(await ok.json()).toEqual({
+			schema: "qorpera.member-machine-pointer/v1",
+			pass,
+			milliseconds: 9900,
+			ticket: "T".repeat(43),
+			seconds: 30,
+		});
+		expect(s.pointed).toHaveBeenLastCalledWith(
+			{
+				companyId: s.companyId,
+				machineId: s.machineId,
+				token,
+				begin: { generation: 7 },
+				withStreamTicket: true,
+				origin: "https://app.qorpera.com",
+			},
+			expect.any(AbortSignal),
+		);
+		const before = s.pointed.mock.calls.length;
+		for (const [body, origin] of [
+			[{ begin: { generation: 7 }, withStreamTicket: true }, undefined],
+			[{ begin: { generation: 7 }, withStreamTicket: true }, "http://evil.example"],
+			[{ begin: { generation: 7 }, withStreamTicket: false }, "https://app.qorpera.com"],
+		] as const)
+			expect((await post(s.url("/pointer"), body, origin ? { origin } : {})).status).toBe(400);
+		expect(s.pointed.mock.calls.length).toBe(before);
+	});
+
 	it("refuses a body that is not a begin or a move as 400, and without the route it is 404", async () => {
 		const s = await service(
 			async () => ({ etag, png: picture }),

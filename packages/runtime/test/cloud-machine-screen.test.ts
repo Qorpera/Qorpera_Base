@@ -227,8 +227,7 @@ describe("machine_screen's action shape", () => {
 		]);
 		expect(machineScreenDesktopArgs({ type: "scroll", direction: "down" })).toEqual([["scroll", "down", "3"]]);
 		expect(machineScreenDesktopArgs({ type: "scroll", direction: "up", steps: 5, x: 7, y: 8 })).toEqual([
-			["move", "7", "8"],
-			["scroll", "up", "5"],
+			["scroll", "up", "5", "7", "8"],
 		]);
 		expect(machineScreenDesktopArgs({ type: "open", target: "https://example.test/" })).toEqual([
 			["open", "https://example.test/"],
@@ -332,20 +331,16 @@ describe("machine_screen's helper", () => {
 		expect((m.ports.mark as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
 			(m.ports.run as ReturnType<typeof vi.fn>).mock.invocationCallOrder[1]!,
 		);
-		// A scroll at a place moves there first, within the one action's deadline.
 		const scroll = machine();
 		await machineScreen(action({ type: "scroll", direction: "down", steps: 4, x: 10, y: 20 }), scroll.ports);
-		expect(scroll.actions().map((call) => call.args)).toEqual([
-			["move", "10", "20"],
-			["scroll", "down", "4"],
-		]);
+		expect(scroll.actions().map((call) => call.args)).toEqual([["scroll", "down", "4", "10", "20"]]);
 	});
 
 	it("tells a failed action's exit and the last line of its error, and still shows the screen", async () => {
 		const m = machine({
 			answers: {
 				click: done(1, "", `xdotool: warning\n${"é".repeat(400)}\n`),
-				move: done(2, "", "not a pixel position: 99999\n"),
+				scroll: done(2, "", "not a pixel position: 99999\n"),
 			},
 		});
 		const failed = await machineScreen(action({ type: "click", x: 1, y: 1 }), m.ports);
@@ -354,12 +349,11 @@ describe("machine_screen's helper", () => {
 		expect(Buffer.byteLength(failed.header.action?.error ?? "")).toBeLessThanOrEqual(300);
 		expect(failed.header.action?.error).toMatch(/^é+$/);
 		expect(failed.png).toEqual(PNG);
-		// A scroll whose move fails does not scroll.
 		const scroll = await machineScreen(action({ type: "scroll", direction: "up", x: 1, y: 1 }), m.ports);
 		expect(scroll).toMatchObject({
 			header: { action: { type: "scroll", exitCode: 2, error: "not a pixel position: 99999" } },
 		});
-		expect(m.actions().map((call) => call.args[0])).toEqual(["click", "move"]);
+		expect(m.actions().map((call) => call.args[0])).toEqual(["click", "scroll"]);
 		// Killed by the helper's own backstop: no exit, and no error of a killed command.
 		const killed = machine({ answers: { type: done(null, "", "Killed") } });
 		const output = await machineScreen(action({ type: "type", text: "hello" }), killed.ports);
@@ -411,21 +405,15 @@ describe("machine_screen's helper", () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		try {
 			vi.setSystemTime(1_800_000_000_000);
-			// The move takes 4 s: the scroll after it gets the 6 s left, never a fresh 10.
-			const slow = machine({
-				during: (args) => {
-					if (args[0] === "move") vi.setSystemTime(Date.now() + 4000);
-				},
-			});
-			await machineScreen(action({ type: "scroll", direction: "down", x: 1, y: 2 }), slow.ports);
-			expect(slow.actions().map((call) => [call.args[0], call.seconds, call.timeoutMs])).toEqual([
-				["move", "10.000", 11000],
-				["scroll", "6.000", 7000],
+			const single = machine();
+			await machineScreen(action({ type: "scroll", direction: "down", x: 1, y: 2 }), single.ports);
+			expect(single.actions().map((call) => [call.args, call.seconds, call.timeoutMs])).toEqual([
+				[["scroll", "down", "3", "1", "2"], "10.000", 11000],
 			]);
-			// A move that used it all leaves the scroll unstarted (a limit of 0 would be none), killed at the deadline.
 			const spent = machine({
+				answers: { scroll: done(1, "", "Job for run-u9.service failed") },
 				during: (args) => {
-					if (args[0] === "move") vi.setSystemTime(Date.now() + 10000);
+					if (args[0] === "scroll") vi.setSystemTime(Date.now() + 10000);
 				},
 			});
 			expect(
@@ -433,7 +421,7 @@ describe("machine_screen's helper", () => {
 			).toMatchObject({
 				header: { action: { type: "scroll", exitCode: null } },
 			});
-			expect(spent.actions().map((call) => call.args[0])).toEqual(["move"]);
+			expect(spent.actions().map((call) => call.args[0])).toEqual(["scroll"]);
 		} finally {
 			vi.useRealTimers();
 		}

@@ -152,7 +152,10 @@ const POINTER_REFUSALS: ReadonlySet<string> = new Set<MachinePointerRefusal>([
 /** A pointer pass's begin (shared at the lease generation the window knows, or on the member's own private hold), or one
  * move on a pass, in the screen's own pixels. */
 export type MachinePointerRequest =
-	| { readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number } }
+	| {
+			readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number };
+			readonly withStreamTicket?: true;
+	  }
 	| { readonly pass: string; readonly x: number; readonly y: number }
 	/** A live picture's ticket on that pass, for its hold (20260930745000): bought for this page's Origin. */
 	| {
@@ -164,7 +167,13 @@ export type MachinePointerRequest =
 /** A pass (its id and what is left of it), a move's end (`moved` false: dropped, never queued), why not, or no pointer
  * route at all (`unavailable`: a bridge or an executor from before 20260930744000; the window then keeps today's way). */
 export type MachinePointerAnswer =
-	| { readonly kind: "pass"; readonly pass: string; readonly milliseconds: number }
+	| {
+			readonly kind: "pass";
+			readonly pass: string;
+			readonly milliseconds: number;
+			readonly ticket?: string;
+			readonly seconds?: number;
+	  }
 	| { readonly kind: "moved"; readonly moved: boolean }
 	| { readonly kind: "ticket"; readonly ticket: string; readonly seconds: number }
 	| { readonly kind: "refused"; readonly code: MachinePointerRefusal }
@@ -220,6 +229,7 @@ export interface WebMachineScreens {
 		on: {
 			readonly pass: string;
 			readonly hold: { readonly generation: number } | { readonly epoch: number; readonly seat: number };
+			readonly ticket?: string;
 		},
 		onMessage: (message: MachineStreamMessage) => void,
 		signal: AbortSignal,
@@ -250,6 +260,7 @@ export function createWebMachineScreens(options: {
 	readonly streamUrl?: string;
 	readonly WebSocket?: typeof WebSocket;
 }): WebMachineScreens {
+	let combinedTicketUnsupported = false;
 	const screens: WebMachineScreens = {
 		look: (machineId, { etag, watching }, signal) => {
 			if (!UUID_PATTERN.test(options.companyId) || !UUID_PATTERN.test(machineId))
@@ -404,21 +415,32 @@ export function createWebMachineScreens(options: {
 					const url = options.route(
 						`${origin}/v1/member-machine-screens/${options.companyId.toLowerCase()}/${machineId.toLowerCase()}/pointer`,
 					);
-					const response = await options.fetch(url, {
-						method: "POST",
-						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-						body: JSON.stringify(
-							"begin" in request
-								? { begin: request.begin }
-								: "stream" in request
-									? { stream: { pass: request.stream.pass, hold: request.stream.hold } }
-									: { pass: request.pass, x: request.x, y: request.y },
-						),
-						signal: requestSignal,
-						redirect: "error",
-						// WHY: Omit cache: "no-store" on cross-origin POST so Chrome caches the CORS preflight instead of adding an OPTIONS RTT per action.
-						credentials: "omit",
-					});
+					const wantTicket = "begin" in request && request.withStreamTicket === true && !combinedTicketUnsupported;
+					const sendPointer = (withTicket: boolean) =>
+						options.fetch(url, {
+							method: "POST",
+							headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+							body: JSON.stringify(
+								"begin" in request
+									? withTicket
+										? { begin: request.begin, withStreamTicket: true }
+										: { begin: request.begin }
+									: "stream" in request
+										? { stream: { pass: request.stream.pass, hold: request.stream.hold } }
+										: { pass: request.pass, x: request.x, y: request.y },
+							),
+							signal: requestSignal,
+							redirect: "error",
+							// WHY: Omit cache: "no-store" on cross-origin POST so Chrome caches the CORS preflight instead of adding an OPTIONS RTT per action.
+							credentials: "omit",
+						});
+					let response = await sendPointer(wantTicket);
+					// WHY: Fall back transparently when talking to an older executor that rejects withStreamTicket with HTTP 400.
+					if (wantTicket && response.status === 400) {
+						void response.body?.cancel().catch(() => undefined);
+						combinedTicketUnsupported = true;
+						response = await sendPointer(false);
+					}
 					// A bridge or an executor before 20260930744000 has no such route (404), or not for this method (405), or
 					// takes no such body (400): no pointer, quietly.
 					if ([400, 404, 405].includes(response.status)) {
@@ -449,14 +471,32 @@ export function createWebMachineScreens(options: {
 					const keys = Object.keys(answer).sort().join();
 					if (
 						"begin" in request &&
-						keys === "milliseconds,pass,schema" &&
+						(keys === "milliseconds,pass,schema" || keys === "milliseconds,pass,schema,seconds,ticket") &&
 						typeof answer.pass === "string" &&
 						UUID_PATTERN.test(answer.pass) &&
 						Number.isSafeInteger(answer.milliseconds) &&
 						(answer.milliseconds as number) >= 0 &&
 						(answer.milliseconds as number) <= 10_000
-					)
+					) {
+						if (keys === "milliseconds,pass,schema,seconds,ticket") {
+							if (
+								typeof answer.ticket !== "string" ||
+								!/^[A-Za-z0-9_-]{43}$/.test(answer.ticket) ||
+								!Number.isSafeInteger(answer.seconds) ||
+								(answer.seconds as number) < 1 ||
+								(answer.seconds as number) > 30
+							)
+								throw new MachineScreenError("Invalid machine pointer answer");
+							return {
+								kind: "pass",
+								pass: answer.pass,
+								milliseconds: answer.milliseconds as number,
+								ticket: answer.ticket,
+								seconds: answer.seconds as number,
+							};
+						}
 						return { kind: "pass", pass: answer.pass, milliseconds: answer.milliseconds as number };
+					}
 					if ("stream" in request) {
 						if (
 							keys === "schema,seconds,ticket" &&
@@ -531,14 +571,18 @@ export function createWebMachineScreens(options: {
 	const streamUrl = options.streamUrl;
 	if (streamUrl)
 		screens.stream = async (machineId, on, onMessage, signal) => {
-			// The ticket: on the member's pass, for this page's Origin (the bridge passes it on; the executor binds it).
-			const bought = await screens.pointer(machineId, { stream: { pass: on.pass, hold: on.hold } }, signal);
-			if (bought.kind === "unavailable") return { kind: "unavailable", delivered: false };
-			if (bought.kind === "refused") return { kind: "refused", code: bought.code, delivered: false };
-			if (bought.kind !== "ticket") return { kind: "failed", delivered: false };
+			let ticket = typeof on.ticket === "string" && /^[A-Za-z0-9_-]{43}$/.test(on.ticket) ? on.ticket : undefined;
+			if (!ticket) {
+				// The ticket: on the member's pass, for this page's Origin (the bridge passes it on; the executor binds it).
+				const bought = await screens.pointer(machineId, { stream: { pass: on.pass, hold: on.hold } }, signal);
+				if (bought.kind === "unavailable") return { kind: "unavailable", delivered: false };
+				if (bought.kind === "refused") return { kind: "refused", code: bought.code, delivered: false };
+				if (bought.kind !== "ticket") return { kind: "failed", delivered: false };
+				ticket = bought.ticket;
+			}
 			return openMachineStream({
 				url: streamUrl,
-				ticket: bought.ticket,
+				ticket,
 				onMessage,
 				signal,
 				...(options.WebSocket ? { WebSocket: options.WebSocket } : {}),

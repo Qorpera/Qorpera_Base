@@ -2665,6 +2665,123 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 		await expect(plain.memberAct(f.act, f.signal)).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 	});
 
+	it("reuses a live 10s desktop pass on memberAct with zero SQL, enforces shared rate limits, supports combined withStreamTicket, and falls back on miss, expiry, or revocation", async () => {
+		const f = fixture();
+		const passId = randomUUID();
+		let pointerAnswer: Record<string, unknown> = {
+			schema: "qorpera.member-machine-desktop-pointer-authority/v1",
+			state: "authorized",
+			passId,
+			machineId: f.machineId,
+			placementId: f.placementId,
+			bootId: f.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			userId: f.userId,
+			generation: 4,
+			private: false,
+			milliseconds: 10_000,
+			served: true,
+		};
+		const memberPointerBegin = vi.fn(async () => passId);
+		const memberStreamLocal = vi.fn(async () => "closed");
+		const controlCall = vi.fn(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_member_machine_desktop_pointer_authority") return pointerAnswer;
+			return f.call(method, args);
+		});
+		const router = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: closed({ call: controlCall }),
+			credential: async () => "",
+			memberActBegin: f.memberActBegin,
+			memberShareBegin: f.memberShareBegin,
+			memberPointerBegin,
+			memberActLocal: localMemberMachineAct(f.host),
+			memberStreamLocal,
+		});
+		const origin = "https://app.qorpera.com";
+		const begun = await router.memberPointer(
+			{
+				companyId: f.companyId,
+				machineId: f.machineId,
+				token: "eyJh.eyJz.c2ln",
+				begin: { generation: 4 },
+				withStreamTicket: true,
+				origin,
+			},
+			f.signal,
+		);
+		expect(begun).toMatchObject({ pass: passId, ticket: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), seconds: 30 });
+		const admitted = router.admitMemberStream((begun as { ticket: string }).ticket, origin);
+		expect(admitted).not.toBeNull();
+		expect(await admitted!({ send: async () => {} }, f.signal)).toBe("closed");
+
+		controlCall.mockClear();
+		f.memberShareBegin.mockClear();
+		f.host.memberAct.mockClear();
+		const sharedAct = {
+			companyId: f.companyId,
+			machineId: f.machineId,
+			token: "eyJh.eyJz.c2ln",
+			action: { type: "click" as const, x: 10, y: 20 },
+			shared: true as const,
+			generation: 4,
+		};
+		expect(await router.memberAct(sharedAct, f.signal)).toEqual({ exitCode: 0 });
+		expect(f.memberShareBegin).not.toHaveBeenCalled();
+		expect(controlCall).not.toHaveBeenCalled();
+		expect(f.host.memberAct).toHaveBeenCalledWith(
+			expect.objectContaining({
+				placementId: f.placementId,
+				bootId: f.bootId,
+				seat: 4,
+				userId: f.userId,
+				shared: true,
+				passVerified: true,
+			}),
+			f.signal,
+		);
+		// WHY: Mismatched generation or token must miss the desktop pass cache and fall back to SQL authority.
+		await router.memberAct({ ...sharedAct, generation: 5 }, f.signal);
+		expect(f.memberShareBegin).toHaveBeenCalledTimes(1);
+		await router.memberAct({ ...sharedAct, token: "eyJh.eyJz.b3RoZXI" }, f.signal);
+		expect(f.memberShareBegin).toHaveBeenCalledTimes(2);
+		// WHY: Non-transient refusal revokes the cached pass so subsequent calls fall back to SQL.
+		f.host.memberAct.mockResolvedValueOnce({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		await expect(router.memberAct(sharedAct, f.signal)).rejects.toMatchObject({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+		await router.memberAct(sharedAct, f.signal);
+		expect(f.memberShareBegin).toHaveBeenCalledTimes(3);
+
+		// WHY: Shared rate limit (25 actions in 5 seconds) is enforced even on cached desktop passes.
+		const passId2 = randomUUID();
+		memberPointerBegin.mockResolvedValueOnce(passId2);
+		pointerAnswer = { ...pointerAnswer, passId: passId2 };
+		await router.memberPointer(
+			{ companyId: f.companyId, machineId: f.machineId, token: "eyJh.eyJz.c2ln", begin: { generation: 4 } },
+			f.signal,
+		);
+		for (let i = 0; i < 23; i++) await router.memberAct(sharedAct, f.signal);
+		await expect(router.memberAct(sharedAct, f.signal)).rejects.toMatchObject({ code: "DESKTOP_ACTIONS_TOO_FAST" });
+
+		// WHY: Private holds also reuse a matching live pass and require exact epoch + seat match.
+		const privPass = randomUUID();
+		memberPointerBegin.mockResolvedValueOnce(privPass);
+		pointerAnswer = { ...pointerAnswer, passId: privPass, private: true, generation: 9 };
+		await router.memberPointer(
+			{ companyId: f.companyId, machineId: f.machineId, token: "eyJh.eyJz.c2ln", begin: { epoch: 4, seat: 9 } },
+			f.signal,
+		);
+		f.memberActBegin.mockClear();
+		controlCall.mockClear();
+		expect(await router.memberAct(f.act, f.signal)).toEqual({ exitCode: 0 });
+		expect(f.memberActBegin).not.toHaveBeenCalled();
+		expect(controlCall).not.toHaveBeenCalled();
+		await router.memberAct({ ...f.act, epoch: 5 }, f.signal);
+		expect(f.memberActBegin).toHaveBeenCalledTimes(1);
+	});
+
 	it("runs only the action SQL let in: its record must be this one's, a text by its length", async () => {
 		const f = fixture();
 		const request = { actionId: f.actionId, action: typed, owner: "mx-a", providerId: "machine-node" };
