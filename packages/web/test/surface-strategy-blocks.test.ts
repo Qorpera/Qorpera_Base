@@ -8,7 +8,7 @@ import { SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 import { PAGE_READY } from "../src/ui/page-frame.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fakeClient, storeWith, summary, workspace } from "./surface-fixtures.ts";
+import { fakeClient, session, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
 const ROOT = "surfaces/strategy";
 
@@ -1502,7 +1502,7 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		);
 		await store.load();
 		await store.openSurface(surface.slug);
-		const startSession = vi.spyOn(store, "startSession").mockResolvedValue(undefined);
+		const startSession = vi.spyOn(store, "startSession").mockResolvedValue(session([]));
 		const life = new AbortController();
 		const files: Record<string, string> = {
 			[`${ROOT}/layout.json`]: JSON.stringify({
@@ -1615,7 +1615,7 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		try {
 			await store.load();
 			await store.openSurface(surface.slug);
-			const startSession = vi.spyOn(store, "startSession").mockResolvedValue(undefined);
+			const startSession = vi.spyOn(store, "startSession").mockResolvedValue(session([]));
 			const files: Record<string, string> = {
 				[`${ROOT}/layout.json`]: JSON.stringify({
 					schema: "qorpera.surface-layout/v1",
@@ -1678,6 +1678,121 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 			await vi.waitFor(() => expect(view!.el.querySelector(".studio-tell-bar")).not.toBeNull());
 			view.el.querySelector<HTMLButtonElement>('[data-tell-act="cancel"]')!.click();
 			expect(await afterCloseTell).toMatchObject({ ok: false });
+		} finally {
+			life.abort();
+			view?.dispose();
+			store.dispose();
+			HTMLDialogElement.prototype.showModal = origShowModal;
+			HTMLDialogElement.prototype.show = origShow;
+			HTMLDialogElement.prototype.close = origClose;
+		}
+	});
+
+	it("keeps the tell bar and edited text for retry when startSession returns undefined and holds the guard during an in-flight dialog close", async () => {
+		const origShowModal = HTMLDialogElement.prototype.showModal;
+		const origShow = HTMLDialogElement.prototype.show;
+		const origClose = HTMLDialogElement.prototype.close;
+		HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+			this.setAttribute("open", "");
+		};
+		HTMLDialogElement.prototype.show = HTMLDialogElement.prototype.showModal;
+		HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+			this.removeAttribute("open");
+			this.dispatchEvent(new Event("close"));
+		};
+		const surface = strategySurface();
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+			}),
+		);
+		const life = new AbortController();
+		let view: SurfaceStudioView | undefined;
+		try {
+			await store.load();
+			await store.openSurface(surface.slug);
+			let resolveInFlight: ((value: ReturnType<typeof session> | undefined) => void) | undefined;
+			const startSession = vi
+				.spyOn(store, "startSession")
+				.mockResolvedValueOnce(undefined)
+				.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							resolveInFlight = resolve;
+						}),
+				);
+			const files: Record<string, string> = {
+				[`${ROOT}/layout.json`]: JSON.stringify({
+					schema: "qorpera.surface-layout/v1",
+					tabs: [
+						{
+							id: "lab",
+							title: "Lab",
+							blocks: [{ type: "module", from: "sketch", heading: "Sketchpad" }],
+						},
+					],
+				}),
+				[`${ROOT}/sketch/index.html`]: "<!doctype html><p>Sketch module</p>",
+			};
+			view = new SurfaceStudioView({
+				store,
+				surface,
+				signal: life.signal,
+				baseFiles: files,
+				timeSlice: false,
+			});
+			document.body.append(view.el);
+
+			const inlineFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
+			const callInline = connectFrame(inlineFrame);
+
+			let failedResolved = false;
+			const failedTell = callInline("tell", { about: "Sketch", text: "Original note" }).then((answer) => {
+				failedResolved = true;
+				return answer;
+			});
+			await vi.waitFor(() => expect(view!.el.querySelector(".studio-tell-bar")).not.toBeNull());
+			const input = view.el.querySelector<HTMLTextAreaElement>(".studio-tell-input")!;
+			input.value = "Carefully edited member note";
+			const sendBtn = view.el.querySelector<HTMLButtonElement>('[data-tell-act="send"]')!;
+			const cancelBtn = view.el.querySelector<HTMLButtonElement>('[data-tell-act="cancel"]')!;
+			sendBtn.click();
+
+			await vi.waitFor(() => {
+				const err = view!.el.querySelector<HTMLElement>(".studio-tell-error");
+				expect(err && !err.hidden).toBe(true);
+			});
+			expect(failedResolved).toBe(false);
+			expect(view.el.querySelector(".studio-tell-bar")).not.toBeNull();
+			expect(input.value).toBe("Carefully edited member note");
+			expect(input.disabled).toBe(false);
+			expect(sendBtn.disabled).toBe(false);
+			expect(cancelBtn.disabled).toBe(false);
+
+			cancelBtn.click();
+			expect(await failedTell).toMatchObject({ ok: false });
+
+			view.el.querySelector<HTMLButtonElement>('[data-block="module"] button.studio-expand-btn')!.click();
+			const fsDialog = document.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog")!;
+			const fsFrame = fsDialog.querySelector<HTMLIFrameElement>("iframe.studio-module-frame.is-fullscreen")!;
+			const callFullscreen = connectFrame(fsFrame);
+
+			void callFullscreen("tell", { about: "Fullscreen", text: "In-flight note" });
+			await vi.waitFor(() => expect(fsDialog.querySelector(".studio-tell-bar")).not.toBeNull());
+			fsDialog.querySelector<HTMLButtonElement>('[data-tell-act="send"]')!.click();
+			await vi.waitFor(() => expect(startSession).toHaveBeenCalledTimes(2));
+
+			fsDialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
+			expect(document.querySelector(".studio-tell-bar")).toBeNull();
+			expect(await callInline("tell", { text: "Duplicate while in flight" })).toMatchObject({ ok: false });
+
+			resolveInFlight!(session([]));
+			await vi.waitFor(async () => {
+				const res = await callInline("tell", { text: "Immediate post-send cooldown check" });
+				expect(res.ok).toBe(false);
+				expect(String(res.error)).toContain("moment ago");
+			});
 		} finally {
 			life.abort();
 			view?.dispose();

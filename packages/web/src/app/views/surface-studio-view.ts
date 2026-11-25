@@ -330,21 +330,22 @@ export class SurfaceStudioView {
 		this.#htmlFrames.length = 0;
 	}
 
-	async #askSurface(prompt: string, title?: string): Promise<void> {
+	async #askSurface(prompt: string, title?: string): Promise<boolean> {
 		const trimmed = prompt.trim();
-		if (!trimmed) return;
+		if (!trimmed) return false;
 		const session = await this.#options.store.startSession(this.#options.surface.id, trimmed, {
 			originKind: "member",
 			...(title?.trim() ? { originLabel: title.trim().slice(0, 160) } : {}),
 		});
-		if (session) this.#options.store.openDrawer(this.#options.surface.id, session.id);
+		if (!session) return false;
+		this.#options.store.openDrawer(this.#options.surface.id, session.id);
+		return true;
 	}
 
 	#cancelPendingTell(owner?: symbol): void {
 		const pending = this.#pendingTell;
 		if (!pending) return;
 		if (owner !== undefined && pending.owner !== owner) return;
-		this.#pendingTell = null;
 		pending.cancel();
 	}
 
@@ -366,12 +367,15 @@ export class SurfaceStudioView {
 		}
 		return new Promise((resolve) => {
 			let settled = false;
+			let sending = false;
+			let dismissed = false;
 			const input = h("textarea", {
 				class: "studio-tell-input",
 				rows: 2,
 				"aria-label": t("Note to send"),
 			});
 			input.value = draftText;
+			const errorLine = h("p", { class: "studio-tell-error", role: "alert", hidden: true });
 			const sendBtn = h(
 				"button",
 				{ type: "button", class: "btn btn-primary btn-small", "data-tell-act": "send" },
@@ -390,10 +394,10 @@ export class SurfaceStudioView {
 				{ class: "studio-tell-bar", role: "region", "aria-label": labelText },
 				h("div", { class: "studio-tell-head" }, h("strong", null, labelText)),
 				input,
+				errorLine,
 				h("div", { class: "studio-tell-actions" }, cancelBtn, sendBtn),
 			);
 			const hostDialog = hostEl instanceof HTMLDialogElement ? hostEl : null;
-			const onDialogClose = () => finish({ ok: false, error: t("Cancelled.") });
 			const finish = (answer: AppAnswer) => {
 				if (settled) return;
 				settled = true;
@@ -402,25 +406,60 @@ export class SurfaceStudioView {
 				bar.remove();
 				resolve(answer);
 			};
+			const dismiss = () => {
+				if (settled) return;
+				if (sending) {
+					dismissed = true;
+					hostDialog?.removeEventListener("close", onDialogClose);
+					bar.remove();
+					return;
+				}
+				finish({ ok: false, error: t("Cancelled.") });
+			};
+			const onDialogClose = () => dismiss();
 			hostDialog?.addEventListener("close", onDialogClose, { once: true });
-			cancelBtn.addEventListener("click", () => finish({ ok: false, error: t("Cancelled.") }));
+			cancelBtn.addEventListener("click", () => {
+				if (sending || settled) return;
+				finish({ ok: false, error: t("Cancelled.") });
+			});
 			sendBtn.addEventListener("click", async () => {
+				if (sending || settled) return;
 				const finalText = input.value.trim();
 				if (!finalText || finalText.length > 4000) {
 					input.focus();
 					return;
 				}
+				sending = true;
+				input.disabled = true;
 				sendBtn.disabled = true;
 				cancelBtn.disabled = true;
+				errorLine.hidden = true;
+				errorLine.textContent = "";
+				let started = false;
 				try {
-					await this.#askSurface(finalText, about);
+					started = await this.#askSurface(finalText, about);
+				} catch {
+					started = false;
+				}
+				sending = false;
+				if (started) {
 					this.#lastTellAt = Date.now();
 					finish({ ok: true, value: { sent: true } });
-				} catch {
-					finish({ ok: false, error: t("That didn't work. Try again.") });
+					return;
 				}
+				const message = this.#options.store.state.error ?? t("That didn't work. Try again.");
+				if (dismissed || !bar.isConnected) {
+					finish({ ok: false, error: message });
+					return;
+				}
+				input.disabled = false;
+				sendBtn.disabled = false;
+				cancelBtn.disabled = false;
+				errorLine.textContent = message;
+				errorLine.hidden = false;
+				sendBtn.focus?.({ preventScroll: true });
 			});
-			this.#pendingTell = { bar, owner, cancel: () => finish({ ok: false, error: t("Cancelled.") }) };
+			this.#pendingTell = { bar, owner, cancel: dismiss };
 			hostEl.append(bar);
 			sendBtn.focus?.({ preventScroll: true });
 		});
@@ -1336,7 +1375,9 @@ export class SurfaceStudioView {
 			surface: this.#options.surface,
 			signal: this.#lifetime.signal,
 			baseFiles: () => this.#baseFiles,
-			askSurface: (prompt, title) => this.#askSurface(prompt, title),
+			askSurface: async (prompt, title) => {
+				await this.#askSurface(prompt, title);
+			},
 			...(this.#options.readBinary ? { readBinary: this.#options.readBinary } : {}),
 			...(this.#options.patches ? { patches: this.#options.patches } : {}),
 			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
