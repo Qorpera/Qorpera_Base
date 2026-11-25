@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -10,6 +10,7 @@ import {
 	addCodeWorktree,
 	type CodeHostCommand,
 	type CodeHostJob,
+	CodeHostRefusal,
 	type CodeHostShell,
 	startCodeArea,
 	undoCodeChange,
@@ -18,6 +19,7 @@ import {
 	CodeHostChangeConflict,
 	cherryPickChangeUnits,
 	composePreviewTree,
+	discardSurfaceSessionWorktree,
 	ensureSurfaceStarterRepository,
 	inspectChangeRange,
 	rebaseSessionChanges,
@@ -681,4 +683,123 @@ describe("code-host surfaces multi-change engine", () => {
 			"body { margin: 0; }\n.hero { color: #00f; }\n",
 		);
 	}, 30_000);
+
+	it("removes dirty discarded session worktree, git admin folder, and branch ref in two phases without affecting peers or main", async () => {
+		const f = await keptFixture();
+		const baseSha = f.baseSha;
+		const discarded = await f.startSession(baseSha);
+		const peer = await f.startSession(baseSha);
+
+		await discarded.commit({ "draft.html": "<p>Unmerged change</p>\n" }, "Draft change");
+		await writeFile(join(discarded.worktree, "index.html"), "<main>Dirty edit</main>\n");
+		await writeFile(join(discarded.worktree, "untracked.txt"), "scratch\n");
+		const peerHead = await peer.commit({ "peer.html": "<p>Keep peer</p>\n" }, "Peer change");
+
+		const worktreeDir = join(f.code, "worktrees", discarded.workerId);
+		const adminDir = join(f.repo, "worktrees", discarded.workerId);
+		const discardedRef = `refs/heads/qorpera/coding/${discarded.workerId}`;
+		expect(existsSync(worktreeDir)).toBe(true);
+		expect(existsSync(adminDir)).toBe(true);
+
+		const deferredGit = await discardSurfaceSessionWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			phase: "git-folder",
+		});
+		expect(deferredGit).toEqual({ status: "files_still_there" });
+		expect(existsSync(adminDir)).toBe(true);
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", discardedRef)).toMatch(/^[0-9a-f]{40}$/);
+
+		const phase1 = await discardSurfaceSessionWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			phase: "files",
+		});
+		expect(phase1).toEqual({
+			status: "cleaned",
+			removedWorktree: true,
+			removedAdmin: false,
+			deletedBranch: false,
+		});
+		expect(existsSync(worktreeDir)).toBe(false);
+		expect(existsSync(adminDir)).toBe(true);
+
+		const phase2 = await discardSurfaceSessionWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			phase: "git-folder",
+		});
+		expect(phase2).toEqual({
+			status: "cleaned",
+			removedWorktree: false,
+			removedAdmin: true,
+			deletedBranch: true,
+		});
+		expect(existsSync(worktreeDir)).toBe(false);
+		expect(existsSync(adminDir)).toBe(false);
+		expect(await f.git(f.repo, "--git-dir=.", "for-each-ref", discardedRef)).toBe("");
+
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(baseSha);
+		expect(existsSync(peer.worktree)).toBe(true);
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", `refs/heads/qorpera/coding/${peer.workerId}`)).toBe(
+			peerHead,
+		);
+
+		expect(
+			await discardSurfaceSessionWorktree(f.job, {
+				repository: f.repository,
+				workerId: discarded.workerId,
+				phase: "files",
+			}),
+		).toEqual({ status: "cleaned", removedWorktree: false, removedAdmin: false, deletedBranch: false });
+		expect(
+			await discardSurfaceSessionWorktree(f.job, {
+				repository: f.repository,
+				workerId: discarded.workerId,
+				phase: "git-folder",
+			}),
+		).toEqual({ status: "cleaned", removedWorktree: false, removedAdmin: false, deletedBranch: false });
+
+		const reopened = await addCodeWorktree(f.job, {
+			repository: f.repository,
+			workerId: discarded.workerId,
+			baseSha,
+			preferCurrentBase: true,
+		});
+		expect(reopened.state).toBe("added");
+		expect(existsSync(worktreeDir)).toBe(true);
+		expect(await f.git(f.repo, "--git-dir=.", "rev-parse", discardedRef)).toBe(baseSha);
+	}, 20_000);
+
+	it("handles unseeded repositories cleanly and refuses symlinks in discardSurfaceSessionWorktree", async () => {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "code-host-discard-edge-")));
+		roots.push(root);
+		const companyRoot = join(root, "folder");
+		const scratchRoot = join(root, "scratch");
+		await mkdir(companyRoot, { recursive: true });
+		await mkdir(scratchRoot, { recursive: true });
+		const log: CodeHostCommand[] = [];
+		const job: CodeHostJob = {
+			shell: crossPlatformLocalShell(log),
+			layout: { companyRoot, scratchRoot, git: GIT },
+			signal: new AbortController().signal,
+		};
+		const repository = { host: "qorpera" as const, owner: "surfaces", name: "unseeded", baseBranch: "main" };
+		const workerId = randomUUID();
+		expect(await discardSurfaceSessionWorktree(job, { repository, workerId, phase: "files" })).toEqual({
+			status: "unseeded",
+		});
+
+		const f = await keptFixture();
+		const linkWorkerId = randomUUID();
+		await mkdir(join(f.code, "worktrees"), { recursive: true });
+		await symlink(join(f.code, "main"), join(f.code, "worktrees", linkWorkerId));
+		await expect(
+			discardSurfaceSessionWorktree(f.job, {
+				repository: f.repository,
+				workerId: linkWorkerId,
+				phase: "files",
+			}),
+		).rejects.toSatisfy((error: unknown) => error instanceof CodeHostRefusal && error.code === "CODE_HOST_LINK");
+	}, 20_000);
 });
