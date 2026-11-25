@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { authorizeCodingChannel } from "../../../deploy/coding-worker/coding-channel-authority.ts";
 import { CodingCommandRouter } from "../../../deploy/coding-worker/command-routing.ts";
 import {
 	type CloudCodingCommandHttpRequest,
@@ -7,6 +8,7 @@ import {
 	createHttpCloudCodingCommandGateway,
 	HttpCloudCodingCommandService,
 } from "../src/cloud-coding-command-http.ts";
+import { CloudHomeChannelRefused, type CloudHomeChannelSide } from "../src/cloud-home-channel.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -325,5 +327,131 @@ describe("coding commands follow SQL machine placement", () => {
 		expect(body).not.toContain("secret");
 		expect(f.fetcher).toHaveBeenCalledOnce();
 		expect(authorize).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("coding channel authority and routing", () => {
+	it("parses authorized and refused coding channel authority answers and rejects mismatches", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 2 };
+		const signal = new AbortController().signal;
+
+		const authorized = await authorizeCodingChannel(
+			{
+				call: async () => ({
+					schema: "qorpera.coding-channel-authority/v1",
+					state: "authorized",
+					...scope,
+					executorOwner: "node-one",
+					providerId: "coding-one",
+				}),
+			},
+			{ binding, scope, kind: "exec" },
+			signal,
+		);
+		expect(authorized).toEqual({
+			state: "authorized",
+			...scope,
+			executorOwner: "node-one",
+			providerId: "coding-one",
+		});
+
+		const refused = await authorizeCodingChannel(
+			{
+				call: async () => ({
+					schema: "qorpera.coding-channel-authority/v1",
+					state: "refused",
+					reason: "MACHINE_NEW_DISK",
+				}),
+			},
+			{ binding, scope, kind: "sftp" },
+			signal,
+		);
+		expect(refused).toEqual({ state: "refused", reason: "MACHINE_NEW_DISK" });
+
+		await expect(
+			authorizeCodingChannel(
+				{
+					call: async () => ({
+						schema: "qorpera.coding-channel-authority/v1",
+						state: "authorized",
+						...scope,
+						vmId: randomUUID(),
+						executorOwner: "node-one",
+						providerId: "coding-one",
+					}),
+				},
+				{ binding, scope, kind: "exec" },
+				signal,
+			),
+		).rejects.toThrow("CODING_CHANNEL_AUTHORITY_INVALID");
+
+		await expect(
+			authorizeCodingChannel(
+				{
+					call: async () => ({
+						schema: "qorpera.coding-channel-authority/v1",
+						state: "refused",
+						reason: "UNKNOWN_REASON",
+					}),
+				},
+				{ binding, scope, kind: "exec" },
+				signal,
+			),
+		).rejects.toThrow("CODING_CHANNEL_AUTHORITY_INVALID");
+	});
+
+	it("opens local channels, maps local refusals, and enforces localOnly on peer routes", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
+		const signal = new AbortController().signal;
+		const side: CloudHomeChannelSide = {
+			write: vi.fn(),
+			lines: (async function* () {})(),
+			close: vi.fn(async () => undefined),
+		};
+		const openChannelLocal = vi.fn(async () => side);
+		const router = new CodingCommandRouter({
+			owner: "node-one",
+			providerId: "coding-one",
+			peers: [],
+			control: {
+				call: async () => {
+					throw new Error("unused");
+				},
+			},
+			credential: async () => randomBytes(32).toString("base64url"),
+			executeLocal: async () => {
+				throw new Error("unused");
+			},
+			openChannelLocal,
+		});
+		const localAuthority = {
+			state: "authorized" as const,
+			...scope,
+			executorOwner: "node-one",
+			providerId: "coding-one",
+		};
+		const request = { binding, scope, holder: undefined, kind: "exec" as const };
+		expect(await router.openChannel(localAuthority, request, signal)).toBe(side);
+		expect(openChannelLocal).toHaveBeenCalledOnce();
+
+		openChannelLocal.mockRejectedValueOnce(new Error("CODING_CODEX_NOT_PINNED"));
+		await expect(router.openChannel(localAuthority, request, signal)).rejects.toEqual(
+			new CloudHomeChannelRefused("CODING_CODEX_NOT_PINNED"),
+		);
+
+		openChannelLocal.mockRejectedValueOnce(new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK"));
+		await expect(router.openChannel(localAuthority, request, signal)).rejects.toEqual(
+			new CloudHomeChannelRefused("MACHINE_NEW_DISK"),
+		);
+
+		const remoteAuthority = { ...localAuthority, executorOwner: "node-two", providerId: "coding-two" };
+		await expect(router.openChannel(remoteAuthority, request, signal, true)).rejects.toThrow(
+			"CODING_COMMAND_WRONG_EXECUTOR",
+		);
+		await expect(router.openChannel(remoteAuthority, request, signal, false)).rejects.toThrow(
+			"CODING_COMMAND_ROUTE_UNAVAILABLE",
+		);
 	});
 });

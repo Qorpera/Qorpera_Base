@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
+	CLOUD_MACHINE_HOME,
 	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
 	type CloudCodingNasPolicy,
@@ -52,6 +53,7 @@ import {
 	codeSiteDropAnswer,
 } from "./code-site.ts";
 import {
+	type CodingCommandSecretMask,
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
 	CodingMachineCommandSecrets,
@@ -147,12 +149,15 @@ import type {
 	LxdImageClient,
 	LxdInspectableClient,
 	LxdInstanceDeviceClient,
+	LxdInstanceExecPipeClient,
 	LxdInstanceExecStreamClient,
 	LxdInstanceFile,
 	LxdProjectClient,
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
+import { LINE_PIPE_BYTES, LinePipe, sftpBytes, sftpLines } from "./machine-exec-server.ts";
+import { HomeOutputGate } from "./machine-home-folder.ts";
 import { previewBuildOutcome, type SurfacePreviewBuildOutcome } from "./surface-preview-runner.ts";
 
 export const CODING_HOST_RPCS = [
@@ -262,6 +267,7 @@ export interface LxdCodingExecutorHostOptions {
 	storagePolicy: CloudCodingNasPolicy;
 	client: Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation"> &
 		Pick<LxdInspectableClient, "readInstanceFile" | "pushInstanceFile" | "execInstance"> &
+		Partial<Pick<LxdInstanceExecPipeClient, "execInstancePipe">> &
 		LxdCodingMemoryClient &
 		LxdInstanceDeviceClient &
 		LxdImageClient &
@@ -1453,6 +1459,251 @@ export function codingHostId(label: string, source: string): string {
 export function codingTurnScope(workerId: string, vmId: string, sequence: number): CloudCodingCommandScope {
 	return Object.freeze({ workerId, vmId, requestId: codingHostId("turn", `${workerId}:${sequence}`), turn: sequence });
 }
+
+export const CODING_MACHINE_CHANNEL = Object.freeze({
+	codex: "/opt/qorpera-coding/codex",
+	codexSha256: CLOUD_MACHINE_HOME.codexSha256,
+	sftpServer: CLOUD_MACHINE_HOME.sftpServer,
+	unitPrefix: "qorpera-coding-ch-",
+	resolvConf: "/run/systemd/resolve/resolv.conf",
+});
+
+const CODING_CHANNEL_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; ' +
+	'if [ -e /run/systemd/resolve/resolv.conf ]; then cmd=$1; shift; exec "$cmd" --property=BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf "$@"; fi; ' +
+	'exec "$@"';
+const CODING_CHANNEL_CODEX_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$1" ] || exit 98; exec /usr/bin/sha256sum -- "$1"';
+const CODING_CHANNEL_SFTP_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -x "$1" ] || exit 98';
+const CODING_CHANNEL_HASH_MS = 60_000;
+const CODING_CHANNEL_BOUNDARY_MS = 15_000;
+const CODING_CHANNEL_CLOSE_BOUNDARY_MS = 5_000;
+const CODING_CHANNEL_RELEASE_SPACING_MS = 200;
+const CODING_CHANNEL_RELEASE_BURST = 4;
+const CODING_CHANNEL_SFTP_RELEASE_SPACING_MS = 0;
+const CODING_CHANNEL_RELEASE_TRIES = 3;
+const CODING_CHANNEL_OUTPUT_WAIT_BYTES = 16 * 1024 * 1024;
+const CODING_CHANNEL_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const CODING_CHANNEL_CLIENT_ENV = new Set([
+	"CLAUDECODE",
+	"CLAUDE_CODE_ENTRYPOINT",
+	"CLAUDE_CODE_SESSION_ID",
+	"GIT_EDITOR",
+	"TERM",
+	"COLUMNS",
+]);
+const CODING_CHANNEL_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+function codingSessionChannelEnvironment(uid: number): Record<string, string> {
+	const user = `qorpera-${uid}`;
+	const runtime = `/run/user/${uid}`;
+	return {
+		HOME: `/home/${user}`,
+		USER: user,
+		LOGNAME: user,
+		SHELL: "/bin/bash",
+		PATH: CODING_CHANNEL_PATH,
+		LANG: "C.UTF-8",
+		TZ: "UTC",
+		NO_COLOR: "1",
+		TMPDIR: "/tmp",
+		CODEX_HOME: `/home/${user}/.codex`,
+		XDG_RUNTIME_DIR: runtime,
+		DBUS_SESSION_BUS_ADDRESS: `unix:path=${runtime}/bus`,
+		DOCKER_HOST: `unix://${runtime}/docker.sock`,
+	};
+}
+
+export function codingMachineChannelCommand(input: {
+	readonly bootId: string;
+	readonly workerId: string;
+	readonly uid: number;
+	readonly cwd: string;
+	readonly channel: string;
+	readonly kind?: "exec" | "sftp";
+	readonly environment?: Readonly<Record<string, string>>;
+}): string[] {
+	const kind = input.kind ?? "exec";
+	if (
+		!UUID_PATTERN.test(input.bootId) ||
+		!UUID_PATTERN.test(input.workerId) ||
+		validGuestUid(input.uid) === null ||
+		!/^\/[^\0]*$/.test(input.cwd) ||
+		!/^[0-9a-f]{8,32}$/.test(input.channel) ||
+		(kind !== "exec" && kind !== "sftp")
+	)
+		throw new Error("CODING_CHANNEL_COMMAND_INVALID");
+	const worker = input.workerId.replaceAll("-", "").toLowerCase();
+	const baseEnv = codingSessionChannelEnvironment(input.uid);
+	const env: Record<string, string> =
+		kind === "sftp"
+			? {
+					HOME: baseEnv.HOME!,
+					USER: baseEnv.USER!,
+					LOGNAME: baseEnv.LOGNAME!,
+					PATH: baseEnv.PATH!,
+					LANG: baseEnv.LANG!,
+					TZ: baseEnv.TZ!,
+				}
+			: { ...(input.environment ?? {}), ...baseEnv };
+	for (const [key, value] of Object.entries(env)) {
+		if (!CODING_CHANNEL_ENV_NAME.test(key) || value.includes("\0") || value.includes("\n"))
+			throw new Error("CODING_CHANNEL_COMMAND_INVALID");
+	}
+	return [
+		"/bin/sh",
+		"-c",
+		CODING_CHANNEL_ON_BOOT,
+		input.bootId,
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--pipe",
+		"--wait",
+		"--collect",
+		"--service-type=exec",
+		"--expand-environment=no",
+		`--unit=${CODING_MACHINE_CHANNEL.unitPrefix}${worker}-${kind === "sftp" ? "sftp-" : ""}${input.channel}`,
+		`--slice=qorpera-coding-${worker}.slice`,
+		`--uid=${input.uid}`,
+		`--gid=${input.uid}`,
+		`--working-directory=${input.cwd}`,
+		"--property=KillMode=control-group",
+		"--property=TimeoutStopSec=10",
+		"--property=ProtectProc=invisible",
+		"--property=PrivateIPC=yes",
+		`--property=NetworkNamespacePath=/run/netns/qorpera-${worker}`,
+		`--property=BindPaths=${CODING_GUEST.folder}/mounts/${worker}:/company`,
+		`--property=BindReadOnlyPaths=${CODING_GUEST.folder}/views/${worker}.json:${CODING_GUEST.folder}/view.json`,
+		...Object.entries(env).map(([key, value]) => `--setenv=${key}=${value}`),
+		"--",
+		...(kind === "sftp"
+			? [CODING_MACHINE_CHANNEL.sftpServer]
+			: [CODING_MACHINE_CHANNEL.codex, "exec-server", "--listen", "stdio"]),
+	];
+}
+
+export function injectCodingChannelExecEnv(line: string, authoritativeEnv: Readonly<Record<string, string>>): string {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return line;
+	}
+	if (!isRecord(parsed) || parsed.method !== "process/start" || !isRecord(parsed.params)) return line;
+	const rawEnv = isRecord(parsed.params.env) ? parsed.params.env : {};
+	const merged: Record<string, string> = { ...authoritativeEnv };
+	for (const [name, value] of Object.entries(rawEnv)) {
+		if (
+			CODING_CHANNEL_CLIENT_ENV.has(name) &&
+			typeof value === "string" &&
+			value.length <= 4096 &&
+			!value.includes("\0")
+		)
+			merged[name] = value;
+	}
+	return JSON.stringify({ ...parsed, params: { ...parsed.params, env: merged } });
+}
+
+function maskBytesOnce(bytes: Uint8Array, createMask: () => CodingCommandSecretMask): Buffer {
+	const mask = createMask();
+	const head = mask.push(bytes);
+	const tail = mask.end();
+	if (head.byteLength === 0) return Buffer.from(tail);
+	if (tail.byteLength === 0) return Buffer.from(head);
+	return Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
+}
+
+function maskJsonStrings(value: unknown, createMask: () => CodingCommandSecretMask): unknown {
+	if (typeof value === "string") {
+		if (value.length === 0) return value;
+		return maskBytesOnce(Buffer.from(value, "utf8"), createMask).toString("utf8");
+	}
+	if (Array.isArray(value)) return value.map((item) => maskJsonStrings(item, createMask));
+	if (isRecord(value)) {
+		const next: Record<string, unknown> = {};
+		for (const [key, entry] of Object.entries(value)) next[key] = maskJsonStrings(entry, createMask);
+		return next;
+	}
+	return value;
+}
+
+export async function* maskCodingChannelExecLines(
+	lines: AsyncIterable<string>,
+	createMask: () => CodingCommandSecretMask,
+): AsyncGenerator<string> {
+	const streams = new Map<string, CodingCommandSecretMask>();
+	for await (const line of lines) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(line);
+		} catch {
+			yield maskBytesOnce(Buffer.from(line, "utf8"), createMask).toString("utf8");
+			continue;
+		}
+		if (!isRecord(parsed)) {
+			yield JSON.stringify(maskJsonStrings(parsed, createMask));
+			continue;
+		}
+		if (parsed.method === "process/output" && isRecord(parsed.params) && typeof parsed.params.chunk === "string") {
+			const processId = String(parsed.params.processId ?? "");
+			const streamName = String(parsed.params.stream ?? "stdout");
+			const key = `${processId}\0${streamName}`;
+			let mask = streams.get(key);
+			if (!mask) {
+				mask = createMask();
+				if (streams.size < 1024) streams.set(key, mask);
+			}
+			const maskedChunk = mask.push(Buffer.from(parsed.params.chunk, "base64"));
+			const maskedMessage = maskJsonStrings(parsed, createMask) as Record<string, unknown>;
+			const maskedParams = isRecord(maskedMessage.params) ? maskedMessage.params : {};
+			yield JSON.stringify({
+				...maskedMessage,
+				params: { ...maskedParams, chunk: Buffer.from(maskedChunk).toString("base64") },
+			});
+			continue;
+		}
+		if (
+			(parsed.method === "process/exited" || parsed.method === "process/closed") &&
+			isRecord(parsed.params) &&
+			parsed.params.processId !== undefined
+		) {
+			const prefix = `${String(parsed.params.processId)}\0`;
+			for (const [key, mask] of [...streams.entries()]) {
+				if (!key.startsWith(prefix)) continue;
+				streams.delete(key);
+				const tail = mask.end();
+				if (tail.byteLength > 0) {
+					yield JSON.stringify({
+						method: "process/output",
+						params: {
+							processId: parsed.params.processId,
+							stream: key.slice(prefix.length),
+							chunk: Buffer.from(tail).toString("base64"),
+						},
+					});
+				}
+			}
+			yield JSON.stringify(maskJsonStrings(parsed, createMask));
+			continue;
+		}
+		if (isRecord(parsed.result) && Array.isArray(parsed.result.chunks)) {
+			const maskedMessage = maskJsonStrings(parsed, createMask) as Record<string, unknown>;
+			const maskedResult = isRecord(maskedMessage.result) ? maskedMessage.result : {};
+			const chunks = parsed.result.chunks.map((entry) => {
+				if (isRecord(entry) && typeof entry.chunk === "string") {
+					const maskedEntry = maskJsonStrings(entry, createMask) as Record<string, unknown>;
+					const maskedChunk = maskBytesOnce(Buffer.from(entry.chunk, "base64"), createMask);
+					return { ...maskedEntry, chunk: maskedChunk.toString("base64") };
+				}
+				return maskJsonStrings(entry, createMask);
+			});
+			yield JSON.stringify({ ...maskedMessage, result: { ...maskedResult, chunks } });
+			continue;
+		}
+		yield JSON.stringify(maskJsonStrings(parsed, createMask));
+	}
+}
 function receiptRecord(value: unknown): Record<string, unknown> {
 	if (!isRecord(value)) throw new Error("CODING_HOST_RECEIPT_INVALID");
 	return value;
@@ -1572,6 +1823,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	#released: CodingKeepOutcome[] = [];
 	/** Per machine, the boot whose storage helper this process has checked against its pin. */
 	readonly #helperBoots = new Map<string, string>();
+	readonly #channelCodexes = new Map<
+		string,
+		{ bootId: string; sha: Promise<string>; waiters: number; controller: AbortController; settled: boolean }
+	>();
+	readonly #channelSftps = new Map<string, string>();
+	readonly #codingChannels = new Map<string, Set<() => void>>();
 	/** Per machine, the boot this process has seen finish (the folder model). */
 	readonly #settledBoots = new Map<string, string>();
 	/** Per machine, how many times this process started it on the folder model: a turn that found the machine must
@@ -5024,20 +5281,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	endTurn(claim: CodingSessionClaim): void {
 		if (this.#prepared.get(claim.workerId)?.claim.leaseToken === claim.leaseToken)
 			this.#prepared.delete(claim.workerId);
+		this.#abortCodingChannels(claim.workerId);
 		const attachment = this.#attachments.get(claim.workerId);
 		if (attachment?.turn.sequence === claim.sequence && attachment.turn.open)
 			this.#attachments.set(claim.workerId, { ...attachment, turn: { ...attachment.turn, open: false } });
 	}
-	/** A turn that failed, or must wait for its machine, after hot-plugging its
-	 * session but before recording its attachment: unplug it again. A session
-	 * already attached (this turn's or an earlier one's) is the keeper's. Works
-	 * with or without the lease. */
 	async detachSession(claim: CodingSessionClaim, signal: AbortSignal): Promise<void> {
 		const attached = this.#attached.get(claim.workerId);
 		if (!attached || attached.claim.leaseToken !== claim.leaseToken) return;
-		// No new command, lease refresh or publication for this turn from here on.
 		if (this.#prepared.get(claim.workerId)?.claim.leaseToken === claim.leaseToken)
 			this.#prepared.delete(claim.workerId);
+		this.#abortCodingChannels(claim.workerId);
 		this.#sessionSetups.delete(claim.workerId);
 		try {
 			await this.#takeOff(
@@ -5274,6 +5528,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#forgetDetached(machine.machineId, ended);
 		this.#commandSecrets?.releaseMachine(machine.machineId);
 		this.#helperBoots.delete(machine.machineId);
+		this.#clearChannelCaches(machine.machineId);
 		this.#settledBoots.delete(machine.machineId);
 		this.#folderStartOperations.delete(machine.machineId);
 		this.#cpuHighSamples.delete(machine.machineId);
@@ -5397,6 +5652,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#forgetDetached(machine.machineId, ended);
 		this.#commandSecrets?.releaseMachine(machine.machineId);
 		this.#helperBoots.delete(machine.machineId);
+		this.#clearChannelCaches(machine.machineId);
 		this.#settledBoots.delete(machine.machineId);
 		this.#folderStartOperations.delete(machine.machineId);
 		this.#cpuHighSamples.delete(machine.machineId);
@@ -5418,6 +5674,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			this.#samples.delete(workerId);
 			this.#folderUidCache.delete(workerId);
+			this.#abortCodingChannels(workerId);
 			this.#checksMayRun.delete(workerId);
 			this.#checksUncertain.delete(workerId);
 			this.#deleteKeptCommandsForWorker(workerId);
@@ -6384,6 +6641,294 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			authorize: checkedAuthorize,
 		});
 	}
+	async openCodingChannel(
+		scope: CloudCodingCommandScope,
+		kind: "exec" | "sftp",
+		signal: AbortSignal,
+	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
+		if (kind !== "exec" && kind !== "sftp") throw new Error("CODING_CHANNEL_COMMAND_INVALID");
+		const ready = this.#prepared.get(scope.workerId);
+		if (!ready || !isDeepStrictEqual(scope, ready.scope)) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
+		const folder = this.#options.folder;
+		const readyFolder = ready.folder;
+		if (!folder || !readyFolder) throw new Error("CODING_CHANNEL_UNSUPPORTED");
+		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!exec) throw new Error("CODING_CHANNEL_UNSUPPORTED");
+		this.#current(ready);
+		await this.#run(ready.claim, ready.machine, ready.storage, signal);
+		if (await this.#newDiskDue(ready.machine, signal))
+			throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
+		if (kind === "sftp") {
+			if (!(await this.#channelSftp(ready.machine, ready.bootId, exec, signal)))
+				throw new Error("CODING_SFTP_MISSING");
+		} else if (
+			(await this.#channelCodex(ready.machine, ready.bootId, exec, signal)) !== CODING_MACHINE_CHANNEL.codexSha256
+		)
+			throw new Error("CODING_CODEX_NOT_PINNED");
+		this.#current(ready);
+
+		let resolvedSecrets:
+			| { environment: Readonly<Record<string, string>>; mask(): CodingCommandSecretMask }
+			| undefined;
+		const sessionSecrets = kind === "exec" ? this.#sessionSecrets(ready) : undefined;
+		if (sessionSecrets) {
+			resolvedSecrets = await sessionSecrets.resolve(
+				{
+					companyId: ready.claim.profileId,
+					workerId: ready.claim.workerId,
+					machineId: ready.machine.machineId,
+					commandId: randomUUID(),
+					kind: "command",
+				},
+				signal,
+			);
+			this.#current(ready);
+		}
+		const setupEnv = this.#sessionSetups.get(ready.claim.workerId)?.env;
+		const nonSecretEnv: Readonly<Record<string, string>> = Object.freeze({
+			...setupEnv,
+			...codingFolderGitEnvironment(ready.claim.workerId),
+			...packageCacheEnvironment(ready),
+		});
+		const execEnv: Readonly<Record<string, string>> = Object.freeze({
+			...(resolvedSecrets?.environment ?? {}),
+			...nonSecretEnv,
+			...codingSessionChannelEnvironment(readyFolder.uid),
+		});
+
+		let unreadableSeen = false;
+		const boundaryControl = this.#folderBoundary(folder, ready.machine, () => {
+			unreadableSeen = true;
+		});
+		const release = async (checkSignal: AbortSignal): Promise<string | undefined> => {
+			if (unreadableSeen) return "MACHINE_NEW_DISK";
+			for (let attempt = 0; attempt < CODING_CHANNEL_RELEASE_TRIES; attempt++) {
+				try {
+					const result = boundaryControl.releaseReads
+						? await withTimeoutScope(checkSignal, CODING_CHANNEL_BOUNDARY_MS, (checked) =>
+								boundaryControl.releaseReads!(ready.machine.machineId, checked),
+							)
+						: await withTimeoutScope(checkSignal, CODING_CHANNEL_BOUNDARY_MS, (checked) =>
+								boundaryControl.boundary(ready.machine.machineId, [], checked),
+							);
+					if (result.reads === "released") return undefined;
+					if (result.reads === "unreadable") return "MACHINE_NEW_DISK";
+					return `READS_${result.reads.toUpperCase()}`;
+				} catch {
+					if (checkSignal.aborted) return "CODING_CHANNEL_CLOSED";
+				}
+			}
+			return "CODING_OUTPUT_UNRELEASED";
+		};
+		const initialHeld = await release(signal);
+		if (initialHeld !== undefined) {
+			if (initialHeld === "MACHINE_NEW_DISK") throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
+			throw new Error(initialHeld);
+		}
+		this.#current(ready);
+
+		const toMachine = new LinePipe();
+		const fromMachine = new LinePipe();
+		const run = new AbortController();
+		const stop = (): void => run.abort();
+		let activeSet = this.#codingChannels.get(ready.claim.workerId);
+		if (!activeSet) {
+			activeSet = new Set();
+			this.#codingChannels.set(ready.claim.workerId, activeSet);
+		}
+		activeSet.add(stop);
+		const unregister = (): void => {
+			signal.removeEventListener("abort", stop);
+			const set = this.#codingChannels.get(ready.claim.workerId);
+			if (set) {
+				set.delete(stop);
+				if (set.size === 0) this.#codingChannels.delete(ready.claim.workerId);
+			}
+		};
+
+		let gate: HomeOutputGate | undefined;
+		let execPipe: ReturnType<NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>>;
+		try {
+			signal.addEventListener("abort", stop, { once: true });
+			gate = new HomeOutputGate({
+				release: () => release(run.signal),
+				pass: (chunk) => fromMachine.push(chunk),
+				fail: () => {
+					run.abort();
+					fromMachine.end();
+				},
+				spacingMs: kind === "sftp" ? CODING_CHANNEL_SFTP_RELEASE_SPACING_MS : CODING_CHANNEL_RELEASE_SPACING_MS,
+				burst: kind === "sftp" ? 1 : CODING_CHANNEL_RELEASE_BURST,
+				limitBytes: CODING_CHANNEL_OUTPUT_WAIT_BYTES,
+			});
+			execPipe = exec(
+				ready.machine.project,
+				lxdCodingMachineName(ready.machine.machineId),
+				{
+					command: codingMachineChannelCommand({
+						bootId: ready.bootId,
+						workerId: ready.claim.workerId,
+						uid: readyFolder.uid,
+						cwd: readyFolder.cwd,
+						channel: randomBytes(8).toString("hex"),
+						kind,
+						...(kind === "exec" ? { environment: nonSecretEnv } : {}),
+					}),
+					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+					cwd: "/",
+					stdin: toMachine.read(),
+					stdout: (chunk) => gate!.push(chunk),
+					maxStdoutBytes: LINE_PIPE_BYTES,
+					stderrTailBytes: 4096,
+				},
+				run.signal,
+			);
+		} catch (error) {
+			unregister();
+			gate?.close();
+			fromMachine.end();
+			toMachine.end();
+			throw error;
+		}
+		const pipe = execPipe
+			.catch(() => undefined)
+			.then(async () => {
+				unregister();
+				await gate?.drained();
+				fromMachine.end();
+				toMachine.end();
+				await withTimeoutScope(new AbortController().signal, CODING_CHANNEL_CLOSE_BOUNDARY_MS, (checked) =>
+					boundaryControl.boundary(ready.machine.machineId, [], checked),
+				).catch(() => undefined);
+			});
+		const ended = (): void => {
+			toMachine.end();
+			gate?.close();
+			run.abort();
+		};
+		const maskFactory = resolvedSecrets?.mask;
+		const lines =
+			kind === "sftp"
+				? sftpLines(fromMachine.read())
+				: maskFactory
+					? maskCodingChannelExecLines(fromMachine.lines(), maskFactory)
+					: fromMachine.lines();
+		return {
+			write:
+				kind === "sftp"
+					? (line) => {
+							const bytes = sftpBytes(line);
+							if (bytes) toMachine.push(bytes);
+							else ended();
+						}
+					: (line) => toMachine.push(Buffer.from(`${injectCodingChannelExecEnv(line, execEnv)}\n`, "utf8")),
+			lines,
+			close: async () => {
+				ended();
+				await pipe;
+			},
+		};
+	}
+	async #channelCodex(
+		machine: Readonly<LxdCodingMachineBinding>,
+		bootId: string,
+		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		signal: AbortSignal,
+	): Promise<string> {
+		signal.throwIfAborted();
+		let entry = this.#channelCodexes.get(machine.machineId);
+		if (!entry || entry.bootId !== bootId) {
+			const controller = new AbortController();
+			const created = {
+				bootId,
+				sha: undefined as unknown as Promise<string>,
+				waiters: 0,
+				controller,
+				settled: false,
+			};
+			created.sha = withTimeoutScope(controller.signal, CODING_CHANNEL_HASH_MS, async (checked) => {
+				const result = await exec(
+					machine.project,
+					lxdCodingMachineName(machine.machineId),
+					{
+						command: ["/bin/sh", "-c", CODING_CHANNEL_CODEX_ON_BOOT, bootId, CODING_MACHINE_CHANNEL.codex],
+						environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+						cwd: "/",
+						maxStdoutBytes: 1024,
+						stderrTailBytes: 512,
+					},
+					checked,
+				);
+				if (result.exitCode === 97) throw new Error("CODING_BOOT_CHANGED");
+				if (result.exitCode === 98) return "missing";
+				const read = /^([0-9a-f]{64}) /.exec(result.stdout.toString("utf8"));
+				if (result.exitCode !== 0 || !read) throw new Error("CODING_CODEX_UNREADABLE");
+				return read[1] as string;
+			}).then(
+				(value) => {
+					created.settled = true;
+					return value;
+				},
+				(error) => {
+					created.settled = true;
+					if (this.#channelCodexes.get(machine.machineId) === created)
+						this.#channelCodexes.delete(machine.machineId);
+					throw error;
+				},
+			);
+			created.sha.catch(() => undefined);
+			if (entry && !entry.settled) entry.controller.abort();
+			this.#channelCodexes.set(machine.machineId, created);
+			entry = created;
+		}
+		if (entry.settled) return await entry.sha;
+		entry.waiters += 1;
+		let onAbort: (() => void) | undefined;
+		try {
+			return await Promise.race([
+				entry.sha,
+				new Promise<never>((_, reject) => {
+					onAbort = () => reject(signal.reason);
+					if (signal.aborted) onAbort();
+					else signal.addEventListener("abort", onAbort, { once: true });
+				}),
+			]);
+		} finally {
+			if (onAbort) signal.removeEventListener("abort", onAbort);
+			entry.waiters -= 1;
+			if (!entry.settled && entry.waiters === 0) {
+				if (this.#channelCodexes.get(machine.machineId) === entry) this.#channelCodexes.delete(machine.machineId);
+				entry.controller.abort(signal.reason);
+			}
+		}
+	}
+	async #channelSftp(
+		machine: Readonly<LxdCodingMachineBinding>,
+		bootId: string,
+		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		if (this.#channelSftps.get(machine.machineId) === bootId) return true;
+		const result = await withTimeoutScope(signal, CODING_CHANNEL_HASH_MS, (checked) =>
+			exec(
+				machine.project,
+				lxdCodingMachineName(machine.machineId),
+				{
+					command: ["/bin/sh", "-c", CODING_CHANNEL_SFTP_ON_BOOT, bootId, CODING_MACHINE_CHANNEL.sftpServer],
+					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+					cwd: "/",
+					maxStdoutBytes: 1024,
+					stderrTailBytes: 512,
+				},
+				checked,
+			),
+		);
+		if (result.exitCode === 97) throw new Error("CODING_BOOT_CHANGED");
+		if (result.exitCode === 98) return false;
+		if (result.exitCode !== 0) throw new Error("CODING_SFTP_UNREADABLE");
+		this.#channelSftps.set(machine.machineId, bootId);
+		return true;
+	}
 	#commandAuthority(ready: Prepared): LxdCodingFolderCommandTransportOptions["authorize"] {
 		const folder = this.#options.folder;
 		return async (action, _scope, _commandId, _inputSha256, checked) => {
@@ -6745,6 +7290,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new Error("CODING_MACHINE_SLEEP_UNCONFIRMED");
 		this.#commandSecrets?.releaseMachine(entry.machineId);
 		this.#helperBoots.delete(entry.machineId);
+		this.#clearChannelCaches(entry.machineId);
 		this.#settledBoots.delete(entry.machineId);
 		this.#folderStartOperations.delete(entry.machineId);
 		this.#cpuHighSamples.delete(entry.machineId);
@@ -6822,11 +7368,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	#forgetMachine(machineId: string): void {
 		this.#commandSecrets?.releaseMachine(machineId);
 		this.#helperBoots.delete(machineId);
+		this.#clearChannelCaches(machineId);
 		this.#settledBoots.delete(machineId);
 		this.#folderStarts.delete(machineId);
 		this.#folderStartOperations.delete(machineId);
 		this.#cpuHighSamples.delete(machineId);
 		this.#setupLifecycle.forgetMachine(machineId);
+	}
+	#clearChannelCaches(machineId: string): void {
+		const codex = this.#channelCodexes.get(machineId);
+		this.#channelCodexes.delete(machineId);
+		if (codex && !codex.settled) codex.controller.abort();
+		this.#channelSftps.delete(machineId);
+	}
+	#abortCodingChannels(workerId: string): void {
+		const active = this.#codingChannels.get(workerId);
+		if (!active) return;
+		this.#codingChannels.delete(workerId);
+		for (const abort of active) abort();
 	}
 	async #afterFolderAttach(
 		folder: FolderOptions,

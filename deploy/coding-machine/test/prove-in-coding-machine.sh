@@ -36,6 +36,7 @@ TYPESCRIPT_VERSION=${QORPERA_PROOF_TYPESCRIPT:?the pinned TypeScript version}
 TSX_VERSION=${QORPERA_PROOF_TSX:?the pinned tsx version}
 UV_VERSION=${QORPERA_PROOF_UV:?the pinned uv version}
 MISE_VERSION=${QORPERA_PROOF_MISE:?the pinned mise version}
+CODEX_SHA256=${QORPERA_PROOF_CODEX_SHA256:?the pinned Codex sha-256}
 # What mise installs in the proof: a Node.js other than the image's, from nodejs.org (checked against its SHASUMS256).
 MISE_NODE=22.20.0
 # The test machine's proxy (test/proof-proxy.py): its bridge forwards nothing, so this machine's downloads, the
@@ -167,6 +168,15 @@ pass "session user $NAME in qorpera-coding, its user manager with /company and t
 	fail "a session command does not run as $SESSION_UID with /company"
 [[ $(as_session sudo -n id -u) == 0 ]] || fail "NOPASSWD sudo does not work"
 pass "a command runs as uid $SESSION_UID with /company, and sudo -n gives root without a password"
+[[ $(stat -c '%U:%G %a' /opt/qorpera-coding/codex) == "root:root 555" &&
+	$(sha256sum </opt/qorpera-coding/codex | cut -d' ' -f1) == "$CODEX_SHA256" ]] ||
+	fail "/opt/qorpera-coding/codex is missing or does not match $CODEX_SHA256"
+as_session /opt/qorpera-coding/codex --version >/dev/null || fail "/opt/qorpera-coding/codex does not run as the session"
+{ printf '\000\000\000\005\001\000\000\000\003'; sleep 1; } | as_session /usr/lib/openssh/sftp-server >/tmp/sftp-session.out
+[[ $(head -c 9 /tmp/sftp-session.out | od -An -tx1 | tr -d ' \n') == ????????0200000003 ]] ||
+	fail "sftp-server failed SFTP v3 handshake as the session"
+rm -f /tmp/sftp-session.out
+pass "pinned Codex and sftp-server run as the session"
 
 user_state() { as_session systemctl --user is-active "$1" || true; }
 [[ $(user_state qorpera-docker.socket) == active && $(user_state qorpera-dockerd.service) == inactive ]] ||

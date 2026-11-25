@@ -20,7 +20,7 @@ installs the guest agent, makes the machines and runs the sessions.
 | Delegated controllers and cgroup bounds | `qorpera-delegate.conf` gives every `user@.service` the cpu, cpuset, io, memory and pids controllers, so a rootless container's `--memory` and `--cpus` hold. `qorpera-user-slice.conf` bounds `user-.slice` (`MemoryHigh=70%`, `MemoryMax=80%`, `TasksMax=4096`) and `../machine/lxd-agent-memory.conf` protects `lxd-agent.service` (`OOMScoreAdjust=-900`) so rootless Docker cannot OOM-kill `lxd-agent` or sibling sessions. |
 | NOPASSWD sudo | `qorpera-coding.sudoers`: the system group `qorpera-coding` may run anything as root without a password. 5g makes each session's user a member. |
 | `qorpera-coding.slice` | From `../coding-worker/`: every session's slice (`qorpera-coding-<worker32>.slice`) sits under it, with `IOAccounting=yes`, `MemoryHigh=80%`, `MemoryMax=90%`, `MemorySwapMax=0`, and `TasksMax=90%`. |
-| Places for 5g | `/opt/qorpera-guest` (the guest agent), `/company` (empty; each unit binds the session's mount there), `/run/qorpera-folder/mounts` (the folder programs' mounts, made at boot by `qorpera-coding.tmpfiles`), and `/usr/local/bin/data` (root:root `0555`, runs `/opt/qorpera-folder/qorpera-folder data` as root through `sudo -n` against the session's bound `/run/qorpera-folder/view.json`). |
+| Places for 5g | `/opt/qorpera-guest` (the guest agent), `/opt/qorpera-coding/codex` (root:root `0555`, the pinned Codex binary from `deploy/first-node/native-codex/linux-x64-artifact.json` for `exec-server` coding channels), `/usr/lib/openssh/sftp-server` (`openssh-sftp-server`, without `openssh-server`, for `sftp` coding channels), `/company` (empty; each unit binds the session's mount there), `/run/qorpera-folder/mounts` (the folder programs' mounts, made at boot by `qorpera-coding.tmpfiles`), and `/usr/local/bin/data` (root:root `0555`, runs `/opt/qorpera-folder/qorpera-folder data` as root through `sudo -n` against the session's bound `/run/qorpera-folder/view.json`). |
 | What is gone | apt's five self-update units and `systemd-networkd-wait-online.service` are masked (the guest refuses an image where apt self-update units are not). GRUB drops to `GRUB_TIMEOUT=0`, `GRUB_RECORDFAIL_TIMEOUT=0`, and `quiet` when configured. snapd, openssh-server, the cloud image's own git, the `ubuntu` account and cloud-init's sudoers file are removed, and so are the cloud image's LXD metadata templates, which would write `/etc/hostname`, `/etc/hosts` and cloud-init's seed into every machine made from the image, naming each after its instance. The build's logs, caches, apt lists, machine id and SSH host keys are cleared before the image is published. |
 
 `coding-image.json` pins Node.js, git, Chromium, uv and mise by version, URL and sha-256, and TypeScript and tsx by
@@ -85,8 +85,8 @@ The image expects this per session; `test/prove-in-coding-machine.sh` does exact
 The coordinator runs these, with the coding project in place on the node (Q8: `coding`, listed in the node's
 `codingMachineProjects`).
 
-1. Build in the node's image build space while it is empty (on node 2, `qorpera-build` and `qorpera0`):
-   `deploy/coding-machine/build-coding-image.sh qorpera-build qorpera0 qorpera-vm coding > image-build.json`
+1. Build in the node's image build space while it is empty (on node 2, `qorpera-build` and `qorpera0`), passing the pinned Codex via `QORPERA_CODING_CODEX`:
+   `QORPERA_CODING_CODEX=/path/to/codex deploy/coding-machine/build-coding-image.sh qorpera-build qorpera0 qorpera-vm coding > image-build.json`
    - The builder is a build machine as `build-machine-image.sh`'s is: no profiles, its own 16 GiB root (the smallest
      coding machine disk, since a machine's root can't be smaller than its image), 4 CPUs and 4 GiB, the isolation NIC
      (its IPv6 filter needs `br_netfilter`, which nodes load at bootstrap), `boot.autostart=false`,
