@@ -129,6 +129,7 @@ const FAST_POLL_MS = 1_000;
 const HINT_DEBOUNCE_MS = 50;
 const FOLDER_HINT_DEBOUNCE_MS = 50;
 export const PREVIEW_TOGGLE_DEBOUNCE_MS = 150;
+const PREVIEW_SYNC_RETRY_MS = [1_500, 3_000, 6_000] as const;
 export const PREVIEW_PASS_TTL_MS = 45_000;
 const MAX_LOCAL_SANDBOX_CACHE = 8;
 const LOCAL_AUTOMATION_OWNER = { ownable: false, ownerUserId: null, offer: null } as const;
@@ -306,6 +307,7 @@ export interface SurfacesState {
 	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
 	readonly unseenNotes: Readonly<Record<string, SurfaceUnseenNote>>;
 	readonly reconciliationRequests: Readonly<Record<string, "pending" | "failed">>;
+	readonly previewSyncing: Readonly<Record<string, true>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -1361,6 +1363,9 @@ export class SurfacesStore {
 	readonly #previewSyncDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #previewSyncDebounceWaiters = new Map<string, (() => void)[]>();
 	readonly #lastPreviewSyncKey = new Map<string, string>();
+	readonly #previewSyncSettledBaselineKey = new Map<string, string>();
+	readonly #previewSyncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	readonly #previewSyncRetryCounts = new Map<string, { readonly key: string; readonly count: number }>();
 	readonly #previewIdSelectionKey = new Map<string, string>();
 	readonly #pendingMerges = new Map<
 		string,
@@ -1423,6 +1428,7 @@ export class SurfacesStore {
 			sessionImages: {},
 			unseenNotes: {},
 			reconciliationRequests: {},
+			previewSyncing: {},
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -1660,6 +1666,10 @@ export class SurfacesStore {
 		this.#previewSyncDirty.clear();
 		this.#previewSyncForeground.clear();
 		this.#lastPreviewSyncKey.clear();
+		this.#previewSyncSettledBaselineKey.clear();
+		for (const timer of this.#previewSyncRetryTimers.values()) clearTimeout(timer);
+		this.#previewSyncRetryTimers.clear();
+		this.#previewSyncRetryCounts.clear();
 		this.#previewIdSelectionKey.clear();
 		this.#pendingMerges.clear();
 		this.#pendingPublishChanges.clear();
@@ -2264,12 +2274,28 @@ export class SurfacesStore {
 		return this.#inFlightWorkspaceRefreshes.has(surfaceId);
 	}
 
+	isPreviewSyncing(surfaceId: string): boolean {
+		return Boolean(this.state.previewSyncing[surfaceId]);
+	}
+
 	setActiveSurface(surfaceId: string | undefined): void {
+		const changed = this.#activeSurfaceId !== surfaceId;
 		this.#activeSurfaceId = surfaceId;
+		if (
+			changed &&
+			surfaceId &&
+			this.state.workspaces[surfaceId] &&
+			!this.#inFlightWorkspaceRefreshes.has(surfaceId)
+		) {
+			this.#maybeAutoSyncPreview(surfaceId);
+		}
 	}
 
 	clearActiveSurface(surfaceId: string): void {
-		if (this.#activeSurfaceId === surfaceId) this.#activeSurfaceId = undefined;
+		if (this.#activeSurfaceId === surfaceId) {
+			this.#activeSurfaceId = undefined;
+			this.#clearPreviewSyncRetry(surfaceId, false);
+		}
 		if (this.state.opsPanelSurfaceId === surfaceId) this.store.set({ opsPanelSurfaceId: undefined });
 	}
 
@@ -2279,12 +2305,18 @@ export class SurfacesStore {
 		if (!surface) return undefined;
 		this.#activeSurfaceId = surface.id;
 		this.#hydratedAttempted.delete(surface.id);
+		this.#previewSyncSettledBaselineKey.delete(surface.id);
+		this.#clearPreviewSyncRetry(surface.id);
 		if (isLocalSurfaceId(surface.id) || !this.#options.client) {
 			const existing = this.workspace(surface.id) ?? localWorkspace(surface);
 			this.#putWorkspace({ ...existing, surface });
 			return this.workspace(surface.id);
 		}
-		return this.refreshWorkspace(surface.id);
+		const workspace = await this.refreshWorkspace(surface.id);
+		if (!workspace && this.state.workspaces[surface.id]) {
+			this.#maybeAutoSyncPreview(surface.id);
+		}
+		return workspace;
 	}
 
 	hydrateWorkspace(surfaceId: string): void {
@@ -2368,7 +2400,11 @@ export class SurfacesStore {
 		return this.#ensurePreviewPass(surfaceId, previewId);
 	}
 
-	#putWorkspace(workspace: SurfaceWorkspace, bumpEpoch = true, options?: { readonly background?: boolean }): void {
+	#putWorkspace(
+		workspace: SurfaceWorkspace,
+		bumpEpoch = true,
+		options?: { readonly background?: boolean; readonly fromPreviewSync?: boolean },
+	): void {
 		const surfaceId = workspace.surface.id;
 		const background =
 			options?.background === true &&
@@ -2603,50 +2639,93 @@ export class SurfacesStore {
 				void this.refreshCloudFiles(workspace.surface);
 			}
 		}
-		if (
-			!background &&
-			stored &&
-			this.state.source === "cloud" &&
-			!isLocalSurfaceId(workspace.surface.id) &&
-			this.#options.client &&
-			stored.surface.archetype === "live_build" &&
-			stored.surface.sourceKind === "code_repo" &&
-			stored.previewState.mode !== "compare"
-		) {
-			const info = this.#previewSelectionInfo(workspace.surface.id);
-			if (info.hasOpenChanges) {
-				const primary = stored.previewState.primary;
-				const primaryIds = [...new Set(primary.toggledChangeIds)].sort().join(",");
-				const stalePreviewId = Boolean(
-					primary.previewId &&
-						this.#previewIdSelectionKey.has(primary.previewId) &&
-						this.#previewIdSelectionKey.get(primary.previewId) !== info.selectionKey,
-				);
-				const matchesPrimary =
-					primary.status !== "live_baseline" &&
-					primary.status !== "failed" &&
-					!stalePreviewId &&
-					primaryIds === info.toggledKey;
-				if (matchesPrimary) {
-					this.#lastPreviewSyncKey.set(workspace.surface.id, info.selectionKey);
-				} else if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== info.selectionKey) {
-					this.#lastPreviewSyncKey.set(workspace.surface.id, info.selectionKey);
-					void this.#syncPreview(workspace.surface.id, { background: true });
-				}
-			} else {
-				const primary = stored.previewState.primary;
-				if (primary.status !== "live_baseline") {
-					const emptyKey = `empty|${info.selectionKey}`;
-					if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== emptyKey) {
-						this.#lastPreviewSyncKey.set(workspace.surface.id, emptyKey);
-						void this.#syncPreview(workspace.surface.id, { background: true });
-					}
-				} else {
-					this.#lastPreviewSyncKey.delete(workspace.surface.id);
-				}
-			}
+		if (!background) {
+			this.#maybeAutoSyncPreview(workspace.surface.id, { fromPreviewSync: options?.fromPreviewSync });
 		}
 		this.#syncPolling();
+	}
+
+	#maybeAutoSyncPreview(surfaceId: string, options?: { readonly fromPreviewSync?: boolean }): void {
+		const stored = this.state.workspaces[surfaceId];
+		if (
+			!stored ||
+			this.state.source !== "cloud" ||
+			isLocalSurfaceId(surfaceId) ||
+			!this.#options.client ||
+			stored.surface.archetype !== "live_build" ||
+			stored.surface.sourceKind !== "code_repo"
+		) {
+			return;
+		}
+		const info = this.#previewSelectionInfo(surfaceId);
+		if (this.state.mode === "compare" && (info.selection.compareSessionIds?.length ?? 0) >= 2) {
+			return;
+		}
+		const primary = stored.previewState.primary;
+		if (info.hasOpenChanges) {
+			const primaryIds = [...new Set(primary.toggledChangeIds)].sort().join(",");
+			const stalePreviewId = Boolean(
+				primary.previewId &&
+					this.#previewIdSelectionKey.has(primary.previewId) &&
+					this.#previewIdSelectionKey.get(primary.previewId) !== info.selectionKey,
+			);
+			const matchesPrimary =
+				primary.status !== "live_baseline" &&
+				primary.status !== "failed" &&
+				!stalePreviewId &&
+				primaryIds === info.toggledKey;
+			if (matchesPrimary) {
+				this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
+				if (primary.previewId && !this.#previewIdSelectionKey.has(primary.previewId)) {
+					this.#previewIdSelectionKey.set(primary.previewId, info.selectionKey);
+				}
+				this.#previewSyncSettledBaselineKey.delete(surfaceId);
+				this.#clearPreviewSyncRetry(surfaceId);
+				return;
+			}
+			if (options?.fromPreviewSync) {
+				if (primary.status === "live_baseline") {
+					this.#previewSyncSettledBaselineKey.set(surfaceId, info.selectionKey);
+				}
+				return;
+			}
+			if (this.#previewSyncInFlight.has(surfaceId) || this.#previewSyncDebounceTimers.has(surfaceId)) {
+				return;
+			}
+			if (primary.status === "failed" && !stalePreviewId && primaryIds === info.toggledKey) {
+				if (this.#lastPreviewSyncKey.get(surfaceId) === info.selectionKey) return;
+				this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
+				void this.#syncPreview(surfaceId, { background: true });
+				return;
+			}
+			if (
+				primary.status === "live_baseline" &&
+				this.#previewSyncSettledBaselineKey.get(surfaceId) === info.selectionKey
+			) {
+				return;
+			}
+			this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
+			void this.#syncPreview(surfaceId, { background: true });
+		} else {
+			this.#previewSyncSettledBaselineKey.delete(surfaceId);
+			this.#clearPreviewSyncRetry(surfaceId);
+			if (primary.status !== "live_baseline") {
+				if (
+					options?.fromPreviewSync ||
+					this.#previewSyncInFlight.has(surfaceId) ||
+					this.#previewSyncDebounceTimers.has(surfaceId)
+				) {
+					return;
+				}
+				const emptyKey = `empty|${info.selectionKey}`;
+				if (this.#lastPreviewSyncKey.get(surfaceId) !== emptyKey) {
+					this.#lastPreviewSyncKey.set(surfaceId, emptyKey);
+					void this.#syncPreview(surfaceId, { background: true });
+				}
+			} else {
+				this.#lastPreviewSyncKey.delete(surfaceId);
+			}
+		}
 	}
 
 	#ensurePreviewPass(surfaceId: string, previewId: string): Promise<boolean> {
@@ -3118,9 +3197,10 @@ export class SurfacesStore {
 			...(mode !== "compare" ? { compareFocusSessionId: undefined } : {}),
 			...(mode !== "report" ? { activeReportSlug: undefined } : {}),
 		});
-		if (wasCompare && mode !== "compare" && this.#activeSurfaceId) {
+		if (mode !== "compare" && mode !== "live" && this.#activeSurfaceId) {
 			const ws = this.workspace(this.#activeSurfaceId);
 			if (
+				wasCompare &&
 				ws &&
 				this.state.source === "cloud" &&
 				!isLocalSurfaceId(ws.surface.id) &&
@@ -3128,6 +3208,8 @@ export class SurfacesStore {
 				ws.previewState.mode === "compare"
 			) {
 				void this.#syncPreview(ws.surface.id, { background: true });
+			} else {
+				this.#maybeAutoSyncPreview(this.#activeSurfaceId);
 			}
 		}
 	}
@@ -4881,12 +4963,16 @@ export class SurfacesStore {
 			this.#previewSyncDebounceTimers.delete(surfaceId);
 		}
 		this.#lastPreviewSyncKey.delete(surfaceId);
+		this.#previewSyncSettledBaselineKey.delete(surfaceId);
+		this.#clearPreviewSyncRetry(surfaceId);
 		const primaryId = primary?.previewId;
 		if (primaryId) this.#previewIdSelectionKey.delete(primaryId);
 		await this.#syncPreview(surfaceId);
 	}
 
 	async toggleChange(surfaceId: string, changeId: string): Promise<void> {
+		this.#previewSyncSettledBaselineKey.delete(surfaceId);
+		this.#clearPreviewSyncRetry(surfaceId);
 		this.store.set((state) => {
 			const hiddenChanges = { ...state.hiddenChanges };
 			if (hiddenChanges[changeId]) delete hiddenChanges[changeId];
@@ -4902,6 +4988,8 @@ export class SurfacesStore {
 	}
 
 	async pickVariant(surfaceId: string, explorationId: string, sessionId: string): Promise<void> {
+		this.#previewSyncSettledBaselineKey.delete(surfaceId);
+		this.#clearPreviewSyncRetry(surfaceId);
 		const previousDrawer = this.state.drawer;
 		const switchingDrawer = previousDrawer?.explorationId === explorationId && previousDrawer.sessionId !== sessionId;
 		this.store.set((state) => ({
@@ -5021,6 +5109,53 @@ export class SurfacesStore {
 		};
 	}
 
+	#setPreviewSyncing(surfaceId: string, active: boolean): void {
+		const current = Boolean(this.state.previewSyncing[surfaceId]);
+		if (current === active || this.#options.signal.aborted) return;
+		this.store.set((state) => {
+			const next = { ...state.previewSyncing };
+			if (active) next[surfaceId] = true;
+			else delete next[surfaceId];
+			return { previewSyncing: next };
+		});
+	}
+
+	#clearPreviewSyncRetry(surfaceId: string, resetCount = true): void {
+		const timer = this.#previewSyncRetryTimers.get(surfaceId);
+		if (timer) {
+			clearTimeout(timer);
+			this.#previewSyncRetryTimers.delete(surfaceId);
+		}
+		if (resetCount) this.#previewSyncRetryCounts.delete(surfaceId);
+		this.#setPreviewSyncing(
+			surfaceId,
+			this.#previewSyncInFlight.has(surfaceId) || this.#previewSyncDebounceTimers.has(surfaceId),
+		);
+	}
+
+	#schedulePreviewSyncRetry(surfaceId: string, selectionKey: string): void {
+		if (this.#options.signal.aborted) return;
+		const active = surfaceId === this.#activeSurfaceId || surfaceId === this.state.drawer?.surfaceId;
+		if (!active) return;
+		const prev = this.#previewSyncRetryCounts.get(surfaceId);
+		const attempt = prev && prev.key === selectionKey ? prev.count : 0;
+		if (attempt >= PREVIEW_SYNC_RETRY_MS.length) {
+			this.#clearPreviewSyncRetry(surfaceId, false);
+			return;
+		}
+		const delayMs = PREVIEW_SYNC_RETRY_MS[attempt]!;
+		this.#previewSyncRetryCounts.set(surfaceId, { key: selectionKey, count: attempt + 1 });
+		const existing = this.#previewSyncRetryTimers.get(surfaceId);
+		if (existing) clearTimeout(existing);
+		const timer = setTimeout(() => {
+			this.#previewSyncRetryTimers.delete(surfaceId);
+			if (this.#options.signal.aborted) return;
+			const stillActive = surfaceId === this.#activeSurfaceId || surfaceId === this.state.drawer?.surfaceId;
+			if (stillActive) this.#maybeAutoSyncPreview(surfaceId);
+		}, delayMs);
+		this.#previewSyncRetryTimers.set(surfaceId, timer);
+	}
+
 	async #syncPreview(surfaceId: string, options?: { background?: boolean; debounceMs?: number }): Promise<void> {
 		const client = this.#options.client;
 		if (isLocalSurfaceId(surfaceId) || !client) return;
@@ -5030,12 +5165,14 @@ export class SurfacesStore {
 		if (debounceMs > 0 && !this.#previewSyncInFlight.has(surfaceId)) {
 			const existingTimer = this.#previewSyncDebounceTimers.get(surfaceId);
 			if (existingTimer) clearTimeout(existingTimer);
+			this.#clearPreviewSyncRetry(surfaceId, false);
 			if (foreground) {
 				this.#previewSyncForeground.add(surfaceId);
 				if (!this.#options.signal.aborted && (!this.state.busy[busyKey] || this.state.error !== undefined)) {
 					this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
 				}
 			}
+			this.#setPreviewSyncing(surfaceId, true);
 			await new Promise<void>((resolve) => {
 				const list = this.#previewSyncDebounceWaiters.get(surfaceId);
 				if (list) list.push(resolve);
@@ -5069,6 +5206,7 @@ export class SurfacesStore {
 			clearTimeout(pendingTimer);
 			this.#previewSyncDebounceTimers.delete(surfaceId);
 		}
+		this.#clearPreviewSyncRetry(surfaceId, false);
 		this.#previewSyncGen.set(surfaceId, (this.#previewSyncGen.get(surfaceId) ?? 0) + 1);
 		this.#previewSyncDirty.add(surfaceId);
 		if (foreground) {
@@ -5086,9 +5224,12 @@ export class SurfacesStore {
 			return;
 		}
 		this.#previewSyncInFlight.add(surfaceId);
+		this.#setPreviewSyncing(surfaceId, true);
+		let retryKey: string | undefined;
 		try {
 			while (this.#previewSyncDirty.has(surfaceId) && !this.#options.signal.aborted) {
 				this.#previewSyncDirty.delete(surfaceId);
+				retryKey = undefined;
 				const gen = this.#previewSyncGen.get(surfaceId) ?? 0;
 				const info = this.#previewSelectionInfo(surfaceId);
 				this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
@@ -5110,8 +5251,14 @@ export class SurfacesStore {
 					if (previewState?.primary.previewId) {
 						this.#previewIdSelectionKey.set(previewState.primary.previewId, info.selectionKey);
 					}
+					if (previewState && (previewState.primary.status !== "live_baseline" || !info.hasOpenChanges)) {
+						this.#previewSyncRetryCounts.delete(surfaceId);
+						this.#previewSyncSettledBaselineKey.delete(surfaceId);
+					}
 					const workspace = this.workspace(surfaceId);
-					if (previewState && workspace) this.#putWorkspace({ ...workspace, previewState });
+					if (previewState && workspace) {
+						this.#putWorkspace({ ...workspace, previewState }, true, { fromPreviewSync: true });
+					}
 				} catch (error) {
 					if (this.#lastPreviewSyncKey.get(surfaceId) === info.selectionKey) {
 						this.#lastPreviewSyncKey.delete(surfaceId);
@@ -5124,19 +5271,25 @@ export class SurfacesStore {
 						this.store.set({
 							error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
 						});
+					} else if (!this.#options.signal.aborted && !this.#previewSyncDirty.has(surfaceId)) {
+						retryKey = info.selectionKey;
 					}
 					if (!this.#previewSyncDirty.has(surfaceId)) break;
 				}
 			}
 		} finally {
 			this.#previewSyncInFlight.delete(surfaceId);
-			this.#previewSyncForeground.delete(surfaceId);
+			const wasForeground = this.#previewSyncForeground.delete(surfaceId);
 			if (!this.#options.signal.aborted && this.state.busy[busyKey]) {
 				this.store.set((state) => {
 					const busy = { ...state.busy };
 					delete busy[busyKey];
 					return { busy };
 				});
+			}
+			this.#setPreviewSyncing(surfaceId, this.#previewSyncDebounceTimers.has(surfaceId));
+			if (retryKey && !wasForeground && !this.#previewSyncDirty.has(surfaceId)) {
+				this.#schedulePreviewSyncRetry(surfaceId, retryKey);
 			}
 			const waiters = this.#previewSyncWaiters.get(surfaceId);
 			if (waiters) {
