@@ -32,7 +32,7 @@ do $$
 declare
 	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
 	v_anna constant uuid := '85600000-0000-4000-8000-000000000001';
-	v_outsider constant uuid := '13760000-0000-4000-8000-000000000099';
+	v_outsider constant uuid := '13770000-0000-4000-8000-000000000099';
 	v_company uuid := (v_claim ->> 'profileId')::uuid;
 	v_surface uuid;
 	v_session uuid;
@@ -337,7 +337,7 @@ begin
 	end;
 
 	declare
-		v_viewer constant uuid := '13760000-0000-4000-8000-000000000088';
+		v_viewer constant uuid := '13770000-0000-4000-8000-000000000088';
 		v_studio uuid;
 		v_studio_session uuid;
 		v_dep_session_choose uuid;

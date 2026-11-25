@@ -13,11 +13,11 @@ begin
 		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null
 		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_enqueue_standalone_dependents(uuid,uuid[])') is null then
-		raise exception 'Surface change options (20260930894000) requires prior surface migrations through 20260930890000 first';
+		raise exception 'Surface change options (20260930895000) requires prior surface migrations through 20260930890000 first';
 	end if;
 	v_session_json := pg_get_functiondef('public.qorpera_surface_session_json(public.qorpera_surface_sessions)'::regprocedure);
 	if position('''optionGroupKey''' in v_session_json) > 0 then
-		raise exception 'Surface change options (20260930894000) is already applied';
+		raise exception 'Surface change options (20260930895000) is already applied';
 	end if;
 end $$;
 
@@ -49,12 +49,12 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930894000: invalid replacement pairs for %', p_target;
+		raise exception '20260930895000: invalid replacement pairs for %', p_target;
 	end if;
 	while v_i <= array_length(p_pairs, 1) loop
 		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
 		if v_hits <> 1 then
-			raise exception '20260930894000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
+			raise exception '20260930895000: anchor matched % time(s) in %: %', v_hits, p_target, left(p_pairs[v_i], 120);
 		end if;
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
@@ -70,12 +70,12 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930894000: invalid recreate pairs for %', p_old_target;
+		raise exception '20260930895000: invalid recreate pairs for %', p_old_target;
 	end if;
 	while v_i <= array_length(p_pairs, 1) loop
 		v_hits := (length(v_def) - length(replace(v_def, p_pairs[v_i], ''))) / length(p_pairs[v_i]);
 		if v_hits <> 1 then
-			raise exception '20260930894000: recreate anchor matched % time(s) in %: %', v_hits, p_old_target, left(p_pairs[v_i], 120);
+			raise exception '20260930895000: recreate anchor matched % time(s) in %: %', v_hits, p_old_target, left(p_pairs[v_i], 120);
 		end if;
 		v_def := replace(v_def, p_pairs[v_i], p_pairs[v_i + 1]);
 		v_i := v_i + 2;
