@@ -990,6 +990,33 @@ create trigger nap before update on slowed for each row execute function nap();
 		assert.deepEqual(await inE("select jsonb_typeof(d) as d, jsonb_typeof(n) as n from ledger.docs"), [{ d: "string", n: "string" }]);
 	});
 
+	it("reads rows at a value only where the column holds it whole, and refuses a column whose values have no equals", async () => {
+		put(ENV_E, {
+			"data/ledger/tables/006-priced.sql":
+				"create table priced (id int primary key, tag varchar(3), kind char(3), flags bit(4), price numeric(10,2), facts json, spot point);\ninsert into priced values (1, 'abc', 'xy', B'1010', 1.01, '{\"a\":1}', '(1,2)');\n",
+		});
+		assert.equal((await ask(contributor, "apply", { database: "ledger" }, ENV_E)).value.applied, true);
+		const at = async (table, values) => {
+			const read = await listed(contributor, { database: "ledger", table, at: values });
+			return read.status === 200 ? read.value.rows.map((row) => row.values[0]) : [read.status, read.value.error];
+		};
+		assert.deepEqual(await at("priced", { tag: "abc" }), [1]);
+		assert.deepEqual(await at("priced", { tag: "abcdef" }), [], "a longer text is not cut to the column's length");
+		assert.deepEqual(await at("priced", { tag: ["abcdef", "abc"] }), [1]);
+		assert.deepEqual(await at("priced", { kind: "xy" }), [1], "a char column equals its text without the padding");
+		assert.deepEqual(await at("priced", { kind: "xyzw" }), []);
+		assert.deepEqual(await at("priced", { kind: ["xyzw", "xy"] }), [1]);
+		assert.deepEqual(await at("priced", { flags: "1010" }), [1]);
+		assert.deepEqual(await at("priced", { price: 1.01 }), [1]);
+		assert.deepEqual(await at("priced", { price: "1.005" }), [], "a number is not rounded to the column's scale");
+		assert.deepEqual(await at("priced", { price: [1.005, 2] }), []);
+		assert.deepEqual(await at("priced", { facts: null, id: 1 }), []);
+		assert.deepEqual(await at("priced", { facts: '{"a":1}' }), [400, "facts holds values at cannot compare"]);
+		assert.deepEqual(await at("priced", { spot: "(1,2)" }), [400, "spot holds values at cannot compare"]);
+		assert.deepEqual(await at("docs", { d: "hi" }), [400, "d holds values at cannot compare"]);
+		assert.deepEqual(await at("priced", { id: 1 }), [1], "and the table's shape is still kept after a refusal");
+	});
+
 	it("lets an actor's line go with its rows' lines at the watcher's sweep, and keeps a running write's", async () => {
 		const scratch = companyDatabase("64000000-0000-4000-8000-0000000000f0");
 		await asAdmin("postgres", `create database ${scratch} template qorpera_company_template`);

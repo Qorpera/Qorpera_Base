@@ -464,13 +464,12 @@ describe("find and linked rows (app/views/data.ts)", () => {
 	type Asked = { table: string; find?: string; at?: Record<string, unknown> };
 	const opened = async (can?: readonly string[]) => {
 		const view = await open(shop(can), true, false);
+		const people = customers.map((row) => [...row]);
 		view.calls.rows.mockImplementation(async (asked: Asked) => {
 			if (asked.table === "customers") {
-				const ids = asked.at?.id;
-				return page(
-					["id", "name", "city"],
-					Array.isArray(ids) ? customers.filter((row) => ids.includes(row[0])) : customers,
-				);
+				const id = asked.at?.id;
+				const ids = id === undefined ? undefined : Array.isArray(id) ? id : [id];
+				return page(["id", "name", "city"], ids ? people.filter((row) => ids.includes(row[0])) : people);
 			}
 			const sought = asked.find?.toLowerCase();
 			return page(
@@ -480,7 +479,7 @@ describe("find and linked rows (app/views/data.ts)", () => {
 		});
 		view.container.querySelector<HTMLButtonElement>(".data-plot[data-table='orders']")?.click();
 		await settle();
-		return view;
+		return { ...view, people };
 	};
 	const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -496,7 +495,7 @@ describe("find and linked rows (app/views/data.ts)", () => {
 		const { container, calls } = await opened(["at", "find"]);
 		const field = container.querySelector<HTMLInputElement>(".data-find-input");
 		expect(field?.getAttribute("aria-label")).toBe("Find in Orders");
-		expect(texts(container, "button.data-row .is-lead")).toEqual(["Gazelle", "Batavus", "Raleigh"]);
+		expect(texts(container, ".data-row-open")).toEqual(["Gazelle", "Batavus", "Raleigh"]);
 		field!.value = " gaz ";
 		field!.dispatchEvent(new Event("input", { bubbles: true }));
 		expect(calls.rows).not.toHaveBeenCalledWith(expect.objectContaining({ find: "gaz" }), expect.anything());
@@ -510,7 +509,7 @@ describe("find and linked rows (app/views/data.ts)", () => {
 			[{ database: "shop", table: "orders", limit: 100, find: "gaz", etag }],
 			expect.anything(),
 		);
-		expect(texts(container, "button.data-row .is-lead")).toEqual(["Gazelle"]);
+		expect(texts(container, ".data-row-open")).toEqual(["Gazelle"]);
 		expect(container.querySelector(".data-foot")?.textContent).toContain("1 rows");
 		expect(container.querySelector<HTMLInputElement>(".data-find-input")).toBe(field);
 
@@ -524,12 +523,12 @@ describe("find and linked rows (app/views/data.ts)", () => {
 		await settle();
 		expect(field!.value).toBe("");
 		expect(calls.rows).toHaveBeenLastCalledWith({ database: "shop", table: "orders", limit: 100 }, expect.anything());
-		expect(texts(container, "button.data-row .is-lead")).toHaveLength(3);
+		expect(texts(container, ".data-row-open")).toHaveLength(3);
 		expect(container.querySelector(".data-foot")?.textContent).toContain("3 rows");
 	});
 
 	it("shows a column that points at another table as that row's name, peeks at it, and opens it", async () => {
-		const { container, calls } = await opened(["at", "find"]);
+		const { container, calls, people } = await opened(["at", "find"]);
 		expect(calls.rows).toHaveBeenCalledWith(
 			{ database: "shop", table: "customers", at: { id: [ANN, BEA] }, limit: 200 },
 			expect.anything(),
@@ -537,6 +536,8 @@ describe("find and linked rows (app/views/data.ts)", () => {
 		expect(texts(container, ".data-row-head .data-cell")).toEqual(["Item", "Customer", "Id"]);
 		expect(texts(container, ".data-link")).toEqual(["Ann", "Bea", "Ann"]);
 		expect(calls.rows).toHaveBeenCalledTimes(2);
+		expect(container.querySelector("button button, button [role='link']")).toBeNull();
+		expect(container.querySelectorAll(".data-row.is-linked > .is-lead > button.data-row-open")).toHaveLength(3);
 
 		container.querySelector<HTMLElement>(".data-link")?.click();
 		expect(container.querySelector(".data-thing")).toBeNull();
@@ -547,15 +548,32 @@ describe("find and linked rows (app/views/data.ts)", () => {
 		card?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(container.querySelector(".data-peek")).toBeNull();
 
+		people[1] = [BEA, "Bea B.", "Odense"];
 		container.querySelectorAll<HTMLElement>(".data-link")[1]?.click();
+		expect(container.querySelector(".data-peek-title")?.textContent).toBe("Bea");
 		button(container, "Open in Customers").click();
-		await settle();
-		expect(container.querySelector(".data-peek")).toBeNull();
 		expect(container.querySelector(".data-thing-title")?.textContent).toBe("Bea");
+		await settle();
+		expect(calls.rows).toHaveBeenCalledWith(
+			{ database: "shop", table: "customers", at: { id: BEA }, limit: 1 },
+			expect.anything(),
+		);
+		expect(container.querySelector(".data-peek")).toBeNull();
+		expect(container.querySelector(".data-thing-title")?.textContent).toBe("Bea B.");
 		button(container, "Customers").click();
 		await settle();
 		expect(container.querySelector(".data-tab[aria-selected='true']")?.textContent).toBe("Customers");
-		expect(texts(container, "button.data-row .is-lead")).toEqual(["Ann", "Bea"]);
+		expect(texts(container, "button.data-row .is-lead")).toEqual(["Ann", "Bea B."]);
+		button(container, "Orders").click();
+		await settle();
+		expect(texts(container, ".data-link")).toEqual(["Ann", "Bea B.", "Ann"]);
+	});
+
+	it("opens a row with linked names by its first cell, and the names stay their own buttons", async () => {
+		const { container } = await opened(["at", "find"]);
+		container.querySelectorAll<HTMLButtonElement>(".data-row-open")[1]?.click();
+		await settle();
+		expect(container.querySelector(".data-thing-title")?.textContent).toBe("Batavus");
 	});
 });
 

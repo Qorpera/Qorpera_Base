@@ -59,6 +59,10 @@ export class DataLinked {
 		this.#rows.clear();
 	}
 
+	drop(database: string, table: string): void {
+		for (const place of [...this.#rows.keys()]) if (place.startsWith(`${database}/${table}/`)) this.#rows.delete(place);
+	}
+
 	row(database: string, link: DataLink, value: unknown): DataLinkedRow | undefined {
 		return this.#rows.get(`${database}/${link.table}/${link.to}`)?.get(valueKey(value)) ?? undefined;
 	}
@@ -87,13 +91,16 @@ export class DataLinked {
 		known: Map<string, DataLinkedRow | null>,
 		values: readonly CloudMemberDataAtValue[],
 	): Promise<void> {
+		const askAgain = (left: Iterable<CloudMemberDataAtValue>) => {
+			for (const value of left) if (known.get(valueKey(value)) === null) known.delete(valueKey(value));
+		};
 		await withAbortScopes([this.#stop.signal, this.#signal], async (signal) => {
 			try {
 				const page = await this.#calls().rows(
 					{ database, table: link.table, at: { [link.to]: values }, limit: CLOUD_MEMBER_DATA_AT_LIST },
 					signal,
 				);
-				if (signal.aborted) return;
+				if (signal.aborted) return askAgain(values);
 				const at = page.columns.indexOf(link.to);
 				if (at < 0) return;
 				let found = false;
@@ -107,9 +114,11 @@ export class DataLinked {
 					});
 					found = true;
 				}
+				if (page.more) askAgain(values);
 				if (found) this.#arrived();
-			} catch {
-				return;
+			} catch (error) {
+				const status = (error as { status?: unknown }).status;
+				if (status !== 400 && status !== 403 && status !== 404) askAgain(values);
 			}
 		});
 	}

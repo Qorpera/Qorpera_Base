@@ -738,6 +738,7 @@ class DataListView {
 			read.key.every((column, index) => column === first.key[index]);
 		read.columns = first.columns;
 		read.key = first.key;
+		this.#linked.drop(read.database, read.tab.name);
 		const freshRows = pages.flatMap((page) =>
 			page.rows.filter(hasValues).map((row) => ({ values: row.values, seen: row.seen })),
 		);
@@ -1349,17 +1350,8 @@ class DataListView {
 	}
 
 	#linkEl(link: DataLink, linked: DataLinkedRow, title: string): HTMLElement {
-		const el = h("span", { class: "data-link", role: "link", tabindex: "0" }, title);
-		const peek = (event: Event) => {
-			event.preventDefault();
-			event.stopPropagation();
-			this.#showPeek(el, link, linked, title);
-		};
-		el.addEventListener("click", peek);
-		el.addEventListener("keydown", (pressed) => {
-			const event = pressed as KeyboardEvent;
-			if (event.key === "Enter" || event.key === " ") peek(event);
-		});
+		const el = h("button", { type: "button", class: "data-link" }, title);
+		el.addEventListener("click", () => this.#showPeek(el, link, linked, title));
 		return el;
 	}
 
@@ -1418,6 +1410,28 @@ class DataListView {
 			values: linked.values,
 			seen: linked.seen,
 		});
+		const at = linked.values[linked.columns.indexOf(link.to)];
+		if (this.#open && (typeof at === "string" || typeof at === "number" || typeof at === "boolean"))
+			void this.#readAgain(this.#open, link, at);
+	}
+
+	async #readAgain(open: OpenRow, link: DataLink, at: string | number | boolean): Promise<void> {
+		try {
+			const page = await this.#calls().rows(
+				{ database: open.database, table: link.table, at: { [link.to]: at }, limit: 1 },
+				this.#lifetime.signal,
+			);
+			const [row] = page.rows;
+			if (this.#open !== open || !open.row || !row?.values || row.seen === open.row.seen) return;
+			if (open.pending.size > 0 || open.saving.size > 0) return;
+			this.#linked.drop(open.database, link.table);
+			open.columns = page.columns;
+			open.key = page.key;
+			open.row = { values: row.values, seen: row.seen };
+			this.#syncRow();
+		} catch {
+			return;
+		}
 	}
 
 	#listRowEl(
@@ -1428,20 +1442,37 @@ class DataListView {
 		opens: boolean,
 		links: readonly (DataLink | undefined)[],
 	): HTMLElement {
-		const cells = indices.map((colIndex, index) => {
+		const shown = indices.map((colIndex, index) => {
 			const value = colIndex >= 0 ? row.values[colIndex] : undefined;
-			const link = links[index];
+			const link = index > 0 ? links[index] : undefined;
 			const linked =
 				link && value !== null && value !== undefined ? this.#linked.row(read.database, link, value) : undefined;
 			const title = link && linked ? this.#linkedTitle(link, linked) : "";
-			return h(
-				"span",
-				{
-					class: `data-cell${index === 0 ? " is-lead" : kinds[index] === "number" && !title ? " is-number" : ""}`,
-				},
-				link && linked && title ? this.#linkEl(link, linked, title) : shownValue(value, kinds[index] ?? "text"),
-			);
+			return {
+				name: `data-cell${index === 0 ? " is-lead" : kinds[index] === "number" && !title ? " is-number" : ""}`,
+				text: shownValue(value, kinds[index] ?? "text"),
+				link: link && linked && title ? this.#linkEl(link, linked, title) : undefined,
+			};
 		});
+		if (opens && shown.some((cell) => cell.link))
+			return h(
+				"div",
+				{ class: "data-row is-linked", dataset: { key: keyOf(read.columns, read.key, row.values) } },
+				...shown.map((cell, index) =>
+					h(
+						"span",
+						{ class: cell.name },
+						index === 0
+							? h(
+									"button",
+									{ type: "button", class: "data-row-open", onclick: () => this.#openRow(read, row) },
+									cell.text || "—",
+								)
+							: (cell.link ?? cell.text),
+					),
+				),
+			);
+		const cells = shown.map((cell) => h("span", { class: cell.name }, cell.text));
 		return opens
 			? h(
 					"button",
@@ -1918,6 +1949,7 @@ class DataListView {
 				this.#lifetime.signal,
 			);
 			if (!added.row?.values) return;
+			this.#linked.drop(open.database, open.table);
 			open.columns = added.columns;
 			open.key = added.key;
 			open.row = { values: added.row.values, seen: added.row.seen };
@@ -2001,6 +2033,7 @@ class DataListView {
 				this.#lifetime.signal,
 			);
 			if (!changed.row?.values) return;
+			this.#linked.drop(open.database, open.table);
 			const now = { values: changed.row.values, seen: changed.row.seen };
 			this.#replaceRow(open, row, now);
 			open.row = now;
@@ -2210,6 +2243,7 @@ class DataListView {
 					this.#lifetime.signal,
 				);
 			});
+			this.#linked.drop(open.database, open.table);
 			this.#dropRow(open, row);
 			if (this.#open === open) this.#close();
 		} catch (error) {
