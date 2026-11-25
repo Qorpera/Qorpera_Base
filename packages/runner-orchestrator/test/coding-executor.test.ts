@@ -1478,6 +1478,27 @@ describe("the coding executor over a session turn", () => {
 		expect(w.world.phase).toBe("queued");
 	});
 
+	it("a Claude coding turn whose parallel cap was reached before it began waits in the queue", async () => {
+		const w = world();
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_begin_coding_turn"
+					? Promise.resolve({ state: "refused", reason: "CLAUDE_PARALLEL_LIMIT_REACHED" })
+					: w.control.call(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("deferred");
+		expect(w.host.endTurn).toHaveBeenCalled();
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(w.world.calls.find((c) => c.method === "qorpera_defer_coding_session")!.args).toEqual({
+			p_worker_id: w.world.claim.workerId,
+			p_lease_token: w.world.claim.leaseToken,
+			p_reason: "CLAUDE_PARALLEL_LIMIT_REACHED",
+		});
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+		expect(w.world.phase).toBe("queued");
+	});
+
 	it("a begin refusal for any other reason is never taken for a wait", async () => {
 		const w = world();
 		const control: CodingExecutorControl = {

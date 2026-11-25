@@ -1125,7 +1125,9 @@ export class CloudCodingExecutor {
 						await again("qorpera_begin_coding_turn", admission, admitBy),
 						"Coding turn admission unconfirmed",
 					);
-					hours = begun.state === "refused" && begun.reason === "COMPUTER_HOURS_EXHAUSTED";
+					hours =
+						begun.state === "refused" &&
+						(begun.reason === "COMPUTER_HOURS_EXHAUSTED" || begun.reason === "CLAUDE_PARALLEL_LIMIT_REACHED");
 					if (!hours && (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence))
 						throw new Error("Coding turn admission unconfirmed");
 				} catch (error) {
