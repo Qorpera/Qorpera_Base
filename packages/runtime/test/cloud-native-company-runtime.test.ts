@@ -4360,27 +4360,35 @@ describe("Gemini 4 Neon conversation runs", () => {
 	it("overlaps openGeminiKeyForRun with Wave 2 context reads", async () => {
 		let folderReadInFlight = 0;
 		let overlapped = false;
-		const geminiFetch = vi.fn<typeof fetch>(async () =>
-			Response.json({
-				candidates: [
-					{
-						content: {
-							role: "model",
-							parts: [
-								{
-									functionCall: {
-										id: "send_1",
-										name: "send_message",
-										args: { idempotencyKey: "overlap-final", text: "Done.", phase: "final" },
+		let geminiCalls = 0;
+		const geminiFetch = vi.fn<typeof fetch>(async () => {
+			geminiCalls += 1;
+			if (geminiCalls === 1) {
+				return Response.json({
+					candidates: [
+						{
+							content: {
+								role: "model",
+								parts: [
+									{
+										functionCall: {
+											id: "send_1",
+											name: "send_message",
+											args: { idempotencyKey: "overlap-final", text: "Done.", phase: "final" },
+										},
 									},
-								},
-							],
+								],
+							},
 						},
-					},
-				],
+					],
+					usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
+				});
+			}
+			return Response.json({
+				candidates: [{ content: { role: "model", parts: [{ text: "Done." }] } }],
 				usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
-			}),
-		);
+			});
+		});
 		const vaultFetch = vi.fn<typeof fetch>(async () => {
 			if (folderReadInFlight > 0) overlapped = true;
 			return Response.json({
