@@ -705,8 +705,7 @@ it("fast-paths clean bounded 8-bit RGB PNGs when requested and falls back on uns
 	expect(fromRgba.png[25]).toBe(2);
 	const badCrc = Buffer.from(raw);
 	badCrc[badCrc.byteLength - 1] ^= 0xff;
-	const recovered = folderImageView(badCrc, { fastPathValidPng: true });
-	expect(recovered.png.equals(badCrc)).toBe(false);
+	expect(() => folderImageView(badCrc, { fastPathValidPng: true })).toThrow(FolderImageRefusal);
 	const trailing = Buffer.concat([raw, Buffer.from([1, 2, 3])]);
 	expect(folderImageView(trailing, { fastPathValidPng: true }).png.equals(trailing)).toBe(false);
 	const wide = pngFile(pngHeader(1921, 10, 8, 2), pngRows(new Array(10).fill(new Array(1921 * 3).fill(80))));

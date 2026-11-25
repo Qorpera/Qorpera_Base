@@ -210,7 +210,10 @@ describe("one stream on a ticket (20260930745000)", () => {
 });
 
 describe("the ticket on the member's pointer pass (20260930745000)", () => {
-	function screens(answer: () => Response, streamUrl: string | null = "wss://screens.example.invalid") {
+	function screens(
+		answer: (body: Record<string, unknown>) => Response,
+		streamUrl: string | null = "wss://screens.example.invalid",
+	) {
 		const sent: { url: string; body: unknown }[] = [];
 		const value = createWebMachineScreens({
 			companyId: company,
@@ -218,8 +221,9 @@ describe("the ticket on the member's pointer pass (20260930745000)", () => {
 			route: (url) => url.replace("https://gateway.example.invalid", "https://bridge.example.invalid"),
 			accessToken: async () => "member-token",
 			fetch: (async (url: string, init: RequestInit) => {
-				sent.push({ url, body: JSON.parse(String(init.body)) });
-				return answer();
+				const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+				sent.push({ url, body });
+				return answer(body);
 			}) as typeof fetch,
 			...(streamUrl ? { streamUrl } : {}),
 			WebSocket: FakeSocket as unknown as typeof WebSocket,

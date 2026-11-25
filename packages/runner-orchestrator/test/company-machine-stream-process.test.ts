@@ -321,6 +321,8 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		const firstSink = sinkOf();
 		const firstWatch = desktop.watch(async () => "ok", firstSink, firstStop.signal);
 		await vi.waitFor(() => expect(firstSink.types()).toEqual([STREAM_SIZE]));
+		await src.send(update(rawRect(0, 0, 64, 40, [255, 0, 0])));
+		await vi.waitFor(() => expect(firstSink.areas()).toEqual([["0,0 64x40 #ff0000"]]));
 		firstStop.abort();
 		expect(await firstWatch).toBe("closed");
 		expect(desktop.ended).toBeNull();
@@ -331,7 +333,10 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		const secondSink = sinkOf();
 		const secondWatch = desktop.watch(async () => "ok", secondSink, secondStop.signal);
 		expect(desktop.idle).toBe(false);
-		await vi.waitFor(() => expect(secondSink.types()).toEqual([STREAM_SIZE]));
+		await sleep(50);
+		await src.send(update(rawRect(0, 0, 64, 40, [0, 255, 0])));
+		await vi.waitFor(() => expect(secondSink.areas()).toEqual([["0,0 64x40 #00ff00"]]));
+		expect(secondSink.types()).toContain(STREAM_SIZE);
 		expect(started).toHaveLength(1);
 		secondStop.abort();
 		expect(await secondWatch).toBe("closed");
