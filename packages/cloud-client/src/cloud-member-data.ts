@@ -154,7 +154,9 @@ export interface CloudMemberDataTableWatch extends CloudMemberDataTableAsked {
 export const CLOUD_MEMBER_DATA_FIND_MAX = 200;
 export const CLOUD_MEMBER_DATA_AT_LIST = 200;
 export type CloudMemberDataAtValue = string | number | boolean;
-export type CloudMemberDataAt = Readonly<Record<string, CloudMemberDataAtValue | null | readonly CloudMemberDataAtValue[]>>;
+export type CloudMemberDataAt = Readonly<
+	Record<string, CloudMemberDataAtValue | null | readonly CloudMemberDataAtValue[]>
+>;
 
 export type CloudMemberDataValues = Readonly<Record<string, unknown>>;
 export type CloudMemberDataKey = Readonly<Record<string, unknown>>;

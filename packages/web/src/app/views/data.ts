@@ -294,7 +294,10 @@ export function listedColumns(
 		ordered.find((name) => words(name) && (name === word || name.endsWith(`_${word}`))),
 	).find((name) => name !== undefined);
 	const lead =
-		named ?? ordered.find((name) => !waits(name) && !linked(name)) ?? ordered.find((name) => !waits(name)) ?? ordered[0];
+		named ??
+		ordered.find((name) => !waits(name) && !linked(name)) ??
+		ordered.find((name) => !waits(name)) ??
+		ordered[0];
 	if (lead === undefined) return ordered;
 	const kept = ordered.filter((name) => name !== lead && !waits(name));
 	return [lead, ...(kept.length > 0 ? kept : ordered.filter((name) => name !== lead))];

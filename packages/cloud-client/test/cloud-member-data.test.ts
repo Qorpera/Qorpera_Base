@@ -599,7 +599,16 @@ describe("a member's questions to the company's databases", () => {
 				await expect(data.rows({ database: "shop", table: "orders", find }, signal())).rejects.toThrow(
 					"find is 1 to 200 characters",
 				);
-			for (const at of [{}, { "": 1 }, { id: { more: 1 } }, { id: [] }, { id: [null] }, { id: Number.NaN }, ["id"], "id"])
+			for (const at of [
+				{},
+				{ "": 1 },
+				{ id: { more: 1 } },
+				{ id: [] },
+				{ id: [null] },
+				{ id: Number.NaN },
+				["id"],
+				"id",
+			])
 				await expect(
 					data.rows({ database: "shop", table: "orders", at: at as unknown as Record<string, string> }, signal()),
 				).rejects.toThrow("at names 1 to 32 columns");

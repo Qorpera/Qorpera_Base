@@ -385,7 +385,12 @@ At the gateway, beside `query`, `watch`, `apply`, `describe` and `change` (§3):
   by offset. Each row carries `seen`, a hash of the row as it was read. Only relations in the folder's own schema are
   read. A relation with no primary key (a view, or a table made without one) is listed and cannot be changed: it
   gives its first page alone, ordered by the column named or else as the store returns it, with `more` and no
-  `next`. The list says so, and Ask reaches the rest.
+  `next`. The list says so, and Ask reaches the rest. `find` (text, at most 200 characters) keeps the rows where
+  some column's text holds it, in any case and never as a pattern; a list with a find pages and is watched as a
+  list of its own. `at` names columns and the values they equal (a value or up to 200 of them), read under the
+  same right, login and viewer as any page; it takes no `after` and is not watched. `describe` answers
+  `can: ["at", "find"]` from a gateway that takes them, and the web shows Find and linked names only then, since a
+  gateway from before ignores both and answers every row.
 - **`edit`** `{database, table, op, key?, values?, seen?}`, `op` one of `add`, `change`, `remove`. The gateway
   writes one statement from the catalog (identifiers quoted, every value a parameter cast to its column's type) and
   runs it as the folder's write login under a change's rules (§8: 5 s, the watched tables, the company's size). A
@@ -446,7 +451,9 @@ member or the agent from the lists it already holds.
 - The list: titles for the tables and the kept questions, column heads that sort, a row that opens with its fields.
   Tables whose names start with the same word share one title and stand in a second line under it with their row
   counts; two or more kept questions share the title Questions. The list leads with the column that names the row,
-  and `uuid` columns and created times show only in the opened row.
+  and `uuid` columns and created times show only in the opened row. Find, beside the titles, narrows a table's
+  list to the rows that hold the text. A column that points at another table of the database (a foreign key on one
+  column) shows that row's name in place of the value; a click on it shows the row in a small card, which opens it.
   A new row and a changed field are written as the member makes them: the member's own typing is the ask. Only a
   removal asks first, on the bar above the page, as `qorpera.act` will ask (§5, §8).
 - **Ask.** The box under the list sends the question to an agent with the list it was asked on; from the home it
