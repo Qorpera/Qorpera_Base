@@ -30,6 +30,25 @@ export type NativeChatGptPlanAccess = { readonly directory: string } | { readonl
 
 export type NativeClaudeRead = "usage" | "screen";
 export const NATIVE_CLAUDE_TERMINAL = Object.freeze({ rows: 40, cols: 200 });
+export const NATIVE_ISOLATION_WORKSPACE = "/workspace";
+const RESERVED_WORKSPACE_MOUNTS = new Set([
+	"/",
+	"/usr",
+	"/bin",
+	"/lib",
+	"/lib64",
+	"/etc",
+	"/proc",
+	"/dev",
+	"/tmp",
+	"/qorpera",
+]);
+
+function validateWorkspaceMount(path: string): string {
+	if (!/^\/[a-z0-9_-]+(?:\/[a-z0-9_-]+)*$/.test(path) || RESERVED_WORKSPACE_MOUNTS.has(path))
+		throw new Error("Invalid native isolation workspace mount");
+	return path;
+}
 
 /** A root-owned file no one else may write, every folder above it root's too (also the Claude Code box's check). */
 export async function rootOwnedFile(path: string): Promise<void> {
@@ -141,6 +160,7 @@ export function nativeIsolationInvocation(options: {
 	chatGptPlan?: NativeChatGptPlanAccess;
 	harness?: "claude-code";
 	claudeRead?: NativeClaudeRead;
+	workspaceMount?: string;
 }): { args: string[]; environment: Record<string, string> } {
 	const plan = options.chatGptPlan;
 	const claude = options.harness === "claude-code";
@@ -152,7 +172,17 @@ export function nativeIsolationInvocation(options: {
 	const planToken = plan && "accessToken" in plan ? plan.accessToken : undefined;
 	if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
 		throw new Error("Invalid ChatGPT plan access token");
-	const directories = ["workspace", "home", "config", "data", "cache"].map((name) => join(options.scratchRoot, name));
+	const workspaceTarget =
+		options.workspaceMount !== undefined
+			? validateWorkspaceMount(options.workspaceMount)
+			: join(options.scratchRoot, "workspace");
+	const directoryBinds: [string, string][] = [
+		[join(options.scratchRoot, "workspace"), workspaceTarget],
+		...["home", "config", "data", "cache"].map((name): [string, string] => {
+			const dir = join(options.scratchRoot, name);
+			return [dir, dir];
+		}),
+	];
 	const args = [
 		"--unshare-user",
 		"--unshare-pid",
@@ -201,7 +231,7 @@ export function nativeIsolationInvocation(options: {
 		"--ro-bind",
 		options.configuration.entryPoint,
 		"/qorpera/native-entry.mjs",
-		...directories.flatMap((path) => ["--bind", path, path]),
+		...directoryBinds.flatMap(([source, target]) => ["--bind", source, target]),
 		"--bind",
 		options.codexHome,
 		options.codexHome,
@@ -237,7 +267,7 @@ export function nativeIsolationInvocation(options: {
 	for (const [name, value] of Object.entries(environment)) args.push("--setenv", name, value);
 	args.push(
 		"--chdir",
-		join(options.scratchRoot, "workspace"),
+		workspaceTarget,
 		"--remount-ro",
 		"/",
 		"--",
@@ -276,9 +306,11 @@ export async function launchIsolatedNativeProcess(options: {
 	/** A Claude sign-in: `codexHome` is Claude Code's config directory (the vault's helper only). */
 	harness?: "claude-code";
 	claudeRead?: NativeClaudeRead;
+	workspaceMount?: string;
 	signal: AbortSignal;
 }): Promise<{
 	child: ChildProcessWithoutNullStreams;
+	workspace?: string;
 	close(): Promise<void>;
 	/** The relay's voice call window (NativeEgressRelay.allowRealtime): a Codex login's process only. */
 	allowRealtime?: () => () => void;
@@ -358,6 +390,7 @@ export async function launchIsolatedNativeProcess(options: {
 		});
 		return {
 			child: launched,
+			workspace: options.workspaceMount ?? join(options.scratchRoot, "workspace"),
 			...(relay.allowRealtime ? { allowRealtime: relay.allowRealtime } : {}),
 			...(relay.allowLongWaits ? { allowLongWaits: relay.allowLongWaits } : {}),
 			async close() {

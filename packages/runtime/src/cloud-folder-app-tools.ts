@@ -112,11 +112,13 @@ import {
 } from "./cloud-folder-file-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
+	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	CloudToolRefusal,
 	cloudToolJsonText,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
 	MAX_TOOL_ARGUMENT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
@@ -148,7 +150,7 @@ const SAVE_APP_EMBLEM =
  * The guides stood on save_app's fields until 14 November 2026 (#1804, cloud-app-guides.ts says why no model read them).
  */
 const APP_GUIDE_DESCRIPTION = [
-	"Read the guide to one part of an interface app before you make it with save_app. It reads nothing of the company and changes nothing.",
+	"Read the guide to one or several parts of an interface app before you make it with save_app (pass a topic name or a list of topics in about). It reads nothing of the company and changes nothing.",
 	"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
 	"- about a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, explainer, program): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
 	"- style, reads, writes: for a page written by hand: the base style and the company's colours as CSS variables, in light and dark; how its script reads the company's live data through the qorpera object, and how often; how it lets a member answer a question or change a table's row.",
@@ -1447,6 +1449,9 @@ export function cloudAppTools(options: {
 		},
 	};
 
+	const APP_GUIDE_MAX_TOPICS = 6;
+	const guideFencedBytes = (value: string): number =>
+		Buffer.byteLength(JSON.stringify(value)) + 5 * (value.match(/[<>&\u2028\u2029]/g)?.length ?? 0);
 	const appGuideTool: CloudNativeTool = {
 		name: "app_guide" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -1456,18 +1461,69 @@ export function cloudAppTools(options: {
 			type: "object",
 			additionalProperties: false,
 			required: ["about"],
-			properties: { about: { type: "string", enum: [...APP_GUIDES] } },
+			properties: {
+				about: {
+					oneOf: [
+						{ type: "string", enum: [...APP_GUIDES] },
+						{
+							type: "array",
+							items: { type: "string", enum: [...APP_GUIDES] },
+							minItems: 1,
+							maxItems: APP_GUIDE_MAX_TOPICS,
+							uniqueItems: true,
+						},
+					],
+				},
+			},
 		},
 		parseArguments(value) {
 			const about = args(value, "app_guide", ["about"]).about;
-			if (!isAppGuide(about)) throw new CloudToolArgumentRefusal(`about must be one of ${APP_GUIDES.join(", ")}`);
-			return { about };
+			if (isAppGuide(about)) return { about };
+			if (Array.isArray(about)) {
+				if (about.length < 1 || about.length > APP_GUIDE_MAX_TOPICS)
+					throw new CloudToolArgumentRefusal(`about list must have 1 to ${APP_GUIDE_MAX_TOPICS} topics`);
+				const topics: AppGuide[] = [];
+				for (const entry of about) {
+					if (!isAppGuide(entry))
+						throw new CloudToolArgumentRefusal(`about must be one of ${APP_GUIDES.join(", ")}`);
+					if (!topics.includes(entry)) topics.push(entry);
+				}
+				return { about: topics };
+			}
+			throw new CloudToolArgumentRefusal(`about must be one of ${APP_GUIDES.join(", ")}`);
 		},
 		async execute(value, context) {
-			const about = (value as { about: AppGuide }).about;
-			// Read once the answer is on its way: a guide that could not be shown was not read.
-			const shown = await released(folder, identity.runId, context, appGuide(about), []);
-			guided.add(about);
+			const raw = (value as { about: AppGuide | readonly AppGuide[] }).about;
+			const topics = Array.isArray(raw) ? raw : [raw];
+			if (topics.length === 1) {
+				const topic = topics[0]!;
+				const shown = await released(folder, identity.runId, context, appGuide(topic), []);
+				guided.add(topic);
+				return shown;
+			}
+			// WHY: Pack as many requested guides as fit in one tool result so multi-topic calls never exceed MAX_CLOUD_TOOL_RESULT_BYTES.
+			const budget = MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES - 256;
+			const shownTopics: AppGuide[] = [];
+			const shownTexts: string[] = [];
+			const deferred: AppGuide[] = [];
+			for (const topic of topics) {
+				const body = appGuide(topic);
+				if (
+					shownTexts.length === 0 ||
+					(deferred.length === 0 && guideFencedBytes([...shownTexts, body].join("\n\n---\n\n")) <= budget)
+				) {
+					shownTopics.push(topic);
+					shownTexts.push(body);
+				} else {
+					deferred.push(topic);
+				}
+			}
+			const combined =
+				deferred.length === 0
+					? shownTexts.join("\n\n---\n\n")
+					: `${shownTexts.join("\n\n---\n\n")}\n\nNot shown here to keep each guide whole: ${deferred.join(", ")}. Call app_guide again for them.`;
+			const shown = await released(folder, identity.runId, context, combined, []);
+			for (const topic of shownTopics) guided.add(topic);
 			return shown;
 		},
 	};

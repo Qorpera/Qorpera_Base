@@ -1234,7 +1234,14 @@ it.each([
 			role: f.context.agent.role,
 			startupAssignment: [],
 		});
-		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
+		const promptKeys = Object.keys(prompt);
+		expect(promptKeys.slice(promptKeys.indexOf("skills"), promptKeys.indexOf("skills") + 3)).toEqual([
+			"skills",
+			"memory",
+			"hireOverlay",
+		]);
+		expect(promptKeys.indexOf("observedAt")).toBeGreaterThan(promptKeys.indexOf("hireOverlay"));
+		expect(promptKeys.indexOf("wake")).toBeGreaterThan(promptKeys.indexOf("hireOverlay"));
 		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
 		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
 		// The Co-Founder's company runs read the company's senses beside it; no other run asks for them.
@@ -1252,8 +1259,11 @@ it.each([
 			expect(prompt).not.toHaveProperty("senses");
 			expect(asked).not.toContain("qorpera_describe_company_senses");
 		}
-		// Contract 15.2: the skill catalog sits before the notebook and the job; both libraries are empty here.
-		expect(Object.keys(prompt).slice(-3)).toEqual(["skills", "memory", "hireOverlay"]);
+		expect(promptKeys.slice(promptKeys.indexOf("skills"), promptKeys.indexOf("skills") + 3)).toEqual([
+			"skills",
+			"memory",
+			"hireOverlay",
+		]);
 		expect(prompt.skills).toMatchObject({
 			schema: "qorpera.agent-skills/v1",
 			trust: "guidance_not_authority",

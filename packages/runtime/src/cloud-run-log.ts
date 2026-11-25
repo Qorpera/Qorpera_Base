@@ -511,7 +511,7 @@ export class CloudRunLog {
 	#origin: CloudRunLogOrigin;
 	readonly #protection: CloudRunLogProtection;
 	readonly #folder: CloudRunLogFolder;
-	readonly #effectful: (tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue) => boolean;
+	readonly #effectful: (tool: Pick<CloudNativeTool, "name" | "source" | "parallelRead">, parsed: JsonValue) => boolean;
 	readonly #signal: AbortSignal;
 	readonly #now: () => Date;
 	readonly #commitMs: number;
@@ -554,7 +554,7 @@ export class CloudRunLog {
 		/** The run's own signal: timed batches stop with it, or with closing's (`close`). */
 		signal: AbortSignal;
 		/** The run's classification of its calls: `cloudActionEffect` with its connectors' effects. */
-		effectful?: (tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue) => boolean;
+		effectful?: (tool: Pick<CloudNativeTool, "name" | "source" | "parallelRead">, parsed: JsonValue) => boolean;
 		/** The first step of this run's log: 0, or where a resumed run continues. */
 		firstStep?: number;
 		initialPlace?: CloudRunLogPlace;
@@ -624,7 +624,7 @@ export class CloudRunLog {
 		return this.#generation;
 	}
 
-	effectful(tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue): boolean {
+	effectful(tool: Pick<CloudNativeTool, "name" | "source" | "parallelRead">, parsed: JsonValue): boolean {
 		return this.#effectful(tool, parsed);
 	}
 

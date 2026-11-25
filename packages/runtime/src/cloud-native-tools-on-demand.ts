@@ -152,30 +152,75 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 
 /** Bytes of a tool's description: the boundary's bound. */
 const DESCRIPTION_BYTES = 4096;
+const TARGET_DESCRIPTION_BYTES = 3600;
 /** The most tools one describe shows. */
 const DESCRIBE_MOST = 8;
 
+function parameterSignature(tool: CloudNativeTool, mode: "full" | "compact"): string {
+	const schema = tool.inputSchema;
+	const props =
+		schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+			? (schema.properties as Record<string, JsonValue>)
+			: undefined;
+	if (!props) return "";
+	const names = Object.keys(props);
+	if (names.length === 0) return " ()";
+	const requiredSet = new Set(
+		Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [],
+	);
+	const req = names.filter((name) => requiredSet.has(name));
+	const opt = names.filter((name) => !requiredSet.has(name));
+	if (mode === "compact") {
+		const hasOpKey = req.includes("operationKey");
+		const coreReq = req.filter((name) => name !== "operationKey");
+		const star = hasOpKey ? "*" : "";
+		if (coreReq.length === 0 && !hasOpKey)
+			return opt.length > 0
+				? ` (${opt
+						.slice(0, 2)
+						.map((n) => `${n}?`)
+						.join(",")})`
+				: " ()";
+		return ` (${coreReq.join(",")}${star})`;
+	}
+	const maxTotal = 4;
+	const shown: string[] = [...req];
+	let omitted = false;
+	for (const name of opt) {
+		if (shown.length < maxTotal) shown.push(`${name}?`);
+		else {
+			omitted = true;
+			break;
+		}
+	}
+	return ` (${shown.join(",")}${omitted ? ",..." : ""})`;
+}
+
 /** A tool's line in more_tools' list: its own words, or the first sentence of its description, cut to 100 bytes. */
-function indexLine(tool: CloudNativeTool): string {
+function indexLine(tool: CloudNativeTool, hintMode?: "full" | "compact"): string {
 	const own = INDEX_LINES[tool.name];
-	if (own) return `- ${tool.name}: ${own}`;
+	const suffix = hintMode ? parameterSignature(tool, hintMode) : "";
+	if (own) return `- ${tool.name}: ${own}${suffix}`;
 	const first = [...(tool.description.split(/(?<=\.)\s|\n/, 1)[0] ?? "")];
-	if (Buffer.byteLength(first.join("")) <= 100) return `- ${tool.name}: ${first.join("")}`;
+	if (Buffer.byteLength(first.join("")) <= 100) return `- ${tool.name}: ${first.join("")}${suffix}`;
 	while (Buffer.byteLength(first.join("")) > 97) first.pop();
-	return `- ${tool.name}: ${first.join("")}…`;
+	return `- ${tool.name}: ${first.join("")}…${suffix}`;
 }
 
 const MORE_TOOLS_HEAD = [
-	"More of your tools, opened when you need one. They are yours as fully as the tools beside this one; only their descriptions and forms are not shown until you ask. Each line below names one and what it is for.",
-	"- describe (names): each tool's full description and form (JSON Schema, with every bound). Describe a tool before you first use it in a run.",
-	"- use (name, arguments): calls that tool with those arguments, as a direct call would: the same checks, review, approval cards, operation keys and answer. Arguments that do not fit its form are refused with its form.",
-	"A card's approved call of one of these tools is made again with use: its name, and the card's call as arguments.",
+	"More of your tools, opened on demand; each line shows purpose and parameters (?=optional, *=+operationKey).",
+	"- use (name, arguments): call directly (same checks, review, cards, receipts); bad args return full form.",
+	"- describe (names): full description and JSON Schema when needed. Repeat approved cards via use.",
 	"Your tools here:",
 ].join("\n");
 
 /** more_tools' description: what it does, then the list. Past the bound, the list keeps every name and drops the words. */
 export function cloudMoreToolsDescription(deferred: readonly CloudNativeTool[]): string {
-	const full = [MORE_TOOLS_HEAD, ...deferred.map(indexLine)].join("\n");
+	const withFullHints = [MORE_TOOLS_HEAD, ...deferred.map((tool) => indexLine(tool, "full"))].join("\n");
+	if (Buffer.byteLength(withFullHints) <= TARGET_DESCRIPTION_BYTES) return withFullHints;
+	const withCompactHints = [MORE_TOOLS_HEAD, ...deferred.map((tool) => indexLine(tool, "compact"))].join("\n");
+	if (Buffer.byteLength(withCompactHints) <= TARGET_DESCRIPTION_BYTES) return withCompactHints;
+	const full = [MORE_TOOLS_HEAD, ...deferred.map((tool) => indexLine(tool))].join("\n");
 	if (Buffer.byteLength(full) <= DESCRIPTION_BYTES) return full;
 	return [MORE_TOOLS_HEAD, ...deferred.map((tool) => `- ${tool.name}`)].join("\n");
 }
@@ -235,6 +280,8 @@ function moreToolsTool(tools: readonly CloudNativeTool[], deferred: readonly Clo
 	return {
 		name: CLOUD_MORE_TOOLS,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "describe",
 		description: cloudMoreToolsDescription(deferred),
 		inputSchema: MORE_TOOLS_SCHEMA,
 		parseArguments(value) {

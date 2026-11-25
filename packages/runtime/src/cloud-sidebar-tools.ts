@@ -75,6 +75,8 @@ export function cloudSidebarTools(
 	const tool: CloudNativeTool = {
 		name: "organize_sidebar" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "list",
 		description: CLOUD_SIDEBAR_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",

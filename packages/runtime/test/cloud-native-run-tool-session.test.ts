@@ -10,6 +10,7 @@ import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/clou
 import { type CloudRunLog, CloudRunLogGone } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { MemoryCompactChannel } from "@qorpera/runtime/memory-tree/compact";
+import { CLOSE_MS } from "@qorpera/runtime/memory-tree/tree";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -680,4 +681,45 @@ it("runs runLog.lines.finish and options.closing in parallel after runLog.log.cl
 	});
 	expect(events[0]).toBe("log.close");
 	expect(peakClosing).toBe(2);
+});
+
+it("bounds a stalled runLog.lines.finish at CLOSE_MS without failing the run after durable log.close", async () => {
+	try {
+		const f = fixture();
+		const w = workLog(f.binding.runId);
+		let finishSignal: AbortSignal | undefined;
+		let enteredFinish = () => {};
+		const finishEntered = new Promise<void>((resolve) => {
+			enteredFinish = resolve;
+		});
+		w.log.close.mockImplementation(async () => {
+			w.order.push("log");
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		});
+		w.lines.finish.mockImplementation(async (signal: AbortSignal) => {
+			finishSignal = signal;
+			enteredFinish();
+			await new Promise<void>((_resolve, reject) => {
+				signal.addEventListener(
+					"abort",
+					() => {
+						vi.useRealTimers();
+						reject(signal.reason ?? new Error("aborted"));
+					},
+					{ once: true },
+				);
+			});
+		});
+		const running = f.start({
+			tools: () => ({ ...f.tools(), runLog: w.runLog }),
+		});
+		await finishEntered;
+		await vi.advanceTimersByTimeAsync(CLOSE_MS);
+		const result = await running;
+		expect(result.providerSessionId).toBe("thread_fixture");
+		expect(w.log.close).toHaveBeenCalledOnce();
+		expect(finishSignal?.aborted).toBe(true);
+	} finally {
+		vi.useRealTimers();
+	}
 });

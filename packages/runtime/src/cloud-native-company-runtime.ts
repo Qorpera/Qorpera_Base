@@ -141,7 +141,11 @@ import {
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
-import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
+import {
+	cloudNativeContextIdentity,
+	cloudNativeContextWithPromptCacheKey,
+	cloudNativePromptCacheKey,
+} from "./cloud-native-context-composition.ts";
 import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
@@ -169,6 +173,7 @@ import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	cloudToolJsonText,
+	isCloudParallelReadCall,
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import {
@@ -967,7 +972,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								this.#paths.call(method, argumentsValue, requestSignal),
 						}),
 						signal: openedRun.signal,
+						// WHY: Strictly read-only parallelRead actions never mutate state and skip run-log precommit barriers.
 						effectful: (tool, parsed) =>
+							!isCloudParallelReadCall(tool, parsed) &&
 							cloudActionEffect(tool, parsed, connectorEffects, offlineShells) !== "read",
 					},
 					lines: { call: compactor.call, lane },
@@ -999,9 +1006,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// in the run's compactor lane, on threads this run's Codex session answers (§7.1), and its work composer
 			// serves the agent's requests from then on (§5.7). A run without a log sends each request as Codex built it,
 			// with only its receipts' work message added on a resumed attempt (20260930539000).
+			const promptCacheRole = cloudWorkerToolFilter(wake).isWorker ? "worker" : context.agentKind;
+			const promptCacheKeyFor = (model: string): string =>
+				cloudNativePromptCacheKey(
+					"company",
+					context.identity.companyId,
+					context.identity.staffAgentId,
+					context.identity.audienceKind,
+					context.identity.audienceUserId ?? "",
+					promptCacheRole,
+					model,
+				);
 			let runWork: CloudCodexContextComposer | undefined;
-			const composeRun: CloudCodexContextComposer = (request, composeSignal) =>
-				runWork ? runWork(request, composeSignal) : cloudNativeContextIdentity(request);
+			const composeRun: CloudCodexContextComposer = async (request, composeSignal) => {
+				const composed = runWork ? await runWork(request, composeSignal) : cloudNativeContextIdentity(request);
+				return composed.promptCacheKey === undefined
+					? { ...composed, promptCacheKey: promptCacheKeyFor(request.model) }
+					: composed;
+			};
 			connectorEffects = cloudConnectorEffects(connectorDescriptors);
 			// The run's admission (contract §6, M1b-4b-3), before any provider work: its binary, bundle, reasoning policy
 			// and exact tool catalog. The opening binds its context to it once composed.
@@ -2668,7 +2690,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return {
 						prompt: fullPrompt,
 						runtimeInstructions,
-						composeContext: cloudNativeContextIdentity,
+						composeContext: (request) =>
+							cloudNativeContextWithPromptCacheKey(
+								cloudNativeContextIdentity(request),
+								cloudNativePromptCacheKey(
+									"surface",
+									identity.companyId,
+									identity.staffAgentId,
+									surfaceSlug,
+									sourceKind,
+									isInternalTurn ? "internal" : "turn",
+									request.model,
+								),
+							),
 					};
 				},
 				turnCorrection: async () =>

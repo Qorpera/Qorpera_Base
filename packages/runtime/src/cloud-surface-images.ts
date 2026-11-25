@@ -120,6 +120,7 @@ export function createCodingViewAttachmentTool(
 		name: "coding_view_attachment",
 		source: "worker",
 		images: true,
+		parallelRead: true,
 		description:
 			"View one image the member attached to this Surface session, named by the clientInputId and sha256 the context lists under Images the member attached.",
 		inputSchema: {

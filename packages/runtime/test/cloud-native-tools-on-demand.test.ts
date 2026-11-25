@@ -457,4 +457,29 @@ describe("tools on demand", () => {
 		expect(resultOf(bookkeeping).status).toBe("ok");
 		expect(bookkeeping.completesTurn).toBeUndefined();
 	});
+
+	it("includes compact parameter hints in the more_tools index within budget while keeping describe intact", async () => {
+		const { staff, employee, worker } = await catalogs();
+		for (const [kind, tools] of [
+			["cofounder", staff],
+			["employee", employee],
+			["worker", worker],
+		] as const) {
+			const offered = cloudToolsOnDemand(tools, kind);
+			const more = offered.tools.find((tool) => tool.name === CLOUD_MORE_TOOLS)!;
+			expect(Buffer.byteLength(more.description)).toBeLessThanOrEqual(3600);
+			expect(more.description).toMatch(/^- company_delete: .+\(.+\)$/m);
+			expect(more.description).toMatch(/^- company_move: .+\(.+\)$/m);
+		}
+		const { tool: hook } = recorded("manage_hook");
+		const more = cloudToolsOnDemand([hook], "employee").tools.find((tool) => tool.name === CLOUD_MORE_TOOLS)!;
+		expect(more.description).toContain("(operationKey,title)");
+		expect(typeof more.parallelRead).toBe("function");
+		expect((more.parallelRead as (v: JsonValue) => boolean)({ action: "describe", names: ["manage_hook"] })).toBe(
+			true,
+		);
+		expect(
+			(more.parallelRead as (v: JsonValue) => boolean)({ action: "use", name: "manage_hook", arguments: {} }),
+		).toBe(false);
+	});
 });

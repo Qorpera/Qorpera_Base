@@ -141,7 +141,7 @@ Read every source your assignment names first. Work in tight quality loops until
 If you hit a decision or input only your parent can give, report blocked with the exact question instead of guessing. Report a broken connection rather than working around it with a browser sign-in. Secrets travel only on a member's secret card into the vault: never ask for, write, or pass a password, key, or code in a file, table, notebook, command, or report. Members may open your files directly: write them in plain, natural words in the company's language.`;
 
 export const CLOUD_ACKNOWLEDGEMENT_LINE =
-	'When beforeWork is acknowledge (and initialAcknowledgementSatisfied is false), make your very first call a short, natural progress send naming what you are about to do ("On it — checking the refund log now."), without repeating the request, before reading any continuation: it lets the member know you have picked it up. initialAcknowledgementSatisfied means this run has already acknowledged.';
+	'When beforeWork is acknowledge (and initialAcknowledgementSatisfied is false), make your very first call a short, natural progress send naming what you are about to do ("On it — checking the refund log now."), without repeating the request: it lets the member know you have picked it up. You may emit read-only tool calls (such as company_read, company_list, read_skill, or read_context) in parallel in the same turn so you do not burn a whole round-trip just to acknowledge, before any writes or mutations. initialAcknowledgementSatisfied means this run has already acknowledged.';
 
 function membersSee(has: CloudOfferedTool): string {
 	const after = [...CLOUD_AFTER_ANSWER_TOOLS].filter(has);
@@ -1387,6 +1387,7 @@ export function composeCloudNativeCompanyPrompt(
 	// The request is shown once, whole, as the request (item 3 of the 21 October 2026 amendment).
 	const requested = new Set(request.map((entry) => entry.input.id));
 	const history = context.history.filter((source) => !requested.has(source.id));
+	// WHY: Place stable company/agent/skills/memory/history prefix before volatile per-run fields so KV caches hit.
 	const json = JSON.stringify({
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity: {
@@ -1397,57 +1398,10 @@ export function composeCloudNativeCompanyPrompt(
 			audience: context.audience,
 			runtimeBundle: context.runtimeBundle,
 		},
-		observedAt: context.observedAt,
-		presence: {
-			trust: "ephemeral_observation",
-			selection: presence ? "wake_path" : "on_demand",
-			view: presence ?? null,
-		},
-		delivery: wake
-			? {
-					...deliveryProgress,
-					requireFinalSend: wake.policy.final === "required",
-					initial: wake.policy.initial,
-					final: wake.policy.final,
-					silenceAllowed: wake.policy.silenceAllowed,
-					maxPublicSends: wake.policy.maxPublicSends,
-				}
-			: { ...deliveryProgress, requireFinalSend: context.identity.sessionId !== null },
-		wake: wake
-			? {
-					sourceKind: context.sourceKind,
-					sourceId: context.sourceId,
-					kind: wake.kind,
-					occurrenceId: wake.id,
-					source: wake.source,
-					time: wake.time,
-					routine: wake.routine,
-					payload: wake.payload,
-					actorStaffId: wake.actorStaffId,
-					actorUserId: wake.actorUserId,
-					parentRunId: wake.parentRunId,
-					causalAgentCount: wake.causal.agentIds.length,
-				}
-			: { sourceKind: context.sourceKind, sourceId: context.sourceId },
-		currentInputs: context.currentInputs,
-		...(request.length ? { request } : {}),
-		history,
-		historyTruncated,
 		coworkers: context.coworkers.map((coworker) => withFolder(coworker, folders)),
 		coworkersTruncated: context.coworkersTruncated,
 		job: context.job,
-		continuation: context.continuation,
-		// How much open work the agent has; the list itself stays behind manage_todo and manage_worker.
-		...(openWork ? { openWork } : {}),
-		...(updates ? { updates } : {}),
-		// The platform's facts about the whole company (qorpera_describe_company_senses), in the Co-Founder's company runs
-		// only; null when the read failed.
-		...(senses !== undefined ? { senses } : {}),
-		// Changes the agent saved from a computer that wait for review (P40); apply_proposal applies one.
-		...(proposals ? { proposals } : {}),
-		// Contract 15.2: the skill catalog (own and company libraries), never the bodies.
 		skills: skills ?? unavailableCloudAgentSkills("not_composed"),
-		// Contract 15.1: the agent's own notebook, composed from its Company File objects with exact versions.
 		memory: !memory
 			? unavailableCloudAgentMemory("not_composed")
 			: memory.available && head?.shown.has("profile")
@@ -1467,6 +1421,47 @@ export function composeCloudNativeCompanyPrompt(
 					? context.currentInputs.filter((source) => source.kind === "private_startup")
 					: [],
 		},
+		history,
+		historyTruncated,
+		continuation: context.continuation,
+		...(openWork ? { openWork } : {}),
+		...(updates ? { updates } : {}),
+		...(senses !== undefined ? { senses } : {}),
+		...(proposals ? { proposals } : {}),
+		delivery: wake
+			? {
+					...deliveryProgress,
+					requireFinalSend: wake.policy.final === "required",
+					initial: wake.policy.initial,
+					final: wake.policy.final,
+					silenceAllowed: wake.policy.silenceAllowed,
+					maxPublicSends: wake.policy.maxPublicSends,
+				}
+			: { ...deliveryProgress, requireFinalSend: context.identity.sessionId !== null },
+		presence: {
+			trust: "ephemeral_observation",
+			selection: presence ? "wake_path" : "on_demand",
+			view: presence ?? null,
+		},
+		observedAt: context.observedAt,
+		wake: wake
+			? {
+					sourceKind: context.sourceKind,
+					kind: wake.kind,
+					sourceId: context.sourceId,
+					occurrenceId: wake.id,
+					source: wake.source,
+					time: wake.time,
+					routine: wake.routine,
+					payload: wake.payload,
+					actorStaffId: wake.actorStaffId,
+					actorUserId: wake.actorUserId,
+					parentRunId: wake.parentRunId,
+					causalAgentCount: wake.causal.agentIds.length,
+				}
+			: { sourceKind: context.sourceKind, sourceId: context.sourceId },
+		currentInputs: context.currentInputs,
+		...(request.length ? { request } : {}),
 	});
 	// A webhook signing secret is cut out of all of it, as the tool boundary cuts one out of every tool result (E3c-2):
 	// every source shown here (current inputs, the request, history, the job record and description, the continuation)

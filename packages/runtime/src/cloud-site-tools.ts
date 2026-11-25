@@ -1034,6 +1034,11 @@ export function cloudSiteTools(options: {
 	const manage: CloudNativeTool = {
 		name: "manage_site" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null &&
+			typeof value === "object" &&
+			!Array.isArray(value) &&
+			(value.action === "list_versions" || value.action === "app_health" || value.action === "app_logs"),
 		description: CLOUD_MANAGE_SITE_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",

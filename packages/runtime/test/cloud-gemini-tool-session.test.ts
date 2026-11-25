@@ -578,7 +578,7 @@ describe("runCloudGeminiToolSession", () => {
 									role: "model",
 									parts: [
 										{ thought: true, text: "Thinking about part 1" },
-										{ text: "Checking part 1..." },
+										{ text: `Checking part 1... ${"x".repeat(70_000)}` },
 										{
 											functionCall: { id: "call_1", name: "big_read", args: { part: 1 } },
 											thoughtSignature: "sig-1",

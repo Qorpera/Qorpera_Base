@@ -553,6 +553,8 @@ export function cloudRoutineTools(
 	const tool: CloudNativeTool = {
 		name: "manage_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
+		parallelRead: (value) =>
+			value !== null && typeof value === "object" && !Array.isArray(value) && value.action === "list",
 		description: CLOUD_ROUTINE_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
