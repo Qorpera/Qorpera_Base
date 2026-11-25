@@ -258,11 +258,12 @@ export class SurfaceExplainers {
 		signal.addEventListener("abort", () => this.dispose(), { once: true });
 	}
 
-	prepare(key: string, block: SurfaceExplainerBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
+	prepare(key: string, block: SurfaceExplainerBlock, ctx: SurfaceBlockContext, alone = true): SurfaceBlockPrepared {
 		const items = collectItems(block, ctx);
 		const heading = block.heading ? ctx.words(block.heading) : "";
 		if (items.length === 0) {
 			this.#unmount(key);
+			if (!alone) return { filled: false, pieces: [] };
 			return {
 				filled: false,
 				pieces: [

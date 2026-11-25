@@ -8,7 +8,7 @@ import {
 import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import { type SurfaceBlockContext, type SurfaceBlockPrepared, sectionHead } from "./context.ts";
-import { askButton, kicker, strategyEmpty, svgEl, tierBadge } from "./strategy-kit.ts";
+import { askButton, kicker, strategyEmpty, svgEl, tierMark } from "./strategy-kit.ts";
 
 interface KeyedRival extends StrategyRival {
 	readonly key: string;
@@ -19,21 +19,25 @@ interface PlacedRival extends KeyedRival {
 	readonly y: number;
 }
 
-interface Matrix {
-	readonly wrap: HTMLElement;
-	readonly rows: ReadonlyMap<string, HTMLTableRowElement>;
+interface LabelSpot {
+	readonly x: number;
+	readonly y: number;
+	readonly anchor: "start" | "end";
 }
 
-const MAP = { width: 600, height: 400, left: 44, right: 584, top: 18, bottom: 352 } as const;
-const LABEL_CHARS = 22;
+interface Focus {
+	readonly hover: (key: string | null) => void;
+	readonly pick: (key: string) => void;
+}
+
+const MAP = { width: 680, height: 420, left: 56, right: 648, top: 24, bottom: 368, dot: 14, char: 6.9 } as const;
+const FLIP_AT = 64;
+const NEAR_Y = 26;
+const NEAR_X = 120;
 
 function safeUrl(url: string | undefined): string | undefined {
 	if (!url) return undefined;
 	return /^https?:\/\//i.test(url) ? url : undefined;
-}
-
-function short(text: string): string {
-	return text.length > LABEL_CHARS ? `${text.slice(0, LABEL_CHARS - 1)}…` : text;
 }
 
 function research(players: readonly StrategyRival[]) {
@@ -47,20 +51,50 @@ function research(players: readonly StrategyRival[]) {
 	return { prompt: lines.filter(Boolean).join("\n"), title: t("Research rivals") };
 }
 
-function positioningMap(
-	axes: StrategyLandscapeAxes,
-	placed: readonly PlacedRival[],
-	hover: (key: string | null) => void,
-	pin: (key: string) => void,
-): SVGSVGElement {
-	const px = (x: number) => MAP.left + (x / 100) * (MAP.right - MAP.left);
-	const py = (y: number) => MAP.bottom - (y / 100) * (MAP.bottom - MAP.top);
+const px = (x: number) => MAP.left + (x / 100) * (MAP.right - MAP.left);
+const py = (y: number) => MAP.bottom - (y / 100) * (MAP.bottom - MAP.top);
+
+function labelSpots(placed: readonly PlacedRival[]): Map<string, LabelSpot> {
+	const spots = new Map<string, LabelSpot>();
+	const lift = new Map<string, number>();
+	const byHeight = [...placed].sort((a, b) => py(a.y) - py(b.y));
+	for (let i = 0; i < byHeight.length; i += 1) {
+		for (let j = i + 1; j < byHeight.length; j += 1) {
+			const upper = byHeight[i]!;
+			const lower = byHeight[j]!;
+			const dy = py(lower.y) - py(upper.y);
+			if (dy >= NEAR_Y || Math.abs(px(lower.x) - px(upper.x)) >= NEAR_X) continue;
+			if (!lift.has(upper.key)) lift.set(upper.key, -1);
+			if (!lift.has(lower.key) || lift.get(lower.key) === -1) lift.set(lower.key, 1);
+		}
+	}
+	for (const player of placed) {
+		const cx = px(player.x);
+		const cy = py(player.y);
+		const wide = player.name.length * MAP.char;
+		const roomRight = MAP.width - (cx + MAP.dot) - 6;
+		const roomLeft = cx - MAP.dot - 6;
+		let left = player.x > FLIP_AT;
+		if (left && wide > roomLeft && roomRight > roomLeft) left = false;
+		if (!left && wide > roomRight && roomLeft > roomRight) left = true;
+		const shift = lift.get(player.key) ?? 0;
+		const y = shift < 0 ? cy - 12 : shift > 0 ? cy + 20 : cy + 4;
+		spots.set(player.key, {
+			x: left ? cx - MAP.dot : cx + MAP.dot,
+			y: Math.min(MAP.height - 6, Math.max(14, y)),
+			anchor: left ? "end" : "start",
+		});
+	}
+	return spots;
+}
+
+function positioningMap(axes: StrategyLandscapeAxes, placed: readonly PlacedRival[], steer: Focus): SVGSVGElement {
 	const midX = px(50);
 	const midY = py(50);
 	const svg = svgEl("svg", {
 		class: "studio-land-svg",
 		viewBox: `0 0 ${MAP.width} ${MAP.height}`,
-		role: "img",
+		role: "group",
 		"aria-label": t("Positioning map: {x} against {y}", { x: axes.xLabel, y: axes.yLabel }),
 	});
 	svg.append(
@@ -70,11 +104,11 @@ function positioningMap(
 			y: MAP.top,
 			width: MAP.right - MAP.left,
 			height: MAP.bottom - MAP.top,
-			rx: 12,
+			rx: 14,
 		}),
-		svgEl("line", { class: "studio-land-quad", x1: midX, x2: midX, y1: MAP.top, y2: MAP.bottom }),
-		svgEl("line", { class: "studio-land-quad", x1: MAP.left, x2: MAP.right, y1: midY, y2: midY }),
-		svgEl("text", { class: "studio-land-axis", x: midX, y: MAP.height - 12, "text-anchor": "middle" }, axes.xLabel),
+		svgEl("line", { class: "studio-land-quad", x1: midX, x2: midX, y1: MAP.top + 10, y2: MAP.bottom - 10 }),
+		svgEl("line", { class: "studio-land-quad", x1: MAP.left + 10, x2: MAP.right - 10, y1: midY, y2: midY }),
+		svgEl("text", { class: "studio-land-axis", x: midX, y: MAP.height - 10, "text-anchor": "middle" }, axes.xLabel),
 		svgEl(
 			"text",
 			{
@@ -82,25 +116,26 @@ function positioningMap(
 				x: 0,
 				y: 0,
 				"text-anchor": "middle",
-				transform: `translate(16 ${midY}) rotate(-90)`,
+				transform: `translate(22 ${midY}) rotate(-90)`,
 			},
 			axes.yLabel,
 		),
 	);
 	const ends: [string | undefined, number, number, "start" | "end"][] = [
-		[axes.xLow, MAP.left + 2, MAP.bottom + 18, "start"],
-		[axes.xHigh, MAP.right - 2, MAP.bottom + 18, "end"],
-		[axes.yHigh, MAP.left + 10, MAP.top + 16, "start"],
-		[axes.yLow, MAP.left + 10, MAP.bottom - 10, "start"],
+		[axes.xLow ? `← ${axes.xLow}` : undefined, MAP.left + 2, MAP.bottom + 22, "start"],
+		[axes.xHigh ? `${axes.xHigh} →` : undefined, MAP.right - 2, MAP.bottom + 22, "end"],
+		[axes.yHigh ? `↑ ${axes.yHigh}` : undefined, MAP.left + 14, MAP.top + 20, "start"],
+		[axes.yLow ? `↓ ${axes.yLow}` : undefined, MAP.left + 14, MAP.bottom - 12, "start"],
 	];
 	for (const [label, x, y, anchor] of ends) {
 		if (label) svg.append(svgEl("text", { class: "studio-land-end", x, y, "text-anchor": anchor }, label));
 	}
+	const spots = labelSpots(placed);
 	const ordered = [...placed].sort((a, b) => Number(a.isUs === true) - Number(b.isUs === true));
 	for (const player of ordered) {
 		const cx = px(player.x);
 		const cy = py(player.y);
-		const flip = player.x > 72;
+		const spot = spots.get(player.key)!;
 		const point = svgEl(
 			"g",
 			{
@@ -111,100 +146,90 @@ function positioningMap(
 				"aria-label": player.name,
 			},
 			svgEl("title", {}, player.name),
-			player.isUs ? svgEl("circle", { class: "studio-land-halo", cx, cy, r: 16 }) : null,
+			player.isUs ? svgEl("circle", { class: "studio-land-halo", cx, cy, r: 26 }) : null,
+			svgEl("circle", { class: "studio-land-ring", cx, cy, r: player.isUs ? 13 : 11 }),
 			svgEl("circle", { class: "studio-land-dot", cx, cy, r: player.isUs ? 8 : 6.5 }),
-			svgEl(
-				"text",
-				{
-					class: "studio-land-name",
-					x: flip ? cx - 13 : cx + 13,
-					y: cy + 4,
-					"text-anchor": flip ? "end" : "start",
-				},
-				short(player.name),
-			),
+			svgEl("text", { class: "studio-land-name", x: spot.x, y: spot.y, "text-anchor": spot.anchor }, player.name),
 		);
-		point.addEventListener("mouseenter", () => hover(player.key));
-		point.addEventListener("mouseleave", () => hover(null));
-		point.addEventListener("focus", () => hover(player.key));
-		point.addEventListener("blur", () => hover(null));
-		point.addEventListener("click", () => pin(player.key));
+		point.addEventListener("mouseenter", () => steer.hover(player.key));
+		point.addEventListener("mouseleave", () => steer.hover(null));
+		point.addEventListener("focus", () => steer.hover(player.key));
+		point.addEventListener("blur", () => steer.hover(null));
+		point.addEventListener("click", () => steer.pick(player.key));
 		point.addEventListener("keydown", (event) => {
 			if (event.key !== "Enter" && event.key !== " ") return;
 			event.preventDefault();
-			pin(player.key);
+			steer.pick(player.key);
 		});
 		svg.append(point);
 	}
 	return svg;
 }
 
-function cell(text: string | undefined, extra = ""): HTMLTableCellElement {
-	return h("td", { class: extra || null }, text ?? "–");
-}
-
-function playerCell(player: StrategyRival): HTMLTableCellElement {
-	const url = safeUrl(player.url);
+function beat(kind: string, label: string, body: HTMLElement | string, extra: HTMLElement | null = null): HTMLElement {
 	return h(
-		"th",
-		{ scope: "row", class: "studio-land-player" },
-		h(
-			"div",
-			{ class: "studio-land-who" },
-			url
-				? h(
-						"a",
-						{ href: url, target: "_blank", rel: "noopener noreferrer", class: "studio-land-name-link" },
-						player.name,
-					)
-				: h("strong", null, player.name),
-			player.isUs ? h("span", { class: "studio-land-us" }, t("Us")) : null,
-		),
-		player.category || player.tier
-			? h(
-					"div",
-					{ class: "studio-land-tags" },
-					player.category ? h("span", { class: "studio-land-category" }, player.category) : null,
-					tierBadge(player.tier, player.source),
-				)
-			: null,
+		"div",
+		{ class: `studio-land-beat is-${kind}` },
+		kicker(label),
+		typeof body === "string" ? h("p", null, body) : body,
+		extra,
 	);
 }
 
-function matrix(players: readonly KeyedRival[]): Matrix {
-	const rows = new Map<string, HTMLTableRowElement>();
-	const body = h(
-		"tbody",
-		null,
-		players.map((player) => {
-			const row = h(
-				"tr",
-				{ class: player.isUs ? "is-us" : null, "data-player": player.key },
-				playerCell(player),
-				cell(player.positioning),
-				cell(player.pricing, "is-num"),
-				cell(player.target),
-				cell(player.strength),
-				cell(player.weakness),
-				cell(player.ourEdge, "studio-land-edge"),
-			);
-			rows.set(player.key, row);
-			return row;
-		}),
-	);
-	const head = h(
-		"tr",
-		null,
-		h("th", { scope: "col" }, t("Player")),
-		h("th", { scope: "col" }, t("Positioning")),
-		h("th", { scope: "col" }, t("Pricing")),
-		h("th", { scope: "col" }, t("Target")),
-		h("th", { scope: "col" }, t("Strength")),
-		h("th", { scope: "col" }, t("Weakness")),
-		h("th", { scope: "col", class: "studio-land-edge" }, t("Our edge")),
-	);
-	const table = h("table", { class: "studio-land-table" }, h("thead", null, head), body);
-	return { wrap: h("div", { class: "studio-land-table-wrap" }, table), rows };
+function inspector(player: KeyedRival): HTMLElement[] {
+	const url = safeUrl(player.url);
+	const name = url
+		? h("a", { href: url, target: "_blank", rel: "noopener noreferrer", class: "studio-land-name-link" }, player.name)
+		: h("strong", { class: "studio-land-focus-name" }, player.name);
+	const tag = player.isUs
+		? h("span", { class: "studio-land-us" }, t("Us"))
+		: player.category
+			? h("span", { class: "studio-land-category" }, player.category)
+			: null;
+	const price = player.pricing ? h("span", { class: "studio-land-price" }, player.pricing) : null;
+	const target = player.target ? h("span", { class: "studio-land-target" }, player.target) : null;
+	const where =
+		player.positioning || price || target
+			? beat(
+					"position",
+					t("Positioning"),
+					player.positioning ?? "",
+					price || target ? h("div", { class: "studio-land-meta" }, price, target) : null,
+				)
+			: null;
+	const contrast =
+		player.strength || player.weakness
+			? h(
+					"ul",
+					{ class: "studio-land-contrast" },
+					player.strength
+						? h(
+								"li",
+								{ class: "is-strength" },
+								h("span", { class: "studio-land-contrast-label" }, t("Strength")),
+								" ",
+								h("span", null, player.strength),
+							)
+						: null,
+					player.weakness
+						? h(
+								"li",
+								{ class: "is-weakness" },
+								h("span", { class: "studio-land-contrast-label" }, t("Weakness")),
+								" ",
+								h("span", null, player.weakness),
+							)
+						: null,
+				)
+			: null;
+	const edge = player.ourEdge ? beat("edge", t("Our edge"), player.ourEdge) : null;
+	const body = [where, contrast, edge].filter((part): part is HTMLElement => part !== null);
+	return [
+		h("header", { class: "studio-land-focus-head" }, name, tag, tierMark(player.tier, player.source)),
+		body.length
+			? h("div", { class: "studio-land-focus-body" }, body)
+			: h("p", { class: "studio-land-focus-empty" }, t("Nothing known about {name} yet.", { name: player.name })),
+	];
 }
 
 function filledLandscape(
@@ -213,60 +238,93 @@ function filledLandscape(
 	doc: StrategyLandscapeDocument,
 	ctx: SurfaceBlockContext,
 ): HTMLElement {
-	const players = doc.players.map((player, index) => ({ ...player, key: player.id ?? `rival-${index + 1}` }));
+	const players: KeyedRival[] = doc.players.map((player, index) => ({
+		...player,
+		key: player.id ?? `rival-${index + 1}`,
+	}));
 	const placed = players.filter(
 		(player): player is PlacedRival => typeof player.x === "number" && typeof player.y === "number",
 	);
-	const { wrap, rows } = matrix(players);
-	let pinned: string | null = null;
+	let picked = (players.find((player) => player.isUs) ?? players[0])!.key;
 	let hovered: string | null = null;
+	const view = h("div", { class: "studio-land-focus-view", "aria-live": "polite" });
+	const ask = askButton(ctx, t("Research rivals"), () => research(doc.players));
+	const card = h(
+		"article",
+		{ class: "studio-land-focus" },
+		view,
+		ask ? h("footer", { class: "studio-land-focus-foot" }, ask) : null,
+	);
+	const chips = players.map((player) =>
+		h(
+			"button",
+			{
+				type: "button",
+				class: `studio-land-chip${player.isUs ? " is-us" : ""}`,
+				"data-player": player.key,
+				onclick: () => steer.pick(player.key),
+				onmouseenter: () => steer.hover(player.key),
+				onmouseleave: () => steer.hover(null),
+			},
+			h("span", { class: "studio-land-chip-name" }, player.name),
+			player.isUs ? h("span", { class: "studio-land-chip-us" }, t("Us")) : null,
+			player.pricing ? h("span", { class: "studio-land-chip-price" }, player.pricing) : null,
+		),
+	);
+	let shownKey = "";
 	const paint = () => {
-		const active = hovered ?? pinned;
-		section.classList.toggle("has-active", active !== null);
-		for (const [key, row] of rows) row.classList.toggle("is-active", key === active);
+		const active = hovered ?? picked;
+		const player = players.find((item) => item.key === active);
+		if (player && shownKey !== active) {
+			shownKey = active;
+			card.dataset.player = active;
+			card.classList.toggle("is-us", player.isUs === true);
+			view.replaceChildren(...inspector(player));
+		}
 		for (const point of section.querySelectorAll<SVGGElement>(".studio-land-point")) {
 			point.classList.toggle("is-active", point.dataset.player === active);
+			point.setAttribute("aria-pressed", String(point.dataset.player === picked));
+		}
+		for (const chip of chips) {
+			chip.classList.toggle("is-active", chip.dataset.player === active);
+			chip.setAttribute("aria-pressed", String(chip.dataset.player === picked));
 		}
 	};
-	const hover = (key: string | null) => {
-		hovered = key;
-		paint();
+	const steer: Focus = {
+		hover: (key) => {
+			hovered = key;
+			paint();
+		},
+		pick: (key) => {
+			picked = key;
+			hovered = null;
+			paint();
+		},
 	};
-	const pin = (key: string) => {
-		pinned = pinned === key ? null : key;
-		paint();
-	};
-	for (const [key, row] of rows) {
-		row.addEventListener("mouseenter", () => hover(key));
-		row.addEventListener("mouseleave", () => hover(null));
-		row.addEventListener("click", (event) => {
-			if (event.target instanceof Element && event.target.closest("a")) return;
-			pin(key);
-		});
-	}
 	const map =
 		doc.axes && placed.length >= 2
-			? h("figure", { class: "studio-land-map" }, positioningMap(doc.axes, placed, hover, pin))
+			? h("figure", { class: "studio-land-map" }, positioningMap(doc.axes, placed, steer))
 			: null;
-	const ask = askButton(ctx, t("Research rivals"), () => research(doc.players));
-	const section = h(
-		"section",
-		{ class: "studio-section studio-land", "data-block": "landscape" },
-		sectionHead(heading, changed),
+	const lead =
 		doc.wedge || doc.summary
 			? h(
 					"div",
 					{ class: "studio-land-lead" },
 					doc.wedge
-						? h("div", { class: "studio-land-wedge" }, kicker(t("Our wedge")), h("p", null, doc.wedge))
+						? h("p", { class: "studio-land-wedge" }, kicker(t("Our wedge")), " ", h("span", null, doc.wedge))
 						: null,
 					doc.summary ? h("p", { class: "studio-land-summary" }, doc.summary) : null,
 				)
-			: null,
-		map,
-		wrap,
-		ask ? h("div", { class: "studio-strategy-foot" }, ask) : null,
+			: null;
+	const section = h(
+		"section",
+		{ class: "studio-section studio-land", "data-block": "landscape" },
+		sectionHead(heading, changed),
+		lead,
+		h("div", { class: `studio-land-split${map ? "" : " is-single"}` }, map, card),
+		h("div", { class: "studio-land-strip", role: "group", "aria-label": t("Players") }, chips),
 	);
+	paint();
 	return section;
 }
 

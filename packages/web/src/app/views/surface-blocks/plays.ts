@@ -4,10 +4,10 @@ import {
 	type StrategyPlayStatus,
 	type SurfacePlaysBlock,
 } from "@qorpera/contracts";
-import { h } from "../../../ui/dom.ts";
+import { h, icon } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import { type SurfaceBlockContext, type SurfaceBlockPrepared, sectionHead } from "./context.ts";
-import { askButton, kicker, strategyEmpty, tierBadge } from "./strategy-kit.ts";
+import { askButton, disclosure, kicker, panelId, strategyEmpty, tierMark } from "./strategy-kit.ts";
 
 const STATUS_RANK: Readonly<Record<StrategyPlayStatus, number>> = {
 	recommended: 0,
@@ -32,21 +32,25 @@ function statusLabel(status: StrategyPlayStatus): string {
 	}
 }
 
-function playFacts(play: StrategyPlay): HTMLElement | null {
-	const rows: [string, string | undefined][] = [
-		[t("Who pays"), play.whoPays],
-		[t("Revenue model"), play.revenueModel],
-		[t("Unit margin"), play.unitMargin],
-		[t("Capacity ceiling"), play.capacityCeiling],
-		[t("Moat"), play.moat],
+function playChips(play: StrategyPlay): HTMLElement | null {
+	const facts: [string, string, string | undefined][] = [
+		["pays", t("Who pays"), play.whoPays],
+		["margin", t("Unit margin"), play.unitMargin],
+		["ceiling", t("Capacity ceiling"), play.capacityCeiling],
 	];
-	const shown = rows.filter((row): row is [string, string] => row[1] !== undefined);
+	const shown = facts.filter((fact): fact is [string, string, string] => fact[2] !== undefined);
 	if (shown.length === 0) return null;
 	return h(
-		"dl",
-		{ class: "studio-play-facts" },
-		shown.map(([label, value]) =>
-			h("div", { class: "studio-play-fact" }, h("dt", null, label), h("dd", null, value)),
+		"ul",
+		{ class: "studio-play-chips" },
+		shown.map(([key, label, value]) =>
+			h(
+				"li",
+				{ class: `studio-play-chip is-${key}`, title: `${label}: ${value}` },
+				h("span", { class: "studio-play-chip-label" }, label),
+				" ",
+				h("span", { class: "studio-play-chip-value" }, value),
+			),
 		),
 	);
 }
@@ -77,31 +81,79 @@ function stressTest(play: StrategyPlay) {
 	return { prompt: lines.filter(Boolean).join("\n"), title: t("Stress-test {name}", { name: play.name }) };
 }
 
-function playCard(play: StrategyPlay, ctx: SurfaceBlockContext): HTMLElement {
+function playDetails(play: StrategyPlay, ctx: SurfaceBlockContext): HTMLElement | null {
+	const facts: [string, string | undefined][] = [
+		[t("Revenue model"), play.revenueModel],
+		[t("Moat"), play.moat],
+	];
+	const shown = facts.filter((fact): fact is [string, string] => fact[1] !== undefined);
 	const pros = playList("pros", t("Pros"), play.pros);
 	const cons = playList("cons", t("Cons"), play.cons);
-	const ask = askButton(ctx, t("Stress-test play"), () => stressTest(play));
-	return h(
+	const ask = askButton(ctx, t("Stress-test"), () => stressTest(play));
+	const parts = [
+		shown.length
+			? h(
+					"dl",
+					{ class: "studio-play-facts" },
+					shown.map(([label, value]) =>
+						h("div", { class: "studio-play-fact" }, h("dt", null, label), h("dd", null, value)),
+					),
+				)
+			: null,
+		pros || cons ? h("div", { class: "studio-play-pc" }, pros, cons) : null,
+		play.nextMove
+			? h("div", { class: "studio-play-next" }, kicker(t("Next move")), h("p", null, play.nextMove))
+			: null,
+		play.source ? h("p", { class: "studio-play-source" }, h("b", null, t("Source")), " ", play.source) : null,
+		ask ? h("div", { class: "studio-play-foot" }, ask) : null,
+	].filter((part) => part !== null);
+	if (parts.length === 0) return null;
+	return h("div", { class: "studio-play-details", id: panelId("studio-play-details"), hidden: true }, parts);
+}
+
+function playCard(play: StrategyPlay, ctx: SurfaceBlockContext): HTMLElement {
+	const details = playDetails(play, ctx);
+	const toggle = details
+		? h(
+				"button",
+				{ type: "button", class: "studio-play-more", "aria-expanded": "false", "aria-controls": details.id },
+				h("span", null, t("Details")),
+				icon("chevron-down"),
+			)
+		: null;
+	const card = h(
 		"article",
 		{ class: `studio-play is-${play.status}`, "data-play": play.id },
 		h(
 			"header",
 			{ class: "studio-play-top" },
 			h("span", { class: `studio-play-status is-${play.status}` }, statusLabel(play.status)),
-			tierBadge(play.tier, play.source),
+			tierMark(play.tier, play.source),
 		),
 		h("h3", { class: "studio-play-name" }, play.name),
 		h("p", { class: "studio-play-thesis" }, play.thesis),
-		playFacts(play),
+		playChips(play),
 		play.killRisk
-			? h("div", { class: "studio-play-kill" }, kicker(t("Kill risk")), h("p", null, play.killRisk))
+			? h(
+					"p",
+					{ class: "studio-play-kill" },
+					h("i", { class: "studio-play-kill-dot", "aria-hidden": "true" }),
+					h("span", { class: "studio-play-kill-label" }, t("Kill risk")),
+					" ",
+					h("span", { class: "studio-play-kill-text", title: play.killRisk }, play.killRisk),
+				)
 			: null,
-		play.nextMove
-			? h("div", { class: "studio-play-next" }, kicker(t("Next move")), h("p", null, play.nextMove))
-			: null,
-		pros || cons ? h("div", { class: "studio-play-pc" }, pros, cons) : null,
-		ask ? h("footer", { class: "studio-play-foot" }, ask) : null,
+		toggle,
+		details,
 	);
+	if (toggle && details) {
+		toggle.addEventListener("click", () => {
+			const open = details.hidden;
+			disclosure(toggle, details, open);
+			card.classList.toggle("is-open", open);
+		});
+	}
+	return card;
 }
 
 export function preparePlays(block: SurfacePlaysBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
@@ -140,6 +192,7 @@ export function preparePlays(block: SurfacePlaysBlock, ctx: SurfaceBlockContext)
 		.map((play, index) => ({ play, index }))
 		.sort((a, b) => STATUS_RANK[a.play.status] - STATUS_RANK[b.play.status] || a.index - b.index)
 		.map(({ play }) => play);
+	const lead = doc.verdict ?? doc.summary;
 	return {
 		filled: true,
 		pieces: [
@@ -149,21 +202,7 @@ export function preparePlays(block: SurfacePlaysBlock, ctx: SurfaceBlockContext)
 						"section",
 						{ class: "studio-section studio-plays", "data-block": "plays" },
 						sectionHead(heading, read.changed),
-						doc.verdict || doc.summary
-							? h(
-									"div",
-									{ class: "studio-plays-thesis" },
-									doc.verdict
-										? h(
-												"div",
-												{ class: "studio-plays-verdict" },
-												kicker(t("Verdict")),
-												h("p", null, doc.verdict),
-											)
-										: null,
-									doc.summary ? h("p", { class: "studio-plays-summary" }, doc.summary) : null,
-								)
-							: null,
+						lead ? h("p", { class: "studio-plays-verdict" }, lead) : null,
 						h(
 							"div",
 							{ class: "studio-plays-grid" },

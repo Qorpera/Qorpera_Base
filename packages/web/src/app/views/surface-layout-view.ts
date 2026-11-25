@@ -358,7 +358,7 @@ export class SurfaceLayoutView {
 			case "report":
 				return this.#reports.prepare(block, ctx);
 			case "explainer":
-				return this.#explainers.prepare(key, block, ctx);
+				return this.#explainers.prepare(key, block, ctx, alone);
 			case "artifacts":
 				return prepareArtifacts(
 					block,

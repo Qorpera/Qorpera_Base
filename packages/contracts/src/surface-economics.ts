@@ -18,6 +18,7 @@ export interface EconomicsInput {
 	readonly tier: SurfaceEpistemicTier;
 	readonly source?: string;
 	readonly note?: string;
+	readonly primary?: boolean;
 	readonly marks?: readonly EconomicsInputMark[];
 }
 
@@ -494,6 +495,7 @@ export function parseEconomicsDocument(value: unknown): EconomicsDocument | null
 			...(step !== undefined && step > 0 ? { step } : {}),
 			...(source ? { source } : {}),
 			...(note ? { note } : {}),
+			...(raw.primary === true ? { primary: true } : {}),
 			...(marks && marks.length > 0 ? { marks } : {}),
 		});
 	}

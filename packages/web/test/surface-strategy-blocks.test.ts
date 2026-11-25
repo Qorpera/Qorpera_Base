@@ -79,6 +79,8 @@ function draw(files: Readonly<Record<string, string>>, tab: string, askSurface?:
 const text = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 const texts = (els: Iterable<Element>) => [...els].map(text);
 const file = (name: string, value: unknown) => ({ [`${ROOT}/${name}`]: JSON.stringify(value) });
+const hover = (el: Element, kind: "mouseenter" | "mouseleave") => el.dispatchEvent(new MouseEvent(kind));
+const click = (el: Element) => el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
 const PLAYS = {
 	verdict: "Sell to dealers, not drivers.",
@@ -164,6 +166,7 @@ const ECONOMICS = {
 			min: 200,
 			max: 900,
 			tier: "verified",
+			source: "Payroll 2026",
 		},
 		{
 			id: "fixed_costs",
@@ -193,6 +196,7 @@ const ECONOMICS = {
 		{ id: "contribution", expr: "revenue - labor_cost - fixed_costs", unit: "DKK" },
 	],
 	headlines: [
+		{ id: "work_hours", label: "Team hours", format: "hours" },
 		{
 			id: "contribution",
 			label: "Contribution",
@@ -200,7 +204,6 @@ const ECONOMICS = {
 			emphasis: "primary",
 			toneWhenNegative: "danger",
 		},
-		{ id: "work_hours", label: "Team hours", format: "hours" },
 	],
 	waterfall: [
 		{ id: "revenue", label: "Revenue", kind: "income" },
@@ -274,6 +277,7 @@ const LANDSCAPE = {
 			name: "Leadly",
 			url: "https://leadly.example",
 			category: "Incumbent",
+			positioning: "Lead lists for every dealer",
 			pricing: "1,495 DKK / month",
 			strength: "Brand",
 			weakness: "Lead quality",
@@ -305,13 +309,19 @@ const STRATEGY_TABS: readonly (readonly [string, string])[] = [
 ];
 
 describe("The strategy starter on the layout renderer", () => {
-	it("draws five tabs and every strategy block's empty home, with an ask in each", () => {
+	it("draws the tabs and every strategy block's empty home, with an ask in each", () => {
 		const ask = vi.fn<Ask>(async () => undefined);
 		const plan = draw({}, "plan", ask);
 		const tabs = texts(plan.root.querySelectorAll(".studio-tab"));
-		expect(tabs).toEqual(["Grand plan", "Economics", "Market", "Hypotheses", "Deep dives"]);
+		expect(tabs).toEqual(["Grand plan", "Economics", "Market", "Hypotheses", "Breakdowns", "Deep dives"]);
 		const empty = [...plan.root.querySelectorAll<HTMLElement>(".studio-tab.is-empty")];
-		expect(empty.map((tab) => tab.dataset.tab)).toEqual(["economics", "market", "hypotheses", "reports"]);
+		expect(empty.map((tab) => tab.dataset.tab)).toEqual([
+			"economics",
+			"market",
+			"hypotheses",
+			"breakdowns",
+			"reports",
+		]);
 		const plays = plan.root.querySelector('[data-block="plays"]')!;
 		expect(text(plays.querySelector(".studio-section-head h2"))).toBe("Competing plays");
 		expect(text(plays.querySelector(".studio-strategy-empty.is-plays strong"))).toBe("No plays on the board yet");
@@ -335,7 +345,8 @@ describe("The strategy starter on the layout renderer", () => {
 	it("fills every tab from the folder and speaks Danish in the starter's words", () => {
 		const files = strategyFiles();
 		const filled = draw(files, "plan");
-		expect(filled.root.querySelectorAll(".studio-tab.is-empty")).toHaveLength(1);
+		const empty = [...filled.root.querySelectorAll<HTMLElement>(".studio-tab.is-empty")];
+		expect(empty.map((tab) => tab.dataset.tab)).toEqual(["breakdowns", "reports"]);
 		expect(filled.root.querySelector('[data-block="plays"] .studio-plays-grid')).not.toBeNull();
 		filled.done();
 		for (const [tab, kind] of STRATEGY_TABS) {
@@ -348,15 +359,21 @@ describe("The strategy starter on the layout renderer", () => {
 		setLanguagePreference("da");
 		const danish = draw({}, "plan");
 		const tabs = texts(danish.root.querySelectorAll(".studio-tab"));
-		expect(tabs).toEqual(["Stor plan", "Økonomi", "Marked", "Hypoteser", "Dybdegående"]);
+		expect(tabs).toEqual(["Stor plan", "Økonomi", "Marked", "Hypoteser", "Gennemgange", "Dybdegående"]);
 		const lead = text(danish.root.querySelector(".studio-strategy-empty strong"));
 		expect(lead).toBe("Ingen strategier på bordet endnu");
 		danish.done();
+		const economy = draw(file("economics.json", ECONOMICS), "economics");
+		expect(text(economy.root.querySelector('[data-block="economics"] .studio-section-head h2'))).toBe(
+			"Enhedsøkonomi",
+		);
+		expect(texts(economy.root.querySelectorAll(".studio-econ-view"))).toEqual(["Pengestrøm", "Nulpunkt"]);
+		economy.done();
 	});
 });
 
 describe("The plays block", () => {
-	it("puts the recommended play first, raised, with its kill risk, and stress-tests it", async () => {
+	it("keeps each play scannable at rest and opens the details on demand", async () => {
 		let release: () => void = () => undefined;
 		const pending = new Promise<void>((resolve) => {
 			release = resolve;
@@ -364,25 +381,51 @@ describe("The plays block", () => {
 		const ask = vi.fn<Ask>(() => pending);
 		const { root, done } = draw(file("plays.json", PLAYS), "plan", ask);
 		const block = root.querySelector('[data-block="plays"]')!;
-		expect(text(block.querySelector(".studio-plays-verdict p"))).toBe("Sell to dealers, not drivers.");
-		expect(text(block.querySelector(".studio-plays-summary"))).toBe(PLAYS.summary);
+		expect(text(block.querySelector(".studio-plays-verdict"))).toBe("Sell to dealers, not drivers.");
+		expect(block.querySelector(".studio-play-facts")).not.toBeNull();
 		const names = texts(block.querySelectorAll(".studio-play-name"));
 		expect(names).toEqual(["Dealer lead engine", "Fleet software", "Driver subscription"]);
+
 		const lead = block.querySelector<HTMLElement>(".studio-play.is-recommended")!;
 		expect(lead.dataset.play).toBe("dealers");
 		expect(text(lead.querySelector(".studio-play-status"))).toBe("Recommended");
-		expect(lead.querySelector(".studio-tier.is-benchmark")?.getAttribute("title")).toBe("Dealer interviews");
-		const facts = texts(lead.querySelectorAll(".studio-play-fact dt"));
-		expect(facts).toEqual(["Who pays", "Revenue model", "Unit margin", "Capacity ceiling", "Moat"]);
-		expect(text(lead.querySelector(".studio-play-kill p"))).toBe("Dealers build it in-house.");
-		expect(text(lead.querySelector(".studio-play-next p"))).toBe("Sign three pilot dealers.");
-		expect(text(lead.querySelector(".studio-play-list.is-pros li"))).toBe("Existing budget");
-		expect(text(lead.querySelector(".studio-play-list.is-cons li"))).toBe("Long sales cycle");
-		expect(block.querySelector(".studio-play.is-rejected .studio-play-kill")).not.toBeNull();
-		expect(block.querySelector(".studio-play.is-exploring .studio-play-facts")).toBeNull();
+		expect(lead.querySelector(".studio-tier-mark.is-benchmark")?.getAttribute("title")).toBe(
+			"Benchmark · Dealer interviews",
+		);
+		expect(texts(lead.querySelectorAll(".studio-play-chip-label"))).toEqual([
+			"Who pays",
+			"Unit margin",
+			"Capacity ceiling",
+		]);
+		expect(texts(lead.querySelectorAll(".studio-play-chip-value"))).toEqual([
+			"Dealers",
+			"62%",
+			"40 dealers per ops hire",
+		]);
+		expect(text(lead.querySelector(".studio-play-kill-text"))).toBe("Dealers build it in-house.");
 
-		const stress = lead.querySelector<HTMLButtonElement>(".studio-ask-btn")!;
-		expect(text(stress)).toBe("Stress-test play");
+		const details = lead.querySelector<HTMLElement>(".studio-play-details")!;
+		const more = lead.querySelector<HTMLButtonElement>(".studio-play-more")!;
+		expect(details.hidden).toBe(true);
+		expect(more.getAttribute("aria-expanded")).toBe("false");
+		expect(block.querySelectorAll(".studio-play-details:not([hidden])")).toHaveLength(0);
+		more.click();
+		expect(details.hidden).toBe(false);
+		expect(more.getAttribute("aria-expanded")).toBe("true");
+		expect(lead.classList.contains("is-open")).toBe(true);
+		expect(texts(details.querySelectorAll(".studio-play-fact dt"))).toEqual(["Revenue model", "Moat"]);
+		expect(text(details.querySelector(".studio-play-next p"))).toBe("Sign three pilot dealers.");
+		expect(text(details.querySelector(".studio-play-list.is-pros li"))).toBe("Existing budget");
+		expect(text(details.querySelector(".studio-play-list.is-cons li"))).toBe("Long sales cycle");
+		expect(text(details.querySelector(".studio-play-source"))).toBe("Source Dealer interviews");
+
+		const fleet = block.querySelector('.studio-play[data-play="fleet"]')!;
+		expect(fleet.querySelector(".studio-play-chips")).toBeNull();
+		expect(fleet.querySelector(".studio-play-kill")).toBeNull();
+		expect(block.querySelector(".studio-play.is-rejected .studio-play-kill")).not.toBeNull();
+
+		const stress = details.querySelector<HTMLButtonElement>(".studio-ask-btn")!;
+		expect(text(stress)).toBe("Stress-test");
 		stress.click();
 		stress.click();
 		expect(ask).toHaveBeenCalledTimes(1);
@@ -393,12 +436,23 @@ describe("The plays block", () => {
 		expect(stress.disabled).toBe(true);
 		release();
 		await vi.waitFor(() => expect(stress.disabled).toBe(false));
+
+		more.click();
+		expect(details.hidden).toBe(true);
+		done();
+	});
+
+	it("leaves the details toggle out when a play has nothing more to show", () => {
+		const { root, done } = draw(file("plays.json", PLAYS), "plan");
+		const fleet = root.querySelector('.studio-play[data-play="fleet"]')!;
+		expect(fleet.querySelector(".studio-play-more")).toBeNull();
+		expect(root.querySelector('.studio-play[data-play="dealers"] .studio-play-more')).not.toBeNull();
 		done();
 	});
 });
 
-function economics(ask?: Ask) {
-	const drawn = draw(file("economics.json", ECONOMICS), "economics", ask);
+function economics(ask?: Ask, doc: unknown = ECONOMICS) {
+	const drawn = draw(file("economics.json", doc), "economics", ask);
 	const block = drawn.root.querySelector<HTMLElement>('[data-block="economics"]')!;
 	const range = (id: string) =>
 		block.querySelector<HTMLInputElement>(`.studio-econ-lever[data-input="${id}"] input[type="range"]`)!;
@@ -407,88 +461,239 @@ function economics(ask?: Ask) {
 		input.value = String(value);
 		input.dispatchEvent(new Event("input", { bubbles: true }));
 	};
-	const kpi = (id: string) => text(block.querySelector(`[data-headline="${id}"] .studio-econ-kpi-value`));
-	return { ...drawn, block, range, slide, kpi };
+	const hero = () => text(block.querySelector(".studio-econ-hero-value"));
+	const metric = (id: string) => text(block.querySelector(`[data-headline="${id}"] .studio-econ-metric-value`));
+	const band = (id: string) => block.querySelector<SVGPathElement>(`.studio-econ-band[data-stream="${id}"]`)!;
+	const flag = (id: string) => block.querySelector<HTMLButtonElement>(`.studio-econ-flag[data-constraint="${id}"]`)!;
+	return { ...drawn, block, range, slide, hero, metric, band, flag };
 }
 
 describe("The economics block", () => {
-	it("draws the head, grouped levers with tiers and marks, KPIs, the verdict and both charts", () => {
-		const { block, kpi, done } = economics();
+	it("leads with one hero number, inline metrics, the money river and three levers", () => {
+		const { block, hero, metric, done } = economics();
 		expect(text(block.querySelector(".studio-econ-title h3"))).toBe("Dealer lead engine");
 		expect(texts(block.querySelectorAll(".studio-econ-scenario"))).toEqual(["Base", "Premium"]);
 		expect(block.querySelector(".studio-econ-scenario.is-base.is-on")).not.toBeNull();
-		expect(block.querySelector<HTMLButtonElement>(".studio-econ-reset")!.hidden).toBe(true);
-		expect(texts(block.querySelectorAll(".studio-econ-group-head"))).toEqual(["Demand", "Pricing", "Delivery"]);
-		const price = block.querySelector('.studio-econ-lever[data-input="price"]')!;
-		expect(price.querySelector(".studio-tier.is-benchmark")?.getAttribute("title")).toBe("Rival pricing scan");
+		expect(block.querySelector<HTMLElement>(".studio-econ-thesis")!.hidden).toBe(true);
+
+		const readout = block.querySelector<HTMLElement>(".studio-econ-readout")!;
+		expect(readout.dataset.headline).toBe("contribution");
+		expect(text(readout.querySelector(".studio-econ-hero-label"))).toBe("Contribution");
+		expect(hero()).toBe("DKK 0");
+		expect(text(readout.querySelector(".studio-econ-hero-unit"))).toBe("/ month");
+		expect(block.querySelectorAll(".studio-econ-metric")).toHaveLength(1);
+		expect(metric("work_hours")).toBe("75 h");
+		expect(block.querySelector(".studio-econ-kpi")).toBeNull();
+		expect(block.querySelector<HTMLElement>(".studio-econ-holds")!.hidden).toBe(false);
+		expect(text(block.querySelector(".studio-econ-holds"))).toBe("All constraints hold");
+		expect(block.querySelectorAll(".studio-econ-flag:not([hidden])")).toHaveLength(0);
+		expect(block.querySelector<HTMLElement>(".studio-econ-flag-line")!.hidden).toBe(true);
+		expect(block.querySelector<HTMLElement>(".studio-econ-verdict")!.hidden).toBe(false);
+		expect(text(block.querySelector(".studio-econ-verdict"))).toBe(ECONOMICS.verdict);
+
+		expect(texts(block.querySelectorAll(".studio-econ-view"))).toEqual(["Money flow", "Break-even"]);
+		expect(block.querySelector('.studio-econ-view[data-view="flow"]')?.getAttribute("aria-pressed")).toBe("true");
+		const flow = block.querySelector(".studio-econ-flow svg.studio-econ-svg.is-flow")!;
+		expect(flow.querySelectorAll(".studio-econ-band")).toHaveLength(4);
+		expect(flow.querySelectorAll(".studio-econ-band.is-income")).toHaveLength(1);
+		expect(flow.querySelectorAll(".studio-econ-band.is-cost")).toHaveLength(2);
+		expect(flow.querySelectorAll(".studio-econ-band.is-total")).toHaveLength(1);
+		expect(flow.querySelector(".studio-econ-band.is-shortfall")).toBeNull();
+		expect(flow.querySelector(".studio-econ-spine")).not.toBeNull();
+		for (const path of flow.querySelectorAll(".studio-econ-band"))
+			expect(path.getAttribute("d")).toMatch(/^M.* C.* Z$/);
+		expect(texts(flow.querySelectorAll(".studio-econ-flow-name"))).toEqual([
+			"Revenue",
+			"Delivery",
+			"Fixed",
+			"Contribution",
+		]);
+		expect(texts(flow.querySelectorAll(".studio-econ-flow-amount"))).toEqual([
+			"DKK 50K",
+			"DKK 30K · 60%",
+			"DKK 20K · 40%",
+			"DKK 0 · 0%",
+		]);
+		expect(block.querySelector(".studio-econ-svg.is-curve")).toBeNull();
+
+		const levers = [...block.querySelectorAll<HTMLElement>(".studio-econ-levers > .studio-econ-lever")];
+		expect(levers.map((lever) => lever.dataset.input)).toEqual(["customers", "price", "hours_per_customer"]);
+		expect(block.querySelector(".studio-econ-levers .studio-tier")).toBeNull();
+		expect(block.querySelector(".studio-econ-levers .studio-econ-note")).toBeNull();
+		const price = levers[1]!;
 		expect(text(price.querySelector(".studio-econ-lever-value"))).toBe("DKK 1,000");
 		expect(price.querySelectorAll(".studio-econ-tick-mark")).toHaveLength(1);
-		const hours = block.querySelector('.studio-econ-lever[data-input="hours_per_customer"]')!;
-		expect(text(hours.querySelector(".studio-econ-note"))).toBe("Onboarding plus monthly review.");
-		expect(block.querySelector('[data-input="customers"] .studio-tier.is-hypothesis')).not.toBeNull();
-		expect(kpi("contribution")).toBe("DKK 0");
-		expect(kpi("work_hours")).toBe("75 h");
-		expect(text(block.querySelector('[data-headline="contribution"] .studio-econ-kpi-sub'))).toBe("Per month");
-		expect(text(block.querySelector(".studio-econ-verdict p"))).toBe(ECONOMICS.verdict);
-		expect(block.querySelector(".studio-econ-alert")).toBeNull();
-		expect(text(block.querySelector(".studio-econ-holds"))).toBe("Every hard constraint holds.");
-
-		const waterfall = block.querySelector(".studio-econ-svg.is-waterfall")!;
-		expect(waterfall.querySelectorAll(".studio-econ-wf-bar")).toHaveLength(4);
-		expect(waterfall.querySelectorAll(".studio-econ-wf-bar.is-cost")).toHaveLength(2);
-		expect(waterfall.querySelectorAll(".studio-econ-wf-bar.is-total")).toHaveLength(1);
-		const curve = block.querySelector(".studio-econ-svg.is-curve")!;
-		expect(curve.querySelector(".studio-econ-line")).not.toBeNull();
-		expect(curve.querySelector(".studio-econ-capacity")).not.toBeNull();
-		expect(text(curve.querySelector(".studio-econ-capacity-label"))).toBe("Team capacity");
-		expect(text(curve.querySelector(".studio-econ-pill-text"))).toBe("Break-even 50");
-		expect(curve.querySelector(".studio-econ-breakeven.is-impossible")).toBeNull();
-		expect(curve.querySelector(".studio-econ-now")).not.toBeNull();
-		expect(text(block.querySelector(".studio-econ-chart-note"))).toBe("Break-even at 50.");
+		expect(text(price.querySelector(".studio-econ-mark"))).toBe("Rival Pro DKK 1,495");
 		done();
 	});
 
-	it("recomputes in place as levers move, raises a fatal ceiling and resets to the scenario", () => {
-		const { root, block, slide, kpi, range, done } = economics();
+	it("dims every other band and swaps the hero to a stream while it is pointed at", () => {
+		const { block, hero, band, done } = economics();
+		const flow = block.querySelector(".studio-econ-flow")!;
+		hover(band("labor_cost"), "mouseenter");
+		expect(flow.classList.contains("is-picking")).toBe(true);
+		expect(band("labor_cost").classList.contains("is-on")).toBe(true);
+		expect(band("revenue").classList.contains("is-on")).toBe(false);
+		expect(
+			block.querySelector('.studio-econ-flow-label[data-stream="labor_cost"]')!.classList.contains("is-on"),
+		).toBe(true);
+		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Delivery");
+		expect(hero()).toBe("DKK 30K");
+		expect(text(block.querySelector(".studio-econ-hero-sub"))).toBe("60% of revenue");
+		expect(block.querySelector(".studio-econ-readout.is-peek")).not.toBeNull();
+		hover(band("labor_cost"), "mouseleave");
+		expect(flow.classList.contains("is-picking")).toBe(false);
+		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Contribution");
+		expect(hero()).toBe("DKK 0");
+
+		click(band("fixed_costs"));
+		expect(band("fixed_costs").getAttribute("aria-pressed")).toBe("true");
+		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Fixed");
+		click(band("fixed_costs"));
+		expect(text(block.querySelector(".studio-econ-hero-label"))).toBe("Contribution");
+		done();
+	});
+
+	it("shows a loss as a hatched shortfall and a breach as one pill with one line", () => {
+		const { root, block, slide, hero, band, flag, range, done } = economics();
 		slide("customers", 70);
 		expect(root.querySelector('[data-block="economics"]')).toBe(block);
-		expect(kpi("contribution")).toBe("DKK 8,000");
-		expect(kpi("work_hours")).toBe("105 h");
-		const fatal = block.querySelector(".studio-econ-alert.is-fatal")!;
-		expect(text(fatal.querySelector("strong"))).toBe("Capacity ceiling");
-		expect(text(fatal.querySelector("p"))).toBe("The team runs out of hours before the month ends.");
-		expect(block.querySelector(".studio-econ-verdict")).toBeNull();
+		expect(hero()).toBe("DKK 8,000");
+		expect(block.querySelector(".studio-econ-readout.is-bad")).not.toBeNull();
+		expect(flag("capacity").hidden).toBe(false);
+		expect(flag("loss").hidden).toBe(true);
+		expect(block.querySelector<HTMLElement>(".studio-econ-holds")!.hidden).toBe(true);
+		const line = block.querySelector<HTMLElement>(".studio-econ-flag-line")!;
+		expect(line.hidden).toBe(false);
+		expect(line.classList.contains("is-fatal")).toBe(true);
+		expect(text(line)).toBe("Capacity ceiling The team runs out of hours before the month ends.");
+		expect(block.querySelectorAll(".studio-econ-flag-line")).toHaveLength(1);
+		expect(block.querySelector<HTMLElement>(".studio-econ-verdict")!.hidden).toBe(true);
+		flag("capacity").click();
+		expect(line.hidden).toBe(true);
+		expect(flag("capacity").getAttribute("aria-expanded")).toBe("false");
+		flag("capacity").click();
+		expect(line.hidden).toBe(false);
 		const reset = block.querySelector<HTMLButtonElement>(".studio-econ-reset")!;
 		expect(reset.hidden).toBe(false);
 
 		slide("customers", 20);
-		expect(block.querySelector(".studio-econ-alert.is-fatal")).toBeNull();
-		expect(text(block.querySelector(".studio-econ-alert.is-warning strong"))).toBe("Losing money");
-		expect(block.querySelector('[data-headline="contribution"].is-negative')).not.toBeNull();
+		expect(hero()).toBe("-DKK 12K");
+		expect(flag("capacity").hidden).toBe(true);
+		expect(flag("loss").hidden).toBe(false);
+		expect(line.hidden).toBe(true);
+		flag("loss").click();
+		expect(line.hidden).toBe(false);
+		expect(text(line)).toBe("Losing money Each month burns cash.");
+		const shortfall = band("shortfall");
+		expect(shortfall.classList.contains("is-shortfall")).toBe(true);
+		expect(shortfall.getAttribute("fill")).toMatch(/^url\(#studio-econ-hatch-\d+\)$/);
+		expect(block.querySelector(".studio-econ-band.is-total")).toBeNull();
+		expect(text(block.querySelector(".studio-econ-flow-label.is-shortfall .studio-econ-flow-amount"))).toBe(
+			"-DKK 12K · 60%",
+		);
 
 		reset.click();
 		expect(range("customers").value).toBe("50");
-		expect(kpi("contribution")).toBe("DKK 0");
+		expect(hero()).toBe("DKK 0");
 		expect(reset.hidden).toBe(true);
-		expect(block.querySelector(".studio-econ-alert")).toBeNull();
+		expect(block.querySelectorAll(".studio-econ-flag:not([hidden])")).toHaveLength(0);
+		done();
+	});
 
+	it("switches the stage to the break-even curve with its capacity wall", () => {
+		const { block, slide, done } = economics();
+		const curveButton = block.querySelector<HTMLButtonElement>('.studio-econ-view[data-view="curve"]')!;
+		curveButton.click();
+		expect(curveButton.getAttribute("aria-pressed")).toBe("true");
+		expect(block.querySelector(".studio-econ-flow")).toBeNull();
+		const curve = block.querySelector(".studio-econ-svg.is-curve")!;
+		expect(curve.querySelector(".studio-econ-line")).not.toBeNull();
+		expect(curve.querySelector(".studio-econ-area.is-profit")).not.toBeNull();
+		expect(curve.querySelector(".studio-econ-area.is-loss")).not.toBeNull();
+		expect(curve.querySelector(".studio-econ-capacity")).not.toBeNull();
+		expect(text(curve.querySelector(".studio-econ-capacity-label"))).toBe("Team capacity · 60");
+		expect(text(curve.querySelector(".studio-econ-breakeven-label"))).toBe("Break-even 50");
+		expect(curve.querySelector(".studio-econ-breakeven-dot")).not.toBeNull();
+		expect(curve.querySelector(".studio-econ-breakeven.is-impossible")).toBeNull();
+		expect(curve.querySelector(".studio-econ-now")).not.toBeNull();
+		expect(text(block.querySelector(".studio-econ-chart-note"))).toBe("Break-even at 50.");
+
+		block.querySelector<HTMLButtonElement>(".studio-econ-assumptions")!.click();
 		slide("hours_per_customer", 1.75);
 		expect(block.querySelector(".studio-econ-breakeven.is-impossible")).not.toBeNull();
-		const note = text(block.querySelector(".studio-econ-chart-note.is-danger"));
-		expect(note).toContain("past the capacity ceiling");
+		expect(text(block.querySelector(".studio-econ-chart-note.is-danger"))).toContain("past the capacity ceiling");
+
+		block.querySelector<HTMLButtonElement>('.studio-econ-view[data-view="flow"]')!.click();
+		expect(block.querySelector(".studio-econ-flow")).not.toBeNull();
+		expect(block.querySelector(".studio-econ-svg.is-curve")).toBeNull();
+		done();
+	});
+
+	it("keeps secondary inputs and their sources in a closed Assumptions drawer", () => {
+		const { block, range, slide, metric, done } = economics();
+		const toggle = block.querySelector<HTMLButtonElement>(".studio-econ-assumptions")!;
+		const drawer = block.querySelector<HTMLElement>(".studio-econ-drawer")!;
+		expect(text(toggle)).toBe("Assumptions (5)");
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(toggle.getAttribute("aria-controls")).toBe(drawer.id);
+		expect(drawer.hidden).toBe(true);
+		const secondary = [...drawer.querySelectorAll<HTMLElement>(".studio-econ-secondary > .studio-econ-lever")];
+		expect(secondary.map((lever) => lever.dataset.input)).toEqual(["hourly_cost", "fixed_costs", "capacity_hours"]);
+		const basis = [...drawer.querySelectorAll<HTMLElement>(".studio-econ-basis-row")];
+		expect(basis.map((row) => row.dataset.input)).toEqual(["price", "hours_per_customer"]);
+		expect(basis[0]!.querySelector(".studio-tier.is-benchmark")?.getAttribute("title")).toBe("Rival pricing scan");
+		expect(text(basis[1]!)).toContain("Onboarding plus monthly review.");
+		const hourly = secondary[0]!;
+		expect(hourly.querySelector(".studio-tier.is-verified")).not.toBeNull();
+		expect(text(hourly.querySelector(".studio-econ-note"))).toBe("Payroll 2026");
+
+		toggle.click();
+		expect(drawer.hidden).toBe(false);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		slide("capacity_hours", 60);
+		expect(range("capacity_hours").value).toBe("60");
+		expect(metric("work_hours")).toBe("75 h");
+		expect(block.querySelector<HTMLButtonElement>('.studio-econ-flag[data-constraint="capacity"]')!.hidden).toBe(
+			false,
+		);
+		toggle.click();
+		expect(drawer.hidden).toBe(true);
+		done();
+	});
+
+	it("takes the inputs marked primary as the three levers", () => {
+		const doc = {
+			...ECONOMICS,
+			inputs: ECONOMICS.inputs.map((input) =>
+				input.id === "fixed_costs" || input.id === "hourly_cost" ? { ...input, primary: true } : input,
+			),
+		};
+		const { block, done } = economics(undefined, doc);
+		const levers = [...block.querySelectorAll<HTMLElement>(".studio-econ-levers > .studio-econ-lever")];
+		expect(levers.map((lever) => lever.dataset.input)).toEqual(["hourly_cost", "fixed_costs"]);
+		const secondary = [...block.querySelectorAll<HTMLElement>(".studio-econ-secondary > .studio-econ-lever")];
+		expect(secondary.map((lever) => lever.dataset.input)).toEqual([
+			"customers",
+			"price",
+			"hours_per_customer",
+			"capacity_hours",
+		]);
 		done();
 	});
 
 	it("switches scenarios, snaps to a market mark and goes back to base", () => {
-		const { block, kpi, range, done } = economics();
+		const { block, hero, range, done } = economics();
 		const premium = block.querySelector<HTMLButtonElement>('.studio-econ-scenario[data-scenario="premium"]')!;
 		premium.click();
 		expect(premium.classList.contains("is-on")).toBe(true);
 		expect(text(block.querySelector(".studio-econ-thesis"))).toBe("Fewer dealers at the rival's price.");
 		expect(range("price").value).toBe("1495");
 		expect(range("customers").value).toBe("30");
-		expect(kpi("contribution")).toBe("DKK 6,850");
+		expect(hero()).toBe("DKK 6,850");
+		expect(block.querySelector(".studio-econ-readout.is-good")).not.toBeNull();
 		expect(block.querySelector(".studio-econ-mark.is-on")).not.toBeNull();
+		expect(block.querySelector(".studio-econ-tick-mark.is-on")).not.toBeNull();
 		expect(block.querySelector<HTMLButtonElement>(".studio-econ-reset")!.hidden).toBe(true);
 
 		block.querySelector<HTMLButtonElement>(".studio-econ-scenario.is-base")!.click();
@@ -496,7 +701,7 @@ describe("The economics block", () => {
 		expect(block.querySelector<HTMLElement>(".studio-econ-thesis")!.hidden).toBe(true);
 		expect(block.querySelector(".studio-econ-mark.is-on")).toBeNull();
 
-		block.querySelector<HTMLButtonElement>(".studio-econ-mark")!.click();
+		block.querySelector<HTMLButtonElement>(".studio-econ-tick-mark")!.click();
 		expect(range("price").value).toBe("1495");
 		expect(block.querySelector(".studio-econ-mark.is-on")).not.toBeNull();
 		expect(block.querySelector<HTMLButtonElement>(".studio-econ-reset")!.hidden).toBe(false);
@@ -507,7 +712,7 @@ describe("The economics block", () => {
 		const ask = vi.fn<Ask>(async () => undefined);
 		const { block, slide, done } = economics(ask);
 		slide("customers", 70);
-		const challenge = block.querySelector<HTMLButtonElement>(".studio-strategy-foot .studio-ask-btn")!;
+		const challenge = block.querySelector<HTMLButtonElement>(".studio-econ-foot .studio-ask-btn")!;
 		expect(text(challenge)).toBe("Challenge these numbers");
 		challenge.click();
 		expect(ask).toHaveBeenCalledTimes(1);
@@ -520,51 +725,99 @@ describe("The economics block", () => {
 		done();
 	});
 
-	it("keeps the founder's levers when the tab is drawn again", () => {
+	it("keeps the founder's levers and view when the tab is drawn again", () => {
 		const files = file("economics.json", ECONOMICS);
 		const { view, done } = layoutView(files);
 		const first = view.plan(layoutInput(files, "economics")).tasks.map((task) => task.build());
-		const range = first[0]!.querySelector<HTMLInputElement>('[data-input="customers"] input')!;
+		const block = first.find((el) => el.matches('[data-block="economics"]'))!;
+		block.querySelector<HTMLButtonElement>('.studio-econ-view[data-view="curve"]')!.click();
+		const range = block.querySelector<HTMLInputElement>('[data-input="customers"] input')!;
 		range.value = "70";
 		range.dispatchEvent(new Event("input"));
-		const again = view.plan(layoutInput(files, "economics")).tasks.map((task) => task.build());
-		expect(again[0]!.querySelector<HTMLInputElement>('[data-input="customers"] input')!.value).toBe("70");
-		expect(again[0]!.querySelector(".studio-econ-alert.is-fatal")).not.toBeNull();
+		const again = view
+			.plan(layoutInput(files, "economics"))
+			.tasks.map((task) => task.build())
+			.find((el) => el.matches('[data-block="economics"]'))!;
+		expect(again.querySelector<HTMLInputElement>('[data-input="customers"] input')!.value).toBe("70");
+		expect(again.querySelector<HTMLButtonElement>('.studio-econ-flag[data-constraint="capacity"]')!.hidden).toBe(
+			false,
+		);
+		expect(again.querySelector('.studio-econ-view[data-view="curve"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(again.querySelector(".studio-econ-svg.is-curve")).not.toBeNull();
 		done();
 	});
 });
 
 describe("The hypotheses block", () => {
-	it("ranks the ledger by impact, filters it in place and designs a test", () => {
-		const ask = vi.fn<Ask>(async () => undefined);
-		const { root, done } = draw(file("hypotheses.json", HYPOTHESES), "hypotheses", ask);
-		const block = root.querySelector('[data-block="hypotheses"]')!;
-		const items = [...block.querySelectorAll<HTMLElement>(".studio-hyp")];
-		const visible = () => items.filter((item) => !item.hidden).map((item) => item.dataset.hypothesis);
-		const pill = (filter: string) =>
-			block.querySelector<HTMLButtonElement>(`.studio-hyp-filter[data-filter="${filter}"]`)!;
-		expect(text(block.querySelector(".studio-hyp-summary"))).toBe("Four bets carry the plan.");
-		expect(visible()).toEqual(["h2", "h1", "h4", "h3"]);
-		const filters = texts(block.querySelectorAll(".studio-hyp-filter > span:first-child"));
-		expect(filters).toEqual(["All", "Fatal", "Untested", "Testing", "Proven"]);
-		expect(texts(block.querySelectorAll(".studio-hyp-count"))).toEqual(["4", "1", "2", "1", "1"]);
+	function hypotheses(ask?: Ask) {
+		const drawn = draw(file("hypotheses.json", HYPOTHESES), "hypotheses", ask);
+		const block = drawn.root.querySelector<HTMLElement>('[data-block="hypotheses"]')!;
+		const row = (id: string) => block.querySelector<HTMLElement>(`.studio-hyp[data-hypothesis="${id}"]`)!;
+		const node = (id: string) => block.querySelector<SVGGElement>(`.studio-hyp-node[data-hypothesis="${id}"]`)!;
+		const open = () =>
+			[...block.querySelectorAll<HTMLElement>(".studio-hyp")]
+				.filter((item) => item.querySelector<HTMLElement>(".studio-hyp-body")!.hidden === false)
+				.map((item) => item.dataset.hypothesis);
+		return { ...drawn, block, row, node, open };
+	}
 
-		const fatal = block.querySelector('.studio-hyp[data-hypothesis="h2"]')!;
-		expect(text(fatal.querySelector(".studio-hyp-impact.is-fatal"))).toBe("Fatal");
-		expect(text(fatal.querySelector(".studio-hyp-status"))).toBe("Untested");
-		expect(fatal.querySelector(".studio-tier.is-benchmark")).not.toBeNull();
+	it("draws the proof track in bet order with each node's status and impact", () => {
+		const { block, node, done } = hypotheses();
+		expect(text(block.querySelector(".studio-hyp-summary"))).toBe("Four bets carry the plan.");
+		const track = block.querySelector(".studio-hyp-track svg")!;
+		expect(track.getAttribute("viewBox")).toBe("0 0 760 130");
+		const nodes = [...track.querySelectorAll<SVGGElement>(".studio-hyp-node")];
+		expect(nodes.map((item) => item.dataset.hypothesis)).toEqual(["h2", "h1", "h4", "h3"]);
+		expect(texts(track.querySelectorAll(".studio-hyp-node-label"))).toEqual([
+			"B1 · Fatal",
+			"B2 · High",
+			"B3 · High",
+			"B4 · Medium",
+		]);
+		expect(texts(track.querySelectorAll(".studio-hyp-node-status"))).toEqual([
+			"Untested",
+			"Testing",
+			"Untested",
+			"Proven",
+		]);
+		expect(node("h2").classList.contains("is-untested")).toBe(true);
+		expect(node("h2").querySelector(".studio-hyp-node-danger")).not.toBeNull();
+		expect(text(node("h2").querySelector(".studio-hyp-node-glyph"))).toBe("?");
+		expect(node("h4").querySelector(".studio-hyp-node-danger")).toBeNull();
+		expect(node("h1").querySelector(".studio-hyp-node-core")).not.toBeNull();
+		expect(node("h3").querySelector(".studio-hyp-node-check")).not.toBeNull();
+		const links = [...track.querySelectorAll(".studio-hyp-link")].map((line) => line.getAttribute("class"));
+		expect(links).toEqual(["studio-hyp-link is-quiet", "studio-hyp-link is-fog", "studio-hyp-link is-quiet"]);
+		expect(node("h2").classList.contains("is-selected")).toBe(true);
+		done();
+	});
+
+	it("opens only the first open fatal bet and lets a node or a row pick another", () => {
+		const ask = vi.fn<Ask>(async () => undefined);
+		const { row, node, open, done } = hypotheses(ask);
+		expect(open()).toEqual(["h2"]);
+		const fatal = row("h2");
+		const head = fatal.querySelector<HTMLButtonElement>(".studio-hyp-row")!;
+		expect(head.getAttribute("aria-expanded")).toBe("true");
+		expect(text(head.querySelector(".studio-hyp-impact.is-fatal"))).toBe("Fatal");
+		expect(text(head.querySelector(".studio-hyp-bet"))).toBe("Dealers lack an in-house booking tool.");
+		expect(head.querySelector(".studio-hyp-dot.is-untested")).not.toBeNull();
+		expect(head.querySelector(".studio-tier-mark.is-benchmark")).not.toBeNull();
 		expect(text(fatal.querySelector(".studio-hyp-test.is-test p"))).toBe("Call ten dealers this week.");
 		expect(text(fatal.querySelector(".studio-hyp-test.is-kill p"))).toBe("Four of ten already run one.");
 		expect(text(fatal.querySelector(".studio-hyp-meta"))).toContain("Founder");
+		expect(row("h1").querySelector<HTMLButtonElement>(".studio-hyp-row")!.getAttribute("aria-expanded")).toBe(
+			"false",
+		);
 
-		pill("fatal").click();
-		expect(visible()).toEqual(["h2"]);
-		expect(pill("fatal").getAttribute("aria-pressed")).toBe("true");
-		pill("untested").click();
-		expect(visible()).toEqual(["h2", "h4"]);
-		pill("untested").click();
-		expect(visible()).toEqual(["h2", "h1", "h4", "h3"]);
-		expect(pill("all").classList.contains("is-on")).toBe(true);
+		click(node("h3"));
+		expect(open()).toEqual(["h3"]);
+		expect(node("h3").classList.contains("is-selected")).toBe(true);
+		expect(node("h2").classList.contains("is-selected")).toBe(false);
+		row("h3").querySelector<HTMLButtonElement>(".studio-hyp-row")!.click();
+		expect(open()).toEqual([]);
+		head.click();
+		expect(open()).toEqual(["h2"]);
 
 		fatal.querySelector<HTMLButtonElement>(".studio-ask-btn")!.click();
 		const [prompt, title] = ask.mock.calls[0]!;
@@ -573,60 +826,151 @@ describe("The hypotheses block", () => {
 		expect(prompt).toContain("Four of ten already run one.");
 		done();
 	});
+
+	it("filters the list in place, mutes the track and clears the filter for a hidden node", () => {
+		const { block, node, open, done } = hypotheses();
+		const items = [...block.querySelectorAll<HTMLElement>(".studio-hyp")];
+		const visible = () => items.filter((item) => !item.hidden).map((item) => item.dataset.hypothesis);
+		const pill = (filter: string) =>
+			block.querySelector<HTMLButtonElement>(`.studio-hyp-filter[data-filter="${filter}"]`)!;
+		expect(visible()).toEqual(["h2", "h1", "h4", "h3"]);
+		expect(texts(block.querySelectorAll(".studio-hyp-filter > span:first-child"))).toEqual([
+			"All",
+			"Fatal",
+			"Untested",
+			"Testing",
+			"Proven",
+		]);
+		expect(texts(block.querySelectorAll(".studio-hyp-count"))).toEqual(["4", "1", "2", "1", "1"]);
+
+		pill("fatal").click();
+		expect(visible()).toEqual(["h2"]);
+		expect(pill("fatal").getAttribute("aria-pressed")).toBe("true");
+		expect(node("h1").classList.contains("is-muted")).toBe(true);
+		expect(node("h2").classList.contains("is-muted")).toBe(false);
+		pill("untested").click();
+		expect(visible()).toEqual(["h2", "h4"]);
+		click(node("h3"));
+		expect(visible()).toEqual(["h2", "h1", "h4", "h3"]);
+		expect(open()).toEqual(["h3"]);
+		expect(pill("all").classList.contains("is-on")).toBe(true);
+		done();
+	});
 });
 
 describe("The landscape block", () => {
-	it("maps the players, highlights us, links rows and points, and asks for research", () => {
+	it("maps every player with whole names placed clear of the edges and points", () => {
+		const { root, done } = draw(file("landscape.json", LANDSCAPE), "market");
+		const block = root.querySelector<HTMLElement>('[data-block="landscape"]')!;
+		expect(text(block.querySelector(".studio-land-wedge"))).toBe("Our wedge Bookings, not leads.");
+		expect(text(block.querySelector(".studio-land-summary"))).toBe(LANDSCAPE.summary);
+		const map = block.querySelector(".studio-land-map svg")!;
+		expect(map.getAttribute("viewBox")).toBe("0 0 680 420");
+		expect(map.querySelectorAll(".studio-land-quad")).toHaveLength(2);
+		expect(texts(map.querySelectorAll(".studio-land-axis"))).toEqual(["Price", "Depth"]);
+		expect(texts(map.querySelectorAll(".studio-land-end"))).toEqual([
+			"← Cheap",
+			"Premium →",
+			"↑ Bookings",
+			"↓ Leads",
+		]);
+		expect(map.querySelectorAll(".studio-land-point")).toHaveLength(3);
+		expect(map.querySelector('.studio-land-point.is-us[data-player="us"] .studio-land-halo')).not.toBeNull();
+		const names = [...map.querySelectorAll<SVGTextElement>(".studio-land-name")];
+		expect(texts(names)).toEqual(["Leadly", "Spreadsheets", "Qorpera Auto"]);
+		expect(names.some((name) => text(name).includes("…"))).toBe(false);
+		expect(names.map((name) => name.getAttribute("text-anchor"))).toEqual(["end", "start", "start"]);
+		done();
+	});
+
+	it("lifts one of two close labels so they never collide", () => {
+		const crowded = {
+			axes: LANDSCAPE.axes,
+			players: [
+				{ id: "a", name: "Private Dealer B2B Network", x: 30, y: 50 },
+				{ id: "b", name: "Biltorvet", x: 35, y: 55 },
+				{ id: "c", name: "Bilbasen Pro Dealer Suite", x: 96, y: 52 },
+			],
+		};
+		const { root, done } = draw(file("landscape.json", crowded), "market");
+		const label = (id: string) =>
+			root.querySelector<SVGTextElement>(`.studio-land-point[data-player="${id}"] .studio-land-name`)!;
+		const y = (id: string) => Number(label(id).getAttribute("y"));
+		expect(Math.abs(y("a") - y("b"))).toBeGreaterThanOrEqual(26);
+		expect(text(label("a"))).toBe("Private Dealer B2B Network");
+		expect(label("c").getAttribute("text-anchor")).toBe("end");
+		expect(Number(label("c").getAttribute("x"))).toBeLessThan(680);
+		done();
+	});
+
+	it("focuses one player at a time from the map and the strip, starting with us", () => {
 		const ask = vi.fn<Ask>(async () => undefined);
 		const { root, done } = draw(file("landscape.json", LANDSCAPE), "market", ask);
 		const block = root.querySelector<HTMLElement>('[data-block="landscape"]')!;
-		expect(text(block.querySelector(".studio-land-wedge p"))).toBe("Bookings, not leads.");
-		const map = block.querySelector(".studio-land-map svg")!;
-		expect(map.getAttribute("viewBox")).toBe("0 0 600 400");
-		expect(map.querySelectorAll(".studio-land-quad")).toHaveLength(2);
-		expect(texts(map.querySelectorAll(".studio-land-axis"))).toEqual(["Price", "Depth"]);
-		expect(texts(map.querySelectorAll(".studio-land-end"))).toEqual(["Cheap", "Premium", "Bookings", "Leads"]);
-		expect(map.querySelectorAll(".studio-land-point")).toHaveLength(3);
-		expect(map.querySelector('.studio-land-point.is-us[data-player="us"] .studio-land-halo')).not.toBeNull();
+		const card = block.querySelector<HTMLElement>(".studio-land-focus")!;
+		const point = (id: string) => block.querySelector<SVGGElement>(`.studio-land-point[data-player="${id}"]`)!;
+		const chip = (id: string) => block.querySelector<HTMLButtonElement>(`.studio-land-chip[data-player="${id}"]`)!;
+		expect(block.querySelector(".studio-land-table")).toBeNull();
+		expect(card.dataset.player).toBe("us");
+		expect(text(card.querySelector(".studio-land-focus-name"))).toBe("Qorpera Auto");
+		expect(text(card.querySelector(".studio-land-us"))).toBe("Us");
+		expect(text(card.querySelector(".studio-land-beat.is-edge p"))).toBe("Booked, not promised");
+		expect(point("us").classList.contains("is-active")).toBe(true);
+		expect(texts(block.querySelectorAll(".studio-land-chip-name"))).toEqual([
+			"Qorpera Auto",
+			"Leadly",
+			"Spreadsheets",
+			"Local agency",
+		]);
+		expect(text(chip("leadly").querySelector(".studio-land-chip-price"))).toBe("1,495 DKK / month");
+		expect(chip("us").getAttribute("aria-pressed")).toBe("true");
 
-		const rows = [...block.querySelectorAll<HTMLTableRowElement>("tbody tr")];
-		expect(rows.map((row) => row.dataset.player)).toEqual(["us", "leadly", "sheet", "agency"]);
-		expect(rows[0]!.classList.contains("is-us")).toBe(true);
-		expect(text(rows[0]!.querySelector(".studio-land-us"))).toBe("Us");
-		const heads = texts(block.querySelectorAll("thead th"));
-		expect(heads).toEqual(["Player", "Positioning", "Pricing", "Target", "Strength", "Weakness", "Our edge"]);
-		const leadly = rows[1]!;
-		expect(leadly.querySelector("a")?.getAttribute("href")).toBe("https://leadly.example");
-		expect(leadly.querySelector("a")?.getAttribute("rel")).toBe("noopener noreferrer");
-		expect(rows[2]!.querySelector("a")).toBeNull();
-		expect(text(leadly.querySelector(".studio-land-category"))).toBe("Incumbent");
-		expect(leadly.querySelector(".studio-tier.is-benchmark")?.getAttribute("title")).toBe("Leadly pricing page");
-		expect(text(leadly.querySelector("td.studio-land-edge"))).toBe("We charge per booking");
-		expect(text(rows[3]!.querySelector("td.studio-land-edge"))).toBe("–");
+		hover(point("leadly"), "mouseenter");
+		expect(card.dataset.player).toBe("leadly");
+		const link = card.querySelector("a")!;
+		expect(link.getAttribute("href")).toBe("https://leadly.example");
+		expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+		expect(text(card.querySelector(".studio-land-category"))).toBe("Incumbent");
+		expect(card.querySelector(".studio-tier-mark.is-benchmark")?.getAttribute("title")).toBe(
+			"Benchmark · Leadly pricing page",
+		);
+		expect(text(card.querySelector(".studio-land-beat.is-position p"))).toBe("Lead lists for every dealer");
+		expect(text(card.querySelector(".studio-land-price"))).toBe("1,495 DKK / month");
+		expect(texts(card.querySelectorAll(".studio-land-contrast li"))).toEqual([
+			"Strength Brand",
+			"Weakness Lead quality",
+		]);
+		expect(text(card.querySelector(".studio-land-beat.is-edge p"))).toBe("We charge per booking");
+		expect(chip("leadly").classList.contains("is-active")).toBe(true);
+		hover(point("leadly"), "mouseleave");
+		expect(card.dataset.player).toBe("us");
 
-		const point = map.querySelector<SVGGElement>('.studio-land-point[data-player="leadly"]')!;
-		point.dispatchEvent(new MouseEvent("mouseenter"));
-		expect(block.classList.contains("has-active")).toBe(true);
-		expect(leadly.classList.contains("is-active")).toBe(true);
-		point.dispatchEvent(new MouseEvent("mouseleave"));
-		expect(leadly.classList.contains("is-active")).toBe(false);
-		rows[2]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-		const sheet = map.querySelector('.studio-land-point[data-player="sheet"]')!;
-		expect(sheet.classList.contains("is-active")).toBe(true);
-		rows[2]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-		expect(block.classList.contains("has-active")).toBe(false);
+		chip("sheet").click();
+		expect(card.dataset.player).toBe("sheet");
+		expect(card.querySelector("a")).toBeNull();
+		expect(point("sheet").classList.contains("is-active")).toBe(true);
+		expect(point("us").classList.contains("is-active")).toBe(false);
+		expect(chip("sheet").getAttribute("aria-pressed")).toBe("true");
+		hover(chip("agency"), "mouseenter");
+		expect(text(card.querySelector(".studio-land-beat.is-position p"))).toBe("Full service");
+		hover(chip("agency"), "mouseleave");
+		expect(card.dataset.player).toBe("sheet");
+		click(point("leadly"));
+		expect(card.dataset.player).toBe("leadly");
+		expect(point("leadly").getAttribute("aria-pressed")).toBe("true");
 
-		block.querySelector<HTMLButtonElement>(".studio-strategy-foot .studio-ask-btn")!.click();
+		card.querySelector<HTMLButtonElement>(".studio-land-focus-foot .studio-ask-btn")!.click();
 		const [prompt, title] = ask.mock.calls[0]!;
 		expect(title).toBe("Research rivals");
 		expect(prompt).toContain("Leadly, Spreadsheets, Local agency");
 		done();
 	});
 
-	it("leaves the map out without axes or two placed players", () => {
+	it("leaves the map out without axes or two placed players and keeps the strip", () => {
 		const { root, done } = draw(file("landscape.json", { players: LANDSCAPE.players }), "market");
 		expect(root.querySelector(".studio-land-map")).toBeNull();
-		expect(root.querySelectorAll("tbody tr")).toHaveLength(4);
+		expect(root.querySelector(".studio-land-split.is-single .studio-land-focus")).not.toBeNull();
+		expect(root.querySelectorAll(".studio-land-chip")).toHaveLength(4);
 		done();
 	});
 });

@@ -12,6 +12,11 @@ A custom Studio surface is a living workspace tailored to a specific goal that p
 - Stage a `layout.json` whose tabs and blocks create the exact homes this workspace needs, each with a clear heading. Where structure is a genuine taste choice, offer 2 or 3 concrete layout directions via `surface_ask` and build the one the member picks.
 - Then fill the homes piece by piece.
 
+## Show, don't dump text (visuals & video first)
+- Never build a text-only page. Lead every tab with a clear visual model, diagram, interactive simulator, imagery, or a short narrated explainer video (`scenes.js` + `narrate_explainer`).
+- Whenever a static chart or picture cannot cleanly carry the story or mechanism, stage a narrated `explainer` video instead of writing long prose.
+- Keep supporting text light and scannable: one-line takeaways, concise labels, progressive disclosure for secondary detail — never walls of paragraphs or dense multi-column spreadsheets.
+
 ## How to work
 - Stage one cohesive deliverable per `stage_surface_patch` call so the member sees and approves each piece independently. Never dump the whole workspace in one giant patch.
 - Write reports, analyses, memos, and essays as structured `*.report.json` articles (or self-contained `.html` pages when custom visual presentation is asked for), never loose raw Markdown notes; stage each piece in its own change.
@@ -22,8 +27,8 @@ A custom Studio surface is a living workspace tailored to a specific goal that p
 
 ## Native blocks first, module when blocks cannot
 - Prefer native blocks — they inherit the company's Identity tokens and light/dark themes automatically:
-  - Strategy & decision blocks: `plays` (competing strategic bets side by side), `economics` (interactive unit economics simulator with 3-tier inputs, waterfall, break-even & capacity curve, constraints, and scenarios), `hypotheses` (load-bearing assumptions & kill-criteria ledger), and `landscape` (rivals positioning map & competitive matrix).
-  - General blocks: `title`, `facts`, `spec_list`, `table`, `cards`, `report`, `explainer`, `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts` (for sketches, SVGs, HTML boards, PDFs, or images).
+  - Strategy & decision blocks: `plays` (scannable competing bets), `economics` (visual money-flow + 2–3 core levers + scenarios & break-even ceiling), `hypotheses` (visual proof-chain track + expandable kill criteria), and `landscape` (visual positioning map + focused rival cards).
+  - General blocks: `explainer` (narrated 3Blue1Brown-style animated video), `title`, `facts`, `spec_list`, `table`, `cards`, `report`, `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts` (for visual SVGs, HTML boards, PDFs, or images).
 - Use a `module` block (an interactive HTML/JS app inside its own subfolder) only when no native block fits — for example, a bespoke interactive sketchpad, funnel simulator, drag-and-drop planner, or custom visual calculator.
 - Link `/identity/tokens.css` inside modules so they wear the company look; never hardcode brand colors or fonts. Modules have no network access, can read company/surface files via `qorpera.read(path)` and `qorpera.list(prefix)`, and can hand founder inputs or decisions back into a Surface session via `qorpera.tell(text, about)`.
 - A module with `height: "auto"` sizes itself to its content and must not lock itself to `100vh`.

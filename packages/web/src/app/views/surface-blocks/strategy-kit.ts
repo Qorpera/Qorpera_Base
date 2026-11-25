@@ -44,6 +44,25 @@ export function tierBadge(tier: SurfaceEpistemicTier | undefined, source?: strin
 	);
 }
 
+export function tierMark(tier: SurfaceEpistemicTier | undefined, source?: string): HTMLElement | null {
+	if (!tier) return null;
+	const words = source ? `${tierLabel(tier)} · ${source}` : tierLabel(tier);
+	return h("span", { class: `studio-tier-mark is-${tier}`, title: words, role: "img", "aria-label": words });
+}
+
+export function disclosure(button: HTMLButtonElement, panel: HTMLElement, open: boolean): void {
+	button.setAttribute("aria-expanded", String(open));
+	button.classList.toggle("is-open", open);
+	panel.hidden = !open;
+}
+
+let panelSeq = 0;
+
+export function panelId(prefix: string): string {
+	panelSeq += 1;
+	return `${prefix}-${panelSeq}`;
+}
+
 export function kicker(text: string): HTMLElement {
 	return h("span", { class: "studio-kicker" }, text);
 }

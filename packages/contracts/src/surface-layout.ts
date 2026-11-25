@@ -1409,6 +1409,7 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 					name: ["plan.json#/title", "plan.json#/name"],
 					line: ["plan.json#/thesis", "plan.json#/summary", "plan.json#/northStar"],
 				},
+				{ type: "explainer", id: "plan-video", match: "plan/**/scenes.js", heading: "Strategy walkthrough" },
 				{
 					type: "facts",
 					id: "targets",
@@ -1425,20 +1426,29 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 				{
 					type: "artifacts",
 					id: "sketches",
-					match: ["sketches/**", "*.md", "*.svg", "*.html"],
-					heading: "Sketches & notes",
+					match: ["sketches/**", "*.svg", "*.png", "*.webp", "*.html"],
+					heading: "Sketches & visuals",
 				},
 			],
 		},
 		{
 			id: "economics",
 			title: "Economics",
-			blocks: [{ type: "economics", id: "model", from: "economics.json", heading: "Unit economics & scenarios" }],
+			blocks: [
+				{
+					type: "explainer",
+					id: "economics-video",
+					match: "economics/**/scenes.js",
+					heading: "How the money works",
+				},
+				{ type: "economics", id: "model", from: "economics.json", heading: "Unit economics" },
+			],
 		},
 		{
 			id: "market",
 			title: "Market",
 			blocks: [
+				{ type: "explainer", id: "market-video", match: "market/**/scenes.js", heading: "Market & wedge" },
 				{
 					type: "landscape",
 					id: "rivals",
@@ -1452,6 +1462,7 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 			id: "hypotheses",
 			title: "Hypotheses",
 			blocks: [
+				{ type: "explainer", id: "hypotheses-video", match: "hypotheses/**/scenes.js", heading: "Critical bets" },
 				{
 					type: "hypotheses",
 					id: "bets",
@@ -1461,12 +1472,14 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 			],
 		},
 		{
+			id: "breakdowns",
+			title: "Breakdowns",
+			blocks: [{ type: "explainer", id: "breakdowns", match: "breakdowns/**/scenes.js" }],
+		},
+		{
 			id: "reports",
 			title: "Deep dives",
-			blocks: [
-				{ type: "report", id: "deep-dives", match: "**/*.report.json" },
-				{ type: "explainer", id: "breakdowns", match: "breakdowns/**/scenes.js" },
-			],
+			blocks: [{ type: "report", id: "deep-dives", match: "**/*.report.json" }],
 		},
 	],
 };
@@ -1497,7 +1510,7 @@ export const SURFACE_PLAYS_FORMAT =
 	'A plays file (plays.json) is {"summary","verdict","plays":[{"id","name","thesis","status":"recommended"|"active"|"exploring"|"parked"|"rejected","revenueModel","whoPays","unitMargin","capacityCeiling","moat","killRisk","nextMove","pros":["..."],"cons":["..."],"tier":"verified"|"benchmark"|"hypothesis","source"}]}.';
 
 export const SURFACE_ECONOMICS_FORMAT =
-	'An economics file (economics.json) is {"title","subtitle","currency","period","verdict","inputs":[{"id","label","group","unit","value","min","max","step","tier":"verified"|"benchmark"|"hypothesis","source","note","marks":[{"value","label"}]}],"computed":[{"id","expr","label","unit"}],"headlines":[{"id","label","unit","format":"currency"|"number"|"percent"|"hours","emphasis":"primary"|"secondary","toneWhenNegative":"danger"|"neutral"}],"waterfall":[{"id","label","kind":"income"|"cost"|"total"}],"curve":{"xInput","yOutput","xMin","xMax","label","yLabel","capacityExpr","capacityLabel"},"constraints":[{"label","expr","severity":"fatal"|"warning","message"}],"scenarios":[{"id","name","thesis","values":{"<inputId>":0}}]}. Percent values use percentage points (e.g. 35 for 35%). Expressions support +, -, *, /, (), <, <=, >, >=, ==, !=, min, max, abs, round, floor, ceil, clamp, if(cond, a, b).';
+	'An economics file (economics.json) is {"title","subtitle","currency","period","verdict","inputs":[{"id","label","group","unit","value","min","max","step","primary":false,"tier":"verified"|"benchmark"|"hypothesis","source","note","marks":[{"value","label"}]}],"computed":[{"id","expr","label","unit"}],"headlines":[{"id","label","unit","format":"currency"|"number"|"percent"|"hours","emphasis":"primary"|"secondary","toneWhenNegative":"danger"|"neutral"}],"waterfall":[{"id","label","kind":"income"|"cost"|"total"}],"curve":{"xInput","yOutput","xMin","xMax","label","yLabel","capacityExpr","capacityLabel"},"constraints":[{"label","expr","severity":"fatal"|"warning","message"}],"scenarios":[{"id","name","thesis","values":{"<inputId>":0}}]}. Mark at most 3 decisive inputs with "primary":true; secondary inputs stay tucked under Assumptions. Percent values use percentage points (e.g. 35 for 35%). Expressions support +, -, *, /, (), <, <=, >, >=, ==, !=, min, max, abs, round, floor, ceil, clamp, if(cond, a, b).';
 
 export const SURFACE_HYPOTHESES_FORMAT =
 	'A hypotheses file (hypotheses.json) is {"summary","hypotheses":[{"id","bet","tier":"verified"|"benchmark"|"hypothesis","status":"untested"|"testing"|"proven"|"falsified","impact":"fatal"|"high"|"medium","cheapestTest","killCriteria","evidence","source","owner","playId"}]}.';

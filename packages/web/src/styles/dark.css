@@ -248,13 +248,18 @@
 /* ---- Strategy blocks (surfaces.css) ---------------------------------------------------- */
 :root[data-theme="dark"] :is(.studio-plays, .studio-econ, .studio-hyp-block, .studio-land) {
 	--studio-good: #5ed6a9; --studio-warn: #f2c35d; --studio-bad: #ff9084; --studio-info: #8fb0ff;
+	--studio-mist: color-mix(in srgb, var(--text) 34%, var(--bg));
 }
-:root[data-theme="dark"] :is(.studio-play-status.is-recommended, .studio-hyp-impact.is-fatal, .studio-land-us) { color: #1b1b1a; }
-:root[data-theme="dark"] .studio-econ-breakeven.is-impossible .studio-econ-pill-text { fill: #1b1b1a; }
-:root[data-theme="dark"] .studio-play:is(.is-recommended, .is-active) { box-shadow: 0 16px 36px -26px rgb(0 0 0 / 80%); }
-:root[data-theme="dark"] .studio-econ-scenario.is-on { box-shadow: 0 0 0 1px var(--border-strong); }
+:root[data-theme="dark"] :is(.studio-play-status.is-recommended, .studio-land-us) { color: #1b1b1a; }
+:root[data-theme="dark"] .studio-play.is-recommended { box-shadow: 0 16px 36px -26px rgb(0 0 0 / 80%); }
+:root[data-theme="dark"] :is(.studio-econ-scenario, .studio-econ-view).is-on { box-shadow: 0 0 0 1px var(--border-strong); }
 :root[data-theme="dark"] .studio-econ-range::-webkit-slider-thumb { box-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
 :root[data-theme="dark"] .studio-econ-range::-moz-range-thumb { box-shadow: 0 1px 3px rgb(0 0 0 / 60%); }
-:root[data-theme="dark"] .studio-econ-wf-bar.is-income { fill: color-mix(in srgb, var(--studio-good) 70%, var(--bg)); }
 :root[data-theme="dark"] .studio-econ-capacity { fill: color-mix(in srgb, var(--studio-bad) 12%, transparent); }
-:root[data-theme="dark"] .surface-card:hover .app-card-emblem .surface-tile.is-rail { filter: brightness(1.06); }
+:root[data-theme="dark"] .studio-econ-band { fill-opacity: 0.42; }
+:root[data-theme="dark"] .studio-econ-band.is-cost { fill: color-mix(in srgb, var(--text) 48%, var(--bg)); }
+:root[data-theme="dark"] .studio-econ-spine { fill: color-mix(in srgb, var(--text) 82%, var(--bg)); }
+:root[data-theme="dark"] .studio-econ-hatch-ground { fill: color-mix(in srgb, var(--studio-bad) 14%, var(--bg)); }
+:root[data-theme="dark"] .studio-econ-area.is-profit { fill: color-mix(in srgb, var(--studio-good) 20%, transparent); }
+:root[data-theme="dark"] .studio-econ-area.is-loss { fill: color-mix(in srgb, var(--studio-bad) 16%, transparent); }
+:root[data-theme="dark"] .studio-hyp-node-check { stroke: #1b1b1a; }:root[data-theme="dark"] .surface-card:hover .app-card-emblem .surface-tile.is-rail { filter: brightness(1.06); }
