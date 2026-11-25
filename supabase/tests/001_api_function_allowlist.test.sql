@@ -243,6 +243,8 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_folder_human_task_waits(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; lists its unpaid task wakes, read only (P31)'),
 	('public.qorpera_member_folder_list(uuid,text,text,integer)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_object(uuid,text)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
+	('public.qorpera_member_folder_object_authorize(uuid,text)', false, true, 'member: auth.uid() + membership of a folder-v2 company; download authorization with fence metadata, read only (20260930907000)'),
+	('public.qorpera_member_folder_object_fence(uuid,text,bigint,timestamp with time zone,boolean)', false, true, 'member: auth.uid() + membership of a folder-v2 company; post-NAS authority-clock download fence, read only (20260930907000)'),
 	('public.qorpera_member_folder_path_history(uuid,text,uuid,integer)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_read(uuid,text)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_read_many(uuid,text[])', false, true, 'member: auth.uid() + membership of a folder-v2 company; each path as qorpera_member_folder_read answers it, at most 64, read only (20260930722000)'),

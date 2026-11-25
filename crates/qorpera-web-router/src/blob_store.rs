@@ -833,6 +833,45 @@ impl BlobStore {
         }
     }
 
+    // WHY: Check a batch of blob digests in one blocking pass after memory-shard hits to avoid N HTTP HEAD round-trips on deploys.
+    pub async fn exists_batch(&self, hashes: &[String]) -> Result<Vec<String>, BlobError> {
+        let mut seen = std::collections::HashSet::with_capacity(hashes.len());
+        let mut existing = Vec::new();
+        let mut to_stat: Vec<(String, PathBuf)> = Vec::new();
+        for sha256 in hashes {
+            let path = self.blob_path(sha256)?;
+            if !seen.insert(sha256.as_str()) {
+                continue;
+            }
+            let shard_idx = shard_for_sha(sha256);
+            if self.shards[shard_idx].contains(sha256) {
+                existing.push(sha256.clone());
+            } else {
+                to_stat.push((sha256.clone(), path));
+            }
+        }
+        if to_stat.is_empty() {
+            return Ok(existing);
+        }
+        let disk_hits = tokio::task::spawn_blocking(move || -> Result<Vec<String>, std::io::Error> {
+            let mut hits = Vec::new();
+            for (sha256, path) in to_stat {
+                match std::fs::metadata(&path) {
+                    Ok(meta) if meta.is_file() => hits.push(sha256),
+                    Ok(_) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            Ok(hits)
+        })
+        .await
+        .map_err(|e| BlobError::Io(std::io::Error::other(e.to_string())))?
+        .map_err(BlobError::Io)?;
+        existing.extend(disk_hits);
+        Ok(existing)
+    }
+
     pub async fn put(
         &self,
         sha256: &str,

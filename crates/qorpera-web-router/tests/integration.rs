@@ -2331,3 +2331,113 @@ async fn a_snapshot_from_before_database_sites_keeps_the_password_gate() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body, html);
 }
+
+#[tokio::test]
+async fn internal_blobs_exists_batches_and_validates_hashes() {
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 8 * 1024 * 1024, 8 * 1024 * 1024));
+    let present_a = Bytes::from("hello-batch-a");
+    let sha_a = sha256_hex(&present_a);
+    let present_b = Bytes::from("hello-batch-b");
+    let sha_b = sha256_hex(&present_b);
+    let missing_c = sha256_hex(b"missing-batch-c");
+    blobs.put(&sha_a, present_a, false).await.unwrap();
+    blobs.put(&sha_b, present_b, false).await.unwrap();
+
+    let cfg = test_config(None);
+    let state = Arc::new(RouterState::new(blobs, EdgeSnapshot::default(), &cfg));
+    let bound = BoundServers::bind(&cfg, state).await.unwrap();
+    let int_addr = bound.internal_addr;
+    let (_p, _i) = bound.spawn();
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/blobs/exists")
+            .body(Full::new(Bytes::from(r#"{"hashes":[]}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let req_body = serde_json::json!({
+        "hashes": [sha_a, missing_c, sha_b, sha_a]
+    });
+    let (st, _, body) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/blobs/exists")
+            .header("authorization", "Bearer secret-control-token")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(serde_json::to_vec(&req_body).unwrap())))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let mut existing: Vec<String> = parsed["existing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    existing.sort();
+    let mut expected = vec![sha_a.clone(), sha_b.clone()];
+    expected.sort();
+    assert_eq!(existing, expected);
+
+    let (st, _, body) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/blobs/exists")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::from(r#"{"hashes":[]}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["existing"].as_array().unwrap().len(), 0);
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/blobs/exists")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::from(r#"{"hashes":["not-a-sha256"]}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let too_many: Vec<String> = (0..1025).map(|_| sha_a.clone()).collect();
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/blobs/exists")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::from(
+                serde_json::to_vec(&serde_json::json!({ "hashes": too_many })).unwrap(),
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/blobs/exists")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::from(vec![b' '; 260 * 1024])))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+}

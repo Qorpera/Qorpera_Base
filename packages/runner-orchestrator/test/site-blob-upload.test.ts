@@ -60,7 +60,7 @@ describe("site-blob-upload", () => {
 		expect(built.manifest.files["feed.atom"]?.content_type).toBe("application/atom+xml; charset=utf-8");
 	});
 
-	it("deduplicates identical blobs and uploads only missing ones via HEAD + PUT", async () => {
+	it("deduplicates identical blobs and uploads only missing ones via batch POST /exists + PUT", async () => {
 		const existing = makeFile("a.txt", "already-on-nas");
 		const fresh1 = makeFile("index.html", "<h1>Fresh</h1>");
 		const freshDup = makeFile("copy.html", "<h1>Fresh</h1>");
@@ -75,6 +75,13 @@ describe("site-blob-upload", () => {
 				expect(init.headers.authorization).toBe("Bearer tok-123");
 				const sha = url.split("/").at(-1) ?? "";
 				calls.push(`${init.method}:${sha}`);
+				if (init.method === "POST" && url.endsWith("/_internal/blobs/exists")) {
+					const payload = JSON.parse(new TextDecoder().decode(init.body)) as { hashes: string[] };
+					return {
+						status: 200,
+						json: async () => ({ existing: payload.hashes.filter((h) => stored.has(h)) }),
+					};
+				}
 				if (init.method === "HEAD") {
 					return { status: stored.has(sha) ? 200 : 404 };
 				}
@@ -87,7 +94,38 @@ describe("site-blob-upload", () => {
 		expect(result.uploadedBlobs).toBe(1);
 		expect(result.deduplicatedBlobs).toBe(1);
 		expect(result.hasCredentialInputs).toBe(false);
+		expect(calls.filter((c) => c.startsWith("POST:"))).toHaveLength(1);
+		expect(calls.filter((c) => c.startsWith("HEAD:"))).toHaveLength(0);
 		expect(calls.filter((c) => c.startsWith("PUT:"))).toHaveLength(1);
+	});
+
+	it("falls back to HEAD + PUT when POST /_internal/blobs/exists returns 404 or 405", async () => {
+		for (const unsupportedStatus of [404, 405] as const) {
+			const existing = makeFile("a.txt", "already-on-nas");
+			const fresh = makeFile("index.html", "<h1>Fresh</h1>");
+			const stored = new Set<string>([existing.sha256]);
+			const calls: string[] = [];
+
+			const result = await uploadSiteBlobsToEdge({
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "tok-fallback",
+				files: [existing, fresh],
+				fetchImpl: async (url, init) => {
+					const sha = url.split("/").at(-1) ?? "";
+					calls.push(`${init.method}:${sha}`);
+					if (init.method === "POST") return { status: unsupportedStatus };
+					if (init.method === "HEAD") return { status: stored.has(sha) ? 200 : 404 };
+					stored.add(sha);
+					return { status: 201 };
+				},
+			});
+
+			expect(result.uploadedBlobs).toBe(1);
+			expect(result.deduplicatedBlobs).toBe(1);
+			expect(calls.filter((c) => c.startsWith("POST:"))).toHaveLength(1);
+			expect(calls.filter((c) => c.startsWith("HEAD:"))).toHaveLength(2);
+			expect(calls.filter((c) => c.startsWith("PUT:"))).toHaveLength(1);
+		}
 	});
 
 	it("retries transient 5xx blob uploads and rejects protocol-relative open redirects", async () => {

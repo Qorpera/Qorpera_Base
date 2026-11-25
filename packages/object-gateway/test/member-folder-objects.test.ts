@@ -55,10 +55,26 @@ async function fixture(options: { onNas?: boolean } = {}) {
 				authorization: request.headers.get("authorization"),
 				body: await request.json(),
 			});
-			const answer = state.answers.shift() ?? {
-				status: 200,
-				body: { schema: "qorpera.folder-object-download/v1", profileId: companyId, bytes: bytes.length },
-			};
+			const defaultBody =
+				url.pathname === "/rest/v1/rpc/qorpera_member_folder_object_authorize"
+					? {
+							schema: "qorpera.folder-object-download/v1",
+							profileId: companyId,
+							bytes: bytes.length,
+							authoritySeq: 7,
+							checkedAt: "2026-11-25T10:00:00Z",
+							viaActive: true,
+						}
+					: url.pathname === "/rest/v1/rpc/qorpera_member_folder_object_fence"
+						? {
+								schema: "qorpera.folder-object-download/v1",
+								profileId: companyId,
+								bytes: bytes.length,
+								authoritySeq: 7,
+								rechecked: false,
+							}
+						: { schema: "qorpera.folder-object-download/v1", profileId: companyId, bytes: bytes.length };
+			const answer = state.answers.shift() ?? { status: 200, body: defaultBody };
 			return Response.json(answer.body ?? {}, { status: answer.status });
 		},
 	});
@@ -108,18 +124,66 @@ describe("a member's folder-v2 bytes", () => {
 		expect(response.headers.get("etag")).toBe(`"sha256-${sha256}"`);
 		expect(gateway.state.calls).toEqual([
 			{
-				path: "/rest/v1/rpc/qorpera_member_folder_object",
+				path: "/rest/v1/rpc/qorpera_member_folder_object_authorize",
 				apikey: "sb_publishable_fixture",
 				authorization: `Bearer ${memberToken}`,
 				body: { p_environment_id: environmentId, p_sha256: sha256 },
 			},
 			{
-				path: "/rest/v1/rpc/qorpera_member_folder_object",
+				path: "/rest/v1/rpc/qorpera_member_folder_object_fence",
 				apikey: "sb_publishable_fixture",
 				authorization: `Bearer ${memberToken}`,
-				body: { p_environment_id: environmentId, p_sha256: sha256 },
+				body: {
+					p_environment_id: environmentId,
+					p_sha256: sha256,
+					p_authority_seq: 7,
+					p_checked_at: "2026-11-25T10:00:00Z",
+					p_via_active: true,
+				},
 			},
 		]);
+	});
+
+	it("falls back to legacy qorpera_member_folder_object on HTTP 404 and refuses fence revocations", async () => {
+		const fallback = await fixture();
+		fallback.state.answers.push({ status: 404 }, { status: 200, body: allowed }, { status: 200, body: allowed });
+		const fallbackResponse = await fallback.get();
+		expect(fallbackResponse.status).toBe(200);
+		expect(Buffer.from(await fallbackResponse.arrayBuffer())).toEqual(bytes);
+		expect(fallback.state.calls.map((c) => c.path)).toEqual([
+			"/rest/v1/rpc/qorpera_member_folder_object_authorize",
+			"/rest/v1/rpc/qorpera_member_folder_object",
+			"/rest/v1/rpc/qorpera_member_folder_object",
+		]);
+
+		const revokedAtFence = await fixture();
+		revokedAtFence.state.answers.push(
+			{
+				status: 200,
+				body: { ...allowed, authoritySeq: 7, checkedAt: "2026-11-25T10:00:00Z", viaActive: true },
+			},
+			{ status: 403 },
+		);
+		const revokedResponse = await revokedAtFence.get();
+		expect(revokedResponse.status).toBe(403);
+		expect(Buffer.from(await revokedResponse.arrayBuffer()).equals(bytes)).toBe(false);
+		expect(revokedAtFence.state.calls.map((c) => c.path)).toEqual([
+			"/rest/v1/rpc/qorpera_member_folder_object_authorize",
+			"/rest/v1/rpc/qorpera_member_folder_object_fence",
+		]);
+
+		const malformedFence = await fixture();
+		malformedFence.state.answers.push(
+			{
+				status: 200,
+				body: { ...allowed, authoritySeq: 7, checkedAt: "2026-11-25T10:00:00Z", viaActive: true },
+			},
+			{
+				status: 200,
+				body: { ...allowed, authoritySeq: 7, rechecked: false, extra: true },
+			},
+		);
+		expect((await malformedFence.get()).status).toBe(403);
 	});
 
 	it("falls back to the Storage copy when the NAS has none yet", async () => {

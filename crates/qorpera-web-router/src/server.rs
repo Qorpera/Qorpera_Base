@@ -41,6 +41,8 @@ use tokio::sync::{watch, Semaphore};
 
 const MAX_FORM_BODY_BYTES: usize = 16 * 1024;
 const MAX_CONTROL_JSON_BYTES: usize = 64 * 1024;
+const MAX_BLOB_EXISTS_BODY_BYTES: usize = 256 * 1024;
+const MAX_BLOB_EXISTS_BATCH: usize = 1024;
 const MAX_SNAPSHOT_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PUBLIC_CONNS: usize = 4096;
 const MAX_INTERNAL_CONNS: usize = 256;
@@ -1066,6 +1068,48 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
                 }
             }
         }
+    }
+
+    // WHY: Let site blob uploaders check up to 1024 digests per HTTP call instead of N serial HEADs while keeping strict bearer auth and size bounds.
+    if method == Method::POST && path == "/_internal/blobs/exists" {
+        let bytes = match read_limited_body(
+            req.into_body(),
+            MAX_BLOB_EXISTS_BODY_BYTES,
+            state.body_read_timeout,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(BodyReadError::TooLarge) => {
+                return text_response(StatusCode::PAYLOAD_TOO_LARGE, "payload too large");
+            }
+            Err(BodyReadError::Timeout) => {
+                return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
+            }
+            Err(BodyReadError::Failed) => {
+                return text_response(StatusCode::BAD_REQUEST, "invalid body");
+            }
+        };
+        #[derive(Deserialize)]
+        struct BlobExistsBody {
+            hashes: Vec<String>,
+        }
+        #[derive(Serialize)]
+        struct BlobExistsResponse {
+            existing: Vec<String>,
+        }
+        let parsed: BlobExistsBody = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(_) => return text_response(StatusCode::BAD_REQUEST, "invalid json"),
+        };
+        if parsed.hashes.len() > MAX_BLOB_EXISTS_BATCH {
+            return text_response(StatusCode::BAD_REQUEST, "too many hashes");
+        }
+        return match state.blobs.exists_batch(&parsed.hashes).await {
+            Ok(existing) => json_response(StatusCode::OK, BlobExistsResponse { existing }),
+            Err(BlobError::InvalidHash) => text_response(StatusCode::BAD_REQUEST, "invalid sha256"),
+            Err(_) => text_response(StatusCode::INTERNAL_SERVER_ERROR, "storage error"),
+        };
     }
 
     if let Some(sha) = path.strip_prefix("/_internal/blobs/") {
