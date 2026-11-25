@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
+import { transformSync } from "esbuild";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
 import { designPxPlugin, readUiScale } from "./design-px.mjs";
 
@@ -32,7 +33,11 @@ export function threeAsset({ root, serve = false }) {
 }
 
 export function explainerAsset({ root, serve = false }) {
-	const bytes = readFileSync(resolve(root, "../runtime/kits/explainer/engine.js"));
+	const raw = readFileSync(resolve(root, "../runtime/kits/explainer/engine.js"), "utf8");
+	const bytes = Buffer.from(
+		serve ? raw : transformSync(raw, { loader: "js", minify: true, legalComments: "none" }).code,
+		"utf8",
+	);
 	const name = `explainer-${createHash("sha256").update(bytes).digest("hex").slice(0, 12)}.js`;
 	return { bytes, name, file: serve ? name : `build/${name}` };
 }

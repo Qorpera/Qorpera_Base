@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { transform } from "esbuild";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -55,7 +56,10 @@ export function runtimeAssetsPlugin(root = defaultRoot) {
 			build.onLoad({ filter: /[\\/]packages[\\/]runtime[\\/]src[\\/]cloud-embedded-assets\.ts$/ }, async () => {
 				const lines = [];
 				for (const [name, rel] of Object.entries(TEXT_EXPORTS)) {
-					const text = await readFile(join(root, rel), "utf8");
+					let text = await readFile(join(root, rel), "utf8");
+					if ((rel.endsWith(".js") || rel.endsWith(".cjs")) && !rel.includes("/vendor/")) {
+						text = (await transform(text, { loader: "js", minify: true, legalComments: "none" })).code;
+					}
 					lines.push(`export const ${name} = ${JSON.stringify(text)};`);
 				}
 				const figureFolder = join(root, "packages/runtime/kits/figures");
