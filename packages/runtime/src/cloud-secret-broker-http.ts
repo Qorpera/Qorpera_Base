@@ -78,7 +78,7 @@ import {
 import { ClaudeCodeRefused, type CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import type { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import { isNativeJobHolder, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
-import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import {
 	type AppSecretsRequest,
 	CloudSecretBroker,
@@ -101,6 +101,7 @@ import {
 	openCloudSecretRelay,
 } from "./cloud-secret-broker-relay.ts";
 import type { CloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
+import { cloudToolJsonText } from "./cloud-tool-json.ts";
 import {
 	CloudSecretBrokerBusyError,
 	cloudVaultDatabaseBusy,
