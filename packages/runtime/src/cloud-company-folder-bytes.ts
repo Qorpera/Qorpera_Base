@@ -259,8 +259,8 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		const putAll = async (hashes: Iterable<string>): Promise<void> => {
 			const list = [...hashes];
 			if (list.length === 0) return;
-			if (list.length <= 2) {
-				for (const hash of list) await putOne(hash, signal);
+			if (list.length <= 1) {
+				await putOne(list[0]!, signal);
 				return;
 			}
 			let cursor = 0;

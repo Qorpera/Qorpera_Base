@@ -100,7 +100,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { placeAppInGroup } from "./cloud-folder-app-groups.ts";
-import { refuseRetiredApp } from "./cloud-folder-app-retired.ts";
+import { type RetiredAppsRead, refuseRetiredApp } from "./cloud-folder-app-retired.ts";
 import {
 	args,
 	cloudFolderRefusal,
@@ -681,6 +681,17 @@ export function cloudAppTools(options: {
 			return unavailable(error, "saved");
 		}
 	};
+	// WHY: Hand off retired.md and app.toml reads from save_app.prepare to execute for unreviewed own-app saves.
+	type ManifestRead = Awaited<ReturnType<typeof manifestText>>;
+	const preparedSaves = new Map<
+		string,
+		{
+			readonly name: string;
+			readonly operationKey: string;
+			readonly retired: RetiredAppsRead;
+			readonly stored: ManifestRead;
+		}
+	>();
 	// The guides this run has read (app_guide).
 	const guided = new Set<AppGuide>();
 	// A kit's own file is saved only in a run that has read the kit's guide: its fields, their bounds and its example
@@ -847,27 +858,65 @@ export function cloudAppTools(options: {
 		// its owner to members. Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as SaveRequest;
-			// A retired interface is the members' alone (cloud-folder-app-retired.ts): neither changed nor made again under
-			// its name, refused before the review.
-			await refuseRetiredApp(folder, request.name, context.signal, "saved");
-			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
+			// WHY: Read retired.md and app.toml concurrently while keeping retired refusal precedence.
+			const [retiredResult, storedResult] = await Promise.allSettled([
+				refuseRetiredApp(folder, request.name, context.signal, "saved"),
+				manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal),
+			]);
+			if (retiredResult.status === "rejected") throw retiredResult.reason;
+			if (storedResult.status === "rejected") throw storedResult.reason;
+			const retired = retiredResult.value;
+			const stored = storedResult.value;
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
+			if (!foreign) {
+				if (preparedSaves.size >= 64) preparedSaves.clear();
+				preparedSaves.set(context.callId, {
+					name: request.name,
+					operationKey: request.operationKey,
+					retired,
+					stored,
+				});
+			} else {
+				preparedSaves.delete(context.callId);
+			}
 			return foreign ? ({ ...request, foreignOwner: true } as unknown as JsonValue) : value;
 		},
 		refused: cloudFolderRefusal,
 		async execute(value, context) {
-			const request = value as unknown as SaveRequest;
+			const request = value as unknown as SaveRequest & { readonly foreignOwner?: boolean };
 			writable();
 			context.observation?.update({
 				inputBytes: request.files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0),
 			});
 			const root = appFolder(request.name) as string;
 			const reads: CloudCompanyFolderEntry[] = [];
-			// Again at the save, since a member may have retired it since the review: the read is released with the answer.
-			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
+			const cached = preparedSaves.get(context.callId);
+			preparedSaves.delete(context.callId);
+			// WHY: Only reuse prepare reads when no action review ran and the app is not foreign-owned.
+			const handoff =
+				!context.actionReviewId &&
+				!request.foreignOwner &&
+				cached?.name === request.name &&
+				cached.operationKey === request.operationKey
+					? cached
+					: undefined;
+			let retired: RetiredAppsRead;
+			let at: CloudCompanyFolderEntry | null;
+			if (handoff) {
+				retired = handoff.retired;
+				at = await read(root, context.signal);
+			} else {
+				const [retiredResult, atResult] = await Promise.allSettled([
+					refuseRetiredApp(folder, request.name, context.signal, "saved"),
+					read(root, context.signal),
+				]);
+				if (retiredResult.status === "rejected") throw retiredResult.reason;
+				if (atResult.status === "rejected") throw atResult.reason;
+				retired = retiredResult.value;
+				at = atResult.value;
+			}
 			if (retired.entry) reads.push(retired.entry);
-			const at = await read(root, context.signal);
 			if (at !== null && at.kind !== "folder")
 				throw new CloudToolRefusal(
 					`APP_NOT_A_FOLDER: ${root} is a ${at.kind === "file" ? "file" : "link"}, not an app's folder`,
@@ -1020,7 +1069,7 @@ export function cloudAppTools(options: {
 			// A change: the manifest kept or rewritten with its owner and posted as stored, and each file written over the
 			// version read now (a file another call changed in between is a conflict).
 			const manifestPath = `${root}/${APP_MANIFEST}`;
-			const stored = await manifestText(manifestPath, context.signal);
+			const stored = handoff ? handoff.stored : await manifestText(manifestPath, context.signal);
 			const units: CloudCompanyFolderUnit[] = [];
 			let entry = APP_DEFAULT_ENTRY;
 			if (stored !== null && stored !== "unreadable") reads.push(stored.entry);
@@ -1285,9 +1334,14 @@ export function cloudAppTools(options: {
 		// version read here, so an app made or changed in between is refused, never posted under the wrong class.
 		async prepare(value, context) {
 			const request = value as unknown as { name: string };
-			// A retired interface is posted or taken away by no agent, refused before the review.
-			await refuseRetiredApp(folder, request.name, context.signal, "saved");
-			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
+			// WHY: Read retired.md and app.toml concurrently while keeping retired refusal precedence.
+			const [retiredResult, storedResult] = await Promise.allSettled([
+				refuseRetiredApp(folder, request.name, context.signal, "saved"),
+				manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal),
+			]);
+			if (retiredResult.status === "rejected") throw retiredResult.reason;
+			if (storedResult.status === "rejected") throw storedResult.reason;
+			const stored = storedResult.value;
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			// A manifest that cannot be read or does not parse names no owner: it is reviewed as another's.
 			const foreign = parsed === null ? stored === "unreadable" : !parsed.ok || parsed.manifest.owner !== owner;
@@ -1306,9 +1360,16 @@ export function cloudAppTools(options: {
 				checkedVersion?: string | null;
 			};
 			writable();
-			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const path = `${appFolder(request.name)}/${APP_MANIFEST}`;
-			const stored = await manifestText(path, context.signal);
+			// WHY: Re-read retired.md and app.toml fresh in parallel to preserve APP_CHANGED and retired checks.
+			const [retiredResult, storedResult] = await Promise.allSettled([
+				refuseRetiredApp(folder, request.name, context.signal, "saved"),
+				manifestText(path, context.signal),
+			]);
+			if (retiredResult.status === "rejected") throw retiredResult.reason;
+			if (storedResult.status === "rejected") throw storedResult.reason;
+			const retired = retiredResult.value;
+			const stored = storedResult.value;
 			// The review judged the manifest read in prepare: one made or changed since is not the one it judged.
 			if (
 				request.checkedVersion !== undefined &&

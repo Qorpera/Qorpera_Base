@@ -379,9 +379,8 @@ describe("a member's change set to a folder-v2 company", () => {
 		});
 		expect((restored?.structured as { parse: { name: string } }[])[0]?.parse.name).toBe("Nora A.");
 		expect(plain).toEqual({ op: "write", path: "drafts/scan.pdf", file: scan.file });
-		// Only the state file was read back, its manifest and then its chunk, as the member.
+		// WHY: Single-chunk state file skips manifest download via canonical hash check, reading only its chunk.
 		expect(g.read().map((call) => [call.args.p_sha256, call.args.p_actor])).toEqual([
-			[agent.file.manifestSha256, { kind: "member", userId }],
 			[agent.file.fileSha256, { kind: "member", userId }],
 		]);
 	});
@@ -924,5 +923,128 @@ describe("a member's change set to a folder-v2 company", () => {
 			),
 		).rejects.toMatchObject({ status: 403 });
 		expect(written).toBe(0);
+	});
+
+	it("marks only the discovery object preAuthorized when PlatformFolderWriter.stage runs without profileId", async () => {
+		let manifestText = "";
+		const authorizeHashes: string[] = [];
+		const uploadOptions: Array<{ hash: string; preAuthorized?: boolean }> = [];
+		const writer = new PlatformFolderWriter({
+			authority: {
+				async publisher(method, args) {
+					if (method === "qorpera_folder_open_upload") {
+						manifestText = args.p_manifest as string;
+						return {
+							schema: "qorpera.folder-upload/v1",
+							intentId: "34000000-0000-4000-8000-0000000000f3",
+							manifestSha256: digest(manifestText),
+							present: [],
+						};
+					}
+					if (method === "qorpera_folder_authorize_object_upload") {
+						authorizeHashes.push(String(args.p_sha256));
+						return { schema: "qorpera.folder-object-upload/v1", profileId };
+					}
+					if (method === "qorpera_folder_confirm_object") {
+						return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
+					}
+					if (method === "qorpera_folder_seal_upload") {
+						const parsed = JSON.parse(manifestText);
+						return {
+							schema: "qorpera.folder-seal/v1",
+							state: "sealed",
+							intentId: args.p_intent,
+							file: {
+								manifestSha256: digest(manifestText),
+								fileSha256: parsed.fileSha256,
+								bytes: parsed.bytes,
+								mediaType: parsed.mediaType,
+								executable: parsed.executable,
+							},
+						};
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			},
+			store: {
+				async get() {
+					throw new Error("unused");
+				},
+			},
+			replication: {
+				async uploadWithAuthority(_profile, hash, _bytes, callbacks, _verified, options) {
+					uploadOptions.push({ hash, ...(options?.preAuthorized ? { preAuthorized: true } : {}) });
+					if (!options?.preAuthorized) await callbacks.authorize();
+					await callbacks.confirm();
+					return "stored" as const;
+				},
+			},
+		});
+		const body = new TextEncoder().encode("single authorize without profileId\n");
+		const file = await writer.stage(
+			environmentId,
+			body,
+			{ mediaType: "text/plain", executable: false },
+			new AbortController().signal,
+		);
+		expect(file.fileSha256).toBe(digest(body));
+		expect(authorizeHashes).toHaveLength(2);
+		expect(uploadOptions.filter((entry) => entry.preAuthorized)).toHaveLength(1);
+		expect(uploadOptions.filter((entry) => !entry.preAuthorized)).toHaveLength(1);
+	});
+
+	it("skips manifest fetch in PlatformFolderWriter.read for canonical single-chunk refs and falls back otherwise", async () => {
+		const sample = existing("canonical read fast path\n", "text/plain");
+		const nonCanonicalManifest = new TextEncoder().encode(
+			`${JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v2",
+				fileSha256: sample.file.fileSha256,
+				bytes: sample.file.bytes,
+				mediaType: "text/plain",
+				executable: false,
+				chunks: [{ sha256: sample.file.fileSha256, bytes: sample.file.bytes }],
+			})} `,
+		);
+		const nonCanonicalHash = digest(nonCanonicalManifest);
+		const objects = new Map(sample.objects);
+		objects.set(nonCanonicalHash, nonCanonicalManifest);
+		const fetched: string[] = [];
+		const writer = new PlatformFolderWriter({
+			authority: {
+				async publisher(method, args) {
+					if (method === "qorpera_folder_authorize_object_download") {
+						const obj = objects.get(String(args.p_sha256));
+						if (!obj) throw new Error("missing object");
+						return { schema: "qorpera.folder-object-download/v1", profileId, bytes: obj.byteLength };
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			},
+			store: {
+				async get(_profile, hash) {
+					fetched.push(hash);
+					const obj = objects.get(hash);
+					if (!obj) throw new Error("Object not found");
+					return obj;
+				},
+			},
+			replication: {
+				async uploadWithAuthority() {
+					throw new Error("unused");
+				},
+			},
+		});
+		const fast = await writer.read(environmentId, sample.file, 64 * 1024, new AbortController().signal);
+		expect(new TextDecoder().decode(fast)).toBe("canonical read fast path\n");
+		expect(fetched).toEqual([sample.file.fileSha256]);
+		fetched.length = 0;
+		const fallback = await writer.read(
+			environmentId,
+			{ ...sample.file, manifestSha256: nonCanonicalHash },
+			64 * 1024,
+			new AbortController().signal,
+		);
+		expect(new TextDecoder().decode(fallback)).toBe("canonical read fast path\n");
+		expect(fetched).toEqual([nonCanonicalHash, sample.file.fileSha256]);
 	});
 });
