@@ -42,6 +42,8 @@ const DRAWER_DEFAULT = 296;
 const DRAWER_MIN = 260;
 const DRAWER_MAX = 560;
 const DRAWER_MAX_SHARE = 0.56;
+const STAGED_NOTE = "Staged change: ";
+const STAGED_OPTION_NOTE = "Staged option: ";
 export const APPROVE_ARM_MS = 4_500;
 
 interface QuotedChangeRef {
@@ -366,6 +368,8 @@ export class SurfaceSessionDrawer {
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
 	#armedApprove: string | undefined;
+	#unfolded: string | undefined;
+	#openChange: string | undefined;
 	#approvable: readonly { readonly sessionId: string; readonly changeIds: readonly string[] }[] = [];
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
@@ -1582,6 +1586,8 @@ export class SurfaceSessionDrawer {
 			look?.kind,
 			look?.accent,
 			this.#armedApprove,
+			this.#unfolded,
+			this.#openChange,
 			ownedNotes,
 		];
 		if (state.unseenNotes[session.id]) store.seeNotes(session.id);
@@ -1768,236 +1774,297 @@ export class SurfaceSessionDrawer {
 		} else if (listed.length && !sessionHeld(session)) {
 			const running = isRunningSession(session);
 			const entries = groupSessionChanges(listed);
-			const hasOpenOptionGroup = entries.some((entry) => entry.kind === "option_group");
-			const changeRows: HTMLElement[] = [];
-			const flushChangeRows = (): void => {
-				if (changeRows.length === 0) return;
-				parts.push(h("div", { class: "surface-drawer-changes" }, ...changeRows.splice(0)));
-			};
-			for (const entry of entries) {
-				if (entry.kind === "option_group") {
-					flushChangeRows();
-					const { group } = entry;
-					const pickedId = store.pickedOption(session, group.key);
-					const busyGroup = Boolean(store.state.busy[`option-group:${optionGroupId(session.id, group.key)}`]);
-					const discardArmed = this.#armedApprove === `discard-group:${session.id}:${group.key}`;
-					parts.push(
-						h(
-							"div",
-							{
-								class: "surface-drawer-changes is-options",
-								role: "group",
-								"aria-label": group.title ?? session.title,
-								"data-option-group": group.key,
-							},
-							group.title ? h("div", { class: "surface-drawer-option-group-title" }, group.title) : null,
-							...group.options.map((option) => {
-								const checked = option.id === pickedId;
-								const line = option.summary.trim();
-								return h(
-									"div",
+			const optionGroups = entries.flatMap((entry) => (entry.kind === "option_group" ? [entry.group] : []));
+			const regularChanges = entries.flatMap((entry) => (entry.kind === "change" ? [entry.change] : []));
+			const hasOpenOptionGroup = optionGroups.length > 0;
+			for (const group of optionGroups) {
+				const pickedId = store.pickedOption(session, group.key);
+				const busyGroup = Boolean(store.state.busy[`option-group:${optionGroupId(session.id, group.key)}`]);
+				const discardArmed = this.#armedApprove === `discard-group:${session.id}:${group.key}`;
+				parts.push(
+					h(
+						"div",
+						{
+							class: "surface-drawer-changes is-options",
+							role: "group",
+							"aria-label": group.title ?? session.title,
+							"data-option-group": group.key,
+						},
+						group.title ? h("div", { class: "surface-drawer-option-group-title" }, group.title) : null,
+						...group.options.map((option) => {
+							const checked = option.id === pickedId;
+							const line = option.summary.trim();
+							return h(
+								"div",
+								{
+									class: `surface-drawer-change is-option${checked ? " is-picked" : ""}`,
+									"data-change": option.id,
+								},
+								h(
+									"button",
 									{
-										class: `surface-drawer-change is-option${checked ? " is-picked" : ""}`,
+										type: "button",
+										class: "surface-drawer-option-row",
+										"aria-pressed": String(checked),
+										title: checked ? t("Click again to unselect") : t("Preview this option"),
+										"data-act": "pick-option",
+										"data-session": session.id,
+										"data-option-group": group.key,
 										"data-change": option.id,
 									},
+									h("span", { class: "surface-radio", "aria-hidden": "true" }),
+									h(
+										"span",
+										{ class: "surface-overview-option-copy" },
+										h("span", { class: "surface-drawer-change-title" }, option.title),
+										line ? h("span", { class: "surface-overview-option-line" }, line) : null,
+									),
+								),
+								checked && !running
+									? h(
+											"div",
+											{ class: "surface-drawer-change-acts" },
+											h(
+												"button",
+												{
+													type: "button",
+													class: "surface-change-btn is-approve surface-approve-btn",
+													disabled: busyGroup,
+													"data-act": "choose-option",
+													"data-session": session.id,
+													"data-change": option.id,
+												},
+												t("Use this one"),
+											),
+											h(
+												"button",
+												{
+													type: "button",
+													class: "surface-change-btn",
+													"data-act": "quote-change",
+													"data-session": session.id,
+													"data-change": option.id,
+													"data-change-title": option.title,
+												},
+												t("Change"),
+											),
+											h(
+												"button",
+												{
+													type: "button",
+													class: `surface-change-btn is-muted${discardArmed ? " is-danger" : ""}`,
+													disabled: busyGroup,
+													"data-act": "discard-option-group-armed",
+													"data-session": session.id,
+													"data-option-group": group.key,
+													...(discardArmed ? { "data-armed": "true" } : {}),
+												},
+												discardArmed ? t("Confirm") : t("Discard"),
+											),
+										)
+									: null,
+							);
+						}),
+						!pickedId && !running
+							? h(
+									"div",
+									{ class: "surface-drawer-change-acts surface-drawer-option-foot" },
 									h(
 										"button",
 										{
 											type: "button",
-											class: "surface-drawer-option-row",
-											"aria-pressed": String(checked),
-											title: checked ? t("Click again to unselect") : t("Preview this option"),
-											"data-act": "pick-option",
+											class: `surface-change-btn is-muted${discardArmed ? " is-danger" : ""}`,
+											disabled: busyGroup,
+											"data-act": "discard-option-group-armed",
 											"data-session": session.id,
 											"data-option-group": group.key,
-											"data-change": option.id,
+											...(discardArmed ? { "data-armed": "true" } : {}),
 										},
-										h("span", { class: "surface-radio", "aria-hidden": "true" }),
-										h(
-											"span",
-											{ class: "surface-overview-option-copy" },
-											h("span", { class: "surface-drawer-change-title" }, option.title),
-											line ? h("span", { class: "surface-overview-option-line" }, line) : null,
-										),
+										discardArmed ? t("Confirm") : t("Discard"),
 									),
-									checked && !running
-										? h(
-												"div",
-												{ class: "surface-drawer-change-acts" },
-												h(
-													"button",
-													{
-														type: "button",
-														class: "surface-change-btn is-approve surface-approve-btn",
-														disabled: busyGroup,
-														"data-act": "choose-option",
-														"data-session": session.id,
-														"data-change": option.id,
-													},
-													t("Use this one"),
-												),
-												h(
-													"button",
-													{
-														type: "button",
-														class: "surface-change-btn",
-														"data-act": "quote-change",
-														"data-session": session.id,
-														"data-change": option.id,
-														"data-change-title": option.title,
-													},
-													t("Change"),
-												),
-												h(
-													"button",
-													{
-														type: "button",
-														class: `surface-change-btn is-muted${discardArmed ? " is-danger" : ""}`,
-														disabled: busyGroup,
-														"data-act": "discard-option-group-armed",
-														"data-session": session.id,
-														"data-option-group": group.key,
-														...(discardArmed ? { "data-armed": "true" } : {}),
-													},
-													discardArmed ? t("Confirm") : t("Discard"),
-												),
-											)
-										: null,
-								);
-							}),
-							!pickedId && !running
-								? h(
-										"div",
-										{ class: "surface-drawer-change-acts surface-drawer-option-foot" },
-										h(
-											"button",
-											{
-												type: "button",
-												class: `surface-change-btn is-muted${discardArmed ? " is-danger" : ""}`,
-												disabled: busyGroup,
-												"data-act": "discard-option-group-armed",
-												"data-session": session.id,
-												"data-option-group": group.key,
-												...(discardArmed ? { "data-armed": "true" } : {}),
-											},
-											discardArmed ? t("Confirm") : t("Discard"),
-										),
-									)
-								: null,
-						),
-					);
-					continue;
-				}
-				const { change } = entry;
-				const open = isOpenChange(change);
-				const shown = store.isChangeShown(change.id);
-				const busyChange = Boolean(store.state.busy[`change:${change.id}`]);
-				const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
-				const summaryText = change.summary.trim();
-				const showSummary = summaryText.length > 0 && summaryText !== change.title.trim();
-				const deliverables = deliverablesByChange.get(change.id) ?? [];
-				changeRows.push(
-					h(
-						"div",
-						{
-							class: `surface-drawer-change${open ? "" : " is-closed"}`,
-							"data-change": change.id,
-						},
-						h(
-							"div",
-							{ class: "surface-drawer-change-top" },
-							open ? null : h("span", { class: "surface-change-mark" }, icon("check")),
-							h(
-								"div",
-								{ class: "surface-drawer-change-copy" },
-								h("span", { class: "surface-drawer-change-title" }, change.title),
-								showSummary ? h("p", { class: "surface-drawer-change-summary" }, summaryText) : null,
-							),
-							!open ? changeTag(change) : null,
-						),
-						this.#focusedDeliverableButtons(look, change, deliverables),
-						open
-							? h(
-									"div",
-									{ class: "surface-drawer-change-acts" },
-									h("button", {
-										type: "button",
-										class: "surface-switch",
-										role: "switch",
-										"aria-checked": String(shown),
-										"aria-label": t("Show {title} in the preview", { title: change.title }),
-										"data-act": "toggle",
-										"data-change": change.id,
-									}),
-									...(running
-										? []
-										: [
-												h(
-													"button",
-													{
-														type: "button",
-														class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
-														"data-act": "approve",
-														"data-change": change.id,
-														...(armed ? { "data-armed": "true" } : {}),
-														disabled: busyChange,
-													},
-													approveLabel(t("Approve"), armed),
-												),
-												h(
-													"button",
-													{
-														type: "button",
-														class: "surface-change-btn",
-														"data-act": "quote-change",
-														"data-session": session.id,
-														"data-change": change.id,
-														"data-change-title": change.title,
-													},
-													t("Change"),
-												),
-												h(
-													"button",
-													{
-														type: "button",
-														class: "surface-change-btn is-muted",
-														"data-act": "discard-change",
-														"data-change": change.id,
-														disabled: busyChange,
-													},
-													t("Discard"),
-												),
-											]),
 								)
 							: null,
 					),
 				);
 			}
-			flushChangeRows();
-			const open = session.changes.filter(isOpenChange).length;
-			const armedAll = this.#armedApprove === `approve-all:${session.id}`;
-			if (!running && open > 1)
-				parts.push(
-					h(
-						"div",
-						{ class: "surface-drawer-actions" },
-						!hasOpenOptionGroup
-							? h(
-									"button",
-									{
-										type: "button",
-										class: `btn btn-small surface-approve-btn${armedAll ? " is-confirming" : ""}`,
-										"data-act": "approve-all",
-										...(armedAll ? { "data-armed": "true" } : {}),
-									},
-									approveLabel(t("Approve all {count}", { count: open }), armedAll),
-								)
-							: null,
-						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard all")),
-					),
-				);
+			if (regularChanges.length > 0)
+				parts.push(this.#changesBox(session, regularChanges, look, deliverablesByChange, hasOpenOptionGroup));
 		}
 		return parts;
+	}
+
+	#changesBox(
+		session: SurfaceSession,
+		listed: readonly SurfaceChangeUnit[],
+		look: SurfaceLook | undefined,
+		deliverablesByChange: ReadonlyMap<string, readonly SurfaceChangeDeliverable[]>,
+		hasOpenOptionGroup: boolean,
+	): HTMLElement {
+		const running = isRunningSession(session);
+		const unfolded = this.#unfolded === session.id;
+		const open = listed.filter(isOpenChange).length;
+		const armedAll = this.#armedApprove === `approve-all:${session.id}`;
+		const label =
+			open === 1
+				? t("1 change ready")
+				: open > 1
+					? t("{count} changes ready", { count: open })
+					: listed.length === 1
+						? t("1 change")
+						: t("{count} changes", { count: listed.length });
+		const single = listed.length === 1;
+		return h(
+			"div",
+			{ class: `surface-changes${unfolded ? " is-open" : ""}` },
+			h(
+				"div",
+				{ class: "surface-changes-head" },
+				h(
+					"button",
+					{
+						type: "button",
+						class: "surface-changes-toggle",
+						"aria-expanded": String(unfolded),
+						"data-act": "fold-changes",
+					},
+					label,
+				),
+				unfolded && !running && open > 1 && !hasOpenOptionGroup
+					? h(
+							"button",
+							{
+								type: "button",
+								class: `surface-changes-approve surface-approve-btn${armedAll ? " is-confirming" : ""}`,
+								"data-act": "approve-all",
+								...(armedAll ? { "data-armed": "true" } : {}),
+							},
+							approveLabel(t("Approve all"), armedAll),
+						)
+					: null,
+				h(
+					"button",
+					{
+						type: "button",
+						class: "icon-button surface-changes-fold",
+						"aria-label": unfolded ? t("Hide the changes") : t("Show the changes"),
+						"aria-expanded": String(unfolded),
+						"data-act": "fold-changes",
+					},
+					icon("chevron-down"),
+				),
+			),
+			...(unfolded
+				? listed.map((change) =>
+						this.#changeRow(
+							session,
+							change,
+							look,
+							deliverablesByChange.get(change.id) ?? [],
+							single || this.#openChange === change.id,
+							single,
+							running,
+						),
+					)
+				: []),
+		);
+	}
+
+	#changeRow(
+		session: SurfaceSession,
+		change: SurfaceChangeUnit,
+		look: SurfaceLook | undefined,
+		deliverables: readonly SurfaceChangeDeliverable[],
+		expanded: boolean,
+		single: boolean,
+		running: boolean,
+	): HTMLElement {
+		const store = this.#store;
+		const open = isOpenChange(change);
+		const busyChange = Boolean(store.state.busy[`change:${change.id}`]);
+		const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+		const summaryText = change.summary.trim();
+		const showSummary = expanded && summaryText.length > 0 && summaryText !== change.title.trim();
+		const title = h("span", { class: "surface-drawer-change-title" }, change.title);
+		return h(
+			"div",
+			{
+				class: `surface-drawer-change${open ? "" : " is-closed"}${expanded ? " is-expanded" : ""}`,
+				"data-change": change.id,
+			},
+			h(
+				"div",
+				{ class: "surface-drawer-change-top" },
+				open
+					? h("button", {
+							type: "button",
+							class: "surface-switch",
+							role: "switch",
+							"aria-checked": String(store.isChangeShown(change.id)),
+							"aria-label": t("Show {title} in the preview", { title: change.title }),
+							"data-act": "toggle",
+							"data-change": change.id,
+						})
+					: h("span", { class: "surface-change-mark" }, icon("check")),
+				single
+					? h("div", { class: "surface-drawer-change-row" }, title, open ? null : changeTag(change))
+					: h(
+							"button",
+							{
+								type: "button",
+								class: "surface-drawer-change-row",
+								"aria-expanded": String(expanded),
+								"data-act": "open-change",
+								"data-change": change.id,
+							},
+							title,
+							open ? null : changeTag(change),
+							h("span", { class: "surface-drawer-change-arrow", "aria-hidden": "true" }, icon("chevron-down")),
+						),
+			),
+			showSummary ? h("p", { class: "surface-drawer-change-summary" }, summaryText) : null,
+			expanded ? this.#focusedDeliverableButtons(look, change, deliverables) : null,
+			expanded && open && !running
+				? h(
+						"div",
+						{ class: "surface-drawer-change-acts" },
+						h(
+							"button",
+							{
+								type: "button",
+								class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
+								"data-act": "approve",
+								"data-change": change.id,
+								...(armed ? { "data-armed": "true" } : {}),
+								disabled: busyChange,
+							},
+							approveLabel(t("Approve"), armed),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-change-btn is-quiet",
+								"data-act": "quote-change",
+								"data-session": session.id,
+								"data-change": change.id,
+								"data-change-title": change.title,
+							},
+							t("Change"),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-change-btn is-quiet is-muted",
+								"data-act": "discard-change",
+								"data-change": change.id,
+								disabled: busyChange,
+							},
+							t("Discard"),
+						),
+					)
+				: null,
+		);
 	}
 
 	#setPinned(parts: readonly HTMLElement[]): void {
@@ -2013,6 +2080,12 @@ export class SurfaceSessionDrawer {
 		const parts: HTMLElement[] = [];
 		if (session.messages.length > 0) {
 			for (const message of session.messages) {
+				if (
+					message.authorKind === "system" &&
+					message.changeId &&
+					(message.text.startsWith(STAGED_NOTE) || message.text.startsWith(STAGED_OPTION_NOTE))
+				)
+					continue;
 				const attached =
 					message.authorKind === "member" ? sent.find((item) => item.messageId === message.id) : undefined;
 				let images: HTMLElement | undefined;
@@ -2180,6 +2253,24 @@ export class SurfaceSessionDrawer {
 				return;
 			case "approve-all":
 				if (sessionId && this.#confirmOrArm(`approve-all:${sessionId}`)) void store.approveAll(sessionId);
+				return;
+			case "fold-changes":
+				this.#unfolded = this.#unfolded === sessionId ? undefined : sessionId;
+				this.#redraw();
+				this.#pinned
+					.querySelector<HTMLElement>(
+						target.classList.contains("surface-changes-fold")
+							? ".surface-changes-fold"
+							: ".surface-changes-toggle",
+					)
+					?.focus({ preventScroll: true });
+				return;
+			case "open-change":
+				this.#openChange = this.#openChange === change ? undefined : change;
+				this.#redraw();
+				[...this.#pinned.querySelectorAll<HTMLElement>('[data-act="open-change"]')]
+					.find((row) => row.dataset.change === change)
+					?.focus({ preventScroll: true });
 				return;
 			case "approve-shown":
 				if (surfaceId && this.#confirmOrArm(`approve-shown:${surfaceId}`))
