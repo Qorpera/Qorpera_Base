@@ -26,6 +26,8 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FUSE = ["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN", "--security-opt", "apparmor=unconfined"];
 /** The target directory scripts/build-folder-program.mjs builds the recorded program in. */
 const TARGET = "/tmp/target";
+// WHY: cargo test uses a sibling target subdir so its .cargo-lock does not serialize against the concurrent release build.
+const TEST_TARGET = `${TARGET}/test`;
 /** A runner's volume unused this long is removed; so is a run's own volume that a killed run left behind a day ago. */
 const RUNNER_DAYS = 2;
 const LEFTOVER_DAYS = 1;
@@ -143,14 +145,14 @@ export async function folderProgramStep({
 	const runner = cacheRunner(status, user);
 	const target = runner ? `qorpera-folder-target-${runner}` : `qorpera-folder-target-run-${now}-${process.pid}`;
 	const out = `qorpera-folder-out-${now}-${process.pid}`;
-	const rust = (script, extra = []) => [
+	const rust = (script, extra = [], targetDir = TARGET) => [
 		"run",
 		"--rm",
 		"--label",
 		`${LABEL}=${target}`,
 		...extra,
 		"-e",
-		`CARGO_TARGET_DIR=${TARGET}`,
+		`CARGO_TARGET_DIR=${targetDir}`,
 		"-v",
 		"qorpera-cargo-registry:/usr/local/cargo/registry",
 		"-v",
@@ -202,7 +204,7 @@ export async function folderProgramStep({
 		console.log(`== folder-program: compiled crates in ${target} ${state} (key ${key.slice(0, 12)})`);
 		// The tests' output waits in a file and is printed after the build's, as run-on-node-plan.mjs's `beside` does.
 		const testLog = openSync(join(work, "tests.log"), "w");
-		const tested = run(docker, rust(TEST, [...FUSE, "-e", "QORPERA_FOLDER_FUSE_TESTS=1"]), testLog);
+		const tested = run(docker, rust(TEST, [...FUSE, "-e", "QORPERA_FOLDER_FUSE_TESTS=1"], TEST_TARGET), testLog);
 		let built = (await run(docker, rust(BUILD, ["-v", `${out}:/out`]))) === 0;
 		let checked = built && (await run(docker, node(CHECK))) === 0;
 		// Kept crates that give other bytes than a clean build would fail a sound record: build again from clean, so the

@@ -76,6 +76,7 @@ const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
  * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNNER_ORCHESTRATOR_WAITING = [
 	"test/company-machine-stream-process.test.ts",
+	"test/company-machine-stream-process-stress.test.ts",
 	"test/company-machine-host.test.ts",
 	"test/lxd-login-gateway.test.ts",
 	"test/orchestrator-wake.test.ts",
@@ -84,10 +85,11 @@ export const RUNNER_ORCHESTRATOR_WAITING = [
 	"test/orchestrator.test.ts",
 ];
 
-/** Runtime test files that spend nearly all their time asleep on timers and child processes, not on CPU: about 127 s
- * of the step's 235 s of file time, 121 s of it asleep (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNTIME_WAITING = [
+	"test/cloud-native-company-runtime.test.ts",
 	"test/cloud-codex-tool-session.test.ts",
+	"test/cloud-coding-guest-agent.test.ts",
+	"test/cloud-claude-box-start.test.ts",
 	"test/shared-vault-secrets.test.ts",
 	"test/cloud-native-transport.test.ts",
 ];
@@ -177,8 +179,8 @@ export const STEPS = [
 		// another step writes meanwhile would dirty the tree, and the build rewrites the built packages other
 		// steps import: alone.
 		alone: [
-			"git init -q && git add -A && git -c user.name=run-on-node -c user.email=run-on-node@invalid commit -qm snapshot",
-			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' npm run build:release --workspace packages/web; built=$?; rm -rf .git; exit $built`,
+			"git init -q && git -c core.compression=0 -c core.looseCompression=0 add -A && git -c core.compression=0 -c core.looseCompression=0 -c user.name=run-on-node -c user.email=run-on-node@invalid commit -qm snapshot",
+			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' node packages/web/scripts/build.mjs --release; built=$?; rm -rf .git; exit $built`,
 		],
 	},
 	{
@@ -193,13 +195,18 @@ export const STEPS = [
 		paths: NOT_WEB_ONLY,
 		commands: [vitest("cloud-client")],
 	},
-	{
-		name: "runtime",
-		why: "every change that is not web-only (runtime-release-train.yml): all tests, then the coding command supervisor; the files that mostly wait run beside the rest",
-		seconds: 154,
+	...[1, 2].map((half) => ({
+		name: `runtime-${half}`,
+		why: `every change that is not web-only (runtime-release-train.yml): half ${half} of runtime tests; the files that mostly wait run beside the rest${half === 1 ? ", then the coding command supervisor" : ""}`,
+		seconds: 78,
 		paths: NOT_WEB_ONLY,
-		commands: [...besideTheRest("runtime", RUNTIME_WAITING, [RUNTIME_GUEST]), vitest("runtime", ` ${RUNTIME_GUEST}`)],
-	},
+		cores: 2.5,
+		workers: 4,
+		commands: [
+			...besideTheRest("runtime", RUNTIME_WAITING, [RUNTIME_GUEST], `${half}/2`),
+			...(half === 1 ? [vitest("runtime", ` ${RUNTIME_GUEST}`)] : []),
+		],
+	})),
 	{
 		name: "scripts",
 		why: "every change that is not web-only: all script tests, packaging and pins included (runtime-release-train.yml, step2-lxd.yml)",
@@ -217,7 +224,8 @@ export const STEPS = [
 		why: "packages/object-gateway",
 		seconds: 30,
 		paths: [/^packages\/object-gateway\//],
-		cores: 0.4,
+		cores: 1,
+		workers: 4,
 		commands: [vitest("object-gateway")],
 	},
 	// runner-orchestrator's tests in two halves, a step each, so a run in parts puts one half on each machine. As one
@@ -419,10 +427,10 @@ function enforceRuntimeBundleOnStep(step) {
 		return {
 			...step,
 			alone: step.alone.map((command) =>
-				command.includes("npm run build:release --workspace packages/web") && !command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1")
+				command.includes("node packages/web/scripts/build.mjs --release") && !command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1")
 					? command.replace(
-							"npm run build:release --workspace packages/web",
-							"QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run build:release --workspace packages/web",
+							"node packages/web/scripts/build.mjs --release",
+							"QORPERA_ENFORCE_RUNTIME_BUNDLE=1 node packages/web/scripts/build.mjs --release",
 						)
 					: command,
 			),

@@ -28,7 +28,8 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const names = (files) => planChanged(files).steps.map((step) => step.name).sort();
 const set = (list) => [...list].sort();
 const ALWAYS = ["lint", "typecheck", "checks"];
-const BASELINE = [...ALWAYS, "cloud-client", "runtime", "scripts"];
+const RUNTIME = ["runtime-1", "runtime-2"];
+const BASELINE = [...ALWAYS, "cloud-client", ...RUNTIME, "scripts"];
 /** runner-orchestrator's tests run in two halves, a step each. */
 const RUNNER_ORCHESTRATOR = ["runner-orchestrator-1", "runner-orchestrator-2"];
 /** These tests run inside run-on-node's own side-by-side runs, which set QORPERA_RUN_CORES_FILE: a script under test
@@ -64,10 +65,10 @@ test("a web-only change runs the always-on checks and the web client, including 
 	const web = [...step.commands, ...step.alone].join("\n");
 	assert.match(web, /typecheck --workspace packages\/web/);
 	// The snapshot and the release build need the tree to themselves.
-	assert.match(step.alone.join("\n"), /git init -q[^]*build:release/);
-	assert.doesNotMatch(step.commands.join("\n"), /git init|build:release/);
-	assert.match(web, /git init -q && git add -A && .*commit -qm snapshot/);
-	assert.match(web, /QORPERA_WEB_CONFIG_JSON='\{"projectUrl"[^']+' npm run build:release --workspace packages\/web; built=\$\?; rm -rf \.git; exit \$built/);
+	assert.match(step.alone.join("\n"), /git init -q[^]*build\.mjs --release/);
+	assert.doesNotMatch(step.commands.join("\n"), /git init|build\.mjs --release/);
+	assert.match(web, /git init -q && git .*add -A && .*commit -qm snapshot/);
+	assert.match(web, /QORPERA_WEB_CONFIG_JSON='\{"projectUrl"[^']+' node packages\/web\/scripts\/build\.mjs --release; built=\$\?; rm -rf \.git; exit \$built/);
 });
 
 test("anything that is not web-only also runs runtime, cloud-client and every script test (the old release train)", () => {
@@ -203,14 +204,20 @@ test("shared configuration and unknown paths run every step", () => {
 
 test("in parts, every step runs in exactly one part, the heaviest work first to the lightest part, in plan order, the most work first", () => {
 	const groupNames = (groups) => groups.map((group) => group.steps.map((step) => step.name));
-	// runner-orchestrator's halves (294 s × 3 cores each) are the heaviest steps, so they go one to each part. A runtime
-	// source change: runtime goes beside one half, without the build; the alone checks and scripts beside the other.
 	const runtime = splitPlan(planChanged(["packages/runtime/src/cloud-identity-recovery-filesystems.ts"]).steps, 2);
-	assert.deepEqual(groupNames(runtime), [
-		["runtime", "runner-orchestrator-1"],
-		["lint", "typecheck", "checks", "cloud-client", "scripts", "runner-orchestrator-2"],
-	]);
-	assert.deepEqual(runtime.map((group) => group.build), [false, true]);
+	assert.deepEqual(
+		runtime.map((group) => group.steps.filter((step) => RUNTIME.includes(step.name)).length),
+		[1, 1],
+	);
+	assert.deepEqual(
+		runtime.map((group) => group.steps.filter((step) => RUNNER_ORCHESTRATOR.includes(step.name)).length),
+		[1, 1],
+	);
+	assert.deepEqual(
+		runtime.flatMap((group) => group.steps.map((step) => step.name)).sort(),
+		set([...BASELINE, ...RUNNER_ORCHESTRATOR]),
+	);
+	assert.deepEqual(runtime.map((group) => group.build), runtime.map((group) => group.steps.some((step) => step.build)));
 	// The full plan in two parts: a half each, and the other steps fill the parts to about the same work, the most first.
 	const full = planChanged(["package-lock.json"]).steps;
 	const two = splitPlan(full, 2);
@@ -259,13 +266,13 @@ test("in parts, the checks' part builds the packages too, though no other step i
 		"packages/web/test/message-erases.test.ts",
 	];
 	const plan = planChanged(files);
-	assert.deepEqual(plan.steps.map((step) => step.name), [...ALWAYS, "web", "cloud-client", "runtime", "scripts"]);
+	assert.deepEqual(plan.steps.map((step) => step.name), [...ALWAYS, "web", "cloud-client", ...RUNTIME, "scripts"]);
 	const parts = splitPlan(plan.steps, 2);
-	assert.deepEqual(parts.map((part) => part.steps.map((step) => step.name)), [
-		["web", "scripts"],
-		["lint", "typecheck", "checks", "cloud-client", "runtime"],
-	]);
-	assert.deepEqual(parts.map((part) => part.build), [true, true]);
+	assert.deepEqual(
+		parts.map((part) => part.steps.filter((step) => RUNTIME.includes(step.name)).length),
+		[1, 1],
+	);
+	assert.deepEqual(parts.map((part) => part.build), parts.map((part) => part.steps.some((step) => step.build)));
 	// Node imports the built packages for these steps; the other vitest steps (runtime, cloud-client and the rest) read
 	// the packages' sources (vitest.base.ts), so a part of only those has no build.
 	assert.deepEqual(STEPS.filter((step) => step.build).map((step) => step.name), ["checks", "web", "scripts", "hosted-db"]);
@@ -726,7 +733,7 @@ function filesUnder(root, directory = root) {
 // in two halves), with the files that then run on their own, each in a vitest of its own.
 for (const [name, stepNames, waiting, alone] of [
 	["runner-orchestrator", RUNNER_ORCHESTRATOR, RUNNER_ORCHESTRATOR_WAITING, []],
-	["runtime", ["runtime"], RUNTIME_WAITING, ["test/cloud-coding-command-guest.test.ts"]],
+	["runtime", RUNTIME, RUNTIME_WAITING, ["test/cloud-coding-command-guest.test.ts"]],
 ]) {
 	test(`${name}'s vitest runs together run every test file of the package exactly once`, () => {
 		const root = join(repositoryRoot, "packages", name);
@@ -741,20 +748,27 @@ for (const [name, stepNames, waiting, alone] of [
 		// These steps, and no other, run the package's vitest.
 		const vitests = (step) => [...step.commands, ...step.alone].join("\n").includes(`cd packages/${name} && node ../../node_modules/vitest/`);
 		assert.deepEqual(STEPS.filter((step) => vitests({ alone: [], ...step })).map((step) => step.name), stepNames);
-		// Halves: the k-th of n steps runs every one of its vitests as --shard=k/n, each with the same arguments as the
-		// other halves' (vitest shards the files those select, by a hash of each path: shards 1/n to n/n run each once).
+		const aloneRuns = [];
 		const shares = stepNames.map((stepName, k) => {
 			const step = STEPS.find((candidate) => candidate.name === stepName);
 			const shard = stepNames.length > 1 ? ` --shard=${k + 1}/${stepNames.length}` : "";
-			return [...step.commands.join("\n").matchAll(/vitest\/dist\/cli\.js --run([^)]*)\)/g)].map(([, args]) => {
+			const sharded = [];
+			for (const [, args] of step.commands.join("\n").matchAll(/vitest\/dist\/cli\.js --run([^)]*)\)/g)) {
+				const trimmed = args.trim();
+				if (alone.includes(trimmed)) {
+					assert.equal(k, 0, `${stepName}: alone file ${trimmed} must only run in first half`);
+					aloneRuns.push(trimmed);
+					continue;
+				}
 				assert.ok(args.endsWith(shard), `${stepName}: ${args}`);
 				const unsharded = args.slice(0, args.length - shard.length);
 				assert.doesNotMatch(unsharded, /--shard/);
-				return unsharded.trim();
-			});
+				sharded.push(unsharded.trim());
+			}
+			return sharded;
 		});
 		for (const share of shares) assert.deepEqual(share, shares[0]);
-		const runs = shares[0];
+		const runs = [...shares[0], ...aloneRuns];
 		// The rest, the files that mostly wait, and each file that runs alone.
 		assert.equal(runs.length, 2 + alone.length);
 		const rest = runs.find((args) => args.startsWith("--exclude "));
@@ -908,7 +922,8 @@ test("planReleaseCheck runs the fast enforced release subset when only derived f
 		"packages/web/src/app/views/thread.ts",
 	]);
 	assert.equal(fallback.derivedOnly, false);
-	assert.ok(fallback.steps.some((step) => step.name === "runtime"));
+	assert.ok(fallback.steps.some((step) => step.name === "runtime-1"));
+	assert.ok(fallback.steps.some((step) => step.name === "runtime-2"));
 	assert.ok(fallback.steps.some((step) => step.name === "runner-orchestrator-1"));
 	assert.ok(
 		fallback.steps
@@ -919,6 +934,6 @@ test("planReleaseCheck runs the fast enforced release subset when only derived f
 	assert.ok(
 		fallback.steps
 			.find((step) => step.name === "web")
-			.alone.some((command) => command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run build:release --workspace packages/web")),
+			.alone.some((command) => command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 node packages/web/scripts/build.mjs --release")),
 	);
 });
