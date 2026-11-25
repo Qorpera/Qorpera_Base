@@ -28,6 +28,8 @@ export { type FoundingIntent, lobbyError, setFoundingIntent };
 
 /** Another founder's edit shows within this long; the table is short-lived and small. */
 const POLL_MS = 2500;
+// WHY: Poll rapidly while founding is actively in flight (company setup or shared-vault login linking) so ready detection does not add 1.25s average wait.
+const ACTIVE_POLL_MS = 500;
 /** While the ChatGPT panel is open, a finished sign-in turns into Ready sooner. */
 const CONNECT_POLL_MS = 1500;
 const CONNECT_GRACE_MS = 8000;
@@ -206,7 +208,13 @@ export class FoundingController {
 		};
 		window.addEventListener("focus", resume, { signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", resume, { signal: this.#lifetime.signal });
-		void this.refresh();
+		// WHY: Hydrate directly from the table just returned by open/update so auto-start and initial render skip a redundant qorpera_read_company_founding round trip.
+		if (intent?.table && intent.table.profileId === profileId) {
+			this.#show(intent.table);
+			this.#schedule();
+		} else {
+			void this.refresh();
+		}
 	}
 
 	get disposed(): boolean {
@@ -254,12 +262,13 @@ export class FoundingController {
 			if (table.start.firstRun !== "queued" || Date.now() - this.#readyAt > FIRST_RUN_WATCH_MS) return;
 		}
 		// A hidden tab does not ask; coming back (visibilitychange) reads at once.
+		const inFlightFounding = (table?.phase === "started" && !table.start?.companyReady) || this.#waitingForLogin;
 		this.#timer = setTimeout(
 			() => {
 				if (document.hidden) this.#schedule();
 				else void this.refresh();
 			},
-			connectOpen || this.#waitingForLogin ? CONNECT_POLL_MS : POLL_MS,
+			inFlightFounding ? ACTIVE_POLL_MS : connectOpen ? CONNECT_POLL_MS : POLL_MS,
 		);
 	}
 
@@ -486,7 +495,10 @@ export class FoundingController {
 		try {
 			const next = await run(table);
 			this.#epoch++;
-			if (next) this.#show(next);
+			if (next) {
+				this.#show(next);
+				this.#schedule();
+			}
 			return true;
 		} catch (error) {
 			if (this.disposed) return false;

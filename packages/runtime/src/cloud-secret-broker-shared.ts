@@ -221,6 +221,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
 	#running = new Set<Promise<void>>();
 	readonly #closing = new AbortController();
+	readonly #wake: { subscribe(listener: () => void): () => void } | undefined;
+	#unsubscribeWake: (() => void) | undefined;
+	#wokenRefresh = false;
+	#wakeAgain = false;
 	#started = false;
 	#closed = false;
 
@@ -249,6 +253,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		verifyEveryMs?: number;
 		bankEveryMs?: number;
 		digitalPostEveryMs?: number;
+		wake?: { subscribe(listener: () => void): () => void };
 		now?: () => number;
 	}) {
 		this.#principal = options.principal;
@@ -269,6 +274,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#verifyEveryMs = options.verifyEveryMs ?? 5000;
 		this.#bankEveryMs = options.bankEveryMs ?? 60_000;
 		this.#digitalPostEveryMs = options.digitalPostEveryMs ?? 60_000;
+		this.#wake = options.wake;
 		this.#now = options.now ?? Date.now;
 		const account = this.#account;
 		const helper = this.#helper;
@@ -655,9 +661,42 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		});
 	}
 
+	// WHY: Trigger an immediate company-registration refresh when notified of a new company so account-login linking beats the founding page's grace timer.
+	wake(): void {
+		if (this.#closed || !this.#started) return;
+		if (this.#wokenRefresh) {
+			this.#wakeAgain = true;
+			return;
+		}
+		this.#wokenRefresh = true;
+		const run = (async (): Promise<void> => {
+			try {
+				do {
+					this.#wakeAgain = false;
+					if (this.#closed) return;
+					try {
+						await withAbortScopes([this.#closing.signal], (signal) => this.refresh(signal), DEADLINE_MS);
+					} catch (error: unknown) {
+						if (!this.#closed) {
+							console.error(
+								`Shared vault: a woken refresh failed (class: ${cloudVaultFailureClass(error)}); the next one tries again.`,
+							);
+						}
+					}
+				} while (this.#wakeAgain && !this.#closed);
+			} finally {
+				this.#wokenRefresh = false;
+			}
+		})().finally(() => {
+			this.#running.delete(run);
+		});
+		this.#running.add(run);
+	}
+
 	start(): void {
 		if (this.#started || this.#closed) return;
 		this.#started = true;
+		this.#unsubscribeWake = this.#wake?.subscribe(() => this.wake());
 		this.#loop(
 			() => withAbortScopes([this.#closing.signal], (signal) => this.refresh(signal), DEADLINE_MS),
 			this.#refreshEveryMs,
@@ -713,6 +752,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	 * which the unit's stop timeout waits for. */
 	async close(): Promise<void> {
 		this.#closed = true;
+		this.#unsubscribeWake?.();
+		this.#unsubscribeWake = undefined;
 		this.#closing.abort();
 		for (const timer of this.#timers) clearTimeout(timer);
 		this.#timers.clear();

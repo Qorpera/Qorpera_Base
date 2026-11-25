@@ -135,6 +135,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_code_ops_status_claims_and_lifecycle.sql",
 			"_studio_voice_narration.sql",
 			"_image_generation_gemini_and_gpt.sql",
+			"_instant_founding_hiring_and_wakes.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -167,7 +168,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(166);
+	expect(rows).toHaveLength(167);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

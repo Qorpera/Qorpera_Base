@@ -3123,7 +3123,46 @@ export class CloudCompanyFolderClient {
 		const results = input.units.map((value, index) => unitResult(value, index, units[index]!.op));
 		const seq = input.seq === null ? null : counter(input.seq);
 		if ((seq === null) !== results.every((unit) => unit.outcome !== "saved")) invalid();
-		return { commitId: folderUuid(input.commitId), seq, replay: input.replay, units: results };
+		const commitId = folderUuid(input.commitId);
+		if (
+			method === "qorpera_folder_commit" &&
+			seq !== null &&
+			!input.replay &&
+			results.some((unit, index) => unit.outcome === "saved" && unitNeedsFollowUp(units[index]!))
+		) {
+			await this.#kickFollowUps(commitId, signal);
+		}
+		return { commitId, seq, replay: input.replay, units: results };
+	}
+
+	// WHY: Converge runtime hire/archive/vision follow-up marks immediately after commit instead of waiting for the 10s cron backstop.
+	async #kickFollowUps(commitId: string, signal: AbortSignal): Promise<void> {
+		const deadline = Date.now() + 3_000;
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const remaining = deadline - Date.now();
+			if (signal.aborted || remaining <= 100) return;
+			try {
+				const answer = await this.#control.call(
+					"qorpera_folder_follow_up_run_commit",
+					{
+						p_environment_id: this.#identity.environmentId,
+						p_actor: this.#actor,
+						p_commit_id: commitId,
+					},
+					signal,
+					Math.min(remaining, 3_000),
+				);
+				if (
+					!answer ||
+					typeof answer !== "object" ||
+					Array.isArray(answer) ||
+					(answer as Record<string, unknown>).more !== true
+				)
+					return;
+			} catch {
+				return;
+			}
+		}
 	}
 
 	/** Stages a change set's bytes for one commit (core §3): every unit is checked before any bytes are staged, each
@@ -3332,4 +3371,16 @@ function structured(path: string, bytes: Uint8Array): Record<string, unknown> | 
 	return parsed.ok
 		? { path, kind: where.kind, text, parse: parsed.file, parserVersion: COMPANY_STATE_PARSER_VERSION }
 		: { path, kind: where.kind, problems: parsed.problems };
+}
+
+// WHY: Only commits touching agent roster folders/files or vision.md emit folder follow-up marks that need immediate convergence.
+function unitNeedsFollowUp(unit: CloudCompanyFolderUnit): boolean {
+	if (unit.op === "move" || unit.op === "copy") return false;
+	const path = unit.path.toLowerCase();
+	if (path === "qorperaos/vision/vision.md") return unit.op === "write";
+	if (!path.startsWith("qorperaos/agents/")) return false;
+	const rest = path.slice("qorperaos/agents/".length);
+	if (!rest || rest === "sections.md" || rest === "groups" || rest.startsWith("groups/")) return false;
+	if (!rest.includes("/")) return unit.op === "new_folder" || unit.op === "delete";
+	return rest.endsWith("/agent.md") && rest.indexOf("/") === rest.length - "/agent.md".length;
 }

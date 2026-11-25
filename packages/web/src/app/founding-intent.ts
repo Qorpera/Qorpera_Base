@@ -1,4 +1,5 @@
 import { CloudRpcError, describeError } from "../cloud/client.ts";
+import type { CompanyFounding } from "../cloud/company-founding.ts";
 import { t } from "../ui/preferences.ts";
 
 export interface FoundingIntent {
@@ -7,6 +8,7 @@ export interface FoundingIntent {
 	start?: boolean;
 	founders?: string[];
 	spectators?: string[];
+	table?: CompanyFounding;
 }
 
 const intents = new Map<string, FoundingIntent>();
@@ -19,7 +21,21 @@ function texts(value: unknown): string[] {
 }
 
 export function setFoundingIntent(profileId: string, intent: FoundingIntent): void {
-	if (!intent.friends && !intent.vision && !intent.start && !intent.founders?.length && !intent.spectators?.length) {
+	const persisted = {
+		...(intent.friends ? { friends: true } : {}),
+		...(intent.vision ? { vision: intent.vision } : {}),
+		...(intent.start ? { start: true } : {}),
+		...(intent.founders?.length ? { founders: intent.founders } : {}),
+		...(intent.spectators?.length ? { spectators: intent.spectators } : {}),
+	};
+	if (
+		!persisted.friends &&
+		!persisted.vision &&
+		!persisted.start &&
+		!persisted.founders?.length &&
+		!persisted.spectators?.length &&
+		!intent.table
+	) {
 		intents.delete(profileId);
 		try {
 			sessionStorage.removeItem(intentKey(profileId));
@@ -30,7 +46,8 @@ export function setFoundingIntent(profileId: string, intent: FoundingIntent): vo
 	}
 	intents.set(profileId, intent);
 	try {
-		sessionStorage.setItem(intentKey(profileId), JSON.stringify(intent));
+		if (Object.keys(persisted).length > 0) sessionStorage.setItem(intentKey(profileId), JSON.stringify(persisted));
+		else sessionStorage.removeItem(intentKey(profileId));
 	} catch {
 		return;
 	}

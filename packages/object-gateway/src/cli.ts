@@ -17,6 +17,7 @@ import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
 import { MemoryMessageEraser } from "./memory-message-eraser.ts";
 import { FileSystemObjectStore, resolveObjectStoreLanes } from "./object-store.ts";
+import { RealtimeTopicSubscriber } from "./realtime-wake.ts";
 import { ObjectGatewayReplication } from "./replication.ts";
 import { createObjectGatewayHandler } from "./service.ts";
 import { SupabaseObjectAuthority } from "./supabase-authority.ts";
@@ -252,11 +253,19 @@ const handler = createObjectGatewayHandler({
 	// The connection-file writer's own loop: one drain at a time (its worker id holds at most one claim), at most ten
 	// files and 60 s per tick, so it never holds up the gateway's other maintenance.
 	let writing = false;
+	let writeAgain = false;
 	const writeConnectionFiles = async (): Promise<void> => {
-		if (!connectionFiles || writing || stopping) return;
+		if (!connectionFiles || stopping) return;
+		if (writing) {
+			writeAgain = true;
+			return;
+		}
 		writing = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => connectionFiles.writeDue(10, signal), 60_000);
+			do {
+				writeAgain = false;
+				await withAbortScopes([shutdown.signal], (signal) => connectionFiles.writeDue(10, signal), 60_000);
+			} while (writeAgain && !stopping);
 		} catch {
 			if (!shutdown.signal.aborted) process.stderr.write("Connection file writer requires operator attention\n");
 		} finally {
@@ -269,11 +278,19 @@ const handler = createObjectGatewayHandler({
 	// The coding results writer's own loop, every 5 s (an agent's revival waits up to a minute for the file): one drain at
 	// a time, at most ten files and 30 s per tick.
 	let writingResults = false;
+	let writeResultsAgain = false;
 	const writeCodingResults = async (): Promise<void> => {
-		if (!codingResults || writingResults || stopping) return;
+		if (!codingResults || stopping) return;
+		if (writingResults) {
+			writeResultsAgain = true;
+			return;
+		}
 		writingResults = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => codingResults.writeDue(10, signal), 30_000);
+			do {
+				writeResultsAgain = false;
+				await withAbortScopes([shutdown.signal], (signal) => codingResults.writeDue(10, signal), 30_000);
+			} while (writeResultsAgain && !stopping);
 		} catch {
 			if (!shutdown.signal.aborted) process.stderr.write("Coding results writer requires operator attention\n");
 		} finally {
@@ -336,11 +353,19 @@ const handler = createObjectGatewayHandler({
 	}, 5_000);
 	// Company creation's own loop: one drain at a time, at most five companies and 120 s per tick.
 	let creating = false;
+	let createAgain = false;
 	const createCompanies = async (): Promise<void> => {
-		if (!companyCreation || creating || stopping) return;
+		if (!companyCreation || stopping) return;
+		if (creating) {
+			createAgain = true;
+			return;
+		}
 		creating = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => companyCreation.createDue(5, signal), 120_000);
+			do {
+				createAgain = false;
+				await withAbortScopes([shutdown.signal], (signal) => companyCreation.createDue(5, signal), 120_000);
+			} while (createAgain && !stopping);
 		} catch {
 			if (!shutdown.signal.aborted) process.stderr.write("Company creation worker requires operator attention\n");
 		} finally {
@@ -388,6 +413,23 @@ const handler = createObjectGatewayHandler({
 		}
 	};
 	scheduleSurfaceFolders(SURFACE_FOLDER_IDLE_MS);
+	// WHY: Subscribe to service-role Realtime wakes so company creations, coding results, connection files, and folder surfaces drain immediately while keeping timers as backstops.
+	const hasWakeWorkers = Boolean(companyCreation || codingResults || connectionFiles || surfaceFolderWorker);
+	const gatewayWake = hasWakeWorkers
+		? new RealtimeTopicSubscriber({
+				supabaseUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+				apiKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				...(supabaseCa !== undefined ? { ca: supabaseCa } : {}),
+			})
+		: undefined;
+	gatewayWake?.subscribe("qorpera-object-gateway-wake", (event) => {
+		if (stopping) return;
+		const kind = typeof event?.payload?.kind === "string" ? event.payload.kind : "all";
+		if (kind === "company_creation" || kind === "all") void createCompanies();
+		if (kind === "coding_results" || kind === "all") void writeCodingResults();
+		if (kind === "connection_files" || kind === "all") void writeConnectionFiles();
+		if (kind === "surface_folder" || kind === "all") scheduleSurfaceFolders(0);
+	});
 	server.listen(port(process.env), host, () => {
 		process.stdout.write(`Qorpera object gateway listening on ${host}:${port(process.env)}\n`);
 	});
@@ -397,6 +439,7 @@ const handler = createObjectGatewayHandler({
 			stopping = true;
 			triggerReconcile = undefined;
 			shutdown.abort();
+			gatewayWake?.close();
 			maintenance.stop();
 			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);

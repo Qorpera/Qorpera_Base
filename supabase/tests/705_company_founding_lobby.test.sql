@@ -56,7 +56,7 @@ begin
 			raise exception 'API clients can call %', v_function; end if;
 	end loop;
 	foreach v_function in array array['public.qorpera_company_founding_available()',
-		'public.qorpera_open_company_founding(uuid,text)','public.qorpera_read_company_founding(uuid)',
+		'public.qorpera_open_company_founding(uuid,text,text)','public.qorpera_read_company_founding(uuid)',
 		'public.qorpera_list_company_foundings()','public.qorpera_update_company_founding(uuid,bigint,text,text)',
 		'public.qorpera_invite_company_founder(uuid,uuid)','public.qorpera_respond_company_founding(uuid,boolean)',
 		'public.qorpera_set_founder_role(uuid,bigint,text)','public.qorpera_set_founder_ready(uuid,bigint,boolean)',

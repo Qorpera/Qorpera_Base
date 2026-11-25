@@ -549,7 +549,7 @@ describe("commits", () => {
 		const problems = parseCompanyStateFile("QorperaOS/agents/otto/agent.md", refused);
 		expect(parse?.ok).toBe(true);
 		expect(problems?.ok).toBe(false);
-		expect(calls).toHaveLength(1);
+		expect(calls.map((c) => c.method)).toEqual(["qorpera_folder_commit", "qorpera_folder_follow_up_run_commit"]);
 		expect(calls[0]!.args).toEqual({
 			p_environment_id: expect.any(String),
 			p_actor: expect.objectContaining({ kind: "run" }),
@@ -2828,5 +2828,145 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 			),
 		).rejects.toMatchObject({ failure: "full", category: "budget_exhausted" });
 		expect(abortedSiblings).toBe(2);
+	});
+
+	it("kicks follow-ups after saving hire or vision commits, loops while more remains, and skips normal or replay commits", async () => {
+		const commitId = randomUUID();
+		let followUpCalls = 0;
+		const { client, calls } = fixture((method) => {
+			if (method === "qorpera_folder_commit") {
+				return {
+					schema: "qorpera.folder-commit/v1",
+					commitId,
+					seq: 11,
+					replay: false,
+					units: [
+						{
+							unit: 1,
+							op: "new_folder",
+							path: "QorperaOS/agents/new-hire",
+							outcome: "saved",
+							version: randomUUID(),
+						},
+					],
+				};
+			}
+			if (method === "qorpera_folder_follow_up_run_commit") {
+				followUpCalls++;
+				return {
+					schema: "qorpera.folder-follow-up/v1",
+					result: "done",
+					convergedCount: 1,
+					convergedItems: [],
+					more: followUpCalls === 1,
+				};
+			}
+			throw new Error(`Unexpected RPC ${method}`);
+		});
+		const hireStaged = await client.stage(
+			[
+				{
+					op: "new_folder",
+					path: "QorperaOS/agents/new-hire",
+					contents: [
+						{ path: "agent.md", kind: "file", content: { text: AGENT_TEXT } },
+						{ path: "routines", kind: "folder" },
+						{ path: "todos", kind: "folder" },
+					],
+				},
+			],
+			signal(),
+		);
+		await client.commitStaged("op-hire-kick", hireStaged, {}, signal());
+		expect(calls.map((c) => c.method)).toEqual([
+			"qorpera_folder_commit",
+			"qorpera_folder_follow_up_run_commit",
+			"qorpera_folder_follow_up_run_commit",
+		]);
+		expect(calls[1]!.args).toMatchObject({ p_commit_id: commitId });
+
+		const visionFailure = fixture((method) => {
+			if (method === "qorpera_folder_commit") {
+				return {
+					schema: "qorpera.folder-commit/v1",
+					commitId,
+					seq: 12,
+					replay: false,
+					units: [
+						{
+							unit: 1,
+							op: "write",
+							path: "QorperaOS/vision/vision.md",
+							outcome: "saved",
+							version: randomUUID(),
+						},
+					],
+				};
+			}
+			if (method === "qorpera_folder_follow_up_run_commit") {
+				throw sqlError("57014", "statement timeout");
+			}
+			throw new Error(`Unexpected RPC ${method}`);
+		});
+		const visionStaged = await visionFailure.client.stage(
+			[{ op: "write", path: "QorperaOS/vision/vision.md", content: { text: "# Vision\n" } }],
+			signal(),
+		);
+		await expect(
+			visionFailure.client.commitStaged("op-vision-kick", visionStaged, {}, signal()),
+		).resolves.toMatchObject({
+			commitId,
+			seq: 12,
+		});
+		expect(visionFailure.calls.map((c) => c.method)).toEqual([
+			"qorpera_folder_commit",
+			"qorpera_folder_follow_up_run_commit",
+		]);
+
+		const ordinary = fixture((method) => {
+			if (method === "qorpera_folder_commit") {
+				return {
+					schema: "qorpera.folder-commit/v1",
+					commitId,
+					seq: 13,
+					replay: false,
+					units: [{ unit: 1, op: "write", path: "docs/notes.md", outcome: "saved", version: randomUUID() }],
+				};
+			}
+			throw new Error(`Unexpected RPC ${method}`);
+		});
+		const docStaged = await ordinary.client.stage(
+			[{ op: "write", path: "docs/notes.md", content: { text: "hello" } }],
+			signal(),
+		);
+		await ordinary.client.commitStaged("op-ordinary", docStaged, {}, signal());
+		expect(ordinary.calls.map((c) => c.method)).toEqual(["qorpera_folder_commit"]);
+
+		const replay = fixture((method) => {
+			if (method === "qorpera_folder_commit") {
+				return {
+					schema: "qorpera.folder-commit/v1",
+					commitId,
+					seq: 14,
+					replay: true,
+					units: [
+						{
+							unit: 1,
+							op: "write",
+							path: "QorperaOS/agents/nora/agent.md",
+							outcome: "saved",
+							version: randomUUID(),
+						},
+					],
+				};
+			}
+			throw new Error(`Unexpected RPC ${method}`);
+		});
+		const replayStaged = await replay.client.stage(
+			[{ op: "write", path: "QorperaOS/agents/nora/agent.md", content: { text: AGENT_TEXT } }],
+			signal(),
+		);
+		await replay.client.commitStaged("op-replay", replayStaged, {}, signal());
+		expect(replay.calls.map((c) => c.method)).toEqual(["qorpera_folder_commit"]);
 	});
 });

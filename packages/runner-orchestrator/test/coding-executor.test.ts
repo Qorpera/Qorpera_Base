@@ -2435,4 +2435,77 @@ describe("the coding executor over a preview builder's turn", () => {
 			p_outcome: "none",
 		});
 	});
+
+	it("wakes immediately from turn polling when the coding wake source signals", async () => {
+		vi.useFakeTimers();
+		try {
+			const w = world();
+			let admitted = false;
+			let pollCount = 0;
+			let subscribed!: () => void;
+			const wakeSubscribed = new Promise<void>((resolve) => {
+				subscribed = resolve;
+			});
+			let firstPolled!: () => void;
+			const firstPollDone = new Promise<void>((resolve) => {
+				firstPolled = resolve;
+			});
+			const control = withHook(w.control, (method) => {
+				if (method === "qorpera_begin_coding_turn") admitted = true;
+				if (method === "qorpera_describe_coding_turn" && admitted) {
+					pollCount++;
+					if (pollCount === 1) {
+						w.world.jobStatus = "running";
+						firstPolled();
+					}
+				}
+			});
+			const listeners = new Set<() => void>();
+			const wake = {
+				listening: true,
+				subscribe(listener: () => void) {
+					listeners.add(listener);
+					subscribed();
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+			};
+			const exec = new CloudCodingExecutor({
+				control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 60_000,
+				wake,
+			});
+			const running = exec.runOnce(new AbortController().signal);
+			await wakeSubscribed;
+			await vi.advanceTimersByTimeAsync(0);
+			expect(pollCount).toBe(0);
+
+			for (const listener of listeners) listener();
+			await firstPollDone;
+			await vi.advanceTimersByTimeAsync(0);
+			expect(pollCount).toBe(1);
+
+			w.world.jobStatus = "completed";
+			w.world.submission = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Done fast",
+				headSha,
+				operationKey: "done-fast",
+			};
+			for (const listener of listeners) listener();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(await running).toBe("completed");
+			expect(pollCount).toBe(2);
+			expect(listeners.size).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
