@@ -410,6 +410,173 @@ describe("the home and the two lines of names (app/views/data.ts)", () => {
 	});
 });
 
+describe("find and linked rows (app/views/data.ts)", () => {
+	const ANN = "5a000000-0000-4000-8000-000000000001";
+	const BEA = "5a000000-0000-4000-8000-000000000002";
+	const shop = (can?: readonly string[]) => ({
+		...describedWith(true, {
+			tables: [
+				{
+					name: "orders",
+					kind: "table" as const,
+					key: ["id"],
+					rows: 3,
+					columns: [
+						{ name: "id", type: "integer", settable: false },
+						{ name: "customer_id", type: "uuid", settable: true },
+						{ name: "item", type: "text", settable: true },
+					],
+					references: [{ columns: ["customer_id"], table: "customers", to: ["id"] }],
+				},
+				{
+					name: "customers",
+					kind: "table" as const,
+					key: ["id"],
+					rows: 2,
+					columns: [
+						{ name: "id", type: "uuid", settable: false },
+						{ name: "name", type: "text", settable: true },
+						{ name: "city", type: "text", settable: true },
+					],
+				},
+			],
+			questions: [],
+		}),
+		...(can ? { can } : {}),
+	});
+	const orders = [
+		[1, ANN, "Gazelle"],
+		[2, BEA, "Batavus"],
+		[3, ANN, "Raleigh"],
+	];
+	const customers = [
+		[ANN, "Ann", "Aarhus"],
+		[BEA, "Bea", "Odense"],
+	];
+	const page = (columns: string[], rows: unknown[][]): CloudMemberDataPage => ({
+		columns,
+		key: ["id"],
+		rows: rows.map((values, index) => ({ values, seen: seen(index + 1) })),
+		more: false,
+		etag,
+		asOf,
+	});
+	type Asked = { table: string; find?: string; at?: Record<string, unknown> };
+	const opened = async (can?: readonly string[]) => {
+		const view = await open(shop(can), true, false);
+		const people = customers.map((row) => [...row]);
+		view.calls.rows.mockImplementation(async (asked: Asked) => {
+			if (asked.table === "customers") {
+				const id = asked.at?.id;
+				const ids = id === undefined ? undefined : Array.isArray(id) ? id : [id];
+				return page(["id", "name", "city"], ids ? people.filter((row) => ids.includes(row[0])) : people);
+			}
+			const sought = asked.find?.toLowerCase();
+			return page(
+				["id", "customer_id", "item"],
+				sought === undefined ? orders : orders.filter((row) => String(row[2]).toLowerCase().includes(sought)),
+			);
+		});
+		view.container.querySelector<HTMLButtonElement>(".data-plot[data-table='orders']")?.click();
+		await settle();
+		return { ...view, people };
+	};
+	const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+	it("shows no Find and no linked name until the store says it can", async () => {
+		const { container, calls } = await opened();
+		expect(container.querySelector(".data-find")).toBeNull();
+		expect(container.querySelector(".data-link")).toBeNull();
+		expect(texts(container, ".data-row-head .data-cell")).toEqual(["Item", "Id"]);
+		expect(calls.rows).toHaveBeenCalledTimes(1);
+	});
+
+	it("narrows the list by the text in Find, in the read and in its watch, and gives the whole list back on Escape", async () => {
+		const { container, calls } = await opened(["at", "find"]);
+		const field = container.querySelector<HTMLInputElement>(".data-find-input");
+		expect(field?.getAttribute("aria-label")).toBe("Find in Orders");
+		expect(texts(container, ".data-row-open")).toEqual(["Gazelle", "Batavus", "Raleigh"]);
+		field!.value = " gaz ";
+		field!.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(calls.rows).not.toHaveBeenCalledWith(expect.objectContaining({ find: "gaz" }), expect.anything());
+		await wait(320);
+		await settle();
+		expect(calls.rows).toHaveBeenCalledWith(
+			{ database: "shop", table: "orders", limit: 100, find: "gaz" },
+			expect.anything(),
+		);
+		expect(calls.watchTables).toHaveBeenLastCalledWith(
+			[{ database: "shop", table: "orders", limit: 100, find: "gaz", etag }],
+			expect.anything(),
+		);
+		expect(texts(container, ".data-row-open")).toEqual(["Gazelle"]);
+		expect(container.querySelector(".data-foot")?.textContent).toContain("1 rows");
+		expect(container.querySelector<HTMLInputElement>(".data-find-input")).toBe(field);
+
+		field!.value = "zzz";
+		field!.dispatchEvent(new Event("input", { bubbles: true }));
+		await wait(320);
+		await settle();
+		expect(container.querySelector(".data-none")?.textContent).toBe("Nothing found");
+
+		field!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await settle();
+		expect(field!.value).toBe("");
+		expect(calls.rows).toHaveBeenLastCalledWith({ database: "shop", table: "orders", limit: 100 }, expect.anything());
+		expect(texts(container, ".data-row-open")).toHaveLength(3);
+		expect(container.querySelector(".data-foot")?.textContent).toContain("3 rows");
+	});
+
+	it("shows a column that points at another table as that row's name, peeks at it, and opens it", async () => {
+		const { container, calls, people } = await opened(["at", "find"]);
+		expect(calls.rows).toHaveBeenCalledWith(
+			{ database: "shop", table: "customers", at: { id: [ANN, BEA] }, limit: 200 },
+			expect.anything(),
+		);
+		expect(texts(container, ".data-row-head .data-cell")).toEqual(["Item", "Customer", "Id"]);
+		expect(texts(container, ".data-link")).toEqual(["Ann", "Bea", "Ann"]);
+		expect(calls.rows).toHaveBeenCalledTimes(2);
+		expect(container.querySelector("button button, button [role='link']")).toBeNull();
+		expect(container.querySelectorAll(".data-row.is-linked > .is-lead > button.data-row-open")).toHaveLength(3);
+
+		container.querySelector<HTMLElement>(".data-link")?.click();
+		expect(container.querySelector(".data-thing")).toBeNull();
+		const card = container.querySelector(".data-peek");
+		expect(card?.querySelector(".data-peek-title")?.textContent).toBe("Ann");
+		expect(texts(card!, "dt")).toEqual(["City"]);
+		expect(texts(card!, "dd")).toEqual(["Aarhus"]);
+		card?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(container.querySelector(".data-peek")).toBeNull();
+
+		people[1] = [BEA, "Bea B.", "Odense"];
+		container.querySelectorAll<HTMLElement>(".data-link")[1]?.click();
+		expect(container.querySelector(".data-peek-title")?.textContent).toBe("Bea");
+		button(container, "Open in Customers").click();
+		expect(container.querySelector(".data-thing-title")?.textContent).toBe("Bea");
+		await settle();
+		expect(calls.rows).toHaveBeenCalledWith(
+			{ database: "shop", table: "customers", at: { id: BEA }, limit: 1 },
+			expect.anything(),
+		);
+		expect(container.querySelector(".data-peek")).toBeNull();
+		expect(container.querySelector(".data-thing-title")?.textContent).toBe("Bea B.");
+		button(container, "Customers").click();
+		await settle();
+		expect(container.querySelector(".data-tab[aria-selected='true']")?.textContent).toBe("Customers");
+		expect(texts(container, "button.data-row .is-lead")).toEqual(["Ann", "Bea B."]);
+		button(container, "Orders").click();
+		await settle();
+		expect(texts(container, ".data-link")).toEqual(["Ann", "Bea B.", "Ann"]);
+	});
+
+	it("opens a row with linked names by its first cell, and the names stay their own buttons", async () => {
+		const { container } = await opened(["at", "find"]);
+		container.querySelectorAll<HTMLButtonElement>(".data-row-open")[1]?.click();
+		await settle();
+		expect(container.querySelector(".data-thing-title")?.textContent).toBe("Batavus");
+	});
+});
+
 describe("the list (app/views/data.ts)", () => {
 	it("shows a table's rows under tabs for its tables and its kept questions", async () => {
 		const { container, calls } = await open(describedWith());
