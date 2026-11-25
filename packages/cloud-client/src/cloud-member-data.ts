@@ -421,6 +421,8 @@ function parseTable(value: unknown): CloudMemberDataTable {
 	const columns = table.columns.map((item) => {
 		const column = shapedKeys(item, ["name", "type", "settable"], ["nullable", "default"]);
 		if (!isText(column.name, 200) || !isText(column.type, 1024) || typeof column.settable !== "boolean") invalid();
+		if (column.nullable !== undefined && typeof column.nullable !== "boolean") invalid();
+		if (column.default !== undefined && column.default !== null && !isText(column.default, 4096)) invalid();
 		return { name: column.name, type: column.type, settable: column.settable };
 	});
 	const key = texts(table.key, 200);
@@ -458,6 +460,9 @@ export function parseCloudMemberDataDescription(value: unknown): CloudMemberData
 		if (typeof one.write !== "boolean" || typeof one.list !== "boolean") invalid();
 		if (!Array.isArray(one.questions) || !Array.isArray(one.changes)) invalid();
 		if (!one.list && (one.tables !== undefined || one.applied !== undefined)) invalid();
+		if (one.enums !== undefined && !Array.isArray(one.enums)) invalid();
+		if (one.extensions !== undefined && !Array.isArray(one.extensions)) invalid();
+		if (one.ddlTruncated !== undefined && one.ddlTruncated !== true) invalid();
 		const applied =
 			one.applied === undefined
 				? undefined

@@ -463,10 +463,18 @@ describe("a member's questions to the company's databases", () => {
 				{ ...table, surprise: true },
 				{ ...table, constraints: "none" },
 				{ ...table, columns: [{ ...table.columns[0], surprise: true }] },
+				{ ...table, columns: [{ ...table.columns[0], nullable: 1 }] },
+				{ ...table, columns: [{ ...table.columns[0], default: 0 }] },
+				{ ...table, indexes: {} },
+				{ ...table, viewDefinition: null },
 			]) {
 				const refused = fakeFetch([
 					[200, { ...described, databases: [{ ...described.databases[0], tables: [odd] }] }],
 				]);
+				await expect(client(refused.fetch).data.describe("shop", signal())).rejects.toThrow();
+			}
+			for (const odd of [{ enums: "none" }, { extensions: {} }, { ddlTruncated: "yes" }, { ddlTruncated: false }]) {
+				const refused = fakeFetch([[200, { ...described, databases: [{ ...described.databases[0], ...odd }] }]]);
 				await expect(client(refused.fetch).data.describe("shop", signal())).rejects.toThrow();
 			}
 		});
