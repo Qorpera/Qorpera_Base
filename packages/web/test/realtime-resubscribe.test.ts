@@ -523,22 +523,41 @@ describe("a company's hints by push", () => {
 			// A company's machines (20260930712000): to every member.
 			["broadcast", "machines"],
 			["broadcast", "surfaces"],
+			["broadcast", "activity"],
 		]);
 		made[0]!.status!("SUBSCRIBED");
 		expect(health).toEqual(["connecting", "connected"]);
 		expect(subscription.live()).toBe(true);
 		const fire = (event: string) => made[0]!.bindings.find(([, filter]) => filter.event === event)![2]({ event });
-		for (const event of ["sessions", "staff", "access", "company-file", "member-chats", "machines", "surfaces"])
+		for (const event of [
+			"sessions",
+			"staff",
+			"access",
+			"company-file",
+			"member-chats",
+			"machines",
+			"surfaces",
+			"activity",
+		])
 			fire(event);
-		expect(changes).toEqual(["sessions", "staff", "access", "company-file", "member-chats", "machines", "surfaces"]);
+		expect(changes).toEqual([
+			"sessions",
+			"staff",
+			"access",
+			"company-file",
+			"member-chats",
+			"machines",
+			"surfaces",
+			"activity",
+		]);
 		// The sidebar's hints count from when the sidebar was read, as its own channel did.
 		fire("sidebar");
-		expect(changes).toHaveLength(7);
+		expect(changes).toHaveLength(8);
 		const sidebar = vi.fn();
 		const following = subscription.followSidebar(sidebar);
 		fire("sidebar");
 		expect(sidebar).toHaveBeenCalledTimes(1);
-		expect(changes).toHaveLength(7);
+		expect(changes).toHaveLength(8);
 		expect(following.live()).toBe(true);
 		// No channel of its own while the company's topic carries them.
 		expect(made).toHaveLength(1);
