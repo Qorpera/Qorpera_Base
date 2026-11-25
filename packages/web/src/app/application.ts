@@ -3044,7 +3044,8 @@ export function mountApplication(
 						});
 						return;
 					}
-					mod.renderInterface(el, controller, page, interfaceWrites());
+					const { dataAsk: _surfaceBarAsks, ...writes } = interfaceWrites();
+					mod.renderInterface(el, controller, page, writes);
 				};
 				return {
 					el,
