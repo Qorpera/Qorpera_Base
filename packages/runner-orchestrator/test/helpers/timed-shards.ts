@@ -6,7 +6,6 @@ import { relative } from "node:path";
  * counts as UNLISTED_SECONDS (the other 136 took about 21 s together). A wrong or missing entry costs balance only: shares
  * 1/n to n/n still run every file exactly once. */
 export const TEST_FILE_SECONDS: Readonly<Record<string, number>> = {
-	"test/code-site.test.ts": 70,
 	"test/coding-executor-host.test.ts": 54,
 	"test/company-machine-stream-process-stress.test.ts": 48,
 	"test/company-machine-host.test.ts": 47,
@@ -16,6 +15,7 @@ export const TEST_FILE_SECONDS: Readonly<Record<string, number>> = {
 	"test/code-host-jobs.test.ts": 27,
 	"test/lxd-login-gateway.test.ts": 25,
 	"test/orchestrator-wake.test.ts": 22,
+	"test/code-site.test.ts": 21,
 	"test/code-host-repositories.test.ts": 19,
 	"test/code-import-run.test.ts": 18,
 	"test/company-machine-stream.test.ts": 14,

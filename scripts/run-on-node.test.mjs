@@ -20,6 +20,7 @@ import { join, relative } from "node:path";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+	AUTO_PARTS_MIN_WORK,
 	baseCopyCompare,
 	buildClearCaretakerCloseScript,
 	buildClearSleepMarkerScript,
@@ -37,6 +38,7 @@ import {
 	describeProbes,
 	diskTidyLine,
 	dockerLabelScript,
+	effectiveParts,
 	EXTRA_MEMORY_MIB,
 	EXTRA_PAUSE_SECONDS,
 	EXTRA_PRESSURE,
@@ -2341,7 +2343,72 @@ test("pruneScript reaps orphaned cdgateway/qext containers and diskTidyLine pars
 	assert.match(script, /--filter name=\^cdgateway-/);
 	assert.match(script, /--filter name=\^qext-/);
 	assert.match(script, /docker volume prune -f/);
-	assert.equal(spawnSync("bash", ["-n", "-c", diskTidyLine()]).status, 0);
+	const tidy = diskTidyLine();
+	assert.match(tidy, /date -u -d '-2 hours' \+%Y%m%dT%H%M%S/);
+	assert.match(tidy, /date -u -d '-30 minutes' \+%Y%m%dT%H%M%S/);
+	assert.match(tidy, /docker builder prune -f --filter until=1h/);
+	assert.equal(spawnSync("bash", ["-n", "-c", tidy]).status, 0);
+});
+
+test("effectiveParts defaults large changed plans to 2 parts across healthy open machines while honoring overrides", () => {
+	const idle = (name, extra = {}) => ({
+		name,
+		busy: 0,
+		waiting: 0,
+		quickBusy: 0,
+		quickWaiting: 0,
+		arriving: 0,
+		frontWaiting: 0,
+		keptBusy: 0,
+		extraBusy: 0,
+		closed: false,
+		setUp: true,
+		cpus: 10,
+		diskMiB: 50_000,
+		load: 0.1,
+		...extra,
+	});
+	const probes = [idle("node02"), idle("node01")];
+	const ranked = [{ name: "node02" }, { name: "node01" }];
+	const bigPlan = {
+		steps: [
+			{ name: "lint", commands: [], alone: ["true"], seconds: 0, cores: 1 },
+			{ name: "hosted-db", commands: ["true"], seconds: 100, cores: 2 },
+			{ name: "runtime-1", commands: ["true"], seconds: AUTO_PARTS_MIN_WORK, cores: 1 },
+		],
+	};
+	const smallPlan = {
+		steps: [
+			{ name: "web-1", commands: ["true"], seconds: 35, cores: 1.5 },
+			{ name: "web-2", commands: ["true"], seconds: 35, cores: 1.5 },
+		],
+	};
+	assert.equal(effectiveParts({ requestedParts: null, explicitMachine: false, plan: bigPlan, probes, ranked }), 2);
+	assert.equal(effectiveParts({ requestedParts: 1, explicitMachine: false, plan: bigPlan, probes, ranked }), 1);
+	assert.equal(effectiveParts({ requestedParts: null, explicitMachine: true, plan: bigPlan, probes, ranked }), 1);
+	assert.equal(effectiveParts({ requestedParts: null, explicitMachine: false, plan: smallPlan, probes, ranked }), 1);
+	assert.equal(effectiveParts({ requestedParts: 2, explicitMachine: false, plan: smallPlan, probes, ranked }), 2);
+	assert.equal(
+		effectiveParts({
+			requestedParts: null,
+			explicitMachine: false,
+			plan: bigPlan,
+			probes: [idle("node02", { diskMiB: LOW_DISK_MIB - 1 }), idle("node01")],
+			ranked,
+		}),
+		1,
+	);
+	assert.equal(
+		effectiveParts({
+			requestedParts: null,
+			explicitMachine: false,
+			plan: bigPlan,
+			probes: [idle("node02", { busy: 4 }), idle("node01")],
+			ranked,
+		}),
+		1,
+	);
+	assert.equal(effectiveParts({ requestedParts: null, explicitMachine: false, plan: null, probes, ranked }), 1);
 });
 
 test("vmNameForMachine and shouldWakeStoppedMachines identify wakeable sleeping VMs only when needed", () => {

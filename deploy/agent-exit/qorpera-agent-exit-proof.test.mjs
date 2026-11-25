@@ -8,7 +8,7 @@
 // a proof must never do on a shared test machine is unload a module: `modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge on the machine (3 October, an
 // E2b draft run bare on a test machine did that, not this proof).
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
@@ -27,7 +27,7 @@ const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"
 // Default-on again (E2a): #748 made it opt-in after docker0 vanished on node01's test machine; the cause was an E2b
 // draft run's `modprobe -r br_netfilter` bare on that machine, not this proof (see the header).
 describe("the exit on a stand-in node", { skip: dockerUsable ? false : "needs Linux with Docker" }, () => {
-	test("the root proof passes inside a privileged, network-less container", () => {
+	test("the root proof passes inside a privileged, network-less container", async () => {
 		const image = `qorpera-agent-exit-test:${sha256(DOCKERFILE).slice(0, 12)}`;
 		if (spawnSync("docker", ["image", "inspect", image], { stdio: "ignore" }).status !== 0) {
 			const build = spawnSync("docker", ["build", "-t", image, "-"], { input: DOCKERFILE, encoding: "utf8" });
@@ -46,11 +46,32 @@ describe("the exit on a stand-in node", { skip: dockerUsable ? false : "needs Li
 		// even under nft -c, or a queue socket would load them on the machine's kernel).
 		const queueModules = () => ["nft_queue", "nfnetlink_queue"].filter((name) => existsSync(`/sys/module/${name}`));
 		const modulesBefore = queueModules();
-		const proof = spawnSync(
-			"docker",
-			["run", "--rm", "--privileged", "--network", "none", "-v", `${here}:/w:ro`, image, "bash", "/w/test/proof.sh"],
-			{ encoding: "utf8", timeout: 540_000 },
-		);
+		const runPart = (part) =>
+			new Promise((resolveRun, rejectRun) => {
+				const child = spawn(
+					"docker",
+					["run", "--rm", "--privileged", "--network", "none", "-v", `${here}:/w:ro`, image, "bash", "/w/test/proof.sh", "--part", part],
+					{ stdio: ["ignore", "pipe", "pipe"] },
+				);
+				const timer = setTimeout(() => child.kill("SIGKILL"), 540_000);
+				let stdout = "";
+				let stderr = "";
+				child.stdout.setEncoding("utf8").on("data", (chunk) => {
+					stdout += chunk;
+				});
+				child.stderr.setEncoding("utf8").on("data", (chunk) => {
+					stderr += chunk;
+				});
+				child.on("error", (error) => {
+					clearTimeout(timer);
+					rejectRun(error);
+				});
+				child.on("close", (status) => {
+					clearTimeout(timer);
+					resolveRun({ part, status, stdout, stderr });
+				});
+			});
+		const results = await Promise.all(["core", "names-logs", "brake-lifecycle"].map(runPart));
 		const after = bridges();
 		assert.deepEqual(
 			["docker0", "lxdbr0", "testmach0"].filter((name) => before.has(name) && !after.has(name)),
@@ -62,7 +83,9 @@ describe("the exit on a stand-in node", { skip: dockerUsable ? false : "needs Li
 			[],
 			"the proof loaded a queue module on the machine running it",
 		);
-		assert.equal(proof.status, 0, `${proof.stdout}\n${proof.stderr}`);
-		assert.match(proof.stdout, /ALL PASSED/);
+		for (const proof of results) {
+			assert.equal(proof.status, 0, `[${proof.part}]\n${proof.stdout}\n${proof.stderr}`);
+			assert.match(proof.stdout, /ALL PASSED/, `[${proof.part}]`);
+		}
 	});
 });

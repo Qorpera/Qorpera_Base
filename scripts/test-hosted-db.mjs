@@ -31,18 +31,15 @@ export function checkLocale(line) {
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Without `--only`, the SQL tests run in these databases at the same time, each a fresh copy of the migrated
- * database. A database runs the tests from its first name on, in their usual order, up to the next database's;
- * the five take about the same time (100-125 s each on a test machine, 7 Nov). The tests that keep rows for a later
- * one, 000 and 040 and its readers up to 200, stay in the first, so a test still sees only rows its usual predecessors
- * left. A test connecting to its database again uses `current_database()`, not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "530"],
-	["qorpera_test_3", "685"],
-	["qorpera_test_4", "825"],
-	["qorpera_test_5", "965"],
-	["qorpera_test_6", "1245"],
+	["qorpera_test_2", "508"],
+	["qorpera_test_3", "510"],
+	["qorpera_test_4", "661"],
+	["qorpera_test_5", "786"],
+	["qorpera_test_6", "896"],
+	["qorpera_test_7", "1211"],
+	["qorpera_test_8", "1266"],
 ];
 
 export function compareTestNames(a, b) {
@@ -324,8 +321,6 @@ function startInBackground(script, environment = {}) {
 	});
 }
 
-/** The shared-server scripts that run in a second lane: the longest (about 61 s on a busy test machine) and the
- * one after it (28 s), together about as long as all the others in the first (79 s). */
 const SECOND_LANE = new Set([
 	"scripts/test-folder-core-acceptance.mjs",
 ]);
@@ -471,7 +466,6 @@ async function main() {
 		const testing = performance.now();
 		const databases = splitTests(tests, only);
 		for (const [database] of databases) cluster.create(database);
-		// The scripts that share this PostgreSQL run in turn in two lanes beside the SQL tests, each in a database of its own.
 		if (withScripts)
 			shared = startInTurn(
 				HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name)),
@@ -482,8 +476,12 @@ async function main() {
 		const results = await Promise.allSettled(
 			databases.map(async ([database, part]) => {
 				const since = performance.now();
-				await runSqlTests(cluster, database, part);
-				if (databases.length > 1) process.stdout.write(`${part.length} tests passed on ${database} in ${seconds(since)}\n`);
+				try {
+					await runSqlTests(cluster, database, part);
+					if (databases.length > 1) process.stdout.write(`${part.length} tests passed on ${database} in ${seconds(since)}\n`);
+				} finally {
+					cluster.drop(database);
+				}
 			}),
 		);
 		const errors = results.filter(({ status }) => status === "rejected");
@@ -493,7 +491,6 @@ async function main() {
 			process.stdout.write(
 				`Hosted database checks passed (${migrations} migrations, ${tests.length}${only ? ` of ${all.length}` : ""} tests) in ${seconds(testing)}\n`,
 			);
-		for (const [database] of databases) cluster.drop(database);
 	} finally {
 		// The scripts using this run's PostgreSQL end before it is removed.
 		await reportEach(failed, shared);
