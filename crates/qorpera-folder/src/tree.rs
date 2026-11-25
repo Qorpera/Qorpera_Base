@@ -14,6 +14,7 @@
 
 use crate::proto::{join, split, Authority, Entry, EntryKind};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub const ROOT: u64 = 1;
@@ -55,7 +56,8 @@ struct Node {
 	/// The attributes last seen, to tell a new version of a file from the same one.
 	seen: Attr,
 	/// Lookups the kernel holds (it gives them back with forget).
-	lookups: u64,
+	// WHY: AtomicU64 lets cached lookup and readdirplus increment refcounts under shared Tree read locks instead of write locks.
+	lookups: AtomicU64,
 	/// Named in its parent's cached listing.
 	listed: bool,
 	/// Replaced by a newer version: unreachable by name, attributes frozen.
@@ -115,7 +117,7 @@ impl Tree {
 				parent: ROOT,
 				attr: Some(Attr::root()),
 				seen: Attr::root(),
-				lookups: 1,
+				lookups: AtomicU64::new(1),
 				listed: false,
 				detached: false,
 				removed: false,
@@ -262,7 +264,7 @@ impl Tree {
 							parent: dir,
 							attr: None,
 							seen: attr.clone(),
-							lookups: 0,
+							lookups: AtomicU64::new(0),
 							listed: false,
 							detached: false,
 							removed: false,
@@ -280,7 +282,7 @@ impl Tree {
 				node.seen = attr.clone();
 			}
 			if hold == Some(e.name.as_str()) {
-				node.lookups += 1;
+				*node.lookups.get_mut() += 1;
 			}
 			children.push(Child { name: e.name, ino, attr });
 		}
@@ -327,9 +329,9 @@ impl Tree {
 	}
 
 	/// The kernel looked a node up once more (from a cached listing).
-	pub fn hold(&mut self, ino: u64) -> bool {
-		if let Some(n) = self.nodes.get_mut(&ino) {
-			n.lookups += 1;
+	pub fn hold(&self, ino: u64) -> bool {
+		if let Some(n) = self.nodes.get(&ino) {
+			n.lookups.fetch_add(1, Ordering::Relaxed);
 			true
 		} else {
 			false
@@ -342,8 +344,9 @@ impl Tree {
 			return false;
 		}
 		if let Some(n) = self.nodes.get_mut(&ino) {
-			n.lookups = n.lookups.saturating_sub(count);
-			let dropped = n.lookups == 0;
+			let lookups = n.lookups.get_mut();
+			*lookups = lookups.saturating_sub(count);
+			let dropped = *lookups == 0;
 			self.prune(ino);
 			dropped
 		} else {
@@ -478,7 +481,7 @@ impl Tree {
 				parent: dir,
 				attr: Some(attr.clone()),
 				seen: attr,
-				lookups: 1,
+				lookups: AtomicU64::new(1),
 				listed: false,
 				detached: false,
 				removed: false,
@@ -591,8 +594,8 @@ impl Tree {
 		if ino == ROOT {
 			return;
 		}
-		let Some(n) = self.nodes.get(&ino) else { return };
-		if n.lookups > 0 || n.listed {
+		let Some(n) = self.nodes.get_mut(&ino) else { return };
+		if *n.lookups.get_mut() > 0 || n.listed {
 			return;
 		}
 		let n = self.nodes.remove(&ino).expect("checked above");
@@ -604,7 +607,7 @@ impl Tree {
 
 	#[cfg(test)]
 	fn lookups(&self, ino: u64) -> u64 {
-		self.nodes[&ino].lookups
+		self.nodes[&ino].lookups.load(Ordering::Relaxed)
 	}
 }
 

@@ -2911,9 +2911,33 @@ export class FolderService {
 			files.push({ path: reflog, at: reflog, node: log, expectedVersion: lock.versions.reflog });
 		const units: GitUnit[] = [];
 		const made: { path: string; at: string; version: string }[] = [];
-		for (const file of files) {
-			const version = file.node.version;
-			const staged = await this.#gitStage(view, file.node, file.path);
+		// WHY: Stage independent pending git objects concurrently while preserving exact unit ordering and earliest refusal semantics.
+		const stagedByIndex = new Array<
+			{ readonly version: string; readonly staged: FileRef | undefined; readonly error?: unknown } | undefined
+		>(files.length);
+		let nextIndex = 0;
+		const stageConcurrency = Math.min(4, files.length);
+		await Promise.all(
+			Array.from({ length: stageConcurrency }, async () => {
+				for (;;) {
+					const i = nextIndex++;
+					if (i >= files.length) return;
+					const file = files[i]!;
+					const version = file.node.version;
+					try {
+						const staged = await this.#gitStage(view, file.node, file.path);
+						stagedByIndex[i] = { version, staged };
+					} catch (error) {
+						stagedByIndex[i] = { version, staged: undefined, error };
+					}
+				}
+			}),
+		);
+		for (let i = 0; i < files.length; i++) {
+			const file = files[i]!;
+			const result = stagedByIndex[i]!;
+			if ("error" in result) throw result.error;
+			const staged = result.staged;
 			if (!staged) {
 				if (file.expectedVersion === undefined) continue;
 				throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
@@ -2923,7 +2947,7 @@ export class FolderService {
 					? { op: "write", path: file.path, file: staged }
 					: { op: "write", path: file.path, file: staged, expectedVersion: file.expectedVersion },
 			);
-			made.push({ path: file.path, at: file.at, version });
+			made.push({ path: file.path, at: file.at, version: result.version });
 		}
 		this.#gitHold(view, pending, target);
 		await this.#gitReadGate(view);

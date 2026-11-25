@@ -3,14 +3,15 @@
 //! byte. The relay reads nothing it carries: the node's bridge names the calling machine (this host, by the CID the
 //! kernel reports), and the folder service checks the run's view and its pass, as for any machine.
 
+use crate::mux::{Mux, WorkerPool};
 use crate::transport::{self, Stream};
-use std::io::{self, Read, Write};
+use std::io;
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-const COPY_BUF_BYTES: usize = 128 * 1024;
 const MAX_RELAY_CONNECTIONS: usize = 512;
+const HANDSHAKE_WORKERS: usize = 4;
 
 struct ActiveGuard(Arc<AtomicUsize>);
 
@@ -42,7 +43,10 @@ pub fn run(listener: UnixListener, upstream: &str) -> io::Result<()> {
 }
 
 fn run_with_limit(listener: UnixListener, upstream: &str, max_connections: usize) -> io::Result<()> {
+	// WHY: Multiplex active relay connections on one epoll loop + 4 connect workers instead of 2 OS threads and 256 KiB per connection.
 	let active = Arc::new(AtomicUsize::new(0));
+	let mux = Arc::new(Mux::spawn("relay-mux")?);
+	let pool = WorkerPool::new("relay-conn", HANDSHAKE_WORKERS)?;
 	for local in listener.incoming() {
 		let local = match local {
 			Ok(s) => s,
@@ -60,17 +64,19 @@ fn run_with_limit(listener: UnixListener, upstream: &str, max_connections: usize
 			continue;
 		};
 		let upstream = upstream.to_string();
-		let spawned = std::thread::Builder::new().name("relay".into()).spawn(move || {
-			let _guard = guard;
-			match transport::connect(&upstream) {
-				Ok(remote) => pipe(Stream::Unix(local), remote),
-				// The caller sees its connection end and asks again.
-				Err(e) => eprintln!("qorpera-folder relay: {upstream}: {e}"),
+		let mux = Arc::clone(&mux);
+		pool.submit(move || match transport::connect(&upstream) {
+			Ok(remote) => {
+				if let Err(e) = mux.add(Stream::Unix(local), remote, guard) {
+					eprintln!("qorpera-folder relay: {upstream}: {e}");
+				}
+			}
+			// The caller sees its connection end and asks again.
+			Err(e) => {
+				let _ = local.shutdown(std::net::Shutdown::Both);
+				eprintln!("qorpera-folder relay: {upstream}: {e}");
 			}
 		});
-		if let Err(e) = spawned {
-			eprintln!("qorpera-folder relay: no thread for a connection: {e}");
-		}
 	}
 	Ok(())
 }
@@ -78,59 +84,6 @@ fn run_with_limit(listener: UnixListener, upstream: &str, max_connections: usize
 /// The listening socket itself is unusable: asking again only fails again.
 fn listener_broken(e: &io::Error) -> bool {
 	matches!(e.raw_os_error(), Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK | libc::EOPNOTSUPP | libc::EFAULT))
-}
-
-/// Copies both ways until either side ends, then ends both.
-fn copy_buffered<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
-	let mut buf = vec![0u8; COPY_BUF_BYTES];
-	let mut total = 0u64;
-	loop {
-		let n = match reader.read(&mut buf) {
-			Ok(0) => return Ok(total),
-			Ok(n) => n,
-			Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-			Err(e) => return Err(e),
-		};
-		writer.write_all(&buf[..n])?;
-		total += n as u64;
-	}
-}
-
-fn pipe(local: Stream, remote: Stream) {
-	let (mut from_local, mut into_remote) = match (local.try_clone(), remote.try_clone()) {
-		(Ok(a), Ok(b)) => (a, b),
-		_ => {
-			local.shutdown();
-			remote.shutdown();
-			return;
-		}
-	};
-	let (up_tx, up_rx) = std::sync::mpsc::channel::<()>();
-	let up = std::thread::Builder::new().name("relay-up".into()).spawn(move || {
-		// WHY: Propagate clean EOF with SHUT_WR so half-closed requests keep receiving their in-flight response.
-		if copy_buffered(&mut from_local, &mut into_remote).is_ok() {
-			into_remote.shutdown_write();
-		} else {
-			from_local.shutdown();
-			into_remote.shutdown();
-		}
-		let _ = up_tx.send(());
-	});
-	let (mut from_remote, mut into_local) = (remote, local);
-	if copy_buffered(&mut from_remote, &mut into_local).is_ok() {
-		into_local.shutdown_write();
-		// WHY: Bound teardown when the server closes an idle pooled socket so the up thread does not pin an ActiveGuard slot.
-		if up_rx.recv_timeout(std::time::Duration::from_millis(200)).is_err() {
-			from_remote.shutdown();
-			into_local.shutdown();
-		}
-	} else {
-		from_remote.shutdown();
-		into_local.shutdown();
-	}
-	if let Ok(up) = up {
-		let _ = up.join();
-	}
 }
 
 /// The socket systemd passed (`LISTEN_FDS`, descriptor 3), when it is meant for this process.

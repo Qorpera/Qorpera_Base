@@ -884,9 +884,18 @@ impl Local {
 	/// rename's, a removal's). Nothing waits while they are held but for that lock, so every holder is soon done. They
 	/// go to this program's threads in turn (`turns`), first come first served.
 	fn names(&self) -> Held<'_> {
+		self.names_with(libc::LOCK_EX)
+	}
+
+	// WHY: Read-only local cache walks only need a shared cross-process flock while still serializing on the in-process names mutex.
+	fn names_shared(&self) -> Held<'_> {
+		self.names_with(libc::LOCK_SH)
+	}
+
+	fn names_with(&self, op: libc::c_int) -> Held<'_> {
 		let turn = self.turns.take();
 		let names = self.names.lock().unwrap();
-		let lock = self.names_lock.as_ref().filter(|lock| match crate::viewfile::flock(lock, libc::LOCK_EX) {
+		let lock = self.names_lock.as_ref().filter(|lock| match crate::viewfile::flock(lock, op) {
 			Ok(()) => true,
 			Err(e) => {
 				eprintln!("qorpera-folder: the names are held without their lock ({e})");
@@ -1677,7 +1686,7 @@ impl Local {
 
 	/// The entry for `name` in `up`, from the disk, now known by its inode.
 	pub fn entry(&self, up: Up, name: &str, area: Area) -> Result<FileAttr, i32> {
-		let mut names = self.names();
+		let mut names = self.names_shared();
 		let (disk, area) = self.disk_under(&names, &up, name, area)?;
 		self.known_at(&mut names, up, name, area, &disk)
 	}
@@ -1696,7 +1705,7 @@ impl Local {
 		if let Some(file) = self.handle_of(fh, ino, false) {
 			return file.metadata().map(|m| self.attr(ino, &m)).map_err(errno);
 		}
-		let names = self.names();
+		let names = self.names_shared();
 		let (disk, area) = self.disk_at(&names, ino)?;
 		let meta = fs::symlink_metadata(disk.path()).map_err(errno)?;
 		if self.id(area, &meta) != Ok(ino) {
@@ -1740,7 +1749,7 @@ impl Local {
 	}
 
 	pub fn entries_of_plus(&self, dir: &str, area: Area) -> Vec<(u64, FileType, String, FileAttr)> {
-		let mut names = self.names();
+		let mut names = self.names_shared();
 		let Ok(room) = self.folder(area, &room_in(dir, area), false) else { return Vec::new() };
 		let Ok(read) = fs::read_dir(fd_path(&room)) else { return Vec::new() };
 		let mut out = Vec::new();
@@ -1761,7 +1770,7 @@ impl Local {
 
 	pub fn children_plus(&self, ino: u64) -> Result<Vec<(u64, FileType, String, FileAttr)>, i32> {
 		let mut out = Vec::new();
-		let mut names = self.names();
+		let mut names = self.names_shared();
 		let (disk, area) = self.disk_at(&names, ino)?;
 		let stale = |e: i32| if matches!(e, libc::ENOENT | libc::ENOTDIR | libc::ELOOP) { libc::ESTALE } else { e };
 		let dir = open_dir(&disk.dir, &disk.name).map_err(stale)?;
@@ -1860,7 +1869,7 @@ impl Local {
 
 	/// A local link's target: of the link its name has, checked to be `ino` still (`place_of`).
 	pub fn readlink(&self, ino: u64) -> Result<Vec<u8>, i32> {
-		let names = self.names();
+		let names = self.names_shared();
 		let place = self.place_of(&names, ino)?;
 		drop(names);
 		target_of(&place)
