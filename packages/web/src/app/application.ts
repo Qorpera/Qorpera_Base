@@ -321,7 +321,7 @@ export function mountApplication(
 	const pictures = new MemberPictures(api);
 	setPersonPictures(pictures);
 	// Every company figure shows the company's own logo through this store, once it has one.
-	const logos = new CompanyLogos(api);
+	const logos = new CompanyLogos(api, { scope: cloud.config.projectUrl });
 	setCompanyLogos(logos);
 	const wordmarks = new CompanyWordmarkCache(cloud.config.projectUrl);
 	setCompanyWordmarks(wordmarks);
@@ -859,7 +859,7 @@ export function mountApplication(
 			accountUserId = userId;
 			online.mark();
 			pictures.reset();
-			logos.reset();
+			logos.setAccount(userId, switchingAccount);
 			wordmarks.setAccount(userId, switchingAccount);
 			accountRevision++;
 			routeRevision++;
@@ -1070,6 +1070,7 @@ export function mountApplication(
 		const currentHub = hub;
 		return (profileId) => {
 			if (disposed || hub !== currentHub) return;
+			logos.forget(profileId);
 			wordmarks.forget(profileId);
 			void currentHub.companyRemoved(profileId);
 			const route = currentRoute();
@@ -1351,13 +1352,10 @@ export function mountApplication(
 					stopIdentityTeam();
 				};
 				controller.signal.addEventListener("abort", stopIdentitySync, { once: true });
-				// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
-				// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
-				const syncLogo = controller.store.subscribe(() => {
+				const syncCompanyLogo = () => {
 					const team = controller.store.get().team;
-					if (!team || controller.store.get().accessLost) return;
-					syncLogo();
-					if (!team.capabilities.write) return;
+					if (!team || !team.capabilities.write || controller.store.get().accessLost || controller.signal.aborted)
+						return;
 					const current = () => {
 						if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 							throw new Error(t("Company access changed."));
@@ -1369,6 +1367,16 @@ export function mountApplication(
 							controller.signal,
 						)
 						.catch(() => undefined);
+				};
+				logos.bindIdentity(profile.profileId, surfaces, controller.signal, {
+					disabled: surfacesDisabledOf(controller),
+					onBaseLogoChange: syncCompanyLogo,
+				});
+				const syncLogo = controller.store.subscribe(() => {
+					const team = controller.store.get().team;
+					if (!team || controller.store.get().accessLost) return;
+					syncLogo();
+					syncCompanyLogo();
 				});
 				// On a cloud from before each member's own sidebar (20260930727000), the company's sections are
 				// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
@@ -1625,6 +1633,15 @@ export function mountApplication(
 				navigate({ name: "new" }, true);
 			} else if (route.name === "hub") {
 				renderHub(hub, main, viewer);
+				if (auth.userId && profiles.length > 0) {
+					const userId = auth.userId;
+					void logos.prefetchManyIdentity(
+						profiles.map((profile) => ({
+							profileId: profile.profileId,
+							createFolder: (signal: AbortSignal) => wordmarkFolder(profile, userId, signal),
+						})),
+					);
+				}
 			} else if (route.name === "new") {
 				renderNewCompany(hub, main, viewer);
 			} else if (route.name === "found") {
@@ -3623,7 +3640,7 @@ export function mountApplication(
 		accountPayments?.dispose();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
-		logos.reset();
+		logos.dispose();
 		if (companyLogos() === logos) setCompanyLogos(undefined);
 		wordmarks.dispose();
 		if (companyWordmarks() === wordmarks) setCompanyWordmarks(undefined);

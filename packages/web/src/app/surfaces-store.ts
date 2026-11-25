@@ -3155,6 +3155,12 @@ export class SurfacesStore {
 		}
 	}
 
+	refreshIdentityFiles(): void {
+		if (this.state.source !== "cloud" || !this.#options.loadCloudFiles) return;
+		const identity = findIdentitySurface(this.state);
+		if (identity && !isLocalSurfaceId(identity.id)) void this.refreshCloudFiles(identity);
+	}
+
 	onRealtimeHint(resource: "surfaces" | "company-file"): void {
 		if (this.#options.signal.aborted) return;
 		if (resource === "company-file") this.#pendingHintFiles = true;

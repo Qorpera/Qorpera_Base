@@ -11,6 +11,13 @@ export interface CompanyLogoStore {
 	attach(element: HTMLElement, profileId: string): void;
 	/** What the cloud last said about a company's logo, once it has answered. */
 	logo(profileId: string): CompanyLogo | undefined;
+	hasLogo?(profileId: string): boolean;
+	subscribe?(profileId: string, listener: () => void): () => void;
+	prefetchIdentity?(
+		profileId: string,
+		createFolder: (signal: AbortSignal) => WebMemberFolder,
+		signal?: AbortSignal,
+	): Promise<void>;
 	/** Brings the logo everyone sees in step with the company folder's logo.svg, when the caller may. */
 	sync(profileId: string, folder: () => WebMemberFolder, signal: AbortSignal): Promise<void>;
 	/** Saves a chosen picture as the company's logo. */
@@ -40,7 +47,11 @@ export function attachCompanyLogo(element: HTMLElement, profileId: string): void
 }
 
 /** Lays `url` over a company's figure, or takes the logo away (`undefined`). */
-export function paintCompanyLogo(element: HTMLElement, url: string | undefined): void {
+export function paintCompanyLogo(
+	element: HTMLElement,
+	url: string | undefined,
+	onError?: (failedUrl: string) => void,
+): void {
 	let picture = element.querySelector<HTMLImageElement>(":scope > img.company-logo-picture");
 	if (url) {
 		if (!picture) {
@@ -50,6 +61,7 @@ export function paintCompanyLogo(element: HTMLElement, url: string | undefined):
 			picture.draggable = false;
 			element.append(picture);
 		}
+		picture.onerror = onError ? () => onError(url) : null;
 		if (picture.getAttribute("src") !== url) picture.src = url;
 	} else picture?.remove();
 	element.classList.toggle("has-logo", Boolean(url));

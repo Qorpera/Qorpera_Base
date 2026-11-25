@@ -14,6 +14,7 @@ import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { currentRoute } from "../router.ts";
+import { surfacesOf } from "../surfaces-store.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
 import { FriendsController } from "./friends.ts";
@@ -644,7 +645,15 @@ export class SettingsView {
 					company.store.set(({ profile }) => ({ profile: { ...profile, profileName: name } }));
 					this.#hub.renamed(company.profile.profileId, name);
 				},
+				logoChanged: () => {
+					surfacesOf(company)?.refreshIdentityFiles();
+				},
 			});
+			if (!surfacesOf(company) || !companyLogos()?.hasLogo?.(company.profile.profileId))
+				void companyLogos()
+					?.prefetchIdentity?.(company.profile.profileId, () => folder(), lifetime)
+					.then(() => this.#brand?.update())
+					.catch(() => undefined);
 			if (company.store.get().team?.capabilities.write)
 				void companyLogos()
 					?.sync(company.profile.profileId, folder, lifetime)
