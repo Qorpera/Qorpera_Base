@@ -49,6 +49,7 @@ declare
 	v_c2_sha constant text := repeat('3', 40);
 	v_c3_sha constant text := repeat('4', 40);
 	v_c4_sha constant text := repeat('5', 40);
+	v_c5_sha constant text := repeat('8', 40);
 	v_opt1_sha constant text := repeat('6', 40);
 	v_opt2_sha constant text := repeat('7', 40);
 	v_lease_1 constant uuid := '13840000-0000-4000-8000-000000000101';
@@ -223,6 +224,27 @@ begin
 	set local role service_role;
 	begin
 		perform public.qorpera_native_surface_record_change(
+			v_company, v_code_session, 'Omitted parent while tip discarded', 'Should fail.',
+			'git_range', null, v_c3_sha, '{}'::uuid[], array['index.html'],
+			null, null, false, v_lease_3, null, null
+		);
+		v_err_state := null;
+	exception when others then
+		v_err_state := sqlstate;
+		v_err_msg := sqlerrm;
+	end;
+	reset role;
+	perform pg_temp.sdaa_assert(
+		v_err_state = '22023'
+			and position('parentSha is required while branch tip' in v_err_msg) > 0
+			and position('git read-tree --reset -u ' || v_c1_sha in v_err_msg) > 0,
+		'omitted parentSha while branch tip is discarded is refused when open change remains, got ' || coalesce(v_err_state, 'none') || ': ' || coalesce(v_err_msg, '')
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	begin
+		perform public.qorpera_native_surface_record_change(
 			v_company, v_code_session, 'Accidental rebase onto discarded change', 'Should fail.',
 			'git_range', v_c2_sha, v_c3_sha, '{}'::uuid[], array['index.html'],
 			null, '{"rebase": true}'::jsonb, false, v_lease_3, null, null, v_c1
@@ -277,6 +299,30 @@ begin
 		'coding completion at an already-discarded branch tip does not resurrect the discarded change or overwrite open change'
 	);
 
+	perform pg_temp.sdaa_open_turn(v_code_session, '13840000-0000-4000-8000-00000000010a');
+	v_worker.sequence := 4;
+	perform public.qorpera_surface_sync_coding_completion(
+		v_cs,
+		v_worker,
+		'succeeded',
+		'Committed without calling coding_record_change.',
+		null,
+		null,
+		jsonb_build_array(jsonb_build_object('headSha', v_c5_sha, 'baseSha', v_main_sha))
+	);
+	perform pg_temp.sdaa_assert(
+		(select count(*) from public.qorpera_surface_changes where session_id = v_code_session) = 3
+			and (select head_sha from public.qorpera_surface_changes where id = v_c1) = v_c1_sha
+			and (select branch_head_sha from public.qorpera_surface_sessions where id = v_code_session) = v_c3_sha
+			and exists (
+				select 1 from public.qorpera_surface_session_messages m
+				where m.session_id = v_code_session
+					and m.author_kind = 'system'
+					and m.body like 'Latest commits were not staged automatically%'
+			),
+		'sync fallback does not auto-stage unrecorded commits over a discarded branch tip and keeps branch_head_sha at discarded tip'
+	);
+
 	perform pg_temp.sdaa_as(v_anna);
 	set local role authenticated;
 	perform public.qorpera_set_session_chat_open(v_code_session, true);
@@ -306,9 +352,30 @@ begin
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
+	begin
+		perform public.qorpera_native_surface_record_change(
+			v_company, v_code_session, 'Omitted parent after all discarded', 'Should fail.',
+			'git_range', null, v_c4_sha, '{}'::uuid[], array['index.html'],
+			null, null, false, v_lease_5, null, null
+		);
+		v_err_state := null;
+	exception when others then
+		v_err_state := sqlstate;
+		v_err_msg := sqlerrm;
+	end;
+	reset role;
+	perform pg_temp.sdaa_assert(
+		v_err_state = '22023'
+			and position('parentSha is required while branch tip' in v_err_msg) > 0
+			and position('git reset --hard ' || v_main_sha in v_err_msg) > 0,
+		'omitted parentSha while branch tip is discarded is refused when no open changes remain, got ' || coalesce(v_err_state, 'none') || ': ' || coalesce(v_err_msg, '')
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
 	v_res := public.qorpera_native_surface_record_change(
 		v_company, v_code_session, 'Fresh direction from main', 'Started clean from main.',
-		'git_range', null, v_c4_sha, '{}'::uuid[], array['index.html'],
+		'git_range', v_main_sha, v_c4_sha, '{}'::uuid[], array['index.html'],
 		null, null, false, v_lease_5, null, null
 	);
 	v_c4 := (v_res ->> 'changeId')::uuid;
@@ -318,7 +385,7 @@ begin
 	reset role;
 	perform pg_temp.sdaa_assert(
 		(select parent_sha from public.qorpera_surface_changes where id = v_c4) = v_main_sha,
-		'omitted parentSha falls back to live_head_sha rather than discarded branch_head_sha'
+		'explicit mainSha parentSha succeeds after all prior changes were discarded'
 	);
 
 	perform pg_temp.sdaa_as(v_anna);
@@ -431,7 +498,9 @@ begin
 	reset role;
 
 	insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
-	values (v_company, v_studio_session, 'system', 'Previous attempt failed; retrying automatically.');
+	values
+		(v_company, v_studio_session, 'system', 'Previous attempt failed; retrying automatically.'),
+		(v_company, v_studio_session, 'system', 'Discarded carts should get a reminder.');
 
 	perform pg_temp.sdaa_as(v_anna);
 	set local role authenticated;
@@ -447,8 +516,9 @@ begin
 				< position(E'System:\nDiscarded change: Experimental voice' in (v_turn ->> 'prompt'))
 			and position(E'System:\nDiscarded change: Experimental voice' in (v_turn ->> 'prompt'))
 				< position('Keep the brief and make the voice calmer instead.' in (v_turn ->> 'prompt'))
-			and position('Previous attempt failed' in (v_turn ->> 'prompt')) = 0,
-		'folder surface turn prompt includes discard event chronologically and keeps retry noise out, got ' || coalesce(v_turn ->> 'prompt', 'null')
+			and position('Previous attempt failed' in (v_turn ->> 'prompt')) = 0
+			and position('Discarded carts should get a reminder.' in (v_turn ->> 'prompt')) = 0,
+		'folder surface turn prompt includes discard event chronologically and keeps retry/non-lifecycle system rows out, got ' || coalesce(v_turn ->> 'prompt', 'null')
 	);
 	perform pg_temp.sdaa_assert(
 		jsonb_array_length(v_turn -> 'openChanges') = 1

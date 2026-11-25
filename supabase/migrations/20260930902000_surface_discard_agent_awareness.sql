@@ -169,6 +169,7 @@ $new$			where m.session_id = v_session.id
 					m.author_kind in ('member', 'session')
 					or (
 						m.author_kind = 'system'
+						and (m.change_id is not null or m.author_user_id is not null)
 						and (
 							btrim(m.body) like 'Discarded %'
 							or btrim(m.body) like 'Selected option: %'
@@ -285,6 +286,7 @@ $old$	v_group_key text := nullif(lower(btrim(coalesce(p_option_group_key, ''))),
 	v_result jsonb;
 begin$old$,
 $new$	v_group_key text := nullif(lower(btrim(coalesce(p_option_group_key, ''))), '');
+	v_branch_head_sha text;
 	v_discarded_parent_title text;
 	v_active_target_sha text;
 	v_result jsonb;
@@ -324,6 +326,48 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 		select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id;
 		if p_change_id is null then
 			if v_parent_sha is null then
+				v_branch_head_sha := nullif(btrim(coalesce(v_session.branch_head_sha, '')), '');
+				if v_branch_head_sha is not null
+					and v_branch_head_sha is distinct from nullif(btrim(coalesce(v_session.base_sha, '')), '')
+					and v_branch_head_sha is distinct from nullif(btrim(coalesce(v_surface.live_head_sha, '')), '')
+					and not exists (
+						select 1 from public.qorpera_surface_changes ac
+						where ac.session_id = p_session_id
+							and ac.head_sha = v_branch_head_sha
+							and ac.status in ('staged', 'conflicted', 'merging', 'merged')
+					) then
+					select dc.title into v_discarded_parent_title
+					from public.qorpera_surface_changes dc
+					where dc.session_id = p_session_id
+						and dc.head_sha = v_branch_head_sha
+						and dc.status = 'discarded'
+					order by dc.seq desc
+					limit 1;
+					if v_discarded_parent_title is not null then
+						v_discarded_parent_title := btrim(regexp_replace(left(v_discarded_parent_title, 100), E'[^\\x20-\\x7E\\xC0-\\xFF]+', ' ', 'g'));
+						select nullif(btrim(oc.head_sha), '') into v_active_target_sha
+						from public.qorpera_surface_changes oc
+						where oc.session_id = p_session_id
+							and oc.head_sha is not null
+							and oc.status in ('staged', 'conflicted')
+						order by oc.seq desc
+						limit 1;
+						if v_active_target_sha is not null then
+							raise exception 'parentSha is required while branch tip % is discarded change "%". Reset your working tree with `git read-tree --reset -u %` (keeping HEAD on the branch tip), commit, and pass parentSha "%".',
+								v_branch_head_sha, v_discarded_parent_title, v_active_target_sha, v_active_target_sha
+								using errcode = '22023';
+						else
+							v_active_target_sha := coalesce(
+								nullif(btrim(coalesce(v_surface.live_head_sha, '')), ''),
+								nullif(btrim(coalesce(v_session.base_sha, '')), ''),
+								'main'
+							);
+							raise exception 'parentSha is required while branch tip % is discarded change "%". No open changes remain; check `git log %..HEAD`, run `git reset --hard %`, commit, and pass parentSha "%".',
+								v_branch_head_sha, v_discarded_parent_title, v_active_target_sha, v_active_target_sha, v_active_target_sha
+								using errcode = '22023';
+						end if;
+					end if;
+				end if;
 				if v_group_key is not null then
 					select nullif(btrim(c.parent_sha), '')
 					into v_parent_sha
@@ -341,27 +385,7 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 							where c.session_id = p_session_id and c.head_sha is not null
 								and c.status in ('staged', 'conflicted')
 							order by c.seq desc limit 1),
-						case
-							when nullif(btrim(coalesce(v_session.branch_head_sha, '')), '') is not null
-								and not exists (
-									select 1 from public.qorpera_surface_changes dc
-									where dc.session_id = p_session_id
-										and dc.status = 'discarded'
-										and dc.head_sha = btrim(v_session.branch_head_sha)
-								)
-							then nullif(btrim(coalesce(v_session.branch_head_sha, '')), '')
-							when exists (
-								select 1 from public.qorpera_surface_changes dc
-								where dc.session_id = p_session_id
-									and dc.status = 'discarded'
-									and dc.head_sha = btrim(coalesce(v_session.branch_head_sha, ''))
-							)
-							then coalesce(
-								nullif(btrim(coalesce(v_surface.live_head_sha, '')), ''),
-								nullif(btrim(coalesce(v_session.base_sha, '')), '')
-							)
-							else null
-						end,
+						v_branch_head_sha,
 						nullif(btrim(coalesce(v_session.base_sha, '')), ''),
 						nullif(btrim(coalesce(v_surface.live_head_sha, '')), '')
 					);
@@ -398,7 +422,7 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 			order by dc.seq desc
 			limit 1;
 			if v_discarded_parent_title is not null then
-				v_discarded_parent_title := btrim(regexp_replace(left(v_discarded_parent_title, 120), E'[^\\x20-\\x7E\\xC0-\\xFF]+', ' ', 'g'));
+				v_discarded_parent_title := btrim(regexp_replace(left(v_discarded_parent_title, 100), E'[^\\x20-\\x7E\\xC0-\\xFF]+', ' ', 'g'));
 				select nullif(btrim(oc.head_sha), '') into v_active_target_sha
 				from public.qorpera_surface_changes oc
 				where oc.session_id = p_session_id
@@ -429,6 +453,19 @@ $new$	if coalesce(p_kind, 'git_range') = 'git_range' then
 select pg_temp.sdaa_patch(
 	'public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions,public.qorpera_runtime_workers,text,text,text,jsonb,jsonb)'::regprocedure,
 	array[
+$old$	v_open_git_count integer := 0;
+	v_reply_change_id uuid;$old$,
+$new$	v_open_git_count integer := 0;
+	v_reply_change_id uuid;
+	v_branch_tip_discarded boolean := false;
+	v_sync_head_sha text;$new$,
+$old$		v_base_sha := coalesce(v_base_sha, p_session.base_sha, v_surf_session.base_sha);
+
+		if v_head_sha ~ '^[0-9a-f]{40}$' and v_base_sha ~ '^[0-9a-f]{40}$' then$old$,
+$new$		v_base_sha := coalesce(v_base_sha, p_session.base_sha, v_surf_session.base_sha);
+		v_sync_head_sha := case when v_head_sha ~ '^[0-9a-f]{40}$' then v_head_sha else null end;
+
+		if v_head_sha ~ '^[0-9a-f]{40}$' and v_base_sha ~ '^[0-9a-f]{40}$' then$new$,
 $old$			v_prev_sha := coalesce(nullif(btrim(v_tip_change.head_sha), ''), v_base_sha);
 			if v_head_sha <> v_prev_sha then$old$,
 $new$			v_prev_sha := coalesce(nullif(btrim(v_tip_change.head_sha), ''), v_base_sha);
@@ -438,7 +475,45 @@ $new$			v_prev_sha := coalesce(nullif(btrim(v_tip_change.head_sha), ''), v_base_
 					select 1 from public.qorpera_surface_changes c
 					where c.session_id = v_surf_session.id
 						and c.head_sha = v_head_sha
-				) then$new$
+				) then
+				v_branch_tip_discarded := nullif(btrim(coalesce(v_surf_session.branch_head_sha, '')), '') is not null
+					and btrim(v_surf_session.branch_head_sha) is distinct from v_base_sha
+					and not exists (
+						select 1 from public.qorpera_surface_changes ac
+						where ac.session_id = v_surf_session.id
+							and ac.head_sha = btrim(v_surf_session.branch_head_sha)
+							and ac.status in ('staged', 'conflicted', 'merging', 'merged')
+					)
+					and exists (
+						select 1 from public.qorpera_surface_changes dc
+						where dc.session_id = v_surf_session.id
+							and dc.head_sha = btrim(v_surf_session.branch_head_sha)
+							and dc.status = 'discarded'
+					);$new$,
+$old$				if p_worker.sequence > 1
+					and v_tip_change.id is not null
+					and v_tip_change.status = 'conflicted'
+					and v_open_git_count > 1
+					and not coalesce(v_surf_session.is_internal, false) then$old$,
+$new$				if v_branch_tip_discarded
+					and not coalesce(v_surf_session.is_internal, false) then
+					insert into public.qorpera_surface_session_messages(
+						profile_id, session_id, author_kind, body
+					)
+					values (
+						v_surf_session.profile_id,
+						v_surf_session.id,
+						'system',
+						'Latest commits were not staged automatically because the session branch tip held a discarded change; reset to the active base and record the change explicitly.'
+					);
+					v_sync_head_sha := null;
+				elsif p_worker.sequence > 1
+					and v_tip_change.id is not null
+					and v_tip_change.status = 'conflicted'
+					and v_open_git_count > 1
+					and not coalesce(v_surf_session.is_internal, false) then$new$,
+$old$			case when v_head_sha ~ '^[0-9a-f]{40}$' then v_head_sha else null end,$old$,
+$new$			v_sync_head_sha,$new$
 	]
 );
 

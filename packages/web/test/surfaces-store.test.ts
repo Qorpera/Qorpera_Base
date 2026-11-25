@@ -3552,4 +3552,67 @@ describe("SurfacesStore", () => {
 		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("ready");
 		store.dispose();
 	});
+
+	it("appends localized discard system messages when discarding local interactive option groups", async () => {
+		const store = storeWith(undefined, { companyName: "Thetaband", localInteractive: true });
+		await store.load();
+		const site = await store.createSurface({
+			title: "Website",
+			slug: "website",
+			archetype: "studio",
+			icon: "figure:browser",
+			folderRoot: "surfaces/website",
+		});
+		expect(site).toBeDefined();
+		const surfaceId = site!.id;
+		const localSessionId = "local-session-option-discard";
+		const optA = change(CHANGES[0], 1, "staged", {
+			title: "Editorial",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage direction",
+		});
+		const optB = change(CHANGES[1], 2, "staged", {
+			title: "Showcase",
+			optionGroupKey: "concept",
+			optionGroupTitle: "Homepage direction",
+		});
+		const soloOpt = change(CHANGES[2], 3, "staged", {
+			title: "Minimalist",
+			optionGroupKey: "solo",
+			optionGroupTitle: "Footer tone",
+		});
+		const seeded = session([], {
+			id: localSessionId,
+			surfaceId,
+			changes: [optA, optB, soloOpt],
+			openChangeCount: 3,
+			messages: [],
+		});
+		store.store.set((state) => ({
+			workspaces: {
+				...state.workspaces,
+				[surfaceId]: {
+					...state.workspaces[surfaceId]!,
+					activeSessions: [seeded],
+				},
+			},
+		}));
+
+		expect(await store.discardOptionGroup(localSessionId, "concept")).toBe(true);
+		const afterMulti = store.session(localSessionId);
+		expect(afterMulti?.messages.at(-1)).toMatchObject({
+			authorKind: "system",
+			text: "Discarded options: Editorial, Showcase",
+			changeId: null,
+		});
+
+		expect(await store.discardOptionGroup(localSessionId, "solo")).toBe(true);
+		const afterSolo = store.session(localSessionId);
+		expect(afterSolo?.messages.at(-1)).toMatchObject({
+			authorKind: "system",
+			text: "Discarded option “Minimalist”",
+			changeId: soloOpt.id,
+		});
+		store.dispose();
+	});
 });
