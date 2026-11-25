@@ -256,9 +256,7 @@ insert into p13_deferred values
 	('qorpera_runtime_workers', 'qorpera_runtime_workers_coding_turn_recorded', 'One indexed read of the coding turn; no lock.'),
 	('qorpera_runtime_workers', 'qorpera_runtime_workers_coding_turn_sequence', 'One indexed read of the coding turn; no lock.'),
 	('qorpera_session_inputs', 'qorpera_session_inputs_turn_id_fkey', 'A foreign key to session turns; a plain RI check.'),
-	('qorpera_shared_sessions', 'qorpera_live_hint', 'The live hint (20260930653000): once per company and readers'' class in the transaction, the session by key, the members by key and an insert into realtime.messages, under a 20 ms lock budget with every error caught; a later row of the class is a string search. It never fails or holds the commit.'),
-	('qorpera_wake_occurrences', 'qorpera_activity_hint', 'The activity live hint on queued wake insert (20260930902000): once per company per transaction under a 20 ms lock budget with every error caught.'),
-	('qorpera_wake_occurrences', 'qorpera_activity_hint_status', 'The activity live hint on queued wake cancellation (20260930902000): skips materialization and scan updates; once per company per transaction under a 20 ms lock budget with every error caught.');
+	('qorpera_shared_sessions', 'qorpera_live_hint', 'The live hint (20260930653000): once per company and readers'' class in the transaction, the session by key, the members by key and an insert into realtime.messages, under a 20 ms lock budget with every error caught; a later row of the class is a string search. It never fails or holds the commit.');
 
 do $$
 declare v_list text;

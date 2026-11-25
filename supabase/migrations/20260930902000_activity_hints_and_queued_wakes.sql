@@ -74,15 +74,16 @@ create constraint trigger qorpera_activity_hint
 	when (new.operation = 'message_composition')
 	execute function public.qorpera_activity_hint();
 
-create constraint trigger qorpera_activity_hint
+-- WHY: Use non-deferred triggers on qorpera_wake_occurrences so same-transaction DDL never hits pending trigger events.
+create trigger qorpera_activity_hint
 	after insert on public.qorpera_wake_occurrences
-	deferrable initially deferred for each row
+	for each row
 	when (new.status = 'queued' and new.source_kind <> 'surface-session')
 	execute function public.qorpera_activity_hint();
 
-create constraint trigger qorpera_activity_hint_status
+create trigger qorpera_activity_hint_status
 	after update of status on public.qorpera_wake_occurrences
-	deferrable initially deferred for each row
+	for each row
 	when (old.status = 'queued' and new.status is distinct from 'queued'
 		and new.status is distinct from 'materialized' and new.source_kind <> 'surface-session')
 	execute function public.qorpera_activity_hint();

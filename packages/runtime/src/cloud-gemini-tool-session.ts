@@ -672,7 +672,7 @@ async function generateGeminiContent(options: {
 	};
 	const throwClassifiedHttpError = (
 		status: number,
-		snippet: string,
+		snippet: Uint8Array | undefined,
 		retryAfterHeader: string | null,
 		attempt: number,
 	): number => {
@@ -826,7 +826,12 @@ async function generateGeminiContent(options: {
 								throw error;
 							}
 							if (error instanceof GeminiStreamError) {
-								retryWait = throwClassifiedHttpError(error.status, error.bodyText, null, attempt);
+								retryWait = throwClassifiedHttpError(
+									error.status,
+									new TextEncoder().encode(error.bodyText),
+									null,
+									attempt,
+								);
 							} else if (error instanceof GeminiMalformedResponseError) {
 								failObservation("provider_failed");
 								throw tagNativeRuntimeFailure(error, "native-tools", "provider_failed");

@@ -1445,12 +1445,11 @@ export class CompanyController {
 				const open = this.#openSessionId;
 				const lastParallel =
 					open !== undefined && this.#lastParallelOpenRead?.sessionId === open ? this.#lastParallelOpenRead.at : 0;
-				const lastOpenRead = open ? Math.max(lastParallel, this.#conversationReadAt.get(open)?.any ?? 0) : 0;
 				const parallelOpen =
 					open !== undefined &&
 					(typeof document === "undefined" || document.visibilityState !== "hidden") &&
 					this.#isOpenSessionActive(open) &&
-					Date.now() - lastOpenRead >= OPEN_PARALLEL_COOLDOWN_MS;
+					Date.now() - lastParallel >= OPEN_PARALLEL_COOLDOWN_MS;
 				// WHY: Overlap readSessionEvents with listSessions on active visible threads so agent replies paint in one RTT.
 				if (parallelOpen) {
 					this.#lastParallelOpenRead = { sessionId: open, at: Date.now() };
