@@ -920,7 +920,7 @@ export function identityWordmarkStatus(store: SurfacesStore | undefined, disable
 	if (!store) return "loading";
 	const state = store.state;
 	if (state.source === "loading") return "loading";
-	if (state.source === "local" && state.error) return "loading";
+	if (state.source === "local" && store.fellBackAfterLoadError) return "loading";
 	if (state.source !== "cloud") return "settled";
 	const identity = findIdentitySurface(state);
 	if (!identity) return "settled";
@@ -1563,6 +1563,7 @@ export class SurfacesStore {
 	readonly #binaryReads = new Map<string, { readonly read: Promise<Uint8Array>; readonly bytes: number }>();
 	readonly #reconciliationRequested = new Set<string>();
 	#loaded: Promise<void> | undefined;
+	#fallbackAfterLoadError = false;
 
 	constructor(options: SurfacesStoreOptions) {
 		this.#options = options;
@@ -1659,6 +1660,10 @@ export class SurfacesStore {
 
 	get isLocalInteractive(): boolean {
 		return this.state.source === "local" && this.#options.localInteractive === true;
+	}
+
+	get fellBackAfterLoadError(): boolean {
+		return this.#fallbackAfterLoadError;
 	}
 
 	get companyId(): string {
@@ -1901,12 +1906,14 @@ export class SurfacesStore {
 				const enabled = await client.isSurfacesEnabled();
 				if (this.#options.signal.aborted) return;
 				if (!enabled) {
+					this.#fallbackAfterLoadError = false;
 					this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
 					return;
 				}
 			} catch (error) {
 				if (this.#options.signal.aborted) return;
 				if (isMissingSurfaceRpcError(error) || isSurfacesDisabledError(error)) {
+					this.#fallbackAfterLoadError = false;
 					this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
 					return;
 				}
@@ -1938,10 +1945,14 @@ export class SurfacesStore {
 				}
 			}
 			if (surfaces.length === 0) this.#useLocal();
-			else this.store.set({ source: "cloud", surfaces: sortSurfaces(surfaces) });
+			else {
+				this.#fallbackAfterLoadError = false;
+				this.store.set({ source: "cloud", surfaces: sortSurfaces(surfaces) });
+			}
 		} catch (error) {
 			if (this.#options.signal.aborted) return;
 			if (isSurfacesDisabledError(error)) {
+				this.#fallbackAfterLoadError = false;
 				this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
 				return;
 			}
@@ -1952,6 +1963,7 @@ export class SurfacesStore {
 	}
 
 	#useLocal(error?: string): void {
+		this.#fallbackAfterLoadError = Boolean(error);
 		const cached = this.#options.localInteractive ? localSandboxCache.get(this.#options.companyId) : undefined;
 		if (cached) {
 			localSandboxCache.delete(this.#options.companyId);
@@ -5976,6 +5988,7 @@ export class SurfacesStore {
 		if (!surfaces) return false;
 		this.#surfacesMutationEpoch += 1;
 		const migration = this.state.migration;
+		if (surfaces.length) this.#fallbackAfterLoadError = false;
 		this.store.set({
 			source: surfaces.length ? "cloud" : this.state.source,
 			surfaces: surfaces.length ? sortSurfaces(surfaces) : this.state.surfaces,

@@ -1147,6 +1147,16 @@ describe("sidepanel company selector wordmark", () => {
 		expect(localStorage.getItem(`qorpera.web.company-wordmarks.v1:test-fallback:${userA.id}`)).toContain(
 			profileA.profileId,
 		);
+
+		store.clearError();
+		draw();
+		expect(store.state.error).toBeUndefined();
+		expect(img.hidden).toBe(false);
+		expect(img.getAttribute("src")).toBe(svgUrl(LIGHT_SVG));
+		expect(cache.get(profileA.profileId)?.light).toBe(svgUrl(LIGHT_SVG));
+		expect(localStorage.getItem(`qorpera.web.company-wordmarks.v1:test-fallback:${userA.id}`)).toContain(
+			profileA.profileId,
+		);
 	});
 
 	it("loads identity files once when refreshSurfaces activates a proposed identity surface", async () => {
