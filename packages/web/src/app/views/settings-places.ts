@@ -15,7 +15,7 @@ export const SETTINGS_TABS = [
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff delete leave good will goodwill tax invoices card payment sales rules agent rules auto-review review approval approve ask first allow automatically safety agents actions permissions virksomhed personer medlemmer invitationer agenter roller slet forlad skat fakturaer kort betaling salg regler agentregler godkendelse godkend spørg først tillad automatisk sikkerhed handlinger tilladelser",
+			"brand rename logo company name people team members invitations staff delete leave good will goodwill tax invoices card payment sales rules agent rules auto-review review approval approve ask first allow automatically safety agents actions permissions mærke omdøb virksomhedsnavn virksomhed personer medlemmer invitationer agenter roller slet forlad skat fakturaer kort betaling salg regler agentregler godkendelse godkend spørg først tillad automatisk sikkerhed handlinger tilladelser",
 	},
 	{
 		id: "leaderboard",
@@ -81,6 +81,7 @@ export function settingsPlaces(deletes: boolean): SettingsPlace[] {
 			t("Appearance"),
 		),
 		place("general", goodWillName(), general, "goodwill good will tax skat", goodWillName()),
+		place("company", t("Brand"), company, "brand rename logo company name mærke omdøb virksomhedsnavn"),
 		place(
 			"company",
 			t("Staff at work"),

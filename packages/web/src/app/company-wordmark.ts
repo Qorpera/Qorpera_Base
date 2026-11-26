@@ -21,8 +21,8 @@ import {
 } from "./surfaces-store.ts";
 
 export type CompanyWordmarkAsset =
-	| { readonly kind: "svg"; readonly src: string }
-	| { readonly kind: "binary"; readonly ref: StudioBinaryRef };
+	| { readonly kind: "svg"; readonly src: string; readonly updatedAt?: string }
+	| { readonly kind: "binary"; readonly ref: StudioBinaryRef; readonly updatedAt?: string };
 
 export interface CompanyWordmarks {
 	readonly light?: CompanyWordmarkAsset;
@@ -32,6 +32,11 @@ export interface CompanyWordmarks {
 export interface CachedCompanyWordmarks {
 	readonly light?: string;
 	readonly dark?: string;
+}
+
+interface CachedWordmarkTimestamps {
+	readonly lightAt?: string;
+	readonly darkAt?: string;
 }
 
 export interface WordmarkFolderReader {
@@ -64,7 +69,9 @@ const SAFE_DATA_URL_RE = /^data:image\/(?:svg\+xml;charset=utf-8,|png;base64,|we
 const EMPTY_WORDMARKS: CompanyWordmarks = {};
 const resolvedByIdentity = new WeakMap<CompanyIdentityFiles, CompanyWordmarks>();
 
-type CacheEntry = { readonly kind: "marks"; readonly marks: CachedCompanyWordmarks } | { readonly kind: "none" };
+type CacheEntry =
+	| { readonly kind: "marks"; readonly marks: CachedCompanyWordmarks; readonly timestamps?: CachedWordmarkTimestamps }
+	| { readonly kind: "none" };
 
 interface WordmarkCandidatePaths {
 	readonly lightPaths: readonly string[];
@@ -177,14 +184,28 @@ function isValidCachedUrl(value: unknown): value is string {
 	return typeof value === "string" && value.length <= MAX_STORED_URL_CHARS && SAFE_DATA_URL_RE.test(value);
 }
 
+function isStaleForRename(assetUpdatedAt: string | undefined, nameChangedAt: string | undefined): boolean {
+	if (!nameChangedAt || !assetUpdatedAt) return false;
+	const changedMs = Date.parse(nameChangedAt);
+	const assetMs = Date.parse(assetUpdatedAt);
+	return Number.isFinite(changedMs) && Number.isFinite(assetMs) && assetMs < changedMs;
+}
+
 function readAsset(path: string | undefined, identity: CompanyIdentityFiles): CompanyWordmarkAsset | undefined {
 	if (!path) return undefined;
+	const baseUpdatedAt = identity.updatedAt?.[path];
 	if (SVG_FILE_RE.test(path)) {
-		const src = identity.files[path] ? svgToDataUrl(identity.files[path]) : undefined;
-		if (src) return { kind: "svg", src };
+		const text = identity.files[path];
+		const src = text ? svgToDataUrl(text) : undefined;
+		if (src) {
+			const isStagedOverride = text !== identity.baseFiles[path];
+			return { kind: "svg", src, ...(!isStagedOverride && baseUpdatedAt ? { updatedAt: baseUpdatedAt } : {}) };
+		}
 	}
 	const binary = identity.binaries[path];
-	return binary ? { kind: "binary", ref: binary } : undefined;
+	if (!binary) return undefined;
+	const isStagedOverride = binary.fileSha256 !== identity.baseBinaries[path]?.fileSha256;
+	return { kind: "binary", ref: binary, ...(!isStagedOverride && baseUpdatedAt ? { updatedAt: baseUpdatedAt } : {}) };
 }
 
 function firstAsset(paths: readonly string[], identity: CompanyIdentityFiles): CompanyWordmarkAsset | undefined {
@@ -195,21 +216,30 @@ function firstAsset(paths: readonly string[], identity: CompanyIdentityFiles): C
 	return undefined;
 }
 
-export function resolveCompanyWordmarks(identity: CompanyIdentityFiles | null): CompanyWordmarks {
+export function resolveCompanyWordmarks(
+	identity: CompanyIdentityFiles | null,
+	nameChangedAt?: string,
+): CompanyWordmarks {
 	if (!identity) return EMPTY_WORDMARKS;
-	const cached = resolvedByIdentity.get(identity);
-	if (cached) return cached;
-	const folderRoot = identity.folderRoot.replace(/^\/+|\/+$/g, "");
-	const layoutText =
-		identity.files[folderRoot ? `${folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH] ??
-		(!folderRoot ? identity.files[`identity/${SURFACE_LAYOUT_PATH}`] : undefined);
-	const { lightPaths, darkPaths } = wordmarkCandidatePaths(layoutText, folderRoot);
-	const light = firstAsset(lightPaths, identity);
-	const dark = firstAsset(darkPaths, identity);
-	const result: CompanyWordmarks =
-		light || dark ? { ...(light ? { light } : {}), ...(dark ? { dark } : {}) } : EMPTY_WORDMARKS;
-	resolvedByIdentity.set(identity, result);
-	return result;
+	let resolved = resolvedByIdentity.get(identity);
+	if (!resolved) {
+		const folderRoot = identity.folderRoot.replace(/^\/+|\/+$/g, "");
+		const layoutText =
+			identity.files[folderRoot ? `${folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH] ??
+			(!folderRoot ? identity.files[`identity/${SURFACE_LAYOUT_PATH}`] : undefined);
+		const { lightPaths, darkPaths } = wordmarkCandidatePaths(layoutText, folderRoot);
+		const light = firstAsset(lightPaths, identity);
+		const dark = firstAsset(darkPaths, identity);
+		resolved = light || dark ? { ...(light ? { light } : {}), ...(dark ? { dark } : {}) } : EMPTY_WORDMARKS;
+		resolvedByIdentity.set(identity, resolved);
+	}
+	if (!nameChangedAt) return resolved;
+	const lightStale = isStaleForRename(resolved.light?.updatedAt, nameChangedAt);
+	const darkStale = isStaleForRename(resolved.dark?.updatedAt, nameChangedAt);
+	if (!lightStale && !darkStale) return resolved;
+	const light = lightStale ? undefined : resolved.light;
+	const dark = darkStale ? undefined : resolved.dark;
+	return light || dark ? { ...(light ? { light } : {}), ...(dark ? { dark } : {}) } : EMPTY_WORDMARKS;
 }
 
 export function wordmarkForTheme(
@@ -238,14 +268,20 @@ async function readFolderEntries(
 async function readFolderWordmarks(
 	folder: WordmarkFolderReader,
 	signal: AbortSignal,
-): Promise<CachedCompanyWordmarks | null | undefined> {
+): Promise<
+	{ readonly marks: CachedCompanyWordmarks; readonly timestamps?: CachedWordmarkTimestamps } | null | undefined
+> {
 	const initial = await readFolderEntries(folder, FAST_PROBE_PATHS, signal);
 	if (!initial || signal.aborted) return undefined;
 	const probed = new Set<string>(FAST_PROBE_PATHS);
 	const filesByPath = new Map<string, CloudMemberFolderFile>();
+	const updatedAtByPath = new Map<string, string>();
 	for (let index = 0; index < FAST_PROBE_PATHS.length; index++) {
 		const entry = initial[index]?.entry;
-		if (entry?.kind === "file" && entry.file) filesByPath.set(FAST_PROBE_PATHS[index]!, entry.file);
+		if (entry?.kind === "file" && entry.file) {
+			filesByPath.set(FAST_PROBE_PATHS[index]!, entry.file);
+			if (entry.updatedAt) updatedAtByPath.set(FAST_PROBE_PATHS[index]!, entry.updatedAt);
+		}
 	}
 	const layoutPath = `identity/${SURFACE_LAYOUT_PATH}`;
 	const layoutFile = filesByPath.get(layoutPath);
@@ -272,7 +308,10 @@ async function readFolderWordmarks(
 		if (!extra || signal.aborted) return undefined;
 		for (let index = 0; index < missingPaths.length; index++) {
 			const entry = extra[index]?.entry;
-			if (entry?.kind === "file" && entry.file) filesByPath.set(missingPaths[index]!, entry.file);
+			if (entry?.kind === "file" && entry.file) {
+				filesByPath.set(missingPaths[index]!, entry.file);
+				if (entry.updatedAt) updatedAtByPath.set(missingPaths[index]!, entry.updatedAt);
+			}
 		}
 	}
 	const decodedBySha = new Map<string, string | null>();
@@ -311,18 +350,29 @@ async function readFolderWordmarks(
 			return undefined;
 		}
 	};
-	const pickFirst = async (paths: readonly string[]): Promise<string | undefined> => {
+	const pickFirst = async (paths: readonly string[]): Promise<{ src: string; updatedAt?: string } | undefined> => {
 		for (const path of paths) {
 			const src = await loadDataUrl(path);
 			if (signal.aborted) return undefined;
-			if (src) return src;
+			if (src) return { src, updatedAt: updatedAtByPath.get(path) };
 		}
 		return undefined;
 	};
 	const light = await pickFirst(lightPaths);
 	const dark = await pickFirst(darkPaths);
 	if (signal.aborted) return undefined;
-	return light || dark ? { ...(light ? { light } : {}), ...(dark ? { dark } : {}) } : null;
+	if (!light && !dark) return null;
+	const timestamps: CachedWordmarkTimestamps | undefined =
+		light?.updatedAt || dark?.updatedAt
+			? {
+					...(light?.updatedAt ? { lightAt: light.updatedAt } : {}),
+					...(dark?.updatedAt ? { darkAt: dark.updatedAt } : {}),
+				}
+			: undefined;
+	return {
+		marks: { ...(light ? { light: light.src } : {}), ...(dark ? { dark: dark.src } : {}) },
+		...(timestamps ? { timestamps } : {}),
+	};
 }
 
 export class CompanyWordmarkCache {
@@ -373,6 +423,26 @@ export class CompanyWordmarkCache {
 		return entry.kind === "marks" ? entry.marks : undefined;
 	}
 
+	getFor(profileId: string, nameChangedAt?: string): CachedCompanyWordmarks | undefined {
+		const id = profileId.toLowerCase();
+		const entry = this.#entries.get(id);
+		if (!entry) return undefined;
+		this.#entries.delete(id);
+		this.#entries.set(id, entry);
+		if (entry.kind !== "marks") return undefined;
+		if (!nameChangedAt) return entry.marks;
+		const changedMs = Date.parse(nameChangedAt);
+		if (!Number.isFinite(changedMs)) return entry.marks;
+		const freshUrl = (url: string | undefined, at: string | undefined): string | undefined => {
+			if (!url || !at) return undefined;
+			const atMs = Date.parse(at);
+			return Number.isFinite(atMs) && atMs >= changedMs ? url : undefined;
+		};
+		const light = freshUrl(entry.marks.light, entry.timestamps?.lightAt);
+		const dark = freshUrl(entry.marks.dark, entry.timestamps?.darkAt);
+		return light || dark ? { ...(light ? { light } : {}), ...(dark ? { dark } : {}) } : undefined;
+	}
+
 	has(profileId: string): boolean {
 		return this.#entries.has(profileId.toLowerCase());
 	}
@@ -391,7 +461,13 @@ export class CompanyWordmarkCache {
 		};
 	}
 
-	set(profileId: string, marks: CachedCompanyWordmarks, source: "live" | "prefetch", startLiveRev?: number): void {
+	set(
+		profileId: string,
+		marks: CachedCompanyWordmarks,
+		source: "live" | "prefetch",
+		startLiveRev?: number,
+		timestamps?: CachedWordmarkTimestamps,
+	): void {
 		const id = profileId.toLowerCase();
 		if (source === "prefetch") {
 			if (startLiveRev !== undefined && (this.#liveRevisions.get(id) ?? 0) !== startLiveRev) return;
@@ -406,10 +482,21 @@ export class CompanyWordmarkCache {
 			this.setNone(id, source, startLiveRev);
 			return;
 		}
+		const cleanedTimestamps: CachedWordmarkTimestamps | undefined =
+			(cleaned.light && timestamps?.lightAt) || (cleaned.dark && timestamps?.darkAt)
+				? {
+						...(cleaned.light && timestamps?.lightAt ? { lightAt: timestamps.lightAt } : {}),
+						...(cleaned.dark && timestamps?.darkAt ? { darkAt: timestamps.darkAt } : {}),
+					}
+				: undefined;
 		const prev = this.#entries.get(id);
 		const unchanged =
-			prev?.kind === "marks" && prev.marks.light === cleaned.light && prev.marks.dark === cleaned.dark;
-		this.#put(id, { kind: "marks", marks: cleaned });
+			prev?.kind === "marks" &&
+			prev.marks.light === cleaned.light &&
+			prev.marks.dark === cleaned.dark &&
+			prev.timestamps?.lightAt === cleanedTimestamps?.lightAt &&
+			prev.timestamps?.darkAt === cleanedTimestamps?.darkAt;
+		this.#put(id, { kind: "marks", marks: cleaned, ...(cleanedTimestamps ? { timestamps: cleanedTimestamps } : {}) });
 		if (unchanged) return;
 		this.#persist();
 		this.#notify(id);
@@ -464,7 +551,7 @@ export class CompanyWordmarkCache {
 				const found = await readFolderWordmarks(folder, requestSignal);
 				if (generation !== this.#generation || requestSignal.aborted || found === undefined) return;
 				if (found === null) this.setNone(id, "prefetch", startLiveRev);
-				else this.set(id, found, "prefetch", startLiveRev);
+				else this.set(id, found.marks, "prefetch", startLiveRev, found.timestamps);
 			} catch {
 				// WHY: Prefetch is best-effort; full SurfacesStore loading remains the authoritative path.
 			}
@@ -557,9 +644,20 @@ export class CompanyWordmarkCache {
 			const light = isValidCachedUrl(record.light) ? record.light : undefined;
 			const dark = isValidCachedUrl(record.dark) ? record.dark : undefined;
 			if (!light && !dark) continue;
+			const lightAt =
+				typeof record.lightAt === "string" && Number.isFinite(Date.parse(record.lightAt))
+					? record.lightAt
+					: undefined;
+			const darkAt =
+				typeof record.darkAt === "string" && Number.isFinite(Date.parse(record.darkAt)) ? record.darkAt : undefined;
+			const timestamps: CachedWordmarkTimestamps | undefined =
+				(light && lightAt) || (dark && darkAt)
+					? { ...(light && lightAt ? { lightAt } : {}), ...(dark && darkAt ? { darkAt } : {}) }
+					: undefined;
 			this.#entries.set(key.toLowerCase(), {
 				kind: "marks",
 				marks: { ...(light ? { light } : {}), ...(dark ? { dark } : {}) },
+				...(timestamps ? { timestamps } : {}),
 			});
 			count++;
 		}
@@ -569,13 +667,21 @@ export class CompanyWordmarkCache {
 		const userId = this.#userId;
 		if (!userId) return;
 		const key = this.#storageKey(userId);
-		const candidates: [string, CachedCompanyWordmarks][] = [];
+		const candidates: [string, CachedCompanyWordmarks & CachedWordmarkTimestamps][] = [];
 		for (const [id, entry] of this.#entries) {
 			if (entry.kind !== "marks") continue;
 			const light = isValidCachedUrl(entry.marks.light) ? entry.marks.light : undefined;
 			const dark = isValidCachedUrl(entry.marks.dark) ? entry.marks.dark : undefined;
 			if (!light && !dark) continue;
-			candidates.push([id, { ...(light ? { light } : {}), ...(dark ? { dark } : {}) }]);
+			candidates.push([
+				id,
+				{
+					...(light ? { light } : {}),
+					...(dark ? { dark } : {}),
+					...(light && entry.timestamps?.lightAt ? { lightAt: entry.timestamps.lightAt } : {}),
+					...(dark && entry.timestamps?.darkAt ? { darkAt: entry.timestamps.darkAt } : {}),
+				},
+			]);
 		}
 		const recent = candidates.slice(-MAX_STORED_COMPANIES);
 		if (recent.length === 0) {
@@ -651,6 +757,7 @@ export class CompanyWordmarkSlot {
 	#identityStatus: IdentityWordmarkStatus = "loading";
 	#store: SurfacesStore | undefined;
 	#displayName = "";
+	#nameChangedAt: string | undefined;
 	#shownSrc: string | undefined;
 	#syncingCache = false;
 
@@ -684,12 +791,18 @@ export class CompanyWordmarkSlot {
 		signal.addEventListener("abort", () => this.#dispose(), { once: true });
 	}
 
-	update(companyName: string, store: SurfacesStore | undefined, surfacesDisabled = false): void {
+	update(
+		companyName: string,
+		store: SurfacesStore | undefined,
+		surfacesDisabled = false,
+		nameChangedAt?: string,
+	): void {
 		showCompanyName(this.#name, companyName);
 		this.#displayName = companyDisplayName(companyName);
 		this.#store = store;
+		this.#nameChangedAt = nameChangedAt;
 		this.#identityStatus = identityWordmarkStatus(store, surfacesDisabled);
-		const next = resolveCompanyWordmarks(store?.companyIdentityFiles() ?? null);
+		const next = resolveCompanyWordmarks(store?.companyIdentityFiles() ?? null, nameChangedAt);
 		if (next !== this.#wordmarks) {
 			this.#wordmarks = next;
 			this.#failedUrls.clear();
@@ -729,10 +842,19 @@ export class CompanyWordmarkSlot {
 		this.#syncingCache = true;
 		try {
 			if (lightUrl || darkUrl) {
+				const timestamps: CachedWordmarkTimestamps | undefined =
+					(lightUrl && light?.updatedAt) || (darkUrl && dark?.updatedAt)
+						? {
+								...(lightUrl && light?.updatedAt ? { lightAt: light.updatedAt } : {}),
+								...(darkUrl && dark?.updatedAt ? { darkAt: dark.updatedAt } : {}),
+							}
+						: undefined;
 				this.#cache.set(
 					this.#profileId,
 					{ ...(lightUrl ? { light: lightUrl } : {}), ...(darkUrl ? { dark: darkUrl } : {}) },
 					"live",
+					undefined,
+					timestamps,
 				);
 			} else if (!light && !dark) {
 				this.#cache.setNone(this.#profileId, "live");
@@ -818,7 +940,7 @@ export class CompanyWordmarkSlot {
 
 	#paint(): void {
 		const theme = activeTheme();
-		const cached = this.#cache?.get(this.#profileId);
+		const cached = this.#cache?.getFor(this.#profileId, this.#nameChangedAt);
 		const cachedSrc = cached ? (theme === "dark" ? cached.dark : cached.light) : undefined;
 		const asset = wordmarkForTheme(this.#wordmarks, theme);
 		if (asset?.kind === "binary" && !this.#blobUrls.has(asset.ref.fileSha256)) {

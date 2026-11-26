@@ -533,6 +533,13 @@ export async function serveMemberFolderCommit(
 		// replay is usually the retry of an answer that was lost, perhaps before its follow-up ran.
 		inFlight.delete(member.actor.userId);
 		held = undefined;
+		let touchedVision = false;
+		for (const entries of structuredByUnit.values()) {
+			if (entries.some((entry) => entry.kind === "vision")) {
+				touchedVision = true;
+				break;
+			}
+		}
 		const left = FOLLOW_UP_LATEST_MS - (Date.now() - started);
 		if (
 			options.followUps &&
@@ -540,7 +547,7 @@ export async function serveMemberFolderCommit(
 			Number.isSafeInteger(answer.seq) &&
 			typeof answer.commitId === "string" &&
 			UUID.test(answer.commitId)
-		)
+		) {
 			await followUpMemberCommit(
 				options.followUps,
 				environmentId,
@@ -548,6 +555,29 @@ export async function serveMemberFolderCommit(
 				signal,
 				Math.min(FOLLOW_UP_MS, left),
 			);
+			const wakeLeft = FOLLOW_UP_LATEST_MS - (Date.now() - started);
+			if (touchedVision && wakeLeft > 0 && !signal.aborted) {
+				const wakeController = new AbortController();
+				const onAbort = () => wakeController.abort(signal.reason);
+				signal.addEventListener("abort", onAbort, { once: true });
+				const wakeTimer = setTimeout(
+					() => wakeController.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+					Math.min(FOLLOW_UP_MS, wakeLeft),
+				);
+				try {
+					await options.followUps.publisher(
+						"qorpera_company_rename_wake_step",
+						{ p_environment_id: environmentId },
+						wakeController.signal,
+					);
+				} catch {
+					/* WHY: Best-effort kick; the 1-minute pg_cron schedule drains any rename wake that misses this window. */
+				} finally {
+					clearTimeout(wakeTimer);
+					signal.removeEventListener("abort", onAbort);
+				}
+			}
+		}
 		const encoded = JSON.stringify(answer);
 		observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
 		response.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });

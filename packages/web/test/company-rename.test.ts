@@ -3,7 +3,16 @@
 import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HubController } from "../src/app/views/hub.ts";
-import { CompanyBrandView, renamedVision, VISION_PATH } from "../src/app/views/settings-brand.ts";
+import {
+	CompanyBrandView,
+	IDENTITY_BRIEF_PATH,
+	IDENTITY_COMPANY_JSON_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
+	renamedCanonicalJson,
+	renamedIdentityBrief,
+	renamedVision,
+	VISION_PATH,
+} from "../src/app/views/settings-brand.ts";
 import type { CloudApi } from "../src/cloud/api.ts";
 import type { WebMemberFolder } from "../src/cloud/company-folder-writes.ts";
 import type { HostedProfile } from "../src/cloud/types.ts";
@@ -335,5 +344,290 @@ describe("the company list after a rename", () => {
 		await vi.advanceTimersByTimeAsync(2500);
 		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys Kaffe");
 		hub.dispose();
+	});
+});
+
+describe("canonical identity file rewrites during rename", () => {
+	it("updates canonical JSON name and brand fields without inventing missing keys", () => {
+		expect(renamedCanonicalJson('{\n  "name": "Nordlys",\n  "tagline": "Bright"\n}\n', "name", "Solstice")).toBe(
+			'{\n  "name": "Solstice",\n  "tagline": "Bright"\n}\n',
+		);
+		expect(renamedCanonicalJson('{"brand":"Nordlys","accent":"#000"}', "brand", "Solstice")).toBe(
+			'{\n  "brand": "Solstice",\n  "accent": "#000"\n}',
+		);
+		expect(renamedCanonicalJson('{"name":"Solstice"}', "name", "Solstice")).toBeNull();
+		expect(renamedCanonicalJson('{"other":"Nordlys"}', "name", "Solstice")).toBeNull();
+		expect(renamedCanonicalJson("{bad json", "name", "Solstice")).toBeNull();
+	});
+
+	it("updates identity/brief.md only when the H1 matches the old company name", () => {
+		expect(renamedIdentityBrief("# Nordlys\n\nBody.\n", "Nordlys", "Solstice")).toBe("# Solstice\n\nBody.\n");
+		expect(renamedIdentityBrief("# Nordlys — Brand Brief\n\nBody.\n", "Nordlys", "Solstice")).toBe(
+			"# Solstice — Brand Brief\n\nBody.\n",
+		);
+		expect(renamedIdentityBrief("# Brand Brief\n\nAbout Nordlys.\n", "Nordlys", "Solstice")).toBeNull();
+		expect(renamedIdentityBrief("# Nordlyset\n\nBody.\n", "Nordlys", "Solstice")).toBeNull();
+	});
+
+	it("commits vision.md first and then syncs existing canonical identity files in a second commit", async () => {
+		const files: Record<string, string> = {
+			[VISION_PATH]: VISION,
+			[IDENTITY_COMPANY_JSON_PATH]: '{\n  "name": "Nordlys"\n}\n',
+			[IDENTITY_TOKENS_JSON_PATH]: '{\n  "brand": "Nordlys",\n  "accent": "#111"\n}\n',
+			[IDENTITY_BRIEF_PATH]: "# Nordlys — Brand Brief\n\nVoice.\n",
+		};
+		const committedUnits: Array<Array<{ path: string; text?: string }>> = [];
+		const folder = {
+			read: vi.fn(async (path: string) => {
+				const text = files[path];
+				if (text === undefined) return { asOfSeq: 1, entry: null };
+				return {
+					asOfSeq: 1,
+					entry: {
+						path,
+						kind: "file",
+						version: `v-${path}`,
+						file: {
+							manifestSha256: `m-${path}`,
+							fileSha256: path,
+							bytes: new TextEncoder().encode(text).length,
+							mediaType: "text/plain",
+							executable: false,
+						},
+					},
+				};
+			}),
+			readFile: vi.fn(async (file: { fileSha256: string }) => new TextEncoder().encode(files[file.fileSha256]!)),
+			commit: vi.fn(async (_key: string, units: Array<{ op: string; path: string; text?: string }>) => {
+				committedUnits.push(units.map((u) => ({ path: u.path, text: u.text })));
+				return {
+					commitId: `c${committedUnits.length}`,
+					seq: committedUnits.length + 1,
+					replay: false,
+					units: units.map((u, idx) => ({
+						unit: idx + 1,
+						op: u.op,
+						path: u.path,
+						to: null,
+						version: `v2-${idx}`,
+						outcome: "saved",
+						reason: null,
+						problems: [],
+					})),
+				};
+			}),
+			list: vi.fn(),
+			stateFolders: vi.fn(),
+		} as unknown as WebMemberFolder;
+
+		const { view, renamed } = brand({ folder });
+		await rename(view, "Solstice");
+		expect(renamed).toHaveBeenCalledWith("Solstice");
+		expect(committedUnits).toHaveLength(2);
+		expect(committedUnits[0]!.map((u) => u.path)).toEqual([VISION_PATH]);
+		expect(committedUnits[1]!.map((u) => u.path)).toEqual([
+			IDENTITY_COMPANY_JSON_PATH,
+			IDENTITY_TOKENS_JSON_PATH,
+			IDENTITY_BRIEF_PATH,
+		]);
+		expect(committedUnits[1]![0]!.text).toContain('"name": "Solstice"');
+		expect(committedUnits[1]![1]!.text).toContain('"brand": "Solstice"');
+		expect(committedUnits[1]![2]!.text).toBe("# Solstice — Brand Brief\n\nVoice.\n");
+		expect(view.el.querySelector(".settings-brand-error")?.textContent).toBe("");
+		expect(view.el.querySelector(".settings-brand-status")?.textContent).toBe(
+			"Name updated. Your Co-Founder is updating the rest of the company.",
+		);
+	});
+
+	it("retries only conflicting canonical identity paths after vision.md saves and preserves concurrent edits", async () => {
+		const versions: Record<string, number> = {
+			[VISION_PATH]: 1,
+			[IDENTITY_COMPANY_JSON_PATH]: 1,
+			[IDENTITY_TOKENS_JSON_PATH]: 1,
+		};
+		const files: Record<string, string> = {
+			[VISION_PATH]: VISION,
+			[IDENTITY_COMPANY_JSON_PATH]: '{\n  "name": "Nordlys"\n}\n',
+			[IDENTITY_TOKENS_JSON_PATH]: '{\n  "brand": "Nordlys",\n  "accent": "#111"\n}\n',
+		};
+		let tokensConflictedOnce = false;
+		const committedBatches: Array<Array<{ path: string; text?: string; expectedVersion?: string }>> = [];
+		const folder = {
+			read: vi.fn(async (path: string) => {
+				const text = files[path];
+				if (text === undefined) return { asOfSeq: 1, entry: null };
+				const ver = versions[path]!;
+				return {
+					asOfSeq: ver,
+					entry: {
+						path,
+						kind: "file",
+						version: `v${ver}`,
+						file: {
+							manifestSha256: `m-${path}-${ver}`,
+							fileSha256: `${path}@${ver}`,
+							bytes: new TextEncoder().encode(text).length,
+							mediaType: "text/plain",
+							executable: false,
+						},
+					},
+				};
+			}),
+			readFile: vi.fn(async (file: { fileSha256: string }) => {
+				const path = file.fileSha256.split("@")[0]!;
+				return new TextEncoder().encode(files[path]!);
+			}),
+			commit: vi.fn(
+				async (
+					_key: string,
+					units: Array<{ op: string; path: string; text?: string; expectedVersion?: string }>,
+				) => {
+					committedBatches.push(
+						units.map((u) => ({ path: u.path, text: u.text, expectedVersion: u.expectedVersion })),
+					);
+					return {
+						commitId: `c${committedBatches.length}`,
+						seq: committedBatches.length + 1,
+						replay: false,
+						units: units.map((u, idx) => {
+							if (u.path === IDENTITY_TOKENS_JSON_PATH && !tokensConflictedOnce) {
+								tokensConflictedOnce = true;
+								versions[IDENTITY_TOKENS_JSON_PATH] = 2;
+								files[IDENTITY_TOKENS_JSON_PATH] = '{\n  "brand": "Nordlys",\n  "accent": "#222"\n}\n';
+								return {
+									unit: idx + 1,
+									op: u.op,
+									path: u.path,
+									to: null,
+									version: null,
+									outcome: "conflict",
+									reason: "version_changed",
+									problems: [],
+								};
+							}
+							if (u.text !== undefined) files[u.path] = u.text;
+							versions[u.path] = (versions[u.path] ?? 1) + 1;
+							return {
+								unit: idx + 1,
+								op: u.op,
+								path: u.path,
+								to: null,
+								version: `v${versions[u.path]}`,
+								outcome: "saved",
+								reason: null,
+								problems: [],
+							};
+						}),
+					};
+				},
+			),
+			list: vi.fn(),
+			stateFolders: vi.fn(),
+		} as unknown as WebMemberFolder;
+
+		const { view, renamed } = brand({ folder });
+		await rename(view, "Solstice");
+		expect(renamed).toHaveBeenCalledWith("Solstice");
+		expect(committedBatches.map((batch) => batch.map((u) => u.path))).toEqual([
+			[VISION_PATH],
+			[IDENTITY_COMPANY_JSON_PATH, IDENTITY_TOKENS_JSON_PATH],
+			[IDENTITY_TOKENS_JSON_PATH],
+		]);
+		expect(committedBatches[2]![0]!.expectedVersion).toBe("v2");
+		expect(committedBatches[2]![0]!.text).toContain('"brand": "Solstice"');
+		expect(committedBatches[2]![0]!.text).toContain('"accent": "#222"');
+	});
+
+	it("leaves canonical identity files untouched when vision.md fails and ignores non-retryable identity errors after vision.md saves", async () => {
+		const files: Record<string, string> = {
+			[VISION_PATH]: VISION,
+			[IDENTITY_COMPANY_JSON_PATH]: '{"name":"Nordlys"}\n',
+		};
+		const failedVisionCommits: string[][] = [];
+		const failingVisionFolder = {
+			read: vi.fn(async (path: string) => {
+				const text = files[path];
+				if (text === undefined) return { asOfSeq: 1, entry: null };
+				return {
+					asOfSeq: 1,
+					entry: {
+						path,
+						kind: "file",
+						version: `v-${path}`,
+						file: {
+							manifestSha256: `m-${path}`,
+							fileSha256: path,
+							bytes: new TextEncoder().encode(text).length,
+							mediaType: "text/plain",
+							executable: false,
+						},
+					},
+				};
+			}),
+			readFile: vi.fn(async (file: { fileSha256: string }) => new TextEncoder().encode(files[file.fileSha256]!)),
+			commit: vi.fn(async (_key: string, units: Array<{ op: string; path: string }>) => {
+				failedVisionCommits.push(units.map((u) => u.path));
+				return {
+					commitId: "c1",
+					seq: 2,
+					replay: false,
+					units: units.map((u, idx) => ({
+						unit: idx + 1,
+						op: u.op,
+						path: u.path,
+						to: null,
+						version: null,
+						outcome: "refused",
+						reason: "hook",
+						problems: [],
+					})),
+				};
+			}),
+			list: vi.fn(),
+			stateFolders: vi.fn(),
+		} as unknown as WebMemberFolder;
+
+		const failedBrand = brand({ folder: failingVisionFolder });
+		await rename(failedBrand.view, "Solstice", "Enter", false);
+		await vi.waitFor(() =>
+			expect(failedBrand.view.el.querySelector(".settings-brand-error")?.textContent).toBe(
+				"The name could not be saved. Try again.",
+			),
+		);
+		expect(failedBrand.renamed).not.toHaveBeenCalled();
+		expect(failedVisionCommits).toEqual([[VISION_PATH]]);
+
+		const bestEffortCommits: string[][] = [];
+		const deniedIdentityFolder = {
+			read: failingVisionFolder.read,
+			readFile: failingVisionFolder.readFile,
+			commit: vi.fn(async (_key: string, units: Array<{ op: string; path: string }>) => {
+				bestEffortCommits.push(units.map((u) => u.path));
+				const isVision = units[0]?.path === VISION_PATH;
+				return {
+					commitId: isVision ? "c2" : "c3",
+					seq: isVision ? 3 : 4,
+					replay: false,
+					units: units.map((u, idx) => ({
+						unit: idx + 1,
+						op: u.op,
+						path: u.path,
+						to: null,
+						version: isVision ? "v2" : null,
+						outcome: isVision ? "saved" : "denied",
+						reason: isVision ? null : "no_grant",
+						problems: [],
+					})),
+				};
+			}),
+			list: vi.fn(),
+			stateFolders: vi.fn(),
+		} as unknown as WebMemberFolder;
+
+		const okBrand = brand({ folder: deniedIdentityFolder });
+		await rename(okBrand.view, "Solstice");
+		expect(okBrand.renamed).toHaveBeenCalledWith("Solstice");
+		expect(bestEffortCommits).toEqual([[VISION_PATH], [IDENTITY_COMPANY_JSON_PATH]]);
+		expect(okBrand.view.el.querySelector(".settings-brand-error")?.textContent).toBe("");
 	});
 });

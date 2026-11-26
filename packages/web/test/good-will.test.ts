@@ -227,4 +227,24 @@ describe("the good will views", () => {
 		const row = view.el.querySelector(".good-will-companies li")!;
 		expect(row.textContent).toBe("Learn anything31,800 kr from customersPaid by another founder3,180 kr");
 	});
+
+	it("updates the rendered company name when update() is called after a rename", async () => {
+		let liveName = "Nordlys";
+		const view = new GoodWillView(
+			{
+				read: async () => parseCompanyGoodWill(company({ companyName: "Nordlys" }), P),
+				cardPage: vi.fn(),
+				open: vi.fn(),
+			},
+			new AbortController().signal,
+			() => liveName,
+		);
+		await flush();
+		expect(view.el.textContent).toContain("Nordlys");
+		liveName = "Solstice";
+		view.update();
+		expect(view.el.textContent).toContain("Solstice");
+		expect(view.el.textContent).not.toContain("Nordlys");
+		view.dispose();
+	});
 });

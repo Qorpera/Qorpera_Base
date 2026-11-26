@@ -1,3 +1,4 @@
+import { companyInSentence } from "../../ui/company-name.ts";
 import { type ContextMenu, type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
 import { fmtTime, formatPresentationDate, h, icon, replace } from "../../ui/dom.ts";
 import { HoverGlide } from "../../ui/hover-glide.ts";
@@ -618,7 +619,10 @@ export class SearchWindow {
 					"p",
 					{ class: "search-window-empty" },
 					words.length
-						? t("Nothing in {company} matches “{query}”.", { company: sources.companyName, query })
+						? t("Nothing in {company} matches “{query}”.", {
+								company: companyInSentence(sources.companyName),
+								query,
+							})
 						: narrowed
 							? t("Nothing here yet.")
 							: t("Type to find agents, apps, files and settings."),

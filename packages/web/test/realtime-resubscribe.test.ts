@@ -517,6 +517,7 @@ describe("a company's hints by push", () => {
 			["broadcast", "staff"],
 			["broadcast", "access"],
 			["broadcast", "company-file"],
+			["broadcast", "company-profile"],
 			["broadcast", "sidebar"],
 			// Member chats (20260930715000): to the two members of the changed chat.
 			["broadcast", "member-chats"],
@@ -534,6 +535,7 @@ describe("a company's hints by push", () => {
 			"staff",
 			"access",
 			"company-file",
+			"company-profile",
 			"member-chats",
 			"machines",
 			"surfaces",
@@ -545,6 +547,7 @@ describe("a company's hints by push", () => {
 			"staff",
 			"access",
 			"company-file",
+			"company-profile",
 			"member-chats",
 			"machines",
 			"surfaces",
@@ -552,12 +555,12 @@ describe("a company's hints by push", () => {
 		]);
 		// The sidebar's hints count from when the sidebar was read, as its own channel did.
 		fire("sidebar");
-		expect(changes).toHaveLength(8);
+		expect(changes).toHaveLength(9);
 		const sidebar = vi.fn();
 		const following = subscription.followSidebar(sidebar);
 		fire("sidebar");
 		expect(sidebar).toHaveBeenCalledTimes(1);
-		expect(changes).toHaveLength(8);
+		expect(changes).toHaveLength(9);
 		expect(following.live()).toBe(true);
 		// No channel of its own while the company's topic carries them.
 		expect(made).toHaveLength(1);

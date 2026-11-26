@@ -806,6 +806,8 @@ export const SETTINGS: Record<string, string> = {
 	"The vision kept changing while it was saved. Try again.":
 		"Visionen blev ved med at ændre sig, mens den blev gemt. Prøv igen.",
 	"The name could not be saved.": "Navnet kunne ikke gemmes.",
+	"Name updated. Your Co-Founder is updating the rest of the company.":
+		"Navnet er opdateret. Din Co-Founder opdaterer resten af virksomheden.",
 	"Choose a new logo": "Vælg et nyt logo",
 	"Company logo": "Virksomhedens logo",
 	"Remove logo": "Fjern logo",

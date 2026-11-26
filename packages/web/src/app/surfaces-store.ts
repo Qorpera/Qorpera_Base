@@ -376,6 +376,7 @@ export interface SurfacesState {
 	readonly cloudSurfaceFiles: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly localStudioBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
 	readonly cloudSurfaceBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
+	readonly cloudSurfaceUpdatedAt: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly pendingStudioPatches: Readonly<Record<string, readonly PendingStudioPatch[]>>;
 	readonly loadingCloudFiles: Readonly<Record<string, true>>;
 	readonly updatingCloudFiles: Readonly<Record<string, true>>;
@@ -800,6 +801,7 @@ export interface CompanyIdentityFiles {
 	readonly baseFiles: Readonly<Record<string, string>>;
 	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
 	readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly updatedAt?: Readonly<Record<string, string>>;
 }
 
 const identityFilesByState = new WeakMap<SurfacesState, CompanyIdentityFiles | null>();
@@ -813,6 +815,7 @@ let lastIdentityFiles:
 			readonly localFiles: Readonly<Record<string, string>> | undefined;
 			readonly cloudBinaries: Readonly<Record<string, StudioBinaryRef>> | undefined;
 			readonly localBinaries: Readonly<Record<string, StudioBinaryRef>> | undefined;
+			readonly cloudUpdatedAt: Readonly<Record<string, string>> | undefined;
 			readonly pendingPatches: readonly PendingStudioPatch[] | undefined;
 			readonly workspace: SurfaceWorkspace | undefined;
 			readonly variantPick: Readonly<Record<string, string>>;
@@ -837,7 +840,8 @@ function sameIdentityFiles(a: CompanyIdentityFiles, b: CompanyIdentityFiles): bo
 		sameRecord(a.files, b.files) &&
 		sameRecord(a.baseFiles, b.baseFiles) &&
 		sameRecord(a.binaries, b.binaries) &&
-		sameRecord(a.baseBinaries, b.baseBinaries)
+		sameRecord(a.baseBinaries, b.baseBinaries) &&
+		sameRecord(a.updatedAt ?? {}, b.updatedAt ?? {})
 	);
 }
 
@@ -852,6 +856,7 @@ export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles
 	const localFiles = state.localStudioBase[identity.id];
 	const cloudBinaries = state.cloudSurfaceBinaries[identity.id];
 	const localBinaries = state.localStudioBinaries[identity.id];
+	const cloudUpdatedAt = state.cloudSurfaceUpdatedAt[identity.id];
 	const pendingPatches = state.pendingStudioPatches[identity.id];
 	const liveMode = state.mode === "live";
 	const workspace = liveMode ? undefined : state.workspaces[identity.id];
@@ -865,6 +870,7 @@ export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles
 		last.localFiles === localFiles &&
 		last.cloudBinaries === cloudBinaries &&
 		last.localBinaries === localBinaries &&
+		last.cloudUpdatedAt === cloudUpdatedAt &&
 		last.pendingPatches === pendingPatches &&
 		(liveMode ||
 			(last.workspace === workspace &&
@@ -916,6 +922,7 @@ export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles
 		baseFiles,
 		binaries,
 		baseBinaries,
+		...(cloudUpdatedAt ? { updatedAt: cloudUpdatedAt } : {}),
 	};
 	const result = last && sameIdentityFiles(last.result, fresh) ? last.result : fresh;
 	lastIdentityFiles = {
@@ -926,6 +933,7 @@ export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles
 		localFiles,
 		cloudBinaries,
 		localBinaries,
+		cloudUpdatedAt,
 		pendingPatches,
 		workspace,
 		variantPick: state.variantPick,
@@ -1590,9 +1598,11 @@ export class SurfacesStore {
 	readonly #reconciliationRequested = new Set<string>();
 	#loaded: Promise<void> | undefined;
 	#fallbackAfterLoadError = false;
+	#companyName: string;
 
 	constructor(options: SurfacesStoreOptions) {
 		this.#options = options;
+		this.#companyName = options.companyName?.trim() || "";
 		this.store = new Store<SurfacesState>({
 			source: "loading",
 			surfaces: [],
@@ -1605,6 +1615,7 @@ export class SurfacesStore {
 			cloudSurfaceFiles: {},
 			localStudioBinaries: {},
 			cloudSurfaceBinaries: {},
+			cloudSurfaceUpdatedAt: {},
 			pendingStudioPatches: {},
 			loadingCloudFiles: {},
 			updatingCloudFiles: {},
@@ -1699,7 +1710,14 @@ export class SurfacesStore {
 	}
 
 	get companyName(): string {
-		return this.#options.companyName?.trim() || "";
+		return this.#companyName;
+	}
+
+	setCompanyName(name: string): void {
+		const next = name.trim();
+		if (next === this.#companyName) return;
+		this.#companyName = next;
+		this.store.set((state) => ({ ...state }));
 	}
 
 	memberName(userId: string | null | undefined): string | undefined {
@@ -3160,7 +3178,7 @@ export class SurfacesStore {
 		try {
 			const contents = await loadFiles(surface, this.#options.signal);
 			if (!this.#options.signal.aborted && contents !== undefined) {
-				const { files, binaries } = contents;
+				const { files, binaries, updatedAt } = contents;
 				this.store.set((state) => {
 					const existingPending = state.pendingStudioPatches[surface.id];
 					let nextPendingStudioPatches = state.pendingStudioPatches;
@@ -3177,7 +3195,17 @@ export class SurfacesStore {
 					const hadBinaries = state.cloudSurfaceBinaries[surface.id];
 					const binariesUnchanged =
 						sameBinaryMap(hadBinaries, binaries) || (!hadBinaries && Object.keys(binaries).length === 0);
-					if (filesUnchanged && binariesUnchanged && nextPendingStudioPatches === state.pendingStudioPatches)
+					const nextUpdatedAt = updatedAt ?? {};
+					const hadUpdatedAt = state.cloudSurfaceUpdatedAt[surface.id];
+					const updatedAtUnchanged =
+						sameFileMap(hadUpdatedAt, nextUpdatedAt) ||
+						(!hadUpdatedAt && Object.keys(nextUpdatedAt).length === 0);
+					if (
+						filesUnchanged &&
+						binariesUnchanged &&
+						updatedAtUnchanged &&
+						nextPendingStudioPatches === state.pendingStudioPatches
+					)
 						return {};
 					const keepIds = new Set<string>();
 					if (this.#activeSurfaceId) keepIds.add(this.#activeSurfaceId);
@@ -3202,6 +3230,16 @@ export class SurfacesStore {
 										state.cloudSurfaceBinaries,
 										surface.id,
 										binaries,
+										keepIds,
+									),
+								}),
+						...(updatedAtUnchanged
+							? {}
+							: {
+									cloudSurfaceUpdatedAt: pruneCloudSurfaceFiles(
+										state.cloudSurfaceUpdatedAt,
+										surface.id,
+										nextUpdatedAt,
 										keepIds,
 									),
 								}),
@@ -4061,6 +4099,8 @@ export class SurfacesStore {
 				delete localStudioBase[surfaceId];
 				const cloudSurfaceBinaries = { ...state.cloudSurfaceBinaries };
 				delete cloudSurfaceBinaries[surfaceId];
+				const cloudSurfaceUpdatedAt = { ...state.cloudSurfaceUpdatedAt };
+				delete cloudSurfaceUpdatedAt[surfaceId];
 				const localStudioBinaries = { ...state.localStudioBinaries };
 				delete localStudioBinaries[surfaceId];
 				const pendingStudioPatches = { ...state.pendingStudioPatches };
@@ -4075,6 +4115,7 @@ export class SurfacesStore {
 					cloudSurfaceFiles,
 					localStudioBase,
 					cloudSurfaceBinaries,
+					cloudSurfaceUpdatedAt,
 					localStudioBinaries,
 					pendingStudioPatches,
 					loadingCloudFiles,

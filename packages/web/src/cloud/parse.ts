@@ -122,6 +122,9 @@ export function parseProfile(value: unknown): HostedProfile {
 		role: role(input.role),
 		contractVersion: boundedInteger(input.contract_version, "environment contract version", 1, 1000),
 		createdAt: timestamp(input.created_at, "profile creation time"),
+		...(typeof input.name_changed_at === "string"
+			? { nameChangedAt: timestamp(input.name_changed_at, "profile rename time") }
+			: {}),
 	};
 }
 

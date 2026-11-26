@@ -1,4 +1,4 @@
-import { companyInSentence } from "../../ui/company-name.ts";
+import { companyDisplayName, companyInSentence } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { h, icon, linkHref, replace, setLinkHref } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -288,7 +288,8 @@ export class ConceptsView {
 			this.#back.setAttribute("aria-label", backLabel);
 			this.#back.title = backLabel;
 		}
-		if (this.#backName.textContent !== company) this.#backName.textContent = company;
+		const displayName = companyDisplayName(company);
+		if (this.#backName.textContent !== displayName) this.#backName.textContent = displayName;
 		this.#current.textContent = selected?.manifest.name ?? "";
 		this.el.classList.toggle("is-collapsed", this.#collapsed);
 		this.el.classList.toggle("is-menu-open", this.#menuOpen);

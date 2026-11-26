@@ -106,7 +106,7 @@ export class HubController {
 	#profilesRefresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
-	readonly #renames = new Map<string, { name: string; stale: Set<string>; staleKnown: boolean }>();
+	readonly #renames = new Map<string, { name: string; renamedAt: string; stale: Set<string>; staleKnown: boolean }>();
 
 	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
@@ -202,7 +202,7 @@ export class HubController {
 		await fresh;
 	}
 
-	renamed(profileId: string, name: string): void {
+	renamed(profileId: string, name: string, renamedAt = new Date().toISOString()): void {
 		if (this.#disposed) return;
 		const earlier = this.#renames.get(profileId);
 		const shown = this.store.get().profiles.find((profile) => profile.profileId === profileId)?.profileName;
@@ -210,7 +210,7 @@ export class HubController {
 		if (earlier) stale.add(earlier.name);
 		else if (shown !== undefined) stale.add(shown);
 		stale.delete(name);
-		this.#renames.set(profileId, { name, stale, staleKnown: earlier?.staleKnown ?? shown !== undefined });
+		this.#renames.set(profileId, { name, renamedAt, stale, staleKnown: earlier?.staleKnown ?? shown !== undefined });
 		this.store.set(({ profiles }) => ({ profiles: this.#withRenames(profiles) }));
 		void this.#settleRename(profileId, name);
 	}
@@ -232,7 +232,7 @@ export class HubController {
 				this.#renames.delete(profile.profileId);
 				return profile;
 			}
-			return { ...profile, profileName: rename.name };
+			return { ...profile, profileName: rename.name, environmentName: rename.name, nameChangedAt: rename.renamedAt };
 		});
 	}
 

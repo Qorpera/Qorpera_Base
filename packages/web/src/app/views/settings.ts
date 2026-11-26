@@ -13,6 +13,7 @@ import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
+import { companyWordmarks } from "../company-wordmark.ts";
 import { currentRoute } from "../router.ts";
 import { surfacesOf } from "../surfaces-store.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
@@ -642,8 +643,14 @@ export class SettingsView {
 				folder,
 				signal: lifetime,
 				renamed: (name) => {
-					company.store.set(({ profile }) => ({ profile: { ...profile, profileName: name } }));
-					this.#hub.renamed(company.profile.profileId, name);
+					const renamedAt = new Date().toISOString();
+					company.store.set(({ profile }) => ({
+						profile: { ...profile, profileName: name, environmentName: name, nameChangedAt: renamedAt },
+					}));
+					surfacesOf(company)?.setCompanyName(name);
+					surfacesOf(company)?.refreshIdentityFiles();
+					companyWordmarks()?.forget(company.profile.profileId);
+					this.#hub.renamed(company.profile.profileId, name, renamedAt);
 				},
 				logoChanged: () => {
 					surfacesOf(company)?.refreshIdentityFiles();
@@ -679,7 +686,10 @@ export class SettingsView {
 			);
 		}
 		const goodWillSlot = panel.querySelector<HTMLElement>(".settings-good-will-slot")!;
-		if (this.#goodWill && goodWillSlot.firstChild !== this.#goodWill.el) replace(goodWillSlot, this.#goodWill.el);
+		if (this.#goodWill) {
+			if (goodWillSlot.firstChild !== this.#goodWill.el) replace(goodWillSlot, this.#goodWill.el);
+			this.#goodWill.update();
+		}
 		// The agent rules, under good will: read once the Company tab shows, kept until the company changes.
 		if (this.#tab === "company" && !this.#rules)
 			this.#rules = new RulesView(

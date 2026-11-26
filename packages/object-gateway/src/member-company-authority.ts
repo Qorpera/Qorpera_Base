@@ -50,6 +50,7 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_folder_commit"
 	// The member commit route's follow-up after a saved commit (F2's P15): a hire's or an archive's work at once.
 	| "qorpera_folder_follow_up_commit"
+	| "qorpera_company_rename_wake_step"
 	// Company creation's worker (company-folder-creation.ts, P14b): its claim, create, release and fail.
 	| "qorpera_folder_company_creation_claim"
 	| "qorpera_folder_company_create"

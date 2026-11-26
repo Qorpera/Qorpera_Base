@@ -1,6 +1,8 @@
+import type { CloudMemberFolderUnit } from "@qorpera/cloud-client/cloud-member-folder";
 import { osPath, writeVisionFile } from "@qorpera/cloud-client/company-state-files";
 import { describeError } from "../../cloud/client.ts";
 import {
+	parseStateFile,
 	rewriteStateFile,
 	WebCompanyFolderRejectedError,
 	type WebMemberFolder,
@@ -14,7 +16,13 @@ import { PictureFileError } from "../../ui/picture-file.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 
 export const VISION_PATH = osPath("vision/vision.md");
+export const IDENTITY_COMPANY_JSON_PATH = "identity/company.json";
+export const IDENTITY_TOKENS_JSON_PATH = "identity/tokens.json";
+export const IDENTITY_BRIEF_PATH = "identity/brief.md";
 export const COMPANY_NAME_LIMIT = 120;
+
+const CANONICAL_IDENTITY_MAX_BYTES = 262_144;
+const RENAME_RETRIES = 3;
 
 export function renamedVision(text: string, name: string): string {
 	const lines = text.split("\n");
@@ -26,6 +34,67 @@ export function renamedVision(text: string, name: string): string {
 		lines[first] = `${bom}${heading}${lines[first]!.endsWith("\r") ? "\r" : ""}`;
 	} else lines.unshift(heading, "");
 	return lines.join("\n");
+}
+
+export function renamedCanonicalJson(text: string, key: "name" | "brand", nextName: string): string | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+	const record = parsed as Record<string, unknown>;
+	if (typeof record[key] !== "string" || record[key] === nextName) return null;
+	const trailing = text.endsWith("\n") ? "\n" : "";
+	return `${JSON.stringify({ ...record, [key]: nextName }, null, 2)}${trailing}`;
+}
+
+export function renamedIdentityBrief(text: string, oldName: string, nextName: string): string | null {
+	const normalizedOld = oldName.replace(/\s+/g, " ").trim();
+	if (!normalizedOld) return null;
+	const lines = text.split("\n");
+	const bare = (line: string) => line.replace(/^\uFEFF/, "").replace(/\r$/, "");
+	const first = lines.findIndex((line) => bare(line).trim() !== "");
+	if (first < 0) return null;
+	const match = /^# +(.+?)\s*$/.exec(bare(lines[first]!));
+	if (!match) return null;
+	const heading = match[1]!;
+	const normalizedHeading = heading.replace(/\s+/g, " ");
+	const lowerHeading = normalizedHeading.toLowerCase();
+	const lowerOld = normalizedOld.toLowerCase();
+	let updatedHeading: string | null = null;
+	if (lowerHeading === lowerOld) {
+		updatedHeading = nextName;
+	} else if (lowerHeading.startsWith(lowerOld)) {
+		const rest = normalizedHeading.slice(normalizedOld.length);
+		if (/^\s*[—–:\-|·]\s+\S/.test(rest)) updatedHeading = `${nextName}${rest}`;
+	}
+	if (!updatedHeading || updatedHeading === heading) return null;
+	const bom = lines[first]!.startsWith("\uFEFF") ? "\uFEFF" : "";
+	const cr = lines[first]!.endsWith("\r") ? "\r" : "";
+	lines[first] = `${bom}# ${updatedHeading}${cr}`;
+	return lines.join("\n");
+}
+
+async function readOptionalText(
+	folder: WebMemberFolder,
+	path: string,
+	signal: AbortSignal,
+): Promise<{ version: string; text: string } | null> {
+	try {
+		const read = await folder.read(path, signal);
+		if (!read.entry || read.entry.kind !== "file" || !read.entry.file) return null;
+		if (read.entry.file.bytes > CANONICAL_IDENTITY_MAX_BYTES) return null;
+		const bytes = await folder.readFile(read.entry.file, signal, CANONICAL_IDENTITY_MAX_BYTES, { cached: true });
+		return {
+			version: read.entry.version,
+			text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+		};
+	} catch (error) {
+		if (signal.aborted) throw error;
+		return null;
+	}
 }
 
 export function renameFailure(error: unknown): string {
@@ -55,6 +124,7 @@ export class CompanyBrandView {
 	readonly #input: HTMLInputElement;
 	readonly #nameSlot = h("div", { class: "settings-brand-name" });
 	readonly #error = h("div", { class: "settings-brand-error" });
+	readonly #status = h("p", { class: "settings-brand-status muted small", role: "status", hidden: true });
 	readonly #menu: HTMLElement;
 	#busy = false;
 	#editing = false;
@@ -122,6 +192,7 @@ export class CompanyBrandView {
 				h("div", { class: "settings-brand-copy" }, this.#nameSlot),
 			),
 			this.#error,
+			this.#status,
 		);
 		const unsubscribeLogo = companyLogos()?.subscribe?.(options.profileId, () => this.update());
 		if (unsubscribeLogo) {
@@ -271,20 +342,10 @@ export class CompanyBrandView {
 			return;
 		}
 		const signal = this.#options.signal;
+		const failure = t("The name could not be saved.");
 		await this.#run(async () => {
 			try {
-				await rewriteStateFile(
-					this.#options.folder(),
-					{
-						locate: async () => VISION_PATH,
-						rewrite: (text) => renamedVision(text, name),
-						key: () => `web:company-rename:${crypto.randomUUID()}`,
-						gone: t("The company's vision could not be read."),
-						failure: t("The name could not be saved."),
-					},
-					signal,
-					() => signal.throwIfAborted(),
-				);
+				await this.#commitRename(name, failure, signal);
 			} catch (error) {
 				if (signal.aborted) throw error;
 				throw new Error(renameFailure(error));
@@ -292,13 +353,100 @@ export class CompanyBrandView {
 			this.#savedName = name;
 			this.#editing = false;
 			this.#options.renamed(name);
+			this.#status.textContent = t("Name updated. Your Co-Founder is updating the rest of the company.");
+			this.#status.hidden = false;
 		}, phrase("The name could not be saved."));
 		if (this.#editing && !signal.aborted) retry();
+	}
+
+	async #commitRename(name: string, failure: string, signal: AbortSignal): Promise<void> {
+		const folder = this.#options.folder();
+		let oldName = this.#savedName ?? this.#options.name();
+		await rewriteStateFile(
+			folder,
+			{
+				locate: async () => VISION_PATH,
+				rewrite: (text) => {
+					const currentVision = parseStateFile(VISION_PATH, text);
+					if (currentVision.ok && currentVision.file.kind === "vision") oldName = currentVision.file.name;
+					return renamedVision(text, name);
+				},
+				key: () => `web:company-rename:${crypto.randomUUID()}`,
+				gone: t("The company's vision could not be read."),
+				failure,
+			},
+			signal,
+			() => signal.throwIfAborted(),
+		);
+		await this.#syncCanonicalIdentityFiles(folder, oldName, name, signal);
+	}
+
+	async #syncCanonicalIdentityFiles(
+		folder: WebMemberFolder,
+		oldName: string,
+		name: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		type CanonicalPath =
+			| typeof IDENTITY_COMPANY_JSON_PATH
+			| typeof IDENTITY_TOKENS_JSON_PATH
+			| typeof IDENTITY_BRIEF_PATH;
+		let pending: CanonicalPath[] = [IDENTITY_COMPANY_JSON_PATH, IDENTITY_TOKENS_JSON_PATH, IDENTITY_BRIEF_PATH];
+		for (let attempt = 0; attempt <= RENAME_RETRIES && pending.length > 0; attempt++) {
+			if (signal.aborted) return;
+			let reads: ({ version: string; text: string } | null)[];
+			try {
+				reads = await Promise.all(pending.map((path) => readOptionalText(folder, path, signal)));
+			} catch {
+				return;
+			}
+			if (signal.aborted) return;
+			const units: CloudMemberFolderUnit[] = [];
+			const unitPaths: CanonicalPath[] = [];
+			for (let i = 0; i < pending.length; i++) {
+				const path = pending[i]!;
+				const current = reads[i];
+				if (!current) continue;
+				let nextText: string | null;
+				switch (path) {
+					case IDENTITY_COMPANY_JSON_PATH:
+						nextText = renamedCanonicalJson(current.text, "name", name);
+						break;
+					case IDENTITY_TOKENS_JSON_PATH:
+						nextText = renamedCanonicalJson(current.text, "brand", name);
+						break;
+					case IDENTITY_BRIEF_PATH:
+						nextText = renamedIdentityBrief(current.text, oldName, name);
+						break;
+				}
+				if (nextText === null) continue;
+				units.push({ op: "write", path, text: nextText, expectedVersion: current.version });
+				unitPaths.push(path);
+			}
+			if (units.length === 0) return;
+			let answer: Awaited<ReturnType<WebMemberFolder["commit"]>>;
+			try {
+				answer = await folder.commit(`web:company-rename-identity:${crypto.randomUUID()}`, units, signal);
+			} catch {
+				return;
+			}
+			if (signal.aborted) return;
+			const retry: CanonicalPath[] = [];
+			for (let i = 0; i < unitPaths.length; i++) {
+				const result = answer.units[i];
+				if (result?.outcome === "conflict" && result.reason === "version_changed") {
+					retry.push(unitPaths[i]!);
+				}
+			}
+			pending = retry;
+		}
 	}
 
 	async #run(action: () => Promise<void>, failure: string): Promise<void> {
 		this.#busy = true;
 		replace(this.#error);
+		this.#status.hidden = true;
+		this.#status.textContent = "";
 		this.update();
 		try {
 			await action();
