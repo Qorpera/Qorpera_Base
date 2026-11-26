@@ -657,6 +657,9 @@ export class SurfaceView {
 		this.#wireActive(this.#active.signal);
 		this.#attachObservers();
 		this.#contentReady = true;
+		this.#primaryDoor.resetRetryState();
+		for (const entry of this.#compareDoors.values()) entry.stage.resetRetryState();
+		this.#framesShown = "";
 		void this.#host.store.openSurface(this.slug);
 		this.update();
 	}
@@ -1745,15 +1748,9 @@ export class SurfaceView {
 	#drawChrome(surface: SurfaceSummary): void {
 		const store = this.#host.store;
 		const state = store.state;
-		const workspace = state.workspaces[surface.id];
-		const preview = workspace?.previewState;
 		const canStart = store.canStartSessions(surface);
 		const pointVisible = surface.archetype === "live_build";
-		const hasPreviewDoor = Boolean(
-			preview?.primary.status === "ready" && preview.primary.doorActionUrl && preview.primary.memberPass,
-		);
-		const pointEnabled =
-			pointVisible && canStart && (hasPreviewDoor || this.#primaryDoor.hasShown || Boolean(this.#localFrame));
+		const pointEnabled = pointVisible && canStart && (this.#primaryDoor.hasShown || Boolean(this.#localFrame));
 		if (this.#pointing && !pointEnabled) {
 			this.#pointing = false;
 			this.#primaryDoor.setInspectorMode(false);

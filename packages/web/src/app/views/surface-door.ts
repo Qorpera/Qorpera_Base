@@ -170,6 +170,7 @@ export class SurfaceDoorStage {
 	#active: DoorSlot | undefined;
 	#staging: DoorSlot | undefined;
 	#retriedPreviewId: string | undefined;
+	#failedPreviewKey: string | undefined;
 	#requestedPassKey: string | undefined;
 	#inspectorActive = false;
 	#identityTokens: CompiledIdentityTokens | null = null;
@@ -179,7 +180,14 @@ export class SurfaceDoorStage {
 	constructor(signal: AbortSignal, options: SurfaceDoorOptions = {}) {
 		this.#options = options;
 		signal.addEventListener("abort", () => this.dispose(), { once: true });
-		this.#retryBtn.addEventListener("click", () => this.#options.onRetry?.(), { signal: this.#lifetime.signal });
+		this.#retryBtn.addEventListener(
+			"click",
+			() => {
+				this.resetRetryState();
+				this.#options.onRetry?.();
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		this.el.append(this.#waiting, this.#pill);
 		window.addEventListener("message", (event) => this.#onMessage(event), { signal: this.#lifetime.signal });
 	}
@@ -218,6 +226,7 @@ export class SurfaceDoorStage {
 		const previewId = frame.previewId ?? "";
 		if (frame.status === "ready" && (previewId || (frame.doorActionUrl && frame.memberPass))) {
 			const path = frame.activeRoute.startsWith("/") ? frame.activeRoute : "/";
+			const targetKey = `${previewId}\0${path}`;
 			if (
 				this.#active &&
 				this.#active.previewId === previewId &&
@@ -227,39 +236,77 @@ export class SurfaceDoorStage {
 				this.#active.iframe.title = title;
 				this.#dropStaging();
 				this.#retriedPreviewId = undefined;
+				this.#failedPreviewKey = undefined;
 				this.#requestedPassKey = undefined;
 				this.#waiting.hidden = true;
 				this.#restPill();
 				return;
 			}
+			const staging = this.#staging;
+			if (
+				staging &&
+				staging.previewId === previewId &&
+				staging.path === path &&
+				(!frame.doorActionUrl || staging.action === frame.doorActionUrl)
+			) {
+				const freshPassForUnsent =
+					!staging.sent &&
+					Boolean(frame.doorActionUrl) &&
+					frame.memberPass !== null &&
+					frame.memberPass !== "" &&
+					frame.memberPass !== staging.pass &&
+					(!previewId || !this.#options.isPassUsable || this.#options.isPassUsable(previewId, frame.memberPass));
+				if (!freshPassForUnsent) {
+					staging.iframe.title = title;
+					this.#restPill();
+					if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
+					return;
+				}
+			}
 			if (!frame.doorActionUrl || !frame.memberPass) {
 				this.#dropStaging();
-				const needKey = `${previewId}\0${path}`;
-				if (previewId && this.#options.onNeedFreshPass && this.#requestedPassKey !== needKey) {
-					this.#requestFreshPass(previewId, needKey);
+				if (this.#failedPreviewKey === targetKey) {
+					this.#restPill();
+					if (!this.#active) this.#showWaiting("failed", t("The preview could not be opened."));
+					return;
+				}
+				const alreadyRequested =
+					this.#requestedPassKey === targetKey ||
+					Boolean(previewId && this.#requestedPassKey?.startsWith(`${previewId}\0`));
+				if (previewId && this.#options.onNeedFreshPass && !alreadyRequested) {
+					this.#requestFreshPass(previewId, targetKey, targetKey);
 				}
 				this.#restPill();
-				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
-				return;
-			}
-			const key = `${previewId}\0${frame.doorActionUrl}\0${frame.memberPass}\0${path}`;
-			if (this.#staging?.key === key) {
-				this.#staging.iframe.title = title;
+				if (!this.#active) {
+					this.#showWaiting(
+						"running",
+						this.#retriedPreviewId && this.#retriedPreviewId === previewId
+							? t("Reconnecting preview…")
+							: t("Opening preview…"),
+					);
+				}
 				return;
 			}
 			if (previewId && this.#options.isPassUsable && !this.#options.isPassUsable(previewId, frame.memberPass)) {
 				this.#dropStaging();
+				if (this.#failedPreviewKey === targetKey) {
+					this.#restPill();
+					if (!this.#active) this.#showWaiting("failed", t("The preview could not be opened."));
+					return;
+				}
 				const staleKey = `${previewId}\0${frame.memberPass}`;
 				if (this.#options.onNeedFreshPass && this.#requestedPassKey !== staleKey) {
-					this.#requestFreshPass(previewId, staleKey, frame.memberPass);
+					this.#requestFreshPass(previewId, staleKey, targetKey, frame.memberPass);
 				}
 				this.#restPill();
 				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
 				return;
 			}
+			this.#failedPreviewKey = undefined;
 			this.#requestedPassKey = undefined;
 			if (this.#retriedPreviewId && this.#retriedPreviewId !== previewId) this.#retriedPreviewId = undefined;
 			this.#dropStaging();
+			const key = `${previewId}\0${frame.doorActionUrl}\0${frame.memberPass}\0${path}`;
 			const iframe = h("iframe", {
 				class: "surface-frame is-staging",
 				sandbox: SANDBOX,
@@ -286,9 +333,10 @@ export class SurfaceDoorStage {
 						this.#retriedPreviewId = previewId;
 						this.#restPill();
 						if (!this.#active) this.#showWaiting("running", t("Reconnecting preview…"));
-						this.#requestFreshPass(previewId, `${previewId}\0${slot.pass}`, slot.pass);
+						this.#requestFreshPass(previewId, `${previewId}\0${slot.pass}`, targetKey, slot.pass);
 						return;
 					}
+					this.#failedPreviewKey = targetKey;
 					this.#restPill();
 					this.#dropActive();
 					this.#showWaiting("failed", t("The preview could not be opened."));
@@ -306,6 +354,7 @@ export class SurfaceDoorStage {
 			return;
 		}
 		this.#retriedPreviewId = undefined;
+		this.#failedPreviewKey = undefined;
 		this.#requestedPassKey = undefined;
 		this.#dropStaging();
 		if (
@@ -354,14 +403,19 @@ export class SurfaceDoorStage {
 		this.#postIdentityTokens();
 	}
 
+	resetRetryState(): void {
+		this.#retriedPreviewId = undefined;
+		this.#failedPreviewKey = undefined;
+		this.#requestedPassKey = undefined;
+	}
+
 	clear(): void {
 		this.#mark = null;
 		if (this.#inspectorActive) {
 			this.#postInspectorMode(false);
 			this.#inspectorActive = false;
 		}
-		this.#retriedPreviewId = undefined;
-		this.#requestedPassKey = undefined;
+		this.resetRetryState();
 		this.#dropStaging();
 		this.#dropActive();
 		this.#retryBtn.hidden = true;
@@ -375,12 +429,13 @@ export class SurfaceDoorStage {
 		this.el.remove();
 	}
 
-	#requestFreshPass(previewId: string, requestKey: string, stalePass?: string): void {
+	#requestFreshPass(previewId: string, requestKey: string, failKey: string, stalePass?: string): void {
 		this.#requestedPassKey = requestKey;
 		const onFailure = () => {
 			if (this.#lifetime.signal.aborted || this.#requestedPassKey !== requestKey || this.#staging) return;
 			this.#requestedPassKey = undefined;
 			this.#retriedPreviewId = undefined;
+			this.#failedPreviewKey = failKey;
 			this.#restPill();
 			this.#dropActive();
 			this.#showWaiting("failed", t("The preview could not be opened."));
@@ -484,6 +539,7 @@ export class SurfaceDoorStage {
 				this.#active = staging;
 				this.#staging = undefined;
 				this.#retriedPreviewId = undefined;
+				this.#failedPreviewKey = undefined;
 				this.#requestedPassKey = undefined;
 				staging.iframe.classList.remove("is-staging");
 				staging.iframe.classList.add("is-shown");
