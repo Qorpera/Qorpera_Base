@@ -484,13 +484,14 @@ end $$;
 do $$
 declare a jsonb := pg_temp.stage('alpha'); v jsonb; u jsonb; r jsonb; v_review uuid; i integer;
 	c_member constant uuid := '63200000-0000-4000-8000-000000000002';
+	v_seq bigint;
 begin
-	r := pg_temp.commit(pg_temp.member(2), 'review-setup-1', (select jsonb_agg(jsonb_build_object('op','write','path','rv' || n || '.txt','file',a))
+	r := pg_temp.commit(pg_temp.member(2), 'review-setup-1', (select jsonb_agg(jsonb_build_object('op','mkdir','path','QorperaOS/agents/rv' || n))
 		from generate_series(1, 6) n));
 	perform pg_temp.expect(r, 6, 'saved');
-	-- No record: denied. A record that allows: saved.
+	select last_seq into v_seq from public.qorpera_folder_clocks where environment_id = '63200000-0000-4000-8000-000000000020';
 	v := pg_temp.run('human', c_member);
-	u := jsonb_build_array(jsonb_build_object('op','delete','path','rv1.txt','expectedVersion',pg_temp.read('rv1.txt') -> 'entry' ->> 'version'));
+	u := jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/rv1','expectedVersion',pg_temp.read('QorperaOS/agents/rv1') -> 'entry' ->> 'version','asOfSeq',v_seq));
 	perform pg_temp.expect(pg_temp.commit(v, 'review-none-1', u), 1, 'denied', 'review_required');
 	insert into public.qorpera_folder_reviews(environment_id, run_id, change_set_sha256, units, decision)
 	values ('63200000-0000-4000-8000-000000000020', (v ->> 'runId')::uuid, public.qorpera_folder_change_set_sha256(u), '{1}', 'allow')
@@ -499,9 +500,8 @@ begin
 	perform pg_temp.expect(r, 1, 'saved');
 	if (select review_id from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid) is distinct from v_review then
 		raise exception 'The commit records the review it used'; end if;
-	-- An answered ask: saved, with its approver.
 	v := pg_temp.run('human', c_member);
-	u := jsonb_build_array(jsonb_build_object('op','move','from','rv2.txt','to','rv2-moved.txt','expectedVersion',pg_temp.read('rv2.txt') -> 'entry' ->> 'version'));
+	u := jsonb_build_array(jsonb_build_object('op','move','from','QorperaOS/agents/rv2','to','QorperaOS/agents/rv2-moved','expectedVersion',pg_temp.read('QorperaOS/agents/rv2') -> 'entry' ->> 'version','asOfSeq',v_seq));
 	insert into public.qorpera_folder_reviews(environment_id, run_id, change_set_sha256, units, decision, answer, answered_by_user_id, answered_at)
 	values ('63200000-0000-4000-8000-000000000020', (v ->> 'runId')::uuid, public.qorpera_folder_change_set_sha256(u), '{1}', 'ask',
 		'allow', '63200000-0000-4000-8000-000000000001', clock_timestamp())
@@ -510,10 +510,9 @@ begin
 	perform pg_temp.expect(r, 1, 'saved');
 	if (select approver_user_id from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid)
 		is distinct from '63200000-0000-4000-8000-000000000001' then raise exception 'An answered allow records its approver'; end if;
-	-- An open ask waits; a deny, another run's record, another digest and a unit outside the set are denied.
 	v := pg_temp.run('human', c_member);
-	u := jsonb_build_array(jsonb_build_object('op','delete','path','rv3.txt','expectedVersion',pg_temp.read('rv3.txt') -> 'entry' ->> 'version'),
-		jsonb_build_object('op','delete','path','rv4.txt','expectedVersion',pg_temp.read('rv4.txt') -> 'entry' ->> 'version'),
+	u := jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/rv3','expectedVersion',pg_temp.read('QorperaOS/agents/rv3') -> 'entry' ->> 'version','asOfSeq',v_seq),
+		jsonb_build_object('op','delete','path','QorperaOS/agents/rv4','expectedVersion',pg_temp.read('QorperaOS/agents/rv4') -> 'entry' ->> 'version','asOfSeq',v_seq),
 		jsonb_build_object('op','mkdir','path','rv-plain'));
 	insert into public.qorpera_folder_reviews(environment_id, run_id, change_set_sha256, units, decision)
 	values ('63200000-0000-4000-8000-000000000020', (v ->> 'runId')::uuid, public.qorpera_folder_change_set_sha256(u), '{1}', 'ask')
@@ -522,9 +521,9 @@ begin
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'waiting_for_review');
 	perform pg_temp.expect(r, 2, 'denied', 'review_required');
 	perform pg_temp.expect(r, 3, 'saved');
-	if (pg_temp.read('rv3.txt') ->> 'found')::boolean is not true then raise exception 'A waiting unit is not applied'; end if;
+	if (pg_temp.read('QorperaOS/agents/rv3') ->> 'found')::boolean is not true then raise exception 'A waiting unit is not applied'; end if;
 	v := pg_temp.run('human', c_member);
-	u := jsonb_build_array(jsonb_build_object('op','delete','path','rv5.txt','expectedVersion',pg_temp.read('rv5.txt') -> 'entry' ->> 'version'));
+	u := jsonb_build_array(jsonb_build_object('op','delete','path','QorperaOS/agents/rv5','expectedVersion',pg_temp.read('QorperaOS/agents/rv5') -> 'entry' ->> 'version','asOfSeq',v_seq));
 	insert into public.qorpera_folder_reviews(environment_id, run_id, change_set_sha256, units, decision)
 	values ('63200000-0000-4000-8000-000000000020', (v ->> 'runId')::uuid, public.qorpera_folder_change_set_sha256(u), '{1}', 'deny')
 	returning id into v_review;
@@ -536,9 +535,8 @@ begin
 	values ('63200000-0000-4000-8000-000000000020', extensions.gen_random_uuid(), public.qorpera_folder_change_set_sha256(u), '{1}', 'allow')
 	returning id into v_review;
 	perform pg_temp.expect(pg_temp.commit(v, 'review-other-run-1', u, v_review), 1, 'denied', 'review_required');
-	-- A member's delete is never reviewed.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'review-member-1', jsonb_build_array(jsonb_build_object('op','delete',
-		'path','rv6.txt','expectedVersion',pg_temp.read('rv6.txt') -> 'entry' ->> 'version'))), 1, 'saved');
+		'path','QorperaOS/agents/rv6','expectedVersion',pg_temp.read('QorperaOS/agents/rv6') -> 'entry' ->> 'version','asOfSeq',v_seq))), 1, 'saved');
 end $$;
 
 -- The indexed resolver keeps C1a's rules: an exact resource covers only its own key, a tie covers nothing, and a

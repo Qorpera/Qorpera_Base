@@ -54,9 +54,13 @@ begin
 		pg_temp.action(b, 'skill-delegation', 'allow', 'delegation', 'update_skill'), u), '42501', 'This change has no approval in this run');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b,
 		pg_temp.action(b, 'skill-other-tool', 'allow', 'destructive', 'update_memory'), u), '42501', 'This change has no approval in this run');
-	-- Its own skill, approved as update_skill's deletion: recorded, and the commit deletes it under the review.
 	r := pg_temp.record(b, pg_temp.action(b, 'skill-own', 'allow', 'destructive', 'update_skill'), u);
-	perform pg_temp.expect(pg_temp.commit(p, 'skill-delete-none', u), 1, 'denied', 'review_required');
+	begin
+		perform pg_temp.expect(pg_temp.commit(p, 'skill-delete-none', u), 1, 'saved');
+		if pg_temp.present(c_own) then raise exception 'The unreviewed skill deletion did not delete the skill'; end if;
+		raise exception 'rollback-probe' using errcode = 'QTF99';
+	exception when sqlstate 'QTF99' then null;
+	end;
 	c := pg_temp.commit(p, 'skill-delete', u, (r ->> 'reviewId')::uuid);
 	perform pg_temp.expect(c, 1, 'saved');
 	if pg_temp.present(c_own) then raise exception 'The reviewed skill deletion did not delete the skill'; end if;

@@ -2921,8 +2921,17 @@ it("explains read-only coding_finish handoffs and archiving unneeded blocked cod
 		false,
 	);
 	expect(completion).toContain(
-		"If a blocked coding session no longer needs the member's answer (for example, you already resolved the work or are closing the todo), archive it with manage_worker action archive (or steer it with followup) so no stale prompt stays pinned for the member.",
+		"Members never see coding-session prompts directly: when a coding session reports blocked, answer it yourself from company context with manage_worker followup, archive it with manage_worker action archive if it is no longer needed, or ask the member cleanly in your own voice in this thread (without raw session IDs or internal jargon) and relay their answer with followup.",
 	);
+	const escalation = cloudCompanyRuntimeInstructions(
+		{
+			kind: "agent",
+			source: { kind: "surface-escalation", id: randomUUID(), occurrenceKey: "surface-escalation:test" },
+		} as never,
+		false,
+	);
+	expect(escalation).toContain("# This run: a Surface session escalated to you");
+	expect(escalation).toContain("steer_surface_session");
 });
 
 it("parses optional imageModel preference on company context and rejects unknown values", () => {

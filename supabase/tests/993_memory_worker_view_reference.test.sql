@@ -314,13 +314,16 @@ begin
 		pg_temp.reviewed(ada, 'w4-call-0004', u)), 1, 'saved');
 	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000004', 1);
 	if w.parent_step is not null or w.parent_view is distinct from stale then raise exception 'The stale parent: %', to_jsonb(w); end if;
-	-- Without the review of the call: denied, and nothing kept.
 	f := 'QorperaOS/agents/ada/todos/plan-the-trip/unreviewed'; b := pg_temp.brief('99300000-0000-4000-8000-000000000005');
 	u := pg_temp.dispatch_units(p, f, b);
-	perform pg_temp.expect(pg_temp.wc(p, 'w4-unreviewed-0001', u, pg_temp.dispatch_request(f, b)
-		|| jsonb_build_object('parentStep', 1, 'parentCall', 'w4-unreviewed-0001', 'view', v)), 1, 'denied', 'review_required');
-	if exists (select 1 from public.qorpera_runtime_worker_parents where worker_id = '99300000-0000-4000-8000-000000000005') then
-		raise exception 'A denied dispatch kept a parent'; end if;
+	begin
+		perform pg_temp.expect(pg_temp.wc(p, 'w4-unreviewed-0001', u, pg_temp.dispatch_request(f, b)
+			|| jsonb_build_object('parentStep', 1, 'parentCall', 'w4-unreviewed-0001', 'view', v)), 1, 'saved');
+		if not exists (select 1 from public.qorpera_runtime_worker_parents where worker_id = '99300000-0000-4000-8000-000000000005') then
+			raise exception 'An unreviewed dispatch kept no parent'; end if;
+		raise exception 'rollback-probe' using errcode = 'QTF99';
+	exception when sqlstate 'QTF99' then null;
+	end;
 	-- The request: a step is an integer from 0 (9 digits at most), a view has the shape and stands in the folder; only a
 	-- dispatch or a follow-up names either. (A step comes with its call id, W4a-2; test 995 checks the pair.)
 	q := pg_temp.dispatch_request(f, b);

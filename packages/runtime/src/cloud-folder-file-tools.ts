@@ -2159,7 +2159,7 @@ export function cloudFolderFileTools(options: {
 			name: "company_move" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
 			description:
-				"Move or rename one file, link or folder of the company folder (a folder moves with everything in it). from is where it is now, to is its new path: nothing may be there yet (a change of letter case alone is fine), and the folder it goes in must exist. Read from first and give its version as expectedVersion. For a folder, list it with company_list first and give that listing's asOfSeq (its first page's): a change in the folder after it stops the move; for a file or a link, asOfSeq is null. A move needs the automatic review's approval of this call, as a deletion does. Links and mentions of the old path in other files stay as they are.",
+				"Move or rename one file, link or folder of the company folder (a folder moves with everything in it). from is where it is now, to is its new path: nothing may be there yet (a change of letter case alone is fine), and the folder it goes in must exist. Read from first and give its version as expectedVersion. For a folder, list it with company_list first and give that listing's asOfSeq (its first page's): a change in the folder after it stops the move; for a file or a link, asOfSeq is null. Links and mentions of the old path in other files stay as they are.",
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,
@@ -2198,10 +2198,6 @@ export function cloudFolderFileTools(options: {
 					asOfSeq: number | null;
 				};
 				const review = context.actionReviewId;
-				if (!review)
-					throw new CloudToolRefusal(
-						"A move needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
-					);
 				enforceSurfaceFilePolicy(surfaceFilePolicy, input.to);
 				if (surfaceFilePolicy?.mode === "surface_worker") {
 					enforceSurfaceFilePolicy(surfaceFilePolicy, input.from);
@@ -2307,10 +2303,6 @@ export function cloudFolderFileTools(options: {
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string; expectedVersion: string };
 				const review = context.actionReviewId;
-				if (!review)
-					throw new CloudToolRefusal(
-						"A deletion needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
-					);
 				if (surfaceFilePolicy?.mode === "surface_worker") {
 					enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
 				}

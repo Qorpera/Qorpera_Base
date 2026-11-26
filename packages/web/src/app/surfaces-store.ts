@@ -2022,13 +2022,12 @@ export class SurfacesStore {
 		const activeSessions = workspace.activeSessions;
 		const running = activeSessions.filter(isRunningSession).length;
 		const pending = activeSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0);
-		const needsAttention = activeSessions.filter((session) => session.state === "needs_input").length;
 		return {
 			...workspace.surface,
 			activeSessionCount: activeSessions.length,
 			runningSessionCount: running,
 			pendingChangeCount: pending,
-			needsAttentionCount: needsAttention,
+			needsAttentionCount: 0,
 		};
 	}
 

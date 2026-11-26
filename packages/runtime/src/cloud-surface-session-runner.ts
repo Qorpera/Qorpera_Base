@@ -146,6 +146,7 @@ export interface SurfaceSessionTurnInput {
 	readonly briefMarkdown?: string | null;
 	readonly explorationVariantLabel?: string | null;
 	readonly originKind?: string;
+	readonly memberInitiated?: boolean;
 	readonly originRef?: unknown;
 	readonly conflictPaths?: readonly string[] | null;
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;

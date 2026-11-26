@@ -161,18 +161,18 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			baseInstructions,
 			"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts and analysis.",
 			"Never try to mutate published Company Files under /company directly; inspect them read-only via company_search, company_read, company_list, data_describe, data_query, or shell commands under /company, and stage every proposed action via stage_surface_ops_action.",
-			"Every turn MUST end with coding_finish (omitting headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
+			"Every turn MUST end with coding_finish (omitting headSha), or coding_ask strictly on a genuine hard blocker you cannot resolve (it escalates to the Co-Founder); never end with plain text alone.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 		].join(" ");
 		const claudeSystemNote = [
 			baseInstructions,
 			"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts and analysis.",
 			"Never try to mutate /company directly from Bash, Edit, or Write; stage every proposed action through mcp__qorpera__stage_surface_ops_action, inspect company files via Read or mcp__qorpera__company_search/company_read/company_list, and query company databases read-only via mcp__qorpera__data_describe/data_query.",
-			"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey and summary) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
+			"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey and summary), or mcp__qorpera__coding_ask strictly on a genuine hard blocker you cannot resolve (it escalates to the Co-Founder); ending with plain text alone fails the turn.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 		].join("\n");
 		const turnCorrection =
-			"Your turn ended without coding_finish or coding_ask. Make sure any proposed action is staged with stage_surface_ops_action, then call coding_finish with a concise founder-facing summary (or coding_ask if a founder decision is needed). This is the last turn of this run.";
+			"Your turn ended without coding_finish or coding_ask. Make sure any proposed action is staged with stage_surface_ops_action, then call coding_finish with a concise founder-facing summary (or coding_ask strictly if hard-blocked; it escalates to the Co-Founder). This is the last turn of this run.";
 		return {
 			instructions: codexInstructions,
 			claudeSystemNote,
@@ -416,7 +416,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 				]
 			: [
 					`Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks)${hasMakePicture ? ", use make_picture for bespoke concept renders" : ""}, use stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call inspect_surface (passing changeId when checking an optionGroup variant) after staging to visually audit the rendered page before calling coding_finish.`,
-					"Every turn MUST end with coding_finish (with operationKey, summary, and optional notePaths; omit headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
+					"Every turn MUST end with coding_finish (with operationKey, summary, and optional notePaths; omit headSha), or coding_ask strictly on a genuine hard blocker you cannot work around (never for taste or layout preferences — stage Preview variants instead; coding_ask escalates to the Co-Founder); never end with plain text alone.",
 				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 	].join("\n\n");
@@ -430,13 +430,13 @@ export async function prepareSurfaceCodingWorkspace(options: {
 				]
 			: [
 					`Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use mcp__qorpera__compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks)${hasMakePicture ? ", use mcp__qorpera__make_picture for bespoke concept renders" : ""}, use mcp__qorpera__stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call mcp__qorpera__inspect_surface (passing changeId when checking an optionGroup variant) after staging to inspect a real rendered screenshot before calling mcp__qorpera__coding_finish.`,
-					"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey, summary, and optional notePaths) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
+					"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey, summary, and optional notePaths), or mcp__qorpera__coding_ask strictly on a genuine hard blocker you cannot work around (never for taste or layout preferences — stage Preview variants instead; coding_ask escalates to the Co-Founder); ending with plain text alone fails the turn.",
 				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 	].join("\n\n");
 	const turnCorrection = isInternalReconciliation
 		? "Your automatic reconciliation turn ended without calling coding_finish. Make sure you called stage_surface_patch with the combined resolution covering every overlapping path, then call coding_finish now with a brief summary. This is the last turn of this run."
-		: "Your turn ended without calling coding_finish or coding_ask. Make sure your deliverables are staged via stage_surface_patch, then call coding_finish now with a concise founder-facing summary (or coding_ask if a founder decision is required). This is the last turn of this run.";
+		: "Your turn ended without calling coding_finish or coding_ask. Make sure your deliverables are staged via stage_surface_patch, then call coding_finish now with a concise founder-facing summary (or coding_ask strictly if hard-blocked; it escalates to the Co-Founder). This is the last turn of this run.";
 
 	return {
 		instructions: codexInstructions,

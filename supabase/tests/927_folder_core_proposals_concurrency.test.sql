@@ -21,7 +21,8 @@ create function pg_temp.owner() returns jsonb language sql as $$
 	select '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}'::jsonb
 $$;
 create function pg_temp.del(p_path text) returns jsonb language sql as $$
-	select jsonb_build_object('op','delete','path',p_path,'expectedVersion',pg_temp.version(p_path))
+	select jsonb_build_object('op','delete','path',p_path,'expectedVersion',pg_temp.version(p_path),
+		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020'))
 $$;
 create function pg_temp.sql_park(p_key text, p_path text) returns text language sql as $$
 	select format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
@@ -75,20 +76,19 @@ $$;
 
 -- The files, committed: each to be parked and decided once; c and c2 have an earlier life (written, deleted, written
 -- again), so an erasure of them has history to erase while their proposals stay in the current life.
-select pg_temp.commit(pg_temp.owner(), 'p40-race-files-1', (select jsonb_agg(jsonb_build_object('op','write','path',p,
-	'file',pg_temp.stage('p40 race ' || p))) from unnest(array['p40-a.txt','p40-b.txt','p40-b2.txt','p40-c.txt','p40-c2.txt',
-	'p40-e.txt']) p) || '[{"op":"mkdir","path":"p40-d"},{"op":"mkdir","path":"p40-narrow"}]'::jsonb) \g /dev/null
-select pg_temp.commit(pg_temp.owner(), 'p40-race-files-2', jsonb_build_array(pg_temp.del('p40-c.txt'), pg_temp.del('p40-c2.txt'),
-	jsonb_build_object('op','write','path','p40-d/x.txt','file',pg_temp.stage('p40 race d')))) \g /dev/null
-select pg_temp.commit(pg_temp.owner(), 'p40-race-files-3', (select jsonb_agg(jsonb_build_object('op','write','path',p,
-	'file',pg_temp.stage('p40 race again ' || p))) from unnest(array['p40-c.txt','p40-c2.txt']) p)) \g /dev/null
+select pg_temp.commit(pg_temp.owner(), 'p40-race-files-1',
+	'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'::jsonb
+	|| (select jsonb_agg(jsonb_build_object('op','mkdir','path',p)) from unnest(array['QorperaOS/agents/p40-a','QorperaOS/agents/p40-b','QorperaOS/agents/p40-b2','QorperaOS/agents/p40-c','QorperaOS/agents/p40-c2',
+	'QorperaOS/agents/p40-e','QorperaOS/agents/p40-d']) p) || '[{"op":"mkdir","path":"p40-narrow"}]'::jsonb) \g /dev/null
+select pg_temp.commit(pg_temp.owner(), 'p40-race-files-2', jsonb_build_array(pg_temp.del('QorperaOS/agents/p40-c'), pg_temp.del('QorperaOS/agents/p40-c2'))) \g /dev/null
+select pg_temp.commit(pg_temp.owner(), 'p40-race-files-3', (select jsonb_agg(jsonb_build_object('op','mkdir','path',p)) from unnest(array['QorperaOS/agents/p40-c','QorperaOS/agents/p40-c2']) p)) \g /dev/null
 do $$
 begin
-	perform set_config('qorpera_test.pa', pg_temp.park('p40-park-a', 'p40-a.txt')::text, false);
-	perform set_config('qorpera_test.pb', pg_temp.park('p40-park-b', 'p40-b.txt')::text, false);
-	perform set_config('qorpera_test.pb2', pg_temp.park('p40-park-b2', 'p40-b2.txt')::text, false);
-	perform set_config('qorpera_test.pc', pg_temp.park('p40-park-c', 'p40-c.txt')::text, false);
-	perform set_config('qorpera_test.pc2', pg_temp.park('p40-park-c2', 'p40-c2.txt')::text, false);
+	perform set_config('qorpera_test.pa', pg_temp.park('p40-park-a', 'QorperaOS/agents/p40-a')::text, false);
+	perform set_config('qorpera_test.pb', pg_temp.park('p40-park-b', 'QorperaOS/agents/p40-b')::text, false);
+	perform set_config('qorpera_test.pb2', pg_temp.park('p40-park-b2', 'QorperaOS/agents/p40-b2')::text, false);
+	perform set_config('qorpera_test.pc', pg_temp.park('p40-park-c', 'QorperaOS/agents/p40-c')::text, false);
+	perform set_config('qorpera_test.pc2', pg_temp.park('p40-park-c2', 'QorperaOS/agents/p40-c2')::text, false);
 end $$;
 do $$
 begin
@@ -111,15 +111,13 @@ begin
 		raise exception 'A: the second apply must wait at the proposal, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' or pg_temp.status(pa) <> 'applied' or pg_temp.present('p40-a.txt')
+	if v_state <> 'ok' or pg_temp.status(pa) <> 'applied' or pg_temp.present('qorperaos/agents/p40-a')
 		or pg_temp.unit_of('p40-race-a-1') <> 'saved:' or pg_temp.unit_of('p40-race-a-2') <> 'denied:review_required'
 		or (select apply_commit_id from public.qorpera_folder_proposals where id = pa) is distinct from
 			(select id from public.qorpera_folder_commits where operation_key = 'p40-race-a-1') then
 		raise exception 'A: % % % %', v_state, pg_temp.status(pa), pg_temp.unit_of('p40-race-a-1'), pg_temp.unit_of('p40-race-a-2'); end if;
 end $$;
 
--- B. A member's discard in flight: the apply waits at the proposal, then finds it discarded and applies nothing. Then the
--- other order: an apply in flight, and the discard waits and answers the proposal as applied.
 do $$
 declare v_state text; pb uuid := current_setting('qorpera_test.pb')::uuid; pb2 uuid := current_setting('qorpera_test.pb2')::uuid;
 begin
@@ -131,7 +129,7 @@ begin
 		raise exception 'B: the apply must wait at the proposal, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' or pg_temp.status(pb) <> 'discarded' or not pg_temp.present('p40-b.txt')
+	if v_state <> 'ok' or pg_temp.status(pb) <> 'discarded' or not pg_temp.present('qorperaos/agents/p40-b')
 		or pg_temp.unit_of('p40-race-b-1') <> 'denied:review_required' then
 		raise exception 'B: % % %', v_state, pg_temp.status(pb), pg_temp.unit_of('p40-race-b-1'); end if;
 	perform dblink_exec('fence_one', 'begin');
@@ -140,29 +138,26 @@ begin
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'B: the discard must wait for the apply'; end if;
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' or pg_temp.status(pb2) <> 'applied' or pg_temp.present('p40-b2.txt') then
+	if v_state <> 'ok' or pg_temp.status(pb2) <> 'applied' or pg_temp.present('qorperaos/agents/p40-b2') then
 		raise exception 'B: the discard after the apply: % %', v_state, pg_temp.status(pb2); end if;
 end $$;
 
--- C. An erasure in flight that holds a proposal at 7c (its path is under the root, in the root's current life, so the
--- proposal stays): the apply waits there, then applies. Then the other order: an apply in flight, and the erasure waits at
--- the proposal and then finishes.
 do $$
 declare v_state text; pc uuid := current_setting('qorpera_test.pc')::uuid; pc2 uuid := current_setting('qorpera_test.pc2')::uuid;
 begin
 	perform dblink_exec('fence_one', 'begin');
-	perform * from dblink('fence_one', pg_temp.sql_erase('p40-c.txt', 'p40-race-erase-c')) as t(r text);
+	perform * from dblink('fence_one', pg_temp.sql_erase('QorperaOS/agents/p40-c', 'p40-race-erase-c')) as t(r text);
 	perform dblink_send_query('fence_two', pg_temp.sql_apply('p40-race-c-1', pc, current_setting('qorpera_test.rc')::uuid));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'C: the apply must wait for the erasure'; end if;
 	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_proposals'::regclass then
 		raise exception 'C: the apply must wait at the proposal, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' or pg_temp.status(pc) <> 'applied' or pg_temp.present('p40-c.txt') then
+	if v_state <> 'ok' or pg_temp.status(pc) <> 'applied' or pg_temp.present('qorperaos/agents/p40-c') then
 		raise exception 'C: the apply after the erasure: % %', v_state, pg_temp.status(pc); end if;
 	perform dblink_exec('fence_one', 'begin');
 	perform * from dblink('fence_one', pg_temp.sql_apply('p40-race-c2-1', pc2, current_setting('qorpera_test.rc2')::uuid)) as t(r text);
-	perform dblink_send_query('fence_two', pg_temp.sql_erase('p40-c2.txt', 'p40-race-erase-c2'));
+	perform dblink_send_query('fence_two', pg_temp.sql_erase('QorperaOS/agents/p40-c2', 'p40-race-erase-c2'));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'C: the erasure must wait for the apply'; end if;
 	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_proposals'::regclass then
 		raise exception 'C: the erasure must wait at the proposal, not on %', pg_temp.queued_on('fence_two'); end if;
@@ -172,14 +167,12 @@ begin
 		raise exception 'C: the erasure after the apply: % %', v_state, pg_temp.status(pc2); end if;
 end $$;
 
--- D. A proposal parked under a root while an erasure of it waited for the root's lock: the erasure's plain read did not
--- lock it at 7c, so it asks for a retry; the retry erases it.
 do $$
 declare v_state text; p uuid; r text;
 begin
 	perform dblink_exec('fence_one', 'begin');
-	perform * from dblink('fence_one', pg_temp.sql_park('p40-race-park-d', 'p40-d/x.txt')) as t(r text);
-	perform dblink_send_query('fence_two', pg_temp.sql_erase('p40-d', 'p40-race-erase-d'));
+	perform * from dblink('fence_one', pg_temp.sql_park('p40-race-park-d', 'QorperaOS/agents/p40-d')) as t(r text);
+	perform dblink_send_query('fence_two', pg_temp.sql_erase('QorperaOS/agents/p40-d', 'p40-race-erase-d'));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'D: the erasure must wait for the root'; end if;
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
@@ -190,11 +183,8 @@ begin
 	if pg_temp.status(p) <> 'open' then raise exception 'D: the parked proposal is open'; end if;
 end $$;
 
--- E. A commit that only parks publishes nothing yet keeps derived content, so it passes the authority check: a narrowing
--- that commits while it decides refuses it (folder_authority_changed) and no proposal is left; a retry with the same
--- operation key parks. The commit is held at rank 1 by a connection holding the member row.
 do $$
-declare v_state text; v_sql text := pg_temp.sql_park('p40-race-park-e', 'p40-e.txt');
+declare v_state text; v_sql text := pg_temp.sql_park('p40-race-park-e', 'QorperaOS/agents/p40-e');
 begin
 	perform dblink_exec('fence_one', 'begin');
 	perform * from dblink('fence_one', $q$select 1 from public.qorpera_profile_members
@@ -211,10 +201,10 @@ begin
 	if v_state not like 'PGRST %folder_authority_changed%' then
 		raise exception 'E: a parking commit must refuse with folder_authority_changed, got %', v_state; end if;
 	if exists (select 1 from public.qorpera_folder_proposal_paths q where q.environment_id = '64800000-0000-4000-8000-000000000020'
-		and q.path = 'p40-e.txt') then raise exception 'E: the refused commit left a proposal'; end if;
+		and q.path = 'QorperaOS/agents/p40-e') then raise exception 'E: the refused commit left a proposal'; end if;
 	perform * from dblink('fence_two', v_sql) as t(r text);
 	if not exists (select 1 from public.qorpera_folder_proposal_paths q where q.environment_id = '64800000-0000-4000-8000-000000000020'
-		and q.path = 'p40-e.txt') then raise exception 'E: the retry parks'; end if;
+		and q.path = 'QorperaOS/agents/p40-e') then raise exception 'E: the retry parks'; end if;
 end $$;
 
 -- F. P40b, with receipts begun for real (run f1's acknowledgement recorded first, as 651 does, so its calls may work).
@@ -250,12 +240,12 @@ create function pg_temp.sql_apply_under(p_proposal uuid, p_review uuid, p_receip
 		current_setting('qorpera_test.actor'), 'apply-proposal:' || p_proposal, p_proposal, p_review, p_receipt)
 $$;
 
-select pg_temp.commit(pg_temp.owner(), 'p40b-race-files', (select jsonb_agg(jsonb_build_object('op','write','path',p,
-	'file',pg_temp.stage('p40b race ' || p))) from unnest(array['p40-f.txt','p40-g.txt']) p)) \g /dev/null
+select pg_temp.commit(pg_temp.owner(), 'p40b-race-files', (select jsonb_agg(jsonb_build_object('op','mkdir','path',p))
+	from unnest(array['QorperaOS/agents/p40-f','QorperaOS/agents/p40-g']) p)) \g /dev/null
 do $$
 begin
-	perform set_config('qorpera_test.pf', pg_temp.park('p40b-park-f', 'p40-f.txt')::text, false);
-	perform set_config('qorpera_test.pg', pg_temp.park('p40b-park-g', 'p40-g.txt')::text, false);
+	perform set_config('qorpera_test.pf', pg_temp.park('p40b-park-f', 'QorperaOS/agents/p40-f')::text, false);
+	perform set_config('qorpera_test.pg', pg_temp.park('p40b-park-g', 'QorperaOS/agents/p40-g')::text, false);
 end $$;
 do $$
 begin
@@ -290,7 +280,7 @@ begin
 	perform * from dblink_get_result('fence_three') as t(r text);
 	select * into v_commit from public.qorpera_folder_commits where environment_id = '64800000-0000-4000-8000-000000000020'
 		and operation_key = 'apply-proposal:' || pf;
-	if v_state <> 'ok' or pg_temp.status(pf) <> 'discarded' or not pg_temp.present('p40-f.txt')
+	if v_state <> 'ok' or pg_temp.status(pf) <> 'discarded' or not pg_temp.present('qorperaos/agents/p40-f')
 		or pg_temp.unit_of('apply-proposal:' || pf) <> 'denied:review_required' or v_commit.receipt_id is distinct from v_receipt then
 		raise exception 'F: % % % %', v_state, pg_temp.status(pf), pg_temp.unit_of('apply-proposal:' || pf), to_jsonb(v_commit); end if;
 	if a is distinct from jsonb_build_object('schema', 'qorpera.folder-commit/v1', 'commitId', v_commit.id, 'seq', v_commit.seq,
@@ -321,7 +311,7 @@ begin
 			'receiptId', v_receipt)
 		or v_row.status <> 'cancelled' or v_row.completed_at is null
 		or exists (select 1 from public.qorpera_folder_commits c where c.receipt_id = v_receipt)
-		or pg_temp.status(pg) <> 'discarded' or not pg_temp.present('p40-g.txt') then
+		or pg_temp.status(pg) <> 'discarded' or not pg_temp.present('qorperaos/agents/p40-g') then
 		raise exception 'G: % %', a, to_jsonb(v_row); end if;
 	-- The run is not fenced: its next operation begins.
 	perform pg_temp.begin_receipt('p40b-after-g');

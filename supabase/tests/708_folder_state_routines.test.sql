@@ -586,8 +586,7 @@ begin
 		'a routine a member made does not become dynamic (when: once)' then
 		raise exception 'A member''s routine does not become dynamic'; end if;
 	u := jsonb_build_array(pg_temp.routine(p, pg_temp.rparse(e8, 'Follow up', pg_temp.once('2030-01-01T09:00:00Z'))));
-	perform pg_temp.expect(pg_temp.commit(a, 'dynamic-0001', u), 1, 'denied', 'review_required');
-	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0002', u), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(a, 'dynamic-0001', u), 1, 'saved');
 	x := pg_temp.rt(e8); v := pg_temp.rv(e8);
 	if x.origin is distinct from 'agent' or x.status is distinct from 'active' or x.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000001'
 		or v.triggers is distinct from '[{"id":"file","kind":"once","at":"2030-01-01T09:00:00Z","timeZone":"Europe/Copenhagen","replyPolicy":"optional"}]'
@@ -619,21 +618,19 @@ begin
 			'{"status":"concluded","conclusion":"Done."}'))) is distinct from 'plain' then
 		raise exception 'A decision is not reviewed'; end if;
 	if pg_temp.review_class(b, pg_temp.routine(p, pg_temp.rparse(e8, 'Follow up again', pg_temp.once('2030-02-01T09:00:00Z'))))
-			is distinct from 'delegation'
+			is distinct from 'plain'
 		or pg_temp.review_class(b, pg_temp.routine(p, pg_temp.rparse(e8, 'Follow up', pg_temp.once('2030-01-01T09:00:00Z'),
-			'{"status":"concluded","conclusion":"Done.","instructions":"Stop."}'))) is distinct from 'delegation'
+			'{"status":"concluded","conclusion":"Done.","instructions":"Stop."}'))) is distinct from 'plain'
 		or pg_temp.review_class(a, pg_temp.routine(p, pg_temp.rparse(e8, 'Follow up', pg_temp.once('2030-02-01T09:00:00Z'))))
-			is distinct from 'delegation' then
-		raise exception 'Other changes are delegation'; end if;
-	-- Deciding to run at the same time is a decision too: a new version.
+			is distinct from 'plain' then
+		raise exception 'Routine changes are plain'; end if;
 	perform pg_temp.expect(pg_temp.commit(b, 'dynamic-0008', jsonb_build_array(pg_temp.routine(p,
 		pg_temp.rparse(e8, 'Follow up', pg_temp.once('2030-01-01T09:00:00Z'))))), 1, 'saved');
 	if (pg_temp.rt(e8)).current_version is distinct from 2::bigint or public.qorpera_routine_decision_pending((b ->> 'runId')::uuid) then
 		raise exception 'The same at is a decision: %', to_jsonb(pg_temp.rt(e8)); end if;
-	-- Once it decided, its further changes are delegation.
 	if pg_temp.review_class(b, pg_temp.routine(p, pg_temp.rparse(e8, 'Follow up', pg_temp.once('2030-02-01T09:00:00Z'))))
-			is distinct from 'delegation' then
-		raise exception 'A decided run''s change is delegation'; end if;
+			is distinct from 'plain' then
+		raise exception 'A decided run''s change is plain'; end if;
 	-- The next run decides a new at and more effort, a new version paid as before.
 	c := pg_temp.routine_run(e8);
 	perform pg_temp.expect(pg_temp.commit(c, 'dynamic-0009', jsonb_build_array(pg_temp.routine(p,
@@ -671,8 +668,8 @@ begin
 	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0014', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/later.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ef', 'Later', pg_temp.once('2030-01-01T09:00:00Z'))))), 1, 'saved');
 	if pg_temp.review_class(b, pg_temp.routine('QorperaOS/agents/nora/routines/later.md', pg_temp.rparse('70800000-0000-4000-8000-0000000000ef',
-		'Later', pg_temp.once('2030-02-01T09:00:00Z')))) is distinct from 'delegation' then
-		raise exception 'A scheduled run''s change is delegation'; end if;
+		'Later', pg_temp.once('2030-02-01T09:00:00Z')))) is distinct from 'plain' then
+		raise exception 'A scheduled run''s change is plain'; end if;
 	-- A run of a fixed routine concludes it (a reviewed change) and keeps working to its end.
 	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0015', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse('70800000-0000-4000-8000-0000000000ec', 'New inbox', pg_temp.every(), '{"status":"concluded","conclusion":"Inbox zero."}')))),

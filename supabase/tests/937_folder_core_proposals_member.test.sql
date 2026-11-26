@@ -53,31 +53,37 @@ end $$;
 
 -- 1. Agent A's run for member 2 parks five proposals through its box (the third, a hire); its run for member 4 parks
 -- one. (Each run is made in a statement of its own.)
+create function pg_temp.del_agent_dir(p_name text) returns jsonb language sql as $$
+	select jsonb_build_object('op', 'delete', 'path', 'QorperaOS/agents/' || p_name,
+		'expectedVersion', pg_temp.read('QorperaOS/agents/' || p_name) -> 'entry' ->> 'version',
+		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020'))
+$$;
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); y jsonb; c jsonb;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'p40c-agents-folder',
-		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'), 2, 'saved');
+		('[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"},'
+		|| '{"op":"mkdir","path":"QorperaOS/agents/m1"},{"op":"mkdir","path":"QorperaOS/agents/m2"},'
+		|| '{"op":"mkdir","path":"QorperaOS/agents/m3"},{"op":"mkdir","path":"QorperaOS/agents/m4"},'
+		|| '{"op":"mkdir","path":"QorperaOS/agents/m5"}]')::jsonb), 7, 'saved');
 	perform set_config('qorpera_test.p1', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-1',
-		jsonb_build_array(pg_temp.deletes('rr1.txt'))))).id::text, true);
+		jsonb_build_array(pg_temp.del_agent_dir('m1'))))).id::text, true);
 	perform set_config('qorpera_test.p2', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-2',
-		jsonb_build_array(pg_temp.deletes('rr2.txt'))))).id::text, true);
+		jsonb_build_array(pg_temp.del_agent_dir('m2'))))).id::text, true);
 	perform set_config('qorpera_test.p3', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-hire',
 		jsonb_build_array(pg_temp.hire(b, 'nora', '63400000-0000-4000-8000-00000000f0c0', 'Nora'))))).id::text, true);
 	perform set_config('qorpera_test.p4', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-4',
-		jsonb_build_array(pg_temp.deletes('rr3.txt'))))).id::text, true);
+		jsonb_build_array(pg_temp.del_agent_dir('m3'))))).id::text, true);
 	perform set_config('qorpera_test.p5', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-5',
-		jsonb_build_array(pg_temp.deletes('rr4.txt'))))).id::text, true);
+		jsonb_build_array(pg_temp.del_agent_dir('m4'))))).id::text, true);
 	y := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000004');
-	c := pg_temp.vcommit(pg_temp.box(y -> 'actor'), 'p40c-park-member-4', jsonb_build_array(pg_temp.deletes('rr5.txt')));
+	c := pg_temp.vcommit(pg_temp.box(y -> 'actor'), 'p40c-park-member-4', jsonb_build_array(pg_temp.del_agent_dir('m5')));
 	perform set_config('qorpera_test.q4', (pg_temp.parked(c)).id::text, true);
 	if (select count(*) from public.qorpera_folder_proposals where status = 'open') <> 6
 		or (pg_temp.proposal(pg_temp.pid('q4'))).member_user_id <> '63400000-0000-4000-8000-000000000004' then
 		raise exception 'The parked proposals: %', (select jsonb_agg(to_jsonb(q)) from public.qorpera_folder_proposals q); end if;
 end $$;
 
--- 2. Member 2's list: agent A's, oldest first, a page of 4 and its cursor; each unit as the run's list names it, and a
--- structured file's parse only by its name, title, role and status. Nothing of agent B's.
 select pg_temp.as_member(2);
 do $$
 declare l jsonb := pg_temp.mlist(); m jsonb;
@@ -86,7 +92,7 @@ begin
 		'nextCursor', pg_temp.pid('p4')), 'The first page');
 	perform pg_temp.same(pg_temp.listed(l), '["p1","p2","p3","p4"]', 'The first page''s proposals');
 	perform pg_temp.same((l -> 'proposals' -> 0) - 'createdAt', jsonb_build_object('proposalId', pg_temp.pid('p1'), 'viewKind', 'run_box',
-		'createsAgent', false, 'unitCount', 1, 'units', '[{"unit":1,"op":"delete","path":"rr1.txt"}]'::jsonb, 'moreUnits', 0),
+		'createsAgent', false, 'unitCount', 1, 'units', '[{"unit":1,"op":"delete","path":"QorperaOS/agents/m1"}]'::jsonb, 'moreUnits', 0),
 		'A listed delete');
 	if (l -> 'proposals' -> 0 ->> 'createdAt')::timestamptz is distinct from (pg_temp.proposal(pg_temp.pid('p1'))).created_at then
 		raise exception 'Its time: %', l -> 'proposals' -> 0; end if;
@@ -139,14 +145,13 @@ select pg_temp.path_claims('service_role');
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor');
 begin
-	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p40c-private-setup', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','p40c'),
-		jsonb_build_object('op','write','path','p40c/a.txt','file',pg_temp.stage('p40c a')))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p40c-private-setup',
+		'[{"op":"mkdir","path":"QorperaOS/agents/p40c"}]'), 1, 'saved');
 	perform set_config('qorpera_test.pc', (pg_temp.parked(pg_temp.vcommit(b, 'p40c-park-private',
-		jsonb_build_array(pg_temp.deletes('p40c/a.txt'))))).id::text, true);
+		jsonb_build_array(pg_temp.del_agent_dir('p40c'))))).id::text, true);
 	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, owner_user_id, policy,
 		created_by_user_id)
-	values ('63400000-0000-4000-8000-000000000020', 'p40c', 'subtree', 'member_private', '63400000-0000-4000-8000-000000000001',
+	values ('63400000-0000-4000-8000-000000000020', 'QorperaOS/agents/p40c', 'subtree', 'member_private', '63400000-0000-4000-8000-000000000001',
 		'normal', '63400000-0000-4000-8000-000000000001');
 end $$;
 select pg_temp.as_member(2);
@@ -160,7 +165,7 @@ begin
 end $$;
 select pg_temp.path_claims('service_role');
 select pg_temp.fx($s$delete from public.qorpera_company_path_resources
-	where environment_id = '63400000-0000-4000-8000-000000000020' and path = 'p40c'$s$);
+	where environment_id = '63400000-0000-4000-8000-000000000020' and path = 'QorperaOS/agents/p40c'$s$);
 select pg_temp.as_member(2);
 do $$
 declare l jsonb := pg_temp.mlist();
