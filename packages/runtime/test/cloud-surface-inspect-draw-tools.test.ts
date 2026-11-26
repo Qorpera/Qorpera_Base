@@ -1771,7 +1771,10 @@ describe("Studio visual inspect & draw tools", () => {
 					folderRoot: "surfaces/thetabands",
 					starter: "product",
 					files: {
-						"surfaces/thetabands/object.json": JSON.stringify({ model: "thetaband.glb", parts: [{ node: "Band" }] }),
+						"surfaces/thetabands/object.json": JSON.stringify({
+							model: "thetaband.glb",
+							parts: [{ node: "Band" }],
+						}),
 						"surfaces/thetabands/specs.json": JSON.stringify({
 							overview: { tagline: "Soft knit meditation headband.", weight: "44 g" },
 						}),
@@ -1855,7 +1858,10 @@ describe("Studio visual inspect & draw tools", () => {
 								},
 							],
 						}),
-						"surfaces/thetabands/object.json": JSON.stringify({ model: "fallback.glb", parts: [{ node: "Band" }] }),
+						"surfaces/thetabands/object.json": JSON.stringify({
+							model: "fallback.glb",
+							parts: [{ node: "Band" }],
+						}),
 						"surfaces/thetabands/modules/fit/index.html": moduleHtml,
 					},
 					binaries: tightBinaries,

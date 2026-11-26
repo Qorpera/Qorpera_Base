@@ -1926,10 +1926,7 @@ async function prepareInspectAssets(
 				previewImages += 1;
 				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
 			}
-		} else if (
-			entry.mediaType === "model/gltf-binary" &&
-			entry.bytes.byteLength <= MAX_STAGED_GLB_UPLOAD_BYTES
-		) {
+		} else if (entry.mediaType === "model/gltf-binary" && entry.bytes.byteLength <= MAX_STAGED_GLB_UPLOAD_BYTES) {
 			const cost = encodedBinaryBundleBytes(entry.bytes.byteLength);
 			if (bundleBytes + cost <= MAX_STAGED_BUNDLE_BYTES) {
 				bundleFiles[rel] = { b64: Buffer.from(entry.bytes).toString("base64") };
