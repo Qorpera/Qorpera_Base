@@ -421,7 +421,7 @@ test("a part ends, and the proof fails, when its machine could not be deleted, m
 			prove(["edge"], { legClicks: 90, killProbeAt: 75 }),
 			prove(["edge"], { legClicks: 70, stallAtReading: "30 4" }),
 			prove(["edge"], { legClicks: 62, pauseProbeAt: "20 2.5", pause: "0.25" }),
-			prove(["edge"], { legClicks: 500, pauseProbeAt: "65 4", legEndsWhileStopped: "2", pause: "0.05" }),
+			prove(["edge"], { legClicks: 500, pauseProbeAt: "65 4", legEndsWhileStopped: "2", pause: "0.25" }),
 			prove(["edge"], { legClicks: 62, pauseBesideAt: "1 3", pause: "0.25" }),
 			prove(["small"], { fails: ["list 1"] }),
 		]);
