@@ -179,7 +179,7 @@ export function planBoundary(
 
 	for (const [path, node] of nodes) {
 		if (node.kind === "gone") continue;
-		if (unpublished(path, view.codeHost)) {
+		if (unpublished(path, view.codeHost, view.workerId)) {
 			keep.add(path);
 			continue;
 		}
@@ -361,7 +361,7 @@ export function planBoundary(
 		for (const item of news) if (item.expected === undefined) freeNewOrLink.add(item.path);
 		for (const item of links) if (item.expected === undefined) freeNewOrLink.add(item.path);
 		for (const [p, n] of nodes) {
-			if (unpublished(p, view.codeHost)) continue;
+			if (unpublished(p, view.codeHost, view.workerId)) continue;
 			const ok = n.kind !== "gone" && !n.origin && (n.kind === "folder" || freeNewOrLink.has(p));
 			if (ok) continue;
 			for (let anc = parentOf(keyOf(p)); anc !== ""; anc = parentOf(anc)) {

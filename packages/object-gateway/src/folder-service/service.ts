@@ -1378,6 +1378,7 @@ export class FolderService {
 			machineId: renewal.machineId,
 			companyId: renewal.companyId,
 			codingMachineId: renewal.codingMachineId,
+			...(renewal.workerId !== undefined ? { workerId: renewal.workerId } : {}),
 		};
 		if (!view.identity) {
 			view.identity = identity;
@@ -1393,7 +1394,8 @@ export class FolderService {
 			view.identity.kind !== identity.kind ||
 			view.identity.machineId !== identity.machineId ||
 			view.identity.companyId !== identity.companyId ||
-			view.identity.codingMachineId !== identity.codingMachineId
+			view.identity.codingMachineId !== identity.codingMachineId ||
+			view.identity.workerId !== identity.workerId
 		)
 			return this.#close(view, "The view's kind or machine changed");
 		// The core's clock says until when; never trust it for longer than one lease from now.
@@ -1819,7 +1821,9 @@ export class FolderService {
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
 				const secrets = this.#secretsOf(view);
 				const file =
-					path === undefined || unpublished(path, view.pending?.codeHost ?? false) ? undefined : { path, node };
+					path === undefined || unpublished(path, view.pending?.codeHost ?? false, view.pending?.workerId)
+						? undefined
+						: { path, node };
 				if (file && secrets !== null)
 					await this.#stageAll(view, secrets, secrets ? { file, waitMs: this.#checkWaitMs } : { file });
 				return { version: node.version };
@@ -2326,6 +2330,8 @@ export class FolderService {
 					() => view.seq,
 					this.#now,
 					view.identity?.kind === "code_host",
+					view.identity?.workerId ??
+						(view.identity?.kind === "test_machine" || view.identity?.kind === "shell_command" ? null : undefined),
 				);
 			this.#log(`folder-service: ${view.key} listed: ${tree.size} paths at change ${seq}`);
 		} catch (error) {
@@ -3827,9 +3833,10 @@ export class FolderService {
 		const place = gitPlace(target);
 		if (!secrets || place.kind !== "git") return unchecked;
 		const codeHost = view.pending?.codeHost ?? false;
+		const workerId = view.pending?.workerId;
 		for (const [path, node] of view.pending?.nodes() ?? []) {
 			if (node.kind !== "file" || node.open > 0 || !path.startsWith(`${place.area}/repo.git/`)) continue;
-			if (unpublished(path, codeHost)) continue;
+			if (unpublished(path, codeHost, workerId)) continue;
 			if (this.#runningFor(node, path, secrets)) {
 				unchecked.set(node, undefined);
 				continue;
@@ -4664,10 +4671,11 @@ export class FolderService {
 			? new Map([[only.file.path, only.file.node]])
 			: (view.pending?.nodes() ?? new Map());
 		const codeHost = view.pending?.codeHost ?? false;
+		const workerId = view.pending?.workerId;
 		for (const [path, node] of files) {
 			if (node.kind !== "file" || node.open > 0) continue;
 			if (only.under !== undefined && !path.startsWith(only.under)) continue;
-			if (unpublished(path, codeHost)) continue;
+			if (unpublished(path, codeHost, workerId)) continue;
 			const running = this.#runningFor(node, path, secrets);
 			if (running) {
 				ends.push(running.done);

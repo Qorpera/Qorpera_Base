@@ -59,6 +59,7 @@ export interface ViewIdentity {
 	readonly machineId: string | null;
 	readonly companyId: string;
 	readonly codingMachineId: string | null;
+	readonly workerId?: string | null;
 }
 
 /** The core's view passes: 32 random bytes, base64url without padding (C1b-3a `qorpera_folder_view_new_pass`). */

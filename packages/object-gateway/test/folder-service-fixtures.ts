@@ -153,6 +153,7 @@ export class FakeCore implements FolderCore {
 			kind: string;
 			machineId: string | null;
 			codingMachineId: string | null;
+			workerId?: string | null;
 			servedBy: string | null;
 			unsaved: (string | null)[];
 			ended: boolean;
@@ -177,6 +178,7 @@ export class FakeCore implements FolderCore {
 			kind?: string;
 			machineId?: string | null;
 			codingMachineId?: string | null;
+			workerId?: string | null;
 		} = {},
 	): void {
 		this.views.set(viewId, {
@@ -187,6 +189,7 @@ export class FakeCore implements FolderCore {
 			kind: options.kind ?? "run_box",
 			machineId: options.machineId ?? null,
 			codingMachineId: options.codingMachineId ?? null,
+			...(options.workerId !== undefined ? { workerId: options.workerId } : {}),
 			servedBy: null,
 			unsaved: [],
 			ended: false,
@@ -913,6 +916,7 @@ export class FakeCore implements FolderCore {
 					machineId: view.machineId,
 					companyId: PROFILE,
 					codingMachineId: view.codingMachineId,
+					...(view.workerId !== undefined ? { workerId: view.workerId } : {}),
 				}
 			: { state: "closed", reason: "ended" };
 	}

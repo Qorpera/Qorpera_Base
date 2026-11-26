@@ -212,6 +212,18 @@ describe("git paths", () => {
 			expect(gitPlatformObjectIndex(`${R}/${rest}`), rest).toBe(false);
 		expect(gitUnpublished("code/acme/app/worktrees/w1/objects/info/packs")).toBe(false);
 		expect(gitUnpublished("code/acme/app/worktrees/w1/yarn.lock")).toBe(false);
+
+		const ownWorker = "11111111-2222-4333-8444-555555555551";
+		const otherWorker = "11111111-2222-4333-8444-555555555552";
+		expect(gitUnpublished(`${R}/worktrees/main/index`, false)).toBe(true);
+		expect(gitUnpublished(`${R}/worktrees/main/index`, false, ownWorker)).toBe(true);
+		expect(gitUnpublished(`${R}/worktrees/main/index`, false, null)).toBe(true);
+		expect(gitUnpublished(`${R}/worktrees/main/index`, true, null)).toBe(false);
+		expect(gitUnpublished(`${R}/worktrees/${otherWorker}/index`, false, ownWorker)).toBe(true);
+		expect(gitUnpublished(`${R}/worktrees/${ownWorker}/index`, false, ownWorker)).toBe(false);
+		expect(gitUnpublished(`${R}/worktrees/${ownWorker.toUpperCase()}/index`, false, ownWorker)).toBe(false);
+		expect(gitUnpublished(`${R}/worktrees/${ownWorker}/index`, false, null)).toBe(true);
+		expect(gitUnpublished(`${R}/worktrees/${otherWorker}/index`, true, ownWorker)).toBe(false);
 	});
 
 	it("carries only git's objects in a lock's publish, as the core takes them", () => {
@@ -874,6 +886,94 @@ describe("the lock protocol in the folder service", () => {
 		expect((await second.publish()).paths).toEqual([
 			expect.objectContaining({ path: `${R}/objects/info/sparse`, outcome: "refused", reason: "git_platform_only" }),
 		]);
+	});
+
+	it("keeps non-owned worktree indexes and live object indexes view-local without publishing writes or deletes", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-git-idx-"));
+		cleanups.push(() => rm(root, { recursive: true, force: true }));
+		const core = new FakeCore();
+		const ownWorker = "11111111-2222-4333-8444-555555555551";
+		const otherWorker = "11111111-2222-4333-8444-555555555552";
+		const mainIdx = await storeFile(root, `${R}/worktrees/main/index`, "live-main-idx", 201);
+		const otherIdx = await storeFile(root, `${R}/worktrees/${otherWorker}/index`, "live-other-idx", 202);
+		const ownIdx = await storeFile(root, `${R}/worktrees/${ownWorker}/index`, "live-own-idx", 203);
+		const liveGraph = await storeFile(root, `${R}/objects/info/commit-graph`, "live-cgph", 204);
+		core.seed([
+			folder("code"),
+			folder("code/acme"),
+			folder("code/acme/app"),
+			folder(R),
+			folder(`${R}/objects`),
+			folder(`${R}/objects/info`),
+			liveGraph,
+			folder(`${R}/worktrees`),
+			folder(`${R}/worktrees/main`),
+			mainIdx,
+			folder(`${R}/worktrees/${otherWorker}`),
+			otherIdx,
+			folder(`${R}/worktrees/${ownWorker}`),
+			ownIdx,
+		]);
+		core.openView(SESSIONS.first.viewId, SESSIONS.first.pass, {
+			kind: "coding_session",
+			codingMachineId: CODING_MACHINE_ID,
+			workerId: ownWorker,
+		});
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: codingGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+		});
+		service.secrets(CODING_MACHINE_ID, noSecrets());
+		const handle = await service.open({ protocol: 3, environmentId: ENV, ...SESSIONS.first, role: "io" }, AT_CODING);
+		cleanups.push(async () => {
+			handle.release();
+			service.stop();
+		});
+
+		await write(handle, `${R}/worktrees/main/index.lock`, "refreshed-main", true);
+		await handle.rename({
+			from: `${R}/worktrees/main/index.lock`,
+			to: `${R}/worktrees/main/index`,
+			noReplace: false,
+		});
+		await write(handle, `${R}/worktrees/${otherWorker}/index.lock`, "refreshed-other", true);
+		await handle.rename({
+			from: `${R}/worktrees/${otherWorker}/index.lock`,
+			to: `${R}/worktrees/${otherWorker}/index`,
+			noReplace: false,
+		});
+		await write(handle, `${R}/objects/info/commit-graph.lock`, "local-cgph", true);
+		await handle.rename({
+			from: `${R}/objects/info/commit-graph.lock`,
+			to: `${R}/objects/info/commit-graph`,
+			noReplace: false,
+		});
+
+		const boundaryOnlyNonOwned = await service.boundary(CODING_MACHINE_ID, []);
+		expect(boundaryOnlyNonOwned.views[0]?.report?.paths).toEqual([]);
+		expect(core.commits).toHaveLength(0);
+		expect(core.entries.get(`${R}/worktrees/main/index`)?.version).toBe(mainIdx.version);
+		expect(core.entries.get(`${R}/worktrees/${otherWorker}/index`)?.version).toBe(otherIdx.version);
+		expect(core.entries.get(`${R}/objects/info/commit-graph`)?.version).toBe(liveGraph.version);
+
+		await write(handle, `${R}/worktrees/${ownWorker}/index.lock`, "updated-own", true);
+		await handle.rename({
+			from: `${R}/worktrees/${ownWorker}/index.lock`,
+			to: `${R}/worktrees/${ownWorker}/index`,
+			noReplace: false,
+		});
+		const boundaryOwn = await service.boundary(CODING_MACHINE_ID, []);
+		expect(boundaryOwn.views[0]?.report?.paths).toEqual([
+			expect.objectContaining({ path: `${R}/worktrees/${ownWorker}/index`, outcome: "saved" }),
+		]);
+		expect(core.entries.get(`${R}/worktrees/${ownWorker}/index`)?.fileSha256).toBe(hashOf("updated-own"));
+		expect(core.entries.get(`${R}/worktrees/main/index`)?.version).toBe(mainIdx.version);
+		expect(core.entries.get(`${R}/worktrees/${otherWorker}/index`)?.version).toBe(otherIdx.version);
+		expect(core.entries.get(`${R}/objects/info/commit-graph`)?.version).toBe(liveGraph.version);
 	});
 
 	it("deletes a branch and its log when the lock is removed after them", async () => {

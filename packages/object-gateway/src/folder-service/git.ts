@@ -212,14 +212,26 @@ export function gitRefused(path: string, codeHost = false): boolean {
 	return place.kind === "git" && ((!codeHost && gitSessionLocal(place.rest)) || gitAlternates(place.rest));
 }
 
-// WHY: Sessions never publish git object indexes because a poisoned commit-graph alters commit trees;
-// only the platform code host publishes strict commit-graph and multi-pack-index files at maintenance.
-export function gitUnpublished(path: string, codeHost = false): boolean {
+// WHY: Sessions never publish git object indexes because a poisoned commit-graph alters commit trees, and
+// non-owned worktree index refreshes (from read-only git status/diff in main or another worker's worktree)
+// stay view-local instead of being rejected by core git rules.
+export function gitUnpublished(path: string, codeHost = false, workerId?: string | null): boolean {
 	const place = gitPlace(path);
 	if (place.kind !== "git") return false;
 	const parts = place.rest.split("/");
 	const name = parts[parts.length - 1];
 	if (name.endsWith(".lock")) return true;
+	if (
+		!codeHost &&
+		parts.length === 3 &&
+		parts[0]!.toLowerCase() === "worktrees" &&
+		parts[2]!.toLowerCase() === "index"
+	) {
+		const worktree = parts[1]!.toLowerCase();
+		if (worktree === "main") return true;
+		if (workerId === null) return true;
+		if (workerId !== undefined && worktree !== workerId.toLowerCase()) return true;
+	}
 	if (!gitObject(place.rest)) return false;
 	if (
 		name.startsWith("tmp_") ||

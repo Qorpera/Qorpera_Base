@@ -290,6 +290,8 @@ export function landRefusal(
 /** A publication that failed for another reason than a refusal (the step's own code is in the executor's log). */
 export const PUBLICATION_UNFINISHED =
 	"Handing in the work did not finish, so it may not have reached the repository yet. The work is kept on the session's branch; finishing again hands it in. [code=CODING_PUBLICATION_UNFINISHED]";
+export const PUBLICATION_FOLDER_REFUSED =
+	"Handing in the work was refused by the company folder because the session has an unsaved change to a protected path outside its writable workspace. Revert or remove that change, or start a fresh session; finishing again without clearing it will fail the same way. [code=CODING_FOLDER_BOUNDARY_REFUSED]";
 /** The turn's step while the work of a session on a repository kept in Qorpera lands: its checks run, then it goes
  * into the default branch (own code storage, step 3). Set before the executor knows whether the repository has checks.
  * The web shows the founder's card line for checks by these exact words. */
@@ -1328,6 +1330,14 @@ export class CloudCodingExecutor {
 						// as "the executor stopped responding". The work stays on the session's branch, and every publication
 						// step checks what an earlier one did, so a later finish hands the same commit in again.
 						this.#reported("publish", error);
+						if (
+							error instanceof Error &&
+							(error.message === "CODING_FOLDER_BOUNDARY_HELD:UNSAVED_REFUSED" ||
+								error.message === "CODING_FOLDER_BOUNDARY_HELD:UNSAVED_DENIED")
+						) {
+							await complete("failed", PUBLICATION_FOLDER_REFUSED);
+							return "failed";
+						}
 						await complete("failed", PUBLICATION_UNFINISHED);
 						return "failed";
 					}
