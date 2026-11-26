@@ -7,6 +7,7 @@ use subtle::ConstantTimeEq;
 pub const SITE_SESSION_COOKIE: &str = "__Host-qorpera_site";
 pub const CLIENT_IP_HEADER: &str = "x-qorpera-client-ip";
 pub const HSTS_HEADER: &str = "max-age=31536000";
+pub const INSPECTOR_PATH: &str = "/__qorpera/inspector.js";
 
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -147,6 +148,43 @@ pub fn verify_preview_cookie(
     password_version: i32,
     now_unix: u64,
 ) -> Option<String> {
+    verify_versioned_cookie(cookie, secret, site_id, "next", password_version, now_unix)
+}
+
+pub fn sign_surface_preview_cookie(
+    secret: &[u8],
+    site_id: &str,
+    slot: u8,
+    version_id: &str,
+    password_version: i32,
+    expires_unix: u64,
+) -> String {
+    let scope = format!("preview:{slot}");
+    let payload = format!("v2.{expires_unix}.{version_id}");
+    let mac = compute_mac(secret, site_id, &scope, password_version, &payload);
+    format!("{payload}.{mac}")
+}
+
+pub fn verify_surface_preview_cookie(
+    cookie: &str,
+    secret: &[u8],
+    site_id: &str,
+    slot: u8,
+    password_version: i32,
+    now_unix: u64,
+) -> Option<String> {
+    let scope = format!("preview:{slot}");
+    verify_versioned_cookie(cookie, secret, site_id, &scope, password_version, now_unix)
+}
+
+fn verify_versioned_cookie(
+    cookie: &str,
+    secret: &[u8],
+    site_id: &str,
+    scope: &str,
+    password_version: i32,
+    now_unix: u64,
+) -> Option<String> {
     let mut parts = cookie.split('.');
     let version = parts.next()?;
     let expires_s = parts.next()?;
@@ -163,7 +201,7 @@ pub fn verify_preview_cookie(
         return None;
     }
     let payload = format!("v2.{expires_unix}.{version_id}");
-    let expected = compute_mac(secret, site_id, "next", password_version, &payload);
+    let expected = compute_mac(secret, site_id, scope, password_version, &payload);
     if constant_time_eq(mac.as_bytes(), expected.as_bytes()) {
         Some(version_id.to_string())
     } else {
@@ -373,6 +411,159 @@ pub fn inject_preview_banner(html: &[u8], slug: &str) -> Vec<u8> {
     out
 }
 
+pub fn inject_preview_inspector(html: &[u8]) -> Vec<u8> {
+    let tag = b"\n<script src=\"/__qorpera/inspector.js\" defer></script>\n";
+    let mut out = Vec::with_capacity(html.len() + tag.len());
+    out.extend_from_slice(html);
+    out.extend_from_slice(tag);
+    out
+}
+
+pub fn frame_ancestors_csp(origins: &[String]) -> String {
+    let mut out = String::from("frame-ancestors 'self'");
+    for origin in origins {
+        out.push(' ');
+        out.push_str(origin);
+    }
+    out
+}
+
+pub fn is_content_hashed_preview_asset(path: &str) -> bool {
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    let Some((stem, ext)) = basename.rsplit_once('.') else {
+        return false;
+    };
+    if ext.is_empty() || !ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let Some(sep_idx) = stem.rfind(['-', '.']) else {
+        return false;
+    };
+    let token = &stem[sep_idx + 1..];
+    if token.len() < 8 || token.len() > 64 {
+        return false;
+    }
+    let mut has_digit = false;
+    let mut has_lower = false;
+    let mut has_upper = false;
+    let mut all_hex = true;
+    for b in token.bytes() {
+        if b.is_ascii_digit() {
+            has_digit = true;
+        } else if b.is_ascii_lowercase() {
+            has_lower = true;
+            if !b.is_ascii_hexdigit() {
+                all_hex = false;
+            }
+        } else if b.is_ascii_uppercase() {
+            has_upper = true;
+            if !b.is_ascii_hexdigit() {
+                all_hex = false;
+            }
+        } else {
+            return false;
+        }
+    }
+    has_digit && ((all_hex && (has_lower || has_upper)) || (has_lower && has_upper))
+}
+
+pub fn render_preview_inspector_script(origins: &[String]) -> String {
+    let allowed = serde_json::to_string(origins).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        r##"(() => {{
+	const allowed = new Set({allowed});
+	let active = false;
+	let parentOrigin = "";
+	let box = null;
+	let badge = null;
+	const ensureUi = () => {{
+		if (box) return;
+		box = document.createElement("div");
+		box.style.cssText = "position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #0e84ff;background:rgba(14,132,255,0.08);border-radius:6px;display:none;transition:all 60ms ease-out;";
+		badge = document.createElement("div");
+		badge.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;background:#161615;color:#fff;font:600 11px/1.3 system-ui,sans-serif;padding:3px 7px;border-radius:6px;display:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.22);";
+		document.documentElement.append(box, badge);
+	}};
+	const hide = () => {{ if (box) box.style.display = "none"; if (badge) badge.style.display = "none"; }};
+	const selectorOf = (el) => {{
+		if (!el || el.nodeType !== 1) return "body";
+		const parts = [];
+		let cur = el;
+		while (cur && cur.nodeType === 1 && parts.length < 5) {{
+			let seg = cur.tagName.toLowerCase();
+			if (cur.id) {{ parts.unshift(seg + "#" + cur.id); break; }}
+			const cls = typeof cur.className === "string" ? cur.className.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
+			if (cls.length) seg += "." + cls.join(".");
+			parts.unshift(seg);
+			cur = cur.parentElement;
+		}}
+		return parts.join(" > ");
+	}};
+	const onMove = (event) => {{
+		if (!active) return;
+		const el = document.elementFromPoint(event.clientX, event.clientY);
+		if (!el || el === box || el === badge) {{ hide(); return; }}
+		ensureUi();
+		const r = el.getBoundingClientRect();
+		box.style.display = "block";
+		box.style.left = r.left + "px";
+		box.style.top = r.top + "px";
+		box.style.width = r.width + "px";
+		box.style.height = r.height + "px";
+		const hint = el.getAttribute("data-qorpera-component") || el.tagName.toLowerCase();
+		badge.textContent = hint;
+		badge.style.display = "block";
+		badge.style.left = Math.max(6, Math.min(window.innerWidth - 160, r.left)) + "px";
+		badge.style.top = Math.max(6, r.top - 26) + "px";
+	}};
+	const onClick = (event) => {{
+		if (!active || !parentOrigin) return;
+		event.preventDefault();
+		event.stopPropagation();
+		const el = document.elementFromPoint(event.clientX, event.clientY) || event.target;
+		if (!el || el.nodeType !== 1) return;
+		const r = el.getBoundingClientRect();
+		const target = {{
+			route: location.pathname || "/",
+			selector: selectorOf(el).slice(0, 512),
+			textSnippet: String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160),
+			tagName: String(el.tagName || "div").toLowerCase().slice(0, 40),
+			componentHint: el.getAttribute("data-qorpera-component") || el.getAttribute("aria-label") || null,
+			boundingBox: {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }},
+			viewport: {{ width: window.innerWidth || 1280, height: window.innerHeight || 800 }},
+		}};
+		active = false;
+		hide();
+		document.documentElement.style.cursor = "";
+		window.parent.postMessage({{ type: "qorpera-inspector-pick", target }}, parentOrigin);
+	}};
+	window.addEventListener("message", (event) => {{
+		if (event.source !== window.parent || !allowed.has(event.origin)) return;
+		if (!event.data || typeof event.data !== "object") return;
+		if (event.data.type === "qorpera:identity-tokens-css") {{
+			const vars = event.data.vars;
+			if (!vars || typeof vars !== "object" || Array.isArray(vars)) return;
+			const root = document.documentElement;
+			for (const [k, v] of Object.entries(vars)) {{
+				if (/^--[a-z][a-z0-9-]{{1,60}}$/.test(k) && typeof v === "string" && v.length <= 160 && !/[;{{}}<>\\]|url\s*\(/i.test(v)) {{
+					root.style.setProperty(k, v);
+				}}
+			}}
+			return;
+		}}
+		if (event.data.type !== "qorpera-inspector-mode") return;
+		parentOrigin = event.origin;
+		active = Boolean(event.data.active);
+		document.documentElement.style.cursor = active ? "crosshair" : "";
+		if (!active) hide();
+	}});
+	window.addEventListener("mousemove", onMove, true);
+	window.addEventListener("click", onClick, true);
+}})();
+"##
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,6 +577,32 @@ mod tests {
         assert!(!verify_session_cookie(&cookie, secret, "site-1", "site", 3, 1500));
         assert!(!verify_session_cookie(&cookie, secret, "site-1", "next", 2, 1500));
         assert!(!verify_session_cookie(&cookie, secret, "site-1", "site", 2, 2001));
+    }
+
+    #[test]
+    fn signs_and_verifies_surface_preview_cookie_per_slot() {
+        let secret = b"test-signing-key";
+        let cookie = sign_surface_preview_cookie(secret, "site-1", 0, "ver-abc", 2, 2000);
+        assert_eq!(
+            verify_surface_preview_cookie(&cookie, secret, "site-1", 0, 2, 1500).as_deref(),
+            Some("ver-abc")
+        );
+        assert!(verify_surface_preview_cookie(&cookie, secret, "site-1", 1, 2, 1500).is_none());
+        assert!(verify_surface_preview_cookie(&cookie, secret, "site-1", 0, 3, 1500).is_none());
+        assert!(verify_surface_preview_cookie(&cookie, secret, "site-1", 0, 2, 2001).is_none());
+        assert!(verify_preview_cookie(&cookie, secret, "site-1", 2, 1500).is_none());
+
+        let origins = vec!["https://app.qorpera.com".to_string()];
+        assert_eq!(
+            frame_ancestors_csp(&origins),
+            "frame-ancestors 'self' https://app.qorpera.com"
+        );
+        let script = render_preview_inspector_script(&origins);
+        assert!(script.contains("qorpera-inspector-pick"));
+        assert!(script.contains("qorpera:identity-tokens-css"));
+        assert!(script.contains("https://app.qorpera.com"));
+        let injected = String::from_utf8(inject_preview_inspector(b"<html></html>")).unwrap();
+        assert!(injected.contains(INSPECTOR_PATH));
     }
 
     #[test]
@@ -484,5 +701,19 @@ mod tests {
         let mut only_platform = HeaderMap::new();
         only_platform.insert("cookie", format!("{SITE_SESSION_COOKIE}=v1.999.abc").parse().unwrap());
         assert_eq!(strip_platform_cookie(&only_platform), None);
+    }
+
+    #[test]
+    fn preview_immutable_cache_requires_mixed_content_hash_in_basename() {
+        assert!(is_content_hashed_preview_asset("assets/app-a1b2c3d4.js"));
+        assert!(is_content_hashed_preview_asset("assets/index-B7k9x2Pq.js"));
+        assert!(is_content_hashed_preview_asset("_next/static/chunks/main.9f8e7d6c.css"));
+        assert!(!is_content_hashed_preview_asset("assets/hero.png"));
+        assert!(!is_content_hashed_preview_asset("assets/logo.svg"));
+        assert!(!is_content_hashed_preview_asset("assets/team-IMG_4567.jpg"));
+        assert!(!is_content_hashed_preview_asset("assets/photo-IMG45678.jpg"));
+        assert!(!is_content_hashed_preview_asset("photo-20240115.jpg"));
+        assert!(!is_content_hashed_preview_asset("assets/branding-statement.css"));
+        assert!(!is_content_hashed_preview_asset("index.html"));
     }
 }

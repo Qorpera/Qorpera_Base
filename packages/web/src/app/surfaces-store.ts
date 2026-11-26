@@ -2742,6 +2742,19 @@ export class SurfacesStore {
 			surfaceId !== this.state.drawer?.surfaceId;
 		const prevWorkspace = this.state.workspaces[surfaceId];
 		const prevSurface = prevWorkspace?.surface ?? this.state.surfaces.find((surface) => surface.id === surfaceId);
+		const recPrefix = `${surfaceId}:`;
+		const recRevision = workspace.surface.folderRevision ?? 0;
+		const recHead = workspace.surface.liveHeadSha ?? "";
+		const presentRecKeys = new Set<string>();
+		for (const rec of workspace.reconciliations ?? []) {
+			const ids = [...new Set(rec.selectedChangeIds.filter(Boolean))].sort();
+			if (ids.length) presentRecKeys.add(`${surfaceId}:${recRevision}:${recHead}:${ids.join(",")}`);
+		}
+		for (const key of [...this.#reconciliationRequested]) {
+			if (!key.startsWith(recPrefix)) continue;
+			if (this.state.reconciliationRequests[key] !== undefined) continue;
+			if (!presentRecKeys.has(key)) this.#reconciliationRequested.delete(key);
+		}
 		if (bumpEpoch) {
 			this.#workspaceEpoch.set(surfaceId, (this.#workspaceEpoch.get(surfaceId) ?? 0) + 1);
 		}

@@ -3403,7 +3403,7 @@ export const COMPANY_STATE_COFOUNDER_INSTRUCTIONS = `You are the Co-Founder. You
 export const COMPANY_STATE_SURFACE_FIRST_COFOUNDER_INSTRUCTIONS = `You are the Co-Founder. You hold the company as a whole: its direction, its live Surfaces, its awareness of where things stand, and the partnership with the founders.
 
 ## How you lead
-- Start moving from the first conversation: shape QorperaOS/vision/vision.md with the founders and turn that vision directly into tangible, previewable Surfaces.
+- Start moving from the first conversation: turn the founders' direction directly into tangible, previewable Surfaces (Identity, Strategy, and core product Surfaces) so the active Interfaces hold the live essence of the company.
 - Populate Identity (identity/) first with brand philosophy, voice, and design tokens so every downstream surface inherits a coherent foundation.
 - Use the Strategy surface (surfaces/strategy) as the living war room for the grand plan, competing strategic plays, competitive landscape, interactive unit economics, and falsifiable hypotheses. For specialized planning workspaces, sketching rooms, GTM trackers, or calculators, create dedicated Custom Studio Surfaces (archetype: "studio", sourceKind: "folder") rather than legacy apps/ tools or scattered markdown files.
 - Activate 1 to 2 core product surfaces on Day 0 and launch focused sessions or 2-to-3-variant explorations so founders see real toggleable changes in Changes right away.
@@ -3570,7 +3570,7 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 							status: "open",
 							requestedBy: options.firstTodo.requestedBy,
 							detail: surfaceFirst
-								? "Meet the founders in your thread, refine QorperaOS/vision/vision.md, launch a 2-to-3-direction Identity exploration under identity/, and activate 1 to 2 core product surfaces with concrete staged changes waiting in Changes.\n\nDone when the founders have previewable directions underway and aligned on the vision."
+								? "Meet the founders in your thread, launch a 2-to-3-direction Identity exploration under identity/, ground the Strategy surface under surfaces/strategy, and activate 1 to 2 core product surfaces with concrete staged changes waiting in Changes.\n\nDone when the founders have previewable directions underway across their initial Interfaces."
 								: "Meet the founders in your thread. Shape QorperaOS/vision/vision.md with them: what the company builds, for whom, why, and how it works.\n\nDone when every founder has agreed their part of the vision.",
 						}),
 					},

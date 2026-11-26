@@ -214,6 +214,13 @@ impl SiteRecord {
                 }
                 self.preview_deployments.values().next().map(deployed).or_else(live)
             }
+            HostScope::PreviewSlot(_) => {
+                let version_id = preview_version_id?;
+                if let Some(deployment) = self.preview_deployments.get(version_id) {
+                    return Some(deployed(deployment));
+                }
+                self.db_previews.get(version_id).and_then(database_stored)
+            }
             HostScope::OwnHost | HostScope::CustomDomain => live(),
         }
     }
@@ -269,6 +276,7 @@ fn default_hosts_domain() -> String {
 pub enum HostScope {
     OwnHost,
     NextHost,
+    PreviewSlot(u8),
     CustomDomain,
 }
 
@@ -703,6 +711,15 @@ impl RouteTable {
                 if let Some(slug) = label.strip_suffix("--next") {
                     if is_valid_slug(slug) {
                         return Some((slug, HostScope::NextHost));
+                    }
+                    return None;
+                }
+                if let Some((slug, slot_str)) = label.rsplit_once("--p") {
+                    if slot_str.len() == 1 {
+                        let b = slot_str.as_bytes()[0];
+                        if (b'0'..=b'7').contains(&b) && is_valid_slug(slug) {
+                            return Some((slug, HostScope::PreviewSlot(b - b'0')));
+                        }
                     }
                     return None;
                 }
@@ -1154,9 +1171,18 @@ mod tests {
         assert!(table.is_tls_allowed("www.nordicbakery.dk"));
         assert!(table.is_tls_allowed("nordic-bakery.qorpera.site"));
         assert!(table.is_tls_allowed("nordic-bakery--next.qorpera.site"));
+        assert!(table.is_tls_allowed("nordic-bakery--p0.qorpera.site"));
+        assert!(table.is_tls_allowed("nordic-bakery--p7.qorpera.site"));
+        assert!(!table.is_tls_allowed("nordic-bakery--p8.qorpera.site"));
+        assert!(!table.is_tls_allowed("nordic-bakery--pab12cd34.qorpera.site"));
         assert!(!table.is_tls_allowed("unverified.dk"));
         assert!(!table.is_tls_allowed("random-attacker.com"));
         assert!(!table.is_tls_allowed("nonexistent.qorpera.site"));
+        assert!(!table.is_tls_allowed("nonexistent--p0.qorpera.site"));
+        assert!(matches!(
+            table.resolve_host("nordic-bakery--p2.qorpera.site"),
+            Some(ResolvedHost::Site { scope: HostScope::PreviewSlot(2), canonical_redirect: None, .. })
+        ));
     }
 
     #[test]
