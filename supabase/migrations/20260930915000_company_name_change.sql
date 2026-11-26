@@ -415,14 +415,8 @@ begin
 		set wake_state = 'skipped',
 			wake_problem = 'reverted',
 			audit_state = case when audit_state = 'pending' then 'superseded' else audit_state end,
-			stripe_sync_state = case
-				when stripe_sync_state = 'synced' and v_needs_stripe then 'pending'
-				else 'none'
-			end,
-			stripe_synced_at = case
-				when stripe_sync_state = 'synced' and v_needs_stripe then null
-				else stripe_synced_at
-			end,
+			stripe_sync_state = case when v_needs_stripe then 'pending' else 'none' end,
+			stripe_synced_at = case when v_needs_stripe then null else stripe_synced_at end,
 			updated_at = v_now
 		where id = v_pending.id;
 	elsif v_pending.id is not null then
@@ -656,7 +650,8 @@ begin
 		wake_problem = 'expired',
 		updated_at = v_now
 	where r.wake_state = 'pending'
-		and r.created_at < v_now - interval '24 hours'
+		and coalesce(r.wake_last_attempt_at, r.created_at) < v_now - interval '24 hours'
+		and not public.qorpera_company_execution_paused(r.profile_id)
 		and (p_environment_id is null or r.environment_id = p_environment_id);
 	get diagnostics v_expired = row_count;
 	v_skipped := v_skipped + v_expired;
@@ -839,26 +834,34 @@ begin
 				end;
 				v_busy := v_busy + 1;
 			when insufficient_privilege then
-				update public.qorpera_company_renames
-				set wake_state = 'unpaid',
-					wake_problem = case when sqlerrm = 'No model account can pay for this work' then 'no_payer' else 'unavailable' end,
-					wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
-					updated_at = clock_timestamp()
-				where id = v_rename.id and wake_state = 'pending';
-				v_unpaid := v_unpaid + 1;
-			when others then
-				update public.qorpera_company_renames
-				set wake_attempts = wake_attempts + 1,
-					wake_last_attempt_at = clock_timestamp(),
-					wake_state = case when wake_attempts + 1 >= 5 then 'skipped' else wake_state end,
-					wake_problem = coalesce(nullif(left(sqlstate || ':' || sqlerrm, 64), ''), 'error'),
-					updated_at = clock_timestamp()
-				where id = v_rename.id and wake_state = 'pending';
-				if v_rename.wake_attempts + 1 >= 5 then
-					v_skipped := v_skipped + 1;
-				else
+				begin
+					update public.qorpera_company_renames
+					set wake_state = 'unpaid',
+						wake_problem = case when sqlerrm = 'No model account can pay for this work' then 'no_payer' else 'unavailable' end,
+						wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+						updated_at = clock_timestamp()
+					where id = v_rename.id and wake_state = 'pending';
+					v_unpaid := v_unpaid + 1;
+				exception when lock_not_available then
 					v_busy := v_busy + 1;
-				end if;
+				end;
+			when others then
+				begin
+					update public.qorpera_company_renames
+					set wake_attempts = wake_attempts + 1,
+						wake_last_attempt_at = clock_timestamp(),
+						wake_state = case when wake_attempts + 1 >= 5 then 'skipped' else wake_state end,
+						wake_problem = coalesce(nullif(left(sqlstate || ':' || sqlerrm, 64), ''), 'error'),
+						updated_at = clock_timestamp()
+					where id = v_rename.id and wake_state = 'pending';
+					if v_rename.wake_attempts + 1 >= 5 then
+						v_skipped := v_skipped + 1;
+					else
+						v_busy := v_busy + 1;
+					end if;
+				exception when lock_not_available then
+					v_busy := v_busy + 1;
+				end;
 		end;
 	end loop;
 
