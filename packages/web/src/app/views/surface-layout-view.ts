@@ -1,10 +1,13 @@
 import {
 	readSurfaceLayout,
+	resolveSurfaceColors,
 	STUDIO_TOUR_PATH,
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_LAYOUT_PATH,
 	type SurfaceArtifactsBlock,
+	type SurfaceAskSource,
+	type SurfaceJsonReader,
 	type SurfaceLayoutRead,
 	type SurfaceReadBlock,
 	type SurfaceReadNode,
@@ -12,6 +15,7 @@ import {
 	type SurfaceSummary,
 	type SurfaceTab,
 	starterSurfaceLayout,
+	surfaceColorsForDark,
 } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
@@ -30,6 +34,7 @@ import {
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
 	type SurfaceFileLayer,
+	type SurfacePageColors,
 	sourceFile,
 	surfaceGlobFinds,
 } from "./surface-blocks/context.ts";
@@ -39,6 +44,7 @@ import { prepareFacts } from "./surface-blocks/facts.ts";
 import { StudioFullscreen } from "./surface-blocks/fullscreen.ts";
 import { prepareHypotheses } from "./surface-blocks/hypotheses.ts";
 import { prepareLandscape } from "./surface-blocks/landscape.ts";
+import { SurfaceAsks, type SurfaceLiveHosts } from "./surface-blocks/live.ts";
 import { moduleFolder, prepareModule } from "./surface-blocks/module.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
 import { SurfacePdfViewer } from "./surface-blocks/pdf.ts";
@@ -60,6 +66,7 @@ export interface SurfaceLayoutOptions {
 	readonly readBinary?: StudioBinaryReader;
 	readonly timeSlice?: boolean;
 	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
+	readonly live?: SurfaceLiveHosts;
 }
 
 export interface SurfaceLayoutInput {
@@ -186,6 +193,11 @@ function artifactsHold(block: SurfaceArtifactsBlock, ctx: SurfaceBlockContext): 
 	};
 }
 
+function pageColors(layout: SurfaceLayoutRead, readJson: SurfaceJsonReader): SurfacePageColors {
+	const light = resolveSurfaceColors(layout.colors, readJson);
+	return { light, dark: surfaceColorsForDark(light), own: layout.colors !== undefined };
+}
+
 function isRow(node: PreparedNode): node is PreparedRow {
 	return "cells" in node;
 }
@@ -231,6 +243,7 @@ export class SurfaceLayoutView {
 	readonly #explainers: SurfaceExplainers;
 	readonly #pictures: SurfacePictures;
 	readonly #pdfs: SurfacePdfViewer;
+	readonly #asks: SurfaceAsks;
 	readonly #colorways = new Map<string, number>();
 	readonly #economics = new Map<string, EconomicsPick>();
 	#renderLife: AbortController | null = null;
@@ -253,6 +266,7 @@ export class SurfaceLayoutView {
 		this.#pictures = new SurfacePictures(read, options.signal);
 		this.#pdfs = new SurfacePdfViewer(read, options.signal);
 		this.#explainers = new SurfaceExplainers(read, options.signal, this.#fullscreen);
+		this.#asks = new SurfaceAsks(options.live ?? {}, options.signal);
 		this.#reports = new SurfaceReports({
 			store: options.store,
 			surface: options.surface,
@@ -284,6 +298,7 @@ export class SurfaceLayoutView {
 		const read = text === undefined ? undefined : readSurfaceLayout(text);
 		const own = read && "layout" in read ? read.layout : undefined;
 		const layout: SurfaceLayoutRead = own ?? starterSurfaceLayout(input.starter);
+		const asked = new Set<string>();
 		const ctx = createBlockContext({
 			surface: input.surface,
 			files: input.files,
@@ -296,6 +311,12 @@ export class SurfaceLayoutView {
 			renderSignal: renderLife.signal,
 			fromStarter: own === undefined,
 			...(this.#options.askSurface ? { askSurface: this.#options.askSurface } : {}),
+			colors: (readJson) => pageColors(layout, readJson),
+			ask: (source: SurfaceAskSource) => {
+				const handle = this.#asks.handle(source);
+				asked.add(handle.key);
+				return handle;
+			},
 		});
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
@@ -320,6 +341,7 @@ export class SurfaceLayoutView {
 		});
 		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
 		this.#stages.keep(stageKeys);
+		this.#asks.keep(asked);
 		const current = tabs.find((item) => item.tab.id === input.tab) ?? tabs[0]!;
 		const activeExplainers = new Set<string>();
 		current.tab.blocks.forEach((node, index) => {
@@ -583,5 +605,6 @@ export class SurfaceLayoutView {
 		this.#reports.dispose();
 		this.#explainers.dispose();
 		this.#pdfs.dispose();
+		this.#asks.dispose();
 	}
 }

@@ -308,6 +308,7 @@ describe("creating surfaces", () => {
 			"mobile_app",
 			"desktop_app",
 			"database",
+			"analytics",
 			"dashboard",
 			"product",
 			"report",
@@ -434,6 +435,22 @@ describe("creating surfaces", () => {
 		expect(euStrategy.archetype).toBe("studio");
 		expect(euStrategy.folderRoot).toBe("surfaces/eu-expansion");
 		expect(euStrategy.folderRoot).not.toBe("surfaces/strategy");
+
+		openCreateSurfaceSheet(store);
+		const analyticsSheet = document.querySelector(".surface-create-sheet")!;
+		analyticsSheet.querySelector<HTMLElement>('[data-preset="analytics"]')!.click();
+		expect(analyticsSheet.querySelector(".surface-create-line")?.textContent).toBe(
+			"Sales, money and visitors as they happen",
+		);
+		expect(analyticsSheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("Analytics");
+		analyticsSheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const analytics = store.state.surfaces.find((item) => item.slug === "analytics")!;
+		expect(analytics.archetype).toBe("studio");
+		expect(analytics.folderRoot).toBe("surfaces/analytics");
+		expect(store.lookOf(analytics).kind).toBe("dashboard");
 		store.dispose();
 	});
 

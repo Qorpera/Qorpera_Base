@@ -3803,6 +3803,7 @@ export function mountApplication(
 									.then(({ surfaceMigrationSheet: { openMigrationSheet } }) => openMigrationSheet(surfaces));
 							},
 							loadStudioFiles,
+							live: { numbers: numbersHost(), data: dataHost() },
 						},
 						route.id ?? "",
 					);

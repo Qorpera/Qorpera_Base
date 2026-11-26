@@ -59,10 +59,27 @@ function escapeHtml(text: string): string {
 	return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
-function palette(theme: ChartTheme): readonly string[] {
+export interface SurfaceChartPaint {
+	readonly palette?: readonly string[];
+	readonly main?: string;
+	readonly named?: Readonly<Record<string, string>>;
+}
+
+export interface SurfaceChartPaints {
+	readonly light: SurfaceChartPaint;
+	readonly dark: SurfaceChartPaint;
+}
+
+function palette(theme: ChartTheme, paint?: SurfaceChartPaint): readonly string[] {
+	if (paint?.palette && paint.palette.length > 0) return paint.palette;
 	return theme.dark
 		? [theme.accent, "#5ed6a9", "#6aa8ff", "#f2c35d", "#d49bff", "#ff9084", "#70d6e8", "#f3a3c7"]
 		: [theme.accent, "#0f7a55", "#2b6cb0", "#b7791f", "#7c4dff", "#b33a2f", "#0e8599", "#c24b7c"];
+}
+
+function fillOf(colors: readonly string[], paint: SurfaceChartPaint | undefined) {
+	return (name: string | undefined, index: number): string =>
+		(name !== undefined ? paint?.named?.[name] : undefined) ?? colors[index % colors.length]!;
 }
 
 function resolveColor(raw: string | undefined, container: HTMLElement, fallback: string): string {
@@ -162,8 +179,14 @@ function pointNumber(item: number | null | SurfaceChartPoint): number | null {
 	return typeof item.value === "number" ? item.value : item.value[1];
 }
 
-function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, container: HTMLElement): Option {
-	const colors = palette(theme);
+function buildCartesianOption(
+	doc: SurfaceChartDocument,
+	theme: ChartTheme,
+	container: HTMLElement,
+	paint: SurfaceChartPaint | undefined,
+): Option {
+	const colors = palette(theme, paint);
+	const fill = fillOf(colors, paint);
 	const seriesList = doc.series ?? [];
 	const horizontal = doc.kind === "bar" && doc.horizontal === true;
 	const showLegend = doc.showLegend ?? seriesList.length > 1;
@@ -237,7 +260,7 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 	}
 
 	const echartsSeries = seriesList.map((series: SurfaceChartSeries, index: number) => {
-		const color = resolveColor(series.color, container, colors[index % colors.length]!);
+		const color = resolveColor(series.color, container, fill(series.name, index));
 		const markLine = markLinesOf(series.markLine, horizontal, theme, doc.unit);
 		if (doc.kind === "bar") {
 			const barRadius = doc.stacked ? 0 : horizontal ? [0, 5, 5, 0] : [5, 5, 0, 0];
@@ -379,8 +402,14 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 	};
 }
 
-function buildPieOption(doc: SurfaceChartDocument, theme: ChartTheme, container: HTMLElement): Option {
-	const colors = palette(theme);
+function buildPieOption(
+	doc: SurfaceChartDocument,
+	theme: ChartTheme,
+	container: HTMLElement,
+	paint: SurfaceChartPaint | undefined,
+): Option {
+	const colors = palette(theme, paint);
+	const fill = fillOf(colors, paint);
 	const primary = doc.series?.[0];
 	const showLegend = doc.showLegend ?? true;
 	const slices = (primary?.data ?? []).flatMap((entry, index) => {
@@ -388,7 +417,7 @@ function buildPieOption(doc: SurfaceChartDocument, theme: ChartTheme, container:
 		if (value === null || value < 0) return [];
 		const name = (entry && typeof entry === "object" && entry.name) || doc.categories?.[index] || `Item ${index + 1}`;
 		const rawColor = entry && typeof entry === "object" ? entry.color : undefined;
-		const color = resolveColor(rawColor, container, colors[index % colors.length]!);
+		const color = resolveColor(rawColor, container, fill(name, index));
 		return [{ name, value, itemStyle: { color } }];
 	});
 	return {
@@ -437,12 +466,18 @@ function buildPieOption(doc: SurfaceChartDocument, theme: ChartTheme, container:
 	};
 }
 
-function buildSankeyOption(doc: SurfaceChartDocument, theme: ChartTheme, container: HTMLElement): Option {
-	const colors = palette(theme);
+function buildSankeyOption(
+	doc: SurfaceChartDocument,
+	theme: ChartTheme,
+	container: HTMLElement,
+	paint: SurfaceChartPaint | undefined,
+): Option {
+	const colors = palette(theme, paint);
+	const fill = fillOf(colors, paint);
 	const nodes = (doc.nodes ?? []).map((node, index) => ({
 		name: node.name,
 		itemStyle: {
-			color: resolveColor(node.color, container, colors[index % colors.length]!),
+			color: resolveColor(node.color, container, fill(node.name, index)),
 			borderRadius: 3,
 			borderWidth: 0,
 		},
@@ -488,8 +523,14 @@ function buildSankeyOption(doc: SurfaceChartDocument, theme: ChartTheme, contain
 	};
 }
 
-function buildRadarOption(doc: SurfaceChartDocument, theme: ChartTheme, container: HTMLElement): Option {
-	const colors = palette(theme);
+function buildRadarOption(
+	doc: SurfaceChartDocument,
+	theme: ChartTheme,
+	container: HTMLElement,
+	paint: SurfaceChartPaint | undefined,
+): Option {
+	const colors = palette(theme, paint);
+	const fill = fillOf(colors, paint);
 	const seriesList = doc.series ?? [];
 	const showLegend = doc.showLegend ?? seriesList.length > 1;
 	return {
@@ -510,7 +551,7 @@ function buildRadarOption(doc: SurfaceChartDocument, theme: ChartTheme, containe
 			{
 				type: "radar",
 				data: seriesList.map((series, index) => {
-					const color = resolveColor(series.color, container, colors[index % colors.length]!);
+					const color = resolveColor(series.color, container, fill(series.name, index));
 					const values = (doc.indicators ?? []).map((_, idx) => pointNumber(series.data[idx] ?? 0) ?? 0);
 					return {
 						name: series.name,
@@ -525,8 +566,14 @@ function buildRadarOption(doc: SurfaceChartDocument, theme: ChartTheme, containe
 	};
 }
 
-function buildFunnelOption(doc: SurfaceChartDocument, theme: ChartTheme, container: HTMLElement): Option {
-	const colors = palette(theme);
+function buildFunnelOption(
+	doc: SurfaceChartDocument,
+	theme: ChartTheme,
+	container: HTMLElement,
+	paint: SurfaceChartPaint | undefined,
+): Option {
+	const colors = palette(theme, paint);
+	const fill = fillOf(colors, paint);
 	const primary = doc.series?.[0];
 	const stages = (primary?.data ?? []).flatMap((entry, index) => {
 		const value = pointNumber(entry);
@@ -534,7 +581,7 @@ function buildFunnelOption(doc: SurfaceChartDocument, theme: ChartTheme, contain
 		const name =
 			(entry && typeof entry === "object" && entry.name) || doc.categories?.[index] || `Stage ${index + 1}`;
 		const rawColor = entry && typeof entry === "object" ? entry.color : undefined;
-		const color = resolveColor(rawColor, container, colors[index % colors.length]!);
+		const color = resolveColor(rawColor, container, fill(name, index));
 		return [{ name, value, itemStyle: { color } }];
 	});
 	return {
@@ -581,7 +628,12 @@ function buildFunnelOption(doc: SurfaceChartDocument, theme: ChartTheme, contain
 	};
 }
 
-function buildHeatmapOption(doc: SurfaceChartDocument, theme: ChartTheme): Option {
+function buildHeatmapOption(
+	doc: SurfaceChartDocument,
+	theme: ChartTheme,
+	paint: SurfaceChartPaint | undefined,
+): Option {
+	const main = paint?.main ?? theme.accent;
 	const cells = doc.cells ?? [];
 	const values = cells.map((cell) => cell[2]);
 	const min = values.length > 0 ? Math.min(...values) : 0;
@@ -632,7 +684,7 @@ function buildHeatmapOption(doc: SurfaceChartDocument, theme: ChartTheme): Optio
 			itemHeight: 110,
 			textStyle: { color: theme.soft, fontFamily: theme.font, fontSize: 11 },
 			inRange: {
-				color: [tint(theme.accent, theme.dark ? 0.14 : 0.08), tint(theme.accent, 0.45), theme.accent],
+				color: [tint(main, theme.dark ? 0.14 : 0.08), tint(main, 0.45), main],
 			},
 		},
 		series: [
@@ -657,20 +709,26 @@ function buildHeatmapOption(doc: SurfaceChartDocument, theme: ChartTheme): Optio
 	};
 }
 
-function buildSurfaceChartOption(doc: SurfaceChartDocument, theme: ChartTheme, container: HTMLElement): Option {
+function buildSurfaceChartOption(
+	doc: SurfaceChartDocument,
+	theme: ChartTheme,
+	container: HTMLElement,
+	paints: SurfaceChartPaints | undefined,
+): Option {
+	const paint = paints ? (theme.dark ? paints.dark : paints.light) : undefined;
 	switch (doc.kind) {
 		case "pie":
-			return buildPieOption(doc, theme, container);
+			return buildPieOption(doc, theme, container, paint);
 		case "sankey":
-			return buildSankeyOption(doc, theme, container);
+			return buildSankeyOption(doc, theme, container, paint);
 		case "radar":
-			return buildRadarOption(doc, theme, container);
+			return buildRadarOption(doc, theme, container, paint);
 		case "funnel":
-			return buildFunnelOption(doc, theme, container);
+			return buildFunnelOption(doc, theme, container, paint);
 		case "heatmap":
-			return buildHeatmapOption(doc, theme);
+			return buildHeatmapOption(doc, theme, paint);
 		default:
-			return buildCartesianOption(doc, theme, container);
+			return buildCartesianOption(doc, theme, container, paint);
 	}
 }
 
@@ -679,10 +737,11 @@ export function mountSurfaceChart(
 	signal: AbortSignal,
 	initial: SurfaceChartDocument,
 	fallback: ChartSize = DEFAULT_SIZE,
+	paints?: SurfaceChartPaints,
 ): ChartMount<SurfaceChartDocument> {
 	const host = createChartHost(container, signal, fallback);
 	let data = initial;
-	const paint = (theme: ChartTheme) => buildSurfaceChartOption(data, theme, container);
+	const paint = (theme: ChartTheme) => buildSurfaceChartOption(data, theme, container, paints);
 	host.paint(paint);
 	return {
 		update: (next) => {

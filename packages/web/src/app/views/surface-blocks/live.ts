@@ -1,0 +1,309 @@
+import type { CloudMemberDataAnswer, CloudMemberDataQuestion } from "@qorpera/cloud-client/cloud-member-data";
+import {
+	parseSurfaceChartDocument,
+	SURFACE_ASK_CHART_KINDS,
+	type SurfaceAskChartKind,
+	type SurfaceAskSource,
+	type SurfaceChartDocument,
+	splitSurfaceAsk,
+} from "@qorpera/contracts";
+import { presentationLocale, t, timeZoneOption } from "../../../ui/preferences.ts";
+import type { CompanyLiveSource } from "../../interface-apps.ts";
+
+const MAX_CATEGORIES = 120;
+const MAX_POINTS = 240;
+const MAX_SERIES = 16;
+const NUMBER_TEXT = /^-?\d+(?:\.\d+)?$/;
+const DAY_TEXT = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/;
+const MONTH_TEXT = /^(\d{4})-(\d{2})$/;
+
+export interface SurfaceLiveHosts {
+	readonly numbers?: CompanyLiveSource | undefined;
+	readonly data?: CompanyLiveSource | undefined;
+}
+
+export type SurfaceAskState =
+	| { readonly state: "loading" }
+	| { readonly state: "answered"; readonly answer: CloudMemberDataAnswer }
+	| { readonly state: "refused" }
+	| { readonly state: "unavailable" };
+
+export interface SurfaceAskHandle {
+	readonly key: string;
+	readonly state: SurfaceAskState;
+	follow(update: (state: SurfaceAskState) => void, signal: AbortSignal): void;
+}
+
+export function askQuestion(source: SurfaceAskSource): CloudMemberDataQuestion | undefined {
+	const split = splitSurfaceAsk(source.ask);
+	return split ? { database: split.database, question: split.question, params: source.params ?? {} } : undefined;
+}
+
+export function askKey(asked: CloudMemberDataQuestion): string {
+	return JSON.stringify([
+		asked.database,
+		asked.question,
+		Object.keys(asked.params)
+			.sort()
+			.map((name) => [name, asked.params[name]]),
+	]);
+}
+
+export function isRefusal(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const status = (error as { readonly status?: unknown }).status;
+	return status === 404 || /\bNo question \S+ that you may read\b/i.test(error.message);
+}
+
+export function answerRecords(answer: CloudMemberDataAnswer): Record<string, unknown>[] {
+	return answer.rows.map((row) => Object.fromEntries(answer.columns.map((column, index) => [column, row[index]])));
+}
+
+export function answerNumber(value: unknown): number | null {
+	if (typeof value === "number") return Number.isFinite(value) ? value : null;
+	if (typeof value === "string" && NUMBER_TEXT.test(value.trim())) {
+		const parsed = Number(value.trim());
+		return Number.isFinite(parsed) ? parsed : null;
+	}
+	return null;
+}
+
+export function pickFigure(answer: CloudMemberDataAnswer, column: string): unknown {
+	const at = answer.columns.indexOf(column);
+	const row = answer.rows.at(-1);
+	return at < 0 || !row ? undefined : row[at];
+}
+
+export function lastRecord(answer: CloudMemberDataAnswer): Record<string, unknown> | undefined {
+	return answerRecords(answer).at(-1);
+}
+
+export function figureText(value: unknown): string | undefined {
+	const number = answerNumber(value);
+	if (number !== null) {
+		return new Intl.NumberFormat(presentationLocale(), { maximumFractionDigits: 2 }).format(number);
+	}
+	if (typeof value === "string") return value.trim() === "" ? undefined : value;
+	if (typeof value === "boolean") return String(value);
+	return undefined;
+}
+
+export function answerAge(answer: CloudMemberDataAnswer): string | undefined {
+	const at = new Date(answer.asOf);
+	if (Number.isNaN(at.getTime())) return undefined;
+	const time = at.toLocaleString(presentationLocale(), {
+		day: "numeric",
+		month: "short",
+		hour: "2-digit",
+		minute: "2-digit",
+		...timeZoneOption(),
+	});
+	return t("As of {time}", { time });
+}
+
+function categoryText(value: unknown): string | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return String(value);
+	if (typeof value !== "string" || value.trim() === "") return undefined;
+	const day = DAY_TEXT.exec(value);
+	if (day) {
+		const date = new Date(Date.UTC(Number(day[1]), Number(day[2]) - 1, Number(day[3])));
+		return date.toLocaleDateString(presentationLocale(), { day: "numeric", month: "short", timeZone: "UTC" });
+	}
+	const month = MONTH_TEXT.exec(value);
+	if (month) {
+		const date = new Date(Date.UTC(Number(month[1]), Number(month[2]) - 1, 1));
+		return date.toLocaleDateString(presentationLocale(), { month: "short", year: "numeric", timeZone: "UTC" });
+	}
+	return value.trim().slice(0, 64);
+}
+
+function isTimeText(value: unknown): value is string {
+	return typeof value === "string" && (DAY_TEXT.test(value) || MONTH_TEXT.test(value));
+}
+
+export function seriesTitle(column: string): string {
+	const spaced = column
+		.replace(/[-_]+/g, " ")
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
+		.trim();
+	return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : column;
+}
+
+export interface SurfaceAskChart {
+	readonly doc: SurfaceChartDocument;
+	readonly keys: readonly string[];
+}
+
+function chartKind(value: unknown): SurfaceAskChartKind {
+	return typeof value === "string" && (SURFACE_ASK_CHART_KINDS as readonly string[]).includes(value)
+		? (value as SurfaceAskChartKind)
+		: "line";
+}
+
+export function answerChart(answer: CloudMemberDataAnswer, source: SurfaceAskSource): SurfaceAskChart | null {
+	const x = source.x;
+	if (x === undefined || source.y === undefined) return null;
+	const ys = typeof source.y === "string" ? [source.y] : [...source.y];
+	const kind = chartKind(source.kind);
+	const records = answerRecords(answer).filter((row) => categoryText(row[x]) !== undefined);
+	const raw: string[] = [];
+	for (const row of records) {
+		const key = String(row[x]);
+		if (!raw.includes(key)) raw.push(key);
+	}
+	const timed = raw.length > 0 && raw.every(isTimeText);
+	const ordered = timed ? [...raw].sort() : raw;
+	const kept = timed ? ordered.slice(-MAX_CATEGORIES) : ordered.slice(0, MAX_CATEGORIES);
+	const index = new Map(kept.map((key, at) => [key, at]));
+	const lines: { key: string; name: string; data: (number | null)[] }[] = [];
+	const lineOf = (key: string, name: string) => {
+		let line = lines.find((item) => item.key === key);
+		if (!line && lines.length < MAX_SERIES) {
+			line = { key, name, data: kept.map(() => null) };
+			lines.push(line);
+		}
+		return line;
+	};
+	const split = source.series !== undefined && ys.length === 1 ? source.series : undefined;
+	for (const y of ys) if (!split) lineOf(y, seriesTitle(y));
+	for (const row of records) {
+		const at = index.get(String(row[x]));
+		if (at === undefined) continue;
+		if (split) {
+			const value = row[split];
+			const key = value === null || value === undefined ? "" : String(value);
+			const line = lineOf(key, key === "" ? "–" : key.slice(0, 80));
+			if (line) line.data[at] = answerNumber(row[ys[0]!]);
+		} else {
+			for (const y of ys) {
+				const line = lineOf(y, seriesTitle(y));
+				if (line) line.data[at] = answerNumber(row[y]);
+			}
+		}
+	}
+	const shown = kind === "pie" || kind === "funnel" ? lines.slice(0, 1) : lines;
+	if (kept.length === 0 || shown.length === 0) return null;
+	if (!shown.some((line) => line.data.some((value) => value !== null))) return null;
+	const doc = parseSurfaceChartDocument({
+		kind,
+		categories: kept.map((key) => categoryText(key)),
+		series: shown.map((line) => ({ name: line.name, data: line.data.slice(-MAX_POINTS) })),
+		...(source.stacked === true && (kind === "bar" || kind === "area" || kind === "line") ? { stacked: true } : {}),
+		...(source.unit !== undefined ? { unit: source.unit } : {}),
+		...(kind === "area" || kind === "line" ? { smooth: true } : {}),
+	});
+	return doc ? { doc, keys: shown.map((line) => line.key) } : null;
+}
+
+interface AskEntry {
+	readonly key: string;
+	readonly asked: CloudMemberDataQuestion;
+	readonly source: CompanyLiveSource | undefined;
+	state: SurfaceAskState;
+	started: boolean;
+	watch: number | undefined;
+	readonly followers: Set<(state: SurfaceAskState) => void>;
+}
+
+const UNAVAILABLE: SurfaceAskState = { state: "unavailable" };
+const LOADING: SurfaceAskState = { state: "loading" };
+
+export class SurfaceAsks {
+	readonly #hosts: SurfaceLiveHosts;
+	readonly #page = new AbortController();
+	readonly #entries = new Map<string, AskEntry>();
+
+	constructor(hosts: SurfaceLiveHosts, signal: AbortSignal) {
+		this.#hosts = hosts;
+		if (signal.aborted) this.#page.abort();
+		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#page.signal });
+	}
+
+	handle(source: SurfaceAskSource): SurfaceAskHandle {
+		const entry = this.#entry(source);
+		return {
+			key: entry.key,
+			state: entry.state,
+			follow: (update, signal) => {
+				if (signal.aborted) return;
+				entry.followers.add(update);
+				signal.addEventListener("abort", () => entry.followers.delete(update), { once: true });
+				update(entry.state);
+				this.#start(entry);
+			},
+		};
+	}
+
+	keep(keys: ReadonlySet<string>): void {
+		for (const [key, entry] of this.#entries) {
+			if (keys.has(key)) continue;
+			this.#entries.delete(key);
+			entry.followers.clear();
+			if (entry.watch !== undefined) entry.source?.unwatch(this.#page.signal, entry.watch);
+		}
+	}
+
+	dispose(): void {
+		for (const entry of this.#entries.values()) entry.followers.clear();
+		this.#entries.clear();
+		this.#page.abort();
+	}
+
+	#entry(source: SurfaceAskSource): AskEntry {
+		const asked = askQuestion(source);
+		const key = asked ? askKey(asked) : `!${source.ask}`;
+		const known = this.#entries.get(key);
+		if (known) return known;
+		const host = asked?.database === "qorpera" ? this.#hosts.numbers : this.#hosts.data;
+		const entry: AskEntry = {
+			key,
+			asked: asked ?? { database: "", question: "", params: {} },
+			source: asked ? host : undefined,
+			state: asked && host && !this.#page.signal.aborted ? LOADING : UNAVAILABLE,
+			started: false,
+			watch: undefined,
+			followers: new Set(),
+		};
+		this.#entries.set(key, entry);
+		return entry;
+	}
+
+	#set(entry: AskEntry, state: SurfaceAskState): void {
+		if (this.#entries.get(entry.key) !== entry) return;
+		entry.state = state;
+		for (const update of [...entry.followers]) update(state);
+	}
+
+	#start(entry: AskEntry): void {
+		if (entry.started || entry.state.state !== "loading" || !entry.source) return;
+		entry.started = true;
+		const source = entry.source;
+		const page = this.#page.signal;
+		const failed = (error: unknown) => {
+			if (page.aborted) return;
+			this.#set(entry, isRefusal(error) ? { state: "refused" } : UNAVAILABLE);
+		};
+		source
+			.watch(page, entry.asked, (_watch, answer) => this.#set(entry, { state: "answered", answer }))
+			.then(
+				({ watch, answer }) => {
+					if (this.#entries.get(entry.key) !== entry) {
+						source.unwatch(page, watch);
+						return;
+					}
+					entry.watch = watch;
+					this.#set(entry, { state: "answered", answer });
+				},
+				(error: unknown) => {
+					if (page.aborted) return;
+					if (isRefusal(error)) {
+						failed(error);
+						return;
+					}
+					source
+						.query(entry.asked, page)
+						.then((answer) => this.#set(entry, { state: "answered", answer }), failed);
+				},
+			);
+	}
+}
