@@ -135,8 +135,11 @@ $new$	if v_auto.id is null or not v_auto.enabled then
 				),
 				true
 			);
-		exception when sqlstate '55000' then
-			return jsonb_build_object('status', 'skipped', 'reason', 'paused');
+		exception
+			when sqlstate '55000' then
+				return jsonb_build_object('status', 'skipped', 'reason', 'paused');
+			when insufficient_privilege then
+				return jsonb_build_object('status', 'skipped', 'reason', 'unauthorized');
 		end;
 
 		select * into v_auto
