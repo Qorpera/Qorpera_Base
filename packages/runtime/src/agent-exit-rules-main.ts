@@ -7,14 +7,6 @@ import { AgentExitRulesReader } from "./agent-exit-rules.ts";
 import { databaseTls } from "./database-ca.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
-/**
- * The agent exit's rules reader as a service (qorpera-agent-exit-rules.service). It reads the database with the exit's
- * own login, from two private systemd credentials: the database URL, which the rollout script places on the node, and
- * Supabase's CA. A node installed with our own CA (install-agent-exit.sh --database-ca) has two more, that CA and its
- * sha256 pin, and trusts that CA alone (database-ca.ts). It reads the node's client map, keeps rules.json in its state
- * folder and writes status.json to its runtime folder.
- */
-
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
 /** The plug's client map (deploy/agent-exit/qorpera-agent-plug.py). */
 const CLIENTS_DIR = "/var/lib/qorpera-agent-exit/clients";
@@ -120,7 +112,6 @@ export async function runAgentExitRulesMain(): Promise<void> {
 	const database = exitDatabase(await readCredential(credentials, "qorpera-agent-exit-rules-database-url"));
 	const ssl = databaseTls(
 		{
-			supabaseCa: await readOptionalCredential(credentials, "qorpera-agent-exit-rules-database-ca", readCredential),
 			ownCa: await readOptionalCredential(
 				credentials,
 				"qorpera-agent-exit-rules-database-own-ca",

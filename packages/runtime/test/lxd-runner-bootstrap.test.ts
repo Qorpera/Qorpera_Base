@@ -19,10 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const roots: string[] = [];
 const computeIdentityId = "90000000-0000-4000-8000-000000000001";
 const fixtureKey = Buffer.alloc(32, 7).toString("base64url");
-const identityRecoveryCa = readFileSync(
-	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-	"utf-8",
-);
+const identityRecoveryCa = readFileSync(new URL("./fixtures/test-ca.crt", import.meta.url), "utf-8");
 const identityRecoveryCaSha256 = createHash("sha256").update(identityRecoveryCa).digest("hex");
 const fixtureState: IdentityRecoveryRuntimeState = {
 	companyId: "90000000-0000-4000-8000-000000000004",
@@ -237,10 +234,7 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 
 async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
 	const { root, paths } = await fixture();
-	const secretBrokerCa = await readFile(
-		new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-		"utf-8",
-	);
+	const secretBrokerCa = await readFile(new URL("./fixtures/test-ca.crt", import.meta.url), "utf-8");
 	const binary = join(root, "codex-pinned");
 	const content = "synthetic native executable, never executed by bootstrap tests\n";
 	await writeFile(binary, content, { mode: 0o500 });

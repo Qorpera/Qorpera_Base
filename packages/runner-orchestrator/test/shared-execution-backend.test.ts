@@ -25,10 +25,7 @@ const runId = "30000000-0000-4000-8000-000000000001";
 const runnerId = "30000000-0000-4000-8000-000000000002";
 const computeIdentityId = "30000000-0000-4000-8000-000000000011";
 const companyId = "30000000-0000-4000-8000-000000000004";
-const secretBrokerCa = readFileSync(
-	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-	"utf-8",
-);
+const secretBrokerCa = readFileSync(new URL("../../runtime/test/fixtures/test-ca.crt", import.meta.url), "utf-8");
 const sha256Hex = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const token = (): string => randomBytes(32).toString("base64url");
 /** The execution host's own credential (G2-3e): every database call of the service goes through its entry points. */

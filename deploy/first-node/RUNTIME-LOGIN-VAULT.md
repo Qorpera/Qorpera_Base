@@ -369,8 +369,8 @@ never see the vault's members' sign-ins, nor it theirs. Every new company shares
 takes `signInLimit` (default 6) and `signInCompanyLimit` (default 2, at most the total), each 1–64. Raise
 them only with the helper unit's memory, task and CPU limits, once a real sign-in is measured.
 
-Prerequisites on each host: the broker build and the CA file
-(`/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt`); the `qorpera-shared-vault` user and group
+Prerequisites on each host: the broker build and the pinned database CA files
+(`/etc/qorpera-secret-broker/database-own-ca.crt` and `/etc/qorpera-secret-broker/database-own-ca.sha256`); the `qorpera-shared-vault` user and group
 (`useradd --system --no-create-home --shell /usr/sbin/nologin qorpera-shared-vault`); the login helper
 reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
 vault token, and stops for every broker on the host); a host without a helper installs it as in
@@ -469,8 +469,8 @@ command runs as a plain argv (no shell needed):
 8. The broker package from the release: `install -d -o root -g root -m 0755 /opt/qorpera-secret-broker`
    and `install -d -o root -g root -m 0755 /etc/qorpera-secret-broker`, then
    `qorpera-cloud-secret-broker-service.mjs` to `/opt/qorpera-secret-broker/` (root, 0444),
-   `shared-vault-secrets.py` beside it (root, 0500), and the CA to
-   `/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt` (root, 0444).
+   `shared-vault-secrets.py` beside it (root, 0500), and the pinned database CA files to
+   `/etc/qorpera-secret-broker/database-own-ca.crt` and `/etc/qorpera-secret-broker/database-own-ca.sha256` (root, 0444).
 
 Node 2 (warm standby), between node 1's steps 6 and 8:
 
@@ -596,7 +596,7 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
 - **Configuration (after approval only).** Qorpera's client registration is the private credential
   `qorpera-cloud-secret-chatgpt-plan`:
   `{"schema":"qorpera.chatgpt-plan-client/v1","clientId":"oaiapp_…","clientSecret":"…" or null,
-  "redirectUri":"https://<project>.supabase.co/functions/v1/chatgpt-plan-callback"}`. The secret is
+  "redirectUri":"https://api.qorpera.com/functions/v1/chatgpt-plan-callback"}`. The secret is
   sent only in the token request's Basic header (client id and secret form-encoded, RFC 6749 2.3.1).
   - Who installs it: the founder, who holds OpenAI's partner console, writes the file on each vault
     host directly (node 1 and node 2: node 2's copy renews too), for example by pasting it over SSH into
@@ -625,7 +625,7 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   document: without it, plan sign-ins and renewals stop (retried as `transient`), not only revocation.
 - **Callback Edge Function (slice 3).** `supabase functions deploy chatgpt-plan-callback`
   (`verify_jwt = false`: OpenAI sends the browser without a JWT). The address OpenAI registers is
-  `https://<project>.supabase.co/functions/v1/chatgpt-plan-callback`, the same as the credential's
+  `https://api.qorpera.com/functions/v1/chatgpt-plan-callback`, the same as the credential's
   `redirectUri`. It asks `qorpera_chatgpt_plan_callback_target(state)` with the service role, forwards
   `{state, code, error, clientId}` to the company's vault, and returns the browser with
   `#?chatgpt_plan=confirm&confirmation=…` or `#?chatgpt_plan=failed&reason=…` after the return page.
@@ -637,7 +637,7 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   `native-provider-login` at `…/chatgpt-plan-confirm`, which the login chooser routes to the same vault
   and which waits 40 s for it (see the confirmation time budget above; redeploy that function too).
   Smoke check after deploy, which must show a 303 back to the return page with `reason=state_unknown`:
-  `curl -s -o /dev/null -D - 'https://<project>.supabase.co/functions/v1/chatgpt-plan-callback?state=x' | grep -i '^location'`
+  `curl -s -o /dev/null -D - 'https://api.qorpera.com/functions/v1/chatgpt-plan-callback?state=x' | grep -i '^location'`
   (a GET: the function answers anything else with 405).
 - **Switches.** `update public.qorpera_chatgpt_plan_settings set enabled = true;` (platform) and
   `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company

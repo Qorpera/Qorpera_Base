@@ -526,49 +526,42 @@ The exit answers each machine's names by its company's network rules (`rules/net
   silent for 30 seconds or failing for 2 minutes.
 
 Its login: the role `qorpera_agent_exit` (migration 20260930230000, E8a) may call that one function and nothing else,
-and has no login until `rules-reader-login.py` gives it one. The login is a URL for Supabase's pooler on port 6543
-(transaction mode, as the secret broker uses it: the database's own host has IPv6 only), with
-`sslmode=verify-full`; the reader takes Supabase's CA only with its pinned fingerprint. On the node it is
+and has no login until `rules-reader-login.py` gives it one. The login connects directly to the self-hosted platform
+database (`db-primary`) with `sslmode=verify-full`, pinned to Qorpera's own database CA. On the node it is
 `/etc/qorpera-agent-exit/database-url`, root's, mode 0400 in a 0700 folder, which the unit hands to the reader with
 `LoadCredential`. Nobody reads, copies or prints it.
 
-Our own CA (a self-hosted database, later): `install-agent-exit.sh <package> --database-ca <file>
---database-ca-sha256 <sha256>` installs that CA and its pin (the file's sha256, as `sha256sum` prints it) beside the
-reader, with the drop-in `/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf`, which hands both
-to the reader as two more credentials. The two go together: one without the other, a pin the file does not match, or a
-file that is not one PEM CA certificate is refused before anything is installed, and the reader refuses the same again
-(`packages/runtime/src/database-ca.ts`). The reader then trusts that CA alone, still with `verify-full`; Supabase's CA
-stays its credential and stays pinned. An install without the two keeps Supabase's CA and removes an own CA a previous
-install placed.
+Pinned database CA: `install-agent-exit.sh <package> --database-ca <file> --database-ca-sha256 <sha256>` (or a package
+built with `package-agent-exit-rules.mjs --database-ca <file> --database-ca-sha256 <sha256>`) installs that CA and its
+sha256 pin at `/usr/local/libexec/qorpera-agent-exit/database-own-ca.{crt,sha256}`, which
+`qorpera-agent-exit-rules.service` hands to the reader with `LoadCredential`. The two go together: a missing CA, one
+without the other, a pin the file does not match, or a file that is not one PEM CA certificate is refused before
+anything is installed, and the reader refuses the same again (`packages/runtime/src/database-ca.ts`). The reader trusts
+that CA alone, with `verify-full`.
 
-The coordinator runs the script on the Mac, from a checkout of what the nodes run. It reads the Supabase CLI's token
-from the keychain itself and reaches each node with `ssh` and its root helper:
+The coordinator runs `rules-reader-login.py` on the Mac, from a checkout of what the nodes run, reaching the database
+directly via `psql` and each node via `ssh` and its root helper:
 
 ```
-python3 deploy/agent-exit/rules-reader-login.py --check   checks everything, changes nothing
-python3 deploy/agent-exit/rules-reader-login.py           makes a new login and places it
+python3 deploy/agent-exit/rules-reader-login.py [--check] --direct-host HOST --direct-port PORT \
+  --direct-ca FILE --direct-ca-sha256 SHA256 --direct-admin ROLE
 ```
 
-Direct mode, for a self-hosted database (opt-in; without its flags the script works as described here):
-`--direct-host HOST --direct-port PORT --direct-ca FILE --direct-ca-sha256 SHA256 --direct-admin ROLE`, all five or
-none, with or without `--check`. The SQL then runs through `psql` over a direct admin connection instead of the
-Supabase API, and the keychain is not read. The script takes the CA only when its sha256 is the pin, and psql connects
-with `sslmode=verify-full` against a copy of exactly those bytes (and GSSAPI encryption off); no input turns the check
-off. psql finds the admin's password itself (`PGPASSWORD`, `PGPASSFILE` or `~/.pgpass`, never a prompt) and gets no
-other libpq setting from the environment. The login is
+All five `--direct-*` flags are required (with or without `--check`). The script takes the CA only when its sha256 is
+the pin, and `psql` connects with `sslmode=verify-full` against a copy of exactly those bytes (and GSSAPI encryption
+off); no input turns the check off. `psql` finds the admin's password itself (`PGPASSWORD`, `PGPASSFILE` or `~/.pgpass`,
+never a prompt) and gets no other libpq setting from the environment. The login is
 `postgresql://qorpera_agent_exit:<password>@HOST:PORT/postgres?sslmode=verify-full`, and each node's reader must
-already hold the pinned CA as its own CA (`install-agent-exit.sh --database-ca … --database-ca-sha256 …`, above):
-the script checks `database-own-ca.crt` against the pin and Supabase's CA against this checkout, and installing the
-CA is not this script's.
+already hold the pinned CA (`install-agent-exit.sh --database-ca … --database-ca-sha256 …`, above): the script checks
+`database-own-ca.crt` and `database-own-ca.sha256` against the pin, and installing the CA is not this script's.
 
-It checks the project's pooler (one primary, with SCRAM), the role as the migration makes it, and on each node the
-root helper, the exit's tool, the reader's unit and CA as this checkout's, the reader's program and the client map.
-Then:
+It checks the role as the migration makes it, and on each node the root helper, the exit's tool, the reader's unit and
+pinned CA as this checkout's, the reader's program and the client map. Then:
 1. a new password (256 random bits) and its login URL;
 2. each node writes the URL into its file (`X database-url`, from stdin), and the script compares each file's size and
    sha256 with the URL's;
-3. the role gets the login as a SCRAM-SHA-256 verifier made on the Mac, so the password never reaches the Supabase
-   API, the database or its logs. This is the one commit point: before it, the readers run on the old login;
+3. the role gets the login as a SCRAM-SHA-256 verifier made on the Mac, so the password never reaches the database or
+   its logs. This is the one commit point: before it, the readers run on the old login;
 4. each node enables and restarts its reader (`X rules-start`) and waits up to 30 seconds for a pass that read the
    database.
 

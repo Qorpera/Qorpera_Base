@@ -64,15 +64,11 @@ test("the installer pins the files in this folder", () => {
 		["SNI_RULES", "qorpera-agent-exit-sni.nft"],
 		["SNI_UNIT", "qorpera-agent-exit-sni.service"],
 		["RESOLVER_UNIT", "qorpera-agent-exit-resolver@.service"],
-		["RULES_CA", "../cloud-secret-broker/supabase-prod-ca-2021.crt"],
 	]) {
 		assert.match(installer, new RegExp(`EXPECTED_${name}_SHA256="${sha256(readFileSync(join(here, file)))}"`), `${file} pin`);
 	}
 });
 
-// The rules reader's database CA: Supabase's, as pinned, unless the install is given our own CA with its sha256 pin.
-// The inputs are checked before the root check, so this runs as any user and installs nothing; the X509 check and the
-// files themselves need root (test/prove-rules-reader-vm.sh's throwaway VM). The file here is a placeholder.
 describe("the installer's own database CA input", { skip: process.getuid?.() === 0 && "runs as a user, not root" }, () => {
 	const installer = join(here, "install-agent-exit.sh");
 	let temporary;
@@ -87,20 +83,27 @@ describe("the installer's own database CA input", { skip: process.getuid?.() ===
 	after(() => rmSync(temporary, { recursive: true, force: true }));
 	const install = (...input) => spawnSync("bash", [installer, temporary, ...input], { encoding: "utf8" });
 
-	test("without the input, or with both halves that match, it goes on (to the root check)", () => {
-		for (const input of [[], ["--database-ca", ca, "--database-ca-sha256", pin], ["--database-ca-sha256", pin, "--database-ca", ca]]) {
+	test("with both halves that match, or with a packaged database-own-ca.crt, it goes on (to the root check)", () => {
+		for (const input of [["--database-ca", ca, "--database-ca-sha256", pin], ["--database-ca-sha256", pin, "--database-ca", ca]]) {
 			const run = install(...input);
 			assert.equal(run.status, 77, `${input.join(" ")}: ${run.stderr}`);
 			assert.equal(run.stderr, "Run as root.\n");
 		}
+		const packagedDir = join(temporary, "packaged");
+		mkdirSync(packagedDir);
+		writeFileSync(join(packagedDir, "database-own-ca.crt"), readFileSync(ca));
+		const fromPackage = spawnSync("bash", [installer, packagedDir], { encoding: "utf8" });
+		assert.equal(fromPackage.status, 77, fromPackage.stderr);
+		assert.equal(fromPackage.stderr, "Run as root.\n");
 	});
 
-	test("refuses half an input, a pin the file does not match and a file that is not one PEM certificate", () => {
+	test("refuses missing CA, half an input, a pin the file does not match and a file that is not one PEM certificate", () => {
 		const two = join(temporary, "two.crt");
 		writeFileSync(two, Buffer.concat([readFileSync(ca), readFileSync(ca)]));
 		const link = join(temporary, "link.crt");
 		symlinkSync(ca, link);
 		for (const [input, status, reason] of [
+			[[], 64, /--database-ca and --database-ca-sha256 are required/],
 			[["--database-ca", ca], 64, /--database-ca and --database-ca-sha256 go together/],
 			[["--database-ca-sha256", pin], 64, /--database-ca and --database-ca-sha256 go together/],
 			[["--database-ca", ca, "--database-ca-sha256", sha256("another file")], 65, /sha256 [0-9a-f]{64}, expected [0-9a-f]{64}; refusing/],
@@ -117,30 +120,31 @@ describe("the installer's own database CA input", { skip: process.getuid?.() ===
 		}
 	});
 
-	test("hands the CA and its pin to the rules reader only through its own drop-in, and removes them without the input", () => {
+	test("installs the pinned CA and removes any legacy drop-in or hosted CA", () => {
 		const text = readFileSync(installer, "utf8");
 		const dropIn = "/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf";
 		assert.ok(text.includes(`OWN_CA_DROP_IN="${dropIn}"`));
 		for (const line of [
-			'"LoadCredential=qorpera-agent-exit-rules-database-own-ca:$INSTALL_ROOT/database-own-ca.crt"',
-			'"LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:$INSTALL_ROOT/database-own-ca.sha256"',
 			'install -m 0644 "$OWN_CA_COPY" "$INSTALL_ROOT/database-own-ca.crt"',
-			'rm -f "$OWN_CA_DROP_IN" "$INSTALL_ROOT/database-own-ca.crt" "$INSTALL_ROOT/database-own-ca.sha256"',
+			'install -m 0644 "$OWN_CA_COPY" "$INSTALL_ROOT/database-own-ca.sha256"',
+			'rm -f "$OWN_CA_DROP_IN" "$INSTALL_ROOT/supabase-prod-ca-2021.crt"',
 		])
 			assert.ok(text.includes(line), line);
-		// The unit itself is unchanged: Supabase's CA is still its credential, and still pinned above.
+		const unitLines = readFileSync(join(here, "qorpera-agent-exit-rules.service"), "utf8").split("\n");
 		assert.ok(
-			readFileSync(join(here, "qorpera-agent-exit-rules.service"), "utf8")
-				.split("\n")
-				.includes(
-					"LoadCredential=qorpera-agent-exit-rules-database-ca:/usr/local/libexec/qorpera-agent-exit/supabase-prod-ca-2021.crt",
-				),
+			unitLines.includes(
+				"LoadCredential=qorpera-agent-exit-rules-database-own-ca:/usr/local/libexec/qorpera-agent-exit/database-own-ca.crt",
+			),
 		);
+		assert.ok(
+			unitLines.includes(
+				"LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/usr/local/libexec/qorpera-agent-exit/database-own-ca.sha256",
+			),
+		);
+		assert.ok(!unitLines.some((line) => line.includes("supabase-prod-ca")));
 	});
 });
 
-// E8b: the rollout script that makes the rules reader's login, against stand-ins for the Supabase API, psql (direct
-// mode) and the nodes' root helpers. No network, keychain, database or ssh; direct mode's host and CA are placeholders.
 describe("the rules reader's login (rules-reader-login.py)", () => {
 	const loginTool = join(here, "rules-reader-login.py");
 	const script = String.raw`
@@ -161,8 +165,6 @@ def keys(verifier):
     m = re.fullmatch(r"SCRAM-SHA-256\$4096:([^$]+)\$([^:]+):(.+)", verifier)
     return [base64.b64decode(part) for part in m.groups()]
 
-# RFC 7677's example exchange (user "user", password "pencil"): a client with the password proves itself against the
-# StoredKey, and the ServerKey signs as the server did.
 salt, stored, server = keys(login.scram_verifier("pencil", base64.b64decode("W22ZaJ0SNY7soEsUEjb6gQ==")))
 nonce = "rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0"
 auth = ("n=user,r=rOprNGfwEbeRWgbNEkqO,r=" + nonce + ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,c=biws,r=" + nonce).encode()
@@ -176,32 +178,10 @@ out["set_login"] = [
     raises(login.set_login, "SCRAM-SHA-256$4096:x$y:z'; drop role postgres; --"),
 ]
 
-host = "aws-0-eu-central-1.pooler.supabase.com"
-urls = [login.login_url(host, secrets.token_urlsafe(32)) for _ in range(200)]
+host = "db.example.invalid"
+urls = [login.login_url(host, secrets.token_urlsafe(32), 5432) for _ in range(200)]
 out["urls"] = urls[:3]
-out["bad_host"] = raises(login.login_url, "pooler.example/x?", "p" * 43)
-
-token = "sbp_" + "0123456789abcdef" * 2 + "01234567"
-out["tokens"] = [
-    login.cli_token(token.encode() + b"\n") == token,
-    login.cli_token(b"go-keyring-base64:" + base64.b64encode(token.encode())) == token,
-    login.cli_token(b"go-keyring-encoded:" + token.encode().hex().encode()) == token,
-    raises(login.cli_token, b"not a token"),
-    raises(login.cli_token, b"go-keyring-base64:" + base64.b64encode(b"sbp_short")),
-]
-
-entry = {"database_type": "PRIMARY", "db_host": host, "is_using_scram_auth": True, "db_port": 6543}
-other = "aws-0-us-east-1.pooler.supabase.com"
-out["pooler"] = [
-    login.pooler_host([entry, dict(entry, database_type="READ_REPLICA", db_host=other)]) == host,
-    login.pooler_host([entry, dict(entry, db_port=5432, pool_mode="session")]) == host,
-    raises(login.pooler_host, []),
-    raises(login.pooler_host, {"db_host": host}),
-    raises(login.pooler_host, [entry, dict(entry, db_host=other)]),
-    raises(login.pooler_host, [dict(entry, db_host=["x"])]),
-    raises(login.pooler_host, [dict(entry, db_host="db." + login.REF + ".supabase.co")]),
-    raises(login.pooler_host, [dict(entry, is_using_scram_auth=False)]),
-]
+out["bad_host"] = raises(login.login_url, "db.example/x?", "p" * 43, 5432)
 
 good = {"login": False, "elevated": False, "alone": True, "reads": True, "lasting": True}
 out["role"] = [
@@ -216,7 +196,6 @@ out["shown"] = login.shown(
     "qorpera-agent-exit: database-url: refused\nWarning: Permanently added\n"
     + '{"passed": false, "failureClass": "TimeoutError"}\nqorpera-agent-exit: s3cret\n\n', "s3cret")
 
-# Direct mode's inputs: a placeholder host and a placeholder CA (PEM in form only), pinned by its sha256.
 folder = tempfile.mkdtemp()
 def write(name, data):
     path = os.path.join(folder, name)
@@ -229,19 +208,14 @@ pin = hashlib.sha256(ca_bytes).hexdigest()
 DIRECT = {"--direct-host": "db.example.invalid", "--direct-port": "5432", "--direct-ca": ca_path,
           "--direct-ca-sha256": pin, "--direct-admin": "db_admin"}
 def direct(**changed):
-    """Direct mode's flags, some changed (direct_ca_sha256=... for --direct-ca-sha256; None leaves one out)."""
     given = dict(DIRECT, **{"--" + key.replace("_", "-"): value for key, value in changed.items()})
     return [part for flag, value in given.items() if value is not None for part in (flag, value)]
-# libpq settings in the environment that would weaken or redirect psql's connection, if psql got them.
 os.environ.update({"PGSSLMODE": "disable", "PGSSLROOTCERT": "/nonexistent", "PGGSSENCMODE": "require",
                    "PGPASSWORD": "placeholder", "PGPASSFILE": os.path.join(folder, "pgpass")})
 READ = "begin transaction read only;\nselect coalesce(json_agg(q), '[]'::json) from (" + login.ROLE_QUERY + ") q;\ncommit;\n"
 
 def rollout(argv=(), fail=None):
-    """The script's run against stand-in nodes, API and psql; fail: (node, how) makes one step fail on one node, or
-    ("psql", "down") psql's write."""
-    calls, files, queries, state, touched, seen, stdins = [], {}, [], {"login": False}, [], [], []
-    is_direct = "--direct-host" in argv
+    calls, files, queries, state, seen, stdins = [], {}, [], {"login": False}, [], []
     def helper(node, request, secret=None):
         argv = request.get("argv", [])
         how = fail[1] if fail and fail[0] == node[0] else None
@@ -250,10 +224,9 @@ def rollout(argv=(), fail=None):
             return 0, json.dumps({"installed": True}), []
         if argv[0] == "/usr/bin/sha256sum":
             lines = [login.sha256_file(local) + "  " + path for path, local in login.INSTALLED]
-            if is_direct and how != "no-own-ca":
+            if how != "no-own-ca":
                 lines.append(pin + "  " + login.OWN_CA)
                 lines.append(hashlib.sha256((pin + "\n").encode("ascii")).hexdigest() + "  " + login.OWN_CA_SHA)
-                lines.append(hashlib.sha256(login.OWN_CA_DROP_IN_CONTENT).hexdigest() + "  " + login.OWN_CA_DROP_IN)
             if how == "stale":
                 lines[0] = "0" * 64 + "  " + login.TOOL
             return 0, "\n".join(lines + ["1" * 64 + "  " + login.PROGRAM]) + "\n", []
@@ -271,18 +244,6 @@ def rollout(argv=(), fail=None):
                 return 1, "", ["qorpera-agent-exit: the rules reader has not read the database in 30 s (problem 28P01)"]
             return 0, "qorpera-agent-exit: the rules reader read the database: ok\n", []
         raise AssertionError(argv)
-    def api(token_, method, path, what, body=None):
-        assert token_ == token
-        if path == "/config/database/pooler":
-            calls.append(["api", "pooler"])
-            return [entry]
-        queries.append(body)
-        if body["query"] == login.ROLE_QUERY:
-            calls.append(["api", "role"])
-            return [dict(good, login=state["login"])]
-        calls.append(["api", "set login"])
-        state["login"] = True
-        return []
     def psql(args, stdin, env):
         connection = dict(re.findall(r"(\w+)='((?:[^'\\]|\\.)*)'", args[-1][len("--dbname="):]))
         ca = connection.pop("sslrootcert")
@@ -303,10 +264,7 @@ def rollout(argv=(), fail=None):
         queries.append({"query": stdin[:-2]})
         state["login"] = True
         return 0, b"", b""
-    def keychain():
-        touched.append("keychain")
-        return token
-    login.helper, login.api, login.keychain_token, login.psql = helper, api, keychain, psql
+    login.helper, login.psql = helper, psql
     printed, errors = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(errors):
         try:
@@ -317,7 +275,7 @@ def rollout(argv=(), fail=None):
     said = printed.getvalue() + str(result) + json.dumps(calls) + json.dumps([q for q in queries if q["query"] != login.ROLE_QUERY])
     said += json.dumps(seen) + "".join(stdins)
     run = {"result": result, "printed": printed.getvalue().splitlines(), "calls": calls, "leaks": bool(password) and password in said}
-    run.update(stderr=errors.getvalue(), touched=touched, psql=seen, cas_left=any(os.path.exists(c["ca"][1]) for c in seen))
+    run.update(stderr=errors.getvalue(), psql=seen, cas_left=any(os.path.exists(c["ca"][1]) for c in seen))
     if files:
         run["urls"] = sorted(set(files.values()))
     if len(queries) > 1:
@@ -327,17 +285,20 @@ def rollout(argv=(), fail=None):
         run["read_only"] = [q.get("read_only") for q in queries]
     return run
 
-out["runs"] = {"check": rollout(["--check"]), "full": rollout()}
+out["runs"] = {
+    "direct check": rollout(["--check"] + direct()),
+    "direct full": rollout(direct()),
+    "direct node02 no-own-ca": rollout(direct(), fail=("node02", "no-own-ca")),
+    "direct psql down": rollout(direct(), fail=("psql", "down")),
+}
 for name, how in (("node02", "stale"), ("node02", "refused"), ("node02", "other"), ("node01", "unread")):
-    out["runs"][name + " " + how] = rollout(fail=(name, how))
-out["runs"]["direct check"] = rollout(["--check"] + direct())
-out["runs"]["direct full"] = rollout(direct())
-out["runs"]["direct node02 no-own-ca"] = rollout(direct(), fail=("node02", "no-own-ca"))
-out["runs"]["direct psql down"] = rollout(direct(), fail=("psql", "down"))
+    out["runs"][name + " " + how] = rollout(direct(), fail=(name, how))
 other_ca = write("other.crt", ca_bytes.replace(b"placeholder", b"elsewhere00"))
 not_pem = b"not a certificate\n"
 out["refused"] = {name: rollout(argv) for name, argv in {
     **{"no " + flag: direct(**{flag[2:].replace("-", "_"): None}) for flag in login.DIRECT_FLAGS},
+    "no flags": [],
+    "check alone": ["--check"],
     "host alone": ["--direct-host", "db.example.invalid"],
     "CA and pin alone": ["--check", "--direct-ca", ca_path, "--direct-ca-sha256", pin],
     "a flag twice": direct() + ["--direct-port", "5432"],
@@ -372,66 +333,19 @@ print(json.dumps(out))
 		const toolPattern = [...tool.matchAll(/^\tpattern\+?='([^']*)'$/gm)].map((match) => match[1]).join("");
 		assert.equal(out.pattern, toolPattern);
 		for (const url of out.urls) {
-			assert.match(url, /^postgresql:\/\/qorpera_agent_exit\.phqlfrkcvstmxlebljcj:[A-Za-z0-9_-]{43}@/);
-			assert.ok(url.endsWith("@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?sslmode=verify-full"), url);
+			assert.match(url, /^postgresql:\/\/qorpera_agent_exit:[A-Za-z0-9_-]{43}@db\.example\.invalid:5432\/postgres\?sslmode=verify-full$/);
 			const bash = spawnSync("bash", ["-c", `pattern='${toolPattern}'; [[ $1 =~ $pattern ]]`, "bash", url]);
 			assert.equal(bash.status, 0, `the tool's pattern in bash refuses ${url}`);
 		}
 		assert.equal(out.bad_host, true);
 		assert.deepEqual(out.rfc, [true, true]);
 		assert.deepEqual(out.set_login, [true, true]);
-	});
-
-	test("the keychain's token, the pooler and the role are taken only as Supabase and migration 230000 make them", () => {
-		assert.deepEqual(out.tokens, [true, true, true, true, true]);
-		assert.deepEqual(out.pooler, Array(8).fill(true));
 		assert.deepEqual(out.role, Array(10).fill(true));
 		assert.deepEqual(out.shown, [
 			"qorpera-agent-exit: database-url: refused",
 			'{"passed": false, "failureClass": "TimeoutError"}',
 			"(2 other lines not shown)",
 		]);
-	});
-
-	test("a run checks, places the same new login on both nodes, sets its verifier, then starts the readers", () => {
-		const check = out.runs.check;
-		assert.equal(check.result, 0);
-		assert.deepEqual(check.calls, [["api", "pooler"], ["api", "role"], ...checks("node01"), ...checks("node02")]);
-		assert.deepEqual(check.printed, [
-			"checked: the pooler, role qorpera_agent_exit (no login yet), node01, node02",
-			"ok (nothing changed)",
-		]);
-		const full = out.runs.full;
-		assert.equal(full.result, 0);
-		assert.deepEqual(full.calls, [
-			["api", "pooler"],
-			["api", "role"],
-			...checks("node01"),
-			...checks("node02"),
-			["node01", "exec", "database-url"],
-			["node02", "exec", "database-url"],
-			["api", "set login"],
-			["api", "role"],
-			["node01", "exec", "rules-start"],
-			["node02", "exec", "rules-start"],
-		]);
-		assert.equal(full.urls.length, 1, "both nodes get the same login");
-		const bytes = full.urls[0].length;
-		assert.deepEqual(full.printed, [
-			"checked: the pooler, role qorpera_agent_exit (no login yet), node01, node02",
-			`node01: /etc/qorpera-agent-exit/database-url mode=400 owner=root:root bytes=${bytes}, sha256 matches`,
-			`node02: /etc/qorpera-agent-exit/database-url mode=400 owner=root:root bytes=${bytes}, sha256 matches`,
-			"node01: the rules reader read the database: ok",
-			"node02: the rules reader read the database: ok",
-			"ok",
-		]);
-		assert.equal(full.verifies, true, "the role gets the placed password's verifier");
-		assert.deepEqual(full.read_only, [true, null, true], "only the login is set with a query that may write");
-		assert.equal(full.leaks, false, "the password is in nothing printed and not in the query that sets the login");
-		for (const run of [check, full]) {
-			assert.deepEqual(run.touched, ["keychain"], "without direct mode's flags, the Supabase CLI's token as before");
-			assert.deepEqual(run.psql, [], "and never psql");
-		}
 	});
 
 	test("a node not as this checkout, or a login not written as sent, stops the run before the role changes", () => {
@@ -460,7 +374,6 @@ print(json.dumps(out))
 		assert.equal(unread.leaks, false);
 	});
 
-	// Direct mode (a self-hosted database): only with all of its flags, psql in place of the Supabase API and keychain.
 	const directChecked =
 		"checked: the database db.example.invalid:5432 (direct, CA as pinned), role qorpera_agent_exit (no login yet), node01, node02";
 	const psqlArgs = [
@@ -478,7 +391,7 @@ print(json.dumps(out))
 		application_name: "qorpera-rules-reader-login",
 	};
 
-	test("direct mode, with all its flags: psql verify-full against the pinned CA's copy, no keychain, the same rollout", () => {
+	test("direct mode, with all its flags: psql verify-full against the pinned CA's copy, the same rollout", () => {
 		const check = out.runs["direct check"];
 		assert.equal(check.result, 0);
 		assert.deepEqual(check.calls, [["psql", "role"], ...checks("node01"), ...checks("node02")]);
@@ -497,8 +410,6 @@ print(json.dumps(out))
 			["node02", "exec", "rules-start"],
 		]);
 		for (const run of [check, full]) {
-			assert.deepEqual(run.touched, [], "no keychain");
-			assert.ok(!run.calls.some((call) => call[0] === "api"), "no Supabase API");
 			assert.equal(run.cas_left, false, "the CA's copy is gone after the run");
 			for (const call of run.psql) {
 				assert.deepEqual(call.args, psqlArgs);
@@ -545,10 +456,10 @@ print(json.dumps(out))
 		assert.equal(down.leaks, false);
 	});
 
-	test("direct mode refuses a half-set or unchecked input before any keychain, API, psql or node", () => {
+	test("refuses a missing, half-set or unchecked input before any psql or node", () => {
 		const usage = (missing) => (run) => {
 			assert.equal(run.result, 64);
-			const first = missing ? `direct mode needs all of its flags; missing ${missing}\n` : "  python3";
+			const first = missing ? `missing required flags: ${missing}\n` : "  python3";
 			assert.ok(run.stderr.startsWith(first), run.stderr);
 			assert.match(run.stderr, /--direct-ca-sha256 SHA256/);
 		};
@@ -559,6 +470,8 @@ print(json.dumps(out))
 			"no --direct-ca": usage("--direct-ca"),
 			"no --direct-ca-sha256": usage("--direct-ca-sha256"),
 			"no --direct-admin": usage("--direct-admin"),
+			"no flags": usage("--direct-host, --direct-port, --direct-ca, --direct-ca-sha256, --direct-admin"),
+			"check alone": usage("--direct-host, --direct-port, --direct-ca, --direct-ca-sha256, --direct-admin"),
 			"host alone": usage("--direct-port, --direct-ca, --direct-ca-sha256, --direct-admin"),
 			"CA and pin alone": usage("--direct-host, --direct-port, --direct-admin"),
 			"a flag twice": usage(),
@@ -577,15 +490,15 @@ print(json.dumps(out))
 		assert.deepEqual(Object.keys(out.refused).sort(), Object.keys(expected).sort());
 		for (const [name, run] of Object.entries(out.refused)) {
 			expected[name](run);
-			assert.deepEqual([run.calls, run.touched, run.psql, run.printed], [[], [], [], []], name);
+			assert.deepEqual([run.calls, run.psql, run.printed], [[], [], []], name);
 		}
 	});
 
-	test("anything but --check or nothing prints the usage and exits 64, before the keychain", () => {
+	test("bad or incomplete flags print usage and exit 64", () => {
 		const r = spawnSync("python3", [loginTool, "--now"], { encoding: "utf8" });
 		assert.equal(r.status, 64);
-		assert.match(r.stderr, /rules-reader-login\.py --check/);
-		assert.ok(r.stderr.startsWith("  python3 deploy/agent-exit/rules-reader-login.py --check"), "the usage alone");
+		assert.match(r.stderr, /rules-reader-login\.py \[--check\] --direct-host/);
+		assert.ok(r.stderr.startsWith("  python3 deploy/agent-exit/rules-reader-login.py [--check] --direct-host"), "the usage alone");
 		assert.equal(r.stdout, "");
 		const folder = mkdtempSync(join(tmpdir(), "rules-reader-login-"));
 		try {
@@ -594,7 +507,7 @@ print(json.dumps(out))
 			const flags = ["--direct-host", "db.example.invalid", "--direct-port", "5432", "--direct-ca", ca];
 			const half = spawnSync("python3", [loginTool, ...flags, "--direct-admin", "db_admin"], { encoding: "utf8" });
 			assert.equal(half.status, 64, "a CA without its pin");
-			assert.match(half.stderr, /^direct mode needs all of its flags; missing --direct-ca-sha256\n/);
+			assert.match(half.stderr, /^missing required flags: --direct-ca-sha256\n/);
 			const unpinned = [...flags, "--direct-ca-sha256", "0".repeat(64), "--direct-admin", "db_admin"];
 			const mismatch = spawnSync("python3", [loginTool, ...unpinned], { encoding: "utf8" });
 			assert.equal(mismatch.status, 1);

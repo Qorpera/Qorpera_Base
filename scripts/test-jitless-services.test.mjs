@@ -135,7 +135,7 @@ for (const forbidGlobalFetch of [false, true]) test(`jitless packaged services s
 		await build({ entryPoints: [join(repository, "packages/runner-orchestrator/test/fixtures/jitless-http.ts")], outfile: fixture,
 			bundle: true, platform: "node", format: "cjs", target: "node22.19", logLevel: "silent" });
 		const boundaries = spawnSync(process.execPath, [...flags, "--require", poison, fixture,
-			join(repository, "deploy/cloud-secret-broker/supabase-prod-ca-2021.crt"), join(root, "login-state")], {
+			join(repository, "packages/runtime/test/fixtures/test-ca.crt"), join(root, "login-state")], {
 			cwd: tmpdir(), env: cleanEnvironment, encoding: "utf8", timeout: 10_000,
 		});
 		assert.equal(boundaries.status, 0, boundaries.stderr);

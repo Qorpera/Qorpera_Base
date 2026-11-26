@@ -9,6 +9,13 @@
 - When the user asks a question, answer it first before making edits or running implementation commands.
 - When responding to user feedback or an analysis, explicitly say whether you agree or disagree before saying what you changed.
 
+## Databases
+
+Qorpera runs two separate database stacks on its own nodes (hosted Supabase Cloud `*.supabase.co`, `pooler.supabase.com`, and `api.supabase.com` Management API are retired and must not be referenced):
+
+- **Platform / control-plane database (`db-primary` / `db-standby`, behind `https://api.qorpera.com`):** self-hosted Supabase (`v0.8.3`: Postgres 17, GoTrue, PostgREST, Realtime, Storage, Edge Runtime). Migrations (`supabase/migrations/`), SQL tests (`supabase/tests/`), and Edge Functions (`supabase/functions/`) target this stack, so PostgREST role grants (`anon`/`authenticated`/`service_role`), RLS (`auth.uid()`/`auth.role()`), and non-superuser migration checks still apply.
+- **Company databases (`data-primary` / `data-standby`, `deploy/company-data/`):** plain PostgreSQL 17.6 + Qorpera's Node `pg` data gateway with zero Supabase components.
+
 ## Code Quality
 
 - Read files in full before wide-ranging changes, before editing files you have not fully inspected, and when asked to investigate or audit. Do not rely on search snippets for broad changes.

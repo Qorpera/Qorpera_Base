@@ -19,10 +19,7 @@ import {
 
 const roots: string[] = [],
 	servers: Server[] = [];
-const certificate = readFileSync(
-	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-	"utf8",
-);
+const certificate = readFileSync(new URL("../../runtime/test/fixtures/test-ca.crt", import.meta.url), "utf8");
 const certificateSha = new X509Certificate(certificate).fingerprint256.replaceAll(":", "").toLowerCase();
 function daemon() {
 	return {

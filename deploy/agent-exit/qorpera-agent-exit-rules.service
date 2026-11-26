@@ -18,7 +18,8 @@ RuntimeDirectory=qorpera-agent-exit-rules
 RuntimeDirectoryMode=0755
 # The exit's own database login (role qorpera_agent_exit, which may call one function); its rollout script places it.
 LoadCredential=qorpera-agent-exit-rules-database-url:/etc/qorpera-agent-exit/database-url
-LoadCredential=qorpera-agent-exit-rules-database-ca:/usr/local/libexec/qorpera-agent-exit/supabase-prod-ca-2021.crt
+LoadCredential=qorpera-agent-exit-rules-database-own-ca:/usr/local/libexec/qorpera-agent-exit/database-own-ca.crt
+LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/usr/local/libexec/qorpera-agent-exit/database-own-ca.sha256
 ExecStart=/usr/bin/node /usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit-rules.mjs
 Restart=on-failure
 RestartSec=10

@@ -3,6 +3,8 @@
 **Status:** Normative architecture contract. Existing desktop execution paths
 are transitional and must not be used to claim autonomous cloud operation.
 
+> **Note, 2026-11-26.** Production runs self-hosted Supabase (`db-primary` / `db-standby`) behind `https://api.qorpera.com` on Qorpera's own nodes, not hosted Supabase Cloud (`*.supabase.co`). Company databases (`deploy/company-data/`, `data-primary` / `data-standby`) run on a separate plain PostgreSQL 17.6 store with no Supabase components.
+>
 > **Note, 2026-09-27.** The runtime contract's company folder layout (section
 > 5.6 and its 2026-09-27 amendments) supersedes this file wherever it describes
 > the Company File as a pinned snapshot, a job-private checkout, or something

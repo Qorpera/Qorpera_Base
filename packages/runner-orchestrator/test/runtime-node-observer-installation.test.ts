@@ -9,7 +9,7 @@ import {
 	validateNodeObserverInstallationDocuments,
 } from "../src/runtime-node-observer-installation.ts";
 
-const ca = readFileSync(new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url));
+const ca = readFileSync(new URL("../../runtime/test/fixtures/test-ca.crt", import.meta.url));
 function fixture() {
 	const policy = {
 		schema: "qorpera.runtime-node-inventory-policy/v1",

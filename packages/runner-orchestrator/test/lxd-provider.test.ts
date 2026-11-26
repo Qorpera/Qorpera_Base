@@ -41,10 +41,7 @@ beforeEach(() => {
 const roots: string[] = [];
 const runId = "20000000-0000-4000-8000-000000000001";
 const runnerId = "20000000-0000-4000-8000-000000000002";
-const secretBrokerCa = readFileSync(
-	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-	"utf-8",
-);
+const secretBrokerCa = readFileSync(new URL("../../runtime/test/fixtures/test-ca.crt", import.meta.url), "utf-8");
 const secretBrokerCaSha256 = createHash("sha256").update(secretBrokerCa).digest("hex");
 
 afterEach(async () => {

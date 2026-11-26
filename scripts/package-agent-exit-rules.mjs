@@ -26,19 +26,9 @@ await bundleNodeEntries({
 	outputRoot: output,
 	banner: ESM_REQUIRE_BANNER,
 });
-await copyPackageFiles(
-	[
-		"deploy/agent-exit/qorpera-agent-exit-rules.service",
-		"deploy/cloud-secret-broker/supabase-prod-ca-2021.crt",
-	],
-	output,
-);
-const caFiles = await writeDatabaseOwnCaFiles(output, ownCa, [
-	"[Service]",
-	"LoadCredential=qorpera-agent-exit-rules-database-own-ca:/usr/local/libexec/qorpera-agent-exit/database-own-ca.crt",
-	"LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/usr/local/libexec/qorpera-agent-exit/database-own-ca.sha256",
-]);
-const files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt", ...caFiles];
+await copyPackageFiles(["deploy/agent-exit/qorpera-agent-exit-rules.service"], output);
+const caFiles = await writeDatabaseOwnCaFiles(output, ownCa);
+const files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", ...caFiles];
 const artifacts = await hashPackageFiles(files, output);
 await writeManifest(output, { schema: "qorpera.agent-exit-rules-package/v1", artifacts }, { mode: 0o600 });
 console.log(output);

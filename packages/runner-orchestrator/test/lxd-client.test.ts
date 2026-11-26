@@ -1597,10 +1597,7 @@ describe("LXD exec stream", () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-proj-"));
 		roots.push(root);
 		const socket = join(root, "lxd.socket");
-		const certificate = readFileSync(
-			new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-			"utf8",
-		);
+		const certificate = readFileSync(new URL("../../runtime/test/fixtures/test-ca.crt", import.meta.url), "utf8");
 		const certificateSha = new X509Certificate(certificate).fingerprint256.replaceAll(":", "").toLowerCase();
 		const serverPayload = {
 			type: "sync",

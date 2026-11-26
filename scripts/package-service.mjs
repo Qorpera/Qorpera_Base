@@ -130,10 +130,9 @@ export async function loadDatabaseOwnCa(file, sha256) {
 	return { bytes, sha256 };
 }
 
-export async function writeDatabaseOwnCaFiles(outputRoot, ownCa, dropInLines) {
+export async function writeDatabaseOwnCaFiles(outputRoot, ownCa) {
 	if (!ownCa) return [];
 	await writeFile(join(outputRoot, "database-own-ca.crt"), ownCa.bytes, { mode: 0o644, flag: "wx" });
 	await writeFile(join(outputRoot, "database-own-ca.sha256"), `${ownCa.sha256}\n`, { mode: 0o644, flag: "wx" });
-	await writeFile(join(outputRoot, "database-own-ca.conf"), `${dropInLines.join("\n")}\n`, { mode: 0o644, flag: "wx" });
-	return ["database-own-ca.crt", "database-own-ca.sha256", "database-own-ca.conf"];
+	return ["database-own-ca.crt", "database-own-ca.sha256"];
 }
