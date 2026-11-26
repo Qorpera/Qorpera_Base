@@ -293,11 +293,9 @@ export class ClaudeWorkerStream {
 
 	toolsAsAllowed(allowedMcpTools?: readonly string[]): boolean {
 		const tools = this.init?.tools ?? [];
+		const allBuiltins = [...(CLAUDE_BOX_TOOLS as readonly string[])].sort().join();
 		if (!allowedMcpTools || allowedMcpTools.length === 0) {
-			return (
-				tools.length === CLAUDE_BOX_TOOLS.length &&
-				[...tools].sort().join() === [...(CLAUDE_BOX_TOOLS as readonly string[])].sort().join()
-			);
+			return tools.length === CLAUDE_BOX_TOOLS.length && [...tools].sort().join() === allBuiltins;
 		}
 		const mcpSet = new Set(allowedMcpTools);
 		const seenMcp = new Set<string>();
@@ -310,9 +308,16 @@ export class ClaudeWorkerStream {
 				builtin.push(tool);
 			}
 		}
+		if (seenMcp.size === 0) return false;
+		const sortedBuiltin = [...builtin].sort().join();
+		// WHY: ENABLE_TOOL_SEARCH=false removes ToolSearch from Claude Code's init.tools list in MCP-backed sessions.
+		const builtinsWithoutToolSearch = (CLAUDE_BOX_TOOLS as readonly string[])
+			.filter((tool) => tool !== "ToolSearch")
+			.sort()
+			.join();
 		return (
-			builtin.length === CLAUDE_BOX_TOOLS.length &&
-			[...builtin].sort().join() === [...(CLAUDE_BOX_TOOLS as readonly string[])].sort().join()
+			(builtin.length === CLAUDE_BOX_TOOLS.length && sortedBuiltin === allBuiltins) ||
+			(builtin.length === CLAUDE_BOX_TOOLS.length - 1 && sortedBuiltin === builtinsWithoutToolSearch)
 		);
 	}
 }
