@@ -44,6 +44,44 @@ function decodeEntities(value: string): string {
 	});
 }
 
+const MAX_INLINE_COLOR_LENGTH = 80;
+const CSS_NUM = "[+-]?(?:\\d+(?:\\.\\d+)?|\\.\\d+)";
+const CSS_PCT = `${CSS_NUM}%`;
+const CSS_NUM_OR_PCT = `${CSS_NUM}%?`;
+const CSS_HUE = `${CSS_NUM}(?:deg|grad|rad|turn)?`;
+const CSS_COLOR_SPACES = "srgb|srgb-linear|display-p3|a98-rgb|prophoto-rgb|rec2020|xyz|xyz-d50|xyz-d65";
+const INLINE_COLOR_RE = new RegExp(
+	`^(?:${[
+		"#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})",
+		`rgba?\\( *${CSS_NUM} *, *${CSS_NUM} *, *${CSS_NUM}(?: *, *${CSS_NUM_OR_PCT})? *\\)`,
+		`rgba?\\( *${CSS_PCT} *, *${CSS_PCT} *, *${CSS_PCT}(?: *, *${CSS_NUM_OR_PCT})? *\\)`,
+		`rgba?\\( *${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT}(?: *\\/ *${CSS_NUM_OR_PCT})? *\\)`,
+		`hsla?\\( *${CSS_HUE} *, *${CSS_PCT} *, *${CSS_PCT}(?: *, *${CSS_NUM_OR_PCT})? *\\)`,
+		`hsla?\\( *${CSS_HUE} +${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT}(?: *\\/ *${CSS_NUM_OR_PCT})? *\\)`,
+		`hwb\\( *${CSS_HUE} +${CSS_PCT} +${CSS_PCT}(?: *\\/ *${CSS_NUM_OR_PCT})? *\\)`,
+		`(?:ok)?lch\\( *${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT} +${CSS_HUE}(?: *\\/ *${CSS_NUM_OR_PCT})? *\\)`,
+		`(?:ok)?lab\\( *${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT}(?: *\\/ *${CSS_NUM_OR_PCT})? *\\)`,
+		`color\\( *(?:${CSS_COLOR_SPACES}) +${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT} +${CSS_NUM_OR_PCT}(?: *\\/ *${CSS_NUM_OR_PCT})? *\\)`,
+	].join("|")})$`,
+	"i",
+);
+
+export function inlineColorValue(text: string): string | undefined {
+	const value = text.trim();
+	if (!value || value.length > MAX_INLINE_COLOR_LENGTH) return undefined;
+	return INLINE_COLOR_RE.test(value) ? value : undefined;
+}
+
+function codespanNode(token: Tokens.Codespan): HTMLElement {
+	const code = h("code", null, drawn(token, token.text));
+	const color = inlineColorValue(token.text);
+	if (color !== undefined) {
+		code.className = "is-color";
+		code.style.setProperty("--code-color", color);
+	}
+	return code;
+}
+
 /** Only explicit web/mail links can leave a transcript. Images are links,
  * never automatic remote requests. Raw HTML is always rendered as text. A
  * `folder:` link (ui/folder-links.ts) leaves nothing: it opens the Company File.
@@ -469,7 +507,7 @@ function renderTokens(
 			case "del":
 				return [h("del", null, children())];
 			case "codespan":
-				return [h("code", null, drawn(token, token.text))];
+				return [codespanNode(token)];
 			case "code":
 				return [h("pre", null, h("code", null, drawn(token, token.text)))];
 			case "br":
