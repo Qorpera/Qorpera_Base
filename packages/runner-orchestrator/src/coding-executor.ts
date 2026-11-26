@@ -1146,8 +1146,15 @@ export class CloudCodingExecutor {
 						return "completed";
 					}
 					const build = parseCodingPreviewBuild(begun.build);
-					await progress({ p_phase: "publishing", p_last_step: CODING_PREVIEW_BUILD_STEP });
-					const result = await this.#host.buildPreview(claimed, build, active);
+					const progressTask = progress({ p_phase: "publishing", p_last_step: CODING_PREVIEW_BUILD_STEP });
+					let result: SurfacePreviewBuildOutcome;
+					try {
+						result = await this.#host.buildPreview(claimed, build, active);
+					} catch (error) {
+						void progressTask.catch(() => undefined);
+						throw error;
+					}
+					await progressTask;
 					end();
 					if (result.outcome === "built") {
 						await finishBuild(build.buildId, "built", {

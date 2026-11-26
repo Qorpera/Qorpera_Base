@@ -8,6 +8,7 @@
 	const READY = "qorpera-site-door-ready";
 	const PASS = "qorpera-site-door";
 	const SHOWN = "qorpera-site-door-shown";
+	const PREVIEW_READY = "qorpera-preview-ready";
 	const INSPECTOR_MODE = "qorpera-inspector-mode";
 	const INSPECTOR_PICK = "qorpera-inspector-pick";
 	const IDENTITY_TOKENS_CSS = "qorpera:identity-tokens-css";
@@ -17,6 +18,7 @@
 	const PASS_TEXT = /^[A-Za-z0-9_-]{43}$/;
 	const PATH = /^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,511}$/;
 	let used = false;
+	let shownEarly = false;
 	let targetOrigin = "";
 	let frame;
 	window.addEventListener("message", (event) => {
@@ -41,6 +43,13 @@
 				}
 				return;
 			}
+			if (event.source === frame.contentWindow && event.origin === targetOrigin && data.type === PREVIEW_READY) {
+				if (!shownEarly) {
+					shownEarly = true;
+					app.postMessage({ type: SHOWN }, location.origin);
+				}
+				return;
+			}
 			if (event.source === frame.contentWindow && event.origin === targetOrigin && data.type === INSPECTOR_PICK) {
 				app.postMessage({ type: INSPECTOR_PICK, target: data.target }, location.origin);
 				return;
@@ -53,6 +62,7 @@
 		if (path !== undefined && (typeof path !== "string" || !PATH.test(path))) return;
 		targetOrigin = new URL(action).origin;
 		used = true;
+		shownEarly = false;
 		if (typeof title === "string" && title.length <= 200) frame.title = title;
 		const form = document.createElement("form");
 		form.method = "post";
@@ -81,7 +91,10 @@
 		frame.style.cssText = "display:block;width:100%;height:100%;border:0;background:#fff";
 		// Its own empty page is this site's; the site's page never is: only that load is the site's.
 		frame.addEventListener("load", () => {
-			if (used && frame.contentDocument === null) app.postMessage({ type: SHOWN }, location.origin);
+			if (used && frame.contentDocument === null) {
+				if (!shownEarly) app.postMessage({ type: SHOWN }, location.origin);
+				shownEarly = false;
+			}
 		});
 		document.body.append(frame);
 		app.postMessage({ type: READY }, location.origin);

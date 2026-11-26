@@ -26,7 +26,7 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree, readRepoDeployConfig, readSurfaceSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree, readRepoDeployConfig } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { RealtimeOrchestratorWake } from "../../packages/runner-orchestrator/src/orchestrator-wake.ts";
@@ -617,7 +617,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		? new SurfaceCodeHostWorker({
 			control,
 			hosts: codeHostJobs,
-			readTree: readSurfaceSiteTree,
 			report: logCodeRecord,
 			...(nativeEdge
 				? { nativeEdge: { routerInternalUrl: nativeEdge.routerInternalUrl, controlToken: nativeEdge.controlToken } }
