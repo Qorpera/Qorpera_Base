@@ -542,9 +542,11 @@ export function mountApplication(
 				companyRemovedHandler(),
 				tab,
 				openFriends,
+				executionNotices,
 			);
 			frame.inert = true;
 			root.append(settings.el);
+			notices?.reveal();
 			settings.focus();
 		};
 		const cached = settingsViewModule.get();
@@ -868,6 +870,7 @@ export function mountApplication(
 	let companyActiveAbort: AbortController | undefined;
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
+	let shownAccountAlerts = 0;
 	/** Which of the open company's two pages are on (Interfaces C6a), read with its folder. */
 	let interfacePages: CompanyInterfacePages | undefined;
 	let companyDatabases: CompanyDatabases | undefined;
@@ -1111,6 +1114,7 @@ export function mountApplication(
 			openFriends,
 			invites: api,
 			invitations: hub.store.get().invitations.length,
+			accountAlerts: notices?.count ?? 0,
 			prefetchCompanyWordmarks: (list) => {
 				const userId = auth.userId;
 				if (!userId || disposed) return;
@@ -1175,8 +1179,10 @@ export function mountApplication(
 					view: new mod.FoundingView(founding.controller, founding.view.drafts()),
 				};
 		}
-		notices?.dispose();
+		const oldNotices = notices;
 		notices = undefined;
+		shownAccountAlerts = 0;
+		oldNotices?.dispose();
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
@@ -1205,8 +1211,10 @@ export function mountApplication(
 
 	function disposeCompanyViews(): void {
 		interfaceViewModule.get()?.disposeInterface(main);
-		notices?.dispose();
+		const oldNotices = notices;
 		notices = undefined;
+		shownAccountAlerts = 0;
+		oldNotices?.dispose();
 		interfacePages?.dispose();
 		interfacePages = undefined;
 		companyDatabases?.dispose();
@@ -2605,16 +2613,22 @@ export function mountApplication(
 							canManage: () => controller.store.get().team?.capabilities.authorize === true,
 						}
 					: undefined;
-			notices = new ExecutionNotices(
+			const createdNotices = new ExecutionNotices(
 				client,
 				controller.signal,
-				() => main.focus({ preventScroll: true }),
+				() => (settings ? settings.focus() : main.focus({ preventScroll: true })),
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
 				api,
 				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
+				(count) => {
+					if (disposed || notices !== createdNotices || count === shownAccountAlerts) return;
+					shownAccountAlerts = count;
+					render();
+				},
 			);
-			executionNotices.append(notices.el);
+			notices = createdNotices;
+			executionNotices.append(createdNotices.el);
 		}
 		// The company's pages are the two the web ships, shown once they are on (Interfaces C6a). What they read comes from
 		// its folder, read with the member's own access as the Company File page reads it, and followed while the
@@ -3478,7 +3492,6 @@ export function mountApplication(
 							...agentActions,
 							...workspaceActions,
 							computerPanels,
-							notificationHost: executionNotices,
 						},
 						() => setNavigationOpen(!navigationOpen),
 					);

@@ -122,36 +122,21 @@ begin
 		or v_row -> 'no_progress_minutes' <> '15' or public.qorpera_run_stall_minutes() <> 15 then
 		raise exception 'B: the stall is named from the last progress %, with its minutes: %', v_since, v_row; end if;
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'opened' <> '2' or pg_temp.st_open_notices()
-		<> '{"92400000-0000-4000-8000-000000000001": 1, "92400000-0000-4000-8000-000000000004": 1}' then
-		raise exception 'B: the owner and the admin are told, and only they: % %', v_sweep, pg_temp.st_open_notices(); end if;
-	select * into strict v_notice from public.qorpera_member_notifications
-	where kind = 'run_no_progress' and subject ->> 'runId' = pg_temp.st_run()::text
-		and user_id = '92400000-0000-4000-8000-000000000001';
-	if v_notice.subject ->> 'schema' <> 'qorpera.member-notification.run-no-progress/v1'
-		or v_notice.subject ->> 'staffAgentId' <> '92400000-0000-4000-8000-000000000031'
-		or (v_notice.subject ->> 'since')::timestamptz <> v_since or v_notice.subject ->> 'sessionId' is null
-		or v_notice.subject -> 'minutes' <> '15' or v_notice.dedupe_key <> pg_temp.st_run()::text then
-		raise exception 'B: the notice names the run, the agent, the thread and the stall: %', v_notice.subject; end if;
-	-- Again: the same run is not told twice.
-	if pg_temp.st_sweep() ->> 'opened' <> '0' or pg_temp.st_open_notices()
-		<> '{"92400000-0000-4000-8000-000000000001": 1, "92400000-0000-4000-8000-000000000004": 1}' then
-		raise exception 'B: a stall is told once'; end if;
+	if v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'B: stalled runs emit no member notifications: % %', v_sweep, pg_temp.st_open_notices(); end if;
 end
 $$;
 
--- C. A dismissed notice is not sent again for the same run.
 do $$
-declare v_notice public.qorpera_member_notifications;
+declare v_sweep jsonb;
 begin
-	for v_notice in select * from public.qorpera_member_notifications
-		where kind = 'run_no_progress' and subject ->> 'runId' = pg_temp.st_run()::text and acknowledged_at is null loop
-		perform pg_temp.base_claims('authenticated', v_notice.user_id);
-		perform public.qorpera_acknowledge_member_notification(v_notice.id);
-	end loop;
-	perform pg_temp.base_claims('service_role');
-	if pg_temp.st_sweep() ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
-		raise exception 'C: a dismissed stall stays dismissed'; end if;
+	insert into public.qorpera_member_notifications(profile_id, user_id, kind, subject, dedupe_key)
+	values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001', 'run_no_progress',
+		jsonb_build_object('schema', 'qorpera.member-notification.run-no-progress/v1', 'runId', pg_temp.st_run()),
+		pg_temp.st_run()::text);
+	v_sweep := pg_temp.st_sweep();
+	if v_sweep ->> 'opened' <> '0' or v_sweep ->> 'closed' <> '1' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'C: pre-existing run_no_progress notices are acknowledged by the sweep: % %', v_sweep, pg_temp.st_open_notices(); end if;
 end
 $$;
 
@@ -218,12 +203,12 @@ begin
 		audience_user_id = '92400000-0000-4000-8000-000000000002' where id = pg_temp.st_run();
 	set local session_replication_role = origin;
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'opened' <> '1' or pg_temp.st_open_notices() <> '{"92400000-0000-4000-8000-000000000002": 1}' then
-		raise exception 'F: a member-private run tells its member only: % %', v_sweep, pg_temp.st_open_notices(); end if;
+	if v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'F: a stalled member-private run opens no notice: % %', v_sweep, pg_temp.st_open_notices(); end if;
 	perform pg_temp.st_observe('company_read', 'finish', 0);
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'closed' <> '1' or v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
-		raise exception 'F: the notice closes itself on progress: %', v_sweep; end if;
+	if v_sweep ->> 'closed' <> '0' or v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'F: sweep stays silent on progress: %', v_sweep; end if;
 	perform pg_temp.st_forget(true);
 	set local session_replication_role = replica;
 	update public.qorpera_execution_runs set audience_kind = 'company', audience_user_id = null,
@@ -231,24 +216,19 @@ begin
 		created_by_user_id = '92400000-0000-4000-8000-000000000003' where id = pg_temp.st_run();
 	set local session_replication_role = origin;
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'opened' <> '1' or pg_temp.st_open_notices() <> '{"92400000-0000-4000-8000-000000000003": 1}' then
-		raise exception 'F: a turn tells its sender (a viewer here): % %', v_sweep, pg_temp.st_open_notices(); end if;
-	-- A member's post in the agent's own thread is a room delivery: it tells the member who posted, not the owner and
-	-- admin (a member who has not been told of this run yet).
-	perform pg_temp.st_observe('company_read', 'finish', 0);
-	if pg_temp.st_sweep() ->> 'closed' <> '1' then raise exception 'F: progress closes the sender''s notice'; end if;
+	if v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'F: a stalled turn opens no notice: % %', v_sweep, pg_temp.st_open_notices(); end if;
 	perform pg_temp.st_forget(true);
 	set local session_replication_role = replica;
 	update public.qorpera_execution_runs set source_kind = 'room_delivery', input_ids = '{}',
 		created_by_user_id = '92400000-0000-4000-8000-000000000006' where id = pg_temp.st_run();
 	set local session_replication_role = origin;
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'opened' <> '1' or pg_temp.st_open_notices() <> '{"92400000-0000-4000-8000-000000000006": 1}' then
-		raise exception 'F: a post in the agent''s thread tells its poster: % %', v_sweep, pg_temp.st_open_notices(); end if;
+	if v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'F: a stalled room post opens no notice: % %', v_sweep, pg_temp.st_open_notices(); end if;
 end
 $$;
 
--- G. A run that ended closes its notice; the job's row was never changed by the sweep.
 do $$
 declare v_job public.qorpera_runner_jobs%rowtype; v_sweep jsonb;
 begin
@@ -263,8 +243,8 @@ begin
 	where id = v_job.id;
 	set local session_replication_role = origin;
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'closed' <> '1' or pg_temp.st_open_notices() <> '{}' then
-		raise exception 'G: an ended run closes its notice: %', v_sweep; end if;
+	if v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'G: an ended run keeps notices silent: %', v_sweep; end if;
 end
 $$;
 

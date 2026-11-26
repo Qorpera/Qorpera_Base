@@ -182,13 +182,18 @@ end $$;
 -- apply's commit decides again, so the delete is refused, the proposal closes not applied, and the page stays.
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); v_before jsonb := pg_temp.layouts(); r jsonb;
-	v_proposal uuid;
+	v_proposal uuid := extensions.gen_random_uuid(); v_units jsonb := jsonb_build_array(pg_temp.p16_delete('QorperaOS/interfaces/member-page'));
+	v_commit uuid;
 begin
-	perform pg_temp.rule(false);
-	r := pg_temp.vcommit(b, 'c6-park-0001', jsonb_build_array(pg_temp.p16_delete('QorperaOS/interfaces/member-page')));
-	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
-	v_proposal := (pg_temp.parked(r)).id;
-	perform pg_temp.rule(true);
+	select id into strict v_commit from public.qorpera_folder_commits
+	where environment_id = '63400000-0000-4000-8000-000000000020' and operation_key = 'c6-view-0001';
+	insert into public.qorpera_folder_proposals(id, environment_id, profile_id, commit_id, staff_agent_id, member_user_id,
+		view_id, view_kind, units, commit_units, change_set_sha256, effect)
+	values (v_proposal, '63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', v_commit,
+		'63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000002', (b ->> 'viewId')::uuid, 'run_box',
+		v_units, '{1}', public.qorpera_folder_change_set_sha256(v_units), 'destructive');
+	insert into public.qorpera_folder_proposal_paths(proposal_id, environment_id, unit_no, item_no, path, manifest_sha256)
+	values (v_proposal, '63400000-0000-4000-8000-000000000020', 1, 0, 'QorperaOS/interfaces/member-page', null);
 	r := pg_temp.approve(pg_temp.agent_run(), 'c6-apply-1', v_proposal);
 	perform pg_temp.layout(r, 1);
 	if (pg_temp.proposal(v_proposal)).status <> 'not_applied' or r ->> 'seq' is not null then

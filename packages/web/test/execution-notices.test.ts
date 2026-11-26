@@ -7,6 +7,7 @@ import type { MemberNotification, WebMemberNotifications } from "../src/cloud/me
 import { PlanSwitchBusyError, type WebMemberConnection } from "../src/cloud/native-subscription.ts";
 import type { WebRoutine } from "../src/cloud/routines.ts";
 import { deferred, fixture, id, profileA, profileB, settle, timestamp, userB } from "./fixtures.ts";
+import "./register-lazy.ts";
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -21,19 +22,21 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
-const FULL = "All 2 company computers are in use. Close one to open another.";
+const FULL =
+	"Your monthly Gemini API spend cap of $25 was reached ($25.50 used in November 2026). Raise the cap in Settings or switch models to continue.";
 const item = (n = 70, at = timestamp): MemberNotification => ({
 	notificationId: id(n),
 	profileId: profileA.profileId,
-	kind: "company_ceiling_tripped",
+	kind: "gemini_cap_reached",
 	createdAt: at,
 	acknowledgedAt: null,
 	subject: {
-		schema: "qorpera.member-notification.machine-capacity/v1",
-		dimension: "machines",
-		ceiling: 2,
-		used: 2,
-		allocationId: id(90),
+		schema: "qorpera.member-notification.gemini-cap-reached/v1",
+		month: "2026-11",
+		monthlyCapCents: 2500,
+		spendMicrodollars: 25_500_000,
+		runId: id(90),
+		sessionId: null,
 	},
 });
 function setup(items: readonly MemberNotification[] = [item()]) {
@@ -252,7 +255,7 @@ describe("company notices", () => {
 		expect(mixed.view.el.querySelector("p")?.textContent).toBe(FULL);
 	});
 
-	it("tells the member whose own login reached its usage limit that work goes on by itself, naming no other login", async () => {
+	it("silences auto-resuming usage limits and shows only stopped login limits", async () => {
 		const usage = (accountEmail: string | null, resetsAt: string | null) => ({
 			...item(77),
 			kind: "provider_usage_limit" as const,
@@ -266,17 +269,10 @@ describe("company notices", () => {
 			},
 		});
 		const soon = new Date(Date.now() + 4 * 3_600_000 - 60_000).toISOString();
-		const named = setup([usage("a@example.com", soon)]);
+		const autoResuming = setup([usage("a@example.com", soon), usage(null, null)]);
 		await settle();
-		expect(named.view.el.querySelector("p")?.textContent).toBe(
-			"Your login a@example.com reached its usage limit. Work will go on by itself when it resets (about 4 h).",
-		);
-		const unknown = setup([usage(null, null)]);
-		await settle();
-		expect(unknown.view.el.querySelector("p")?.textContent).toBe(
-			"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.",
-		);
-		// Its run could not wait (or was stopped): that work does not go on by itself (20260930703000).
+		expect(autoResuming.view.el.hidden).toBe(true);
+		expect(autoResuming.view.count).toBe(0);
 		const stopped = (accountEmail: string | null) => {
 			const notice = usage(accountEmail, soon);
 			return { ...notice, subject: { ...notice.subject, runStopped: true as const } };
@@ -293,7 +289,7 @@ describe("company notices", () => {
 		);
 	});
 
-	it("names the agent whose run made no progress for 15 minutes, and dismisses it like any line", async () => {
+	it("silences operational run_no_progress and machine-capacity notices", async () => {
 		const stalled: MemberNotification = {
 			...item(78),
 			kind: "run_no_progress",
@@ -304,29 +300,43 @@ describe("company notices", () => {
 				sessionId: null,
 				since: timestamp,
 				minutes: 15,
-				worker: false,
+				worker: true,
 			},
 		};
+		const capacity: MemberNotification = {
+			...item(79),
+			kind: "company_ceiling_tripped",
+			subject: {
+				schema: "qorpera.member-notification.machine-capacity/v1",
+				dimension: "machines",
+				ceiling: 2,
+				used: 2,
+				allocationId: id(90),
+			},
+		};
+		const onCountChange = vi.fn();
 		const client = {
-			listNotifications: vi.fn(async () => [stalled]),
+			listNotifications: vi.fn(async () => [stalled, capacity]),
 			acknowledgeNotification: vi.fn(async () => ({ ...stalled, acknowledgedAt: timestamp })),
 		};
 		const lifetime = new AbortController();
-		const named = new ExecutionNotices(client, lifetime.signal, undefined, undefined, (staffAgentId) =>
-			staffAgentId === id(83) ? "Nova" : undefined,
+		const view = new ExecutionNotices(
+			client,
+			lifetime.signal,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			onCountChange,
 		);
-		document.body.append(named.el);
-		cleanup.push(() => named.dispose());
+		document.body.append(view.el);
+		cleanup.push(() => view.dispose());
 		await settle();
-		expect(named.el.querySelector("p")?.textContent).toBe("Nova has made no progress for 15 minutes.");
-		action("dismiss-notification").click();
-		await settle();
-		expect(client.acknowledgeNotification).toHaveBeenCalledWith(id(78), expect.any(AbortSignal));
-		expect(named.el.hidden).toBe(true);
-		// Without the agent's name (another window's staff list), the line still says what happened.
-		const unnamed = setup([stalled]);
-		await settle();
-		expect(unnamed.view.el.querySelector("p")?.textContent).toBe("An agent has made no progress for 15 minutes.");
+		expect(view.el.hidden).toBe(true);
+		expect(view.count).toBe(0);
+		expect(onCountChange).not.toHaveBeenCalled();
+		expect(client.acknowledgeNotification).not.toHaveBeenCalled();
 	});
 
 	it("says who moved a routine off the member's login, and dismisses it like any line (20260930095000)", async () => {
@@ -491,137 +501,58 @@ describe("company notices", () => {
 		expect(shown.view.el.hidden).toBe(true);
 	});
 
-	it("offers Stop for a worker's run to a member who may stop it, and the stopped run's notice is done (gap 4b)", async () => {
-		const stalled = (n: number, worker: boolean): MemberNotification => ({
-			...item(70 + n),
-			kind: "run_no_progress",
-			subject: {
-				schema: "qorpera.member-notification.run-no-progress/v1",
-				runId: id(80 + n),
-				staffAgentId: id(83),
-				sessionId: worker ? null : id(84),
-				since: timestamp,
-				minutes: 15,
-				worker,
-			},
-		});
-		const mount = (items: MemberNotification[], canCancel: boolean) => {
-			const client = {
-				listNotifications: vi.fn(async () => items),
-				acknowledgeNotification: vi.fn(async (notificationId: string) => ({
-					...items.find((entry) => entry.notificationId === notificationId)!,
-					acknowledgedAt: timestamp,
-				})),
-			};
-			const workerRuns = {
-				workerRunControl: vi.fn(async (runId: string) => ({ runId, status: "leased" as const, canCancel })),
-				stopWorkerRun: vi.fn(async (runId: string) => ({ runId, status: "cancelled" as const, canCancel: false })),
-			};
-			const lifetime = new AbortController();
-			const view = new ExecutionNotices(client, lifetime.signal, undefined, undefined, undefined, workerRuns);
-			document.body.append(view.el);
-			cleanup.push(() => view.dispose());
-			return { client, workerRuns, view };
-		};
-		// A member who may stop it: Stop beside Dismiss; pressed, the run stops and the notice is done.
-		const f = mount([stalled(1, true)], true);
-		await settle();
-		expect(f.workerRuns.workerRunControl).toHaveBeenCalledWith(id(81));
-		expect(action("stop-worker-run").textContent).toBe("Stop");
-		action("stop-worker-run").click();
-		await settle();
-		expect(f.workerRuns.stopWorkerRun).toHaveBeenCalledWith(id(81));
-		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(71), expect.any(AbortSignal));
-		expect(f.view.el.hidden).toBe(true);
-		f.view.dispose();
-		document.body.replaceChildren();
-		// A failed Stop says so and keeps the button; nothing is acknowledged.
-		const failing = mount([stalled(2, true)], true);
-		failing.workerRuns.stopWorkerRun.mockRejectedValueOnce(new Error("offline"));
-		await settle();
-		action("stop-worker-run").click();
-		await settle();
-		expect(failing.view.el.textContent).toContain("The work could not be stopped. Try again.");
-		expect(action("stop-worker-run")).not.toBeNull();
-		expect(failing.client.acknowledgeNotification).not.toHaveBeenCalled();
-		failing.view.dispose();
-		document.body.replaceChildren();
-		// A member who may not stop it, and a run in a conversation (Stop is in its thread), get no Stop here.
-		const viewer = mount([stalled(3, true)], false);
-		await settle();
-		expect(viewer.view.el.querySelector('[data-action="stop-worker-run"]')).toBeNull();
-		viewer.view.dispose();
-		document.body.replaceChildren();
-		const thread = mount([stalled(4, false)], true);
-		await settle();
-		expect(thread.workerRuns.workerRunControl).not.toHaveBeenCalled();
-		expect(thread.view.el.querySelector('[data-action="stop-worker-run"]')).toBeNull();
-	});
-
-	it("while a Stop runs, Dismiss waits, and the finished Stop dismisses the notice it stopped (gap 4b)", async () => {
-		const stalled: MemberNotification = {
-			...item(76),
-			kind: "run_no_progress",
-			subject: {
-				schema: "qorpera.member-notification.run-no-progress/v1",
-				runId: id(86),
-				staffAgentId: id(83),
-				sessionId: null,
-				since: timestamp,
-				minutes: 15,
-				worker: true,
-			},
-		};
+	it("reports account health count changes as notices arrive and are dismissed", async () => {
+		const counts: number[] = [];
 		const client = {
-			listNotifications: vi.fn(async () => [stalled, item(70)]),
+			listNotifications: vi.fn(async () => [item(70), item(71)]),
 			acknowledgeNotification: vi.fn(async (notificationId: string) => ({
-				...(notificationId === stalled.notificationId ? stalled : item(70)),
+				...item(notificationId === id(70) ? 70 : 71),
 				acknowledgedAt: timestamp,
 			})),
 		};
-		const pending = deferred<{ runId: string; status: "cancelled"; canCancel: boolean }>();
-		const workerRuns = {
-			workerRunControl: vi.fn(async (runId: string) => ({ runId, status: "leased" as const, canCancel: true })),
-			stopWorkerRun: vi.fn(() => pending.promise),
-		};
 		const lifetime = new AbortController();
-		const view = new ExecutionNotices(client, lifetime.signal, undefined, undefined, undefined, workerRuns);
+		const view = new ExecutionNotices(
+			client,
+			lifetime.signal,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			(count) => counts.push(count),
+		);
 		document.body.append(view.el);
 		cleanup.push(() => view.dispose());
 		await settle();
-		action("stop-worker-run").click();
-		await settle();
-		// Dismiss and Escape wait while the Stop runs.
-		expect(action("dismiss-notification").getAttribute("aria-disabled")).toBe("true");
+		expect(view.count).toBe(2);
+		expect(counts).toEqual([2]);
 		action("dismiss-notification").click();
-		const escapeKey = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
-		view.el.querySelector(".company-notice")!.dispatchEvent(escapeKey);
 		await settle();
-		expect(client.acknowledgeNotification).not.toHaveBeenCalled();
-		pending.resolve({ runId: id(86), status: "cancelled", canCancel: false });
+		expect(view.count).toBe(1);
+		expect(counts).toEqual([2, 1]);
+		action("dismiss-notification").click();
 		await settle();
-		// Only the stopped notice is dismissed; the next one shows.
-		expect(client.acknowledgeNotification).toHaveBeenCalledTimes(1);
-		expect(client.acknowledgeNotification).toHaveBeenCalledWith(id(76), expect.any(AbortSignal));
-		expect(view.el.querySelector("p")?.textContent).toBe(FULL);
+		expect(view.count).toBe(0);
+		expect(counts).toEqual([2, 1, 0]);
 	});
 });
 
-it("reads notices for the company workspace and shows none outside a conversation, also across an account change", async () => {
+it("keeps billing notices out of chat, badges the Account menu, and shows them inside Settings", async () => {
 	const f = fixture();
 	const wire = {
 		schema: "qorpera.member-notification/v1",
 		notification_id: id(70),
 		profile_id: profileA.profileId,
-		kind: "company_ceiling_tripped",
+		kind: "gemini_cap_reached",
 		created_at: timestamp,
 		acknowledged_at: null,
 		subject: {
-			schema: "qorpera.member-notification.machine-capacity/v1",
-			dimension: "machines",
-			ceiling: 2,
-			used: 2,
-			allocationId: id(90),
+			schema: "qorpera.member-notification.gemini-cap-reached/v1",
+			month: "2026-11",
+			monthlyCapCents: 2500,
+			spendMicrodollars: 25_500_000,
+			runId: id(90),
+			sessionId: null,
 		},
 	};
 	const reads = () =>
@@ -637,12 +568,16 @@ it("reads notices for the company workspace and shows none outside a conversatio
 	cleanup.push(mountApplication(root, f.cloud, f.api));
 	await vi.advanceTimersByTimeAsync(100);
 	expect(reads()).toBe(1);
-	// The line belongs to an open conversation (above its composer); nothing floats over the app.
-	expect(root.textContent).not.toContain("company computers are in use");
+	expect(root.textContent).not.toContain("monthly Gemini API spend cap");
+	expect(root.querySelector(".account-health-dot")).not.toBeNull();
+	root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+	expect(root.querySelector('[data-account-action="settings"] .account-count')?.textContent).toBe("1");
+	root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+	expect(root.querySelector(".settings-content .company-notice p")?.textContent).toBe(FULL);
 	transport.mockImplementation(async () => Response.json([]));
 	f.auth(userB);
 	await vi.advanceTimersByTimeAsync(100);
-	expect(root.textContent).not.toContain("company computers are in use");
+	expect(root.querySelector(".account-health-dot")).toBeNull();
 });
 
 describe("a ChatGPT plan's first-routine card (shown only to a member with a plan login, while plans are on)", () => {

@@ -77,10 +77,22 @@ end $$;
 
 -- 1. A view parks: its deletion waits for review and the plain unit saves; a parked-only commit takes no seq. A run's own
 -- unit without a review is still review_required, and parks nothing.
+create function pg_temp.del_agent_dir(p_name text) returns jsonb language sql as $$
+	select jsonb_build_object('op', 'delete', 'path', 'QorperaOS/agents/' || p_name,
+		'expectedVersion', pg_temp.read('QorperaOS/agents/' || p_name) -> 'entry' ->> 'version',
+		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020'))
+$$;
+do $$
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'p40-agent-dirs',
+		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'::jsonb
+		|| (select jsonb_agg(jsonb_build_object('op','mkdir','path','QorperaOS/agents/' || n))
+			from unnest(array['rr1','rr2','rr3','rr4','rr5','rr6','rr7','rr8','rr9','rr10','own-agent']) n)), 13, 'saved');
+end $$;
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); r jsonb; p public.qorpera_folder_proposals; u jsonb;
 begin
-	u := pg_temp.deletes('rr1.txt');
+	u := pg_temp.del_agent_dir('rr1');
 	r := pg_temp.vcommit(b, 'p40-park-1', jsonb_build_array(u, jsonb_build_object('op','mkdir','path','p40-plain')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	perform pg_temp.expect(r, 2, 'saved');
@@ -93,23 +105,19 @@ begin
 		raise exception 'The proposal: %', to_jsonb(p); end if;
 	perform pg_temp.same((select jsonb_agg(jsonb_build_object('unit', q.unit_no, 'item', q.item_no, 'path', q.path, 'manifest', q.manifest_sha256)
 		order by q.unit_no, q.item_no) from public.qorpera_folder_proposal_paths q where q.proposal_id = p.id),
-		'[{"unit":1,"item":0,"path":"rr1.txt","manifest":null}]', 'Its path rows');
-	if not pg_temp.present('rr1.txt') then raise exception 'A parked delete changed nothing'; end if;
-	-- Parked only: no seq, one more proposal.
-	r := pg_temp.vcommit(b, 'p40-park-2', jsonb_build_array(pg_temp.deletes('rr2.txt')));
+		'[{"unit":1,"item":0,"path":"QorperaOS/agents/rr1","manifest":null}]', 'Its path rows');
+	if not pg_temp.present('QorperaOS/agents/rr1') then raise exception 'A parked delete changed nothing'; end if;
+	r := pg_temp.vcommit(b, 'p40-park-2', jsonb_build_array(pg_temp.del_agent_dir('rr2')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	if r ->> 'seq' is not null or (pg_temp.parked(r)).id is null then raise exception 'A parked-only commit: %', r; end if;
-	-- The run itself, without a review: denied as before, nothing parked.
-	r := pg_temp.commit(x -> 'actor', 'run-unreviewed', jsonb_build_array(pg_temp.deletes('rr3.txt')));
+	r := pg_temp.commit(x -> 'actor', 'run-unreviewed', jsonb_build_array(pg_temp.del_agent_dir('rr3')));
 	perform pg_temp.expect(r, 1, 'denied', 'review_required');
 	if (pg_temp.parked(r)).id is not null then raise exception 'A run''s unit was parked'; end if;
 	perform set_config('qorpera_test.p1', (select id::text from public.qorpera_folder_proposals where commit_units = '{1}'
-		and units -> 0 ->> 'path' = 'rr1.txt'), true);
-	perform set_config('qorpera_test.p2', (select id::text from public.qorpera_folder_proposals where units -> 0 ->> 'path' = 'rr2.txt'), true);
+		and units -> 0 ->> 'path' = 'QorperaOS/agents/rr1'), true);
+	perform set_config('qorpera_test.p2', (select id::text from public.qorpera_folder_proposals where units -> 0 ->> 'path' = 'QorperaOS/agents/rr2'), true);
 end $$;
 
--- 2. The list: the agent's open proposals for the run's member, oldest first, with their units; a page and its cursor;
--- nothing for another member's run or another agent's; a bad request and an unknown cursor are refused.
 do $$
 declare x jsonb := pg_temp.agent_run(); l jsonb; y jsonb; z jsonb; p1 uuid := current_setting('qorpera_test.p1')::uuid;
 	p2 uuid := current_setting('qorpera_test.p2')::uuid;
@@ -120,10 +128,9 @@ begin
 		or (l ->> 'moreProposals')::integer <> 0 or l -> 'nextCursor' <> 'null'::jsonb then
 		raise exception 'The list: %', l; end if;
 	perform pg_temp.same((l -> 'proposals' -> 0) - 'createdAt' - 'reads', ('{"proposalId":"' || p1 || '","viewKind":"run_box","effect":"destructive",'
-		'"createsAgent":false,"unitCount":1,"units":[{"unit":1,"op":"delete","path":"rr1.txt"}],"moreUnits":0}')::jsonb, 'A listed proposal');
-	-- (P40b) Its reads: the path it names, with the receipt a read of it gives the run.
-	perform pg_temp.same(l -> 'proposals' -> 0 -> 'reads', jsonb_build_array(jsonb_build_object('path', 'rr1.txt',
-		'authority', pg_temp.read('rr1.txt', x -> 'actor') -> 'entry' -> 'authority')), 'A listed proposal''s reads');
+		'"createsAgent":false,"unitCount":1,"units":[{"unit":1,"op":"delete","path":"QorperaOS/agents/rr1"}],"moreUnits":0}')::jsonb, 'A listed proposal');
+	perform pg_temp.same(l -> 'proposals' -> 0 -> 'reads', jsonb_build_array(jsonb_build_object('path', 'QorperaOS/agents/rr1',
+		'authority', pg_temp.read('QorperaOS/agents/rr1', x -> 'actor') -> 'entry' -> 'authority')), 'A listed proposal''s reads');
 	l := pg_temp.list(x -> 'actor', jsonb_build_object('cursor', p1));
 	if jsonb_array_length(l -> 'proposals') <> 1 or (l -> 'proposals' -> 0 ->> 'proposalId')::uuid <> p2 then
 		raise exception 'After the cursor: %', l; end if;
@@ -144,7 +151,7 @@ do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); y jsonb; p uuid; l jsonb;
 	v_grant uuid := (pg_temp.agent_grant((pg_temp.root()).id, '63400000-0000-4000-8000-0000000000a1')).id;
 begin
-	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-revoked', jsonb_build_array(pg_temp.deletes('rr8.txt'))))).id;
+	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-revoked', jsonb_build_array(pg_temp.del_agent_dir('rr8'))))).id;
 	y := pg_temp.agent_run();
 	if not (pg_temp.list(y -> 'actor') -> 'proposals' @> jsonb_build_array(jsonb_build_object('proposalId', p))) then
 		raise exception 'A readable proposal is listed'; end if;
@@ -167,22 +174,21 @@ declare
 	x jsonb := pg_temp.agent_run(); b jsonb; y jsonb; z jsonb; p uuid; v_res uuid; v_g uuid; v_reads jsonb; v_late jsonb;
 begin
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p40b-reads-setup', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','p40r'),
-		jsonb_build_object('op','write','path','p40r/a.txt','file',pg_temp.stage('p40b a')),
-		jsonb_build_object('op','write','path','p40b-root.txt','file',pg_temp.stage('p40b root')))), 3, 'saved');
-	v_res := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'p40r', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/p40r'),
+		jsonb_build_object('op','mkdir','path','QorperaOS/agents/p40b-root'))), 2, 'saved');
+	v_res := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'QorperaOS/agents/p40r', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
 	v_g := public.qorpera_folder_grant(c_env, pg_temp.member(1), v_res, 'staff_agent', '63400000-0000-4000-8000-0000000000a1',
 		array['read','write']) ->> 'grantId';
 	b := pg_temp.box(x -> 'actor');
-	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-reads', jsonb_build_array(pg_temp.deletes('p40r/a.txt'),
-		pg_temp.deletes('p40b-root.txt'))))).id;
+	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-reads', jsonb_build_array(pg_temp.del_agent_dir('p40r'),
+		pg_temp.del_agent_dir('p40b-root'))))).id;
 	y := pg_temp.agent_run();
 	z := pg_temp.agent_run();
 	v_reads := (select e -> 'reads' from jsonb_array_elements(pg_temp.list(y -> 'actor') -> 'proposals') e
 		where e ->> 'proposalId' = p::text);
 	perform pg_temp.same(v_reads, jsonb_build_array(
-		jsonb_build_object('path', 'p40b-root.txt', 'authority', pg_temp.read('p40b-root.txt', y -> 'actor') -> 'entry' -> 'authority'),
-		jsonb_build_object('path', 'p40r/a.txt', 'authority', pg_temp.read('p40r/a.txt', y -> 'actor') -> 'entry' -> 'authority')),
+		jsonb_build_object('path', 'QorperaOS/agents/p40b-root', 'authority', pg_temp.read('QorperaOS/agents/p40b-root', y -> 'actor') -> 'entry' -> 'authority'),
+		jsonb_build_object('path', 'QorperaOS/agents/p40r', 'authority', pg_temp.read('QorperaOS/agents/p40r', y -> 'actor') -> 'entry' -> 'authority')),
 		'The reads');
 	if v_reads -> 1 -> 'authority' ->> 'resourceId' <> v_res::text or v_reads -> 1 -> 'authority' ->> 'grantId' <> v_g::text then
 		raise exception 'A read under the resource names its grant: %', v_reads; end if;
@@ -218,7 +224,7 @@ begin
 	c := pg_temp.apply(x -> 'actor', 'apply-p1', p1, (r ->> 'reviewId')::uuid);
 	perform pg_temp.expect(c, 1, 'saved');
 	p := pg_temp.proposal(p1);
-	if pg_temp.present('rr1.txt') or p.status <> 'applied' or p.units <> '[]' or p.apply_commit_id <> (c ->> 'commitId')::uuid
+	if pg_temp.present('QorperaOS/agents/rr1') or p.status <> 'applied' or p.units <> '[]' or p.apply_commit_id <> (c ->> 'commitId')::uuid
 		or p.review_id <> (r ->> 'reviewId')::uuid or p.decided_by <> 'review' or p.decided_by_user_id is not null
 		or exists (select 1 from public.qorpera_folder_proposal_paths where proposal_id = p1)
 		or (select proposal_id from public.qorpera_folder_commits where id = (c ->> 'commitId')::uuid) is distinct from p1 then
@@ -275,34 +281,30 @@ begin
 		'review_required');
 	if (pg_temp.proposal(p2)).units = '[]' or not exists (select 1 from public.qorpera_folder_proposal_paths where proposal_id = p2) then
 		raise exception 'A refused apply emptied p2'; end if;
-	if (pg_temp.proposal(p2)).status <> 'open' or not pg_temp.present('rr2.txt') then raise exception 'A refused apply changed p2'; end if;
+	if (pg_temp.proposal(p2)).status <> 'open' or not pg_temp.present('QorperaOS/agents/rr2') then raise exception 'A refused apply changed p2'; end if;
 	perform set_config('qorpera_test.p2_review', r ->> 'reviewId', true);
 	perform set_config('qorpera_test.p2_run', x::text, true);
 end $$;
 
--- 5. A base that moved: the member edits the file first, so the parked delete is a conflict and the proposal is not
--- applied; it closes all the same.
 do $$
 declare x jsonb := current_setting('qorpera_test.p2_run')::jsonb; p2 uuid := current_setting('qorpera_test.p2')::uuid; c jsonb;
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'p2-moved', jsonb_build_array(jsonb_build_object('op','write','path','rr2.txt',
-		'file', pg_temp.stage('moved', pg_temp.member(2)), 'expectedVersion', pg_temp.read('rr2.txt') -> 'entry' ->> 'version'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'p2-moved-del', jsonb_build_array(pg_temp.del_agent_dir('rr2'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'p2-moved-add', '[{"op":"mkdir","path":"QorperaOS/agents/rr2"}]'), 1, 'saved');
 	c := pg_temp.apply(x -> 'actor', 'apply-p2', p2, current_setting('qorpera_test.p2_review')::uuid);
 	perform pg_temp.expect(c, 1, 'conflict', 'version_changed');
-	if (pg_temp.proposal(p2)).status <> 'not_applied' or c ->> 'seq' is not null or not pg_temp.present('rr2.txt') then
+	if (pg_temp.proposal(p2)).status <> 'not_applied' or c ->> 'seq' is not null or not pg_temp.present('QorperaOS/agents/rr2') then
 		raise exception 'A proposal whose base moved: % %', c, to_jsonb(pg_temp.proposal(p2)); end if;
 end $$;
 
--- 6. Closing: a deny declines it (the action review named); the agent's run discards it; a close naming no denial is
--- refused; the asked member and an admin discard, another member may not; a decided proposal answers as it stands.
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); p3 uuid; p4 uuid; p5 uuid; p6 uuid; v_deny uuid; v_allow uuid;
 	r jsonb;
 begin
-	p3 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-3', jsonb_build_array(pg_temp.deletes('rr4.txt'))))).id;
-	p4 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-4', jsonb_build_array(pg_temp.deletes('rr5.txt'))))).id;
-	p5 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-5', jsonb_build_array(pg_temp.deletes('rr6.txt'))))).id;
-	p6 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-6', jsonb_build_array(pg_temp.deletes('rr7.txt'))))).id;
+	p3 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-3', jsonb_build_array(pg_temp.del_agent_dir('rr4'))))).id;
+	p4 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-4', jsonb_build_array(pg_temp.del_agent_dir('rr5'))))).id;
+	p5 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-5', jsonb_build_array(pg_temp.del_agent_dir('rr6'))))).id;
+	p6 := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-6', jsonb_build_array(pg_temp.del_agent_dir('rr7'))))).id;
 	v_deny := (pg_temp.apply_action(x -> 'binding', 'deny-3', p3, 'deny') ->> 'reviewId')::uuid;
 	v_allow := (pg_temp.apply_action(x -> 'binding', 'allow-4', p4) ->> 'reviewId')::uuid;
 	perform pg_temp.raises(format('select pg_temp.close(%L, %L)', x -> 'binding', jsonb_build_object('proposalId', p4, 'actionReviewId', v_allow)),
@@ -324,25 +326,18 @@ begin
 		or (pg_temp.proposal(p5)).decided_by_user_id <> '63400000-0000-4000-8000-000000000002'
 		or (pg_temp.proposal(p6)).decided_by_user_id <> '63400000-0000-4000-8000-000000000005' then
 		raise exception 'The member''s and the admin''s discards: % %', to_jsonb(pg_temp.proposal(p5)), to_jsonb(pg_temp.proposal(p6)); end if;
-	-- Decided: each answers as it stands, and the files are untouched.
 	if pg_temp.discard(1, p3) ->> 'status' <> 'declined' or pg_temp.close(x -> 'binding', jsonb_build_object('proposalId', p5)) ->> 'status' <> 'discarded'
-		or not (pg_temp.present('rr4.txt') and pg_temp.present('rr5.txt') and pg_temp.present('rr6.txt') and pg_temp.present('rr7.txt')) then
+		or not (pg_temp.present('QorperaOS/agents/rr4') and pg_temp.present('QorperaOS/agents/rr5') and pg_temp.present('QorperaOS/agents/rr6') and pg_temp.present('QorperaOS/agents/rr7')) then
 		raise exception 'A decided proposal answers as it stands'; end if;
 	if exists (select 1 from public.qorpera_folder_proposal_paths where proposal_id in (p3, p4, p5, p6))
 		or exists (select 1 from public.qorpera_folder_proposals where id in (p3, p4, p5, p6) and units <> '[]') then
 		raise exception 'A decided proposal keeps no units or path rows'; end if;
 end $$;
 
--- 7. A parked hire: a new agent folder (delegation) roots its file while open. A restricted agent (its root grant
--- expires, so it cannot give a new agent its default access) asks the owners and admins: its reviewer's allow is
--- recorded as an ask, the recorder refuses it until an owner answers, and then the agent is made.
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); r jsonb; p public.qorpera_folder_proposals; v_manifest text;
 	nora constant uuid := '63400000-0000-4000-8000-00000000f040'; v_action jsonb; c jsonb;
 begin
-	-- The fixture has no QorperaOS/agents/ folder yet: the owner makes it.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'p40-agents-folder',
-		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'), 2, 'saved');
 	r := pg_temp.vcommit(b, 'p40-park-hire', jsonb_build_array(pg_temp.hire(b, 'nora', nora, 'Nora')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 	p := pg_temp.parked(r);
@@ -403,13 +398,11 @@ end $$;
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); p uuid; e jsonb;
 begin
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'erase-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','erase-me'),
-		jsonb_build_object('op','write','path','erase-me/x.txt','file', pg_temp.stage('erase me', pg_temp.member(2))))), 2, 'saved');
-	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-erase', jsonb_build_array(pg_temp.deletes('erase-me/x.txt'))))).id;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'erase-delete', jsonb_build_array(jsonb_build_object('op','delete','path','erase-me',
-		'expectedVersion', pg_temp.read('erase-me') -> 'entry' ->> 'version', 'asOfSeq', (select last_seq from public.qorpera_folder_clocks
-			where environment_id = '63400000-0000-4000-8000-000000000020')))), 1, 'saved');
-	e := public.qorpera_folder_erase('63400000-0000-4000-8000-000000000020', pg_temp.member(1), '["erase-me"]', 'erase-p40-1');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'erase-setup',
+		'[{"op":"mkdir","path":"QorperaOS/agents/erase-me"}]'), 1, 'saved');
+	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-erase', jsonb_build_array(pg_temp.del_agent_dir('erase-me'))))).id;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'erase-delete', jsonb_build_array(pg_temp.del_agent_dir('erase-me'))), 1, 'saved');
+	e := public.qorpera_folder_erase('63400000-0000-4000-8000-000000000020', pg_temp.member(1), '["QorperaOS/agents/erase-me"]', 'erase-p40-1');
 	if (e -> 'erased' ->> 'proposals')::integer <> 1 or (pg_temp.proposal(p)).id is not null
 		or exists (select 1 from public.qorpera_folder_proposal_paths where proposal_id = p) then
 		raise exception 'The erased proposal: %', e; end if;
@@ -462,21 +455,19 @@ do $$
 declare x jsonb := pg_temp.agent_run(); y jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); p uuid; q uuid;
 	v_review uuid; v_erased uuid; v_receipt uuid; v_other uuid; v_wrong uuid; a jsonb; v_row public.qorpera_run_operation_receipts;
 begin
-	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-1', jsonb_build_array(pg_temp.deletes('rr9.txt'))))).id;
-	q := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-2', jsonb_build_array(pg_temp.deletes('rr10.txt'))))).id;
+	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-1', jsonb_build_array(pg_temp.del_agent_dir('rr9'))))).id;
+	q := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-2', jsonb_build_array(pg_temp.del_agent_dir('rr10'))))).id;
 	v_review := (pg_temp.record_apply(x -> 'binding', (pg_temp.apply_action(x -> 'binding', 'p40b-apply-1', p) ->> 'reviewId')::uuid, p)
 		->> 'reviewId')::uuid;
 	v_erased := (pg_temp.record_apply(x -> 'binding', (pg_temp.apply_action(x -> 'binding', 'p40b-apply-2', q) ->> 'reviewId')::uuid, q)
 		->> 'reviewId')::uuid;
 	perform pg_temp.discard(1, p);
-	-- Not the call's receipt: another run's for this apply, or this run's for another proposal's.
 	v_other := pg_temp.receipt(y -> 'binding', 'apply_proposal:apply:' || p);
 	v_wrong := pg_temp.receipt(x -> 'binding', 'apply_proposal:apply:' || q);
 	perform pg_temp.raises(format('select pg_temp.apply_under(%L, %L, %L, %L)', x -> 'actor', p, v_review, v_other), 'P0002');
 	perform pg_temp.raises(format('select pg_temp.apply_under(%L, %L, %L, %L)', x -> 'actor', p, v_review, v_wrong), 'P0002');
 	if pg_temp.receipt_status(v_other) <> 'executing' or pg_temp.receipt_status(v_wrong) <> 'executing' then
 		raise exception 'A receipt that is not the call''s was settled'; end if;
-	-- The call's own: cancelled, nothing applied.
 	v_receipt := pg_temp.receipt(x -> 'binding', 'apply_proposal:apply:' || p);
 	a := pg_temp.apply_under(x -> 'actor', p, v_review, v_receipt);
 	perform pg_temp.same(a, jsonb_build_object('schema', 'qorpera.folder-proposal-unapplied/v1', 'proposalId', p, 'status', 'discarded',
@@ -484,24 +475,19 @@ begin
 	select * into v_row from public.qorpera_run_operation_receipts where id = v_receipt;
 	if v_row.status <> 'cancelled' or v_row.completed_at is null or v_row.result is not null or v_row.folder_commit_id is not null
 		or exists (select 1 from public.qorpera_folder_commits c where c.receipt_id = v_receipt or c.operation_key = 'apply-proposal:' || p)
-		or not pg_temp.present('rr9.txt') then
+		or not pg_temp.present('QorperaOS/agents/rr9') then
 		raise exception 'The cancelled receipt: %', to_jsonb(v_row); end if;
-	-- A retry answers the same and leaves the receipt as it is; without a receipt the apply is refused as before.
 	perform pg_temp.same(pg_temp.apply_under(x -> 'actor', p, v_review, v_receipt), a, 'A retry');
 	if (select completed_at from public.qorpera_run_operation_receipts where id = v_receipt) <> v_row.completed_at then
 		raise exception 'A retry settled the receipt again'; end if;
 	perform pg_temp.raises(format('select pg_temp.apply(%L, %L, %L, %L)', x -> 'actor', 'apply-proposal:' || p, p, v_review), 'P0002');
-	-- Erased (deleted, as erasure deletes it in 9): answered as erased, its receipt cancelled.
 	perform pg_temp.fx(format('delete from public.qorpera_folder_proposals where id = %L', q));
 	perform pg_temp.same(pg_temp.apply_under(x -> 'actor', q, v_erased, v_wrong), jsonb_build_object('schema',
 		'qorpera.folder-proposal-unapplied/v1', 'proposalId', q, 'status', 'erased', 'receiptId', v_wrong), 'The apply of an erased proposal');
-	if pg_temp.receipt_status(v_wrong) <> 'cancelled' or pg_temp.present('rr10.txt') is not true then
+	if pg_temp.receipt_status(v_wrong) <> 'cancelled' or pg_temp.present('QorperaOS/agents/rr10') is not true then
 		raise exception 'The erased proposal''s receipt: %', pg_temp.receipt_status(v_wrong); end if;
 end $$;
 
--- 12. 20260930619000: a view's own file moves and deletes as ordinary work, as Blender saves (room.blend to room.blend1,
--- a new room.blend; the next save deletes room.blend1). Another view's file, a file the view did not last change, and a
--- file under QorperaOS/ still park.
 do $$
 declare x jsonb := pg_temp.agent_run(); y jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor');
 	c jsonb := pg_temp.box(y -> 'actor'); r jsonb;
@@ -515,21 +501,19 @@ begin
 	perform pg_temp.expect(r, 2, 'saved');
 	if (pg_temp.parked(r)).id is not null or not pg_temp.present('own-room.blend1') then
 		raise exception 'A view''s own rename parked: %', r; end if;
-	-- Its own moved file deletes too.
 	r := pg_temp.vcommit(b, 'own-file-3', jsonb_build_array(pg_temp.deletes('own-room.blend1')));
 	perform pg_temp.expect(r, 1, 'saved');
 	if pg_temp.present('own-room.blend1') then raise exception 'A view''s own delete changed nothing'; end if;
-	-- Another view (another run's box): the file is not its own, so it parks.
 	r := pg_temp.vcommit(c, 'own-file-4', jsonb_build_array(pg_temp.deletes('own-room.blend')));
-	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
-	-- A member's file (rr12.txt, written by the member) still parks, as in 1.
+	perform pg_temp.expect(r, 1, 'saved');
 	r := pg_temp.vcommit(b, 'own-file-5', jsonb_build_array(jsonb_build_object('op','move','from','rr12.txt','to','rr12-moved.txt',
 		'expectedVersion', pg_temp.read('rr12.txt') -> 'entry' ->> 'version')));
-	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
-	-- Under QorperaOS/: its own file still parks.
+	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(pg_temp.vcommit(b, 'own-file-6', jsonb_build_array(jsonb_build_object('op','write','path','QorperaOS/own-note.md',
 		'file', pg_temp.stage('note', pg_temp.vactor(b))))), 1, 'saved');
 	r := pg_temp.vcommit(b, 'own-file-7', jsonb_build_array(pg_temp.deletes('QorperaOS/own-note.md')));
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.vcommit(b, 'own-file-8', jsonb_build_array(pg_temp.del_agent_dir('own-agent')));
 	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
 end $$;
 

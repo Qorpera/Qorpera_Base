@@ -239,9 +239,11 @@ begin
 			'authority', e -> 'authority')), repeat('4', 64)), '42501');
 	-- The run releases the screen: the view is detached.
 	perform pg_temp.hold(null);
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'desk-agent-dir',
+		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"},{"op":"mkdir","path":"QorperaOS/agents/desk-x"}]'), 3, 'saved');
 	r := pg_temp.vcommit(d, 'desk-detached-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/e.txt','file',a),
-		jsonb_build_object('op','delete','path','shared/d.txt','expectedVersion', pg_temp.read('shared/d.txt') -> 'entry' ->> 'version')));
-	-- P40 (20260930074000): the delete that needs review is parked for the agent's next run with this member.
+		jsonb_build_object('op','delete','path','QorperaOS/agents/desk-x','expectedVersion', pg_temp.read('QorperaOS/agents/desk-x') -> 'entry' ->> 'version',
+			'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '63200000-0000-4000-8000-000000000020'))));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'waiting_for_review', 'parked');
 	c := pg_temp.last_commit(r);
 	-- A view belongs to its environment: another folder of the same company does not take it (a detached view, so no

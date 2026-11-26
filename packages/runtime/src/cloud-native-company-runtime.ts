@@ -250,6 +250,7 @@ import {
 	createManageSurfaceAutomationTool,
 	createProposeSurfaceTool,
 	createStartSurfaceSessionTool,
+	createSteerSurfaceSessionTool,
 	type SurfaceCompanySenses,
 	type SurfaceToolsRpcClient,
 } from "./cloud-surface-tools.ts";
@@ -321,7 +322,7 @@ function confirmNativeAdmission(answer: unknown, expected: Readonly<Record<strin
 export { type ControlPlaneSurfaceToolsPortOptions, createControlPlaneSurfaceToolsPort, type SurfaceToolsRpcClient };
 
 type CloudRuntimeSurfaceToolsPort = Pick<CloudSurfaceToolsPort, "proposeSurface" | "startSurfaceSession"> &
-	Partial<Pick<CloudSurfaceToolsPort, "listSurfaceSenses" | "manageAutomation">>;
+	Partial<Pick<CloudSurfaceToolsPort, "listSurfaceSenses" | "manageAutomation" | "steerSurfaceSession">>;
 
 const EXPLICIT_MEMBER_DOC_PATTERN =
 	/\b(?:write|create|draft|save|export|generate|make|put|prepare)\s+(?:a|an|me|us|the)?\s*(?:markdown|md|doc|document|memo|report|plan|brief|pdf|csv|spreadsheet|file)\b|\b(?:as\s+a\s+(?:markdown|md|doc|document|file|pdf|csv|memo|report))\b|\.(?:md|pdf|csv|docx|xlsx)\b/i;
@@ -1869,6 +1870,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 																toolContext,
 															),
 													}),
+													...(this.#surfaceTools.steerSurfaceSession
+														? [
+																createSteerSurfaceSessionTool({
+																	steerSurfaceSession: (steerRequest, toolContext) =>
+																		this.#surfaceTools!.steerSurfaceSession!(
+																			{
+																				...steerRequest,
+																				originLabel:
+																					steerRequest.originLabel ??
+																					(context.agentKind === "cofounder"
+																						? "Co-Founder"
+																						: context.agent.name),
+																			},
+																			toolContext,
+																		),
+																}),
+															]
+														: []),
 													...(this.#surfaceTools.manageAutomation
 														? [
 																createManageSurfaceAutomationTool(identity.companyId, {
@@ -2815,7 +2834,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				name: "surface_ask",
 				source: "runtime",
 				description:
-					"Pause this Surface session turn and ask the founder one concrete clarifying question before staging changes.",
+					"Pause this Surface session turn ONLY on a genuine hard blocker you cannot resolve or stage as a visual Preview variant. Escalates to the Co-Founder (members are not badged directly on the Surface rail).",
 				inputSchema: {
 					type: "object",
 					additionalProperties: false,
@@ -2891,7 +2910,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const isInternalTurn = spec.isInternal === true;
 			const runtimeInstructions = isInternalTurn
 				? `${spec.instructions}\n\nWhen finished staging the combined resolution via stage_surface_patch, call surface_reply with a concise summary. Do not ask questions.`
-				: `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
+				: `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. Never pause for taste or layout preferences — stage a clean Preview instead. Call surface_ask strictly on a genuine hard blocker (it escalates to the Co-Founder).`;
 			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\n${isInternalTurn ? "Task" : "Founder request"}:\n${spec.prompt}`;
 			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
 			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
@@ -2981,7 +3000,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						? undefined
 						: isInternalTurn
 							? "Your turn ended without calling surface_reply. Make sure you called stage_surface_patch with the combined resolution, then call surface_reply now."
-							: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask if founder input is needed.",
+							: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask strictly if hard-blocked (it escalates to the Co-Founder).",
 				tools: (runIdentity, operations) => ({
 					tools: isInternalTurn
 						? [...spec.buildTools(runIdentity, operations), surfaceReplyTool]

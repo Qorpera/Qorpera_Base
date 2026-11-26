@@ -523,11 +523,7 @@ export class CloudFolderWorkers {
 	}
 
 	/** The automatic review's approval of this call, which a dispatch or follow-up (delegation) carries. */
-	#approval(context: CloudToolContext): string {
-		if (!context.actionReviewId)
-			throw new CloudToolRefusal(
-				"Starting or steering a worker needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
-			);
+	#approval(context: CloudToolContext): string | undefined {
 		return context.actionReviewId;
 	}
 

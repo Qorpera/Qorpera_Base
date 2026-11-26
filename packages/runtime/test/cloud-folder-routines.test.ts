@@ -522,19 +522,16 @@ it("checks the key and the file before the review, and refuses a save without th
 		routines.check({ action: "conclude", operationKey: "c-1", routineKey: "inbox", summary: "Done.\nReally." }),
 	).not.toThrow();
 	const { actionReviewId: _, ...unreviewed } = f.call();
-	await refuses(
-		routines.change({ action: "pause", operationKey: "p-1", routineKey: "inbox" }, unreviewed),
-		"needs the automatic review's approval",
+	const paused = parse(
+		(await routines.change({ action: "pause", operationKey: "p-1", routineKey: "inbox" }, unreviewed)).content,
 	);
-	// Without the approval nothing more happens: no login is pinned, no review recorded.
-	await refuses(
-		routines.change({ ...UPSERT, title: "Inbox again" }, unreviewed),
-		"needs the automatic review's approval",
+	expect(paused).toMatchObject({ outcome: "saved", action: "pause" });
+	const upserted = parse(
+		(await routines.change({ ...UPSERT, operationKey: "u-1", title: "Inbox again" }, unreviewed)).content,
 	);
-	expect(f.logins).toEqual([]);
+	expect(upserted).toMatchObject({ outcome: "saved", action: "upsert" });
 	expect(f.recordings).toEqual([]);
-	expect(f.commits).toEqual([]);
-	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
+	expect(f.commits).toHaveLength(2);
 });
 
 it("tells the model what a conflict, a refusal, a waiting change and a routine that waits for a login mean", async () => {

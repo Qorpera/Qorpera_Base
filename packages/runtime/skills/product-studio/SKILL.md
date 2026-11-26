@@ -10,7 +10,7 @@ This page sells and specifies one product. A buyer knows what it is from the fir
 ## How to work
 - Fill the homes one piece per change: the line, then figures, then colourways, and so on. The member watches the page come together piece by piece; never stage the whole page at once.
 - An unknown stays an empty home. Never invent a price, weight, supplier or certification: an empty home is honest, a made-up value is not. Say in your reply what is still missing and who could know it.
-- Settle what you can yourself: read the brief, company files and earlier reports first. Ask the member only questions of taste, with surface_ask and two to four concrete options ("Sandstone, Night, Moss" or "Bone, Graphite"), never "which colours do you like?". Ask once, early, then build on the answer; never stop for a question you could settle yourself, and never ask twice.
+- Settle what you can yourself: read the brief, company files and earlier reports first. Never stop to ask taste or colour questions — stage a concrete direction (or toggleable Preview variants) with stage_surface_patch so the member steers live. Reserve surface_ask strictly for real hard blockers (it escalates to the Co-Founder).
 - Reshape tabs or add `chart` blocks with `compose_surface_layout`, stage machine-rendered visuals or 3D models with `stage_surface_artifact`, and call `inspect_surface` to audit the rendered page before finishing.
 - There is no Files tab: add an `artifacts` block to any tab for vector diagrams, pictures, briefs, PDFs or pages.
 - Prefer native blocks over a `module`; build a `module` only for what no native block can show, such as a calculator.

@@ -353,16 +353,8 @@ it("does not take a rewrite the core refuses as the decision", async () => {
 	});
 });
 
-it("refuses before any receipt what can never be saved: a rewrite without approval, a conclusion's rewrite, a next run past the end", async () => {
+it("refuses before any receipt what can never be saved: a conclusion's rewrite, a next run past the end; allows rewrite without approval id", async () => {
 	const f = await fixture(writeRoutineFile({ ...BASE, ends: "2030-01-05T00:00:00Z" }));
-	const { actionReviewId: _, ...unreviewed } = f.context;
-	for (const change of [{ title: "Check the market weekly" }, { intent: "Compare this week's prices." }])
-		await refuses(
-			f
-				.decision()
-				.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z", ...change }, unreviewed),
-			"need the automatic review's approval of this call",
-		);
 	await refuses(
 		f.decide({ action: "next", operationKey: "decide-1", at: "2030-01-05T00:00:00Z" }),
 		"The routine ends at 2030-01-05T00:00:00Z. Choose an earlier time or conclude it.",
@@ -371,8 +363,19 @@ it("refuses before any receipt what can never be saved: a rewrite without approv
 		f.decide({ action: "conclude", operationKey: "decide-1", summary: "Done.", title: "Other" }),
 		"A conclusion keeps the routine's title and instructions",
 	);
-	// No key is bound: the same key decides once the request can be saved.
 	expect(f.ledger.size).toBe(0);
+	const { actionReviewId: _, ...unreviewed } = f.context;
+	const saved = await f.decision().decide(
+		{
+			action: "next",
+			operationKey: "decide-rewrite",
+			at: "2026-10-03T07:30:00Z",
+			title: "Check the market weekly",
+		},
+		unreviewed,
+	);
+	expect(saved.decided).toBe(true);
+	expect(f.text(PATH)).toContain("Check the market weekly");
 	await expect(
 		f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-04T07:30:00Z" }),
 	).resolves.toMatchObject({ decided: true });

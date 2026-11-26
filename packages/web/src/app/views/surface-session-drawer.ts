@@ -318,7 +318,7 @@ function isActionSession(session: SurfaceSession, surface: SurfaceSummary): bool
 }
 
 function agentStatusLine(session: SurfaceSession): string | null {
-	if (session.state === "needs_input") return t("Needs you");
+	if (session.state === "needs_input") return t("Paused");
 	if (session.state === "failed") return t("Failed");
 	if (isRunningSession(session)) return t("Working");
 	return null;
@@ -1111,15 +1111,12 @@ export class SurfaceSessionDrawer {
 		const picked = variants.find((item) => item.id === pickedId) ?? variants[0];
 		const busy = Boolean(state.busy[`exploration:${exploration.id}`]);
 		const running = variants.some(isRunningSession);
-		const attention = variants.some((v) => v.state === "needs_input");
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "exploration", id: exploration.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", "is-exploration", attention && "is-attention"]
-					.filter(Boolean)
-					.join(" "),
+				class: "surface-overview-card is-agent is-exploration",
 				"data-act": "focus-exploration",
 				"data-exploration": exploration.id,
 			},
@@ -1216,7 +1213,6 @@ export class SurfaceSessionDrawer {
 		const openChanges = allOpen.filter((change) => !this.#isApplying(change));
 		const actionSession = isActionSession(session, surface);
 		const failed = session.state === "failed";
-		const attention = session.state === "needs_input" || failed;
 		if (allOpen.length > 0 && openChanges.length === 0 && !running && !failed && !session.question) return null;
 		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
 		const claimedPaths = new Set<string>();
@@ -1490,9 +1486,7 @@ export class SurfaceSessionDrawer {
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", attention && "is-attention", failed && "is-failed"]
-					.filter(Boolean)
-					.join(" "),
+				class: ["surface-overview-card", "is-agent", failed && "is-failed"].filter(Boolean).join(" "),
 				"data-act": "focus-session",
 				"data-session": session.id,
 			},

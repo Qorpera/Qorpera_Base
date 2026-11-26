@@ -128,6 +128,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"coding_view_attachment",
 	"propose_surface",
 	"start_surface_session",
+	"steer_surface_session",
 	"stage_surface_patch",
 	"stage_surface_ops_action",
 	"manage_surface_automation",

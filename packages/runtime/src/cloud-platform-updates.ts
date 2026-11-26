@@ -510,6 +510,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Fast edge previews and warm builds for code interfaces",
 		text: "Code-backed website and app interfaces now serve previews directly from the edge up to 10,000 files and 512 MB (100 MB per file), with warm incremental preview builders that keep dependencies and build caches hot between commits and pre-build staged changes in the background. Bundled apps no longer need to commit built output folders into git: have coding sessions declare a preview build command and output folder in their checks configuration so Qorpera builds and serves previews automatically.",
 	},
+	{
+		id: "single-door-agent-ux",
+		kind: "behaviour",
+		date: "2026-11-26",
+		title: "Silent coding, quiet approvals and pull-only Surfaces",
+		text: "Members now interact only through your conversation and Surfaces, never directly with coding sessions, raw worker approval cards, or operational banners. Coding sessions run silently under the dispatching agent and escalate only to it; answer or archive blocked sessions yourself, or ask the member cleanly in your thread. Company file moves, deletions, routine/worker updates, and local workspace commands run without asking unless a specific rule or hard boundary applies; workers report blockers to their parent instead of raising cards. Surface blockers escalate to the Co-Founder, who handles or steers them directly.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

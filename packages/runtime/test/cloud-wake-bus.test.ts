@@ -2228,3 +2228,66 @@ describe("light ask wakes (deploy/first-node/RUNTIME-LIGHT-ASK.md)", () => {
 		).toThrow();
 	});
 });
+
+describe("surface escalation envelopes", () => {
+	function escalationFixture() {
+		const { authority, envelope } = fixture();
+		const escalationId = randomUUID();
+		const surfaceSessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = authority.identity.sessionId;
+		const wake: CloudWakeEnvelope = {
+			...envelope,
+			kind: "agent",
+			actorStaffId: null,
+			actorUserId: null,
+			parentRunId: null,
+			audience: { kind: "company", userId: null, sessionId },
+			source: {
+				kind: "surface-escalation",
+				id: escalationId,
+				occurrenceKey: `surface-escalation:${escalationId}`,
+			},
+			policy: policies.find((item) => item.scenario === "agent-continuation")!.policy,
+			payload: {
+				schema: "qorpera.surface-escalation-wake/v1",
+				escalationId,
+				surfaceSessionId,
+				surfaceId,
+				surfaceSlug: "website",
+				surfaceTitle: "Website",
+				sessionTitle: "Refresh pricing",
+				reason: "needs_input",
+				summary: "Need choice between monthly and annual pricing.",
+				question: { text: "Should annual pricing be featured first?" },
+				memberInitiated: true,
+			},
+		};
+		return {
+			identity: { ...authority.identity, audienceKind: "company" as const, audienceUserId: null, sessionId },
+			wake,
+		};
+	}
+
+	it("admits a surface-escalation wake for the Co-Founder with continuation policy", () => {
+		const { identity, wake } = escalationFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source.kind).toBe("surface-escalation");
+		expect(parsed.payload).toEqual(wake.payload);
+	});
+
+	it.each<[string, (wake: CloudWakeEnvelope) => CloudWakeEnvelope]>([
+		[
+			"wrong schema",
+			(wake) => ({ ...wake, payload: { ...wake.payload, schema: "qorpera.surface-escalation-wake/v2" } }),
+		],
+		["invalid reason", (wake) => ({ ...wake, payload: { ...wake.payload, reason: "paused" } })],
+		["mismatched escalationId", (wake) => ({ ...wake, payload: { ...wake.payload, escalationId: randomUUID() } })],
+		["a parent run", (wake) => ({ ...wake, parentRunId: randomUUID() })],
+		["empty summary", (wake) => ({ ...wake, payload: { ...wake.payload, summary: "" } })],
+		["an actor user", (wake) => ({ ...wake, actorUserId: randomUUID() })],
+	])("rejects a surface-escalation wake with %s", (_label, mutate) => {
+		const { identity, wake } = escalationFixture();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+});
