@@ -583,7 +583,18 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											inCompanyMount: true,
 										};
 									}
-									if (turnReadOverlay) {
+									const targetChangeId = inspectOptions?.changeId;
+									const replacedTargetPrior =
+										targetChangeId && replacedInTurnChangeIds.has(targetChangeId)
+											? sessionOpenChanges.find((ch) => ch.changeId === targetChangeId)
+											: undefined;
+									const excludePriorFromOwn = Boolean(
+										replacedTargetPrior &&
+											(!replacedTargetPrior.optionGroupKey ||
+												replacedTargetPrior.changeId === replyChangeId),
+									);
+									const readOverlay = excludePriorFromOwn ? externalPreviewOverlay : turnReadOverlay;
+									if (readOverlay) {
 										const overlayCandidates = new Set<string>([
 											`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
 											IDENTITY_TOKENS_CSS_PATH,
@@ -598,7 +609,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											}
 										}
 										for (const candidate of overlayCandidates) {
-											const looked = await turnReadOverlay.lookup(candidate, reqSignal);
+											const looked = await readOverlay.lookup(candidate, reqSignal);
 											if (looked?.kind === "file") {
 												files[candidate] = looked.content;
 												delete knownBinaries[candidate];
@@ -627,6 +638,24 @@ export async function prepareSurfaceCodingWorkspace(options: {
 									}
 									for (const change of sessionOpenChanges) {
 										if (change.optionGroupKey && change.changeId !== replyChangeId) continue;
+										if (excludePriorFromOwn && change.changeId === targetChangeId) continue;
+										if (excludePriorFromOwn && change.patchManifest && change.patchManifest.length > 0) {
+											const replayText = new Map<string, string | null>();
+											for (const [full, content] of Object.entries(files)) {
+												const rel = normalizeStudioRelativePath(full, folderRoot);
+												if (rel) replayText.set(rel, content);
+											}
+											applyStudioTextOps(replayText, change.patchManifest, folderRoot);
+											for (const op of change.patchManifest) {
+												if (op.op === "write_file") continue;
+												const rel = normalizeStudioRelativePath(op.path, folderRoot);
+												if (!rel) continue;
+												const full = `${folderRoot}/${rel}`;
+												const updated = replayText.get(rel);
+												if (updated === null || updated === undefined) delete files[full];
+												else files[full] = updated;
+											}
+										}
 										for (const op of change.patchManifest ?? []) {
 											const rel = normalizeStudioRelativePath(op.path, folderRoot);
 											if (!rel) continue;
@@ -665,41 +694,10 @@ export async function prepareSurfaceCodingWorkspace(options: {
 									for (const [full, asset] of localSourceByPath) {
 										localAssetPaths[full] = asset;
 									}
-									const targetChangeId = inspectOptions?.changeId;
 									if (targetChangeId) {
 										const priorOpen = sessionOpenChanges.find((ch) => ch.changeId === targetChangeId);
 										const replacedInTurn = replacedInTurnChangeIds.has(targetChangeId);
 										const turnOps = stagedOpsByChangeId.get(targetChangeId) ?? [];
-										if (replacedInTurn && priorOpen?.patchManifest) {
-											const newPaths = new Set(
-												turnOps
-													.map((op) => normalizeStudioRelativePath(op.path, folderRoot))
-													.filter((rel): rel is string => Boolean(rel)),
-											);
-											for (const oldOp of priorOpen.patchManifest) {
-												const rel = normalizeStudioRelativePath(oldOp.path, folderRoot);
-												if (!rel || newPaths.has(rel)) continue;
-												const full = `${folderRoot}/${rel}`;
-												delete binaries[full];
-												delete localAssetPaths[full];
-												if (contents?.files[full] !== undefined) {
-													files[full] = contents.files[full];
-													delete knownBinaries[full];
-												} else {
-													delete files[full];
-													const baseRef = contents?.binaries[full];
-													if (baseRef) {
-														knownBinaries[full] = {
-															bytes: baseRef.bytes,
-															mediaType: baseRef.mediaType,
-															inCompanyMount: true,
-														};
-													} else {
-														delete knownBinaries[full];
-													}
-												}
-											}
-										}
 										const combinedOps = [
 											...(replacedInTurn ? [] : (priorOpen?.patchManifest ?? [])),
 											...turnOps,

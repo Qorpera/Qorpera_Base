@@ -1347,6 +1347,7 @@ describe("Studio visual inspect & draw tools", () => {
 					briefMarkdown: null,
 					folderRoot: "surfaces/thetabands",
 					sourceKind: "folder",
+					openLayoutOps: [],
 					sessionOpenChanges: [
 						{
 							changeId: priorOptId,
@@ -1490,18 +1491,32 @@ describe("Studio visual inspect & draw tools", () => {
 			recordedCommands.length = 0;
 			await inspectSurface.execute({ tab: "overview", changeId: priorOptId }, CONTEXT);
 			const priorStagedCmds = recordedCommands.filter((cmd) => cmd.includes("staged.json.gz.b64"));
-			if (priorStagedCmds.length > 0) {
-				const priorStaged = JSON.parse(
-					gunzipSync(
-						Buffer.from(
-							priorStagedCmds.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "").join(""),
-							"base64",
-						),
-					).toString("utf8"),
-				) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
-				expect(priorStaged.files["renders/hero.png"]).toBeUndefined();
-				expect(priorStaged.local["renders/hero.png"]).toBeUndefined();
-			}
+			expect(priorStagedCmds.length).toBeGreaterThan(0);
+			const priorStaged = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						priorStagedCmds.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "").join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
+			expect(priorStaged.files["renders/hero.png"]).toBeUndefined();
+			expect(priorStaged.local["renders/hero.png"]).toBeUndefined();
+
+			const defaultSpecsPatch = stagePatch.parseArguments({
+				title: "Default specs update",
+				summary: "Adds default product tagline",
+				createNew: true,
+				ops: [
+					{
+						op: "write_text",
+						path: "specs.json",
+						content: JSON.stringify({ overview: { tagline: "DEFAULT_TURN_TAGLINE" } }),
+					},
+				],
+			});
+			await stagePatch.prepare?.(defaultSpecsPatch, CONTEXT);
+			await stagePatch.execute(defaultSpecsPatch, CONTEXT);
 
 			const replacePatch = stagePatch.parseArguments({
 				title: "Prior option replaced",
@@ -1530,6 +1545,7 @@ describe("Studio visual inspect & draw tools", () => {
 				),
 			).toString("utf8");
 			expect(replacedHtml).not.toContain("OLD_REPLACED_TAGLINE");
+			expect(replacedHtml).toContain("DEFAULT_TURN_TAGLINE");
 
 			const createOptLayout = stagePatch.parseArguments({
 				title: "Custom layout option",
@@ -1550,13 +1566,28 @@ describe("Studio visual inspect & draw tools", () => {
 			await stagePatch.prepare?.(createOptLayout, CONTEXT);
 			await stagePatch.execute(createOptLayout, CONTEXT);
 
+			const partialTabsPatch = {
+				tabs: [{ id: "alt-2", title: "Alt 2", blocks: [{ type: "artifacts", heading: "Visuals" }] }],
+			};
+			const defaultWithoutSchema = stagePatch.parseArguments({
+				title: "Missing schema on default",
+				summary: "Should fail without prior layout.json schema",
+				createNew: true,
+				ops: [{ op: "merge_json", path: "layout.json", patch: partialTabsPatch }],
+			});
+			await expect(stagePatch.prepare?.(defaultWithoutSchema, CONTEXT)).rejects.toBeInstanceOf(CloudToolRefusal);
+
 			const followUpMerge = stagePatch.parseArguments({
 				title: "Custom layout option",
 				summary: "Follow-up merge on same-turn option layout",
 				changeId: sameTurnOptId,
-				ops: [{ op: "merge_json", path: "layout.json", patch: {} }],
+				ops: [{ op: "merge_json", path: "layout.json", patch: partialTabsPatch }],
 			});
-			await expect(stagePatch.prepare?.(followUpMerge, CONTEXT)).resolves.toBeDefined();
+			const followUpPrepared = (await stagePatch.prepare?.(followUpMerge, CONTEXT)) as {
+				layoutUnchecked?: boolean;
+			};
+			expect(followUpPrepared).toBeDefined();
+			expect(followUpPrepared.layoutUnchecked).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
