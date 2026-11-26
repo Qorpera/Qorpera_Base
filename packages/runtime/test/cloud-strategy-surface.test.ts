@@ -229,7 +229,9 @@ describe("strategy surface and custom studio runtime integration", () => {
 		expect(text).toContain("most updates are one or two plain lines");
 		expect(text).toContain("put those Surfaces' links together on a line of their own");
 		expect(text).toContain("[Website](surface:website) [Web App](surface:web-app) [Strategy](surface:strategy)");
-		expect(text).toContain("repository names, file paths written out in the text, server and IP addresses, machine sizes");
+		expect(text).toContain(
+			"repository names, file paths written out in the text, server and IP addresses, machine sizes",
+		);
 		expect(text).toContain("never format words as code or split a message into numbered sections");
 		expect(text).toContain("Link every file you created or updated that matters to the reader");
 		const classic = cloudCompanyRuntimeInstructions(null, false);
