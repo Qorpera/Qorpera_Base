@@ -314,7 +314,7 @@ function trimUtf8ToBytes(text: string, maxBytes: number): string {
 }
 
 // WHY: Preserve both opening context and mandatory closing submission rules when trimming oversized Studio system notes.
-function boundClaudeSystemNote(text: string, maxBytes: number): string {
+export function boundClaudeSystemNote(text: string, maxBytes: number): string {
 	if (Buffer.byteLength(text) <= maxBytes) return text;
 	const marker = "\n...[truncated]\n";
 	const markerBytes = Buffer.byteLength(marker);

@@ -13,6 +13,7 @@ import { HttpCloudCodingControl } from "../src/cloud-coding-control.ts";
 import { CODING_MAKE_PICTURE_SCHEMA } from "../src/cloud-coding-picture-tool.ts";
 import { CloudControlRpcEnded } from "../src/cloud-control-errors.ts";
 import {
+	boundClaudeSystemNote,
 	CLAUDE_CODING_SYSTEM_NOTE,
 	CLAUDE_SURFACE_CODING_SYSTEM_NOTE,
 	type CloudCodingNativeControl,
@@ -2654,7 +2655,7 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 		}
 	});
 
-	it("keeps Claude coding system notes under the 16 KiB box limit without Codex-only tool names", () => {
+	it("keeps base Claude coding system notes compact (<= 14 KiB) without Codex-only tool names", () => {
 		for (const note of [CLAUDE_CODING_SYSTEM_NOTE, CLAUDE_SURFACE_CODING_SYSTEM_NOTE]) {
 			expect(Buffer.byteLength(note)).toBeLessThanOrEqual(14_000);
 			expect(note).toContain("mcp__qorpera__coding_finish");
@@ -2662,6 +2663,18 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			expect(note).not.toContain("coding_run_command");
 		}
 		expect(CLAUDE_SURFACE_CODING_SYSTEM_NOTE).toContain("mcp__qorpera__coding_record_change");
+
+		const twentyKib = `OPENING_STUDIO_CONTEXT\n${"a".repeat(20_000)}\nEvery turn MUST end with mcp__qorpera__coding_finish.`;
+		expect(boundClaudeSystemNote(twentyKib, 65_536)).toBe(twentyKib);
+
+		const hugeNote = `OPENING_STUDIO_CONTEXT\n${"🎯æøå".repeat(12_000)}\nEvery turn MUST end with mcp__qorpera__coding_finish.`;
+		expect(Buffer.byteLength(hugeNote)).toBeGreaterThan(65_536);
+		const bounded = boundClaudeSystemNote(hugeNote, 65_536);
+		expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(65_536);
+		expect(bounded.startsWith("OPENING_STUDIO_CONTEXT\n")).toBe(true);
+		expect(bounded).toContain("\n...[truncated]\n");
+		expect(bounded.endsWith("Every turn MUST end with mcp__qorpera__coding_finish.")).toBe(true);
+		expect(Buffer.from(bounded, "utf8").toString("utf8")).toBe(bounded);
 	});
 
 	it("executes a Claude Code coding turn over the local MCP bridge and records usage without invoking Codex", async () => {
@@ -3206,6 +3219,35 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			expect(exit70Err).toBeInstanceOf(Error);
 			expect((exit70Err as Error).message).toBe("CODING_CLAUDE_BOX_FAILED:EXIT_70");
 			expect(nativeProviderFailureCode(exit70Err)).toBe("CODING_CLAUDE_BOX_FAILED:EXIT_70");
+
+			const fNoInit = prepClaude();
+			const noInitRuntime = new CloudNativeCodingRuntime({
+				control: fNoInit.control,
+				gateway: fNoInit.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins: validLogins(),
+					launch: vi.fn(async () => ({
+						lines: (async function* () {})(),
+						exited: Promise.resolve(0),
+						stderr: () => "",
+						overflowed: () => false,
+						shell: {} as ClaudeCodeBox["shell"],
+						close: vi.fn(async () => undefined),
+					})),
+				},
+			});
+			let noInitErr: unknown;
+			try {
+				await noInitRuntime.execute(fNoInit.request, identityRoot, fNoInit.context.signal, fNoInit.turn);
+			} catch (error) {
+				noInitErr = error;
+			}
+			expect(noInitErr).toBeInstanceOf(Error);
+			expect((noInitErr as Error).message).toBe("CODING_CLAUDE_BOX_FAILED:NO_INIT");
+			expect(nativeProviderFailureCode(noInitErr)).toBe("CODING_CLAUDE_BOX_FAILED:NO_INIT");
 
 			const hangingBox = () => {
 				let stop!: () => void;
