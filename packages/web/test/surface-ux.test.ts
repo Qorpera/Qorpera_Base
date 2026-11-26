@@ -818,7 +818,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("hides both side panels from the notch and leaves the notch as the way back", async () => {
+	it("hides both side panels from the notch and folds the composer into the way back", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -831,17 +831,54 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
 		const bar = notch.querySelector<HTMLElement>(".surface-pill")!;
-		const show = notch.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!;
+		const composer = view.el.querySelector<HTMLFormElement>(".surface-composer")!;
+		const show = composer.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!;
+		const pencil = composer.querySelector<HTMLButtonElement>('[data-act="open-composer"]')!;
+		const input = composer.querySelector<HTMLTextAreaElement>(".surface-input")!;
+		expect(notch.querySelector('[data-act="show-panels"]')).toBeNull();
 		expect(show.hidden).toBe(true);
+		expect(pencil.hidden).toBe(true);
 		expect(bar.lastElementChild?.getAttribute("data-act")).toBe("hide-panels");
 
 		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
 		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
 		expect(notch.classList.contains("is-open")).toBe(false);
 		expect(bar.hidden).toBe(true);
-		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(true);
+		expect(notch.hidden).toBe(true);
 		expect(show.hidden).toBe(false);
+		expect(pencil.hidden).toBe(false);
 		expect(document.activeElement).toBe(show);
+		expect(composer.classList.contains("is-held")).toBe(false);
+		expect(pencil.getAttribute("aria-label")).toBe(input.getAttribute("aria-label"));
+
+		pencil.getClientRects = () => ({ length: 1 }) as DOMRectList;
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		composer.querySelector(".surface-composer-shell")!.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		vi.useFakeTimers();
+		pencil.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		vi.advanceTimersByTime(200);
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		pencil.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		vi.advanceTimersByTime(200);
+		vi.useRealTimers();
+		expect(composer.classList.contains("is-peek")).toBe(true);
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(true);
+		composer.dispatchEvent(new Event("pointerleave"));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+
+		pencil.click();
+		expect(document.activeElement).toBe(input);
+		input.value = "Bigger headline";
+		input.dispatchEvent(new Event("input"));
+		expect(composer.classList.contains("is-held")).toBe(true);
+		input.value = "";
+		input.dispatchEvent(new Event("input"));
+		expect(composer.classList.contains("is-held")).toBe(false);
 
 		view.update();
 		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
@@ -850,6 +887,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		show.click();
 		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
 		expect(show.hidden).toBe(true);
+		expect(pencil.hidden).toBe(true);
+		expect(notch.hidden).toBe(false);
 		expect(bar.hidden).toBe(false);
 		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(false);
 
