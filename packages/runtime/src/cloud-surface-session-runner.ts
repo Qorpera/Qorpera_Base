@@ -584,6 +584,9 @@ export function extractPointToChangeTarget(originRef: unknown): PointToChangeTar
 	return null;
 }
 
+export const STUDIO_NUMBERS_TAB_RULE =
+	"Any interface can have a numbers tab showing how its subject is doing in real numbers (a product's sales, a plan's targets, a site's visits). Before adding or changing one, read_skill analytics-studio and follow it: charts, figures and tables ask their questions live, and a missing number stays an empty home.";
+
 const STUDIO_PAGE_RULES = [
 	"Put values in the files the layout binds; the page draws them from there.",
 	`Change the page's shape by staging ${SURFACE_LAYOUT_PATH} with stage_surface_patch like any other file: it shows in Changes and is approved like content. A layout that does not parse is refused when it is staged (checked on top of this session's own waiting changes, not other sessions'); deleting ${SURFACE_LAYOUT_PATH} brings back the starter.`,
@@ -591,6 +594,7 @@ const STUDIO_PAGE_RULES = [
 	"A module is a folder (modules/<name>/) with index.html and its own css and js linked relatively: no network, nothing from outside its folder except tokens.css / qorpera-identity.css, and an auto module must not size itself by the viewport (100vh).",
 	"An artifacts block shows only what no other block draws; add one to any tab in layout.json when that tab should show vector art, pictures, notes, pages or extra files.",
 	"A company file is bound with a leading slash (/identity/tokens.json).",
+	STUDIO_NUMBERS_TAB_RULE,
 ];
 
 const STUDIO_EXPLAINER_SCHEMA =
@@ -1271,7 +1275,7 @@ export async function runSurfaceSessionTurn(
 			}
 			signal.throwIfAborted();
 			const view = surfaceStudioPageView(input, folderRoot, contents);
-			const savesQuestions = !isInternalReconciliation && view.page === "layout" && view.starter === "analytics";
+			const savesQuestions = !isInternalReconciliation && view.page === "layout";
 			const tools: CloudNativeTool[] = [
 				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
 					deferSessionCompletion: true,

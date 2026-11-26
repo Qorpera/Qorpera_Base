@@ -2037,20 +2037,6 @@ export const SURFACE_ASK_FORMAT = `A source can ask a question instead: {"ask":"
 
 export const SURFACE_COLORS_FORMAT = `"colors" at the layout's top sets every chart's colours once: {"preset":"company"|"one-colour"|"calm"|"bright"} and jobs {"main","compare","up","down","series":[1-${SURFACE_COLORS_MAX_SERIES}]}, each a colour "#rrggbb" or a binding to one, e.g. "/identity/tokens.json#/colors/sand"; jobs left out come from the preset, company when none is named. company follows the Identity colours, one-colour is shades of main, calm is main and greys, bright is eight colours anyone can tell apart, colour-blind included. A chart block's "colors" gives a series by its name a job (main, compare, up, down, series-1 to series-${SURFACE_COLORS_MAX_SERIES}), a colour or a binding, at most ${SURFACE_CHART_COLORS_MAX}; a color in the chart file itself still wins. Say why in the change when you leave the company colours.`;
 
-function layoutAsks(layout: SurfaceLayoutRead): boolean {
-	return layout.tabs.some((tab) =>
-		tab.blocks
-			.flatMap((node) => (node.type === "row" ? node.blocks : [node]))
-			.some(
-				(block) =>
-					("from" in block && isSurfaceAskSource(block.from)) ||
-					(block.type === "facts" &&
-						"items" in block &&
-						block.items.some((item) => isSurfaceAskSource(item.from))),
-			),
-	);
-}
-
 export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
 	const used = new Set(
 		layout.tabs
@@ -2062,7 +2048,5 @@ export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
 		const note = SURFACE_BLOCK_FORMATS[type];
 		if (note && used.has(type) && !notes.includes(note)) notes.push(note);
 	}
-	if (used.has("chart") || layoutAsks(layout)) notes.push(SURFACE_ASK_FORMAT);
-	if (used.has("chart") || layout.colors !== undefined) notes.push(SURFACE_COLORS_FORMAT);
-	return notes;
+	return [...notes, SURFACE_ASK_FORMAT, SURFACE_COLORS_FORMAT];
 }

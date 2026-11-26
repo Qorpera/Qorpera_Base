@@ -753,18 +753,22 @@ describe("the Analytics starter", () => {
 		}
 	});
 
-	it("names the ask and colour formats for its agent, and only charts or asks bring them", () => {
+	it("names the ask and colour formats on every layout page, so any interface can hold a numbers tab", () => {
 		const notes = describeSurfaceFormats(starter);
 		expect(notes).toContain(SURFACE_ASK_FORMAT);
 		expect(notes).toContain(SURFACE_COLORS_FORMAT);
 		expect(SURFACE_ASK_FORMAT).toContain("as the member viewing it");
 		expect(SURFACE_ASK_FORMAT).toContain("kind line|area|bar|pie|funnel, default line");
 		expect(SURFACE_COLORS_FORMAT).toContain('"preset":"company"|"one-colour"|"calm"|"bright"');
-		const asksOnly = parseSurfaceLayout(layoutWith([{ type: "table", from: { ask: "qorpera/site-pages" } }]));
-		expect(describeSurfaceFormats(asksOnly)).toEqual([SURFACE_ASK_FORMAT]);
-		const colorsOnly = parseSurfaceLayout(layoutWith([{ type: "artifacts" }], { preset: "calm" }));
-		expect(describeSurfaceFormats(colorsOnly)).toEqual([SURFACE_COLORS_FORMAT]);
-		expect(describeSurfaceFormats(parseSurfaceLayout(layoutWith([{ type: "table", from: "a.json" }])))).toEqual([]);
+		for (const [kind, layout] of Object.entries(SURFACE_STARTER_LAYOUTS))
+			expect(describeSurfaceFormats(layout).slice(-2), kind).toEqual([
+				SURFACE_ASK_FORMAT,
+				SURFACE_COLORS_FORMAT,
+			]);
+		expect(describeSurfaceFormats(parseSurfaceLayout(layoutWith([{ type: "table", from: "a.json" }])))).toEqual([
+			SURFACE_ASK_FORMAT,
+			SURFACE_COLORS_FORMAT,
+		]);
 	});
 
 	it("is the page of a studio of dashboard kind or analytics slug; a live_build dashboard has no Studio page", () => {
