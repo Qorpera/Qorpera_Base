@@ -221,6 +221,7 @@ export interface CompanyInterfaceSummary {
 	readonly archetype: string;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly folderRoot: string | null;
+	readonly folderExists?: boolean;
 	readonly repositoryKey: string | null;
 	readonly briefSummary: string | null;
 	readonly isGlobal: boolean;
@@ -320,7 +321,7 @@ export function buildCompanyInterfacesSection(
 	if (ctx.interfaces.length === 0 && !strategySummary && !identitySummary) return null;
 	const lines: string[] = [
 		"## Company Interfaces",
-		"This company's active Interfaces are its live source of truth. Every Interface below is mounted live under `/company` on this machine, so inspect them directly rather than guessing.",
+		"This company's active Interfaces are its live source of truth. Published Interface folders and repositories are mounted live under `/company` on this machine, so inspect them directly rather than guessing.",
 	];
 	if (options.hasCompanySearch || options.hasReadOnlyData) {
 		const tools: string[] = [];
@@ -341,10 +342,14 @@ export function buildCompanyInterfacesSection(
 				: iface.folderRoot
 					? `/company/${iface.folderRoot.replace(/^\/+|\/+$/g, "")}`
 					: "ops";
+		const starterNote =
+			iface.sourceKind === "folder" && iface.folderRoot && iface.folderExists === false
+				? " (starter — folder created on first publish)"
+				: "";
 		const currentTag = options.currentSlug && iface.slug === options.currentSlug ? " · **current**" : "";
 		const summary = iface.briefSummary ? ` — ${iface.briefSummary.replace(/\s+/g, " ").slice(0, 180)}` : "";
 		lines.push(
-			`- **${iface.title}** (\`${iface.slug}\` · ${iface.archetype}/${iface.kind}${currentTag}) — \`${pathLabel}\`${summary}`,
+			`- **${iface.title}** (\`${iface.slug}\` · ${iface.archetype}/${iface.kind}${currentTag}) — \`${pathLabel}\`${starterNote}${summary}`,
 		);
 	}
 	if (ctx.interfaces.length > 48) {

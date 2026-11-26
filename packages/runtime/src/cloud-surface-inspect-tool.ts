@@ -299,6 +299,38 @@ function formatNum(value: number, unit?: string): string {
 	return `${body} ${unit}`;
 }
 
+function resolveSvgColor(raw: string | undefined, fallback: string, palette: readonly string[], dark: boolean): string {
+	if (!raw) return fallback;
+	const trimmed = raw.trim();
+	const cssVar = /^var\((--[a-z0-9-]+)\)$/i.exec(trimmed);
+	if (cssVar) {
+		const name = cssVar[1]!.toLowerCase();
+		if (name.includes("accent") || name.includes("primary")) return palette[0]!;
+		if (name.includes("muted") || name.includes("soft")) return dark ? "#b8b7b2" : "#686866";
+		if (name.includes("danger") || name.includes("error")) return dark ? "#ff9084" : "#b33a2f";
+		if (name.includes("success") || name.includes("positive")) return dark ? "#5ed6a9" : "#0f7a55";
+		return fallback;
+	}
+	return escapeHtml(trimmed);
+}
+
+function resolveAxisSpan(
+	values: readonly number[],
+	explicitMin: number | undefined,
+	explicitMax: number | undefined,
+	defaultZeroFloor: boolean,
+): { readonly min: number; readonly max: number } {
+	const dataMin = values.length > 0 ? Math.min(...values) : 0;
+	const dataMax = values.length > 0 ? Math.max(...values) : 1;
+	let min = explicitMin ?? (defaultZeroFloor ? Math.min(0, dataMin) : dataMin);
+	let max = explicitMax ?? Math.max(defaultZeroFloor ? 1 : dataMin + 1, dataMax);
+	if (min >= max) {
+		if (explicitMax !== undefined && explicitMin === undefined) min = max - Math.max(1, Math.abs(max));
+		else max = min + Math.max(1, Math.abs(min));
+	}
+	return { min, max };
+}
+
 function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 	const palette = dark
 		? ["#e5835c", "#5ed6a9", "#6aa8ff", "#f2c35d", "#d49bff", "#ff9084"]
@@ -322,7 +354,12 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 								: entry.value[1];
 				const name =
 					(entry && typeof entry === "object" && entry.name) || doc.categories?.[idx] || `Item ${idx + 1}`;
-				return { name, value: Math.max(0, value), color: palette[idx % palette.length]! };
+				const rawColor = entry && typeof entry === "object" ? entry.color : undefined;
+				return {
+					name,
+					value: Math.max(0, value),
+					color: resolveSvgColor(rawColor, palette[idx % palette.length]!, palette, dark),
+				};
 			})
 			.filter((s) => s.value > 0);
 		const total = slices.reduce((sum, s) => sum + s.value, 0) || 1;
@@ -375,7 +412,12 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 						: typeof entry.value === "number"
 							? entry.value
 							: entry.value[1],
-			color: palette[idx % palette.length]!,
+			color: resolveSvgColor(
+				entry && typeof entry === "object" ? entry.color : undefined,
+				palette[idx % palette.length]!,
+				palette,
+				dark,
+			),
 		}));
 		const maxVal = Math.max(...stages.map((s) => s.value), 1);
 		const rowH = Math.min(46, Math.floor((H - 30) / Math.max(stages.length, 1)));
@@ -404,7 +446,11 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 			const x = cols.length === 1 ? W / 2 : 120 + (cIdx * (W - 240)) / (cols.length - 1);
 			col.forEach((n, rIdx) => {
 				const y = 40 + ((rIdx + 0.5) * (H - 80)) / Math.max(col.length, 1);
-				pos.set(n.name, { x, y, color: palette[(cIdx * 3 + rIdx) % palette.length]! });
+				pos.set(n.name, {
+					x,
+					y,
+					color: resolveSvgColor(n.color, palette[(cIdx * 3 + rIdx) % palette.length]!, palette, dark),
+				});
 			});
 		});
 		const maxFlow = Math.max(...links.map((l) => l.value), 1);
@@ -453,7 +499,7 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 			.join("");
 		const polys = (doc.series ?? [])
 			.map((s, sIdx) => {
-				const color = palette[sIdx % palette.length]!;
+				const color = resolveSvgColor(s.color, palette[sIdx % palette.length]!, palette, dark);
 				const pts = doc
 					.indicators!.map((ind, i) => {
 						const raw = s.data[i];
@@ -509,25 +555,110 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 	}
 
 	const seriesList = doc.series ?? [];
+	const seriesColors = seriesList.map((s, sIdx) =>
+		resolveSvgColor(s.color, palette[sIdx % palette.length]!, palette, dark),
+	);
 	const allNums: number[] = [];
+	const allXs: number[] = [];
 	for (const s of seriesList) {
-		for (const item of s.data) {
-			if (typeof item === "number") allNums.push(item);
-			else if (item && typeof item === "object") {
-				allNums.push(typeof item.value === "number" ? item.value : item.value[1]);
+		for (let idx = 0; idx < s.data.length; idx += 1) {
+			const item = s.data[idx];
+			if (typeof item === "number") {
+				allNums.push(item);
+				allXs.push(idx);
+			} else if (item && typeof item === "object") {
+				if (typeof item.value === "number") {
+					allNums.push(item.value);
+					allXs.push(idx);
+				} else {
+					allXs.push(item.value[0]);
+					allNums.push(item.value[1]);
+				}
 			}
 		}
+		for (const line of s.markLine ?? []) allNums.push(line.value);
 	}
-	const minY = Math.min(0, ...allNums);
-	const maxY = Math.max(1, ...allNums);
+	const count = Math.max(...seriesList.map((s) => s.data.length), doc.categories?.length ?? 0, 1);
+	const cats = doc.categories ?? Array.from({ length: count }, (_, i) => String(i + 1));
+	const legend =
+		seriesList.length > 1
+			? seriesList
+					.map(
+						(s, idx) =>
+							`<g transform="translate(${62 + idx * 130}, 10)"><circle cx="5" cy="4" r="4" fill="${seriesColors[idx]}"/><text x="14" y="8" fill="${muted}" font-size="11.5">${escapeHtml(s.name.slice(0, 16))}</text></g>`,
+					)
+					.join("")
+			: "";
+
+	if (doc.kind === "bar" && doc.horizontal === true) {
+		const { min: minV, max: maxV } = resolveAxisSpan(
+			allNums,
+			doc.xAxisMin ?? doc.yAxisMin,
+			doc.xAxisMax ?? doc.yAxisMax,
+			true,
+		);
+		const padL = 112;
+		const padR = 24;
+		const padT = seriesList.length > 1 ? 30 : 20;
+		const padB = 34;
+		const plotW = W - padL - padR;
+		const plotH = H - padT - padB;
+		const xFor = (val: number) => padL + ((Math.max(minV, Math.min(maxV, val)) - minV) / (maxV - minV || 1)) * plotW;
+		const x0 = xFor(Math.max(minV, Math.min(maxV, 0)));
+		const gridLines = [0, 0.25, 0.5, 0.75, 1]
+			.map((f) => {
+				const val = minV + (maxV - minV) * f;
+				const x = xFor(val);
+				return `<line x1="${x}" y1="${padT}" x2="${x}" y2="${H - padB}" stroke="${grid}" stroke-dasharray="3 4"/><text x="${x}" y="${H - 14}" text-anchor="middle" fill="${muted}" font-size="11">${escapeHtml(formatNum(val, doc.unit))}</text>`;
+			})
+			.join("");
+		const groupH = plotH / count;
+		const barH = Math.max(8, Math.min(28, (groupH * 0.72) / Math.max(seriesList.length, 1)));
+		let shapes = "";
+		seriesList.forEach((s, sIdx) => {
+			const seriesColor = seriesColors[sIdx]!;
+			s.data.forEach((item, idx) => {
+				const val =
+					typeof item === "number"
+						? item
+						: item && typeof item === "object" && typeof item.value === "number"
+							? item.value
+							: 0;
+				const barColor =
+					item && typeof item === "object" && item.color
+						? resolveSvgColor(item.color, seriesColor, palette, dark)
+						: seriesColor;
+				const y = padT + idx * groupH + (groupH - barH * seriesList.length) / 2 + sIdx * barH;
+				const x1 = xFor(val);
+				shapes += `<rect x="${Math.min(x0, x1)}" y="${y}" width="${Math.max(2, Math.abs(x1 - x0))}" height="${Math.max(2, barH - 2)}" rx="4" fill="${barColor}"/>`;
+			});
+			for (const line of s.markLine ?? []) {
+				if (line.value < minV || line.value > maxV) continue;
+				const mx = xFor(line.value);
+				const label = line.label
+					? `${line.label} · ${formatNum(line.value, doc.unit)}`
+					: formatNum(line.value, doc.unit);
+				shapes += `<line x1="${mx}" y1="${padT}" x2="${mx}" y2="${H - padB}" stroke="${muted}" stroke-dasharray="4 4" stroke-width="1.25"/><text x="${mx}" y="${padT - 5}" text-anchor="middle" fill="${muted}" font-size="10.5">${escapeHtml(label)}</text>`;
+			}
+		});
+		const yLabels = cats
+			.map(
+				(cat, idx) =>
+					`<text x="${padL - 8}" y="${padT + (idx + 0.5) * groupH + 4}" text-anchor="end" fill="${muted}" font-size="11">${escapeHtml(cat.slice(0, 16))}</text>`,
+			)
+			.join("");
+		return `<svg viewBox="0 0 ${W} ${H}" class="pv-svg">${legend}${gridLines}${shapes}${yLabels}</svg>`;
+	}
+
+	const { min: minY, max: maxY } = resolveAxisSpan(allNums, doc.yAxisMin, doc.yAxisMax, doc.kind !== "scatter");
 	const padL = 62;
 	const padR = 20;
 	const padT = 26;
 	const padB = 40;
 	const plotW = W - padL - padR;
 	const plotH = H - padT - padB;
-	const yFor = (val: number) => padT + plotH - ((val - minY) / (maxY - minY || 1)) * plotH;
-	const count = Math.max(...seriesList.map((s) => s.data.length), doc.categories?.length ?? 0, 1);
+	const yFor = (val: number) =>
+		padT + plotH - ((Math.max(minY, Math.min(maxY, val)) - minY) / (maxY - minY || 1)) * plotH;
 	const gridLines = [0, 0.25, 0.5, 0.75, 1]
 		.map((f) => {
 			const val = minY + (maxY - minY) * f;
@@ -540,8 +671,9 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 	if (doc.kind === "bar") {
 		const groupW = plotW / count;
 		const barW = Math.max(8, Math.min(36, (groupW * 0.72) / Math.max(seriesList.length, 1)));
+		const y0 = yFor(Math.max(minY, Math.min(maxY, 0)));
 		seriesList.forEach((s, sIdx) => {
-			const color = palette[sIdx % palette.length]!;
+			const seriesColor = seriesColors[sIdx]!;
 			s.data.forEach((item, idx) => {
 				const val =
 					typeof item === "number"
@@ -549,62 +681,93 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 						: item && typeof item === "object" && typeof item.value === "number"
 							? item.value
 							: 0;
+				const barColor =
+					item && typeof item === "object" && item.color
+						? resolveSvgColor(item.color, seriesColor, palette, dark)
+						: seriesColor;
 				const x = padL + idx * groupW + (groupW - barW * seriesList.length) / 2 + sIdx * barW;
-				const y0 = yFor(0);
 				const y1 = yFor(val);
-				shapes += `<rect x="${x}" y="${Math.min(y0, y1)}" width="${barW - 2}" height="${Math.max(2, Math.abs(y1 - y0))}" rx="4" fill="${color}"/>`;
+				shapes += `<rect x="${x}" y="${Math.min(y0, y1)}" width="${barW - 2}" height="${Math.max(2, Math.abs(y1 - y0))}" rx="4" fill="${barColor}"/>`;
+			});
+		});
+	} else if (doc.kind === "scatter") {
+		const { min: minX, max: maxX } = resolveAxisSpan(allXs, doc.xAxisMin, doc.xAxisMax, false);
+		const xFor = (val: number) => padL + ((val - minX) / (maxX - minX || 1)) * plotW;
+		seriesList.forEach((s, sIdx) => {
+			const seriesColor = seriesColors[sIdx]!;
+			s.data.forEach((item, idx) => {
+				if (item === null) return;
+				const xVal = typeof item === "number" ? idx : typeof item.value === "number" ? idx : item.value[0];
+				const yVal = typeof item === "number" ? item : typeof item.value === "number" ? item.value : item.value[1];
+				const pointColor =
+					typeof item === "object" && item.color
+						? resolveSvgColor(item.color, seriesColor, palette, dark)
+						: seriesColor;
+				shapes += `<circle cx="${xFor(xVal)}" cy="${yFor(yVal)}" r="6" fill="${pointColor}" fill-opacity="0.85"/>`;
 			});
 		});
 	} else {
 		seriesList.forEach((s, sIdx) => {
-			const color = palette[sIdx % palette.length]!;
-			const pts: [number, number][] = [];
+			const seriesColor = seriesColors[sIdx]!;
+			const pts: { x: number; y: number; color: string }[] = [];
 			s.data.forEach((item, idx) => {
 				if (item === null) return;
 				const val = typeof item === "number" ? item : typeof item.value === "number" ? item.value : item.value[1];
 				const x = padL + (count === 1 ? plotW / 2 : (idx / (count - 1)) * plotW);
-				pts.push([x, yFor(val)]);
+				const pointColor =
+					typeof item === "object" && item.color
+						? resolveSvgColor(item.color, seriesColor, palette, dark)
+						: seriesColor;
+				pts.push({ x, y: yFor(val), color: pointColor });
 			});
-			if (doc.kind === "scatter") {
-				shapes += pts
-					.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="6" fill="${color}" fill-opacity="0.85"/>`)
-					.join("");
-			} else if (pts.length > 0) {
-				const path = pts.map(([x, y], i) => `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+			if (pts.length > 0) {
+				const path = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
 				if (doc.kind === "area") {
 					const baseY = yFor(minY);
-					const area = `${path} L ${pts[pts.length - 1]![0].toFixed(1)} ${baseY.toFixed(1)} L ${pts[0]![0].toFixed(1)} ${baseY.toFixed(1)} Z`;
-					shapes += `<path d="${area}" fill="${color}" fill-opacity="0.18"/>`;
+					const area = `${path} L ${pts[pts.length - 1]!.x.toFixed(1)} ${baseY.toFixed(1)} L ${pts[0]!.x.toFixed(1)} ${baseY.toFixed(1)} Z`;
+					shapes += `<path d="${area}" fill="${seriesColor}" fill-opacity="0.18"/>`;
 				}
-				shapes += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
-				shapes += pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3.5" fill="${color}"/>`).join("");
+				shapes += `<path d="${path}" fill="none" stroke="${seriesColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+				shapes += pts.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="3.5" fill="${p.color}"/>`).join("");
 			}
 		});
 	}
-	const cats = doc.categories ?? Array.from({ length: count }, (_, i) => String(i + 1));
-	const step = Math.max(1, Math.ceil(cats.length / 10));
-	const xLabels = cats
-		.map((cat, idx) => {
-			if (idx % step !== 0 && idx !== cats.length - 1) return "";
-			const x =
-				padL +
-				(doc.kind === "bar"
-					? (idx + 0.5) * (plotW / count)
-					: count === 1
-						? plotW / 2
-						: (idx / (count - 1)) * plotW);
-			return `<text x="${x}" y="${H - 14}" text-anchor="middle" fill="${muted}" font-size="11">${escapeHtml(cat.slice(0, 14))}</text>`;
-		})
-		.join("");
-	const legend =
-		seriesList.length > 1
-			? seriesList
-					.map(
-						(s, idx) =>
-							`<g transform="translate(${padL + idx * 130}, 10)"><circle cx="5" cy="4" r="4" fill="${palette[idx % palette.length]}"/><text x="14" y="8" fill="${muted}" font-size="11.5">${escapeHtml(s.name.slice(0, 16))}</text></g>`,
-					)
-					.join("")
-			: "";
+	for (const s of seriesList) {
+		for (const line of s.markLine ?? []) {
+			if (line.value < minY || line.value > maxY) continue;
+			const my = yFor(line.value);
+			const label = line.label
+				? `${line.label} · ${formatNum(line.value, doc.unit)}`
+				: formatNum(line.value, doc.unit);
+			shapes += `<line x1="${padL}" y1="${my}" x2="${W - padR}" y2="${my}" stroke="${muted}" stroke-dasharray="4 4" stroke-width="1.25"/><text x="${W - padR - 4}" y="${my - 5}" text-anchor="end" fill="${muted}" font-size="10.5">${escapeHtml(label)}</text>`;
+		}
+	}
+	let xLabels = "";
+	if (doc.kind === "scatter") {
+		const { min: minX, max: maxX } = resolveAxisSpan(allXs, doc.xAxisMin, doc.xAxisMax, false);
+		xLabels = [0, 0.25, 0.5, 0.75, 1]
+			.map((f) => {
+				const val = minX + (maxX - minX) * f;
+				const x = padL + f * plotW;
+				return `<text x="${x}" y="${H - 14}" text-anchor="middle" fill="${muted}" font-size="11">${escapeHtml(formatNum(val))}</text>`;
+			})
+			.join("");
+	} else {
+		const step = Math.max(1, Math.ceil(cats.length / 10));
+		xLabels = cats
+			.map((cat, idx) => {
+				if (idx % step !== 0 && idx !== cats.length - 1) return "";
+				const x =
+					padL +
+					(doc.kind === "bar"
+						? (idx + 0.5) * (plotW / count)
+						: count === 1
+							? plotW / 2
+							: (idx / (count - 1)) * plotW);
+				return `<text x="${x}" y="${H - 14}" text-anchor="middle" fill="${muted}" font-size="11">${escapeHtml(cat.slice(0, 14))}</text>`;
+			})
+			.join("");
+	}
 	return `<svg viewBox="0 0 ${W} ${H}" class="pv-svg">${legend}${gridLines}${shapes}${xLabels}</svg>`;
 }
 

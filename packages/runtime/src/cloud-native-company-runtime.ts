@@ -2257,7 +2257,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
 		const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
 		const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
-		if (!strategyRoot && !identityRoot) {
+		const folderRoots = [
+			...new Set(
+				interfaces
+					.filter((item) => item.sourceKind === "folder" && item.folderRoot)
+					.map((item) => item.folderRoot!.replace(/^\/+|\/+$/g, ""))
+					.filter(Boolean),
+			),
+		].slice(0, 16);
+		if (!strategyRoot && !identityRoot && folderRoots.length === 0) {
 			return { interfaces, strategySummary: null, identitySummary: null };
 		}
 		let folderClient: CloudCompanyFolderClient;
@@ -2277,13 +2285,34 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				return null;
 			}
 		};
-		const [strategyPlays, strategyBrief, identityBrief] = await Promise.all([
+		const checkFolderExists = async (root: string): Promise<boolean | undefined> => {
+			if (typeof folderClient.list !== "function") return undefined;
+			try {
+				const page = await folderClient.list(root, { limit: 1 }, signal);
+				return page.entries.length > 0;
+			} catch (error) {
+				if (signal.aborted) throw error;
+				return undefined;
+			}
+		};
+		const [strategyPlays, strategyBrief, identityBrief, existenceResults] = await Promise.all([
 			strategyRoot ? readOptionalText(`${strategyRoot}/plays.json`, 16_384) : Promise.resolve(null),
 			strategyRoot ? readOptionalText(`${strategyRoot}/brief.md`, 12_288) : Promise.resolve(null),
 			identityRoot ? readOptionalText(`${identityRoot}/brief.md`, 12_288) : Promise.resolve(null),
+			Promise.all(folderRoots.map(async (root) => [root, await checkFolderExists(root)] as const)),
 		]);
+		const existsByRoot = new Map<string, boolean>();
+		for (const [root, exists] of existenceResults) {
+			if (exists !== undefined) existsByRoot.set(root, exists);
+		}
+		const annotatedInterfaces = interfaces.map((item) => {
+			if (item.sourceKind !== "folder" || !item.folderRoot) return item;
+			const root = item.folderRoot.replace(/^\/+|\/+$/g, "");
+			const exists = existsByRoot.get(root);
+			return exists === undefined ? item : { ...item, folderExists: exists };
+		});
 		return {
-			interfaces,
+			interfaces: annotatedInterfaces,
 			strategySummary: extractStrategyInterfaceSummary(strategyPlays, strategyBrief),
 			identitySummary: identityBrief,
 		};

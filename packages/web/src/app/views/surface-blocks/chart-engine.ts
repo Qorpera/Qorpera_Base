@@ -191,9 +191,13 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 		axisLine,
 		axisLabel: { ...axisText, color: theme.muted, hideOverlap: true },
 	};
+	const valueMin = horizontal ? (doc.xAxisMin ?? doc.yAxisMin) : doc.yAxisMin;
+	const valueMax = horizontal ? (doc.xAxisMax ?? doc.yAxisMax) : doc.yAxisMax;
 	const valueAxis: Option = {
 		type: "value",
 		splitNumber: 4,
+		...(valueMin !== undefined ? { min: valueMin } : {}),
+		...(valueMax !== undefined ? { max: valueMax } : {}),
 		name: horizontal ? doc.xAxisLabel : doc.yAxisLabel,
 		nameLocation: "middle",
 		nameGap: horizontal ? 32 : 52,
@@ -209,6 +213,8 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 	const scatterXAxis: Option = {
 		type: "value",
 		splitNumber: 4,
+		...(doc.xAxisMin !== undefined ? { min: doc.xAxisMin } : {}),
+		...(doc.xAxisMax !== undefined ? { max: doc.xAxisMax } : {}),
 		name: doc.xAxisLabel,
 		nameLocation: "middle",
 		nameGap: 30,
@@ -234,6 +240,7 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 		const color = resolveColor(series.color, container, colors[index % colors.length]!);
 		const markLine = markLinesOf(series.markLine, horizontal, theme, doc.unit);
 		if (doc.kind === "bar") {
+			const barRadius = doc.stacked ? 0 : horizontal ? [0, 5, 5, 0] : [5, 5, 0, 0];
 			return {
 				name: series.name,
 				type: "bar",
@@ -241,7 +248,7 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 				barMaxWidth: 44,
 				itemStyle: {
 					color,
-					borderRadius: doc.stacked ? 0 : horizontal ? [0, 5, 5, 0] : [5, 5, 0, 0],
+					borderRadius: barRadius,
 				},
 				emphasis: { focus: "series" },
 				data: series.data.map((entry) => {
@@ -250,7 +257,7 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 					return {
 						value: pointNumber(entry),
 						...(entry.name ? { name: entry.name } : {}),
-						...(itemColor ? { itemStyle: { color: itemColor } } : {}),
+						...(itemColor ? { itemStyle: { color: itemColor, borderRadius: barRadius } } : {}),
 					};
 				}),
 				...(markLine ? { markLine } : {}),
@@ -318,7 +325,13 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 			emphasis: { focus: "series" },
 			data: series.data.map((entry) => {
 				if (entry === null || typeof entry === "number") return entry;
-				return pointNumber(entry);
+				const itemColor = entry.color ? resolveColor(entry.color, container, color) : undefined;
+				if (!entry.name && !itemColor) return pointNumber(entry);
+				return {
+					value: pointNumber(entry),
+					...(entry.name ? { name: entry.name } : {}),
+					...(itemColor ? { itemStyle: { color: itemColor, borderColor: theme.bg, borderWidth: 1.5 } } : {}),
+				};
 			}),
 			...(markLine ? { markLine } : {}),
 		};

@@ -61,6 +61,10 @@ export interface SurfaceChartDocument {
 	readonly categories?: readonly string[];
 	readonly xAxisLabel?: string;
 	readonly yAxisLabel?: string;
+	readonly xAxisMin?: number;
+	readonly xAxisMax?: number;
+	readonly yAxisMin?: number;
+	readonly yAxisMax?: number;
 	readonly series?: readonly SurfaceChartSeries[];
 	readonly nodes?: readonly SurfaceChartSankeyNode[];
 	readonly links?: readonly SurfaceChartSankeyLink[];
@@ -79,7 +83,7 @@ const MAX_RADAR_INDICATORS = 16;
 const MAX_HEATMAP_AXIS = 40;
 const MAX_HEATMAP_CELLS = 1600;
 const MAX_MARK_LINES = 6;
-const COLOR_PATTERN = /^(?:#[0-9a-f]{3,8}|rgba?\([0-9.,%\s/]+\)|var\(--[a-z0-9-]+\))$/i;
+const COLOR_PATTERN = /^(?:#[0-9a-f]{3,8}|(?:rgba?|hsla?)\([0-9.,%\s/]+\)|var\(--[a-z0-9-]+\))$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -99,6 +103,16 @@ function cleanColor(value: unknown): string | undefined {
 
 function finiteNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function cleanAxisBounds(rawMin: unknown, rawMax: unknown): { min?: number; max?: number } {
+	const min = finiteNumber(rawMin);
+	const max = finiteNumber(rawMax);
+	if (min !== undefined && max !== undefined && min >= max) return {};
+	return {
+		...(min !== undefined ? { min } : {}),
+		...(max !== undefined ? { max } : {}),
+	};
 }
 
 function cleanCategories(value: unknown, max: number): string[] | undefined {
@@ -209,6 +223,8 @@ export function parseSurfaceChartDocument(raw: unknown): SurfaceChartDocument | 
 	const note = cleanText(raw.note, 320);
 	const xAxisLabel = cleanText(raw.xAxisLabel, 64);
 	const yAxisLabel = cleanText(raw.yAxisLabel, 64);
+	const xBounds = cleanAxisBounds(raw.xAxisMin, raw.xAxisMax);
+	const yBounds = cleanAxisBounds(raw.yAxisMin, raw.yAxisMax);
 	const categories = cleanCategories(raw.categories, MAX_CATEGORIES);
 	const common = {
 		kind,
@@ -224,6 +240,10 @@ export function parseSurfaceChartDocument(raw: unknown): SurfaceChartDocument | 
 		...(categories ? { categories } : {}),
 		...(xAxisLabel ? { xAxisLabel } : {}),
 		...(yAxisLabel ? { yAxisLabel } : {}),
+		...(xBounds.min !== undefined ? { xAxisMin: xBounds.min } : {}),
+		...(xBounds.max !== undefined ? { xAxisMax: xBounds.max } : {}),
+		...(yBounds.min !== undefined ? { yAxisMin: yBounds.min } : {}),
+		...(yBounds.max !== undefined ? { yAxisMax: yBounds.max } : {}),
 	};
 
 	if (kind === "sankey") {

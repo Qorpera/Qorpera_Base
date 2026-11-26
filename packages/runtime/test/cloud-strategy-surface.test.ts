@@ -51,8 +51,21 @@ describe("strategy surface and custom studio runtime integration", () => {
 							archetype: "studio",
 							sourceKind: "folder",
 							folderRoot: "surfaces/strategy",
+							folderExists: false,
 							repositoryKey: null,
 							briefSummary: "Grand plan and unit economics",
+							isGlobal: false,
+						},
+						{
+							slug: "identity",
+							title: "Identity",
+							kind: "identity",
+							archetype: "studio",
+							sourceKind: "folder",
+							folderRoot: "identity",
+							folderExists: true,
+							repositoryKey: null,
+							briefSummary: "Brand and marks",
 							isGlobal: false,
 						},
 						{
@@ -90,7 +103,8 @@ describe("strategy surface and custom studio runtime integration", () => {
 		);
 
 		expect(turnBrief).toContain("## Company Interfaces");
-		expect(turnBrief).toContain("/company/surfaces/strategy");
+		expect(turnBrief).toContain("`/company/surfaces/strategy` (starter — folder created on first publish)");
+		expect(turnBrief).toContain("`/company/identity` — Brand and marks");
 		expect(turnBrief).toContain("/company/code/surfaces/website");
 		expect(turnBrief).toContain("Win Copenhagen dealer intake first.");
 		expect(turnBrief).toContain("Calm automotive authority.");
