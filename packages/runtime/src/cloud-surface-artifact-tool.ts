@@ -23,10 +23,11 @@ import {
 	type CloudToolContext,
 	CloudToolRefusal,
 	cloudToolJsonText,
+	relayControlRefusal,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import type { StudioChatGptVoiceMachine } from "./cloud-studio-voice-recorder.ts";
-import type { SurfacePatchToolPort } from "./cloud-surface-tools.ts";
+import type { SurfacePatchSessionTracker, SurfacePatchToolPort } from "./cloud-surface-tools.ts";
 
 export const STUDIO_STAGE_ARTIFACT_SCHEMA = "qorpera.studio-surface-artifact/v1";
 export const MAX_STUDIO_ARTIFACT_BINARY_BYTES = 8 * 1024 * 1024;
@@ -93,7 +94,7 @@ export interface StageSurfaceArtifactToolOptions {
 	readonly machine: StudioChatGptVoiceMachine;
 	readonly stageBytes: (bytes: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<StudioBinaryRef>;
 	readonly surfacePatch: SurfacePatchToolPort;
-	readonly onStagedBinary?: (relativePath: string, bytes: Uint8Array, mediaType: string, ref: StudioBinaryRef) => void;
+	readonly patchTracker?: SurfacePatchSessionTracker;
 	readonly pollMs?: number;
 }
 
@@ -105,6 +106,7 @@ interface StageArtifactArgs {
 	readonly title: string;
 	readonly summary: string;
 	readonly changeId?: string;
+	readonly createNew: boolean;
 	readonly optionGroup?: string;
 	readonly optionGroupTitle?: string;
 }
@@ -451,7 +453,16 @@ async function readFileFromCodingMachine(options: {
 
 export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactToolOptions): CloudNativeTool {
 	const parseArgs = (value: unknown): StageArtifactArgs => {
-		const allowed = ["sourcePath", "destPath", "title", "summary", "changeId", "optionGroup", "optionGroupTitle"];
+		const allowed = [
+			"sourcePath",
+			"destPath",
+			"title",
+			"summary",
+			"changeId",
+			"createNew",
+			"optionGroup",
+			"optionGroupTitle",
+		];
 		if (
 			value === null ||
 			typeof value !== "object" ||
@@ -461,7 +472,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 			!Object.hasOwn(value, "destPath")
 		) {
 			throw new CloudToolArgumentRefusal(
-				"stage_surface_artifact takes sourcePath and destPath, plus optional title, summary, changeId, optionGroup, and optionGroupTitle",
+				"stage_surface_artifact takes sourcePath and destPath, plus optional title, summary, changeId, createNew, optionGroup, and optionGroupTitle",
 			);
 		}
 		const rec = value as Record<string, unknown>;
@@ -500,6 +511,15 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 		if (changeId === null) {
 			throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
 		}
+		const createNew = rec.createNew === undefined ? false : typeof rec.createNew === "boolean" ? rec.createNew : null;
+		if (createNew === null) {
+			throw new CloudToolArgumentRefusal("createNew must be a boolean");
+		}
+		if (changeId && createNew) {
+			throw new CloudToolArgumentRefusal(
+				"Pass either changeId to update an existing change in place or createNew: true to add a separate new change, not both.",
+			);
+		}
 		const optionGroup =
 			rec.optionGroup === undefined
 				? undefined
@@ -533,6 +553,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 			title,
 			summary,
 			...(changeId ? { changeId } : {}),
+			createNew,
 			...(optionGroup ? { optionGroup } : {}),
 			...(optionGroupTitle ? { optionGroupTitle } : {}),
 		};
@@ -581,6 +602,11 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 					type: "string",
 					description: "Optional open change UUID to update in place.",
 				},
+				createNew: {
+					type: "boolean",
+					description:
+						"Set true when intentionally staging a separate new change alongside existing open changes in this session.",
+				},
 				optionGroup: {
 					type: "string",
 					description: "Optional option-group slug when staging competing visual options.",
@@ -595,18 +621,33 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 		},
 		parseArguments(value) {
 			const args = parseArgs(value);
+			const targetChangeId = options.patchTracker
+				? options.patchTracker.resolveTargetChangeId({
+						explicitChangeId: args.changeId ?? null,
+						createNew: args.createNew,
+						optionGroup: args.optionGroup ?? null,
+					})
+				: (args.changeId ?? null);
 			return {
 				sourcePath: args.sourcePath,
 				destPath: args.destPath,
 				title: args.title,
 				summary: args.summary,
-				...(args.changeId ? { changeId: args.changeId } : {}),
+				...(targetChangeId ? { changeId: targetChangeId } : {}),
+				...(args.createNew ? { createNew: true } : {}),
 				...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
 				...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
 			};
 		},
 		async execute(rawArgs, context: CloudToolContext) {
 			const args = parseArgs(rawArgs);
+			const targetChangeId = options.patchTracker
+				? options.patchTracker.resolveTargetChangeId({
+						explicitChangeId: args.changeId ?? null,
+						createNew: args.createNew,
+						optionGroup: args.optionGroup ?? null,
+					})
+				: (args.changeId ?? null);
 			const rawBytes = await readFileFromCodingMachine({
 				machine: options.machine,
 				sourcePath: args.sourcePath,
@@ -622,20 +663,32 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 
 			if (args.spec.kind === "text") {
 				const textContent = rawBytes.toString("utf8");
-				const staged = await options.surfacePatch.stageSurfacePatch(
-					options.sessionId,
-					{
-						title: args.title,
-						summary: args.summary,
-						ops: [{ op: "write_text", path: args.destPath, content: textContent }],
-						notePaths: [],
-						finishSession: false,
-						...(args.changeId ? { changeId: args.changeId } : {}),
-						...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
-						...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
-					},
-					context,
-				);
+				const ops = [{ op: "write_text" as const, path: args.destPath, content: textContent }];
+				let staged: { readonly changeId: string; readonly seq: number; readonly updated?: boolean };
+				try {
+					staged = await options.surfacePatch.stageSurfacePatch(
+						options.sessionId,
+						{
+							title: args.title,
+							summary: args.summary,
+							ops,
+							notePaths: [],
+							finishSession: false,
+							...(targetChangeId ? { changeId: targetChangeId } : {}),
+							...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
+							...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
+						},
+						context,
+					);
+				} catch (error) {
+					relayControlRefusal(error);
+				}
+				options.patchTracker?.recordStaged({
+					targetChangeId,
+					resultChangeId: staged.changeId,
+					ops,
+					optionGroup: args.optionGroup ?? null,
+				});
 				return {
 					kind: "text",
 					value: cloudToolJsonText({
@@ -644,6 +697,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 						kind: "artifact",
 						changeId: staged.changeId,
 						seq: staged.seq,
+						...(staged.updated === true ? { updated: true } : {}),
 						path: args.destPath,
 						mediaType: args.spec.mediaType,
 						bytes: rawBytes.byteLength,
@@ -672,21 +726,32 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 				bytes: ref.bytes,
 				mediaType: ref.mediaType,
 			};
-			const staged = await options.surfacePatch.stageSurfacePatch(
-				options.sessionId,
-				{
-					title: args.title,
-					summary: args.summary,
-					ops: [{ op: "write_file", path: args.destPath, file: closedRef }],
-					notePaths: [],
-					finishSession: false,
-					...(args.changeId ? { changeId: args.changeId } : {}),
-					...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
-					...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
-				},
-				context,
-			);
-			options.onStagedBinary?.(args.destPath, binaryView, args.spec.mediaType, closedRef);
+			const ops = [{ op: "write_file" as const, path: args.destPath, file: closedRef }];
+			let staged: { readonly changeId: string; readonly seq: number; readonly updated?: boolean };
+			try {
+				staged = await options.surfacePatch.stageSurfacePatch(
+					options.sessionId,
+					{
+						title: args.title,
+						summary: args.summary,
+						ops,
+						notePaths: [],
+						finishSession: false,
+						...(targetChangeId ? { changeId: targetChangeId } : {}),
+						...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
+						...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
+					},
+					context,
+				);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
+			options.patchTracker?.recordStaged({
+				targetChangeId,
+				resultChangeId: staged.changeId,
+				ops,
+				optionGroup: args.optionGroup ?? null,
+			});
 
 			if (view) {
 				const answer: Record<string, JsonValue> = {
@@ -695,6 +760,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 					kind: "artifact_image",
 					changeId: staged.changeId,
 					seq: staged.seq,
+					...(staged.updated === true ? { updated: true } : {}),
 					path: args.destPath,
 					mediaType: args.spec.mediaType,
 					bytes: rawBytes.byteLength,
@@ -721,6 +787,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 					kind: "artifact",
 					changeId: staged.changeId,
 					seq: staged.seq,
+					...(staged.updated === true ? { updated: true } : {}),
 					path: args.destPath,
 					mediaType: args.spec.mediaType,
 					bytes: rawBytes.byteLength,

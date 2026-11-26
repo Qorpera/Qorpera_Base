@@ -21,9 +21,10 @@ import {
 	type CloudToolContext,
 	CloudToolRefusal,
 	cloudToolJsonText,
+	relayControlRefusal,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
-import type { SurfacePatchToolPort } from "./cloud-surface-tools.ts";
+import type { SurfacePatchSessionTracker, SurfacePatchToolPort } from "./cloud-surface-tools.ts";
 
 export const STUDIO_COMPOSE_LAYOUT_SCHEMA = "qorpera.studio-compose-layout/v1";
 
@@ -34,6 +35,7 @@ export interface ComposeSurfaceLayoutToolOptions {
 	readonly starter: SurfaceStarterKind;
 	readonly readCurrentLayoutText: (signal: AbortSignal) => Promise<string | null>;
 	readonly surfacePatch: SurfacePatchToolPort;
+	readonly patchTracker?: SurfacePatchSessionTracker;
 }
 
 type LayoutOperation =
@@ -62,6 +64,7 @@ interface ComposeLayoutArgs {
 	readonly title: string;
 	readonly summary: string;
 	readonly changeId?: string;
+	readonly createNew: boolean;
 	readonly optionGroup?: string;
 	readonly optionGroupTitle?: string;
 }
@@ -376,7 +379,7 @@ function countLayoutBlocks(layout: SurfaceLayout): number {
 
 export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutToolOptions): CloudNativeTool {
 	const parseArgs = (value: unknown): ComposeLayoutArgs => {
-		const allowed = ["operations", "title", "summary", "changeId", "optionGroup", "optionGroupTitle"];
+		const allowed = ["operations", "title", "summary", "changeId", "createNew", "optionGroup", "optionGroupTitle"];
 		if (
 			!isPlainRecord(value) ||
 			Object.keys(value).some((key) => !allowed.includes(key)) ||
@@ -385,7 +388,7 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 			value.operations.length > MAX_OPERATIONS
 		) {
 			throw new CloudToolArgumentRefusal(
-				`compose_surface_layout takes operations (1..${MAX_OPERATIONS} layout ops) plus optional title, summary, changeId, optionGroup, and optionGroupTitle`,
+				`compose_surface_layout takes operations (1..${MAX_OPERATIONS} layout ops) plus optional title, summary, changeId, createNew, optionGroup, and optionGroupTitle`,
 			);
 		}
 		const operations = value.operations.map((entry, idx) => parseOperation(entry, idx));
@@ -420,6 +423,16 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 		if (changeId === null) {
 			throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
 		}
+		const createNew =
+			value.createNew === undefined ? false : typeof value.createNew === "boolean" ? value.createNew : null;
+		if (createNew === null) {
+			throw new CloudToolArgumentRefusal("createNew must be a boolean");
+		}
+		if (changeId && createNew) {
+			throw new CloudToolArgumentRefusal(
+				"Pass either changeId to update an existing change in place or createNew: true to add a separate new change, not both.",
+			);
+		}
 		const optionGroup =
 			value.optionGroup === undefined
 				? undefined
@@ -450,6 +463,7 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 			title,
 			summary,
 			...(changeId ? { changeId } : {}),
+			createNew,
 			...(optionGroup ? { optionGroup } : {}),
 			...(optionGroupTitle ? { optionGroupTitle } : {}),
 		};
@@ -491,6 +505,11 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 					type: "string",
 					description: "Optional open change UUID to update in place.",
 				},
+				createNew: {
+					type: "boolean",
+					description:
+						"Set true when intentionally staging a separate new change alongside existing open changes in this session.",
+				},
 				optionGroup: {
 					type: "string",
 					description: "Optional option-group slug for competing layout directions.",
@@ -505,18 +524,41 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 		},
 		parseArguments(value) {
 			const args = parseArgs(value);
+			const targetChangeId = options.patchTracker
+				? options.patchTracker.resolveTargetChangeId({
+						explicitChangeId: args.changeId ?? null,
+						createNew: args.createNew,
+						optionGroup: args.optionGroup ?? null,
+					})
+				: (args.changeId ?? null);
 			return {
 				operations: args.operations as unknown as JsonValue,
 				title: args.title,
 				summary: args.summary,
-				...(args.changeId ? { changeId: args.changeId } : {}),
+				...(targetChangeId ? { changeId: targetChangeId } : {}),
+				...(args.createNew ? { createNew: true } : {}),
 				...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
 				...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
 			};
 		},
 		async execute(rawArgs, context: CloudToolContext) {
 			const args = parseArgs(rawArgs);
-			const currentText = await options.readCurrentLayoutText(context.signal);
+			const targetChangeId = options.patchTracker
+				? options.patchTracker.resolveTargetChangeId({
+						explicitChangeId: args.changeId ?? null,
+						createNew: args.createNew,
+						optionGroup: args.optionGroup ?? null,
+					})
+				: (args.changeId ?? null);
+			let currentText: string | null;
+			try {
+				currentText = await options.readCurrentLayoutText(context.signal);
+			} catch (error) {
+				if (context.signal.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+				throw new CloudToolRefusal(
+					"LAYOUT_READ_FAILED: could not read the current layout.json; nothing was staged so existing tabs are not overwritten.",
+				);
+			}
 			let baseLayout: SurfaceLayout;
 			if (currentText !== null) {
 				const read = readSurfaceLayout(currentText);
@@ -539,25 +581,38 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 
 			const nextLayout = applyOperations(baseLayout, args.operations);
 			const formatted = `${JSON.stringify(nextLayout, null, "\t")}\n`;
-			const staged = await options.surfacePatch.stageSurfacePatch(
-				options.sessionId,
-				{
-					title: args.title,
-					summary: args.summary,
-					ops: [{ op: "write_text", path: SURFACE_LAYOUT_PATH, content: formatted }],
-					notePaths: [],
-					finishSession: false,
-					...(args.changeId ? { changeId: args.changeId } : {}),
-					...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
-					...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
-				},
-				context,
-			);
+			const ops = [{ op: "write_text" as const, path: SURFACE_LAYOUT_PATH, content: formatted }];
+			let staged: { readonly changeId: string; readonly seq: number; readonly updated?: boolean };
+			try {
+				staged = await options.surfacePatch.stageSurfacePatch(
+					options.sessionId,
+					{
+						title: args.title,
+						summary: args.summary,
+						ops,
+						notePaths: [],
+						finishSession: false,
+						...(targetChangeId ? { changeId: targetChangeId } : {}),
+						...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
+						...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
+					},
+					context,
+				);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
+			options.patchTracker?.recordStaged({
+				targetChangeId,
+				resultChangeId: staged.changeId,
+				ops,
+				optionGroup: args.optionGroup ?? null,
+			});
 			const answer: Record<string, JsonValue> = {
 				schema: STUDIO_COMPOSE_LAYOUT_SCHEMA,
 				ok: true,
 				changeId: staged.changeId,
 				seq: staged.seq,
+				...(staged.updated === true ? { updated: true } : {}),
 				tabs: nextLayout.tabs.map((tab) => ({
 					id: tab.id,
 					title: tab.title,

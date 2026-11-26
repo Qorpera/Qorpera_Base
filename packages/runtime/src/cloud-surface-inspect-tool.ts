@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import {
 	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	type CloudCodingCommandReceipt,
@@ -44,14 +45,16 @@ export type InspectSurfaceTheme = "light" | "dark";
 export type InspectSurfaceViewport = "desktop" | "mobile";
 
 const WORK_ROOT = "/tmp/qorpera-studio-inspect";
-const UPLOAD_CHUNK_BYTES = 9_000;
+const UPLOAD_CHUNK_BYTES = 14_000;
+const MAX_UPLOAD_CHUNKS = 16;
 const CAPTURE_TIMEOUT_MS = 45_000;
 const SETUP_TIMEOUT_MS = 20_000;
 const CANCEL_ON_ABORT_MS = 5_000;
-const MAX_INLINE_IMAGE_BYTES = 1_500_000;
-const MAX_TOTAL_INLINE_IMAGES_BYTES = 3_500_000;
-const MAX_PREVIEW_HTML_BYTES = 4_500_000;
-const MAX_CAPTURE_HEIGHT = 4800;
+const MAX_INLINE_IMAGE_BYTES = 24_000;
+const MAX_TOTAL_INLINE_IMAGES_BYTES = 64_000;
+const MAX_PREVIEW_HTML_BYTES = 256_000;
+const MAX_CAPTURE_HEIGHT = 1800;
+const MAX_SCROLL_Y = 6000;
 const MAX_BASE64_OUTPUT_BYTES = Math.ceil((8 * 1024 * 1024) / 3) * 4 + 256;
 const SCRIPT_END = "QORPERA_STUDIO_INSPECT_END";
 
@@ -61,11 +64,13 @@ const CAPTURE_SCRIPT_CJS = [
 	'const fs = require("node:fs");',
 	'const http = require("node:http");',
 	'const path = require("node:path");',
-	"const [work, widthRaw, heightRaw, mobileRaw, fullRaw] = process.argv.slice(2);",
+	'const zlib = require("node:zlib");',
+	"const [work, widthRaw, heightRaw, mobileRaw, fullRaw, scrollYRaw, folderRootRaw] = process.argv.slice(2);",
 	"const width = Number(widthRaw) || 1280;",
 	"const height = Number(heightRaw) || 800;",
 	'const mobile = mobileRaw === "1";',
 	'const fullPage = fullRaw === "1";',
+	"const scrollY = Math.max(0, Math.min(6000, Number(scrollYRaw) || 0));",
 	"const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });",
 	"const findChrome = () => {",
 	"  if (process.env.QORPERA_INSPECT_CHROMIUM) return process.env.QORPERA_INSPECT_CHROMIUM;",
@@ -85,11 +90,28 @@ const CAPTURE_SCRIPT_CJS = [
 	'  ".jpeg": "image/jpeg",',
 	'  ".webp": "image/webp",',
 	"};",
+	'const ASSET_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/svg+xml"]);',
 	"(async () => {",
 	'  if (!work || !path.isAbsolute(work)) throw new Error("work must be absolute");',
 	'  const siteDir = path.join(work, "site");',
+	'  const gzPath = path.join(siteDir, "index.html.gz.b64");',
+	'  const htmlPath = path.join(siteDir, "index.html");',
+	"  if (fs.existsSync(gzPath)) {",
+	'    const gz = Buffer.from(fs.readFileSync(gzPath, "utf8"), "base64");',
+	"    fs.writeFileSync(htmlPath, zlib.gunzipSync(gz));",
+	"    try { fs.unlinkSync(gzPath); } catch {}",
+	"  }",
+	"  let companyDir = null;",
+	"  if (folderRootRaw) {",
+	'    const candidate = path.resolve("/company", folderRootRaw);',
+	'    try { const real = fs.realpathSync(candidate); const comp = fs.realpathSync("/company"); const r = path.relative(comp, real); if (r && !r.startsWith("..") && !path.isAbsolute(r)) companyDir = real; } catch {}',
+	"  }",
 	"  const server = http.createServer((req, res) => {",
 	'    const reqPath = (req.url || "/").split("?")[0];',
+	'    if (companyDir && reqPath.startsWith("/company-asset/")) {',
+	'      let rel = ""; try { rel = decodeURIComponent(reqPath.slice("/company-asset/".length)); } catch { res.writeHead(400); res.end(); return; }',
+	'      try { const resolved = fs.realpathSync(path.resolve(companyDir, rel)); const r = path.relative(companyDir, resolved); const mime = MIME[path.extname(resolved).toLowerCase()]; if (!r || r.startsWith("..") || path.isAbsolute(r) || !ASSET_MIME.has(mime) || !fs.statSync(resolved).isFile()) { res.writeHead(404); res.end(); return; } res.writeHead(200, { "Content-Type": mime }); fs.createReadStream(resolved).pipe(res); return; } catch { res.writeHead(404); res.end(); return; }',
+	"    }",
 	'    const rel = reqPath === "/" ? "index.html" : reqPath.replace(/^\\/+/, "");',
 	"    const resolved = path.resolve(siteDir, rel);",
 	"    const relCheck = path.relative(siteDir, resolved);",
@@ -136,17 +158,19 @@ const CAPTURE_SCRIPT_CJS = [
 	'    const send = (method, params = {}) => new Promise((res, rej) => { if (ws.readyState !== 1) return rej(new Error("devtools socket not open")); const id = ++nextId; pending.set(id, { res, rej }); ws.send(JSON.stringify({ id, method, params })); });',
 	'    await send("Page.enable");',
 	'    await send("Runtime.enable");',
-	'    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile });',
+	'    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });',
 	'    await send("Page.navigate", { url: "http://127.0.0.1:" + port + "/index.html" });',
 	"    await Promise.race([loaded, sleep(12000)]);",
 	'    const settle = await send("Runtime.evaluate", { expression: "(async()=>{if(document.fonts&&document.fonts.ready)await document.fonts.ready.catch(()=>{});await new Promise((r)=>requestAnimationFrame(()=>requestAnimationFrame(r)));return Math.ceil(Math.max(document.documentElement.scrollHeight,document.body.scrollHeight||0));})()", awaitPromise: true, returnByValue: true });',
 	"    const scrollHeight = Number(settle && settle.result && settle.result.value) || height;",
+	"    const y = fullPage ? 0 : Math.min(scrollY, Math.max(0, scrollHeight - height));",
 	`    const captureHeight = fullPage ? Math.max(height, Math.min(${MAX_CAPTURE_HEIGHT}, scrollHeight)) : height;`,
-	'    const shot = await send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { x: 0, y: 0, width, height: captureHeight, scale: 1 } });',
+	'    const shot = await send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { x: 0, y, width, height: captureHeight, scale: 1 } });',
 	'    if (!shot || typeof shot.data !== "string" || !shot.data.length) throw new Error("empty screenshot");',
 	'    const data = Buffer.from(shot.data, "base64");',
 	'    const hash = crypto.createHash("sha256").update(data).digest("hex");',
 	'    const writeAll = async (s) => { if (!process.stdout.write(s)) await new Promise((r) => process.stdout.once("drain", r)); };',
+	'    await writeAll("QORPERA_META:" + JSON.stringify({ scrollHeight, scrollY: y, captureHeight }) + "\\n");',
 	'    await writeAll("QORPERA_IMG:" + data.length + ":" + hash + ":\\n");',
 	'    for (let i = 0; i < data.length; i += 49152) await writeAll(data.subarray(i, Math.min(data.length, i + 49152)).toString("base64"));',
 	"  } finally {",
@@ -158,12 +182,19 @@ const CAPTURE_SCRIPT_CJS = [
 	"})().catch((e) => { process.stderr.write(String(e && e.message ? e.message : e) + '\\n'); try { fs.rmSync(work, { recursive: true, force: true }); } catch {} process.exit(1); });",
 ].join("\n");
 
+export interface StudioInspectBinaryMeta {
+	readonly bytes: number;
+	readonly mediaType: string;
+	readonly inCompanyMount?: boolean;
+}
+
 export interface StudioInspectSnapshot {
 	readonly surfaceTitle: string;
 	readonly folderRoot: string;
 	readonly starter: SurfaceStarterKind;
 	readonly files: Readonly<Record<string, string>>;
 	readonly binaries: Readonly<Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }>>;
+	readonly knownBinaries?: Readonly<Record<string, StudioInspectBinaryMeta>>;
 }
 
 export interface InspectSurfaceToolOptions {
@@ -237,6 +268,12 @@ function createSnapshotReader(snapshot: StudioInspectSnapshot) {
 		binary(bindingPath: string): { readonly bytes: Uint8Array; readonly mediaType: string } | undefined {
 			const path = resolveCompanyPath(snapshot.folderRoot, bindingPath);
 			return path ? snapshot.binaries[path] : undefined;
+		},
+		knownBinary(bindingPath: string): { readonly path: string; readonly meta: StudioInspectBinaryMeta } | undefined {
+			const path = resolveCompanyPath(snapshot.folderRoot, bindingPath);
+			if (!path) return undefined;
+			const meta = snapshot.knownBinaries?.[path];
+			return meta ? { path, meta } : undefined;
 		},
 	};
 }
@@ -768,6 +805,8 @@ function renderBlockHtml(
 			const title = block.heading ?? "Mark";
 			const svgText = reader.fileText(block.from);
 			const bin = reader.binary(block.from);
+			const known = reader.knownBinary(block.from);
+			const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
 			let visual = "";
 			if (svgText && /<svg[\s>]/i.test(svgText)) {
 				visual = `<div class="pv-mark-svg">${sanitizeInlineSvg(svgText)}</div>`;
@@ -779,6 +818,15 @@ function renderBlockHtml(
 				imageBudget.used += bin.bytes.byteLength;
 				const b64 = Buffer.from(bin.bytes).toString("base64");
 				visual = `<img class="pv-mark-img" src="data:${escapeHtml(bin.mediaType)};base64,${b64}" alt="${escapeHtml(title)}"/>`;
+			} else if (bin) {
+				visual = `<div class="pv-art-badge">${escapeHtml(bin.mediaType)} · ${Math.round(bin.bytes.byteLength / 1024)} KB</div>`;
+			} else if (known) {
+				const rel = known.path.startsWith(rootPrefix) ? known.path.slice(rootPrefix.length) : undefined;
+				if (known.meta.inCompanyMount && rel && known.meta.mediaType.startsWith("image/")) {
+					visual = `<img class="pv-mark-img" src="/company-asset/${encodeURI(rel)}" alt="${escapeHtml(title)}"/>`;
+				} else {
+					visual = `<div class="pv-art-badge">${escapeHtml(known.meta.mediaType)} · ${Math.round(known.meta.bytes / 1024)} KB</div>`;
+				}
 			}
 			if (!visual) {
 				warnings.push(`Brand mark "${title}" (${block.from}) is missing.`);
@@ -865,7 +913,13 @@ function renderBlockHtml(
 		case "artifacts": {
 			const title = block.heading ?? "Artifacts";
 			const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
-			const candidates = [...new Set([...Object.keys(snapshot.files), ...Object.keys(snapshot.binaries)])]
+			const candidates = [
+				...new Set([
+					...Object.keys(snapshot.files),
+					...Object.keys(snapshot.binaries),
+					...Object.keys(snapshot.knownBinaries ?? {}),
+				]),
+			]
 				.filter((p) => p.startsWith(rootPrefix) && p !== `${rootPrefix}${SURFACE_LAYOUT_PATH}`)
 				.filter((p) => {
 					const rel = p.slice(rootPrefix.length);
@@ -880,6 +934,7 @@ function renderBlockHtml(
 				.map((fullPath) => {
 					const rel = fullPath.slice(rootPrefix.length);
 					const bin = snapshot.binaries[fullPath];
+					const known = snapshot.knownBinaries?.[fullPath];
 					const txt = snapshot.files[fullPath];
 					if (
 						bin?.mediaType.startsWith("image/") &&
@@ -889,6 +944,17 @@ function renderBlockHtml(
 						imageBudget.used += bin.bytes.byteLength;
 						const b64 = Buffer.from(bin.bytes).toString("base64");
 						return `<figure class="pv-art-card"><img src="data:${escapeHtml(bin.mediaType)};base64,${b64}" alt="${escapeHtml(rel)}"/><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
+					}
+					if (bin) {
+						const kb = Math.max(1, Math.round(bin.bytes.byteLength / 1024));
+						return `<figure class="pv-art-card is-doc"><div class="pv-art-badge">${escapeHtml(rel.split(".").pop()?.toUpperCase() ?? "FILE")} · ${kb} KB</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
+					}
+					if (known?.inCompanyMount && known.mediaType.startsWith("image/")) {
+						return `<figure class="pv-art-card"><img src="/company-asset/${encodeURI(rel)}" alt="${escapeHtml(rel)}"/><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
+					}
+					if (known) {
+						const kb = Math.max(1, Math.round(known.bytes / 1024));
+						return `<figure class="pv-art-card is-doc"><div class="pv-art-badge">${escapeHtml(rel.split(".").pop()?.toUpperCase() ?? "FILE")} · ${kb} KB</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
 					}
 					if (txt && rel.toLowerCase().endsWith(".svg") && /<svg[\s>]/i.test(txt)) {
 						return `<figure class="pv-art-card"><div class="pv-art-svg">${sanitizeInlineSvg(txt)}</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
@@ -904,9 +970,15 @@ function renderBlockHtml(
 			const matches =
 				"from" in block
 					? [resolveCompanyPath(snapshot.folderRoot, block.from)].filter((p): p is string =>
-							Boolean(p && (snapshot.files[p] || snapshot.binaries[p])),
+							Boolean(p && (snapshot.files[p] || snapshot.binaries[p] || snapshot.knownBinaries?.[p])),
 						)
-					: [...Object.keys(snapshot.files), ...Object.keys(snapshot.binaries)].filter((p) => {
+					: [
+							...new Set([
+								...Object.keys(snapshot.files),
+								...Object.keys(snapshot.binaries),
+								...Object.keys(snapshot.knownBinaries ?? {}),
+							]),
+						].filter((p) => {
 							if (!p.startsWith(rootPrefix)) return false;
 							const rel = p.slice(rootPrefix.length);
 							return surfaceGlobMatches(block.match, block.match.startsWith("/") ? `/${p}` : rel);
@@ -1263,6 +1335,10 @@ async function runMachineStep(options: {
 	return { exitCode: current.exitCode, state: current.state, output: chunks.join("") };
 }
 
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): CloudNativeTool {
 	const pollMs = options.pollMs ?? 150;
 	const parseArgs = (
@@ -1272,14 +1348,17 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 		readonly theme: InspectSurfaceTheme;
 		readonly viewport: InspectSurfaceViewport;
 		readonly fullPage: boolean;
+		readonly scrollY: number;
 	} => {
-		const allowed = ["tab", "theme", "viewport", "fullPage"];
+		const allowed = ["tab", "theme", "viewport", "fullPage", "scrollY"];
 		if (
 			value !== undefined &&
 			value !== null &&
 			(!isPlainRecord(value) || Object.keys(value).some((key) => !allowed.includes(key)))
 		) {
-			throw new CloudToolArgumentRefusal("inspect_surface accepts optional tab, theme, viewport, and fullPage");
+			throw new CloudToolArgumentRefusal(
+				"inspect_surface accepts optional tab, theme, viewport, fullPage, and scrollY",
+			);
 		}
 		const rec = isPlainRecord(value) ? value : {};
 		const tab =
@@ -1305,11 +1384,23 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 		if (viewport === null) {
 			throw new CloudToolArgumentRefusal('viewport must be "desktop" or "mobile"');
 		}
-		const fullPage = rec.fullPage === undefined ? true : typeof rec.fullPage === "boolean" ? rec.fullPage : null;
+		const fullPage = rec.fullPage === undefined ? false : typeof rec.fullPage === "boolean" ? rec.fullPage : null;
 		if (fullPage === null) {
 			throw new CloudToolArgumentRefusal("fullPage must be a boolean");
 		}
-		return { ...(tab ? { tab } : {}), theme, viewport, fullPage };
+		const scrollY =
+			rec.scrollY === undefined
+				? 0
+				: typeof rec.scrollY === "number" &&
+						Number.isInteger(rec.scrollY) &&
+						rec.scrollY >= 0 &&
+						rec.scrollY <= MAX_SCROLL_Y
+					? rec.scrollY
+					: null;
+		if (scrollY === null) {
+			throw new CloudToolArgumentRefusal(`scrollY must be an integer between 0 and ${MAX_SCROLL_Y}`);
+		}
+		return { ...(tab ? { tab } : {}), theme, viewport, fullPage, scrollY };
 	};
 
 	return {
@@ -1317,8 +1408,8 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 		source: "runtime",
 		images: true,
 		description: [
-			"Render this Studio surface (including active Preview changes and anything you have already staged in this turn) in headless Chromium and return a real PNG screenshot inline so you can visually audit layout, charts, diagrams, dark/light contrast, spacing, and empty homes.",
-			"Call this after staging visual changes or reshaping layout.json before finishing your turn.",
+			"Render this Studio surface (including active Preview changes and anything you have already staged in this turn) in headless Chromium and return a crisp 1:1 PNG screenshot inline so you can visually audit layout, charts, diagrams, dark/light contrast, spacing, and empty homes.",
+			"Defaults to a readable viewport screenshot (1280x800 desktop or 390x844 mobile); pass scrollY to inspect lower bands of tall pages or fullPage: true to capture up to 1800px.",
 		].join("\n"),
 		inputSchema: {
 			type: "object",
@@ -1341,7 +1432,13 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				},
 				fullPage: {
 					type: "boolean",
-					description: "Capture full scrollable tab height up to 4800px (default true) or viewport only (false).",
+					description: "Capture up to 1800px tall (true) or crisp single viewport at scrollY (false, default).",
+				},
+				scrollY: {
+					type: "integer",
+					minimum: 0,
+					maximum: MAX_SCROLL_Y,
+					description: "Vertical scroll offset in CSS px when fullPage is false (default 0).",
 				},
 			},
 		},
@@ -1352,6 +1449,7 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				theme: args.theme,
 				viewport: args.viewport,
 				fullPage: args.fullPage,
+				scrollY: args.scrollY,
 			};
 		},
 		async execute(rawArgs, context: CloudToolContext) {
@@ -1366,20 +1464,24 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 			if (htmlBytes.byteLength > MAX_PREVIEW_HTML_BYTES) {
 				throw new CloudToolRefusal("INSPECT_SURFACE_TOO_LARGE: rendered preview exceeded the size limit.");
 			}
+			const gzB64 = gzipSync(htmlBytes).toString("base64");
+			const chunkCount = Math.ceil(gzB64.length / UPLOAD_CHUNK_BYTES);
+			if (chunkCount > MAX_UPLOAD_CHUNKS) {
+				throw new CloudToolRefusal("INSPECT_SURFACE_TOO_LARGE: compressed preview exceeded the upload bound.");
+			}
 
 			const tag = createHash("sha256")
 				.update(
-					`${options.machine.identity.runId}:${context.callId}:${rendered.activeTab.id}:${args.theme}:${args.viewport}`,
+					`${options.machine.identity.runId}:${context.callId}:${rendered.activeTab.id}:${args.theme}:${args.viewport}:${args.scrollY}`,
 				)
 				.digest("hex")
 				.slice(0, 20);
 			const work = `${WORK_ROOT}-${tag}`;
-			const htmlB64 = htmlBytes.toString("base64");
 
 			const init = await runMachineStep({
 				machine: options.machine,
 				key: `studio-inspect:${tag}:init`,
-				command: `rm -rf ${work} && mkdir -p ${work}/site && cat > ${work}/capture.cjs <<'${SCRIPT_END}'\n${CAPTURE_SCRIPT_CJS}\n${SCRIPT_END}\n: > ${work}/site/index.html.b64`,
+				command: `rm -rf ${work} && mkdir -p ${work}/site && cat > ${work}/capture.cjs <<'${SCRIPT_END}'\n${CAPTURE_SCRIPT_CJS}\n${SCRIPT_END}\n: > ${work}/site/index.html.gz.b64`,
 				timeoutMs: SETUP_TIMEOUT_MS,
 				context,
 				pollMs,
@@ -1390,12 +1492,12 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				);
 			}
 
-			for (let offset = 0, part = 0; offset < htmlB64.length; offset += UPLOAD_CHUNK_BYTES, part += 1) {
-				const slice = htmlB64.slice(offset, offset + UPLOAD_CHUNK_BYTES);
+			for (let offset = 0, part = 0; offset < gzB64.length; offset += UPLOAD_CHUNK_BYTES, part += 1) {
+				const slice = gzB64.slice(offset, offset + UPLOAD_CHUNK_BYTES);
 				const step = await runMachineStep({
 					machine: options.machine,
 					key: `studio-inspect:${tag}:chunk:${part}`,
-					command: `printf '%s' '${slice}' >> ${work}/site/index.html.b64`,
+					command: `printf '%s' '${slice}' >> ${work}/site/index.html.gz.b64`,
 					timeoutMs: SETUP_TIMEOUT_MS,
 					context,
 					pollMs,
@@ -1411,10 +1513,11 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				args.viewport === "mobile"
 					? { width: 390, height: 844, mobile: "1" }
 					: { width: 1280, height: 800, mobile: "0" };
+			const folderArg = snapshot.folderRoot ? shellQuote(snapshot.folderRoot) : "''";
 			const capture = await runMachineStep({
 				machine: options.machine,
 				key: `studio-inspect:${tag}:capture`,
-				command: `base64 -d ${work}/site/index.html.b64 > ${work}/site/index.html && rm -f ${work}/site/index.html.b64 && if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" ${work}/capture.cjs ${work} ${dims.width} ${dims.height} ${dims.mobile} ${args.fullPage ? "1" : "0"} 2>/dev/null`,
+				command: `if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" ${work}/capture.cjs ${work} ${dims.width} ${dims.height} ${dims.mobile} ${args.fullPage ? "1" : "0"} ${args.scrollY} ${folderArg} 2>/dev/null`,
 				timeoutMs: CAPTURE_TIMEOUT_MS,
 				context,
 				pollMs,
@@ -1425,7 +1528,25 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 					`INSPECT_SURFACE_UNAVAILABLE: could not render Studio screenshot on the coding machine (exit ${capture.exitCode ?? capture.state}).`,
 				);
 			}
-			const rawPng = decodeInspectImageOutput(capture.output.trim());
+			let outputText = capture.output.trim();
+			let scrollHeight = dims.height;
+			let effectiveScrollY = args.scrollY;
+			if (outputText.startsWith("QORPERA_META:")) {
+				const nl = outputText.indexOf("\n");
+				if (nl > 0) {
+					try {
+						const meta = JSON.parse(outputText.slice("QORPERA_META:".length, nl)) as Record<string, unknown>;
+						if (typeof meta.scrollHeight === "number" && Number.isFinite(meta.scrollHeight)) {
+							scrollHeight = Math.max(dims.height, Math.round(meta.scrollHeight));
+						}
+						if (typeof meta.scrollY === "number" && Number.isFinite(meta.scrollY)) {
+							effectiveScrollY = Math.max(0, Math.round(meta.scrollY));
+						}
+					} catch {}
+					outputText = outputText.slice(nl + 1);
+				}
+			}
+			const rawPng = decodeInspectImageOutput(outputText);
 			if (!rawPng) {
 				throw new CloudToolRefusal("INSPECT_SURFACE_UNREADABLE: rendered screenshot payload was invalid or empty.");
 			}
@@ -1438,6 +1559,7 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				throw new CloudToolRefusal(`INSPECT_SURFACE_UNREADABLE: ${error.message}.`);
 			}
 
+			const hasMoreBelow = !args.fullPage && effectiveScrollY + dims.height < scrollHeight;
 			const answer: Record<string, JsonValue> = {
 				schema: STUDIO_INSPECT_SURFACE_SCHEMA,
 				ok: true,
@@ -1448,6 +1570,9 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				theme: args.theme,
 				viewport: args.viewport,
 				fullPage: args.fullPage,
+				scrollY: effectiveScrollY,
+				scrollHeight,
+				hasMoreBelow,
 				width: view.width,
 				height: view.height,
 				shownWidth: view.shownWidth,

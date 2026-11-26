@@ -3,16 +3,18 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync } from "node:zlib";
+import { deflateSync, gunzipSync } from "node:zlib";
 import type { CloudCodingCommandReceipt, JsonValue, StudioBinaryRef } from "@qorpera/contracts";
 import { parseSurfaceLayout, SURFACE_LAYOUT_SCHEMA } from "@qorpera/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { cloudActionEffect } from "../src/cloud-action-review.ts";
+import type { CloudCompanyFolderClient } from "../src/cloud-company-folder-client.ts";
 import {
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	CloudToolRefusal,
 } from "../src/cloud-native-tool-boundary.ts";
+import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "../src/cloud-runtime-observability.ts";
 import type { StudioChatGptVoiceMachine } from "../src/cloud-studio-voice-recorder.ts";
 import {
@@ -23,13 +25,18 @@ import {
 	STUDIO_STAGE_ARTIFACT_SCHEMA,
 	validateArtifactBytes,
 } from "../src/cloud-surface-artifact-tool.ts";
+import { prepareSurfaceCodingWorkspace } from "../src/cloud-surface-coding-tools.ts";
 import {
 	createInspectSurfaceTool,
 	renderStudioPreviewHtml,
 	STUDIO_INSPECT_SURFACE_SCHEMA,
 } from "../src/cloud-surface-inspect-tool.ts";
 import { createComposeSurfaceLayoutTool, STUDIO_COMPOSE_LAYOUT_SCHEMA } from "../src/cloud-surface-layout-tool.ts";
-import type { SurfacePatchToolPort } from "../src/cloud-surface-tools.ts";
+import {
+	createStageSurfacePatchTool,
+	createSurfacePatchSessionTracker,
+	type SurfacePatchToolPort,
+} from "../src/cloud-surface-tools.ts";
 
 function crc32(data: Buffer): number {
 	let crc = 0xffffffff;
@@ -101,7 +108,11 @@ function makeReceipt(commandId: string, inputSha256: string, output: string, exi
 	};
 }
 
-function makeShellMachine(cwd: string, env: NodeJS.ProcessEnv = process.env): StudioChatGptVoiceMachine {
+function makeShellMachine(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+	recordedCommands?: string[],
+): StudioChatGptVoiceMachine {
 	let seq = 0;
 	const receipts = new Map<string, CloudCodingCommandReceipt>();
 	const rawOutputs = new Map<string, string>();
@@ -160,6 +171,11 @@ function makeShellMachine(cwd: string, env: NodeJS.ProcessEnv = process.env): St
 				return undefined;
 			},
 			async start(_scope, request) {
+				const cmdBytes = Buffer.byteLength(request.command, "utf8");
+				if (cmdBytes > 16_384) {
+					throw new Error(`Command exceeded 16384-byte coding gateway limit (${cmdBytes} bytes)`);
+				}
+				recordedCommands?.push(request.command);
 				let stdout = "";
 				let exitCode = 0;
 				try {
@@ -205,6 +221,64 @@ function makeShellMachine(cwd: string, env: NodeJS.ProcessEnv = process.env): St
 			},
 		},
 	};
+}
+
+function writeFakeChromium(dir: string, scrollHeight = 2200): string {
+	const fakeChrome = join(dir, "fake-chromium.mjs");
+	writeFileSync(
+		fakeChrome,
+		[
+			"#!/usr/bin/env node",
+			'import http from "node:http";',
+			'import { createHash } from "node:crypto";',
+			`const PNG_B64 = ${JSON.stringify(VALID_PNG.toString("base64"))};`,
+			`const SCROLL_H = ${scrollHeight};`,
+			"const server = http.createServer((req, res) => {",
+			'  if (req.url === "/json/list") {',
+			"    const port = server.address().port;",
+			'    res.writeHead(200, { "Content-Type": "application/json" });',
+			'    res.end(JSON.stringify([{ type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:" + port + "/devtools/page/1" }]));',
+			"    return;",
+			"  }",
+			"  res.writeHead(404); res.end();",
+			"});",
+			'server.on("upgrade", (req, socket) => {',
+			'  const key = req.headers["sec-websocket-key"];',
+			'  const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");',
+			'  socket.write("HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n");',
+			"  let buf = Buffer.alloc(0);",
+			"  const sendFrame = (obj) => {",
+			'    const payload = Buffer.from(JSON.stringify(obj), "utf8");',
+			"    const header = payload.length < 126 ? Buffer.from([0x81, payload.length]) : Buffer.from([0x81, 126, payload.length >> 8, payload.length & 255]);",
+			"    socket.write(Buffer.concat([header, payload]));",
+			"  };",
+			'  socket.on("data", (chunk) => {',
+			"    buf = Buffer.concat([buf, chunk]);",
+			"    while (buf.length >= 2) {",
+			"      let len = buf[1] & 127, offset = 2;",
+			"      if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); offset = 4; }",
+			"      const masked = (buf[1] & 128) !== 0;",
+			"      if (buf.length < offset + (masked ? 4 : 0) + len) return;",
+			"      let payload = buf.subarray(offset + (masked ? 4 : 0), offset + (masked ? 4 : 0) + len);",
+			"      if (masked) { const mask = buf.subarray(offset, offset + 4); payload = Buffer.from(payload.map((b, i) => b ^ mask[i & 3])); }",
+			"      buf = buf.subarray(offset + (masked ? 4 : 0) + len);",
+			"      if ((chunk[0] & 0x0f) === 8) { socket.end(); return; }",
+			'      const msg = JSON.parse(payload.toString("utf8"));',
+			'      if (msg.method === "Page.navigate") { sendFrame({ id: msg.id, result: {} }); sendFrame({ method: "Page.loadEventFired", params: {} }); }',
+			'      else if (msg.method === "Runtime.evaluate") sendFrame({ id: msg.id, result: { result: { value: SCROLL_H } } });',
+			'      else if (msg.method === "Page.captureScreenshot") sendFrame({ id: msg.id, result: { data: PNG_B64 } });',
+			"      else sendFrame({ id: msg.id, result: {} });",
+			"    }",
+			"  });",
+			"});",
+			'server.listen(0, "127.0.0.1", () => {',
+			'  process.stderr.write("DevTools listening on ws://127.0.0.1:" + server.address().port + "/devtools/browser/1\\n");',
+			"});",
+			"setTimeout(() => process.exit(0), 15000);",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	return fakeChrome;
 }
 
 describe("Studio visual inspect & draw tools", () => {
@@ -297,7 +371,6 @@ describe("Studio visual inspect & draw tools", () => {
 
 			const stagedRefs: StudioBinaryRef[] = [];
 			const stagedOps: unknown[] = [];
-			const onStagedBinary = vi.fn();
 			const tool = createStageSurfaceArtifactTool({
 				sessionId: "44444444-4444-4444-8444-444444444444",
 				folderRoot: "surfaces/strategy",
@@ -323,7 +396,6 @@ describe("Studio visual inspect & draw tools", () => {
 						};
 					},
 				},
-				onStagedBinary,
 				pollMs: 10,
 			});
 
@@ -338,7 +410,6 @@ describe("Studio visual inspect & draw tools", () => {
 				expect(pngRes.image?.png.byteLength).toBeGreaterThan(0);
 			}
 			expect(stagedRefs).toHaveLength(1);
-			expect(onStagedBinary).toHaveBeenCalledTimes(1);
 
 			const svgRes = await tool.execute({ sourcePath: svgRel, destPath: "visuals/diagram.svg" }, CONTEXT);
 			expect(svgRes.kind).toBe("text");
@@ -358,62 +429,182 @@ describe("Studio visual inspect & draw tools", () => {
 		}
 	});
 
-	it("inspect_surface renders Studio preview HTML and captures PNG inline via CDP protocol", async () => {
+	it("compose_surface_layout refuses with LAYOUT_READ_FAILED when reading layout.json fails and never overwrites with starter", async () => {
+		let stagedCalls = 0;
+		const tool = createComposeSurfaceLayoutTool({
+			sessionId: "44444444-4444-4444-8444-444444444444",
+			starter: "strategy",
+			readCurrentLayoutText: async () => {
+				throw new Error("folder service temporarily unavailable");
+			},
+			surfacePatch: {
+				async stageSurfacePatch() {
+					stagedCalls += 1;
+					return { changeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", seq: 1, openChangeCount: 1 };
+				},
+			},
+		});
+		await expect(
+			tool.execute({ operations: [{ op: "rename_tab", tabId: "plan", title: "Plan" }] }, CONTEXT),
+		).rejects.toThrow("LAYOUT_READ_FAILED");
+		expect(stagedCalls).toBe(0);
+	});
+
+	it("shares follow-up change targeting and staged layout state across compose_surface_layout, stage_surface_artifact, and stage_surface_patch", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-tracker-test-"));
+		try {
+			writeFileSync(join(dir, "hero.png"), VALID_PNG);
+			const changeA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+			const changeB = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+			const calls: { readonly changeId?: string | null; readonly ops: readonly unknown[] }[] = [];
+			const surfacePatch: SurfacePatchToolPort = {
+				async stageSurfacePatch(_sid, req) {
+					calls.push({ changeId: req.changeId ?? null, ops: req.ops });
+					return {
+						changeId: req.changeId ?? "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+						seq: calls.length,
+						openChangeCount: 2,
+						updated: Boolean(req.changeId),
+					};
+				},
+			};
+			const openChanges = [
+				{
+					changeId: changeA,
+					seq: 1,
+					status: "open",
+					title: "First change",
+					summary: "First",
+					kind: "folder_patch",
+					actionKind: null,
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["layout.json"],
+					previewBaseChangeIds: [],
+					patchManifest: null,
+					baseFiles: null,
+				},
+				{
+					changeId: changeB,
+					seq: 2,
+					status: "open",
+					title: "Second change",
+					summary: "Second",
+					kind: "folder_patch",
+					actionKind: null,
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["charts/arr.json"],
+					previewBaseChangeIds: [],
+					patchManifest: null,
+					baseFiles: null,
+				},
+			];
+
+			const ambiguousTracker = createSurfacePatchSessionTracker({
+				openChanges,
+				replyChangeId: null,
+				folderRoot: "surfaces/strategy",
+			});
+			const ambiguousCompose = createComposeSurfaceLayoutTool({
+				sessionId: "44444444-4444-4444-8444-444444444444",
+				starter: "custom",
+				readCurrentLayoutText: async () => null,
+				surfacePatch,
+				patchTracker: ambiguousTracker,
+			});
+			const ambiguousArtifact = createStageSurfaceArtifactTool({
+				sessionId: "44444444-4444-4444-8444-444444444444",
+				folderRoot: "surfaces/strategy",
+				machine: makeShellMachine(dir),
+				stageBytes: async (bytes, mediaType) => {
+					const sha = createHash("sha256").update(bytes).digest("hex");
+					return { manifestSha256: sha, fileSha256: sha, bytes: bytes.byteLength, mediaType };
+				},
+				surfacePatch,
+				patchTracker: ambiguousTracker,
+				pollMs: 10,
+			});
+			expect(() =>
+				ambiguousCompose.parseArguments({ operations: [{ op: "rename_tab", tabId: "overview", title: "Home" }] }),
+			).toThrow(CloudToolArgumentRefusal);
+			expect(() =>
+				ambiguousArtifact.parseArguments({ sourcePath: "hero.png", destPath: "visuals/hero.png" }),
+			).toThrow(CloudToolArgumentRefusal);
+
+			const replyTracker = createSurfacePatchSessionTracker({
+				openChanges,
+				replyChangeId: changeA,
+				folderRoot: "surfaces/strategy",
+			});
+			const composeTool = createComposeSurfaceLayoutTool({
+				sessionId: "44444444-4444-4444-8444-444444444444",
+				starter: "custom",
+				readCurrentLayoutText: async () => null,
+				surfacePatch,
+				patchTracker: replyTracker,
+			});
+			const artifactTool = createStageSurfaceArtifactTool({
+				sessionId: "44444444-4444-4444-8444-444444444444",
+				folderRoot: "surfaces/strategy",
+				machine: makeShellMachine(dir),
+				stageBytes: async (bytes, mediaType) => {
+					const sha = createHash("sha256").update(bytes).digest("hex");
+					return { manifestSha256: sha, fileSha256: sha, bytes: bytes.byteLength, mediaType };
+				},
+				surfacePatch,
+				patchTracker: replyTracker,
+				pollMs: 10,
+			});
+			const patchTool = createStageSurfacePatchTool(
+				"44444444-4444-4444-8444-444444444444",
+				surfacePatch,
+				{
+					folderRoot: "surfaces/strategy",
+					waitingOps: [],
+					readLayout: async () => null,
+				},
+				{ openChanges, replyChangeId: changeA, deferSessionCompletion: true, tracker: replyTracker },
+			);
+
+			await composeTool.execute(
+				{
+					operations: [
+						{
+							op: "add_tab",
+							tab: {
+								id: "metrics",
+								title: "Metrics",
+								blocks: [{ type: "artifacts", heading: "Visuals" }],
+							},
+						},
+					],
+				},
+				CONTEXT,
+			);
+			expect(calls[0]?.changeId).toBe(changeA);
+
+			await artifactTool.execute({ sourcePath: "hero.png", destPath: "visuals/hero.png", createNew: true }, CONTEXT);
+			expect(calls[1]?.changeId).toBeNull();
+
+			const parsedPatch = patchTool.parseArguments({
+				title: "Merge layout",
+				summary: "Merge extra metadata into layout",
+				changeId: changeA,
+				ops: [{ op: "merge_json", path: "layout.json", patch: { schema: SURFACE_LAYOUT_SCHEMA } }],
+			});
+			await expect(patchTool.prepare?.(parsedPatch, CONTEXT)).resolves.toBeDefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("inspect_surface renders Studio preview HTML, bounds commands under 16KB even with 2MB PNGs, and reports scroll pagination", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "qorpera-inspect-test-"));
 		try {
-			const fakeChrome = join(dir, "fake-chromium.mjs");
-			writeFileSync(
-				fakeChrome,
-				[
-					"#!/usr/bin/env node",
-					'import http from "node:http";',
-					'import { createHash } from "node:crypto";',
-					`const PNG_B64 = ${JSON.stringify(VALID_PNG.toString("base64"))};`,
-					"const server = http.createServer((req, res) => {",
-					'  if (req.url === "/json/list") {',
-					"    const port = server.address().port;",
-					'    res.writeHead(200, { "Content-Type": "application/json" });',
-					'    res.end(JSON.stringify([{ type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:" + port + "/devtools/page/1" }]));',
-					"    return;",
-					"  }",
-					"  res.writeHead(404); res.end();",
-					"});",
-					'server.on("upgrade", (req, socket) => {',
-					'  const key = req.headers["sec-websocket-key"];',
-					'  const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");',
-					'  socket.write("HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n");',
-					"  let buf = Buffer.alloc(0);",
-					"  const sendFrame = (obj) => {",
-					'    const payload = Buffer.from(JSON.stringify(obj), "utf8");',
-					"    const header = payload.length < 126 ? Buffer.from([0x81, payload.length]) : Buffer.from([0x81, 126, payload.length >> 8, payload.length & 255]);",
-					"    socket.write(Buffer.concat([header, payload]));",
-					"  };",
-					'  socket.on("data", (chunk) => {',
-					"    buf = Buffer.concat([buf, chunk]);",
-					"    while (buf.length >= 2) {",
-					"      let len = buf[1] & 127, offset = 2;",
-					"      if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); offset = 4; }",
-					"      const masked = (buf[1] & 128) !== 0;",
-					"      if (buf.length < offset + (masked ? 4 : 0) + len) return;",
-					"      let payload = buf.subarray(offset + (masked ? 4 : 0), offset + (masked ? 4 : 0) + len);",
-					"      if (masked) { const mask = buf.subarray(offset, offset + 4); payload = Buffer.from(payload.map((b, i) => b ^ mask[i & 3])); }",
-					"      buf = buf.subarray(offset + (masked ? 4 : 0) + len);",
-					"      if ((chunk[0] & 0x0f) === 8) { socket.end(); return; }",
-					'      const msg = JSON.parse(payload.toString("utf8"));',
-					'      if (msg.method === "Page.navigate") { sendFrame({ id: msg.id, result: {} }); sendFrame({ method: "Page.loadEventFired", params: {} }); }',
-					'      else if (msg.method === "Runtime.evaluate") sendFrame({ id: msg.id, result: { result: { value: 920 } } });',
-					'      else if (msg.method === "Page.captureScreenshot") sendFrame({ id: msg.id, result: { data: PNG_B64 } });',
-					"      else sendFrame({ id: msg.id, result: {} });",
-					"    }",
-					"  });",
-					"});",
-					'server.listen(0, "127.0.0.1", () => {',
-					'  process.stderr.write("DevTools listening on ws://127.0.0.1:" + server.address().port + "/devtools/browser/1\\n");',
-					"});",
-					"setTimeout(() => process.exit(0), 15000);",
-				].join("\n"),
-				{ mode: 0o755 },
-			);
+			const fakeChrome = writeFakeChromium(dir, 2200);
+			const hugePng = Buffer.alloc(2 * 1024 * 1024, 0x42);
+			VALID_PNG.copy(hugePng, 0);
 
 			const snapshot = {
 				surfaceTitle: "Strategy",
@@ -428,6 +619,12 @@ describe("Studio visual inspect & draw tools", () => {
 								title: "Grand plan",
 								blocks: [
 									{ type: "chart", id: "mrr", from: "charts/mrr.json", heading: "MRR" },
+									{
+										type: "brand_mark",
+										from: "visuals/base-mark.png",
+										grounds: ["light"],
+										heading: "Base mark",
+									},
 									{ type: "artifacts", heading: "Visuals" },
 								],
 							},
@@ -444,6 +641,14 @@ describe("Studio visual inspect & draw tools", () => {
 				},
 				binaries: {
 					"surfaces/strategy/visuals/hero.png": { bytes: VALID_PNG, mediaType: "image/png" },
+					"surfaces/strategy/visuals/huge.png": { bytes: hugePng, mediaType: "image/png" },
+				},
+				knownBinaries: {
+					"surfaces/strategy/visuals/base-mark.png": {
+						bytes: 4096,
+						mediaType: "image/png",
+						inCompanyMount: true,
+					},
 				},
 			};
 
@@ -451,27 +656,211 @@ describe("Studio visual inspect & draw tools", () => {
 			expect(rendered.html).toContain('data-theme="dark"');
 			expect(rendered.html).toContain("<svg viewBox=");
 			expect(rendered.html).not.toContain("<script>");
+			expect(rendered.html).toContain("/company-asset/visuals/base-mark.png");
+			expect(rendered.html).toContain("2048 KB");
+			expect(rendered.warnings).toEqual([]);
 			expect(rendered.renderedBlocks.find((b) => b.type === "chart")?.filled).toBe(true);
+			expect(rendered.renderedBlocks.find((b) => b.type === "brand_mark")?.filled).toBe(true);
 
+			const commands: string[] = [];
 			const tool = createInspectSurfaceTool({
-				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }),
+				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }, commands),
 				loadSnapshot: async () => snapshot,
 				pollMs: 10,
 			});
 
-			const shot = await tool.execute({ tab: "plan", theme: "dark", viewport: "desktop", fullPage: true }, CONTEXT);
-			expect(shot.kind).toBe("json");
-			if (shot.kind === "json") {
-				const value = shot.value as Record<string, JsonValue>;
+			const firstShot = await tool.execute({ tab: "plan", theme: "dark", viewport: "desktop" }, CONTEXT);
+			expect(firstShot.kind).toBe("json");
+			if (firstShot.kind === "json") {
+				const value = firstShot.value as Record<string, JsonValue>;
 				expect(value.schema).toBe(STUDIO_INSPECT_SURFACE_SCHEMA);
 				expect(value.kind).toBe("surface_screenshot");
 				expect(value.tab).toBe("plan");
 				expect(value.theme).toBe("dark");
-				expect(shot.image?.sha256).toBe(value.imageSha256);
-				expect(shot.image?.png.byteLength).toBeGreaterThan(0);
+				expect(value.fullPage).toBe(false);
+				expect(value.scrollY).toBe(0);
+				expect(value.scrollHeight).toBe(2200);
+				expect(value.hasMoreBelow).toBe(true);
+				expect(firstShot.image?.sha256).toBe(value.imageSha256);
+				expect(firstShot.image?.png.byteLength).toBeGreaterThan(0);
+			}
+			expect(commands.length).toBeLessThanOrEqual(6);
+
+			const scrolledShot = await tool.execute({ tab: "plan", viewport: "desktop", scrollY: 1400 }, CONTEXT);
+			expect(scrolledShot.kind).toBe("json");
+			if (scrolledShot.kind === "json") {
+				const value = scrolledShot.value as Record<string, JsonValue>;
+				expect(value.scrollY).toBe(1400);
+				expect(value.hasMoreBelow).toBe(false);
+			}
+
+			const fullShot = await tool.execute({ tab: "plan", viewport: "desktop", fullPage: true }, CONTEXT);
+			expect(fullShot.kind).toBe("json");
+			if (fullShot.kind === "json") {
+				const value = fullShot.value as Record<string, JsonValue>;
+				expect(value.fullPage).toBe(true);
+				expect(value.scrollY).toBe(0);
 			}
 
 			await expect(tool.execute({ tab: "missing" }, CONTEXT)).rejects.toBeInstanceOf(CloudToolArgumentRefusal);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("prepareSurfaceCodingWorkspace merges Base, Preview overlay, and staged binaries while skipping option-group binaries and clearing text overwrites", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-prep-surface-"));
+		try {
+			const fakeChrome = writeFakeChromium(dir, 900);
+			writeFileSync(join(dir, "fresh.png"), VALID_PNG);
+			writeFileSync(join(dir, "alt.png"), VALID_PNG);
+
+			const baseMarkRef: StudioBinaryRef = {
+				manifestSha256: "1".repeat(64),
+				fileSha256: "2".repeat(64),
+				bytes: 2048,
+				mediaType: "image/png",
+			};
+			const baseFiles = new Map<string, string>([
+				[
+					"surfaces/strategy/layout.json",
+					JSON.stringify({
+						schema: SURFACE_LAYOUT_SCHEMA,
+						tabs: [
+							{
+								id: "plan",
+								title: "Plan",
+								blocks: [
+									{ type: "brand_mark", from: "visuals/base-mark.png", grounds: ["light"], heading: "Mark" },
+									{ type: "artifacts", heading: "Visuals" },
+								],
+							},
+						],
+					}),
+				],
+			]);
+			let failLayoutRead = false;
+			const folder = {
+				async list(parent: string | null) {
+					if (parent === "surfaces/strategy") {
+						return {
+							entries: [
+								{
+									path: "surfaces/strategy/layout.json",
+									kind: "file",
+									file: { bytes: baseFiles.get("surfaces/strategy/layout.json")!.length },
+								},
+								{ path: "surfaces/strategy/visuals", kind: "folder", file: null },
+							],
+						};
+					}
+					if (parent === "surfaces/strategy/visuals") {
+						return {
+							entries: [
+								{
+									path: "surfaces/strategy/visuals/base-mark.png",
+									kind: "file",
+									file: baseMarkRef,
+								},
+							],
+						};
+					}
+					return { entries: [] };
+				},
+				async readRange(entry: { readonly path: string }) {
+					const text = baseFiles.get(entry.path);
+					if (text !== undefined) return Buffer.from(text, "utf8");
+					return VALID_PNG;
+				},
+				async readText(path: string) {
+					if (failLayoutRead && path === "surfaces/strategy/layout.json") {
+						throw new Error("rpc timeout");
+					}
+					const text = baseFiles.get(path);
+					return text === undefined ? null : { text };
+				},
+			} as unknown as CloudCompanyFolderClient;
+
+			const recordedCommands: string[] = [];
+			const machine = makeShellMachine(
+				dir,
+				{ ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome },
+				recordedCommands,
+			);
+			const prepared = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "strategy",
+					surfaceTitle: "Strategy",
+					surfaceKind: "strategy",
+					briefMarkdown: null,
+					folderRoot: "surfaces/strategy",
+					sourceKind: "folder",
+					stageBytes: async (bytes, mediaType) => {
+						const sha = createHash("sha256").update(bytes).digest("hex");
+						return { manifestSha256: sha, fileSha256: sha, bytes: bytes.byteLength, mediaType };
+					},
+					stageSurfacePatch: async () => ({
+						changeId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+						seq: 1,
+						openChangeCount: 1,
+					}),
+				},
+				folder,
+				isClaudeTurn: false,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+
+			const tools = prepared.buildTools(
+				machine.identity,
+				machine.operations as unknown as CloudNativeToolOperations,
+				machine,
+			);
+			const byName = new Map(tools.map((t) => [t.name, t]));
+			const stageArtifact = byName.get("stage_surface_artifact")!;
+			const stagePatch = byName.get("stage_surface_patch")!;
+			const composeLayout = byName.get("compose_surface_layout")!;
+			const inspectSurface = byName.get("inspect_surface")!;
+
+			await stageArtifact.execute(
+				{ sourcePath: "alt.png", destPath: "visuals/option-only.png", optionGroup: "hero-dir" },
+				CONTEXT,
+			);
+			await stageArtifact.execute({ sourcePath: "fresh.png", destPath: "visuals/fresh.png" }, CONTEXT);
+
+			const parsedOverwrite = stagePatch.parseArguments({
+				title: "Replace with SVG",
+				summary: "Overwrite path with text",
+				ops: [{ op: "write_text", path: "visuals/fresh.png", content: "replaced" }],
+			});
+			await stagePatch.prepare?.(parsedOverwrite, CONTEXT);
+			await stagePatch.execute(parsedOverwrite, CONTEXT);
+
+			recordedCommands.length = 0;
+			const shot = await inspectSurface.execute({ tab: "plan" }, CONTEXT);
+			expect(shot.kind).toBe("json");
+			if (shot.kind === "json") {
+				const val = shot.value as Record<string, JsonValue>;
+				expect(val.warnings).toEqual([]);
+			}
+			const gzChunks = recordedCommands
+				.filter((cmd) => cmd.includes("index.html.gz.b64"))
+				.map((cmd) => {
+					const m = cmd.match(/printf '%s' '([^']+)' >> /);
+					return m?.[1] ?? "";
+				})
+				.join("");
+			const renderedHtml = gunzipSync(Buffer.from(gzChunks, "base64")).toString("utf8");
+			expect(renderedHtml).toContain("/company-asset/visuals/base-mark.png");
+			expect(renderedHtml).not.toContain("option-only.png");
+			expect(renderedHtml).not.toContain("data:image/png;base64,");
+
+			failLayoutRead = true;
+			await expect(
+				composeLayout.execute({ operations: [{ op: "rename_tab", tabId: "plan", title: "Renamed" }] }, CONTEXT),
+			).rejects.toThrow("LAYOUT_READ_FAILED");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

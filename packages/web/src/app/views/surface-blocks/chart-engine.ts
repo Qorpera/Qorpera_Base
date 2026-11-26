@@ -270,7 +270,7 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 				emphasis: { scale: 1.25 },
 				data: series.data.flatMap((entry, pointIndex) => {
 					if (entry === null) return [];
-					if (typeof entry === "number") return [[pointIndex, entry]];
+					if (typeof entry === "number") return [{ value: [pointIndex, entry] }];
 					const tuple = Array.isArray(entry.value) ? [...entry.value] : [pointIndex, entry.value];
 					const itemColor = entry.color ? resolveColor(entry.color, container, color) : undefined;
 					return [

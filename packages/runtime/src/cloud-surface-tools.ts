@@ -1570,17 +1570,28 @@ export async function checkStagedSurfaceLayout(
 	return "checked";
 }
 
-export interface StageSurfacePatchToolOptions extends SurfaceFollowUpChangeOptions {
-	readonly deferSessionCompletion?: boolean;
-	readonly allowMultipleDeliverables?: boolean;
+export interface SurfacePatchSessionTracker {
+	readonly openChanges: readonly SurfaceSessionOpenChange[];
+	readonly openById: ReadonlyMap<string, SurfaceSessionOpenChange>;
+	readonly currentOpsByChangeId: ReadonlyMap<string, readonly StudioPatchOp[]>;
+	readonly stagedEntries: readonly { readonly changeId: string | null; readonly ops: readonly StudioPatchOp[] }[];
+	resolveTargetChangeId(input: {
+		readonly explicitChangeId: string | null;
+		readonly createNew: boolean;
+		readonly optionGroup?: string | null;
+	}): string | null;
+	recordStaged(input: {
+		readonly targetChangeId: string | null;
+		readonly resultChangeId: string;
+		readonly ops: readonly StudioPatchOp[];
+		readonly replaceAll?: boolean;
+		readonly optionGroup?: string | null;
+	}): void;
 }
 
-export function createStageSurfacePatchTool(
-	sessionId: string,
-	port: SurfacePatchToolPort,
-	layout?: SurfaceLayoutStaging,
-	options: StageSurfacePatchToolOptions = {},
-): CloudNativeTool {
+export function createSurfacePatchSessionTracker(
+	options: SurfaceFollowUpChangeOptions & { readonly folderRoot?: string } = {},
+): SurfacePatchSessionTracker {
 	const openChanges = (options.openChanges ?? []).filter((item) => item.kind === "folder_patch");
 	const openById = new Map(openChanges.map((item) => [item.changeId, item]));
 	const replyChangeId = options.replyChangeId?.trim() || null;
@@ -1593,6 +1604,63 @@ export function createStageSurfacePatchTool(
 		}
 	}
 	const stagedEntries: Array<{ readonly changeId: string | null; readonly ops: readonly StudioPatchOp[] }> = [];
+	return {
+		openChanges,
+		openById,
+		currentOpsByChangeId,
+		stagedEntries,
+		resolveTargetChangeId(input) {
+			return resolveFollowUpTargetChangeId({
+				explicitChangeId: input.explicitChangeId,
+				createNew: input.createNew,
+				optionGroup: input.optionGroup ?? null,
+				openChanges,
+				replyChangeId,
+				updatedInTurn,
+				isInternalReconciliation,
+			});
+		},
+		recordStaged(input) {
+			const targetOpen = input.targetChangeId ? openById.get(input.targetChangeId) : undefined;
+			if (input.targetChangeId) {
+				updatedInTurn.add(input.targetChangeId);
+				const prevOps = input.replaceAll ? [] : (currentOpsByChangeId.get(input.targetChangeId) ?? []);
+				const nextOps = input.replaceAll
+					? input.ops
+					: mergeFolderPatchOps(options.folderRoot, prevOps, input.ops, targetOpen?.baseFiles ?? null);
+				currentOpsByChangeId.set(input.targetChangeId, nextOps);
+				if (input.replaceAll) {
+					for (let i = stagedEntries.length - 1; i >= 0; i -= 1) {
+						if (stagedEntries[i]?.changeId === input.targetChangeId) stagedEntries.splice(i, 1);
+					}
+				}
+			}
+			if (!input.optionGroup && !targetOpen?.optionGroupKey) {
+				stagedEntries.push({ changeId: input.resultChangeId, ops: input.ops });
+			}
+		},
+	};
+}
+
+export interface StageSurfacePatchToolOptions extends SurfaceFollowUpChangeOptions {
+	readonly deferSessionCompletion?: boolean;
+	readonly allowMultipleDeliverables?: boolean;
+	readonly tracker?: SurfacePatchSessionTracker;
+}
+
+export function createStageSurfacePatchTool(
+	sessionId: string,
+	port: SurfacePatchToolPort,
+	layout?: SurfaceLayoutStaging,
+	options: StageSurfacePatchToolOptions = {},
+): CloudNativeTool {
+	const tracker =
+		options.tracker ??
+		createSurfacePatchSessionTracker({
+			...options,
+			...(layout?.folderRoot ? { folderRoot: layout.folderRoot } : {}),
+		});
+	const { openChanges, openById, currentOpsByChangeId, stagedEntries } = tracker;
 	const schemaProperties: Record<string, JsonValue> = {
 		title: {
 			type: "string",
@@ -1734,14 +1802,10 @@ export function createStageSurfacePatchTool(
 			}
 			const createNew = parseBooleanArg(raw.createNew, "createNew", false);
 			const replaceAll = parseBooleanArg(raw.replaceAll, "replaceAll", false);
-			const targetChangeId = resolveFollowUpTargetChangeId({
+			const targetChangeId = tracker.resolveTargetChangeId({
 				explicitChangeId,
 				createNew,
 				optionGroup: groupArgs.optionGroup ?? null,
-				openChanges,
-				replyChangeId,
-				updatedInTurn,
-				isInternalReconciliation,
 			});
 			if (replaceAll && !targetChangeId) {
 				throw new CloudToolArgumentRefusal("replaceAll can only be used when updating an existing open change");
@@ -1820,23 +1884,13 @@ export function createStageSurfacePatchTool(
 			} catch (error) {
 				relayControlRefusal(error);
 			}
-			const targetOpen = parsed.changeId ? openById.get(parsed.changeId) : undefined;
-			if (parsed.changeId) {
-				updatedInTurn.add(parsed.changeId);
-				const prevOps = parsed.replaceAll ? [] : (currentOpsByChangeId.get(parsed.changeId) ?? []);
-				const nextOps = parsed.replaceAll
-					? parsed.ops
-					: mergeFolderPatchOps(layout?.folderRoot, prevOps, parsed.ops, targetOpen?.baseFiles ?? null);
-				currentOpsByChangeId.set(parsed.changeId, nextOps);
-				if (parsed.replaceAll) {
-					for (let i = stagedEntries.length - 1; i >= 0; i -= 1) {
-						if (stagedEntries[i]?.changeId === parsed.changeId) stagedEntries.splice(i, 1);
-					}
-				}
-			}
-			if (!parsed.optionGroup && !targetOpen?.optionGroupKey) {
-				stagedEntries.push({ changeId: result.changeId, ops: parsed.ops });
-			}
+			tracker.recordStaged({
+				targetChangeId: parsed.changeId ?? null,
+				resultChangeId: result.changeId,
+				ops: parsed.ops,
+				replaceAll: parsed.replaceAll === true,
+				optionGroup: parsed.optionGroup ?? null,
+			});
 			return {
 				kind: "text",
 				value: cloudToolJsonText({

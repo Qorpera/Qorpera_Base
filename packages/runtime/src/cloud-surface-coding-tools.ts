@@ -13,7 +13,7 @@ import { type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-too
 import { recordStudioChatGptVoiceClips, type StudioChatGptVoiceMachine } from "./cloud-studio-voice-recorder.ts";
 import { createStageSurfaceArtifactTool } from "./cloud-surface-artifact-tool.ts";
 import { createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
-import { createInspectSurfaceTool } from "./cloud-surface-inspect-tool.ts";
+import { createInspectSurfaceTool, type StudioInspectBinaryMeta } from "./cloud-surface-inspect-tool.ts";
 import { createComposeSurfaceLayoutTool } from "./cloud-surface-layout-tool.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import { createStudioPictureTool } from "./cloud-surface-picture-tool.ts";
@@ -37,6 +37,7 @@ import {
 import {
 	createStageSurfaceOpsActionTool,
 	createStageSurfacePatchTool,
+	createSurfacePatchSessionTracker,
 	type SurfaceLayoutStaging,
 	type SurfacePatchToolPort,
 } from "./cloud-surface-tools.ts";
@@ -310,9 +311,10 @@ export async function prepareSurfaceCodingWorkspace(options: {
 				for (const op of request.ops) {
 					const rel = normalizeStudioRelativePath(op.path, folderRoot);
 					if (!rel) continue;
-					if (op.op === "delete") {
+					if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
 						stagedBinaries.delete(rel);
 					} else if (op.op === "write_file") {
+						stagedText.delete(rel);
 						const cached = stagedBytesBySha.get(op.file.fileSha256);
 						if (cached) stagedBinaries.set(rel, cached);
 					}
@@ -406,6 +408,12 @@ export async function prepareSurfaceCodingWorkspace(options: {
 		turnBrief,
 		turnCorrection,
 		buildTools: (identity, operations, codingMachine) => {
+			const patchTracker = createSurfacePatchSessionTracker({
+				openChanges: sessionOpenChanges,
+				replyChangeId,
+				isInternalReconciliation,
+				folderRoot,
+			});
 			const stagePatchTool = createStageSurfacePatchTool(
 				surfaceSession.sessionId,
 				trackedSurfacePatch,
@@ -416,6 +424,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 					openChanges: sessionOpenChanges,
 					replyChangeId,
 					isInternalReconciliation,
+					tracker: patchTracker,
 				},
 			);
 			const voicePort = surfaceSession.narrateExplainer;
@@ -471,14 +480,27 @@ export async function prepareSurfaceCodingWorkspace(options: {
 							}),
 						]
 					: [];
+			const readCurrentLayoutTextStrict = async (reqSignal: AbortSignal): Promise<string | null> => {
+				if (stagedText.has(SURFACE_LAYOUT_PATH)) return stagedText.get(SURFACE_LAYOUT_PATH) ?? null;
+				if (!effectiveFolderReader) {
+					throw new Error("SURFACE_FOLDER_UNAVAILABLE");
+				}
+				return folderText(
+					effectiveFolderReader,
+					`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
+					MAX_STAGED_LAYOUT_READ_BYTES,
+					reqSignal,
+				);
+			};
 			const composeLayoutTool =
 				!isInternalReconciliation && view.page !== "report"
 					? [
 							createComposeSurfaceLayoutTool({
 								sessionId: surfaceSession.sessionId,
 								starter: view.page === "layout" ? view.starter : "custom",
-								readCurrentLayoutText: (reqSignal) => readStudioText(SURFACE_LAYOUT_PATH, reqSignal),
+								readCurrentLayoutText: readCurrentLayoutTextStrict,
 								surfacePatch: trackedSurfacePatch,
+								patchTracker,
 							}),
 						]
 					: [];
@@ -491,9 +513,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 								machine: codingMachine,
 								stageBytes: trackedStageBytes,
 								surfacePatch: trackedSurfacePatch,
-								onStagedBinary: (relPath, bytes, mediaType) => {
-									stagedBinaries.set(relPath, { bytes, mediaType });
-								},
+								patchTracker,
 							}),
 						]
 					: [];
@@ -504,6 +524,14 @@ export async function prepareSurfaceCodingWorkspace(options: {
 								machine: codingMachine,
 								loadSnapshot: async (reqSignal) => {
 									const files: Record<string, string> = { ...(contents?.files ?? {}) };
+									const knownBinaries: Record<string, StudioInspectBinaryMeta> = {};
+									for (const [fullPath, ref] of Object.entries(contents?.binaries ?? {})) {
+										knownBinaries[fullPath] = {
+											bytes: ref.bytes,
+											mediaType: ref.mediaType,
+											inCompanyMount: true,
+										};
+									}
 									if (turnReadOverlay) {
 										const overlayCandidates = new Set<string>([
 											`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
@@ -520,19 +548,67 @@ export async function prepareSurfaceCodingWorkspace(options: {
 										}
 										for (const candidate of overlayCandidates) {
 											const looked = await turnReadOverlay.lookup(candidate, reqSignal);
-											if (looked?.kind === "file") files[candidate] = looked.content;
-											else if (looked?.kind === "deleted") delete files[candidate];
+											if (looked?.kind === "file") {
+												files[candidate] = looked.content;
+												delete knownBinaries[candidate];
+											} else if (looked?.kind === "deleted") {
+												delete files[candidate];
+												delete knownBinaries[candidate];
+											}
+										}
+									}
+									for (const change of previewBaseChanges) {
+										for (const op of change.patchManifest ?? []) {
+											const rel = normalizeStudioRelativePath(op.path, folderRoot);
+											if (!rel) continue;
+											const full = `${folderRoot}/${rel}`;
+											if (op.op === "write_file") {
+												delete files[full];
+												knownBinaries[full] = {
+													bytes: op.file.bytes,
+													mediaType: op.file.mediaType,
+													inCompanyMount: false,
+												};
+											} else if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
+												delete knownBinaries[full];
+											}
+										}
+									}
+									for (const change of sessionOpenChanges) {
+										if (change.optionGroupKey && change.changeId !== replyChangeId) continue;
+										for (const op of change.patchManifest ?? []) {
+											const rel = normalizeStudioRelativePath(op.path, folderRoot);
+											if (!rel) continue;
+											const full = `${folderRoot}/${rel}`;
+											if (op.op === "write_file") {
+												delete files[full];
+												knownBinaries[full] = {
+													bytes: op.file.bytes,
+													mediaType: op.file.mediaType,
+													inCompanyMount: false,
+												};
+											} else if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
+												delete knownBinaries[full];
+											}
 										}
 									}
 									for (const [rel, val] of stagedText) {
 										const full = `${folderRoot}/${rel}`;
+										delete knownBinaries[full];
 										if (val === null) delete files[full];
 										else files[full] = val;
 									}
 									const binaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> =
 										{};
 									for (const [rel, entry] of stagedBinaries) {
-										binaries[`${folderRoot}/${rel}`] = entry;
+										const full = `${folderRoot}/${rel}`;
+										delete files[full];
+										binaries[full] = entry;
+										knownBinaries[full] = {
+											bytes: entry.bytes.byteLength,
+											mediaType: entry.mediaType,
+											inCompanyMount: false,
+										};
 									}
 									return {
 										surfaceTitle: surfaceSession.surfaceTitle,
@@ -540,6 +616,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 										starter: view.page === "layout" ? view.starter : "custom",
 										files,
 										binaries,
+										knownBinaries,
 									};
 								},
 							}),
