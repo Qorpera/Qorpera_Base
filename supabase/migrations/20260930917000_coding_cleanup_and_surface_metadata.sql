@@ -311,7 +311,7 @@ begin
 			where c.environment_id = v_repo.environment_id
 				and c.owner = v_repo.owner
 				and c.name = v_repo.name
-				and c.kind <> 'lost'
+				and c.state <> 'lost'
 				and (c.main_after = v_row.live_head_sha or c.main_before = v_row.live_head_sha)
 		) then
 			continue;

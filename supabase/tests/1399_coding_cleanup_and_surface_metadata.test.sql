@@ -321,6 +321,10 @@ begin
 	update public.qorpera_company_sites set title = 'Preview 12345678' where id = v_site_id;
 	update public.qorpera_company_site_versions set title = 'Preview 12345678' where id = v_version_fallback;
 	update public.qorpera_surfaces set live_head_sha = v_sha_backfill, updated_at = clock_timestamp() + interval '5 minutes' where id = v_surface;
+	insert into public.qorpera_code_changes(
+		environment_id, profile_id, owner, name, n, kind, state, main_before, main_after, title
+	)
+	values (v_env, v_profile, 'surfaces', 'website', 99, 'found', 'lost', v_sha_undone, v_sha_backfill, 'Lost history');
 
 	perform pg_temp.ccsm_as(v_anna);
 	set local role authenticated;
@@ -371,7 +375,7 @@ begin
 		if exists (
 			select 1 from public.qorpera_code_changes c
 			where c.environment_id = v_repo.environment_id and c.owner = v_repo.owner and c.name = v_repo.name
-				and c.kind <> 'lost'
+				and c.state <> 'lost'
 				and (c.main_after = v_row.live_head_sha or c.main_before = v_row.live_head_sha)
 		) then
 			continue;
