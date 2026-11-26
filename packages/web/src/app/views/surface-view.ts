@@ -657,6 +657,9 @@ export class SurfaceView {
 		this.#wireActive(this.#active.signal);
 		this.#attachObservers();
 		this.#contentReady = true;
+		this.#primaryDoor.resetRetryState();
+		for (const entry of this.#compareDoors.values()) entry.stage.resetRetryState();
+		this.#framesShown = "";
 		void this.#host.store.openSurface(this.slug);
 		this.update();
 	}

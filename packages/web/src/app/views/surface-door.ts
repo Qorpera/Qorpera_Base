@@ -183,9 +183,7 @@ export class SurfaceDoorStage {
 		this.#retryBtn.addEventListener(
 			"click",
 			() => {
-				this.#failedPreviewKey = undefined;
-				this.#retriedPreviewId = undefined;
-				this.#requestedPassKey = undefined;
+				this.resetRetryState();
 				this.#options.onRetry?.();
 			},
 			{ signal: this.#lifetime.signal },
@@ -244,16 +242,26 @@ export class SurfaceDoorStage {
 				this.#restPill();
 				return;
 			}
+			const staging = this.#staging;
 			if (
-				this.#staging &&
-				this.#staging.previewId === previewId &&
-				this.#staging.path === path &&
-				(!frame.doorActionUrl || this.#staging.action === frame.doorActionUrl)
+				staging &&
+				staging.previewId === previewId &&
+				staging.path === path &&
+				(!frame.doorActionUrl || staging.action === frame.doorActionUrl)
 			) {
-				this.#staging.iframe.title = title;
-				this.#restPill();
-				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
-				return;
+				const freshPassForUnsent =
+					!staging.sent &&
+					Boolean(frame.doorActionUrl) &&
+					frame.memberPass !== null &&
+					frame.memberPass !== "" &&
+					frame.memberPass !== staging.pass &&
+					(!previewId || !this.#options.isPassUsable || this.#options.isPassUsable(previewId, frame.memberPass));
+				if (!freshPassForUnsent) {
+					staging.iframe.title = title;
+					this.#restPill();
+					if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
+					return;
+				}
 			}
 			if (!frame.doorActionUrl || !frame.memberPass) {
 				this.#dropStaging();
@@ -395,15 +403,19 @@ export class SurfaceDoorStage {
 		this.#postIdentityTokens();
 	}
 
+	resetRetryState(): void {
+		this.#retriedPreviewId = undefined;
+		this.#failedPreviewKey = undefined;
+		this.#requestedPassKey = undefined;
+	}
+
 	clear(): void {
 		this.#mark = null;
 		if (this.#inspectorActive) {
 			this.#postInspectorMode(false);
 			this.#inspectorActive = false;
 		}
-		this.#retriedPreviewId = undefined;
-		this.#failedPreviewKey = undefined;
-		this.#requestedPassKey = undefined;
+		this.resetRetryState();
 		this.#dropStaging();
 		this.#dropActive();
 		this.#retryBtn.hidden = true;
