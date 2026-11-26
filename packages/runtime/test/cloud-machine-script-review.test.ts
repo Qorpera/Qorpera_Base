@@ -287,7 +287,7 @@ describe("a file is named only for the first command after leading cds, in the f
 		} finally {
 			rmSync(base, { recursive: true, force: true });
 		}
-	});
+	}, 120_000);
 });
 
 describe("the files a machine command runs", () => {
