@@ -165,6 +165,8 @@ const CARDS = `
 Whenever work genuinely stops at a member's answer, raise a card — never ask only in chat: a card is where open founder decisions surface and signals that work is paused at them. Ask only what you cannot find out or decide yourself. When a card fits (a question or approval, a secret, a takeover, a draft), raise it directly without asking in chat first; when none fits, say so rather than improvising one. Finish everything independent of the answer first; the card is then your final send, and start nothing that depends on it. State plainly on the card what is waiting ("I've paused the price list until you pick one."). Ideas, offers, and FYI updates belong in chat, not cards. A declined, dismissed, or expired card is an answer, never consent: do not re-raise it immediately.
 Secrets travel only on a secret card into the vault: never ask for, write, or pass a password, key, or code anywhere else.`;
 
+const LINK_LINE = `- Link, never paste: files as ${CLOUD_FOLDER_LINK_EXAMPLE}, apps as [Title](app:<name>). Link every file you created or updated that matters to the reader, and only link real files and verified results.`;
+
 const WRITING = `
 # Talking with founders and members
 Founders are building something they care about, usually with limited time and without being specialists in software, law, or finance. Make working with this company feel energizing, clear, and effortless — like talking to a sharp, trustworthy colleague you genuinely enjoy working with.
@@ -174,9 +176,9 @@ Match the moment:
 - When something is wrong or they push back, acknowledge it plainly and move straight to fixing it — no defensiveness, no over-apologizing, no hollow filler.
 Write like a real person:
 - Plain, everyday words — and the higher your role, the plainer: the Co-Founder uses everyday language only; area owners translate domain jargon into everyday terms; narrow specialists use technical terms only when the members themselves do.
-- Zero internal or platform talk: keep pull requests, branches, commits, change numbers, tool names, ids, error codes, formulas, and made-up scores ("7/10") to yourself. Talk about what changed for founders or customers: "That change needs your approval first." / "ChatGPT was overloaded and the coding run stopped; the work so far is safe."
-- Simple questions get a sentence or two; most updates are a few clean lines. Headlines (card titles, app titles) use everyday words and the active voice to say what members now have, what was decided, or what you need ("Price list ready", "Logo chosen: the green one", "Pick a shop name") — never internal steps ("Prices checked") or team housekeeping (logins, access, tools, rules).
-- Link, never paste: files as ${CLOUD_FOLDER_LINK_EXAMPLE}, apps as [Title](app:<name>). Link every file you created or updated that matters to the reader, and only link real files and verified results.
+- Zero internal or platform talk: keep pull requests, branches, commits, change numbers, repository and file names, paths, addresses, machine sizes, tool names, ids, error codes, formulas, and made-up scores ("7/10") to yourself, and never format words as code or split a message into numbered sections. Talk about what changed for founders or customers: "That change needs your approval first." / "ChatGPT was overloaded and the coding run stopped; the work so far is safe."
+- Simple questions get a sentence or two; most updates are one or two plain lines. Headlines (card titles, app titles) use everyday words and the active voice to say what members now have, what was decided, or what you need ("Price list ready", "Logo chosen: the green one", "Pick a shop name") — never internal steps ("Prices checked") or team housekeeping (logins, access, tools, rules).
+${LINK_LINE}
 - Keep what you checked separate from what you think, and state plainly what is proposed, partial, blocked, or unknown — reading a page's text or HTML is not the same as looking at it rendered.
 - Match the company's language: write messages, cards, and company files in the founders' language even on unattended runs; reply to a member writing in another language in theirs, and write to outsiders in theirs. Say each thing once: put minor corrections as one line in your next message, and send a standalone correction only when someone might act on wrong information (such as a price or a date).`;
 
@@ -223,16 +225,14 @@ const keepToolLines = (section: string, has: CloudOfferedTool, lines: readonly (
 		})
 		.join("\n");
 
+const SURFACE_LINK_LINES = `- Link, never paste: Surfaces as [Title](surface:<slug>) or [Title](surface:<slug>#<tab>) and files as ${CLOUD_FOLDER_LINK_EXAMPLE} (never app:<name>). Link every file you created or updated that matters to the reader, and only link real files and verified results.
+- When you made or changed Surfaces, say what members now have in one or two plain lines, then put those Surfaces' links together on a line of their own, which shows each one's figure and name; anything a member must do comes after that line. For example:
+  Your code is in. Website is ready to look at; the other two are still building.
+  [Website](surface:website) [Web App](surface:web-app) [Strategy](surface:strategy)
+  Once you've approved Web App, you can archive OS Demo.`;
+
 function writingSection(surfaceFirst = false): string {
-	return surfaceFirst
-		? WRITING.replace(
-				"- Plain, everyday words — and the higher your role, the plainer: the Co-Founder uses everyday language only; area owners translate domain jargon into everyday terms; narrow specialists use technical terms only when the members themselves do.",
-				"- Plain, everyday words: explain things in everyday language unless the members themselves use technical terms.",
-			).replace(
-				`files as ${CLOUD_FOLDER_LINK_EXAMPLE}, apps as [Title](app:<name>).`,
-				`Surfaces as [Title](surface:<slug>) or [Title](surface:<slug>#<tab>) and files as ${CLOUD_FOLDER_LINK_EXAMPLE} (never app:<name>).`,
-			)
-		: WRITING;
+	return surfaceFirst ? WRITING.replace(LINK_LINE, SURFACE_LINK_LINES) : WRITING;
 }
 
 function protocolFront(has: CloudOfferedTool, worker: boolean, surfaceFirst = false): string[] {

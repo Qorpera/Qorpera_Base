@@ -482,6 +482,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Visual inspection, charts and drawing in Studio",
 		text: "Studio interface sessions now have native visual drawing and sight tools: interactive chart blocks (line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap), validated tab and block layout composition, direct Preview staging for PNG, SVG, HTML, PDF, GLB, and audio artifacts built on the coding machine, and headless browser visual page inspection across desktop, mobile, light, and dark themes before finishing.",
 	},
+	{
+		id: "surface-posts-in-two-lines",
+		kind: "behaviour",
+		date: "2026-11-26",
+		title: "Posts about interfaces: two lines and their figures",
+		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository and file names, paths, addresses, machine sizes, code formatting and numbered sections.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
