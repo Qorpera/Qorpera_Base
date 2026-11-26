@@ -2236,7 +2236,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			store.turnHolder(session)?.userId ?? "",
 		]),
 	]);
-	if (workingKey !== hub.workingKey) {
+	if (workingKey !== hub.workingKey || hub.workingList.querySelector("[data-motion-unavailable]")) {
 		hub.workingKey = workingKey;
 		const workingRows: HTMLElement[] = [
 			...input.workingStaff.map((agent) => {
@@ -2351,7 +2351,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		]),
 		input.scheduledStaff.map((agent) => [agent.id, agent.displayName, companyState.agentNotes?.[agent.id]?.next]),
 	]);
-	if (scheduledKey !== hub.scheduledKey) {
+	if (scheduledKey !== hub.scheduledKey || hub.scheduledList.querySelector("[data-motion-unavailable]")) {
 		hub.scheduledKey = scheduledKey;
 		const scheduledRows: HTMLElement[] = [
 			...automations.map((automation) => {
@@ -2474,7 +2474,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	hub.idleTitle.textContent = t("Ready");
 	hub.idleWrap.hidden = !hasIdle;
 	const idleKey = JSON.stringify([locale, input.idleStaff.map((agent) => [agent.id, agent.displayName, agent.role])]);
-	if (idleKey !== hub.idleKey) {
+	if (idleKey !== hub.idleKey || hub.idleList.querySelector("[data-motion-unavailable]")) {
 		hub.idleKey = idleKey;
 		const idleRows = input.idleStaff.map((agent) =>
 			h(

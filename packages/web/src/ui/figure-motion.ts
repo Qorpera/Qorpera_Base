@@ -879,6 +879,8 @@ function paint(entry: LiveMotion): void {
 	const frameStr = String(sample);
 	if (canvas.dataset.frame !== frameStr) canvas.dataset.frame = frameStr;
 	if (entry.painted === key) return;
+	const asset = touchSurface(entry.id + entry.shown);
+	if (!asset) return;
 	entry.painted = key;
 	const ctx = canvas.getContext("2d")!;
 	if (canvas.width !== side) {
@@ -888,8 +890,6 @@ function paint(entry: LiveMotion): void {
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, side, side);
 	ctx.scale(side / 100, side / 100);
-	const asset = touchSurface(entry.id + entry.shown);
-	if (!asset) return;
 	strokes(ctx, p.strokes, false, entry.side);
 	// A figure that has become a symbol is drawn as the symbol, in its own colour.
 	if (symbol) drawSymbol(ctx, symbol, entry.shown);
@@ -1088,7 +1088,8 @@ function recolor(entry: LiveMotion): void {
 		if (!live.has(entry)) return;
 		entry.ready = true;
 		entry.painted = "";
-		if (entry.visible) paint(entry);
+		paint(entry);
+		if (!entry.visible) entry.painted = "";
 		schedule();
 		recolor(entry);
 	});
@@ -1334,7 +1335,7 @@ export function mountFigureMotion(
 		sizes = new ResizeObserver((records) => {
 			for (const record of records) {
 				const item = byHost.get(record.target);
-				if (!item) continue;
+				if (!item || record.contentRect.width <= 0) continue;
 				item.side = record.contentRect.width * 1.12;
 				// Also before the first visibility report: a figure drawn at once is redrawn at its own size
 				// before the browser shows it (this observer reports before the paint, that one after).
@@ -1356,7 +1357,8 @@ export function mountFigureMotion(
 			};
 		}
 		entry.ready = true;
-		if (entry.visible) paint(entry);
+		paint(entry);
+		if (!entry.visible) entry.painted = "";
 		schedule();
 		// The theme may have changed while the artwork loaded.
 		recolor(entry);
@@ -1370,9 +1372,6 @@ export function mountFigureMotion(
 		// only once the observer says it is in view.
 		entry.shown = shown;
 		begin();
-		paint(entry);
-		// Drawn again in full once in view, as every figure is.
-		entry.painted = "";
 	} else {
 		// Until the motion's code and the artwork in this colour are both here the figure's place stays empty, and
 		// the figure then fades in.

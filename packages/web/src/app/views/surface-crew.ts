@@ -92,7 +92,7 @@ export class CrewFigures {
 			turn?.name ?? "",
 		]);
 		let stand = this.#used.get(key) ?? this.#kept.get(key);
-		if (stand?.querySelector("[data-figure-disposed]")) stand = undefined;
+		if (stand?.querySelector("[data-figure-disposed], [data-motion-unavailable]")) stand = undefined;
 		if (!stand) {
 			const figure = figureElement(crew.figure, crew.color, {
 				size,
@@ -141,7 +141,7 @@ export class CrewFigures {
 			className,
 		]);
 		let stand = this.#used.get(key) ?? this.#kept.get(key);
-		if (stand?.querySelector("[data-figure-disposed]")) stand = undefined;
+		if (stand?.querySelector("[data-figure-disposed], [data-motion-unavailable]")) stand = undefined;
 		if (!stand) {
 			const figure = figureElement(crew.figure, crew.color, {
 				size,
@@ -171,7 +171,7 @@ export class CrewFigures {
 		const crew = sessionCrew(id);
 		const key = JSON.stringify(["scheduled", id, enabled, size]);
 		let stand = this.#used.get(key) ?? this.#kept.get(key);
-		if (stand?.querySelector("[data-figure-disposed]")) stand = undefined;
+		if (stand?.querySelector("[data-figure-disposed], [data-motion-unavailable]")) stand = undefined;
 		if (!stand) {
 			const figure = figureElement(crew.figure, crew.color, {
 				size,
