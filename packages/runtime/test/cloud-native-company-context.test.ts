@@ -1785,7 +1785,7 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 		"or click Go back in What's new",
 		"For git history, run git log, show, and diff in /company/code/<owner>/<name>/main on a machine",
 		"to hand over a whole repository as one file, write a git archive or git bundle into /company.",
-		"keep pull requests, branches, commits, change numbers, repository and file names, paths, addresses, machine sizes, tool names, ids, error codes, formulas, and made-up scores",
+		"keep pull requests, branches, commits, change numbers, repository names, file paths written out in the text, server and IP addresses, machine sizes, tool names, ids, error codes, formulas, and made-up scores",
 	])
 		expect(instructions).toContain(rule);
 	const worker = cloudCompanyRuntimeInstructions(

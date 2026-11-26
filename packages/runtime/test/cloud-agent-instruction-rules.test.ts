@@ -1781,7 +1781,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"10",
 		"pull requests are yours",
-		"keep pull requests, branches, commits, change numbers, repository and file names, paths, addresses, machine sizes, tool names, ids, error codes, formulas, and made-up scores",
+		"keep pull requests, branches, commits, change numbers, repository names, file paths written out in the text, server and IP addresses, machine sizes, tool names, ids, error codes, formulas, and made-up scores",
 		STAFF,
 	],
 	[

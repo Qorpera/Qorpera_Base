@@ -487,7 +487,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-26",
 		title: "Posts about interfaces: two lines and their figures",
-		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository and file names, paths, addresses, machine sizes, code formatting and numbered sections.",
+		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository names, file paths written out in the text, server and IP addresses, machine sizes, code formatting and numbered sections.",
 	},
 ]);
 
