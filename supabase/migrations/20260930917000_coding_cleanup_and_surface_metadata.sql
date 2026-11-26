@@ -286,7 +286,7 @@ declare
 begin
 	for v_row in
 		select distinct on (r.environment_id, r.owner, r.name)
-			r.environment_id, r.owner, r.name, surf.live_head_sha, surf.updated_at as surface_updated_at
+			r.environment_id, r.owner, r.name, surf.live_head_sha
 		from public.qorpera_surfaces surf
 		join public.qorpera_company_cofounders cof on cof.profile_id = surf.profile_id
 		join public.qorpera_code_repositories r
@@ -311,7 +311,8 @@ begin
 			where c.environment_id = v_repo.environment_id
 				and c.owner = v_repo.owner
 				and c.name = v_repo.name
-				and c.created_at >= v_row.surface_updated_at
+				and c.kind <> 'lost'
+				and (c.main_after = v_row.live_head_sha or c.main_before = v_row.live_head_sha)
 		) then
 			continue;
 		end if;

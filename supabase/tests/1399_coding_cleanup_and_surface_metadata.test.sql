@@ -332,7 +332,9 @@ begin
 	update public.qorpera_surfaces set live_head_sha = v_sha_init, updated_at = clock_timestamp() - interval '10 minutes' where id = v_surface_ahead;
 	perform public.qorpera_code_change_found(v_env, 'surfaces', 'ahead-app', v_sha_init, v_sha_ahead);
 	update public.qorpera_code_repositories set main_sha = v_sha_ahead where environment_id = v_env and owner = 'surfaces' and name = 'ahead-app';
+	update public.qorpera_surfaces set title = 'Ahead App Renamed', updated_at = clock_timestamp() + interval '5 minutes' where id = v_surface_ahead;
 
+	-- WHY: Migrations run before tests, so this block mirrors lines 266-333 of 20260930917000_coding_cleanup_and_surface_metadata.sql.
 	update public.qorpera_company_sites site
 	set title = surf.title, updated_at = clock_timestamp()
 	from public.qorpera_surfaces surf
@@ -349,7 +351,7 @@ begin
 
 	for v_row in
 		select distinct on (r.environment_id, r.owner, r.name)
-			r.environment_id, r.owner, r.name, surf.live_head_sha, surf.updated_at as surface_updated_at
+			r.environment_id, r.owner, r.name, surf.live_head_sha
 		from public.qorpera_surfaces surf
 		join public.qorpera_company_cofounders cof on cof.profile_id = surf.profile_id
 		join public.qorpera_code_repositories r
@@ -369,7 +371,8 @@ begin
 		if exists (
 			select 1 from public.qorpera_code_changes c
 			where c.environment_id = v_repo.environment_id and c.owner = v_repo.owner and c.name = v_repo.name
-				and c.created_at >= v_row.surface_updated_at
+				and c.kind <> 'lost'
+				and (c.main_after = v_row.live_head_sha or c.main_before = v_row.live_head_sha)
 		) then
 			continue;
 		end if;
