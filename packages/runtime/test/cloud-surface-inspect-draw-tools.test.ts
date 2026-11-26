@@ -1588,6 +1588,140 @@ describe("Studio visual inspect & draw tools", () => {
 			};
 			expect(followUpPrepared).toBeDefined();
 			expect(followUpPrepared.layoutUnchecked).toBeUndefined();
+
+			const siblingId = "78787878-7878-4787-8787-787878787878";
+			const nonOptReplaceId = "89898989-8989-4898-8898-898989898989";
+			const baseSpecs = JSON.stringify({
+				overview: { tagline: "BASE_TAGLINE", weight: "42 g" },
+			});
+			const siblingFolder = {
+				async list(parent: string | null) {
+					if (parent === "surfaces/thetabands") {
+						return {
+							entries: [
+								{ path: "surfaces/thetabands/specs.json", kind: "file", file: { bytes: baseSpecs.length } },
+							],
+						};
+					}
+					return { entries: [] };
+				},
+				async readRange(entry: { readonly path: string }) {
+					if (entry.path === "surfaces/thetabands/specs.json") return Buffer.from(baseSpecs, "utf8");
+					return altPng;
+				},
+				async readText(path: string) {
+					return path === "surfaces/thetabands/specs.json" ? { text: baseSpecs } : null;
+				},
+			} as unknown as CloudCompanyFolderClient;
+			const siblingCommands: string[] = [];
+			const siblingMachine = makeShellMachine(
+				dir,
+				{ ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome },
+				siblingCommands,
+			);
+			const siblingPrepared = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "thetabands",
+					surfaceTitle: "ThetaBands",
+					surfaceKind: "product",
+					surfaceIcon: "product",
+					surfaceIsGlobal: false,
+					briefMarkdown: null,
+					folderRoot: "surfaces/thetabands",
+					sourceKind: "folder",
+					openLayoutOps: [],
+					sessionOpenChanges: [
+						{
+							changeId: siblingId,
+							seq: 1,
+							status: "open",
+							title: "Sibling merge change",
+							summary: "Merges tagline",
+							kind: "folder_patch",
+							actionKind: null,
+							parentSha: null,
+							headSha: null,
+							affectedPaths: ["specs.json"],
+							previewBaseChangeIds: [],
+							patchManifest: [
+								{
+									op: "merge_json",
+									path: "specs.json",
+									patch: { overview: { tagline: "SIBLING_MERGED_TAGLINE" } },
+								},
+							],
+							baseFiles: null,
+						},
+						{
+							changeId: nonOptReplaceId,
+							seq: 2,
+							status: "open",
+							title: "Non-option change",
+							summary: "Will be replaced",
+							kind: "folder_patch",
+							actionKind: null,
+							parentSha: null,
+							headSha: null,
+							affectedPaths: ["specs.json"],
+							previewBaseChangeIds: [],
+							patchManifest: [
+								{
+									op: "write_text",
+									path: "specs.json",
+									content: JSON.stringify({ overview: { tagline: "NON_OPT_OLD_TAGLINE" } }),
+								},
+							],
+							baseFiles: null,
+						},
+					],
+					stageSurfacePatch: async (_sid, req) => ({
+						changeId: req.changeId ?? nonOptReplaceId,
+						seq: 3,
+						openChangeCount: 2,
+						updated: Boolean(req.changeId),
+					}),
+				},
+				folder: siblingFolder,
+				isClaudeTurn: false,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+			const siblingTools = new Map(
+				siblingPrepared
+					.buildTools(
+						siblingMachine.identity,
+						siblingMachine.operations as unknown as CloudNativeToolOperations,
+						siblingMachine,
+					)
+					.map((t) => [t.name, t]),
+			);
+			const siblingStagePatch = siblingTools.get("stage_surface_patch")!;
+			const siblingInspect = siblingTools.get("inspect_surface")!;
+			const replaceNonOpt = siblingStagePatch.parseArguments({
+				title: "Non-option change",
+				summary: "Replaced with 3D object only",
+				changeId: nonOptReplaceId,
+				replaceAll: true,
+				ops: [{ op: "write_text", path: "object.json", content: JSON.stringify({ kind: "headband" }) }],
+			});
+			await siblingStagePatch.prepare?.(replaceNonOpt, CONTEXT);
+			await siblingStagePatch.execute(replaceNonOpt, CONTEXT);
+			siblingCommands.length = 0;
+			await siblingInspect.execute({ tab: "overview", changeId: nonOptReplaceId }, CONTEXT);
+			const siblingHtml = gunzipSync(
+				Buffer.from(
+					siblingCommands
+						.filter((cmd) => cmd.includes("index.html.gz.b64"))
+						.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+						.join(""),
+					"base64",
+				),
+			).toString("utf8");
+			expect(siblingHtml).toContain("SIBLING_MERGED_TAGLINE");
+			expect(siblingHtml).toContain("42 g");
+			expect(siblingHtml).not.toContain("NON_OPT_OLD_TAGLINE");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

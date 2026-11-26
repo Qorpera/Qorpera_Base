@@ -260,6 +260,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			contents = null;
 		}
 	}
+	const baseContentsFiles: Readonly<Record<string, string>> = contents ? { ...contents.files } : {};
 	if (contents && turnReadOverlay) {
 		const layoutPath = `${folderRoot}/${SURFACE_LAYOUT_PATH}`;
 		const overlaidLayout = await turnReadOverlay.lookup(layoutPath, signal);
@@ -574,7 +575,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 							createInspectSurfaceTool({
 								machine: codingMachine,
 								loadSnapshot: async (reqSignal, inspectOptions) => {
-									const files: Record<string, string> = { ...(contents?.files ?? {}) };
+									const files: Record<string, string> = { ...baseContentsFiles };
 									const knownBinaries: Record<string, StudioInspectBinaryMeta> = {};
 									for (const [fullPath, ref] of Object.entries(contents?.binaries ?? {})) {
 										knownBinaries[fullPath] = {
@@ -593,7 +594,20 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											(!replacedTargetPrior.optionGroupKey ||
 												replacedTargetPrior.changeId === replyChangeId),
 									);
-									const readOverlay = excludePriorFromOwn ? externalPreviewOverlay : turnReadOverlay;
+									let readOverlay = turnReadOverlay;
+									if (excludePriorFromOwn && baseReaderForPatch) {
+										const remainingOpen = sessionOpenChanges.filter((ch) => ch.changeId !== targetChangeId);
+										const filteredOwn = remainingOpen.some((ch) => ch.kind === "folder_patch")
+											? createSurfaceSessionOwnOverlay({
+													folderRoot,
+													sessionOpenChanges: remainingOpen,
+													baseReader: baseReaderForPatch,
+													replyChangeId,
+												})
+											: null;
+										if (filteredOwn) await filteredOwn.prepare(reqSignal);
+										readOverlay = chainFolderPreviewOverlays(externalPreviewOverlay, filteredOwn);
+									}
 									if (readOverlay) {
 										const overlayCandidates = new Set<string>([
 											`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
@@ -639,23 +653,6 @@ export async function prepareSurfaceCodingWorkspace(options: {
 									for (const change of sessionOpenChanges) {
 										if (change.optionGroupKey && change.changeId !== replyChangeId) continue;
 										if (excludePriorFromOwn && change.changeId === targetChangeId) continue;
-										if (excludePriorFromOwn && change.patchManifest && change.patchManifest.length > 0) {
-											const replayText = new Map<string, string | null>();
-											for (const [full, content] of Object.entries(files)) {
-												const rel = normalizeStudioRelativePath(full, folderRoot);
-												if (rel) replayText.set(rel, content);
-											}
-											applyStudioTextOps(replayText, change.patchManifest, folderRoot);
-											for (const op of change.patchManifest) {
-												if (op.op === "write_file") continue;
-												const rel = normalizeStudioRelativePath(op.path, folderRoot);
-												if (!rel) continue;
-												const full = `${folderRoot}/${rel}`;
-												const updated = replayText.get(rel);
-												if (updated === null || updated === undefined) delete files[full];
-												else files[full] = updated;
-											}
-										}
 										for (const op of change.patchManifest ?? []) {
 											const rel = normalizeStudioRelativePath(op.path, folderRoot);
 											if (!rel) continue;
