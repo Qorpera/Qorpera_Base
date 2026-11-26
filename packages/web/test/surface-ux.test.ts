@@ -856,7 +856,15 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(composer.classList.contains("is-peek")).toBe(false);
 		composer.querySelector(".surface-composer-shell")!.dispatchEvent(new Event("pointerover", { bubbles: true }));
 		expect(composer.classList.contains("is-peek")).toBe(false);
+		vi.useFakeTimers();
 		pencil.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		vi.advanceTimersByTime(200);
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		pencil.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		vi.advanceTimersByTime(200);
+		vi.useRealTimers();
 		expect(composer.classList.contains("is-peek")).toBe(true);
 		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
 		expect(composer.classList.contains("is-peek")).toBe(true);

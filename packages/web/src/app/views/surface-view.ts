@@ -287,6 +287,7 @@ export class SurfaceView {
 	#barOpen = false;
 	#barPinned = false;
 	#panelsHidden = false;
+	#peekTimer: ReturnType<typeof setTimeout> | undefined;
 	readonly #thumbAt = new Map<string, readonly [number, number]>();
 	#phoneModelId = PHONE_MODELS[0]!.id;
 	#phoneBarShown = "";
@@ -388,14 +389,26 @@ export class SurfaceView {
 		this.#composer.addEventListener(
 			"pointerover",
 			(event) => {
-				const folded = this.#composeOpen.getClientRects().length > 0;
-				if (!folded || this.#composeOpen.contains(event.target as Node)) this.#composer.classList.add("is-peek");
+				if (this.#composeOpen.getClientRects().length === 0) {
+					this.#composer.classList.add("is-peek");
+					return;
+				}
+				clearTimeout(this.#peekTimer);
+				if (!this.#composeOpen.contains(event.target as Node)) return;
+				// WHY: A pointer sweeping left to the eye crosses the pencil; opening at once would slide the eye away.
+				this.#peekTimer = setTimeout(() => this.#composer.classList.add("is-peek"), 120);
 			},
 			{ signal: lifetimeSignal },
 		);
-		this.#composer.addEventListener("pointerleave", () => this.#composer.classList.remove("is-peek"), {
-			signal: lifetimeSignal,
-		});
+		this.#composer.addEventListener(
+			"pointerleave",
+			() => {
+				clearTimeout(this.#peekTimer);
+				this.#composer.classList.remove("is-peek");
+			},
+			{ signal: lifetimeSignal },
+		);
+		lifetimeSignal.addEventListener("abort", () => clearTimeout(this.#peekTimer));
 		this.#composer.addEventListener(
 			"submit",
 			(event) => {
