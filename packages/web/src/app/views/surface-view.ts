@@ -1248,31 +1248,31 @@ export class SurfaceView {
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
 		const mobileApp = look.kind === "mobile_app";
+		if (mobileApp && this.#address.isOpen) {
+			this.#address.close();
+			return;
+		}
 		const effectiveDevice =
 			reportMode || !live ? "desktop" : mobileApp ? "mobile" : showViewportSplit ? state.device : "desktop";
 		const showWebsiteZoom = live && !reportMode && effectiveDevice === "desktop";
 		const websiteZoom = clampSurfaceZoom(state.websiteZoom);
 		const served = this.#host.isSiteLive?.(surface);
 		const siteLive = served === true;
-		const addressShown = live && !mobileApp && siteLive;
+		const addressShown = live && siteLive;
 		const reader = addressShown ? this.#host.siteHosting?.(surface) : undefined;
 		const addressKey = this.#address.sync(addressShown, reader, surface.liveUrl);
 		const mark = this.#address.mark();
 		const site: AddressMark =
 			!live || !this.#host.isSiteLive
 				? "live"
-				: mobileApp
-					? served === undefined
-						? "unknown"
-						: "private"
-					: served === undefined
-						? "unknown"
-						: !siteLive
-							? "private"
-							: reader && surface.liveUrl && !(mark === "unknown" && this.#address.readFailed)
-								? mark
-								: "live";
-		this.#sitePublic = !mobileApp && site === "live";
+				: served === undefined
+					? "unknown"
+					: !siteLive
+						? "private"
+						: reader && surface.liveUrl && !(mark === "unknown" && this.#address.readFailed)
+							? mark
+							: "live";
+		this.#sitePublic = site === "live";
 		if (site === "private" && !this.#address.isWriting) this.#publishWhileNotLive(surface);
 		if (mark === "live" && !this.#address.isWriting) this.#switchAutoPublishOffOwed(surface);
 		const key = JSON.stringify([
@@ -2348,6 +2348,7 @@ export class SurfaceView {
 				return;
 			}
 			case "address":
+				if (!this.#hasNotch) return;
 				this.#address.toggle(event.detail === 0);
 				return;
 			case "expand-pill":

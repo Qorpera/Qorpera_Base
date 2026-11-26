@@ -1740,98 +1740,126 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("removes the center notch on mobile_app interfaces while keeping phone controls, narrow layout, and quiet auto-publish", async () => {
+	it("removes the center notch on mobile_app interfaces while keeping phone controls, narrow layout, and public-site auto-publish rules", async () => {
 		stubFigureMotion();
 		localStorage.clear();
-		let current = summary({
-			slug: "mobile-app",
-			title: "Meditation App",
-			icon: "phone",
-			kind: "mobile_app",
-			siteSlug: "thetaband-meditation-app",
-			liveUrl: "https://thetaband-meditation-app.qorpera.site/",
-			autoPublish: false,
-			unpublishedChangeCount: 2,
-			hasUnpublishedChanges: true,
-			publishAsk: {
-				askedByUserId: "99999999-9999-4999-8999-999999999999",
-				askedUserId: userA.id,
-				askedAt: "2026-11-26T10:00:00Z",
-				changeCount: 2,
-				status: "open",
-				answeredAt: null,
-			},
-		});
-		const client = fakeClient({
-			listSurfaces: vi.fn(async () => [current]),
-			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: current })),
-			setSurfaceAutoPublish: vi.fn(async (_id: string, enabled: boolean) => {
-				current = { ...current, autoPublish: enabled };
-				return current;
-			}),
-			publishSurface: vi.fn(async () => {
-				current = { ...current, unpublishedChangeCount: 0, hasUnpublishedChanges: false };
-				return current;
-			}),
-		});
-		const hosting = fakeSiteHosting({ entry: { isPublic: true, domains: [] } });
-		const store = storeWith(client, {
-			peopleAtSurface: () => [{ userId: "99999999-9999-4999-8999-999999999999", name: "Mads" }],
-		});
-		await store.load();
-		store.setMode("live");
-		const view = new SurfaceView(
-			{
+		const runMobileApp = async (isPublic: boolean) => {
+			let current = summary({
+				slug: "mobile-app",
+				title: "Meditation App",
+				icon: "phone",
+				kind: "mobile_app",
+				siteSlug: "thetaband-meditation-app",
+				liveUrl: "https://thetaband-meditation-app.qorpera.site/",
+				autoPublish: false,
+				unpublishedChangeCount: 2,
+				hasUnpublishedChanges: true,
+				publishAsk: {
+					askedByUserId: "99999999-9999-4999-8999-999999999999",
+					askedUserId: userA.id,
+					askedAt: "2026-11-26T10:00:00Z",
+					changeCount: 2,
+					status: "open",
+					answeredAt: null,
+				},
+			});
+			const client = fakeClient({
+				listSurfaces: vi.fn(async () => [current]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: current })),
+				setSurfaceAutoPublish: vi.fn(async (_id: string, enabled: boolean) => {
+					current = { ...current, autoPublish: enabled };
+					return current;
+				}),
+				publishSurface: vi.fn(async () => {
+					current = { ...current, unpublishedChangeCount: 0, hasUnpublishedChanges: false };
+					return current;
+				}),
+			});
+			const hosting = fakeSiteHosting({ entry: { isPublic, domains: [] } });
+			const store = storeWith(client, {
+				peopleAtSurface: () => [{ userId: "99999999-9999-4999-8999-999999999999", name: "Mads" }],
+			});
+			await store.load();
+			store.setMode("live");
+			const view = new SurfaceView(
+				{
+					store,
+					mount: () => undefined,
+					openMigration: () => undefined,
+					isSiteLive: () => true,
+					siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+					managesSites: () => true,
+					canWrite: () => true,
+				},
+				"mobile-app",
+			);
+			document.body.append(view.el);
+			const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+			vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1200, 900));
+			const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;
+			let barWidth = 700;
+			Object.defineProperty(bar, "clientWidth", { configurable: true, get: () => barWidth });
+			for (const corner of view.el.querySelectorAll(".surface-phone-corner"))
+				Object.defineProperty(corner, "offsetWidth", { configurable: true, get: () => 120 });
+			for (let turn = 0; turn < 4; turn++) {
+				await flush();
+				view.update();
+			}
+			return {
 				store,
-				mount: () => undefined,
-				openMigration: () => undefined,
-				isSiteLive: () => true,
-				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
-				managesSites: () => true,
-				canWrite: () => true,
-			},
-			"mobile-app",
+				view,
+				viewport,
+				bar,
+				client,
+				hosting,
+				setBarWidth: (next: number) => {
+					barWidth = next;
+				},
+				dispose: () => {
+					view.dispose();
+					store.dispose();
+				},
+			};
+		};
+
+		const publicApp = await runMobileApp(true);
+		expect(publicApp.bar.hidden).toBe(false);
+		expect(publicApp.bar.classList.contains("has-phone-corners")).toBe(true);
+		expect(publicApp.bar.classList.contains("is-phone-stacked")).toBe(false);
+		expect(publicApp.bar.classList.contains("is-phone-tight")).toBe(false);
+		expect(publicApp.bar.classList.contains("is-phone-covered")).toBe(false);
+		expect(publicApp.view.el.querySelector<HTMLElement>(".surface-notch")?.hidden).toBe(true);
+		expect(publicApp.view.el.querySelector<HTMLElement>(".surface-notch-pill")?.hidden).toBe(true);
+		expect(publicApp.view.el.querySelector<HTMLElement>(".surface-pill")?.hidden).toBe(true);
+		expect(publicApp.view.el.querySelector(".surface-pill")?.childElementCount).toBe(0);
+		expect(publicApp.view.el.querySelector(".surface-phone-pick")?.textContent).toBe("iPhone 16");
+		expect(publicApp.view.el.querySelector('[data-act="zoom-menu"][data-zoom-target="phone"]')?.textContent).toBe(
+			"100%",
 		);
-		document.body.append(view.el);
-		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
-		vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1200, 900));
-		const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;
-		let barWidth = 700;
-		Object.defineProperty(bar, "clientWidth", { configurable: true, get: () => barWidth });
-		for (const corner of view.el.querySelectorAll(".surface-phone-corner"))
-			Object.defineProperty(corner, "offsetWidth", { configurable: true, get: () => 120 });
-		for (let turn = 0; turn < 4; turn++) {
-			await flush();
-			view.update();
-		}
+		expect(publicApp.hosting.client.read).toHaveBeenCalledTimes(1);
+		expect(publicApp.store.state.mode).toBe("preview");
+		expect(publicApp.client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(publicApp.client.publishSurface).not.toHaveBeenCalled();
 
-		expect(bar.hidden).toBe(false);
-		expect(bar.classList.contains("has-phone-corners")).toBe(true);
-		expect(bar.classList.contains("is-phone-stacked")).toBe(false);
-		expect(bar.classList.contains("is-phone-tight")).toBe(false);
-		expect(bar.classList.contains("is-phone-covered")).toBe(false);
-		expect(view.el.querySelector<HTMLElement>(".surface-notch")?.hidden).toBe(true);
-		expect(view.el.querySelector<HTMLElement>(".surface-notch-pill")?.hidden).toBe(true);
-		expect(view.el.querySelector<HTMLElement>(".surface-pill")?.hidden).toBe(true);
-		expect(view.el.querySelector(".surface-pill")?.childElementCount).toBe(0);
-		expect(view.el.querySelector(".surface-phone-pick")?.textContent).toBe("iPhone 16");
-		expect(view.el.querySelector('[data-act="zoom-menu"][data-zoom-target="phone"]')?.textContent).toBe("100%");
-		expect(hosting.client.read).not.toHaveBeenCalled();
-		expect(store.state.mode).toBe("preview");
-		expect(client.setSurfaceAutoPublish).toHaveBeenCalledWith(SURFACE, true);
-		expect(client.publishSurface).toHaveBeenCalledWith(SURFACE);
+		const roomy = Number.parseFloat(publicApp.viewport.style.getPropertyValue("--phone-scale"));
+		publicApp.setBarWidth(220);
+		publicApp.view.update();
+		expect(publicApp.bar.classList.contains("is-phone-stacked")).toBe(false);
+		expect(publicApp.bar.classList.contains("is-phone-tight")).toBe(true);
+		expect(publicApp.bar.classList.contains("is-phone-covered")).toBe(false);
+		expect(publicApp.viewport.dataset.phoneStacked).toBe("true");
+		expect(Number.parseFloat(publicApp.viewport.style.getPropertyValue("--phone-scale"))).toBeLessThan(roomy);
+		publicApp.dispose();
 
-		const roomy = Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));
-		barWidth = 220;
-		view.update();
-		expect(bar.classList.contains("is-phone-stacked")).toBe(false);
-		expect(bar.classList.contains("is-phone-tight")).toBe(true);
-		expect(bar.classList.contains("is-phone-covered")).toBe(false);
-		expect(viewport.dataset.phoneStacked).toBe("true");
-		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeLessThan(roomy);
-
-		view.dispose();
-		store.dispose();
+		const privateApp = await runMobileApp(false);
+		expect(privateApp.bar.hidden).toBe(false);
+		expect(privateApp.view.el.querySelector<HTMLElement>(".surface-notch")?.hidden).toBe(true);
+		expect(privateApp.view.el.querySelector(".surface-pill")?.childElementCount).toBe(0);
+		expect(privateApp.hosting.client.read).toHaveBeenCalledTimes(1);
+		expect(privateApp.store.state.mode).toBe("preview");
+		expect(privateApp.client.setSurfaceAutoPublish).toHaveBeenCalledWith(SURFACE, true);
+		expect(privateApp.client.publishSurface).toHaveBeenCalledWith(SURFACE);
+		privateApp.dispose();
 	});
 
 	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and the publish window", async () => {
