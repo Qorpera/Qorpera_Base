@@ -53,7 +53,7 @@ if [[ -n $previous ]]; then
 		[[ $previous_package == /* ]] || previous_package=$repo/$previous_package
 		[[ -f $previous_package/manifest.json ]] ||
 			fail "QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE: no reader package manifest at $previous_package"
-	elif grep -q 'supabase-prod-ca-2021\.crt' "$previous/install-agent-exit.sh"; then
+	elif grep -qF '"supabase-prod-ca-2021.crt"]' "$previous/install-agent-exit.sh"; then
 		fail "QORPERA_AGENT_EXIT_PROOF_PREVIOUS expects the pre-pinned-CA package format (supabase-prod-ca-2021.crt); also set QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE to a package built from that release"
 	fi
 fi
