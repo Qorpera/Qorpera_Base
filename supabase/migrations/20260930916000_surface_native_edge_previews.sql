@@ -711,7 +711,7 @@ begin
 			exception when others then
 				v_sqlstate := sqlstate;
 				v_raw_err := sqlerrm;
-				if v_sqlstate in ('55P03', '40P01', '40001') then
+				if v_sqlstate in ('55P03', '40P01') then
 					update public.qorpera_surface_previews p
 					set
 						status = 'composing',
@@ -804,7 +804,7 @@ begin
 			exception when others then
 				v_sqlstate := sqlstate;
 				v_raw_err := sqlerrm;
-				if v_sqlstate in ('55P03', '40P01', '40001') then
+				if v_sqlstate in ('55P03', '40P01') then
 					update public.qorpera_surface_jobs
 					set status = 'queued', attempts = 0, lease_expires_at = null, updated_at = v_now
 					where id = v_job.id;
