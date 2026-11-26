@@ -13,6 +13,7 @@ import {
 	CLAUDE_BOX_DENY,
 	CLAUDE_BOX_HOME_FOLDERS,
 	CLAUDE_BOX_PATHS,
+	CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES,
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_BOX_TOOLS_KEPT_OUT,
 	CLAUDE_CODE_MINIMUM_VERSION,
@@ -23,12 +24,14 @@ import {
 	claudeBoxInvocation,
 	claudeBoxMountOptions,
 	claudeBoxSettings,
+	claudeBoxStartStage,
 	claudeBoxStdoutLines,
 	claudeReviewerArguments,
 	claudeReviewerInvocation,
 	claudeReviewerVerdict,
 	claudeWarmReviewerArguments,
 	claudeWarmReviewerInvocation,
+	startClaudeCodeBox,
 	WarmClaudeReviewer,
 } from "@qorpera/runtime/cloud-claude-box";
 import { expect, it, vi } from "vitest";
@@ -624,6 +627,7 @@ it("keeps a warm stream-json reviewer alive across allow verdicts, recycles on d
 
 it("supports custom homeFolders, cwd, and local MCP bridge config for coding sessions", () => {
 	expect(CLAUDE_BOX_CODING_FOLDERS).toEqual(["/company", "/tmp"]);
+	expect(CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES).toBe(65_536);
 	const argsWithMcp = claudeBoxArguments({ mcpConfig: true });
 	expect(argsWithMcp).toContain("--strict-mcp-config");
 	expect(argsWithMcp.slice(argsWithMcp.indexOf("--mcp-config"), argsWithMcp.indexOf("--mcp-config") + 2)).toEqual([
@@ -659,6 +663,9 @@ it("supports custom homeFolders, cwd, and local MCP bridge config for coding ses
 	]);
 	expect(box).toContain("--mcp-config");
 	expect(box).toContain(CLAUDE_BOX_PATHS.mcpConfig);
+	expect(Object.fromEntries(pairs(box, "--setenv")).ENABLE_TOOL_SEARCH).toBe("false");
+	expect(claudeBoxEnvironment({ login: "folder" }).ENABLE_TOOL_SEARCH).toBeUndefined();
+	expect(claudeBoxEnvironment({ login: "folder", mcp: true }).ENABLE_TOOL_SEARCH).toBe("false");
 	expect(() => claudeBoxInvocation({ ...base, login: "token", homeFolders: [] })).toThrow(
 		"Invalid Claude box home folders",
 	);
@@ -687,3 +694,39 @@ it("supports custom homeFolders, cwd, and local MCP bridge config for coding ses
 		}),
 	).toThrow("Invalid Claude MCP server name");
 });
+
+it.skipIf(process.platform !== "linux")(
+	"accepts 16-64 KiB systemNote past the arguments stage and rejects notes above CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES",
+	async () => {
+		const dummyChannel = { open: vi.fn() };
+		const baseStart = {
+			configuration: CLAUDE_BOX_CONFIGURATION,
+			scratchRoot: "/nonexistent-qorpera-claude-box-scratch",
+			login: { token: "tok-123" },
+			channel: dummyChannel,
+			sessionId: "00000000-0000-4000-8000-000000000001",
+			machineId: "00000000-0000-4000-8000-000000000002",
+			prompt: "hi",
+			signal: new AbortController().signal,
+		};
+		let acceptedErr: unknown;
+		try {
+			await startClaudeCodeBox({ ...baseStart, systemNote: "x".repeat(20_000) }, vi.fn() as never);
+		} catch (error) {
+			acceptedErr = error;
+		}
+		expect(claudeBoxStartStage(acceptedErr)).toBe("scratch");
+
+		for (const badNote of ["", "x".repeat(CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES + 1)]) {
+			let rejectedErr: unknown;
+			try {
+				await startClaudeCodeBox({ ...baseStart, systemNote: badNote }, vi.fn() as never);
+			} catch (error) {
+				rejectedErr = error;
+			}
+			expect(rejectedErr).toBeInstanceOf(Error);
+			expect((rejectedErr as Error).message).toBe("Invalid Claude system note");
+			expect(claudeBoxStartStage(rejectedErr)).toBe("arguments");
+		}
+	},
+);

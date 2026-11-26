@@ -17,6 +17,7 @@ import { withAbortScopes } from "./abort-scope.ts";
 import { hasChatGptPlanDirectory, hasChatGptPlanToken } from "./cloud-chatgpt-plan-image.ts";
 import {
 	CLAUDE_BOX_CODING_FOLDERS,
+	CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES,
 	type ClaudeBoxConfiguration,
 	type ClaudeCodeBox,
 	type ClaudeCodeBoxOptions,
@@ -310,6 +311,46 @@ function trimUtf8ToBytes(text: string, maxBytes: number): string {
 		used += bytes;
 	}
 	return maxBytes > suffixBytes ? `${out}${suffix}` : out;
+}
+
+// WHY: Preserve both opening context and mandatory closing submission rules when trimming oversized Studio system notes.
+export function boundClaudeSystemNote(text: string, maxBytes: number): string {
+	if (Buffer.byteLength(text) <= maxBytes) return text;
+	const marker = "\n...[truncated]\n";
+	const markerBytes = Buffer.byteLength(marker);
+	if (maxBytes <= markerBytes + 64) return trimUtf8ToBytes(text, maxBytes);
+	const tailBudget = Math.min(4096, Math.floor((maxBytes - markerBytes) / 4));
+	const headBudget = maxBytes - markerBytes - tailBudget;
+	const chars = Array.from(text);
+	let headBytes = 0;
+	let head = "";
+	for (const ch of chars) {
+		const b = Buffer.byteLength(ch);
+		if (headBytes + b > headBudget) break;
+		head += ch;
+		headBytes += b;
+	}
+	let tailBytes = 0;
+	const tailParts: string[] = [];
+	for (let i = chars.length - 1; i >= 0; i -= 1) {
+		const ch = chars[i]!;
+		const b = Buffer.byteLength(ch);
+		if (tailBytes + b > tailBudget) break;
+		tailParts.push(ch);
+		tailBytes += b;
+	}
+	tailParts.reverse();
+	return `${head}${marker}${tailParts.join("")}`;
+}
+
+// WHY: codingErrorCode and nativeProviderFailureCode accept only uppercase/underscore suffixes up to 41 chars.
+function codingClaudeBoxFailureCode(error: unknown): string {
+	const suffix = claudeBoxFailureCode(error)
+		.toUpperCase()
+		.replace(/[^A-Z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 41);
+	return `CODING_CLAUDE_BOX_FAILED:${suffix || "UNKNOWN"}`;
 }
 
 function codingShownImageSha256(
@@ -1499,13 +1540,14 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									return codingChannel.open({ scope, ...(kind ? { kind } : {}) }, channelSignal);
 								},
 							};
-							const systemNote = preparedSurface
+							const rawSystemNote = preparedSurface
 								? preparedSurface.claudeSystemNote
 								: [
 										surfaceSession ? CLAUDE_SURFACE_CODING_SYSTEM_NOTE : CLAUDE_CODING_SYSTEM_NOTE,
 										...(turn.machine.newDisk ? [NEW_DISK] : []),
 										...(pictureTool.length > 0 ? [CODING_PICTURE_INSTRUCTIONS] : []),
 									].join("\n");
+							const systemNote = boundClaudeSystemNote(rawSystemNote, CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES);
 							const launcher = claudeHost.launch ?? launchClaudeCodeBox;
 							try {
 								box = await launcher({
@@ -1529,7 +1571,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								});
 							} catch (error) {
 								turnSignal.throwIfAborted();
-								throw new Error(`CODING_CLAUDE_BOX_FAILED:${claudeBoxFailureCode(error)}`, { cause: error });
+								throw new Error(codingClaudeBoxFailureCode(error), { cause: error });
 							}
 							const closeOnAbort = (): void => {
 								void box?.close().catch(() => undefined);
@@ -1552,6 +1594,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							let toolsWrong = false;
 							let overflowed = false;
 							let completed = false;
+							let exitCode: number | undefined;
 							const declaredMcpTools = mcpBridge.declaredMcpToolNames;
 							try {
 								for await (const line of box.lines) {
@@ -1588,16 +1631,16 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								if (toolsWrong || submittedClosed || !completed) {
 									await box.close().catch(() => undefined);
 									let exitTimer: ReturnType<typeof setTimeout> | undefined;
-									await Promise.race([
+									exitCode = await Promise.race([
 										box.exited,
-										new Promise<void>((resolve) => {
-											exitTimer = setTimeout(resolve, 5_000);
+										new Promise<undefined>((resolve) => {
+											exitTimer = setTimeout(() => resolve(undefined), 5_000);
 											exitTimer.unref();
 										}),
 									]);
 									clearTimeout(exitTimer);
 								} else {
-									await box.exited;
+									exitCode = await box.exited;
 								}
 								await watch;
 								if (usageMark.owed) {
@@ -1622,6 +1665,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							if (overflowed) throw new Error("CODING_CLAUDE_OUTPUT_LIMIT");
 							if (stream.signedOut) throw new Error("CODING_CLAUDE_SIGNED_OUT");
 							if (stream.limit) throw new Error("CODING_CLAUDE_RATE_LIMITED");
+							if (stream.init === null) {
+								throw new Error(
+									exitCode !== undefined && Number.isInteger(exitCode) && exitCode > 0 && exitCode < 256
+										? `CODING_CLAUDE_BOX_FAILED:EXIT_${exitCode}`
+										: "CODING_CLAUDE_BOX_FAILED:NO_INIT",
+								);
+							}
 							throw new Error("CODING_TURN_ENDED_WITHOUT_SUBMISSION");
 						} finally {
 							await box?.close().catch(() => undefined);
