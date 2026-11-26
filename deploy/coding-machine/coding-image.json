@@ -26,6 +26,11 @@
     "url": "https://github.com/jdx/mise/releases/download/v2026.10.10/mise-v2026.10.10-linux-x64",
     "sha256": "7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be"
   },
+  "blender": {
+    "version": "4.3.2",
+    "url": "https://download.blender.org/release/Blender4.3/blender-4.3.2-linux-x64.tar.xz",
+    "sha256": "4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6"
+  },
   "npm": {
     "typescript": "7.0.2",
     "tsx": "4.23.15"

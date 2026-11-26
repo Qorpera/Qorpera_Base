@@ -137,6 +137,9 @@ export async function oneImageAtATime<T>(signal: AbortSignal, task: () => Promis
 
 export interface FolderImageViewOptions {
 	readonly fastPathValidPng?: boolean;
+	readonly maxWidth?: number;
+	readonly maxHeight?: number;
+	readonly maxBytes?: number;
 }
 
 const MAX_FAST_PNG_CHUNKS = 64;
@@ -246,23 +249,31 @@ export function folderImageView(bytes: Uint8Array, options?: FolderImageViewOpti
 		throw new FolderImageRefusal("unreadable", "the file is not a PNG, JPEG, GIF or WebP image");
 	if (bytes.byteLength > MAX_FOLDER_IMAGE_BYTES)
 		throw new FolderImageRefusal("too_large", `the file is larger than ${MAX_FOLDER_IMAGE_BYTES / 1024 / 1024} MiB`);
-	if (options?.fastPathValidPng === true && format === "png") {
+	const maxWidth = Math.max(1, Math.min(SHOWN_MAX_WIDTH, options?.maxWidth ?? SHOWN_MAX_WIDTH));
+	const maxHeight = Math.max(1, Math.min(SHOWN_MAX_HEIGHT, options?.maxHeight ?? SHOWN_MAX_HEIGHT));
+	const maxBytes = Math.max(4096, Math.min(SHOWN_MAX_BYTES, options?.maxBytes ?? SHOWN_MAX_BYTES));
+	if (
+		options?.fastPathValidPng === true &&
+		format === "png" &&
+		maxWidth === SHOWN_MAX_WIDTH &&
+		maxHeight === SHOWN_MAX_HEIGHT &&
+		maxBytes === SHOWN_MAX_BYTES
+	) {
 		const fast = tryFastPathValidPng(bytes);
 		if (fast !== null) return fast;
 	}
 	try {
 		const raster = RASTERS[format](bytes);
-		const scale = Math.min(1, SHOWN_MAX_WIDTH / raster.width, SHOWN_MAX_HEIGHT / raster.height);
-		const fitWidth = Math.min(SHOWN_MAX_WIDTH, Math.max(1, Math.round(raster.width * scale)));
-		const fitHeight = Math.min(SHOWN_MAX_HEIGHT, Math.max(1, Math.round(raster.height * scale)));
+		const scale = Math.min(1, maxWidth / raster.width, maxHeight / raster.height);
+		const fitWidth = Math.min(maxWidth, Math.max(1, Math.round(raster.width * scale)));
+		const fitHeight = Math.min(maxHeight, Math.max(1, Math.round(raster.height * scale)));
 		const fitted = resample(raster, fitWidth, fitHeight);
-		// Fitted to the byte budget from the fitted pixels: each try shrinks by what the last one overshot.
 		let shownWidth = fitWidth;
 		let shownHeight = fitHeight;
 		let png = encodePng(fitted, shownWidth, shownHeight);
-		for (let tries = 0; png.byteLength > SHOWN_MAX_BYTES; tries++) {
+		for (let tries = 0; png.byteLength > maxBytes; tries++) {
 			if (tries === 16) throw new Error("The image does not fit the byte budget");
-			const factor = Math.sqrt(SHOWN_MAX_BYTES / png.byteLength) * 0.9;
+			const factor = Math.sqrt(maxBytes / png.byteLength) * 0.9;
 			shownWidth = Math.max(1, Math.floor(shownWidth * factor));
 			shownHeight = Math.max(1, Math.floor(shownHeight * factor));
 			const smaller = resample(bufferRaster(fitted, fitWidth, fitHeight), shownWidth, shownHeight);

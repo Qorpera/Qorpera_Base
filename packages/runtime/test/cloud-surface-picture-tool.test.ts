@@ -15,6 +15,7 @@ import {
 	STUDIO_MAKE_PICTURE_SCHEMA,
 } from "@qorpera/runtime/cloud-surface-picture-tool";
 import { describe, expect, it, vi } from "vitest";
+import { createStageSurfacePatchTool, createSurfacePatchSessionTracker } from "../src/cloud-surface-tools.ts";
 import { pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
 
 const samplePng = () =>
@@ -186,5 +187,135 @@ describe("cloud-surface-picture-tool", () => {
 		await runRefusal(new CloudPictureFailure("failed"), "PICTURE_FAILED");
 		expect(stageBytes).not.toHaveBeenCalled();
 		expect(stageSurfacePatch).not.toHaveBeenCalled();
+	});
+
+	it("preserves existing change title and summary when attaching a picture via changeId and uses path-free defaults", async () => {
+		const png = samplePng();
+		const pngSha = createHash("sha256").update(png).digest("hex");
+		const sessionId = randomUUID();
+		const priorChangeId = randomUUID();
+		const optionChangeId = randomUUID();
+		const recordedPatches: {
+			readonly changeId?: string | null;
+			readonly title: string;
+			readonly summary: string;
+			readonly optionGroup?: string | null;
+		}[] = [];
+
+		const surfacePatch = {
+			stageSurfacePatch: vi.fn(
+				async (
+					_sid: string,
+					req: {
+						readonly changeId?: string | null;
+						readonly title: string;
+						readonly summary: string;
+						readonly optionGroup?: string | null;
+					},
+				) => {
+					recordedPatches.push({
+						changeId: req.changeId,
+						title: req.title,
+						summary: req.summary,
+						optionGroup: req.optionGroup,
+					});
+					const id = req.changeId ?? (req.optionGroup ? optionChangeId : randomUUID());
+					return { changeId: id, seq: recordedPatches.length, openChangeCount: 2, updated: Boolean(req.changeId) };
+				},
+			),
+		};
+
+		const tracker = createSurfacePatchSessionTracker({
+			openChanges: [
+				{
+					changeId: priorChangeId,
+					seq: 1,
+					status: "open",
+					title: "Slim Temple Arch",
+					summary: "Rigid temple arch with washable knit sleeve.",
+					kind: "folder_patch",
+					actionKind: null,
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["overview.json"],
+					previewBaseChangeIds: [],
+					patchManifest: null,
+					baseFiles: null,
+				},
+			],
+			replyChangeId: null,
+			folderRoot: "surfaces/product",
+		});
+
+		const patchTool = createStageSurfacePatchTool(
+			sessionId,
+			surfacePatch,
+			{ folderRoot: "surfaces/product", waitingOps: [], readLayout: async () => null },
+			{ openChanges: [], replyChangeId: null, deferSessionCompletion: true, tracker },
+		);
+
+		const pictures = new CloudPictureChannel();
+		pictures.attach(async () => ({ png, revisedPrompt: "Studio hero render", transparent: false }));
+		const pictureTool = createStudioPictureTool({
+			sessionId,
+			folderRoot: "surfaces/product",
+			stageBytes: async (bytes, mediaType) => ({
+				manifestSha256: "m".repeat(64),
+				fileSha256: pngSha,
+				bytes: bytes.byteLength,
+				mediaType,
+			}),
+			surfacePatch,
+			pictures,
+			patchTracker: tracker,
+		});
+
+		const attachPrior = pictureTool.parseArguments({
+			path: "pictures/sleeve-swap.png",
+			prompt: "Studio hero of sleeve swap.",
+			changeId: priorChangeId,
+		});
+		await pictureTool.execute(attachPrior, makeContext());
+		expect(recordedPatches[0]).toEqual({
+			changeId: priorChangeId,
+			title: "Slim Temple Arch",
+			summary: "Rigid temple arch with washable knit sleeve.",
+			optionGroup: undefined,
+		});
+
+		const optionPatch = patchTool.parseArguments({
+			title: "Detachable Pod + Knit Band",
+			summary: "Soft braided knit band with magnetic pod.",
+			optionGroup: "band-concepts",
+			optionGroupTitle: "Headband concepts",
+			ops: [{ op: "write_text", path: "overview.json", content: '{"name":"Pod + Knit"}' }],
+		});
+		await patchTool.prepare?.(optionPatch, makeContext());
+		await patchTool.execute(optionPatch, makeContext());
+
+		const attachOption = pictureTool.parseArguments({
+			path: "pictures/pod-knit.png",
+			prompt: "Studio render of detachable pod.",
+			changeId: optionChangeId,
+		});
+		await pictureTool.execute(attachOption, makeContext());
+		expect(recordedPatches[2]).toEqual({
+			changeId: optionChangeId,
+			title: "Detachable Pod + Knit Band",
+			summary: "Soft braided knit band with magnetic pod.",
+			optionGroup: undefined,
+		});
+
+		const newStandalone = pictureTool.parseArguments({
+			path: "pictures/worn-yoga.png",
+			prompt: "Lifestyle render.",
+			createNew: true,
+		});
+		await pictureTool.execute(newStandalone, makeContext());
+		expect(recordedPatches[3]?.changeId).toBeUndefined();
+		expect(recordedPatches[3]?.title).not.toContain("/");
+		expect(recordedPatches[3]?.title).not.toContain(".png");
+		expect(recordedPatches[3]?.summary).not.toContain("/");
+		expect(recordedPatches[3]?.summary).not.toContain(".png");
 	});
 });

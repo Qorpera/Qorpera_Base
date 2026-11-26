@@ -511,6 +511,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Code-backed website and app interfaces now serve previews directly from the edge up to 10,000 files and 512 MB (100 MB per file), with warm incremental preview builders that keep dependencies and build caches hot between commits and pre-build staged changes in the background. Bundled apps no longer need to commit built output folders into git: have coding sessions declare a preview build command and output folder in their checks configuration so Qorpera builds and serves previews automatically.",
 	},
 	{
+		id: "product-studio-3d-and-visuals",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Product Studio visuals, live 3D models and sharper checks",
+		text: "Product Studio interfaces now include a native visuals gallery on Overview beside the 3D stage, colourways and headline figures, and Studio HTML pages and modules now load staged PNG, WebP and SVG images directly instead of breaking. Product sessions can now build real multi-part 3D GLB models in session on the coding machine (with Blender pre-installed on updated coding images, or script-built glTF) alongside generated renders while keeping the native Product layout. Visual page inspection now renders 3D models, colourways, live modules and images, checks option-group variants by change, and flags broken images before finishing.",
+	},
+	{
 		id: "single-door-agent-ux",
 		kind: "behaviour",
 		date: "2026-11-26",
