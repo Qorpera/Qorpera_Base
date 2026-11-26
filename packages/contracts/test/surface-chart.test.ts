@@ -74,6 +74,41 @@ describe("parseSurfaceChartDocument", () => {
 		});
 		expect(pie?.donut).toBe(true);
 		expect(pie?.series?.[0]?.data).toHaveLength(2);
+
+		const bounded = parseSurfaceChartDocument({
+			kind: "bar",
+			xAxisMin: 0,
+			xAxisMax: 100,
+			yAxisMin: 0,
+			yAxisMax: 10,
+			categories: ["A", "B"],
+			series: [
+				{
+					name: "Score",
+					color: "hsl(152 65% 38%)",
+					data: [6, { value: 9, color: "hsla(210, 70%, 45%, 0.9)" }],
+				},
+			],
+		});
+		expect(bounded?.xAxisMin).toBe(0);
+		expect(bounded?.xAxisMax).toBe(100);
+		expect(bounded?.yAxisMin).toBe(0);
+		expect(bounded?.yAxisMax).toBe(10);
+		expect(bounded?.series?.[0]?.color).toBe("hsl(152 65% 38%)");
+		expect(bounded?.series?.[0]?.data[1]).toEqual({ value: 9, color: "hsla(210, 70%, 45%, 0.9)" });
+
+		const inverted = parseSurfaceChartDocument({
+			kind: "bar",
+			yAxisMin: 10,
+			yAxisMax: 5,
+			xAxisMin: 4,
+			xAxisMax: 4,
+			series: [{ name: "Score", data: [6] }],
+		});
+		expect(inverted?.yAxisMin).toBeUndefined();
+		expect(inverted?.yAxisMax).toBeUndefined();
+		expect(inverted?.xAxisMin).toBeUndefined();
+		expect(inverted?.xAxisMax).toBeUndefined();
 	});
 
 	it("parses sankey, radar, and heatmap charts and drops invalid entries", () => {

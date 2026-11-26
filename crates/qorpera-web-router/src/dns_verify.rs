@@ -13,9 +13,13 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 pub const DNS_TYPE_A: u16 = 1;
+pub const DNS_TYPE_NS: u16 = 2;
 pub const DNS_TYPE_CNAME: u16 = 5;
 pub const DNS_TYPE_TXT: u16 = 16;
 pub const DNS_TYPE_AAAA: u16 = 28;
+pub const DNS_RCODE_NXDOMAIN: u8 = 3;
+const MAX_NS_HOSTS: usize = 4;
+const MAX_REASON_CHARS: usize = 300;
 const MAX_PARALLEL_DOMAIN_CHECKS: usize = 16;
 const DB_OP_TIMEOUT: Duration = Duration::from_secs(5);
 const UNCHANGED_DB_HEARTBEAT: Duration = Duration::from_secs(10 * 60);
@@ -73,6 +77,12 @@ pub struct DnsAnswers {
     pub aaaa_records: Vec<String>,
     pub cname_records: Vec<String>,
     pub txt_records: Vec<String>,
+    #[serde(default)]
+    pub hostname_txt_records: Vec<String>,
+    #[serde(default)]
+    pub registrable_domain_ns: Vec<String>,
+    #[serde(default)]
+    pub registrable_domain_not_found: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +100,121 @@ pub struct DomainCheckOutcome {
     pub previous_status: DomainStatus,
     pub next_status: DomainStatus,
     pub reason: String,
+    pub routing_ok: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DnsReply {
+    pub rcode: u8,
+    pub records: Vec<(u16, String)>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MergedDnsReply {
+    pub records: Vec<(u16, String)>,
+    pub answered: usize,
+    pub nxdomain: usize,
+}
+
+impl MergedDnsReply {
+    pub fn merge(replies: impl IntoIterator<Item = DnsReply>) -> Self {
+        let mut merged = Self::default();
+        for reply in replies {
+            merged.answered += 1;
+            if reply.rcode == DNS_RCODE_NXDOMAIN {
+                merged.nxdomain += 1;
+            }
+            for record in reply.records {
+                if !merged.records.contains(&record) {
+                    merged.records.push(record);
+                }
+            }
+        }
+        merged
+    }
+
+    pub fn not_found_everywhere(&self) -> bool {
+        self.answered > 0 && self.nxdomain == self.answered
+    }
+
+    fn values_of(&self, record_type: u16) -> Vec<String> {
+        self.records
+            .iter()
+            .filter(|(rt, _)| *rt == record_type)
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+}
+
+pub fn registrable_domain(hostname: &str) -> &str {
+    let trimmed = hostname.trim_end_matches('.');
+    match trimmed.rmatch_indices('.').nth(1) {
+        Some((dot, _)) => &trimmed[dot + 1..],
+        None => trimmed,
+    }
+}
+
+fn txt_matches(raw: &str, expected: &str) -> bool {
+    raw.trim_matches('"').trim() == expected
+}
+
+fn clean_ns_hosts(raw_hosts: &[String]) -> Vec<String> {
+    let mut hosts: Vec<String> = raw_hosts
+        .iter()
+        .map(|raw| raw.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|host| {
+            !host.is_empty()
+                && host.len() <= 253
+                && !host.starts_with('.')
+                && !host.contains("..")
+                && host
+                    .bytes()
+                    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_'))
+        })
+        .collect();
+    hosts.sort();
+    hosts.dedup();
+    hosts.truncate(MAX_NS_HOSTS);
+    hosts
+}
+
+fn failure_reason(
+    expectation: &DnsExpectation,
+    answers: &DnsAnswers,
+    routing_ok: bool,
+    txt_ok: bool,
+    expected_txt: &str,
+) -> String {
+    let base = if !routing_ok && answers.registrable_domain_not_found {
+        "domain_not_found"
+    } else if !routing_ok && !txt_ok {
+        "dns_routing_and_txt_missing"
+    } else if !routing_ok {
+        if expectation.is_apex {
+            "apex_a_record_mismatch"
+        } else {
+            "cname_record_mismatch"
+        }
+    } else {
+        "txt_verification_missing"
+    };
+    let mut reason = base.to_string();
+    if !txt_ok
+        && answers
+            .hostname_txt_records
+            .iter()
+            .any(|raw| txt_matches(raw, expected_txt))
+    {
+        reason.push_str(" txt_on_wrong_name");
+    }
+    let ns_hosts = clean_ns_hosts(&answers.registrable_domain_ns);
+    for count in (1..=ns_hosts.len()).rev() {
+        let with_ns = format!("{reason} ns={}", ns_hosts[..count].join(","));
+        if with_ns.len() <= MAX_REASON_CHARS {
+            return with_ns;
+        }
+    }
+    reason
 }
 
 pub fn evaluate_dns(expectation: &DnsExpectation, answers: &DnsAnswers) -> DnsVerificationResult {
@@ -98,7 +223,7 @@ pub fn evaluate_dns(expectation: &DnsExpectation, answers: &DnsAnswers) -> DnsVe
         || answers
             .txt_records
             .iter()
-            .any(|raw| raw.trim_matches('"').trim() == expected_txt);
+            .any(|raw| txt_matches(raw, &expected_txt));
 
     let routing_ok = if expectation.is_apex {
         let v4_match = expectation
@@ -140,16 +265,8 @@ pub fn evaluate_dns(expectation: &DnsExpectation, answers: &DnsAnswers) -> DnsVe
     let verified = routing_ok && txt_ok;
     let reason = if verified {
         "ok".to_string()
-    } else if !routing_ok && !txt_ok {
-        "dns_routing_and_txt_missing".to_string()
-    } else if !routing_ok {
-        if expectation.is_apex {
-            "apex_a_record_mismatch".to_string()
-        } else {
-            "cname_record_mismatch".to_string()
-        }
     } else {
-        "txt_verification_missing".to_string()
+        failure_reason(expectation, answers, routing_ok, txt_ok, &expected_txt)
     };
 
     DnsVerificationResult {
@@ -282,7 +399,7 @@ fn read_dns_name(packet: &[u8], mut offset: usize) -> Result<(String, usize), St
     Ok((labels.join("."), end_offset))
 }
 
-pub fn parse_dns_response(packet: &[u8], expected_tx_id: u16) -> Result<Vec<(u16, String)>, String> {
+pub fn parse_dns_response(packet: &[u8], expected_tx_id: u16) -> Result<DnsReply, String> {
     if packet.len() < 12 {
         return Err("dns_short_header".to_string());
     }
@@ -294,9 +411,12 @@ pub fn parse_dns_response(packet: &[u8], expected_tx_id: u16) -> Result<Vec<(u16
     if (flags & 0x8000) == 0 {
         return Err("dns_not_response".to_string());
     }
-    let rcode = flags & 0x000F;
-    if rcode == 3 {
-        return Ok(Vec::new());
+    let rcode = (flags & 0x000F) as u8;
+    if rcode == DNS_RCODE_NXDOMAIN {
+        return Ok(DnsReply {
+            rcode,
+            records: Vec::new(),
+        });
     }
     if rcode != 0 {
         return Err(format!("dns_rcode_{rcode}"));
@@ -342,7 +462,7 @@ pub fn parse_dns_response(packet: &[u8], expected_tx_id: u16) -> Result<Vec<(u16
                 let ip = Ipv6Addr::from(octets);
                 out.push((rtype, ip.to_string()));
             }
-            DNS_TYPE_CNAME => {
+            DNS_TYPE_CNAME | DNS_TYPE_NS => {
                 if let Ok((target, _)) = read_dns_name(packet, rdata_start) {
                     out.push((rtype, target));
                 }
@@ -368,7 +488,7 @@ pub fn parse_dns_response(packet: &[u8], expected_tx_id: u16) -> Result<Vec<(u16
         offset = rdata_end;
     }
 
-    Ok(out)
+    Ok(DnsReply { rcode, records: out })
 }
 
 fn is_dns_truncated(packet: &[u8]) -> bool {
@@ -380,7 +500,7 @@ async fn query_dns_tcp(
     query: &[u8],
     tx_id: u16,
     timeout: Duration,
-) -> Result<Vec<(u16, String)>, String> {
+) -> Result<DnsReply, String> {
     let len = u16::try_from(query.len()).map_err(|_| "dns_query_too_large".to_string())?;
     let mut stream = tokio::time::timeout(timeout, TcpStream::connect(server))
         .await
@@ -412,7 +532,7 @@ pub async fn query_dns_udp(
     qname: &str,
     qtype: u16,
     timeout: Duration,
-) -> Result<Vec<(u16, String)>, String> {
+) -> Result<DnsReply, String> {
     let bind_addr: SocketAddr = if server.is_ipv6() {
         "[::]:0".parse().unwrap()
     } else {
@@ -442,18 +562,31 @@ pub async fn query_dns_udp(
     parse_dns_response(&buf[..n], tx_id)
 }
 
-async fn query_with_fallback(
+pub async fn query_all_servers(
     servers: &[SocketAddr],
     qname: &str,
     qtype: u16,
     timeout: Duration,
-) -> Vec<(u16, String)> {
-    for server in servers {
-        if let Ok(records) = query_dns_udp(*server, qname, qtype, timeout).await {
-            return records;
+) -> MergedDnsReply {
+    let mut set = JoinSet::new();
+    for (index, server) in servers.iter().copied().enumerate() {
+        let qname = qname.to_string();
+        set.spawn(async move {
+            let reply = tokio::time::timeout(
+                timeout.saturating_mul(2),
+                query_dns_udp(server, &qname, qtype, timeout),
+            )
+            .await;
+            (index, reply.ok().and_then(Result::ok))
+        });
+    }
+    let mut replies: Vec<Option<DnsReply>> = vec![None; servers.len()];
+    while let Some(joined) = set.join_next().await {
+        if let Ok((index, reply)) = joined {
+            replies[index] = reply;
         }
     }
-    Vec::new()
+    MergedDnsReply::merge(replies.into_iter().flatten())
 }
 
 pub async fn resolve_domain_dns(
@@ -463,17 +596,18 @@ pub async fn resolve_domain_dns(
 ) -> DnsAnswers {
     let txt_host = format!("_qorpera.{hostname}");
     let (a_res, aaaa_res, cname_res, txt_res) = tokio::join!(
-        query_with_fallback(servers, hostname, DNS_TYPE_A, timeout),
-        query_with_fallback(servers, hostname, DNS_TYPE_AAAA, timeout),
-        query_with_fallback(servers, hostname, DNS_TYPE_CNAME, timeout),
-        query_with_fallback(servers, &txt_host, DNS_TYPE_TXT, timeout),
+        query_all_servers(servers, hostname, DNS_TYPE_A, timeout),
+        query_all_servers(servers, hostname, DNS_TYPE_AAAA, timeout),
+        query_all_servers(servers, hostname, DNS_TYPE_CNAME, timeout),
+        query_all_servers(servers, &txt_host, DNS_TYPE_TXT, timeout),
     );
     let mut answers = DnsAnswers::default();
     for (rt, val) in a_res
+        .records
         .into_iter()
-        .chain(aaaa_res)
-        .chain(cname_res)
-        .chain(txt_res)
+        .chain(aaaa_res.records)
+        .chain(cname_res.records)
+        .chain(txt_res.records)
     {
         match rt {
             DNS_TYPE_A => answers.a_records.push(val),
@@ -484,6 +618,29 @@ pub async fn resolve_domain_dns(
         }
     }
     answers
+}
+
+pub async fn add_domain_diagnostics(
+    answers: &mut DnsAnswers,
+    servers: &[SocketAddr],
+    hostname: &str,
+    check_hostname_txt: bool,
+    timeout: Duration,
+) {
+    let hostname_txt = async {
+        if check_hostname_txt {
+            query_all_servers(servers, hostname, DNS_TYPE_TXT, timeout).await
+        } else {
+            MergedDnsReply::default()
+        }
+    };
+    let (ns, txt) = tokio::join!(
+        query_all_servers(servers, registrable_domain(hostname), DNS_TYPE_NS, timeout),
+        hostname_txt,
+    );
+    answers.registrable_domain_not_found = ns.not_found_everywhere();
+    answers.registrable_domain_ns = ns.values_of(DNS_TYPE_NS);
+    answers.hostname_txt_records = txt.values_of(DNS_TYPE_TXT);
 }
 
 fn status_sql_str(status: DomainStatus) -> &'static str {
@@ -613,7 +770,7 @@ async fn verify_domains_once_with_tracker(
 
         set.spawn(async move {
             let _permit = permit;
-            let answers = resolve_domain_dns(&targets_ref.servers, &domain.hostname, query_timeout).await;
+            let mut answers = resolve_domain_dns(&targets_ref.servers, &domain.hostname, query_timeout).await;
             let require_txt = domain.is_apex
                 && matches!(
                     domain.status,
@@ -628,7 +785,18 @@ async fn verify_domains_once_with_tracker(
                 verification_token: domain.verification_token.clone(),
                 require_txt,
             };
-            let eval = evaluate_dns(&expectation, &answers);
+            let mut eval = evaluate_dns(&expectation, &answers);
+            if !eval.verified {
+                add_domain_diagnostics(
+                    &mut answers,
+                    &targets_ref.servers,
+                    &domain.hostname,
+                    !eval.txt_ok,
+                    query_timeout,
+                )
+                .await;
+                eval = evaluate_dns(&expectation, &answers);
+            }
             let next_status = if eval.verified {
                 if domain.status == DomainStatus::TlsActive {
                     DomainStatus::TlsActive
@@ -710,6 +878,7 @@ async fn verify_domains_once_with_tracker(
                     previous_status: domain.status,
                     next_status,
                     reason: eval.reason,
+                    routing_ok: eval.routing_ok,
                 },
                 eval.verified,
                 changed_in_memory,
@@ -725,9 +894,14 @@ async fn verify_domains_once_with_tracker(
             outcomes.push(outcome);
         }
     }
-    if !changed_batch.is_empty() {
+    let routing: Vec<(String, bool)> = outcomes
+        .iter()
+        .map(|outcome| (outcome.id.clone(), outcome.routing_ok))
+        .collect();
+    if !changed_batch.is_empty() || routes.load().domain_routing_differs(&routing) {
         routes.update(|table| {
             table.update_domain_checks(&changed_batch);
+            table.set_domain_routing(&routing);
         });
     }
     outcomes
@@ -930,6 +1104,267 @@ mod tests {
         assert_eq!(sub.cname_records, vec!["sites.qorpera.site".to_string()]);
     }
 
+    type MockAnswer = (u8, Vec<(u16, Vec<u8>)>);
+
+    fn txt_rdata(text: &str) -> Vec<u8> {
+        let mut v = vec![text.len() as u8];
+        v.extend_from_slice(text.as_bytes());
+        v
+    }
+
+    async fn spawn_mock_dns(answer: impl Fn(&str, u16) -> MockAnswer + Send + 'static) -> SocketAddr {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((n, peer)) = server.recv_from(&mut buf).await else {
+                    break;
+                };
+                if n < 12 {
+                    continue;
+                }
+                let (qname, after_name) = read_dns_name(&buf[..n], 12).unwrap();
+                let qtype = u16::from_be_bytes([buf[after_name], buf[after_name + 1]]);
+                let (rcode, records) = answer(&qname, qtype);
+                let mut resp = Vec::new();
+                resp.extend_from_slice(&buf[0..2]);
+                resp.extend_from_slice(&(0x8180u16 | rcode as u16).to_be_bytes());
+                resp.extend_from_slice(&1u16.to_be_bytes());
+                resp.extend_from_slice(&(records.len() as u16).to_be_bytes());
+                resp.extend_from_slice(&0u16.to_be_bytes());
+                resp.extend_from_slice(&0u16.to_be_bytes());
+                resp.extend_from_slice(&buf[12..after_name + 4]);
+                for (rt, data) in records {
+                    resp.extend_from_slice(&[0xC0, 0x0C]);
+                    resp.extend_from_slice(&rt.to_be_bytes());
+                    resp.extend_from_slice(&1u16.to_be_bytes());
+                    resp.extend_from_slice(&60u32.to_be_bytes());
+                    resp.extend_from_slice(&(data.len() as u16).to_be_bytes());
+                    resp.extend_from_slice(&data);
+                }
+                let _ = server.send_to(&resp, peer).await;
+            }
+        });
+        addr
+    }
+
+    fn namah_live(qname: &str, qtype: u16) -> MockAnswer {
+        match (qname, qtype) {
+            ("namah.dk", DNS_TYPE_A) => (0, vec![(DNS_TYPE_A, vec![93, 164, 62, 162])]),
+            ("_qorpera.namah.dk", DNS_TYPE_TXT) => (0, vec![(DNS_TYPE_TXT, txt_rdata("qorpera-verify=tok"))]),
+            ("namah.dk", DNS_TYPE_NS) => (
+                0,
+                vec![
+                    (DNS_TYPE_NS, encode_dns_name("ns02.one.com")),
+                    (DNS_TYPE_NS, encode_dns_name("ns01.one.com")),
+                ],
+            ),
+            _ => (0, Vec::new()),
+        }
+    }
+
+    fn namah_expectation() -> DnsExpectation {
+        DnsExpectation {
+            hostname: "namah.dk".to_string(),
+            is_apex: true,
+            expected_ipv4: Some("93.164.62.162".to_string()),
+            expected_ipv6: None,
+            expected_cname_target: Some("sites.qorpera.site".to_string()),
+            verification_token: "tok".to_string(),
+            require_txt: true,
+        }
+    }
+
+    #[test]
+    fn parses_nxdomain_rcode_and_ns_records() {
+        let query = build_dns_query(7, "namah.dk", DNS_TYPE_NS).unwrap();
+        let mut nx = query[..12].to_vec();
+        nx[2] = 0x81;
+        nx[3] = 0x83;
+        let reply = parse_dns_response(&nx, 7).unwrap();
+        assert_eq!(reply, DnsReply { rcode: DNS_RCODE_NXDOMAIN, records: Vec::new() });
+
+        let mut servfail = nx.clone();
+        servfail[3] = 0x82;
+        assert!(parse_dns_response(&servfail, 7).is_err());
+    }
+
+    #[test]
+    fn reason_tokens_name_the_wrong_txt_name_the_shop_and_a_missing_domain() {
+        let expectation = namah_expectation();
+        let pointed = DnsAnswers {
+            a_records: vec!["93.164.62.162".to_string()],
+            hostname_txt_records: vec!["\"qorpera-verify=tok\"".to_string()],
+            registrable_domain_ns: vec!["NS02.one.com.".to_string(), "ns01.one.com".to_string(), "ns01.one.com.".to_string()],
+            ..Default::default()
+        };
+        let eval = evaluate_dns(&expectation, &pointed);
+        assert!(!eval.verified && eval.routing_ok && !eval.txt_ok);
+        assert_eq!(eval.reason, "txt_verification_missing txt_on_wrong_name ns=ns01.one.com,ns02.one.com");
+
+        let other_txt = DnsAnswers {
+            hostname_txt_records: vec!["v=spf1 -all".to_string(), "qorpera-verify=other".to_string()],
+            ..pointed.clone()
+        };
+        assert_eq!(
+            evaluate_dns(&expectation, &other_txt).reason,
+            "txt_verification_missing ns=ns01.one.com,ns02.one.com"
+        );
+
+        let nothing = DnsAnswers::default();
+        assert_eq!(evaluate_dns(&expectation, &nothing).reason, "dns_routing_and_txt_missing");
+
+        let missing = DnsAnswers {
+            registrable_domain_not_found: true,
+            ..Default::default()
+        };
+        assert_eq!(evaluate_dns(&expectation, &missing).reason, "domain_not_found");
+
+        let sub = DnsExpectation {
+            hostname: "shop.namah.dk".to_string(),
+            is_apex: false,
+            require_txt: false,
+            ..namah_expectation()
+        };
+        let sub_eval = evaluate_dns(
+            &sub,
+            &DnsAnswers {
+                registrable_domain_ns: vec!["ns1.simply.com".to_string()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(sub_eval.reason, "cname_record_mismatch ns=ns1.simply.com");
+
+        let verified = DnsAnswers {
+            txt_records: vec!["qorpera-verify=tok".to_string()],
+            ..pointed
+        };
+        let ok = evaluate_dns(&expectation, &verified);
+        assert!(ok.verified);
+        assert_eq!(ok.reason, "ok");
+    }
+
+    #[test]
+    fn ns_token_keeps_at_most_four_hosts_and_drops_trailing_hosts_to_fit() {
+        let expectation = namah_expectation();
+        let many = DnsAnswers {
+            a_records: vec!["93.164.62.162".to_string()],
+            registrable_domain_ns: ["e", "d", "c", "b", "a", "bad host", "", "x\u{7}y"]
+                .iter()
+                .map(|h| format!("{h}.example.net"))
+                .chain(["".to_string(), "bad,host.net".to_string()])
+                .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            evaluate_dns(&expectation, &many).reason,
+            "txt_verification_missing ns=a.example.net,b.example.net,c.example.net,d.example.net"
+        );
+
+        let long_label = "a".repeat(63);
+        let long_host = |c: char| format!("{c}{}.{long_label}.{long_label}.example", &long_label[1..]);
+        let long = DnsAnswers {
+            a_records: vec!["93.164.62.162".to_string()],
+            hostname_txt_records: vec!["qorpera-verify=tok".to_string()],
+            registrable_domain_ns: vec![long_host('a'), long_host('b'), long_host('c')],
+            ..Default::default()
+        };
+        let reason = evaluate_dns(&expectation, &long).reason;
+        assert!(reason.len() <= 300);
+        assert_eq!(reason, format!("txt_verification_missing txt_on_wrong_name ns={}", long_host('a')));
+        assert!(reason.split(' ').all(|token| !token.is_empty()));
+
+        let longest_host = format!("{long_label}.{long_label}.{long_label}.{}", &long_label[..61]);
+        assert_eq!(longest_host.len(), 253);
+        let huge = DnsAnswers {
+            hostname_txt_records: vec!["qorpera-verify=tok".to_string()],
+            registrable_domain_ns: vec![longest_host],
+            ..Default::default()
+        };
+        assert_eq!(
+            evaluate_dns(&expectation, &huge).reason,
+            "dns_routing_and_txt_missing txt_on_wrong_name"
+        );
+    }
+
+    #[tokio::test]
+    async fn any_server_may_confirm_when_another_serves_a_stale_nxdomain() {
+        let stale = spawn_mock_dns(|_, _| (DNS_RCODE_NXDOMAIN, Vec::new())).await;
+        let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let silent_addr = silent.local_addr().unwrap();
+        let live = spawn_mock_dns(namah_live).await;
+
+        let started = tokio::time::Instant::now();
+        let answers = resolve_domain_dns(
+            &[stale, silent_addr, live],
+            "namah.dk",
+            Duration::from_millis(400),
+        )
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(answers.a_records, vec!["93.164.62.162".to_string()]);
+        assert_eq!(answers.txt_records, vec!["qorpera-verify=tok".to_string()]);
+        assert!(evaluate_dns(&namah_expectation(), &answers).verified);
+
+        let merged = query_all_servers(&[stale, live, live], "namah.dk", DNS_TYPE_A, Duration::from_secs(1)).await;
+        assert_eq!(merged.records, vec![(DNS_TYPE_A, "93.164.62.162".to_string())]);
+        assert_eq!((merged.answered, merged.nxdomain), (3, 1));
+        assert!(!merged.not_found_everywhere());
+        drop(silent);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_find_a_missing_domain_the_shop_and_a_txt_on_the_wrong_name() {
+        let nx_a = spawn_mock_dns(|_, _| (DNS_RCODE_NXDOMAIN, Vec::new())).await;
+        let nx_b = spawn_mock_dns(|_, _| (DNS_RCODE_NXDOMAIN, Vec::new())).await;
+        let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let silent_addr = silent.local_addr().unwrap();
+        let servers = [nx_a, nx_b, silent_addr];
+        let timeout = Duration::from_millis(300);
+        let mut answers = resolve_domain_dns(&servers, "namah.dk", timeout).await;
+        add_domain_diagnostics(&mut answers, &servers, "namah.dk", true, timeout).await;
+        assert!(answers.registrable_domain_not_found);
+        assert_eq!(evaluate_dns(&namah_expectation(), &answers).reason, "domain_not_found");
+
+        let wrong_name = spawn_mock_dns(|qname, qtype| match (qname, qtype) {
+            ("namah.dk", DNS_TYPE_A) => (0, vec![(DNS_TYPE_A, vec![93, 164, 62, 162])]),
+            ("namah.dk", DNS_TYPE_TXT) => (0, vec![(DNS_TYPE_TXT, txt_rdata("qorpera-verify=tok"))]),
+            ("_qorpera.namah.dk", _) => (DNS_RCODE_NXDOMAIN, Vec::new()),
+            ("namah.dk", DNS_TYPE_NS) => (0, vec![(DNS_TYPE_NS, encode_dns_name("ns01.one.com"))]),
+            _ => (0, Vec::new()),
+        })
+        .await;
+        let servers = [nx_a, wrong_name];
+        let mut answers = resolve_domain_dns(&servers, "namah.dk", timeout).await;
+        add_domain_diagnostics(&mut answers, &servers, "namah.dk", true, timeout).await;
+        assert!(!answers.registrable_domain_not_found);
+        assert_eq!(
+            evaluate_dns(&namah_expectation(), &answers).reason,
+            "txt_verification_missing txt_on_wrong_name ns=ns01.one.com"
+        );
+
+        let record_missing = spawn_mock_dns(|qname, qtype| match (qname, qtype) {
+            ("shop.namah.dk", _) => (DNS_RCODE_NXDOMAIN, Vec::new()),
+            ("namah.dk", DNS_TYPE_NS) => (0, vec![(DNS_TYPE_NS, encode_dns_name("ns01.one.com."))]),
+            _ => (0, Vec::new()),
+        })
+        .await;
+        let mut answers = resolve_domain_dns(&[record_missing], "shop.namah.dk", timeout).await;
+        add_domain_diagnostics(&mut answers, &[record_missing], "shop.namah.dk", false, timeout).await;
+        assert!(!answers.registrable_domain_not_found);
+        let sub = DnsExpectation {
+            hostname: "shop.namah.dk".to_string(),
+            is_apex: false,
+            require_txt: false,
+            ..namah_expectation()
+        };
+        assert_eq!(evaluate_dns(&sub, &answers).reason, "cname_record_mismatch ns=ns01.one.com");
+        assert_eq!(registrable_domain("shop.namah.dk."), "namah.dk");
+        assert_eq!(registrable_domain("namah.dk"), "namah.dk");
+        drop(silent);
+    }
+
     #[tokio::test]
     async fn persist_tracker_skips_unchanged_inside_heartbeat_and_prunes_removed() {
         let tracker = DomainPersistTracker::new();
@@ -1013,6 +1448,6 @@ mod tests {
         let records = query_dns_udp(addr, "_qorpera.big-txt.example", DNS_TYPE_TXT, Duration::from_secs(2))
             .await
             .unwrap();
-        assert_eq!(records, vec![(DNS_TYPE_TXT, "qorpera-verify=tcp-fallback-token".to_string())]);
+        assert_eq!(records.records, vec![(DNS_TYPE_TXT, "qorpera-verify=tcp-fallback-token".to_string())]);
     }
 }

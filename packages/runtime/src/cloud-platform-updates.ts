@@ -480,7 +480,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-26",
 		title: "Visual inspection, charts and drawing in Studio",
-		text: "Studio interface sessions now have native visual drawing and sight tools: interactive chart blocks (line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap), validated tab and block layout composition, direct Preview staging for PNG, SVG, HTML, PDF, GLB, and audio artifacts built on the coding machine, and headless browser visual page inspection across desktop, mobile, light, and dark themes before finishing.",
+		text: "Studio interface sessions now have native visual drawing and sight tools: interactive chart blocks (line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap) with custom series/point colors (#hex, rgb/rgba, hsl/hsla, or CSS tokens) and explicit axis bounds (xAxisMin/xAxisMax/yAxisMin/yAxisMax), validated tab and block layout composition, direct Preview staging for PNG, SVG, HTML, PDF, GLB, and audio artifacts built on the coding machine, and headless browser visual page inspection across desktop, mobile, light, and dark themes before finishing.",
 	},
 	{
 		id: "editable-site-subdomains",

@@ -8,7 +8,11 @@ import {
 } from "../src/cloud-company-rename-wake.ts";
 import { cloudCompanyRuntimeInstructions } from "../src/cloud-native-company-context.ts";
 import { cloudRuntimeHireBehavior } from "../src/cloud-runtime-hire-overlays.ts";
-import { buildCompanyInterfacesSection, parseCompanyInterfacesMeta } from "../src/cloud-surface-turn-context.ts";
+import {
+	buildCompanyInterfacesSection,
+	loadCompanyInterfacesContext,
+	parseCompanyInterfacesMeta,
+} from "../src/cloud-surface-turn-context.ts";
 import {
 	CLOUD_WAKE_SCHEMA,
 	type CloudWakeEnvelope,
@@ -128,8 +132,8 @@ describe("company-rename wake payload and protocol", () => {
 		expect(regularInstructions).not.toContain("# This run: the company was renamed");
 	});
 
-	it("parses live company metadata in Company Interfaces and formats formerly suffix cleanly", () => {
-		const meta = parseCompanyInterfacesMeta({
+	it("parses live company metadata in Company Interfaces and formats formerly suffix cleanly", async () => {
+		const raw = {
 			schema: "qorpera.company-interfaces/v1",
 			company: {
 				id: randomUUID(),
@@ -138,13 +142,21 @@ describe("company-rename wake payload and protocol", () => {
 				renamedAt: "2026-11-26T09:15:00Z",
 			},
 			interfaces: [],
-		});
+		};
+		const meta = parseCompanyInterfacesMeta(raw);
 		expect(meta).toEqual({
 			id: expect.any(String),
 			name: "Solstice Roasters",
 			previousName: "Nordlys Kaffe",
 			renamedAt: "2026-11-26T09:15:00Z",
 		});
+
+		const loaded = await loadCompanyInterfacesContext(
+			raw,
+			() => ({ readText: async () => null }),
+			new AbortController().signal,
+		);
+		expect(loaded?.company).toEqual(meta);
 
 		const section = buildCompanyInterfacesSection({ interfaces: [], company: meta });
 		expect(section).toContain("Company name: **Solstice Roasters** (formerly Nordlys Kaffe).");

@@ -381,12 +381,14 @@ describe(
 		it("gives the api name's routes its own Host, never a visitor's x-forwarded-host", async () => {
 			for (const sent of [[], [SITES], [SITES, SITES], [`${SITES}, ${API}`]]) {
 				for (const path of ["/rest/v1/", "/functions/v1/event-intake/x", "/storage/v1/object/x"]) {
-					const answer = seen(
-						await raw(front, path, [["Host", API], ...sent.map((value) => ["X-Forwarded-Host", value])]),
-					);
+					const response = await raw(front, path, [["Host", API], ...sent.map((value) => ["X-Forwarded-Host", value])]);
+					const answer = seen(response);
 					assert.deepEqual(answer.forwardedHost, [API], `${path} ${sent.join(",")}`);
 					// Set by the front itself, not left to the gateway.
 					assert.deepEqual(answer.fromFront, [API], `${path} ${sent.join(",")}`);
+					if (path.startsWith("/storage/v1/")) {
+						assert.match(response.head, /\r\nvary:[^\r\n]*\bOrigin\b/i, `${path} Vary: Origin`);
+					}
 				}
 			}
 			// The api name with a port or a trailing dot is the api name, forwarded bare.

@@ -255,9 +255,7 @@ import {
 } from "./cloud-surface-tools.ts";
 import {
 	type CompanyInterfacesContext,
-	extractStrategyInterfaceSummary,
-	parseCompanyInterfacesMeta,
-	parseCompanyInterfacesResponse,
+	loadCompanyInterfacesContext,
 	parseSurfaceConflictDetails,
 	parseSurfaceTurnOpenChanges,
 	parseSurfaceTurnResolvedChanges,
@@ -2252,44 +2250,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			if (signal.aborted) throw error;
 			return null;
 		}
-		const interfaces = parseCompanyInterfacesResponse(raw);
-		const company = parseCompanyInterfacesMeta(raw);
-		if (interfaces.length === 0 && !company) return null;
-		const strategyInterface = interfaces.find((item) => item.slug === "strategy" || item.kind === "strategy");
-		const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
-		const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
-		const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
-		if (!strategyRoot && !identityRoot) {
-			return { interfaces, company, strategySummary: null, identitySummary: null };
-		}
-		let folderClient: CloudCompanyFolderClient;
-		try {
-			folderClient = getFolder();
-		} catch (error) {
-			if (signal.aborted) throw error;
-			return { interfaces, company, strategySummary: null, identitySummary: null };
-		}
-		const readOptionalText = async (path: string, maxBytes: number): Promise<string | null> => {
-			try {
-				const found = await folderClient.readText(path, maxBytes, signal);
-				const text = found?.text.trim();
-				return text ? text : null;
-			} catch (error) {
-				if (signal.aborted) throw error;
-				return null;
-			}
-		};
-		const [strategyPlays, strategyBrief, identityBrief] = await Promise.all([
-			strategyRoot ? readOptionalText(`${strategyRoot}/plays.json`, 16_384) : Promise.resolve(null),
-			strategyRoot ? readOptionalText(`${strategyRoot}/brief.md`, 12_288) : Promise.resolve(null),
-			identityRoot ? readOptionalText(`${identityRoot}/brief.md`, 12_288) : Promise.resolve(null),
-		]);
-		return {
-			interfaces,
-			company,
-			strategySummary: extractStrategyInterfaceSummary(strategyPlays, strategyBrief),
-			identitySummary: identityBrief,
-		};
+		return loadCompanyInterfacesContext(raw, getFolder, signal);
 	}
 
 	async #loadSurfaceCodingBinding(
