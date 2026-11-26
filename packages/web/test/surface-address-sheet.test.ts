@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	ADDRESS_POLL_MS,
 	ADDRESS_RECHECK_GAP_MS,
+	ADDRESS_SECURING_MS,
 	ADDRESS_SLUG_CHECK_MS,
 	type AddressMark,
 	SurfaceAddress,
@@ -79,9 +80,13 @@ const submit = (text: string) => {
 		.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
 };
 const records = () =>
-	[...sheet().querySelectorAll(".surface-address-record")].map((item) =>
-		[...item.querySelectorAll("b, span")].map((cell) => cell.textContent),
-	);
+	[...sheet().querySelectorAll(".surface-address-record")].map((item) => [
+		item.querySelector(".surface-address-chip")?.textContent,
+		item.querySelector(".surface-address-record-what, .surface-address-record-wrong")?.textContent,
+		...[...item.querySelectorAll(".surface-address-fields > span")].map((cell) => cell.textContent).filter(Boolean),
+	]);
+const line = () => sheet().querySelector(".surface-address-line")?.textContent;
+const hints = () => [...sheet().querySelectorAll(".surface-address-hint")].map((item) => item.textContent);
 const refusal = (message: string, code = "42501") => new CloudRpcError("rpc", { message, code });
 const changing = () =>
 	sheet().querySelectorAll(
@@ -299,13 +304,12 @@ describe("your own domain", () => {
 		expect(title()).toBe("www.thetaband.dk");
 		await settle();
 		expect(title()).toBe("www.thetaband.dk");
-		expect(sheet().querySelector(".surface-address-line")?.textContent).toBe(
-			"Add these two lines where you bought www.thetaband.dk.",
-		);
+		expect(line()).toBe("Open the DNS settings where you bought thetaband.dk and create these two records.");
 		expect(records()).toEqual([
-			["CNAME", "www.thetaband.dk", "edge.qorpera.com"],
-			["TXT", "_qorpera.www.thetaband.dk", "qorpera-verify=9f3a1c"],
+			["CNAME", "points www.thetaband.dk to your website", "Hostname", "www", "Value", "edge.qorpera.com"],
+			["TXT", "shows the domain is yours", "Hostname", "_qorpera.www", "Value", "qorpera-verify=9f3a1c"],
 		]);
+		expect(hints()).toEqual(["Some shops call Hostname “Name” or “Host”. The shop adds “.thetaband.dk” by itself."]);
 		expect(groups()).toEqual([["Copy as a message for someone else", "Remove www.thetaband.dk"]]);
 		expect(address.mark()).toBe("private");
 
@@ -319,14 +323,13 @@ describe("your own domain", () => {
 	it("names an apex domain's three lines", async () => {
 		await opened({ entry: { isPublic: true, domains: [siteDomain("thetaband.dk")] } });
 		press("thetaband.dk");
-		expect(sheet().querySelector(".surface-address-line")?.textContent).toBe(
-			"Add these three lines where you bought thetaband.dk.",
-		);
+		expect(line()).toBe("Open the DNS settings where you bought thetaband.dk and create these three records.");
 		expect(records()).toEqual([
-			["A", "@", "203.0.113.7"],
-			["AAAA", "@", "2001:db8::7"],
-			["TXT", "_qorpera.thetaband.dk", "qorpera-verify=9f3a1c"],
+			["A", "points thetaband.dk to your website", "Hostname", "leave empty", "Value", "203.0.113.7"],
+			["AAAA", "also points thetaband.dk to your website", "Hostname", "leave empty", "Value", "2001:db8::7"],
+			["TXT", "shows the domain is yours", "Hostname", "_qorpera", "Value", "qorpera-verify=9f3a1c"],
 		]);
+		expect(sheet().querySelectorAll(".surface-address-copy").length).toBe(4);
 	});
 
 	it("copies a line, the lines as a message, and says what to press when the browser refuses", async () => {
@@ -335,11 +338,13 @@ describe("your own domain", () => {
 		const writeText = vi.fn(async (_text: string) => {});
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
 		const copies = () => [...sheet().querySelectorAll<HTMLButtonElement>(".surface-address-copy")];
-		copies()[1]!.click();
+		copies()[3]!.click();
 		expect(writeText).toHaveBeenCalledWith("qorpera-verify=9f3a1c");
 		await settle();
-		expect(copies()[1]!.classList.contains("is-copied")).toBe(true);
-		expect(copies()[1]!.getAttribute("aria-label")).toBe("Copy qorpera-verify=9f3a1c");
+		expect(copies()[3]!.classList.contains("is-copied")).toBe(true);
+		expect(copies()[3]!.getAttribute("aria-label")).toBe("Copy qorpera-verify=9f3a1c");
+		copies()[2]!.click();
+		expect(writeText).toHaveBeenLastCalledWith("_qorpera.www");
 
 		press("Copy as a message for someone else");
 		await settle();
@@ -347,13 +352,20 @@ describe("your own domain", () => {
 			[
 				"Could you add these lines to the DNS for www.thetaband.dk? They connect it to our website.",
 				"",
-				"CNAME  www.thetaband.dk  edge.qorpera.com",
-				"TXT  _qorpera.www.thetaband.dk  qorpera-verify=9f3a1c",
+				"CNAME",
+				"Hostname: www",
+				"Value: edge.qorpera.com",
+				"",
+				"TXT",
+				"Hostname: _qorpera.www",
+				"Value: qorpera-verify=9f3a1c",
+				"",
+				"Some shops call Hostname “Name” or “Host”. The shop adds “.thetaband.dk” by itself.",
 			].join("\n"),
 		);
 
 		writeText.mockRejectedValueOnce(new Error("denied"));
-		copies()[0]!.click();
+		copies()[1]!.click();
 		await settle();
 		expect(problem()).toMatch(/^Press (⌘|Ctrl\+)C to copy\.$/);
 		expect(window.getSelection()?.toString()).toBe("edge.qorpera.com");
@@ -627,20 +639,231 @@ describe("the address card while a domain is not connected", () => {
 			throw new Error("denied");
 		});
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-		const value = sheet().querySelectorAll(".surface-address-value")[1]!;
-		sheet().querySelectorAll<HTMLButtonElement>(".surface-address-copy")[1]!.click();
+		const value = sheet().querySelectorAll(".surface-address-value")[3]!;
+		sheet().querySelectorAll<HTMLButtonElement>(".surface-address-copy")[3]!.click();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(problem()).toMatch(/^Press (⌘|Ctrl\+)C to copy\.$/);
 		expect(window.getSelection()?.toString()).toBe("qorpera-verify=9f3a1c");
-		const selected = sheet().querySelectorAll(".surface-address-value")[1]!;
+		const selected = sheet().querySelectorAll(".surface-address-value")[3]!;
 		expect(selected).not.toBe(value);
 
 		const reads = client.read.mock.calls.length;
 		await vi.advanceTimersByTimeAsync(ADDRESS_POLL_MS);
 		expect(client.read).toHaveBeenCalledTimes(reads + 1);
-		expect(sheet().querySelectorAll(".surface-address-value")[1]).toBe(selected);
+		expect(sheet().querySelectorAll(".surface-address-value")[3]).toBe(selected);
 		expect(window.getSelection()?.toString()).toBe("qorpera-verify=9f3a1c");
 		expect(problem()).toMatch(/^Press (⌘|Ctrl\+)C to copy\.$/);
+	});
+});
+
+const CHECKED = "2026-11-26T08:00:00Z";
+const found = () =>
+	[...sheet().querySelectorAll(".surface-address-record.is-found .surface-address-chip")].map(
+		(item) => item.textContent,
+	);
+
+describe("what the card says after the domain was checked", () => {
+	it("keeps the lines in the shop's words when the reason is unknown, naming the shop when the name servers tell it", async () => {
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [
+					siteDomain("namah.dk", "pending_dns", {
+						lastCheckedAt: CHECKED,
+						lastError: "something_new ns=ns01.one.com",
+					}),
+				],
+			},
+		});
+		press("namah.dk");
+		expect(line()).toBe("Open the DNS settings at one.com and create these three records.");
+		expect(found()).toEqual([]);
+		expect(records().map((record) => record[0])).toEqual(["A", "AAAA", "TXT"]);
+		expect(groups()).toEqual([["Copy as a message for someone else", "Remove namah.dk"]]);
+	});
+
+	it("shows what was found from today's single reason, the rest as full boxes", async () => {
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [
+					siteDomain("namah.dk", "pending_dns", { lastCheckedAt: CHECKED, lastError: "txt_verification_missing" }),
+				],
+			},
+		});
+		press("namah.dk");
+		expect(line()).toBe("Two of three found. We look again every 30 seconds.");
+		expect(found()).toEqual(["A", "AAAA"]);
+		expect(records()[2]).toEqual([
+			"TXT",
+			"shows the domain is yours",
+			"Hostname",
+			"_qorpera",
+			"Value",
+			"qorpera-verify=9f3a1c",
+		]);
+		expect(sheet().querySelector(".surface-address-record.is-wrong")).toBeNull();
+		expect(hints()).toEqual([]);
+		expect(groups()).toEqual([["Copy as a message for someone else", "Remove namah.dk"]]);
+	});
+
+	it("says the routing line is missing on a subdomain and the TXT is found", async () => {
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [
+					siteDomain("www.namah.dk", "pending_dns", {
+						lastCheckedAt: CHECKED,
+						lastError: "cname_record_mismatch",
+					}),
+				],
+			},
+		});
+		press("www.namah.dk");
+		expect(line()).toBe("One of two found. We look again every 30 seconds.");
+		expect(found()).toEqual(["TXT"]);
+		expect(records()[0]).toEqual([
+			"CNAME",
+			"points www.namah.dk to your website",
+			"Hostname",
+			"www",
+			"Value",
+			"edge.qorpera.com",
+		]);
+	});
+
+	it("says plainly when the TXT line sits on the wrong name", async () => {
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [
+					siteDomain("namah.dk", "pending_dns", {
+						lastCheckedAt: CHECKED,
+						lastError: "dns_routing_and_txt_missing txt_on_wrong_name ns=ns01.one.com,ns02.one.com",
+					}),
+				],
+			},
+		});
+		press("namah.dk");
+		expect(line()).toBe("None found yet. We look again every 30 seconds.");
+		const wrong = sheet().querySelector(".surface-address-record.is-wrong")!;
+		expect(wrong.querySelector(".surface-address-record-wrong")?.textContent).toBe("Found on the wrong name");
+		expect(wrong.querySelector(".surface-address-record-note")?.textContent).toBe(
+			"It's on namah.dk. Put it on _qorpera instead: write _qorpera in the Hostname box.",
+		);
+		expect(records()[2]).toEqual([
+			"TXT",
+			"Found on the wrong name",
+			"Hostname",
+			"_qorpera",
+			"Value",
+			"qorpera-verify=9f3a1c",
+		]);
+		expect(sheet().textContent).not.toContain("txt_on_wrong_name");
+		expect(sheet().textContent).not.toContain("dns_routing");
+	});
+
+	it("says a domain that is not on the internet yet must be switched on, with the lines folded", async () => {
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [
+					siteDomain("namah.dk", "pending_dns", {
+						lastCheckedAt: CHECKED,
+						lastError: "domain_not_found ns=ns01.one.com",
+					}),
+				],
+			},
+		});
+		press("namah.dk");
+		expect(sheet().querySelector(".surface-address-warn-title")?.textContent).toBe(
+			"namah.dk isn't on the internet yet",
+		);
+		expect(sheet().querySelector(".surface-address-warn-text")?.textContent).toBe(
+			"New .dk domains wait until the owner confirms them. Look for an email from Punktum dk and confirm with MitID. It usually takes a few minutes after that.",
+		);
+		expect(line()).toBe(
+			"Your three lines can go in at one.com already. We'll find them as soon as the domain is on.",
+		);
+		expect(
+			[...sheet().querySelectorAll(".surface-address-record.is-summary")].map((item) => item.textContent),
+		).toEqual([
+			"AHostname empty · 203.0.113.7",
+			"AAAAHostname empty · 2001:db8::7",
+			"TXTHostname _qorpera · qorpera-verify=9f3a1c",
+		]);
+		expect(sheet().querySelectorAll(".surface-address-copy").length).toBe(0);
+		expect(groups()).toEqual([["Remove namah.dk"]]);
+		document.body.replaceChildren();
+
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [
+					siteDomain("www.namah.com", "pending_dns", { lastCheckedAt: CHECKED, lastError: "domain_not_found" }),
+				],
+			},
+		});
+		press("www.namah.com");
+		expect(sheet().querySelector(".surface-address-warn-text")?.textContent).toBe(
+			"New domains can take a while before they are switched on. Check your email from the shop where you bought it for a confirmation step.",
+		);
+		expect(line()).toBe("Your two lines can go in already. We'll find them as soon as the domain is on.");
+	});
+
+	it("shows the lines again for a check that has not run or a reason it does not know", async () => {
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [siteDomain("namah.dk", "pending_dns", { lastCheckedAt: null, lastError: "domain_not_found" })],
+			},
+		});
+		press("namah.dk");
+		expect(line()).toBe("Open the DNS settings where you bought namah.dk and create these three records.");
+		document.body.replaceChildren();
+
+		await opened({
+			entry: {
+				isPublic: true,
+				domains: [
+					siteDomain("namah.dk", "pending_dns", { lastCheckedAt: CHECKED, lastError: "  ns=junk,, ok?? " }),
+				],
+			},
+		});
+		press("namah.dk");
+		expect(line()).toBe("Open the DNS settings where you bought namah.dk and create these three records.");
+	});
+
+	it("shows the steps while a found domain is made secure, keeps the old address, then switches by itself", async () => {
+		vi.useFakeTimers();
+		const now = new Date("2026-11-26T09:00:00Z");
+		vi.setSystemTime(now);
+		const fresh = siteDomain("namah.dk", "dns_verified", {
+			isPrimary: true,
+			lastCheckedAt: now.toISOString(),
+			verifiedAt: now.toISOString(),
+		});
+		const { address } = mount({ entry: { isPublic: true, domains: [fresh] } });
+		await vi.advanceTimersByTimeAsync(0);
+		address.open();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(bar().textContent).toBe("thetaband.qorpera.com");
+		expect(groups()[1]).toEqual(["namah.dk | Making it secure"]);
+		press("namah.dk");
+		expect(title()).toBe("namah.dk");
+		expect([...sheet().querySelectorAll(".surface-address-step")].map((item) => item.textContent)).toEqual([
+			"All lines found",
+			"Making it secureabout a minute",
+			"Open at namah.dk",
+		]);
+		expect(hints()).toEqual([
+			"You can close this. The website keeps its thetaband.qorpera.com address until namah.dk is ready, then switches by itself.",
+		]);
+		expect(groups()).toEqual([["Remove namah.dk"]]);
+
+		await vi.advanceTimersByTimeAsync(ADDRESS_SECURING_MS);
+		expect(groups()).toEqual([["Add another address", "Remove namah.dk"]]);
+		expect(bar().textContent).toBe("namah.dk");
 	});
 });
 
