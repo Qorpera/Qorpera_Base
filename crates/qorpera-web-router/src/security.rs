@@ -328,6 +328,28 @@ pub fn render_not_live_page(danish: bool) -> &'static str {
     }
 }
 
+pub fn render_almost_ready_page(hostname: &str, danish: bool) -> String {
+    let (lang, headline, line, made_with) = if danish {
+        (
+            "da",
+            "er næsten klar",
+            "Hjemmesiden flytter til sin nye adresse. Prøv igen om et par minutter.",
+            "Lavet med Qorpera",
+        )
+    } else {
+        (
+            "en",
+            "is almost ready",
+            "This website is moving to its new address. Try again in a few minutes.",
+            "Made with Qorpera",
+        )
+    };
+    let host = escape_html(hostname);
+    format!(
+        "<!doctype html><html lang=\"{lang}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>{host} {headline}</title><style>body{{font-family:system-ui,-apple-system,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}}main{{max-width:520px;padding:24px;text-align:center}}h1{{font-size:32px;line-height:1.2;margin:0 0 12px;overflow-wrap:anywhere}}p{{color:#475569;margin:0}}small{{display:block;margin-top:32px;color:#94a3b8;font-size:12px}}</style></head><body><main><h1>{host} {headline}</h1><p>{line}</p><small>{made_with}</small></main></body></html>"
+    )
+}
+
 pub fn render_takedown_page() -> &'static str {
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Site unavailable</title><style>body{font-family:system-ui,-apple-system,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}main{max-width:420px;padding:24px;text-align:center}h1{font-size:20px;margin:0 0 8px}p{color:#475569;margin:0}</style></head><body><main><h1>This site is not available</h1><p>This site has been taken offline.</p></main></body></html>"
 }
@@ -384,6 +406,25 @@ mod tests {
         }
         assert!(render_not_live_page(false).contains("<h1>Not live yet</h1>"));
         assert!(render_not_live_page(true).contains("<h1>Ikke live endnu</h1>"));
+    }
+
+    #[test]
+    fn almost_ready_page_in_english_and_danish() {
+        let english = render_almost_ready_page("namah.dk", false);
+        assert!(english.contains("lang=\"en\""));
+        assert!(english.contains("<h1>namah.dk is almost ready</h1>"));
+        assert!(english.contains("This website is moving to its new address. Try again in a few minutes."));
+        assert!(english.contains("Made with Qorpera"));
+        let danish = render_almost_ready_page("namah.dk", true);
+        assert!(danish.contains("lang=\"da\""));
+        assert!(danish.contains("<h1>namah.dk er næsten klar</h1>"));
+        assert!(danish.contains("Hjemmesiden flytter til sin nye adresse. Prøv igen om et par minutter."));
+        assert!(danish.contains("Lavet med Qorpera"));
+        for page in [&english, &danish] {
+            assert!(page.contains("noindex"));
+            assert!(!page.contains("http://") && !page.contains("https://") && !page.contains("<script"));
+        }
+        assert!(render_almost_ready_page("<x>", false).contains("&lt;x&gt; is almost ready"));
     }
 
     #[test]
