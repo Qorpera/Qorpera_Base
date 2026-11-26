@@ -369,6 +369,7 @@ export class SurfaceView {
 	#toastShown = "";
 	#barOpen = false;
 	#barPinned = false;
+	#hasNotch = false;
 	#panelsHidden = false;
 	#peekTimer: ReturnType<typeof setTimeout> | undefined;
 	readonly #thumbAt = new Map<string, readonly [number, number]>();
@@ -703,22 +704,23 @@ export class SurfaceView {
 	}
 
 	#setBarOpen(open: boolean): void {
-		this.#barOpen = open;
+		this.#barOpen = open && this.#hasNotch;
 		this.#paintNotch();
 	}
 
 	#paintNotch(): void {
 		const hidden = this.#panelsHidden;
-		const open = !hidden && (this.#barOpen || this.#barPinned);
+		const notchHidden = hidden || !this.#hasNotch;
+		const open = !notchHidden && (this.#barOpen || this.#barPinned);
 		this.el.classList.toggle("is-panels-hidden", hidden);
 		this.#notch.classList.toggle("is-open", open);
-		this.#notch.hidden = hidden;
+		this.#notch.hidden = notchHidden;
 		this.#showPanels.hidden = !hidden;
 		this.#composeOpen.hidden = !hidden;
-		this.#notchPill.hidden = hidden || this.#barPinned;
-		this.#notchPill.inert = open;
+		this.#notchPill.hidden = notchHidden || this.#barPinned;
+		this.#notchPill.inert = open || notchHidden;
 		this.#notchPill.setAttribute("aria-expanded", String(open));
-		this.#notchBar.hidden = hidden;
+		this.#notchBar.hidden = notchHidden;
 		this.#notchBar.inert = !open;
 		this.#fitNotch();
 	}
@@ -735,21 +737,25 @@ export class SurfaceView {
 		if (surface) this.#drawBar(surface);
 		else this.#paintNotch();
 		if (hidden) this.#showPanels.focus({ preventScroll: true });
-		else if (hadFocus) this.#notchPill.focus({ preventScroll: true });
+		else if (hadFocus && this.#hasNotch) this.#notchPill.focus({ preventScroll: true });
 		window.dispatchEvent(new Event("qorpera-rail-resize"));
 	}
 
 	#fitNotch(): void {
-		if (this.#panelsHidden) return;
-		const layer = this.#notch.classList.contains("is-open") ? this.#notchBar : this.#notchPill;
-		const width = layer.offsetWidth;
-		const height = layer.offsetHeight;
-		if (width > 0 && height > 0) {
-			this.#notch.style.width = `${width}px`;
-			this.#notch.style.height = `${height}px`;
+		if (this.#hasNotch && !this.#panelsHidden) {
+			const layer = this.#notch.classList.contains("is-open") ? this.#notchBar : this.#notchPill;
+			const width = layer.offsetWidth;
+			const height = layer.offsetHeight;
+			if (width > 0 && height > 0) {
+				this.#notch.style.width = `${width}px`;
+				this.#notch.style.height = `${height}px`;
+			}
+			for (const toggle of this.#notchBar.querySelectorAll<HTMLElement>(".surface-toggle")) this.#placeThumb(toggle);
+			this.#markNotchCut();
+		} else if (!this.#hasNotch) {
+			this.#notch.style.removeProperty("width");
+			this.#notch.style.removeProperty("height");
 		}
-		for (const toggle of this.#notchBar.querySelectorAll<HTMLElement>(".surface-toggle")) this.#placeThumb(toggle);
-		this.#markNotchCut();
 		if (this.#fitPhoneCorners()) this.#syncPhoneViewport();
 	}
 
@@ -867,8 +873,17 @@ export class SurfaceView {
 		const state = store.state;
 		const surface = this.surface;
 		if (!surface) {
+			this.#hasNotch = false;
+			this.#barOpen = false;
+			this.#barPinned = false;
+			this.#notch.hidden = true;
+			this.#notch.classList.remove("is-open");
+			this.#notch.style.removeProperty("width");
+			this.#notch.style.removeProperty("height");
+			this.#notchPill.replaceChildren();
 			this.#notchBar.replaceChildren();
 			this.#bar.hidden = true;
+			this.#bar.classList.remove("has-phone-corners", "is-phone-stacked", "is-phone-tight", "is-phone-covered");
 			this.#panelToggle.hidden = true;
 			this.#phoneModelCorner.hidden = true;
 			this.#phoneZoomCorner.hidden = true;
@@ -1117,7 +1132,7 @@ export class SurfaceView {
 		this.#phoneZoomCorner.hidden = !isMobile;
 		if (!isMobile) {
 			this.#viewport.removeAttribute("data-phone-cutout");
-			this.#bar.classList.remove("has-phone-corners", "is-phone-stacked");
+			this.#bar.classList.remove("has-phone-corners", "is-phone-stacked", "is-phone-tight", "is-phone-covered");
 			delete this.#viewport.dataset.phoneStacked;
 			delete this.#viewport.dataset.phoneZoomed;
 			this.#viewport.style.removeProperty("--phone-w");
@@ -1204,15 +1219,26 @@ export class SurfaceView {
 		const start = this.#phoneModelCorner.offsetWidth;
 		const end = this.#phoneZoomCorner.offsetWidth;
 		const gap = Math.ceil(12 * uiScale());
-		const clears = (notch: number) => notch / 2 + Math.max(start, end) + gap <= inner / 2;
-		const notch = (parseFloat(this.#notch.style.width) || this.#notch.offsetWidth) + 2;
-		const restingNotch = this.#barPinned || this.#panelsHidden ? notch : this.#notchPill.offsetWidth + 2;
-		const stacked = inner > 0 && !clears(restingNotch);
-		const changed = stacked !== (this.#viewport.dataset.phoneStacked === "true");
+		const notchShown = this.#hasNotch && !this.#panelsHidden;
+		let stacked = false;
+		let tight = false;
+		let covered = false;
+		if (notchShown) {
+			const clears = (notch: number) => notch / 2 + Math.max(start, end) + gap <= inner / 2;
+			const notch = (parseFloat(this.#notch.style.width) || this.#notch.offsetWidth) + 2;
+			const restingNotch = this.#barPinned ? notch : this.#notchPill.offsetWidth + 2;
+			stacked = inner > 0 && !clears(restingNotch);
+			tight = stacked && start + end + gap > inner;
+			covered = !stacked && inner > 0 && !clears(notch);
+		} else {
+			tight = inner > 0 && start + end + gap > inner;
+		}
+		const needsRoom = stacked || tight;
+		const changed = needsRoom !== (this.#viewport.dataset.phoneStacked === "true");
 		this.#bar.classList.toggle("is-phone-stacked", stacked);
-		this.#bar.classList.toggle("is-phone-tight", stacked && start + end + gap > inner);
-		this.#bar.classList.toggle("is-phone-covered", !stacked && inner > 0 && !clears(notch));
-		if (stacked) this.#viewport.dataset.phoneStacked = "true";
+		this.#bar.classList.toggle("is-phone-tight", tight);
+		this.#bar.classList.toggle("is-phone-covered", covered);
+		if (needsRoom) this.#viewport.dataset.phoneStacked = "true";
 		else delete this.#viewport.dataset.phoneStacked;
 		return changed;
 	}
@@ -1278,14 +1304,13 @@ export class SurfaceView {
 		const shownCount = effectiveMode === "preview" ? store.shownPreviewChangeCount(surface.id) : 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
+		const mobileApp = look.kind === "mobile_app";
+		if (mobileApp && this.#address.isOpen) {
+			this.#address.close();
+			return;
+		}
 		const effectiveDevice =
-			reportMode || !live
-				? "desktop"
-				: look.kind === "mobile_app"
-					? "mobile"
-					: showViewportSplit
-						? state.device
-						: "desktop";
+			reportMode || !live ? "desktop" : mobileApp ? "mobile" : showViewportSplit ? state.device : "desktop";
 		const showWebsiteZoom = live && !reportMode && effectiveDevice === "desktop";
 		const websiteZoom = clampSurfaceZoom(state.websiteZoom);
 		const served = this.#host.isSiteLive?.(surface);
@@ -1337,7 +1362,7 @@ export class SurfaceView {
 		if (key === this.#barShown) return;
 		this.#barShown = key;
 		const ask = surface.publishAsk ?? null;
-		const askedMe = site === "live" && askedToPublish(surface, store.userId);
+		const askedMe = !mobileApp && site === "live" && askedToPublish(surface, store.userId);
 		const myAsk = ask && ask.askedByUserId === store.userId ? ask : null;
 		const askKey = askedMe ? `${surface.id}:${ask!.askedAt}` : "";
 		if (askKey && askKey !== this.#askShown) {
@@ -1345,7 +1370,7 @@ export class SurfaceView {
 			if (state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 		}
 		if (!this.#panelsHidden) this.#askShown = askKey;
-		if (site === "private" && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
+		if ((mobileApp || site === "private") && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 
 		const toggle = (name: string, label: string, ...segments: HTMLElement[]) =>
 			h(
@@ -1382,155 +1407,163 @@ export class SurfaceView {
 			);
 
 		const groups: HTMLElement[] = [];
-		const address = live ? this.#address.button() : null;
-		if (address) groups.push(address);
-		if (live && site === "live") {
-			groups.push(
-				toggle(
-					"mode",
-					t("What the surface shows"),
-					modeSegment("live", t("Live"), t("What visitors see right now")),
-					modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
-				),
-			);
-		} else if (studioHasChanges || (surface.archetype === "studio" && state.mode === "report")) {
-			groups.push(
-				toggle(
-					"mode",
-					t("What the surface shows"),
-					modeSegment("live", t("Base"), t("Saved studio files without open changes")),
-					modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
-				),
-			);
-		}
-		if (showViewportSplit) {
-			groups.push(
-				toggle(
-					"device",
-					t("Viewport"),
-					deviceSegment("desktop", t("Desktop"), icon("computer")),
-					deviceSegment("mobile", t("Mobile"), h("span", { class: "surface-phone-icon", "aria-hidden": "true" })),
-				),
-			);
-		}
-		if (showWebsiteZoom) {
-			groups.push(this.#buildZoomControl("website", websiteZoom));
-		}
-
+		const address = !mobileApp && live ? this.#address.button() : null;
 		const count = surface.unpublishedChangeCount;
-		const presentHere = store.peopleAtSurface(surface.slug);
-		if (presentHere.length > 0) {
-			const presentLabel =
-				presentHere.length === 1
-					? t("{name} is here", { name: presentHere[0]!.name })
-					: t("{names} are here", { names: presentHere.map((person) => person.name).join(", ") });
-			groups.push(
-				h(
-					"span",
-					{ class: "surface-pill-presence", title: presentLabel, "aria-label": presentLabel },
-					...presentHere.slice(0, 3).map((person) => personAvatar(person.name, person.userId)),
-					presentHere.length > 3
-						? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
-						: null,
-					presentHere.length > 1
-						? h("span", { class: "surface-pill-presence-fold" }, `+${presentHere.length - 1}`)
-						: null,
-				),
-			);
-		}
-		const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
-		const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
-		const personName = (userId: string) => store.memberName(userId) ?? t("A teammate");
-		if (askedMe && surface.archetype !== "ops" && count > 0 && !publishBusy) {
-			const asker = personName(ask!.askedByUserId);
-			const label = t("{name} asks you to publish", { name: firstName(asker) });
-			groups.push(
-				h(
-					"div",
-					{ class: "surface-publish has-changes is-asked", role: "group", "aria-label": label },
-					h(
-						"button",
-						{ type: "button", class: "surface-publish-main", title: label, "data-act": "publish" },
-						personAvatar(asker, ask!.askedByUserId),
-						h("span", { class: "surface-publish-word" }, t("Publish")),
+		if (!mobileApp) {
+			if (address) groups.push(address);
+			if (live && site === "live") {
+				groups.push(
+					toggle(
+						"mode",
+						t("What the surface shows"),
+						modeSegment("live", t("Live"), t("What visitors see right now")),
+						modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
 					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-yes",
-							disabled: askBusy,
-							"aria-label": t("Yes, publish"),
-							title: t("Yes, publish"),
-							"data-act": "ask-yes",
-						},
-						icon("check"),
+				);
+			} else if (studioHasChanges || (surface.archetype === "studio" && state.mode === "report")) {
+				groups.push(
+					toggle(
+						"mode",
+						t("What the surface shows"),
+						modeSegment("live", t("Base"), t("Saved studio files without open changes")),
+						modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
 					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-no",
-							disabled: askBusy,
-							"aria-label": t("No"),
-							title: t("No"),
-							"data-act": "ask-no",
-						},
-						icon("close"),
+				);
+			}
+			if (showViewportSplit) {
+				groups.push(
+					toggle(
+						"device",
+						t("Viewport"),
+						deviceSegment("desktop", t("Desktop"), icon("computer")),
+						deviceSegment(
+							"mobile",
+							t("Mobile"),
+							h("span", { class: "surface-phone-icon", "aria-hidden": "true" }),
+						),
 					),
-				),
-			);
-		} else if (site === "live" && surface.archetype !== "ops" && (count > 0 || publishBusy)) {
-			const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
-			const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
-			groups.push(
-				h(
-					"div",
-					{ class: `surface-publish${count ? " has-changes" : ""}${publishBusy ? " is-busy" : ""}` },
+				);
+			}
+			if (showWebsiteZoom) {
+				groups.push(this.#buildZoomControl("website", websiteZoom));
+			}
+
+			const presentHere = store.peopleAtSurface(surface.slug);
+			if (presentHere.length > 0) {
+				const presentLabel =
+					presentHere.length === 1
+						? t("{name} is here", { name: presentHere[0]!.name })
+						: t("{names} are here", { names: presentHere.map((person) => person.name).join(", ") });
+				groups.push(
 					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-main",
-							disabled: publishBusy,
-							title: publishBusy ? t("Publishing…") : t("Publish Base to the live surface"),
-							"data-act": "publish",
-						},
-						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
-						saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
-						publishBusy
-							? h("span", { class: "surface-publish-word" }, t("Publishing…"))
-							: saidNo
-								? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
-								: t("Publish"),
-						publishBusy || saidNo
-							? h("span", { class: "surface-publish-short" }, publishBusy ? t("Publish") : t("No"))
+						"span",
+						{ class: "surface-pill-presence", title: presentLabel, "aria-label": presentLabel },
+						...presentHere.slice(0, 3).map((person) => personAvatar(person.name, person.userId)),
+						presentHere.length > 3
+							? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
 							: null,
-						!publishBusy && !saidNo && count ? h("span", { class: "surface-notch-count" }, String(count)) : null,
-						askedUser && !saidNo
-							? h(
-									"span",
-									{
-										class: "surface-publish-waiting",
-										title: t("Waiting for {name}", { name: firstName(personName(askedUser)) }),
-									},
-									personAvatar(personName(askedUser), askedUser),
-								)
+						presentHere.length > 1
+							? h("span", { class: "surface-pill-presence-fold" }, `+${presentHere.length - 1}`)
 							: null,
 					),
+				);
+			}
+			const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+			const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
+			const personName = (userId: string) => store.memberName(userId) ?? t("A teammate");
+			if (askedMe && surface.archetype !== "ops" && count > 0 && !publishBusy) {
+				const asker = personName(ask!.askedByUserId);
+				const label = t("{name} asks you to publish", { name: firstName(asker) });
+				groups.push(
 					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-menu",
-							"aria-label": t("Publish options"),
-							"aria-haspopup": "menu",
-							"data-act": "publish-menu",
-						},
-						icon("chevron-down"),
+						"div",
+						{ class: "surface-publish has-changes is-asked", role: "group", "aria-label": label },
+						h(
+							"button",
+							{ type: "button", class: "surface-publish-main", title: label, "data-act": "publish" },
+							personAvatar(asker, ask!.askedByUserId),
+							h("span", { class: "surface-publish-word" }, t("Publish")),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-yes",
+								disabled: askBusy,
+								"aria-label": t("Yes, publish"),
+								title: t("Yes, publish"),
+								"data-act": "ask-yes",
+							},
+							icon("check"),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-no",
+								disabled: askBusy,
+								"aria-label": t("No"),
+								title: t("No"),
+								"data-act": "ask-no",
+							},
+							icon("close"),
+						),
 					),
-				),
-			);
+				);
+			} else if (site === "live" && surface.archetype !== "ops" && (count > 0 || publishBusy)) {
+				const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
+				const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
+				groups.push(
+					h(
+						"div",
+						{ class: `surface-publish${count ? " has-changes" : ""}${publishBusy ? " is-busy" : ""}` },
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-main",
+								disabled: publishBusy,
+								title: publishBusy ? t("Publishing…") : t("Publish Base to the live surface"),
+								"data-act": "publish",
+							},
+							publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
+							saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
+							publishBusy
+								? h("span", { class: "surface-publish-word" }, t("Publishing…"))
+								: saidNo
+									? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
+									: t("Publish"),
+							publishBusy || saidNo
+								? h("span", { class: "surface-publish-short" }, publishBusy ? t("Publish") : t("No"))
+								: null,
+							!publishBusy && !saidNo && count
+								? h("span", { class: "surface-notch-count" }, String(count))
+								: null,
+							askedUser && !saidNo
+								? h(
+										"span",
+										{
+											class: "surface-publish-waiting",
+											title: t("Waiting for {name}", { name: firstName(personName(askedUser)) }),
+										},
+										personAvatar(personName(askedUser), askedUser),
+									)
+								: null,
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-menu",
+								"aria-label": t("Publish options"),
+								"aria-haspopup": "menu",
+								"data-act": "publish-menu",
+							},
+							icon("chevron-down"),
+						),
+					),
+				);
+			}
 		}
 
 		const panelLabel = panelOpen ? t("Close panel") : t("Preview panel");
@@ -1559,9 +1592,21 @@ export class SurfaceView {
 					icon("hide"),
 				),
 			);
-		else this.#panelsHidden = false;
-		this.#bar.hidden = groups.length === 0;
+		else if (this.#panelsHidden) {
+			this.#panelsHidden = false;
+			window.dispatchEvent(new Event("qorpera-rail-resize"));
+		}
+		this.#hasNotch = groups.length > 0;
+		this.#bar.hidden = !this.#hasNotch && effectiveDevice !== "mobile";
 		this.#barTitle.textContent = surface.title;
+		if (!this.#hasNotch) {
+			this.#notchPill.replaceChildren();
+			this.#notchBar.replaceChildren();
+			this.#barOpen = false;
+			this.#barPinned = false;
+			this.#paintNotch();
+			return;
+		}
 		const notchLabel =
 			effectiveMode === "live"
 				? live
@@ -2355,9 +2400,11 @@ export class SurfaceView {
 				return;
 			}
 			case "address":
+				if (!this.#hasNotch) return;
 				this.#address.toggle(event.detail === 0);
 				return;
 			case "expand-pill":
+				if (!this.#hasNotch) return;
 				this.#setBarOpen(true);
 				if (event.detail === 0)
 					(
@@ -2369,6 +2416,7 @@ export class SurfaceView {
 				store.togglePreviewPanel(surface.id);
 				return;
 			case "hide-panels":
+				if (!this.#hasNotch) return;
 				this.#setPanelsHidden(true);
 				return;
 			case "show-panels":
