@@ -95,6 +95,12 @@ export interface StageSurfaceArtifactToolOptions {
 	readonly stageBytes: (bytes: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<StudioBinaryRef>;
 	readonly surfacePatch: SurfacePatchToolPort;
 	readonly patchTracker?: SurfacePatchSessionTracker;
+	readonly onStagedSource?: (info: {
+		readonly destPath: string;
+		readonly sourcePath: string;
+		readonly fileSha256: string;
+		readonly changeId: string;
+	}) => void;
 	readonly pollMs?: number;
 }
 
@@ -103,12 +109,46 @@ interface StageArtifactArgs {
 	readonly destPath: string;
 	readonly ext: string;
 	readonly spec: ArtifactFormatSpec;
-	readonly title: string;
-	readonly summary: string;
+	readonly title?: string;
+	readonly summary?: string;
 	readonly changeId?: string;
 	readonly createNew: boolean;
 	readonly optionGroup?: string;
 	readonly optionGroupTitle?: string;
+}
+
+function defaultArtifactTitleAndSummary(
+	destPath: string,
+	ext: string,
+	spec: ArtifactFormatSpec,
+): { readonly title: string; readonly summary: string } {
+	const base = destPath.split("/").pop() ?? "";
+	const stem = base
+		.slice(0, Math.max(0, base.length - ext.length))
+		.replace(/[-_]+/g, " ")
+		.trim();
+	if (ext === ".glb") {
+		return {
+			title: (stem ? `Add ${stem} 3D model` : "Add 3D model").slice(0, SURFACE_MAX_CHANGE_TITLE_CHARS),
+			summary: "Staged 3D model in Preview.",
+		};
+	}
+	if (spec.kind === "raster" || ext === ".svg") {
+		return {
+			title: (stem ? `Add ${stem}` : "Add visual").slice(0, SURFACE_MAX_CHANGE_TITLE_CHARS),
+			summary: "Staged visual in Preview.",
+		};
+	}
+	if (ext === ".pdf") {
+		return {
+			title: (stem ? `Add ${stem}` : "Add PDF document").slice(0, SURFACE_MAX_CHANGE_TITLE_CHARS),
+			summary: "Staged PDF document in Preview.",
+		};
+	}
+	return {
+		title: (stem ? `Add ${stem}` : "Add artifact").slice(0, SURFACE_MAX_CHANGE_TITLE_CHARS),
+		summary: "Staged artifact in Preview.",
+	};
 }
 
 function shellQuote(value: string): string {
@@ -479,10 +519,9 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 		const { sourcePath, ext } = normalizeArtifactSourcePath(rec.sourcePath);
 		const spec = ARTIFACT_FORMATS[ext]!;
 		const destPath = normalizeArtifactDestPath(rec.destPath, options.folderRoot, spec.mediaType);
-		const base = destPath.split("/").pop() ?? "artifact";
 		const title =
 			rec.title === undefined
-				? `Add ${base}`.slice(0, SURFACE_MAX_CHANGE_TITLE_CHARS)
+				? undefined
 				: typeof rec.title === "string" &&
 						rec.title.trim().length > 0 &&
 						rec.title.trim().length <= SURFACE_MAX_CHANGE_TITLE_CHARS
@@ -493,7 +532,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 		}
 		const summary =
 			rec.summary === undefined
-				? `Staged ${base} in Preview.`.slice(0, SURFACE_MAX_CHANGE_SUMMARY_CHARS)
+				? undefined
 				: typeof rec.summary === "string" &&
 						rec.summary.trim().length > 0 &&
 						rec.summary.trim().length <= SURFACE_MAX_CHANGE_SUMMARY_CHARS
@@ -550,12 +589,24 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 			destPath,
 			ext,
 			spec,
-			title,
-			summary,
+			...(title !== undefined ? { title } : {}),
+			...(summary !== undefined ? { summary } : {}),
 			...(changeId ? { changeId } : {}),
 			createNew,
 			...(optionGroup ? { optionGroup } : {}),
 			...(optionGroupTitle ? { optionGroupTitle } : {}),
+		};
+	};
+
+	const resolveTitleAndSummary = (
+		args: StageArtifactArgs,
+		targetChangeId: string | null,
+	): { readonly title: string; readonly summary: string } => {
+		const existing = targetChangeId ? options.patchTracker?.getChangeMeta(targetChangeId) : undefined;
+		const fallback = defaultArtifactTitleAndSummary(args.destPath, args.ext, args.spec);
+		return {
+			title: args.title ?? existing?.title ?? fallback.title,
+			summary: args.summary ?? existing?.summary ?? fallback.summary,
 		};
 	};
 
@@ -566,7 +617,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 		description: [
 			"Stage a visual or binary artifact you generated on the coding machine (under /tmp/... or the workspace) into this Studio interface's Preview folder.",
 			"Supports PNG, JPG, JPEG, WebP (returned inline so you can visually verify immediately), SVG, HTML, PDF, GLB 3D models, MP3, and WAV up to 8 MiB (480 KiB for SVG/HTML).",
-			"Use this after rendering custom plots, diagrams, PDFs, 3D models, or raster mockups with Python, Node, Blender, or Chromium on the coding machine.",
+			"Use this after rendering custom plots, diagrams, PDFs, 3D models, or raster mockups with Python, Node, Blender, or Chromium on the coding machine. When attaching an artifact to an existing change or option, pass its changeId and omit title and summary to preserve its title and summary.",
 		].join("\n"),
 		inputSchema: {
 			type: "object",
@@ -584,19 +635,21 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 					minLength: 3,
 					maxLength: MAX_ARTIFACT_PATH_CHARS,
 					description:
-						"Relative destination path inside this interface folder (for example visuals/cohort.png or briefs/deck.pdf).",
+						"Relative destination path inside this interface folder (for example visuals/cohort.png or model.glb).",
 				},
 				title: {
 					type: "string",
 					minLength: 1,
 					maxLength: SURFACE_MAX_CHANGE_TITLE_CHARS,
-					description: "Short founder-facing change title shown in Changes.",
+					description:
+						"Short founder-facing change title shown in Changes. Omit when attaching to changeId to preserve its title.",
 				},
 				summary: {
 					type: "string",
 					minLength: 1,
 					maxLength: SURFACE_MAX_CHANGE_SUMMARY_CHARS,
-					description: "Concise founder-facing summary of the staged artifact.",
+					description:
+						"Concise founder-facing summary of the staged artifact. Omit when attaching to changeId to preserve its summary.",
 				},
 				changeId: {
 					type: "string",
@@ -628,11 +681,12 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 						optionGroup: args.optionGroup ?? null,
 					})
 				: (args.changeId ?? null);
+			const { title, summary } = resolveTitleAndSummary(args, targetChangeId);
 			return {
 				sourcePath: args.sourcePath,
 				destPath: args.destPath,
-				title: args.title,
-				summary: args.summary,
+				title,
+				summary,
 				...(targetChangeId ? { changeId: targetChangeId } : {}),
 				...(args.createNew ? { createNew: true } : {}),
 				...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
@@ -648,6 +702,7 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 						optionGroup: args.optionGroup ?? null,
 					})
 				: (args.changeId ?? null);
+			const { title, summary } = resolveTitleAndSummary(args, targetChangeId);
 			const rawBytes = await readFileFromCodingMachine({
 				machine: options.machine,
 				sourcePath: args.sourcePath,
@@ -669,8 +724,8 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 					staged = await options.surfacePatch.stageSurfacePatch(
 						options.sessionId,
 						{
-							title: args.title,
-							summary: args.summary,
+							title,
+							summary,
 							ops,
 							notePaths: [],
 							finishSession: false,
@@ -688,6 +743,8 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 					resultChangeId: staged.changeId,
 					ops,
 					optionGroup: args.optionGroup ?? null,
+					title,
+					summary,
 				});
 				return {
 					kind: "text",
@@ -732,8 +789,8 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 				staged = await options.surfacePatch.stageSurfacePatch(
 					options.sessionId,
 					{
-						title: args.title,
-						summary: args.summary,
+						title,
+						summary,
 						ops,
 						notePaths: [],
 						finishSession: false,
@@ -751,6 +808,14 @@ export function createStageSurfaceArtifactTool(options: StageSurfaceArtifactTool
 				resultChangeId: staged.changeId,
 				ops,
 				optionGroup: args.optionGroup ?? null,
+				title,
+				summary,
+			});
+			options.onStagedSource?.({
+				destPath: args.destPath,
+				sourcePath: args.sourcePath,
+				fileSha256: closedRef.fileSha256,
+				changeId: staged.changeId,
 			});
 
 			if (view) {

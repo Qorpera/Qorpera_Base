@@ -5,27 +5,31 @@ description: How to build a product's page in its Studio interface, and what a g
 
 # Product Studio
 
-This page sells and specifies one product. A buyer knows what it is from the first line; an engineer finds every number without reading prose. The layout names the homes and files they read. Fill those; this says how, and what good looks like.
+This page sells and specifies one product. A buyer knows what it is at first glance from the 3D stage, renders and headline figures; an engineer finds every number in Specs and Vendors without wading through prose. The starter layout already sets up Overview, Specs, Vendors, Reports and Breakdowns. Keep and fill those native homes.
+
+## Keep the Product template
+- Keep Overview's native structure for physical products: `stage_3d`, `title`, `swatch_row`, `facts` and the Overview `artifacts` visuals gallery, plus Specs, Vendors, Reports and Breakdowns.
+- Never replace Overview with a monolithic `module` iframe, never build nested tab bars inside a `module`, and never put prose walls on Overview.
+- Use `module` only as a focused extra block or tab for an interactive widget native blocks cannot draw (such as a live sizing or pricing calculator).
+- For competing directions in one session, vary the native Product page (3D model, renders, colourways, figures, specs and parts) across separate option-group changes instead of embedding an in-page switcher.
 
 ## How to work
-- Fill the homes one piece per change: the line, then figures, then colourways, and so on. The member watches the page come together piece by piece; never stage the whole page at once.
-- An unknown stays an empty home. Never invent a price, weight, supplier or certification: an empty home is honest, a made-up value is not. Say in your reply what is still missing and who could know it.
-- Settle what you can yourself: read the brief, company files and earlier reports first. Ask the member only questions of taste, with surface_ask and two to four concrete options ("Sandstone, Night, Moss" or "Bone, Graphite"), never "which colours do you like?". Ask once, early, then build on the answer; never stop for a question you could settle yourself, and never ask twice.
-- Reshape tabs or add `chart` blocks with `compose_surface_layout`, stage machine-rendered visuals or 3D models with `stage_surface_artifact`, and call `inspect_surface` to audit the rendered page before finishing.
-- There is no Files tab: add an `artifacts` block to any tab for vector diagrams, pictures, briefs, PDFs or pages.
-- Prefer native blocks over a `module`; build a `module` only for what no native block can show, such as a calculator.
-- Never draw a stand-in for a real product, model or photo. If it cannot be made in this session, leave its home empty and say so.
+- Fill the homes piece by piece: 3D model and visuals, then the line, figures and colourways, then specs, parts and vendors.
+- An unknown stays an empty home. Never invent a price, weight, supplier or certification: say in your reply what is still missing and who could know it.
+- Read the brief, company files and earlier reports first. Ask the member only questions of taste, with surface_ask and two to four concrete options ("Sandstone, Night, Moss" or "Bone, Graphite"), once early.
+- Build real visuals and 3D models in this session: generate studio renders, worn shots and exploded views placed under pictures or renders (so Overview shows them cleanly), and use `stage_surface_artifact` for GLB 3D models, Blender renders, charts or PDFs made on the coding machine.
+- Use `compose_surface_layout` only to add a focused block (such as `chart` or an extra `artifacts` section) or remove unused homes; call `inspect_surface` after staging (including option-group changes) to verify the real rendered page before finishing.
 - Write to the member about the product, never file paths, file names or tool names.
 
 ## What good looks like
-- The line comes first: one plain sentence, in a buyer's words, saying what it is and for whom. "A soft EEG headband that tracks sleep stages at home", not "Reinventing rest".
-- The figures are the four a buyer asks about first, each short enough to read as a figure: "14 h", "44 g", "Merino wool", "1.995 kr.". Most important first; anything longer belongs in specs.
-- Colourways have names a shop would print, each with a colour true to the material: "Sandstone", "Night", not "Beige 1".
-- The model comes from the object file. A real model is made outside this session. Until one can be staged, the simple stand-in config (kind, real dimensions and layers) may show how it is built. When the member asked for a real 3D model, the stand-in is not it: say the model is still to be made.
-- Specs are values with units, grouped as an engineer looks for them (size, weight, power, materials, sensors, compliance), never sentences.
-- Parts are a table: one row a part, with what it is, what it is made of, who makes it and what it costs.
-- Vendors are comparable rows: the same fields for every vendor (component, unit price, minimum order, lead time, region, certifications, status) so they can be judged side by side. An unconfirmed vendor says so in its status.
-- Analyses, reports and posts are structured reports, standalone HTML pages or PDFs, never plain Markdown notes: each with numbers in a chart or table, ending in a decision or tradeoff, staged in its own change with stage_surface_patch so the member can review and approve each piece on its own. Any tab can hold them: add or widen a report block there to match.
+- The 3D stage holds a real multi-part GLB 3D model built in this session on the coding machine (using Blender when installed, or a Python or Node script exporting multi-part PBR geometry with named nodes and tintable materials), staged via `stage_surface_artifact` and wired in the object file so it turns, pulls apart and tints with `swatch_row`. Use the simple stand-in config only when a real GLB cannot be built, and say so clearly.
+- Visuals look like real industrial design renders and product photography, never crude diagram boxes or broken images.
+- The line is one plain buyer sentence ("A soft EEG headband that tracks sleep stages at home", not "Reinventing rest").
+- The four headline figures are brief values ("14 h", "44 g", "Merino wool", "1.995 kr."); longer details go in Specs.
+- Colourways have shop-ready material names ("Sandstone", "Night", not "Beige 1").
+- Specs are grouped values with units (size, weight, power, materials, sensors, compliance), never prose.
+- Parts are a table with what it is, material, supplier and unit cost; Vendors are comparable rows with identical fields and unconfirmed vendors marked in status.
+- Reports and analyses are structured reports, standalone HTML pages or PDFs, staged one per change with stage_surface_patch.
 
-## A product that is not hardware
-Software, a service or a subscription has nothing to put on a stage. Drop the stage and colourways and give the page the tabs it needs, such as plans and prices, features or integrations. Adapt the layout; never fill homes that make no sense for the product.
+## Non-hardware products
+Software, a service or a subscription has no 3D stage. Drop `stage_3d` and `swatch_row` and use the native tabs it needs, such as plans and prices, features or integrations.
