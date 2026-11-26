@@ -882,15 +882,19 @@ An object is retained while it is referenced by any of:
   which the folder GC + erasure session adds to `qorpera_folder_erase`);
 - an open proposal (P40a: `qorpera_folder_proposal_paths`, in
   `qorpera_folder_object_rooted`), which never expires (2026-09-25 amendment,
-  item 5); erasing a path erases the open proposals under it; or
+  item 5); erasing a path erases the open proposals under it;
+- an open surface change (`qorpera_surface_change_files`, in
+  `qorpera_folder_object_rooted`; discarding, superseding, or deleting an open
+  change removes its index rows and enqueues newly unrooted manifests and
+  chunks into `qorpera_folder_object_gc`); or
 - a retention hold.
 
 ### Invariants
 
 - **G1. References lock the object.** Every new reference (intent, write,
-  copy, conflict copy, proposal, hold, restore) takes `FOR KEY SHARE` on the
-  manifest row and every chunk row, and refuses rows that are absent or
-  marked deleting. Intents list their chunks.
+  copy, conflict copy, proposal, surface change, hold, restore) takes
+  `FOR KEY SHARE` on the manifest row and every chunk row, and refuses rows
+  that are absent or marked deleting. Intents list their chunks.
 - **G2. GC marks before it unlinks.** GC locks the object row `FOR UPDATE`,
   re-checks every root in a new statement, and commits the `deleting` mark
   with its lease token before any unlink. Its final re-check before the
