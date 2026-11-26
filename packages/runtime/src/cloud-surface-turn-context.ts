@@ -14,8 +14,9 @@ import {
 	SURFACE_KINDS,
 	SURFACE_SHARED_DIR,
 	type SurfaceArchetype,
-	type SurfaceLookKind,
+	type SurfaceKind,
 	type SurfaceSourceKind,
+	surfaceLookKind,
 	surfaceStarterKind,
 } from "@qorpera/contracts";
 import type { GeminiTtsModel, GeminiTtsSpeechResult, GeminiTtsVoice } from "./cloud-gemini-tts.ts";
@@ -242,11 +243,10 @@ const MAX_ANALYTICS_SUMMARY_CHARS = 1500;
 
 function isAnalyticsInterface(item: CompanyInterfaceSummary): boolean {
 	if (item.archetype !== "studio" || item.sourceKind !== "folder") return false;
-	const lookKind =
-		(SURFACE_KINDS as readonly string[]).includes(item.kind) && item.kind !== "members" ? item.kind : "custom";
+	const kind = (SURFACE_KINDS as readonly string[]).includes(item.kind) ? (item.kind as SurfaceKind) : "custom";
 	return (
 		surfaceStarterKind({
-			lookKind: lookKind as SurfaceLookKind,
+			lookKind: surfaceLookKind({ slug: item.slug, icon: "", archetype: "studio", kind }),
 			slug: item.slug,
 			isGlobal: item.isGlobal,
 			paths: [],

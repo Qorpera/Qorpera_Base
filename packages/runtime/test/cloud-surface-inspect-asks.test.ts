@@ -9,6 +9,7 @@ import {
 	renderStudioPreviewHtml,
 	type StudioInspectAskAnswer,
 	type StudioInspectSnapshot,
+	studioAskChart,
 	studioInspectAsker,
 	studioPreviewAsks,
 } from "@qorpera/runtime/cloud-surface-inspect-tool";
@@ -74,6 +75,65 @@ describe("inspect_surface with live asks", () => {
 		expect(rendered.renderedBlocks.find((block) => block.type === "chart")).toMatchObject({ filled: true });
 		expect(rendered.warnings.join("\n")).not.toContain("has no valid chart data");
 		expect(rendered.html).toContain("<svg");
+	});
+
+	it("says which named columns an answer lacks, leaves that block empty, and draws a missing value as a gap, never 0", async () => {
+		const files = {
+			"surfaces/analytics/layout.json": JSON.stringify({
+				schema: "qorpera.surface-layout/v1",
+				tabs: [
+					{
+						id: "main",
+						title: "Main",
+						blocks: [
+							{
+								type: "chart",
+								heading: "Is revenue up?",
+								from: { ask: "qorpera/orders-days", x: "day", y: "revenue" },
+							},
+							{
+								type: "facts",
+								items: [{ label: "Orders", from: { ask: "qorpera/orders-now", pick: "orders" } }],
+							},
+						],
+					},
+				],
+			}),
+		};
+		const snapshot = await askStudioPreview(
+			{ ...SNAPSHOT, files },
+			undefined,
+			async (ask) => ANSWERS[ask.ask] ?? { state: "unavailable", words: "none" },
+			CONTEXT,
+		);
+		const rendered = renderStudioPreviewHtml({ snapshot, theme: "light" });
+		expect(rendered.asks).toEqual([
+			{
+				block: "Is revenue up?",
+				ask: "qorpera/orders-days",
+				state: "answered",
+				rows: 2,
+				missing: ["revenue"],
+				columns: ["day", "orders", "sales", "refunds"],
+			},
+			{
+				block: "facts: Orders",
+				ask: "qorpera/orders-now",
+				state: "answered",
+				rows: 1,
+				missing: ["orders"],
+				columns: ["stripe", "orders_today", "sales_today", "to_pack"],
+			},
+		]);
+		expect(rendered.renderedBlocks.map((block) => block.filled)).toEqual([false, false]);
+		expect(rendered.warnings).toContain(
+			"Is revenue up? asks qorpera/orders-days for revenue, which its answer has no column for; its columns are day, orders, sales, refunds.",
+		);
+		const chart = studioAskChart({ ask: "qorpera/orders-days", x: "day", y: "orders" }, [
+			{ day: "2026-11-25", orders: null },
+			{ day: "2026-11-26", orders: 4 },
+		]);
+		expect(chart && "series" in chart ? chart.series?.[0]?.data : undefined).toEqual([null, 4]);
 	});
 
 	it("says a question nobody could ask is unavailable, and asks nothing on a tab without asks", async () => {

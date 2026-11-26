@@ -286,6 +286,7 @@ export const SURFACES: Record<string, string> = {
 	"In this report": "I denne rapport",
 	"Phone model": "Telefonmodel",
 	"Phone: {name}": "Telefon: {name}",
+	"{group}, current: {name}": "{group}, valgt: {name}",
 	"Website zoom": "Zoom for hjemmeside",
 	"Phone zoom": "Zoom for telefon",
 	"Zoom out": "Zoom ud",

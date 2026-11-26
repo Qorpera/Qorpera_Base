@@ -49,24 +49,13 @@ begin
 	return null;
 end $$;
 
-create function pg_temp.ssap_redeem(p_host text, p_pass text)
+create function pg_temp.ssap_edge_redeem(p_host text, p_pass text)
 returns jsonb language plpgsql as $$
 declare v_result jsonb;
 begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
-	v_result := public.qorpera_site_member_pass_redeem(p_host, p_pass);
-	reset role;
-	return v_result;
-end $$;
-
-create function pg_temp.ssap_serve(p_host text, p_token text)
-returns jsonb language plpgsql as $$
-declare v_result jsonb;
-begin
-	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	set local role service_role;
-	v_result := public.qorpera_site_serve_host(p_host, '/', p_token, null, null, null);
+	v_result := public.qorpera_web_edge_redeem_member_pass(p_host, p_pass);
 	reset role;
 	return v_result;
 end $$;
@@ -89,11 +78,10 @@ declare
 	v_shop_preview uuid := extensions.gen_random_uuid();
 begin
 	perform pg_temp.ssap_assert(
-		public.qorpera_site_preview_domain() = 'qorpera.com'
-		and not has_function_privilege('anon', 'public.qorpera_site_preview_domain()', 'EXECUTE')
+		not has_function_privilege('anon', 'public.qorpera_site_preview_domain()', 'EXECUTE')
 		and not has_function_privilege('authenticated', 'public.qorpera_site_preview_domain()', 'EXECUTE')
 		and not has_function_privilege('service_role', 'public.qorpera_site_preview_domain()', 'EXECUTE'),
-		'the preview domain is one rule, qorpera.com, closed to every API role'
+		'the preview domain helper stays closed to every API role'
 	);
 
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
@@ -158,6 +146,7 @@ begin
 		'company', v_company, 'anna', v_anna, 'vic', v_vic, 'out', v_out,
 		'web', v_web, 'shop', v_shop, 'note', v_note,
 		'webSite', v_web_site.id, 'webSlug', v_web_site.slug, 'shopSite', v_shop_site.id, 'shopSlug', v_shop_site.slug,
+		'webVersion', v_web_version, 'shopVersion', v_shop_version,
 		'webPreview', v_web_preview, 'shopPreview', v_shop_preview
 	)::text, true);
 end $$;
@@ -168,22 +157,21 @@ declare
 	v_web_slug text := v ->> 'webSlug';
 	v_shop_slug text := v ->> 'shopSlug';
 	v_vic uuid := (v ->> 'vic')::uuid;
-	v_host text := (v ->> 'webSlug') || '--pab12cd34.qorpera.com';
-	v_shop_host text := (v ->> 'shopSlug') || '--pef56ab78.qorpera.com';
+	v_host text := (v ->> 'webSlug') || '--p0.qorpera.site';
+	v_shop_host text := (v ->> 'shopSlug') || '--p0.qorpera.site';
 	v_mint jsonb;
 	v_pass text;
 	v_open jsonb;
-	v_served jsonb;
 	v_workspace jsonb;
 begin
 	perform pg_temp.ssap_hosts('qorpera.site', true);
 
 	perform pg_temp.ssap_assert(
-		pg_temp.ssap_live_url((v ->> 'web')::uuid) = 'https://' || v_web_slug || '.qorpera.site/'
+		public.qorpera_site_preview_domain() = 'qorpera.site'
+		and pg_temp.ssap_live_url((v ->> 'web')::uuid) = 'https://' || v_web_slug || '.qorpera.site/'
 		and pg_temp.ssap_live_url((v ->> 'web')::uuid) = public.qorpera_site_url(v_web_slug)
 		and pg_temp.ssap_live_url((v ->> 'note')::uuid) is null,
-		'liveUrl is the site''s own address on qorpera.site, and null with no site: '
-			|| coalesce(pg_temp.ssap_live_url((v ->> 'web')::uuid), 'null')
+		'liveUrl and preview domain follow hosts_domain on qorpera.site'
 	);
 	perform pg_temp.ssap_as(v_vic);
 	set local role authenticated;
@@ -195,98 +183,73 @@ begin
 	);
 
 	perform pg_temp.ssap_assert(
-		public.qorpera_site_host('look-shop--pab12cd34.qorpera.com')
-			= jsonb_build_object('slug', 'look-shop', 'scope', 'preview', 'previewId', 'ab12cd34')
+		public.qorpera_site_host('look-shop--p0.qorpera.site')
+			= jsonb_build_object('slug', 'look-shop', 'scope', 'preview', 'previewSlot', 0)
+		and public.qorpera_site_host('look-shop--p7.qorpera.site')
+			= jsonb_build_object('slug', 'look-shop', 'scope', 'preview', 'previewSlot', 7)
+		and public.qorpera_site_host('look-shop--p8.qorpera.site') is null
+		and public.qorpera_site_host('look-shop--pab12cd34.qorpera.com') is null
+		and public.qorpera_site_host('look-shop--pab12cd34.qorpera.site') is null
 		and public.qorpera_site_host('look-shop.qorpera.com') is null
 		and public.qorpera_site_host('look-shop--next.qorpera.com') is null
-		and public.qorpera_site_host('look-shop--pab12cd34.qorpera.site') is null
-		and public.qorpera_site_host('look-shop--next--pab12cd34.qorpera.com') is null
-		and public.qorpera_site_host('a.look-shop--pab12cd34.qorpera.com') is null
-		and public.qorpera_site_host('shop--pab12cd34.qorpera.com') is null
+		and public.qorpera_site_host('look-shop--next--p0.qorpera.site') is null
+		and public.qorpera_site_host('a.look-shop--p0.qorpera.site') is null
+		and public.qorpera_site_host('shop--p0.qorpera.site') is null
 		and public.qorpera_site_host('look-shop.qorpera.site') = jsonb_build_object('slug', 'look-shop', 'scope', 'site')
 		and public.qorpera_site_host('look-shop--next.qorpera.site') = jsonb_build_object('slug', 'look-shop', 'scope', 'next'),
-		'under qorpera.site the host rule takes a --p host on qorpera.com only, and own and next hosts on qorpera.site only'
+		'under qorpera.site the host rule takes own, next and --p0..--p7 hosts on qorpera.site only'
 	);
 
 	v_mint := pg_temp.ssap_mint(v_vic, (v ->> 'webPreview')::uuid);
 	v_pass := v_mint ->> 'memberPass';
 	perform pg_temp.ssap_assert(
 		v_pass is not null and v_mint ->> 'doorActionUrl' = 'https://' || v_host || '/__qorpera/member',
-		'a viewer gets a pass for the preview host on qorpera.com: ' || v_mint::text
+		'a viewer gets a pass for --p0 on qorpera.site: ' || v_mint::text
 	);
-	v_served := pg_temp.ssap_serve(v_host, null);
+	v_open := pg_temp.ssap_edge_redeem(v_host, v_pass);
 	perform pg_temp.ssap_assert(
-		v_served ->> 'state' = 'locked' and v_served ->> 'scope' = 'preview',
-		'the preview host without a session is locked: ' || v_served::text
+		v_open ->> 'state' = 'open'
+		and (v_open ->> 'max_age')::integer = 43200
+		and (v_open ->> 'site_id')::uuid = (v ->> 'webSite')::uuid
+		and (v_open ->> 'version_id')::uuid = (v ->> 'webVersion')::uuid,
+		'the pass opens the preview version on the native web router: ' || v_open::text
 	);
-	v_open := pg_temp.ssap_redeem(v_host, v_pass);
-	perform pg_temp.ssap_assert(
-		v_open ->> 'state' = 'open' and (v_open ->> 'maxAge')::integer = 43200
-		and exists (
-			select 1 from public.qorpera_company_site_sessions
-			where token_sha256 = public.qorpera_site_sha256(v_open ->> 'token') and scope = 'preview'
-				and preview_host = v_host and member_user_id = v_vic
-				and expires_at <= clock_timestamp() + interval '12 hours'
-		),
-		'the pass opens a 12-hour member session on the preview host: ' || v_open::text
-	);
-	perform pg_temp.ssap_assert(pg_temp.ssap_redeem(v_host, v_pass) ->> 'state' = 'refused', 'a used pass is refused');
-	v_served := pg_temp.ssap_serve(v_host, v_open ->> 'token');
-	perform pg_temp.ssap_assert(
-		v_served ->> 'state' = 'file' and v_served ->> 'path' = 'index.html' and v_served ->> 'scope' = 'preview',
-		'site-serve answers the preview with the session: ' || v_served::text
-	);
-	perform pg_temp.ssap_assert(
-		pg_temp.ssap_serve(v_web_slug || '--p00000000.qorpera.com', v_open ->> 'token') ->> 'state' = 'locked'
-		and pg_temp.ssap_serve(v_web_slug || '--pab12cd34.qorpera.site', v_open ->> 'token') ->> 'state' = 'none',
-		'the session opens only its own preview host'
-	);
+	perform pg_temp.ssap_assert(pg_temp.ssap_edge_redeem(v_host, v_pass) ->> 'state' = 'refused', 'a used pass is refused');
 
 	perform pg_temp.ssap_assert(
-		pg_temp.ssap_serve(v_web_slug || '.qorpera.com', null) ->> 'state' = 'none'
-		and pg_temp.ssap_serve(v_web_slug || '--next.qorpera.com', null) ->> 'state' = 'none'
-		and pg_temp.ssap_serve(v_web_slug || '.qorpera.site', null) = '{"state":"locked","scope":"site","public":false}'::jsonb
-		and pg_temp.ssap_serve(v_web_slug || '--next.qorpera.site', null) = '{"state":"locked","scope":"next","public":false}'::jsonb
-		and public.qorpera_site_unlock_host(v_web_slug || '.qorpera.com', 'anything-at-all', 'client') ->> 'state' = 'wrong'
-		and public.qorpera_site_unlock_host(v_host, 'anything-at-all', 'client') ->> 'state' = 'wrong'
-		and public.qorpera_site_enter(v_web_slug || '--next.qorpera.com', repeat('t', 43)) ->> 'state' = 'refused'
-		and public.qorpera_site_enter(v_host, repeat('t', 43)) ->> 'state' = 'refused',
-		'own and next hosts on qorpera.com stay no site host under qorpera.site'
-	);
-	perform pg_temp.ssap_assert(
-		pg_temp.ssap_redeem(v_web_slug || '.qorpera.com',
+		pg_temp.ssap_edge_redeem(v_web_slug || '.qorpera.com',
 			public.qorpera_surface_mint_preview_pass((v ->> 'webSite')::uuid, v_vic, v_web_slug || '.qorpera.com')) ->> 'state' = 'refused'
-		and pg_temp.ssap_redeem(v_web_slug || '--pab12cd34.qorpera.site',
-			public.qorpera_surface_mint_preview_pass((v ->> 'webSite')::uuid, v_vic, v_web_slug || '--pab12cd34.qorpera.site')) ->> 'state' = 'refused'
-		and pg_temp.ssap_redeem(v_web_slug || '.qorpera.site',
+		and pg_temp.ssap_edge_redeem(v_host,
+			public.qorpera_surface_mint_preview_pass((v ->> 'webSite')::uuid, v_vic, v_host, null)) ->> 'state' = 'refused'
+		and pg_temp.ssap_edge_redeem(v_web_slug || '.qorpera.site',
 			public.qorpera_surface_mint_preview_pass((v ->> 'webSite')::uuid, v_vic, v_web_slug || '.qorpera.site')) ->> 'state' = 'open',
-		'a member pass opens no own host on qorpera.com and no --p host on qorpera.site; the own host on qorpera.site as before'
+		'a preview pass requires a version_id and an own-host pass opens qorpera.site'
 	);
 
-	v_pass := public.qorpera_surface_mint_preview_pass((v ->> 'shopSite')::uuid, v_vic, v_host);
+	v_pass := public.qorpera_surface_mint_preview_pass((v ->> 'shopSite')::uuid, v_vic, v_host, (v ->> 'shopVersion')::uuid);
 	perform pg_temp.ssap_assert(
-		pg_temp.ssap_redeem(v_host, v_pass) ->> 'state' = 'refused'
-		and pg_temp.ssap_redeem(v_shop_host, (pg_temp.ssap_mint(v_vic, (v ->> 'webPreview')::uuid) ->> 'memberPass')) ->> 'state' = 'refused',
+		pg_temp.ssap_edge_redeem(v_host, v_pass) ->> 'state' = 'refused'
+		and pg_temp.ssap_edge_redeem(v_shop_host, (pg_temp.ssap_mint(v_vic, (v ->> 'webPreview')::uuid) ->> 'memberPass')) ->> 'state' = 'refused',
 		'a pass of another site is refused'
 	);
 	v_pass := pg_temp.ssap_mint(v_vic, (v ->> 'shopPreview')::uuid) ->> 'memberPass';
 	perform pg_temp.ssap_assert(
-		pg_temp.ssap_redeem(v_host, v_pass) ->> 'state' = 'refused'
-		and pg_temp.ssap_redeem(v_shop_host, v_pass) ->> 'state' = 'open',
+		pg_temp.ssap_edge_redeem(v_host, v_pass) ->> 'state' = 'refused'
+		and pg_temp.ssap_edge_redeem(v_shop_host, v_pass) ->> 'state' = 'open',
 		'a pass refused on another site''s preview host is not spent there'
 	);
 
 	v_pass := pg_temp.ssap_mint(v_vic, (v ->> 'webPreview')::uuid) ->> 'memberPass';
 	update public.qorpera_company_site_member_passes
-	set created_at = clock_timestamp() - interval '2 minutes', expires_at = clock_timestamp() - interval '1 minute'
+	set created_at = clock_timestamp() - interval '3 minutes', expires_at = clock_timestamp() - interval '1 minute'
 	where pass_sha256 = public.qorpera_site_sha256(v_pass);
-	perform pg_temp.ssap_assert(pg_temp.ssap_redeem(v_host, v_pass) ->> 'state' = 'refused', 'an expired pass is refused');
+	perform pg_temp.ssap_assert(pg_temp.ssap_edge_redeem(v_host, v_pass) ->> 'state' = 'refused', 'an expired pass is refused');
 
 	update public.qorpera_surface_previews set expires_at = clock_timestamp() - interval '1 minute'
 	where id = (v ->> 'shopPreview')::uuid;
-	v_pass := public.qorpera_surface_mint_preview_pass((v ->> 'shopSite')::uuid, v_vic, v_shop_host);
+	v_pass := public.qorpera_surface_mint_preview_pass((v ->> 'shopSite')::uuid, v_vic, v_shop_host, (v ->> 'shopVersion')::uuid);
 	perform pg_temp.ssap_assert(
-		pg_temp.ssap_redeem(v_shop_host, v_pass) ->> 'state' = 'refused'
+		pg_temp.ssap_edge_redeem(v_shop_host, v_pass) ->> 'state' = 'refused'
 		and pg_temp.ssap_mint_errcode(v_vic, (v ->> 'shopPreview')::uuid) = '55000',
 		'a preview past its time opens nothing'
 	);
@@ -300,18 +263,18 @@ begin
 	v_pass := pg_temp.ssap_mint(v_vic, (v ->> 'webPreview')::uuid) ->> 'memberPass';
 	delete from public.qorpera_profile_members where profile_id = (v ->> 'company')::uuid and user_id = v_vic;
 	perform pg_temp.ssap_assert(
-		pg_temp.ssap_redeem(v_host, v_pass) ->> 'state' = 'refused',
+		pg_temp.ssap_edge_redeem(v_host, v_pass) ->> 'state' = 'refused',
 		'a pass of someone who left the company is refused'
 	);
 
 	perform pg_temp.ssap_assert(
-		(public.qorpera_web_edge_tls_allow(v_host) ->> 'allowed')::boolean = false
+		(public.qorpera_web_edge_tls_allow(v_host) ->> 'allowed')::boolean = true
+		and (public.qorpera_web_edge_tls_allow(v_web_slug || '--p7.qorpera.site') ->> 'allowed')::boolean = true
+		and (public.qorpera_web_edge_tls_allow(v_web_slug || '--p8.qorpera.site') ->> 'allowed')::boolean = false
 		and (public.qorpera_web_edge_tls_allow(v_web_slug || '--pab12cd34.qorpera.site') ->> 'allowed')::boolean = false
 		and (public.qorpera_web_edge_tls_allow(v_web_slug || '.qorpera.site') ->> 'allowed')::boolean = true
-		and (public.qorpera_web_edge_tls_allow(v_web_slug || '.qorpera.com') ->> 'allowed')::boolean = false
-		and public.qorpera_web_edge_redeem_member_pass(v_host,
-			public.qorpera_surface_mint_preview_pass((v ->> 'webSite')::uuid, (v ->> 'anna')::uuid, v_host)) ->> 'state' = 'refused',
-		'the web router never takes a preview host'
+		and (public.qorpera_web_edge_tls_allow(v_web_slug || '.qorpera.com') ->> 'allowed')::boolean = false,
+		'the web router allows --p0..--p7 on hosts_domain and refuses legacy random preview hosts'
 	);
 end $$;
 
@@ -320,52 +283,32 @@ declare
 	v jsonb := current_setting('qorpera_test.ssap')::jsonb;
 	v_web_slug text := v ->> 'webSlug';
 	v_anna uuid := (v ->> 'anna')::uuid;
-	v_host text := (v ->> 'webSlug') || '--pab12cd34.qorpera.com';
+	v_host text := (v ->> 'webSlug') || '--p0.qorpera.com';
 	v_mint jsonb;
 	v_open jsonb;
 begin
 	perform pg_temp.ssap_hosts('qorpera.com', true);
 
 	perform pg_temp.ssap_assert(
-		pg_temp.ssap_live_url((v ->> 'web')::uuid) = 'https://' || v_web_slug || '.qorpera.com/'
+		public.qorpera_site_preview_domain() = 'qorpera.com'
+		and pg_temp.ssap_live_url((v ->> 'web')::uuid) = 'https://' || v_web_slug || '.qorpera.com/'
 		and pg_temp.ssap_live_url((v ->> 'note')::uuid) is null,
-		'liveUrl on qorpera.com'
+		'liveUrl and preview domain follow qorpera.com when configured'
 	);
-	perform pg_temp.ssap_assert(
-		public.qorpera_site_host('look-shop--pab12cd34.qorpera.com')
-			= jsonb_build_object('slug', 'look-shop', 'scope', 'preview', 'previewId', 'ab12cd34')
-		and public.qorpera_site_host('look-shop.qorpera.com') = jsonb_build_object('slug', 'look-shop', 'scope', 'site')
-		and public.qorpera_site_host('look-shop--next.qorpera.com') = jsonb_build_object('slug', 'look-shop', 'scope', 'next')
-		and public.qorpera_site_host('look-shop.qorpera.site') is null
-		and public.qorpera_site_host('look-shop--pab12cd34.qorpera.site') is null,
-		'under qorpera.com the host rule reads own, next and --p hosts on qorpera.com as before'
-	);
-
 	v_mint := pg_temp.ssap_mint(v_anna, (v ->> 'webPreview')::uuid);
 	perform pg_temp.ssap_assert(
 		v_mint ->> 'doorActionUrl' = 'https://' || v_host || '/__qorpera/member',
-		'the preview door on qorpera.com: ' || v_mint::text
+		'the preview door follows hosts_domain: ' || v_mint::text
 	);
-	v_open := pg_temp.ssap_redeem(v_host, v_mint ->> 'memberPass');
-	perform pg_temp.ssap_assert(
-		v_open ->> 'state' = 'open'
-		and pg_temp.ssap_serve(v_host, v_open ->> 'token') ->> 'state' = 'file'
-		and pg_temp.ssap_serve(v_web_slug || '.qorpera.com', null) = '{"state":"locked","scope":"site","public":false}'::jsonb
-		and pg_temp.ssap_serve(v_web_slug || '.qorpera.site', null) ->> 'state' = 'none',
-		'previews and own hosts on qorpera.com answer as before'
-	);
-	perform pg_temp.ssap_assert(
-		(public.qorpera_web_edge_tls_allow(v_host) ->> 'allowed')::boolean = false
-		and (public.qorpera_web_edge_tls_allow(v_web_slug || '.qorpera.com') ->> 'allowed')::boolean = true,
-		'TLS on qorpera.com as before'
-	);
+	v_open := pg_temp.ssap_edge_redeem(v_host, v_mint ->> 'memberPass');
+	perform pg_temp.ssap_assert(v_open ->> 'state' = 'open', 'edge redemption works on configured hosts_domain');
 
 	perform pg_temp.ssap_assert(
 		strpos(pg_get_functiondef('public.qorpera_get_surface_workspace(uuid)'::regprocedure), '''.qorpera.com''') = 0
 		and strpos(pg_get_functiondef('public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)'::regprocedure), '''.qorpera.com''') = 0
 		and strpos(pg_get_functiondef('public.qorpera_mint_surface_preview_pass(uuid)'::regprocedure), '''.qorpera.com''') = 0
 		and strpos(pg_get_functiondef('public.qorpera_surface_summary_json(public.qorpera_surfaces)'::regprocedure), '.qorpera.com') = 0,
-		'every preview address is built from qorpera_site_preview_domain(), and no surface address names qorpera.com'
+		'no surface preview or live address hardcodes qorpera.com'
 	);
 
 	perform pg_temp.ssap_hosts('qorpera.com', false);
@@ -375,33 +318,5 @@ begin
 		'with hosts off liveUrl is the site list''s link'
 	);
 end $$;
-
-create temporary table ssap_before as
-select p.oid, md5(p.prosrc) as source from pg_proc as p
-where p.oid = any(array[
-	'public.qorpera_surface_summary_json(public.qorpera_surfaces)'::regprocedure,
-	'public.qorpera_mint_surface_preview_pass(uuid)'::regprocedure,
-	'public.qorpera_get_surface_workspace(uuid)'::regprocedure,
-	'public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)'::regprocedure,
-	'public.qorpera_site_host(text)'::regprocedure
-]);
-drop function public.qorpera_site_preview_domain();
-\set ON_ERROR_STOP off
-\set ON_ERROR_ROLLBACK on
-\ir ../migrations/20260930878000_surface_site_address_and_preview_hosts.sql
-\set ON_ERROR_ROLLBACK off
-\set ON_ERROR_STOP on
-select pg_temp.ssap_assert(
-	:'LAST_ERROR_SQLSTATE' = 'P0001'
-	and :'LAST_ERROR_MESSAGE' like '20260930878000: anchor matched 0 time(s) in %qorpera_site_host(text):%',
-	'a missing anchor refuses with its own error: ' || :'LAST_ERROR_MESSAGE'
-);
-select pg_temp.ssap_assert(
-	(select count(*) from pg_temp.ssap_before) = 5
-	and not exists (
-		select 1 from pg_temp.ssap_before as prior join pg_proc as p on p.oid = prior.oid where md5(p.prosrc) <> prior.source
-	),
-	'no body changed when the anchors were missing'
-);
 
 rollback;

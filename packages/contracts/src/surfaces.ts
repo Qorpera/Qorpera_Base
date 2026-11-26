@@ -1327,6 +1327,7 @@ export function inferSurfaceKind(surface: Pick<SurfaceKindFacts, "slug" | "icon"
 		if (icon === "database" || /(^|-)(data|database|tables|crm)(-|$)/.test(slug)) return "database";
 		if (icon === "box" || icon === "board" || /product|hardware|spec|headband/.test(slug)) return "product";
 		if (icon === "spark" || /brand/.test(slug)) return "brand";
+		if (/(^|-)(analytics|dashboard|kpis?|metrics|numbers)(-|$)/.test(slug)) return "dashboard";
 		return "custom";
 	}
 	if (icon === "phone" || /mobile|ios|android/.test(slug)) return "mobile_app";

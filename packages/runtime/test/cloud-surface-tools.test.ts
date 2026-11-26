@@ -153,6 +153,8 @@ describe("cloud surface runtime tools", () => {
 		const surfaceId = randomUUID();
 		const proposeSurface = vi.fn().mockResolvedValue({ id: surfaceId, slug: "website", status: "active" as const });
 		const tool = createProposeSurfaceTool({ proposeSurface });
+		expect(tool.description).toContain('Analytics (live business numbers, kind "dashboard")');
+		expect(JSON.stringify(tool.inputSchema)).toContain("Analytics: studio, kind dashboard.");
 
 		const parsed = tool.parseArguments({
 			slug: "website",
@@ -1155,6 +1157,15 @@ describe("cloud surface runtime tools", () => {
 		expect(combined).toContain("stay silent");
 		expect(combined).toContain("senses.surfaces");
 		expect(combined).toContain("QorperaOS/surfaces/<slug>/notes/");
+		expect(combined).toContain("static mock");
+		expect(combined).toContain("retired");
+		expect(combined).not.toContain("vision/vision.md");
+		const surfaceEmployee = cloudRuntimeHireBehavior("employee", {
+			has: surfaceHas,
+			visionAgreed: true,
+			surfaceFirst: true,
+		});
+		expect(surfaceEmployee).toContain("real application rather than hand-rolling a standalone static mock");
 
 		for (const legacyTerm of [
 			"hire_team",

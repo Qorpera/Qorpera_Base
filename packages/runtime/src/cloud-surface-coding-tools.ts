@@ -365,7 +365,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			...surfaceSession,
 			sourceKind: "folder",
 			hasCompanySearch: Boolean(folder && folderSearch),
-			hasReadOnlyData: Boolean(folder && companyData),
+			hasReadOnlyData: Boolean(folder),
 			folderRoot,
 			previewOverlayStatus: previewOverlayStatus?.status ?? null,
 			previewSkippedPaths: previewOverlayStatus?.skippedPaths ?? null,

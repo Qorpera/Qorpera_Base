@@ -85,39 +85,65 @@ const AUTO_PUBLISH_OFF_QUIET_TRIES = 3;
 interface PhoneModelSpec {
 	readonly id: string;
 	readonly label: string;
-	readonly shortLabel: string;
+	readonly group?: string;
 	readonly width: number;
 	readonly height: number;
 	readonly radius: number;
-	readonly cutout: "island" | "punch" | "none";
+	readonly cutout: "island" | "notch" | "punch" | "none";
+	readonly notch?: number;
 	readonly status: number;
 }
 
+type PhoneShape = Pick<PhoneModelSpec, "width" | "height" | "radius" | "cutout" | "notch" | "status">;
+
+const ISLAND_6_1: PhoneShape = { width: 393, height: 852, radius: 50, cutout: "island", status: 54 };
+const ISLAND_6_3: PhoneShape = { width: 402, height: 874, radius: 52, cutout: "island", status: 54 };
+const ISLAND_6_5: PhoneShape = { width: 420, height: 912, radius: 53, cutout: "island", status: 54 };
+const ISLAND_6_7: PhoneShape = { width: 430, height: 932, radius: 54, cutout: "island", status: 54 };
+const ISLAND_6_9: PhoneShape = { width: 440, height: 956, radius: 54, cutout: "island", status: 54 };
+const NOTCH_6_1: PhoneShape = { width: 390, height: 844, radius: 47, cutout: "notch", notch: 162, status: 47 };
+const NOTCH_6_7: PhoneShape = { width: 428, height: 926, radius: 53, cutout: "notch", notch: 162, status: 47 };
+const NOTCH_MINI: PhoneShape = { width: 375, height: 812, radius: 44, cutout: "notch", notch: 172, status: 50 };
+const WIDE_NOTCH = { notch: 210 } as const;
+
+function iphone(group: string, name: string, shape: PhoneShape, extra: Partial<PhoneShape> = {}): PhoneModelSpec {
+	const label = `iPhone ${name}`;
+	const id = label.toLowerCase().replace(/\s+/g, "-");
+	return { id, label, group, ...shape, ...extra };
+}
+
 const PHONE_MODELS: readonly PhoneModelSpec[] = [
-	{
-		id: "iphone-16",
-		label: "iPhone 16",
-		shortLabel: "iPhone 16",
-		width: 393,
-		height: 852,
-		radius: 50,
-		cutout: "island",
-		status: 54,
-	},
-	{
-		id: "iphone-16-pro-max",
-		label: "iPhone 16 Pro Max",
-		shortLabel: "16 Pro Max",
-		width: 440,
-		height: 956,
-		radius: 54,
-		cutout: "island",
-		status: 54,
-	},
+	iphone("iPhone 18", "18 Pro", ISLAND_6_3),
+	iphone("iPhone 18", "18 Pro Max", ISLAND_6_9),
+	iphone("iPhone 17", "17", ISLAND_6_3),
+	iphone("iPhone 17", "Air", ISLAND_6_5),
+	iphone("iPhone 17", "17 Pro", ISLAND_6_3),
+	iphone("iPhone 17", "17 Pro Max", ISLAND_6_9),
+	iphone("iPhone 17", "17e", NOTCH_6_1),
+	iphone("iPhone 16", "16", ISLAND_6_1),
+	iphone("iPhone 16", "16 Plus", ISLAND_6_7),
+	iphone("iPhone 16", "16 Pro", ISLAND_6_3),
+	iphone("iPhone 16", "16 Pro Max", ISLAND_6_9),
+	iphone("iPhone 16", "16e", NOTCH_6_1),
+	iphone("iPhone 15", "15", ISLAND_6_1),
+	iphone("iPhone 15", "15 Plus", ISLAND_6_7),
+	iphone("iPhone 15", "15 Pro", ISLAND_6_1),
+	iphone("iPhone 15", "15 Pro Max", ISLAND_6_7),
+	iphone("iPhone 14", "14", NOTCH_6_1),
+	iphone("iPhone 14", "14 Plus", NOTCH_6_7),
+	iphone("iPhone 14", "14 Pro", ISLAND_6_1),
+	iphone("iPhone 14", "14 Pro Max", ISLAND_6_7),
+	iphone("iPhone 13", "13 mini", NOTCH_MINI),
+	iphone("iPhone 13", "13", NOTCH_6_1),
+	iphone("iPhone 13", "13 Pro", NOTCH_6_1),
+	iphone("iPhone 13", "13 Pro Max", NOTCH_6_7),
+	iphone("iPhone 12", "12 mini", NOTCH_MINI, { notch: 200 }),
+	iphone("iPhone 12", "12", NOTCH_6_1, WIDE_NOTCH),
+	iphone("iPhone 12", "12 Pro", NOTCH_6_1, WIDE_NOTCH),
+	iphone("iPhone 12", "12 Pro Max", NOTCH_6_7, WIDE_NOTCH),
 	{
 		id: "iphone-se",
 		label: "iPhone SE",
-		shortLabel: "iPhone SE",
 		width: 375,
 		height: 667,
 		radius: 26,
@@ -127,7 +153,6 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 	{
 		id: "pixel-9",
 		label: "Pixel 9",
-		shortLabel: "Pixel 9",
 		width: 412,
 		height: 915,
 		radius: 36,
@@ -135,6 +160,10 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 		status: 40,
 	},
 ];
+
+/* WHY: Jonas 26 Nov: the phone reads best a little larger than life, so it rests at 110 % of its real size. */
+const PHONE_RESTING_SCALE = 1.1;
+const DEFAULT_PHONE_MODEL = PHONE_MODELS.find((model) => model.id === "iphone-16") ?? PHONE_MODELS[0]!;
 
 const PHONE_BODY_EDGE = 16;
 
@@ -152,7 +181,7 @@ function phoneStatusIcons(): SVGSVGElement {
 }
 
 function phoneModelById(id: string | null | undefined): PhoneModelSpec {
-	return PHONE_MODELS.find((model) => model.id === id) ?? PHONE_MODELS[0]!;
+	return PHONE_MODELS.find((model) => model.id === id) ?? DEFAULT_PHONE_MODEL;
 }
 
 function hostOf(url: string | null): string {
@@ -342,10 +371,11 @@ export class SurfaceView {
 	#toastShown = "";
 	#barOpen = false;
 	#barPinned = false;
+	#hasNotch = false;
 	#panelsHidden = false;
 	#peekTimer: ReturnType<typeof setTimeout> | undefined;
 	readonly #thumbAt = new Map<string, readonly [number, number]>();
-	#phoneModelId = PHONE_MODELS[0]!.id;
+	#phoneModelId = DEFAULT_PHONE_MODEL.id;
 	#phoneBarShown = "";
 	#lastPhoneZoom = DEFAULT_SURFACE_ZOOM;
 	#sitePublic = true;
@@ -676,22 +706,23 @@ export class SurfaceView {
 	}
 
 	#setBarOpen(open: boolean): void {
-		this.#barOpen = open;
+		this.#barOpen = open && this.#hasNotch;
 		this.#paintNotch();
 	}
 
 	#paintNotch(): void {
 		const hidden = this.#panelsHidden;
-		const open = !hidden && (this.#barOpen || this.#barPinned);
+		const notchHidden = hidden || !this.#hasNotch;
+		const open = !notchHidden && (this.#barOpen || this.#barPinned);
 		this.el.classList.toggle("is-panels-hidden", hidden);
 		this.#notch.classList.toggle("is-open", open);
-		this.#notch.hidden = hidden;
+		this.#notch.hidden = notchHidden;
 		this.#showPanels.hidden = !hidden;
 		this.#composeOpen.hidden = !hidden;
-		this.#notchPill.hidden = hidden || this.#barPinned;
-		this.#notchPill.inert = open;
+		this.#notchPill.hidden = notchHidden || this.#barPinned;
+		this.#notchPill.inert = open || notchHidden;
 		this.#notchPill.setAttribute("aria-expanded", String(open));
-		this.#notchBar.hidden = hidden;
+		this.#notchBar.hidden = notchHidden;
 		this.#notchBar.inert = !open;
 		this.#fitNotch();
 	}
@@ -708,21 +739,25 @@ export class SurfaceView {
 		if (surface) this.#drawBar(surface);
 		else this.#paintNotch();
 		if (hidden) this.#showPanels.focus({ preventScroll: true });
-		else if (hadFocus) this.#notchPill.focus({ preventScroll: true });
+		else if (hadFocus && this.#hasNotch) this.#notchPill.focus({ preventScroll: true });
 		window.dispatchEvent(new Event("qorpera-rail-resize"));
 	}
 
 	#fitNotch(): void {
-		if (this.#panelsHidden) return;
-		const layer = this.#notch.classList.contains("is-open") ? this.#notchBar : this.#notchPill;
-		const width = layer.offsetWidth;
-		const height = layer.offsetHeight;
-		if (width > 0 && height > 0) {
-			this.#notch.style.width = `${width}px`;
-			this.#notch.style.height = `${height}px`;
+		if (this.#hasNotch && !this.#panelsHidden) {
+			const layer = this.#notch.classList.contains("is-open") ? this.#notchBar : this.#notchPill;
+			const width = layer.offsetWidth;
+			const height = layer.offsetHeight;
+			if (width > 0 && height > 0) {
+				this.#notch.style.width = `${width}px`;
+				this.#notch.style.height = `${height}px`;
+			}
+			for (const toggle of this.#notchBar.querySelectorAll<HTMLElement>(".surface-toggle")) this.#placeThumb(toggle);
+			this.#markNotchCut();
+		} else if (!this.#hasNotch) {
+			this.#notch.style.removeProperty("width");
+			this.#notch.style.removeProperty("height");
 		}
-		for (const toggle of this.#notchBar.querySelectorAll<HTMLElement>(".surface-toggle")) this.#placeThumb(toggle);
-		this.#markNotchCut();
 		if (this.#fitPhoneCorners()) this.#syncPhoneViewport();
 	}
 
@@ -840,8 +875,17 @@ export class SurfaceView {
 		const state = store.state;
 		const surface = this.surface;
 		if (!surface) {
+			this.#hasNotch = false;
+			this.#barOpen = false;
+			this.#barPinned = false;
+			this.#notch.hidden = true;
+			this.#notch.classList.remove("is-open");
+			this.#notch.style.removeProperty("width");
+			this.#notch.style.removeProperty("height");
+			this.#notchPill.replaceChildren();
 			this.#notchBar.replaceChildren();
 			this.#bar.hidden = true;
+			this.#bar.classList.remove("has-phone-corners", "is-phone-stacked", "is-phone-tight", "is-phone-covered");
 			this.#panelToggle.hidden = true;
 			this.#phoneModelCorner.hidden = true;
 			this.#phoneZoomCorner.hidden = true;
@@ -1090,13 +1134,14 @@ export class SurfaceView {
 		this.#phoneZoomCorner.hidden = !isMobile;
 		if (!isMobile) {
 			this.#viewport.removeAttribute("data-phone-cutout");
-			this.#bar.classList.remove("has-phone-corners", "is-phone-stacked");
+			this.#bar.classList.remove("has-phone-corners", "is-phone-stacked", "is-phone-tight", "is-phone-covered");
 			delete this.#viewport.dataset.phoneStacked;
 			delete this.#viewport.dataset.phoneZoomed;
 			this.#viewport.style.removeProperty("--phone-w");
 			this.#viewport.style.removeProperty("--phone-h");
 			this.#viewport.style.removeProperty("--phone-r");
 			this.#viewport.style.removeProperty("--phone-status");
+			this.#viewport.style.removeProperty("--phone-notch");
 			this.#viewport.style.removeProperty("--phone-scale");
 			this.#viewportBody.scrollLeft = 0;
 			this.#viewportBody.scrollTop = 0;
@@ -1111,11 +1156,11 @@ export class SurfaceView {
 		const rect = this.#viewport.getBoundingClientRect();
 		const ui = uiScale();
 		const padX = Math.ceil(64 * ui);
-		const padY = Math.ceil((stacked ? 244 : 208) * ui);
+		const padY = Math.ceil((stacked ? 224 : 188) * ui);
 		const body = PHONE_BODY_EDGE * 2;
 		const availW = rect.width > 0 ? Math.max(220, rect.width - padX) : model.width + body;
 		const availH = rect.height > 0 ? Math.max(260, rect.height - padY) : model.height + body;
-		const fitScale = Math.min(1, availW / (model.width + body), availH / (model.height + body));
+		const fitScale = Math.min(PHONE_RESTING_SCALE, availW / (model.width + body), availH / (model.height + body));
 		const phoneZoom = clampSurfaceZoom(this.#host.store.state.phoneZoom);
 		const scale = fitScale * phoneZoom;
 		const wasOverflowX = this.#viewportBody.scrollWidth > this.#viewportBody.clientWidth + 1;
@@ -1126,6 +1171,8 @@ export class SurfaceView {
 		this.#viewport.style.setProperty("--phone-h", `${model.height}px`);
 		this.#viewport.style.setProperty("--phone-r", `${model.radius}px`);
 		this.#viewport.style.setProperty("--phone-status", `${model.status}px`);
+		if (model.notch) this.#viewport.style.setProperty("--phone-notch", `${model.notch}px`);
+		else this.#viewport.style.removeProperty("--phone-notch");
 		this.#viewport.style.setProperty("--phone-scale", scale.toFixed(4));
 		if (phoneZoom !== this.#lastPhoneZoom) {
 			this.#lastPhoneZoom = phoneZoom;
@@ -1174,17 +1221,53 @@ export class SurfaceView {
 		const start = this.#phoneModelCorner.offsetWidth;
 		const end = this.#phoneZoomCorner.offsetWidth;
 		const gap = Math.ceil(12 * uiScale());
-		const clears = (notch: number) => notch / 2 + Math.max(start, end) + gap <= inner / 2;
-		const notch = (parseFloat(this.#notch.style.width) || this.#notch.offsetWidth) + 2;
-		const restingNotch = this.#barPinned || this.#panelsHidden ? notch : this.#notchPill.offsetWidth + 2;
-		const stacked = inner > 0 && !clears(restingNotch);
-		const changed = stacked !== (this.#viewport.dataset.phoneStacked === "true");
+		const notchShown = this.#hasNotch && !this.#panelsHidden;
+		let stacked = false;
+		let tight = false;
+		let covered = false;
+		if (notchShown) {
+			const clears = (notch: number) => notch / 2 + Math.max(start, end) + gap <= inner / 2;
+			const notch = (parseFloat(this.#notch.style.width) || this.#notch.offsetWidth) + 2;
+			const restingNotch = this.#barPinned ? notch : this.#notchPill.offsetWidth + 2;
+			stacked = inner > 0 && !clears(restingNotch);
+			tight = stacked && start + end + gap > inner;
+			covered = !stacked && inner > 0 && !clears(notch);
+		} else {
+			tight = inner > 0 && start + end + gap > inner;
+		}
+		const needsRoom = stacked || tight;
+		const changed = needsRoom !== (this.#viewport.dataset.phoneStacked === "true");
 		this.#bar.classList.toggle("is-phone-stacked", stacked);
-		this.#bar.classList.toggle("is-phone-tight", stacked && start + end + gap > inner);
-		this.#bar.classList.toggle("is-phone-covered", !stacked && inner > 0 && !clears(notch));
-		if (stacked) this.#viewport.dataset.phoneStacked = "true";
+		this.#bar.classList.toggle("is-phone-tight", tight);
+		this.#bar.classList.toggle("is-phone-covered", covered);
+		if (needsRoom) this.#viewport.dataset.phoneStacked = "true";
 		else delete this.#viewport.dataset.phoneStacked;
 		return changed;
+	}
+
+	#phoneModelMenu(): MenuEntry[] {
+		const row = (model: PhoneModelSpec): MenuEntry => ({
+			label: model.label,
+			hint: `${model.width} × ${model.height}`,
+			checked: model.id === this.#phoneModelId,
+			select: () => this.#setPhoneModel(model.id),
+		});
+		const current = phoneModelById(this.#phoneModelId);
+		const groups = [...new Set(PHONE_MODELS.map((model) => model.group))];
+		return groups.flatMap((group): MenuEntry[] =>
+			group
+				? [
+						{
+							kind: "submenu",
+							label: group,
+							...(group === current.group
+								? { icon: "check", ariaLabel: t("{group}, current: {name}", { group, name: current.label }) }
+								: {}),
+							items: PHONE_MODELS.filter((model) => model.group === group).map(row),
+						},
+					]
+				: PHONE_MODELS.filter((model) => !model.group).map(row),
+		);
 	}
 
 	#setPhoneModel(id: string): void {
@@ -1223,14 +1306,13 @@ export class SurfaceView {
 		const shownCount = effectiveMode === "preview" ? store.shownPreviewChangeCount(surface.id) : 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
+		const mobileApp = look.kind === "mobile_app";
+		if (mobileApp && this.#address.isOpen) {
+			this.#address.close();
+			return;
+		}
 		const effectiveDevice =
-			reportMode || !live
-				? "desktop"
-				: look.kind === "mobile_app"
-					? "mobile"
-					: showViewportSplit
-						? state.device
-						: "desktop";
+			reportMode || !live ? "desktop" : mobileApp ? "mobile" : showViewportSplit ? state.device : "desktop";
 		const showWebsiteZoom = live && !reportMode && effectiveDevice === "desktop";
 		const websiteZoom = clampSurfaceZoom(state.websiteZoom);
 		const served = this.#host.isSiteLive?.(surface);
@@ -1282,7 +1364,7 @@ export class SurfaceView {
 		if (key === this.#barShown) return;
 		this.#barShown = key;
 		const ask = surface.publishAsk ?? null;
-		const askedMe = site === "live" && askedToPublish(surface, store.userId);
+		const askedMe = !mobileApp && site === "live" && askedToPublish(surface, store.userId);
 		const myAsk = ask && ask.askedByUserId === store.userId ? ask : null;
 		const askKey = askedMe ? `${surface.id}:${ask!.askedAt}` : "";
 		if (askKey && askKey !== this.#askShown) {
@@ -1290,7 +1372,7 @@ export class SurfaceView {
 			if (state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 		}
 		if (!this.#panelsHidden) this.#askShown = askKey;
-		if (site === "private" && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
+		if ((mobileApp || site === "private") && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 
 		const toggle = (name: string, label: string, ...segments: HTMLElement[]) =>
 			h(
@@ -1327,155 +1409,163 @@ export class SurfaceView {
 			);
 
 		const groups: HTMLElement[] = [];
-		const address = live ? this.#address.button() : null;
-		if (address) groups.push(address);
-		if (live && site === "live") {
-			groups.push(
-				toggle(
-					"mode",
-					t("What the surface shows"),
-					modeSegment("live", t("Live"), t("What visitors see right now")),
-					modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
-				),
-			);
-		} else if (studioHasChanges || (surface.archetype === "studio" && state.mode === "report")) {
-			groups.push(
-				toggle(
-					"mode",
-					t("What the surface shows"),
-					modeSegment("live", t("Base"), t("Saved studio files without open changes")),
-					modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
-				),
-			);
-		}
-		if (showViewportSplit) {
-			groups.push(
-				toggle(
-					"device",
-					t("Viewport"),
-					deviceSegment("desktop", t("Desktop"), icon("computer")),
-					deviceSegment("mobile", t("Mobile"), h("span", { class: "surface-phone-icon", "aria-hidden": "true" })),
-				),
-			);
-		}
-		if (showWebsiteZoom) {
-			groups.push(this.#buildZoomControl("website", websiteZoom));
-		}
-
+		const address = !mobileApp && live ? this.#address.button() : null;
 		const count = surface.unpublishedChangeCount;
-		const presentHere = store.peopleAtSurface(surface.slug);
-		if (presentHere.length > 0) {
-			const presentLabel =
-				presentHere.length === 1
-					? t("{name} is here", { name: presentHere[0]!.name })
-					: t("{names} are here", { names: presentHere.map((person) => person.name).join(", ") });
-			groups.push(
-				h(
-					"span",
-					{ class: "surface-pill-presence", title: presentLabel, "aria-label": presentLabel },
-					...presentHere.slice(0, 3).map((person) => personAvatar(person.name, person.userId)),
-					presentHere.length > 3
-						? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
-						: null,
-					presentHere.length > 1
-						? h("span", { class: "surface-pill-presence-fold" }, `+${presentHere.length - 1}`)
-						: null,
-				),
-			);
-		}
-		const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
-		const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
-		const personName = (userId: string) => store.memberName(userId) ?? t("A teammate");
-		if (askedMe && surface.archetype !== "ops" && count > 0 && !publishBusy) {
-			const asker = personName(ask!.askedByUserId);
-			const label = t("{name} asks you to publish", { name: firstName(asker) });
-			groups.push(
-				h(
-					"div",
-					{ class: "surface-publish has-changes is-asked", role: "group", "aria-label": label },
-					h(
-						"button",
-						{ type: "button", class: "surface-publish-main", title: label, "data-act": "publish" },
-						personAvatar(asker, ask!.askedByUserId),
-						h("span", { class: "surface-publish-word" }, t("Publish")),
+		if (!mobileApp) {
+			if (address) groups.push(address);
+			if (live && site === "live") {
+				groups.push(
+					toggle(
+						"mode",
+						t("What the surface shows"),
+						modeSegment("live", t("Live"), t("What visitors see right now")),
+						modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
 					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-yes",
-							disabled: askBusy,
-							"aria-label": t("Yes, publish"),
-							title: t("Yes, publish"),
-							"data-act": "ask-yes",
-						},
-						icon("check"),
+				);
+			} else if (studioHasChanges || (surface.archetype === "studio" && state.mode === "report")) {
+				groups.push(
+					toggle(
+						"mode",
+						t("What the surface shows"),
+						modeSegment("live", t("Base"), t("Saved studio files without open changes")),
+						modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
 					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-no",
-							disabled: askBusy,
-							"aria-label": t("No"),
-							title: t("No"),
-							"data-act": "ask-no",
-						},
-						icon("close"),
+				);
+			}
+			if (showViewportSplit) {
+				groups.push(
+					toggle(
+						"device",
+						t("Viewport"),
+						deviceSegment("desktop", t("Desktop"), icon("computer")),
+						deviceSegment(
+							"mobile",
+							t("Mobile"),
+							h("span", { class: "surface-phone-icon", "aria-hidden": "true" }),
+						),
 					),
-				),
-			);
-		} else if (site === "live" && surface.archetype !== "ops" && (count > 0 || publishBusy)) {
-			const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
-			const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
-			groups.push(
-				h(
-					"div",
-					{ class: `surface-publish${count ? " has-changes" : ""}${publishBusy ? " is-busy" : ""}` },
+				);
+			}
+			if (showWebsiteZoom) {
+				groups.push(this.#buildZoomControl("website", websiteZoom));
+			}
+
+			const presentHere = store.peopleAtSurface(surface.slug);
+			if (presentHere.length > 0) {
+				const presentLabel =
+					presentHere.length === 1
+						? t("{name} is here", { name: presentHere[0]!.name })
+						: t("{names} are here", { names: presentHere.map((person) => person.name).join(", ") });
+				groups.push(
 					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-main",
-							disabled: publishBusy,
-							title: publishBusy ? t("Publishing…") : t("Publish Base to the live surface"),
-							"data-act": "publish",
-						},
-						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
-						saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
-						publishBusy
-							? h("span", { class: "surface-publish-word" }, t("Publishing…"))
-							: saidNo
-								? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
-								: t("Publish"),
-						publishBusy || saidNo
-							? h("span", { class: "surface-publish-short" }, publishBusy ? t("Publish") : t("No"))
+						"span",
+						{ class: "surface-pill-presence", title: presentLabel, "aria-label": presentLabel },
+						...presentHere.slice(0, 3).map((person) => personAvatar(person.name, person.userId)),
+						presentHere.length > 3
+							? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
 							: null,
-						!publishBusy && !saidNo && count ? h("span", { class: "surface-notch-count" }, String(count)) : null,
-						askedUser && !saidNo
-							? h(
-									"span",
-									{
-										class: "surface-publish-waiting",
-										title: t("Waiting for {name}", { name: firstName(personName(askedUser)) }),
-									},
-									personAvatar(personName(askedUser), askedUser),
-								)
+						presentHere.length > 1
+							? h("span", { class: "surface-pill-presence-fold" }, `+${presentHere.length - 1}`)
 							: null,
 					),
+				);
+			}
+			const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+			const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
+			const personName = (userId: string) => store.memberName(userId) ?? t("A teammate");
+			if (askedMe && surface.archetype !== "ops" && count > 0 && !publishBusy) {
+				const asker = personName(ask!.askedByUserId);
+				const label = t("{name} asks you to publish", { name: firstName(asker) });
+				groups.push(
 					h(
-						"button",
-						{
-							type: "button",
-							class: "surface-publish-menu",
-							"aria-label": t("Publish options"),
-							"aria-haspopup": "menu",
-							"data-act": "publish-menu",
-						},
-						icon("chevron-down"),
+						"div",
+						{ class: "surface-publish has-changes is-asked", role: "group", "aria-label": label },
+						h(
+							"button",
+							{ type: "button", class: "surface-publish-main", title: label, "data-act": "publish" },
+							personAvatar(asker, ask!.askedByUserId),
+							h("span", { class: "surface-publish-word" }, t("Publish")),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-yes",
+								disabled: askBusy,
+								"aria-label": t("Yes, publish"),
+								title: t("Yes, publish"),
+								"data-act": "ask-yes",
+							},
+							icon("check"),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-no",
+								disabled: askBusy,
+								"aria-label": t("No"),
+								title: t("No"),
+								"data-act": "ask-no",
+							},
+							icon("close"),
+						),
 					),
-				),
-			);
+				);
+			} else if (site === "live" && surface.archetype !== "ops" && (count > 0 || publishBusy)) {
+				const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
+				const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
+				groups.push(
+					h(
+						"div",
+						{ class: `surface-publish${count ? " has-changes" : ""}${publishBusy ? " is-busy" : ""}` },
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-main",
+								disabled: publishBusy,
+								title: publishBusy ? t("Publishing…") : t("Publish Base to the live surface"),
+								"data-act": "publish",
+							},
+							publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
+							saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
+							publishBusy
+								? h("span", { class: "surface-publish-word" }, t("Publishing…"))
+								: saidNo
+									? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
+									: t("Publish"),
+							publishBusy || saidNo
+								? h("span", { class: "surface-publish-short" }, publishBusy ? t("Publish") : t("No"))
+								: null,
+							!publishBusy && !saidNo && count
+								? h("span", { class: "surface-notch-count" }, String(count))
+								: null,
+							askedUser && !saidNo
+								? h(
+										"span",
+										{
+											class: "surface-publish-waiting",
+											title: t("Waiting for {name}", { name: firstName(personName(askedUser)) }),
+										},
+										personAvatar(personName(askedUser), askedUser),
+									)
+								: null,
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-menu",
+								"aria-label": t("Publish options"),
+								"aria-haspopup": "menu",
+								"data-act": "publish-menu",
+							},
+							icon("chevron-down"),
+						),
+					),
+				);
+			}
 		}
 
 		const panelLabel = panelOpen ? t("Close panel") : t("Preview panel");
@@ -1504,9 +1594,21 @@ export class SurfaceView {
 					icon("hide"),
 				),
 			);
-		else this.#panelsHidden = false;
-		this.#bar.hidden = groups.length === 0;
+		else if (this.#panelsHidden) {
+			this.#panelsHidden = false;
+			window.dispatchEvent(new Event("qorpera-rail-resize"));
+		}
+		this.#hasNotch = groups.length > 0;
+		this.#bar.hidden = !this.#hasNotch && effectiveDevice !== "mobile";
 		this.#barTitle.textContent = surface.title;
+		if (!this.#hasNotch) {
+			this.#notchPill.replaceChildren();
+			this.#notchBar.replaceChildren();
+			this.#barOpen = false;
+			this.#barPinned = false;
+			this.#paintNotch();
+			return;
+		}
 		const notchLabel =
 			effectiveMode === "live"
 				? live
@@ -2296,19 +2398,16 @@ export class SurfaceView {
 					y: box.bottom + 6,
 					opener: target,
 					findOpener: () => this.el.querySelector<HTMLElement>('[data-act="phone-models"]'),
-					items: PHONE_MODELS.map((model) => ({
-						label: model.label,
-						hint: `${model.width} × ${model.height}`,
-						checked: model.id === this.#phoneModelId,
-						select: () => this.#setPhoneModel(model.id),
-					})),
+					items: this.#phoneModelMenu(),
 				});
 				return;
 			}
 			case "address":
+				if (!this.#hasNotch) return;
 				this.#address.toggle(event.detail === 0);
 				return;
 			case "expand-pill":
+				if (!this.#hasNotch) return;
 				this.#setBarOpen(true);
 				if (event.detail === 0)
 					(
@@ -2320,6 +2419,7 @@ export class SurfaceView {
 				store.togglePreviewPanel(surface.id);
 				return;
 			case "hide-panels":
+				if (!this.#hasNotch) return;
 				this.#setPanelsHidden(true);
 				return;
 			case "show-panels":

@@ -4,6 +4,7 @@ import { type CodeHostJob, CodeHostJobFailure } from "./code-host-jobs.ts";
 import { type CodeHostChangeRange, composePreviewTree } from "./code-host-surfaces.ts";
 import { CODE_SITE_MAX_FILES, CODE_SITE_MAX_FOLDERS, type CodeSiteProblem } from "./code-site.ts";
 import { parseCodingJson } from "./coding-setup.ts";
+import { NATIVE_SITE_MAX_FILES, type SiteManifestPayload } from "./site-blob-upload.ts";
 
 export interface SurfacePreviewRecipe {
 	readonly run: string;
@@ -50,7 +51,12 @@ const SITE_LIMIT_PROBLEMS: ReadonlySet<CodeSiteProblem["code"]> = new Set([
 	"SITE_FILE_NAME",
 ]);
 
-export function previewSiteProblemDetail(problem: CodeSiteProblem, folder: string | null): string {
+export function previewSiteProblemDetail(
+	problem: CodeSiteProblem,
+	folder: string | null,
+	options?: { readonly native?: boolean },
+): string {
+	const native = options?.native === true;
 	const path = problem.path === null || /[\r\n]/.test(problem.path) ? null : problem.path;
 	const named = (what: string) => (path === null ? what : `${what}: ${path}`);
 	let what: string;
@@ -62,19 +68,21 @@ export function previewSiteProblemDetail(problem: CodeSiteProblem, folder: strin
 			what = "has no index.html at its top";
 			break;
 		case "SITE_TOO_MANY_FILES":
-			what = `has more than ${CODE_SITE_MAX_FILES} web files`;
+			what = `has more than ${native ? NATIVE_SITE_MAX_FILES : CODE_SITE_MAX_FILES} web files`;
 			break;
 		case "SITE_TOO_MANY_FOLDERS":
 			what = `has web files in more than ${CODE_SITE_MAX_FOLDERS} folders`;
 			break;
 		case "SITE_FILE_TOO_LARGE":
-			what = named("has a file over 10 MB");
+			what = named(native ? "has a file over 100 MB" : "has a file over 10 MB");
 			break;
 		case "SITE_TOO_LARGE":
-			what = "is over 25 MB";
+			what = native ? "is over 512 MB" : "is over 25 MB";
 			break;
 		case "SITE_FILE_NAME":
-			what = `${named("has a file whose name a site cannot serve")} (each part of a path takes only letters, digits, dots, hyphens and underscores, and starts with a letter, a digit or an underscore)`;
+			what = native
+				? named("has a file whose name a site cannot serve")
+				: `${named("has a file whose name a site cannot serve")} (each part of a path takes only letters, digits, dots, hyphens and underscores, and starts with a letter, a digit or an underscore)`;
 			break;
 		case "SITE_HOLDS_SECRET":
 			what = "holds the value of one of the company's secrets";
@@ -90,8 +98,20 @@ export function previewSiteProblemDetail(problem: CodeSiteProblem, folder: strin
 	);
 }
 
+export interface SurfacePreviewBuiltManifest {
+	readonly manifestSha256: string;
+	readonly manifest: SiteManifestPayload;
+	readonly fileCount: number;
+	readonly totalBytes: number;
+	readonly hasCredentialInputs: boolean;
+}
+
 export type SurfacePreviewBuildOutcome =
-	| { readonly outcome: "built"; readonly builtTreeSha: string }
+	| {
+			readonly outcome: "built";
+			readonly builtTreeSha: string | null;
+			readonly native?: SurfacePreviewBuiltManifest;
+	  }
 	| { readonly outcome: "failed"; readonly errorDetail: string };
 
 const PREVIEW_BUILD_RUN_SHOWN = 200;

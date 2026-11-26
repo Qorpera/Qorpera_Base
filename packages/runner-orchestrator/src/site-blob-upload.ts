@@ -1,15 +1,20 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { withTimeoutScope } from "./abort-scope.ts";
+import type { CodeSiteProblem } from "./code-site.ts";
 import type { CodeSiteUploadFile } from "./code-site-uploads.ts";
 
 export const NATIVE_SITE_MAX_FILES = 10_000;
 export const NATIVE_SITE_MAX_BYTES = 512 * 1024 * 1024;
 export const NATIVE_SITE_MAX_FILE_BYTES = 100 * 1024 * 1024;
+export const NATIVE_SITE_MAX_PATH_BYTES = 1024;
+export const NATIVE_SITE_MAX_SEGMENTS = 24;
+export const NATIVE_SITE_CONTROL_FILE_MAX_BYTES = 256 * 1024;
 export const DEFAULT_BLOB_UPLOAD_CONCURRENCY = 8;
 export const BLOB_EXISTS_BATCH_SIZE = 512;
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const EXTENSION_PATTERN = /\.([A-Za-z0-9]{1,12})$/;
 const INPUT_TAG_PATTERN = /<input\b[^>]*>/gi;
 const PASSWORD_TYPE_PATTERN = /\btype\s*=\s*(?:"password"|'password'|password(?=\s|>|\/))/i;
 const CREDENTIAL_AUTOCOMPLETE_PATTERN = /\bautocomplete\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>/]+))/i;
@@ -29,6 +34,7 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
 	css: "text/css; charset=utf-8",
 	js: "application/javascript; charset=utf-8",
 	mjs: "application/javascript; charset=utf-8",
+	cjs: "application/javascript; charset=utf-8",
 	json: "application/json; charset=utf-8",
 	map: "application/json; charset=utf-8",
 	webmanifest: "application/manifest+json; charset=utf-8",
@@ -62,6 +68,70 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
 	glb: "model/gltf-binary",
 	gltf: "model/gltf+json",
 };
+
+export const NATIVE_SITE_EXTENSIONS: ReadonlySet<string> = new Set(Object.keys(CONTENT_TYPES));
+
+export function isNativeSitePath(path: string): boolean {
+	if (!path || Buffer.byteLength(path, "utf8") > NATIVE_SITE_MAX_PATH_BYTES) return false;
+	if (path.startsWith("/") || path.endsWith("/") || path.includes("//")) return false;
+	for (const ch of path) {
+		const code = ch.codePointAt(0) as number;
+		if (
+			code < 0x20 ||
+			(code >= 0x7f && code <= 0x9f) ||
+			code === 0x2028 ||
+			code === 0x2029 ||
+			ch === "\\" ||
+			ch === "?" ||
+			ch === "#" ||
+			ch === "%"
+		) {
+			return false;
+		}
+	}
+	const segments = path.split("/");
+	if (segments.length === 0 || segments.length > NATIVE_SITE_MAX_SEGMENTS) return false;
+	if ((segments[0] as string).toLowerCase() === "__qorpera") return false;
+	return segments.every(
+		(segment) => segment !== "" && segment !== "." && segment !== ".." && !segment.startsWith("."),
+	);
+}
+
+export function isNativeServableSitePath(path: string): boolean {
+	if (!isNativeSitePath(path)) return false;
+	const slash = path.lastIndexOf("/");
+	const basename = slash >= 0 ? path.slice(slash + 1) : path;
+	const extension = EXTENSION_PATTERN.exec(basename)?.[1]?.toLowerCase();
+	return Boolean(extension && NATIVE_SITE_EXTENSIONS.has(extension));
+}
+
+export function nativeSiteTreeProblem(
+	entries: readonly { readonly path: string; readonly bytes: number }[],
+): CodeSiteProblem | null {
+	const problem = (code: CodeSiteProblem["code"], path: string | null = null): CodeSiteProblem => ({
+		code,
+		path,
+		variable: null,
+	});
+	const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+	let files = 0;
+	let total = 0;
+	let hasIndex = false;
+	for (const { path, bytes } of sorted) {
+		if (path === "_redirects" || path === "_headers") {
+			if (bytes > NATIVE_SITE_CONTROL_FILE_MAX_BYTES) return problem("SITE_FILE_TOO_LARGE", path);
+			continue;
+		}
+		if (!isNativeServableSitePath(path)) return problem("SITE_FILE_NAME", path);
+		if (bytes > NATIVE_SITE_MAX_FILE_BYTES) return problem("SITE_FILE_TOO_LARGE", path);
+		files += 1;
+		total += bytes;
+		if (files > NATIVE_SITE_MAX_FILES) return problem("SITE_TOO_MANY_FILES");
+		if (total > NATIVE_SITE_MAX_BYTES) return problem("SITE_TOO_LARGE");
+		if (path === "index.html") hasIndex = true;
+	}
+	return hasIndex ? null : problem("SITE_NO_INDEX");
+}
 
 const HASHED_ASSET_PATTERN = /(?:^|\/)(?:_next\/static|assets)\/|[-.][0-9a-f]{8,}\.[a-z0-9]+$/i;
 
@@ -165,14 +235,22 @@ export function scanSiteCredentialInputs(files: readonly CodeSiteUploadFile[]): 
 	return flagged.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-export function buildCanonicalSiteManifest(
-	files: readonly CodeSiteUploadFile[],
-	options?: {
-		readonly redirects?: readonly SiteRedirectEntry[];
-		readonly headers?: readonly SiteHeaderEntry[];
-		readonly spaFallback?: string | null;
-		readonly notFoundPage?: string | null;
-	},
+export interface CanonicalSiteManifestInput {
+	readonly path: string;
+	readonly bytes: number;
+	readonly sha256: string;
+}
+
+export interface CanonicalSiteManifestOptions {
+	readonly redirects?: readonly SiteRedirectEntry[];
+	readonly headers?: readonly SiteHeaderEntry[];
+	readonly spaFallback?: string | null;
+	readonly notFoundPage?: string | null;
+}
+
+export function computeCanonicalSiteManifest(
+	files: readonly CanonicalSiteManifestInput[],
+	options?: CanonicalSiteManifestOptions,
 ): { manifestSha256: string; manifest: SiteManifestPayload; totalBytes: number } {
 	if (files.length === 0 || files.length > NATIVE_SITE_MAX_FILES) {
 		throw new Error(`Site file count must be between 1 and ${NATIVE_SITE_MAX_FILES}`);
@@ -186,12 +264,8 @@ export function buildCanonicalSiteManifest(
 		if (!SHA256_PATTERN.test(file.sha256)) {
 			throw new Error(`Invalid sha256 for ${file.path}`);
 		}
-		if (file.bytes !== file.content.byteLength || file.bytes > NATIVE_SITE_MAX_FILE_BYTES) {
+		if (!Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > NATIVE_SITE_MAX_FILE_BYTES) {
 			throw new Error(`Invalid byte length for ${file.path}`);
-		}
-		const computed = createHash("sha256").update(file.content).digest("hex");
-		if (computed !== file.sha256) {
-			throw new Error(`SHA-256 mismatch for ${file.path}`);
 		}
 		totalBytes += file.bytes;
 		if (totalBytes > NATIVE_SITE_MAX_BYTES) {
@@ -228,6 +302,22 @@ export function buildCanonicalSiteManifest(
 			not_found_page: inferredNotFound,
 		},
 	};
+}
+
+export function buildCanonicalSiteManifest(
+	files: readonly CodeSiteUploadFile[],
+	options?: CanonicalSiteManifestOptions,
+): { manifestSha256: string; manifest: SiteManifestPayload; totalBytes: number } {
+	for (const file of files) {
+		if (file.bytes !== file.content.byteLength || file.bytes > NATIVE_SITE_MAX_FILE_BYTES) {
+			throw new Error(`Invalid byte length for ${file.path}`);
+		}
+		const computed = createHash("sha256").update(file.content).digest("hex");
+		if (computed !== file.sha256) {
+			throw new Error(`SHA-256 mismatch for ${file.path}`);
+		}
+	}
+	return computeCanonicalSiteManifest(files, options);
 }
 
 const defaultFetch: BlobUploadFetch = async (url, init) =>
@@ -301,6 +391,148 @@ export function parseHeadersFile(text: string): SiteHeaderEntry[] {
 	return entries.slice(0, 100);
 }
 
+async function fetchWithRetry(
+	fetchImpl: BlobUploadFetch,
+	url: string,
+	init: Parameters<BlobUploadFetch>[1],
+	signal?: AbortSignal,
+): Promise<BlobUploadFetchResponse> {
+	let lastErr: unknown;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		signal?.throwIfAborted();
+		try {
+			const res = await fetchImpl(url, init);
+			if (res.status < 500 || attempt === 2) return res;
+			lastErr = new Error(`HTTP ${res.status}`);
+		} catch (err) {
+			if (signal?.aborted || attempt === 2) throw err;
+			lastErr = err;
+		}
+		const delayMs = 100 * 2 ** attempt;
+		await delay(delayMs, undefined, signal ? { signal } : undefined);
+	}
+	throw lastErr instanceof Error ? lastErr : new Error("Blob upload failed");
+}
+
+export async function checkMissingBlobsOnEdge(options: {
+	readonly routerInternalUrl: string;
+	readonly controlToken: string;
+	readonly hashes: readonly string[];
+	readonly concurrency?: number;
+	readonly fetchImpl?: BlobUploadFetch;
+	readonly signal?: AbortSignal;
+}): Promise<Set<string>> {
+	const unique = [...new Set(options.hashes)];
+	if (unique.length === 0) return new Set();
+	const base = options.routerInternalUrl.replace(/\/+$/, "");
+	const fetchImpl = options.fetchImpl ?? defaultFetch;
+	const authHeader = { authorization: `Bearer ${options.controlToken}` };
+	const uniqueSet = new Set(unique);
+	const missing = new Set<string>();
+	let fallbackFromIndex: number | null = null;
+
+	// WHY: Batch existence checks via POST /_internal/blobs/exists to collapse N HEADs into 1 call, falling back to HEAD on 404/405 for rolling deploys.
+	for (let offset = 0; offset < unique.length; offset += BLOB_EXISTS_BATCH_SIZE) {
+		options.signal?.throwIfAborted();
+		const chunk = unique.slice(offset, offset + BLOB_EXISTS_BATCH_SIZE);
+		const existsRes = await fetchWithRetry(
+			fetchImpl,
+			`${base}/_internal/blobs/exists`,
+			{
+				method: "POST",
+				headers: { ...authHeader, "content-type": "application/json" },
+				body: Buffer.from(JSON.stringify({ hashes: chunk }), "utf8"),
+				signal: options.signal,
+			},
+			options.signal,
+		);
+		if (existsRes.status === 404 || existsRes.status === 405 || !existsRes.json) {
+			fallbackFromIndex = offset;
+			break;
+		}
+		if (existsRes.status !== 200) {
+			throw new Error(`Blob exists batch check failed with HTTP ${existsRes.status}`);
+		}
+		const parsed = await existsRes.json();
+		if (
+			!parsed ||
+			typeof parsed !== "object" ||
+			!("existing" in parsed) ||
+			!Array.isArray((parsed as { existing: unknown }).existing)
+		) {
+			throw new Error("Blob exists batch check returned invalid JSON");
+		}
+		const existingSet = new Set<string>();
+		for (const entry of (parsed as { existing: unknown[] }).existing) {
+			if (typeof entry === "string" && uniqueSet.has(entry)) existingSet.add(entry);
+		}
+		for (const sha of chunk) {
+			if (!existingSet.has(sha)) missing.add(sha);
+		}
+	}
+
+	if (fallbackFromIndex !== null) {
+		const remaining = unique.slice(fallbackFromIndex);
+		const concurrency = Math.max(1, Math.min(16, options.concurrency ?? DEFAULT_BLOB_UPLOAD_CONCURRENCY));
+		let cursor = 0;
+		let failed = false;
+		const headWorker = async (): Promise<void> => {
+			while (!failed && cursor < remaining.length) {
+				options.signal?.throwIfAborted();
+				const sha256 = remaining[cursor++]!;
+				try {
+					const headRes = await fetchWithRetry(
+						fetchImpl,
+						`${base}/_internal/blobs/${sha256}`,
+						{ method: "HEAD", headers: authHeader, signal: options.signal },
+						options.signal,
+					);
+					if (headRes.status === 404) {
+						missing.add(sha256);
+					} else if (headRes.status !== 200) {
+						throw new Error(`Blob HEAD failed for ${sha256} with HTTP ${headRes.status}`);
+					}
+				} catch (err) {
+					failed = true;
+					throw err;
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(concurrency, remaining.length) }, () => headWorker()));
+	}
+
+	return missing;
+}
+
+export async function putBlobToEdge(options: {
+	readonly routerInternalUrl: string;
+	readonly controlToken: string;
+	readonly sha256: string;
+	readonly content: Uint8Array;
+	readonly fetchImpl?: BlobUploadFetch;
+	readonly signal?: AbortSignal;
+}): Promise<"stored" | "exists"> {
+	const base = options.routerInternalUrl.replace(/\/+$/, "");
+	const fetchImpl = options.fetchImpl ?? defaultFetch;
+	const putRes = await fetchWithRetry(
+		fetchImpl,
+		`${base}/_internal/blobs/${options.sha256}`,
+		{
+			method: "PUT",
+			headers: {
+				authorization: `Bearer ${options.controlToken}`,
+				"content-type": "application/octet-stream",
+			},
+			body: options.content,
+			signal: options.signal,
+		},
+		options.signal,
+	);
+	if (putRes.status === 201) return "stored";
+	if (putRes.status === 200) return "exists";
+	throw new Error(`Blob PUT failed for ${options.sha256} with HTTP ${putRes.status}`);
+}
+
 export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Promise<SiteBlobUploadResult> {
 	const base = options.routerInternalUrl.replace(/\/+$/, "");
 	const fetchImpl = options.fetchImpl ?? defaultFetch;
@@ -338,27 +570,6 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 	let deduplicatedBlobs = 0;
 	let failed = false;
 
-	const fetchWithRetry = async (
-		url: string,
-		init: Parameters<BlobUploadFetch>[1],
-	): Promise<BlobUploadFetchResponse> => {
-		let lastErr: unknown;
-		for (let attempt = 0; attempt < 3; attempt += 1) {
-			options.signal?.throwIfAborted();
-			try {
-				const res = await fetchImpl(url, init);
-				if (res.status < 500 || attempt === 2) return res;
-				lastErr = new Error(`HTTP ${res.status}`);
-			} catch (err) {
-				if (options.signal?.aborted || attempt === 2) throw err;
-				lastErr = err;
-			}
-			const delayMs = 100 * 2 ** attempt;
-			await delay(delayMs, undefined, options.signal ? { signal: options.signal } : undefined);
-		}
-		throw lastErr instanceof Error ? lastErr : new Error("Blob upload failed");
-	};
-
 	const authHeader = { authorization: `Bearer ${options.controlToken}` };
 	const knownMissing = new Set<string>();
 	let uploadQueue: [string, Uint8Array][] = queue;
@@ -371,12 +582,17 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 			options.signal?.throwIfAborted();
 			const chunk = queue.slice(offset, offset + BLOB_EXISTS_BATCH_SIZE);
 			const chunkHashes = chunk.map(([sha]) => sha);
-			const existsRes = await fetchWithRetry(`${base}/_internal/blobs/exists`, {
-				method: "POST",
-				headers: { ...authHeader, "content-type": "application/json" },
-				body: Buffer.from(JSON.stringify({ hashes: chunkHashes }), "utf8"),
-				signal: options.signal,
-			});
+			const existsRes = await fetchWithRetry(
+				fetchImpl,
+				`${base}/_internal/blobs/exists`,
+				{
+					method: "POST",
+					headers: { ...authHeader, "content-type": "application/json" },
+					body: Buffer.from(JSON.stringify({ hashes: chunkHashes }), "utf8"),
+					signal: options.signal,
+				},
+				options.signal,
+			);
 			if (existsRes.status === 404 || existsRes.status === 405) {
 				fallbackFromIndex = offset;
 				break;
@@ -426,11 +642,16 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 			const url = `${base}/_internal/blobs/${sha256}`;
 			try {
 				if (!knownMissing.has(sha256)) {
-					const headRes = await fetchWithRetry(url, {
-						method: "HEAD",
-						headers: authHeader,
-						signal: options.signal,
-					});
+					const headRes = await fetchWithRetry(
+						fetchImpl,
+						url,
+						{
+							method: "HEAD",
+							headers: authHeader,
+							signal: options.signal,
+						},
+						options.signal,
+					);
 					if (headRes.status === 200) {
 						deduplicatedBlobs++;
 						continue;
@@ -439,18 +660,18 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 						throw new Error(`Blob HEAD failed for ${sha256} with HTTP ${headRes.status}`);
 					}
 				}
-				const putRes = await fetchWithRetry(url, {
-					method: "PUT",
-					headers: { ...authHeader, "content-type": "application/octet-stream" },
-					body: content,
+				const result = await putBlobToEdge({
+					routerInternalUrl: base,
+					controlToken: options.controlToken,
+					sha256,
+					content,
+					fetchImpl,
 					signal: options.signal,
 				});
-				if (putRes.status === 201) {
+				if (result === "stored") {
 					uploadedBlobs++;
-				} else if (putRes.status === 200) {
-					deduplicatedBlobs++;
 				} else {
-					throw new Error(`Blob PUT failed for ${sha256} with HTTP ${putRes.status}`);
+					deduplicatedBlobs++;
 				}
 			} catch (err) {
 				failed = true;

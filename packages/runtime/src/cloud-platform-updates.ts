@@ -497,11 +497,18 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository names, file paths written out in the text, server and IP addresses, machine sizes, code formatting and numbered sections.",
 	},
 	{
+		id: "cofounder-pulse-and-real-codebases",
+		kind: "behaviour",
+		date: "2026-11-26",
+		title: "Co-Founder Pulse and real-codebase builds",
+		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Legacy third-party Connections are retired: never ask founders to connect GitHub — import public repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
+	},
+	{
 		id: "analytics-interfaces-live-numbers",
 		kind: "capability",
 		date: "2026-11-26",
 		title: "Analytics interfaces with live numbers",
-		text: "A company can now have an Analytics interface: a Studio page of its real numbers (orders, site visits, money) that asks each question live when a member opens it, as that member, so nobody sees more than they may read. The page picks its chart colours once, linked to the company's Identity. You can read the platform's own numbers too: data_describe with database qorpera lists its questions and data_query asks them by name. When a founder asks how the business is doing, offer an Analytics interface rather than a report of copied numbers, and take real figures from its numbers when you plan.",
+		text: "A company can now have an Analytics interface: a Studio page of its real numbers (orders, site visits, money) that asks each question live when a member opens it, as that member, so nobody sees more than they may read. The page picks its chart colours once, linked to the company's Identity. You can read the platform's own numbers too: data_describe with database qorpera lists its questions and data_query asks them by name. When a founder asks how the business is doing, offer an Analytics interface rather than a report of copied numbers (propose it as a Studio interface on a folder, of kind dashboard), and take real figures from its numbers when you plan.",
 	},
 ]);
 

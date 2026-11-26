@@ -17,15 +17,14 @@ import {
 	withJob,
 } from "./code-host-jobs.ts";
 import {
-	CODE_SITE_EXTENSIONS,
 	CODE_SITE_MAX_FOLDERS,
-	CODE_SITE_PATH,
 	type CodeSiteProblem,
 	codeSiteFolderValid,
 	codeSiteManifest,
 	codeSiteTreeProblem,
 } from "./code-site.ts";
 import { parseCodingJson } from "./coding-setup.ts";
+import { isNativeServableSitePath, NATIVE_SITE_MAX_FILES, nativeSiteTreeProblem } from "./site-blob-upload.ts";
 import { readSurfacePreviewRecipe, type SurfacePreviewPlan } from "./surface-preview-runner.ts";
 
 /** A repository's website as the code host reads it (own code storage, step 4, part B; STEP4-RELEASES-PLAN.md 8.2).
@@ -225,8 +224,6 @@ export async function readCodeSiteTree(
 	});
 }
 
-const SURFACE_SITE_EXTENSIONS = new Set(CODE_SITE_EXTENSIONS);
-const SURFACE_EXTENSION = /\.([A-Za-z0-9]{1,12})$/;
 const SURFACE_SITE_FALLBACK_FOLDERS = ["dist", "build", "out", "public"] as const;
 const SURFACE_SKIP_DIRS = new Set(["node_modules", "vendor", "target", "coverage", "__pycache__"]);
 const SURFACE_ROOT_CONFIG_FILES = new Set([
@@ -262,7 +259,7 @@ const SURFACE_ROOT_CONFIG_FILES = new Set([
 ]);
 const SURFACE_TSCONFIG_FILE = /^tsconfig\.[^/]+\.json$/i;
 const MAX_SURFACE_CHECKS_BYTES = 64 * 1024;
-const MAX_SURFACE_WALK_FOLDERS = 500;
+const MAX_SURFACE_WALK_FOLDERS = NATIVE_SITE_MAX_FILES;
 
 interface ParsedGitTreeEntry {
 	readonly mode: string;
@@ -460,14 +457,8 @@ async function readSurfaceSiteTreeInRun(
 				)
 					continue;
 				const path = folder.path ? `${folder.path}/${item.name}` : item.name;
-				const extension = SURFACE_EXTENSION.exec(item.name)?.[1]?.toLowerCase();
-				if (
-					!extension ||
-					!SURFACE_SITE_EXTENSIONS.has(extension) ||
-					path.length > 512 ||
-					!CODE_SITE_PATH.test(path)
-				)
-					continue;
+				const isRootControlFile = folder.path === "" && (item.name === "_redirects" || item.name === "_headers");
+				if (!isRootControlFile && !isNativeServableSitePath(path)) continue;
 				entries.push({ mode: item.mode, type: "blob", name: item.id, path, bytes: 0 });
 			}
 		}
@@ -482,7 +473,7 @@ async function readSurfaceSiteTreeInRun(
 		const sized = (
 			await run.gitOk(run.repo, ["cat-file", "--batch-check"], READ_FAILED, {
 				stdin: Buffer.from(entries.map((entry) => `${entry.name}\n`).join("")),
-				maximumOutputBytes: MAX_LISTING,
+				maximumOutputBytes: Math.max(MAX_LISTING, entries.length * 80),
 			})
 		)
 			.toString("latin1")
@@ -498,7 +489,7 @@ async function readSurfaceSiteTreeInRun(
 			entry.bytes = Number(size);
 		});
 	}
-	const problem = codeSiteTreeProblem(entries);
+	const problem = nativeSiteTreeProblem(entries);
 	if (problem) throw new CodeSiteTreeInvalid(problem);
 	const versions = [...new Map(entries.map((entry) => [entry.name, entry.bytes])).entries()],
 		length = versions.reduce((sum, [name, bytes]) => sum + `${name} blob ${bytes}\n`.length + bytes + 1, 0);
