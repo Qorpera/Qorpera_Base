@@ -83,7 +83,7 @@ describe("shared agent activity", () => {
 				{
 					p_environment_id: profileA.environmentId,
 				},
-				f.company.signal,
+				f.company.readSignal,
 			);
 			const indicator = f.view.el.querySelector<HTMLElement>(".thread-activity")!;
 			const label = phase === "writing" ? "Writing" : "Working";

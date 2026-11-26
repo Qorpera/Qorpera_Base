@@ -961,7 +961,13 @@ describe("starter layouts", () => {
 	it("keeps the product page's homes in order with Breakdowns and no Files tab", () => {
 		const product = SURFACE_STARTER_LAYOUTS.product;
 		expect(product.tabs.map((tab) => tab.title)).toEqual(["Overview", "Specs", "Vendors", "Reports", "Breakdowns"]);
-		expect(product.tabs[0]?.blocks.map((node) => node.type)).toEqual(["stage_3d", "title", "swatch_row", "facts"]);
+		expect(product.tabs[0]?.blocks.map((node) => node.type)).toEqual([
+			"stage_3d",
+			"title",
+			"swatch_row",
+			"facts",
+			"artifacts",
+		]);
 		expect(product.tabs[0]?.blocks[1]).toEqual({
 			type: "title",
 			line: [

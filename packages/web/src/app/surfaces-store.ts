@@ -63,10 +63,16 @@ export function getLocalSandbox(): LocalSandboxModule | undefined {
 
 export function loadLocalSandbox(): Promise<LocalSandboxModule> {
 	if (localSandbox) return Promise.resolve(localSandbox);
-	localSandboxLoading ??= import("./surface-local-sandbox.ts").then((mod) => {
-		localSandbox = mod;
-		return mod;
-	});
+	localSandboxLoading ??= import("./surface-local-sandbox.ts").then(
+		(mod) => {
+			localSandbox = mod;
+			return mod;
+		},
+		(error: unknown) => {
+			localSandboxLoading = undefined;
+			throw error;
+		},
+	);
 	return localSandboxLoading;
 }
 
@@ -221,7 +227,7 @@ const POLL_MS = 4_000;
 const FAST_POLL_MS = 1_000;
 const HINT_DEBOUNCE_MS = 50;
 const FOLDER_HINT_DEBOUNCE_MS = 50;
-export const PREVIEW_TOGGLE_DEBOUNCE_MS = 150;
+export const PREVIEW_TOGGLE_DEBOUNCE_MS = 50;
 const PREVIEW_SYNC_RETRY_MS = [1_500, 3_000, 6_000] as const;
 export const PREVIEW_PASS_TTL_MS = 45_000;
 const MAX_LOCAL_SANDBOX_CACHE = 8;
@@ -1583,6 +1589,7 @@ export class SurfacesStore {
 	#folderHintTimer: ReturnType<typeof setTimeout> | undefined;
 	#retryLoadTimer: ReturnType<typeof setTimeout> | undefined;
 	#suspended = false;
+	#visitAbort = new AbortController();
 	#pendingHintFiles = false;
 	#undoSeq = 0;
 	#noteSeq = 0;
@@ -1630,12 +1637,13 @@ export class SurfacesStore {
 			previewSyncing: {},
 			busy: {},
 		});
+		if (options.signal.aborted) this.#visitAbort.abort();
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		if (typeof document !== "undefined") {
 			document.addEventListener(
 				"visibilitychange",
 				() => {
-					if (this.#options.signal.aborted) return;
+					if (this.#options.signal.aborted || this.#suspended) return;
 					this.#syncPolling();
 					if (
 						document.visibilityState !== "hidden" &&
@@ -1863,6 +1871,7 @@ export class SurfacesStore {
 	suspend(): void {
 		if (this.#options.signal.aborted || this.#suspended) return;
 		this.#suspended = true;
+		this.#visitAbort.abort();
 		this.#activeSurfaceId = undefined;
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
 		if (this.#hintTimer) clearTimeout(this.#hintTimer);
@@ -1886,6 +1895,7 @@ export class SurfacesStore {
 	resume(): void {
 		if (this.#options.signal.aborted || !this.#suspended) return;
 		this.#suspended = false;
+		this.#visitAbort = new AbortController();
 		if ((this.state.source === "loading" && !this.#loaded) || this.#fallbackAfterLoadError) {
 			this.#loaded = undefined;
 			void this.load();
@@ -1957,6 +1967,7 @@ export class SurfacesStore {
 	}
 
 	dispose(): void {
+		this.#visitAbort.abort();
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
 		if (this.#hintTimer) clearTimeout(this.#hintTimer);
@@ -2022,6 +2033,9 @@ export class SurfacesStore {
 	}
 
 	load(): Promise<void> {
+		if (this.#options.signal.aborted || this.#suspended || this.#visitAbort.signal.aborted) {
+			return Promise.resolve();
+		}
 		this.#loaded ??= this.#load();
 		return this.#loaded;
 	}
@@ -2032,10 +2046,19 @@ export class SurfacesStore {
 			this.#useLocal();
 			return;
 		}
+		const signal = this.#visitAbort.signal;
+		if (this.#options.signal.aborted || this.#suspended || signal.aborted) {
+			if (this.state.source === "loading") this.#loaded = undefined;
+			return;
+		}
 		if (client.isSurfacesEnabled) {
 			try {
-				const enabled = await client.isSurfacesEnabled();
+				const enabled = await client.isSurfacesEnabled(signal);
 				if (this.#options.signal.aborted) return;
+				if (signal.aborted) {
+					if (this.state.source === "loading") this.#loaded = undefined;
+					return;
+				}
 				if (!enabled) {
 					this.#fallbackAfterLoadError = false;
 					this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
@@ -2043,6 +2066,10 @@ export class SurfacesStore {
 				}
 			} catch (error) {
 				if (this.#options.signal.aborted) return;
+				if (signal.aborted) {
+					if (this.state.source === "loading") this.#loaded = undefined;
+					return;
+				}
 				if (isMissingSurfaceRpcError(error) || isSurfacesDisabledError(error)) {
 					this.#fallbackAfterLoadError = false;
 					this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
@@ -2063,13 +2090,25 @@ export class SurfacesStore {
 			}
 		}
 		try {
-			let surfaces = await client.listSurfaces(this.#options.companyId);
+			let surfaces = await client.listSurfaces(this.#options.companyId, signal);
 			if (this.#options.signal.aborted) return;
+			if (signal.aborted) {
+				if (this.state.source === "loading") this.#loaded = undefined;
+				return;
+			}
 			if (surfaces.length === 0 && client.bootstrapCompanySurfaces) {
 				try {
-					surfaces = await client.bootstrapCompanySurfaces(this.#options.companyId);
+					surfaces = await client.bootstrapCompanySurfaces(this.#options.companyId, signal);
 					if (this.#options.signal.aborted) return;
+					if (signal.aborted) {
+						if (this.state.source === "loading") this.#loaded = undefined;
+						return;
+					}
 				} catch (bootstrapError) {
+					if (this.#options.signal.aborted || signal.aborted) {
+						if (this.state.source === "loading") this.#loaded = undefined;
+						return;
+					}
 					if (!isMissingSurfaceRpcError(bootstrapError)) {
 						/* WHY: Viewers without write rights cannot bootstrap rows; fall through cleanly. */
 					}
@@ -2082,6 +2121,10 @@ export class SurfacesStore {
 			}
 		} catch (error) {
 			if (this.#options.signal.aborted) return;
+			if (signal.aborted) {
+				if (this.state.source === "loading") this.#loaded = undefined;
+				return;
+			}
 			if (isSurfacesDisabledError(error)) {
 				this.#fallbackAfterLoadError = false;
 				this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
@@ -2490,10 +2533,11 @@ export class SurfacesStore {
 	}
 
 	async #loadUnseenNotes(client: SurfacesClient): Promise<void> {
-		if (!client.unseenSurfaceNotes) return;
+		if (!client.unseenSurfaceNotes || this.#suspended) return;
+		const signal = this.#visitAbort.signal;
 		try {
-			const unseen = await client.unseenSurfaceNotes(this.#options.companyId);
-			if (this.#options.signal.aborted) return;
+			const unseen = await client.unseenSurfaceNotes(this.#options.companyId, signal);
+			if (this.#options.signal.aborted || signal.aborted) return;
 			const next = Object.fromEntries(unseen.map((item) => [item.sessionId, item]));
 			if (JSON.stringify(next) !== JSON.stringify(this.state.unseenNotes)) this.store.set({ unseenNotes: next });
 		} catch {
@@ -2502,9 +2546,11 @@ export class SurfacesStore {
 	}
 
 	async #loadAutomations(client: SurfacesClient): Promise<void> {
+		if (this.#suspended) return;
+		const signal = this.#visitAbort.signal;
 		try {
-			const automations = await client.listAutomations(this.#options.companyId);
-			if (!this.#options.signal.aborted) {
+			const automations = await client.listAutomations(this.#options.companyId, signal);
+			if (!this.#options.signal.aborted && !signal.aborted) {
 				const prompts: Record<string, string> = {};
 				for (const item of automations) {
 					if (item.prompt) prompts[item.id] = item.prompt;
@@ -2528,11 +2574,13 @@ export class SurfacesStore {
 	}
 
 	async #loadMigration(client: SurfacesClient): Promise<void> {
+		if (this.#suspended) return;
+		const signal = this.#visitAbort.signal;
 		try {
-			const migration = await client.getMigrationChecklist(this.#options.companyId);
-			if (!this.#options.signal.aborted) this.store.set({ migration });
+			const migration = await client.getMigrationChecklist(this.#options.companyId, signal);
+			if (!this.#options.signal.aborted && !signal.aborted) this.store.set({ migration });
 		} catch {
-			if (!this.#options.signal.aborted)
+			if (!this.#options.signal.aborted && !signal.aborted)
 				this.store.set({ migration: synthesizeMigration(this.#options.migration()) });
 		}
 	}
@@ -2670,16 +2718,17 @@ export class SurfacesStore {
 		options?: { readonly background?: boolean },
 	): Promise<SurfaceWorkspace | undefined> {
 		const client = this.#options.client;
-		if (!client || isLocalSurfaceId(surfaceId)) return this.workspace(surfaceId);
+		if (!client || isLocalSurfaceId(surfaceId) || this.#suspended) return this.workspace(surfaceId);
 		const reqId = ++this.#workspaceReqSeq;
 		const startEpoch = this.#workspaceEpoch.get(surfaceId) ?? 0;
+		const signal = this.#visitAbort.signal;
 		this.#latestWorkspaceReq.set(surfaceId, reqId);
 		this.#inFlightWorkspaceRefreshes.add(surfaceId);
 		let rerun = false;
 		let result: SurfaceWorkspace | undefined;
 		try {
-			const workspace = await client.getSurfaceWorkspace(surfaceId);
-			if (this.#options.signal.aborted) return undefined;
+			const workspace = await client.getSurfaceWorkspace(surfaceId, signal);
+			if (this.#options.signal.aborted || signal.aborted) return undefined;
 			if (this.#latestWorkspaceReq.get(surfaceId) !== reqId) {
 				return this.workspace(surfaceId);
 			}
@@ -2691,7 +2740,9 @@ export class SurfacesStore {
 				result = workspace;
 			}
 		} catch (error) {
-			if (
+			if (signal.aborted && !this.#options.signal.aborted) {
+				if (!this.state.workspaces[surfaceId]) this.#hydratedAttempted.delete(surfaceId);
+			} else if (
 				!options?.background &&
 				!this.#options.signal.aborted &&
 				this.#latestWorkspaceReq.get(surfaceId) === reqId
@@ -2704,7 +2755,13 @@ export class SurfacesStore {
 				this.#inFlightWorkspaceRefreshes.delete(surfaceId);
 			}
 		}
-		if (rerun && !this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
+		if (
+			rerun &&
+			!this.#options.signal.aborted &&
+			!signal.aborted &&
+			!this.#suspended &&
+			this.#latestWorkspaceReq.get(surfaceId) === reqId
+		) {
 			return this.refreshWorkspace(surfaceId, retryDepth + 1, options);
 		}
 		return result;
@@ -3172,8 +3229,9 @@ export class SurfacesStore {
 		}
 		let shouldRerun = false;
 		let rerunVisible = false;
+		const signal = this.#visitAbort.signal;
 		try {
-			const contents = await loadFiles(surface, this.#options.signal);
+			const contents = await loadFiles(surface, signal);
 			if (!this.#options.signal.aborted && contents !== undefined) {
 				const { files, binaries } = contents;
 				this.store.set((state) => {
@@ -3227,7 +3285,10 @@ export class SurfacesStore {
 				});
 			}
 		} catch {
-			if (!this.#options.signal.aborted) {
+			if (signal.aborted && !this.#options.signal.aborted) {
+				this.#cloudFilesDirty.add(surface.id);
+				if (visible) this.#cloudFilesDirtyVisible.add(surface.id);
+			} else if (!this.#options.signal.aborted) {
 				this.store.set((state) => {
 					const existingPending = state.pendingStudioPatches[surface.id];
 					if (!existingPending?.length) return {};
@@ -6101,13 +6162,16 @@ export class SurfacesStore {
 
 	async refreshSurfaces(): Promise<void> {
 		const client = this.#options.client;
-		if (!client || this.state.source !== "cloud") return;
+		if (!client || this.state.source !== "cloud" || this.#suspended) return;
 		const reqId = ++this.#surfacesReqSeq;
 		const startEpoch = this.#surfacesMutationEpoch;
+		const signal = this.#visitAbort.signal;
 		try {
-			const surfaces = await client.listSurfaces(this.#options.companyId);
+			const surfaces = await client.listSurfaces(this.#options.companyId, signal);
 			if (
 				!this.#options.signal.aborted &&
+				!signal.aborted &&
+				!this.#suspended &&
 				reqId === this.#surfacesReqSeq &&
 				startEpoch === this.#surfacesMutationEpoch &&
 				surfaces.length
@@ -6265,6 +6329,10 @@ const registry = new WeakMap<object, SurfacesStore>();
 
 export function attachSurfaces(owner: object, store: SurfacesStore): void {
 	registry.set(owner, store);
+}
+
+export function surfacesStoreOf(owner: object): SurfacesStore | undefined {
+	return registry.get(owner);
 }
 
 export function surfacesOf(owner: object): SurfacesStore | undefined {

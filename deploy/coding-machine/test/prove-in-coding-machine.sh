@@ -36,6 +36,7 @@ TYPESCRIPT_VERSION=${QORPERA_PROOF_TYPESCRIPT:?the pinned TypeScript version}
 TSX_VERSION=${QORPERA_PROOF_TSX:?the pinned tsx version}
 UV_VERSION=${QORPERA_PROOF_UV:?the pinned uv version}
 MISE_VERSION=${QORPERA_PROOF_MISE:?the pinned mise version}
+BLENDER_VERSION=${QORPERA_PROOF_BLENDER:?the pinned Blender version}
 CODEX_SHA256=${QORPERA_PROOF_CODEX_SHA256:?the pinned Codex sha-256}
 # What mise installs in the proof: a Node.js other than the image's, from nodejs.org (checked against its SHASUMS256).
 MISE_NODE=22.20.0
@@ -110,6 +111,9 @@ pass "apt's self-update units masked, no snapd"
 	fail "tsc or tsx is not the pinned one: $(tsc --version), $(first tsx --version)"
 [[ $(uv --version) == "uv $UV_VERSION"* ]] || fail "uv is not $UV_VERSION: $(uv --version)"
 [[ $(mise --version 2>/dev/null) == "$MISE_VERSION"* ]] || fail "mise is not $MISE_VERSION: $(mise --version 2>&1)"
+[[ $(HOME=/tmp/blender-proof-home blender --version | head -1) == "Blender $BLENDER_VERSION" ]] ||
+	fail "blender is not $BLENDER_VERSION"
+rm -rf /tmp/blender-proof-home
 echo "$(python3 --version), $(go version), $(rustc --version), $(first java -version), $(tmux -V)"
 echo "$(first gcc --version), $(first clang --version), $(ruby --version), $(first soffice --version)"
 echo "$(docker --version), $(docker compose version), $(first docker buildx version)"
@@ -315,6 +319,9 @@ PDF=$(as_session bash -c 'cd ~/languages && timeout 300 soffice --headless --con
 	head -c 5 note.pdf') || fail "LibreOffice did not convert"
 [[ $PDF == %PDF- ]] || fail "LibreOffice gave '$PDF'"
 pass "LibreOffice converts a document to PDF as the session"
+GLB_HEAD=$(as_session bash -c 'cd ~/languages && timeout 120 blender -b --factory-startup --python-exit-code 1 --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath=\"cube.glb\", export_format=\"GLB\")" >/dev/null && head -c 4 cube.glb') || fail "Blender did not export GLB"
+[[ $GLB_HEAD == glTF ]] || fail "Blender gave '$GLB_HEAD'"
+pass "Blender $BLENDER_VERSION exports a GLB headlessly as the session"
 TOOLS=$(as_session bash -c 'cd ~/languages && sqlite3 :memory: "select 40 + 2" && zip -q note.zip note.txt && unzip -p note.zip note.txt &&
 	rg -c Qorpera note.txt && fd --type f --glob note.txt && jq -n "1 + 1"') || fail "the command-line tools failed: $TOOLS"
 [[ $TOOLS == $'42\nQorpera proof\n1\nnote.txt\n2' ]] || fail "the command-line tools gave '$TOOLS'"

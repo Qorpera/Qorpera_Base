@@ -381,7 +381,7 @@ describe("a surface's figure in the rail", () => {
 
 		const website = () => rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
 		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(1);
-		expect(getSurfaceWorkspace).toHaveBeenCalledWith(site.id);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(site.id, expect.any(AbortSignal));
 		expect(mintPreviewPass).not.toHaveBeenCalled();
 		expect(setPreviewSelection).not.toHaveBeenCalled();
 		expect(loadCloudFiles).not.toHaveBeenCalled();

@@ -6527,6 +6527,15 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		);
 	});
 
+	it("paces failed start retries when checksPollMs is unset", async () => {
+		const f = await checksFixture({ pollMs: null, budgetMs: 450 });
+		mocked.guestRun.mockRejectedValue(new Error("LXD operation failed"));
+		const run = await f.run(CHECKS.slice(0, 1));
+		expect(run).toEqual({ state: "not_run", why: "budget", code: "CODE_CHECKS_BUDGET" });
+		expect(mocked.guestRun.mock.calls.length).toBeGreaterThanOrEqual(1);
+		expect(mocked.guestRun.mock.calls.length).toBeLessThanOrEqual(5);
+	});
+
 	it("asks a call that failed once again at the next read, and goes on", async () => {
 		const f = await checksFixture();
 		f.ending((run) => (checkOf(run) ? { after: 200 } : {}));

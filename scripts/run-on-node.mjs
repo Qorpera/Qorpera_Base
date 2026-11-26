@@ -148,9 +148,6 @@ export const PROBE_TIMEOUT_MS = 12_000;
 /** Before a run moves to another machine or starts its suite, the event loop gets this long to act on a signal
  * that arrived during a synchronous copy: an interrupted run must stop, not start a suite somewhere. */
 const SIGNAL_TURN_MS = 100;
-/** Runner users on the test machine (guest-setup.sh creates them). Each run takes one for its whole
- * duration, so per-user kernel limits count that run alone: the coding Git sandbox caps RLIMIT_NPROC
- * at 512 tasks, which every concurrent run under one shared user exhausted together. */
 export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
 /** The CPU lane's slots (past them only EXTRA_SLOTS, while the machine has room), each run with (vCPUs / CPU_SLOTS) vitest
  * workers, so the slots together use the machine's vCPUs: 2 each on 10 or 12 vCPUs. Measured 2026-09-29: a full npm test

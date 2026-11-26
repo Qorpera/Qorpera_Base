@@ -153,7 +153,8 @@ set +e
 		QORPERA_PROOF_CHROMIUM="$(jq -r .chromium "$WORK/image-build.json")" \
 		QORPERA_PROOF_TYPESCRIPT="$(jq -r .typescript "$WORK/image-build.json")" \
 		QORPERA_PROOF_TSX="$(jq -r .tsx "$WORK/image-build.json")" QORPERA_PROOF_UV="$(jq -r .uv "$WORK/image-build.json")" \
-		QORPERA_PROOF_MISE="$(jq -r .mise "$WORK/image-build.json")" QORPERA_PROOF_PROXY="$PROXY" \
+		QORPERA_PROOF_MISE="$(jq -r .mise "$WORK/image-build.json")" \
+		QORPERA_PROOF_BLENDER="$(jq -r .blender "$WORK/image-build.json")" QORPERA_PROOF_PROXY="$PROXY" \
 		QORPERA_PROOF_CODEX_SHA256="$(jq -r .codexSha256 "$WORK/image-build.json")" \
 		QORPERA_PROOF_SCRIPTS=/root/code-checks QORPERA_PROOF_GUEST=/root/guest bash /root/prove-in-coding-machine.sh \
 		</dev/null | tee "$WORK/inner.out"

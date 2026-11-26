@@ -5092,6 +5092,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					return await stopped(failed(error));
 				}
 			}
+			if (!wasRunning && receipt !== undefined && readWaitMs > 0) continue;
 			const delayMs =
 				wasRunning && readWaitMs > 0 && callElapsedMs >= 200
 					? 50

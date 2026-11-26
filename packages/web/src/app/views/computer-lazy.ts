@@ -67,17 +67,21 @@ export class LazyComputerPanels implements ComputerPanelsLike {
 		this.#initIfReady();
 		if (this.#inner || this.#disposed || this.#signal?.aborted) return Promise.resolve();
 		this.#loading ??= (async () => {
-			const [{ ComputerPanels: LoadedPanels }, computerMod] = await Promise.all([
-				preloadedComputerPanels
-					? Promise.resolve({ ComputerPanels: preloadedComputerPanels })
-					: import("./computer.ts"),
-				typeof this.#computer === "function" && !preloadedWebCompanyComputer
-					? import("../../cloud/computer.ts")
-					: Promise.resolve(undefined),
-			]);
-			preloadedComputerPanels = LoadedPanels;
-			if (computerMod) preloadedWebCompanyComputer = computerMod.WebCompanyComputer;
-			this.#initIfReady();
+			try {
+				const [{ ComputerPanels: LoadedPanels }, computerMod] = await Promise.all([
+					preloadedComputerPanels
+						? Promise.resolve({ ComputerPanels: preloadedComputerPanels })
+						: import("./computer.ts"),
+					typeof this.#computer === "function" && !preloadedWebCompanyComputer
+						? import("../../cloud/computer.ts")
+						: Promise.resolve(undefined),
+				]);
+				preloadedComputerPanels = LoadedPanels;
+				if (computerMod) preloadedWebCompanyComputer = computerMod.WebCompanyComputer;
+				this.#initIfReady();
+			} finally {
+				this.#loading = undefined;
+			}
 		})();
 		return this.#loading;
 	}

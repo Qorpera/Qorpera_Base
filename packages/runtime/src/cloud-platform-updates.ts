@@ -517,6 +517,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Analytics interfaces with live numbers",
 		text: "A company can now have an Analytics interface: a Studio page of its real numbers (orders, site visits, money) that asks each question live when a member opens it, as that member, so nobody sees more than they may read. The page picks its chart colours once, linked to the company's Identity. You can read the platform's own numbers too: data_describe with database qorpera lists its questions and data_query asks them by name. When a founder asks how the business is doing, offer an Analytics interface rather than a report of copied numbers (propose it as a Studio interface on a folder, of kind dashboard), and take real figures from its numbers when you plan.",
 	},
+	{
+		id: "product-studio-3d-and-visuals",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Product Studio visuals, live 3D models and sharper checks",
+		text: "Product Studio interfaces now include a native visuals gallery on Overview beside the 3D stage, colourways and headline figures, and Studio HTML pages and modules now load staged PNG, WebP and SVG images directly instead of breaking. Product sessions can now build real multi-part 3D GLB models in session on the coding machine (with Blender pre-installed on updated coding images, or script-built glTF) alongside generated renders while keeping the native Product layout. Visual page inspection now renders 3D models, colourways, live modules and images, checks option-group variants by change, and flags broken images before finishing.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

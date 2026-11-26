@@ -1,5 +1,10 @@
 import { type SurfaceFolderContents, surfaceFolderRoots } from "@qorpera/cloud-client/surface-folder-files";
-import { IDENTITY_TOKENS_CSS_PATH, type StudioBinaryRef, SURFACE_LAYOUT_PATH } from "@qorpera/contracts";
+import {
+	IDENTITY_TOKENS_CSS_PATH,
+	type StudioBinaryRef,
+	type StudioPatchOp,
+	SURFACE_LAYOUT_PATH,
+} from "@qorpera/contracts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
@@ -16,6 +21,7 @@ import { createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
 import {
 	createInspectSurfaceTool,
 	type StudioInspectBinaryMeta,
+	type StudioInspectLocalAsset,
 	studioInspectAsker,
 } from "./cloud-surface-inspect-tool.ts";
 import { createComposeSurfaceLayoutTool } from "./cloud-surface-layout-tool.ts";
@@ -255,6 +261,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			contents = null;
 		}
 	}
+	const baseContentsFiles: Readonly<Record<string, string>> = contents ? { ...contents.files } : {};
 	if (contents && turnReadOverlay) {
 		const layoutPath = `${folderRoot}/${SURFACE_LAYOUT_PATH}`;
 		const overlaidLayout = await turnReadOverlay.lookup(layoutPath, signal);
@@ -281,6 +288,13 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	const stagedText = new Map<string, string | null>();
 	const stagedBytesBySha = new Map<string, { readonly bytes: Uint8Array; readonly mediaType: string }>();
 	const stagedBinaries = new Map<string, { readonly bytes: Uint8Array; readonly mediaType: string }>();
+	const stagedOpsByChangeId = new Map<string, StudioPatchOp[]>();
+	const replacedInTurnChangeIds = new Set<string>();
+	const optionGroupByChangeId = new Map<string, string | null>(
+		sessionOpenChanges.map((ch) => [ch.changeId, ch.optionGroupKey ?? null]),
+	);
+	const localSourceByPath = new Map<string, StudioInspectLocalAsset>();
+	const localSourceByChangeId = new Map<string, Map<string, StudioInspectLocalAsset>>();
 	const rawStageBytes = surfaceSession.stageBytes ?? surfaceSession.narrateExplainer?.stageBytes;
 	const trackedStageBytes = rawStageBytes
 		? async (bytes: Uint8Array, mediaType: string, reqSignal: AbortSignal): Promise<StudioBinaryRef> => {
@@ -307,20 +321,38 @@ export async function prepareSurfaceCodingWorkspace(options: {
 				}
 			}
 			const result = await stageSurfacePatch(sessionIdArg, effectiveRequest, context);
-			const targetOpen = request.changeId
-				? sessionOpenChanges.find((ch) => ch.changeId === request.changeId)
-				: undefined;
-			if (!request.optionGroup && (!targetOpen?.optionGroupKey || targetOpen.changeId === replyChangeId)) {
+			const targetId = request.changeId ?? result.changeId;
+			const prevGroup = optionGroupByChangeId.get(targetId) ?? null;
+			const resolvedGroup = request.optionGroup ?? prevGroup;
+			optionGroupByChangeId.set(result.changeId, resolvedGroup);
+			if (request.replaceAll) {
+				replacedInTurnChangeIds.add(result.changeId);
+				localSourceByChangeId.delete(result.changeId);
+			}
+			const prevChangeOps = request.replaceAll ? [] : (stagedOpsByChangeId.get(result.changeId) ?? []);
+			stagedOpsByChangeId.set(result.changeId, [...prevChangeOps, ...request.ops]);
+			const perChangeLocal = localSourceByChangeId.get(result.changeId);
+			if (perChangeLocal) {
+				for (const op of request.ops) {
+					const rel = normalizeStudioRelativePath(op.path, folderRoot);
+					if (rel) perChangeLocal.delete(`${folderRoot}/${rel}`);
+				}
+			}
+			const includeInDefault = !resolvedGroup || result.changeId === replyChangeId;
+			if (includeInDefault) {
 				applyStudioTextOps(stagedText, request.ops, folderRoot);
 				for (const op of request.ops) {
 					const rel = normalizeStudioRelativePath(op.path, folderRoot);
 					if (!rel) continue;
+					const full = `${folderRoot}/${rel}`;
+					localSourceByPath.delete(full);
 					if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
 						stagedBinaries.delete(rel);
 					} else if (op.op === "write_file") {
 						stagedText.delete(rel);
 						const cached = stagedBytesBySha.get(op.file.fileSha256);
 						if (cached) stagedBinaries.set(rel, cached);
+						else stagedBinaries.delete(rel);
 					}
 				}
 			}
@@ -376,28 +408,28 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	);
 	const codexInstructions = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "coding_finish"),
-		"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts, Node/Python tooling, and headless Chromium visual verification.",
+		"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts, Node/Python tooling, 3D GLB model generation (use Blender if installed, or Python/Node glTF 2.0 scripts), and headless Chromium visual verification.",
 		`Never try to write directly into /company/${folderRoot}/ from shell commands (the mount refuses direct writes); use company_search to find files across the whole company, data_describe and data_query to inspect company databases under /company/data/, company_read and company_list to read files with active Preview overlays, stage every change under ${folderRoot}/ via stage_surface_patch, and write working notes under ${notesRoot}/ via company_write.`,
 		...(isInternalReconciliation
 			? [
 					"When finished staging the combined resolution via stage_surface_patch, call coding_finish with a concise summary (omitting headSha). Never call coding_ask.",
 				]
 			: [
-					"Visual drawing and inspection tools: use compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks for line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap data), use stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, GLB, MP3/WAV) straight into Preview, and call inspect_surface after staging layout or visual changes to visually verify the rendered page (desktop/mobile, light/dark) before calling coding_finish.",
+					`Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks)${hasMakePicture ? ", use make_picture for bespoke concept renders" : ""}, use stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call inspect_surface (passing changeId when checking an optionGroup variant) after staging to visually audit the rendered page before calling coding_finish.`,
 					"Every turn MUST end with coding_finish (with operationKey, summary, and optional notePaths; omit headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
 				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 	].join("\n\n");
 	const claudeSystemNote = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "mcp__qorpera__coding_finish"),
-		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts, Node/Python, Blender, and headless Chromium visual verification.",
+		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts, Node/Python, 3D GLB model generation (using Blender when installed, or Python/Node glTF 2.0 scripts), and headless Chromium visual verification.",
 		`Never try to modify /company directly with Bash, Edit, or Write (the mount refuses direct writes). Use mcp__qorpera__company_search to search across the whole company, mcp__qorpera__data_describe and mcp__qorpera__data_query to inspect company databases read-only, mcp__qorpera__company_read and mcp__qorpera__company_list when you need active Preview overlay contents, stage every file change under ${folderRoot}/ through mcp__qorpera__stage_surface_patch, and write working notes under ${notesRoot}/ through mcp__qorpera__company_write.`,
 		...(isInternalReconciliation
 			? [
 					"When finished staging the combined resolution via mcp__qorpera__stage_surface_patch, call mcp__qorpera__coding_finish with operationKey and a concise summary. Never call coding_ask.",
 				]
 			: [
-					"Visual drawing and inspection tools: use mcp__qorpera__compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks for line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap data), use mcp__qorpera__stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, GLB, MP3/WAV) straight into Preview, and call mcp__qorpera__inspect_surface after staging visual or layout changes to inspect a real rendered screenshot (desktop/mobile, light/dark) before calling mcp__qorpera__coding_finish.",
+					`Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use mcp__qorpera__compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks)${hasMakePicture ? ", use mcp__qorpera__make_picture for bespoke concept renders" : ""}, use mcp__qorpera__stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call mcp__qorpera__inspect_surface (passing changeId when checking an optionGroup variant) after staging to inspect a real rendered screenshot before calling mcp__qorpera__coding_finish.`,
 					"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey, summary, and optional notePaths) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
 				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
@@ -481,6 +513,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 								stageBytes: trackedStageBytes,
 								surfacePatch: trackedSurfacePatch,
 								pictures,
+								patchTracker,
 							}),
 						]
 					: [];
@@ -518,6 +551,22 @@ export async function prepareSurfaceCodingWorkspace(options: {
 								stageBytes: trackedStageBytes,
 								surfacePatch: trackedSurfacePatch,
 								patchTracker,
+								onStagedSource: ({ destPath, sourcePath, fileSha256, changeId }) => {
+									const rel = normalizeStudioRelativePath(destPath, folderRoot);
+									if (!rel) return;
+									const full = `${folderRoot}/${rel}`;
+									const asset: StudioInspectLocalAsset = { sourcePath, sha256: fileSha256 };
+									let perChange = localSourceByChangeId.get(changeId);
+									if (!perChange) {
+										perChange = new Map<string, StudioInspectLocalAsset>();
+										localSourceByChangeId.set(changeId, perChange);
+									}
+									perChange.set(full, asset);
+									const group = optionGroupByChangeId.get(changeId) ?? null;
+									if (!group || changeId === replyChangeId) {
+										localSourceByPath.set(full, asset);
+									}
+								},
 							}),
 						]
 					: [];
@@ -531,8 +580,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											ask: studioInspectAsker(cloudDataTools({ folder, door: companyData, apply: false })),
 										}
 									: {}),
-								loadSnapshot: async (reqSignal) => {
-									const files: Record<string, string> = { ...(contents?.files ?? {}) };
+								loadSnapshot: async (reqSignal, inspectOptions) => {
+									const files: Record<string, string> = { ...baseContentsFiles };
 									const knownBinaries: Record<string, StudioInspectBinaryMeta> = {};
 									for (const [fullPath, ref] of Object.entries(contents?.binaries ?? {})) {
 										knownBinaries[fullPath] = {
@@ -541,7 +590,31 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											inCompanyMount: true,
 										};
 									}
-									if (turnReadOverlay) {
+									const targetChangeId = inspectOptions?.changeId;
+									const replacedTargetPrior =
+										targetChangeId && replacedInTurnChangeIds.has(targetChangeId)
+											? sessionOpenChanges.find((ch) => ch.changeId === targetChangeId)
+											: undefined;
+									const excludePriorFromOwn = Boolean(
+										replacedTargetPrior &&
+											(!replacedTargetPrior.optionGroupKey ||
+												replacedTargetPrior.changeId === replyChangeId),
+									);
+									let readOverlay = turnReadOverlay;
+									if (excludePriorFromOwn && baseReaderForPatch) {
+										const remainingOpen = sessionOpenChanges.filter((ch) => ch.changeId !== targetChangeId);
+										const filteredOwn = remainingOpen.some((ch) => ch.kind === "folder_patch")
+											? createSurfaceSessionOwnOverlay({
+													folderRoot,
+													sessionOpenChanges: remainingOpen,
+													baseReader: baseReaderForPatch,
+													replyChangeId,
+												})
+											: null;
+										if (filteredOwn) await filteredOwn.prepare(reqSignal);
+										readOverlay = chainFolderPreviewOverlays(externalPreviewOverlay, filteredOwn);
+									}
+									if (readOverlay) {
 										const overlayCandidates = new Set<string>([
 											`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
 											IDENTITY_TOKENS_CSS_PATH,
@@ -556,7 +629,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											}
 										}
 										for (const candidate of overlayCandidates) {
-											const looked = await turnReadOverlay.lookup(candidate, reqSignal);
+											const looked = await readOverlay.lookup(candidate, reqSignal);
 											if (looked?.kind === "file") {
 												files[candidate] = looked.content;
 												delete knownBinaries[candidate];
@@ -585,6 +658,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 									}
 									for (const change of sessionOpenChanges) {
 										if (change.optionGroupKey && change.changeId !== replyChangeId) continue;
+										if (excludePriorFromOwn && change.changeId === targetChangeId) continue;
 										for (const op of change.patchManifest ?? []) {
 											const rel = normalizeStudioRelativePath(op.path, folderRoot);
 											if (!rel) continue;
@@ -619,6 +693,57 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											inCompanyMount: false,
 										};
 									}
+									const localAssetPaths: Record<string, StudioInspectLocalAsset> = {};
+									for (const [full, asset] of localSourceByPath) {
+										localAssetPaths[full] = asset;
+									}
+									if (targetChangeId) {
+										const priorOpen = sessionOpenChanges.find((ch) => ch.changeId === targetChangeId);
+										const replacedInTurn = replacedInTurnChangeIds.has(targetChangeId);
+										const turnOps = stagedOpsByChangeId.get(targetChangeId) ?? [];
+										const combinedOps = [
+											...(replacedInTurn ? [] : (priorOpen?.patchManifest ?? [])),
+											...turnOps,
+										];
+										if (combinedOps.length > 0) {
+											const variantText = new Map<string, string | null>();
+											for (const [full, content] of Object.entries(files)) {
+												const rel = normalizeStudioRelativePath(full, folderRoot);
+												if (rel) variantText.set(rel, content);
+											}
+											applyStudioTextOps(variantText, combinedOps, folderRoot);
+											for (const op of combinedOps) {
+												const rel = normalizeStudioRelativePath(op.path, folderRoot);
+												if (!rel) continue;
+												const full = `${folderRoot}/${rel}`;
+												if (op.op === "write_file") {
+													delete files[full];
+													delete localAssetPaths[full];
+													const cached = stagedBytesBySha.get(op.file.fileSha256);
+													if (cached) binaries[full] = cached;
+													else delete binaries[full];
+													knownBinaries[full] = {
+														bytes: op.file.bytes,
+														mediaType: op.file.mediaType,
+														inCompanyMount: false,
+													};
+												} else {
+													delete binaries[full];
+													delete knownBinaries[full];
+													delete localAssetPaths[full];
+													const updated = variantText.get(rel);
+													if (updated === null || updated === undefined) delete files[full];
+													else files[full] = updated;
+												}
+											}
+										}
+										const changeLocal = localSourceByChangeId.get(targetChangeId);
+										if (changeLocal) {
+											for (const [full, asset] of changeLocal) {
+												localAssetPaths[full] = asset;
+											}
+										}
+									}
 									return {
 										surfaceTitle: surfaceSession.surfaceTitle,
 										folderRoot,
@@ -626,6 +751,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 										files,
 										binaries,
 										knownBinaries,
+										localAssetPaths,
 									};
 								},
 							}),

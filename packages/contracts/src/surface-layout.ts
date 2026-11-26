@@ -1554,6 +1554,12 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 					take: 4,
 					skip: ["tagline", "summary", "description"],
 				},
+				{
+					type: "artifacts",
+					id: "visuals",
+					match: ["pictures/**", "renders/**", "visuals/**", "images/**", "*.png", "*.webp", "*.jpg", "*.jpeg"],
+					heading: "Visuals",
+				},
 			],
 		},
 		{

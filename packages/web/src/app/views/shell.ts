@@ -969,6 +969,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		document.addEventListener(
 			"pointerdown",
 			(event) => {
+				if (!created.toolbar.isConnected) return;
 				pressClosesMenu =
 					companyButton.getAttribute("aria-expanded") === "true" &&
 					event.target instanceof Node &&
@@ -1077,6 +1078,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		window.addEventListener(
 			"qorpera-rail-resize",
 			() => {
+				if (!created.toolbar.isConnected) return;
 				const rail = created.toolbar.parentElement;
 				if (!rail || rail.hidden || isCollapsed(rail) === created.collapsed) return;
 				created.redraw();
@@ -1992,7 +1994,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		(agent) => !agentWorks(company.agentState(agent.id)) && !state.agentNotes?.[agent.id]?.next,
 	);
 	const activeAgentId =
-		context.route.name === "company" && context.route.section === "staff" ? context.route.id : undefined;
+		context.route.name === "company" && context.route.section === "staff"
+			? context.route.id
+			: activeSessionId
+				? (state.sessions.find((session) => session.sessionId === activeSessionId)?.staffAgentId ?? undefined)
+				: undefined;
 	const agentsHub = surfaceRail
 		? syncAgentsHub(company, {
 				profileId,
@@ -4634,6 +4640,14 @@ export function invalidateShellSearchFiles(profileId: string): void {
 }
 
 export function clearShellCompanyState(company?: CompanyController): void {
+	if (company) {
+		const parts = railParts.get(company);
+		if (parts) {
+			parts.redraw = () => {};
+			parts.drag.cancel();
+			parts.appsDrag.cancel();
+		}
+	}
 	if (!company || searchTarget?.company === company) {
 		searchTarget = undefined;
 		searchWindow?.reset();

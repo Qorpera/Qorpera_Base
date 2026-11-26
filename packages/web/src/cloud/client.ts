@@ -146,6 +146,41 @@ export const DATABASE_ANSWER_MS = 20_000;
 
 export const NO_ANSWER = "Qorpera did not answer in time.";
 
+function abortRpcError(name: string, signal: AbortSignal): CloudRpcError {
+	const reason = signal.reason;
+	const message =
+		reason instanceof Error
+			? `${reason.name}: ${reason.message}`
+			: typeof reason === "string" && reason
+				? reason
+				: "AbortError: The operation was aborted.";
+	return new CloudRpcError(name, { message }, 0);
+}
+
+function raceAbort<T>(name: string, promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		void promise.catch(() => undefined);
+		return Promise.reject(abortRpcError(name, signal));
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = (): void => {
+			void promise.catch(() => undefined);
+			reject(abortRpcError(name, signal));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 function requestUrl(input: string | URL | Request): string {
 	return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 }
@@ -300,8 +335,10 @@ export function createCloud(config: CloudConfig): Cloud {
 		config,
 		supabase,
 		async rpc(name, args = {}, signal) {
+			if (signal?.aborted) throw abortRpcError(name, signal);
 			const call = supabase.rpc(name, args);
-			const { data, error, status } = await (signal ? call.abortSignal(signal) : call);
+			const pending = Promise.resolve(signal ? call.abortSignal(signal) : call);
+			const { data, error, status } = signal ? await raceAbort(name, pending, signal) : await pending;
 			if (error) throw new CloudRpcError(name, error, status);
 			return data;
 		},

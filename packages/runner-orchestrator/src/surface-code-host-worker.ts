@@ -1819,25 +1819,16 @@ export class SurfaceCodeHostWorker {
 		} else {
 			try {
 				let ran: { readonly yielded: false; readonly value: PreparedPreview } | { readonly yielded: true };
-				if (canReadOnlyPreview) {
-					try {
-						ran = await this.#runYieldable<PreparedPreview>(
-							preview.profileId,
-							environmentId,
-							signal,
-							(codeHostJob) => composeAndRead(codeHostJob, false),
-							{ readOnly: true },
-						);
-					} catch (error) {
-						if (!isUnseededAreaRefusal(error) || signal.aborted) throw error;
-						ran = await this.#runYieldable<PreparedPreview>(
-							preview.profileId,
-							environmentId,
-							signal,
-							(codeHostJob) => composeAndRead(codeHostJob, true),
-						);
-					}
-				} else {
+				try {
+					ran = await this.#runYieldable<PreparedPreview>(
+						preview.profileId,
+						environmentId,
+						signal,
+						(codeHostJob) => composeAndRead(codeHostJob, false),
+						canReadOnlyPreview ? { readOnly: true } : undefined,
+					);
+				} catch (error) {
+					if (!isUnseededAreaRefusal(error) || signal.aborted) throw error;
 					ran = await this.#runYieldable<PreparedPreview>(
 						preview.profileId,
 						environmentId,

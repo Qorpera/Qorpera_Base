@@ -125,9 +125,11 @@ repository's `npm test`; it first runs `npm run build:web-sdk`, because the scri
 
 Each run takes one of the runner users `ci01` to `ci16`, under a lock held until the run ends, and hands
 it the run directory; install and suite run as that user. Kernel limits per user then count one run
-only. This matters: the coding Git sandbox runs under `prlimit --nproc=512`, and RLIMIT_NPROC counts
-every task of the user on the machine. When all runs shared `tester`, a few parallel sessions pushed it
-past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
+only. This mattered for the coding Git sandbox's `--nproc=512`: RLIMIT_NPROC counts every task of the uid
+in the user namespace that forks. When all runs shared `tester`, a few parallel sessions pushed it past 512 and
+bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable"; on 26 Nov one pr-loop
+run of all steps alone peaked at 535 tasks of its user and `code-host-seed` failed the same way. Since then the
+sandbox sets `--nproc` inside its own user namespace, just before git, where it counts only the sandbox's tasks.
 When all 16 are busy, a run waits (up to an hour).
 
 The CPU lane has five slots, and each run in it runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 5 (2 on

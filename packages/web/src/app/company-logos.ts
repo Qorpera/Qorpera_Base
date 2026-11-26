@@ -560,7 +560,7 @@ export class CompanyLogos implements CompanyLogoStore {
 	}
 
 	resumeIdentity(profileId: string): void {
-		const binding = this.#identityLive.get(profileId);
+		const binding = this.#identityLive.get(profileId.toLowerCase());
 		if (!binding || binding.signal.aborted || binding.store.suspended) return;
 		binding.failedReads.clear();
 		for (const timer of binding.retryTimers.values()) clearTimeout(timer);
