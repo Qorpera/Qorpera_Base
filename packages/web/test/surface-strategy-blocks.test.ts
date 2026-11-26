@@ -591,10 +591,11 @@ describe("The economics block", () => {
 		const total = list(at(sankey, "data")).find((node) => at(node, "stream", "id") === "contribution");
 		const rent = list(at(sankey, "data")).find((node) => at(node, "stream", "id") === "fixed_costs");
 		expect(at(total, "itemStyle", "color")).not.toBe(at(rent, "itemStyle", "color"));
-		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => string;
+		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => HTMLElement;
 		const delivery = list(at(sankey, "links"))[0];
-		expect(clean(tip({ data: delivery }))).toContain("60% of revenue");
-		expect(clean(tip({ data: delivery }))).toContain("DKK 30K");
+		const deliveryTip = tip({ data: delivery });
+		expect(clean(deliveryTip.textContent)).toContain("60% of revenue");
+		expect(clean(deliveryTip.textContent)).toContain("DKK 30K");
 
 		const leverStrip = block.querySelector<HTMLElement>(".studio-econ-levers")!;
 		expect(leverStrip.dataset.tourId).toBe("econ:levers");
@@ -722,8 +723,8 @@ describe("The economics block", () => {
 		expect(at(down[2], "value")).toBe(-12000);
 		expect(at(list(at(seriesOf(host, 1), "data"))[2], "value")).toBe(8000);
 
-		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => string;
-		expect(tip([{ dataIndex: 1 }])).toContain("60% of revenue");
+		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => HTMLElement;
+		expect(tip([{ dataIndex: 1 }]).textContent).toContain("60% of revenue");
 		expect(block.querySelector(".studio-econ-chart-foot")?.childElementCount).toBe(0);
 		done();
 	});
@@ -1069,12 +1070,12 @@ describe("The landscape block", () => {
 				{ xAxis: 100, yAxis: 100 },
 			],
 		]);
-		const tip = at(option, "tooltip", 0, "formatter") as (params: unknown) => string;
+		const tip = at(option, "tooltip", 0, "formatter") as (params: unknown) => HTMLElement;
 		const leadly = tip({ data: list(at(rivals, "data"))[0] });
-		expect(leadly).toContain("Leadly");
-		expect(leadly).toContain("Incumbent");
-		expect(leadly).toContain("1,495 DKK / month");
-		expect(leadly).toContain("We charge per booking");
+		expect(leadly.textContent).toContain("Leadly");
+		expect(leadly.textContent).toContain("Incumbent");
+		expect(leadly.textContent).toContain("1,495 DKK / month");
+		expect(leadly.textContent).toContain("We charge per booking");
 		done();
 	});
 
@@ -1099,10 +1100,11 @@ describe("The landscape block", () => {
 		expect(data.map((item) => at(item, "label", "formatter"))).toEqual(["{b}", "{b}", "{b}"]);
 		expect(data.map((item) => at(item, "label", "position"))).toEqual(["right", "right", "left"]);
 		expect(list(at(seriesOf(host, 1), "data"))).toEqual([]);
-		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => string;
-		const html = tip({ data: data[1] });
-		expect(html).toContain("Biltorvet &#60;b&#62;Pro&#60;/b&#62;");
-		expect(html).not.toContain("<b>Pro</b>");
+		const tip = at(chartOption(host), "tooltip", 0, "formatter") as (params: unknown) => HTMLElement;
+		const el = tip({ data: data[1] });
+		expect(el.textContent).toContain("Biltorvet <b>Pro</b>");
+		expect(el.querySelector("b")?.textContent).not.toBe("Pro");
+		expect(el.innerHTML).not.toContain("<b>Pro</b>");
 		done();
 	});
 

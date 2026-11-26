@@ -1,5 +1,5 @@
 import { compileIdentityTokensCss, IDENTITY_TOKENS_CSS_PATH, IDENTITY_TOKENS_JSON_PATH } from "@qorpera/contracts";
-import { frameParsedPage } from "../../ui/page-frame.ts";
+import { frameParsedPage, parseHtmlInert } from "../../ui/page-frame.ts";
 import { SVG_FILE_RE, svgDataUrl } from "./surface-blocks/artifacts.ts";
 
 const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
@@ -86,7 +86,8 @@ export function prepareStudioHtmlPreview(
 	files: Readonly<Record<string, string>>,
 	compiledTokensCss: string,
 ): string | null {
-	const doc = new DOMParser().parseFromString(html, "text/html");
+	const parsed = parseHtmlInert(html);
+	const { doc } = parsed;
 	let modified = false;
 	for (const link of [...doc.querySelectorAll("link[href]")]) {
 		const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/);
@@ -100,8 +101,11 @@ export function prepareStudioHtmlPreview(
 			css = files[resolved];
 		}
 		if (!css) continue;
-		const style = doc.createElement("style");
-		style.textContent = css.replace(/<\/(style)/gi, "<\\/$1");
+		const style = doc.createElement("noframes");
+		style.setAttribute(parsed.tagAttr, "");
+		style.textContent = css
+			.replace(/<\/(style)/gi, "<\\/$1")
+			.replace(/<\/noframes/gi, parsed.endNoframesToken);
 		link.replaceWith(style);
 		modified = true;
 	}
@@ -133,6 +137,6 @@ export function prepareStudioHtmlPreview(
 		img.setAttribute("src", svgDataUrl(svg));
 		modified = true;
 	}
-	if (!modified) return frameParsedPage(doc, html);
-	return frameParsedPage(doc);
+	if (!modified) return frameParsedPage(doc, html, parsed);
+	return frameParsedPage(doc, undefined, parsed);
 }

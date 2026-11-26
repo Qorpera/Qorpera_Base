@@ -2349,4 +2349,74 @@ describe("SurfaceReportView", () => {
 		mdView.dispose();
 		store.dispose();
 	});
+
+	it("does not pin a failed reconciliation banner when the current preview selection composes cleanly", async () => {
+		const brandSurface = summary({
+			id: BRAND_ID,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			folderRoot: "identity",
+		});
+		const recId = "77777777-7777-4777-8777-777777777777";
+		const s1 = session(["staged"], {
+			id: "11111111-1111-4111-8111-111111111111",
+			surfaceId: BRAND_ID,
+			changes: [
+				{
+					id: CHANGES[0],
+					sessionId: "11111111-1111-4111-8111-111111111111",
+					surfaceId: BRAND_ID,
+					seq: 1,
+					kind: "folder_patch",
+					title: "Update voice",
+					summary: "",
+					status: "staged",
+					affectedPaths: ["identity/voice.md"],
+					patchManifest: [{ op: "write_text", path: "identity/voice.md", content: "# Voice\nCalm.\n" }],
+					createdAt: "2026-11-26T00:00:00Z",
+					updatedAt: "2026-11-26T00:00:00Z",
+				},
+			],
+		});
+		const ws = workspace([s1], {
+			surface: brandSurface,
+			reconciliations: [
+				{
+					id: recId,
+					surfaceId: BRAND_ID,
+					compositionKey: "stale-failed",
+					baseFingerprint: "folder-rev:0",
+					selectedChangeIds: [CHANGES[0]],
+					status: "failed",
+					patchManifest: null,
+					commitSha: null,
+					treeSha: null,
+					conflictPaths: ["identity/voice.md"],
+					errorDetail: "Couldn't update preview",
+					updatedAt: "2026-11-26T00:00:01Z",
+				},
+			],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [brandSurface]),
+				getSurfaceWorkspace: vi.fn(async () => ws),
+			}),
+		);
+		await store.load();
+		await store.openSurface("identity");
+		const view = new SurfaceStudioView({
+			store,
+			surface: brandSurface,
+			signal: new AbortController().signal,
+			baseFiles: { "identity/voice.md": "# Voice\nOriginal.\n" },
+			timeSlice: false,
+		});
+		document.body.append(view.el);
+		view.update();
+		expect(view.el.querySelector(".studio-reconcile-retry")).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
 });

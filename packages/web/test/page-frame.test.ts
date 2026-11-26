@@ -277,6 +277,27 @@ describe("an HTML page's frame", () => {
 		expect(parses).toBe(2);
 	});
 
+	it("neutralizes style tags and inline style attributes during DOMParser checks and restores them when modified", () => {
+		const parse = DOMParser.prototype.parseFromString;
+		const parsedInputs: string[] = [];
+		vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (this: DOMParser, text, type) {
+			parsedInputs.push(text);
+			return Reflect.apply(parse, this, [text, type]) as Document;
+		});
+		const html =
+			'<!doctype html><html><head><style>.a{color:red}/*</noframes>*/</style></head><body><div style="padding:8px">Hi</div><noscript>No JS</noscript></body></html>';
+		const handed = framePage(html);
+		expect(handed).not.toBeNull();
+		expect(handed).not.toContain("noscript");
+		expect(handed).toContain("<style>.a{color:red}/*</noframes>*/</style>");
+		expect(handed).toContain('style="padding:8px"');
+		expect(parsedInputs.length).toBeGreaterThanOrEqual(2);
+		for (const input of parsedInputs) {
+			expect(input).not.toMatch(/<style\b/i);
+			expect(input).not.toMatch(/\sstyle\s*=/i);
+		}
+	});
+
 	it("hears Escape pressed in its own frames' pages as Escape pressed on the frame, and nothing else", () => {
 		const one = standAlone("<p>One</p>", "Page: one.html");
 		const stranger = document.createElement("iframe");

@@ -30,6 +30,132 @@ const NETWORK_HINTS = new Set(["dns-prefetch", "preconnect"]);
 
 /** Template attributes that make the parser attach a shadow root (the second is the older spelling). */
 const DECLARATIVE_SHADOW_ROOT = ["shadowrootmode", "shadowroot"];
+const LETTER = /[a-z]/i;
+const SPACE = /[\t\n\f\r ]/;
+const RAW_TEXT = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
+
+export interface InertHtmlParse {
+	readonly doc: Document;
+	readonly tagAttr: string;
+	readonly styleAttr: string;
+	readonly endNoframesToken: string;
+}
+
+function past(html: string, end: string, from: number): number {
+	const found = html.indexOf(end, from);
+	return found === -1 ? html.length : found + end.length;
+}
+
+function readTag(
+	html: string,
+	nameAt: number,
+): { readonly name: string; readonly nameAt: number; readonly styles: number[]; readonly end: number } {
+	let at = nameAt;
+	while (at < html.length && !/[\t\n\f\r />]/.test(html[at]!)) at++;
+	const name = html.slice(nameAt, at).toLowerCase();
+	const styles: number[] = [];
+	while (at < html.length && html[at] !== ">") {
+		if (SPACE.test(html[at]!) || html[at] === "/") {
+			at++;
+			continue;
+		}
+		const start = at++;
+		while (at < html.length && !/[\t\n\f\r />=]/.test(html[at]!)) at++;
+		if (html.slice(start, at).toLowerCase() === "style") styles.push(start);
+		let equals = at;
+		while (equals < html.length && SPACE.test(html[equals]!)) equals++;
+		if (html[equals] !== "=") continue;
+		at = equals + 1;
+		while (at < html.length && SPACE.test(html[at]!)) at++;
+		const quote = html[at];
+		if (quote === '"' || quote === "'") at = past(html, quote, at + 1);
+		else while (at < html.length && !/[\t\n\f\r >]/.test(html[at]!)) at++;
+	}
+	return { name, nameAt, styles, end: Math.min(at + 1, html.length) };
+}
+
+function uniqueToken(html: string, prefix: string): string {
+	let token = prefix;
+	while (html.includes(token)) token += "x";
+	return token;
+}
+
+// WHY: Chromium enforces the parent document's style-src CSP on DOMParser detached documents and logs violations for
+// every <style> and style= attribute; renaming them to raw-text <noframes> and data-* attributes avoids CSP noise.
+function neutralizeStyles(
+	html: string,
+	styleTagMarker: string,
+	styleAttrName: string,
+	endNoframesToken: string,
+): string {
+	const parts: string[] = [];
+	let copied = 0;
+	const rename = (from: number, to: string) => {
+		parts.push(html.slice(copied, from), to);
+		copied = from + "style".length;
+	};
+	let at = 0;
+	while (at < html.length) {
+		const open = html.indexOf("<", at);
+		if (open === -1) break;
+		const after = html[open + 1] ?? "";
+		const closing = after === "/" && LETTER.test(html[open + 2] ?? "");
+		if (html.startsWith("<!--", open)) at = past(html, "-->", open + 4);
+		else if (after === "!" || after === "?" || (after === "/" && !closing)) at = past(html, ">", open + 2);
+		else if (!closing && !LETTER.test(after)) at = open + 1;
+		else {
+			const tag = readTag(html, open + (closing ? 2 : 1));
+			if (tag.name === "style") rename(tag.nameAt, closing ? "noframes" : `noframes ${styleTagMarker}=""`);
+			if (!closing) for (const attribute of tag.styles) rename(attribute, styleAttrName);
+			at = tag.end;
+			if (!closing && RAW_TEXT.has(tag.name)) {
+				const end = new RegExp(`</${tag.name}(?=[\\t\\n\\f\\r />])`, "gi");
+				end.lastIndex = at;
+				const closeAt = tag.name === "plaintext" ? html.length : (end.exec(html)?.index ?? html.length);
+				if (tag.name === "style" && closeAt > at) {
+					const raw = html.slice(at, closeAt);
+					if (/<\/noframes/i.test(raw)) {
+						parts.push(html.slice(copied, at), raw.replace(/<\/noframes/gi, endNoframesToken));
+						copied = closeAt;
+					}
+				}
+				at = closeAt;
+			}
+		}
+	}
+	parts.push(html.slice(copied));
+	return parts.join("");
+}
+
+export function parseHtmlInert(html: string): InertHtmlParse {
+	const tagAttr = uniqueToken(html, "data-qorpera-style-tag");
+	const styleAttr = uniqueToken(html, "data-qorpera-style");
+	const endNoframesToken = uniqueToken(html, "__qorpera_endnf__");
+	const inert = neutralizeStyles(html, tagAttr, styleAttr, endNoframesToken);
+	return {
+		doc: new DOMParser().parseFromString(inert, "text/html"),
+		tagAttr,
+		styleAttr,
+		endNoframesToken,
+	};
+}
+
+export function serializeHtmlInert(
+	page: Document,
+	inert: Pick<InertHtmlParse, "tagAttr" | "styleAttr" | "endNoframesToken">,
+): string {
+	const raw = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
+	const tagRe = new RegExp(
+		`<noframes\\b([^>]*?)\\s+${inert.tagAttr}(?:="")?([^>]*)>([\\s\\S]*?)<\\/noframes>`,
+		"gi",
+	);
+	const attrRe = new RegExp(`\\b${inert.styleAttr}(?=[\\t\\n\\f\\r =>/])`, "gi");
+	return raw
+		.replace(tagRe, "<style$1$2>$3</style>")
+		.replace(attrRe, "style")
+		.split(inert.endNoframesToken)
+		.join("</noframes");
+}
 
 function isHint(link: Element): boolean {
 	return (link.getAttribute("rel") ?? "")
@@ -59,18 +185,25 @@ function unfit(page: Document): Element[] {
 	return found;
 }
 
-export function frameParsedPage(page: Document, rawHtml?: string): string | null {
+export function frameParsedPage(
+	page: Document,
+	rawHtml?: string,
+	inert?: Pick<InertHtmlParse, "tagAttr" | "styleAttr" | "endNoframesToken">,
+): string | null {
 	const found = unfit(page);
 	if (found.length === 0 && rawHtml !== undefined) return rawHtml;
 	for (const element of found)
 		if (element.localName === "template") for (const name of DECLARATIVE_SHADOW_ROOT) element.removeAttribute(name);
 		else element.remove();
-	const handed = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
+	const handed = inert
+		? serializeHtmlInert(page, inert)
+		: `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
 	// WHY: a changed page's text can read back as other markup than the page checked (a script's <!-- swallowing a
 	// later </script>); the frame reads the text, so the text is what is checked.
-	return unfit(new DOMParser().parseFromString(handed, "text/html")).length === 0 ? handed : null;
+	return unfit(parseHtmlInert(handed).doc).length === 0 ? handed : null;
 }
 
 export function framePage(html: string): string | null {
-	return frameParsedPage(new DOMParser().parseFromString(html, "text/html"), html);
+	const parsed = parseHtmlInert(html);
+	return frameParsedPage(parsed.doc, html, parsed);
 }

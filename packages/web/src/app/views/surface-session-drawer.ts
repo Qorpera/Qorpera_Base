@@ -1430,8 +1430,6 @@ export class SurfaceSessionDrawer {
 				const shown = store.isChangeShown(change.id);
 				const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
 				const deliverables = deliverablesByChange.get(change.id) ?? [];
-				const inlineDeliverable =
-					deliverables.length === 1 ? this.#overviewDeliverablePill(look, change, deliverables[0]!, false) : null;
 				const busyChange = Boolean(state.busy[`change:${change.id}`]);
 				grouped.push(
 					h(
@@ -1450,7 +1448,6 @@ export class SurfaceSessionDrawer {
 								"data-change": change.id,
 							}),
 							h("span", { class: "surface-overview-change-title" }, change.title),
-							inlineDeliverable,
 							canDiscard
 								? overviewDiscardButton(
 										session.id,
@@ -1475,7 +1472,7 @@ export class SurfaceSessionDrawer {
 									)
 								: null,
 						),
-						deliverables.length > 1
+						deliverables.length > 0
 							? h(
 									"div",
 									{ class: "surface-overview-change-deliverables" },
