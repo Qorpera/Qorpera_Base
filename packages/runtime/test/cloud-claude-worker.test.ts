@@ -1378,5 +1378,42 @@ describe("the box's scratch root on a run host", () => {
 			}),
 		);
 		expect(extraBuiltin.toolsAsAllowed(declared)).toBe(false);
+
+		const withoutToolSearch = new ClaudeWorkerStream();
+		withoutToolSearch.push(
+			JSON.stringify({
+				type: "system",
+				subtype: "init",
+				session_id: "s-mcp-no-toolsearch",
+				model: "claude-opus-5-5",
+				tools: [...CLAUDE_BOX_TOOLS.filter((tool) => tool !== "ToolSearch"), ...declared],
+			}),
+		);
+		expect(withoutToolSearch.toolsAsAllowed(declared)).toBe(true);
+		expect(withoutToolSearch.toolsAsAllowed()).toBe(false);
+
+		const missingMcp = new ClaudeWorkerStream();
+		missingMcp.push(
+			JSON.stringify({
+				type: "system",
+				subtype: "init",
+				session_id: "s-mcp-none",
+				model: "claude-opus-5-5",
+				tools: CLAUDE_BOX_TOOLS.filter((tool) => tool !== "ToolSearch"),
+			}),
+		);
+		expect(missingMcp.toolsAsAllowed(declared)).toBe(false);
+
+		const missingOtherBuiltin = new ClaudeWorkerStream();
+		missingOtherBuiltin.push(
+			JSON.stringify({
+				type: "system",
+				subtype: "init",
+				session_id: "s-mcp-missing-bash",
+				model: "claude-opus-5-5",
+				tools: [...CLAUDE_BOX_TOOLS.filter((tool) => tool !== "Bash"), ...declared],
+			}),
+		);
+		expect(missingOtherBuiltin.toolsAsAllowed(declared)).toBe(false);
 	});
 });

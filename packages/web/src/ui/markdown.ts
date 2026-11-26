@@ -253,33 +253,102 @@ function placeCells(layer: Layer, cells: Tokens.Table["header"], line: string, b
 	}
 }
 
+export function surfaceFigureLink(slug: string, name: string | Node[], tab?: string): HTMLElement {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "surface-card is-figure",
+			"data-surface-slug": slug,
+			...(tab ? { "data-surface-tab": tab } : {}),
+			title: t("Open {name}", { name: slug }),
+		},
+		h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", 34)),
+		h("strong", { class: "app-card-title" }, name),
+	);
+}
+
+const COMPACT_FIGURE_ROW = 6;
+
+const FIGURE_ROW_COLUMNS = 4;
+
+function surfaceFigureRow(figures: readonly HTMLElement[]): HTMLElement {
+	const row = h(
+		"div",
+		{
+			class:
+				figures.length > COMPACT_FIGURE_ROW ? "app-cards surface-figures is-compact" : "app-cards surface-figures",
+		},
+		[...figures],
+	);
+	row.style.setProperty("--figure-columns", String(Math.min(figures.length, FIGURE_ROW_COLUMNS)));
+	return row;
+}
+
+interface NamedSurface {
+	readonly slug: string;
+	readonly tab?: string;
+	readonly name: string;
+}
+
+interface FoundSurfaces {
+	readonly named: Map<string, NamedSurface>;
+	readonly shown: Set<string>;
+}
+
+const foundSurfaces = (): FoundSurfaces => ({ named: new Map(), shown: new Set() });
+const surfaceKey = (surface: { slug: string; tab?: string }) =>
+	surface.tab ? `${surface.slug}#${surface.tab}` : surface.slug;
+const LINK_SEPARATOR = /^[\s,;·•|&+/–—-]*(?:(?:and|og|und|et|y)[\s,;·•|&+/–—-]*)?$/iu;
+
+function surfaceLinksOnly(parts: readonly MarkedToken[]): MarkedToken[] | undefined {
+	const found: MarkedToken[] = [];
+	for (const part of parts) {
+		if (part.type === "link" && surfaceLinkTarget(decodeEntities(part.href))) found.push(part);
+		else if (part.type === "strong" || part.type === "em" || part.type === "text") {
+			const inner =
+				"tokens" in part && part.tokens?.length ? surfaceLinksOnly(part.tokens as MarkedToken[]) : undefined;
+			if (inner) found.push(...inner);
+			else if (!LINK_SEPARATOR.test(part.raw)) return undefined;
+		} else if (part.type !== "br" && part.type !== "space") return undefined;
+	}
+	return found.length ? found : undefined;
+}
+
+function surfaceFigures(linksOnly: readonly MarkedToken[], surfaces: FoundSurfaces, depth: number): Node[] {
+	const figures = linksOnly.flatMap((part) => {
+		if (part.type !== "link") return [];
+		const target = surfaceLinkTarget(decodeEntities(part.href));
+		if (!target) return [];
+		const key = surfaceKey(target);
+		if (surfaces.shown.has(key)) return [];
+		surfaces.shown.add(key);
+		return [
+			surfaceFigureLink(
+				target.slug,
+				renderTokens((part.tokens ?? []) as MarkedToken[], depth + 1, false, undefined, surfaces),
+				target.tab,
+			),
+		];
+	});
+	return figures.length ? [surfaceFigureRow(figures)] : [];
+}
+
+function namedSurfacesRow(surfaces: FoundSurfaces): HTMLElement | undefined {
+	const figures = [...surfaces.named.entries()].flatMap(([key, named]) => {
+		if (surfaces.shown.has(key)) return [];
+		surfaces.shown.add(key);
+		return [surfaceFigureLink(named.slug, named.name, named.tab)];
+	});
+	return figures.length ? surfaceFigureRow(figures) : undefined;
+}
+
 /** An agent's interface app linked in a message (`app:<name>`): a card the app answers by opening the app's own page
  * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). It is drawn plain here, as this has no company: a page's emblem
  * and "App" under the name. Once the company's apps are read it shows the app as the drawer does, its own emblem in
  * its own colour, and what the app is about in one line (app/application.ts).
  * A member's note sent from an app's page (§5 "tell") opens with the same card (views/conversation.ts), with what the
  * note is about as its line (`about`), which stays: once the apps are read, its title becomes the app's own name. */
-export function surfaceCard(slug: string, name: string | Node[], tab?: string): HTMLElement {
-	return h(
-		"button",
-		{
-			type: "button",
-			class: "app-card surface-card",
-			"data-surface-slug": slug,
-			...(tab ? { "data-surface-tab": tab } : {}),
-			title: t("Open {name}", { name: slug }),
-		},
-		h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", 34)),
-		h(
-			"span",
-			{ class: "app-card-copy" },
-			h("strong", { class: "app-card-title" }, name),
-			h("small", { class: "app-card-note" }, tab ? `${t("Surface")} · ${tab}` : t("Surface")),
-		),
-		h("span", { class: "app-card-go", "aria-hidden": "true" }, icon("chevron")),
-	);
-}
-
 export function appCard(app: string, name: string | Node[], about?: string): HTMLElement {
 	return h(
 		"button",
@@ -317,11 +386,23 @@ interface FoundSites {
 
 /** `links` false draws a link as its text and an image as its alt text: nothing leaves the page or is fetched. `sites`:
  * links to the company's own sites, found while drawing (a thread's message). */
-function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, sites?: FoundSites): Node[] {
+function renderTokens(
+	tokens: readonly MarkedToken[],
+	depth = 0,
+	links = true,
+	sites?: FoundSites,
+	surfaces: FoundSurfaces = foundSurfaces(),
+): Node[] {
 	if (depth > 32) return [document.createTextNode(tokens.map((token) => token.raw).join(""))];
 	return tokens.flatMap((token): Node[] => {
 		const children = () =>
-			renderTokens(("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[], depth + 1, links, sites);
+			renderTokens(
+				("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[],
+				depth + 1,
+				links,
+				sites,
+				surfaces,
+			);
 		switch (token.type) {
 			case "space":
 			case "def":
@@ -332,76 +413,48 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 			case "heading":
 				return [h(token.depth <= 2 ? "h2" : "h3", { "data-heading-level": token.depth }, children())];
 			case "paragraph": {
-				// An app's link among words: the sentence stays whole, with the name as a link, and the app's card stands
-				// under it, once however often the sentence names the app. Cards stand in a row of their own
-				// (`.app-cards`), never in a paragraph: a thread draws that row under the words' bubble, not in it
-				// (`markdownBubbles`).
 				const parts = ("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[];
+				const linksOnly = links ? surfaceLinksOnly(parts) : undefined;
+				if (linksOnly) return surfaceFigures(linksOnly, surfaces, depth);
 				const appOf = (part: MarkedToken) =>
 					links && part.type === "link" ? appLinkName(decodeEntities(part.href)) : undefined;
-				const surfaceOf = (part: MarkedToken) =>
-					links && part.type === "link" ? surfaceLinkTarget(decodeEntities(part.href)) : undefined;
 				const inner = (part: MarkedToken) =>
-					renderTokens(("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[], depth + 1, links, sites);
+					renderTokens(
+						("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[],
+						depth + 1,
+						links,
+						sites,
+						surfaces,
+					);
 				const namedApps = new Set<string>();
-				const namedSurfaces = new Set<string>();
 				const cards = parts.flatMap((part) => {
 					const app = appOf(part);
-					if (app !== undefined) {
-						if (namedApps.has(app)) return [];
-						namedApps.add(app);
-						return [appCard(app, inner(part))];
-					}
-					const surface = surfaceOf(part);
-					if (surface !== undefined) {
-						const key = surface.tab ? `${surface.slug}#${surface.tab}` : surface.slug;
-						if (namedSurfaces.has(key)) return [];
-						namedSurfaces.add(key);
-						return [surfaceCard(surface.slug, inner(part), surface.tab)];
-					}
-					return [];
+					if (app === undefined || namedApps.has(app)) return [];
+					namedApps.add(app);
+					return [appCard(app, inner(part))];
 				});
 				if (!cards.length) return [h("p", null, children())];
 				const row = h("div", { class: "app-cards" }, cards);
-				if (parts.every((part) => appOf(part) !== undefined || surfaceOf(part) !== undefined || !part.raw.trim()))
-					return [row];
+				if (parts.every((part) => appOf(part) !== undefined || !part.raw.trim())) return [row];
 				return [
 					h(
 						"p",
 						null,
 						parts.flatMap((part): Node[] => {
 							const app = appOf(part);
-							if (app !== undefined) {
-								return [
-									h(
-										"button",
-										{
-											type: "button",
-											class: "folder-link app-link",
-											"data-app-name": app,
-											title: t("Open {name}", { name: app }),
-										},
-										inner(part),
-									),
-								];
-							}
-							const surface = surfaceOf(part);
-							if (surface !== undefined) {
-								return [
-									h(
-										"button",
-										{
-											type: "button",
-											class: "folder-link surface-link",
-											"data-surface-slug": surface.slug,
-											...(surface.tab ? { "data-surface-tab": surface.tab } : {}),
-											title: t("Open {name}", { name: surface.slug }),
-										},
-										inner(part),
-									),
-								];
-							}
-							return renderTokens([part], depth + 1, links, sites);
+							if (app === undefined) return renderTokens([part], depth + 1, links, sites, surfaces);
+							return [
+								h(
+									"button",
+									{
+										type: "button",
+										class: "folder-link app-link",
+										"data-app-name": app,
+										title: t("Open {name}", { name: app }),
+									},
+									inner(part),
+								),
+							];
 						}),
 					),
 					row,
@@ -423,7 +476,26 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 				return [h("br")];
 			case "hr":
 				return [h("hr")];
-			case "list":
+			case "list": {
+				const itemLinks = links
+					? token.items.map((item) =>
+							item.task
+								? undefined
+								: surfaceLinksOnly(
+										(item.tokens as MarkedToken[]).flatMap((part) =>
+											part.type === "text" || part.type === "paragraph"
+												? ((part.tokens ?? []) as MarkedToken[])
+												: [part],
+										),
+									),
+						)
+					: [];
+				if (itemLinks.length && itemLinks.every(Boolean))
+					return surfaceFigures(
+						itemLinks.flatMap((found) => found ?? []),
+						surfaces,
+						depth,
+					);
 				return [
 					h(
 						token.ordered ? "ol" : "ul",
@@ -440,18 +512,19 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 											"aria-label": t("Task status"),
 										})
 									: null,
-								renderTokens(item.tokens as MarkedToken[], depth + 1, links, sites),
+								renderTokens(item.tokens as MarkedToken[], depth + 1, links, sites, surfaces),
 							),
 						),
 					),
 				];
+			}
 			case "table": {
 				const cells = (row: typeof token.header, heading: boolean) =>
 					row.map((cell) =>
 						h(
 							heading ? "th" : "td",
 							heading ? { scope: "col" } : null,
-							renderTokens(cell.tokens as MarkedToken[], depth + 1, links, sites),
+							renderTokens(cell.tokens as MarkedToken[], depth + 1, links, sites, surfaces),
 						),
 					);
 				return [
@@ -477,11 +550,33 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 					token.type === "image"
 						? t("Image: {name}", { name: decodeEntities(token.text) || t("Open image") })
 						: children();
-				// An agent's interface app where no paragraph placed it (a list's item, a table's cell): its card, in place.
 				const app = token.type === "link" ? appLinkName(decodeEntities(token.href)) : undefined;
 				if (app !== undefined) return [appCard(app, content)];
 				const surface = token.type === "link" ? surfaceLinkTarget(decodeEntities(token.href)) : undefined;
-				if (surface !== undefined) return [surfaceCard(surface.slug, content, surface.tab)];
+				if (surface !== undefined) {
+					const key = surfaceKey(surface);
+					if (!surfaces.named.has(key))
+						surfaces.named.set(key, {
+							slug: surface.slug,
+							...(surface.tab ? { tab: surface.tab } : {}),
+							name: renderTokens((token.tokens ?? []) as MarkedToken[], depth + 1, false, undefined, surfaces)
+								.map((node) => node.textContent ?? "")
+								.join(""),
+						});
+					return [
+						h(
+							"button",
+							{
+								type: "button",
+								class: "folder-link surface-link",
+								"data-surface-slug": surface.slug,
+								...(surface.tab ? { "data-surface-tab": surface.tab } : {}),
+								title: t("Open {name}", { name: surface.slug }),
+							},
+							content,
+						),
+					];
+				}
 				const path = folderLinkPath(decodeEntities(token.href));
 				if (path !== undefined)
 					return [
@@ -544,6 +639,7 @@ export interface MarkdownOptions {
 	/** Each drawn run of text keeps which stretch of the source it stands for, so a place in the drawn text can be
 	 * found in the text behind it (`markdownSourceOffset`). */
 	readonly sourceRanges?: boolean;
+	readonly surfaceRow?: boolean;
 }
 
 export function markdown(source: string, options: MarkdownOptions = {}): HTMLElement {
@@ -557,7 +653,10 @@ export function markdown(source: string, options: MarkdownOptions = {}): HTMLEle
 			const first = tokens.find((token) => !["space", "def", "heading", "hr"].includes(token.type));
 			tokens = first ? [first] : [];
 		}
-		return h("div", { class: "message-prose" }, renderTokens(tokens, 0, options.links !== false));
+		const surfaces = foundSurfaces();
+		const drawnTokens = renderTokens(tokens, 0, options.links !== false, undefined, surfaces);
+		const row = options.surfaceRow ? namedSurfacesRow(surfaces) : undefined;
+		return h("div", { class: "message-prose" }, row ? [...drawnTokens, row] : drawnTokens);
 	} catch {
 		return h("div", { class: "text" }, source);
 	}
@@ -615,13 +714,14 @@ export function markdownBubbles(source: string, site?: (href: string) => LinkedS
 		// the row of the sites the words link.
 		const parts: HTMLElement[] = [];
 		const sites: FoundSites | undefined = site ? { of: site, seen: new Set(), cards: [] } : undefined;
+		const surfaces = foundSurfaces();
 		for (const group of groups) {
 			let prose: Node[] = [];
 			const words = () => {
 				if (prose.length) parts.push(h("div", { class: "message-prose" }, prose));
 				prose = [];
 			};
-			for (const node of renderTokens(group, 0, true, sites)) {
+			for (const node of renderTokens(group, 0, true, sites, surfaces)) {
 				if (node instanceof HTMLElement && node.classList.contains("app-cards")) {
 					words();
 					parts.push(node);
@@ -633,7 +733,8 @@ export function markdownBubbles(source: string, site?: (href: string) => LinkedS
 				sites.cards = [];
 			}
 		}
-		return parts;
+		const row = namedSurfacesRow(surfaces);
+		return row ? [...parts, row] : parts;
 	} catch {
 		return [h("div", { class: "text" }, source)];
 	}

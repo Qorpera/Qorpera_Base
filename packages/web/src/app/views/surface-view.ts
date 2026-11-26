@@ -344,6 +344,11 @@ export class SurfaceView {
 				this.#autoPublishOffOwed.delete(surface.id);
 				if (!surface.autoPublish) void host.store.setAutoPublish(surface.id, true, { quiet: true });
 			},
+			slugChanged: ({ slug, url }) => {
+				const surface = this.surface;
+				if (!surface) return;
+				host.store.noteSiteSlug(surface.id, slug, url);
+			},
 			signal: lifetimeSignal,
 		});
 		this.#stage.append(this.#canvas, this.#drawer.el);

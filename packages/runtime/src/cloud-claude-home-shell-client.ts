@@ -21,6 +21,11 @@ import { fileURLToPath } from "node:url";
 const SOCKET = "/run/qorpera-home/shell.sock";
 const MCP_SOCKET = "/run/qorpera-home/mcp.sock";
 export const CLAUDE_HOME_REVIEW_HOOK = "/opt/qorpera/review-hook";
+export const CLAUDE_HOME_MCP_CLIENT = "/opt/qorpera/mcp-client";
+
+export function isCloudClaudeMcpClientArg(arg: string | undefined): boolean {
+	return arg === "--mcp" || arg === CLAUDE_HOME_MCP_CLIENT;
+}
 const REQUEST_BYTES = 4 * 1024 * 1024 - 64 * 1024;
 const FORWARDED = [
 	"CLAUDECODE",
@@ -140,7 +145,8 @@ function runMcpBridge(): void {
 }
 
 function main(): void {
-	if (process.argv[2] === "--mcp") {
+	// WHY: Claude Code invokes stdio MCP servers through CLAUDE_CODE_SHELL_PREFIX, passing /opt/qorpera/mcp-client as argv[2].
+	if (isCloudClaudeMcpClientArg(process.argv[2])) {
 		runMcpBridge();
 		return;
 	}
