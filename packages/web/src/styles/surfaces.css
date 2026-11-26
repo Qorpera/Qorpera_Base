@@ -734,7 +734,7 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-target-clear:hover { background: var(--hover); color: var(--text); }
 .surface-target-clear .icon { width: 12px; height: 12px; }
 .surface-composer-shell {
-	position: relative; isolation: isolate; display: flex; align-items: flex-end; gap: 4px; padding: 6px 6px 6px 10px;
+	position: relative; isolation: isolate; display: flex; align-items: flex-end; gap: 4px; padding: 6px;
 	border: 1px solid var(--surface-glass-edge); border-radius: 24px; box-shadow: var(--surface-glass-shadow);
 	transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
@@ -751,27 +751,18 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-composer-shell:hover::before, .surface-composer-shell:focus-within::before {
 	background: color-mix(in srgb, var(--bg) 80%, transparent);
 }
-.surface-point {
-	display: inline-flex; align-items: center; gap: 5px; height: 34px; flex: none; padding: 0 11px 0 9px; border: 1px solid transparent;
-	border-radius: 17px; background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text-muted); font: inherit;
-	font-size: 12.5px; font-weight: 600; cursor: default;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
-}
-.surface-point[hidden] { display: none; }
-.surface-point:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); }
-.surface-point.is-on {
-	border-color: color-mix(in srgb, var(--accent) 34%, transparent);
-	background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
-}
-.surface-point:disabled { opacity: 0.45; cursor: default; }
-.surface-point .icon { width: 15px; height: 15px; }
-.surface-attach {
+.surface-plus, .surface-attach {
 	display: grid; place-items: center; width: 34px; height: 34px; flex: none; border: 0; border-radius: 50%;
 	background: none; color: var(--text-muted); cursor: default;
 	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
-.surface-attach[hidden] { display: none; }
-.surface-attach:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.surface-plus[hidden], .surface-attach[hidden] { display: none; }
+.surface-plus:hover:not(:disabled), .surface-plus.menu-open, .surface-attach:hover {
+	background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text);
+}
+.surface-plus.is-on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.surface-plus:disabled { opacity: 0.45; }
+.surface-plus .icon { width: 18px; height: 18px; }
 .surface-attach .icon { width: 17px; height: 17px; }
 .surface-composer > .attachment-tray { padding: 0 0 8px; }
 .surface-composer > .attachment-tray .attachment-chip { box-shadow: var(--surface-glass-shadow); }
@@ -808,17 +799,17 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-compose-open:disabled:hover { background: none; color: var(--text-muted); }
 .surface-page.is-panels-hidden .surface-composer { transition: width var(--motion-slow) var(--ease-spring); }
 .surface-page.is-panels-hidden .surface-chips:not(:has(.surface-chip.is-pointing)) { display: none; }
-.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) {
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-plus, .surface-send):focus), .is-held) {
 	width: 78px; transition: width var(--motion-base) var(--ease-in) 180ms;
 }
-.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-composer-shell {
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-plus, .surface-send):focus), .is-held) .surface-composer-shell {
 	align-items: center; gap: 2px; padding: 3px;
 }
-.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
-	:is(.surface-point, .surface-attach, .surface-input, .surface-send) { display: none; }
-.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-plus, .surface-send):focus), .is-held)
+	:is(.surface-plus, .surface-input, .surface-send) { display: none; }
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-plus, .surface-send):focus), .is-held)
 	:is(.surface-show-panels, .surface-compose-open) { width: 30px; height: 30px; }
-.surface-page.is-panels-hidden .surface-composer:is(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-compose-open { display: none; }
+.surface-page.is-panels-hidden .surface-composer:is(.is-peek, :has(:is(.surface-input, .surface-plus, .surface-send):focus), .is-held) .surface-compose-open { display: none; }
 
 /* ---- the pushed session side panel -------------------------------------------- */
 .surface-drawer {

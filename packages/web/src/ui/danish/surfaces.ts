@@ -120,8 +120,8 @@ export const SURFACES: Record<string, string> = {
 	"Delete {name}? It is removed for everyone in the company.": "Slet {name}? Den fjernes for alle i virksomheden.",
 	"{path} and {count} more": "{path} og {count} flere",
 	"Opening preview…": "Åbner forhåndsvisning…",
-	Point: "Peg",
-	"Point at an element (P)": "Peg på et element (P)",
+	"Point at an element": "Peg på et element",
+	"Point or attach": "Peg eller vedhæft",
 	"Point is available when a preview is open": "Peg kan bruges, når en forhåndsvisning er åben",
 	"Click anything on the page to target it · Esc to cancel":
 		"Klik på et element på siden for at vælge det · Esc for at annullere",

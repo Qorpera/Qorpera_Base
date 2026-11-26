@@ -31,6 +31,23 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
+describe("a menu opened up", () => {
+	it("sits with its bottom edge at y and grows from its bottom corner", () => {
+		const tall = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(80);
+		const menu = openContextMenu({
+			label: "Plus",
+			x: 10,
+			y: 300,
+			up: true,
+			items: [{ label: "Point", select: () => {} }],
+		});
+		tall.mockRestore();
+		expect(menu.el.classList.contains("is-up")).toBe(true);
+		expect(menu.el.style.top).toBe("220px");
+		menu.close();
+	});
+});
+
 describe("a menu that animates out", () => {
 	it("gives focus back to its opener at once, before a dialog its choice opens takes note of it", () => {
 		running = true;
