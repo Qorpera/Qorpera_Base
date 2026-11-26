@@ -8,10 +8,10 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929028799_runtime_bundle_activation_v287.sql";
-const activationVersion = 287;
-const previousActivationVersion = 286;
-const previousActivationSha256 = "f01b9c8a46385d520ead25266f61cc257cdf27eba929cf7b8206abc8cfff48ca";
+const activation = "supabase/migrations/20260929028899_runtime_bundle_activation_v288.sql";
+const activationVersion = 288;
+const previousActivationVersion = 287;
+const previousActivationSha256 = "6f29ee82c9678addf1e220858ec44deed66eb2c8ba51388fd83ea7bd933057f3";
 const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
