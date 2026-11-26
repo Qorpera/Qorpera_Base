@@ -21,7 +21,14 @@ import {
 	sectionHead,
 } from "./context.ts";
 import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
-import { answerAge, answerChart, type SurfaceAskState } from "./live.ts";
+import {
+	answerAge,
+	answerChart,
+	previousSource,
+	type SurfaceAskChart,
+	type SurfaceAskState,
+	withPrevious,
+} from "./live.ts";
 
 let engineLoading: Promise<typeof ChartEngine> | undefined;
 
@@ -79,6 +86,7 @@ export function chartPaints(
 	ctx: SurfaceBlockContext,
 	doc: SurfaceChartDocument,
 	keys?: readonly string[],
+	compared?: string,
 ): ChartEngine.SurfaceChartPaints | undefined {
 	const colors = ctx.colors;
 	if (!colors) return undefined;
@@ -106,6 +114,10 @@ export function chartPaints(
 			});
 		}
 		for (const node of doc.nodes ?? []) name(node.name, undefined);
+	}
+	if (compared !== undefined) {
+		light[compared] = colors.light.compare;
+		dark[compared] = colors.dark.compare;
 	}
 	if (!colors.own && Object.keys(light).length === 0) return undefined;
 	return { light: paintOf(colors.light, colors.own, light), dark: paintOf(colors.dark, colors.own, dark) };
@@ -200,17 +212,58 @@ function liveChart(
 	);
 	let life: AbortController | undefined;
 	let expand: HTMLElement | undefined;
+	let current: SurfaceAskChart | null = null;
+	let earlier: SurfaceAskChart | null = null;
+	let following: string | undefined;
+	const clear = () => {
+		life?.abort();
+		life = undefined;
+		expand?.remove();
+		expand = undefined;
+	};
+	const mount = () => {
+		if (!current) return;
+		clear();
+		const compared = earlier && current.days ? t("Previous {count} days", { count: current.days.count }) : undefined;
+		const doc = compared ? withPrevious(current, earlier, compared) : current.doc;
+		const chart: ChartPaint = {
+			doc,
+			paints: chartPaints(block, ctx, doc, current.keys, doc === current.doc ? undefined : compared),
+		};
+		const drawn = new AbortController();
+		life = drawn;
+		chartSignal.addEventListener("abort", () => drawn.abort(), { once: true, signal: drawn.signal });
+		section.dataset.chartKind = doc.kind;
+		const host = chartHost(heading, height);
+		body.replaceChildren(h("figure", { class: "studio-chart-frame" }, host));
+		mountChartInto(host, chart, drawn.signal, { width: 720, height });
+		expand = expandButton(heading, () => openWide(fullscreen, heading, chart, drawn.signal, caption));
+		head.append(expand);
+	};
+	const compare = (shaped: SurfaceAskChart) => {
+		const previous = previousSource(source, shaped.days);
+		if (!previous || !handle || !ctx.askAfter) return;
+		const other = ctx.askAfter(previous, handle.key);
+		if (other.key === following) return;
+		following = other.key;
+		earlier = null;
+		other.follow((state) => {
+			if (following !== other.key) return;
+			const next = state.state === "answered" ? answerChart(state.answer, previous) : null;
+			if (next === earlier) return;
+			earlier = next;
+			if (next) mount();
+		}, chartSignal);
+	};
 	const draw = (state: SurfaceAskState) => {
 		section.dataset.live = state.state;
 		if (state.state === "loading") {
 			if (!life) body.replaceChildren(h("figure", { class: "studio-chart-frame" }, chartHost(heading, height)));
 			return;
 		}
-		life?.abort();
-		life = undefined;
-		expand?.remove();
-		expand = undefined;
+		clear();
 		section.removeAttribute("title");
+		current = null;
 		if (state.state === "refused") {
 			body.replaceChildren(homeLocked());
 			return;
@@ -224,18 +277,11 @@ function liveChart(
 			body.replaceChildren(homeEmpty(t("No chart data yet")));
 			return;
 		}
-		const chart: ChartPaint = { doc: shaped.doc, paints: chartPaints(block, ctx, shaped.doc, shaped.keys) };
+		current = shaped;
 		const age = answerAge(state.answer);
 		if (age) section.title = age;
-		const drawn = new AbortController();
-		life = drawn;
-		chartSignal.addEventListener("abort", () => drawn.abort(), { once: true, signal: drawn.signal });
-		section.dataset.chartKind = shaped.doc.kind;
-		const host = chartHost(heading, height);
-		body.replaceChildren(h("figure", { class: "studio-chart-frame" }, host));
-		mountChartInto(host, chart, drawn.signal, { width: 720, height });
-		expand = expandButton(heading, () => openWide(fullscreen, heading, chart, drawn.signal, caption));
-		head.append(expand);
+		mount();
+		compare(shaped);
 	};
 	if (handle) handle.follow(draw, chartSignal);
 	else draw({ state: "unavailable" });

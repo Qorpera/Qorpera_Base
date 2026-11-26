@@ -65,6 +65,7 @@ export interface SurfaceBlockContext extends SurfaceFileLayer {
 	readonly readJson: SurfaceJsonReader;
 	readonly colors?: SurfacePageColors;
 	readonly ask?: (source: SurfaceAskSource) => SurfaceAskHandle;
+	readonly askAfter?: (source: SurfaceAskSource, parent: string) => SurfaceAskHandle;
 	readonly companyPath: (bindingPath: string) => string | undefined;
 	readonly text: (path: string) => { readonly value: string | undefined; readonly base: string | undefined };
 	readonly binary: (path: string) => {
@@ -88,6 +89,7 @@ export interface SurfaceBlockContextInput extends SurfaceFileLayer {
 	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 	readonly colors?: (readJson: SurfaceJsonReader) => SurfacePageColors;
 	readonly ask?: (source: SurfaceAskSource) => SurfaceAskHandle;
+	readonly askAfter?: (source: SurfaceAskSource, parent: string) => SurfaceAskHandle;
 }
 
 const STARTER_WORDS: ReadonlySet<string> = new Set([
@@ -146,12 +148,11 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Refunds, 30 days"),
 	phrase("On the way"),
 	phrase("Open disputes"),
-	phrase("Sales and refunds by day"),
-	phrase("Money in the bank"),
-	phrase("Money in and out"),
-	phrase("This month by kind"),
-	phrase("Visits by day"),
-	phrase("Most read pages"),
+	phrase("Are refunds eating sales?"),
+	phrase("How long does the money last?"),
+	phrase("Do we earn more than we spend?"),
+	phrase("Are more people visiting?"),
+	phrase("What do they read?"),
 	phrase("Page"),
 	phrase("Views"),
 	phrase("Visits"),
@@ -364,6 +365,7 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 		readJson: readPreview,
 		...(colors ? { colors } : {}),
 		...(input.ask ? { ask: input.ask } : {}),
+		...(input.askAfter ? { askAfter: input.askAfter } : {}),
 		companyPath,
 		text: (path) => {
 			const layer = layerOf(path);

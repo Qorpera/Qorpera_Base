@@ -17,7 +17,15 @@ import {
 	type SurfaceBlockPrepared,
 	sameValue,
 } from "./context.ts";
-import { answerAge, figureText, lastRecord, pickFigure, type SurfaceAskHandle, type SurfaceAskState } from "./live.ts";
+import {
+	answerAge,
+	figureText,
+	lastRecord,
+	pickFigure,
+	type SurfaceAskHandle,
+	type SurfaceAskState,
+	withUnit,
+} from "./live.ts";
 
 interface Fact {
 	readonly label: string;
@@ -25,6 +33,7 @@ interface Fact {
 	readonly changed: boolean;
 	readonly live?: SurfaceAskHandle | undefined;
 	readonly pick?: string;
+	readonly unit?: string | undefined;
 }
 
 function factsFrom(value: unknown, base: unknown, skip: readonly string[]): Fact[] {
@@ -58,7 +67,7 @@ function lockedMark(): HTMLElement {
 	return h("span", { class: "studio-fact-lock", role: "img", "aria-label": t("Not shared with you") }, icon("lock"));
 }
 
-function drawFigure(dd: HTMLElement, state: SurfaceAskState, pick: string): void {
+function drawFigure(dd: HTMLElement, state: SurfaceAskState, pick: string, unit: string | undefined): void {
 	dd.classList.remove("is-loading", "is-locked", "is-unknown");
 	dd.removeAttribute("title");
 	if (state.state === "loading") {
@@ -77,7 +86,8 @@ function drawFigure(dd: HTMLElement, state: SurfaceAskState, pick: string): void
 		dd.replaceChildren("?");
 		return;
 	}
-	const text = figureText(pickFigure(state.answer, pick)) ?? "–";
+	const figure = figureText(pickFigure(state.answer, pick));
+	const text = figure === undefined ? "–" : withUnit(figure, unit);
 	const age = answerAge(state.answer);
 	dd.title = age ? `${text} · ${age}` : text;
 	dd.replaceChildren(text);
@@ -117,7 +127,13 @@ function liveFacts(
 		}
 		const record = lastRecord(state.answer);
 		const facts = factsFrom(
-			record && Object.fromEntries(Object.entries(record).map(([key, value]) => [key, figureText(value) ?? value])),
+			record &&
+				Object.fromEntries(
+					Object.entries(record).map(([key, value]) => {
+						const figure = figureText(value);
+						return [key, figure === undefined ? value : withUnit(figure, source.unit)];
+					}),
+				),
 			record,
 			block.skip,
 		)
@@ -170,6 +186,7 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 					changed: false,
 					live: ctx.ask?.(item.from),
 					pick: item.from.pick ?? "",
+					unit: item.from.unit,
 				};
 			}
 			const read = ctx.read(item.from);
@@ -206,9 +223,9 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 							let dd: HTMLElement;
 							if (fact.pick !== undefined) {
 								dd = h("dd");
-								const pick = fact.pick;
-								if (fact.live) fact.live.follow((state) => drawFigure(dd, state, pick), signal);
-								else drawFigure(dd, { state: "unavailable" }, pick);
+								const { pick, unit } = fact;
+								if (fact.live) fact.live.follow((state) => drawFigure(dd, state, pick, unit), signal);
+								else drawFigure(dd, { state: "unavailable" }, pick, unit);
 							} else {
 								dd =
 									fact.value !== undefined

@@ -317,6 +317,7 @@ export class SurfaceLayoutView {
 				asked.add(handle.key);
 				return handle;
 			},
+			askAfter: (source: SurfaceAskSource, parent: string) => this.#asks.handle(source, parent),
 		});
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();

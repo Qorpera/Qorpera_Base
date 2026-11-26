@@ -6,6 +6,7 @@ import {
 	type SurfaceAskSource,
 	type SurfaceChartDocument,
 	splitSurfaceAsk,
+	surfaceAskPreviousParams,
 } from "@qorpera/contracts";
 import { presentationLocale, t, timeZoneOption } from "../../../ui/preferences.ts";
 import type { CompanyLiveSource } from "../../interface-apps.ts";
@@ -88,6 +89,10 @@ export function figureText(value: unknown): string | undefined {
 	return undefined;
 }
 
+export function withUnit(text: string, unit: string | undefined): string {
+	return unit ? `${text} ${unit}` : text;
+}
+
 export function answerAge(answer: CloudMemberDataAnswer): string | undefined {
 	const at = new Date(answer.asOf);
 	if (Number.isNaN(at.getTime())) return undefined;
@@ -129,9 +134,16 @@ export function seriesTitle(column: string): string {
 	return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : column;
 }
 
+export interface SurfaceAskDays {
+	readonly first: string;
+	readonly last: string;
+	readonly count: number;
+}
+
 export interface SurfaceAskChart {
 	readonly doc: SurfaceChartDocument;
 	readonly keys: readonly string[];
+	readonly days?: SurfaceAskDays;
 }
 
 function chartKind(value: unknown): SurfaceAskChartKind {
@@ -192,7 +204,38 @@ export function answerChart(answer: CloudMemberDataAnswer, source: SurfaceAskSou
 		...(source.unit !== undefined ? { unit: source.unit } : {}),
 		...(kind === "area" || kind === "line" ? { smooth: true } : {}),
 	});
-	return doc ? { doc, keys: shown.map((line) => line.key) } : null;
+	if (!doc) return null;
+	const dayKeys = kept.map((key) => DAY_TEXT.exec(key)?.slice(1, 4).join("-"));
+	const first = dayKeys[0];
+	const last = dayKeys.at(-1);
+	const days =
+		first && last && dayKeys.every((key) => key !== undefined) ? { first, last, count: kept.length } : undefined;
+	return { doc, keys: shown.map((line) => line.key), ...(days ? { days } : {}) };
+}
+
+export function previousSource(source: SurfaceAskSource, days: SurfaceAskDays | undefined): SurfaceAskSource | null {
+	if (source.against !== "previous" || !days) return null;
+	const params = surfaceAskPreviousParams(source, days.first, days.last);
+	if (!params) return null;
+	return { ...source, params };
+}
+
+export function withPrevious(
+	current: SurfaceAskChart,
+	previous: SurfaceAskChart | null,
+	name: string,
+): SurfaceChartDocument {
+	const line = previous?.doc.series?.[0];
+	const series = current.doc.series ?? [];
+	if (!line || series.length >= MAX_SERIES || current.doc.kind === "pie" || current.doc.kind === "funnel") {
+		return current.doc;
+	}
+	const length = current.doc.categories?.length ?? series[0]?.data.length ?? 0;
+	const data = Array.from({ length }, (_, at) => {
+		const point = line.data[at];
+		return typeof point === "number" ? point : null;
+	});
+	return { ...current.doc, series: [...series, { name, data }] };
 }
 
 interface AskEntry {
@@ -202,6 +245,7 @@ interface AskEntry {
 	state: SurfaceAskState;
 	started: boolean;
 	watch: number | undefined;
+	readonly parent: string | undefined;
 	readonly followers: Set<(state: SurfaceAskState) => void>;
 }
 
@@ -219,8 +263,8 @@ export class SurfaceAsks {
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#page.signal });
 	}
 
-	handle(source: SurfaceAskSource): SurfaceAskHandle {
-		const entry = this.#entry(source);
+	handle(source: SurfaceAskSource, parent?: string): SurfaceAskHandle {
+		const entry = this.#entry(source, parent);
 		return {
 			key: entry.key,
 			state: entry.state,
@@ -236,7 +280,7 @@ export class SurfaceAsks {
 
 	keep(keys: ReadonlySet<string>): void {
 		for (const [key, entry] of this.#entries) {
-			if (keys.has(key)) continue;
+			if (keys.has(key) || (entry.parent !== undefined && keys.has(entry.parent))) continue;
 			this.#entries.delete(key);
 			entry.followers.clear();
 			if (entry.watch !== undefined) entry.source?.unwatch(this.#page.signal, entry.watch);
@@ -249,11 +293,16 @@ export class SurfaceAsks {
 		this.#page.abort();
 	}
 
-	#entry(source: SurfaceAskSource): AskEntry {
+	#entry(source: SurfaceAskSource, parent: string | undefined): AskEntry {
 		const asked = askQuestion(source);
 		const key = asked ? askKey(asked) : `!${source.ask}`;
 		const known = this.#entries.get(key);
 		if (known) return known;
+		if (parent !== undefined) {
+			for (const [other, entry] of this.#entries) {
+				if (entry.parent === parent) this.#entries.delete(other);
+			}
+		}
 		const host = asked?.database === "qorpera" ? this.#hosts.numbers : this.#hosts.data;
 		const entry: AskEntry = {
 			key,
@@ -262,6 +311,7 @@ export class SurfaceAsks {
 			state: asked && host && !this.#page.signal.aborted ? LOADING : UNAVAILABLE,
 			started: false,
 			watch: undefined,
+			parent,
 			followers: new Set(),
 		};
 		this.#entries.set(key, entry);
@@ -283,6 +333,10 @@ export class SurfaceAsks {
 			if (page.aborted) return;
 			this.#set(entry, isRefusal(error) ? { state: "refused" } : UNAVAILABLE);
 		};
+		if (entry.parent !== undefined) {
+			source.query(entry.asked, page).then((answer) => this.#set(entry, { state: "answered", answer }), failed);
+			return;
+		}
 		source
 			.watch(page, entry.asked, (_watch, answer) => this.#set(entry, { state: "answered", answer }))
 			.then(

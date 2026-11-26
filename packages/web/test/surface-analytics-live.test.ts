@@ -14,9 +14,12 @@ import {
 	figureText,
 	isRefusal,
 	pickFigure,
+	previousSource,
 	type SurfaceAskState,
 	SurfaceAsks,
 	type SurfaceLiveHosts,
+	withPrevious,
+	withUnit,
 } from "../src/app/views/surface-blocks/live.ts";
 import { SurfaceLayoutView } from "../src/app/views/surface-layout-view.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -517,6 +520,125 @@ describe("live asks on the page", () => {
 			(1200).toLocaleString("en"),
 			"/shop",
 			"300",
+		]);
+		life.abort();
+	});
+});
+
+describe("units and the previous days", () => {
+	it("writes a unit after a figure and finds the previous range of days", () => {
+		expect(withUnit("184.339", "kr.")).toBe("184.339 kr.");
+		expect(withUnit("12", undefined)).toBe("12");
+		const source = { ask: "qorpera/orders-days", x: "day", y: "orders", against: "previous" } as const;
+		const shaped = answerChart(NUMBERS["orders-days"]!, source)!;
+		expect(shaped.days).toEqual({ first: "2026-11-24", last: "2026-11-26", count: 3 });
+		expect(previousSource(source, shaped.days)?.params).toEqual({ from: "2026-11-21", to: "2026-11-23" });
+		expect(previousSource({ ...source, against: undefined }, shaped.days)).toBeNull();
+		const months = answerChart(answer(["month", "n"], [["2026-10", 1]]), { ask: "a/b", x: "month", y: "n" });
+		expect(months?.days).toBeUndefined();
+
+		const earlier = answerChart(
+			answer(
+				["day", "orders"],
+				[
+					["2026-11-21", 2],
+					["2026-11-22", "4"],
+				],
+			),
+			source,
+		);
+		const doc = withPrevious(shaped, earlier, "Previous 3 days");
+		expect(doc.series?.map((series) => series.name)).toEqual(["Orders", "Previous 3 days"]);
+		expect(doc.series?.[1]?.data).toEqual([2, 4, null]);
+		expect(withPrevious(shaped, null, "Previous 3 days")).toBe(shaped.doc);
+	});
+
+	it("draws units on live figures and the previous days in the compare colour, quietly without them", async () => {
+		const life = new AbortController();
+		const previousOrders = answer(
+			["day", "orders"],
+			[
+				["2026-11-21", 3],
+				["2026-11-22", 4],
+				["2026-11-23", 6],
+			],
+		);
+		const make = (refuse: boolean) =>
+			new FakeLive(async (asked) => {
+				if (asked.params.from !== undefined) {
+					if (refuse) throw refusal("qorpera/orders-days");
+					return previousOrders;
+				}
+				const found = NUMBERS[asked.question];
+				if (!found) throw new Error("did not answer (502)");
+				return found;
+			});
+		const layout = {
+			schema: SURFACE_LAYOUT_SCHEMA,
+			colors: { preset: "bright" },
+			tabs: [
+				{
+					id: "now",
+					title: "Now",
+					blocks: [
+						{
+							type: "facts",
+							id: "f",
+							items: [
+								{ label: "Sales today", from: { ask: "qorpera/orders-now", pick: "sales_today", unit: "kr." } },
+							],
+						},
+						{
+							type: "chart",
+							id: "pulse",
+							from: { ask: "qorpera/orders-days", x: "day", y: "orders", against: "previous" },
+						},
+					],
+				},
+			],
+		};
+		const numbers = make(false);
+		const view = layoutView({ numbers }, life.signal);
+		const root = mount(planOf(view, layout));
+		await settle();
+		expect(root.querySelector(".studio-fact dd")?.textContent).toBe(`${(48250).toLocaleString("en")} kr.`);
+		let option = await chartOption(root.querySelector<HTMLElement>(".studio-chart-host")!);
+		await vi.waitFor(async () => {
+			option = await chartOption(root.querySelector<HTMLElement>(".studio-chart-host")!);
+			expect(option.series).toHaveLength(2);
+		});
+		expect(option.series.map((series) => series.name)).toEqual(["Orders", "Previous 3 days"]);
+		expect(option.series[1]?.itemStyle?.color).toBe("#999999");
+		expect(option.series[0]?.itemStyle?.color).toBe(SURFACE_OKABE_ITO[0]);
+		expect(numbers.queries.map((asked) => asked.params)).toEqual([{ from: "2026-11-21", to: "2026-11-23" }]);
+		expect(numbers.watches.every((watch) => watch.asked.params.from === undefined)).toBe(true);
+
+		mount(planOf(view, layout));
+		await settle();
+		expect(numbers.queries).toHaveLength(1);
+
+		const refused = mount(planOf(layoutView({ numbers: make(true) }, life.signal), layout));
+		await settle();
+		const plain = await chartOption(refused.querySelector<HTMLElement>(".studio-chart-host")!);
+		expect(plain.series.map((series) => series.name)).toEqual(["Orders"]);
+		expect(refused.querySelector(".studio-home-locked")).toBeNull();
+		life.abort();
+	});
+
+	it("writes the unit after each figure of a live facts.from", async () => {
+		const life = new AbortController();
+		const data = new FakeLive(async () => answer(["revenue", "orders"], [[1200, 3]]));
+		const layout = {
+			schema: SURFACE_LAYOUT_SCHEMA,
+			tabs: [
+				{ id: "now", title: "Now", blocks: [{ type: "facts", id: "f", from: { ask: "shop/today", unit: "kr." } }] },
+			],
+		};
+		const root = mount(planOf(layoutView({ data }, life.signal), layout));
+		await settle();
+		expect([...root.querySelectorAll(".studio-fact dd")].map((dd) => dd.textContent)).toEqual([
+			`${(1200).toLocaleString("en")} kr.`,
+			"3 kr.",
 		]);
 		life.abort();
 	});

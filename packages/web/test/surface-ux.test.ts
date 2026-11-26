@@ -281,7 +281,7 @@ describe("operational surfaces", () => {
 });
 
 describe("creating surfaces", () => {
-	it("offers ten kinds, a figure for each, a custom studio surface with a brief, and opens a Mobile App in the phone frame", async () => {
+	it("offers twelve kinds, a figure for each, a custom studio surface with a brief, and opens a Mobile App in the phone frame", async () => {
 		const navigated: string[] = [];
 		const store = storeWith(undefined, {
 			companyName: "Brooks",
