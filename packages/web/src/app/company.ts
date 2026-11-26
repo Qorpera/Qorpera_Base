@@ -837,6 +837,7 @@ export class CompanyController {
 	#suspended = false;
 	#connectionFailures = 0;
 	readonly #abort = new AbortController();
+	#visitAbort = new AbortController();
 	readonly #reconnect = new Reconnect(() => this.#tryAgain(), this.#abort.signal);
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
@@ -1020,6 +1021,10 @@ export class CompanyController {
 		return this.#abort.signal;
 	}
 
+	get readSignal(): AbortSignal {
+		return this.#visitAbort.signal;
+	}
+
 	get suspended(): boolean {
 		return this.#suspended;
 	}
@@ -1081,6 +1086,7 @@ export class CompanyController {
 	suspend(): void {
 		if (this.#stopped || this.#suspended) return;
 		this.#suspended = true;
+		this.#visitAbort.abort();
 		this.#realtime?.stop();
 		this.#realtime = undefined;
 		this.#sidebarRealtime?.stop();
@@ -1106,6 +1112,7 @@ export class CompanyController {
 		this.#reconnect.pause();
 		this.#atComputers.pause();
 		this.memberChats.pause();
+		this.roomDrafts.pause();
 		for (const id of this.conversations.keys()) this.#staleConversations.add(id);
 		this.setOpenSession(undefined);
 		this.#openPlace = undefined;
@@ -1114,6 +1121,7 @@ export class CompanyController {
 	resume(): void {
 		if (this.#stopped || !this.#suspended) return;
 		this.#suspended = false;
+		this.#visitAbort = new AbortController();
 		this.#subscribeRealtime();
 		if (this.store.get().sidebar?.own) {
 			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
@@ -1121,6 +1129,7 @@ export class CompanyController {
 		if (!this.#poll) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
 		this.#reconnect.resume();
 		this.memberChats.resume();
+		this.roomDrafts.resume();
 		if (this.store.get().team?.capabilities.read) this.#atComputers.resume();
 		if (this.#presenceWatching) this.#syncPresence();
 		if (Object.keys(this.store.get().appIconsDrawing ?? {}).length > 0) this.#watchIcons();
@@ -1153,6 +1162,7 @@ export class CompanyController {
 	stop(): void {
 		if (this.#stopped) return;
 		this.#stopped = true;
+		this.#visitAbort.abort();
 		this.#abort.abort();
 		this.#atComputers.dispose();
 		this.#emailDraftEditors.clear();
@@ -1195,13 +1205,13 @@ export class CompanyController {
 	}
 
 	async refreshAll(): Promise<void> {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		this.store.set({ loading: true, error: undefined });
 		const teamPromise = this.refreshTeam();
 		const sessionsPromise = this.refreshSessions();
 		const groupsPromise = Promise.all([teamPromise, sessionsPromise]).then(() => this.refreshGroups());
 		const afterTeam = teamPromise.then(() => {
-			if (this.#stopped) return;
+			if (this.#stopped || this.#suspended) return;
 			void this.refreshMentions();
 			void this.refreshHoursWait();
 			void this.memberChats.refresh();
@@ -1216,19 +1226,25 @@ export class CompanyController {
 			groupsPromise,
 			afterTeam,
 		]);
-		this.store.set({ loading: false });
+		if (!this.#stopped && !this.#suspended) this.store.set({ loading: false });
 	}
 
 	/** Re-read whether the company waits for computer hours. */
 	async refreshHoursWait(): Promise<void> {
-		if (this.#stopped || this.store.get().hoursWaitUnavailable || !this.store.get().team?.capabilities.read) return;
+		if (
+			this.#stopped ||
+			this.#suspended ||
+			this.store.get().hoursWaitUnavailable ||
+			!this.store.get().team?.capabilities.read
+		)
+			return;
 		const version = ++this.#hoursWaitReads;
 		try {
 			const waiting = await this.#api.companyWaitingForHours(this.profile.profileId);
-			if (this.#stopped || version !== this.#hoursWaitReads) return;
+			if (this.#stopped || this.#suspended || version !== this.#hoursWaitReads) return;
 			if (waiting !== (this.store.get().waitingForHours === true)) this.store.set({ waitingForHours: waiting });
 		} catch (error) {
-			if (this.#stopped || version !== this.#hoursWaitReads) return;
+			if (this.#stopped || this.#suspended || version !== this.#hoursWaitReads) return;
 			if (error instanceof CloudRpcError && error.missing)
 				this.store.set({ hoursWaitUnavailable: true, waitingForHours: false });
 		}
@@ -1236,13 +1252,14 @@ export class CompanyController {
 
 	/** Re-read where this member was mentioned and has not looked yet. */
 	async refreshMentions(): Promise<void> {
+		if (this.#stopped || this.#suspended) return;
 		// A card waiting for this member changes where a mention does (an agent's thread), so both are read together.
 		void this.refreshApprovals();
-		if (this.#stopped || this.store.get().mentionsUnavailable || !this.store.get().team?.capabilities.read) return;
+		if (this.store.get().mentionsUnavailable || !this.store.get().team?.capabilities.read) return;
 		const version = ++this.#mentionReads;
 		try {
 			const sessions = await this.#api.listMemberMentions(this.profile.profileId);
-			if (this.#stopped || version !== this.#mentionReads) return;
+			if (this.#stopped || this.#suspended || version !== this.#mentionReads) return;
 			const mentions = Object.fromEntries(sessions.map((item) => [item.sessionId, item.count]));
 			const current = this.store.get();
 			if (!current.mentionsReady || !sameJson(current.mentions, mentions)) {
@@ -1250,7 +1267,7 @@ export class CompanyController {
 			}
 			this.#seeMentions();
 		} catch (error) {
-			if (this.#stopped || version !== this.#mentionReads) return;
+			if (this.#stopped || this.#suspended || version !== this.#mentionReads) return;
 			if (error instanceof CloudRpcError && error.missing)
 				this.store.set({ mentionsUnavailable: true, mentions: {} });
 		}
@@ -1259,12 +1276,12 @@ export class CompanyController {
 	/** Re-read what each agent's work waits on this member for: its open cards for them and the approval cards they
 	 * answer (20260930723000), in one read. A cloud before that reads the approval cards alone, as before. */
 	async refreshApprovals(): Promise<void> {
-		if (this.#stopped || !this.store.get().team?.capabilities.read) return;
+		if (this.#stopped || this.#suspended || !this.store.get().team?.capabilities.read) return;
 		if (!this.store.get().waitingWorkUnavailable) {
 			const version = ++this.#approvalReads;
 			try {
 				const work = await this.#api.listWaitingWork(this.profile.profileId);
-				if (this.#stopped || version !== this.#approvalReads) return;
+				if (this.#stopped || this.#suspended || version !== this.#approvalReads) return;
 				const waitingOnMe: Record<string, WaitingWork> = {};
 				const approvals: Record<string, number> = {};
 				for (const item of work) {
@@ -1277,7 +1294,7 @@ export class CompanyController {
 				}
 				return;
 			} catch (error) {
-				if (this.#stopped || version !== this.#approvalReads) return;
+				if (this.#stopped || this.#suspended || version !== this.#approvalReads) return;
 				if (!(error instanceof CloudRpcError && error.missing)) return;
 				this.store.set({ waitingWorkUnavailable: true, waitingOnMe: undefined });
 			}
@@ -1286,12 +1303,12 @@ export class CompanyController {
 		const version = ++this.#approvalReads;
 		try {
 			const waiting = await this.#api.listWaitingApprovals(this.profile.profileId);
-			if (this.#stopped || version !== this.#approvalReads) return;
+			if (this.#stopped || this.#suspended || version !== this.#approvalReads) return;
 			const approvals: Record<string, number> = {};
 			for (const item of waiting) approvals[item.staffAgentId] = (approvals[item.staffAgentId] ?? 0) + item.count;
 			if (!sameJson(this.store.get().approvals, approvals)) this.store.set({ approvals });
 		} catch (error) {
-			if (this.#stopped || version !== this.#approvalReads) return;
+			if (this.#stopped || this.#suspended || version !== this.#approvalReads) return;
 			if (error instanceof CloudRpcError && error.missing)
 				this.store.set({ approvalsUnavailable: true, approvals: {} });
 		}
@@ -1369,11 +1386,12 @@ export class CompanyController {
 	}
 
 	async refreshTeam(): Promise<void> {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		const version = ++this.#versions.team;
+		const signal = this.#visitAbort.signal;
 		try {
-			const team = await this.#api.getTeam(this.profile.profileId, this.signal);
-			if (this.#stopped || version !== this.#versions.team) return;
+			const team = await this.#api.getTeam(this.profile.profileId, signal);
+			if (this.#stopped || signal.aborted || version !== this.#versions.team) return;
 			const before = this.store
 				.get()
 				.team?.members.map((member) => member.userId)
@@ -1386,7 +1404,7 @@ export class CompanyController {
 			if (before !== undefined && before !== team.members.map((member) => member.userId).join(" "))
 				void this.memberChats.refresh();
 		} catch (error) {
-			if (this.#stopped || version !== this.#versions.team) return;
+			if (this.#stopped || signal.aborted || version !== this.#versions.team) return;
 			if (error instanceof CloudRpcError && error.denied) {
 				this.store.set({
 					accessLost: true,
@@ -1457,38 +1475,40 @@ export class CompanyController {
 	}
 
 	async refreshStaff(): Promise<void> {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		const version = ++this.#versions.staff;
+		const signal = this.#visitAbort.signal;
 		try {
-			const staff = await this.#api.listStaff(this.profile.profileId, this.signal);
-			if (this.#stopped || version !== this.#versions.staff) return;
+			const staff = await this.#api.listStaff(this.profile.profileId, signal);
+			if (this.#stopped || signal.aborted || version !== this.#versions.staff) return;
 			this.store.set((state) => ({
 				staff,
 				staffLoaded: true,
 				hierarchy: buildCompanyHierarchy(state.organization, staff),
 			}));
 		} catch (error) {
-			if (this.#stopped || version !== this.#versions.staff) return;
+			if (this.#stopped || signal.aborted || version !== this.#versions.staff) return;
 			if (!this.#lost(error)) this.store.set({ staffLoaded: true, error: describeError(error) });
 		}
 	}
 
 	/** Reads every conversation the member may read. */
 	async refreshSessions(): Promise<void> {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		const version = ++this.#versions.sessions;
+		const signal = this.#visitAbort.signal;
 		const started = Date.now();
 		const read = (async () => {
 			try {
-				const sessions = await this.#api.listSessions(this.profile.environmentId, this.signal);
-				if (this.#stopped || version !== this.#versions.sessions) return;
+				const sessions = await this.#api.listSessions(this.profile.environmentId, signal);
+				if (this.#stopped || signal.aborted || version !== this.#versions.sessions) return;
 				this.#sessionsCursor = newestSession(sessions);
 				this.#sessionsReadAt = started;
 				this.#sessionsWholeReads += 1;
 				this.store.set({ sessions, sessionsLoaded: true, sessionsError: undefined });
 				if (!this.store.get().loading) await this.refreshGroups();
 			} catch (error) {
-				if (this.#stopped || version !== this.#versions.sessions) return;
+				if (this.#stopped || signal.aborted || version !== this.#versions.sessions) return;
 				this.store.set({
 					sessionsLoaded: true,
 					sessionsError: this.#lost(error) ? undefined : describeError(error),
@@ -1517,7 +1537,7 @@ export class CompanyController {
 	}
 
 	async #sessionsChanged(): Promise<void> {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		if (this.#changedRead) {
 			this.#changedAgain = true;
 			return this.#changedRead;
@@ -1539,7 +1559,7 @@ export class CompanyController {
 					this.#triggerOpenConversationRead(open);
 				}
 				const changed = await this.#readChangedSessions();
-				if (this.#stopped) return;
+				if (this.#stopped || this.#suspended) return;
 				const currentOpen = this.#openSessionId;
 				if (
 					currentOpen &&
@@ -1549,7 +1569,7 @@ export class CompanyController {
 					this.#refreshOpenConversation();
 				if (!changed || changed.some((session) => typeof session.executionScope?.roomId === "string"))
 					this.#refreshMentionsSoon();
-			} while (this.#changedAgain && !this.#stopped);
+			} while (this.#changedAgain && !this.#stopped && !this.#suspended);
 		})();
 		this.#changedRead = read;
 		try {
@@ -1564,6 +1584,7 @@ export class CompanyController {
 	 * whole read is old (undefined: all may have changed). A read on its way is waited for first. */
 	async #readChangedSessions(): Promise<HostedSession[] | undefined> {
 		if (this.#sessionsFullRead) await this.#sessionsFullRead;
+		if (this.#stopped || this.#suspended) return [];
 		const cursor = this.#sessionsCursor;
 		if (!cursor || Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS) {
 			await this.refreshSessions();
@@ -1571,13 +1592,14 @@ export class CompanyController {
 		}
 		const since = Date.parse(cursor.time) - SESSIONS_OVERLAP_MS;
 		const wholeReads = this.#sessionsWholeReads;
+		const signal = this.#visitAbort.signal;
 		try {
 			const read = await this.#api.listSessions(
 				this.profile.environmentId,
-				this.signal,
+				signal,
 				Number.isFinite(since) ? { time: new Date(since).toISOString(), id: NO_ID } : undefined,
 			);
-			if (this.#stopped) return [];
+			if (this.#stopped || signal.aborted) return [];
 			// A whole read on its way, or one that landed meanwhile, is newer than this one's copies.
 			if (this.#sessionsFullRead || wholeReads !== this.#sessionsWholeReads) return undefined;
 			const known = new Map(this.store.get().sessions.map((session) => [session.sessionId, session]));
@@ -1594,7 +1616,8 @@ export class CompanyController {
 				await this.refreshGroups();
 			return changed;
 		} catch (error) {
-			if (!this.#stopped) this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
+			if (this.#stopped || signal.aborted) return [];
+			this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
 			// Unknown, not unchanged: what the hint would have read is read anyway.
 			return undefined;
 		}
@@ -1620,11 +1643,12 @@ export class CompanyController {
 	}
 
 	async refreshOrganization(): Promise<void> {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		const version = ++this.#versions.organization;
+		const signal = this.#visitAbort.signal;
 		try {
-			const organization = await this.#api.getOrganization(this.profile.profileId, this.signal);
-			if (this.#stopped || version !== this.#versions.organization) return;
+			const organization = await this.#api.getOrganization(this.profile.profileId, signal);
+			if (this.#stopped || signal.aborted || version !== this.#versions.organization) return;
 			this.store.set((state) => ({
 				organization,
 				organizationState: organization ? "ready" : "not-seeded",
@@ -1632,7 +1656,7 @@ export class CompanyController {
 				hierarchy: buildCompanyHierarchy(organization, state.staff),
 			}));
 		} catch (error) {
-			if (this.#stopped || version !== this.#versions.organization) return;
+			if (this.#stopped || signal.aborted || version !== this.#versions.organization) return;
 			if (error instanceof CloudRpcError && error.missing) {
 				this.store.set((state) => ({
 					organizationState: "not-deployed",
@@ -1645,12 +1669,13 @@ export class CompanyController {
 	}
 
 	async refreshSidebar(): Promise<void> {
-		if (this.#stopped || this.store.get().sidebarUnavailable) return;
+		if (this.#stopped || this.#suspended || this.store.get().sidebarUnavailable) return;
 		const version = ++this.#versions.sidebar;
+		const signal = this.#visitAbort.signal;
 		try {
-			const sidebar = await this.#api.readCompanySidebar(this.profile.profileId, this.signal);
+			const sidebar = await this.#api.readCompanySidebar(this.profile.profileId, signal);
 			// A change in flight answers with a newer sidebar than this read.
-			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
+			if (this.#stopped || signal.aborted || version !== this.#versions.sidebar || this.#sidebarPending) return;
 			if (!sameJson(this.store.get().sidebar, sidebar)) this.store.set({ sidebar });
 			// The member's apps layout is part of their own sidebar: a hint for one is a hint for the other.
 			if (sidebar.own) {
@@ -1661,7 +1686,7 @@ export class CompanyController {
 			// the sidebar tables must not degrade the company's hints.
 			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
 		} catch (error) {
-			if (this.#stopped || version !== this.#versions.sidebar) return;
+			if (this.#stopped || signal.aborted || version !== this.#versions.sidebar) return;
 			if (error instanceof CloudRpcError && error.missing)
 				this.store.set({ sidebarUnavailable: true, sidebar: undefined });
 			// Otherwise the rail keeps what it showed: the sidebar arranges agents, it holds no content.
@@ -1961,29 +1986,37 @@ export class CompanyController {
 
 	/** Reads the member's own arrangement of the apps drawer. A cloud without it (before 20260930728000) says so once. */
 	async refreshAppLayout(): Promise<void> {
-		if (this.#stopped || this.store.get().appLayoutUnavailable) return;
+		if (this.#stopped || this.#suspended || this.store.get().appLayoutUnavailable) return;
 		const version = ++this.#appLayoutReads;
+		const signal = this.#visitAbort.signal;
 		try {
-			const read = await this.#api.readMemberAppLayout(this.profile.profileId, this.signal);
-			if (this.#stopped || version !== this.#appLayoutReads || this.#appLayoutPending) return;
+			const read = await this.#api.readMemberAppLayout(this.profile.profileId, signal);
+			if (this.#stopped || signal.aborted || version !== this.#appLayoutReads || this.#appLayoutPending) return;
 			this.#appLayoutStale = false;
 			this.store.set({ appLayout: read });
 		} catch (error) {
-			if (this.#stopped) return;
+			if (this.#stopped || signal.aborted) return;
 			if (error instanceof CloudRpcError && error.missing) this.store.set({ appLayoutUnavailable: true });
 		}
 	}
 
 	async refreshSurfaceRail(force = false): Promise<void> {
-		if (this.#stopped || this.store.get().surfaceRailUnavailable) return;
+		if (this.#stopped || this.#suspended || this.store.get().surfaceRailUnavailable) return;
 		const version = ++this.#surfaceRailReads;
+		const signal = this.#visitAbort.signal;
 		try {
-			const read = await this.#api.readMemberSurfaceRail(this.profile.profileId, this.signal);
-			if (this.#stopped || version !== this.#surfaceRailReads || (this.#surfaceRailPending && !force)) return;
+			const read = await this.#api.readMemberSurfaceRail(this.profile.profileId, signal);
+			if (
+				this.#stopped ||
+				signal.aborted ||
+				version !== this.#surfaceRailReads ||
+				(this.#surfaceRailPending && !force)
+			)
+				return;
 			this.#surfaceRailStale = false;
 			if (!sameJson(this.store.get().surfaceRail, read)) this.store.set({ surfaceRail: read });
 		} catch (error) {
-			if (this.#stopped) return;
+			if (this.#stopped || signal.aborted) return;
 			if (error instanceof CloudRpcError && error.missing) {
 				this.#surfaceRailStale = false;
 				this.store.set({ surfaceRailUnavailable: true });
@@ -2186,11 +2219,12 @@ export class CompanyController {
 	}
 
 	async refreshActivity(): Promise<void> {
-		if (this.#stopped) return;
+		if (this.#stopped || this.#suspended) return;
 		const version = ++this.#versions.activity;
+		const signal = this.#visitAbort.signal;
 		try {
-			const activity = await this.#api.listStaffActivity(this.profile.environmentId, this.signal);
-			if (this.#stopped || version !== this.#versions.activity) return;
+			const activity = await this.#api.listStaffActivity(this.profile.environmentId, signal);
+			if (this.#stopped || signal.aborted || version !== this.#versions.activity) return;
 			const current = this.store.get();
 			const recoveries = stillFailed(current.recoveries, activity);
 			if (!sameJson(current.activity, activity) || recoveries !== current.recoveries) {
@@ -2322,6 +2356,7 @@ export class CompanyController {
 			const current = this.store.get();
 			return (
 				!this.#stopped &&
+				!this.#suspended &&
 				!current.accessLost &&
 				Boolean(current.team?.capabilities.read) &&
 				current.team?.profileId === profile.profileId &&
@@ -2331,6 +2366,7 @@ export class CompanyController {
 		};
 		if (!canRead()) return;
 		const version = ++this.#versions.groups;
+		const signal = this.#visitAbort.signal;
 		const sessions = state.sessions.filter(
 			(session) =>
 				!session.staffAgentId &&
@@ -2345,8 +2381,8 @@ export class CompanyController {
 			return;
 		}
 		try {
-			const rooms = await listGroupChatDetails(this.#api.cloud, profile.profileId, this.signal);
-			if (!canRead() || version !== this.#versions.groups) return;
+			const rooms = await listGroupChatDetails(this.#api.cloud, profile.profileId, signal);
+			if (!canRead() || signal.aborted || version !== this.#versions.groups) return;
 			const current = this.store.get();
 			const groups: Record<string, GroupChatDetails> = {};
 			for (const room of rooms) {
@@ -2374,7 +2410,7 @@ export class CompanyController {
 				this.store.set({ groups, groupsError: undefined });
 			}
 		} catch (error) {
-			if (canRead() && version === this.#versions.groups) {
+			if (canRead() && !signal.aborted && version === this.#versions.groups) {
 				const groupsError = describeError(error);
 				if (this.store.get().groupsError !== groupsError) this.store.set({ groupsError });
 			}
@@ -3018,7 +3054,7 @@ export class CompanyController {
 	 * events keeps that window and only "Show earlier" reads further back, so hints, the trailing
 	 * full read, the watch and a catch-up after Realtime returns never read from the start. */
 	loadConversation(sessionId: string, options: { eventsOnly?: boolean } = {}): Promise<void> {
-		if (this.#stopped) return Promise.resolve();
+		if (this.#stopped || this.#suspended) return Promise.resolve();
 		const full = !options.eventsOnly;
 		const existing = this.#conversationLoads.get(sessionId);
 		if (existing) {
@@ -3038,6 +3074,8 @@ export class CompanyController {
 		const store = this.conversations.get(sessionId);
 		if (!store) return;
 		do {
+			const signal = this.#visitAbort.signal;
+			if (this.#stopped || signal.aborted) return;
 			request.repeat = false;
 			const known = store.get();
 			// A conversation read for the first time is read in full.
@@ -3076,12 +3114,12 @@ export class CompanyController {
 			let hasEarlier: boolean | undefined;
 			// A failed read ends the others at their next page.
 			let failed = false;
-			const live = () => !this.#stopped && !failed;
+			const live = () => !this.#stopped && !signal.aborted && !failed;
 			// The history after `from`, page by page, oldest first.
 			const readForward = async (from: number): Promise<boolean> => {
 				let after = from;
 				for (;;) {
-					const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE, this.signal);
+					const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE, signal);
 					if (!live()) return false;
 					add(page);
 					if (page.length < EVENT_PAGE) return true;
@@ -3094,7 +3132,7 @@ export class CompanyController {
 				// A thread opens at its newest events; "Show earlier" reads further back (loadEarlier).
 				if (!known.events.length && !this.#tailMissing) {
 					try {
-						const read = await this.#readTail(sessionId, [], undefined, live);
+						const read = await this.#readTail(sessionId, [], undefined, live, signal);
 						if (!read) return false;
 						add(read.events);
 						hasEarlier = read.hasEarlier;
@@ -3113,7 +3151,7 @@ export class CompanyController {
 				const pending: PendingSessionInput[] = [];
 				let position = 0;
 				for (;;) {
-					const page = await this.#api.listSessionInputs(sessionId, position, 100, this.signal);
+					const page = await this.#api.listSessionInputs(sessionId, position, 100, signal);
 					if (!live()) return undefined;
 					pending.push(...page.items);
 					if (!page.hasMore) return pending;
@@ -3138,22 +3176,20 @@ export class CompanyController {
 					// The listing is optional: a cloud without Order 9 answers with a missing
 					// RPC, and a refused or failed listing keeps what the thread already shows.
 					full
-						? this.#api.listCodingSessions(sessionId, this.signal).catch(() => undefined)
+						? this.#api.listCodingSessions(sessionId, signal).catch(() => undefined)
 						: Promise.resolve(undefined),
 					// So are the proposals: a company not on folder-v2 refuses, a cloud before P40c has no RPC.
 					full && agent?.staffAgentId
-						? this.#api
-								.listAgentProposals(agent.environmentId, agent.staffAgentId, this.signal)
-								.catch(() => undefined)
+						? this.#api.listAgentProposals(agent.environmentId, agent.staffAgentId, signal).catch(() => undefined)
 						: Promise.resolve(undefined),
 					// An erase rewrites an event the thread may have read already. A failed read keeps the generation the
 					// events reflect, and the next full read asks again.
 					full
-						? this.#api.readSessionMemoryGeneration(sessionId, this.signal).catch(() => undefined)
+						? this.#api.readSessionMemoryGeneration(sessionId, signal).catch(() => undefined)
 						: Promise.resolve(undefined),
 				]);
 				const pending = full ? read : store.get().pending;
-				if (this.#stopped || !complete || !pending) return;
+				if (this.#stopped || signal.aborted || !complete || !pending) return;
 				const reflected = store.get().memoryGeneration;
 				// WHY: Cold open just fetched the current transcript; only re-read when previously cached events may predate an erase.
 				const hadEvents = known.events.length > 0;
@@ -3173,7 +3209,13 @@ export class CompanyController {
 					const seen = readBack ?? new Set<string>();
 					if (!readBack) this.#readBackFor.set(sessionId, seen);
 					for (const input of taken) seen.add(input.inputId);
-					const read = await this.#readTail(sessionId, merged, taken, () => !this.#stopped);
+					const read = await this.#readTail(
+						sessionId,
+						merged,
+						taken,
+						() => !this.#stopped && !signal.aborted,
+						signal,
+					);
 					if (!read) return;
 					// "Show earlier" may have landed meanwhile, and reached further back.
 					merged = mergeEvents(store.get().events, read.events);
@@ -3248,7 +3290,7 @@ export class CompanyController {
 				}
 			} catch (error) {
 				failed = true;
-				if (this.#stopped) return;
+				if (this.#stopped || signal.aborted) return;
 				// The history read before the failure stays, so the next read resumes after it, and so do erased copies.
 				// The generation the events reflect stays as it was: a failed read of them again is repeated.
 				const merged = current();
@@ -3269,7 +3311,7 @@ export class CompanyController {
 				store.set({ ...read, loading: false, complete: false, error: describeError(error) });
 				return;
 			}
-		} while (request.repeat && !this.#stopped);
+		} while (request.repeat && !this.#stopped && !this.#suspended);
 	}
 
 	/** Reads a transcript back from the oldest event in `loaded` (from its end when empty), a page
@@ -3280,6 +3322,7 @@ export class CompanyController {
 		loaded: readonly HostedSessionEvent[],
 		pending: readonly PendingSessionInput[] | undefined,
 		live: () => boolean,
+		signal: AbortSignal = this.#visitAbort.signal,
 	): Promise<{ events: HostedSessionEvent[]; hasEarlier: boolean } | undefined> {
 		let older: HostedSessionEvent[] = [];
 		const loadedInputIds = pending
@@ -3289,7 +3332,7 @@ export class CompanyController {
 		let hasEarlier = true;
 		for (let page = 0; page < TAIL_PAGES && hasEarlier; page++) {
 			const before = older[0]?.sequence ?? loaded[0]?.sequence;
-			const read = await this.#api.readSessionEventsTail(sessionId, before, TAIL_PAGE, this.signal);
+			const read = await this.#api.readSessionEventsTail(sessionId, before, TAIL_PAGE, signal);
 			if (!live()) return undefined;
 			if (read.length)
 				older = older.length ? mergeEvents(read, older) : [...read].sort((a, b) => a.sequence - b.sequence);
@@ -3310,10 +3353,17 @@ export class CompanyController {
 	async loadEarlier(sessionId: string): Promise<void> {
 		const store = this.conversations.get(sessionId);
 		const state = store?.get();
-		if (!store || !state?.hasEarlier || state.earlierLoading || this.#stopped) return;
+		if (!store || !state?.hasEarlier || state.earlierLoading || this.#stopped || this.#suspended) return;
+		const signal = this.#visitAbort.signal;
 		store.set({ earlierLoading: true, earlierError: undefined });
 		try {
-			const read = await this.#readTail(sessionId, state.events, undefined, () => !this.#stopped);
+			const read = await this.#readTail(
+				sessionId,
+				state.events,
+				undefined,
+				() => !this.#stopped && !signal.aborted,
+				signal,
+			);
 			if (!read) return;
 			// A read of new events that landed meanwhile keeps them; a read-back that went further
 			// back meanwhile keeps its start.
@@ -3332,7 +3382,12 @@ export class CompanyController {
 				...(current.memoryGeneration === state.memoryGeneration ? {} : { memoryGeneration: undefined }),
 			});
 		} catch (error) {
-			if (!this.#stopped) store.set({ earlierLoading: false, earlierError: describeError(error) });
+			if (this.#stopped) return;
+			if (signal.aborted) {
+				store.set({ earlierLoading: false });
+				return;
+			}
+			store.set({ earlierLoading: false, earlierError: describeError(error) });
 		}
 	}
 
@@ -3346,9 +3401,11 @@ export class CompanyController {
 	/** The thread's sessions read again, for the header's figures while one is still going. */
 	async refreshCodingSessions(sessionId: string): Promise<void> {
 		const store = this.conversations.get(sessionId);
-		if (!store || this.#stopped) return;
-		const listed = await this.#api.listCodingSessions(sessionId, this.signal);
-		if (!this.#stopped) store.set({ codingSessions: newerCodingSessions(listed, store.get().codingSessions) });
+		if (!store || this.#stopped || this.#suspended) return;
+		const signal = this.#visitAbort.signal;
+		const listed = await this.#api.listCodingSessions(sessionId, signal);
+		if (!this.#stopped && !signal.aborted)
+			store.set({ codingSessions: newerCodingSessions(listed, store.get().codingSessions) });
 	}
 
 	async answerCodingSession(
