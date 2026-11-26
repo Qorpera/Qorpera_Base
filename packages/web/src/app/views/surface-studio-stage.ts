@@ -17,9 +17,11 @@ import {
 	easeOutCubic,
 	type StudioModelSource,
 	type StudioObjectPart,
+	type StudioStageBounds,
 	type StudioVec3,
 	sameStudioModel,
 	shortestTurn,
+	stageCameraDistance,
 	studioColorHex,
 	tintedMaterials,
 } from "./surface-studio-model.ts";
@@ -66,6 +68,8 @@ interface StageShown {
 	readonly root: ThreeObject3D;
 	readonly parts: readonly StagePart[];
 	readonly tints: readonly StageTint[];
+	readonly whole: StudioStageBounds;
+	readonly apart: StudioStageBounds;
 }
 
 interface StageMotion {
@@ -347,12 +351,20 @@ export class StudioModelStage {
 		const extent = box.getSize(new three.Vector3());
 		const span = Math.max(extent.x, extent.y, extent.z, 1e-6);
 		const parts: StagePart[] = [];
+		const apartMin = { x: box.min.x, y: box.min.y, z: box.min.z };
+		const apartMax = { x: box.max.x, y: box.max.y, z: box.max.z };
 		for (const { object, pull } of movableParts(model, source.object?.parts ?? [])) {
 			const parent = object.parent;
 			if (!parent) continue;
 			const partBox = new three.Box3().setFromObject(object);
 			if (partBox.isEmpty()) continue;
 			const offset = apartOffset(partBox, centre, span, pull);
+			apartMin.x = Math.min(apartMin.x, partBox.min.x + offset.x);
+			apartMin.y = Math.min(apartMin.y, partBox.min.y + offset.y);
+			apartMin.z = Math.min(apartMin.z, partBox.min.z + offset.z);
+			apartMax.x = Math.max(apartMax.x, partBox.max.x + offset.x);
+			apartMax.y = Math.max(apartMax.y, partBox.max.y + offset.y);
+			apartMax.z = Math.max(apartMax.z, partBox.max.z + offset.z);
 			const origin = object.getWorldPosition(new three.Vector3());
 			const target = parent.worldToLocal(
 				new three.Vector3(origin.x + offset.x, origin.y + offset.y, origin.z + offset.z),
@@ -386,12 +398,26 @@ export class StudioModelStage {
 			}
 		}
 		const scale = MODEL_SPAN / span;
+		const whole: StudioStageBounds = {
+			half: { x: (extent.x * scale) / 2, y: (extent.y * scale) / 2, z: (extent.z * scale) / 2 },
+			centerY: 0,
+		};
+		const apartMinY = (apartMin.y - centre.y) * scale;
+		const apartMaxY = (apartMax.y - centre.y) * scale;
+		const apart: StudioStageBounds = {
+			half: {
+				x: Math.max(Math.abs(apartMin.x - centre.x), Math.abs(apartMax.x - centre.x)) * scale,
+				y: (apartMaxY - apartMinY) / 2,
+				z: Math.max(Math.abs(apartMin.z - centre.z), Math.abs(apartMax.z - centre.z)) * scale,
+			},
+			centerY: (apartMinY + apartMaxY) / 2,
+		};
 		const holder = new three.Group();
 		holder.add(model);
 		holder.scale.set(scale, scale, scale);
 		holder.position.set(-centre.x * scale, -centre.y * scale, -centre.z * scale);
 		gl.spin.add(holder);
-		this.#shown = { root: holder, parts, tints };
+		this.#shown = { root: holder, parts, tints, whole, apart };
 		this.#drawControls();
 		this.el.classList.add("is-ready");
 		if (!this.#reducedMotion()) {
@@ -628,11 +654,14 @@ export class StudioModelStage {
 
 	#place(camera: ThreeCamera): void {
 		const aspect = this.#width / Math.max(1, this.#height);
-		const half = Math.tan((FOV * DEG) / 2);
-		const whole = Math.max(0.9, 1.72 / aspect);
-		const apart = Math.max(1.02, 2.5 / aspect);
-		const distance = lerp(whole, apart, this.#apart) / half;
-		camera.position.set(0, distance * Math.sin(this.#pitch), distance * Math.cos(this.#pitch));
-		camera.lookAt(0, 0, 0);
+		const shown = this.#shown;
+		const whole = shown?.whole ?? { half: { x: MODEL_SPAN / 2, y: MODEL_SPAN / 2, z: MODEL_SPAN / 2 }, centerY: 0 };
+		const apart = shown?.apart ?? whole;
+		const wholeDistance = stageCameraDistance(whole.half, aspect, this.#pitch, FOV);
+		const apartDistance = stageCameraDistance(apart.half, aspect, this.#pitch, FOV, 1.2);
+		const distance = lerp(wholeDistance, apartDistance, this.#apart);
+		const targetY = lerp(whole.centerY, apart.centerY, this.#apart);
+		camera.position.set(0, targetY + distance * Math.sin(this.#pitch), distance * Math.cos(this.#pitch));
+		camera.lookAt(0, targetY, 0);
 	}
 }

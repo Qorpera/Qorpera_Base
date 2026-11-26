@@ -25,6 +25,11 @@ export interface StudioVec3 {
 	readonly z: number;
 }
 
+export interface StudioStageBounds {
+	readonly half: StudioVec3;
+	readonly centerY: number;
+}
+
 const MAX_PARTS = 12;
 const MAX_TINT = 12;
 export const APART_DISTANCE = 0.32;
@@ -188,6 +193,33 @@ export function shortestTurn(from: number, to: number): number {
 	if (delta > Math.PI) delta -= turn;
 	if (delta < -Math.PI) delta += turn;
 	return from + delta;
+}
+
+export function stageCameraDistance(
+	half: StudioVec3,
+	aspect: number,
+	pitchRad: number,
+	fovDeg: number,
+	margin = 1.15,
+): number {
+	const safeAspect = Number.isFinite(aspect) && aspect > 0 ? Math.max(0.25, aspect) : 1;
+	const safeFov = Number.isFinite(fovDeg) && fovDeg > 1 && fovDeg < 170 ? fovDeg : 24;
+	const tanV = Math.tan((safeFov * Math.PI) / 360);
+	const tanH = tanV * safeAspect;
+	const hx = Number.isFinite(half.x) && half.x > 0 ? half.x : 0;
+	const hy = Number.isFinite(half.y) && half.y > 0 ? half.y : 0;
+	const hz = Number.isFinite(half.z) && half.z > 0 ? half.z : 0;
+	const radiusXZ = Math.max(0.15, Math.min(Math.hypot(hx, hz), Math.max(hx, hz) * 1.12));
+	const halfY = Math.max(0.1, hy);
+	const p = Number.isFinite(pitchRad) ? Math.abs(pitchRad) : 0;
+	const cosP = Math.cos(p);
+	const sinP = Math.sin(p);
+	const projectedY = halfY * cosP + radiusXZ * sinP;
+	const verticalFront = Math.max(0, radiusXZ * cosP - halfY * sinP);
+	const horizontalFront = halfY * sinP;
+	const distV = (projectedY * margin) / tanV + verticalFront;
+	const distH = Math.hypot((radiusXZ * margin) / tanH, radiusXZ * cosP) + horizontalFront;
+	return Math.max(1.2, distV, distH);
 }
 
 function channelHex(value: number): string {

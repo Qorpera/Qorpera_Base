@@ -24,7 +24,13 @@ export function prepareTitle(block: SurfaceTitleBlock, ctx: SurfaceBlockContext)
 							ownName ? formatScalar(name.value) : ctx.surface.title,
 						),
 						lineText
-							? h("p", { class: `studio-product-line${ownLine && line.changed ? " is-changed" : ""}` }, lineText)
+							? h(
+									"p",
+									{
+										class: `studio-product-line${ownLine ? "" : " is-brief"}${ownLine && line.changed ? " is-changed" : ""}`,
+									},
+									lineText,
+								)
 							: h("p", { class: "studio-product-line is-empty" }, t("One line about what it is")),
 					),
 			},
