@@ -8,20 +8,75 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929028399_runtime_bundle_activation_v283.sql";
-const activationVersion = 283;
-const previousActivationVersion = 282;
-const previousActivationSha256 = "c8e468a4259d98372ee4535002f910a9988168b5e28b33a5a8e310c2331b56fc";
+const activation = "supabase/migrations/20260929028499_runtime_bundle_activation_v284.sql";
+const activationVersion = 284;
+const previousActivationVersion = 283;
+const previousActivationSha256 = "a56a9fc116035f87b5a125e0e1452118e08dfd84d9b6e2e90ca5fc6fd49ff67e";
 const activationRequires = Object.freeze([
 	[
-		"20260930900000_surface_discard_worktree_cleanup",
-		"#2370 (discarded code_repo worktree cleanup): bundle 283 pairs with qorpera_surface_complete_cleanup and qorpera_surface_lock_coding_workers_for_sessions",
-		"to_regprocedure('public.qorpera_surface_complete_cleanup(uuid,text,text,uuid)') is not null and to_regprocedure('public.qorpera_surface_lock_coding_workers_for_sessions(uuid[])') is not null",
+		"20260930902000_surface_discard_agent_awareness",
+		"#2381 (surface discard awareness): bundle 284 pairs with resolvedChanges turn-read payload",
+		"strpos(pg_get_functiondef('public.qorpera_native_surface_read_session_turn(uuid)'::regprocedure), '''resolvedChanges''') > 0",
 	],
 	[
-		"20260930901000_surface_update_change_in_place",
-		"#2365 (surface update change in place): bundle 283 pairs with qorpera_surface_reply_target_change_id and 14/16-arg change recording signatures",
-		"to_regprocedure('public.qorpera_surface_reply_target_change_id(uuid)') is not null and to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid)') is not null and to_regprocedure('public.qorpera_native_surface_record_change(uuid,uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,uuid,text,text,uuid)') is not null",
+		"20260930903000_image_generation_gemini_and_gpt",
+		"#2386 (Gemini and ChatGPT image generation): bundle 284 pairs with qorpera_bundle_supports_image_model and qorpera_resolve_member_image_preference",
+		"to_regprocedure('public.qorpera_bundle_supports_image_model(uuid)') is not null and to_regprocedure('public.qorpera_resolve_member_image_preference(uuid,uuid)') is not null",
+	],
+	[
+		"20260930904000_company_logo_identity_source",
+		"#2392 (company logo identity source): bundle 284 pairs with qorpera_company_logo_source_entry",
+		"to_regprocedure('public.qorpera_company_logo_source_entry(uuid)') is not null",
+	],
+	[
+		"20260930904500_activity_hints_and_queued_wakes",
+		"#2390/#2395 (activity hints and queued wakes): bundle 284 pairs with qorpera_activity_hint",
+		"to_regprocedure('public.qorpera_activity_hint()') is not null",
+	],
+	[
+		"20260930905000_instant_founding_hiring_and_wakes",
+		"#2396 (instant founding, hiring, and zero-idle wakes): bundle 284 pairs with 3-arg qorpera_open_company_founding",
+		"to_regprocedure('public.qorpera_open_company_founding(uuid,text,text)') is not null",
+	],
+	[
+		"20260930906000_inline_room_post_materialization",
+		"#2398 (inline room post materialization): bundle 284 pairs with qorpera_folder_materialize_room_wakes_inline",
+		"to_regprocedure('public.qorpera_folder_materialize_room_wakes_inline(uuid,uuid,uuid,uuid[])') is not null",
+	],
+	[
+		"20260930907000_pg_lock_relief_and_plpgsql_hot_paths",
+		"#2399 (PG lock relief and PL/pgSQL hot paths): bundle 284 pairs with qorpera_list_company_foundings",
+		"to_regprocedure('public.qorpera_list_company_foundings()') is not null",
+	],
+	[
+		"20260930908000_coding_channel_authority",
+		"#2401 (coding channel authority): bundle 284 pairs with qorpera_authorize_coding_channel",
+		"to_regprocedure('public.qorpera_authorize_coding_channel(jsonb,jsonb,text)') is not null",
+	],
+	[
+		"20260930909000_coding_sessions_claude_and_defaults",
+		"#2402 (Claude coding sessions and defaults): bundle 284 pairs with qorpera_coding_claude_driver_ready",
+		"to_regprocedure('public.qorpera_coding_claude_driver_ready()') is not null",
+	],
+	[
+		"20260930910000_surface_studio_ops_coding_sessions",
+		"#2407 (Studio and Ops surface coding sessions): bundle 284 pairs with qorpera_surface_studio_ops_coding_ready",
+		"to_regprocedure('public.qorpera_surface_studio_ops_coding_ready()') is not null",
+	],
+	[
+		"20260930911000_strategy_surface",
+		"#2400 (Strategy Studio and Custom Surfaces): bundle 284 pairs with strategy surface kind constraint",
+		"exists (select 1 from pg_constraint where conrelid = 'public.qorpera_surfaces'::regclass and pg_get_constraintdef(oid) like '%strategy%')",
+	],
+	[
+		"20260930912000_coding_interfaces_context_and_tools",
+		"#2410 (live Company Interfaces manifest and cross-company coding tools): bundle 284 pairs with qorpera_native_list_company_interfaces",
+		"to_regprocedure('public.qorpera_native_list_company_interfaces(jsonb)') is not null",
+	],
+	[
+		"20260930913000_studio_inspect_and_draw_tools",
+		"#2411 (Studio visual inspect and draw tools): bundle 284 pairs with compose_surface_layout in qorpera_begin_native_coding_execution",
+		"strpos(pg_get_functiondef('public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)'::regprocedure), 'compose_surface_layout') > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
