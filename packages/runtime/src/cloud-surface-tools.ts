@@ -181,6 +181,13 @@ export interface StartSurfaceSessionToolRequest {
 	readonly variantLabels?: readonly string[] | null;
 }
 
+export interface SteerSurfaceSessionRequest {
+	readonly sessionId: string;
+	readonly message: string;
+	readonly changeId: string | null;
+	readonly originLabel?: string | null;
+}
+
 export interface StageSurfacePatchRequest {
 	readonly title: string;
 	readonly summary: string;
@@ -247,6 +254,10 @@ export interface CloudSurfaceToolsPort {
 		request: StartSurfaceSessionToolRequest,
 		context: CloudToolContext,
 	): Promise<{ readonly sessionId: string; readonly explorationId: string | null }>;
+	steerSurfaceSession?(
+		request: SteerSurfaceSessionRequest,
+		context: CloudToolContext,
+	): Promise<{ readonly sessionId: string; readonly state: string }>;
 	stageSurfacePatch?: SurfacePatchToolPort["stageSurfacePatch"];
 	stageSurfaceOpsAction?: SurfaceOpsActionToolPort["stageSurfaceOpsAction"];
 	listSurfaceSenses?(companyId: string, signal?: AbortSignal): Promise<SurfaceCompanySenses>;
@@ -256,6 +267,7 @@ export interface CloudSurfaceToolsPort {
 export type SurfaceControlPlaneRpc =
 	| "qorpera_native_surface_propose"
 	| "qorpera_native_surface_start_session"
+	| "qorpera_native_surface_steer_session"
 	| "qorpera_native_surface_record_change"
 	| "qorpera_native_surface_read_session_turn"
 	| "qorpera_native_surface_renew_lease"
@@ -730,6 +742,25 @@ export function createControlPlaneSurfaceToolsPort(
 					row.explorationId === null || row.explorationId === undefined
 						? null
 						: parseUuid(row.explorationId, "startSurfaceSession.explorationId"),
+			};
+		},
+
+		async steerSurfaceSession(request, context) {
+			const response = await rpc(
+				"qorpera_native_surface_steer_session",
+				{
+					p_profile_id: context.companyId,
+					p_session_id: request.sessionId,
+					p_message: request.message,
+					p_origin_label: request.originLabel ?? options.defaultOriginLabel ?? "Co-Founder",
+					...(request.changeId ? { p_change_id: request.changeId } : {}),
+				},
+				context.signal,
+			);
+			const row = parseRecord(response, "steerSurfaceSession");
+			return {
+				sessionId: parseUuid(row.id ?? row.sessionId ?? request.sessionId, "steerSurfaceSession.sessionId"),
+				state: typeof row.state === "string" ? row.state : "queued",
 			};
 		},
 
@@ -1313,6 +1344,61 @@ export function createStartSurfaceSessionTool(
 					schema: "qorpera.surface-session-started/v1",
 					sessionId: result.sessionId,
 					explorationId: result.explorationId,
+				}),
+			};
+		},
+	};
+}
+
+export function createSteerSurfaceSessionTool(port: {
+	steerSurfaceSession: NonNullable<CloudSurfaceToolsPort["steerSurfaceSession"]>;
+}): CloudNativeTool {
+	return {
+		name: "steer_surface_session",
+		source: "runtime",
+		description:
+			"Send steering direction or unblock a paused, conflicted, or failed Surface session and re-queue its next turn. Use when answering a Surface escalation directly or relaying the founder's decision.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["sessionId", "message"],
+			properties: {
+				sessionId: { type: "string" },
+				message: { type: "string", minLength: 1, maxLength: SURFACE_MAX_PROMPT_CHARS },
+				changeId: { type: "string" },
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(value, "steer_surface_session", ["sessionId", "message"], ["changeId"]);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			if (!isUuid(raw.sessionId)) throw new CloudToolArgumentRefusal("sessionId must be a valid UUID");
+			let message: string;
+			try {
+				message = parseBoundedText(raw.message, "message", SURFACE_MAX_PROMPT_CHARS).trim();
+			} catch {
+				throw new CloudToolArgumentRefusal(`message must be 1..${SURFACE_MAX_PROMPT_CHARS} characters`);
+			}
+			if (!message) throw new CloudToolArgumentRefusal("message must not be blank");
+			let changeId: string | null = null;
+			if (raw.changeId !== undefined && raw.changeId !== null) {
+				if (!isUuid(raw.changeId)) throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
+				changeId = raw.changeId;
+			}
+			return { sessionId: raw.sessionId, message, changeId };
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as SteerSurfaceSessionRequest;
+			const result = await port.steerSurfaceSession(parsed, context);
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-session-steered/v1",
+					sessionId: result.sessionId,
+					state: result.state,
 				}),
 			};
 		},

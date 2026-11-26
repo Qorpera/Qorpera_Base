@@ -116,6 +116,7 @@ export class SettingsView {
 	/** General: the account's settings, then how the app looks. */
 	readonly #accountPanel = h("div");
 	readonly #myGoodWillSlot = h("div");
+	readonly #accountHealthHost: HTMLElement | undefined;
 	#feedback: TeamFeedback = {};
 
 	constructor(
@@ -128,6 +129,7 @@ export class SettingsView {
 		companyRemoved: (profileId: string) => void,
 		tab: SettingsTab = "general",
 		openFriends: () => void = () => {},
+		accountHealthHost?: HTMLElement,
 	) {
 		this.#api = api;
 		this.#hub = hub;
@@ -136,6 +138,7 @@ export class SettingsView {
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#openFriends = openFriends;
+		this.#accountHealthHost = accountHealthHost;
 		this.#borrowedCompany = company;
 		const route = currentRoute();
 		this.#overCompany = Boolean(company) || route.name === "company";
@@ -516,7 +519,17 @@ export class SettingsView {
 	#general(): void {
 		if (this.#lifetime.signal.aborted) return;
 		if (!this.#panels.has("general"))
-			this.#panels.set("general", h("div", null, this.#accountPanel, renderAppearance(), this.#myGoodWillSlot));
+			this.#panels.set(
+				"general",
+				h(
+					"div",
+					null,
+					...(this.#accountHealthHost ? [this.#accountHealthHost] : []),
+					this.#accountPanel,
+					renderAppearance(),
+					this.#myGoodWillSlot,
+				),
+			);
 		renderAccount(this.#auth, this.#accountPanel, this.#account, (next) => {
 			if (this.#lifetime.signal.aborted) return;
 			this.#account = { ...this.#account, ...next };

@@ -1,5 +1,4 @@
 import { withAbortScopes } from "../../cloud/abort-scope.ts";
-import type { CloudApi } from "../../cloud/api.ts";
 import { formatUsdCents, formatUsdMicrodollars } from "../../cloud/gemini-key.ts";
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
 import {
@@ -15,8 +14,6 @@ import { t } from "../../ui/preferences.ts";
 import { goodWillName, kroner, monthName } from "./good-will-format.ts";
 
 type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
-/** A worker's own run, which has no conversation: the notice line offers its Stop (gap 4b). */
-export type WorkerRuns = Pick<CloudApi, "workerRunControl" | "stopWorkerRun">;
 /** What the band needs to ask a ChatGPT plan's member to turn on work while away (Sign in with ChatGPT). */
 export interface PlanOffer {
 	native: Pick<WebNativeSubscription, "listConnections"> &
@@ -110,59 +107,18 @@ function sentence(
 			return t("{member} left the company, so the agents in {area} have no supervisor.", { member, area });
 		}
 		case "qorpera.member-notification.run-no-progress/v1":
-			return t("{agent} has made no progress for {minutes} minutes.", {
-				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
-				minutes: subject.minutes,
-			});
+			return undefined;
 		case "qorpera.member-notification.provider-usage-limit/v1": {
-			// The member whose own login it is reads one line: the work waits on that login and goes on by itself
-			// (20260930575000; a run that can resume waits too, 20260930703000). Older notices, and a company account's, get
-			// none: the run's card tells of the limit.
-			if (subject.accountEmail === undefined) return undefined;
+			if (subject.accountEmail === undefined || !subject.runStopped) return undefined;
 			const account = subject.accountEmail;
-			// Its run could not wait (or was stopped): that work does not go on by itself (20260930703000). Its card in the
-			// agent's thread says how to continue it.
-			if (subject.runStopped)
-				return account
-					? t(
-							"Your login {account} reached its usage limit, and the work it paid for stopped. It does not go on by itself.",
-							{
-								account,
-							},
-						)
-					: t(
-							"Your login reached its usage limit, and the work it paid for stopped. It does not go on by itself.",
-						);
-			const reset = Date.parse(subject.resetsAt ?? "");
-			const left = reset - Date.now();
-			if (Number.isFinite(reset) && left > 0) {
-				const minutes = Math.ceil(left / 60_000);
-				const time =
-					minutes < 60
-						? t("{count} min", { count: minutes })
-						: minutes < 48 * 60
-							? t("{count} h", { count: Math.round(minutes / 60) })
-							: t("{count} days", { count: Math.round(minutes / 1440) });
-				return account
-					? t(
-							"Your login {account} reached its usage limit. Work will go on by itself when it resets (about {time}).",
-							{
-								account,
-								time,
-							},
-						)
-					: t("Your login reached its usage limit. Work will go on by itself when it resets (about {time}).", {
-							time,
-						});
-			}
 			return account
 				? t(
-						"Your login {account} reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.",
-						{ account },
+						"Your login {account} reached its usage limit, and the work it paid for stopped. It does not go on by itself.",
+						{
+							account,
+						},
 					)
-				: t(
-						"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.",
-					);
+				: t("Your login reached its usage limit, and the work it paid for stopped. It does not go on by itself.");
 		}
 		case "qorpera.member-notification.good-will-card-failed/v1":
 			// The month's good will invoice could not charge the card (20260930571000); Stripe tries again.
@@ -193,7 +149,7 @@ function sentence(
 				},
 			);
 		case "qorpera.member-notification.machine-capacity/v1":
-			return t("All {count} company computers are in use. Close one to open another.", { count: subject.ceiling });
+			return undefined;
 		case "routine-needs-model-account":
 			// Only a ChatGPT plan's member is asked, once, by the plan card below.
 			return undefined;
@@ -216,14 +172,10 @@ export class ExecutionNotices {
 	readonly #restoreFocus: (() => void) | undefined;
 	readonly #plan: PlanOffer | undefined;
 	readonly #agentName: ((staffAgentId: string) => string | undefined) | undefined;
-	readonly #workerRuns: WorkerRuns | undefined;
 	/** A member's name, for who moved a routine off this member's login. */
 	readonly #memberName: ((userId: string) => string | undefined) | undefined;
-	/** Per notice of a worker's run: whether this member may stop it, once read. */
-	readonly #stoppable = new Map<string, boolean>();
-	#stopping = false;
-	/** Notices whose Stop failed: the line says so and keeps the button. */
-	readonly #stopFailed = new Set<string>();
+	readonly #onCountChange: ((count: number) => void) | undefined;
+	#lastCount = 0;
 	#items: readonly MemberNotification[] = [];
 	#offer: Offer | undefined;
 	/** Plans whose card this window showed (and recorded): it stays until answered here. */
@@ -250,15 +202,15 @@ export class ExecutionNotices {
 		restoreFocus?: () => void,
 		plan?: PlanOffer,
 		agentName?: (staffAgentId: string) => string | undefined,
-		workerRuns?: WorkerRuns,
 		memberName?: (userId: string) => string | undefined,
+		onCountChange?: (count: number) => void,
 	) {
 		this.#client = client;
 		this.#restoreFocus = restoreFocus;
 		this.#plan = plan;
 		this.#agentName = agentName;
-		this.#workerRuns = workerRuns;
 		this.#memberName = memberName;
+		this.#onCountChange = onCountChange;
 		if (signal.aborted) {
 			this.dispose();
 			return;
@@ -279,6 +231,22 @@ export class ExecutionNotices {
 		void this.refresh();
 	}
 
+	get count(): number {
+		const visibleItems = this.#items.filter((entry) => !this.#hidden.has(entry.notificationId)).length;
+		return visibleItems + (this.#offer ? 1 : 0);
+	}
+
+	reveal(): void {
+		if (!this.#lifetime.signal.aborted && this.#offer) this.#drawOffer(this.#offer);
+	}
+
+	#notifyCount(): void {
+		const next = this.count;
+		if (next === this.#lastCount) return;
+		this.#lastCount = next;
+		this.#onCountChange?.(next);
+	}
+
 	async refresh(): Promise<void> {
 		if (
 			this.#lifetime.signal.aborted ||
@@ -295,17 +263,12 @@ export class ExecutionNotices {
 				const items = await this.#client!.listNotifications(signal);
 				if (signal.aborted) return;
 				this.#items = told(items);
-				const [, offer] = await Promise.all([
-					this.#readStop(signal),
-					this.#offerDone
-						? Promise.resolve(this.#offer)
-						: this.#readOffer(items, signal).catch((error: unknown) => {
-								if (signal.aborted) throw error;
-								this.#offerChecked = "";
-								return undefined;
-							}),
-				]);
-				if (!this.#offerDone) this.#offer = offer;
+				if (!this.#offerDone)
+					this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
+						if (signal.aborted) throw error;
+						this.#offerChecked = "";
+						return undefined;
+					});
 			} catch {
 				if (signal.aborted) return;
 				// Nothing stale is shown, and nothing can be dismissed, until a read succeeds. A card shown
@@ -446,10 +409,9 @@ export class ExecutionNotices {
 		this.#draw();
 	}
 
-	/** Dismisses the shown notice, or the one a finished Stop names; nothing else while a Stop runs. */
-	async #acknowledge(stopped?: MemberNotification): Promise<void> {
-		if (this.#lifetime.signal.aborted || this.#acking || (this.#stopping && !stopped)) return;
-		const item = stopped ?? this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
+	async #acknowledge(): Promise<void> {
+		if (this.#lifetime.signal.aborted || this.#acking) return;
+		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
 		if (!item) return;
 		this.#request?.abort();
 		this.#request = undefined;
@@ -475,54 +437,6 @@ export class ExecutionNotices {
 		}
 	}
 
-	/** A shown notice of a worker's run asks once whether this member may stop it; a failed read offers nothing. */
-	async #readStop(signal: AbortSignal): Promise<void> {
-		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
-		const subject = item?.subject;
-		if (!item || !this.#workerRuns || subject?.schema !== "qorpera.member-notification.run-no-progress/v1") return;
-		if (!subject.worker || this.#stoppable.has(item.notificationId)) return;
-		const control = await this.#workerRuns.workerRunControl(subject.runId).catch(() => undefined);
-		// A failed read offers nothing now and is asked again at the next poll.
-		if (signal.aborted || !control) return;
-		this.#stoppable.set(item.notificationId, control.canCancel);
-	}
-
-	/** Stops the worker's run the shown notice names. Once stopped (or already ended), the notice is done. */
-	async #stop(): Promise<void> {
-		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
-		const subject = item?.subject;
-		if (
-			this.#lifetime.signal.aborted ||
-			this.#stopping ||
-			this.#acking ||
-			!item ||
-			!this.#workerRuns ||
-			subject?.schema !== "qorpera.member-notification.run-no-progress/v1"
-		)
-			return;
-		this.#stopping = true;
-		this.#stopFailed.delete(item.notificationId);
-		this.#draw();
-		let ended = false;
-		try {
-			const control = await this.#workerRuns.stopWorkerRun(subject.runId);
-			ended = control.status !== "queued" && control.status !== "leased";
-		} catch {
-			// Never replayed; the member may press Stop again.
-		}
-		if (this.#lifetime.signal.aborted) return;
-		if (ended) {
-			// The stopped notice itself, even if another one shows meanwhile.
-			await this.#acknowledge(item);
-			this.#stopping = false;
-			this.#draw();
-		} else {
-			this.#stopping = false;
-			this.#stopFailed.add(item.notificationId);
-			this.#draw();
-		}
-	}
-
 	#draw(): void {
 		if (this.#offer) {
 			this.#drawOffer(this.#offer);
@@ -530,10 +444,11 @@ export class ExecutionNotices {
 		}
 		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
 		const text = item && sentence(item, this.#agentName, this.#memberName);
-		const stoppable = item ? this.#stoppable.get(item.notificationId) === true : false;
-		const stopFailed = item ? this.#stopFailed.has(item.notificationId) : false;
-		const key = JSON.stringify([item?.notificationId, text, this.#acking, stoppable, this.#stopping, stopFailed]);
-		if (key === this.#drawn) return;
+		const key = JSON.stringify([item?.notificationId, text, this.#acking]);
+		if (key === this.#drawn) {
+			this.#notifyCount();
+			return;
+		}
 		const focused = this.el.contains(document.activeElement);
 		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
 		if (text) {
@@ -541,14 +456,7 @@ export class ExecutionNotices {
 				small: true,
 			});
 			dismiss.dataset.action = "dismiss-notification";
-			if (this.#acking || this.#stopping) dismiss.setAttribute("aria-disabled", "true");
-			// A worker's run has no conversation: its Stop is here, for a member who may stop it (gap 4b).
-			let stop: HTMLElement | null = null;
-			if (stoppable) {
-				stop = button(t("Stop"), (event) => event.detail < 2 && void this.#stop(), { small: true });
-				stop.dataset.action = "stop-worker-run";
-				if (this.#stopping || this.#acking) stop.setAttribute("aria-disabled", "true");
-			}
+			if (this.#acking) dismiss.setAttribute("aria-disabled", "true");
 			this.el.replaceChildren(
 				h(
 					"div",
@@ -576,10 +484,6 @@ export class ExecutionNotices {
 								t("Open the invoice"),
 							)
 						: null,
-					stopFailed
-						? h("p", { class: "company-notice-error" }, t("The work could not be stopped. Try again."))
-						: null,
-					stop,
 					dismiss,
 				),
 			);
@@ -593,6 +497,7 @@ export class ExecutionNotices {
 			else this.#restoreFocus?.();
 		}
 		this.#drawn = key;
+		this.#notifyCount();
 	}
 
 	/** The plan card, in the notice's shape: what waits, and Turn on or Not now. Showing it, on a page
@@ -617,7 +522,10 @@ export class ExecutionNotices {
 				.recordRoutineOffer(offer.plan.connectionId, this.#lifetime.signal)
 				.catch(() => undefined);
 		}
-		if (key === this.#drawn) return;
+		if (key === this.#drawn) {
+			this.#notifyCount();
+			return;
+		}
 		const focused = this.el.contains(document.activeElement);
 		const card = (text: (Node | string | null)[], ...actions: HTMLElement[]) =>
 			h(
@@ -671,6 +579,7 @@ export class ExecutionNotices {
 		this.el.hidden = false;
 		if (focused) this.el.querySelector<HTMLElement>("button[data-action]")?.focus({ preventScroll: true });
 		this.#drawn = key;
+		this.#notifyCount();
 	}
 
 	dispose(): void {
@@ -678,6 +587,8 @@ export class ExecutionNotices {
 		this.#request?.abort();
 		clearInterval(this.#timer);
 		this.#items = [];
+		this.#offer = undefined;
+		this.#notifyCount();
 		this.el.replaceChildren();
 		this.el.hidden = true;
 		this.el.remove();

@@ -86,14 +86,30 @@ describe("a surface's figure in the rail", () => {
 		vi.useRealTimers();
 	});
 
-	it("rests or works without error or question animations even when attention is needed, keeping screen-reader words", async () => {
+	it("rests or works without agent attention badges, keeping teammate publish-ask screen-reader words", async () => {
 		const surfaces = [
 			summary(),
 			summary({ id: "s-busy", slug: "shop", title: "Shop", runningSessionCount: 2 }),
 			summary({ id: "s-asks", slug: "mail", title: "Mail", runningSessionCount: 1, needsAttentionCount: 1 }),
-			summary({ id: "s-idle-asks", slug: "inbox", title: "Inbox", runningSessionCount: 0, needsAttentionCount: 1 }),
+			summary({
+				id: "s-idle-asks",
+				slug: "inbox",
+				title: "Inbox",
+				runningSessionCount: 0,
+				needsAttentionCount: 0,
+				publishAsk: {
+					askedByUserId: "99999999-9999-4999-8999-999999999999",
+					askedUserId: "11111111-1111-4111-8111-111111111111",
+					askedAt: "2026-11-26T10:00:00Z",
+					changeCount: 1,
+					status: "open",
+					answeredAt: null,
+				},
+			}),
 		];
-		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => surfaces) }));
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => surfaces) }), {
+			userId: "11111111-1111-4111-8111-111111111111",
+		});
 		await store.load();
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
@@ -109,7 +125,7 @@ describe("a surface's figure in the rail", () => {
 		expect(state("mail")).toContain("is-working");
 		expect(state("mail")).not.toContain("is-attention");
 		expect(row("mail").querySelector(".surface-figure-ask")).toBeNull();
-		expect(said("mail")).toBe("Needs your attention");
+		expect(said("mail")).toBe("Working");
 		expect(state("inbox")).toContain("is-rest");
 		expect(state("inbox")).not.toContain("is-attention");
 		expect(row("inbox").querySelector(".surface-figure-ask")).toBeNull();

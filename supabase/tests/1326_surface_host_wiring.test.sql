@@ -93,8 +93,8 @@ begin
 	values (v_company_b, v_other_owner, 'owner-shw-b@example.test', 'Owner B', 'owner');
 
 	perform pg_temp.shw_assert(
-		(select count(*) from public.qorpera_native_host_calls where name like 'qorpera_native_surface_%' and scope = 'profile') = 9,
-		'all 9 tenant-scoped native surface wrappers are registered in qorpera_native_host_calls with profile scope'
+		(select count(*) from public.qorpera_native_host_calls where name like 'qorpera_native_surface_%' and scope = 'profile') = 10,
+		'all 10 tenant-scoped native surface wrappers are registered in qorpera_native_host_calls with profile scope'
 	);
 
 	perform pg_temp.shw_as(v_owner);

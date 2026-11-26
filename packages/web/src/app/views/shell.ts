@@ -119,6 +119,7 @@ export interface ShellContext {
 	auth: AuthController;
 	/** Company invitations waiting for this account, for the menu's count. */
 	invitations: number;
+	accountAlerts?: number;
 	openSettings: (tab?: SettingsTab) => void;
 	openFeedback: () => void;
 	/** Friends, a window of its own beside the account (friends-window.ts). */
@@ -252,11 +253,13 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	accountContext = context;
 	const name = displayName(context.user);
+	const accountAlerts = context.accountAlerts ?? 0;
 	const shown = JSON.stringify([
 		name,
 		context.user?.id,
 		personPicturesEpoch(),
 		context.invitations,
+		accountAlerts,
 		Boolean(company),
 		presentationLocale(),
 	]);
@@ -294,12 +297,13 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 		accountTrigger!,
 		chip,
 		h("span", { class: "account-trigger-name" }, name),
+		accountAlerts > 0 ? h("span", { class: "account-health-dot", "aria-hidden": "true" }) : null,
 		company ? null : h("span", { class: "account-chevron", "aria-hidden": "true" }),
 	);
 	replace(
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
-		settingsItem("general", "settings", phrase("Account and settings")),
+		settingsItem("general", "settings", phrase("Account and settings"), accountAlerts),
 		h(
 			"button",
 			{
@@ -2301,7 +2305,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				const status: HTMLElement | string = running
 					? crewWave()
 					: session.state === "needs_input"
-						? t("Needs you")
+						? t("Paused")
 						: actions
 							? open > 1
 								? t("{count} actions ready", { count: open })

@@ -30,13 +30,10 @@ begin
 		from public.qorpera_runtime_observations where run_id = pg_temp.st_run()) then
 		raise exception 'A: an open tool call stalls from its last record: %', pg_temp.st_bob(); end if;
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'opened' <> '2' or pg_temp.st_open_notices()
-		<> '{"92400000-0000-4000-8000-000000000001": 1, "92400000-0000-4000-8000-000000000004": 1}' then
-		raise exception 'A: the owner and the admin are told: % %', v_sweep, pg_temp.st_open_notices(); end if;
+	if v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'A: stalled runs open no member notices: % %', v_sweep, pg_temp.st_open_notices(); end if;
 end $$;
 
--- B. A call made 5 minutes ago is no stall yet, the clock being the same for every record, and the sweep closes A's
--- notices.
 do $$
 declare v_sweep jsonb;
 begin
@@ -45,8 +42,8 @@ begin
 	perform pg_temp.st_observe('context_authority', 'finish', 5);
 	if pg_temp.st_bob() ? 'no_progress_since' then raise exception 'B: a 5-minute-old call is progress: %', pg_temp.st_bob(); end if;
 	v_sweep := pg_temp.st_sweep();
-	if v_sweep ->> 'closed' <> '2' or pg_temp.st_open_notices() <> '{}' then
-		raise exception 'B: progress closes the notices: % %', v_sweep, pg_temp.st_open_notices(); end if;
+	if v_sweep ->> 'opened' <> '0' or pg_temp.st_open_notices() <> '{}' then
+		raise exception 'B: progress keeps notices silent: % %', v_sweep, pg_temp.st_open_notices(); end if;
 end $$;
 
 do $$

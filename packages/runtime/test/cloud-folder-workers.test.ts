@@ -260,20 +260,21 @@ it.each<[string, Partial<CloudFolderWorkerChange>, Record<string, string>, strin
 	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
 });
 
-it("refuses a dispatch or a follow-up the automatic review did not approve", async () => {
+it("allows a dispatch and follow-up without an automatic review id", async () => {
 	const f = await fixture({ files: { [TODO]: todoText() } });
 	const { actionReviewId: _unused, ...unreviewed } = f.context;
-	await refuses(f.workers().change(DISPATCH, unreviewed), "automatic review's approval");
-	await refuses(
-		f
+	const dispatched = parse(await f.workers().change(DISPATCH, unreviewed));
+	expect(dispatched).toMatchObject({ action: "dispatch", outcome: "saved" });
+	const followed = parse(
+		await f
 			.workers()
 			.change(
 				{ action: "followup", operationKey: "f-1", todoKey: "market-scan", workerKey: "prices", text: "More." },
 				unreviewed,
 			),
-		"automatic review's approval",
 	);
-	expect(f.commits).toHaveLength(0);
+	expect(followed).toMatchObject({ action: "followup", outcome: "saved" });
+	expect(f.commits).toHaveLength(2);
 });
 
 it("dispatches a coding session: its brief names the harness and repository, and the database gets them (C3a/C3b)", async () => {

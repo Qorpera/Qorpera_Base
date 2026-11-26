@@ -503,10 +503,6 @@ export class CloudFolderRoutines {
 			}
 		}
 		const actionReviewId = context.actionReviewId;
-		if (!actionReviewId)
-			throw new CloudToolRefusal(
-				"A routine change needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
-			);
 		const units: CloudCompanyFolderUnit[] = [];
 		// The folder core never invents a parent folder.
 		if (!current && !(await this.#folder.read(this.#routines, signal)).entry)
@@ -552,18 +548,28 @@ export class CloudFolderRoutines {
 			// The folder core decides at the commit, under this call's receipt.
 			authorize: async () => {},
 			perform: async (_operation, { receiptId, signal: performSignal }) => {
-				const staged = await this.#folder.stage(units, performSignal);
-				const reviewId = await this.#folder.recordReview(
-					{ actionReviewId, tool: "manage_routine", argumentSha256: context.argumentSha256 },
-					staged,
-					performSignal,
-				);
-				const committed = await this.#folder.commitStaged(
-					`routine-file:${request.operationKey}`,
-					staged,
-					{ reviewId, receiptId },
-					performSignal,
-				);
+				let committed: Awaited<ReturnType<CloudCompanyFolderClient["commit"]>>;
+				if (actionReviewId) {
+					const staged = await this.#folder.stage(units, performSignal);
+					const reviewId = await this.#folder.recordReview(
+						{ actionReviewId, tool: "manage_routine", argumentSha256: context.argumentSha256 },
+						staged,
+						performSignal,
+					);
+					committed = await this.#folder.commitStaged(
+						`routine-file:${request.operationKey}`,
+						staged,
+						{ reviewId, receiptId },
+						performSignal,
+					);
+				} else {
+					committed = await this.#folder.commit(
+						`routine-file:${request.operationKey}`,
+						units,
+						{ receiptId },
+						performSignal,
+					);
+				}
 				const written = committed.units.at(-1);
 				if (!written) throw new Error("Company folder commit answered no unit");
 				const saved = written.outcome === "saved";

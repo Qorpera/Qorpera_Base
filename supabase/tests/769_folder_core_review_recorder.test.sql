@@ -84,14 +84,24 @@ end $$;
 
 -- 1. The run's own allow: recorded for the change set, used by the commit; a replay returns it; another change set is
 -- refused; a commit without it, with other units, or with another run's record is denied.
+create function pg_temp.del_agent_dir(p_name text) returns jsonb language sql as $$
+	select jsonb_build_object('op', 'delete', 'path', 'QorperaOS/agents/' || p_name,
+		'expectedVersion', pg_temp.read('QorperaOS/agents/' || p_name) -> 'entry' ->> 'version',
+		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020'))
+$$;
+do $$
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'recorder-agent-dirs',
+		'[{"op":"mkdir","path":"QorperaOS"},{"op":"mkdir","path":"QorperaOS/agents"}]'::jsonb
+		|| (select jsonb_agg(jsonb_build_object('op','mkdir','path','QorperaOS/agents/rr' || n)) from generate_series(1, 10) n)), 12, 'saved');
+end $$;
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; p jsonb := x -> 'actor'; v_action uuid; u jsonb; r jsonb;
 	v_row public.qorpera_folder_reviews%rowtype; c jsonb;
 begin
-	-- Without a record the delete is denied, as before.
-	perform pg_temp.expect(pg_temp.commit(p, 'recorder-none', jsonb_build_array(pg_temp.deletes('rr1.txt'))), 1, 'denied', 'review_required');
+	perform pg_temp.expect(pg_temp.commit(p, 'recorder-none', jsonb_build_array(pg_temp.del_agent_dir('rr1'))), 1, 'denied', 'review_required');
 	v_action := pg_temp.action(b, 'call-allow-1');
-	u := jsonb_build_array(pg_temp.deletes('rr1.txt'), jsonb_build_object('op', 'mkdir', 'path', 'rr-plain'));
+	u := jsonb_build_array(pg_temp.del_agent_dir('rr1'), jsonb_build_object('op', 'mkdir', 'path', 'rr-plain'));
 	r := pg_temp.record(b, v_action, u);
 	select * into v_row from public.qorpera_folder_reviews where id = (r ->> 'reviewId')::uuid;
 	if r - 'reviewId' <> jsonb_build_object('schema', 'qorpera.folder-review/v1', 'approvedBy', null, 'units', 2)
@@ -100,24 +110,21 @@ begin
 		or v_row.change_set_sha256 <> public.qorpera_folder_change_set_sha256(u) or v_row.units <> '{1,2}'
 		or v_row.decision <> 'allow' or v_row.answer is not null or v_row.answered_by_user_id is not null then
 		raise exception 'The recorded review: % %', r, to_jsonb(v_row); end if;
-	-- A replay of the same change set returns the same record; another change set is refused.
 	if pg_temp.record(b, v_action, u) <> r then raise exception 'A replay returns the same record'; end if;
-	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, jsonb_build_array(pg_temp.deletes('rr2.txt'))),
+	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, jsonb_build_array(pg_temp.del_agent_dir('rr2'))),
 		'23505', 'This approval was already used for another change');
 	if (select count(*) from public.qorpera_folder_reviews where run_id = (p ->> 'runId')::uuid) <> 1 then
 		raise exception 'One approval stands for one change set'; end if;
-	-- The commit with other units, or without the record, is denied; with it, both units save and the commit names it.
-	perform pg_temp.expect(pg_temp.commit(p, 'recorder-other-units', jsonb_build_array(pg_temp.deletes('rr2.txt')),
+	perform pg_temp.expect(pg_temp.commit(p, 'recorder-other-units', jsonb_build_array(pg_temp.del_agent_dir('rr2')),
 		(r ->> 'reviewId')::uuid), 1, 'denied', 'review_required');
 	c := pg_temp.commit(p, 'recorder-allow', u, (r ->> 'reviewId')::uuid);
 	perform pg_temp.expect(c, 1, 'saved');
 	perform pg_temp.expect(c, 2, 'saved');
-	if pg_temp.present('rr1.txt') or (select review_id from public.qorpera_folder_commits where id = (c ->> 'commitId')::uuid)
+	if pg_temp.present('QorperaOS/agents/rr1') or (select review_id from public.qorpera_folder_commits where id = (c ->> 'commitId')::uuid)
 			is distinct from (r ->> 'reviewId')::uuid then
 		raise exception 'The reviewed delete is saved with its review: %', c; end if;
-	-- Another run's record is denied in this run's commit.
 	x := pg_temp.agent_run();
-	u := jsonb_build_array(pg_temp.deletes('rr3.txt'));
+	u := jsonb_build_array(pg_temp.del_agent_dir('rr3'));
 	r := pg_temp.record(x -> 'binding', pg_temp.action(x -> 'binding', 'call-allow-2'), u);
 	if (r ->> 'reviewId')::uuid = v_row.id then raise exception 'Another approval has another record id'; end if;
 	perform pg_temp.expect(pg_temp.commit(p, 'recorder-other-run', u, (r ->> 'reviewId')::uuid), 1, 'denied', 'review_required');
@@ -133,10 +140,9 @@ begin
 	if (select decision from public.qorpera_action_reviews where id = v_action) <> 'ask'
 		or (select card_session_id from public.qorpera_action_reviews where id = v_action) is null then
 		raise exception 'The fixture ask raises a card'; end if;
-	u := jsonb_build_array(pg_temp.deletes('rr4.txt'));
+	u := jsonb_build_array(pg_temp.del_agent_dir('rr4'));
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', 'This change has no approval in this run');
 	perform pg_temp.answer(v_action);
-	-- Answered but not yet used by this run.
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', 'This change has no approval in this run');
 	w := public.qorpera_await_action_review(b, v_action, false);
 	if w ->> 'state' <> 'approved' then raise exception 'The holding call is approved: %', w; end if;
@@ -151,7 +157,6 @@ begin
 		is distinct from '63400000-0000-4000-8000-000000000002' then
 		raise exception 'The commit records the member who approved the card'; end if;
 
-	-- A parked card answered later: the woken run's begin uses it, so that run records it and the first cannot.
 	v_action := pg_temp.action(b, 'call-ask-2', 'ask');
 	perform public.qorpera_await_action_review(b, v_action, true);
 	perform pg_temp.answer(v_action, 'always_allow');
@@ -159,30 +164,27 @@ begin
 	w := public.qorpera_begin_action_review(y -> 'binding', jsonb_build_object('tool', 'hire_agent',
 		'argumentSha256', md5('call-ask-2') || md5('call-ask-2')));
 	if w ->> 'state' <> 'approved' or (w ->> 'reviewId')::uuid <> v_action then raise exception 'The woken run is approved: %', w; end if;
-	u := jsonb_build_array(pg_temp.deletes('rr5.txt'));
+	u := jsonb_build_array(pg_temp.del_agent_dir('rr5'));
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', 'This change has no approval in this run');
 	r := pg_temp.record(y -> 'binding', v_action, u);
 	perform pg_temp.expect(pg_temp.commit(y -> 'actor', 'recorder-woken', u, (r ->> 'reviewId')::uuid), 1, 'saved');
 
-	-- A card whose answering member was since deleted (on delete set null) is recorded as a plain allow.
 	v_action := pg_temp.action(b, 'call-ask-3', 'ask');
 	perform pg_temp.answer(v_action);
 	perform public.qorpera_await_action_review(b, v_action, false);
 	perform pg_temp.fx(format('update public.qorpera_action_reviews set answered_by_user_id = null where id = %L', v_action));
-	u := jsonb_build_array(pg_temp.deletes('rr7.txt'));
+	u := jsonb_build_array(pg_temp.del_agent_dir('rr7'));
 	r := pg_temp.record(b, v_action, u);
 	if r ->> 'approvedBy' is not null or (select decision from public.qorpera_folder_reviews where id = (r ->> 'reviewId')::uuid) <> 'allow' then
 		raise exception 'A card without its member is a plain allow: %', r; end if;
 	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-no-member', u, (r ->> 'reviewId')::uuid), 1, 'saved');
 end $$;
 
--- 3. What is never an approval here: a denial, an answered denial, another run's allow, another agent's, another
--- company's, an approved external action, and an id that names nothing.
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; y jsonb; v_action uuid; u jsonb; v_first jsonb; v_second jsonb;
 	c_refused constant text := 'This change has no approval in this run';
 begin
-	u := jsonb_build_array(pg_temp.deletes('rr6.txt'));
+	u := jsonb_build_array(pg_temp.del_agent_dir('rr6'));
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, pg_temp.action(b, 'call-deny-1', 'deny'), u), '42501', c_refused);
 	v_action := pg_temp.action(b, 'call-ask-deny', 'ask');
 	perform pg_temp.answer(v_action, 'deny');
@@ -220,7 +222,7 @@ begin
 			and run_id::text <> x -> 'actor' ->> 'runId') then
 		raise exception 'A refused recording writes nothing'; end if;
 	-- Two approvals of one change set are two records, and either serves the commit.
-	u := jsonb_build_array(pg_temp.deletes('rr8.txt'));
+	u := jsonb_build_array(pg_temp.del_agent_dir('rr8'));
 	v_first := pg_temp.record(b, pg_temp.action(b, 'call-twice-1'), u);
 	v_second := pg_temp.record(b, pg_temp.action(b, 'call-twice-2'), u);
 	if v_first ->> 'reviewId' = v_second ->> 'reviewId' then

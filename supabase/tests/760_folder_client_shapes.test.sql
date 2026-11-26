@@ -80,14 +80,13 @@ begin
 		jsonb_build_object('op','copy','from','notes/a.md','to','notes/c.md')));
 	if not (e ->> 'replay')::boolean or e -> 'units' <> r -> 'units' or e -> 'seq' <> r -> 'seq' then
 		raise exception 'A replay: %', e; end if;
-	-- A move. An in-house run's move is a deletion, denied without a review, and names its target even so; saved (as
-	-- the platform, which the same outcome code answers), it names its source and target; a missing source is a conflict.
 	r := public.qorpera_folder_commit(env, a, 'client-shape-move', jsonb_build_array(
-		jsonb_build_object('op','move','from','notes/c.md','to','notes/d.md','expectedVersion',
-			public.qorpera_folder_read(env, a, 'notes/c.md') -> 'entry' ->> 'version')));
+		jsonb_build_object('op','move','from','QorperaOS/agents/x','to','QorperaOS/agents/y','expectedVersion',
+			public.qorpera_folder_read(env, a, 'QorperaOS/agents/x') -> 'entry' ->> 'version',
+			'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = env))));
 	perform pg_temp.shape(r -> 'units' -> 0, 'op,outcome,path,reason,to,unit', 'a move that was not saved');
 	if r -> 'units' -> 0 ->> 'outcome' <> 'denied' or r -> 'units' -> 0 ->> 'reason' <> 'review_required' then
-		raise exception 'A run''s move: %', r; end if;
+		raise exception 'A run''s agent folder move: %', r; end if;
 	r := public.qorpera_folder_commit(env, '{"kind":"platform"}', 'client-shape-move-platform', jsonb_build_array(
 		jsonb_build_object('op','move','from','notes/c.md','to','notes/d.md','expectedVersion',
 			public.qorpera_folder_read(env, a, 'notes/c.md') -> 'entry' ->> 'version'),

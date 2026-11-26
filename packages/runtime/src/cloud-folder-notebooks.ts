@@ -170,8 +170,7 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 			if (operation === "delete" && changes.tool === "update_skill") {
 				const own = `${changes.agentFolder}/skills/`.toLowerCase();
 				review = changes.context.actionReviewId;
-				// Refused before any receipt: another library, or no approval to record.
-				if (!path.toLowerCase().startsWith(own) || path.length <= own.length || !review)
+				if (!path.toLowerCase().startsWith(own) || path.length <= own.length)
 					throw new CloudCompanyPathToolRefusal();
 			}
 			// The tools key a change by the version it replaces. An absent path has none on folder-v2 (the legacy gateway

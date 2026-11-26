@@ -215,6 +215,9 @@
 .thread-status .notice { margin: 6px 0; font-size: 12px; }
 /* Company notices: one quiet line above the composer, never a popup. */
 .company-notices { flex: none; padding: 0 16px; }
+.settings-content .company-notices { padding: 0; margin-bottom: 18px; }
+.settings-content .company-notices:empty,
+.settings-content .company-notices:has(> .execution-notices[hidden]) { display: none; }
 .execution-notices[hidden] { display: none; }
 .company-notice { display: flex; align-items: center; gap: 12px; margin-top: 6px; padding: 8px 8px 8px 16px; border: 1px solid var(--border); border-radius: 18px; background: var(--hover); }
 .company-notice p { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }

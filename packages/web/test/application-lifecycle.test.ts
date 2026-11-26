@@ -2103,9 +2103,17 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 		return { ...f, calls, commits };
 	}
 	const card = () => document.querySelector(".company-notices .company-notice p")?.textContent;
+	const openAccountSettings = () => {
+		document.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+		expect(document.querySelector('[data-account-action="settings"] .account-count')?.textContent).toBe("1");
+		document.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+	};
 
-	it("asks the signed-in member about their own routine, and an owner's Turn on starts it", async () => {
+	it("asks the signed-in member about their own routine in Settings, and an owner's Turn on starts it", async () => {
 		const f = planApp();
+		await vi.waitFor(() => expect(document.querySelector(".account-health-dot")).not.toBeNull(), { timeout: 3000 });
+		expect(card()).toBeUndefined();
+		openAccountSettings();
 		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
 		expect(f.calls).toContain("qorpera_record_chatgpt_plan_routine_offer");
 		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
@@ -2128,6 +2136,9 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 
 	it("turns the plan on for a member who does not save routines, and says to ask the agent", async () => {
 		const f = planApp({ ...team.capabilities, authorize: false });
+		await vi.waitFor(() => expect(document.querySelector(".account-health-dot")).not.toBeNull(), { timeout: 3000 });
+		expect(card()).toBeUndefined();
+		openAccountSettings();
 		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
 		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
 		await vi.waitFor(
