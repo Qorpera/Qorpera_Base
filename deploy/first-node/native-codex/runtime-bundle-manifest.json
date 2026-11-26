@@ -21,16 +21,16 @@
   "components": {
     "kernel": "7d88af1f8150432e1eb084da6d187dc56b9fbafac1fae6923070a5f6e23eda22",
     "constitution": "ae3349d0b5b453b679a70cb09ab7a96a9fac81696ced4f05b685d68cdc9c0718",
-    "toolCatalog": "93883ac40bd7984a661c7c1d4b328f0d02f096c885f03aeb75fdcd5c66635035",
+    "toolCatalog": "93e8527e5b043d3de5f2c34ea40037edeb6b8617e8f5dedae11d9d08db09a4c3",
     "wakeAndSilence": "afbd72c7bc1a2d87724359e65a22f271915102214f66f2719ae1332c0e9de29e",
-    "contextComposer": "3ed2f325ef1a24c4396e34fa08b62ddf481e264180591caafcec3ebe5c4de652",
-    "providerBootstrap": "4afe2dd54bdb3b09ab1c4e0e0f12a9b34818df186be915e9c2d1dfa7317e9dc6",
-    "authorization": "c9ed49107b85543a879394baa98715b9c07f1ed730550fb8a3605d7e0b36cf58",
+    "contextComposer": "50924b06f16dc492a02d872f69371c43280458303903ca6997a2b9bce588ac45",
+    "providerBootstrap": "9fc3da2839b283403a25546cef458fc4e86b94932d04248885aedeb0d5589651",
+    "authorization": "881eabcb2cc175ae7804d09ce5c37f32b30f8bafa7655b1fd18a2799a444b67b",
     "inboundSafety": "174716df3a4c3d83a93bcc19d2ac326422e4d7d477b55a890aa10c93523acf2c",
     "outboundSafety": "f958b42a39e63f06020cd05f7de3971a67d244733af09d8a6b3f336e87f09c12",
     "interactionSurfaces": "4026a564c6763a0d2ea72eb8b9192ad7a40e9e0c3fa2c2842ce96b51871409e4",
     "workerLifecycle": "9b73a5862b5003e87287535785c75f42dcdbd67c83ab59d020f2220c72629a68",
-    "memoryAndSkills": "e7ae8cf45396ced88b84f4fea035bf7536737bdbeba64477989c596ea7da238c"
+    "memoryAndSkills": "dde30b49f66d11a6151e450dbd9be0a3a4fe48eada269dcda69127711eedd446"
   },
   "implementation": {
     "deploy/claude-box/qorpera-claude-box-ns.apparmor": "600638f776a8d2687b2ceab43ec228bf98c245ade07a691314f6890a2416bddf",
@@ -273,7 +273,7 @@
     "packages/runtime/src/cloud-chatgpt-plan-image.ts": "74a8333cfee1299c4f157dbc359d208c4d390052b3d56c0564cd63d15620940c",
     "packages/runtime/src/cloud-chatgpt-plan-sign-in.ts": "e0362c3bc6fe19e98f6aa1aafe6d2f4c0460ffa7833b8e78b0a24e2fe5c0e2da",
     "packages/runtime/src/cloud-chatgpt-plan.ts": "3044246e8a02a5cd32ee5dc0b19b8f73d18790b227e97a415e0633ee80669ee4",
-    "packages/runtime/src/cloud-claude-box.ts": "3bc0b8aee9f935b948b737ad048b6a30407ae953500bfde1ca1c3654a9ec9585",
+    "packages/runtime/src/cloud-claude-box.ts": "b69741073794e45f634b530a79b928c4431d4c5c5bea7682d1829b3cc200fe4b",
     "packages/runtime/src/cloud-claude-home-review.ts": "1508b43eab23c3274aa3bba569343c0e8bb4be0a89a820658d502c9456903f3d",
     "packages/runtime/src/cloud-claude-home-shell-client.ts": "753a98451fd70428a2cbe481f52d82027f5c6310386b1d80f1019e063da3963d",
     "packages/runtime/src/cloud-claude-home-shell.ts": "d369155f6143cef06fda730e9a1f280ffe2aa74b19af386ab8e0f7742812c713",
@@ -399,8 +399,8 @@
     "packages/runtime/src/cloud-model-login-vault-usage.ts": "c282702d25794907ec7bb2d64622e89dd61eeb62c63e01ca23365e04dabe2d36",
     "packages/runtime/src/cloud-model-login-vault.ts": "d217db49110bebde236484a48169fcbdf5339d22c467b7ba26bb076555a31809",
     "packages/runtime/src/cloud-native-capture-images.ts": "063fa3a75d4ac35298075795462abdbb0c3820e3ca3506749a278b8fb03cea21",
-    "packages/runtime/src/cloud-native-coding-runtime.ts": "2c288c680bf8fe535d8f1419cf1553a5d47796cb03b95758908ba0ba247555ae",
-    "packages/runtime/src/cloud-native-company-context.ts": "0e21a126e38a8a72ae2addc6ba40d437c914a9a8a0330e75df7cdd3ce98de1a1",
+    "packages/runtime/src/cloud-native-coding-runtime.ts": "aabb4599410bbad431b652f2d3ab56beeb7345a836dd497b887e3aba234538ce",
+    "packages/runtime/src/cloud-native-company-context.ts": "221bd7f367a3646c8c9657f57de9b34cda6a3f1fcb309b1018185b745045bb73",
     "packages/runtime/src/cloud-native-company-runner.ts": "ebb0eba266926089470ec0dfe4be5708cf1e906fc6dcca6b721c0834d069e701",
     "packages/runtime/src/cloud-native-company-runtime.ts": "639ef180ff00feb903e9886fa57c5011e6935c2c87a876db99f8e29bec87b92c",
     "packages/runtime/src/cloud-native-context-composition.ts": "63f3364c1abd5bf097ec3699a2874970d9377ec0135a806036d21d05c58cfc1e",
@@ -422,7 +422,7 @@
     "packages/runtime/src/cloud-native-tools-on-demand.ts": "71cead3effaa04ebaccee53714e8e75b6c3658589bcaed29f3253cd01e93946b",
     "packages/runtime/src/cloud-picture-channel.ts": "28f987a9da75c799bb1fa09d8cfa826ac4ad782bbe2dea82c2178a76ce3704b5",
     "packages/runtime/src/cloud-platform-skills.ts": "c9fdf4cc00c1e9cd4291041a7f32ecb0c26d90160a2aeeb15c9378a23f59b514",
-    "packages/runtime/src/cloud-platform-updates.ts": "daf68ac808b733bc3c8b9a44b3d159784791db8d2edadf1e2bd6fe29a7e5d4cc",
+    "packages/runtime/src/cloud-platform-updates.ts": "d72427f848bc9bfdda1fb48734dd7064af6ef5a5a434cae01b451b25a2c1586c",
     "packages/runtime/src/cloud-review-rule-tools.ts": "fac9ce624cfa50a809d7d2129f894597606bb85c2465f360ae1bf83f0320f7dd",
     "packages/runtime/src/cloud-routine-pace.ts": "63b34a20c4506c603db58739737a1e2a0983c5987f00862e0ec8d0add772c7dd",
     "packages/runtime/src/cloud-routine-tools.ts": "6067c2a305131a8033ab025548e93269e981c5d1d447cefd2b193e7cd06d1d21",
@@ -495,7 +495,7 @@
     "packages/runtime/src/native-provider-account.ts": "1bab05c1f06759927ed4696d4310eb17319570d567446043582cd150e94f60d2",
     "packages/runtime/src/native-provider-usage.ts": "25a89a2499aa9a0886534f22c1c4316ac47070e1088e51c2ccdcf57eecc8ceec",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "923ef84678197bd13f939573f5c29067355d717cfdece0685526300da60a6b99",
+    "scripts/generate-cloud-runtime-bundle.mjs": "2d4bb9844a91debc4821a2e6909525dfbd4b1e907986ece97b1b1b0f01626a04",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "30e89beb2952a28f975c395e34f6306163145dffaceca88161599867d4ed4765",
     "scripts/package-coding-guest-agent.mjs": "246b70a83818d90818e4b8be7410453da67c66093196d455393ed06a8536a19f",
@@ -506,6 +506,6 @@
     "scripts/package-lxd-runner-guest.mjs": "1f8d6b729000a3f41b36702d8997c9a05d6b0a15df68d1ed1c25018389eb45d3",
     "scripts/package-service.mjs": "4ac7a2419e9f923e27d1b186c9af58195e211c55d229c09104a596bcd24a4113",
     "scripts/runtime-assets-plugin.mjs": "169ce941c1066b62159aa58df486e2893d7bb39897967dc0f9dadc34a5e21466",
-    "supabase/migrations": "c9ed49107b85543a879394baa98715b9c07f1ed730550fb8a3605d7e0b36cf58"
+    "supabase/migrations": "881eabcb2cc175ae7804d09ce5c37f32b30f8bafa7655b1fd18a2799a444b67b"
   }
 }
