@@ -44,10 +44,22 @@ declare
 	v_sha_init constant text := repeat('1', 40);
 	v_sha_landed constant text := repeat('2', 40);
 	v_sha_undone constant text := repeat('3', 40);
+	v_sha_ahead constant text := repeat('5', 40);
+	v_sha_backfill constant text := repeat('6', 40);
 	v_tree constant text := repeat('4', 40);
+	v_tree_2 constant text := repeat('7', 40);
+	v_version_fallback uuid;
+	v_surface_ahead uuid;
+	v_row record;
+	v_repo public.qorpera_code_repositories%rowtype;
 	v_file_sha constant text := encode(extensions.digest(convert_to('<h1>Hello</h1>', 'utf8'), 'sha256'), 'hex');
 	v_manifest_sha constant text := encode(
 		extensions.digest(convert_to('index.html' || chr(9) || v_file_sha || chr(9) || '14', 'utf8'), 'sha256'),
+		'hex'
+	);
+	v_file_sha_2 constant text := encode(extensions.digest(convert_to('<h1>Hello 2</h1>', 'utf8'), 'sha256'), 'hex');
+	v_manifest_sha_2 constant text := encode(
+		extensions.digest(convert_to('index.html' || chr(9) || v_file_sha_2 || chr(9) || '16', 'utf8'), 'sha256'),
 		'hex'
 	);
 begin
@@ -233,6 +245,35 @@ begin
 			|| coalesce((select title from public.qorpera_company_sites where id = v_site_id), '<null>')
 	);
 
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_begin := public.qorpera_surface_site_version_begin(
+		v_surface, v_tree_2, v_sha_landed, v_manifest_sha_2, 1, 16, 'Preview deadbeef'
+	);
+	v_version_fallback := (v_begin ->> 'versionId')::uuid;
+	perform public.qorpera_surface_site_version_list(
+		v_version_fallback,
+		jsonb_build_object('last', true, 'files', jsonb_build_array(jsonb_build_object('path', 'index.html', 'bytes', 16, 'sha256', v_file_sha_2)))
+	);
+	perform public.qorpera_surface_site_version_put(
+		v_version_fallback,
+		jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('path', 'index.html', 'part', 0, 'of', 1, 'contentBase64', encode(convert_to('<h1>Hello 2</h1>', 'utf8'), 'base64'))))
+	);
+	reset role;
+	update public.qorpera_company_sites set title = 'Custom Brand Title' where id = v_site_id;
+	update public.qorpera_surfaces set site_id = null where id = v_surface;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_finish := public.qorpera_surface_site_version_finish(v_version_fallback, true);
+	reset role;
+	perform pg_temp.ccsm_assert(
+		v_finish ->> 'state' = 'live'
+			and (select title from public.qorpera_company_sites where id = v_site_id) = 'Custom Brand Title'
+			and (select title from public.qorpera_company_site_versions where id = v_version_fallback) = 'Custom Brand Title',
+		'promoting preview version falls back to existing non-preview site title when unlinked from surface'
+	);
+	update public.qorpera_surfaces set site_id = v_site_id where id = v_surface;
+
 	v_merge_lease := extensions.gen_random_uuid();
 	insert into public.qorpera_surface_jobs(profile_id, surface_id, kind, status, payload, lease_token, lease_expires_at)
 	values (v_profile, v_surface, 'land_change', 'running', '{"changeIds":[]}'::jsonb, v_merge_lease, clock_timestamp() + interval '60 seconds')
@@ -244,12 +285,17 @@ begin
 	);
 	reset role;
 	perform pg_temp.ccsm_assert(
-		(select last_main = v_sha_landed and main_sha = v_sha_landed
+		(select main_sha = v_sha_landed and last_main is null
 			from public.qorpera_code_repositories
-			where environment_id = v_env and owner = 'surfaces' and name = 'website'),
-		'land_change updates qorpera_code_repositories last_main and main_sha'
+			where environment_id = v_env and owner = 'surfaces' and name = 'website')
+			and not exists (
+				select 1 from public.qorpera_code_changes
+				where environment_id = v_env and owner = 'surfaces' and name = 'website'
+			),
+		'land_change updates main_sha without creating synthetic found rows when last_main is null'
 	);
 
+	perform public.qorpera_code_change_found(v_env, 'surfaces', 'website', v_sha_init, v_sha_landed);
 	v_merge_lease := extensions.gen_random_uuid();
 	insert into public.qorpera_surface_jobs(profile_id, surface_id, kind, status, payload, lease_token, lease_expires_at)
 	values (v_profile, v_surface, 'undo_change', 'running', '{"changeIds":[]}'::jsonb, v_merge_lease, clock_timestamp() + interval '60 seconds')
@@ -261,9 +307,103 @@ begin
 	);
 	reset role;
 	perform pg_temp.ccsm_assert(
-		(select last_main = v_sha_undone and main_sha = v_sha_undone
+		(select main_sha = v_sha_undone and last_main = v_sha_undone
 			from public.qorpera_code_repositories
-			where environment_id = v_env and owner = 'surfaces' and name = 'website'),
-		'undo_change updates qorpera_code_repositories last_main and main_sha'
+			where environment_id = v_env and owner = 'surfaces' and name = 'website')
+			and exists (
+				select 1 from public.qorpera_code_changes
+				where environment_id = v_env and owner = 'surfaces' and name = 'website'
+					and kind = 'found' and main_before = v_sha_landed and main_after = v_sha_undone
+			),
+		'undo_change advances main_sha and appends a continuous found row when last_main is tracked'
+	);
+
+	update public.qorpera_company_sites set title = 'Preview 12345678' where id = v_site_id;
+	update public.qorpera_company_site_versions set title = 'Preview 12345678' where id = v_version_fallback;
+	update public.qorpera_surfaces set live_head_sha = v_sha_backfill, updated_at = clock_timestamp() + interval '5 minutes' where id = v_surface;
+
+	perform pg_temp.ccsm_as(v_anna);
+	set local role authenticated;
+	v_surface_ahead := (public.qorpera_create_surface(v_profile, 'Ahead App', 'ahead-app', 'live_build', 'web_app', 'globe', '#0a84ff', null, null, false) ->> 'id')::uuid;
+	reset role;
+	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, main_sha)
+	values (v_env, v_profile, 'surfaces', 'ahead-app', v_sha_init)
+	on conflict (environment_id, owner, name) do update set main_sha = excluded.main_sha;
+	update public.qorpera_surfaces set live_head_sha = v_sha_init, updated_at = clock_timestamp() - interval '10 minutes' where id = v_surface_ahead;
+	perform public.qorpera_code_change_found(v_env, 'surfaces', 'ahead-app', v_sha_init, v_sha_ahead);
+	update public.qorpera_code_repositories set main_sha = v_sha_ahead where environment_id = v_env and owner = 'surfaces' and name = 'ahead-app';
+
+	update public.qorpera_company_sites site
+	set title = surf.title, updated_at = clock_timestamp()
+	from public.qorpera_surfaces surf
+	where surf.site_id = site.id
+		and nullif(btrim(coalesce(surf.title, '')), '') is not null
+		and site.title ~ '^Preview [0-9a-f]{8}$';
+
+	update public.qorpera_company_site_versions ver
+	set title = site.title
+	from public.qorpera_company_sites site
+	where site.current_version_id = ver.id
+		and ver.title ~ '^Preview [0-9a-f]{8}$'
+		and site.title !~ '^Preview [0-9a-f]{8}$';
+
+	for v_row in
+		select distinct on (r.environment_id, r.owner, r.name)
+			r.environment_id, r.owner, r.name, surf.live_head_sha, surf.updated_at as surface_updated_at
+		from public.qorpera_surfaces surf
+		join public.qorpera_company_cofounders cof on cof.profile_id = surf.profile_id
+		join public.qorpera_code_repositories r
+			on r.environment_id = cof.environment_id
+			and r.owner = split_part(surf.repository_key, '/', 1)
+			and r.name = split_part(surf.repository_key, '/', 2)
+		where surf.source_kind = 'code_repo'
+			and surf.repository_key is not null
+			and strpos(surf.repository_key, '/') > 1
+			and coalesce(surf.live_head_sha, '') ~ '^[0-9a-f]{40}$'
+		order by r.environment_id, r.owner, r.name, surf.updated_at desc, surf.id desc
+	loop
+		select * into v_repo
+		from public.qorpera_code_repositories
+		where environment_id = v_row.environment_id and owner = v_row.owner and name = v_row.name
+		for update;
+		if exists (
+			select 1 from public.qorpera_code_changes c
+			where c.environment_id = v_repo.environment_id and c.owner = v_repo.owner and c.name = v_repo.name
+				and c.created_at >= v_row.surface_updated_at
+		) then
+			continue;
+		end if;
+		if v_repo.main_sha is distinct from v_row.live_head_sha then
+			update public.qorpera_code_repositories set main_sha = v_row.live_head_sha
+			where environment_id = v_repo.environment_id and owner = v_repo.owner and name = v_repo.name;
+		end if;
+		if v_repo.last_main is not null and v_repo.last_main is distinct from v_row.live_head_sha then
+			perform public.qorpera_code_change_found(
+				v_repo.environment_id, v_repo.owner, v_repo.name, v_repo.last_main, v_row.live_head_sha
+			);
+		end if;
+	end loop;
+
+	perform pg_temp.ccsm_assert(
+		(select title from public.qorpera_company_sites where id = v_site_id) = 'Marketing Site'
+			and (select title from public.qorpera_company_site_versions where id = v_version_fallback) = 'Marketing Site',
+		'site and current version title backfills repair Preview <hex> titles'
+	);
+	perform pg_temp.ccsm_assert(
+		(select main_sha = v_sha_backfill and last_main = v_sha_backfill
+			from public.qorpera_code_repositories
+			where environment_id = v_env and owner = 'surfaces' and name = 'website')
+			and exists (
+				select 1 from public.qorpera_code_changes
+				where environment_id = v_env and owner = 'surfaces' and name = 'website'
+					and kind = 'found' and main_before = v_sha_undone and main_after = v_sha_backfill
+			),
+		'repository backfill advances drifted surface repo via found change row'
+	);
+	perform pg_temp.ccsm_assert(
+		(select main_sha = v_sha_ahead and last_main = v_sha_ahead
+			from public.qorpera_code_repositories
+			where environment_id = v_env and owner = 'surfaces' and name = 'ahead-app'),
+		'repository backfill never moves last_main backwards when a newer recorded change exists'
 	);
 end $$;

@@ -11,7 +11,8 @@ do $$ begin
 		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null
 		or to_regprocedure('public.qorpera_code_request_step(text,text,uuid,uuid,jsonb)') is null
 		or to_regprocedure('public.qorpera_surface_site_version_finish(uuid,boolean)') is null
-		or to_regprocedure('public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)') is null then
+		or to_regprocedure('public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)') is null
+		or to_regprocedure('public.qorpera_code_change_found(uuid,text,text,text,text)') is null then
 		raise exception '20260930917000 requires earlier folder, code-ops, and surface migrations first';
 	end if;
 end $$;
@@ -165,6 +166,13 @@ $new$	if coalesce(p_promote_live, false) and v_version.state <> 'live' then
 select pg_temp.ccsm_patch(
 	'public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)'::regprocedure,
 	array[
+$old$	v_change_ids uuid[];
+	v_merged_count integer := 0;
+	v_rec public.qorpera_surface_reconciliations%rowtype;$old$,
+$new$	v_change_ids uuid[];
+	v_merged_count integer := 0;
+	v_rec public.qorpera_surface_reconciliations%rowtype;
+	v_repo public.qorpera_code_repositories%rowtype;$new$,
 $old$			update public.qorpera_surfaces
 			set
 				live_head_sha = coalesce(p_main_after, live_head_sha),
@@ -184,15 +192,28 @@ $new$			update public.qorpera_surfaces
 				and v_surface.source_kind = 'code_repo'
 				and v_surface.repository_key is not null
 				and strpos(v_surface.repository_key, '/') > 1 then
-				update public.qorpera_code_repositories r
-				set
-					last_main = p_main_after,
-					main_sha = p_main_after
-				from public.qorpera_company_cofounders cof
-				where cof.profile_id = v_job.profile_id
-					and r.environment_id = cof.environment_id
+				select r.* into v_repo
+				from public.qorpera_code_repositories r
+				join public.qorpera_company_cofounders cof on cof.profile_id = v_job.profile_id
+				where r.environment_id = cof.environment_id
 					and r.owner = split_part(v_surface.repository_key, '/', 1)
-					and r.name = split_part(v_surface.repository_key, '/', 2);
+					and r.name = split_part(v_surface.repository_key, '/', 2)
+				for update of r;
+
+				if v_repo.environment_id is not null then
+					update public.qorpera_code_repositories
+					set main_sha = p_main_after
+					where environment_id = v_repo.environment_id
+						and owner = v_repo.owner
+						and name = v_repo.name;
+
+					-- WHY: Advance last_main only via qorpera_code_change_found so the change record stays continuous.
+					if v_repo.last_main is not null and v_repo.last_main is distinct from p_main_after then
+						perform public.qorpera_code_change_found(
+							v_repo.environment_id, v_repo.owner, v_repo.name, v_repo.last_main, p_main_after
+						);
+					end if;
+				end if;
 			end if;$new$,
 $old$		if p_status = 'landed' then
 			if p_main_after is not null or v_surface.source_kind = 'folder' then
@@ -216,15 +237,27 @@ $new$		if p_status = 'landed' then
 					and v_surface.source_kind = 'code_repo'
 					and v_surface.repository_key is not null
 					and strpos(v_surface.repository_key, '/') > 1 then
-					update public.qorpera_code_repositories r
-					set
-						last_main = p_main_after,
-						main_sha = p_main_after
-					from public.qorpera_company_cofounders cof
-					where cof.profile_id = v_job.profile_id
-						and r.environment_id = cof.environment_id
+					select r.* into v_repo
+					from public.qorpera_code_repositories r
+					join public.qorpera_company_cofounders cof on cof.profile_id = v_job.profile_id
+					where r.environment_id = cof.environment_id
 						and r.owner = split_part(v_surface.repository_key, '/', 1)
-						and r.name = split_part(v_surface.repository_key, '/', 2);
+						and r.name = split_part(v_surface.repository_key, '/', 2)
+					for update of r;
+
+					if v_repo.environment_id is not null then
+						update public.qorpera_code_repositories
+						set main_sha = p_main_after
+						where environment_id = v_repo.environment_id
+							and owner = v_repo.owner
+							and name = v_repo.name;
+
+						if v_repo.last_main is not null and v_repo.last_main is distinct from p_main_after then
+							perform public.qorpera_code_change_found(
+								v_repo.environment_id, v_repo.owner, v_repo.name, v_repo.last_main, p_main_after
+							);
+						end if;
+					end if;
 				end if;
 			end if;$new$
 	]
@@ -246,20 +279,58 @@ where site.current_version_id = ver.id
 	and ver.title ~ '^Preview [0-9a-f]{8}$'
 	and site.title !~ '^Preview [0-9a-f]{8}$';
 
-update public.qorpera_code_repositories r
-set
-	last_main = surf.live_head_sha,
-	main_sha = surf.live_head_sha
-from public.qorpera_surfaces surf
-join public.qorpera_company_cofounders cof on cof.profile_id = surf.profile_id
-where surf.source_kind = 'code_repo'
-	and surf.repository_key is not null
-	and strpos(surf.repository_key, '/') > 1
-	and coalesce(surf.live_head_sha, '') ~ '^[0-9a-f]{40}$'
-	and r.environment_id = cof.environment_id
-	and r.owner = split_part(surf.repository_key, '/', 1)
-	and r.name = split_part(surf.repository_key, '/', 2)
-	and (r.last_main is distinct from surf.live_head_sha or r.main_sha is distinct from surf.live_head_sha);
+do $$
+declare
+	v_row record;
+	v_repo public.qorpera_code_repositories%rowtype;
+begin
+	for v_row in
+		select distinct on (r.environment_id, r.owner, r.name)
+			r.environment_id, r.owner, r.name, surf.live_head_sha, surf.updated_at as surface_updated_at
+		from public.qorpera_surfaces surf
+		join public.qorpera_company_cofounders cof on cof.profile_id = surf.profile_id
+		join public.qorpera_code_repositories r
+			on r.environment_id = cof.environment_id
+			and r.owner = split_part(surf.repository_key, '/', 1)
+			and r.name = split_part(surf.repository_key, '/', 2)
+		where surf.source_kind = 'code_repo'
+			and surf.repository_key is not null
+			and strpos(surf.repository_key, '/') > 1
+			and coalesce(surf.live_head_sha, '') ~ '^[0-9a-f]{40}$'
+		order by r.environment_id, r.owner, r.name, surf.updated_at desc, surf.id desc
+	loop
+		select * into v_repo
+		from public.qorpera_code_repositories
+		where environment_id = v_row.environment_id
+			and owner = v_row.owner
+			and name = v_row.name
+		for update;
+
+		if exists (
+			select 1 from public.qorpera_code_changes c
+			where c.environment_id = v_repo.environment_id
+				and c.owner = v_repo.owner
+				and c.name = v_repo.name
+				and c.created_at >= v_row.surface_updated_at
+		) then
+			continue;
+		end if;
+
+		if v_repo.main_sha is distinct from v_row.live_head_sha then
+			update public.qorpera_code_repositories
+			set main_sha = v_row.live_head_sha
+			where environment_id = v_repo.environment_id
+				and owner = v_repo.owner
+				and name = v_repo.name;
+		end if;
+
+		if v_repo.last_main is not null and v_repo.last_main is distinct from v_row.live_head_sha then
+			perform public.qorpera_code_change_found(
+				v_repo.environment_id, v_repo.owner, v_repo.name, v_repo.last_main, v_row.live_head_sha
+			);
+		end if;
+	end loop;
+end $$;
 
 do $$
 declare
@@ -287,6 +358,7 @@ begin
 		end if;
 		execute format('grant select on public.qorpera_company_cofounders to %I', v_owner);
 		execute format('grant select, update on public.qorpera_code_repositories to %I', v_owner);
+		execute format('grant execute on function public.qorpera_code_change_found(uuid,text,text,text,text) to %I', v_owner);
 	end loop;
 
 	select string_agg(p.oid::regprocedure::text, ', ')

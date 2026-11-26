@@ -2331,7 +2331,9 @@ export class FolderService {
 					this.#now,
 					view.identity?.kind === "code_host",
 					view.identity?.workerId ??
-						(view.identity?.kind === "test_machine" || view.identity?.kind === "shell_command" ? null : undefined),
+						(view.identity && view.identity.kind !== "coding_session" && view.identity.kind !== "code_host"
+							? null
+							: undefined),
 				);
 			this.#log(`folder-service: ${view.key} listed: ${tree.size} paths at change ${seq}`);
 		} catch (error) {

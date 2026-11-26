@@ -38,8 +38,11 @@ import {
 	noSecrets,
 	OFFICE,
 	PASS,
+	PLACEMENT,
 	secretsOf,
 	storeFile,
+	TEST_MACHINE,
+	testGrants,
 	v,
 } from "./folder-service-fixtures.ts";
 
@@ -974,6 +977,90 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.entries.get(`${R}/worktrees/main/index`)?.version).toBe(mainIdx.version);
 		expect(core.entries.get(`${R}/worktrees/${otherWorker}/index`)?.version).toBe(otherIdx.version);
 		expect(core.entries.get(`${R}/objects/info/commit-graph`)?.version).toBe(liveGraph.version);
+	});
+
+	it("keeps all worktree indexes view-local on test_machine and computer_shell_command views", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-git-noncoding-"));
+		cleanups.push(() => rm(root, { recursive: true, force: true }));
+		const worker = "11111111-2222-4333-8444-555555555559";
+		const workerIdx = await storeFile(root, `${R}/worktrees/${worker}/index`, "live-worker-idx", 210);
+		const seedEntries = [
+			folder("code"),
+			folder("code/acme"),
+			folder("code/acme/app"),
+			folder(R),
+			folder(`${R}/worktrees`),
+			folder(`${R}/worktrees/${worker}`),
+			workerIdx,
+		];
+
+		const testCore = new FakeCore();
+		testCore.seed(seedEntries);
+		testCore.openView(SESSIONS.first.viewId, SESSIONS.first.pass, {
+			kind: "test_machine",
+			machineId: PLACEMENT,
+			codingMachineId: null,
+		});
+		const testObjects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const testService = new FolderService({
+			core: testCore,
+			objects: testObjects,
+			grants: testGrants(),
+			staging: new FolderStaging(testCore, new FakeUploads(root, testCore), testObjects),
+			log: () => undefined,
+		});
+		const testHandle = await testService.open(
+			{ protocol: 3, environmentId: ENV, ...SESSIONS.first, role: "io" },
+			{ cid: 81, lookup: "found", machine: TEST_MACHINE },
+		);
+		cleanups.push(async () => {
+			testHandle.release();
+			testService.stop();
+		});
+		await write(testHandle, `${R}/worktrees/${worker}/index.lock`, "test-refreshed", true);
+		await testHandle.rename({
+			from: `${R}/worktrees/${worker}/index.lock`,
+			to: `${R}/worktrees/${worker}/index`,
+			noReplace: false,
+		});
+		const testBoundary = await testService.boundary(PLACEMENT, []);
+		expect(testBoundary.views[0]?.report?.paths).toEqual([]);
+		expect(testCore.commits).toHaveLength(0);
+		expect(testCore.entries.get(`${R}/worktrees/${worker}/index`)?.version).toBe(workerIdx.version);
+
+		const cmdCore = new FakeCore();
+		cmdCore.seed(seedEntries);
+		cmdCore.openView(SESSIONS.second.viewId, SESSIONS.second.pass, {
+			kind: "computer_shell_command",
+			machineId: ALLOCATION,
+			codingMachineId: null,
+		});
+		const cmdObjects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const cmdService = new FolderService({
+			core: cmdCore,
+			objects: cmdObjects,
+			grants: companyGrants(),
+			staging: new FolderStaging(cmdCore, new FakeUploads(root, cmdCore), cmdObjects),
+			log: () => undefined,
+		});
+		const cmdHandle = await cmdService.open(
+			{ protocol: 3, environmentId: ENV, ...SESSIONS.second, role: "io" },
+			{ cid: 82, lookup: "found", machine: OFFICE },
+		);
+		cleanups.push(async () => {
+			cmdHandle.release();
+			cmdService.stop();
+		});
+		await write(cmdHandle, `${R}/worktrees/${worker}/index.lock`, "shell-refreshed", true);
+		await cmdHandle.rename({
+			from: `${R}/worktrees/${worker}/index.lock`,
+			to: `${R}/worktrees/${worker}/index`,
+			noReplace: false,
+		});
+		const cmdReport = await cmdHandle.publish();
+		expect(cmdReport.paths).toEqual([]);
+		expect(cmdCore.commits).toHaveLength(0);
+		expect(cmdCore.entries.get(`${R}/worktrees/${worker}/index`)?.version).toBe(workerIdx.version);
 	});
 
 	it("deletes a branch and its log when the lock is removed after them", async () => {
