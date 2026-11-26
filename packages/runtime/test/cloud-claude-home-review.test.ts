@@ -1,3 +1,4 @@
+import { CLAUDE_BOX_PATHS } from "@qorpera/runtime/cloud-claude-box";
 import {
 	CLAUDE_FILE_UNACCOUNTED,
 	CLAUDE_REPEAT_CHANGE,
@@ -16,10 +17,12 @@ import {
 } from "@qorpera/runtime/cloud-claude-home-review";
 import { parseCloudClaudeShellRequest } from "@qorpera/runtime/cloud-claude-home-shell";
 import {
+	CLAUDE_HOME_MCP_CLIENT,
 	CLAUDE_HOME_REVIEW_HOOK,
 	cloudClaudeHookRealPath,
 	cloudClaudeRipgrepCommand,
 	cloudClaudeShellRequestLine,
+	isCloudClaudeMcpClientArg,
 } from "@qorpera/runtime/cloud-claude-home-shell-client";
 import type { CloudCodexHomeAction } from "@qorpera/runtime/cloud-codex-home";
 import { expect, it, vi } from "vitest";
@@ -101,6 +104,12 @@ it("makes a command one home_command action whose approval holds for the same co
 
 it("reads a file tool's call from its hook, and reviews the whole change it makes", () => {
 	expect(CLAUDE_HOME_REVIEW_HOOK).toBe(CLAUDE_REVIEW_HOOK_PATH);
+	expect(CLAUDE_HOME_MCP_CLIENT).toBe(CLAUDE_BOX_PATHS.mcpClient);
+	expect(isCloudClaudeMcpClientArg("--mcp")).toBe(true);
+	expect(isCloudClaudeMcpClientArg(CLAUDE_BOX_PATHS.mcpClient)).toBe(true);
+	expect(isCloudClaudeMcpClientArg(`${CLAUDE_BOX_PATHS.mcpClient} && id`)).toBe(false);
+	expect(isCloudClaudeMcpClientArg("--hook")).toBe(false);
+	expect(isCloudClaudeMcpClientArg(undefined)).toBe(false);
 	const call = cloudClaudeFileCall(
 		JSON.stringify({
 			tool_name: "Write",
