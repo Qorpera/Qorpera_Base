@@ -75,4 +75,31 @@ describe("surface notch track spacing", () => {
 		});
 		expect(nested.map(({ index }) => surfacesCss.slice(index, index + 80))).toEqual([]);
 	});
+
+	it("scales desktop websites via iframe transform and mobile phones via the outer sizer and phone shell", () => {
+		const desktopZoom = declarations(
+			'.surface-viewport[data-device="desktop"][data-site-zoomed] :is(iframe.surface-frame, iframe.site-frame)',
+		);
+		expect(desktopZoom).toContain("width: calc(100% / var(--site-zoom, 1))");
+		expect(desktopZoom).toContain("height: calc(100% / var(--site-zoom, 1))");
+		expect(desktopZoom).toContain("transform: scale(var(--site-zoom, 1))");
+		expect(desktopZoom).toContain("transform-origin: 0 0");
+
+		const mobileBody = declarations(
+			'.surface-viewport[data-device="mobile"]:not(.is-compare-mobile) > .surface-viewport-body',
+		);
+		expect(mobileBody).toContain("overflow: auto");
+
+		const phoneSizer = declarations(
+			'.surface-viewport[data-device="mobile"]:not(.is-compare-mobile) .surface-phone-sizer',
+		);
+		expect(phoneSizer).toContain("width: calc(var(--phone-w) * var(--phone-scale, 1))");
+		expect(phoneSizer).toContain("height: calc(var(--phone-h) * var(--phone-scale, 1))");
+
+		const phoneShell = declarations(
+			'.surface-viewport[data-device="mobile"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames, .surface-loading)',
+		);
+		expect(phoneShell).toContain("transform: scale(var(--phone-scale, 1))");
+		expect(phoneShell).toContain("transform-origin: 0 0");
+	});
 });

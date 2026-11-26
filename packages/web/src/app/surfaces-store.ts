@@ -193,6 +193,29 @@ export type SurfaceDevice = "desktop" | "mobile";
 export type ApprovalOutcome = "open" | "hold" | "history";
 export type SurfaceUpdatePhase = "publishing" | "merging" | "updating";
 
+export const SURFACE_ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
+export const DEFAULT_SURFACE_ZOOM = 1;
+export const MIN_SURFACE_ZOOM: number = SURFACE_ZOOM_LEVELS[0];
+export const MAX_SURFACE_ZOOM: number = SURFACE_ZOOM_LEVELS[SURFACE_ZOOM_LEVELS.length - 1]!;
+
+export function clampSurfaceZoom(zoom: number): number {
+	if (!Number.isFinite(zoom)) return DEFAULT_SURFACE_ZOOM;
+	const clamped = Math.min(MAX_SURFACE_ZOOM, Math.max(MIN_SURFACE_ZOOM, zoom));
+	return Math.round(clamped * 100) / 100;
+}
+
+export function stepSurfaceZoom(current: number, direction: -1 | 1): number {
+	const value = clampSurfaceZoom(current);
+	if (direction > 0) {
+		return SURFACE_ZOOM_LEVELS.find((level) => level > value + 0.001) ?? MAX_SURFACE_ZOOM;
+	}
+	for (let index = SURFACE_ZOOM_LEVELS.length - 1; index >= 0; index -= 1) {
+		const level = SURFACE_ZOOM_LEVELS[index]!;
+		if (level < value - 0.001) return level;
+	}
+	return MIN_SURFACE_ZOOM;
+}
+
 export const SURFACE_UNDO_MS = 5_000;
 const POLL_MS = 4_000;
 const FAST_POLL_MS = 1_000;
@@ -367,6 +390,8 @@ export interface SurfacesState {
 	readonly compareFocusSessionId?: string;
 	readonly compareExcludedSessions: Readonly<Record<string, true>>;
 	readonly device: SurfaceDevice;
+	readonly websiteZoom: number;
+	readonly phoneZoom: number;
 	readonly hiddenChanges: Readonly<Record<string, true>>;
 	readonly optionPick: Readonly<Record<string, string | null>>;
 	readonly publishedChangeIds: Readonly<Record<string, true>>;
@@ -1588,6 +1613,8 @@ export class SurfacesStore {
 			previewPanel: "auto",
 			compareExcludedSessions: {},
 			device: "desktop",
+			websiteZoom: DEFAULT_SURFACE_ZOOM,
+			phoneZoom: DEFAULT_SURFACE_ZOOM,
 			hiddenChanges: {},
 			optionPick: {},
 			publishedChangeIds: {},
@@ -3714,6 +3741,16 @@ export class SurfacesStore {
 
 	setDevice(device: SurfaceDevice): void {
 		this.store.set({ device });
+	}
+
+	setWebsiteZoom(zoom: number): void {
+		const next = clampSurfaceZoom(zoom);
+		if (this.state.websiteZoom !== next) this.store.set({ websiteZoom: next });
+	}
+
+	setPhoneZoom(zoom: number): void {
+		const next = clampSurfaceZoom(zoom);
+		if (this.state.phoneZoom !== next) this.store.set({ phoneZoom: next });
 	}
 
 	toggleCollapsed(sessionId: string): void {

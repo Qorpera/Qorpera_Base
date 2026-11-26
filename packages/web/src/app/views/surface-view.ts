@@ -13,21 +13,28 @@ import { growToText, h, icon, personAvatar } from "../../ui/dom.ts";
 import { reviveGroupAvatars } from "../../ui/group-avatar.ts";
 import { playOnce } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
+import { uiScale } from "../../ui/scale.ts";
 import { type SurfaceSkeletonKind, surfaceSkeleton } from "../../ui/skeleton.ts";
 import { afterPaint } from "../../ui/time-slice.ts";
 import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
 import {
 	askedToPublish,
+	clampSurfaceZoom,
+	DEFAULT_SURFACE_ZOOM,
 	getLocalSandbox,
 	isLocalSurfaceId,
 	isOpenChange,
 	isOpenVariant,
 	loadLocalSandbox,
+	MAX_SURFACE_ZOOM,
+	MIN_SURFACE_ZOOM,
 	migrationPending,
 	openExplorations,
 	runningSessionTotal,
+	SURFACE_ZOOM_LEVELS,
 	type SurfacePreviewMode,
 	type SurfacesStore,
+	stepSurfaceZoom,
 	surfaceBySlug,
 	surfaceHasDeliverables,
 } from "../surfaces-store.ts";
@@ -134,7 +141,23 @@ function targetOriginLabel(target: PointToChangeTarget): string {
 }
 
 function barFocusKey(element: HTMLElement): string {
-	return `${element.dataset.act ?? ""}:${element.dataset.mode ?? element.dataset.device ?? ""}`;
+	return `${element.dataset.act ?? ""}:${element.dataset.mode ?? element.dataset.device ?? element.dataset.zoomTarget ?? element.dataset.phoneModel ?? ""}`;
+}
+
+function restoreBarFocus(container: HTMLElement, focusKey: string | undefined): void {
+	if (focusKey === undefined) return;
+	const buttons = [...container.querySelectorAll<HTMLElement>("[data-act]")];
+	const exact = buttons.find((item) => barFocusKey(item) === focusKey);
+	if (exact && !(exact instanceof HTMLButtonElement && exact.disabled)) {
+		exact.focus({ preventScroll: true });
+		return;
+	}
+	if (focusKey.startsWith("zoom-out:") || focusKey.startsWith("zoom-in:")) {
+		const target = focusKey.slice(focusKey.indexOf(":") + 1);
+		container
+			.querySelector<HTMLElement>(`[data-act="zoom-menu"][data-zoom-target="${target}"]`)
+			?.focus({ preventScroll: true });
+	}
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -192,6 +215,8 @@ export class SurfaceView {
 	readonly #stage = h("div", { class: "surface-stage" });
 	readonly #canvas = h("div", { class: "surface-canvas" });
 	readonly #viewport = h("div", { class: "surface-viewport" });
+	readonly #viewportBody = h("div", { class: "surface-viewport-body" });
+	readonly #phoneSizer = h("div", { class: "surface-phone-sizer" });
 	readonly #loadingSlot = h("div", { class: "surface-loading", hidden: true });
 	readonly #mountSlot = h("div", { class: "surface-mount" });
 	readonly #reportSlot = h("div", { class: "surface-report-slot", hidden: true });
@@ -247,6 +272,7 @@ export class SurfaceView {
 	readonly #thumbAt = new Map<string, readonly [number, number]>();
 	#phoneModelId = PHONE_MODELS[0]!.id;
 	#phoneBarShown = "";
+	#lastPhoneZoom = DEFAULT_SURFACE_ZOOM;
 	#sitePublic = true;
 	readonly #autoPublishAsked = new Set<string>();
 	readonly #publishedAt = new Map<string, string>();
@@ -293,7 +319,9 @@ export class SurfaceView {
 			},
 		});
 		this.#topSlot.append(this.#banner);
-		this.#viewport.append(this.#phoneBar, this.#loadingSlot, this.#mountSlot, this.#reportSlot, this.#frames);
+		this.#phoneSizer.append(this.#loadingSlot, this.#mountSlot, this.#reportSlot, this.#frames);
+		this.#viewportBody.append(this.#phoneSizer);
+		this.#viewport.append(this.#phoneBar, this.#viewportBody);
 		this.#bar.append(this.#barTitle, this.#notch);
 		this.#canvas.append(this.#bar, this.#topSlot, this.#viewport, this.#composer, this.#toast);
 		this.#address = new SurfaceAddress({
@@ -685,6 +713,16 @@ export class SurfaceView {
 			this.#bar.hidden = true;
 			this.#panelToggle.hidden = true;
 			this.#phoneBar.hidden = true;
+			this.#phoneBarShown = "";
+			this.#lastPhoneZoom = DEFAULT_SURFACE_ZOOM;
+			delete this.#viewport.dataset.siteZoomed;
+			delete this.#viewport.dataset.phoneZoomed;
+			this.#viewport.removeAttribute("data-phone-cutout");
+			this.#viewport.style.removeProperty("--site-zoom");
+			this.#viewport.style.removeProperty("--phone-w");
+			this.#viewport.style.removeProperty("--phone-h");
+			this.#viewport.style.removeProperty("--phone-r");
+			this.#viewport.style.removeProperty("--phone-scale");
 			this.#banner.replaceChildren();
 			this.#toast.replaceChildren();
 			this.#topSlot.hidden = true;
@@ -845,7 +883,73 @@ export class SurfaceView {
 						? state.device
 						: "desktop";
 		this.#viewport.dataset.device = effectiveDevice;
+		const websiteZoom =
+			surface.archetype === "live_build" && !reportMode && effectiveDevice === "desktop"
+				? clampSurfaceZoom(state.websiteZoom)
+				: DEFAULT_SURFACE_ZOOM;
+		if (websiteZoom !== DEFAULT_SURFACE_ZOOM) {
+			this.#viewport.dataset.siteZoomed = "true";
+			this.#viewport.style.setProperty("--site-zoom", String(websiteZoom));
+		} else {
+			delete this.#viewport.dataset.siteZoomed;
+			this.#viewport.style.removeProperty("--site-zoom");
+		}
 		this.#syncPhoneViewport();
+	}
+
+	#buildZoomControl(target: "website" | "phone", zoom: number): HTMLElement {
+		const pct = Math.round(zoom * 100);
+		const canOut = zoom > MIN_SURFACE_ZOOM + 0.001;
+		const canIn = zoom < MAX_SURFACE_ZOOM - 0.001;
+		const groupLabel = target === "phone" ? t("Phone zoom") : t("Website zoom");
+		return h(
+			"div",
+			{
+				class: `surface-zoom is-${target}${zoom !== DEFAULT_SURFACE_ZOOM ? " is-zoomed" : ""}`,
+				role: "group",
+				"aria-label": groupLabel,
+				"data-zoom-target": target,
+			},
+			h(
+				"button",
+				{
+					type: "button",
+					class: "surface-zoom-step",
+					disabled: !canOut,
+					"aria-label": t("Zoom out"),
+					title: t("Zoom out"),
+					"data-act": "zoom-out",
+					"data-zoom-target": target,
+				},
+				icon("minus"),
+			),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "surface-zoom-value",
+					"aria-label": t("Zoom level: {percent}%", { percent: pct }),
+					"aria-haspopup": "menu",
+					title: groupLabel,
+					"data-act": "zoom-menu",
+					"data-zoom-target": target,
+				},
+				`${pct}%`,
+			),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "surface-zoom-step",
+					disabled: !canIn,
+					"aria-label": t("Zoom in"),
+					title: t("Zoom in"),
+					"data-act": "zoom-in",
+					"data-zoom-target": target,
+				},
+				icon("plus"),
+			),
+		);
 	}
 
 	#syncPhoneViewport(): void {
@@ -853,27 +957,52 @@ export class SurfaceView {
 		this.#phoneBar.hidden = !isMobile;
 		if (!isMobile) {
 			this.#viewport.removeAttribute("data-phone-cutout");
+			delete this.#viewport.dataset.phoneZoomed;
 			this.#viewport.style.removeProperty("--phone-w");
 			this.#viewport.style.removeProperty("--phone-h");
 			this.#viewport.style.removeProperty("--phone-r");
 			this.#viewport.style.removeProperty("--phone-scale");
+			this.#viewportBody.scrollLeft = 0;
+			this.#viewportBody.scrollTop = 0;
+			this.#lastPhoneZoom = DEFAULT_SURFACE_ZOOM;
 			return;
 		}
 		const model = phoneModelById(this.#phoneModelId);
 		const rect = this.#viewport.getBoundingClientRect();
-		const availW = rect.width > 0 ? Math.max(220, rect.width - 36) : model.width + 24;
-		const availH = rect.height > 0 ? Math.max(260, rect.height - 208) : model.height + 24;
-		const scale = Math.min(1, availW / (model.width + 20), availH / (model.height + 20));
+		const ui = uiScale();
+		const padX = Math.ceil(64 * ui);
+		const padY = Math.ceil(224 * ui);
+		const bezel = Math.ceil(20 * ui);
+		const availW = rect.width > 0 ? Math.max(220, rect.width - padX) : model.width + bezel;
+		const availH = rect.height > 0 ? Math.max(260, rect.height - padY) : model.height + bezel;
+		const fitScale = Math.min(1, availW / (model.width + bezel), availH / (model.height + bezel));
+		const phoneZoom = clampSurfaceZoom(this.#host.store.state.phoneZoom);
+		const scale = fitScale * phoneZoom;
+		const wasOverflowX = this.#viewportBody.scrollWidth > this.#viewportBody.clientWidth + 1;
 		this.#viewport.dataset.phoneCutout = model.cutout;
+		if (phoneZoom !== DEFAULT_SURFACE_ZOOM) this.#viewport.dataset.phoneZoomed = "true";
+		else delete this.#viewport.dataset.phoneZoomed;
 		this.#viewport.style.setProperty("--phone-w", `${model.width}px`);
 		this.#viewport.style.setProperty("--phone-h", `${model.height}px`);
 		this.#viewport.style.setProperty("--phone-r", `${model.radius}px`);
 		this.#viewport.style.setProperty("--phone-scale", scale.toFixed(4));
+		if (phoneZoom !== this.#lastPhoneZoom) {
+			this.#lastPhoneZoom = phoneZoom;
+			const overflowX = this.#viewportBody.scrollWidth - this.#viewportBody.clientWidth;
+			if (overflowX > 1 && !wasOverflowX) {
+				this.#viewportBody.scrollLeft = Math.round(overflowX / 2);
+			} else if (overflowX <= 1) {
+				this.#viewportBody.scrollLeft = 0;
+			}
+		}
 
-		const pct = Math.round(scale * 100);
-		const barKey = `${model.id}:${pct}`;
+		const zoomPct = Math.round(phoneZoom * 100);
+		const barKey = `${model.id}:${zoomPct}`;
 		if (barKey === this.#phoneBarShown) return;
 		this.#phoneBarShown = barKey;
+		const focused = document.activeElement;
+		const focusKey =
+			focused instanceof HTMLElement && this.#phoneBar.contains(focused) ? barFocusKey(focused) : undefined;
 		this.#phoneBar.replaceChildren(
 			h(
 				"div",
@@ -893,12 +1022,11 @@ export class SurfaceView {
 					),
 				),
 			),
-			h(
-				"span",
-				{ class: "surface-phone-dims" },
-				pct < 100 ? `${model.width} × ${model.height} · ${pct}%` : `${model.width} × ${model.height}`,
-			),
+			h("span", { class: "surface-phone-dims" }, `${model.width} × ${model.height}`),
+			h("span", { class: "surface-phone-divider", "aria-hidden": "true" }),
+			this.#buildZoomControl("phone", phoneZoom),
 		);
+		restoreBarFocus(this.#phoneBar, focusKey);
 	}
 
 	#drawBar(surface: SurfaceSummary): void {
@@ -925,6 +1053,16 @@ export class SurfaceView {
 		const shownCount = effectiveMode === "preview" ? store.shownPreviewChangeCount(surface.id) : 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
+		const effectiveDevice =
+			reportMode || !live
+				? "desktop"
+				: look.kind === "mobile_app"
+					? "mobile"
+					: showViewportSplit
+						? state.device
+						: "desktop";
+		const showWebsiteZoom = live && !reportMode && effectiveDevice === "desktop";
+		const websiteZoom = clampSurfaceZoom(state.websiteZoom);
 		const served = this.#host.isSiteLive?.(surface);
 		const siteLive = served === true;
 		const addressShown = live && siteLive;
@@ -958,6 +1096,8 @@ export class SurfaceView {
 			reportMode,
 			state.device,
 			showViewportSplit,
+			showWebsiteZoom,
+			websiteZoom,
 			studioHasChanges,
 			panelOpen,
 			openWorkCount,
@@ -1047,6 +1187,9 @@ export class SurfaceView {
 					deviceSegment("mobile", t("Mobile"), h("span", { class: "surface-phone-icon", "aria-hidden": "true" })),
 				),
 			);
+		}
+		if (showWebsiteZoom) {
+			groups.push(this.#buildZoomControl("website", websiteZoom));
 		}
 
 		const count = surface.unpublishedChangeCount;
@@ -1206,6 +1349,9 @@ export class SurfaceView {
 			effectiveMode === "preview" ? shownCount : site === "live" && count > 0 ? count : openWorkCount;
 		this.#notchPill.replaceChildren(
 			h("span", { class: "surface-notch-label" }, notchLabel),
+			...(showWebsiteZoom && websiteZoom !== DEFAULT_SURFACE_ZOOM
+				? [h("span", { class: "surface-notch-zoom" }, `${Math.round(websiteZoom * 100)}%`)]
+				: []),
 			...(notchCount > 0 ? [h("span", { class: "surface-notch-count" }, String(notchCount))] : []),
 		);
 		const focused = document.activeElement;
@@ -1217,10 +1363,7 @@ export class SurfaceView {
 				index === 0 ? [group] : [h("span", { class: "surface-pill-divider", "aria-hidden": "true" }), group],
 			),
 		);
-		if (focusKey !== undefined)
-			[...this.#notchBar.querySelectorAll<HTMLElement>("[data-act]")]
-				.find((item) => barFocusKey(item) === focusKey)
-				?.focus({ preventScroll: true });
+		restoreBarFocus(this.#notchBar, focusKey);
 		this.#barPinned = Boolean(address) && this.#address.mark() === "private";
 		if (this.#barPinned) this.#barOpen = true;
 		this.#paintNotch();
@@ -1893,6 +2036,38 @@ export class SurfaceView {
 			case "device":
 				store.setDevice(target.dataset.device === "mobile" ? "mobile" : "desktop");
 				return;
+			case "zoom-out":
+			case "zoom-in": {
+				const dir = act === "zoom-in" ? 1 : -1;
+				if (target.dataset.zoomTarget === "phone") {
+					store.setPhoneZoom(stepSurfaceZoom(store.state.phoneZoom, dir));
+				} else {
+					store.setWebsiteZoom(stepSurfaceZoom(store.state.websiteZoom, dir));
+				}
+				return;
+			}
+			case "zoom-menu": {
+				const zoomTarget = target.dataset.zoomTarget === "phone" ? "phone" : "website";
+				const current = zoomTarget === "phone" ? store.state.phoneZoom : store.state.websiteZoom;
+				const box = target.getBoundingClientRect();
+				openContextMenu({
+					label: zoomTarget === "phone" ? t("Phone zoom") : t("Website zoom"),
+					x: box.left,
+					y: box.bottom + 6,
+					opener: target,
+					findOpener: () =>
+						this.el.querySelector<HTMLElement>(`[data-act="zoom-menu"][data-zoom-target="${zoomTarget}"]`),
+					items: SURFACE_ZOOM_LEVELS.map((level) => ({
+						label: `${Math.round(level * 100)}%`,
+						checked: Math.abs(current - level) < 0.001,
+						select: () => {
+							if (zoomTarget === "phone") store.setPhoneZoom(level);
+							else store.setWebsiteZoom(level);
+						},
+					})),
+				});
+				return;
+			}
 			case "phone-model": {
 				const model = phoneModelById(target.dataset.phoneModel);
 				this.#phoneModelId = model.id;
