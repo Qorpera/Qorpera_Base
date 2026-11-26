@@ -1437,30 +1437,84 @@ describe("The studio voice tour", () => {
 });
 
 describe("Surface links in messages", () => {
-	it("draws one card per surface and tab under the words, with the links inline", () => {
-		const prose = markdown(
-			"See [Strategy](surface:strategy), the [Economics](surface:strategy#economics) tab and [Strategy](surface:strategy) again.",
+	const slugs = (root: ParentNode) =>
+		[...root.querySelectorAll<HTMLElement>(".surface-card.is-figure")].map((figure) =>
+			figure.dataset.surfaceTab
+				? `${figure.dataset.surfaceSlug}#${figure.dataset.surfaceTab}`
+				: figure.dataset.surfaceSlug,
 		);
-		const cards = [...prose.querySelectorAll<HTMLElement>(".surface-card")];
-		const targets = cards.map((card) => [card.dataset.surfaceSlug, card.dataset.surfaceTab]);
-		expect(targets).toEqual([
-			["strategy", undefined],
-			["strategy", "economics"],
-		]);
-		expect(text(cards[1]!.querySelector(".app-card-title"))).toBe("Economics");
-		const links = [...prose.querySelectorAll<HTMLElement>("p .surface-link")];
-		expect(links.map((link) => [text(link), link.dataset.surfaceTab])).toEqual([
-			["Strategy", undefined],
-			["Economics", "economics"],
-			["Strategy", undefined],
-		]);
+	const classes = (parts: readonly HTMLElement[]) => parts.map((part) => part.className);
 
-		const bubbles = markdownBubbles("[Economics](surface:strategy#economics)");
-		const card = bubbles
-			.map((bubble) => bubble.querySelector<HTMLElement>('.surface-card[data-surface-slug="strategy"]'))
-			.find(Boolean);
-		expect(card?.dataset.surfaceTab).toBe("economics");
-		expect(bubbles.some((bubble) => bubble.querySelector(".surface-link"))).toBe(false);
+	it("draws a line of only interface links as one row of figures between the words", () => {
+		const parts = markdownBubbles(
+			[
+				"Your code is in. Website is ready to look at.",
+				"",
+				"[Website](surface:website) [Web App](surface:web-app), [Strategy](surface:strategy) and [Economics](surface:strategy#economics)",
+				"",
+				"Once you've approved Web App, archive OS Demo.",
+			].join("\n"),
+		);
+		expect(classes(parts)).toEqual(["message-prose", "app-cards surface-figures", "message-prose"]);
+		expect(slugs(parts[1]!)).toEqual(["website", "web-app", "strategy", "strategy#economics"]);
+		expect(texts(parts[1]!.querySelectorAll(".app-card-title"))).toEqual([
+			"Website",
+			"Web App",
+			"Strategy",
+			"Economics",
+		]);
+		expect(parts[1]!.querySelector(".app-card-note, .app-card-go")).toBeNull();
+	});
+
+	it("keeps a name among words as a bold link and adds each interface once at the end", () => {
+		const parts = markdownBubbles(
+			[
+				"I rebuilt [Website](surface:website) and started [Web App](surface:web-app).",
+				"",
+				"- Checked [Website](surface:website) again",
+				"",
+				"## [Strategy](surface:strategy)",
+			].join("\n"),
+		);
+		expect(parts.slice(0, -1).some((part) => part.querySelector(".surface-card"))).toBe(false);
+		expect(texts(parts[0]!.querySelectorAll("p .surface-link"))).toEqual(["Website", "Web App"]);
+		expect(parts[2]!.querySelector("h2 .surface-link")?.getAttribute("data-surface-slug")).toBe("strategy");
+		expect(parts.at(-1)!.className).toBe("app-cards surface-figures");
+		expect(slugs(parts.at(-1)!)).toEqual(["website", "web-app", "strategy"]);
+	});
+
+	it("adds no end row for interfaces the message already shows in a row", () => {
+		const parts = markdownBubbles(
+			"[Website](surface:website) [Strategy](surface:strategy)\n\nOpen [Website](surface:website) first.",
+		);
+		expect(classes(parts)).toEqual(["app-cards surface-figures", "message-prose"]);
+		expect(slugs(parts[0]!)).toEqual(["website", "strategy"]);
+	});
+
+	it("draws a list of only interface links as a row", () => {
+		const parts = markdownBubbles("Set up:\n\n- [Website](surface:website)\n- **[Web App](surface:web-app)**");
+		expect(classes(parts)).toEqual(["message-prose", "app-cards surface-figures"]);
+		expect(slugs(parts[1]!)).toEqual(["website", "web-app"]);
+	});
+
+	it("puts more than six interfaces on one compact line", () => {
+		const line = ["a", "b", "c", "d", "e", "f", "g"].map((slug) => `[${slug}](surface:${slug})`).join(" ");
+		const [row] = markdownBubbles(line);
+		expect(row?.className).toBe("app-cards surface-figures is-compact");
+		expect(slugs(row!)).toHaveLength(7);
+	});
+
+	it("draws the end row in markdown only when asked", () => {
+		const source = "See [Strategy](surface:strategy).";
+		expect(markdown(source).querySelector(".surface-figures")).toBeNull();
+		expect(text(markdown(source).querySelector("p .surface-link"))).toBe("Strategy");
+		expect(slugs(markdown(source, { surfaceRow: true }))).toEqual(["strategy"]);
+	});
+
+	it("leaves interface links as plain text where links are off", () => {
+		const prose = markdown("[Website](surface:website)", { links: false });
+		expect(prose.querySelector(".surface-card, .surface-link")).toBeNull();
+		expect(text(prose)).toBe("Website");
 	});
 });
 
