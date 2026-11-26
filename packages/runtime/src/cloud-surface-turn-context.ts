@@ -306,6 +306,89 @@ export function extractStrategyInterfaceSummary(
 	return brief ? brief.slice(0, 1500) : null;
 }
 
+export interface CompanyInterfacesFolderReader {
+	readText(path: string, maxBytes: number, signal: AbortSignal): Promise<{ readonly text: string } | null>;
+	list?(
+		parent: string,
+		options: { readonly after?: string; readonly limit?: number; readonly recursive?: boolean },
+		signal: AbortSignal,
+	): Promise<{ readonly entries: readonly unknown[] }>;
+}
+
+const MAX_INTERFACE_FOLDER_PROBES = 16;
+
+export async function loadCompanyInterfacesContext(
+	raw: unknown,
+	getFolder: () => CompanyInterfacesFolderReader,
+	signal: AbortSignal,
+): Promise<CompanyInterfacesContext | null> {
+	const interfaces = parseCompanyInterfacesResponse(raw);
+	if (interfaces.length === 0) return null;
+	const strategyInterface = interfaces.find((item) => item.slug === "strategy" || item.kind === "strategy");
+	const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
+	const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
+	const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
+	const folderRoots = [
+		...new Set(
+			interfaces
+				.filter((item) => item.sourceKind === "folder" && item.folderRoot)
+				.map((item) => item.folderRoot!.replace(/^\/+|\/+$/g, ""))
+				.filter(Boolean),
+		),
+	].slice(0, MAX_INTERFACE_FOLDER_PROBES);
+	if (!strategyRoot && !identityRoot && folderRoots.length === 0) {
+		return { interfaces, strategySummary: null, identitySummary: null };
+	}
+	let folderClient: CompanyInterfacesFolderReader;
+	try {
+		folderClient = getFolder();
+	} catch (error) {
+		if (signal.aborted) throw error;
+		return { interfaces, strategySummary: null, identitySummary: null };
+	}
+	const readOptionalText = async (path: string, maxBytes: number): Promise<string | null> => {
+		try {
+			const found = await folderClient.readText(path, maxBytes, signal);
+			const text = found?.text.trim();
+			return text ? text : null;
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return null;
+		}
+	};
+	const checkFolderExists = async (root: string): Promise<boolean | undefined> => {
+		if (typeof folderClient.list !== "function") return undefined;
+		try {
+			const page = await folderClient.list(root, { limit: 1 }, signal);
+			return page.entries.length > 0;
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return undefined;
+		}
+	};
+	const [strategyPlays, strategyBrief, identityBrief, existenceResults] = await Promise.all([
+		strategyRoot ? readOptionalText(`${strategyRoot}/plays.json`, 16_384) : Promise.resolve(null),
+		strategyRoot ? readOptionalText(`${strategyRoot}/brief.md`, 12_288) : Promise.resolve(null),
+		identityRoot ? readOptionalText(`${identityRoot}/brief.md`, 12_288) : Promise.resolve(null),
+		Promise.all(folderRoots.map(async (root) => [root, await checkFolderExists(root)] as const)),
+	]);
+	const existsByRoot = new Map<string, boolean>();
+	for (const [root, exists] of existenceResults) {
+		if (exists !== undefined) existsByRoot.set(root, exists);
+	}
+	const annotatedInterfaces = interfaces.map((item) => {
+		if (item.sourceKind !== "folder" || !item.folderRoot) return item;
+		const root = item.folderRoot.replace(/^\/+|\/+$/g, "");
+		const exists = existsByRoot.get(root);
+		return exists === undefined ? item : { ...item, folderExists: exists };
+	});
+	return {
+		interfaces: annotatedInterfaces,
+		strategySummary: extractStrategyInterfaceSummary(strategyPlays, strategyBrief),
+		identitySummary: identityBrief,
+	};
+}
+
 export function buildCompanyInterfacesSection(
 	ctx: CompanyInterfacesContext | null | undefined,
 	options: {

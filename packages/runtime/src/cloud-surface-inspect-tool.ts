@@ -576,7 +576,6 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 				}
 			}
 		}
-		for (const line of s.markLine ?? []) allNums.push(line.value);
 	}
 	const count = Math.max(...seriesList.map((s) => s.data.length), doc.categories?.length ?? 0, 1);
 	const cats = doc.categories ?? Array.from({ length: count }, (_, i) => String(i + 1));
@@ -650,7 +649,7 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 		return `<svg viewBox="0 0 ${W} ${H}" class="pv-svg">${legend}${gridLines}${shapes}${yLabels}</svg>`;
 	}
 
-	const { min: minY, max: maxY } = resolveAxisSpan(allNums, doc.yAxisMin, doc.yAxisMax, doc.kind !== "scatter");
+	const { min: minY, max: maxY } = resolveAxisSpan(allNums, doc.yAxisMin, doc.yAxisMax, true);
 	const padL = 62;
 	const padR = 20;
 	const padT = 26;
@@ -691,7 +690,7 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 			});
 		});
 	} else if (doc.kind === "scatter") {
-		const { min: minX, max: maxX } = resolveAxisSpan(allXs, doc.xAxisMin, doc.xAxisMax, false);
+		const { min: minX, max: maxX } = resolveAxisSpan(allXs, doc.xAxisMin, doc.xAxisMax, true);
 		const xFor = (val: number) => padL + ((val - minX) / (maxX - minX || 1)) * plotW;
 		seriesList.forEach((s, sIdx) => {
 			const seriesColor = seriesColors[sIdx]!;
@@ -744,7 +743,7 @@ function renderChartSvg(doc: SurfaceChartDocument, dark: boolean): string {
 	}
 	let xLabels = "";
 	if (doc.kind === "scatter") {
-		const { min: minX, max: maxX } = resolveAxisSpan(allXs, doc.xAxisMin, doc.xAxisMax, false);
+		const { min: minX, max: maxX } = resolveAxisSpan(allXs, doc.xAxisMin, doc.xAxisMax, true);
 		xLabels = [0, 0.25, 0.5, 0.75, 1]
 			.map((f) => {
 				const val = minX + (maxX - minX) * f;

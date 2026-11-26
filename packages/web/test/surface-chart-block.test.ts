@@ -207,6 +207,7 @@ describe("Studio chart block", () => {
 						blocks: [
 							{ type: "chart", id: "scores", from: "charts/scores.json" },
 							{ type: "chart", id: "horiz", from: "charts/horiz.json" },
+							{ type: "chart", id: "hsl-area", from: "charts/hsl-area.json" },
 						],
 					},
 				],
@@ -234,6 +235,12 @@ describe("Studio chart block", () => {
 				categories: ["Speed"],
 				series: [{ name: "Pct", color: "#7c4dff", data: [65] }],
 			}),
+			[`${ROOT}/charts/hsl-area.json`]: JSON.stringify({
+				kind: "area",
+				title: "HSL Area",
+				categories: ["Jan", "Feb"],
+				series: [{ name: "Actual", color: "hsl(152 65% 38%)", data: [10, 20] }],
+			}),
 		};
 		const plan = view.plan({
 			surface,
@@ -251,7 +258,7 @@ describe("Studio chart block", () => {
 		for (const task of plan.tasks) document.body.append(task.build());
 
 		const hosts = [...document.querySelectorAll<HTMLElement>(".studio-chart-host")];
-		expect(hosts).toHaveLength(2);
+		expect(hosts).toHaveLength(3);
 		await vi.waitFor(
 			() => {
 				expect(hosts.every((host) => Boolean(getInstanceByDom(host)?.getOption()))).toBe(true);
@@ -275,6 +282,17 @@ describe("Studio chart block", () => {
 		expect(horizOpt.xAxis[0]?.min).toBe(0);
 		expect(horizOpt.xAxis[0]?.max).toBe(100);
 		expect(horizOpt.series[0]?.itemStyle?.color).toBe("#7c4dff");
+
+		const areaOpt = getInstanceByDom(hosts[2]!)!.getOption() as {
+			series: { areaStyle?: { color?: { colorStops?: { color?: string }[] } } }[];
+		};
+		const stops = areaOpt.series[0]?.areaStyle?.color?.colorStops ?? [];
+		expect(stops).toHaveLength(2);
+		for (const stop of stops) {
+			const match = /^rgba\(\d+, \d+, \d+, (0(?:\.\d+)?)\)$/.exec(stop.color ?? "");
+			expect(match).not.toBeNull();
+			expect(Number(match?.[1])).toBeLessThan(1);
+		}
 
 		controller.abort();
 	});

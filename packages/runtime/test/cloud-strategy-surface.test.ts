@@ -8,7 +8,11 @@ import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operati
 import { CLOUD_PLATFORM_SKILLS, MAX_STUDIO_SKILL_BYTES } from "../src/cloud-platform-skills.ts";
 import { createNarrateExplainerTool } from "../src/cloud-surface-narrate-tool.ts";
 import { runSurfaceSessionTurn } from "../src/cloud-surface-session-runner.ts";
-import { extractStrategyInterfaceSummary } from "../src/cloud-surface-turn-context.ts";
+import {
+	buildCompanyInterfacesSection,
+	extractStrategyInterfaceSummary,
+	loadCompanyInterfacesContext,
+} from "../src/cloud-surface-turn-context.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 function fakeIdentity() {
@@ -115,6 +119,118 @@ describe("strategy surface and custom studio runtime integration", () => {
 		expect(instructions).toContain("plays.json");
 		expect(instructions).toContain("hypotheses.json");
 		expect(instructions).toContain("landscape.json");
+	});
+
+	it("probes Studio folder existence in loadCompanyInterfacesContext, enforces 16-root cap, and propagates aborts", async () => {
+		const listed: string[] = [];
+		const folderClient = {
+			readText: vi.fn(async () => null),
+			list: vi.fn(async (parent: string, options: { limit?: number }) => {
+				expect(options.limit).toBe(1);
+				listed.push(parent);
+				if (parent === "surfaces/populated") return { entries: [{ path: "surfaces/populated/layout.json" }] };
+				if (parent === "surfaces/errored") throw new Error("transient failure");
+				return { entries: [] };
+			}),
+		};
+		const getFolder = vi.fn(() => folderClient);
+		const extraFolders = Array.from({ length: 15 }, (_, index) => ({
+			slug: `room-${index}`,
+			title: `Room ${index}`,
+			kind: "custom",
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: `surfaces/room-${index}`,
+			repositoryKey: null,
+			briefSummary: null,
+			isGlobal: false,
+		}));
+		const raw = {
+			schema: "qorpera.company-interfaces/v1",
+			interfaces: [
+				{
+					slug: "populated",
+					title: "Populated",
+					kind: "custom",
+					archetype: "studio",
+					sourceKind: "folder",
+					folderRoot: "surfaces/populated",
+					repositoryKey: null,
+					briefSummary: "Has published files",
+					isGlobal: false,
+				},
+				{
+					slug: "empty",
+					title: "Empty",
+					kind: "custom",
+					archetype: "studio",
+					sourceKind: "folder",
+					folderRoot: "surfaces/empty",
+					repositoryKey: null,
+					briefSummary: null,
+					isGlobal: false,
+				},
+				{
+					slug: "errored",
+					title: "Errored",
+					kind: "custom",
+					archetype: "studio",
+					sourceKind: "folder",
+					folderRoot: "surfaces/errored",
+					repositoryKey: null,
+					briefSummary: null,
+					isGlobal: false,
+				},
+				...extraFolders,
+			],
+		};
+
+		const loaded = await loadCompanyInterfacesContext(raw, getFolder, new AbortController().signal);
+		expect(getFolder).toHaveBeenCalledTimes(1);
+		expect(listed).toHaveLength(16);
+		expect(listed).not.toContain("surfaces/room-13");
+		expect(listed).not.toContain("surfaces/room-14");
+		expect(loaded?.interfaces.find((item) => item.slug === "populated")?.folderExists).toBe(true);
+		expect(loaded?.interfaces.find((item) => item.slug === "empty")?.folderExists).toBe(false);
+		expect(loaded?.interfaces.find((item) => item.slug === "errored")?.folderExists).toBeUndefined();
+		expect(loaded?.interfaces.find((item) => item.slug === "room-14")?.folderExists).toBeUndefined();
+
+		const section = buildCompanyInterfacesSection(loaded);
+		expect(section).toContain("`/company/surfaces/populated` — Has published files");
+		expect(section).toContain("`/company/surfaces/empty` (starter — folder created on first publish)");
+		expect(section).not.toContain("`/company/surfaces/errored` (starter");
+
+		const abortController = new AbortController();
+		const abortErr = new Error("aborted");
+		const abortingFolder = {
+			readText: vi.fn(async () => null),
+			list: vi.fn(async () => {
+				abortController.abort(abortErr);
+				throw abortErr;
+			}),
+		};
+		await expect(
+			loadCompanyInterfacesContext(
+				{
+					schema: "qorpera.company-interfaces/v1",
+					interfaces: [
+						{
+							slug: "empty",
+							title: "Empty",
+							kind: "custom",
+							archetype: "studio",
+							sourceKind: "folder",
+							folderRoot: "surfaces/empty",
+							repositoryKey: null,
+							briefSummary: null,
+							isGlobal: false,
+						},
+					],
+				},
+				() => abortingFolder,
+				abortController.signal,
+			),
+		).rejects.toThrow("aborted");
 	});
 
 	it("extractStrategyInterfaceSummary parses contract-shaped plays.json (summary, verdict, play.name, play.thesis) and falls back to brief.md", () => {
