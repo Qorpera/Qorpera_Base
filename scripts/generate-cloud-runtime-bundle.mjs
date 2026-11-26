@@ -16,7 +16,7 @@ const activationRequires = Object.freeze([
 	[
 		"20260930902000_surface_discard_agent_awareness",
 		"#2381 (surface discard awareness): bundle 284 pairs with resolvedChanges turn-read payload",
-		"strpos(pg_get_functiondef('public.qorpera_native_surface_read_session_turn(uuid)'::regprocedure), '''resolvedChanges''') > 0",
+		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)')), ''), '''resolvedChanges''') > 0",
 	],
 	[
 		"20260930903000_image_generation_gemini_and_gpt",
@@ -66,7 +66,7 @@ const activationRequires = Object.freeze([
 	[
 		"20260930911000_strategy_surface",
 		"#2400 (Strategy Studio and Custom Surfaces): bundle 284 pairs with strategy surface kind constraint",
-		"exists (select 1 from pg_constraint where conrelid = 'public.qorpera_surfaces'::regclass and pg_get_constraintdef(oid) like '%strategy%')",
+		"exists (select 1 from pg_constraint where conrelid = to_regclass('public.qorpera_surfaces') and pg_get_constraintdef(oid) like '%strategy%')",
 	],
 	[
 		"20260930912000_coding_interfaces_context_and_tools",
@@ -76,7 +76,7 @@ const activationRequires = Object.freeze([
 	[
 		"20260930913000_studio_inspect_and_draw_tools",
 		"#2411 (Studio visual inspect and draw tools): bundle 284 pairs with compose_surface_layout in qorpera_begin_native_coding_execution",
-		"strpos(pg_get_functiondef('public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)'::regprocedure), 'compose_surface_layout') > 0",
+		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)')), ''), 'compose_surface_layout') > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
