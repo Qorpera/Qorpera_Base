@@ -652,6 +652,8 @@ declare
 	v_job public.qorpera_surface_jobs%rowtype;
 	v_reg jsonb;
 	v_version_id uuid;
+	v_publish_head_sha text;
+	v_sqlstate text;
 	v_err text;
 begin
 	select * into v_build from public.qorpera_surface_preview_builds where id = p_build_id;
@@ -688,6 +690,9 @@ begin
 					v_build.commit_sha,
 					null
 				);
+				if v_reg ->> 'state' = 'refused' or nullif(v_reg ->> 'versionId', '') is null then
+					raise exception '%', coalesce(nullif(v_reg ->> 'code', ''), 'SITE_REGISTER_REFUSED');
+				end if;
 				v_version_id := (v_reg ->> 'versionId')::uuid;
 				update public.qorpera_surface_previews p
 				set
@@ -703,10 +708,33 @@ begin
 					updated_at = v_now
 				where p.build_id = v_build.id and p.status = 'building' and p.lease_token is null;
 			exception when others then
-				v_err := left(sqlerrm, 1000);
-				update public.qorpera_surface_previews
-				set status = 'failed', error_detail = v_err, lease_expires_at = null, lease_token = null, updated_at = v_now
-				where build_id = v_build.id and status = 'building' and lease_token is null;
+				v_sqlstate := sqlstate;
+				if v_sqlstate in ('55P03', '57014', '40P01', '40001') then
+					update public.qorpera_surface_previews p
+					set
+						status = 'composing',
+						attempts = 0,
+						lease_expires_at = null,
+						lease_token = null,
+						expires_at = case when public.qorpera_surface_preview_selected(p.id) then p.expires_at else least(p.expires_at, v_now) end,
+						updated_at = v_now
+					where p.build_id = v_build.id and p.status = 'building' and p.lease_token is null;
+				else
+					v_err := public.qorpera_surface_preview_build_detail(
+						'PREVIEW_BUILD_FAILED',
+						'The built preview could not be registered: ' || left(sqlerrm, 700)
+					);
+					update public.qorpera_surface_preview_builds
+					set state = 'failed', error_detail = v_err, built_tree_sha = null,
+						manifest_sha256 = null, manifest_json = null, file_count = null, total_bytes = null, has_credential_inputs = false,
+						updated_at = v_now
+					where id = v_build.id
+					returning * into v_build;
+					update public.qorpera_surface_previews
+					set status = 'failed', error_detail = v_err, lease_expires_at = null, lease_token = null, updated_at = v_now
+					where build_id = v_build.id and status = 'building' and lease_token is null;
+					perform public.qorpera_surface_build_hand_back(v_build.id);
+				end if;
 			end;
 		end if;
 	else
@@ -727,8 +755,13 @@ begin
 		for update
 	loop
 		if v_build.state = 'built' and v_build.manifest_json is not null and v_build.manifest_sha256 is not null then
+			v_publish_head_sha := coalesce(
+				nullif(v_job.payload ->> 'requestedHeadSha', ''),
+				nullif(v_job.payload ->> 'liveHeadSha', ''),
+				v_build.commit_sha
+			);
 			begin
-				perform public.qorpera_surface_site_deployment_register(
+				v_reg := public.qorpera_surface_site_deployment_register(
 					v_build.surface_id,
 					v_build.tree_sha,
 					v_build.manifest_sha256,
@@ -737,12 +770,15 @@ begin
 					v_build.total_bytes,
 					v_build.has_credential_inputs,
 					true,
-					v_build.commit_sha,
+					v_publish_head_sha,
 					null
 				);
+				if v_reg ->> 'state' = 'refused' or nullif(v_reg ->> 'versionId', '') is null then
+					raise exception '%', coalesce(nullif(v_reg ->> 'code', ''), 'SITE_REGISTER_REFUSED');
+				end if;
 				update public.qorpera_surfaces
 				set
-					published_head_sha = coalesce(v_build.commit_sha, live_head_sha),
+					published_head_sha = coalesce(v_publish_head_sha, live_head_sha),
 					unpublished_change_count = 0,
 					publish_status = 'idle',
 					last_publish_error = null,
@@ -762,13 +798,30 @@ begin
 					updated_at = v_now
 				where id = v_job.id;
 			exception when others then
-				v_err := left(sqlerrm, 1000);
-				update public.qorpera_surfaces
-				set publish_status = 'failed', last_publish_error = v_err, updated_at = v_now
-				where id = v_job.surface_id;
-				update public.qorpera_surface_jobs
-				set status = 'failed', error_detail = v_err, lease_expires_at = null, completed_at = v_now, updated_at = v_now
-				where id = v_job.id;
+				v_sqlstate := sqlstate;
+				if v_sqlstate in ('55P03', '57014', '40P01', '40001') then
+					update public.qorpera_surface_jobs
+					set status = 'queued', attempts = 0, lease_expires_at = null, updated_at = v_now
+					where id = v_job.id;
+				else
+					v_err := public.qorpera_surface_preview_build_detail(
+						'PREVIEW_BUILD_FAILED',
+						'The built site could not be published: ' || left(sqlerrm, 700)
+					);
+					update public.qorpera_surface_preview_builds
+					set state = 'failed', error_detail = v_err, built_tree_sha = null,
+						manifest_sha256 = null, manifest_json = null, file_count = null, total_bytes = null, has_credential_inputs = false,
+						updated_at = v_now
+					where id = v_build.id
+					returning * into v_build;
+					update public.qorpera_surfaces
+					set publish_status = 'failed', last_publish_error = v_err, updated_at = v_now
+					where id = v_job.surface_id;
+					update public.qorpera_surface_jobs
+					set status = 'failed', error_detail = v_err, lease_expires_at = null, completed_at = v_now, updated_at = v_now
+					where id = v_job.id;
+					perform public.qorpera_surface_build_hand_back(v_build.id);
+				end if;
 			end;
 		elsif v_build.state = 'built' then
 			update public.qorpera_surface_jobs
@@ -949,7 +1002,12 @@ begin
 		where id = v_preview.id;
 	else
 		update public.qorpera_surface_jobs
-		set build_id = v_build.id, lease_token = null, lease_expires_at = null, updated_at = v_now
+		set
+			build_id = v_build.id,
+			payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{requestedHeadSha}', to_jsonb(p_commit_sha), true),
+			lease_token = null,
+			lease_expires_at = null,
+			updated_at = v_now
 		where id = v_job.id;
 	end if;
 

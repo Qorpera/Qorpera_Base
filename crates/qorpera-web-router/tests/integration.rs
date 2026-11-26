@@ -2622,12 +2622,21 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
     let v1_html = Bytes::from("<!doctype html><html><body><h1>Preview V1</h1></body></html>");
     let v2_html = Bytes::from("<!doctype html><html><body><h1>Preview V2</h1></body></html>");
     let chunk_js = Bytes::from("export const chunk = 'cached-surface-preview-asset';\n".repeat(40));
+    let v1_hero = Bytes::from_static(b"PNG-V1-HERO-IMAGE-BYTES");
+    let v2_hero = Bytes::from_static(b"PNG-V2-HERO-IMAGE-BYTES-UPDATED");
+    let v1_date_photo = Bytes::from_static(b"JPG-DATE-V1");
     let v1_sha = sha256_hex(&v1_html);
     let v2_sha = sha256_hex(&v2_html);
     let chunk_sha = sha256_hex(&chunk_js);
+    let v1_hero_sha = sha256_hex(&v1_hero);
+    let v2_hero_sha = sha256_hex(&v2_hero);
+    let v1_date_photo_sha = sha256_hex(&v1_date_photo);
     blobs.put(&v1_sha, v1_html.clone(), true).await.unwrap();
     blobs.put(&v2_sha, v2_html.clone(), true).await.unwrap();
     blobs.put(&chunk_sha, chunk_js.clone(), true).await.unwrap();
+    blobs.put(&v1_hero_sha, v1_hero.clone(), false).await.unwrap();
+    blobs.put(&v2_hero_sha, v2_hero.clone(), false).await.unwrap();
+    blobs.put(&v1_date_photo_sha, v1_date_photo.clone(), false).await.unwrap();
 
     let mut v1_files = HashMap::new();
     v1_files.insert("index.html".to_string(), html_file(v1_sha.clone(), v1_html.len()));
@@ -2640,6 +2649,24 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
             immutable: true,
         },
     );
+    v1_files.insert(
+        "assets/hero.png".to_string(),
+        ManifestFile {
+            sha256: v1_hero_sha.clone(),
+            bytes: v1_hero.len(),
+            content_type: "image/png".to_string(),
+            immutable: true,
+        },
+    );
+    v1_files.insert(
+        "photo-20240115.jpg".to_string(),
+        ManifestFile {
+            sha256: v1_date_photo_sha.clone(),
+            bytes: v1_date_photo.len(),
+            content_type: "image/jpeg".to_string(),
+            immutable: true,
+        },
+    );
     let mut v2_files = HashMap::new();
     v2_files.insert("index.html".to_string(), html_file(v2_sha.clone(), v2_html.len()));
     v2_files.insert(
@@ -2648,6 +2675,15 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
             sha256: chunk_sha.clone(),
             bytes: chunk_js.len(),
             content_type: "application/javascript; charset=utf-8".to_string(),
+            immutable: true,
+        },
+    );
+    v2_files.insert(
+        "assets/hero.png".to_string(),
+        ManifestFile {
+            sha256: v2_hero_sha.clone(),
+            bytes: v2_hero.len(),
+            content_type: "image/png".to_string(),
             immutable: true,
         },
     );
@@ -2689,6 +2725,16 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
     auth.insert_member_pass(
         "atelier-nord--p1.qorpera.site",
         "pass-v2",
+        RedeemedMemberPass {
+            site_id: "site-surf".to_string(),
+            version_id: Some("ver-2".to_string()),
+            password_version: 4,
+            max_age: 43200,
+        },
+    );
+    auth.insert_member_pass(
+        "atelier-nord--p0.qorpera.site",
+        "pass-v2-p0",
         RedeemedMemberPass {
             site_id: "site-surf".to_string(),
             version_id: Some("ver-2".to_string()),
@@ -2845,4 +2891,51 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
     )
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/assets/hero.png",
+            &[("cookie", cookie_p0.as_str())],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, v1_hero);
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
+    assert_eq!(hdrs.get("etag").unwrap(), &format!("\"{v1_hero_sha}\""));
+
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/photo-20240115.jpg",
+            &[("cookie", cookie_p0.as_str())],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
+
+    let (st, hdrs, _) = http_call(pub_addr, post_pass("atelier-nord--p0.qorpera.site", "pass-v2-p0")).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let cookie_p0_v2 = first_cookie(&hdrs);
+
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/assets/hero.png",
+            &[
+                ("cookie", cookie_p0_v2.as_str()),
+                ("if-none-match", &format!("\"{v1_hero_sha}\"")),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, v2_hero);
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
+    assert_eq!(hdrs.get("etag").unwrap(), &format!("\"{v2_hero_sha}\""));
 }

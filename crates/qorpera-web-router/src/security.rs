@@ -428,6 +428,35 @@ pub fn frame_ancestors_csp(origins: &[String]) -> String {
     out
 }
 
+pub fn is_content_hashed_preview_asset(path: &str) -> bool {
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    let Some((stem, ext)) = basename.rsplit_once('.') else {
+        return false;
+    };
+    if ext.is_empty() || !ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let Some(sep_idx) = stem.rfind(['-', '.']) else {
+        return false;
+    };
+    let token = &stem[sep_idx + 1..];
+    if token.len() < 8 || token.len() > 64 {
+        return false;
+    }
+    let mut has_digit = false;
+    let mut has_letter = false;
+    for b in token.bytes() {
+        if b.is_ascii_digit() {
+            has_digit = true;
+        } else if b.is_ascii_alphabetic() {
+            has_letter = true;
+        } else if b != b'_' {
+            return false;
+        }
+    }
+    has_digit && has_letter
+}
+
 pub fn render_preview_inspector_script(origins: &[String]) -> String {
     let allowed = serde_json::to_string(origins).unwrap_or_else(|_| "[]".to_string());
     format!(
@@ -662,5 +691,17 @@ mod tests {
         let mut only_platform = HeaderMap::new();
         only_platform.insert("cookie", format!("{SITE_SESSION_COOKIE}=v1.999.abc").parse().unwrap());
         assert_eq!(strip_platform_cookie(&only_platform), None);
+    }
+
+    #[test]
+    fn preview_immutable_cache_requires_mixed_content_hash_in_basename() {
+        assert!(is_content_hashed_preview_asset("assets/app-a1b2c3d4.js"));
+        assert!(is_content_hashed_preview_asset("assets/index-B7k9x2Pq.js"));
+        assert!(is_content_hashed_preview_asset("_next/static/chunks/main.9f8e7d6c.css"));
+        assert!(!is_content_hashed_preview_asset("assets/hero.png"));
+        assert!(!is_content_hashed_preview_asset("assets/logo.svg"));
+        assert!(!is_content_hashed_preview_asset("photo-20240115.jpg"));
+        assert!(!is_content_hashed_preview_asset("assets/branding-statement.css"));
+        assert!(!is_content_hashed_preview_asset("index.html"));
     }
 }

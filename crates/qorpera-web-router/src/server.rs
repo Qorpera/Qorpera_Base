@@ -16,8 +16,8 @@ use crate::routes::{
 };
 use crate::security::{
     check_cross_site_write, constant_time_eq, extract_client_ip_cow, frame_ancestors_csp,
-    inject_preview_banner, inject_preview_inspector, parse_cookie, prefers_danish,
-    render_almost_ready_page, render_app_unavailable_page, render_not_found_page,
+    inject_preview_banner, inject_preview_inspector, is_content_hashed_preview_asset, parse_cookie,
+    prefers_danish, render_almost_ready_page, render_app_unavailable_page, render_not_found_page,
     render_not_live_page, render_password_page, render_preview_inspector_script,
     render_takedown_page, sanitize_next_path, sanitize_redirect_location, sign_preview_cookie,
     sign_session_cookie, sign_surface_preview_cookie, verify_preview_cookie, verify_session_cookie,
@@ -2235,7 +2235,11 @@ fn build_static_response(
     body: BoxBody,
 ) -> Response<BoxBody> {
     let cache_control = if !is_public {
-        if preview_mode == PreviewMode::SurfaceInspector && !is_html && file.immutable {
+        if preview_mode == PreviewMode::SurfaceInspector
+            && !is_html
+            && file.immutable
+            && is_content_hashed_preview_asset(resolved_path)
+        {
             "private, max-age=31536000, immutable"
         } else {
             "private, no-cache, no-transform"

@@ -298,6 +298,86 @@ begin
 		v_err := sqlerrm;
 	end;
 	perform pg_temp.snep_assert(v_err = 'SITE_CONTAINS_CREDENTIAL_INPUTS', 'public live promotion refuses credential inputs: ' || v_err);
+
+	update public.qorpera_company_sites set is_public = false where id = v_site.id;
+	update public.qorpera_surfaces
+	set live_head_sha = repeat('4', 40), published_head_sha = repeat('2', 40), unpublished_change_count = 1
+	where id = v_surface;
+
+	insert into public.qorpera_surface_previews (
+		surface_id, profile_id, requested_by_user_id, composition_key, short_host_id,
+		base_sha, selected_change_ids, status, lease_token, lease_expires_at, expires_at
+	) values (
+		v_surface, v_company, v_owner, 'shared-tree-test', 'shrdtree',
+		repeat('3', 40), '{}'::uuid[], 'building', gen_random_uuid(), clock_timestamp() + interval '5 minutes', clock_timestamp() + interval '1 hour'
+	)
+	returning id, lease_token into strict v_p1, v_lease;
+
+	v_req := pg_temp.snep_service(format(
+		'select public.qorpera_surface_request_build(%L, %L, %L, %L, %L, %L)',
+		'preview', v_p1, v_lease, repeat('3', 40), repeat('b', 40), v_recipe
+	));
+	v_build_id := (v_req ->> 'buildId')::uuid;
+	perform pg_temp.snep_assert(v_req ->> 'state' = 'waiting', 'preview queues shared build on tree b');
+
+	perform pg_temp.snep_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_publish_surface(v_surface);
+	reset role;
+	v_claimed := pg_temp.snep_service($q$select public.qorpera_surface_claim_pending_jobs_for_lane(16, 'code_repo')$q$);
+	select (elem ->> 'jobId')::uuid, (elem ->> 'leaseToken')::uuid into strict v_pub_job, v_pub_lease
+	from jsonb_array_elements(v_claimed -> 'publishes') elem where (elem ->> 'surfaceId')::uuid = v_surface;
+
+	v_req := pg_temp.snep_service(format(
+		'select public.qorpera_surface_request_build(%L, %L, %L, %L, %L, %L)',
+		'publish', v_pub_job, v_pub_lease, repeat('4', 40), repeat('b', 40), v_recipe
+	));
+	perform pg_temp.snep_assert(
+		v_req ->> 'state' = 'waiting' and (v_req ->> 'buildId')::uuid = v_build_id,
+		'publish attaches to running preview build with same tree but distinct commit sha'
+	);
+
+	v_coding_claim := pg_temp.snep_service($q$select public.qorpera_claim_coding_session('exec-1398', 60)$q$);
+	v_b_lease := (v_coding_claim ->> 'leaseToken')::uuid;
+	perform pg_temp.snep_service(format('select public.qorpera_begin_surface_preview_build(%L, %L)', v_worker.id, v_b_lease));
+	perform pg_temp.snep_service(format(
+		'select public.qorpera_complete_surface_preview_build(%L, %L, %L, %L, null, null, %L, %L::jsonb, 2, 2112, false)',
+		v_worker.id, v_b_lease, v_build_id, 'built', repeat('9', 64), v_manifest::text
+	));
+	perform pg_temp.snep_assert(
+		(select status = 'completed' from public.qorpera_surface_jobs where id = v_pub_job)
+		and (select published_head_sha = repeat('4', 40) from public.qorpera_surfaces where id = v_surface),
+		'direct publish settle uses publish job requestedHeadSha instead of preview composite commit_sha'
+	);
+
+	update public.qorpera_company_sites set is_public = true where id = v_site.id;
+	update public.qorpera_surfaces
+	set live_head_sha = repeat('5', 40), published_head_sha = repeat('4', 40), unpublished_change_count = 1
+	where id = v_surface;
+	perform pg_temp.snep_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_publish_surface(v_surface);
+	reset role;
+	v_claimed := pg_temp.snep_service($q$select public.qorpera_surface_claim_pending_jobs_for_lane(16, 'code_repo')$q$);
+	select (elem ->> 'jobId')::uuid, (elem ->> 'leaseToken')::uuid into strict v_pub_job, v_pub_lease
+	from jsonb_array_elements(v_claimed -> 'publishes') elem where (elem ->> 'surfaceId')::uuid = v_surface;
+	v_req := pg_temp.snep_service(format(
+		'select public.qorpera_surface_request_build(%L, %L, %L, %L, %L, %L)',
+		'publish', v_pub_job, v_pub_lease, repeat('5', 40), repeat('c', 40), v_recipe
+	));
+	v_build_id := (v_req ->> 'buildId')::uuid;
+	v_coding_claim := pg_temp.snep_service($q$select public.qorpera_claim_coding_session('exec-1398', 60)$q$);
+	v_b_lease := (v_coding_claim ->> 'leaseToken')::uuid;
+	perform pg_temp.snep_service(format('select public.qorpera_begin_surface_preview_build(%L, %L)', v_worker.id, v_b_lease));
+	perform pg_temp.snep_service(format(
+		'select public.qorpera_complete_surface_preview_build(%L, %L, %L, %L, null, null, %L, %L::jsonb, 2, 2112, true)',
+		v_worker.id, v_b_lease, v_build_id, 'built', repeat('8', 64), v_manifest::text
+	));
+	perform pg_temp.snep_assert(
+		(select publish_status = 'failed' and split_part(last_publish_error, E'\n', 1) = 'PREVIEW_BUILD_FAILED' from public.qorpera_surfaces where id = v_surface)
+		and (select state = 'failed' and split_part(error_detail, E'\n', 1) = 'PREVIEW_BUILD_FAILED' from public.qorpera_surface_preview_builds where id = v_build_id),
+		'settle register refusal wraps error with PREVIEW_BUILD_FAILED header and fails build for hand-back'
+	);
 end $$;
 
 rollback;
