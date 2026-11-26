@@ -7,7 +7,7 @@ description: How to build the company's Analytics interface, or a numbers tab on
 
 This page shows how the company is doing, in its own numbers, and what to do about it. A founder looks for ten seconds and should leave knowing whether things are better or worse than last time, and why.
 
-On another interface, a numbers tab follows the same rules for that page's subject (one product's sales, a plan's targets): one tab in its layout, in its colours.
+On another interface, a numbers tab follows these rules for that page's subject (one product's sales, a plan's targets), in the page's colours.
 
 ## Where numbers come from
 - Only from questions: the platform's own (orders, site, money; data_describe on qorpera lists them) or a named question in a company database. Read each with data_query and look at the answer before you draw it.
@@ -30,7 +30,7 @@ On another interface, a numbers tab follows the same rules for that page's subje
 
 ## Colour
 - Choose the page's colours once, in the layout's colors, and every chart follows. Charts name jobs (main, compare, up, down, series), never colours.
-- Start from the company preset, which links the jobs to Identity's palette. Choose one-colour for parts of one whole, calm when one series matters, bright when more than five things must be told apart, or your own; say why.
+- Start from the company preset, which links the jobs to Identity's palette. Choose one-colour for parts of one whole, calm when one series matters, bright when more than five must be told apart, or your own; say why.
 - With no Identity yet, keep the quiet company preset; link to Identity once it has a palette.
 - Things with a colour of their own keep it: bind a product's colourway to its own page.
 - Say direction twice: the up or down colour and an arrow or sign. Down is never the brand's main colour.
