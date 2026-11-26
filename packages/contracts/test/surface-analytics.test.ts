@@ -761,10 +761,7 @@ describe("the Analytics starter", () => {
 		expect(SURFACE_ASK_FORMAT).toContain("kind line|area|bar|pie|funnel, default line");
 		expect(SURFACE_COLORS_FORMAT).toContain('"preset":"company"|"one-colour"|"calm"|"bright"');
 		for (const [kind, layout] of Object.entries(SURFACE_STARTER_LAYOUTS))
-			expect(describeSurfaceFormats(layout).slice(-2), kind).toEqual([
-				SURFACE_ASK_FORMAT,
-				SURFACE_COLORS_FORMAT,
-			]);
+			expect(describeSurfaceFormats(layout).slice(-2), kind).toEqual([SURFACE_ASK_FORMAT, SURFACE_COLORS_FORMAT]);
 		expect(describeSurfaceFormats(parseSurfaceLayout(layoutWith([{ type: "table", from: "a.json" }])))).toEqual([
 			SURFACE_ASK_FORMAT,
 			SURFACE_COLORS_FORMAT,
