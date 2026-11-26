@@ -3165,12 +3165,47 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 					}),
 				},
 			});
-			await expect(
-				startFailRuntime.execute(fFail.request, identityRoot, fFail.context.signal, fFail.turn),
-			).rejects.toThrow("CODING_CLAUDE_BOX_FAILED:box-unknown:ENOENT");
+			let startErr: unknown;
+			try {
+				await startFailRuntime.execute(fFail.request, identityRoot, fFail.context.signal, fFail.turn);
+			} catch (error) {
+				startErr = error;
+			}
+			expect(startErr).toBeInstanceOf(Error);
+			expect((startErr as Error).message).toBe("CODING_CLAUDE_BOX_FAILED:BOX_UNKNOWN_ENOENT");
+			expect(nativeProviderFailureCode(startErr)).toBe("CODING_CLAUDE_BOX_FAILED:BOX_UNKNOWN_ENOENT");
 			expect(existsSync(startLoginFolder)).toBe(false);
 			expect(existsSync(startScratchRoot)).toBe(false);
 			expect(existsSync(startMcpSocket)).toBe(false);
+
+			const fExit70 = prepClaude();
+			const exit70Runtime = new CloudNativeCodingRuntime({
+				control: fExit70.control,
+				gateway: fExit70.gatewayFactory,
+				command: ["/pinned/codex"],
+				binarySha256: CLOUD_RUNTIME_NATIVE_BINARY_SHA256,
+				claude: {
+					channel: () => ({ open: vi.fn() }),
+					logins: validLogins(),
+					launch: vi.fn(async () => ({
+						lines: (async function* () {})(),
+						exited: Promise.resolve(70),
+						stderr: () => "mount failed",
+						overflowed: () => false,
+						shell: {} as ClaudeCodeBox["shell"],
+						close: vi.fn(async () => undefined),
+					})),
+				},
+			});
+			let exit70Err: unknown;
+			try {
+				await exit70Runtime.execute(fExit70.request, identityRoot, fExit70.context.signal, fExit70.turn);
+			} catch (error) {
+				exit70Err = error;
+			}
+			expect(exit70Err).toBeInstanceOf(Error);
+			expect((exit70Err as Error).message).toBe("CODING_CLAUDE_BOX_FAILED:EXIT_70");
+			expect(nativeProviderFailureCode(exit70Err)).toBe("CODING_CLAUDE_BOX_FAILED:EXIT_70");
 
 			const hangingBox = () => {
 				let stop!: () => void;
@@ -3348,6 +3383,7 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 				expect(options.homeFolders).toEqual(CLAUDE_BOX_CODING_FOLDERS);
 				expect(options.systemNote).toContain("mcp__qorpera__stage_surface_patch");
 				expect(options.systemNote).toContain("mcp__qorpera__coding_finish");
+				expect(Buffer.byteLength(options.systemNote ?? "")).toBeLessThanOrEqual(65_536);
 				const mcpSocket = options.mcp?.socketPath ?? "";
 				let finishExit!: (code: number) => void;
 				const exited = new Promise<number>((resolve) => {

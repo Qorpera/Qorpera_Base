@@ -261,10 +261,14 @@ export function claudeBoxArguments(
  * private to this account: the driver mounts it at /slot/config and never opens what is in it. */
 export type ClaudeBoxLogin = { readonly token: string } | { readonly folder: string };
 
+/** Maximum UTF-8 byte length of `--append-system-prompt-file` passed into the Claude Code box. */
+export const CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES = 65_536;
+
 /** The box's environment (bwrap sets it after clearing its own). */
 export function claudeBoxEnvironment(options: {
 	login: "token" | "folder";
 	extraCa?: boolean;
+	mcp?: boolean;
 }): Record<string, string> {
 	return {
 		HOME: CLAUDE_BOX_PATHS.home,
@@ -284,6 +288,7 @@ export function claudeBoxEnvironment(options: {
 		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 		DISABLE_TELEMETRY: "1",
 		DISABLE_ERROR_REPORTING: "1",
+		...(options.mcp ? { ENABLE_TOOL_SEARCH: "false" } : {}),
 		...(options.login === "token" ? { CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: "3" } : {}),
 		...(options.extraCa ? { NODE_EXTRA_CA_CERTS: CLAUDE_BOX_PATHS.extraCa } : {}),
 	};
@@ -499,7 +504,9 @@ export function claudeBoxInvocation(options: {
 		CLAUDE_BOX_PATHS.home,
 		...folders.flatMap((folder) => ["--bind", `${s.mount}${folder}`, folder]),
 	];
-	for (const [name, value] of Object.entries(claudeBoxEnvironment({ login, extraCa: Boolean(options.extraCa) })))
+	for (const [name, value] of Object.entries(
+		claudeBoxEnvironment({ login, extraCa: Boolean(options.extraCa), mcp: options.mcp !== undefined }),
+	))
 		box.push("--setenv", name, value);
 	box.push(
 		"--chdir",
@@ -1267,7 +1274,7 @@ export interface ClaudeCodeBoxOptions {
 	endSession?: (sessionId: string, reason: "ended" | "stopped") => Promise<void>;
 	/** What the model is asked; Claude Code reads it on stdin. */
 	prompt: string;
-	/** A short note appended to Claude Code's own system prompt (at most 16 KiB), read-only in the box. */
+	/** A short note appended to Claude Code's own system prompt (at most 64 KiB), read-only in the box. */
 	systemNote?: string;
 	model?: string;
 	effort?: string;
@@ -1374,7 +1381,10 @@ async function startBox(
 		if (options.mcp.serverName !== undefined && !MCP_SERVER_NAME.test(options.mcp.serverName))
 			throw new Error("Invalid Claude MCP server name");
 	}
-	if (options.systemNote !== undefined && (!options.systemNote || Buffer.byteLength(options.systemNote) > 16_384))
+	if (
+		options.systemNote !== undefined &&
+		(!options.systemNote || Buffer.byteLength(options.systemNote) > CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES)
+	)
 		throw new Error("Invalid Claude system note");
 	progress.stage = "scratch";
 	await privateDirectory(options.scratchRoot);

@@ -13,6 +13,7 @@ import {
 	CLAUDE_BOX_DENY,
 	CLAUDE_BOX_HOME_FOLDERS,
 	CLAUDE_BOX_PATHS,
+	CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES,
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_BOX_TOOLS_KEPT_OUT,
 	CLAUDE_CODE_MINIMUM_VERSION,
@@ -624,6 +625,7 @@ it("keeps a warm stream-json reviewer alive across allow verdicts, recycles on d
 
 it("supports custom homeFolders, cwd, and local MCP bridge config for coding sessions", () => {
 	expect(CLAUDE_BOX_CODING_FOLDERS).toEqual(["/company", "/tmp"]);
+	expect(CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES).toBe(65_536);
 	const argsWithMcp = claudeBoxArguments({ mcpConfig: true });
 	expect(argsWithMcp).toContain("--strict-mcp-config");
 	expect(argsWithMcp.slice(argsWithMcp.indexOf("--mcp-config"), argsWithMcp.indexOf("--mcp-config") + 2)).toEqual([
@@ -659,6 +661,9 @@ it("supports custom homeFolders, cwd, and local MCP bridge config for coding ses
 	]);
 	expect(box).toContain("--mcp-config");
 	expect(box).toContain(CLAUDE_BOX_PATHS.mcpConfig);
+	expect(Object.fromEntries(pairs(box, "--setenv")).ENABLE_TOOL_SEARCH).toBe("false");
+	expect(claudeBoxEnvironment({ login: "folder" }).ENABLE_TOOL_SEARCH).toBeUndefined();
+	expect(claudeBoxEnvironment({ login: "folder", mcp: true }).ENABLE_TOOL_SEARCH).toBe("false");
 	expect(() => claudeBoxInvocation({ ...base, login: "token", homeFolders: [] })).toThrow(
 		"Invalid Claude box home folders",
 	);
