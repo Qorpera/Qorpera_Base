@@ -52,6 +52,10 @@ const SETUP_TIMEOUT_MS = 20_000;
 const CANCEL_ON_ABORT_MS = 5_000;
 const MAX_INLINE_IMAGE_BYTES = 24_000;
 const MAX_TOTAL_INLINE_IMAGES_BYTES = 64_000;
+const MAX_INLINE_SVG_BYTES = 24_000;
+const MAX_TOTAL_INLINE_SVG_BYTES = 64_000;
+const MAX_INLINE_MODULE_BYTES = 32_000;
+const MAX_TOTAL_INLINE_MODULES_BYTES = 64_000;
 const MAX_PREVIEW_HTML_BYTES = 256_000;
 const MAX_CAPTURE_HEIGHT = 1800;
 const MAX_SCROLL_Y = 6000;
@@ -609,7 +613,7 @@ function renderBlockHtml(
 	snapshot: StudioInspectSnapshot,
 	reader: ReturnType<typeof createSnapshotReader>,
 	dark: boolean,
-	imageBudget: { used: number },
+	inlineBudget: { imageUsed: number; svgUsed: number; moduleUsed: number },
 	renderedBlocks: { readonly type: string; readonly heading: string; readonly filled: boolean }[],
 	warnings: string[],
 ): string {
@@ -809,13 +813,25 @@ function renderBlockHtml(
 			const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
 			let visual = "";
 			if (svgText && /<svg[\s>]/i.test(svgText)) {
-				visual = `<div class="pv-mark-svg">${sanitizeInlineSvg(svgText)}</div>`;
+				const rawBytes = Buffer.byteLength(svgText, "utf8");
+				if (rawBytes <= MAX_INLINE_SVG_BYTES) {
+					const sanitized = sanitizeInlineSvg(svgText);
+					const svgBytes = Buffer.byteLength(sanitized, "utf8");
+					if (inlineBudget.svgUsed + svgBytes <= MAX_TOTAL_INLINE_SVG_BYTES) {
+						inlineBudget.svgUsed += svgBytes;
+						visual = `<div class="pv-mark-svg">${sanitized}</div>`;
+					}
+				}
+				if (!visual) {
+					const kb = Math.max(1, Math.round(rawBytes / 1024));
+					visual = `<div class="pv-art-badge">SVG · ${kb} KB</div>`;
+				}
 			} else if (
 				bin &&
 				bin.bytes.byteLength <= MAX_INLINE_IMAGE_BYTES &&
-				imageBudget.used + bin.bytes.byteLength <= MAX_TOTAL_INLINE_IMAGES_BYTES
+				inlineBudget.imageUsed + bin.bytes.byteLength <= MAX_TOTAL_INLINE_IMAGES_BYTES
 			) {
-				imageBudget.used += bin.bytes.byteLength;
+				inlineBudget.imageUsed += bin.bytes.byteLength;
 				const b64 = Buffer.from(bin.bytes).toString("base64");
 				visual = `<img class="pv-mark-img" src="data:${escapeHtml(bin.mediaType)};base64,${b64}" alt="${escapeHtml(title)}"/>`;
 			} else if (bin) {
@@ -939,9 +955,9 @@ function renderBlockHtml(
 					if (
 						bin?.mediaType.startsWith("image/") &&
 						bin.bytes.byteLength <= MAX_INLINE_IMAGE_BYTES &&
-						imageBudget.used + bin.bytes.byteLength <= MAX_TOTAL_INLINE_IMAGES_BYTES
+						inlineBudget.imageUsed + bin.bytes.byteLength <= MAX_TOTAL_INLINE_IMAGES_BYTES
 					) {
-						imageBudget.used += bin.bytes.byteLength;
+						inlineBudget.imageUsed += bin.bytes.byteLength;
 						const b64 = Buffer.from(bin.bytes).toString("base64");
 						return `<figure class="pv-art-card"><img src="data:${escapeHtml(bin.mediaType)};base64,${b64}" alt="${escapeHtml(rel)}"/><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
 					}
@@ -957,7 +973,17 @@ function renderBlockHtml(
 						return `<figure class="pv-art-card is-doc"><div class="pv-art-badge">${escapeHtml(rel.split(".").pop()?.toUpperCase() ?? "FILE")} · ${kb} KB</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
 					}
 					if (txt && rel.toLowerCase().endsWith(".svg") && /<svg[\s>]/i.test(txt)) {
-						return `<figure class="pv-art-card"><div class="pv-art-svg">${sanitizeInlineSvg(txt)}</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
+						const rawBytes = Buffer.byteLength(txt, "utf8");
+						if (rawBytes <= MAX_INLINE_SVG_BYTES) {
+							const sanitized = sanitizeInlineSvg(txt);
+							const svgBytes = Buffer.byteLength(sanitized, "utf8");
+							if (inlineBudget.svgUsed + svgBytes <= MAX_TOTAL_INLINE_SVG_BYTES) {
+								inlineBudget.svgUsed += svgBytes;
+								return `<figure class="pv-art-card"><div class="pv-art-svg">${sanitized}</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
+							}
+						}
+						const kb = Math.max(1, Math.round(rawBytes / 1024));
+						return `<figure class="pv-art-card is-doc"><div class="pv-art-badge">SVG · ${kb} KB</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
 					}
 					return `<figure class="pv-art-card is-doc"><div class="pv-art-badge">${escapeHtml(rel.split(".").pop()?.toUpperCase() ?? "FILE")}</div><figcaption>${escapeHtml(rel)}</figcaption></figure>`;
 				})
@@ -1036,9 +1062,23 @@ function renderBlockHtml(
 				return wrap(title, `<div class="pv-empty">Module not built yet</div>`, false);
 			}
 			const h = typeof block.height === "number" ? block.height : 360;
+			const escaped = escapeHtml(html);
+			const modBytes = Buffer.byteLength(escaped, "utf8");
+			if (
+				modBytes <= MAX_INLINE_MODULE_BYTES &&
+				inlineBudget.moduleUsed + modBytes <= MAX_TOTAL_INLINE_MODULES_BYTES
+			) {
+				inlineBudget.moduleUsed += modBytes;
+				return wrap(
+					title,
+					`<iframe class="pv-module" style="height:${h}px" sandbox="allow-scripts" srcdoc="${escaped}"></iframe>`,
+					true,
+				);
+			}
+			const kb = Math.max(1, Math.round(Buffer.byteLength(html, "utf8") / 1024));
 			return wrap(
 				title,
-				`<iframe class="pv-module" style="height:${h}px" sandbox="allow-scripts" srcdoc="${escapeHtml(html)}"></iframe>`,
+				`<div class="pv-art-card is-doc"><div class="pv-art-badge">HTML MODULE · ${kb} KB</div><figcaption>${escapeHtml(block.from)}/index.html</figcaption></div>`,
 				true,
 			);
 		}
@@ -1090,7 +1130,7 @@ export function renderStudioPreviewHtml(options: {
 	const reader = createSnapshotReader(snapshot);
 	const renderedBlocks: { readonly type: string; readonly heading: string; readonly filled: boolean }[] = [];
 	const warnings: string[] = [];
-	const imageBudget = { used: 0 };
+	const inlineBudget = { imageUsed: 0, svgUsed: 0, moduleUsed: 0 };
 	if (read && "problem" in read) {
 		warnings.push(`layout.json parse warning (using starter fallback): ${read.problem}`);
 	}
@@ -1101,12 +1141,12 @@ export function renderStudioPreviewHtml(options: {
 				const cells = node.blocks
 					.map(
 						(child) =>
-							`<div class="pv-row-cell">${renderBlockHtml(child, snapshot, reader, dark, imageBudget, renderedBlocks, warnings)}</div>`,
+							`<div class="pv-row-cell">${renderBlockHtml(child, snapshot, reader, dark, inlineBudget, renderedBlocks, warnings)}</div>`,
 					)
 					.join("");
 				return `<div class="pv-row" style="--cols:${node.blocks.length}">${cells}</div>`;
 			}
-			return renderBlockHtml(node, snapshot, reader, dark, imageBudget, renderedBlocks, warnings);
+			return renderBlockHtml(node, snapshot, reader, dark, inlineBudget, renderedBlocks, warnings);
 		})
 		.join("\n");
 

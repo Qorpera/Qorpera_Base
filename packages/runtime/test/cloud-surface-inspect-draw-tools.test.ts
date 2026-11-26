@@ -638,6 +638,7 @@ describe("Studio visual inspect & draw tools", () => {
 						series: [{ name: "Actual", data: [12000, 24000] }],
 					}),
 					"surfaces/strategy/visuals/logo.svg": '<svg><script>alert(1)</script><circle r="5"/></svg>',
+					"surfaces/strategy/visuals/large-graph.svg": `<svg xmlns="http://www.w3.org/2000/svg">${"<path d='M0 0 L10 10'/>".repeat(15_000)}</svg>`,
 				},
 				binaries: {
 					"surfaces/strategy/visuals/hero.png": { bytes: VALID_PNG, mediaType: "image/png" },
@@ -658,6 +659,8 @@ describe("Studio visual inspect & draw tools", () => {
 			expect(rendered.html).not.toContain("<script>");
 			expect(rendered.html).toContain("/company-asset/visuals/base-mark.png");
 			expect(rendered.html).toContain("2048 KB");
+			expect(rendered.html).toContain("SVG · ");
+			expect(Buffer.byteLength(rendered.html, "utf8")).toBeLessThan(256_000);
 			expect(rendered.warnings).toEqual([]);
 			expect(rendered.renderedBlocks.find((b) => b.type === "chart")?.filled).toBe(true);
 			expect(rendered.renderedBlocks.find((b) => b.type === "brand_mark")?.filled).toBe(true);
