@@ -86,7 +86,6 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { surfaceKindSubtitle } from "./surface-kinds.ts";
 import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
@@ -134,7 +133,7 @@ import {
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
 import type { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
-import { surfaceTile } from "./views/surface-rail.ts";
+import { decorateSurfaceFigure, surfacesBySlug } from "./views/surface-figure-row.ts";
 import type { SurfaceMount, SurfaceView } from "./views/surface-view.ts";
 import type { TeamFeedback } from "./views/team.ts";
 import type { WhatsNewView } from "./views/whats-new.ts";
@@ -678,35 +677,6 @@ export function mountApplication(
 		}
 		return found;
 	};
-	const decorateSurfaceCardElement = (
-		card: HTMLElement,
-		surfaces: SurfacesStore,
-		bySlug: Map<string, SurfaceSummary>,
-	): void => {
-		const slug = card.dataset.surfaceSlug?.toLowerCase();
-		const surface = slug ? bySlug.get(slug) : undefined;
-		if (!surface) return;
-		const look = surfaces.lookOf(surface);
-		const tab = card.dataset.surfaceTab ?? "";
-		const subtitle = surfaceKindSubtitle(look.kind);
-		const figure = card.classList.contains("is-figure");
-		const state = figure && surface.runningSessionCount > 0 ? "working" : "rest";
-		const shown = JSON.stringify([surface.id, surface.title, surface.icon, look.kind, tab, subtitle, state]);
-		if (card.dataset.shown === shown) return;
-		card.dataset.shown = shown;
-		card.querySelector(".app-card-emblem")?.replaceChildren(surfaceTile(surface, look, "is-rail", state));
-		if (figure) {
-			const title = card.querySelector<HTMLElement>(".app-card-title");
-			if (title && !tab) title.textContent = surface.title;
-			return;
-		}
-		const note = card.querySelector<HTMLElement>(".app-card-note");
-		if (note) {
-			const label = tab ? `${surface.title} · ${tab}` : subtitle;
-			note.textContent = label;
-			note.title = label;
-		}
-	};
 	const decorateCardElement = (
 		card: HTMLElement,
 		activeCompany: CompanyController,
@@ -740,7 +710,7 @@ export function mountApplication(
 		if (!targets.length) return;
 		const surfaces = surfacesOf(activeCompany);
 		if (surfaces?.state.surfaces.length) {
-			const bySlug = new Map(surfaces.state.surfaces.map((item) => [item.slug.toLowerCase(), item]));
+			const bySlug = surfacesBySlug(surfaces);
 			for (const target of targets) {
 				if (!target.isConnected) continue;
 				if (
@@ -748,11 +718,11 @@ export function mountApplication(
 					target.classList.contains("surface-card") &&
 					target.dataset.surfaceSlug
 				) {
-					decorateSurfaceCardElement(target, surfaces, bySlug);
+					decorateSurfaceFigure(target, surfaces, bySlug);
 					continue;
 				}
 				for (const card of target.querySelectorAll<HTMLElement>(".surface-card[data-surface-slug]")) {
-					decorateSurfaceCardElement(card, surfaces, bySlug);
+					decorateSurfaceFigure(card, surfaces, bySlug);
 				}
 			}
 		}

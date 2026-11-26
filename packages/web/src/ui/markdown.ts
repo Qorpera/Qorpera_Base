@@ -253,12 +253,6 @@ function placeCells(layer: Layer, cells: Tokens.Table["header"], line: string, b
 	}
 }
 
-/** An agent's interface app linked in a message (`app:<name>`): a card the app answers by opening the app's own page
- * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). It is drawn plain here, as this has no company: a page's emblem
- * and "App" under the name. Once the company's apps are read it shows the app as the drawer does, its own emblem in
- * its own colour, and what the app is about in one line (app/application.ts).
- * A member's note sent from an app's page (§5 "tell") opens with the same card (views/conversation.ts), with what the
- * note is about as its line (`about`), which stays: once the apps are read, its title becomes the app's own name. */
 export function surfaceFigureLink(slug: string, name: string | Node[], tab?: string): HTMLElement {
 	return h(
 		"button",
@@ -349,6 +343,12 @@ function namedSurfacesRow(surfaces: FoundSurfaces): HTMLElement | undefined {
 	return figures.length ? surfaceFigureRow(figures) : undefined;
 }
 
+/** An agent's interface app linked in a message (`app:<name>`): a card the app answers by opening the app's own page
+ * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). It is drawn plain here, as this has no company: a page's emblem
+ * and "App" under the name. Once the company's apps are read it shows the app as the drawer does, its own emblem in
+ * its own colour, and what the app is about in one line (app/application.ts).
+ * A member's note sent from an app's page (§5 "tell") opens with the same card (views/conversation.ts), with what the
+ * note is about as its line (`about`), which stays: once the apps are read, its title becomes the app's own name. */
 export function appCard(app: string, name: string | Node[], about?: string): HTMLElement {
 	return h(
 		"button",
@@ -559,7 +559,9 @@ function renderTokens(
 						surfaces.named.set(key, {
 							slug: surface.slug,
 							...(surface.tab ? { tab: surface.tab } : {}),
-							name: decodeEntities(token.text),
+							name: renderTokens((token.tokens ?? []) as MarkedToken[], depth + 1, false, undefined, surfaces)
+								.map((node) => node.textContent ?? "")
+								.join(""),
 						});
 					return [
 						h(

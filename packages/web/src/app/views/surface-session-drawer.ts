@@ -34,6 +34,7 @@ import {
 } from "../surfaces-store.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
+import { decorateSurfaceFigures } from "./surface-figure-row.ts";
 import { openPublishSheet } from "./surface-publish-sheet.ts";
 import { isActionChange } from "./surface-rail.ts";
 
@@ -937,6 +938,11 @@ export class SurfaceSessionDrawer {
 	}
 
 	update(surface?: SurfaceSummary): void {
+		this.#draw(surface);
+		decorateSurfaceFigures(this.el, this.#store);
+	}
+
+	#draw(surface?: SurfaceSummary): void {
 		const store = this.#store;
 		const state = store.state;
 		const targetSurface =
