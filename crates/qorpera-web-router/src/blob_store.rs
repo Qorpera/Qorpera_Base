@@ -28,6 +28,8 @@ const MAX_CONCURRENT_PRECOMPRESS: usize = 2;
 const MAX_COMPRESS_QUEUE: usize = 32;
 const MAX_BG_PRECOMPRESS_QUEUE: usize = 1024;
 const MAX_BG_PRECOMPRESS_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STREAM_COMPRESS_CONCURRENCY: usize = MAX_CONCURRENT_PRECOMPRESS;
+const MAX_STREAM_INCOMPRESSIBLE_CACHE: usize = 4096;
 const BATCH_WRITE_CONCURRENCY: usize = 16;
 const ENTRY_STRUCTURAL_OVERHEAD: usize = 256;
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
@@ -896,6 +898,21 @@ impl BackgroundPrecompress {
     }
 }
 
+struct StreamSidecarGuard<'a> {
+    map: &'a Mutex<HashMap<String, broadcast::Sender<()>>>,
+    key: String,
+}
+
+impl Drop for StreamSidecarGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.map.lock() {
+            if let Some(tx) = guard.remove(&self.key) {
+                let _ = tx.send(());
+            }
+        }
+    }
+}
+
 pub struct BlobStore {
     root: PathBuf,
     max_blob_bytes: usize,
@@ -906,6 +923,9 @@ pub struct BlobStore {
     compress_pool: CompressPool,
     bg_compress: BackgroundPrecompress,
     created_dirs: Arc<RwLock<HashSet<u16>>>,
+    stream_compress_sem: Arc<Semaphore>,
+    stream_sidecar_inflight: Mutex<HashMap<String, broadcast::Sender<()>>>,
+    stream_sidecar_skip: Mutex<HashSet<String>>,
 }
 
 impl BlobStore {
@@ -931,6 +951,9 @@ impl BlobStore {
             compress_pool: CompressPool::new(),
             bg_compress,
             created_dirs: Arc::new(RwLock::new(HashSet::new())),
+            stream_compress_sem: Arc::new(Semaphore::new(MAX_STREAM_COMPRESS_CONCURRENCY)),
+            stream_sidecar_inflight: Mutex::new(HashMap::new()),
+            stream_sidecar_skip: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1435,26 +1458,91 @@ impl BlobStore {
                 }
                 if total >= COMPRESS_MIN_BYTES {
                     if let Some((encoding, ext)) = ranked.into_iter().flatten().next() {
-                        if let Ok(raw) = self.read_verified_raw(&path, sha256).await {
-                            if !is_likely_incompressible(&raw) {
-                                let raw_clone = raw.clone();
-                                let compressed = tokio::task::spawn_blocking(move || {
-                                    compress_bytes_for_encoding(&raw_clone, encoding)
+                        let sidecar_key = format!("{sha256}{ext}");
+                        let skipped = self
+                            .stream_sidecar_skip
+                            .lock()
+                            .ok()
+                            .is_some_and(|set| set.contains(&sidecar_key));
+                        if !skipped {
+                            let existing_rx = {
+                                self.stream_sidecar_inflight.lock().ok().and_then(|mut map| {
+                                    if let Some(tx) = map.get(&sidecar_key) {
+                                        Some(tx.subscribe())
+                                    } else {
+                                        let (tx, _) = broadcast::channel(4);
+                                        map.insert(sidecar_key.clone(), tx);
+                                        None
+                                    }
                                 })
-                                .await
-                                .ok()
-                                .flatten();
-                                if let Some(comp) = compressed {
-                                    let sidecar_path = Self::sidecar_path(&path, ext);
-                                    if write_atomic(&sidecar_path, &comp, false).await.is_ok() {
-                                        if let Ok(sidecar_file) = tokio::fs::File::open(&sidecar_path).await {
+                            };
+                            if let Some(mut rx) = existing_rx {
+                                let _ = rx.recv().await;
+                                let sidecar_path = Self::sidecar_path(&path, ext);
+                                if let Ok(sidecar_file) = tokio::fs::File::open(&sidecar_path).await {
+                                    if let Ok(sidecar_meta) = sidecar_file.metadata().await {
+                                        if sidecar_meta.is_file() {
                                             return Ok(BlobRead::Stream {
                                                 file: sidecar_file,
-                                                len: comp.len(),
+                                                len: sidecar_meta.len() as usize,
                                                 total,
                                                 encoding,
                                                 expected_sha256: None,
                                             });
+                                        }
+                                    }
+                                }
+                            } else {
+                                let _guard = StreamSidecarGuard {
+                                    map: &self.stream_sidecar_inflight,
+                                    key: sidecar_key.clone(),
+                                };
+                                let sidecar_path = Self::sidecar_path(&path, ext);
+                                if let Ok(sidecar_file) = tokio::fs::File::open(&sidecar_path).await {
+                                    if let Ok(sidecar_meta) = sidecar_file.metadata().await {
+                                        if sidecar_meta.is_file() {
+                                            return Ok(BlobRead::Stream {
+                                                file: sidecar_file,
+                                                len: sidecar_meta.len() as usize,
+                                                total,
+                                                encoding,
+                                                expected_sha256: None,
+                                            });
+                                        }
+                                    }
+                                }
+                                if let Ok(_permit) = Arc::clone(&self.stream_compress_sem).acquire_owned().await {
+                                    if let Ok(raw) = self.read_verified_raw(&path, sha256).await {
+                                        let compressed = if is_likely_incompressible(&raw) {
+                                            None
+                                        } else {
+                                            let raw_clone = raw.clone();
+                                            tokio::task::spawn_blocking(move || {
+                                                compress_bytes_for_encoding(&raw_clone, encoding)
+                                            })
+                                            .await
+                                            .ok()
+                                            .flatten()
+                                        };
+                                        if let Some(comp) = compressed {
+                                            if write_atomic(&sidecar_path, &comp, false).await.is_ok() {
+                                                if let Ok(sidecar_file) =
+                                                    tokio::fs::File::open(&sidecar_path).await
+                                                {
+                                                    return Ok(BlobRead::Stream {
+                                                        file: sidecar_file,
+                                                        len: comp.len(),
+                                                        total,
+                                                        encoding,
+                                                        expected_sha256: None,
+                                                    });
+                                                }
+                                            }
+                                        } else if let Ok(mut skip) = self.stream_sidecar_skip.lock() {
+                                            if skip.len() >= MAX_STREAM_INCOMPRESSIBLE_CACHE {
+                                                skip.clear();
+                                            }
+                                            skip.insert(sidecar_key);
                                         }
                                     }
                                 }
@@ -2396,5 +2484,63 @@ mod tests {
             .unwrap();
         assert_eq!(raw.encoding, ContentEncoding::Identity);
         assert_eq!(raw.bytes, text);
+    }
+
+    #[tokio::test]
+    async fn get_or_stream_singleflights_and_caches_incompressible_blobs() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            BlobStore::new(dir.path().to_path_buf(), 64 * 512, 256 * 1024).with_stream_threshold(1024),
+        );
+        let compressible = Bytes::from("export const chunk = 'streaming-singleflight-sidecar';\n".repeat(160));
+        let comp_sha = sha256_hex(&compressible);
+        assert_eq!(
+            store.put(&comp_sha, compressible.clone(), false).await.unwrap(),
+            PutOutcome::Stored
+        );
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&store);
+            let sha = comp_sha.clone();
+            tasks.push(tokio::spawn(async move {
+                s.get_or_stream(&sha, AcceptedEncodings::from_header("br, gzip"))
+                    .await
+                    .unwrap()
+            }));
+        }
+        for task in tasks {
+            match task.await.unwrap() {
+                BlobRead::Stream { encoding, len, total, .. } => {
+                    assert_eq!(encoding, ContentEncoding::Brotli);
+                    assert_eq!(total, compressible.len());
+                    assert!(len < compressible.len());
+                }
+                BlobRead::Buffered(_) => panic!("expected streaming sidecar"),
+            }
+        }
+        assert!(store.stream_sidecar_inflight.lock().unwrap().is_empty());
+
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut random_bytes = vec![b'A', b'A', b'A', b'A'];
+        for _ in 0..8192 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            random_bytes.push((state & 0xff) as u8);
+        }
+        let rand_payload = Bytes::from(random_bytes);
+        let rand_sha = sha256_hex(&rand_payload);
+        assert_eq!(
+            store.put(&rand_sha, rand_payload.clone(), false).await.unwrap(),
+            PutOutcome::Stored
+        );
+        let read = store
+            .get_or_stream(&rand_sha, AcceptedEncodings::from_header("br"))
+            .await
+            .unwrap();
+        assert!(matches!(read, BlobRead::Stream { encoding: ContentEncoding::Identity, .. }));
+        assert!(store.stream_sidecar_skip.lock().unwrap().contains(&format!("{rand_sha}.br")));
+        assert!(store.stream_sidecar_inflight.lock().unwrap().is_empty());
     }
 }

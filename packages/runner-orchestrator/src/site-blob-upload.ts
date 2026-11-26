@@ -555,7 +555,9 @@ export async function putBlobBatchToEdge(options: {
 	readonly body: Uint8Array;
 	readonly fetchImpl?: BlobUploadFetch;
 	readonly signal?: AbortSignal;
-}): Promise<{ readonly supported: true; readonly stored: number; readonly exists: number } | { readonly supported: false }> {
+}): Promise<
+	{ readonly supported: true; readonly stored: number; readonly exists: number } | { readonly supported: false }
+> {
 	const base = options.routerInternalUrl.replace(/\/+$/, "");
 	const fetchImpl = options.fetchImpl ?? defaultFetch;
 	const res = await fetchWithRetry(

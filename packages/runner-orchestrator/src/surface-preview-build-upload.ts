@@ -658,24 +658,38 @@ export async function collectAndUploadPreviewBuildToEdge(
 		}
 	}
 
-	let inFlightUpload: Promise<void> | null = null;
+	type SettledUpload = Promise<{ readonly ok: true } | { readonly ok: false; readonly error: unknown }>;
+	const settleUpload = (task: Promise<void>): SettledUpload =>
+		task.then(
+			() => ({ ok: true as const }),
+			(error: unknown) => ({ ok: false as const, error }),
+		);
+	let inFlightUpload: SettledUpload | null = null;
+	const awaitInFlightUpload = async () => {
+		if (!inFlightUpload) return;
+		const settled = await inFlightUpload;
+		inFlightUpload = null;
+		if (!settled.ok) throw settled.error;
+	};
 	try {
 		if (missingShared.length > 0) {
 			const sharedBody = encodeBlobBatchFrames(missingShared);
-			inFlightUpload = (async () => {
-				if (batchEndpointSupported && missingShared.length > 1 && missingShared.length <= MAX_BLOB_BATCH_FILES) {
-					const res = await putBlobBatchToEdge({
-						routerInternalUrl: options.routerInternalUrl,
-						controlToken: options.controlToken,
-						body: sharedBody,
-						fetchImpl: options.fetchImpl,
-						signal: options.signal,
-					});
-					if (res.supported) return;
-					batchEndpointSupported = false;
-				}
-				await uploadQueue(missingShared);
-			})();
+			inFlightUpload = settleUpload(
+				(async () => {
+					if (batchEndpointSupported && missingShared.length > 1 && missingShared.length <= MAX_BLOB_BATCH_FILES) {
+						const res = await putBlobBatchToEdge({
+							routerInternalUrl: options.routerInternalUrl,
+							controlToken: options.controlToken,
+							body: sharedBody,
+							fetchImpl: options.fetchImpl,
+							signal: options.signal,
+						});
+						if (res.supported) return;
+						batchEndpointSupported = false;
+					}
+					await uploadQueue(missingShared);
+				})(),
+			);
 		}
 
 		// WHY: Chunk VM->host blob reads to ~32 MiB batches and pipeline stream N+1 with edge upload N without buffering 512 MiB in host RAM.
@@ -720,7 +734,10 @@ export async function collectAndUploadPreviewBuildToEdge(
 				options.signal,
 			);
 			if (streamRes.exitCode !== 0) {
-				if (inFlightUpload) await inFlightUpload.catch(() => undefined);
+				if (inFlightUpload) {
+					await inFlightUpload;
+					inFlightUpload = null;
+				}
 				return {
 					outcome: "failed",
 					errorDetail: previewBuildDetail(
@@ -730,12 +747,15 @@ export async function collectAndUploadPreviewBuildToEdge(
 				};
 			}
 			validateStreamedBlobFrames(streamRes.stdout, batch);
-			if (inFlightUpload) await inFlightUpload;
-			inFlightUpload = uploadBatchStreamOrFallback(streamRes.stdout, batch);
+			await awaitInFlightUpload();
+			inFlightUpload = settleUpload(uploadBatchStreamOrFallback(streamRes.stdout, batch));
 		}
-		if (inFlightUpload) await inFlightUpload;
+		await awaitInFlightUpload();
 	} catch (error) {
-		if (inFlightUpload) await inFlightUpload.catch(() => undefined);
+		if (inFlightUpload) {
+			await inFlightUpload;
+			inFlightUpload = null;
+		}
 		if (options.signal.aborted) throw error;
 		return {
 			outcome: "failed",

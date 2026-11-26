@@ -875,7 +875,7 @@ describe("the site door", () => {
 		expect(submitted).toEqual([{ action, target: "qorpera-site", fields: { pass: pass().pass, path: "/" } }]);
 	});
 
-	it("reveals early on trusted qorpera-preview-ready and suppresses duplicate load reveal", () => {
+	it("forwards trusted qorpera-preview-ready and load in either order across navigations", () => {
 		const { parent, say, site } = runDoor();
 		const previewOrigin = "https://nordic-shop--p0.qorpera.site";
 		const action = `${previewOrigin}/__qorpera/member`;
@@ -896,9 +896,15 @@ describe("the site door", () => {
 		expect(parent.postMessage).toHaveBeenLastCalledWith({ type: SITE_DOOR_SHOWN }, "https://app.qorpera.com");
 
 		site.dispatchEvent(new Event("load"));
-		expect(parent.postMessage).toHaveBeenCalledTimes(2);
+		expect(parent.postMessage).toHaveBeenCalledTimes(3);
 
 		site.dispatchEvent(new Event("load"));
-		expect(parent.postMessage).toHaveBeenCalledTimes(3);
+		expect(parent.postMessage).toHaveBeenCalledTimes(4);
+
+		say({ type: "qorpera-preview-ready" }, siteWindow, previewOrigin);
+		expect(parent.postMessage).toHaveBeenCalledTimes(5);
+
+		site.dispatchEvent(new Event("load"));
+		expect(parent.postMessage).toHaveBeenCalledTimes(6);
 	});
 });
