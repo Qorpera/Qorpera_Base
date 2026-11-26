@@ -24,6 +24,7 @@ import {
 	type SurfaceLiveSource,
 	type SurfaceReadBlock,
 	type SurfaceReadNode,
+	type SurfaceSource,
 	type SurfaceStarterKind,
 	type SurfaceTab,
 	starterSurfaceLayout,
