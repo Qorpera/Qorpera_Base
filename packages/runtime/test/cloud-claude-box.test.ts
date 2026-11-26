@@ -728,6 +728,26 @@ it.skipIf(process.platform !== "linux")(
 			expect((rejectedErr as Error).message).toBe("Invalid Claude system note");
 			expect(claudeBoxStartStage(rejectedErr)).toBe("arguments");
 		}
+		let reviewTmpErr: unknown;
+		try {
+			await startClaudeCodeBox(
+				{
+					...baseStart,
+					tmpDir: "/tmp/qc-0123456789ab",
+					review: {
+						machine: { id: baseStart.machineId, name: "home" },
+						gate: { check: vi.fn() },
+						attach: vi.fn(),
+					},
+				},
+				vi.fn() as never,
+			);
+		} catch (error) {
+			reviewTmpErr = error;
+		}
+		expect(reviewTmpErr).toBeInstanceOf(Error);
+		expect((reviewTmpErr as Error).message).toBe("Invalid Claude tmpDir");
+		expect(claudeBoxStartStage(reviewTmpErr)).toBe("arguments");
 	},
 );
 
@@ -742,7 +762,16 @@ it("sets CLAUDE_CODE_TMPDIR when tmpDir is provided and rejects unsafe tmpDir pa
 		tmpDir: "/tmp/qc-0123456789ab",
 	});
 	expect(pairs(inv.args, "--setenv")).toContainEqual(["CLAUDE_CODE_TMPDIR", "/tmp/qc-0123456789ab"]);
-	for (const bad of ["", "/tmp", "/tmp/", "/tmp/.", "/tmp/..", "/tmp/a/b", "/var/tmp/qc-1", `/tmp/${"a".repeat(65)}`]) {
+	for (const bad of [
+		"",
+		"/tmp",
+		"/tmp/",
+		"/tmp/.",
+		"/tmp/..",
+		"/tmp/a/b",
+		"/var/tmp/qc-1",
+		`/tmp/${"a".repeat(65)}`,
+	]) {
 		expect(() => claudeBoxEnvironment({ login: "folder", tmpDir: bad })).toThrow("Invalid Claude tmpDir");
 		expect(() =>
 			claudeBoxInvocation({
@@ -758,6 +787,14 @@ it("sets CLAUDE_CODE_TMPDIR when tmpDir is provided and rejects unsafe tmpDir pa
 			login: { folder: `${scratch}/login` },
 			homeFolders: ["/company"],
 			cwd: "/company",
+			tmpDir: "/tmp/qc-0123456789ab",
+		}),
+	).toThrow("Invalid Claude tmpDir");
+	expect(() =>
+		claudeBoxInvocation({
+			...base,
+			login: { folder: `${scratch}/login` },
+			reviewHook: true,
 			tmpDir: "/tmp/qc-0123456789ab",
 		}),
 	).toThrow("Invalid Claude tmpDir");

@@ -459,7 +459,7 @@ export function claudeBoxInvocation(options: {
 	const { folders, cwd } = resolveBoxFoldersAndCwd(options.homeFolders, options.cwd);
 	if (options.tmpDir !== undefined) {
 		assertClaudeTmpDir(options.tmpDir);
-		if (!folders.includes("/tmp")) throw new Error("Invalid Claude tmpDir");
+		if (!folders.includes("/tmp") || options.reviewHook) throw new Error("Invalid Claude tmpDir");
 	}
 	if (options.mcp) {
 		if (!isAbsolute(options.mcp.socketPath) || options.mcp.socketPath.includes("\0"))
@@ -1401,7 +1401,7 @@ async function startBox(
 	}
 	if (options.tmpDir !== undefined) {
 		assertClaudeTmpDir(options.tmpDir);
-		if (!folders.includes("/tmp")) throw new Error("Invalid Claude tmpDir");
+		if (!folders.includes("/tmp") || options.review !== undefined) throw new Error("Invalid Claude tmpDir");
 	}
 	if (
 		options.systemNote !== undefined &&
@@ -1667,7 +1667,7 @@ async function startBox(
 				signal,
 				toHome,
 				toMount: (bytes) => void toMount.write(bytes),
-				ownFolder: options.tmpDir ? `${options.tmpDir}/claude-${uid}` : `/tmp/claude-${uid}`,
+				ownFolder: `/tmp/claude-${uid}`,
 			});
 			if (options.proof?.onLone) gate.onLone = options.proof.onLone;
 		}
