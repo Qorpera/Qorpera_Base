@@ -247,9 +247,6 @@ snap refresh --hold=forever
 usermod -aG lxd tester
 
 log "runner users ci01..ci16"
-# scripts/run-on-node.mjs runs each suite as one of these, locked for the run's duration, so per-user
-# kernel limits and cleanup count one run (until 26 Nov the coding Git sandbox's RLIMIT_NPROC cap of 512
-# counted every task of the user; it now counts only the sandbox's). Same trust as tester.
 chmod 0711 /home/tester
 runners=$(seq -f 'ci%02g' 1 16 | paste -sd, -)
 for runner in ${runners//,/ }; do
