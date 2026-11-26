@@ -19,6 +19,7 @@ import {
 	type SurfaceLayout,
 	type SurfaceLayoutColors,
 	splitSurfaceAsk,
+	surfaceAskPreviousParams,
 	surfaceColorContrast,
 	surfaceColorsForDark,
 	surfaceStarterKind,
@@ -134,8 +135,8 @@ describe("an ask source", () => {
 		["with a capital in its question", chart({ ask: "qorpera/Orders", x: "d", y: "o" }), ".from.ask must be"],
 		[
 			"with a key it does not take",
-			chart({ ask: "qorpera/orders-days", x: "day", y: "orders", against: "last-month" }),
-			"has a field that an ask does not take; its fields are ask, params, pick, x, y, series",
+			chart({ ask: "qorpera/orders-days", x: "day", y: "orders", versus: "last-month" }),
+			"has a field that an ask does not take; its fields are ask, params, pick, x, y, series, kind, stacked, unit, against",
 		],
 		[
 			"a chart without x",
@@ -237,7 +238,30 @@ describe("an ask source", () => {
 		[
 			"a kind on a figure",
 			{ type: "facts", items: [{ label: "A", from: { ask: "a/b", pick: "v", kind: "bar" } }] },
-			"items[0].from.kind is not taken by a figure's ask; it takes pick",
+			"items[0].from.kind is not taken by a figure's ask; it takes pick, unit",
+		],
+		[
+			"against on a figure",
+			{
+				type: "facts",
+				items: [{ label: "A", from: { ask: "qorpera/orders-days", pick: "orders", against: "previous" } }],
+			},
+			"items[0].from.against is not taken by a figure's ask",
+		],
+		[
+			"against of another kind",
+			chart({ ask: "qorpera/orders-days", x: "day", y: "orders", against: "last-year" }),
+			'.from.against must be "previous"',
+		],
+		[
+			"against on a question with no day range",
+			chart({ ask: "qorpera/money-months", x: "month", y: "money_in", against: "previous" }),
+			".from.against needs a question asked over days from :from to :to: qorpera/orders-days, qorpera/site-days, qorpera/money-balance, or params from and to as YYYY-MM-DD",
+		],
+		[
+			"against on a company question without from and to",
+			chart({ ask: "shop/sales-days", x: "day", y: "sales", params: { from: "2026-11-01" }, against: "previous" }),
+			".from.against needs a question asked over days",
 		],
 		[
 			"a unit on a table",
@@ -251,6 +275,51 @@ describe("an ask source", () => {
 		],
 	])("refuses a look %s", (_name, block, problem) => {
 		expect(refusal(layoutWith([block]))).toContain(problem);
+	});
+
+	it("lets a figure carry its unit, and a chart ask against the equal range of days before", () => {
+		expect(
+			firstBlock(
+				layoutWith([
+					{
+						type: "facts",
+						items: [{ label: "Bank", from: { ask: "qorpera/money-now", pick: "balance", unit: "kr." } }],
+					},
+				]),
+			),
+		).toMatchObject({ items: [{ from: { unit: "kr." } }] });
+		expect(
+			firstBlock(layoutWith([{ type: "facts", from: { ask: "qorpera/money-now", unit: "kr." } }])),
+		).toMatchObject({
+			from: { unit: "kr." },
+		});
+		const own = {
+			ask: "shop/sales-days",
+			x: "day",
+			y: "sales",
+			params: { from: "2026-11-01", to: "2026-11-26" },
+			against: "previous",
+		} as const;
+		expect(firstBlock(layoutWith([chart(own)]))).toMatchObject({ from: own });
+		expect(surfaceAskPreviousParams(own, "2026-11-01", "2026-11-26")).toEqual({
+			from: "2026-10-06",
+			to: "2026-10-31",
+		});
+		const days: SurfaceAskSource = {
+			ask: "qorpera/orders-days",
+			x: "day",
+			y: "orders",
+			against: "previous",
+			params: { test: false },
+		};
+		expect(surfaceAskPreviousParams(days, "2026-02-28", "2026-03-01")).toEqual({
+			test: false,
+			from: "2026-02-26",
+			to: "2026-02-27",
+		});
+		expect(surfaceAskPreviousParams(days, "2026-02-30", "2026-03-01")).toBeNull();
+		expect(surfaceAskPreviousParams(days, "2026-03-02", "2026-03-01")).toBeNull();
+		expect(surfaceAskPreviousParams({ ask: "qorpera/orders-days" }, "2026-03-01", "2026-03-02")).toBeNull();
 	});
 
 	it("is told apart, split, and never resolved from files", () => {
@@ -616,9 +685,13 @@ describe("the Analytics starter", () => {
 			"sales-days": "bar",
 			balance: "area",
 			months: "bar",
-			kinds: "bar",
 			visits: "line",
 		});
+		const headings = starter.tabs.flatMap((tab) =>
+			tab.blocks.flatMap((node) => (node.type !== "row" && "heading" in node && node.heading ? [node.heading] : [])),
+		);
+		expect(headings.every((heading) => heading.endsWith("?"))).toBe(true);
+		expect(starter.tabs[2]?.blocks.map((node) => node.type)).toEqual(["chart", "chart"]);
 		expect(starter.tabs[0]?.blocks[0]).toEqual({ type: "title", id: "reading", line: "reading.json#/line" });
 		expect(starter.tabs[4]?.blocks).toEqual([{ type: "report", id: "questions", match: "questions/*.report.json" }]);
 		expect(starter.tabs[5]?.blocks[0]).toMatchObject({
@@ -635,8 +708,13 @@ describe("the Analytics starter", () => {
 	it("asks only qorpera questions that exist, naming their real columns", () => {
 		const asks = asksOf(starter);
 		expect(new Set(asks.map(({ ask }) => splitSurfaceAsk(ask.ask)?.question))).toEqual(
-			new Set(Object.keys(QORPERA_COLUMNS)),
+			new Set(Object.keys(QORPERA_COLUMNS).filter((question) => question !== "money-kinds")),
 		);
+		expect(asks.find(({ holder }) => holder.id === "pulse")?.ask.against).toBe("previous");
+		expect(asks.find(({ holder }) => holder.id === "months")?.holder.colors).toEqual({
+			money_in: "up",
+			money_out: "compare",
+		});
 		for (const { ask, holder } of asks) {
 			const parts = splitSurfaceAsk(ask.ask);
 			expect(parts?.database).toBe("qorpera");
