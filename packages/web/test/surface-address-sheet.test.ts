@@ -885,14 +885,44 @@ describe("editing the platform subdomain", () => {
 		expect(problem()).toBe("Qorpera took this site down, so this cannot change now.");
 	});
 
-	it("hides the edit control when a verified custom domain is active or when the member cannot manage sites", async () => {
+	it("hides the edit control when a verified custom domain is active, hosts are off, or the member cannot manage sites", async () => {
 		const primary = siteDomain("www.thetaband.dk", "tls_active", { isPrimary: true });
 		await opened({ entry: { isPublic: true, domains: [primary] } });
 		expect(editButton()).toBeNull();
 		document.body.replaceChildren();
 
+		await opened(
+			{ entry: { isPublic: true, domains: [] }, hostsDomain: "qorpera.com", hostsEnabled: false },
+			true,
+			{},
+			"https://sites.qorpera.com/thetaband/",
+		);
+		expect(editButton()).toBeNull();
+		document.body.replaceChildren();
+
 		await opened({ entry: { isPublic: true, domains: [] } }, false);
 		expect(editButton()).toBeNull();
+	});
+
+	it("shows takedown refusal directly from the availability check", async () => {
+		vi.useFakeTimers();
+		const { client, address } = mount(
+			{ entry: { slug: "thetaband", isPublic: true, domains: [] }, hostsDomain: "qorpera.site" },
+			true,
+			{},
+			"https://thetaband.qorpera.site/",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		address.open();
+		await vi.advanceTimersByTimeAsync(0);
+		editButton()!.click();
+
+		client.checkSlug.mockRejectedValueOnce(refusal("SITE_TAKEN_DOWN", "42501"));
+		slugField()!.value = "after-takedown";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(problem()).toBe("Qorpera took this site down, so this cannot change now.");
+		expect(saveSlugButton()?.disabled).toBe(true);
 	});
 
 	it("returns focus to the edit button when going back", async () => {

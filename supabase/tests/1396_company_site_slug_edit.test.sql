@@ -5,8 +5,8 @@ declare
 	v_fn text;
 	v_env_id uuid;
 	v_site_id uuid;
+	v_ver_id uuid;
 	v_other_site_id uuid;
-	v_abandoned_site_id uuid;
 	v_app_site_id uuid;
 	v_res jsonb;
 	v_snap jsonb;
@@ -49,6 +49,13 @@ begin
 	values (pg_temp.rel_company(), v_env_id, 'old-brand', 'Old Brand', 'code/company/h-look', 'company', 'h-look', v_staff_id)
 	returning id into v_site_id;
 	insert into public.qorpera_company_site_secrets (site_id, password) values (v_site_id, 'test-pass-1234');
+	insert into public.qorpera_company_site_versions (
+		site_id, state, first_publish, title, source_path, manifest_sha256,
+		file_count, total_bytes, tree, change, main_sha, listed
+	) values (
+		v_site_id, 'ready', false, 'Old Brand v1', 'code/company/h-look', repeat('a', 64),
+		1, 100, repeat('1', 40), 1, repeat('2', 40), true
+	) returning id into v_ver_id;
 	update public.qorpera_code_repositories
 	set site_id = v_site_id
 	where environment_id = v_env_id and owner = 'company' and name = 'h-look';
@@ -57,9 +64,7 @@ begin
 	values (pg_temp.rel_company(), v_env_id, 'taken-brand', 'Taken Brand', 'sites/taken-brand', v_staff_id)
 	returning id into v_other_site_id;
 
-	insert into public.qorpera_company_sites (profile_id, environment_id, slug, title, source_path, created_by_staff_agent_id, updated_at)
-	values (pg_temp.rel_company(), v_env_id, 'stale-brand', 'Stale Brand', 'sites/stale-brand', v_staff_id, clock_timestamp() - interval '2 days')
-	returning id into v_abandoned_site_id;
+	perform pg_temp.rel_other_site('other-stale', interval '2 days');
 
 	insert into public.qorpera_company_sites (profile_id, environment_id, kind, slug, title, source_path, created_by_staff_agent_id, app_port)
 	values (pg_temp.rel_company(), v_env_id, 'app', 'preview-app', 'Preview App', 'machine-1', v_staff_id, 3000)
@@ -74,6 +79,14 @@ begin
 		'42501'
 	);
 	perform pg_temp.base_error(
+		format('select pg_temp.req_as(%L, %L)', pg_temp.rel_outsider(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'fresh-brand')),
+		'42501'
+	);
+	perform pg_temp.base_error(
+		format('select pg_temp.req_as(%L, %L)', pg_temp.rel_outsider(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'fresh-brand')),
+		'42501'
+	);
+	perform pg_temp.base_error(
 		format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_app_site_id, 'fresh-brand')),
 		'22023'
 	);
@@ -81,6 +94,17 @@ begin
 		format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(), format('public.qorpera_set_company_site_slug(%L, %L)', v_app_site_id, 'fresh-brand')),
 		'22023'
 	);
+
+	insert into public.qorpera_company_deletions (profile_id) values (pg_temp.rel_company());
+	perform pg_temp.base_error(
+		format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'fresh-brand')),
+		'42501'
+	);
+	perform pg_temp.base_error(
+		format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'fresh-brand')),
+		'42501'
+	);
+	delete from public.qorpera_company_deletions where profile_id = pg_temp.rel_company();
 
 	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, '  Old-Brand  '));
 	perform pg_temp.base_assert(
@@ -91,10 +115,10 @@ begin
 		'current slug check returns current'
 	);
 
-	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'Fresh-Brand'));
+	v_res := pg_temp.req_as(pg_temp.rel_admin(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'Fresh-Brand'));
 	perform pg_temp.base_assert(
 		(v_res ->> 'available')::boolean and v_res ->> 'reason' = 'available' and v_res ->> 'slug' = 'fresh-brand',
-		'free slug check returns available'
+		'admin free slug check returns available'
 	);
 
 	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'taken-brand'));
@@ -103,10 +127,10 @@ begin
 		'taken slug check returns taken'
 	);
 
-	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'stale-brand'));
+	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'other-stale'));
 	perform pg_temp.base_assert(
 		(v_res ->> 'available')::boolean and v_res ->> 'reason' = 'available',
-		'abandoned slug check returns available'
+		'other-company abandoned slug check returns available'
 	);
 
 	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'shop'));
@@ -148,8 +172,14 @@ begin
 
 	insert into public.qorpera_company_site_member_passes (pass_sha256, site_id, user_id, host, expires_at)
 	values (repeat('1', 64), v_site_id, pg_temp.req_owner(), 'old-brand.qorpera.site', clock_timestamp() + interval '1 minute');
+	insert into public.qorpera_company_site_tickets (ticket_sha256, site_id, version_id, user_id, expires_at)
+	values (repeat('3', 64), v_site_id, v_ver_id, pg_temp.req_owner(), clock_timestamp() + interval '2 minutes');
 	insert into public.qorpera_company_site_sessions (token_sha256, site_id, password_version, expires_at, scope)
 	values (repeat('2', 64), v_site_id, 1, clock_timestamp() + interval '1 hour', 'site');
+
+	delete from realtime.messages where topic like 'qorpera-live-%';
+	perform set_config('qorpera.live_hints_sent', '', true);
+	perform set_config('qorpera.live_hints_failed', '', true);
 
 	select repo.index_version into v_repo_index_before
 	from public.qorpera_code_repositories as repo
@@ -163,6 +193,13 @@ begin
 			and v_res ->> 'url' = 'https://fresh-brand.qorpera.site/',
 		'owner renames site slug and receives updated url'
 	);
+
+	set constraints qorpera_live_hint_site_slug immediate;
+	set constraints qorpera_live_hint_site_slug deferred;
+	select count(*) into v_hint_count
+	from realtime.messages as message
+	where message.topic like 'qorpera-live-%' and message.event = 'surfaces';
+	perform pg_temp.base_assert(v_hint_count >= 1, 'rename broadcasts surfaces live hint to company members');
 
 	select count(*) into v_pass_count from public.qorpera_company_site_member_passes where site_id = v_site_id;
 	select count(*) into v_ticket_count from public.qorpera_company_site_tickets where site_id = v_site_id;
@@ -181,26 +218,33 @@ begin
 		'edge snapshot immediately reflects renamed slug'
 	);
 
-	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'fresh-brand'));
-	perform pg_temp.base_assert(v_res ->> 'slug' = 'fresh-brand', 'no-op rename to same slug succeeds');
-
-	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'stale-brand'));
+	v_res := pg_temp.req_as(pg_temp.rel_admin(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'admin-brand'));
 	perform pg_temp.base_assert(
-		v_res ->> 'slug' = 'stale-brand'
-			and not exists (select 1 from public.qorpera_company_sites where id = v_abandoned_site_id),
-		'rename reclaims abandoned site slug'
+		v_res ->> 'slug' = 'admin-brand' and v_res ->> 'url' = 'https://admin-brand.qorpera.site/',
+		'admin renames site slug'
 	);
 
-	perform public.qorpera_site_take_down('stale-brand', 'policy test');
+	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'admin-brand'));
+	perform pg_temp.base_assert(v_res ->> 'slug' = 'admin-brand', 'no-op rename to same slug succeeds');
+
+	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'other-stale'));
+	perform pg_temp.base_assert(
+		v_res ->> 'slug' = 'other-stale'
+			and (select count(*) from public.qorpera_company_sites where slug = 'other-stale') = 1
+			and (select profile_id from public.qorpera_company_sites where slug = 'other-stale') = pg_temp.rel_company(),
+		'rename reclaims abandoned site slug owned by another company'
+	);
+
+	perform public.qorpera_site_take_down('other-stale', 'policy test');
+	perform pg_temp.base_error(
+		format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(), format('public.qorpera_check_company_site_slug(%L, %L)', v_site_id, 'after-down')),
+		'42501',
+		'SITE_TAKEN_DOWN'
+	);
 	perform pg_temp.base_error(
 		format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(), format('public.qorpera_set_company_site_slug(%L, %L)', v_site_id, 'after-down')),
-		'42501'
+		'42501',
+		'SITE_TAKEN_DOWN'
 	);
-	perform public.qorpera_site_restore('stale-brand');
-
-	select count(*) into v_hint_count
-	from pg_trigger as trg
-	where trg.tgrelid = 'public.qorpera_company_sites'::regclass
-		and trg.tgname = 'qorpera_live_hint_site_slug';
-	perform pg_temp.base_assert(v_hint_count = 1, 'surfaces live-hint trigger installed on qorpera_company_sites');
+	perform public.qorpera_site_restore('other-stale');
 end $$;

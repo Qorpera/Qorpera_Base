@@ -233,7 +233,12 @@ describe("site-hosting", () => {
 		expect(() => parseUpdatedSiteSlug({ schema: "wrong" }, SITE_ID)).toThrow();
 		expect(() =>
 			parseUpdatedSiteSlug(
-				{ schema: "qorpera.company-site-slug/v1", siteId: SITE_ID, slug: "fresh-shop", url: "http://evil.example/" },
+				{
+					schema: "qorpera.company-site-slug/v1",
+					siteId: SITE_ID,
+					slug: "fresh-shop",
+					url: "http://evil.example/",
+				},
 				SITE_ID,
 			),
 		).toThrow();

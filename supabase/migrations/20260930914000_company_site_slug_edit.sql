@@ -49,6 +49,9 @@ begin
 	if v_site.kind <> 'files' then
 		raise exception 'SITE_KIND_UNSUPPORTED' using errcode = '22023';
 	end if;
+	if v_site.taken_down_at is not null then
+		raise exception 'SITE_TAKEN_DOWN' using errcode = '42501';
+	end if;
 	if v_slug = v_site.slug then
 		return jsonb_build_object(
 			'schema', 'qorpera.company-site-slug-check/v1',

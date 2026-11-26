@@ -1,7 +1,7 @@
 import { CloudRpcError } from "../../cloud/client.ts";
 import {
-	cleanSiteSlugInput,
 	type CompanySiteHostingState,
+	cleanSiteSlugInput,
 	domainDnsSetup,
 	isApexHostname,
 	NATIVE_SITE_HOST,
@@ -584,8 +584,8 @@ export class SurfaceAddress {
 	#nativeSuffix(): string {
 		const host = hostOf(this.#liveUrl);
 		if (NATIVE_SITE_HOST.test(host)) return host.slice(host.indexOf("."));
-		const domain = this.#known?.hosting.hostsDomain;
-		return domain ? `.${domain}` : "";
+		const hosting = this.#known?.hosting;
+		return hosting?.hostsEnabled && hosting.hostsDomain ? `.${hosting.hostsDomain}` : "";
 	}
 
 	#currentSlug(): string {
@@ -594,7 +594,9 @@ export class SurfaceAddress {
 	}
 
 	#canEditSlug(): boolean {
-		return Boolean(this.#known && this.#setup.canManage() && !this.#working() && this.#nativeSuffix());
+		return Boolean(
+			this.#known?.hosting.hostsEnabled && this.#setup.canManage() && !this.#working() && this.#nativeSuffix(),
+		);
 	}
 
 	#openEdit(): void {
@@ -736,41 +738,39 @@ export class SurfaceAddress {
 		this.#problem = undefined;
 		this.#syncSlugUi();
 		this.#setup.changed();
-		void target.client
-			.setSlug(target.siteId, cleaned, this.#setup.signal)
-			.then(
-				(updated) => {
-					this.#savingSlug = false;
-					this.#writing--;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					if (this.#known) this.#known.slug = updated.slug;
-					this.#liveUrl = updated.url;
-					this.#cancelSlugCheck();
-					this.#page = MAIN;
-					this.#setup.slugChanged?.(updated);
-					this.#changed();
-					if (inside && this.#open) this.#land({ kind: "edit" });
-					if (this.#writing === 0) void this.#read();
-				},
-				(error: unknown) => {
-					this.#savingSlug = false;
-					this.#writing--;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					if (
-						error instanceof CloudRpcError &&
-						(error.message.trim() === "SITE_SLUG_TAKEN" || error.code === "23505")
-					) {
-						this.#slugCheck = { kind: "unavailable", slug: cleaned };
-						this.#problem = undefined;
-						this.#syncSlugUi();
-					} else {
-						this.#problem = addressRefusal(error, phrase("The address could not be changed. Try again."));
-						this.#paint();
-					}
-					if (this.#open && this.#slugField.isConnected) this.#slugField.focus();
-					this.#setup.changed();
-				},
-			);
+		void target.client.setSlug(target.siteId, cleaned, this.#setup.signal).then(
+			(updated) => {
+				this.#savingSlug = false;
+				this.#writing--;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				if (this.#known) this.#known.slug = updated.slug;
+				this.#liveUrl = updated.url;
+				this.#cancelSlugCheck();
+				this.#page = MAIN;
+				this.#setup.slugChanged?.(updated);
+				this.#changed();
+				if (inside && this.#open) this.#land({ kind: "edit" });
+				if (this.#writing === 0) void this.#read();
+			},
+			(error: unknown) => {
+				this.#savingSlug = false;
+				this.#writing--;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				if (
+					error instanceof CloudRpcError &&
+					(error.message.trim() === "SITE_SLUG_TAKEN" || error.code === "23505")
+				) {
+					this.#slugCheck = { kind: "unavailable", slug: cleaned };
+					this.#problem = undefined;
+					this.#syncSlugUi();
+				} else {
+					this.#problem = addressRefusal(error, phrase("The address could not be changed. Try again."));
+					this.#paint();
+				}
+				if (this.#open && this.#slugField.isConnected) this.#slugField.focus();
+				this.#setup.changed();
+			},
+		);
 	}
 
 	#slugCanSave(): boolean {
@@ -964,6 +964,7 @@ export class SurfaceAddress {
 							known.slug,
 							known.isPublic,
 							known.hosting.hostsDomain,
+							known.hosting.hostsEnabled,
 							known.hosting.publicEnabled,
 							known.hosting.domainsEnabled,
 							known.hosting.edgeIpv4,

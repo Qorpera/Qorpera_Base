@@ -2797,9 +2797,13 @@ describe("a new website's first publish", () => {
 
 		const store = storeWith(
 			fakeClient({
-				listSurfaces: vi.fn(async () => [summary({ siteSlug: "thetaband", liveUrl: "https://thetaband.qorpera.site/" })]),
+				listSurfaces: vi.fn(async () => [
+					summary({ siteSlug: "thetaband", liveUrl: "https://thetaband.qorpera.site/" }),
+				]),
 				getSurfaceWorkspace: vi.fn(async () =>
-					workspace([], { surface: summary({ siteSlug: "thetaband", liveUrl: "https://thetaband.qorpera.site/" }) }),
+					workspace([], {
+						surface: summary({ siteSlug: "thetaband", liveUrl: "https://thetaband.qorpera.site/" }),
+					}),
 				),
 			}),
 		);

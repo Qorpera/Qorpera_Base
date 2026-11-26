@@ -341,7 +341,13 @@ export function parseUpdatedSiteSlug(value: unknown, siteId: string): UpdatedSit
 	} catch {
 		throw new Error("Invalid site address response.");
 	}
-	if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+	if (
+		parsedUrl.protocol !== "https:" ||
+		parsedUrl.username ||
+		parsedUrl.password ||
+		parsedUrl.search ||
+		parsedUrl.hash
+	) {
 		throw new Error("Invalid site address response.");
 	}
 	return {
@@ -401,8 +407,7 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 			const cleaned = cleanSiteSlugInput(slug);
 			if (validateSiteSlugInput(cleaned) !== undefined) throw new Error("Invalid site address.");
 			const raw = await withCloudDeadline(
-				(deadline) =>
-					cloud.rpc("qorpera_set_company_site_slug", { p_site_id: siteId, p_slug: cleaned }, deadline),
+				(deadline) => cloud.rpc("qorpera_set_company_site_slug", { p_site_id: siteId, p_slug: cleaned }, deadline),
 				HOSTING_TIMEOUT_MS,
 				signal,
 			);

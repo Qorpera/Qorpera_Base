@@ -18,9 +18,9 @@ import {
 } from "../src/app/surfaces-store.ts";
 import {
 	type AddedSiteDomain,
-	cleanSiteSlugInput,
 	type CompanySiteHostingState,
 	type CustomDomainStatus,
+	cleanSiteSlugInput,
 	type SiteCustomDomain,
 	type SiteSlugAvailability,
 	type UpdatedSiteSlug,
@@ -286,6 +286,7 @@ export function siteDomain(
 export interface HostingWorld {
 	entry: { slug?: string; isPublic: boolean; domains: SiteCustomDomain[] } | null;
 	hostsDomain?: string;
+	hostsEnabled?: boolean;
 	takenSlugs?: string[];
 	publicEnabled: boolean;
 	domainsEnabled: boolean;
@@ -295,6 +296,7 @@ export function fakeSiteHosting(world: Partial<HostingWorld> = {}) {
 	const now: HostingWorld = {
 		entry: { slug: "thetaband", isPublic: false, domains: [] },
 		hostsDomain: "qorpera.com",
+		hostsEnabled: true,
 		takenSlugs: [],
 		publicEnabled: true,
 		domainsEnabled: true,
@@ -304,7 +306,7 @@ export function fakeSiteHosting(world: Partial<HostingWorld> = {}) {
 	const currentSlug = () => now.entry?.slug ?? "thetaband";
 	const state = (): CompanySiteHostingState => ({
 		hostsDomain: hostsDomain(),
-		hostsEnabled: true,
+		hostsEnabled: now.hostsEnabled ?? true,
 		publicEnabled: now.publicEnabled,
 		domainsEnabled: now.domainsEnabled,
 		edgeIpv4: "203.0.113.7",
@@ -342,7 +344,8 @@ export function fakeSiteHosting(world: Partial<HostingWorld> = {}) {
 			const problem = validateSiteSlugInput(cleaned);
 			if (problem === "reserved") return { siteId, slug: cleaned, available: false, reason: "reserved" };
 			if (problem !== undefined) return { siteId, slug: cleaned, available: false, reason: "invalid" };
-			if ((now.takenSlugs ?? []).includes(cleaned)) return { siteId, slug: cleaned, available: false, reason: "taken" };
+			if ((now.takenSlugs ?? []).includes(cleaned))
+				return { siteId, slug: cleaned, available: false, reason: "taken" };
 			return { siteId, slug: cleaned, available: true, reason: "available" };
 		}),
 		setSlug: vi.fn(async (siteId: string, slug: string, _signal?: AbortSignal): Promise<UpdatedSiteSlug> => {
