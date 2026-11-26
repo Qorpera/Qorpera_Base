@@ -285,6 +285,8 @@ function writeFakeChromium(
 		readonly brokenImages?: readonly string[];
 		readonly stage3dErrors?: readonly string[];
 	},
+	fetchPaths?: readonly string[],
+	fetchOutFile?: string,
 ): string {
 	const fakeChrome = join(dir, "fake-chromium.mjs");
 	const evalValue = evalPayload ?? scrollHeight;
@@ -293,9 +295,12 @@ function writeFakeChromium(
 		[
 			"#!/usr/bin/env node",
 			'import http from "node:http";',
+			'import fs from "node:fs";',
 			'import { createHash } from "node:crypto";',
 			`const PNG_B64 = ${JSON.stringify(VALID_PNG.toString("base64"))};`,
 			`const EVAL_VAL = ${JSON.stringify(evalValue)};`,
+			`const FETCH_PATHS = ${JSON.stringify(fetchPaths ?? [])};`,
+			`const FETCH_OUT = ${JSON.stringify(fetchOutFile ?? "")};`,
 			"const server = http.createServer((req, res) => {",
 			'  if (req.url === "/json/list") {',
 			"    const port = server.address().port;",
@@ -327,7 +332,23 @@ function writeFakeChromium(
 			"      buf = buf.subarray(offset + (masked ? 4 : 0) + len);",
 			"      if ((chunk[0] & 0x0f) === 8) { socket.end(); return; }",
 			'      const msg = JSON.parse(payload.toString("utf8"));',
-			'      if (msg.method === "Page.navigate") { sendFrame({ id: msg.id, result: {} }); sendFrame({ method: "Page.loadEventFired", params: {} }); }',
+			'      if (msg.method === "Page.navigate") {',
+			"        const navUrl = msg.params && msg.params.url;",
+			"        void (async () => {",
+			"          if (navUrl && FETCH_PATHS.length > 0) {",
+			"            const origin = new URL(navUrl).origin;",
+			"            const results = {};",
+			"            for (const p of FETCH_PATHS) {",
+			"              const r = await fetch(origin + p);",
+			"              const b = Buffer.from(await r.arrayBuffer());",
+			'              results[p] = { status: r.status, sha256: createHash("sha256").update(b).digest("hex"), bytes: b.byteLength };',
+			"            }",
+			"            if (FETCH_OUT) fs.writeFileSync(FETCH_OUT, JSON.stringify(results));",
+			"          }",
+			"          sendFrame({ id: msg.id, result: {} });",
+			'          sendFrame({ method: "Page.loadEventFired", params: {} });',
+			"        })();",
+			"      }",
 			'      else if (msg.method === "Runtime.evaluate") sendFrame({ id: msg.id, result: { result: { value: EVAL_VAL } } });',
 			'      else if (msg.method === "Page.captureScreenshot") sendFrame({ id: msg.id, result: { data: PNG_B64 } });',
 			"      else sendFrame({ id: msg.id, result: {} });",
@@ -1210,10 +1231,332 @@ describe("Studio visual inspect & draw tools", () => {
 						"base64",
 					),
 				).toString("utf8"),
-			) as { files: Record<string, { b64?: string; text?: string }>; local: Record<string, string> };
-			expect(stagedJson.local["models/band.glb"]).toBe("band.glb");
-			expect(stagedJson.files["models/band.glb"]).toBeUndefined();
+			) as {
+				files: Record<string, { b64?: string; text?: string }>;
+				local: Record<string, { src: string; sha256: string }>;
+			};
+			expect(stagedJson.local["models/band.glb"]).toEqual({
+				src: "band.glb",
+				sha256: createHash("sha256").update(VALID_GLB).digest("hex"),
+			});
 			expect((stagedJson.files["pictures/soft-core-hero.png"]?.b64 ?? "").length).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("clears stale local assets on make_picture overwrite, checks disk sha-256, respects replaceAll, gates make_picture instructions, and validates same-turn option layout follow-ups", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-review-fixes-"));
+		try {
+			const altPng = Buffer.from(VALID_PNG);
+			const makeColorPng = (r: number, g: number, b: number): Buffer => {
+				const ihdr = Buffer.alloc(13);
+				ihdr.writeUInt32BE(2, 0);
+				ihdr.writeUInt32BE(2, 4);
+				ihdr[8] = 8;
+				ihdr[9] = 6;
+				const raw = Buffer.alloc((1 + 2 * 4) * 2, 0xff);
+				raw[0] = 0;
+				raw[9] = 0;
+				for (const off of [1, 5, 10, 14]) {
+					raw[off] = r;
+					raw[off + 1] = g;
+					raw[off + 2] = b;
+				}
+				return Buffer.concat([
+					Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+					pngChunk("IHDR", ihdr),
+					pngChunk("IDAT", deflateSync(raw)),
+					pngChunk("IEND", Buffer.alloc(0)),
+				]);
+			};
+			const blenderPng = makeColorPng(10, 20, 30);
+			const generatedPng = makeColorPng(200, 100, 50);
+			const mutatedPng = makeColorPng(1, 2, 3);
+			const largeGlb = Buffer.concat([VALID_GLB, Buffer.alloc(160_000, 0)]);
+			largeGlb.writeUInt32LE(largeGlb.byteLength, 8);
+			writeFileSync(join(dir, "hero.png"), blenderPng);
+			writeFileSync(join(dir, "large.glb"), largeGlb);
+			const fetchOut = join(dir, "fetches.json");
+			const fakeChrome = writeFakeChromium(
+				dir,
+				900,
+				undefined,
+				["/staged-asset/renders/hero.png", "/staged-asset/models/large.glb"],
+				fetchOut,
+			);
+			const folder = {
+				async list() {
+					return { entries: [] };
+				},
+				async readRange() {
+					return altPng;
+				},
+				async readText() {
+					return null;
+				},
+			} as unknown as CloudCompanyFolderClient;
+
+			const withoutPics = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "thetabands",
+					surfaceTitle: "ThetaBands",
+					surfaceKind: "product",
+					surfaceIcon: "product",
+					surfaceIsGlobal: false,
+					briefMarkdown: null,
+					folderRoot: "surfaces/thetabands",
+					sourceKind: "folder",
+					stageSurfacePatch: async () => ({
+						changeId: "11111111-1111-4111-8111-111111111119",
+						seq: 1,
+						openChangeCount: 1,
+					}),
+				},
+				folder,
+				isClaudeTurn: true,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+			expect(withoutPics.instructions).not.toContain("make_picture");
+			expect(withoutPics.claudeSystemNote).not.toContain("make_picture");
+
+			const priorOptId = "12121212-1212-4121-8121-121212121212";
+			const optBId = "34343434-3434-4343-8343-343434343434";
+			const sameTurnOptId = "56565656-5656-4565-8565-565656565656";
+			let nextOptSeq = 0;
+			const recordedCommands: string[] = [];
+			const machine = makeShellMachine(
+				dir,
+				{ ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome },
+				recordedCommands,
+			);
+			const pictures = new CloudPictureChannel();
+			pictures.attach(async () => ({ png: generatedPng, revisedPrompt: "Studio render", transparent: false }));
+			const prepared = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "thetabands",
+					surfaceTitle: "ThetaBands",
+					surfaceKind: "product",
+					surfaceIcon: "product",
+					surfaceIsGlobal: false,
+					briefMarkdown: null,
+					folderRoot: "surfaces/thetabands",
+					sourceKind: "folder",
+					sessionOpenChanges: [
+						{
+							changeId: priorOptId,
+							seq: 1,
+							status: "open",
+							title: "Prior option",
+							summary: "Earlier variant",
+							kind: "folder_patch",
+							actionKind: null,
+							parentSha: null,
+							headSha: null,
+							optionGroupKey: "concepts",
+							affectedPaths: ["renders/hero.png", "specs.json"],
+							previewBaseChangeIds: [],
+							patchManifest: [
+								{
+									op: "write_file",
+									path: "renders/hero.png",
+									file: {
+										manifestSha256: "9".repeat(64),
+										fileSha256: "8".repeat(64),
+										bytes: 4096,
+										mediaType: "image/png",
+									},
+								},
+								{
+									op: "write_text",
+									path: "specs.json",
+									content: JSON.stringify({ overview: { tagline: "OLD_REPLACED_TAGLINE" } }),
+								},
+							],
+							baseFiles: null,
+						},
+					],
+					stageBytes: async (bytes, mediaType) => {
+						const sha = createHash("sha256").update(bytes).digest("hex");
+						return { manifestSha256: sha, fileSha256: sha, bytes: bytes.byteLength, mediaType };
+					},
+					stageSurfacePatch: async (_sid, req) => {
+						nextOptSeq += 1;
+						const changeId =
+							req.changeId ??
+							(req.optionGroup === "concepts"
+								? optBId
+								: req.optionGroup === "layout-opts"
+									? sameTurnOptId
+									: "99999999-9999-4999-8999-999999999999");
+						return { changeId, seq: nextOptSeq, openChangeCount: 2, updated: Boolean(req.changeId) };
+					},
+				},
+				folder,
+				pictures,
+				isClaudeTurn: false,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+
+			const tools = prepared.buildTools(
+				machine.identity,
+				machine.operations as unknown as CloudNativeToolOperations,
+				machine,
+			);
+			const byName = new Map(tools.map((t) => [t.name, t]));
+			const stageArtifact = byName.get("stage_surface_artifact")!;
+			const stagePatch = byName.get("stage_surface_patch")!;
+			const makePicture = byName.get("make_picture")!;
+			const inspectSurface = byName.get("inspect_surface")!;
+
+			await stageArtifact.execute(
+				{ sourcePath: "hero.png", destPath: "renders/hero.png", createNew: true },
+				CONTEXT,
+			);
+			await stageArtifact.execute(
+				{ sourcePath: "large.glb", destPath: "models/large.glb", createNew: true },
+				CONTEXT,
+			);
+
+			writeFileSync(join(dir, "hero.png"), mutatedPng);
+			writeFileSync(join(dir, "large.glb"), Buffer.concat([largeGlb.subarray(0, 16), Buffer.alloc(160_000, 7)]));
+			const mutatedShot = await inspectSurface.execute({ tab: "overview" }, CONTEXT);
+			expect(mutatedShot.kind).toBe("json");
+			if (mutatedShot.kind === "json") {
+				const warns = (mutatedShot.value as Record<string, JsonValue>).warnings as string[];
+				expect(warns.some((w) => w.includes("models/large.glb") && w.includes("changed on disk"))).toBe(true);
+			}
+			const fetched = JSON.parse(execFileSync("cat", [fetchOut], { encoding: "utf8" })) as Record<
+				string,
+				{ status: number; sha256: string }
+			>;
+			expect(fetched["/staged-asset/renders/hero.png"]?.status).toBe(200);
+			expect(fetched["/staged-asset/renders/hero.png"]?.sha256).toBe(
+				createHash("sha256").update(blenderPng).digest("hex"),
+			);
+			expect(fetched["/staged-asset/models/large.glb"]?.status).toBe(404);
+
+			await makePicture.execute(
+				makePicture.parseArguments({
+					path: "renders/hero.png",
+					prompt: "Option B hero render",
+					optionGroup: "concepts",
+					optionGroupTitle: "Concepts",
+				}),
+				CONTEXT,
+			);
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview", changeId: optBId }, CONTEXT);
+			const optBStaged = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						recordedCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
+			expect(optBStaged.local["renders/hero.png"]).toBeUndefined();
+			expect(optBStaged.files["renders/hero.png"]?.b64).toBe(generatedPng.toString("base64"));
+
+			await makePicture.execute(
+				makePicture.parseArguments({ path: "renders/hero.png", prompt: "Default override", createNew: true }),
+				CONTEXT,
+			);
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview" }, CONTEXT);
+			const defaultOverwritten = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						recordedCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
+			expect(defaultOverwritten.local["renders/hero.png"]).toBeUndefined();
+			expect(defaultOverwritten.files["renders/hero.png"]?.b64).toBe(generatedPng.toString("base64"));
+
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview", changeId: priorOptId }, CONTEXT);
+			const priorStagedCmds = recordedCommands.filter((cmd) => cmd.includes("staged.json.gz.b64"));
+			if (priorStagedCmds.length > 0) {
+				const priorStaged = JSON.parse(
+					gunzipSync(
+						Buffer.from(
+							priorStagedCmds.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "").join(""),
+							"base64",
+						),
+					).toString("utf8"),
+				) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
+				expect(priorStaged.files["renders/hero.png"]).toBeUndefined();
+				expect(priorStaged.local["renders/hero.png"]).toBeUndefined();
+			}
+
+			const replacePatch = stagePatch.parseArguments({
+				title: "Prior option replaced",
+				summary: "Replaced specs cleanly",
+				changeId: priorOptId,
+				replaceAll: true,
+				ops: [
+					{
+						op: "write_text",
+						path: "object.json",
+						content: JSON.stringify({ kind: "headband" }),
+					},
+				],
+			});
+			await stagePatch.prepare?.(replacePatch, CONTEXT);
+			await stagePatch.execute(replacePatch, CONTEXT);
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview", changeId: priorOptId }, CONTEXT);
+			const replacedHtml = gunzipSync(
+				Buffer.from(
+					recordedCommands
+						.filter((cmd) => cmd.includes("index.html.gz.b64"))
+						.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+						.join(""),
+					"base64",
+				),
+			).toString("utf8");
+			expect(replacedHtml).not.toContain("OLD_REPLACED_TAGLINE");
+
+			const createOptLayout = stagePatch.parseArguments({
+				title: "Custom layout option",
+				summary: "Adds custom tab layout",
+				optionGroup: "layout-opts",
+				optionGroupTitle: "Layout options",
+				ops: [
+					{
+						op: "write_text",
+						path: "layout.json",
+						content: JSON.stringify({
+							schema: SURFACE_LAYOUT_SCHEMA,
+							tabs: [{ id: "alt", title: "Alt", blocks: [{ type: "artifacts", heading: "Visuals" }] }],
+						}),
+					},
+				],
+			});
+			await stagePatch.prepare?.(createOptLayout, CONTEXT);
+			await stagePatch.execute(createOptLayout, CONTEXT);
+
+			const followUpMerge = stagePatch.parseArguments({
+				title: "Custom layout option",
+				summary: "Follow-up merge on same-turn option layout",
+				changeId: sameTurnOptId,
+				ops: [{ op: "merge_json", path: "layout.json", patch: {} }],
+			});
+			await expect(stagePatch.prepare?.(followUpMerge, CONTEXT)).resolves.toBeDefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

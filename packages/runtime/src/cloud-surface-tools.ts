@@ -1900,7 +1900,10 @@ export function createStageSurfacePatchTool(
 				} else {
 					waitingOps = null;
 				}
-			} else if (targetId && openById.get(targetId)?.optionGroupKey) {
+			} else if (
+				targetId &&
+				(openById.get(targetId)?.optionGroupKey || tracker.getChangeMeta(targetId)?.optionGroupKey)
+			) {
 				const targetPriorOps = currentOpsByChangeId.get(targetId);
 				if (targetPriorOps === undefined || layout.waitingOps === null) {
 					waitingOps = null;

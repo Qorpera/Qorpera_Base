@@ -18,7 +18,11 @@ import { type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-too
 import { recordStudioChatGptVoiceClips, type StudioChatGptVoiceMachine } from "./cloud-studio-voice-recorder.ts";
 import { createStageSurfaceArtifactTool } from "./cloud-surface-artifact-tool.ts";
 import { createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
-import { createInspectSurfaceTool, type StudioInspectBinaryMeta } from "./cloud-surface-inspect-tool.ts";
+import {
+	createInspectSurfaceTool,
+	type StudioInspectBinaryMeta,
+	type StudioInspectLocalAsset,
+} from "./cloud-surface-inspect-tool.ts";
 import { createComposeSurfaceLayoutTool } from "./cloud-surface-layout-tool.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import { createStudioPictureTool } from "./cloud-surface-picture-tool.ts";
@@ -283,11 +287,12 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	const stagedBytesBySha = new Map<string, { readonly bytes: Uint8Array; readonly mediaType: string }>();
 	const stagedBinaries = new Map<string, { readonly bytes: Uint8Array; readonly mediaType: string }>();
 	const stagedOpsByChangeId = new Map<string, StudioPatchOp[]>();
+	const replacedInTurnChangeIds = new Set<string>();
 	const optionGroupByChangeId = new Map<string, string | null>(
 		sessionOpenChanges.map((ch) => [ch.changeId, ch.optionGroupKey ?? null]),
 	);
-	const localSourceByPath = new Map<string, string>();
-	const localSourceByChangeId = new Map<string, Map<string, string>>();
+	const localSourceByPath = new Map<string, StudioInspectLocalAsset>();
+	const localSourceByChangeId = new Map<string, Map<string, StudioInspectLocalAsset>>();
 	const rawStageBytes = surfaceSession.stageBytes ?? surfaceSession.narrateExplainer?.stageBytes;
 	const trackedStageBytes = rawStageBytes
 		? async (bytes: Uint8Array, mediaType: string, reqSignal: AbortSignal): Promise<StudioBinaryRef> => {
@@ -318,21 +323,34 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			const prevGroup = optionGroupByChangeId.get(targetId) ?? null;
 			const resolvedGroup = request.optionGroup ?? prevGroup;
 			optionGroupByChangeId.set(result.changeId, resolvedGroup);
+			if (request.replaceAll) {
+				replacedInTurnChangeIds.add(result.changeId);
+				localSourceByChangeId.delete(result.changeId);
+			}
 			const prevChangeOps = request.replaceAll ? [] : (stagedOpsByChangeId.get(result.changeId) ?? []);
 			stagedOpsByChangeId.set(result.changeId, [...prevChangeOps, ...request.ops]);
+			const perChangeLocal = localSourceByChangeId.get(result.changeId);
+			if (perChangeLocal) {
+				for (const op of request.ops) {
+					const rel = normalizeStudioRelativePath(op.path, folderRoot);
+					if (rel) perChangeLocal.delete(`${folderRoot}/${rel}`);
+				}
+			}
 			const includeInDefault = !resolvedGroup || result.changeId === replyChangeId;
 			if (includeInDefault) {
 				applyStudioTextOps(stagedText, request.ops, folderRoot);
 				for (const op of request.ops) {
 					const rel = normalizeStudioRelativePath(op.path, folderRoot);
 					if (!rel) continue;
+					const full = `${folderRoot}/${rel}`;
+					localSourceByPath.delete(full);
 					if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
 						stagedBinaries.delete(rel);
-						localSourceByPath.delete(`${folderRoot}/${rel}`);
 					} else if (op.op === "write_file") {
 						stagedText.delete(rel);
 						const cached = stagedBytesBySha.get(op.file.fileSha256);
 						if (cached) stagedBinaries.set(rel, cached);
+						else stagedBinaries.delete(rel);
 					}
 				}
 			}
@@ -395,7 +413,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 					"When finished staging the combined resolution via stage_surface_patch, call coding_finish with a concise summary (omitting headSha). Never call coding_ask.",
 				]
 			: [
-					"Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks), use make_picture for bespoke concept renders, use stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call inspect_surface (passing changeId when checking an optionGroup variant) after staging to visually audit the rendered page before calling coding_finish.",
+					`Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks)${hasMakePicture ? ", use make_picture for bespoke concept renders" : ""}, use stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call inspect_surface (passing changeId when checking an optionGroup variant) after staging to visually audit the rendered page before calling coding_finish.`,
 					"Every turn MUST end with coding_finish (with operationKey, summary, and optional notePaths; omit headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
 				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
@@ -409,7 +427,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 					"When finished staging the combined resolution via mcp__qorpera__stage_surface_patch, call mcp__qorpera__coding_finish with operationKey and a concise summary. Never call coding_ask.",
 				]
 			: [
-					"Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use mcp__qorpera__compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks), use mcp__qorpera__make_picture for bespoke concept renders, use mcp__qorpera__stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call mcp__qorpera__inspect_surface (passing changeId when checking an optionGroup variant) after staging to inspect a real rendered screenshot before calling mcp__qorpera__coding_finish.",
+					`Visual, 3D, and inspection tools: keep the native Studio starter tabs and blocks rather than replacing Overview with a custom module iframe. Use mcp__qorpera__compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks)${hasMakePicture ? ", use mcp__qorpera__make_picture for bespoke concept renders" : ""}, use mcp__qorpera__stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, multi-part PBR GLB 3D models, MP3/WAV) straight into Preview (omitting title and summary when attaching to an existing changeId so you preserve its title and summary), and call mcp__qorpera__inspect_surface (passing changeId when checking an optionGroup variant) after staging to inspect a real rendered screenshot before calling mcp__qorpera__coding_finish.`,
 					"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey, summary, and optional notePaths) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
 				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
@@ -531,19 +549,20 @@ export async function prepareSurfaceCodingWorkspace(options: {
 								stageBytes: trackedStageBytes,
 								surfacePatch: trackedSurfacePatch,
 								patchTracker,
-								onStagedSource: ({ destPath, sourcePath, changeId }) => {
+								onStagedSource: ({ destPath, sourcePath, fileSha256, changeId }) => {
 									const rel = normalizeStudioRelativePath(destPath, folderRoot);
 									if (!rel) return;
 									const full = `${folderRoot}/${rel}`;
+									const asset: StudioInspectLocalAsset = { sourcePath, sha256: fileSha256 };
 									let perChange = localSourceByChangeId.get(changeId);
 									if (!perChange) {
-										perChange = new Map<string, string>();
+										perChange = new Map<string, StudioInspectLocalAsset>();
 										localSourceByChangeId.set(changeId, perChange);
 									}
-									perChange.set(full, sourcePath);
+									perChange.set(full, asset);
 									const group = optionGroupByChangeId.get(changeId) ?? null;
 									if (!group || changeId === replyChangeId) {
-										localSourceByPath.set(full, sourcePath);
+										localSourceByPath.set(full, asset);
 									}
 								},
 							}),
@@ -642,15 +661,49 @@ export async function prepareSurfaceCodingWorkspace(options: {
 											inCompanyMount: false,
 										};
 									}
-									const localAssetPaths: Record<string, string> = {};
-									for (const [full, sourcePath] of localSourceByPath) {
-										localAssetPaths[full] = sourcePath;
+									const localAssetPaths: Record<string, StudioInspectLocalAsset> = {};
+									for (const [full, asset] of localSourceByPath) {
+										localAssetPaths[full] = asset;
 									}
 									const targetChangeId = inspectOptions?.changeId;
 									if (targetChangeId) {
 										const priorOpen = sessionOpenChanges.find((ch) => ch.changeId === targetChangeId);
+										const replacedInTurn = replacedInTurnChangeIds.has(targetChangeId);
 										const turnOps = stagedOpsByChangeId.get(targetChangeId) ?? [];
-										const combinedOps = [...(priorOpen?.patchManifest ?? []), ...turnOps];
+										if (replacedInTurn && priorOpen?.patchManifest) {
+											const newPaths = new Set(
+												turnOps
+													.map((op) => normalizeStudioRelativePath(op.path, folderRoot))
+													.filter((rel): rel is string => Boolean(rel)),
+											);
+											for (const oldOp of priorOpen.patchManifest) {
+												const rel = normalizeStudioRelativePath(oldOp.path, folderRoot);
+												if (!rel || newPaths.has(rel)) continue;
+												const full = `${folderRoot}/${rel}`;
+												delete binaries[full];
+												delete localAssetPaths[full];
+												if (contents?.files[full] !== undefined) {
+													files[full] = contents.files[full];
+													delete knownBinaries[full];
+												} else {
+													delete files[full];
+													const baseRef = contents?.binaries[full];
+													if (baseRef) {
+														knownBinaries[full] = {
+															bytes: baseRef.bytes,
+															mediaType: baseRef.mediaType,
+															inCompanyMount: true,
+														};
+													} else {
+														delete knownBinaries[full];
+													}
+												}
+											}
+										}
+										const combinedOps = [
+											...(replacedInTurn ? [] : (priorOpen?.patchManifest ?? [])),
+											...turnOps,
+										];
 										if (combinedOps.length > 0) {
 											const variantText = new Map<string, string | null>();
 											for (const [full, content] of Object.entries(files)) {
@@ -664,8 +717,10 @@ export async function prepareSurfaceCodingWorkspace(options: {
 												const full = `${folderRoot}/${rel}`;
 												if (op.op === "write_file") {
 													delete files[full];
+													delete localAssetPaths[full];
 													const cached = stagedBytesBySha.get(op.file.fileSha256);
 													if (cached) binaries[full] = cached;
+													else delete binaries[full];
 													knownBinaries[full] = {
 														bytes: op.file.bytes,
 														mediaType: op.file.mediaType,
@@ -683,8 +738,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 										}
 										const changeLocal = localSourceByChangeId.get(targetChangeId);
 										if (changeLocal) {
-											for (const [full, sourcePath] of changeLocal) {
-												localAssetPaths[full] = sourcePath;
+											for (const [full, asset] of changeLocal) {
+												localAssetPaths[full] = asset;
 											}
 										}
 									}

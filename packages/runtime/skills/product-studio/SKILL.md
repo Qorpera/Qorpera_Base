@@ -17,7 +17,7 @@ This page sells and specifies one product. A buyer knows what it is at first gla
 - Fill the homes piece by piece: 3D model and visuals, then the line, figures and colourways, then specs, parts and vendors.
 - An unknown stays an empty home. Never invent a price, weight, supplier or certification: say in your reply what is still missing and who could know it.
 - Read the brief, company files and earlier reports first. Ask the member only questions of taste, with surface_ask and two to four concrete options ("Sandstone, Night, Moss" or "Bone, Graphite"), once early.
-- Build real visuals and 3D models in this session: use `make_picture` for studio renders, worn shots and exploded views placed under pictures or renders (so Overview shows them cleanly), and `stage_surface_artifact` for GLB 3D models, Blender renders, charts or PDFs made on the coding machine.
+- Build real visuals and 3D models in this session: generate studio renders, worn shots and exploded views placed under pictures or renders (so Overview shows them cleanly), and use `stage_surface_artifact` for GLB 3D models, Blender renders, charts or PDFs made on the coding machine.
 - Use `compose_surface_layout` only to add a focused block (such as `chart` or an extra `artifacts` section) or remove unused homes; call `inspect_surface` after staging (including option-group changes) to verify the real rendered page before finishing.
 - Write to the member about the product, never file paths, file names or tool names.
 

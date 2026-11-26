@@ -1675,7 +1675,7 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 						title: "Lab",
 						blocks: [
 							{ type: "module", from: "modules/pod", heading: "Pod" },
-							{ type: "artifacts", heading: "Pages" },
+							{ type: "artifacts", match: ["*.html"], heading: "Pages" },
 						],
 					},
 				],

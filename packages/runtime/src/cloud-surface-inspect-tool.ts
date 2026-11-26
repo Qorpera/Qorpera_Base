@@ -120,6 +120,7 @@ const CAPTURE_SCRIPT_CJS = [
 	'  const cwdReal = fs.realpathSync(".");',
 	'  let tmpReal = "/tmp"; try { tmpReal = fs.realpathSync("/tmp"); } catch {}',
 	"  const localAssets = new Map();",
+	"  const staleLocalAssets = new Set();",
 	'  const stagedGz = path.join(siteDir, "staged.json.gz.b64");',
 	"  if (fs.existsSync(stagedGz)) {",
 	'    const bundle = JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync(stagedGz, "utf8"), "base64")).toString("utf8"));',
@@ -135,9 +136,17 @@ const CAPTURE_SCRIPT_CJS = [
 	"      }",
 	"    }",
 	"    if (bundle && typeof bundle.local === 'object' && bundle.local) {",
-	"      for (const [rel, src] of Object.entries(bundle.local)) {",
-	'        if (typeof src !== "string") continue;',
-	"        try { const real = fs.realpathSync(src); if ((inside(cwdReal, real) || inside(tmpReal, real)) && fs.statSync(real).isFile() && MIME[path.extname(real).toLowerCase()]) localAssets.set(rel, real); } catch {}",
+	"      for (const [rel, entry] of Object.entries(bundle.local)) {",
+	'        const src = typeof entry === "string" ? entry : entry && typeof entry.src === "string" ? entry.src : null;',
+	'        const sha256 = entry && typeof entry === "object" && typeof entry.sha256 === "string" ? entry.sha256 : null;',
+	"        if (!src) continue;",
+	"        try {",
+	"          const real = fs.realpathSync(src);",
+	"          const st = fs.statSync(real);",
+	"          if ((inside(cwdReal, real) || inside(tmpReal, real)) && st.isFile() && st.size <= 8 * 1024 * 1024 && MIME[path.extname(real).toLowerCase()]) {",
+	"            localAssets.set(rel, { real, sha256 });",
+	"          }",
+	"        } catch {}",
 	"      }",
 	"    }",
 	"  }",
@@ -152,6 +161,21 @@ const CAPTURE_SCRIPT_CJS = [
 	'    res.writeHead(200, { "Content-Type": mime });',
 	"    fs.createReadStream(filePath).pipe(res);",
 	"  };",
+	"  const sendLocal = (res, rel, hit) => {",
+	"    try {",
+	"      const st = fs.statSync(hit.real);",
+	"      if (!st.isFile() || st.size > 8 * 1024 * 1024) return { ok: false, stale: false };",
+	"      const mime = MIME[path.extname(hit.real).toLowerCase()];",
+	"      if (!mime) return { ok: false, stale: false };",
+	"      const data = fs.readFileSync(hit.real);",
+	'      if (hit.sha256 && crypto.createHash("sha256").update(data).digest("hex") !== hit.sha256) {',
+	"        return { ok: false, stale: true };",
+	"      }",
+	'      res.writeHead(200, { "Content-Type": mime });',
+	"      res.end(data);",
+	"      return { ok: true, stale: false };",
+	"    } catch { return { ok: false, stale: false }; }",
+	"  };",
 	"  const server = http.createServer((req, res) => {",
 	'    const reqPath = (req.url || "/").split("?")[0];',
 	'    if (companyDir && reqPath.startsWith("/company-asset/")) {',
@@ -162,11 +186,13 @@ const CAPTURE_SCRIPT_CJS = [
 	'      const prefix = reqPath.startsWith("/staged-asset/") ? "/staged-asset/" : "/staged/";',
 	'      let rel = ""; try { rel = decodeURIComponent(reqPath.slice(prefix.length)).replace(/^\\/+/, ""); } catch { res.writeHead(400); res.end(); return; }',
 	'      if (!rel || rel.includes("\\\\") || rel.includes("\\0")) { res.writeHead(404); res.end(); return; }',
+	"      const localHit = localAssets.get(rel);",
+	"      const localResult = localHit ? sendLocal(res, rel, localHit) : { ok: false, stale: false };",
+	"      if (localResult.ok) return;",
 	"      const stagedTarget = path.resolve(stagedDir, rel);",
 	"      if (inside(stagedDir, stagedTarget) && fs.existsSync(stagedTarget) && fs.statSync(stagedTarget).isFile()) { sendFile(res, stagedTarget, null); return; }",
-	"      const localHit = localAssets.get(rel);",
-	"      if (localHit && fs.existsSync(localHit) && fs.statSync(localHit).isFile()) { sendFile(res, localHit, null); return; }",
-	"      if (companyDir) { try { const compHit = fs.realpathSync(path.resolve(companyDir, rel)); if (inside(companyDir, compHit) && fs.statSync(compHit).isFile()) { sendFile(res, compHit, null); return; } } catch {} }",
+	"      if (localResult.stale) staleLocalAssets.add(rel);",
+	'      if (companyDir && prefix === "/staged/") { try { const compHit = fs.realpathSync(path.resolve(companyDir, rel)); if (inside(companyDir, compHit) && fs.statSync(compHit).isFile()) { sendFile(res, compHit, null); return; } } catch {} }',
 	'      res.writeHead(404); res.end("not found"); return;',
 	"    }",
 	'    const rel = reqPath === "/" ? "index.html" : reqPath.replace(/^\\/+/, "");',
@@ -229,7 +255,7 @@ const CAPTURE_SCRIPT_CJS = [
 	'    const data = Buffer.from(shot.data, "base64");',
 	'    const hash = crypto.createHash("sha256").update(data).digest("hex");',
 	'    const writeAll = async (s) => { if (!process.stdout.write(s)) await new Promise((r) => process.stdout.once("drain", r)); };',
-	'    await writeAll("QORPERA_META:" + JSON.stringify({ scrollHeight, scrollY: y, captureHeight, brokenImages, stage3dErrors }) + "\\n");',
+	'    await writeAll("QORPERA_META:" + JSON.stringify({ scrollHeight, scrollY: y, captureHeight, brokenImages, stage3dErrors, staleLocalAssets: [...staleLocalAssets] }) + "\\n");',
 	'    await writeAll("QORPERA_IMG:" + data.length + ":" + hash + ":\\n");',
 	'    for (let i = 0; i < data.length; i += 49152) await writeAll(data.subarray(i, Math.min(data.length, i + 49152)).toString("base64"));',
 	"  } finally {",
@@ -287,6 +313,11 @@ export interface StudioInspectBinaryMeta {
 	readonly inCompanyMount?: boolean;
 }
 
+export interface StudioInspectLocalAsset {
+	readonly sourcePath: string;
+	readonly sha256: string;
+}
+
 export interface StudioInspectSnapshot {
 	readonly surfaceTitle: string;
 	readonly folderRoot: string;
@@ -294,7 +325,7 @@ export interface StudioInspectSnapshot {
 	readonly files: Readonly<Record<string, string>>;
 	readonly binaries: Readonly<Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }>>;
 	readonly knownBinaries?: Readonly<Record<string, StudioInspectBinaryMeta>>;
-	readonly localAssetPaths?: Readonly<Record<string, string>>;
+	readonly localAssetPaths?: Readonly<Record<string, StudioInspectLocalAsset>>;
 }
 
 export interface InspectSurfaceToolOptions {
@@ -1831,22 +1862,22 @@ async function prepareInspectAssets(
 	readonly assetUrls: Record<string, string>;
 	readonly bundle: {
 		readonly files: Record<string, { readonly b64?: string; readonly text?: string }>;
-		readonly local: Record<string, string>;
+		readonly local: Record<string, { readonly src: string; readonly sha256: string }>;
 	};
 }> {
 	const assetUrls: Record<string, string> = {};
 	const bundleFiles: Record<string, { readonly b64?: string; readonly text?: string }> = {};
-	const bundleLocal: Record<string, string> = {};
+	const bundleLocal: Record<string, { readonly src: string; readonly sha256: string }> = {};
 	const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
 	const relOf = (fullPath: string): string | null => {
 		if (!rootPrefix) return fullPath.replace(/^\/+/, "") || null;
 		return fullPath.startsWith(rootPrefix) ? fullPath.slice(rootPrefix.length) : null;
 	};
 
-	for (const [fullPath, sourcePath] of Object.entries(snapshot.localAssetPaths ?? {})) {
+	for (const [fullPath, local] of Object.entries(snapshot.localAssetPaths ?? {})) {
 		const rel = relOf(fullPath);
 		if (!rel) continue;
-		bundleLocal[rel] = sourcePath;
+		bundleLocal[rel] = { src: local.sourcePath, sha256: local.sha256 };
 		assetUrls[fullPath] = `/staged-asset/${encodeURI(rel)}`;
 	}
 	for (const [fullPath, meta] of Object.entries(snapshot.knownBinaries ?? {})) {
@@ -1858,10 +1889,14 @@ async function prepareInspectAssets(
 
 	let bundleBytes = 0;
 	let previewImages = 0;
-	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
-		if (assetUrls[fullPath] || bundleBytes >= MAX_STAGED_BUNDLE_BYTES) continue;
+	const tryBundleBinary = async (
+		fullPath: string,
+		entry: { readonly bytes: Uint8Array; readonly mediaType: string },
+		setUrl: boolean,
+	): Promise<void> => {
+		if (bundleBytes >= MAX_STAGED_BUNDLE_BYTES) return;
 		const rel = relOf(fullPath);
-		if (!rel) continue;
+		if (!rel || bundleFiles[rel]) return;
 		if (entry.mediaType.startsWith("image/") && previewImages < MAX_STAGED_PREVIEW_IMAGES) {
 			let pngBytes: Uint8Array | null = null;
 			if (entry.bytes.byteLength <= MAX_INLINE_IMAGE_BYTES) {
@@ -1884,7 +1919,7 @@ async function prepareInspectAssets(
 				bundleFiles[rel] = { b64: Buffer.from(pngBytes).toString("base64") };
 				bundleBytes += pngBytes.byteLength;
 				previewImages += 1;
-				assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
+				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
 			}
 		} else if (
 			entry.mediaType === "model/gltf-binary" &&
@@ -1893,8 +1928,16 @@ async function prepareInspectAssets(
 		) {
 			bundleFiles[rel] = { b64: Buffer.from(entry.bytes).toString("base64") };
 			bundleBytes += entry.bytes.byteLength;
-			assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
+			if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
 		}
+	};
+	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
+		if (assetUrls[fullPath]) continue;
+		await tryBundleBinary(fullPath, entry, true);
+	}
+	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
+		if (!snapshot.localAssetPaths?.[fullPath]) continue;
+		await tryBundleBinary(fullPath, entry, false);
 	}
 
 	const layoutPath = snapshot.folderRoot ? `${snapshot.folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
@@ -2196,6 +2239,14 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 						if (Array.isArray(meta.stage3dErrors) && meta.stage3dErrors.length > 0) {
 							for (const err of meta.stage3dErrors) {
 								if (typeof err === "string") runtimeWarnings.push(`3D stage render failed: ${err}`);
+							}
+						}
+						if (Array.isArray(meta.staleLocalAssets) && meta.staleLocalAssets.length > 0) {
+							const listed = meta.staleLocalAssets.filter((item): item is string => typeof item === "string");
+							if (listed.length > 0) {
+								runtimeWarnings.push(
+									`Staged files changed on disk since staging (restage with stage_surface_artifact): ${listed.join(", ")}`,
+								);
 							}
 						}
 					} catch {}
