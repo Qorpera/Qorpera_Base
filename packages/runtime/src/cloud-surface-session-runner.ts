@@ -75,6 +75,7 @@ import {
 } from "./cloud-surface-tools.ts";
 import {
 	buildSurfaceTurnBrief,
+	type CompanyInterfacesContext,
 	SURFACE_STAGED_CODING_INSTRUCTIONS,
 	type SurfaceCodingTurnBinding,
 	type SurfaceConflictDetail,
@@ -162,6 +163,7 @@ export interface SurfaceSessionTurnInput {
 	readonly voiceName?: string | null;
 	readonly imageModel?: string | null;
 	readonly openScenesOps?: readonly StudioPatchOp[];
+	readonly companyInterfaces?: CompanyInterfacesContext | null;
 }
 
 export interface SurfaceSessionTurnCompletion {
@@ -1065,7 +1067,7 @@ export async function runSurfaceSessionTurn(
 			turnReadOverlay && folderReader ? turnReadOverlay.wrapTextReader(folderReader) : folderReader;
 
 		const explicitBrief = input.briefMarkdown?.trim() || null;
-		const [loaded, folderBrief, visionMarkdown, readingMarkdown] = effectiveFolderReader
+		const [loaded, folderBrief] = effectiveFolderReader
 			? await Promise.all([
 					loadSurfaceSharedAssets(effectiveFolderReader, signal, input.productFolderRoots),
 					explicitBrief === null
@@ -1076,20 +1078,8 @@ export async function runSurfaceSessionTurn(
 								signal,
 							)
 						: Promise.resolve(null),
-					readOptionalFolderText(
-						effectiveFolderReader,
-						"QorperaOS/vision/vision.md",
-						MAX_SURFACE_BRIEF_BYTES,
-						signal,
-					),
-					readOptionalFolderText(
-						effectiveFolderReader,
-						"QorperaOS/vision/reading.md",
-						MAX_SURFACE_BRIEF_BYTES,
-						signal,
-					),
 				])
-			: [null, null, null, null];
+			: [null, null];
 		if (loaded) {
 			if (input.surfaceSlug !== "identity" && (loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)) {
 				identityContext = {
@@ -1123,8 +1113,7 @@ export async function runSurfaceSessionTurn(
 			surfaceTitle: input.surfaceTitle,
 			sourceKind: input.sourceKind,
 			isInternalReconciliation,
-			visionMarkdown,
-			readingMarkdown,
+			companyInterfaces: input.companyInterfaces ?? null,
 			briefMarkdown,
 			repositoryKey: input.repositoryKey ?? null,
 			folderRoot: normalizedFolderRoot,

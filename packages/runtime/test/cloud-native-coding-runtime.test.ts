@@ -3597,4 +3597,189 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			await rm(identityRoot, { recursive: true, force: true });
 		}
 	});
+
+	it("injects Company Interfaces and company_search into git_repo coding turns and admits search readId provenance only", async () => {
+		const identityRoot = await mkdtemp(join(tmpdir(), "qcc-interfaces-"));
+		try {
+			const f = fixture();
+			const fakeFolder = {
+				read: vi.fn(),
+				readText: vi.fn(),
+				list: vi.fn(),
+				commit: vi.fn(),
+				release: vi.fn(),
+			} as unknown as Parameters<CloudNativeCodingRuntime["execute"]>[3]["folder"];
+			const fakeSearch = {
+				search: vi.fn(),
+				close: vi.fn(),
+			} as unknown as Parameters<CloudNativeCodingRuntime["execute"]>[3]["folderSearch"];
+			const readId = randomUUID();
+			const searchText = JSON.stringify({ matches: [{ path: "surfaces/strategy/plays.json", line: 1 }] });
+			const searchSha = createHash("sha256").update(searchText).digest("hex");
+			const baseCall = f.call.getMockImplementation()!;
+			f.call.mockImplementation(async (method, args, sig) => {
+				if (method === "qorpera_record_coding_context_view") {
+					const view = args.p_view as { requestId: string };
+					return {
+						schema: "qorpera.native-context-view-receipt/v1",
+						viewId: randomUUID(),
+						requestId: view.requestId,
+						sha256: createHash("sha256").update(JSON.stringify(view)).digest("hex"),
+						ordinal: 1,
+					};
+				}
+				return baseCall(method, args, sig);
+			});
+
+			let capturedPrompt = "";
+			let offeredNames: string[] = [];
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				capturedPrompt = options.prompt ?? "";
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						f.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					offeredNames = adapters.tools.map((tool) => tool.name);
+					await adapters.recordContextView(
+						{
+							schema: "qorpera.native-result-fence/v1",
+							requestId: "req-search-1",
+							threadId: "thr-1",
+							turnId: "turn-1",
+							purpose: "turn",
+							outputs: [],
+						},
+						[
+							{
+								callId: "call-search-1",
+								kind: "function_call_output",
+								output: JSON.stringify({
+									status: "ok",
+									provenance: {
+										tool: "company_search",
+										source: "company_file",
+										companyId: f.authority.identity.companyId,
+										runId: f.authority.identity.runId,
+										companyReadId: readId,
+									},
+									content: {
+										sha256: searchSha,
+										text: searchText,
+										includedBytes: Buffer.byteLength(searchText),
+									},
+								}),
+							},
+						],
+						options.signal,
+					);
+					await expect(
+						adapters.recordContextView(
+							{
+								schema: "qorpera.native-result-fence/v1",
+								requestId: "req-non-search-1",
+								threadId: "thr-1",
+								turnId: "turn-1",
+								purpose: "turn",
+								outputs: [],
+							},
+							[
+								{
+									callId: "call-read-illegal",
+									kind: "function_call_output",
+									output: JSON.stringify({
+										status: "ok",
+										provenance: {
+											tool: "company_read",
+											source: "company_file",
+											companyId: f.authority.identity.companyId,
+											runId: f.authority.identity.runId,
+											companyReadId: readId,
+										},
+										content: {
+											sha256: searchSha,
+											text: searchText,
+											includedBytes: Buffer.byteLength(searchText),
+										},
+									}),
+								},
+							],
+							options.signal,
+						),
+					).rejects.toThrow("CODING_CONTEXT_RESOURCES_REFUSED");
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "fin-interfaces-1",
+							headSha: "b".repeat(40),
+							summary: "Checked interfaces and updated repo.",
+						}),
+						f.context,
+					);
+					return {
+						providerSessionId: "git-interfaces-thread",
+						toolCalls: 1,
+						codexVersion: "pinned",
+						fencedRequests: 1,
+					};
+				} finally {
+					run.close();
+				}
+			});
+
+			await f.runtime.execute(f.request, identityRoot, f.context.signal, {
+				...f.turn,
+				folder: fakeFolder,
+				folderSearch: fakeSearch,
+				companyInterfaces: {
+					interfaces: [
+						{
+							slug: "strategy",
+							title: "Strategy",
+							kind: "strategy",
+							archetype: "studio",
+							sourceKind: "folder",
+							folderRoot: "surfaces/strategy",
+							repositoryKey: null,
+							briefSummary: "Grand plan",
+							isGlobal: false,
+						},
+						{
+							slug: "website",
+							title: "Website",
+							kind: "website",
+							archetype: "live_build",
+							sourceKind: "code_repo",
+							folderRoot: null,
+							repositoryKey: "surfaces/website",
+							briefSummary: "Public site",
+							isGlobal: false,
+						},
+					],
+					strategySummary: "Verdict: Sell direct to European installers.",
+					identitySummary: "# SolGrid\nIndustrial solar control.",
+				},
+			});
+
+			expect(offeredNames).toContain("company_search");
+			expect(offeredNames).not.toContain("data_describe");
+			expect(offeredNames).not.toContain("data_query");
+			expect(capturedPrompt).toContain("## Company Interfaces");
+			expect(capturedPrompt).toContain("/company/surfaces/strategy");
+			expect(capturedPrompt).toContain("/company/code/surfaces/website");
+			expect(capturedPrompt).toContain("Sell direct to European installers.");
+			expect(capturedPrompt).toContain("Industrial solar control.");
+			const viewCall = f.call.mock.calls.find(([method]) => method === "qorpera_record_coding_context_view");
+			const recordedView = viewCall?.[1]?.p_view as Record<string, unknown> | undefined;
+			expect((recordedView?.outputs as Record<string, unknown>[])[0]).toMatchObject({
+				readId,
+				readSha256: searchSha,
+				includedBytes: Buffer.byteLength(searchText),
+			});
+		} finally {
+			await rm(identityRoot, { recursive: true, force: true });
+		}
+	});
 });

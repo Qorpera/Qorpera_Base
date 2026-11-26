@@ -8,6 +8,7 @@ import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operati
 import { CLOUD_PLATFORM_SKILLS, MAX_STUDIO_SKILL_BYTES } from "../src/cloud-platform-skills.ts";
 import { createNarrateExplainerTool } from "../src/cloud-surface-narrate-tool.ts";
 import { runSurfaceSessionTurn } from "../src/cloud-surface-session-runner.ts";
+import { extractStrategyInterfaceSummary } from "../src/cloud-surface-turn-context.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 function fakeIdentity() {
@@ -25,13 +26,9 @@ function fakeToolContext() {
 }
 
 describe("strategy surface and custom studio runtime integration", () => {
-	it("loads company vision and reading into Studio turn briefs and attaches strategy-studio skill", async () => {
+	it("injects live Company Interfaces into Studio turn briefs (not vision/reading) and attaches strategy-studio skill", async () => {
 		let turnBrief = "";
 		let instructions = "";
-		const files: Record<string, string> = {
-			"QorperaOS/vision/vision.md": "# Brooks\nPre-market dealer stock matching for serious car buyers.",
-			"QorperaOS/vision/reading.md": "Testing dealer-funded access vs buyer subscriptions in Copenhagen.",
-		};
 		await runSurfaceSessionTurn(
 			{
 				sessionId: randomUUID(),
@@ -45,12 +42,40 @@ describe("strategy surface and custom studio runtime integration", () => {
 				surfaceIsGlobal: false,
 				surfaceArchetype: "studio",
 				folderRoot: "surfaces/strategy",
+				companyInterfaces: {
+					interfaces: [
+						{
+							slug: "strategy",
+							title: "Strategy",
+							kind: "strategy",
+							archetype: "studio",
+							sourceKind: "folder",
+							folderRoot: "surfaces/strategy",
+							repositoryKey: null,
+							briefSummary: "Grand plan and unit economics",
+							isGlobal: false,
+						},
+						{
+							slug: "website",
+							title: "Website",
+							kind: "website",
+							archetype: "live_build",
+							sourceKind: "code_repo",
+							folderRoot: null,
+							repositoryKey: "surfaces/website",
+							briefSummary: "Public landing site",
+							isGlobal: false,
+						},
+					],
+					strategySummary: "Verdict: Win Copenhagen dealer intake first.",
+					identitySummary: "# Brooks\nCalm automotive authority.",
+				},
 				prompt: "Build our competing plays and stress-test unit economics.",
 			},
 			{
 				folder: {
-					async readText(path: string) {
-						return files[path] ?? null;
+					async readText() {
+						return null;
 					},
 				},
 				readStudioFiles: async () => ({ files: {}, binaries: {} }),
@@ -64,15 +89,45 @@ describe("strategy surface and custom studio runtime integration", () => {
 			},
 		);
 
-		expect(turnBrief).toContain("## Company Vision (QorperaOS/vision/vision.md)");
-		expect(turnBrief).toContain("Pre-market dealer stock matching");
-		expect(turnBrief).toContain("## Company Reading (QorperaOS/vision/reading.md)");
-		expect(turnBrief).toContain("dealer-funded access");
+		expect(turnBrief).toContain("## Company Interfaces");
+		expect(turnBrief).toContain("/company/surfaces/strategy");
+		expect(turnBrief).toContain("/company/code/surfaces/website");
+		expect(turnBrief).toContain("Win Copenhagen dealer intake first.");
+		expect(turnBrief).toContain("Calm automotive authority.");
+		expect(turnBrief).not.toContain("## Company Vision");
+		expect(turnBrief).not.toContain("## Company Reading");
 		expect(instructions).toContain("## Skill: strategy-studio");
 		expect(instructions).toContain("economics.json");
 		expect(instructions).toContain("plays.json");
 		expect(instructions).toContain("hypotheses.json");
 		expect(instructions).toContain("landscape.json");
+	});
+
+	it("extractStrategyInterfaceSummary parses contract-shaped plays.json (summary, verdict, play.name, play.thesis) and falls back to brief.md", () => {
+		const playsJson = JSON.stringify({
+			summary: "Copenhagen specialty coffee roasters need predictable wholesale subscriptions.",
+			verdict: "Win boutique cafes first; consumer DTC waits until unit economics clear.",
+			plays: [
+				{
+					id: "wholesale-clubs",
+					name: "Boutique Cafe Subscriptions",
+					thesis: "Weekly standing orders cut CAC by 80% and fill roastery capacity.",
+					status: "recommended",
+				},
+				{
+					id: "dtc-pods",
+					name: "Consumer Compostable Pods",
+					thesis: "High churn and paid social CAC trap until brand awareness exists.",
+					status: "parked",
+				},
+			],
+		});
+		const summary = extractStrategyInterfaceSummary(playsJson, "Fallback brief text");
+		expect(summary).toContain("Summary: Copenhagen specialty coffee roasters");
+		expect(summary).toContain("Verdict: Win boutique cafes first");
+		expect(summary).toContain("[recommended] Boutique Cafe Subscriptions: Weekly standing orders");
+		expect(summary).toContain("[parked] Consumer Compostable Pods: High churn");
+		expect(extractStrategyInterfaceSummary("{bad-json", "Fallback brief text")).toBe("Fallback brief text");
 	});
 
 	it("keeps strategy-studio and custom-surface skills under MAX_STUDIO_SKILL_BYTES", () => {

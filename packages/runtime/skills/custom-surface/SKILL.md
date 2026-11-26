@@ -8,7 +8,7 @@ description: How to shape and fill a custom Studio surface for planning, sketchi
 A custom Studio surface is a living workspace tailored to a goal that product or identity surfaces do not cover: a pricing lab, GTM room, launch tracker, sketching board, supplier matrix, or investor room. Shape the page freely first, then fill it piece by piece.
 
 ## Shape freely first
-- Read the member's goal, company vision, brief, and relevant company files under `/company` (`company_read`, `company_list`, or read-only workspace search).
+- Read the member's goal, active company Interfaces, brief, and relevant company files or databases under `/company` using `company_search`, `company_read`, `company_list`, `data_describe`, and `data_query`.
 - Shape the layout file freely with the tabs and blocks this workspace needs (`explainer` videos, `report` articles and posts, `artifacts` images and diagrams, `module` custom tools, and strategy or data blocks on any tab). When structure is a genuine taste choice, offer two or three concrete options by asking once early, then build on the answer.
 - Fill the layout one coherent deliverable per `stage_surface_patch` call so each piece lands and approves cleanly on its own.
 

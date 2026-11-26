@@ -214,14 +214,160 @@ export function parseSurfaceTurnResolvedChanges(raw: unknown): SurfaceTurnResolv
 	return out;
 }
 
+export interface CompanyInterfaceSummary {
+	readonly slug: string;
+	readonly title: string;
+	readonly kind: string;
+	readonly archetype: string;
+	readonly sourceKind: SurfaceSourceKind;
+	readonly folderRoot: string | null;
+	readonly repositoryKey: string | null;
+	readonly briefSummary: string | null;
+	readonly isGlobal: boolean;
+}
+
+export interface CompanyInterfacesContext {
+	readonly interfaces: readonly CompanyInterfaceSummary[];
+	readonly strategySummary?: string | null;
+	readonly identitySummary?: string | null;
+}
+
+export function parseCompanyInterfacesResponse(raw: unknown): CompanyInterfaceSummary[] {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+	const rec = raw as Record<string, unknown>;
+	if (rec.schema !== "qorpera.company-interfaces/v1" || !Array.isArray(rec.interfaces)) return [];
+	const out: CompanyInterfaceSummary[] = [];
+	for (const entry of rec.interfaces) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const item = entry as Record<string, unknown>;
+		const slug = typeof item.slug === "string" ? item.slug.trim() : "";
+		const title = typeof item.title === "string" ? item.title.trim() : "";
+		if (!slug || !title) continue;
+		const sourceKind: SurfaceSourceKind =
+			item.sourceKind === "code_repo" || item.sourceKind === "folder" || item.sourceKind === "native_ops"
+				? item.sourceKind
+				: "folder";
+		out.push({
+			slug,
+			title,
+			kind: typeof item.kind === "string" && item.kind.trim() ? item.kind.trim() : "custom",
+			archetype: typeof item.archetype === "string" && item.archetype.trim() ? item.archetype.trim() : "studio",
+			sourceKind,
+			folderRoot: typeof item.folderRoot === "string" && item.folderRoot.trim() ? item.folderRoot.trim() : null,
+			repositoryKey:
+				typeof item.repositoryKey === "string" && item.repositoryKey.trim() ? item.repositoryKey.trim() : null,
+			briefSummary:
+				typeof item.briefSummary === "string" && item.briefSummary.trim() ? item.briefSummary.trim() : null,
+			isGlobal: item.isGlobal === true,
+		});
+		if (out.length >= 64) break;
+	}
+	return out;
+}
+
+export function extractStrategyInterfaceSummary(
+	playsJsonText: string | null | undefined,
+	briefText: string | null | undefined,
+): string | null {
+	if (playsJsonText?.trim()) {
+		try {
+			const parsed = JSON.parse(playsJsonText) as Record<string, unknown>;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				const lines: string[] = [];
+				const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+				const verdict = typeof parsed.verdict === "string" ? parsed.verdict.trim() : "";
+				if (summary) lines.push(`Summary: ${summary.slice(0, 320)}`);
+				if (verdict) lines.push(`Verdict: ${verdict.slice(0, 400)}`);
+				if (Array.isArray(parsed.plays)) {
+					const playLines: string[] = [];
+					for (const rawPlay of parsed.plays) {
+						if (!rawPlay || typeof rawPlay !== "object" || Array.isArray(rawPlay)) continue;
+						const play = rawPlay as Record<string, unknown>;
+						const status = typeof play.status === "string" ? play.status.trim() : "";
+						const name = typeof play.name === "string" ? play.name.trim() : "";
+						const thesis = typeof play.thesis === "string" ? play.thesis.trim() : "";
+						if (!name) continue;
+						if (status === "recommended" || playLines.length < 3) {
+							playLines.push(
+								`- ${status ? `[${status}] ` : ""}${name}${thesis ? `: ${thesis.slice(0, 240)}` : ""}`,
+							);
+						}
+					}
+					lines.push(...playLines);
+				}
+				if (lines.length > 0) return lines.join("\n").slice(0, 1500);
+			}
+		} catch {
+			/* WHY: Malformed plays.json falls back cleanly to Strategy brief.md without failing turn startup. */
+		}
+	}
+	const brief = briefText?.trim();
+	return brief ? brief.slice(0, 1500) : null;
+}
+
+export function buildCompanyInterfacesSection(
+	ctx: CompanyInterfacesContext | null | undefined,
+	options: {
+		readonly currentSlug?: string | null;
+		readonly includeIdentitySummary?: boolean;
+		readonly hasCompanySearch?: boolean;
+		readonly hasReadOnlyData?: boolean;
+	} = {},
+): string | null {
+	if (!ctx) return null;
+	const strategySummary = ctx.strategySummary?.trim() || null;
+	const identitySummary = options.includeIdentitySummary === false ? null : ctx.identitySummary?.trim() || null;
+	if (ctx.interfaces.length === 0 && !strategySummary && !identitySummary) return null;
+	const lines: string[] = [
+		"## Company Interfaces",
+		"This company's active Interfaces are its live source of truth. Every Interface below is mounted live under `/company` on this machine, so inspect them directly rather than guessing.",
+	];
+	if (options.hasCompanySearch || options.hasReadOnlyData) {
+		const tools: string[] = [];
+		if (options.hasCompanySearch) {
+			tools.push(
+				"use `company_search` (or read-only inspection under `/company`) to find anything across the company",
+			);
+		}
+		if (options.hasReadOnlyData) {
+			tools.push("use `data_describe` and `data_query` to inspect company databases under `/company/data/`");
+		}
+		lines.push(`Cross-company tools: ${tools.join("; ")}.`);
+	}
+	for (const iface of ctx.interfaces.slice(0, 48)) {
+		const pathLabel =
+			iface.sourceKind === "code_repo" && iface.repositoryKey
+				? `/company/code/${iface.repositoryKey.replace(/^\/+|\/+$/g, "")}`
+				: iface.folderRoot
+					? `/company/${iface.folderRoot.replace(/^\/+|\/+$/g, "")}`
+					: "ops";
+		const currentTag = options.currentSlug && iface.slug === options.currentSlug ? " · **current**" : "";
+		const summary = iface.briefSummary ? ` — ${iface.briefSummary.replace(/\s+/g, " ").slice(0, 180)}` : "";
+		lines.push(
+			`- **${iface.title}** (\`${iface.slug}\` · ${iface.archetype}/${iface.kind}${currentTag}) — \`${pathLabel}\`${summary}`,
+		);
+	}
+	if (ctx.interfaces.length > 48) {
+		lines.push(`- ...and ${ctx.interfaces.length - 48} more active interfaces`);
+	}
+	if (strategySummary) {
+		lines.push("", "### Active Strategy Summary (`/company/surfaces/strategy`)", strategySummary.slice(0, 1500));
+	}
+	if (identitySummary) {
+		lines.push("", "### Active Identity Summary (`/company/identity`)", identitySummary.slice(0, 1200));
+	}
+	return lines.join("\n");
+}
+
 export interface SurfaceTurnBriefInput {
 	readonly sessionId: string;
 	readonly surfaceSlug: string;
 	readonly surfaceTitle: string;
 	readonly sourceKind?: SurfaceSourceKind;
 	readonly isInternalReconciliation?: boolean;
-	readonly visionMarkdown?: string | null;
-	readonly readingMarkdown?: string | null;
+	readonly companyInterfaces?: CompanyInterfacesContext | null;
+	readonly hasCompanySearch?: boolean;
+	readonly hasReadOnlyData?: boolean;
 	readonly briefMarkdown: string | null;
 	readonly fullPrompt?: string | null;
 	readonly repositoryKey?: string | null;
@@ -331,14 +477,14 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
-	const vision = binding.visionMarkdown?.trim();
-	if (vision) {
-		sections.push(`## Company Vision (QorperaOS/vision/vision.md)\n${vision.slice(0, 6000)}`);
-	}
-
-	const reading = binding.readingMarkdown?.trim();
-	if (reading) {
-		sections.push(`## Company Reading (QorperaOS/vision/reading.md)\n${reading.slice(0, 4096)}`);
+	const interfacesSection = buildCompanyInterfacesSection(binding.companyInterfaces, {
+		currentSlug: binding.surfaceSlug,
+		includeIdentitySummary: !binding.identityContext,
+		hasCompanySearch: binding.hasCompanySearch === true,
+		hasReadOnlyData: binding.hasReadOnlyData === true,
+	});
+	if (interfacesSection) {
+		sections.push(interfacesSection);
 	}
 	const identity = binding.identityContext;
 	if (identity) {

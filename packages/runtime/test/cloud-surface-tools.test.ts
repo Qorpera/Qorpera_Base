@@ -1197,9 +1197,12 @@ describe("cloud surface runtime tools", () => {
 		expect(surfaceInstructions).toContain("senses.surfaces");
 		expect(surfaceInstructions).toContain("senses.automations");
 		expect(surfaceInstructions).toContain("manage_surface_automation");
+		expect(surfaceInstructions).toContain("no standing role silos");
 		expect(surfaceInstructions).not.toContain("hire_team");
 		expect(surfaceInstructions).not.toContain("vision-draft.md");
 		expect(surfaceInstructions).not.toContain("company-plan.md");
+		expect(surfaceInstructions).not.toContain("each area owner drives their area");
+		expect(surfaceInstructions).not.toContain("reading.md");
 	});
 
 	it("selects Surface-First Co-Founder mandate in cloudActionReviewMandate when surfaceFirst is true and preserves legacy default", () => {
@@ -1214,7 +1217,8 @@ describe("cloud surface runtime tools", () => {
 		expect(surfaceMandate).toContain("propose_surface");
 		expect(surfaceMandate).toContain("start_surface_session");
 		expect(surfaceMandate).toContain("manage_surface_automation");
-		expect(surfaceMandate).toContain("vision.md and reading.md");
+		expect(surfaceMandate).toContain("active Interfaces (Identity, Strategy, and product/custom Surfaces)");
+		expect(surfaceMandate).not.toContain("vision.md and reading.md");
 		expect(surfaceMandate).toContain("without member approval is not");
 		expect(surfaceMandate).not.toContain("hires the team");
 		expect(surfaceMandate).not.toContain("weekday planning routine");
@@ -1897,6 +1901,7 @@ describe("cloud surface runtime tools", () => {
 				"organize_sidebar",
 				"offer_agents_to_member",
 				"crew_and_members",
+				"update_reading",
 			]) {
 				expect(allOffered.has(stripped)).toBe(false);
 			}
@@ -1904,8 +1909,10 @@ describe("cloud surface runtime tools", () => {
 			const instructions = evidence.threadParameters.developerInstructions;
 			expect(instructions).toContain("# Surfaces & Identity");
 			expect(instructions).toContain("Each Surface is a direct live projection");
+			expect(instructions).toContain("first line of QorperaOS/vision/vision.md");
 			expect(instructions).toContain("senses.surfaces");
 			expect(instructions).not.toContain("hire_team");
+			expect(instructions).not.toContain("reading.md");
 			expect(instructions).not.toContain("vision-draft.md");
 			expect(instructions).not.toContain("company-plan.md");
 			expect(instructions).not.toContain("Customer Researcher");
