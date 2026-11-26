@@ -47,6 +47,7 @@ interface MountedExplainer {
 	readonly meta: HTMLElement;
 	readonly items: readonly ExplainerItem[];
 	readonly signature: string;
+	readonly heading: string;
 }
 
 function explainerSignature(item: ExplainerItem): string {
@@ -320,8 +321,8 @@ export class SurfaceExplainers {
 							}
 							if (heading) prev.section.insertBefore(sectionHead(heading, false), prev.meta);
 							if (switcher) prev.section.insertBefore(switcher, prev.meta);
-							this.#renderMeta(prev.meta, active, prev.frame, prev.stage);
-							this.#mounted.set(key, { ...prev, items });
+							this.#renderMeta(prev.meta, active, prev.frame, prev.stage, heading);
+							this.#mounted.set(key, { ...prev, items, heading });
 							return prev.section;
 						}
 						const meta = h("div", { class: "studio-explainer-head" });
@@ -338,7 +339,7 @@ export class SurfaceExplainers {
 							meta,
 							stage,
 						);
-						this.#mount(key, items, active, signature, section, meta, stage);
+						this.#mount(key, items, active, signature, section, meta, stage, heading);
 						return section;
 					},
 				},
@@ -361,7 +362,16 @@ export class SurfaceExplainers {
 		}
 		mounted.section.classList.toggle("is-changed", next.changed);
 		mounted.section.dataset.file = next.path;
-		this.#mount(key, mounted.items, next, explainerSignature(next), mounted.section, mounted.meta, mounted.stage);
+		this.#mount(
+			key,
+			mounted.items,
+			next,
+			explainerSignature(next),
+			mounted.section,
+			mounted.meta,
+			mounted.stage,
+			mounted.heading,
+		);
 		return true;
 	}
 
@@ -394,14 +404,19 @@ export class SurfaceExplainers {
 		this.#mounted.delete(key);
 	}
 
-	#renderMeta(meta: HTMLElement, item: ExplainerItem, frame: AppFrame, stage: HTMLElement): void {
+	#renderMeta(meta: HTMLElement, item: ExplainerItem, frame: AppFrame, stage: HTMLElement, heading: string): void {
+		const duplicateTitle =
+			heading.trim().length > 0 && heading.trim().toLowerCase() === item.title.trim().toLowerCase();
+		const expand = expandButton(item.title, () =>
+			this.#fullscreen.openHosted(item.title, frame.frame, stage, "frame"),
+		);
 		meta.replaceChildren(
 			h(
 				"div",
-				{ class: "studio-section-head" },
-				h("h3", null, item.title),
+				{ class: `studio-section-head${duplicateTitle && !item.changed ? " is-actions-only" : ""}` },
+				duplicateTitle ? null : h("h3", null, item.title),
 				item.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-				expandButton(item.title, () => this.#fullscreen.openHosted(item.title, frame.frame, stage, "frame")),
+				expand,
 			),
 		);
 	}
@@ -414,6 +429,7 @@ export class SurfaceExplainers {
 		section: HTMLElement,
 		meta: HTMLElement,
 		stage: HTMLElement,
+		heading: string,
 	): void {
 		this.#unmount(key);
 		const loadAbort = new AbortController();
@@ -440,9 +456,9 @@ export class SurfaceExplainers {
 			showError,
 			{ again: true },
 		);
-		this.#renderMeta(meta, item, frame, stage);
+		this.#renderMeta(meta, item, frame, stage, heading);
 		stage.replaceChildren(frame.frame);
-		this.#mounted.set(key, { frame, loadAbort, section, stage, meta, items, signature });
+		this.#mounted.set(key, { frame, loadAbort, section, stage, meta, items, signature, heading });
 	}
 
 	async #buildPage(item: ExplainerItem, signal: AbortSignal): Promise<FramedPage> {

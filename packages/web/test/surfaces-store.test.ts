@@ -611,6 +611,57 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("allows re-requesting a reconciliation after a workspace refresh drops a superseded one", async () => {
+		const recA = "66666666-6666-4666-8666-666666666661";
+		const recB = "66666666-6666-4666-8666-666666666662";
+		let currentWs = workspace([session(["staged", "staged"])], { reconciliations: [] });
+		const ensureSurfaceReconciliation = vi.fn(async (_surfaceId, ids) => ({
+			id: ids.length === 2 ? recA : recB,
+			surfaceId: SURFACE,
+			compositionKey: ids.length === 2 ? "k-a" : "k-b",
+			baseFingerprint: "1".repeat(40),
+			selectedChangeIds: [...ids],
+			status: "queued" as const,
+			patchManifest: null,
+			commitSha: null,
+			treeSha: null,
+			errorDetail: null,
+			updatedAt: "2026-11-26T00:00:00Z",
+		}));
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => currentWs),
+				ensureSurfaceReconciliation,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+		await store.ensureReconciliation(SURFACE, [CHANGES[0], CHANGES[1]], ["src/hero.tsx"]);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(1);
+
+		currentWs = workspace([session(["staged", "staged"])], {
+			reconciliations: [
+				{
+					id: recB,
+					surfaceId: SURFACE,
+					compositionKey: "k-b",
+					baseFingerprint: "1".repeat(40),
+					selectedChangeIds: [CHANGES[0]],
+					status: "queued",
+					patchManifest: null,
+					commitSha: null,
+					treeSha: null,
+					errorDetail: null,
+					updatedAt: "2026-11-26T00:00:01Z",
+				},
+			],
+		});
+		await store.refreshWorkspace(SURFACE);
+		await store.ensureReconciliation(SURFACE, [CHANGES[0], CHANGES[1]], ["src/hero.tsx"]);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
 	it("falls back cleanly when reconciling a local surface conflict without a cloud client", async () => {
 		const store = storeWith(undefined);
 		await store.load();
@@ -3814,6 +3865,66 @@ describe("SurfacesStore", () => {
 			});
 			expect(store.surfaceUpdatePhase(studioSurface.id)).toBeNull();
 		});
+		store.dispose();
+	});
+
+	it("keeps staged changes on failed sessions unselected by default while letting members toggle them on", async () => {
+		const failedSession = session(["staged"], {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+			state: "failed",
+		});
+		const readySession = session(["staged"], {
+			id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+			state: "ready",
+			changes: [
+				{
+					id: CHANGES[1],
+					sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+					surfaceId: SURFACE,
+					seq: 1,
+					kind: "git_range",
+					title: "Healthy change",
+					summary: "",
+					status: "staged",
+					parentSha: null,
+					headSha: null,
+					dependsOnChangeIds: [],
+					diffStats: null,
+					affectedPaths: ["src/ok.ts"],
+					conflictPaths: null,
+					landedChangeNumber: null,
+					canUndo: false,
+					createdAt: "2026-11-26T00:00:00Z",
+					resolvedAt: null,
+				},
+			],
+		});
+		const setPreviewSelection = vi.fn(async () => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame(),
+			compareFrames: [],
+		}));
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([failedSession, readySession])),
+				setPreviewSelection,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+
+		expect(store.isChangeShown(CHANGES[0])).toBe(false);
+		expect(store.isChangeShown(CHANGES[1])).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[1]]);
+
+		await store.toggleChange(SURFACE, CHANGES[0]);
+		expect(store.isChangeShown(CHANGES[0])).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[0], CHANGES[1]]);
+
+		await store.toggleChange(SURFACE, CHANGES[0]);
+		expect(store.isChangeShown(CHANGES[0])).toBe(false);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[1]]);
 		store.dispose();
 	});
 });

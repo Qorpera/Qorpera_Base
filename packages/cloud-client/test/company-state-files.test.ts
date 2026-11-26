@@ -2735,10 +2735,14 @@ describe("companyStateSeedTree", () => {
 		});
 		const agent = tree.find((entry) => entry.path === "QorperaOS/agents/co-founder/agent.md")?.text ?? "";
 		expect(agent).toContain("Populate Identity (identity/) first");
+		expect(agent).toContain("active Interfaces hold the live essence of the company");
+		expect(agent).not.toContain("QorperaOS/vision/vision.md");
 		expect(agent).not.toContain("Hire owners when the work needs them");
 		expect(agent).not.toContain("sections.md");
 		const todo = tree.find((entry) => entry.path === "QorperaOS/agents/co-founder/todos/start-with-the-founders.md");
 		expect(todo?.text).toContain("Identity exploration");
+		expect(todo?.text).toContain("surfaces/strategy");
+		expect(todo?.text).not.toContain("QorperaOS/vision/vision.md");
 		const brief = tree.find((entry) => entry.path === "identity/brief.md")?.text ?? "";
 		expect(brief).toContain("# Thetaband — Identity");
 		expect(brief).toContain("Calm wearable EEG headband for deep rest.");

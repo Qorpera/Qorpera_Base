@@ -9,6 +9,7 @@ import {
 import { type ECharts, type EChartsCoreOption, graphic, init, use } from "echarts/core";
 import { LabelLayout } from "echarts/features";
 import { SVGRenderer } from "echarts/renderers";
+import { h } from "../../../ui/dom.ts";
 
 use([
 	SankeyChart,
@@ -176,10 +177,6 @@ function rose(theme: ChartTheme): string {
 	return theme.dark ? "#e3a296" : "#c4806f";
 }
 
-function escapeHtml(text: string): string {
-	return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
-}
-
 function still(): boolean {
 	return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -217,18 +214,24 @@ function tooltipBase(theme: ChartTheme): Option {
 	};
 }
 
-function tipHtml(theme: ChartTheme, heading: string, rows: readonly Row[], accent?: string): string {
-	const dot = accent ? `<i style="width:8px;height:8px;border-radius:50%;background:${accent};flex:none"></i>` : "";
-	const gap = rows.length ? 7 : 0;
-	const head = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:${gap}px;font-weight:700;font-size:13px;color:${theme.text}">${dot}<span>${escapeHtml(heading)}</span></div>`;
-	const body = rows
-		.map(([label, value, tone]) => {
-			const figure = `<b style="font-variant-numeric:tabular-nums;font-weight:680;color:${tone ?? theme.text}">${escapeHtml(value)}</b>`;
-			if (!label) return `<div style="line-height:1.55">${figure}</div>`;
-			return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:18px;line-height:1.55"><span style="color:${theme.muted}">${escapeHtml(label)}</span>${figure}</div>`;
-		})
-		.join("");
-	return head + body;
+function tipHtml(theme: ChartTheme, heading: string, rows: readonly Row[], accent?: string): HTMLElement {
+	const dot = accent ? h("i", { class: "studio-chart-tip-dot" }) : null;
+	if (dot && accent) dot.style.backgroundColor = accent;
+	const head = h(
+		"div",
+		{ class: `studio-chart-tip-head${rows.length ? "" : " is-solo"}` },
+		dot,
+		h("span", null, heading),
+	);
+	const body = rows.map(([label, value, tone]) => {
+		const figure = h("b", { class: "studio-chart-tip-val" }, value);
+		if (tone) figure.style.color = tone;
+		if (!label) return h("div", { class: "studio-chart-tip-row is-plain" }, figure);
+		return h("div", { class: "studio-chart-tip-row" }, h("span", { class: "studio-chart-tip-label" }, label), figure);
+	});
+	const root = h("div", { class: "studio-chart-tip" }, head, ...body);
+	root.style.color = theme.text;
+	return root;
 }
 
 export function createChartHost(
@@ -1016,9 +1019,9 @@ export function mountLandscapeChart(
 			},
 			yAxis: {
 				type: "value",
-				min: 0,
-				max: 100,
-				interval: 50,
+				min: -12,
+				max: 112,
+				interval: 124,
 				name: axes.yLabel,
 				nameLocation: "middle",
 				nameGap: 18,
@@ -1031,6 +1034,8 @@ export function mountLandscapeChart(
 					...axisEnds,
 					inside: true,
 					margin: 10,
+					showMinLabel: true,
+					showMaxLabel: true,
 					formatter: (value: number) => {
 						if (value <= 0 && axes.yLow) return `↓ ${axes.yLow}`;
 						if (value >= 100 && axes.yHigh) return `↑ ${axes.yHigh}`;
