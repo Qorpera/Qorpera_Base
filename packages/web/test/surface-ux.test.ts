@@ -818,7 +818,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("hides both side panels from the notch and leaves the notch as the way back", async () => {
+	it("hides both side panels from the notch and folds the composer into the way back", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -831,17 +831,54 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
 		const bar = notch.querySelector<HTMLElement>(".surface-pill")!;
-		const show = notch.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!;
+		const composer = view.el.querySelector<HTMLFormElement>(".surface-composer")!;
+		const show = composer.querySelector<HTMLButtonElement>('[data-act="show-panels"]')!;
+		const pencil = composer.querySelector<HTMLButtonElement>('[data-act="open-composer"]')!;
+		const input = composer.querySelector<HTMLTextAreaElement>(".surface-input")!;
+		expect(notch.querySelector('[data-act="show-panels"]')).toBeNull();
 		expect(show.hidden).toBe(true);
+		expect(pencil.hidden).toBe(true);
 		expect(bar.lastElementChild?.getAttribute("data-act")).toBe("hide-panels");
 
 		bar.querySelector<HTMLButtonElement>('[data-act="hide-panels"]')!.click();
 		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
 		expect(notch.classList.contains("is-open")).toBe(false);
 		expect(bar.hidden).toBe(true);
-		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(true);
+		expect(notch.hidden).toBe(true);
 		expect(show.hidden).toBe(false);
+		expect(pencil.hidden).toBe(false);
 		expect(document.activeElement).toBe(show);
+		expect(composer.classList.contains("is-held")).toBe(false);
+		expect(pencil.getAttribute("aria-label")).toBe(input.getAttribute("aria-label"));
+
+		pencil.getClientRects = () => ({ length: 1 }) as DOMRectList;
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		composer.querySelector(".surface-composer-shell")!.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		vi.useFakeTimers();
+		pencil.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		vi.advanceTimersByTime(200);
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		pencil.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		vi.advanceTimersByTime(200);
+		vi.useRealTimers();
+		expect(composer.classList.contains("is-peek")).toBe(true);
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(true);
+		composer.dispatchEvent(new Event("pointerleave"));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+
+		pencil.click();
+		expect(document.activeElement).toBe(input);
+		input.value = "Bigger headline";
+		input.dispatchEvent(new Event("input"));
+		expect(composer.classList.contains("is-held")).toBe(true);
+		input.value = "";
+		input.dispatchEvent(new Event("input"));
+		expect(composer.classList.contains("is-held")).toBe(false);
 
 		view.update();
 		expect(view.el.classList.contains("is-panels-hidden")).toBe(true);
@@ -850,6 +887,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		show.click();
 		expect(view.el.classList.contains("is-panels-hidden")).toBe(false);
 		expect(show.hidden).toBe(true);
+		expect(pencil.hidden).toBe(true);
+		expect(notch.hidden).toBe(false);
 		expect(bar.hidden).toBe(false);
 		expect(notch.querySelector<HTMLElement>(".surface-notch-pill")!.hidden).toBe(false);
 
@@ -1472,6 +1511,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 	it("lets mobile previews switch between exact phone models and updates logical viewport dimensions", async () => {
 		stubFigureMotion();
+		localStorage.clear();
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -1488,16 +1528,35 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
 		expect(viewport.dataset.phoneCutout).toBe("island");
+		expect(viewport.style.getPropertyValue("--phone-status")).toBe("54px");
 
-		view.el.querySelector<HTMLButtonElement>('[data-phone-model="iphone-se"]')!.click();
+		const pickPhone = (label: string) => {
+			view.el.querySelector<HTMLButtonElement>('[data-act="phone-models"]')!.click();
+			const rows = [...document.querySelectorAll<HTMLButtonElement>('.context-menu [role="menuitemradio"]')];
+			expect(rows.map((row) => row.textContent)).toEqual([
+				"iPhone 16393 × 852",
+				"iPhone 16 Pro Max440 × 956",
+				"iPhone SE375 × 667",
+				"Pixel 9412 × 915",
+			]);
+			rows.find((row) => row.textContent?.startsWith(label))!.click();
+		};
+		expect(view.el.querySelector(".surface-bar .surface-phone-pick")?.textContent).toBe("iPhone 16");
+
+		pickPhone("iPhone SE");
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("375px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("667px");
 		expect(viewport.dataset.phoneCutout).toBe("none");
+		expect(viewport.style.getPropertyValue("--phone-status")).toBe("20px");
+		expect(view.el.querySelector(".surface-phone-pick")?.textContent).toBe("iPhone SE");
+		expect(localStorage.getItem("qorpera.web.surface-phone-model.v1")).toBe("iphone-se");
 
-		view.el.querySelector<HTMLButtonElement>('[data-phone-model="pixel-9"]')!.click();
+		pickPhone("Pixel 9");
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("412px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("915px");
 		expect(viewport.dataset.phoneCutout).toBe("punch");
+		expect(view.el.querySelector(".surface-phone-glass .surface-phone-clock")?.textContent).toBe("9:41");
+		localStorage.clear();
 
 		view.dispose();
 		store.dispose();
@@ -1596,7 +1655,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("");
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
-		expect(view.el.querySelector(".surface-phone-dims")?.textContent).toBe("393 × 852");
+		expect(view.el.querySelector(".surface-phone-pick")?.getAttribute("title")).toBe("iPhone 16 (393 × 852)");
 		expect(view.el.querySelector('[data-act="zoom-menu"][data-zoom-target="website"]')).toBeNull();
 
 		const baseScale = Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));
@@ -1631,6 +1690,44 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.dataset.phoneZoomed).toBeUndefined();
 		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeCloseTo(baseScale, 3);
 		expect(localStorage.length).toBe(0);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("moves the phone controls below a wide address and fits the phone to the smaller room", async () => {
+		stubFigureMotion();
+		localStorage.clear();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1200, 900));
+		const width = (el: Element, key: "offsetWidth" | "clientWidth", value: () => number) =>
+			Object.defineProperty(el, key, { configurable: true, get: value });
+		const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;
+		let pill = 300;
+		width(bar, "clientWidth", () => 700);
+		width(view.el.querySelector(".surface-notch-pill")!, "offsetWidth", () => pill);
+		for (const corner of view.el.querySelectorAll(".surface-phone-corner")) width(corner, "offsetWidth", () => 120);
+		view.update();
+
+		expect(bar.classList.contains("has-phone-corners")).toBe(true);
+		expect(bar.classList.contains("is-phone-stacked")).toBe(false);
+		expect(viewport.dataset.phoneStacked).toBeUndefined();
+		const roomy = Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));
+
+		pill = 500;
+		view.el.querySelector<HTMLButtonElement>('[data-act="expand-pill"]')!.click();
+		expect(bar.classList.contains("is-phone-stacked")).toBe(true);
+		expect(viewport.dataset.phoneStacked).toBe("true");
+		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeLessThan(roomy);
 
 		view.dispose();
 		store.dispose();

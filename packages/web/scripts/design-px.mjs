@@ -23,7 +23,8 @@ const SCALED = ["(pointer: fine)", "(pointer: none)"];
 const SVG_GEOMETRY = new Set(["stroke-width", "stroke-dasharray", "stroke-dashoffset", "cx", "cy", "r", "rx", "ry", "x", "y"]);
 /** At-rules whose block must stay literal: @property values cannot hold var(). */
 const LITERAL_BLOCKS = new Set(["property"]);
-const PX_SCOPE = /\.(?:computer-panel|computer-loading|computer-scene|screen-viewer|machine-screen|picture-crop-view)(?![\w-])/;
+const PX_SCOPE =
+	/\.(?:computer-panel|computer-loading|computer-scene|screen-viewer|machine-screen|picture-crop-view|surface-phone-(?:body|button|glass|status|signal|home))(?![\w-])/;
 const NUMBER_PX = /([+-]?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/iy;
 const QUERY_PX = /(?<![\w.#+-])([+-]?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/gi;
 

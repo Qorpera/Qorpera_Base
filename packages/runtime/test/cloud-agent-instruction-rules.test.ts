@@ -1718,7 +1718,7 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	["10", "no secret in a database", "Never store a secret in a step, query, action, or row.", ALL],
 	["10", "answer from what is known", "lead with the answer, result, or choice in the format asked for", STAFF],
-	["10", "few short lines", "Simple questions get a sentence or two; most updates are a few clean lines.", STAFF],
+	["10", "few short lines", "Simple questions get a sentence or two; most updates are one or two plain lines.", STAFF],
 	[
 		"10",
 		"plainness by place",
@@ -1781,7 +1781,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"10",
 		"pull requests are yours",
-		"keep pull requests, branches, commits, change numbers, tool names, ids, error codes, formulas, and made-up scores",
+		"keep pull requests, branches, commits, change numbers, repository names, file paths written out in the text, server and IP addresses, machine sizes, tool names, ids, error codes, formulas, and made-up scores",
 		STAFF,
 	],
 	[

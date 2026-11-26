@@ -202,7 +202,6 @@ export const SURFACES: Record<string, string> = {
 	Philosophy: "Filosofi",
 	"Product Studio": "Produktstudie",
 	"Custom Surface": "Egen surface",
-	Surface: "Surface",
 	"What is this surface for? An agent shapes it from this brief.":
 		"Hvad skal denne surface bruges til? En agent former den ud fra denne brief.",
 	Brief: "Brief",
@@ -286,6 +285,7 @@ export const SURFACES: Record<string, string> = {
 		"Ingen rapporter endnu. Beskriv en analyse, leverandørsammenligning eller et designessay nedenfor.",
 	"In this report": "I denne rapport",
 	"Phone model": "Telefonmodel",
+	"Phone: {name}": "Telefon: {name}",
 	"Website zoom": "Zoom for hjemmeside",
 	"Phone zoom": "Zoom for telefon",
 	"Zoom out": "Zoom ud",
