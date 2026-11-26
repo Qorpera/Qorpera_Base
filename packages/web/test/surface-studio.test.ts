@@ -1805,7 +1805,7 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 		expect(view.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
-		await new Promise((resolve) => setTimeout(resolve, 40));
+		await vi.waitFor(() => expect(view.el.querySelectorAll(".studio-html-card")).toHaveLength(2), { timeout: 2000 });
 		expect(view.el.querySelector(".skeleton-surface-studio")).toBeNull();
 		const htmlCards = [...view.el.querySelectorAll<HTMLElement>(".studio-html-card")];
 		expect(htmlCards).toHaveLength(2);
