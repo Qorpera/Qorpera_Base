@@ -172,6 +172,16 @@ describe("a coding session's environment through the company's secret broker", (
 			environment: { API_KEY },
 			mask: [],
 		});
+		const surfaceSession = fixture(
+			[{ name: "API_KEY", ownerKind: "member", fields: { value: API_KEY } }],
+			(answer) => ({ ...answer, repository: null }),
+			[],
+		);
+		await expect(surfaceSession.broker.codingEnvironment(surfaceSession.request, signal())).resolves.toEqual({
+			schema: "qorpera.coding-environment/v1",
+			environment: { API_KEY },
+			mask: [],
+		});
 	});
 
 	it("takes at most 64 older versions", async () => {
