@@ -70,7 +70,6 @@ describe("mandatory coding Git parser containment", () => {
 	});
 	it.runIf(linux)("caps Git's processes inside its own user namespace, so the host user's other tasks never stop it", async () => {
 		const command = await fixture();
-		// A stand-in bubblewrap shows the limit bubblewrap itself runs under and the command it would run.
 		const stand = join(command.scratchRoot, "bwrap");
 		await writeFile(
 			stand,
