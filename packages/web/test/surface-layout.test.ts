@@ -1514,6 +1514,8 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 			`${ROOT}/screens/02-review.svg`,
 			`${ROOT}/screens/03-progress.png`,
 		]);
+		expect(cards.map((card) => card.classList.contains("is-raster"))).toEqual([false, false, true]);
+		expect(view.el.querySelector(".studio-svg-grid")?.classList.contains("is-pair-grid")).toBe(false);
 
 		cards[0]!.querySelector<HTMLButtonElement>("button.studio-svg-stage")!.click();
 		const mediaDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-media")!;
@@ -1813,6 +1815,53 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 			expect(readCloudBinary).toHaveBeenCalledTimes(1);
 			lifetime.abort();
 			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:spec-sheet"));
+			view.dispose();
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
+	it("lays out two or four visuals in a balanced pair grid and marks raster visual cards", async () => {
+		const imageRef = (seed: string): StudioBinaryRef => ({
+			manifestSha256: seed.repeat(64).slice(0, 64),
+			fileSha256: seed.repeat(64).slice(0, 64),
+			bytes: 4,
+			mediaType: "image/png",
+		});
+		Object.assign(URL, { createObjectURL: vi.fn(() => "blob:visual"), revokeObjectURL: vi.fn() });
+		try {
+			const surface = studio();
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [surface]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(
+							{ [`${ROOT}/specs.json`]: JSON.stringify(SPECS) },
+							{
+								[`${ROOT}/pictures/a.png`]: imageRef("a"),
+								[`${ROOT}/pictures/b.png`]: imageRef("b"),
+								[`${ROOT}/renders/c.jpg`]: { ...imageRef("c"), mediaType: "image/jpeg" },
+								[`${ROOT}/renders/d.jpg`]: { ...imageRef("d"), mediaType: "image/jpeg" },
+							},
+						),
+					),
+					readCloudBinary: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
+				},
+			);
+			await store.load();
+			await store.refreshCloudFiles(surface);
+			const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+			document.body.append(view.el);
+			const grid = view.el.querySelector<HTMLElement>(".studio-visuals-section .studio-svg-grid");
+			expect(grid?.classList.contains("is-pair-grid")).toBe(true);
+			const cards = [...view.el.querySelectorAll<HTMLElement>(".studio-svg-card")];
+			expect(cards).toHaveLength(4);
+			expect(cards.every((card) => card.classList.contains("is-raster"))).toBe(true);
 			view.dispose();
 			store.dispose();
 		} finally {
