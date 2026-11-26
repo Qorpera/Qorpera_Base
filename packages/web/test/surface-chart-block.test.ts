@@ -187,4 +187,113 @@ describe("Studio chart block", () => {
 			expect(getInstanceByDom(host)).toBeUndefined();
 		}
 	});
+
+	it("applies explicit axis min/max bounds and custom series/point colors", async () => {
+		const controller = new AbortController();
+		const surface = strategySurface();
+		const view = new SurfaceLayoutView({
+			store: storeWith(fakeClient()),
+			surface,
+			signal: controller.signal,
+			baseFiles: () => ({}),
+		});
+		const files = {
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				schema: SURFACE_LAYOUT_SCHEMA,
+				tabs: [
+					{
+						id: "overview",
+						title: "Overview",
+						blocks: [
+							{ type: "chart", id: "scores", from: "charts/scores.json" },
+							{ type: "chart", id: "horiz", from: "charts/horiz.json" },
+							{ type: "chart", id: "hsl-area", from: "charts/hsl-area.json" },
+						],
+					},
+				],
+			}),
+			[`${ROOT}/charts/scores.json`]: JSON.stringify({
+				kind: "bar",
+				title: "Scores",
+				yAxisMin: 0,
+				yAxisMax: 10,
+				categories: ["A", "B"],
+				series: [
+					{
+						name: "Score",
+						color: "#2b6cb0",
+						data: [6, { value: 8, color: "#0f7a55" }],
+					},
+				],
+			}),
+			[`${ROOT}/charts/horiz.json`]: JSON.stringify({
+				kind: "bar",
+				title: "Horizontal",
+				horizontal: true,
+				xAxisMin: 0,
+				xAxisMax: 100,
+				categories: ["Speed"],
+				series: [{ name: "Pct", color: "#7c4dff", data: [65] }],
+			}),
+			[`${ROOT}/charts/hsl-area.json`]: JSON.stringify({
+				kind: "area",
+				title: "HSL Area",
+				categories: ["Jan", "Feb"],
+				series: [{ name: "Actual", color: "hsl(152 65% 38%)", data: [10, 20] }],
+			}),
+		};
+		const plan = view.plan({
+			surface,
+			files,
+			baseFiles: files,
+			binaries: {},
+			baseBinaries: {},
+			company: undefined,
+			briefSummary: "",
+			starter: "strategy",
+			tab: "overview",
+			legacyModel: undefined,
+			htmlPages: HTML_PAGES,
+		});
+		for (const task of plan.tasks) document.body.append(task.build());
+
+		const hosts = [...document.querySelectorAll<HTMLElement>(".studio-chart-host")];
+		expect(hosts).toHaveLength(3);
+		await vi.waitFor(
+			() => {
+				expect(hosts.every((host) => Boolean(getInstanceByDom(host)?.getOption()))).toBe(true);
+			},
+			{ timeout: 5_000, interval: 10 },
+		);
+
+		const barOpt = getInstanceByDom(hosts[0]!)!.getOption() as {
+			yAxis: { min?: number; max?: number }[];
+			series: { itemStyle?: { color?: string }; data?: unknown[] }[];
+		};
+		expect(barOpt.yAxis[0]?.min).toBe(0);
+		expect(barOpt.yAxis[0]?.max).toBe(10);
+		expect(barOpt.series[0]?.itemStyle?.color).toBe("#2b6cb0");
+		expect(barOpt.series[0]?.data?.[1]).toMatchObject({ value: 8, itemStyle: { color: "#0f7a55" } });
+
+		const horizOpt = getInstanceByDom(hosts[1]!)!.getOption() as {
+			xAxis: { min?: number; max?: number }[];
+			series: { itemStyle?: { color?: string } }[];
+		};
+		expect(horizOpt.xAxis[0]?.min).toBe(0);
+		expect(horizOpt.xAxis[0]?.max).toBe(100);
+		expect(horizOpt.series[0]?.itemStyle?.color).toBe("#7c4dff");
+
+		const areaOpt = getInstanceByDom(hosts[2]!)!.getOption() as {
+			series: { areaStyle?: { color?: { colorStops?: { color?: string }[] } } }[];
+		};
+		const stops = areaOpt.series[0]?.areaStyle?.color?.colorStops ?? [];
+		expect(stops).toHaveLength(2);
+		for (const stop of stops) {
+			const match = /^rgba\(\d+, \d+, \d+, (0(?:\.\d+)?)\)$/.exec(stop.color ?? "");
+			expect(match).not.toBeNull();
+			expect(Number(match?.[1])).toBeLessThan(1);
+		}
+
+		controller.abort();
+	});
 });

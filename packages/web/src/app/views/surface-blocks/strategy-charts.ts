@@ -117,7 +117,8 @@ function readTheme(el: HTMLElement): ChartTheme {
 }
 
 function channels(color: string): [number, number, number, number] | null {
-	const hex = /^#([0-9a-f]{3,8})$/i.exec(color.trim());
+	const trimmed = color.trim();
+	const hex = /^#([0-9a-f]{3,8})$/i.exec(trimmed);
 	if (hex) {
 		let body = hex[1]!;
 		if (body.length === 3 || body.length === 4) body = [...body].map((char) => char + char).join("");
@@ -125,16 +126,43 @@ function channels(color: string): [number, number, number, number] | null {
 		const at = (index: number) => Number.parseInt(body.slice(index, index + 2), 16);
 		return [at(0), at(2), at(4), body.length === 8 ? at(6) / 255 : 1];
 	}
-	const fn = /^rgba?\(([^)]+)\)$/i.exec(color.trim());
-	if (!fn) return null;
-	const parts = fn[1]!.split(/[\s,/]+/).filter(Boolean);
-	if (parts.length < 3) return null;
 	const num = (part: string, scale: number) =>
 		part.endsWith("%") ? (Number.parseFloat(part) / 100) * scale : Number.parseFloat(part);
-	const rgb = [num(parts[0]!, 255), num(parts[1]!, 255), num(parts[2]!, 255)];
+	const fn = /^rgba?\(([^)]+)\)$/i.exec(trimmed);
+	if (fn) {
+		const parts = fn[1]!.split(/[\s,/]+/).filter(Boolean);
+		if (parts.length < 3) return null;
+		const rgb = [num(parts[0]!, 255), num(parts[1]!, 255), num(parts[2]!, 255)];
+		const alpha = parts[3] === undefined ? 1 : num(parts[3], 1);
+		if (![...rgb, alpha].every(Number.isFinite)) return null;
+		return [rgb[0]!, rgb[1]!, rgb[2]!, alpha];
+	}
+	const hsl = /^hsla?\(([^)]+)\)$/i.exec(trimmed);
+	if (!hsl) return null;
+	const parts = hsl[1]!.split(/[\s,/]+/).filter(Boolean);
+	if (parts.length < 3 || !parts[1]!.endsWith("%") || !parts[2]!.endsWith("%")) return null;
+	const h = Number.parseFloat(parts[0]!);
+	const s = Math.max(0, Math.min(100, Number.parseFloat(parts[1]!))) / 100;
+	const l = Math.max(0, Math.min(100, Number.parseFloat(parts[2]!))) / 100;
 	const alpha = parts[3] === undefined ? 1 : num(parts[3], 1);
-	if (![...rgb, alpha].every(Number.isFinite)) return null;
-	return [rgb[0]!, rgb[1]!, rgb[2]!, alpha];
+	if (![h, s, l, alpha].every(Number.isFinite)) return null;
+	const hue = ((h % 360) + 360) % 360;
+	const c = (1 - Math.abs(2 * l - 1)) * s;
+	const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+	const m = l - c / 2;
+	const [r1, g1, b1] =
+		hue < 60
+			? [c, x, 0]
+			: hue < 120
+				? [x, c, 0]
+				: hue < 180
+					? [0, c, x]
+					: hue < 240
+						? [0, x, c]
+						: hue < 300
+							? [x, 0, c]
+							: [c, 0, x];
+	return [(r1 + m) * 255, (g1 + m) * 255, (b1 + m) * 255, alpha];
 }
 
 export function tint(color: string, alpha: number): string {

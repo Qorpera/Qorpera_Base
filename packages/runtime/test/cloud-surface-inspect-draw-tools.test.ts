@@ -635,8 +635,17 @@ describe("Studio visual inspect & draw tools", () => {
 						kind: "bar",
 						title: "MRR",
 						unit: "$",
+						yAxisMin: 0,
+						yAxisMax: 40000,
 						categories: ["Q1", "Q2"],
-						series: [{ name: "Actual", data: [12000, 24000] }],
+						series: [
+							{
+								name: "Actual",
+								color: "#2b6cb0",
+								data: [12000, { value: 24000, color: "#0f7a55" }],
+								markLine: [{ value: 30000, label: "Goal" }],
+							},
+						],
 					}),
 					"surfaces/strategy/visuals/logo.svg": '<svg><script>alert(1)</script><circle r="5"/></svg>',
 					"surfaces/strategy/visuals/large-graph.svg": `<svg xmlns="http://www.w3.org/2000/svg">${"<path d='M0 0 L10 10'/>".repeat(15_000)}</svg>`,
@@ -658,6 +667,10 @@ describe("Studio visual inspect & draw tools", () => {
 			const rendered = renderStudioPreviewHtml({ snapshot, theme: "dark" });
 			expect(rendered.html).toContain('data-theme="dark"');
 			expect(rendered.html).toContain("<svg viewBox=");
+			expect(rendered.html).toContain('fill="#2b6cb0"');
+			expect(rendered.html).toContain('fill="#0f7a55"');
+			expect(rendered.html).toContain("$40.0k");
+			expect(rendered.html).toContain("Goal · $30.0k");
 			expect(rendered.html).not.toContain("<script>");
 			expect(rendered.html).toContain("/company-asset/visuals/base-mark.png");
 			expect(rendered.html).toContain("2048 KB");
