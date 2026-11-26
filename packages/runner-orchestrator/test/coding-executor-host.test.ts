@@ -97,6 +97,8 @@ import {
 	lxdCodingSessionStorage,
 } from "../src/coding-machine.ts";
 import type { CodingSecretMask } from "../src/coding-secret-mask.ts";
+import { type ParsedCodingSetup, parseCodingSetup } from "../src/coding-setup.ts";
+import { CodingSetupLifecycle } from "../src/coding-setup-lifecycle.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import {
 	type LxdExecPipeRequest,
@@ -105,6 +107,12 @@ import {
 	type LxdInstanceRecord,
 	validExecPipe,
 } from "../src/lxd-client.ts";
+import {
+	PREVIEW_WORKSPACE_CHECK,
+	PREVIEW_WORKSPACE_SYNC,
+	previewWorkspaceDir,
+	previewWorkspaceKey,
+} from "../src/surface-preview-workspace.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
@@ -5844,13 +5852,40 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			pollMs?: number | null;
 			/** What the machine's agent says of its package caches at the mount (true: a new agent that made them). */
 			packageCaches?: boolean;
+			previewBuilder?: boolean;
+			withClaimBaseSha?: boolean;
+			setupResult?: ParsedCodingSetup;
+			setupLifecycle?: CodingSetupLifecycle;
+			nativeEdge?: {
+				readonly routerInternalUrl: string;
+				readonly controlToken: string;
+				readonly fetchImpl: (
+					url: string,
+					init?: RequestInit,
+				) => Promise<{ ok: boolean; status: number; json?: () => Promise<unknown>; text?: () => Promise<string> }>;
+			};
+			execInstancePipe?: LxdCodingExecutorHostOptions["client"]["execInstancePipe"];
 		} = {},
 	) {
 		const f = await folderFixture();
 		f.agent.packageCaches = options.packageCaches ?? true;
 		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
+		if (options.previewBuilder) f.claim.previewBuilder = true;
+		if (options.withClaimBaseSha) f.claim.baseSha = f.baseSha;
+		const readSetup = vi.fn(
+			async () =>
+				options.setupResult ?? {
+					file: null,
+					setupDigest: "",
+					refused: false,
+					problems: [],
+					setupSpec: (await parseCodingSetup({ read: async () => ({ kind: "missing" }) })).setupSpec,
+					dockerfiles: [],
+				},
+		);
 		Object.assign(f.repositories, {
 			start: vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha })),
+			readSetup,
 		});
 		// The vault: each answer it gives, counted.
 		const vault = vi.fn<CodingEnvironmentSource["environment"]>(async () => ({
@@ -5865,6 +5900,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		});
 		const host = new LxdCodingExecutorHost({
 			...f.options,
+			client: {
+				...f.options.client,
+				...(options.execInstancePipe ? { execInstancePipe: options.execInstancePipe } : {}),
+			},
 			folder: {
 				...f.folder,
 				report,
@@ -5874,6 +5913,8 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				...(options.boundaryMs === undefined ? {} : { checksBoundaryMs: options.boundaryMs }),
 			},
 			...(commandSecrets ? { commandSecrets } : {}),
+			...(options.nativeEdge ? { nativeEdge: options.nativeEdge } : {}),
+			...(options.setupLifecycle ? { setupLifecycle: options.setupLifecycle } : {}),
 		});
 		mocked.realTransports = true;
 		// The tail as the words' rule cuts it (part C1's own tests hold its bounds): here it says what it was handed.
@@ -5957,6 +5998,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			...f,
 			host,
 			session,
+			readSetup,
 			vault,
 			logged,
 			/** When the log line of `step` for `commandId` was written, in the order of every mock's calls. */
@@ -9516,6 +9558,193 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHE_ROOT).toContain(CODING_CHECK_CACHES.root);
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHES).toBeUndefined();
 			expect(f.folderExecStream).not.toHaveBeenCalled();
+		});
+
+		it("skips worktree preparation and setup discovery for previewBuilder and uses warm incremental workspace on nativeEdge", async () => {
+			const html = Buffer.from("<!doctype html><h1>Warm</h1>");
+			const htmlHash = createHash("sha256").update(html).digest("hex");
+			const scannedDirs: string[] = [];
+			const uploadedBlobs: string[] = [];
+			const execInstancePipe = vi.fn<NonNullable<LxdCodingExecutorHostOptions["client"]["execInstancePipe"]>>(
+				async (_project, _instance, request) => {
+					const rawStdin =
+						request.stdin instanceof Uint8Array ? Buffer.from(request.stdin).toString("utf8") : "{}";
+					const cfg = JSON.parse(rawStdin) as { outputDir?: string; files?: readonly unknown[] };
+					if (cfg.outputDir && !cfg.files) {
+						scannedDirs.push(cfg.outputDir);
+						return {
+							exitCode: 0,
+							stdout: Buffer.from(
+								JSON.stringify({
+									files: [{ path: "index.html", bytes: html.byteLength, sha256: htmlHash }],
+									redirects: null,
+									headers: null,
+									hasCredentialInputs: false,
+									shared: {},
+								}),
+							),
+							stderrTail: Buffer.alloc(0),
+						};
+					}
+					return {
+						exitCode: 0,
+						stdout: Buffer.concat([Buffer.from(`${htmlHash} ${html.byteLength}\n`), html]),
+						stderrTail: Buffer.alloc(0),
+					};
+				},
+			);
+			const fetchImpl = vi.fn(async (url: string) => {
+				if (url.endsWith("/_internal/blobs/exists")) {
+					return {
+						ok: true,
+						status: 200,
+						json: async () => ({ existing: [] }),
+					};
+				}
+				uploadedBlobs.push(url);
+				return { ok: true, status: 201 };
+			});
+			const f = await checksFixture({
+				previewBuilder: true,
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8088",
+					controlToken: "tok",
+					fetchImpl,
+				},
+				execInstancePipe,
+			});
+			expect(f.repositories.prepare).not.toHaveBeenCalled();
+			expect(f.readSetup).toHaveBeenCalledTimes(1);
+			const result = await f.host.buildPreview(
+				f.claim,
+				{
+					buildId: randomUUID(),
+					commitSha: COMMIT,
+					treeSha: "d".repeat(40),
+					recipe: {
+						run: "npm ci --no-audit && npm run build",
+						cwd: "web",
+						folder: "web/dist",
+						timeoutSeconds: 120,
+					},
+					attempt: 1,
+				},
+				f.signal,
+			);
+			expect(result).toMatchObject({ outcome: "built" });
+			const expectedKey = previewWorkspaceKey("code/acme/shop", "web");
+			const expectedWsDir = previewWorkspaceDir(f.state.guestUid as number, expectedKey);
+			const syncRun = f.ran().find((run) => run.environment.QORPERA_CHECKS_COMMIT === COMMIT);
+			expect(syncRun?.command).toBe(PREVIEW_WORKSPACE_SYNC);
+			expect(syncRun?.environment.QORPERA_PREVIEW_WORKSPACE_KEY).toBe(expectedKey);
+			expect(syncRun?.environment.QORPERA_PREVIEW_OUTPUT_FOLDER).toBe("web/dist");
+			const buildRun = f
+				.ran()
+				.find((run) => run.environment.QORPERA_CHECK_RUN === "npm ci --no-audit && npm run build");
+			expect(buildRun?.command).toBe(PREVIEW_WORKSPACE_CHECK);
+			expect(buildRun?.cwd).toBe(`${expectedWsDir}/src`);
+			expect(buildRun?.environment.QORPERA_PREVIEW_WORKSPACE_DIR).toBe(expectedWsDir);
+			expect(buildRun?.environment.QORPERA_PREVIEW_INSTALL_MANAGER).toBe("npm");
+			expect(buildRun?.environment.QORPERA_PREVIEW_INSTALL_CMD).toBe("npm ci --no-audit");
+			expect(buildRun?.environment.QORPERA_PREVIEW_BUILD_CMD).toBe("npm run build");
+			expect(scannedDirs).toEqual([`${expectedWsDir}/src/web/dist`]);
+			expect(uploadedBlobs).toEqual([`http://127.0.0.1:8088/_internal/blobs/${htmlHash}`]);
+		});
+
+		it("falls back to clean per-run copy when preview recipe folder is root (.) while still uploading natively to edge", async () => {
+			const html = Buffer.from("<!doctype html><h1>Root</h1>");
+			const htmlHash = createHash("sha256").update(html).digest("hex");
+			const scannedDirs: string[] = [];
+			const execInstancePipe = vi.fn<NonNullable<LxdCodingExecutorHostOptions["client"]["execInstancePipe"]>>(
+				async (_project, _instance, request) => {
+					const rawStdin =
+						request.stdin instanceof Uint8Array ? Buffer.from(request.stdin).toString("utf8") : "{}";
+					const cfg = JSON.parse(rawStdin) as { outputDir?: string; files?: readonly unknown[] };
+					if (cfg.outputDir && !cfg.files) {
+						scannedDirs.push(cfg.outputDir);
+						return {
+							exitCode: 0,
+							stdout: Buffer.from(
+								JSON.stringify({
+									files: [{ path: "index.html", bytes: html.byteLength, sha256: htmlHash }],
+									redirects: null,
+									headers: null,
+									hasCredentialInputs: false,
+									shared: {},
+								}),
+							),
+							stderrTail: Buffer.alloc(0),
+						};
+					}
+					return {
+						exitCode: 0,
+						stdout: Buffer.concat([Buffer.from(`${htmlHash} ${html.byteLength}\n`), html]),
+						stderrTail: Buffer.alloc(0),
+					};
+				},
+			);
+			const fetchImpl = vi.fn(async (url: string) =>
+				url.endsWith("/_internal/blobs/exists")
+					? { ok: true, status: 200, json: async () => ({ existing: [htmlHash] }) }
+					: { ok: true, status: 201 },
+			);
+			const f = await checksFixture({
+				previewBuilder: true,
+				nativeEdge: { routerInternalUrl: "http://127.0.0.1:8088", controlToken: "tok", fetchImpl },
+				execInstancePipe,
+			});
+			const result = await f.host.buildPreview(
+				f.claim,
+				{
+					buildId: randomUUID(),
+					commitSha: COMMIT,
+					treeSha: "d".repeat(40),
+					recipe: { run: "npm ci && npm run build", cwd: ".", folder: ".", timeoutSeconds: 120 },
+					attempt: 1,
+				},
+				f.signal,
+			);
+			expect(result).toMatchObject({ outcome: "built" });
+			const syncRun = f.ran().find((run) => run.environment.QORPERA_CHECKS_COMMIT === COMMIT);
+			expect(syncRun?.command).not.toBe(PREVIEW_WORKSPACE_SYNC);
+			const buildRun = f.ran().find((run) => run.environment.QORPERA_CHECK_RUN === "npm ci && npm run build");
+			expect(buildRun?.command).not.toBe(PREVIEW_WORKSPACE_CHECK);
+			expect(scannedDirs).toEqual([
+				`/home/qorpera-${f.state.guestUid as number}/.qorpera-checks/${runName(f.claim.sequence, 1)}/src`,
+			]);
+		});
+
+		it("preserves repository setup discovery, planning digest, worktree, and lifecycle for previewBuilder when environment.json defines install steps", async () => {
+			const setup = await parseCodingSetup({
+				read: async (path) =>
+					path === ".qorpera/environment.json"
+						? { kind: "file", bytes: Buffer.from(JSON.stringify({ install: "npm i -g pnpm" }), "utf8") }
+						: { kind: "missing" },
+			});
+			const setupLifecycle = new CodingSetupLifecycle();
+			const onAttachSpy = vi.spyOn(setupLifecycle, "onAttach").mockResolvedValue({
+				env: {},
+				skippedEnv: [],
+				ranInstall: true,
+				ranStart: false,
+				startedTerminals: [],
+				preparedDependencies: [],
+			});
+			const f = await checksFixture({
+				previewBuilder: true,
+				withClaimBaseSha: true,
+				setupResult: setup,
+				setupLifecycle,
+			});
+			expect(f.readSetup).toHaveBeenCalledTimes(1);
+			expect(f.repositories.prepare).toHaveBeenCalledTimes(1);
+			const planCall = f.calls("qorpera_plan_coding_machine").at(-1);
+			expect(planCall?.p_setup_digest).toBe(setup.setupDigest);
+			expect(onAttachSpy).toHaveBeenCalledTimes(1);
+			expect(onAttachSpy.mock.calls[0]?.[0]).toMatchObject({
+				setupDigest: setup.setupDigest,
+				cwd: expect.stringContaining("/company/"),
+			});
 		});
 
 		it("applies incremental path filters, runs downstream checks whose needs were skipped, and bypasses when checks file changed", async () => {

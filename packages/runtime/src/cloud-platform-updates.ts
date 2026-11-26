@@ -504,6 +504,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Legacy third-party Connections are retired: never ask founders to connect GitHub — import public repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
 	},
 	{
+		id: "fast-edge-surface-previews",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Fast edge previews and warm builds for code interfaces",
+		text: "Code-backed website and app interfaces now serve previews directly from the edge up to 10,000 files and 512 MB (100 MB per file), with warm incremental preview builders that keep dependencies and build caches hot between commits and pre-build staged changes in the background. Bundled apps no longer need to commit built output folders into git: have coding sessions declare a preview build command and output folder in their checks configuration so Qorpera builds and serves previews automatically.",
+	},
+	{
 		id: "analytics-interfaces-live-numbers",
 		kind: "capability",
 		date: "2026-11-26",

@@ -22,7 +22,7 @@ export function applyIdentityTokensToFrame(
 	if (injectStyle) {
 		try {
 			const doc = iframe.contentDocument;
-			if (doc?.head) {
+			if (doc?.head && !doc.URL.includes("/site-door/")) {
 				let style = doc.head.querySelector<HTMLStyleElement>("style[data-qorpera-identity-tokens]");
 				if (css) {
 					if (!style) {
