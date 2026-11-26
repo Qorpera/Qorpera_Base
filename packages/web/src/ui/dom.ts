@@ -293,6 +293,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	],
 	bell: ["M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"],
 	plus: ["M12 5v14M5 12h14"],
+	minus: ["M5 12h14"],
 	arrow_up: ["M12 19V5", "M5.5 11.5 12 5l6.5 6.5"],
 	globe: [
 		"M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z",

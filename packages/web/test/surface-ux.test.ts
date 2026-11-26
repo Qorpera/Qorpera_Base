@@ -1503,6 +1503,139 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
+	it("zooms websites in the notch pill without affecting phone zoom or persisting across reloads", async () => {
+		stubFigureMotion();
+		localStorage.clear();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		const zoomValue = () =>
+			view.el.querySelector<HTMLButtonElement>('[data-act="zoom-menu"][data-zoom-target="website"]');
+		const zoomIn = () => view.el.querySelector<HTMLButtonElement>('[data-act="zoom-in"][data-zoom-target="website"]');
+		const zoomOut = () =>
+			view.el.querySelector<HTMLButtonElement>('[data-act="zoom-out"][data-zoom-target="website"]');
+
+		expect(viewport.dataset.device).toBe("desktop");
+		expect(viewport.dataset.siteZoomed).toBeUndefined();
+		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("");
+		expect(zoomValue()?.textContent).toBe("100%");
+		expect(view.el.querySelector(".surface-notch-zoom")).toBeNull();
+
+		view.el.querySelector<HTMLButtonElement>(".surface-notch-pill")!.click();
+		zoomIn()!.click();
+		view.update();
+		expect(store.state.websiteZoom).toBe(1.25);
+		expect(store.state.phoneZoom).toBe(1);
+		expect(viewport.dataset.siteZoomed).toBe("true");
+		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("1.25");
+		expect(zoomValue()?.textContent).toBe("125%");
+		expect(view.el.querySelector(".surface-notch-zoom")?.textContent).toBe("125%");
+
+		zoomValue()!.click();
+		const menuItems = [...document.querySelectorAll<HTMLButtonElement>('.context-menu [role="menuitemradio"]')];
+		expect(menuItems.map((item) => item.textContent)).toEqual(["50%", "75%", "100%", "125%", "150%", "175%", "200%"]);
+		menuItems.find((item) => item.textContent === "200%")!.click();
+		view.update();
+		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("2");
+		expect(zoomIn()!.disabled).toBe(true);
+		expect(zoomOut()!.disabled).toBe(false);
+
+		zoomValue()!.click();
+		[...document.querySelectorAll<HTMLButtonElement>('.context-menu [role="menuitemradio"]')]
+			.find((item) => item.textContent === "50%")!
+			.click();
+		view.update();
+		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("0.5");
+		expect(zoomOut()!.disabled).toBe(true);
+		expect(zoomIn()!.disabled).toBe(false);
+
+		store.setDevice("mobile");
+		view.update();
+		expect(viewport.dataset.device).toBe("mobile");
+		expect(viewport.dataset.siteZoomed).toBeUndefined();
+		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("");
+		expect(zoomValue()).toBeNull();
+		expect(view.el.querySelector('[data-act="zoom-menu"][data-zoom-target="phone"]')?.textContent).toBe("100%");
+
+		store.setDevice("desktop");
+		view.update();
+		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("0.5");
+		expect(localStorage.length).toBe(0);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("zooms the phone frame from its auto-fit baseline while keeping its device viewport dimensions fixed", async () => {
+		stubFigureMotion();
+		localStorage.clear();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1200, 900));
+		view.update();
+
+		expect(viewport.dataset.device).toBe("mobile");
+		expect(viewport.dataset.siteZoomed).toBeUndefined();
+		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("");
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
+		expect(view.el.querySelector(".surface-phone-dims")?.textContent).toBe("393 × 852");
+		expect(view.el.querySelector('[data-act="zoom-menu"][data-zoom-target="website"]')).toBeNull();
+
+		const baseScale = Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));
+		expect(baseScale).toBeGreaterThan(0);
+		expect(baseScale).toBeLessThan(1);
+
+		const phoneZoomValue = () =>
+			view.el.querySelector<HTMLButtonElement>('[data-act="zoom-menu"][data-zoom-target="phone"]');
+		const phoneZoomIn = () =>
+			view.el.querySelector<HTMLButtonElement>('[data-act="zoom-in"][data-zoom-target="phone"]');
+
+		expect(phoneZoomValue()?.textContent).toBe("100%");
+		phoneZoomIn()!.click();
+		view.update();
+		phoneZoomIn()!.click();
+		view.update();
+
+		expect(store.state.phoneZoom).toBe(1.5);
+		expect(phoneZoomValue()?.textContent).toBe("150%");
+		expect(viewport.dataset.phoneZoomed).toBe("true");
+		expect(viewport.dataset.siteZoomed).toBeUndefined();
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
+		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeCloseTo(baseScale * 1.5, 3);
+
+		phoneZoomValue()!.click();
+		[...document.querySelectorAll<HTMLButtonElement>('.context-menu [role="menuitemradio"]')]
+			.find((item) => item.textContent === "100%")!
+			.click();
+		view.update();
+		expect(store.state.phoneZoom).toBe(1);
+		expect(viewport.dataset.phoneZoomed).toBeUndefined();
+		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeCloseTo(baseScale, 3);
+		expect(localStorage.length).toBe(0);
+
+		view.dispose();
+		store.dispose();
+	});
+
 	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and the publish window", async () => {
 		stubFigureMotion();
 		const madsId = "99999999-9999-4999-8999-999999999999";
@@ -2039,7 +2172,9 @@ describe("a website that is not live", () => {
 
 	const parts = (view: SurfaceView) =>
 		[
-			...view.el.querySelectorAll<HTMLElement>(".surface-pill > :not(.surface-pill-divider, .surface-hide-panels)"),
+			...view.el.querySelectorAll<HTMLElement>(
+				".surface-pill > :not(.surface-pill-divider, .surface-hide-panels, .surface-zoom)",
+			),
 		].map((part) => part.dataset.toggle ?? part.className);
 	const card = (view: SurfaceView) => view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
 	const openCard = async (view: SurfaceView, settle: () => Promise<void>) => {
