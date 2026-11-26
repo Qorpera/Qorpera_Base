@@ -1562,6 +1562,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 										: `/company/${repositoryArea!}/worktrees/${scope.workerId}`,
 									shellBaseEnv: CODING_CLAUDE_SHELL_BASE_ENV,
 									mcp: { socketPath: mcpBridge.socketPath, serverName: CLOUD_CLAUDE_MCP_SERVER_NAME },
+									// WHY: Shared coding VMs run each session under its own Linux user; isolating CLAUDE_CODE_TMPDIR prevents /tmp/claude-<slotUid> EACCES collisions.
+									tmpDir: `/tmp/qc-${scope.workerId.replaceAll("-", "").slice(0, 12)}`,
 									prompt: effectivePrompt,
 									systemNote,
 									signal: turnSignal,
