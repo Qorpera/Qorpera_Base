@@ -3,12 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import type { Cloud } from "../src/cloud/client.ts";
 import { parseSitePreviewAnswer } from "../src/cloud/releases.ts";
 import {
+	cleanSiteSlugInput,
 	createWebSiteHosting,
 	isApexHostname,
 	NATIVE_SITE_HOST,
 	parseAddedSiteDomain,
 	parseCompanySiteHostingState,
+	parseSiteSlugAvailability,
+	parseUpdatedSiteSlug,
 	validateCustomDomainInput,
+	validateSiteSlugInput,
 } from "../src/cloud/site-hosting.ts";
 import { createWebSites, parseCompanySite, parseSiteMemberPass, siteOfLink } from "../src/cloud/sites.ts";
 
@@ -85,6 +89,21 @@ describe("site-hosting", () => {
 		expect(isApexHostname("www.minbutik.dk")).toBe(false);
 	});
 
+	it("validates site subdomain inputs against the kernel slug rules", () => {
+		expect(cleanSiteSlugInput("  My-Shop  ")).toBe("my-shop");
+		expect(validateSiteSlugInput("my-shop")).toBeUndefined();
+		expect(validateSiteSlugInput("a1b")).toBeUndefined();
+		expect(validateSiteSlugInput("ab")).toBe("too_short");
+		expect(validateSiteSlugInput("bad--slug")).toBe("invalid");
+		expect(validateSiteSlugInput("-leading")).toBe("invalid");
+		expect(validateSiteSlugInput("trailing-")).toBe("invalid");
+		expect(validateSiteSlugInput("bad_slug")).toBe("invalid");
+		expect(validateSiteSlugInput("a".repeat(49))).toBe("invalid");
+		expect(validateSiteSlugInput("shop")).toBe("reserved");
+		expect(validateSiteSlugInput("my-preview")).toBe("reserved");
+		expect(validateSiteSlugInput("qorpera-fans")).toBe("reserved");
+	});
+
 	it("parses hosting state and performs visibility and domain RPCs", async () => {
 		const rpc = vi.fn(async (name: string) => {
 			if (name === "qorpera_company_site_hosting") {
@@ -125,6 +144,23 @@ describe("site-hosting", () => {
 			}
 			if (name === "qorpera_set_company_site_public") {
 				return { schema: "qorpera.company-site-visibility/v1", siteId: SITE_ID, isPublic: true };
+			}
+			if (name === "qorpera_check_company_site_slug") {
+				return {
+					schema: "qorpera.company-site-slug-check/v1",
+					siteId: SITE_ID,
+					slug: "fresh-shop",
+					available: true,
+					reason: "available",
+				};
+			}
+			if (name === "qorpera_set_company_site_slug") {
+				return {
+					schema: "qorpera.company-site-slug/v1",
+					siteId: SITE_ID,
+					slug: "fresh-shop",
+					url: "https://fresh-shop.qorpera.site/",
+				};
 			}
 			if (name === "qorpera_add_company_site_domain") {
 				return {
@@ -172,6 +208,17 @@ describe("site-hosting", () => {
 		expect(state.sites.get(SITE_ID)?.domains[0]?.hostname).toBe("minbutik.dk");
 
 		expect(await client.setPublic(SITE_ID, true)).toBe(true);
+		expect(await client.checkSlug(SITE_ID, "  Fresh-Shop  ")).toEqual({
+			siteId: SITE_ID,
+			slug: "fresh-shop",
+			available: true,
+			reason: "available",
+		});
+		expect(await client.setSlug(SITE_ID, "  Fresh-Shop  ")).toEqual({
+			siteId: SITE_ID,
+			slug: "fresh-shop",
+			url: "https://fresh-shop.qorpera.site/",
+		});
 		const added = await client.addDomain(SITE_ID, "MinButik.dk.", true);
 		expect(added.hostname).toBe("minbutik.dk");
 		expect(added.dns.recordType).toBe("A");
@@ -182,6 +229,19 @@ describe("site-hosting", () => {
 
 		expect(() => parseCompanySiteHostingState({ schema: "wrong" })).toThrow();
 		expect(() => parseAddedSiteDomain({ schema: "wrong" })).toThrow();
+		expect(() => parseSiteSlugAvailability({ schema: "wrong" }, SITE_ID)).toThrow();
+		expect(() => parseUpdatedSiteSlug({ schema: "wrong" }, SITE_ID)).toThrow();
+		expect(() =>
+			parseUpdatedSiteSlug(
+				{
+					schema: "qorpera.company-site-slug/v1",
+					siteId: SITE_ID,
+					slug: "fresh-shop",
+					url: "http://evil.example/",
+				},
+				SITE_ID,
+			),
+		).toThrow();
 	});
 
 	it("forwards AbortSignal to site hosting and company site RPCs", async () => {
@@ -203,6 +263,23 @@ describe("site-hosting", () => {
 			}
 			if (name === "qorpera_set_company_site_public") {
 				return { schema: "qorpera.company-site-visibility/v1", siteId: SITE_ID, isPublic: true };
+			}
+			if (name === "qorpera_check_company_site_slug") {
+				return {
+					schema: "qorpera.company-site-slug-check/v1",
+					siteId: SITE_ID,
+					slug: "fresh-shop",
+					available: true,
+					reason: "available",
+				};
+			}
+			if (name === "qorpera_set_company_site_slug") {
+				return {
+					schema: "qorpera.company-site-slug/v1",
+					siteId: SITE_ID,
+					slug: "fresh-shop",
+					url: "https://fresh-shop.qorpera.site/",
+				};
 			}
 			if (name === "qorpera_add_company_site_domain") {
 				return {
@@ -272,6 +349,8 @@ describe("site-hosting", () => {
 		const sites = createWebSites({ rpc } as unknown as Cloud, { profileId: COMPANY_ID });
 		await hosting.read(ac.signal);
 		await hosting.setPublic(SITE_ID, true, ac.signal);
+		await hosting.checkSlug(SITE_ID, "fresh-shop", ac.signal);
+		await hosting.setSlug(SITE_ID, "fresh-shop", ac.signal);
 		await hosting.addDomain(SITE_ID, "minbutik.dk", false, ac.signal);
 		await hosting.recheckDomain(DOMAIN_ID, ac.signal);
 		await hosting.setPrimaryDomain(DOMAIN_ID, ac.signal);
@@ -281,7 +360,7 @@ describe("site-hosting", () => {
 		await sites.password(SITE_ID, ac.signal);
 		await sites.access(ac.signal);
 
-		expect(seenSignals).toHaveLength(10);
+		expect(seenSignals).toHaveLength(12);
 		expect(seenSignals.every((sig) => sig instanceof AbortSignal && !sig.aborted)).toBe(true);
 
 		const inFlightAc = new AbortController();

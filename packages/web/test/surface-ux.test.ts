@@ -2768,6 +2768,50 @@ describe("a new website's first publish", () => {
 		await noted.read();
 		expect(company.get().sitesPublic?.get(HOSTED_SITE)).toBe(false);
 	});
+
+	it("keeps company siteList and SurfacesStore in step when a website subdomain changes", async () => {
+		const listed = [
+			{
+				id: HOSTED_SITE,
+				slug: "thetaband",
+				kind: "files",
+				state: "live",
+				url: "https://thetaband.qorpera.site/",
+			} as CompanySite,
+		];
+		const company = new Store<CompanyState>({ loading: false } as CompanyState);
+		company.set({ siteList: listed });
+		const hosting = fakeSiteHosting({
+			entry: { slug: "thetaband", isPublic: true, domains: [] },
+			hostsDomain: "qorpera.site",
+		});
+		const noted = hostingNotingPublic(company, hosting.client);
+		const updated = await noted.setSlug(HOSTED_SITE, "new-thetaband");
+		expect(updated).toEqual({
+			siteId: HOSTED_SITE,
+			slug: "new-thetaband",
+			url: "https://new-thetaband.qorpera.site/",
+		});
+		expect(company.get().siteList?.[0]?.slug).toBe("new-thetaband");
+		expect(company.get().siteList?.[0]?.url).toBe("https://new-thetaband.qorpera.site/");
+
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [
+					summary({ siteSlug: "thetaband", liveUrl: "https://thetaband.qorpera.site/" }),
+				]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace([], {
+						surface: summary({ siteSlug: "thetaband", liveUrl: "https://thetaband.qorpera.site/" }),
+					}),
+				),
+			}),
+		);
+		await store.load();
+		store.noteSiteSlug(SURFACE, updated.slug, updated.url);
+		expect(store.state.surfaces[0]?.siteSlug).toBe("new-thetaband");
+		expect(store.state.surfaces[0]?.liveUrl).toBe("https://new-thetaband.qorpera.site/");
+	});
 });
 
 describe("a website's rail row", () => {

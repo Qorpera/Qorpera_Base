@@ -16,12 +16,16 @@ import {
 	type SurfacesStoreOptions,
 	synthesizeMigration,
 } from "../src/app/surfaces-store.ts";
-import type {
-	AddedSiteDomain,
-	CompanySiteHostingState,
-	CustomDomainStatus,
-	SiteCustomDomain,
-	WebSiteHosting,
+import {
+	type AddedSiteDomain,
+	type CompanySiteHostingState,
+	type CustomDomainStatus,
+	cleanSiteSlugInput,
+	type SiteCustomDomain,
+	type SiteSlugAvailability,
+	type UpdatedSiteSlug,
+	validateSiteSlugInput,
+	type WebSiteHosting,
 } from "../src/cloud/site-hosting.ts";
 
 export const COMPANY = "11111111-1111-4111-8111-111111111111";
@@ -280,21 +284,29 @@ export function siteDomain(
 }
 
 export interface HostingWorld {
-	entry: { isPublic: boolean; domains: SiteCustomDomain[] } | null;
+	entry: { slug?: string; isPublic: boolean; domains: SiteCustomDomain[] } | null;
+	hostsDomain?: string;
+	hostsEnabled?: boolean;
+	takenSlugs?: string[];
 	publicEnabled: boolean;
 	domainsEnabled: boolean;
 }
 
 export function fakeSiteHosting(world: Partial<HostingWorld> = {}) {
 	const now: HostingWorld = {
-		entry: { isPublic: false, domains: [] },
+		entry: { slug: "thetaband", isPublic: false, domains: [] },
+		hostsDomain: "qorpera.com",
+		hostsEnabled: true,
+		takenSlugs: [],
 		publicEnabled: true,
 		domainsEnabled: true,
 		...world,
 	};
+	const hostsDomain = () => now.hostsDomain ?? "qorpera.com";
+	const currentSlug = () => now.entry?.slug ?? "thetaband";
 	const state = (): CompanySiteHostingState => ({
-		hostsDomain: "qorpera.com",
-		hostsEnabled: true,
+		hostsDomain: hostsDomain(),
+		hostsEnabled: now.hostsEnabled ?? true,
 		publicEnabled: now.publicEnabled,
 		domainsEnabled: now.domainsEnabled,
 		edgeIpv4: "203.0.113.7",
@@ -307,7 +319,7 @@ export function fakeSiteHosting(world: Partial<HostingWorld> = {}) {
 							HOSTED_SITE,
 							{
 								siteId: HOSTED_SITE,
-								slug: "thetaband",
+								slug: currentSlug(),
 								isPublic: now.entry.isPublic,
 								deploymentKind: "static" as const,
 								storageMode: "db" as const,
@@ -325,6 +337,21 @@ export function fakeSiteHosting(world: Partial<HostingWorld> = {}) {
 		setPublic: vi.fn(async (_siteId: string, isPublic: boolean, _signal?: AbortSignal) => {
 			if (now.entry) now.entry.isPublic = isPublic;
 			return isPublic;
+		}),
+		checkSlug: vi.fn(async (siteId: string, slug: string, _signal?: AbortSignal): Promise<SiteSlugAvailability> => {
+			const cleaned = cleanSiteSlugInput(slug);
+			if (cleaned === currentSlug()) return { siteId, slug: cleaned, available: true, reason: "current" };
+			const problem = validateSiteSlugInput(cleaned);
+			if (problem === "reserved") return { siteId, slug: cleaned, available: false, reason: "reserved" };
+			if (problem !== undefined) return { siteId, slug: cleaned, available: false, reason: "invalid" };
+			if ((now.takenSlugs ?? []).includes(cleaned))
+				return { siteId, slug: cleaned, available: false, reason: "taken" };
+			return { siteId, slug: cleaned, available: true, reason: "available" };
+		}),
+		setSlug: vi.fn(async (siteId: string, slug: string, _signal?: AbortSignal): Promise<UpdatedSiteSlug> => {
+			const cleaned = cleanSiteSlugInput(slug);
+			if (now.entry) now.entry.slug = cleaned;
+			return { siteId, slug: cleaned, url: `https://${cleaned}.${hostsDomain()}/` };
 		}),
 		addDomain: vi.fn(
 			async (siteId: string, hostname: string, isApex: boolean, _signal?: AbortSignal): Promise<AddedSiteDomain> => {

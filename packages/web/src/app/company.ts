@@ -461,6 +461,18 @@ export function hostingNotingPublic(store: Store<CompanyState>, hosting: WebSite
 				writes.finished += 1;
 			}
 		},
+		setSlug: async (siteId, slug, signal) => {
+			const updated = await hosting.setSlug(siteId, slug, signal);
+			const list = store.get().siteList;
+			if (list?.some((item) => item.id === siteId && (item.slug !== updated.slug || item.url !== updated.url))) {
+				store.set({
+					siteList: list.map((item) =>
+						item.id === siteId ? { ...item, slug: updated.slug, url: updated.url } : item,
+					),
+				});
+			}
+			return updated;
+		},
 	};
 }
 
