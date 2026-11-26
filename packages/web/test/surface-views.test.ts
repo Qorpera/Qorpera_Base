@@ -52,6 +52,23 @@ function spyFrameMessages(iframe: HTMLIFrameElement): { message: Record<string, 
 	return sent;
 }
 
+function pointRow(view: SurfaceView): HTMLButtonElement | undefined {
+	view.el.querySelector<HTMLButtonElement>(".surface-plus")!.click();
+	return [...document.querySelectorAll<HTMLButtonElement>(".context-menu-item")].find((row) =>
+		row.textContent?.includes("Point at an element"),
+	);
+}
+
+function pointDisabled(view: SurfaceView): boolean {
+	const disabled = pointRow(view)?.disabled ?? true;
+	openMenu()?.close();
+	return disabled;
+}
+
+function pressPoint(view: SurfaceView): void {
+	pointRow(view)!.click();
+}
+
 function sendFromFrame(iframe: HTMLIFrameElement, data: Record<string, unknown>, origin = location.origin): void {
 	const event = new MessageEvent("message", { data, origin });
 	Object.defineProperty(event, "source", { value: iframe.contentWindow });
@@ -671,6 +688,54 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("opens Point and Attach from the composer's +, holds the folded composer open meanwhile, and shuts on a second press", async () => {
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([])),
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: "s", messages: [] })),
+			}),
+			{ uploadImage: vi.fn(async () => ({ sha256: "a".repeat(64), bytes: 5, mediaType: "image/png" })) },
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const plus = view.el.querySelector<HTMLButtonElement>(".surface-plus")!;
+		const composer = view.el.querySelector<HTMLElement>(".surface-composer")!;
+		expect(plus.hidden).toBe(false);
+		expect(view.el.querySelector(".surface-composer-shell .surface-attach")).toBeNull();
+
+		plus.click();
+		const menu = openMenu()!;
+		expect(menu.el.classList.contains("is-up")).toBe(true);
+		expect(plus.getAttribute("aria-expanded")).toBe("true");
+		expect(composer.classList.contains("is-held")).toBe(true);
+		const labels = [...menu.el.querySelectorAll(".context-menu-label")].map((label) => label.textContent);
+		expect(labels).toEqual(["Point at an element", "Attach images"]);
+
+		const picked = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => undefined);
+		[...menu.el.querySelectorAll<HTMLElement>(".context-menu-item")].at(-1)!.click();
+		expect(picked).toHaveBeenCalledTimes(1);
+		picked.mockRestore();
+		expect(openMenu()).toBeUndefined();
+		expect(plus.getAttribute("aria-expanded")).toBe("false");
+		expect(composer.classList.contains("is-held")).toBe(false);
+
+		plus.click();
+		expect(openMenu()).toBeDefined();
+		const press = new MouseEvent("pointerdown", { bubbles: true });
+		plus.dispatchEvent(press);
+		expect(openMenu()).toBeUndefined();
+		plus.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+		expect(openMenu()).toBeUndefined();
+		plus.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+		expect(openMenu()).toBeDefined();
+		openMenu()?.close();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("supports Point-to-Change mode, validates picked targets, and starts a targeted session", async () => {
 		const target = pointTarget();
 		const ws = workspace([session(["staged"])], {
@@ -692,39 +757,39 @@ describe("the surface page", () => {
 
 		const frame = view.el.querySelector<HTMLIFrameElement>("iframe.surface-frame")!;
 		const posted = spyFrameMessages(frame);
-		const pointBtn = view.el.querySelector<HTMLButtonElement>(".surface-point")!;
-		expect(pointBtn.hidden).toBe(false);
-		expect(pointBtn.disabled).toBe(true);
+		const plus = view.el.querySelector<HTMLButtonElement>(".surface-plus")!;
+		expect(plus.hidden).toBe(false);
+		expect(pointDisabled(view)).toBe(true);
 		sendFromFrame(frame, { type: SITE_DOOR_READY });
-		expect(pointBtn.disabled).toBe(true);
+		expect(pointDisabled(view)).toBe(true);
 		sendFromFrame(frame, { type: SITE_DOOR_SHOWN });
 		posted.length = 0;
 
-		expect(pointBtn.hidden).toBe(false);
-		expect(pointBtn.disabled).toBe(false);
+		expect(plus.hidden).toBe(false);
+		expect(pointDisabled(view)).toBe(false);
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "p" }));
-		expect(pointBtn.getAttribute("aria-pressed")).toBe("true");
+		expect(plus.classList.contains("is-on")).toBe(true);
 		expect(posted.at(-1)).toEqual({
 			message: { type: SURFACE_INSPECTOR_MODE_MESSAGE, active: true },
 			origin: location.origin,
 		});
 
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-		expect(pointBtn.getAttribute("aria-pressed")).toBe("false");
+		expect(plus.classList.contains("is-on")).toBe(false);
 		expect(posted.at(-1)).toEqual({
 			message: { type: SURFACE_INSPECTOR_MODE_MESSAGE, active: false },
 			origin: location.origin,
 		});
 
-		pointBtn.click();
-		expect(pointBtn.getAttribute("aria-pressed")).toBe("true");
+		pressPoint(view);
+		expect(plus.classList.contains("is-on")).toBe(true);
 
 		sendFromFrame(frame, { type: SURFACE_INSPECTOR_PICK_MESSAGE, target: { bad: true } });
 		expect(view.el.querySelector(".surface-target-pill")).toBeNull();
-		expect(pointBtn.getAttribute("aria-pressed")).toBe("true");
+		expect(plus.classList.contains("is-on")).toBe(true);
 
 		sendFromFrame(frame, { type: SURFACE_INSPECTOR_PICK_MESSAGE, target });
-		expect(pointBtn.getAttribute("aria-pressed")).toBe("false");
+		expect(plus.classList.contains("is-on")).toBe(false);
 		expect(posted.at(-1)?.message).toEqual({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active: false });
 		const pill = view.el.querySelector(".surface-target-pill")!;
 		expect(pill.textContent).toContain("PreorderCta");
@@ -1003,6 +1068,7 @@ describe("the surface page", () => {
 		await flush();
 		inboxView.update();
 		expect(inboxView.el.querySelector(".surface-handoff-btn")).toBeNull();
+		expect(inboxView.el.querySelector<HTMLElement>(".surface-plus")?.hidden).toBe(true);
 		expect(inboxView.el.querySelector<HTMLElement>(".surface-bar")?.hidden).toBe(true);
 		inboxView.dispose();
 		store.dispose();
@@ -1129,14 +1195,13 @@ describe("the surface page", () => {
 		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
 		const stagingFrame = view.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
 		expect(stagingFrame).not.toBeNull();
-		const pointBtn = view.el.querySelector<HTMLButtonElement>(".surface-point")!;
-		expect(pointBtn.disabled).toBe(true);
+		expect(pointDisabled(view)).toBe(true);
 
 		const posted = spyFrameMessages(stagingFrame);
 		sendFromFrame(stagingFrame, { type: SITE_DOOR_READY });
 		expect(posted).toHaveLength(1);
 		expect(posted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: `${VALID_PASS.slice(0, -1)}1` });
-		expect(pointBtn.disabled).toBe(true);
+		expect(pointDisabled(view)).toBe(true);
 
 		await store.refreshWorkspace(SURFACE);
 		await flush();
@@ -1146,7 +1211,7 @@ describe("the surface page", () => {
 		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
 		expect(view.el.querySelector("iframe.is-staging")).toBe(stagingFrame);
 		expect(view.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe("Opening preview…");
-		expect(pointBtn.disabled).toBe(true);
+		expect(pointDisabled(view)).toBe(true);
 
 		await store.refreshWorkspace(SURFACE);
 		await flush();
@@ -1157,14 +1222,14 @@ describe("the surface page", () => {
 		sendFromFrame(stagingFrame, { type: SITE_DOOR_SHOWN });
 		expect(view.el.querySelector("iframe.is-shown")).toBe(stagingFrame);
 		expect(view.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(true);
-		expect(pointBtn.disabled).toBe(false);
+		expect(pointDisabled(view)).toBe(false);
 
 		await store.refreshWorkspace(SURFACE);
 		await flush();
 		view.update();
 		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
 		expect(view.el.querySelector("iframe.is-shown")).toBe(stagingFrame);
-		expect(pointBtn.disabled).toBe(false);
+		expect(pointDisabled(view)).toBe(false);
 
 		view.dispose();
 		store.dispose();
@@ -1362,7 +1427,7 @@ describe("the surface page", () => {
 			sendFromFrame(recoveredFrame, { type: SITE_DOOR_SHOWN });
 			expect(view.el.querySelector("iframe.is-shown")).toBe(recoveredFrame);
 			expect(view.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(true);
-			expect(view.el.querySelector<HTMLButtonElement>(".surface-point")?.disabled).toBe(false);
+			expect(pointDisabled(view)).toBe(false);
 
 			unsub();
 			view.dispose();

@@ -2770,6 +2770,7 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 				expect(options.model).toBe("claude-opus-5-5");
 				expect(options.effort).toBe("high");
 				expect(options.mcp?.serverName).toBe("qorpera");
+				expect(options.tmpDir).toMatch(/^\/tmp\/qc-[0-9a-f]{12}$/);
 				expect(options.systemNote).toContain("mcp__qorpera__coding_finish");
 				observedScratchRoot = options.scratchRoot;
 				observedLoginFolder = "folder" in options.login ? options.login.folder : "";
