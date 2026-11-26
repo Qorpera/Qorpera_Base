@@ -307,8 +307,22 @@ function applyReconciledSubset(
 		})
 		.sort((a, b) => b.selectedChangeIds.length - a.selectedChangeIds.length);
 
+	const selectedByChangeId = new Map<
+		string,
+		{
+			readonly id: string;
+			readonly lastCoveredIndex: number;
+			readonly coveredOrderedIds: readonly string[];
+			readonly preservedById: ReadonlyMap<string, StudioPatchChange>;
+			readonly reconciledOps: readonly StudioPatchOp[];
+		}
+	>();
+	const claimedChangeIds = new Set<string>();
+	const claimedReconciledPaths = new Set<string>();
+
 	for (const chosen of readyMatches) {
 		if (!chosen.patchManifest) continue;
+		if (chosen.selectedChangeIds.some((id) => claimedChangeIds.has(id))) continue;
 		const covered = new Set(chosen.selectedChangeIds);
 		let lastCoveredIndex = -1;
 		const coveredOrderedChanges: StudioPatchChange[] = [];
@@ -325,20 +339,46 @@ function applyReconciledSubset(
 		});
 		if (!composed.ok) continue;
 
-		const preservedById = new Map(composed.preservedChanges.map((entry) => [entry.changeId, entry]));
-		const coveredOrderedIds = coveredOrderedChanges.map((entry) => entry.changeId);
+		const reconciledPaths = new Set<string>();
+		let invalidPath = false;
+		for (const op of composed.reconciledOps) {
+			try {
+				reconciledPaths.add(normalizedRoot ? resolveStudioFolderPath(normalizedRoot, op.path) : op.path);
+			} catch {
+				invalidPath = true;
+				break;
+			}
+		}
+		if (invalidPath || [...reconciledPaths].some((path) => claimedReconciledPaths.has(path))) continue;
+
+		const entry = {
+			id: chosen.id,
+			lastCoveredIndex,
+			coveredOrderedIds: coveredOrderedChanges.map((item) => item.changeId),
+			preservedById: new Map(composed.preservedChanges.map((item) => [item.changeId, item])),
+			reconciledOps: composed.reconciledOps,
+		};
+		for (const id of chosen.selectedChangeIds) {
+			claimedChangeIds.add(id);
+			selectedByChangeId.set(id, entry);
+		}
+		for (const path of reconciledPaths) claimedReconciledPaths.add(path);
+	}
+
+	if (selectedByChangeId.size > 0) {
 		const out: { readonly change: StudioPatchChange; readonly memberIds: readonly string[] }[] = [];
 		for (let index = 0; index < orderedChanges.length; index += 1) {
 			const item = orderedChanges[index]!;
-			if (covered.has(item.changeId)) {
-				const preserved = preservedById.get(item.changeId);
+			const entry = selectedByChangeId.get(item.changeId);
+			if (entry) {
+				const preserved = entry.preservedById.get(item.changeId);
 				if (preserved) {
 					out.push({ change: preserved, memberIds: [item.changeId] });
 				}
-				if (index === lastCoveredIndex) {
+				if (index === entry.lastCoveredIndex) {
 					out.push({
-						change: { changeId: `reconciled:${chosen.id}`, ops: composed.reconciledOps },
-						memberIds: coveredOrderedIds,
+						change: { changeId: `reconciled:${entry.id}`, ops: entry.reconciledOps },
+						memberIds: entry.coveredOrderedIds,
 					});
 				}
 				continue;
