@@ -704,5 +704,93 @@ describe("studio surface folder_patch overlay engine", () => {
 			expect(composed.files["identity/tokens.json"]).toBe('{"accent":"#ff5500"}\n');
 			expect(composed.files["identity/promo.md"]).toBe("# Sunset Promo\n");
 		});
+
+		it("applies multiple disjoint ready reconciliations together without dropping smaller subsets", () => {
+			const cTok1 = randomUUID();
+			const cTok2 = randomUUID();
+			const cMark1 = randomUUID();
+			const cMark2 = randomUUID();
+			const cMark3 = randomUUID();
+			const base = {};
+			const ordered = [
+				{
+					changeId: cTok1,
+					ops: [
+						{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#111"}\n' },
+						{ op: "write_text" as const, path: "brief.md", content: "# Nordic Brief\n" },
+					],
+				},
+				{
+					changeId: cMark1,
+					ops: [
+						{ op: "write_text" as const, path: "layout.json", content: '{"v":1}\n' },
+						{ op: "write_text" as const, path: "wordmark.svg", content: "<svg>1</svg>\n" },
+					],
+				},
+				{
+					changeId: cTok2,
+					ops: [{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#222"}\n' }],
+				},
+				{
+					changeId: cMark2,
+					ops: [{ op: "write_text" as const, path: "layout.json", content: '{"v":2}\n' }],
+				},
+				{
+					changeId: cMark3,
+					ops: [{ op: "write_text" as const, path: "wordmark.svg", content: "<svg>3</svg>\n" }],
+				},
+			];
+			const reconciliations = [
+				{
+					id: randomUUID(),
+					status: "ready" as const,
+					selectedChangeIds: [cMark1, cMark2, cMark3],
+					conflictPaths: ["identity/layout.json", "identity/wordmark.svg"],
+					patchManifest: [
+						{ op: "write_text" as const, path: "layout.json", content: '{"v":2,"merged":true}\n' },
+						{ op: "write_text" as const, path: "wordmark.svg", content: "<svg>merged</svg>\n" },
+					],
+					errorDetail: null,
+				},
+				{
+					id: randomUUID(),
+					status: "ready" as const,
+					selectedChangeIds: [cTok1, cTok2],
+					conflictPaths: ["identity/tokens.json"],
+					patchManifest: [
+						{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#222","merged":true}\n' },
+					],
+					errorDetail: null,
+				},
+			];
+			const composed = composeStudioPreview(base, ordered, "identity", {}, { reconciliations });
+			expect(composed.status).toBe("ready");
+			expect(composed.files["identity/brief.md"]).toBe("# Nordic Brief\n");
+			expect(composed.files["identity/tokens.json"]).toBe('{"accent":"#222","merged":true}\n');
+			expect(composed.files["identity/layout.json"]).toBe('{"v":2,"merged":true}\n');
+			expect(composed.files["identity/wordmark.svg"]).toBe("<svg>merged</svg>\n");
+
+			const overlapping = composeStudioPreview(
+				base,
+				ordered,
+				"identity",
+				{},
+				{
+					reconciliations: [
+						...reconciliations,
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cTok1, cMark1],
+							conflictPaths: ["identity/tokens.json"],
+							patchManifest: [{ op: "write_text" as const, path: "tokens.json", content: '{"wrong":true}\n' }],
+							errorDetail: null,
+						},
+					],
+				},
+			);
+			expect(overlapping.status).toBe("ready");
+			expect(overlapping.files["identity/tokens.json"]).toBe('{"accent":"#222","merged":true}\n');
+		});
 	});
 });
