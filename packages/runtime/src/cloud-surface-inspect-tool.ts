@@ -48,7 +48,7 @@ export type InspectSurfaceViewport = "desktop" | "mobile";
 
 const WORK_ROOT = "/tmp/qorpera-studio-inspect";
 const UPLOAD_CHUNK_BYTES = 14_000;
-const MAX_UPLOAD_CHUNKS = 16;
+const MAX_UPLOAD_CHUNKS = 36;
 const CAPTURE_TIMEOUT_MS = 45_000;
 const SETUP_TIMEOUT_MS = 20_000;
 const CANCEL_ON_ABORT_MS = 5_000;
@@ -64,9 +64,9 @@ const MAX_SCROLL_Y = 6000;
 const MAX_BASE64_OUTPUT_BYTES = Math.ceil((8 * 1024 * 1024) / 3) * 4 + 256;
 const SCRIPT_END = "QORPERA_STUDIO_INSPECT_END";
 
-const MAX_STAGED_BUNDLE_BYTES = 220_000;
-const MAX_STAGED_PREVIEW_IMAGES = 6;
-const MAX_STAGED_PREVIEW_IMAGE_BYTES = 40_000;
+const MAX_STAGED_BUNDLE_BYTES = 380_000;
+const MAX_STAGED_PREVIEW_IMAGES = 8;
+const MAX_STAGED_PREVIEW_IMAGE_BYTES = 32_000;
 const MAX_STAGED_GLB_UPLOAD_BYTES = 140_000;
 
 const CAPTURE_SCRIPT_CJS = [
@@ -1854,6 +1854,10 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function encodedBinaryBundleBytes(rawBytes: number): number {
+	return Math.ceil(rawBytes * 1.45) + 128;
+}
+
 async function prepareInspectAssets(
 	snapshot: StudioInspectSnapshot,
 	tabId: string | undefined,
@@ -1915,29 +1919,25 @@ async function prepareInspectAssets(
 					pngBytes = null;
 				}
 			}
-			if (pngBytes && bundleBytes + pngBytes.byteLength <= MAX_STAGED_BUNDLE_BYTES) {
+			const cost = pngBytes ? encodedBinaryBundleBytes(pngBytes.byteLength) : 0;
+			if (pngBytes && bundleBytes + cost <= MAX_STAGED_BUNDLE_BYTES) {
 				bundleFiles[rel] = { b64: Buffer.from(pngBytes).toString("base64") };
-				bundleBytes += pngBytes.byteLength;
+				bundleBytes += cost;
 				previewImages += 1;
 				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
 			}
-		} else if (
-			entry.mediaType === "model/gltf-binary" &&
-			entry.bytes.byteLength <= MAX_STAGED_GLB_UPLOAD_BYTES &&
-			bundleBytes + entry.bytes.byteLength <= MAX_STAGED_BUNDLE_BYTES
-		) {
-			bundleFiles[rel] = { b64: Buffer.from(entry.bytes).toString("base64") };
-			bundleBytes += entry.bytes.byteLength;
-			if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
+		} else if (entry.mediaType === "model/gltf-binary" && entry.bytes.byteLength <= MAX_STAGED_GLB_UPLOAD_BYTES) {
+			const cost = encodedBinaryBundleBytes(entry.bytes.byteLength);
+			if (bundleBytes + cost <= MAX_STAGED_BUNDLE_BYTES) {
+				bundleFiles[rel] = { b64: Buffer.from(entry.bytes).toString("base64") };
+				bundleBytes += cost;
+				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
+			}
 		}
 	};
 	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
 		if (assetUrls[fullPath]) continue;
 		await tryBundleBinary(fullPath, entry, true);
-	}
-	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
-		if (!snapshot.localAssetPaths?.[fullPath]) continue;
-		await tryBundleBinary(fullPath, entry, false);
 	}
 
 	const layoutPath = snapshot.folderRoot ? `${snapshot.folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
@@ -1960,7 +1960,7 @@ async function prepareInspectAssets(
 				if (!fullPath.startsWith(prefix)) continue;
 				const rel = relOf(fullPath);
 				if (!rel) continue;
-				const size = Buffer.byteLength(text, "utf8");
+				const size = Buffer.byteLength(text, "utf8") + 128;
 				if (bundleBytes + size > MAX_STAGED_BUNDLE_BYTES) continue;
 				bundleFiles[rel] = { text };
 				bundleBytes += size;
@@ -1970,6 +1970,11 @@ async function prepareInspectAssets(
 				assetUrls[indexPath] = `/staged/${encodeURI(indexRel)}`;
 			}
 		}
+	}
+
+	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
+		if (!snapshot.localAssetPaths?.[fullPath]) continue;
+		await tryBundleBinary(fullPath, entry, false);
 	}
 
 	return { assetUrls, bundle: { files: bundleFiles, local: bundleLocal } };
