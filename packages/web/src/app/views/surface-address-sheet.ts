@@ -174,8 +174,6 @@ function openLine(count: number, shop: string | null, domain: string): string {
 function waitLine(found: number, count: number): string {
 	if (found === 0) return t("None found yet. We look again every 30 seconds.");
 	if (found === 1 && count === 2) return t("One of two found. We look again every 30 seconds.");
-	if (found === 1 && count === 3) return t("One of three found. We look again every 30 seconds.");
-	if (found === 2 && count === 3) return t("Two of three found. We look again every 30 seconds.");
 	return t("{found} of {count} found. We look again every 30 seconds.", { found, count });
 }
 
@@ -1411,25 +1409,35 @@ export class SurfaceAddress {
 		reason: DomainCheckReason,
 		txtOnWrongName: boolean,
 	): HTMLElement[] {
-		const found = records.filter((record) => dnsRecordFound(record, reason)).length;
+		const routing = records.filter((record) => record.type !== "TXT");
+		const txt = records.find((record) => record.type === "TXT");
+		const routed = routing.length > 0 && dnsRecordFound(routing[0]!, reason);
+		const proven = txt !== undefined && dnsRecordFound(txt, reason);
+		const items = (routing.length > 0 ? 1 : 0) + (txt ? 1 : 0);
+		const foundRow = (shown: readonly SiteDnsRecord[]) =>
+			h(
+				"div",
+				{ class: "surface-address-record is-found", "data-type": shown.map((record) => record.type).join(" ") },
+				h("span", { class: "surface-address-mark is-done", "aria-hidden": "true" }, icon("check")),
+				...shown.map((record) => chip(record.type)),
+				h("span", { class: "surface-address-record-what" }, t("Found")),
+			);
+		const at = (record: SiteDnsRecord) => records.indexOf(record);
 		return [
-			h("p", { class: "surface-address-line" }, waitLine(found, records.length)),
+			h("p", { class: "surface-address-line" }, waitLine((routed ? 1 : 0) + (proven ? 1 : 0), items)),
 			h(
 				"div",
 				{ class: "surface-address-records" },
-				...records.map((record, index) =>
-					dnsRecordFound(record, reason)
-						? h(
-								"div",
-								{ class: "surface-address-record is-found", "data-type": record.type },
-								h("span", { class: "surface-address-mark is-done", "aria-hidden": "true" }, icon("check")),
-								chip(record.type),
-								h("span", { class: "surface-address-record-what" }, t("Found")),
-							)
-						: record.type === "TXT" && txtOnWrongName
-							? this.#wrongName(record, index, hostname)
-							: this.#recordBox(record, index, hostname),
-				),
+				...(routed ? [foundRow(routing)] : routing.map((record) => this.#recordBox(record, at(record), hostname))),
+				...(txt
+					? [
+							proven
+								? foundRow([txt])
+								: txtOnWrongName
+									? this.#wrongName(txt, at(txt), hostname)
+									: this.#recordBox(txt, at(txt), hostname),
+						]
+					: []),
 			),
 		];
 	}

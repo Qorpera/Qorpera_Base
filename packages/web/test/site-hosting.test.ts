@@ -117,6 +117,19 @@ describe("site-hosting", () => {
 			["shop.eu", "_qorpera.shop.eu"],
 		);
 		expect(registrableDomain(" WWW.Namah.DK. ")).toBe("namah.dk");
+		expect(registrableDomain("www.shop.co.uk")).toBe("shop.co.uk");
+		expect(registrableDomain("shop.com.au")).toBe("shop.com.au");
+		expect(registrableDomain("co.uk")).toBe("co.uk");
+		expect(isApexHostname("shop.co.uk")).toBe(true);
+		expect(isApexHostname("www.shop.co.uk")).toBe(false);
+		expect(siteDnsRecords("www.shop.co.uk", dns("www.shop.co.uk", "CNAME")).map((record) => record.host)).toEqual([
+			"www",
+			"_qorpera.www",
+		]);
+		expect(siteDnsRecords("shop.co.uk", dns("shop.co.uk", "A")).map((record) => record.host)).toEqual([
+			"",
+			"_qorpera",
+		]);
 		expect(shopHostname("_qorpera.namah.dk.", "namah.dk")).toBe("_qorpera");
 		expect(shopHostname("other.example", "namah.dk")).toBe("other.example");
 	});
@@ -170,6 +183,7 @@ describe("site-hosting", () => {
 		const txt = { type: "TXT", host: "_qorpera", value: "y" } as const;
 		expect([a, txt].map((record) => dnsRecordFound(record, "txt_verification_missing"))).toEqual([true, false]);
 		expect([a, txt].map((record) => dnsRecordFound(record, "apex_a_record_mismatch"))).toEqual([false, true]);
+		expect([a, txt].map((record) => dnsRecordFound(record, "cname_record_mismatch"))).toEqual([false, false]);
 		expect([a, txt].map((record) => dnsRecordFound(record, "dns_routing_and_txt_missing"))).toEqual([false, false]);
 		expect([a, txt].map((record) => dnsRecordFound(record, null))).toEqual([false, false]);
 	});

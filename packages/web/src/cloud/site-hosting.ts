@@ -125,6 +125,7 @@ const DOMAIN_CHECK_REASONS = new Set<DomainCheckReason>([
 	"txt_verification_missing",
 	"domain_not_found",
 ]);
+const SECOND_LEVEL_LABELS = new Set(["ac", "co", "com", "edu", "gov", "ltd", "net", "nom", "org", "plc", "sch"]);
 const DNS_SHOPS: readonly (readonly [suffix: string, shop: string])[] = [
 	["one.com", "one.com"],
 	["simply.com", "Simply.com"],
@@ -188,7 +189,11 @@ function parseCustomDomain(value: unknown): SiteCustomDomain | undefined {
 }
 
 export function registrableDomain(hostname: string): string {
-	return cleanHostname(hostname).split(".").slice(-2).join(".");
+	const labels = cleanHostname(hostname).split(".");
+	const tld = labels.at(-1) ?? "";
+	const second = labels.at(-2) ?? "";
+	const size = labels.length > 2 && tld.length === 2 && SECOND_LEVEL_LABELS.has(second) ? 3 : 2;
+	return labels.slice(-size).join(".");
 }
 
 export function shopHostname(name: string, hostname: string): string {
@@ -238,7 +243,7 @@ export function dnsShop(nameServers: readonly string[]): string | null {
 }
 
 export function dnsRecordFound(record: SiteDnsRecord, reason: DomainCheckReason | null): boolean {
-	if (record.type === "TXT") return reason === "apex_a_record_mismatch" || reason === "cname_record_mismatch";
+	if (record.type === "TXT") return reason === "apex_a_record_mismatch";
 	return reason === "txt_verification_missing";
 }
 
@@ -258,7 +263,8 @@ function cleanHostname(hostname: string): string {
 }
 
 export function isApexHostname(hostname: string): boolean {
-	return cleanHostname(hostname).split(".").length === 2;
+	const cleaned = cleanHostname(hostname);
+	return cleaned === registrableDomain(cleaned);
 }
 
 export function cleanSiteSlugInput(slug: string): string {

@@ -376,8 +376,6 @@ export const SURFACES: Record<string, string> = {
 		"Den ligger på {domain}. Sæt den på {name} i stedet: skriv {typed} i feltet Værtsnavn.",
 	"None found yet. We look again every 30 seconds.": "Ingen fundet endnu. Vi kigger igen hvert 30. sekund.",
 	"One of two found. We look again every 30 seconds.": "En af to fundet. Vi kigger igen hvert 30. sekund.",
-	"One of three found. We look again every 30 seconds.": "En af tre fundet. Vi kigger igen hvert 30. sekund.",
-	"Two of three found. We look again every 30 seconds.": "To af tre fundet. Vi kigger igen hvert 30. sekund.",
 	"{found} of {count} found. We look again every 30 seconds.":
 		"{found} af {count} fundet. Vi kigger igen hvert 30. sekund.",
 	"{domain} isn't on the internet yet": "{domain} er ikke på internettet endnu",

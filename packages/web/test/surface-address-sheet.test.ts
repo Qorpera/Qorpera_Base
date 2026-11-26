@@ -682,7 +682,7 @@ describe("what the card says after the domain was checked", () => {
 		expect(groups()).toEqual([["Copy as a message for someone else", "Remove namah.dk"]]);
 	});
 
-	it("shows what was found from today's single reason, the rest as full boxes", async () => {
+	it("shows what was found from today's single reason, the pointing lines as one, the rest as full boxes", async () => {
 		await opened({
 			entry: {
 				isPublic: true,
@@ -692,9 +692,10 @@ describe("what the card says after the domain was checked", () => {
 			},
 		});
 		press("namah.dk");
-		expect(line()).toBe("Two of three found. We look again every 30 seconds.");
+		expect(line()).toBe("One of two found. We look again every 30 seconds.");
 		expect(found()).toEqual(["A", "AAAA"]);
-		expect(records()[2]).toEqual([
+		expect(records().length).toBe(2);
+		expect(records()[1]).toEqual([
 			"TXT",
 			"shows the domain is yours",
 			"Hostname",
@@ -707,7 +708,7 @@ describe("what the card says after the domain was checked", () => {
 		expect(groups()).toEqual([["Copy as a message for someone else", "Remove namah.dk"]]);
 	});
 
-	it("says the routing line is missing on a subdomain and the TXT is found", async () => {
+	it("never calls a subdomain's TXT line found, since today's router does not look for it", async () => {
 		await opened({
 			entry: {
 				isPublic: true,
@@ -720,8 +721,8 @@ describe("what the card says after the domain was checked", () => {
 			},
 		});
 		press("www.namah.dk");
-		expect(line()).toBe("One of two found. We look again every 30 seconds.");
-		expect(found()).toEqual(["TXT"]);
+		expect(line()).toBe("None found yet. We look again every 30 seconds.");
+		expect(found()).toEqual([]);
 		expect(records()[0]).toEqual([
 			"CNAME",
 			"points www.namah.dk to your website",
