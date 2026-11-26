@@ -388,7 +388,8 @@ export class SurfaceView {
 		this.#composer.addEventListener(
 			"pointerover",
 			(event) => {
-				if (!this.#showPanels.contains(event.target as Node)) this.#composer.classList.add("is-peek");
+				const folded = this.#composeOpen.getClientRects().length > 0;
+				if (!folded || this.#composeOpen.contains(event.target as Node)) this.#composer.classList.add("is-peek");
 			},
 			{ signal: lifetimeSignal },
 		);
