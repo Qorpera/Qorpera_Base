@@ -48,13 +48,6 @@ function strategySurface(): SurfaceSummary {
 	});
 }
 
-async function flushCharts(): Promise<void> {
-	for (let i = 0; i < 6; i += 1) {
-		await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-}
-
 describe("Studio chart block", () => {
 	it("renders empty state when chart data is missing", () => {
 		const controller = new AbortController();
@@ -165,21 +158,29 @@ describe("Studio chart block", () => {
 			htmlPages: HTML_PAGES,
 		});
 		for (const task of plan.tasks) document.body.append(task.build());
-		await flushCharts();
 
 		const hosts = [...document.querySelectorAll<HTMLElement>(".studio-chart-host")];
 		expect(hosts).toHaveLength(3);
-		expect(hosts.map((host) => host.dataset.chart)).toEqual(["area", "sankey", "heatmap"]);
-		for (const host of hosts) {
-			expect(getInstanceByDom(host)).toBeTruthy();
-			expect(host.querySelector("svg")).toBeTruthy();
-		}
+		await vi.waitFor(
+			() => {
+				expect(hosts.map((host) => host.dataset.chart)).toEqual(["area", "sankey", "heatmap"]);
+				for (const host of hosts) {
+					expect(getInstanceByDom(host)).toBeTruthy();
+					expect(host.querySelector("svg")).toBeTruthy();
+				}
+			},
+			{ timeout: 5_000, interval: 10 },
+		);
 
 		const expand = document.querySelector<HTMLButtonElement>('[data-act="studio-expand"]');
 		expect(expand).toBeTruthy();
 		expand!.click();
-		await flushCharts();
-		expect(document.querySelector(".studio-chart-host.is-fullscreen")?.getAttribute("data-chart")).toBe("area");
+		await vi.waitFor(
+			() => {
+				expect(document.querySelector(".studio-chart-host.is-fullscreen")?.getAttribute("data-chart")).toBe("area");
+			},
+			{ timeout: 5_000, interval: 10 },
+		);
 
 		controller.abort();
 		for (const host of hosts) {
