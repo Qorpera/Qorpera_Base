@@ -625,6 +625,7 @@ describe("Studio visual inspect & draw tools", () => {
 										grounds: ["light"],
 										heading: "Base mark",
 									},
+									{ type: "module", id: "sim", from: "modules/sim", heading: "Interactive sim" },
 									{ type: "artifacts", heading: "Visuals" },
 								],
 							},
@@ -639,6 +640,7 @@ describe("Studio visual inspect & draw tools", () => {
 					}),
 					"surfaces/strategy/visuals/logo.svg": '<svg><script>alert(1)</script><circle r="5"/></svg>',
 					"surfaces/strategy/visuals/large-graph.svg": `<svg xmlns="http://www.w3.org/2000/svg">${"<path d='M0 0 L10 10'/>".repeat(15_000)}</svg>`,
+					"surfaces/strategy/modules/sim/index.html": `<!doctype html><html><body>${"<div data-x='1'>row</div>".repeat(2_000)}</body></html>`,
 				},
 				binaries: {
 					"surfaces/strategy/visuals/hero.png": { bytes: VALID_PNG, mediaType: "image/png" },
@@ -660,10 +662,13 @@ describe("Studio visual inspect & draw tools", () => {
 			expect(rendered.html).toContain("/company-asset/visuals/base-mark.png");
 			expect(rendered.html).toContain("2048 KB");
 			expect(rendered.html).toContain("SVG · ");
+			expect(rendered.html).toContain("HTML MODULE · ");
+			expect(rendered.html).not.toContain("srcdoc=");
 			expect(Buffer.byteLength(rendered.html, "utf8")).toBeLessThan(256_000);
 			expect(rendered.warnings).toEqual([]);
 			expect(rendered.renderedBlocks.find((b) => b.type === "chart")?.filled).toBe(true);
 			expect(rendered.renderedBlocks.find((b) => b.type === "brand_mark")?.filled).toBe(true);
+			expect(rendered.renderedBlocks.find((b) => b.type === "module")?.filled).toBe(true);
 
 			const commands: string[] = [];
 			const tool = createInspectSurfaceTool({
