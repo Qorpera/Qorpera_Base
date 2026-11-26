@@ -125,7 +125,8 @@ function proofTrack(
 	items: readonly StrategyHypothesis[],
 	pick: (id: string) => void,
 ): { svg: SVGSVGElement; nodes: TrackNode[] } {
-	const { width, height, side, y } = TRACK;
+	const { height, side, y } = TRACK;
+	const width = Math.max(TRACK.width, side * 2 + Math.max(0, items.length - 1) * 96);
 	const step = items.length > 1 ? (width - side * 2) / (items.length - 1) : 0;
 	const xAt = (index: number) => (items.length > 1 ? side + step * index : width / 2);
 	const svg = svgEl("svg", {
@@ -134,6 +135,7 @@ function proofTrack(
 		role: "group",
 		"aria-label": t("Proof track"),
 	});
+	svg.style.setProperty("--studio-hyp-width", `${width}px`);
 	for (let index = 0; index + 1 < items.length; index += 1) {
 		svg.append(
 			svgEl("line", {

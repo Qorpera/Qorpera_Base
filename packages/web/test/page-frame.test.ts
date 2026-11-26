@@ -3,7 +3,16 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppFrame } from "../src/ui/app-frame.ts";
-import { framePage, PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
+import {
+	framePage,
+	frameParsedPage,
+	PAGE_CONTENT,
+	PAGE_ESCAPE,
+	PAGE_FRAME_URL,
+	PAGE_READY,
+	parseHtmlInert,
+	serializeHtmlInert,
+} from "../src/ui/page-frame.ts";
 
 // Read from the package root, where the tests run.
 const headers = readFileSync(resolve("public/_headers"), "utf8");
@@ -275,6 +284,80 @@ describe("an HTML page's frame", () => {
 		});
 		expect(framePage('<!doctype html><link rel="preconnect" href="https://x.example"><p>Hi</p>')).toBeNull();
 		expect(parses).toBe(2);
+	});
+
+	it("skips DOMParser on clean pages without unfit constructs and runs the real parser when preconnect or declarative shadow roots appear inside svg style", () => {
+		const parse = DOMParser.prototype.parseFromString;
+		const parsedInputs: string[] = [];
+		vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (this: DOMParser, text, type) {
+			parsedInputs.push(text);
+			return Reflect.apply(parse, this, [text, type]) as Document;
+		});
+
+		const clean =
+			'<!doctype html><html><head><style>.a{color:red}</style></head><body><div style="padding:8px">Hi</div></body></html>';
+		expect(framePage(clean)).toBe(clean);
+		expect(parsedInputs).toHaveLength(0);
+
+		const svgPreconnect =
+			"<svg><style><p><noframes></noframes><link rel=preconnect href=https://evil.example></style></svg>";
+		const cleanedPreconnect = framePage(svgPreconnect);
+		expect(cleanedPreconnect).not.toBeNull();
+		expect(cleanedPreconnect).not.toMatch(/preconnect/i);
+
+		const svgShadow =
+			'<svg><style><p><noframes></noframes><template shadowrootmode="open"><iframe srcdoc="x"></iframe></template></style></svg>';
+		const cleanedShadow = framePage(svgShadow);
+		expect(cleanedShadow).not.toBeNull();
+		expect(cleanedShadow).not.toMatch(/shadowroot/i);
+
+		const entityPreconnect = '<!doctype html><link rel="&#112;reconnect" href="https://evil.example"><p>Hi</p>';
+		const cleanedEntity = framePage(entityPreconnect);
+		expect(cleanedEntity).not.toBeNull();
+		expect(cleanedEntity).not.toMatch(/<link/i);
+		expect(cleanedEntity).toContain("<p>Hi</p>");
+
+		const inertSvg = parseHtmlInert(svgPreconnect);
+		const cleanedInertSvg = frameParsedPage(inertSvg.doc, undefined, inertSvg);
+		expect(cleanedInertSvg).not.toBeNull();
+		expect(cleanedInertSvg).not.toMatch(/preconnect/i);
+
+		const inertSvgShadow = parseHtmlInert(svgShadow);
+		const cleanedInertShadow = frameParsedPage(inertSvgShadow.doc, undefined, inertSvgShadow);
+		expect(cleanedInertShadow).not.toBeNull();
+		expect(cleanedInertShadow).not.toMatch(/shadowroot/i);
+
+		const svgCss = "<!doctype html><html><body><svg><style>.a > .b { fill: red; }</style></svg></body></html>";
+		const inertCss = parseHtmlInert(svgCss);
+		const restoredCss = frameParsedPage(inertCss.doc, undefined, inertCss)!;
+		const parsedRestored = new DOMParser().parseFromString(restoredCss, "text/html");
+		expect(parsedRestored.querySelector("svg style")?.textContent).toBe(".a > .b { fill: red; }");
+
+		const foreignObjStyle =
+			'<!doctype html><html><body><svg><foreignObject><style>a::after{content:"</noframes>"}</style></foreignObject></svg></body></html>';
+		const inertForeignObj = parseHtmlInert(foreignObjStyle);
+		const restoredForeignObj = serializeHtmlInert(inertForeignObj.doc, inertForeignObj);
+		expect(restoredForeignObj).toContain('<style>a::after{content:"</noframes>"}</style>');
+
+		const unclosedSvgScript =
+			'<!doctype html><html><body><svg><p><script>const tag = "<style>";</script><style>.ok{color:blue}</style></body></html>';
+		const inertUnclosed = parseHtmlInert(unclosedSvgScript);
+		const restoredUnclosed = serializeHtmlInert(inertUnclosed.doc, inertUnclosed);
+		expect(restoredUnclosed).toContain('<script>const tag = "<style>";</script>');
+		expect(restoredUnclosed).toContain("<style>.ok{color:blue}</style>");
+	});
+
+	it("preserves literal data-qorpera-style text inside inlined scripts when serializing an inert parse", () => {
+		const html =
+			'<!doctype html><html><head><style>.a{color:red}/*</noframes>*/</style></head><body><div style="padding:8px">Hi</div></body></html>';
+		const parsed = parseHtmlInert(html);
+		const script = parsed.doc.createElement("script");
+		script.textContent = 'const s = "data-qorpera-style=1 __qorpera_endnf__";';
+		parsed.doc.body.append(script);
+		const out = serializeHtmlInert(parsed.doc, parsed);
+		expect(out).toContain("<style>.a{color:red}/*</noframes>*/</style>");
+		expect(out).toContain('style="padding:8px"');
+		expect(out).toContain('const s = "data-qorpera-style=1 __qorpera_endnf__";');
 	});
 
 	it("hears Escape pressed in its own frames' pages as Escape pressed on the frame, and nothing else", () => {

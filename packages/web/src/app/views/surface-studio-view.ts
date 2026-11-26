@@ -1059,16 +1059,8 @@ export class SurfaceStudioView {
 				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
 				if (activeRec?.status === "queued" || activeRec?.status === "running") {
 					reconcilingPreview = true;
-					this.#pendingRetryTarget = null;
-				} else if (activeRec?.status === "failed") {
-					reconciliationFailed = true;
-					this.#pendingRetryTarget = {
-						changeIds: activeRec.selectedChangeIds,
-						paths: activeRec.conflictPaths ?? [],
-					};
-				} else {
-					this.#pendingRetryTarget = null;
 				}
+				this.#pendingRetryTarget = null;
 			}
 		}
 

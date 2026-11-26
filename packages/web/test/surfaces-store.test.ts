@@ -3867,4 +3867,64 @@ describe("SurfacesStore", () => {
 		});
 		store.dispose();
 	});
+
+	it("keeps staged changes on failed sessions unselected by default while letting members toggle them on", async () => {
+		const failedSession = session(["staged"], {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+			state: "failed",
+		});
+		const readySession = session(["staged"], {
+			id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+			state: "ready",
+			changes: [
+				{
+					id: CHANGES[1],
+					sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+					surfaceId: SURFACE,
+					seq: 1,
+					kind: "git_range",
+					title: "Healthy change",
+					summary: "",
+					status: "staged",
+					parentSha: null,
+					headSha: null,
+					dependsOnChangeIds: [],
+					diffStats: null,
+					affectedPaths: ["src/ok.ts"],
+					conflictPaths: null,
+					landedChangeNumber: null,
+					canUndo: false,
+					createdAt: "2026-11-26T00:00:00Z",
+					resolvedAt: null,
+				},
+			],
+		});
+		const setPreviewSelection = vi.fn(async () => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame(),
+			compareFrames: [],
+		}));
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([failedSession, readySession])),
+				setPreviewSelection,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+
+		expect(store.isChangeShown(CHANGES[0])).toBe(false);
+		expect(store.isChangeShown(CHANGES[1])).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[1]]);
+
+		await store.toggleChange(SURFACE, CHANGES[0]);
+		expect(store.isChangeShown(CHANGES[0])).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[0], CHANGES[1]]);
+
+		await store.toggleChange(SURFACE, CHANGES[0]);
+		expect(store.isChangeShown(CHANGES[0])).toBe(false);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[1]]);
+		store.dispose();
+	});
 });

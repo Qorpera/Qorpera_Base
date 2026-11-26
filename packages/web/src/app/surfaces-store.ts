@@ -392,7 +392,7 @@ export interface SurfacesState {
 	readonly device: SurfaceDevice;
 	readonly websiteZoom: number;
 	readonly phoneZoom: number;
-	readonly hiddenChanges: Readonly<Record<string, true>>;
+	readonly hiddenChanges: Readonly<Record<string, boolean>>;
 	readonly optionPick: Readonly<Record<string, string | null>>;
 	readonly publishedChangeIds: Readonly<Record<string, true>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
@@ -668,7 +668,7 @@ export function pickedOptionChangeId(
 }
 
 export function isSessionChangeShown(
-	session: Pick<SurfaceSession, "id" | "changes">,
+	session: Pick<SurfaceSession, "id" | "changes"> & { readonly state?: SurfaceSession["state"] },
 	change: SurfaceChangeUnit,
 	state: Pick<SurfacesState, "hiddenChanges" | "optionPick">,
 ): boolean {
@@ -682,7 +682,9 @@ export function isSessionChangeShown(
 			return pickedOptionChangeId(session, change.optionGroupKey, state.optionPick) === change.id;
 		}
 	}
-	return !state.hiddenChanges[change.id];
+	const explicit = state.hiddenChanges[change.id];
+	if (explicit !== undefined) return !explicit;
+	return session.state !== "failed";
 }
 
 export function openExplorations(workspace: SurfaceWorkspace | undefined): SurfaceExplorationSet[] {
@@ -816,7 +818,7 @@ let lastIdentityFiles:
 			readonly pendingPatches: readonly PendingStudioPatch[] | undefined;
 			readonly workspace: SurfaceWorkspace | undefined;
 			readonly variantPick: Readonly<Record<string, string>>;
-			readonly hiddenChanges: Readonly<Record<string, true>>;
+			readonly hiddenChanges: Readonly<Record<string, boolean>>;
 			readonly optionPick: Readonly<Record<string, string | null>>;
 			readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 			readonly result: CompanyIdentityFiles;
@@ -1514,7 +1516,7 @@ interface LocalSandboxCacheEntry {
 	readonly localStudioBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
 	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
-	readonly hiddenChanges: Readonly<Record<string, true>>;
+	readonly hiddenChanges: Readonly<Record<string, boolean>>;
 	readonly optionPick: Readonly<Record<string, string | null>>;
 	readonly publishedChangeIds: Readonly<Record<string, true>>;
 	readonly localCreatedIds: readonly string[];
@@ -3615,7 +3617,7 @@ export class SurfacesStore {
 		const state = this.state;
 		const surface = state.surfaces.find((item) => item.id === surfaceId);
 		const dedicatedReport = Boolean(surface && this.lookOf(surface).kind === "report");
-		const wasHidden = Boolean(state.hiddenChanges[changeId]);
+		const wasHidden = !this.isChangeShown(changeId);
 		const inTab = Boolean(!dedicatedReport && path && this.#deliverableHosts.get(surfaceId)?.(path));
 		if (inTab && state.mode === "compare") this.setMode("preview");
 		if (!inTab && !dedicatedReport && !wasHidden && state.mode === "report" && state.activeReportSlug === slug) {
@@ -3624,9 +3626,11 @@ export class SurfacesStore {
 		}
 		this.store.set((current) => {
 			let hiddenChanges = current.hiddenChanges;
-			if (hiddenChanges[changeId]) {
+			if (wasHidden) {
 				const nextHidden = { ...hiddenChanges };
-				delete nextHidden[changeId];
+				const failedOwner = this.#changeBelongsToFailedSession(changeId);
+				if (failedOwner) nextHidden[changeId] = false;
+				else delete nextHidden[changeId];
 				hiddenChanges = nextHidden;
 			}
 			return {
@@ -4716,7 +4720,7 @@ export class SurfacesStore {
 				closedAt: allDiscarded || closes ? now : null,
 			};
 			this.store.set((state) => {
-				if (!state.hiddenChanges[changeId]) return {};
+				if (state.hiddenChanges[changeId] === undefined) return {};
 				const hiddenChanges = { ...state.hiddenChanges };
 				delete hiddenChanges[changeId];
 				return { hiddenChanges };
@@ -5622,13 +5626,30 @@ export class SurfacesStore {
 		await this.#syncPreview(surfaceId);
 	}
 
+	#changeBelongsToFailedSession(changeId: string): boolean {
+		for (const workspace of Object.values(this.state.workspaces)) {
+			for (const session of workspace.activeSessions) {
+				if (session.changes.some((item) => item.id === changeId)) return session.state === "failed";
+			}
+		}
+		return false;
+	}
+
 	async toggleChange(surfaceId: string, changeId: string): Promise<void> {
 		this.#previewSyncSettledBaselineKey.delete(surfaceId);
 		this.#clearPreviewSyncRetry(surfaceId);
+		const currentlyShown = this.isChangeShown(changeId);
+		const failedOwner = this.#changeBelongsToFailedSession(changeId);
 		this.store.set((state) => {
 			const hiddenChanges = { ...state.hiddenChanges };
-			if (hiddenChanges[changeId]) delete hiddenChanges[changeId];
-			else hiddenChanges[changeId] = true;
+			if (currentlyShown) {
+				if (failedOwner) delete hiddenChanges[changeId];
+				else hiddenChanges[changeId] = true;
+			} else if (failedOwner) {
+				hiddenChanges[changeId] = false;
+			} else {
+				delete hiddenChanges[changeId];
+			}
 			return {
 				hiddenChanges,
 				...(state.mode === "live" || state.mode === "report"

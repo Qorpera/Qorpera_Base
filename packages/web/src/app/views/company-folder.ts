@@ -407,7 +407,7 @@ export class CompanyFolderBrowser {
 		const sections = h("div", {
 			class: "storage-view-toggle files-sections",
 			role: "group",
-			"aria-label": t("Company File"),
+			"aria-label": t("Company files"),
 		});
 		for (const [section, label] of [
 			["documents", t("Documents")],
@@ -434,7 +434,7 @@ export class CompanyFolderBrowser {
 				: h(
 						"header",
 						{ class: "files-head" },
-						h("h1", null, t("Company File")),
+						h("h1", null, t("Company files")),
 						h(
 							"div",
 							{ class: "files-tools" },
