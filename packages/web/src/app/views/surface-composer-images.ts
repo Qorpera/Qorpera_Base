@@ -41,13 +41,7 @@ export class SurfaceComposerImages {
 			icon("attach"),
 		) as HTMLButtonElement;
 		zone.append(this.#picker);
-		this.button.addEventListener(
-			"click",
-			() => {
-				if (this.#available) this.#picker.click();
-			},
-			{ signal },
-		);
+		this.button.addEventListener("click", () => this.open(), { signal });
 		this.#picker.addEventListener(
 			"change",
 			() => {
@@ -91,6 +85,15 @@ export class SurfaceComposerImages {
 
 	get files(): readonly File[] {
 		return this.#files;
+	}
+
+	get available(): boolean {
+		return this.#available;
+	}
+
+	/** Opens the file picker, for a control other than `button` (the floating composer's "+" menu). */
+	open(): void {
+		if (this.#available) this.#picker.click();
 	}
 
 	get problem(): string | undefined {

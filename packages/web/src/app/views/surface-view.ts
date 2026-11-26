@@ -8,7 +8,7 @@ import {
 	surfacePageKind,
 } from "@qorpera/contracts";
 import { reviveFigures } from "../../ui/avatar.ts";
-import { openContextMenu, openMenu } from "../../ui/context-menu.ts";
+import { type ContextMenu, type MenuEntry, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon, personAvatar } from "../../ui/dom.ts";
 import { reviveGroupAvatars } from "../../ui/group-avatar.ts";
 import { playOnce } from "../../ui/motion.ts";
@@ -277,11 +277,19 @@ export class SurfaceView {
 	readonly #banner = h("div", { class: "surface-banners" });
 	readonly #chips = h("div", { class: "surface-chips" });
 	readonly #targetRow = h("div", { class: "surface-target-row" });
-	readonly #point = h(
+	readonly #plus = h(
 		"button",
-		{ type: "button", class: "surface-point", "data-act": "point", "aria-pressed": "false", hidden: true },
-		icon("crosshair"),
-		h("span", null, t("Point")),
+		{
+			type: "button",
+			class: "surface-plus",
+			"data-act": "plus-menu",
+			"aria-label": t("Point or attach"),
+			title: t("Point or attach"),
+			"aria-haspopup": "menu",
+			"aria-expanded": "false",
+			hidden: true,
+		},
+		icon("plus"),
 	);
 	readonly #input = h("textarea", { class: "surface-input", rows: 1 });
 	readonly #send = h("button", { type: "submit", class: "surface-send" }, icon("send"));
@@ -290,7 +298,7 @@ export class SurfaceView {
 		{ class: "surface-composer-shell" },
 		this.#showPanels,
 		this.#composeOpen,
-		this.#point,
+		this.#plus,
 		this.#input,
 		this.#send,
 	);
@@ -303,6 +311,9 @@ export class SurfaceView {
 	readonly #compareDoors = new Map<string, CompareColumn>();
 	#framesMode: "none" | "primary" | "compare" = "none";
 	#pointing = false;
+	#pointVisible = false;
+	#pointEnabled = false;
+	#plusMenu: ContextMenu | undefined;
 	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
 	#attachedReport: SurfaceReportView | undefined;
@@ -353,7 +364,6 @@ export class SurfaceView {
 		const lifetimeSignal = this.#lifetime.signal;
 		const activeSignal = this.#active.signal;
 		this.#images = new SurfaceComposerImages(this.#shell, lifetimeSignal, () => this.#syncSend());
-		this.#shell.insertBefore(this.#images.button, this.#input);
 		this.#composer.insertBefore(this.#images.tray.el, this.#shell);
 		this.#composer.append(this.#images.tray.status);
 		this.#images.setAvailable(host.store.canAttachImages);
@@ -1900,6 +1910,7 @@ export class SurfaceView {
 			canStart,
 			pointVisible,
 			pointEnabled,
+			this.#images.available,
 			this.#pointing,
 			this.#target,
 			running,
@@ -1929,11 +1940,11 @@ export class SurfaceView {
 		this.#composeOpen.disabled = !canStart;
 		this.#send.setAttribute("aria-label", t("Start session"));
 		this.#send.disabled = !canStart;
-		this.#point.hidden = !pointVisible;
-		this.#point.disabled = !pointEnabled;
-		this.#point.classList.toggle("is-on", this.#pointing);
-		this.#point.setAttribute("aria-pressed", String(this.#pointing));
-		this.#point.title = pointEnabled ? t("Point at an element (P)") : t("Point is available when a preview is open");
+		this.#pointVisible = pointVisible;
+		this.#pointEnabled = pointEnabled;
+		this.#plus.hidden = !pointVisible && !this.#images.available;
+		this.#plus.disabled = !canStart;
+		this.#plus.classList.toggle("is-on", this.#pointing);
 		this.el.classList.toggle("is-pointing", this.#pointing);
 		const chips: HTMLElement[] = [];
 		if (this.#pointing)
@@ -2074,7 +2085,7 @@ export class SurfaceView {
 		if (isEditableTarget(event.target)) return;
 		if (this.#host.store.state.drawer || document.querySelector("dialog.surface-dialog[open], .settings-overlay"))
 			return;
-		if (this.#point.hidden || this.#point.disabled) return;
+		if (!this.#pointEnabled) return;
 		event.preventDefault();
 		this.#setPointing(!this.#pointing);
 	}
@@ -2129,8 +2140,45 @@ export class SurfaceView {
 		this.#paintFold();
 	}
 
+	#openPlusMenu(): void {
+		if (this.#plusMenu) {
+			this.#plusMenu.close();
+			return;
+		}
+		const items: MenuEntry[] = [];
+		if (this.#pointVisible)
+			items.push({
+				label: t("Point at an element"),
+				icon: "crosshair",
+				checked: this.#pointing,
+				multiple: true,
+				...(this.#pointEnabled ? {} : { disabled: true, hint: t("Point is available when a preview is open") }),
+				select: () => this.#setPointing(!this.#pointing),
+			});
+		if (this.#images.available)
+			items.push({ label: t("Attach images"), icon: "attach", select: () => this.#images.open() });
+		if (!items.length) return;
+		const box = this.#plus.getBoundingClientRect();
+		this.#plus.setAttribute("aria-expanded", "true");
+		this.#plusMenu = openContextMenu({
+			label: t("Point or attach"),
+			x: box.left,
+			y: this.#shell.getBoundingClientRect().top - 8,
+			up: true,
+			opener: this.#plus,
+			items,
+			onClose: () => {
+				this.#plusMenu = undefined;
+				this.#plus.setAttribute("aria-expanded", "false");
+				this.#paintFold();
+			},
+		});
+		this.#paintFold();
+	}
+
 	#paintFold(): void {
 		const held =
+			Boolean(this.#plusMenu) ||
 			this.#input.value.trim().length > 0 ||
 			this.#pointing ||
 			Boolean(this.#target) ||
@@ -2261,8 +2309,8 @@ export class SurfaceView {
 				this.#input.focus({ preventScroll: true });
 				this.#paintFold();
 				return;
-			case "point":
-				this.#setPointing(!this.#pointing);
+			case "plus-menu":
+				this.#openPlusMenu();
 				return;
 			case "clear-target":
 				this.#target = undefined;

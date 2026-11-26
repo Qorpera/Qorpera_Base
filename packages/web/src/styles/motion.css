@@ -256,8 +256,13 @@
 .mention-picker,
 .recipient-menu { transform-origin: bottom left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
 .recipient-menu { transform-origin: top left; }
+.context-menu.is-up { transform-origin: bottom left; animation-name: menu-in-up; }
 @keyframes menu-in {
 	from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+	50% { opacity: 1; }
+}
+@keyframes menu-in-up {
+	from { opacity: 0; transform: translateY(4px) scale(0.96); }
 	50% { opacity: 1; }
 }
 .context-menu.is-leaving { animation: menu-out var(--motion-fast) var(--ease-in) both; }

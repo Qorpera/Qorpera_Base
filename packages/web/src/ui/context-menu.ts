@@ -44,6 +44,8 @@ export interface ContextMenuOptions {
 	/** Where the pointer was, in viewport pixels. The menu opens down and to the right of it. */
 	x: number;
 	y: number;
+	/** The menu opens up from (x, y) instead: its bottom edge sits at y (a composer at the foot of the page). */
+	up?: boolean;
 	items: MenuEntry[];
 	/** Gets focus back when the menu closes, and a class while it is open. */
 	opener?: HTMLElement;
@@ -275,8 +277,9 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 			options.onClose?.(closedBy);
 		},
 	};
+	if (options.up) root.classList.add("is-up");
 	(options.container ?? document.body).append(root);
-	place(root, options.x, options.y);
+	place(root, options.x, options.up ? Math.max(MARGIN * uiScale(), options.y - root.offsetHeight) : options.y);
 	opener?.classList.add("menu-open");
 	active = handle;
 	menuItems(root)[0]?.focus({ preventScroll: true });
