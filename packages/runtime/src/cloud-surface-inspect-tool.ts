@@ -1868,12 +1868,10 @@ async function prepareInspectAssets(
 		readonly files: Record<string, { readonly b64?: string; readonly text?: string }>;
 		readonly local: Record<string, { readonly src: string; readonly sha256: string }>;
 	};
-	readonly fallbackKeys: readonly string[];
 }> {
 	const assetUrls: Record<string, string> = {};
 	const bundleFiles: Record<string, { readonly b64?: string; readonly text?: string }> = {};
 	const bundleLocal: Record<string, { readonly src: string; readonly sha256: string }> = {};
-	const fallbackKeys: string[] = [];
 	const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
 	const relOf = (fullPath: string): string | null => {
 		if (!rootPrefix) return fullPath.replace(/^\/+/, "") || null;
@@ -1927,7 +1925,6 @@ async function prepareInspectAssets(
 				bundleBytes += cost;
 				previewImages += 1;
 				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
-				else fallbackKeys.push(rel);
 			}
 		} else if (
 			entry.mediaType === "model/gltf-binary" &&
@@ -1938,17 +1935,12 @@ async function prepareInspectAssets(
 				bundleFiles[rel] = { b64: Buffer.from(entry.bytes).toString("base64") };
 				bundleBytes += cost;
 				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
-				else fallbackKeys.push(rel);
 			}
 		}
 	};
 	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
 		if (assetUrls[fullPath]) continue;
 		await tryBundleBinary(fullPath, entry, true);
-	}
-	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
-		if (!snapshot.localAssetPaths?.[fullPath]) continue;
-		await tryBundleBinary(fullPath, entry, false);
 	}
 
 	const layoutPath = snapshot.folderRoot ? `${snapshot.folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
@@ -1983,7 +1975,12 @@ async function prepareInspectAssets(
 		}
 	}
 
-	return { assetUrls, bundle: { files: bundleFiles, local: bundleLocal }, fallbackKeys };
+	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
+		if (!snapshot.localAssetPaths?.[fullPath]) continue;
+		await tryBundleBinary(fullPath, entry, false);
+	}
+
+	return { assetUrls, bundle: { files: bundleFiles, local: bundleLocal } };
 }
 
 export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): CloudNativeTool {
@@ -2139,19 +2136,14 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				throw new CloudToolRefusal("INSPECT_SURFACE_TOO_LARGE: rendered preview exceeded the size limit.");
 			}
 			const gzB64 = gzipSync(htmlBytes).toString("base64");
-			const htmlChunks = Math.ceil(gzB64.length / UPLOAD_CHUNK_BYTES);
-			const encodeBundle = (bundle: typeof prepared.bundle): string =>
-				Object.keys(bundle.files).length > 0 || Object.keys(bundle.local).length > 0
-					? gzipSync(Buffer.from(JSON.stringify(bundle), "utf8")).toString("base64")
-					: "";
-			let stagedGzB64 = encodeBundle(prepared.bundle);
-			let chunkCount = htmlChunks + (stagedGzB64 ? Math.ceil(stagedGzB64.length / UPLOAD_CHUNK_BYTES) : 0);
-			if (chunkCount > MAX_UPLOAD_CHUNKS && prepared.fallbackKeys.length > 0) {
-				const trimmedFiles = { ...prepared.bundle.files };
-				for (const key of prepared.fallbackKeys) delete trimmedFiles[key];
-				stagedGzB64 = encodeBundle({ files: trimmedFiles, local: prepared.bundle.local });
-				chunkCount = htmlChunks + (stagedGzB64 ? Math.ceil(stagedGzB64.length / UPLOAD_CHUNK_BYTES) : 0);
-			}
+			const hasStagedBundle =
+				Object.keys(prepared.bundle.files).length > 0 || Object.keys(prepared.bundle.local).length > 0;
+			const stagedGzB64 = hasStagedBundle
+				? gzipSync(Buffer.from(JSON.stringify(prepared.bundle), "utf8")).toString("base64")
+				: "";
+			const chunkCount =
+				Math.ceil(gzB64.length / UPLOAD_CHUNK_BYTES) +
+				(stagedGzB64 ? Math.ceil(stagedGzB64.length / UPLOAD_CHUNK_BYTES) : 0);
 			if (chunkCount > MAX_UPLOAD_CHUNKS) {
 				throw new CloudToolRefusal("INSPECT_SURFACE_TOO_LARGE: compressed preview exceeded the upload bound.");
 			}

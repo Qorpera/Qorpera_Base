@@ -1802,6 +1802,89 @@ describe("Studio visual inspect & draw tools", () => {
 			expect(Object.keys(stagedJson.files).filter((k) => k.startsWith("pictures/"))).toHaveLength(8);
 			expect(stagedJson.local["thetaband.glb"]?.src).toBe("thetaband.glb");
 			expect(stagedJson.local["renders/render-0.png"]?.src).toBe("render-0.png");
+
+			const tightBinaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> = {};
+			const tightLocal: Record<string, { readonly sourcePath: string; readonly sha256: string }> = {};
+			for (let i = 0; i < 6; i += 1) {
+				tightBinaries[`surfaces/thetabands/pictures/pic-${i}.png`] = {
+					bytes: makeIncompressiblePng(),
+					mediaType: "image/png",
+				};
+			}
+			const fallbackGlb = Buffer.concat([VALID_GLB, randomBytes(130_000)]);
+			fallbackGlb.writeUInt32LE(fallbackGlb.byteLength, 8);
+			writeFileSync(join(dir, "fallback.glb"), fallbackGlb);
+			tightBinaries["surfaces/thetabands/fallback.glb"] = {
+				bytes: fallbackGlb,
+				mediaType: "model/gltf-binary",
+			};
+			tightLocal["surfaces/thetabands/fallback.glb"] = {
+				sourcePath: "fallback.glb",
+				sha256: createHash("sha256").update(fallbackGlb).digest("hex"),
+			};
+			const smallRender = makeIncompressiblePng();
+			writeFileSync(join(dir, "detail.png"), smallRender);
+			tightBinaries["surfaces/thetabands/renders/detail.png"] = {
+				bytes: smallRender,
+				mediaType: "image/png",
+			};
+			tightLocal["surfaces/thetabands/renders/detail.png"] = {
+				sourcePath: "detail.png",
+				sha256: createHash("sha256").update(smallRender).digest("hex"),
+			};
+			const moduleHtml = `<!doctype html><html><body>${"m".repeat(8_000)}</body></html>`;
+			const tightCommands: string[] = [];
+			const tightTool = createInspectSurfaceTool({
+				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }, tightCommands),
+				loadSnapshot: async () => ({
+					surfaceTitle: "ThetaBands",
+					folderRoot: "surfaces/thetabands",
+					starter: "product",
+					files: {
+						"surfaces/thetabands/layout.json": JSON.stringify({
+							schema: SURFACE_LAYOUT_SCHEMA,
+							tabs: [
+								{
+									id: "overview",
+									title: "Overview",
+									blocks: [
+										{ type: "stage_3d", model: "object.json" },
+										{ type: "module", id: "fit", from: "modules/fit", heading: "Fit" },
+										{ type: "artifacts", heading: "Visuals" },
+									],
+								},
+							],
+						}),
+						"surfaces/thetabands/object.json": JSON.stringify({ model: "fallback.glb", parts: [{ node: "Band" }] }),
+						"surfaces/thetabands/modules/fit/index.html": moduleHtml,
+					},
+					binaries: tightBinaries,
+					localAssetPaths: tightLocal,
+					knownBinaries: {},
+				}),
+				pollMs: 10,
+			});
+
+			const tightRes = await tightTool.execute({ tab: "overview", viewport: "desktop" }, CONTEXT);
+			expect(tightRes.kind).toBe("json");
+			const tightStaged = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						tightCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as {
+				files: Record<string, { b64?: string; text?: string }>;
+				local: Record<string, { src: string; sha256: string }>;
+			};
+			expect(tightStaged.files["modules/fit/index.html"]?.text).toBe(moduleHtml);
+			expect(tightStaged.files["renders/detail.png"]?.b64).toBeTruthy();
+			expect(tightStaged.files["fallback.glb"]).toBeUndefined();
+			expect(tightStaged.local["fallback.glb"]?.src).toBe("fallback.glb");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
