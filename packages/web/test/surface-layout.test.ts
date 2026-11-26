@@ -130,6 +130,7 @@ describe("Product studio on the layout renderer", () => {
 		]);
 		expect(product.querySelector(".studio-product-head h2")?.textContent).toBe("Lamp");
 		expect(product.querySelector(".studio-product-line")?.textContent).toBe("A lamp that dims itself.");
+		expect(product.querySelector(".studio-product-line")?.classList.contains("is-brief")).toBe(false);
 		expect(product.querySelectorAll(".studio-product-head .studio-dots .studio-dot")).toHaveLength(2);
 		expect([...product.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
 			"Battery14 h",
@@ -1868,5 +1869,15 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 			Reflect.deleteProperty(URL, "createObjectURL");
 			Reflect.deleteProperty(URL, "revokeObjectURL");
 		}
+	});
+
+	it("marks brief-fallback hero copy with is-brief while leaving explicit product taglines unclamped", async () => {
+		const briefSurface = studio({ briefMarkdown: "Long free-form creation brief for the product surface." });
+		const fallback = await open({}, { surface: briefSurface });
+		const fallbackLine = fallback.view.el.querySelector<HTMLElement>(".studio-product-line")!;
+		expect(fallbackLine.textContent).toContain("Long free-form creation brief");
+		expect(fallbackLine.classList.contains("is-brief")).toBe(true);
+		fallback.view.dispose();
+		fallback.store.dispose();
 	});
 });

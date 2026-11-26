@@ -1671,7 +1671,7 @@ a.surface-address-row:hover { text-decoration: none; }
 .studio-visuals-section { container-type: inline-size; }
 .studio-svg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); min-width: 0; gap: 12px; }
 .studio-svg-grid.is-pair-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-@container (max-width: 520px) {
+@container (max-width: 34em) {
 	.studio-svg-grid.is-pair-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .studio-svg-card {
@@ -1797,6 +1797,9 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .surface-studio.has-identity-tokens .studio-product-head h2 { font-family: var(--q-font-heading, var(--font-heading, inherit)); }
 .studio-product-line {
 	margin: 0; color: var(--text-muted); font-size: 15.5px; line-height: 1.5; text-wrap: balance;
+}
+.studio-product-line.is-brief {
+	display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden;
 }
 .studio-product-line.is-empty { color: color-mix(in srgb, var(--text) 24%, transparent); }
 :is(.studio-product-head h2, .studio-product-line).is-changed { color: var(--studio-brand-accent, var(--accent)); }
