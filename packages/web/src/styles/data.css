@@ -23,17 +23,14 @@
 
 .data-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; min-width: 0; }
 .data-tabs {
-	flex: 1 1 280px; min-width: 0; display: flex; align-items: center; gap: 18px; overflow-x: auto; scrollbar-width: none;
+	flex: 1 1 280px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px;
 	padding: 2px 0;
 }
-.data-tabs::-webkit-scrollbar { display: none; }
-.data-tabs.is-cut { mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
-.data-tabs.is-cut-start { mask-image: linear-gradient(to right, transparent, #000 40px); }
-.data-tabs.is-cut.is-cut-start { mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
 .data-tab {
-	flex: none; padding: 0; border: 0; background: transparent; color: var(--text-soft);
+	flex: none; max-width: 100%; padding: 0; border: 0; overflow: hidden; background: transparent; color: var(--text-soft);
 	font: 650 20px/1.45 var(--font-display);
-	letter-spacing: -0.01em; white-space: nowrap; cursor: default; transition: color var(--motion-fast) ease;
+	letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; cursor: default;
+	transition: color var(--motion-fast) ease;
 }
 .data-tab.is-question { font-weight: 500; }
 .data-tab:hover, .data-tab[aria-selected="true"] { color: var(--text); }
@@ -325,7 +322,7 @@ textarea.data-field-input { field-sizing: content; min-height: 42px; max-height:
 	.data-plot-group { height: auto; }
 	.data-plot-group-in { display: flex; flex-direction: column; gap: 6px; height: auto; }
 	.data-plot-slot { flex: none; height: 4.4em; }
-	.data-tabs { gap: 18px; }
+	.data-tabs { gap: 4px 14px; }
 	.data-scroll { padding: 0 16px 22px; }
 	.data-params { padding: 14px 16px 0; }
 	.data-param { flex: 1 1 8em; min-width: 0; }

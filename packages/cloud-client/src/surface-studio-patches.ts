@@ -307,43 +307,99 @@ function applyReconciledSubset(
 		})
 		.sort((a, b) => b.selectedChangeIds.length - a.selectedChangeIds.length);
 
+	const remainingById = new Map<string, StudioPatchChange | null>(
+		orderedChanges.map((change) => [change.changeId, change]),
+	);
+	const claimedReconciledPaths = new Set<string>();
+	const reconciledAtIndex = new Map<
+		number,
+		{
+			readonly id: string;
+			readonly coveredOrderedIds: readonly string[];
+			readonly reconciledOps: readonly StudioPatchOp[];
+		}[]
+	>();
+	let appliedCount = 0;
+
+	const resolvePath = (rawPath: string): string =>
+		normalizedRoot ? resolveStudioFolderPath(normalizedRoot, rawPath) : rawPath.trim().replace(/^\/+|\/+$/g, "");
+
 	for (const chosen of readyMatches) {
 		if (!chosen.patchManifest) continue;
 		const covered = new Set(chosen.selectedChangeIds);
 		let lastCoveredIndex = -1;
-		const coveredOrderedChanges: StudioPatchChange[] = [];
+		const coveredOrderedIds: string[] = [];
+		const coveredRemainingChanges: StudioPatchChange[] = [];
 		for (let index = 0; index < orderedChanges.length; index += 1) {
 			const item = orderedChanges[index]!;
-			if (covered.has(item.changeId)) {
-				lastCoveredIndex = index;
-				coveredOrderedChanges.push(item);
-			}
+			if (!covered.has(item.changeId)) continue;
+			lastCoveredIndex = index;
+			coveredOrderedIds.push(item.changeId);
+			const remaining = remainingById.get(item.changeId);
+			if (remaining) coveredRemainingChanges.push(remaining);
 		}
-		const composed = composeReconciledFolderChanges(coveredOrderedChanges, chosen.patchManifest, {
+		if (lastCoveredIndex < 0 || coveredRemainingChanges.length === 0) continue;
+
+		const composed = composeReconciledFolderChanges(coveredRemainingChanges, chosen.patchManifest, {
 			folderRoot: normalizedRoot,
 			conflictPaths: chosen.conflictPaths,
 		});
 		if (!composed.ok) continue;
 
-		const preservedById = new Map(composed.preservedChanges.map((entry) => [entry.changeId, entry]));
-		const coveredOrderedIds = coveredOrderedChanges.map((entry) => entry.changeId);
+		const reconciledPaths = new Set<string>();
+		let invalidPath = false;
+		for (const op of composed.reconciledOps) {
+			try {
+				reconciledPaths.add(resolvePath(op.path));
+			} catch {
+				invalidPath = true;
+				break;
+			}
+		}
+		if (invalidPath || [...reconciledPaths].some((path) => claimedReconciledPaths.has(path))) continue;
+
+		const coveredRemainingPaths = new Set<string>();
+		for (const change of coveredRemainingChanges) {
+			for (const op of change.ops) {
+				try {
+					coveredRemainingPaths.add(resolvePath(op.path));
+				} catch {}
+			}
+		}
+		if (![...reconciledPaths].some((path) => coveredRemainingPaths.has(path))) continue;
+
+		const preservedById = new Map(composed.preservedChanges.map((item) => [item.changeId, item]));
+		for (const change of coveredRemainingChanges) {
+			remainingById.set(change.changeId, preservedById.get(change.changeId) ?? null);
+		}
+		for (const path of reconciledPaths) claimedReconciledPaths.add(path);
+		const atIndex = reconciledAtIndex.get(lastCoveredIndex) ?? [];
+		atIndex.push({
+			id: chosen.id,
+			coveredOrderedIds,
+			reconciledOps: composed.reconciledOps,
+		});
+		reconciledAtIndex.set(lastCoveredIndex, atIndex);
+		appliedCount += 1;
+	}
+
+	if (appliedCount > 0) {
 		const out: { readonly change: StudioPatchChange; readonly memberIds: readonly string[] }[] = [];
 		for (let index = 0; index < orderedChanges.length; index += 1) {
 			const item = orderedChanges[index]!;
-			if (covered.has(item.changeId)) {
-				const preserved = preservedById.get(item.changeId);
-				if (preserved) {
-					out.push({ change: preserved, memberIds: [item.changeId] });
-				}
-				if (index === lastCoveredIndex) {
+			const remaining = remainingById.get(item.changeId);
+			if (remaining) {
+				out.push({ change: remaining, memberIds: [item.changeId] });
+			}
+			const reconciled = reconciledAtIndex.get(index);
+			if (reconciled) {
+				for (const entry of reconciled) {
 					out.push({
-						change: { changeId: `reconciled:${chosen.id}`, ops: composed.reconciledOps },
-						memberIds: coveredOrderedIds,
+						change: { changeId: `reconciled:${entry.id}`, ops: entry.reconciledOps },
+						memberIds: entry.coveredOrderedIds,
 					});
 				}
-				continue;
 			}
-			out.push({ change: item, memberIds: [item.changeId] });
 		}
 		return { changes: out, usedReconciliation: true };
 	}
