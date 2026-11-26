@@ -28,28 +28,19 @@ parallel safe
 set search_path = ''
 as $$
 declare
-	v_raw text := coalesce(p_op_path, '');
-	v_rooted boolean;
-	v_body text;
-	v_root text;
+	v_root text := btrim(btrim(coalesce(p_folder_root, '')), '/');
+	v_norm text := btrim(btrim(coalesce(p_op_path, '')), '/');
 	v_candidate text;
 begin
-	if v_raw = '' then
+	if v_root = '' or v_norm = '' or not public.qorpera_company_path_valid(v_root) then
 		return null;
 	end if;
-	v_rooted := left(v_raw, 1) = '/';
-	v_body := case when v_rooted then substr(v_raw, 2) else v_raw end;
-	if v_body = '' then
+	v_candidate := case
+		when v_norm = v_root or starts_with(v_norm, v_root || '/') then v_norm
+		else v_root || '/' || v_norm
+	end;
+	if not starts_with(v_candidate, v_root || '/') then
 		return null;
-	end if;
-	if v_rooted then
-		v_candidate := v_body;
-	else
-		v_root := btrim(coalesce(p_folder_root, ''), '/');
-		if v_root = '' then
-			return null;
-		end if;
-		v_candidate := v_root || '/' || v_body;
 	end if;
 	if not public.qorpera_company_path_valid(v_candidate) then
 		return null;
@@ -60,32 +51,79 @@ end $$;
 revoke all on function public.qorpera_surface_change_file_company_path(text, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
-create or replace function public.qorpera_sync_surface_change_files(p_change_id uuid)
+create or replace function public.qorpera_enqueue_surface_change_gc(
+	p_profile_ids uuid[],
+	p_manifests text[]
+)
 returns void
 language plpgsql
 security definer
 set search_path = ''
 as $$
 begin
-	delete from public.qorpera_surface_change_files
-	where change_id = p_change_id;
+	if coalesce(cardinality(p_manifests), 0) = 0 then
+		return;
+	end if;
+	insert into public.qorpera_folder_object_gc (profile_id, sha256, unreferenced_since)
+	select hash.profile_id, hash.sha256, clock_timestamp()
+	from (
+		select g.profile_id, g.manifest_sha256 as sha256
+		from unnest(p_profile_ids, p_manifests) as g(profile_id, manifest_sha256)
+		union
+		select chunk.profile_id, chunk.chunk_sha256
+		from unnest(p_profile_ids, p_manifests) as g(profile_id, manifest_sha256)
+		join public.qorpera_folder_file_chunks as chunk
+			on chunk.profile_id = g.profile_id
+			and chunk.manifest_sha256 = g.manifest_sha256
+	) as hash
+	where public.qorpera_folder_gc_company(hash.profile_id)
+		and exists (
+			select 1
+			from public.qorpera_profile_objects as obj
+			where obj.profile_id = hash.profile_id
+				and obj.sha256 = hash.sha256
+		)
+		and not public.qorpera_folder_object_rooted(hash.profile_id, hash.sha256)
+	order by hash.profile_id, hash.sha256 collate "C"
+	on conflict (profile_id, sha256) do update
+	set unreferenced_since = greatest(
+		public.qorpera_folder_object_gc.unreferenced_since,
+		excluded.unreferenced_since
+	);
+end $$;
 
-	insert into public.qorpera_surface_change_files (
-		change_id,
-		profile_id,
-		surface_id,
-		path,
-		manifest_sha256
-	)
+revoke all on function public.qorpera_enqueue_surface_change_gc(uuid[], text[])
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+create or replace function public.qorpera_sync_surface_change_files(p_change_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_desired_profiles uuid[];
+	v_desired_surfaces uuid[];
+	v_desired_paths text[];
+	v_desired_manifests text[];
+	v_profile_id uuid;
+	v_needed_hashes text[];
+	v_locked_count integer;
+	v_removed_profiles uuid[];
+	v_removed_manifests text[];
+begin
 	select
-		latest.change_id,
-		latest.profile_id,
-		latest.surface_id,
-		latest.company_path,
-		latest.manifest_sha256
+		array_agg(latest.profile_id),
+		array_agg(latest.surface_id),
+		array_agg(latest.company_path),
+		array_agg(latest.manifest_sha256)
+	into
+		v_desired_profiles,
+		v_desired_surfaces,
+		v_desired_paths,
+		v_desired_manifests
 	from (
 		select distinct on (public.qorpera_folder_key(resolved.company_path))
-			c.id as change_id,
 			c.profile_id,
 			c.surface_id,
 			resolved.company_path,
@@ -108,6 +146,88 @@ begin
 	) latest
 	where latest.op_kind = 'write_file'
 		and coalesce(latest.manifest_sha256, '') ~ '^[0-9a-f]{64}$';
+
+	-- WHY: Enforce G1/G3 by taking FOR KEY SHARE on newly rooted manifest and chunk rows and refusing absent or deleting objects.
+	if coalesce(cardinality(v_desired_manifests), 0) > 0 then
+		v_profile_id := v_desired_profiles[1];
+		select array_agg(h.sha256 order by h.sha256 collate "C")
+		into v_needed_hashes
+		from (
+			select distinct m as sha256
+			from unnest(v_desired_manifests) as m
+			union
+			select distinct chunk.chunk_sha256
+			from unnest(v_desired_manifests) as m
+			join public.qorpera_folder_file_chunks as chunk
+				on chunk.profile_id = v_profile_id
+				and chunk.manifest_sha256 = m
+		) h;
+
+		select count(*)::integer
+		into v_locked_count
+		from (
+			select o.sha256
+			from public.qorpera_profile_objects o
+			where o.profile_id = v_profile_id
+				and o.sha256 = any(v_needed_hashes)
+			order by o.sha256 collate "C"
+			for key share
+		) locked;
+
+		if v_locked_count <> cardinality(v_needed_hashes) then
+			raise exception 'Staged surface file object is unavailable' using errcode = '42501';
+		end if;
+
+		if exists (
+			select 1
+			from unnest(v_needed_hashes) as sha256
+			where public.qorpera_folder_object_marked(v_profile_id, sha256)
+		) then
+			perform public.qorpera_folder_object_collecting();
+		end if;
+	end if;
+
+	with gone as (
+		delete from public.qorpera_surface_change_files
+		where change_id = p_change_id
+		returning profile_id, manifest_sha256
+	)
+	select
+		array_agg(distinct_gone.profile_id),
+		array_agg(distinct_gone.manifest_sha256)
+	into v_removed_profiles, v_removed_manifests
+	from (
+		select distinct g.profile_id, g.manifest_sha256
+		from gone g
+		where not (
+			g.profile_id = coalesce(v_profile_id, '00000000-0000-0000-0000-000000000000'::uuid)
+			and g.manifest_sha256 = any(coalesce(v_desired_manifests, '{}'::text[]))
+		)
+	) distinct_gone;
+
+	if coalesce(cardinality(v_desired_manifests), 0) > 0 then
+		insert into public.qorpera_surface_change_files (
+			change_id,
+			profile_id,
+			surface_id,
+			path,
+			manifest_sha256
+		)
+		select
+			p_change_id,
+			d.profile_id,
+			d.surface_id,
+			d.path,
+			d.manifest_sha256
+		from unnest(
+			v_desired_profiles,
+			v_desired_surfaces,
+			v_desired_paths,
+			v_desired_manifests
+		) as d(profile_id, surface_id, path, manifest_sha256);
+	end if;
+
+	perform public.qorpera_enqueue_surface_change_gc(v_removed_profiles, v_removed_manifests);
 end $$;
 
 revoke all on function public.qorpera_sync_surface_change_files(uuid)
@@ -132,6 +252,43 @@ create trigger qorpera_surface_changes_sync_files
 	on public.qorpera_surface_changes
 	for each row
 	execute function public.qorpera_surface_changes_sync_files_trigger();
+
+create or replace function public.qorpera_surface_changes_release_files_trigger()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_removed_profiles uuid[];
+	v_removed_manifests text[];
+begin
+	with gone as (
+		delete from public.qorpera_surface_change_files
+		where change_id = old.id
+		returning profile_id, manifest_sha256
+	)
+	select
+		array_agg(distinct_gone.profile_id),
+		array_agg(distinct_gone.manifest_sha256)
+	into v_removed_profiles, v_removed_manifests
+	from (
+		select distinct g.profile_id, g.manifest_sha256
+		from gone g
+	) distinct_gone;
+
+	perform public.qorpera_enqueue_surface_change_gc(v_removed_profiles, v_removed_manifests);
+	return old;
+end $$;
+
+revoke all on function public.qorpera_surface_changes_release_files_trigger()
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+create trigger qorpera_surface_changes_release_files
+	before delete
+	on public.qorpera_surface_changes
+	for each row
+	execute function public.qorpera_surface_changes_release_files_trigger();
 
 create or replace function public.qorpera_surfaces_sync_change_files_trigger()
 returns trigger
