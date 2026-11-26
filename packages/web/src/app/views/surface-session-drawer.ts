@@ -300,7 +300,7 @@ function messageRow(
 			cachedMarkdown(message.text),
 		);
 	if (message.authorKind === "agent") {
-		const label = message.authorLabel?.trim() || t("Co-Founder");
+		const label = message.authorLabel?.trim() || "Co-Founder";
 		return h(
 			"div",
 			{ class: "surface-message-group is-agent" },
