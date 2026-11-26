@@ -1692,14 +1692,17 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: color-mix(in srgb, var(--text) 3%, var(--bg)); font: inherit; color: inherit;
 }
 .studio-svg-card.is-raster .studio-svg-stage {
-	aspect-ratio: 4 / 3; min-height: 0; padding: 6px;
+	position: relative; aspect-ratio: 4 / 3; min-height: 0; padding: 0;
 	background: color-mix(in srgb, var(--text) 2.5%, var(--bg));
 }
 button.studio-svg-stage { cursor: zoom-in; transition: background-color var(--motion-fast) ease; }
 button.studio-svg-stage:hover { background: color-mix(in srgb, var(--text) 5.5%, var(--bg)); }
 button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .studio-svg-img { display: block; max-width: 100%; width: auto; height: auto; max-height: 240px; object-fit: contain; }
-.studio-svg-card.is-raster .studio-svg-img { width: 100%; height: 100%; max-height: none; border-radius: 6px; object-fit: contain; }
+.studio-svg-card.is-raster .studio-svg-img {
+	position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; padding: 6px; box-sizing: border-box;
+	border-radius: 10px; object-fit: contain;
+}
 .studio-svg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; }
 .studio-svg-meta strong { min-width: 0; overflow-wrap: anywhere; }
 .studio-changed-paths { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
@@ -1767,7 +1770,7 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 	display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 34px; min-width: 0;
 	container-type: inline-size;
 }
-.studio-stage { position: relative; display: grid; align-items: end; justify-items: center; width: 100%; }
+.studio-stage { position: relative; display: grid; align-items: end; justify-items: center; width: 100%; min-width: 0; container-type: inline-size; }
 .studio-stage > .studio-expand-btn { position: absolute; top: 8px; right: 8px; z-index: 2; margin-left: 0; opacity: 0.65; }
 .studio-stage:hover > .studio-expand-btn, .studio-stage > .studio-expand-btn:focus-visible { opacity: 1; }
 .studio-stage.is-empty { min-height: min(300px, 40dvh); }
@@ -1777,7 +1780,7 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 }
 .studio-model { display: grid; justify-items: center; gap: 10px; width: 100%; min-width: 0; }
 .studio-model-box {
-	position: relative; width: 100%; max-width: 760px; aspect-ratio: 16 / 9; min-height: 240px; max-height: 400px;
+	position: relative; width: min(760px, 100%); min-width: 0; height: clamp(185px, 52cqw, 310px);
 }
 .studio-model-box .studio-stage-floor { position: absolute; left: 50%; top: 64%; margin: 0; translate: -50% -50%; }
 .studio-model-canvas {
