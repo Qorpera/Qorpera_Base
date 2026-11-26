@@ -158,8 +158,8 @@ test("Pages environment configuration binds release CSP without writing source f
 });
 
 test("every long-cached directory gets a 404 page, so a missing file there is never kept as the app page", t => {
-	assert.deepEqual(prepareDeployment(fixture(t)).notFoundPages, ["assets/404.html", "build/404.html"]);
-	assert.deepEqual(prepareDeployment({ headersTemplate }).notFoundPages, ["assets/404.html", "build/404.html"]);
+	assert.deepEqual(prepareDeployment(fixture(t)).notFoundPages, ["site-door/404.html", "assets/404.html", "build/404.html"]);
+	assert.deepEqual(prepareDeployment({ headersTemplate }).notFoundPages, ["site-door/404.html", "assets/404.html", "build/404.html"]);
 	const rules = (path, value, name = "Cache-Control") => `/*\n  ${name}: public, max-age=0, must-revalidate\n${path}\n  ! ${name}\n  ${name}: ${value}\n`;
 	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=31536000, immutable")), ["build"]);
 	assert.deepEqual(longCachedDirectories(rules("/assets/avatars/*", "s-maxage=60")), ["assets/avatars"]);

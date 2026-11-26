@@ -40,7 +40,12 @@ import {
 } from "../surfaces-store.ts";
 import { type AddressMark, SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
-import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
+import {
+	applyIdentityTokensToFrame,
+	preconnectPreviewOrigin,
+	previewSlotOriginFromSiteUrl,
+	SurfaceDoorStage,
+} from "./surface-door.ts";
 import { firstName, openPublishSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
@@ -1912,6 +1917,10 @@ export class SurfaceView {
 		const key = JSON.stringify([state.mode, remoteCompare, targetExploration?.id, showPrimary, preview, surface.id]);
 		if (key === this.#framesShown) return;
 		this.#framesShown = key;
+		if (liveBuild && !localLive) {
+			preconnectPreviewOrigin(previewSlotOriginFromSiteUrl(surface.liveUrl, 0));
+			if (remoteCompare) preconnectPreviewOrigin(previewSlotOriginFromSiteUrl(surface.liveUrl, 1));
+		}
 		this.#frames.classList.toggle("is-compare", remoteCompare);
 
 		if (remoteCompare && preview && targetExploration && workspace) {
