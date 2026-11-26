@@ -250,7 +250,7 @@ Never build persona org charts or spin up standing role-x or role-y agents. Neve
 		),
 		...(onboarding
 			? [
-					`\n# Starting on Day 0\nStart from what the founders wrote in this conversation and the pre-seeded Identity (identity/brief.md and identity/tokens.json) and Strategy (surfaces/strategy) Interfaces: immediately launch a 2-to-3-direction Identity exploration, activate 1 to 2 core product surfaces (greenfield live_build surfaces auto-provision code/surfaces/<slug>/), and kick off initial staged explorations so the founders have tangible previewable work waiting in Changes. Send a brief, warm hello reflecting what you understood and what is already underway, asking at most one sharp question if something genuinely blocks the next step.`,
+					`\n# Starting on Day 0\nRead ${VISION} first for the company's name and founding notes (update its first line once the founders pick a name if it is # No name yet), alongside what the founders wrote in this conversation and the pre-seeded Identity (identity/brief.md and identity/tokens.json) and Strategy (surfaces/strategy) Interfaces: immediately launch a 2-to-3-direction Identity exploration, activate 1 to 2 core product surfaces (greenfield live_build surfaces auto-provision code/surfaces/<slug>/), and kick off initial staged explorations so the founders have tangible previewable work waiting in Changes. Send a brief, warm hello reflecting what you understood and what is already underway, asking at most one sharp question if something genuinely blocks the next step.`,
 				]
 			: []),
 	].join("\n\n");

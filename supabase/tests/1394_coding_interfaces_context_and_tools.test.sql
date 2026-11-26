@@ -128,6 +128,9 @@ declare
 	v_binding_studio jsonb;
 	v_binding_ops jsonb;
 	v_binding_code jsonb;
+	v_auth_studio jsonb;
+	v_auth_ops jsonb;
+	v_auth_code jsonb;
 	v_ifaces jsonb;
 	v_slugs text[];
 	v_errcode text;
@@ -287,6 +290,16 @@ begin
 	perform pg_temp.as_service();
 	set local role service_role;
 
+	v_auth_studio := public.qorpera_authorize_coding_turn(v_binding_studio);
+	v_auth_ops := public.qorpera_authorize_coding_turn(v_binding_ops);
+	v_auth_code := public.qorpera_authorize_coding_turn(v_binding_code);
+	perform pg_temp.cict_assert(
+		v_auth_studio #>> '{coding,workspaceKind}' = 'surface_folder'
+			and v_auth_ops #>> '{coding,workspaceKind}' = 'surface_ops'
+			and v_auth_code #>> '{coding,workspaceKind}' = 'git_repo',
+		'authorize_coding_turn succeeds for studio, ops, and code bindings'
+	);
+
 	v_errcode := null;
 	begin
 		perform public.qorpera_begin_native_coding_execution(
@@ -298,7 +311,9 @@ begin
 		v_errcode := sqlstate || ':' || sqlerrm;
 	end;
 	perform pg_temp.cict_assert(
-		v_errcode is null or v_errcode not like '42501:Coding catalog must contain only coding tools%',
+		v_errcode is null
+			or (v_errcode <> '42501:Coding catalog must contain only coding tools'
+				and v_errcode <> '42501:Coding turn authority unavailable'),
 		'surface_folder admits company_search + data_describe + data_query: ' || coalesce(v_errcode, 'ok')
 	);
 
@@ -310,9 +325,12 @@ begin
 			repeat('d', 64), 100
 		);
 	exception when others then
-		v_errcode := sqlstate;
+		v_errcode := sqlstate || ':' || sqlerrm;
 	end;
-	perform pg_temp.cict_assert(v_errcode = '42501', 'surface_folder rejects data_apply');
+	perform pg_temp.cict_assert(
+		v_errcode = '42501:Coding catalog must contain only coding tools',
+		'surface_folder rejects data_apply with exact catalog refusal: ' || coalesce(v_errcode, 'ok')
+	);
 
 	v_errcode := null;
 	begin
@@ -325,7 +343,9 @@ begin
 		v_errcode := sqlstate || ':' || sqlerrm;
 	end;
 	perform pg_temp.cict_assert(
-		v_errcode is null or v_errcode not like '42501:Coding catalog must contain only coding tools%',
+		v_errcode is null
+			or (v_errcode <> '42501:Coding catalog must contain only coding tools'
+				and v_errcode <> '42501:Coding turn authority unavailable'),
 		'surface_ops admits company_search + data_describe + data_query: ' || coalesce(v_errcode, 'ok')
 	);
 
@@ -340,7 +360,9 @@ begin
 		v_errcode := sqlstate || ':' || sqlerrm;
 	end;
 	perform pg_temp.cict_assert(
-		v_errcode is null or v_errcode not like '42501:Coding catalog must contain only coding tools%',
+		v_errcode is null
+			or (v_errcode <> '42501:Coding catalog must contain only coding tools'
+				and v_errcode <> '42501:Coding turn authority unavailable'),
 		'git_repo admits company_search: ' || coalesce(v_errcode, 'ok')
 	);
 
@@ -352,9 +374,12 @@ begin
 			repeat('d', 64), 100
 		);
 	exception when others then
-		v_errcode := sqlstate;
+		v_errcode := sqlstate || ':' || sqlerrm;
 	end;
-	perform pg_temp.cict_assert(v_errcode = '42501', 'git_repo still rejects company_write');
+	perform pg_temp.cict_assert(
+		v_errcode = '42501:Coding catalog must contain only coding tools',
+		'git_repo still rejects company_write with exact catalog refusal: ' || coalesce(v_errcode, 'ok')
+	);
 
 	v_errcode := null;
 	begin
@@ -370,9 +395,12 @@ begin
 			)
 		);
 	exception when others then
-		v_errcode := sqlstate;
+		v_errcode := sqlstate || ':' || sqlerrm;
 	end;
-	perform pg_temp.cict_assert(v_errcode = '42501', 'git_repo context view still rejects capture');
+	perform pg_temp.cict_assert(
+		v_errcode = '42501:Coding context cannot introduce Company File reads',
+		'git_repo context view still rejects capture with exact refusal: ' || coalesce(v_errcode, 'ok')
+	);
 
 	v_errcode := null;
 	begin
@@ -391,7 +419,9 @@ begin
 		v_errcode := sqlstate || ':' || sqlerrm;
 	end;
 	perform pg_temp.cict_assert(
-		v_errcode is null or v_errcode not like '42501:Coding context cannot introduce Company File reads%',
+		v_errcode is null
+			or (v_errcode <> '42501:Coding context cannot introduce Company File reads'
+				and v_errcode <> '42501:Coding turn authority unavailable'),
 		'git_repo context view delegates readId validation instead of blanket-refusing: ' || coalesce(v_errcode, 'ok')
 	);
 

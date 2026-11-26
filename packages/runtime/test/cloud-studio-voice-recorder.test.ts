@@ -968,6 +968,9 @@ describe("prepareSurfaceCodingWorkspace interfaces, search/data tools, and machi
 		});
 
 		expect(prepared.turnBrief).toContain("## Company Interfaces");
+		expect(prepared.turnBrief).toContain("Cross-company tools:");
+		expect(prepared.turnBrief).toContain("`company_search`");
+		expect(prepared.turnBrief).toContain("`data_describe` and `data_query`");
 		expect(prepared.turnBrief).toContain("/company/surfaces/strategy");
 		expect(prepared.turnBrief).toContain("/company/code/surfaces/website");
 		expect(prepared.turnBrief).toContain("Pre-market used car intake.");

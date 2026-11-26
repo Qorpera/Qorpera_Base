@@ -8,6 +8,7 @@ import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operati
 import { CLOUD_PLATFORM_SKILLS, MAX_STUDIO_SKILL_BYTES } from "../src/cloud-platform-skills.ts";
 import { createNarrateExplainerTool } from "../src/cloud-surface-narrate-tool.ts";
 import { runSurfaceSessionTurn } from "../src/cloud-surface-session-runner.ts";
+import { extractStrategyInterfaceSummary } from "../src/cloud-surface-turn-context.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 function fakeIdentity() {
@@ -100,6 +101,33 @@ describe("strategy surface and custom studio runtime integration", () => {
 		expect(instructions).toContain("plays.json");
 		expect(instructions).toContain("hypotheses.json");
 		expect(instructions).toContain("landscape.json");
+	});
+
+	it("extractStrategyInterfaceSummary parses contract-shaped plays.json (summary, verdict, play.name, play.thesis) and falls back to brief.md", () => {
+		const playsJson = JSON.stringify({
+			summary: "Copenhagen specialty coffee roasters need predictable wholesale subscriptions.",
+			verdict: "Win boutique cafes first; consumer DTC waits until unit economics clear.",
+			plays: [
+				{
+					id: "wholesale-clubs",
+					name: "Boutique Cafe Subscriptions",
+					thesis: "Weekly standing orders cut CAC by 80% and fill roastery capacity.",
+					status: "recommended",
+				},
+				{
+					id: "dtc-pods",
+					name: "Consumer Compostable Pods",
+					thesis: "High churn and paid social CAC trap until brand awareness exists.",
+					status: "parked",
+				},
+			],
+		});
+		const summary = extractStrategyInterfaceSummary(playsJson, "Fallback brief text");
+		expect(summary).toContain("Summary: Copenhagen specialty coffee roasters");
+		expect(summary).toContain("Verdict: Win boutique cafes first");
+		expect(summary).toContain("[recommended] Boutique Cafe Subscriptions: Weekly standing orders");
+		expect(summary).toContain("[parked] Consumer Compostable Pods: High churn");
+		expect(extractStrategyInterfaceSummary("{bad-json", "Fallback brief text")).toBe("Fallback brief text");
 	});
 
 	it("keeps strategy-studio and custom-surface skills under MAX_STUDIO_SKILL_BYTES", () => {

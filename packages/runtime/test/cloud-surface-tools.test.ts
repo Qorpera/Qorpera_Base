@@ -1901,6 +1901,7 @@ describe("cloud surface runtime tools", () => {
 				"organize_sidebar",
 				"offer_agents_to_member",
 				"crew_and_members",
+				"update_reading",
 			]) {
 				expect(allOffered.has(stripped)).toBe(false);
 			}
@@ -1908,8 +1909,10 @@ describe("cloud surface runtime tools", () => {
 			const instructions = evidence.threadParameters.developerInstructions;
 			expect(instructions).toContain("# Surfaces & Identity");
 			expect(instructions).toContain("Each Surface is a direct live projection");
+			expect(instructions).toContain("first line of QorperaOS/vision/vision.md");
 			expect(instructions).toContain("senses.surfaces");
 			expect(instructions).not.toContain("hire_team");
+			expect(instructions).not.toContain("reading.md");
 			expect(instructions).not.toContain("vision-draft.md");
 			expect(instructions).not.toContain("company-plan.md");
 			expect(instructions).not.toContain("Customer Researcher");

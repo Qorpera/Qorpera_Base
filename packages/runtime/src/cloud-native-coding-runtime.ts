@@ -670,13 +670,6 @@ export function parseCloudCodingTurnContext(
 	};
 }
 
-/** The coding composition: three command tools and two ways to end the turn, no
- * public mouth, no Company File mount, no connector, no secret tool and no
- * inherited conversation. The company runtime selects it only for a
- * worker-dispatch wake of species coding; the authority it re-reads is the
- * ordinary native tool authority bounded by the session lease. Provider
- * credentials stay in the identity host; the gateway runs repository code in
- * the separate, credential-free VM. */
 export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 	readonly #control: CloudCodingNativeControl;
 	readonly #gateway: (binding: CloudNativeToolBinding) => CloudCodingCommandGateway;
@@ -888,6 +881,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			: surfaceSession
 				? buildSurfaceTurnBrief({
 						...surfaceSession,
+						hasCompanySearch,
 						...(surfaceSession.companyInterfaces === undefined && context.companyInterfaces
 							? { companyInterfaces: context.companyInterfaces }
 							: {}),

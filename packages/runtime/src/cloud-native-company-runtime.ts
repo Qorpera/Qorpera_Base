@@ -657,14 +657,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 					return folder;
 				};
-				const folderClient = getFolder();
 				const usesPrimaryCodexCoding = !isGeminiRun && wake.payload.harness !== "claude-code";
 				const codingStudioVoice =
 					usesPrimaryCodexCoding && !(await hasChatGptPlanDirectory(identityRoot))
 						? new CloudVoiceChannel()
 						: undefined;
 				const [companyInterfaces, rawSurfaceSession] = await Promise.all([
-					this.#loadCompanyInterfacesContext(binding, folderClient, signal),
+					this.#loadCompanyInterfacesContext(binding, getFolder, signal),
 					this.#loadSurfaceCodingBinding(binding, context, wake.payload, getFolder, signal, codingStudioVoice),
 				]);
 				const surfaceSession = rawSurfaceSession
@@ -673,10 +672,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							...(companyInterfaces ? { companyInterfaces } : {}),
 						}
 					: undefined;
+				if (this.#coding.supportsFolderWrites) getFolder();
 				const codingFolderSearch = this.#folderSearch
 					? new CloudFolderSearch({
 							socketPath: this.#folderSearch.socketPath,
-							folder: folderClient,
+							folder: getFolder(),
 							environmentId: context.identity.environmentId,
 						})
 					: undefined;
@@ -710,7 +710,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						identity: context.identity,
 						wake,
 						observability,
-						folder: folderClient,
+						...(folder ? { folder } : {}),
 						...(companyInterfaces ? { companyInterfaces } : {}),
 						...(codingFolderSearch ? { folderSearch: codingFolderSearch } : {}),
 						...(this.#companyData ? { companyData: this.#companyData } : {}),
@@ -952,7 +952,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 					}),
 					readCloudAgentHeadVision(notebooks.composition, signal),
-					readCloudAgentHeadReading(notebooks.composition, signal),
+					this.#surfaceFirst ? Promise.resolve(null) : readCloudAgentHeadReading(notebooks.composition, signal),
 				]);
 				return {
 					initialPresence: await initialPresenceRequest,
@@ -1739,8 +1739,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
 											? [cloudRecordReflectionTool({ folder: folder.client, operations, identity })]
 											: []),
-										// The company's reading of itself (20260930766000): the Co-Founder keeps it, in its company runs.
-										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
+										...(context.agentKind === "cofounder" &&
+										identity.audienceKind === "company" &&
+										!this.#surfaceFirst
 											? [
 													cloudReadingTool(
 														identity,
@@ -2240,7 +2241,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 
 	async #loadCompanyInterfacesContext(
 		binding: CloudNativeToolBinding,
-		folderClient: CloudCompanyFolderClient,
+		getFolder: () => CloudCompanyFolderClient,
 		signal: AbortSignal,
 	): Promise<CompanyInterfacesContext | null> {
 		let raw: unknown;
@@ -2252,6 +2253,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		}
 		const interfaces = parseCompanyInterfacesResponse(raw);
 		if (interfaces.length === 0) return null;
+		const strategyInterface = interfaces.find((item) => item.slug === "strategy" || item.kind === "strategy");
+		const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
+		const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
+		const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
+		if (!strategyRoot && !identityRoot) {
+			return { interfaces, strategySummary: null, identitySummary: null };
+		}
+		let folderClient: CloudCompanyFolderClient;
+		try {
+			folderClient = getFolder();
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return { interfaces, strategySummary: null, identitySummary: null };
+		}
 		const readOptionalText = async (path: string, maxBytes: number): Promise<string | null> => {
 			try {
 				const found = await folderClient.readText(path, maxBytes, signal);
@@ -2262,10 +2277,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				return null;
 			}
 		};
-		const strategyInterface = interfaces.find((item) => item.slug === "strategy" || item.kind === "strategy");
-		const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
-		const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
-		const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
 		const [strategyPlays, strategyBrief, identityBrief] = await Promise.all([
 			strategyRoot ? readOptionalText(`${strategyRoot}/plays.json`, 16_384) : Promise.resolve(null),
 			strategyRoot ? readOptionalText(`${strategyRoot}/brief.md`, 12_288) : Promise.resolve(null),
@@ -2654,7 +2665,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			bytes: this.#folderBytes(binding, identity),
 			...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
 		});
-		const companyInterfacesRequest = this.#loadCompanyInterfacesContext(binding, folderClient, signal);
+		const companyInterfacesRequest = this.#loadCompanyInterfacesContext(binding, () => folderClient, signal);
 		companyInterfacesRequest.catch(() => undefined);
 		const stagedNotePaths = new Set<string>();
 		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {

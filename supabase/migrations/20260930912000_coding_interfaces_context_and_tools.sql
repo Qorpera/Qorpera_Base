@@ -9,7 +9,7 @@ do $$ begin
 		or to_regprocedure('public.qorpera_describe_native_tool_authority(jsonb)') is null
 		or to_regprocedure('public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)') is null
 		or to_regprocedure('public.qorpera_record_coding_context_view(jsonb,jsonb)') is null then
-		raise exception '20260930912000 requires 20260930910000 and 20260930911000';
+		raise exception '20260930912000 requires 20260930910000';
 	end if;
 end $$;
 

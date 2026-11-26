@@ -274,22 +274,26 @@ export function extractStrategyInterfaceSummary(
 			const parsed = JSON.parse(playsJsonText) as Record<string, unknown>;
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				const lines: string[] = [];
+				const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
 				const verdict = typeof parsed.verdict === "string" ? parsed.verdict.trim() : "";
+				if (summary) lines.push(`Summary: ${summary.slice(0, 320)}`);
 				if (verdict) lines.push(`Verdict: ${verdict.slice(0, 400)}`);
 				if (Array.isArray(parsed.plays)) {
+					const playLines: string[] = [];
 					for (const rawPlay of parsed.plays) {
 						if (!rawPlay || typeof rawPlay !== "object" || Array.isArray(rawPlay)) continue;
 						const play = rawPlay as Record<string, unknown>;
 						const status = typeof play.status === "string" ? play.status.trim() : "";
-						const title = typeof play.title === "string" ? play.title.trim() : "";
-						const thesis = typeof play.summary === "string" ? play.summary.trim() : "";
-						if (!title) continue;
-						if (status === "recommended" || lines.length < 3) {
-							lines.push(
-								`- ${status ? `[${status}] ` : ""}${title}${thesis ? `: ${thesis.slice(0, 240)}` : ""}`,
+						const name = typeof play.name === "string" ? play.name.trim() : "";
+						const thesis = typeof play.thesis === "string" ? play.thesis.trim() : "";
+						if (!name) continue;
+						if (status === "recommended" || playLines.length < 3) {
+							playLines.push(
+								`- ${status ? `[${status}] ` : ""}${name}${thesis ? `: ${thesis.slice(0, 240)}` : ""}`,
 							);
 						}
 					}
+					lines.push(...playLines);
 				}
 				if (lines.length > 0) return lines.join("\n").slice(0, 1500);
 			}
@@ -362,6 +366,8 @@ export interface SurfaceTurnBriefInput {
 	readonly sourceKind?: SurfaceSourceKind;
 	readonly isInternalReconciliation?: boolean;
 	readonly companyInterfaces?: CompanyInterfacesContext | null;
+	readonly hasCompanySearch?: boolean;
+	readonly hasReadOnlyData?: boolean;
 	readonly briefMarkdown: string | null;
 	readonly fullPrompt?: string | null;
 	readonly repositoryKey?: string | null;
@@ -474,6 +480,8 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const interfacesSection = buildCompanyInterfacesSection(binding.companyInterfaces, {
 		currentSlug: binding.surfaceSlug,
 		includeIdentitySummary: !binding.identityContext,
+		hasCompanySearch: binding.hasCompanySearch === true,
+		hasReadOnlyData: binding.hasReadOnlyData === true,
 	});
 	if (interfacesSection) {
 		sections.push(interfacesSection);

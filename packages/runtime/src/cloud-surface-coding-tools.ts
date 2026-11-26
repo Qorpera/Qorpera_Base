@@ -138,6 +138,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			buildSurfaceTurnBrief({
 				...surfaceSession,
 				sourceKind: "native_ops",
+				hasCompanySearch: Boolean(folder && folderSearch),
+				hasReadOnlyData: Boolean(folder && companyData),
 			}),
 			finishToolName,
 		);
@@ -333,6 +335,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 		buildSurfaceTurnBrief({
 			...surfaceSession,
 			sourceKind: "folder",
+			hasCompanySearch: Boolean(folder && folderSearch),
+			hasReadOnlyData: Boolean(folder && companyData),
 			folderRoot,
 			previewOverlayStatus: previewOverlayStatus?.status ?? null,
 			previewSkippedPaths: previewOverlayStatus?.skippedPaths ?? null,
