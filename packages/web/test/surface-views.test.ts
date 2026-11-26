@@ -692,11 +692,14 @@ describe("the surface page", () => {
 
 		const frame = view.el.querySelector<HTMLIFrameElement>("iframe.surface-frame")!;
 		const posted = spyFrameMessages(frame);
+		const pointBtn = view.el.querySelector<HTMLButtonElement>(".surface-point")!;
+		expect(pointBtn.hidden).toBe(false);
+		expect(pointBtn.disabled).toBe(true);
 		sendFromFrame(frame, { type: SITE_DOOR_READY });
+		expect(pointBtn.disabled).toBe(true);
 		sendFromFrame(frame, { type: SITE_DOOR_SHOWN });
 		posted.length = 0;
 
-		const pointBtn = view.el.querySelector<HTMLButtonElement>(".surface-point")!;
 		expect(pointBtn.hidden).toBe(false);
 		expect(pointBtn.disabled).toBe(false);
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "p" }));
@@ -1088,6 +1091,154 @@ describe("the surface page", () => {
 		expect(failStage.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe(
 			"The preview could not be opened.",
 		);
+
+		controller.abort();
+		vi.useRealTimers();
+	});
+
+	it("keeps an in-flight preview staging iframe alive when workspace refreshes strip its consumed pass and does not flicker Point", async () => {
+		let mintCount = 0;
+		const mintPreviewPass = vi.fn(async (previewId: string) => {
+			mintCount += 1;
+			return {
+				previewId,
+				doorActionUrl: `https://thetaband--p${previewId.slice(-8)}.qorpera.com/__qorpera/member`,
+				memberPass: `${VALID_PASS.slice(0, -1)}${mintCount}`,
+			};
+		});
+		const ws = () =>
+			workspace([session(["staged"], { state: "running" })], {
+				previewState: {
+					surfaceId: SURFACE,
+					mode: "single",
+					primary: previewFrame({
+						previewId: PREVIEW_IDS[0],
+						doorActionUrl: `https://thetaband--p${PREVIEW_IDS[0].slice(-8)}.qorpera.com/__qorpera/member`,
+						memberPass: null,
+					}),
+					compareFrames: [],
+				},
+			});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws()), mintPreviewPass }));
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
+		const stagingFrame = view.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		expect(stagingFrame).not.toBeNull();
+		const pointBtn = view.el.querySelector<HTMLButtonElement>(".surface-point")!;
+		expect(pointBtn.disabled).toBe(true);
+
+		const posted = spyFrameMessages(stagingFrame);
+		sendFromFrame(stagingFrame, { type: SITE_DOOR_READY });
+		expect(posted).toHaveLength(1);
+		expect(posted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: `${VALID_PASS.slice(0, -1)}1` });
+		expect(pointBtn.disabled).toBe(true);
+
+		await store.refreshWorkspace(SURFACE);
+		await flush();
+		view.update();
+
+		expect(store.workspace(SURFACE)?.previewState.primary.memberPass).toBeNull();
+		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector("iframe.is-staging")).toBe(stagingFrame);
+		expect(view.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe("Opening preview…");
+		expect(pointBtn.disabled).toBe(true);
+
+		await store.refreshWorkspace(SURFACE);
+		await flush();
+		view.update();
+		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector("iframe.is-staging")).toBe(stagingFrame);
+
+		sendFromFrame(stagingFrame, { type: SITE_DOOR_SHOWN });
+		expect(view.el.querySelector("iframe.is-shown")).toBe(stagingFrame);
+		expect(view.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(true);
+		expect(pointBtn.disabled).toBe(false);
+
+		await store.refreshWorkspace(SURFACE);
+		await flush();
+		view.update();
+		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector("iframe.is-shown")).toBe(stagingFrame);
+		expect(pointBtn.disabled).toBe(false);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("preserves staging for kept previews on null-pass refresh, replaces staging on target change, and stops auto-reminting after handshake timeout failure", () => {
+		vi.useFakeTimers();
+		const remints: { previewId: string; stalePass?: string }[] = [];
+		const onRetry = vi.fn();
+		const controller = new AbortController();
+		const stage = new SurfaceDoorStage(controller.signal, {
+			handshakeTimeoutMs: 500,
+			onRetry,
+			onNeedFreshPass: (previewId, stalePass) => {
+				remints.push({ previewId, stalePass });
+				return undefined;
+			},
+		});
+		document.body.append(stage.el);
+
+		const pass1 = VALID_PASS;
+		const pass2 = `${VALID_PASS.slice(0, -1)}2`;
+		const failedKept = (memberPass: string | null) =>
+			previewFrame({
+				previewId: PREVIEW_IDS[0],
+				status: "failed",
+				doorActionUrl: null,
+				memberPass: null,
+				errorDetail: "PREVIEW_BUILD_FAILED\nlog",
+				kept: {
+					previewId: PREVIEW_IDS[1],
+					doorActionUrl: "https://thetaband--p12ab34cd.qorpera.com/__qorpera/member",
+					memberPass,
+				},
+				fixing: true,
+			});
+
+		stage.sync(failedKept(pass1), "Website");
+		const keptFrame = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		expect(keptFrame).not.toBeNull();
+		stage.sync(failedKept(null), "Website");
+		expect(stage.el.querySelector("iframe.is-staging")).toBe(keptFrame);
+		expect(remints).toEqual([]);
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], activeRoute: "/pricing", memberPass: null }), "Pricing");
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+		expect(remints).toEqual([{ previewId: PREVIEW_IDS[0], stalePass: undefined }]);
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], activeRoute: "/pricing", memberPass: pass1 }), "Pricing");
+		const attempt1 = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		expect(attempt1).not.toBeNull();
+		vi.advanceTimersByTime(500);
+		expect(remints).toEqual([
+			{ previewId: PREVIEW_IDS[0], stalePass: undefined },
+			{ previewId: PREVIEW_IDS[0], stalePass: pass1 },
+		]);
+		expect(stage.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe("Reconnecting preview…");
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], activeRoute: "/pricing", memberPass: null }), "Pricing");
+		expect(remints).toHaveLength(2);
+		expect(stage.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe("Reconnecting preview…");
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], activeRoute: "/pricing", memberPass: pass2 }), "Pricing");
+		vi.advanceTimersByTime(500);
+		expect(stage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], activeRoute: "/pricing", memberPass: null }), "Pricing");
+		expect(remints).toHaveLength(2);
+		expect(stage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+
+		stage.el.querySelector<HTMLButtonElement>('[data-act="retry-preview"]')!.click();
+		expect(onRetry).toHaveBeenCalledTimes(1);
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], activeRoute: "/pricing", memberPass: null }), "Pricing");
+		expect(remints).toHaveLength(3);
 
 		controller.abort();
 		vi.useRealTimers();
