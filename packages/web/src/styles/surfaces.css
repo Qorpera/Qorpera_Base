@@ -1780,7 +1780,7 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 }
 .studio-model { display: grid; justify-items: center; gap: 10px; width: 100%; min-width: 0; }
 .studio-model-box {
-	position: relative; width: min(760px, 100%); min-width: 0; height: clamp(185px, 52cqw, 310px);
+	position: relative; width: min(760px, 100%); min-width: 0; height: clamp(240px, 56.25cqw, 400px);
 }
 .studio-model-box .studio-stage-floor { position: absolute; left: 50%; top: 64%; margin: 0; translate: -50% -50%; }
 .studio-model-canvas {
