@@ -666,7 +666,7 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 	const html = await files.text(entry);
 	if (html === null) return null;
 	// WHY: Parse with <style>/style= neutralized so Chromium never logs style-src CSP errors on detached DOMParser docs.
-	const parsed = parseHtmlInert(html);
+	const parsed = parseHtmlInert(html, files.warm ? { fixedStyleAttr: "data-qorpera-style" } : undefined);
 	const page = parsed.doc;
 	const styleSelector = `noframes[${parsed.tagAttr}]`;
 	const styleAttribute = parsed.styleAttr;

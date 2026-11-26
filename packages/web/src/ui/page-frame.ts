@@ -49,13 +49,27 @@ function past(html: string, end: string, from: number): number {
 function readTag(
 	html: string,
 	nameAt: number,
-): { readonly name: string; readonly nameAt: number; readonly styles: number[]; readonly end: number } {
+): {
+	readonly name: string;
+	readonly nameAt: number;
+	readonly styles: number[];
+	readonly selfClosing: boolean;
+	readonly end: number;
+} {
 	let at = nameAt;
 	while (at < html.length && !/[\t\n\f\r />]/.test(html[at]!)) at++;
 	const name = html.slice(nameAt, at).toLowerCase();
 	const styles: number[] = [];
+	let selfClosing = false;
 	while (at < html.length && html[at] !== ">") {
-		if (SPACE.test(html[at]!) || html[at] === "/") {
+		if (SPACE.test(html[at]!)) {
+			at++;
+			continue;
+		}
+		if (html[at] === "/") {
+			let next = at + 1;
+			while (next < html.length && SPACE.test(html[next]!)) next++;
+			if (html[next] === ">") selfClosing = true;
 			at++;
 			continue;
 		}
@@ -71,7 +85,13 @@ function readTag(
 		if (quote === '"' || quote === "'") at = past(html, quote, at + 1);
 		else while (at < html.length && !/[\t\n\f\r >]/.test(html[at]!)) at++;
 	}
-	return { name, nameAt, styles, end: Math.min(at + 1, html.length) };
+	return { name, nameAt, styles, selfClosing, end: Math.min(at + 1, html.length) };
+}
+
+function randomNonce(): string {
+	const bytes = new Uint8Array(8);
+	globalThis.crypto.getRandomValues(bytes);
+	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function uniqueToken(html: string, prefix: string): string {
@@ -81,7 +101,8 @@ function uniqueToken(html: string, prefix: string): string {
 }
 
 // WHY: Chromium enforces the parent document's style-src CSP on DOMParser detached documents and logs violations for
-// every <style> and style= attribute; renaming them to raw-text <noframes> and data-* attributes avoids CSP noise.
+// every <style> and style= attribute; renaming <style> to <noframes> and style= to data-* keeps parsing CSP-quiet,
+// while framePage always validates unfit elements on the restored raw HTML via plain DOMParser.
 function neutralizeStyles(
 	html: string,
 	styleTagMarker: string,
@@ -90,6 +111,7 @@ function neutralizeStyles(
 ): string {
 	const parts: string[] = [];
 	let copied = 0;
+	let foreignDepth = 0;
 	const rename = (from: number, to: string) => {
 		parts.push(html.slice(copied, from), to);
 		copied = from + "style".length;
@@ -105,10 +127,15 @@ function neutralizeStyles(
 		else if (!closing && !LETTER.test(after)) at = open + 1;
 		else {
 			const tag = readTag(html, open + (closing ? 2 : 1));
+			if (tag.name === "svg" || tag.name === "math") {
+				if (closing) foreignDepth = Math.max(0, foreignDepth - 1);
+				else if (!tag.selfClosing) foreignDepth += 1;
+			}
+			const inForeign = foreignDepth > 0;
 			if (tag.name === "style") rename(tag.nameAt, closing ? "noframes" : `noframes ${styleTagMarker}=""`);
 			if (!closing) for (const attribute of tag.styles) rename(attribute, styleAttrName);
 			at = tag.end;
-			if (!closing && RAW_TEXT.has(tag.name)) {
+			if (!closing && !inForeign && RAW_TEXT.has(tag.name)) {
 				const end = new RegExp(`</${tag.name}(?=[\\t\\n\\f\\r />])`, "gi");
 				end.lastIndex = at;
 				const closeAt = tag.name === "plaintext" ? html.length : (end.exec(html)?.index ?? html.length);
@@ -127,10 +154,11 @@ function neutralizeStyles(
 	return parts.join("");
 }
 
-export function parseHtmlInert(html: string): InertHtmlParse {
-	const tagAttr = uniqueToken(html, "data-qorpera-style-tag");
-	const styleAttr = uniqueToken(html, "data-qorpera-style");
-	const endNoframesToken = uniqueToken(html, "__qorpera_endnf__");
+export function parseHtmlInert(html: string, options?: { readonly fixedStyleAttr?: string }): InertHtmlParse {
+	const nonce = randomNonce();
+	const tagAttr = uniqueToken(html, `data-qorpera-style-tag-${nonce}`);
+	const styleAttr = options?.fixedStyleAttr ?? uniqueToken(html, `data-qorpera-style-${nonce}`);
+	const endNoframesToken = uniqueToken(html, `__qorpera_endnf_${nonce}__`);
 	const inert = neutralizeStyles(html, tagAttr, styleAttr, endNoframesToken);
 	return {
 		doc: new DOMParser().parseFromString(inert, "text/html"),
@@ -155,6 +183,12 @@ export function serializeHtmlInert(
 		.replace(attrRe, "style")
 		.split(inert.endNoframesToken)
 		.join("</noframes");
+}
+
+function mayContainUnfit(html: string): boolean {
+	if (/(?:noscript|shadowroot|dns-prefetch|preconnect)/i.test(html)) return true;
+	// WHY: HTML character references can spell a link's rel value (e.g. &#112;reconnect), so any <link with & goes to DOMParser.
+	return /<link[\t\n\f\r />]/i.test(html) && html.includes("&");
 }
 
 function isHint(link: Element): boolean {
@@ -190,20 +224,22 @@ export function frameParsedPage(
 	rawHtml?: string,
 	inert?: Pick<InertHtmlParse, "tagAttr" | "styleAttr" | "endNoframesToken">,
 ): string | null {
+	if (inert) {
+		const candidate = rawHtml !== undefined ? rawHtml : serializeHtmlInert(page, inert);
+		return framePage(candidate);
+	}
 	const found = unfit(page);
 	if (found.length === 0 && rawHtml !== undefined) return rawHtml;
 	for (const element of found)
 		if (element.localName === "template") for (const name of DECLARATIVE_SHADOW_ROOT) element.removeAttribute(name);
 		else element.remove();
-	const handed = inert
-		? serializeHtmlInert(page, inert)
-		: `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
+	const handed = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
 	// WHY: a changed page's text can read back as other markup than the page checked (a script's <!-- swallowing a
 	// later </script>); the frame reads the text, so the text is what is checked.
-	return unfit(parseHtmlInert(handed).doc).length === 0 ? handed : null;
+	return unfit(new DOMParser().parseFromString(handed, "text/html")).length === 0 ? handed : null;
 }
 
 export function framePage(html: string): string | null {
-	const parsed = parseHtmlInert(html);
-	return frameParsedPage(parsed.doc, html, parsed);
+	if (!mayContainUnfit(html)) return html;
+	return frameParsedPage(new DOMParser().parseFromString(html, "text/html"), html);
 }

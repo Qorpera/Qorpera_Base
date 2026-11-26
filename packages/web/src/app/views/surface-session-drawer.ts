@@ -1476,7 +1476,9 @@ export class SurfaceSessionDrawer {
 							? h(
 									"div",
 									{ class: "surface-overview-change-deliverables" },
-									...deliverables.map((item) => this.#overviewDeliverablePill(look, change, item, true)),
+									...deliverables.map((item) =>
+										this.#overviewDeliverablePill(look, change, item, deliverables.length > 1),
+									),
 								)
 							: null,
 					),

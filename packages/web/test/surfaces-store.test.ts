@@ -3831,17 +3831,29 @@ describe("SurfacesStore", () => {
 					sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
 					surfaceId: SURFACE,
 					seq: 1,
-					kind: "code_change",
+					kind: "git_range",
 					title: "Healthy change",
 					summary: "",
 					status: "staged",
+					parentSha: null,
+					headSha: null,
+					dependsOnChangeIds: [],
+					diffStats: null,
 					affectedPaths: ["src/ok.ts"],
+					conflictPaths: null,
+					landedChangeNumber: null,
+					canUndo: false,
 					createdAt: "2026-11-26T00:00:00Z",
-					updatedAt: "2026-11-26T00:00:00Z",
+					resolvedAt: null,
 				},
 			],
 		});
-		const setPreviewSelection = vi.fn(async () => previewState());
+		const setPreviewSelection = vi.fn(async () => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame(),
+			compareFrames: [],
+		}));
 		const store = storeWith(
 			fakeClient({
 				getSurfaceWorkspace: vi.fn(async () => workspace([failedSession, readySession])),
