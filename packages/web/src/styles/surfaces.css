@@ -158,10 +158,19 @@
 @keyframes surface-address-forward { from { opacity: 0; transform: translateX(14px); } }
 @keyframes surface-address-backward { from { opacity: 0; transform: translateX(-14px); } }
 .surface-address-head { display: grid; gap: 12px; padding: 16px 16px 14px; }
+.surface-address-name-row { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
 .surface-address-name {
-	min-width: 0; font-size: 21px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.15; overflow-wrap: anywhere;
+	flex: 1 1 auto; min-width: 0; font-size: 21px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.15; overflow-wrap: anywhere;
 }
 .surface-address-name span { color: var(--text-soft); }
+.surface-address-edit {
+	display: grid; flex: none; place-items: center; width: 28px; height: 28px; margin: -2px -4px 0 0; padding: 0;
+	border: 0; border-radius: 8px; background: none; color: var(--text-soft); cursor: default;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.surface-address-edit:hover { background: var(--hover); color: var(--text); }
+.surface-address-edit:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.surface-address-edit .icon { width: 15px; height: 15px; }
 .surface-address-go {
 	display: flex; align-items: center; justify-content: center; width: 100%; height: 36px; padding: 0 16px;
 	border: 0; border-radius: 999px; background: var(--primary); color: var(--on-primary);
@@ -213,13 +222,55 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: transparent; color: var(--text); font: inherit; font-size: 14.5px;
 }
 .surface-address-input:focus { border-color: var(--text); }
+.surface-address-slug-box {
+	display: flex; align-items: center; min-width: 0; height: 38px; padding: 0 12px;
+	border: 1px solid var(--border-strong); border-radius: 10px; background: transparent;
+	transition: border-color var(--motion-fast) ease;
+}
+.surface-address-slug-box:focus-within { border-color: var(--text); }
+.surface-address-slug-input {
+	flex: 1 1 0; min-width: 0; height: 100%; padding: 0; border: 0; outline: none;
+	background: transparent; color: var(--text); font: inherit; font-size: 14.5px;
+}
+.surface-address-slug-suffix {
+	flex: none; padding-left: 2px; color: var(--text-soft); font-size: 14px; font-weight: 500;
+	white-space: nowrap; user-select: none;
+}
+.surface-address-slug-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
+.surface-address-slug-foot > .surface-address-pill { margin-left: auto; }
+.surface-address-availability {
+	display: inline-flex; align-items: center; gap: 7px; min-width: 0;
+	font-size: 12.5px; font-weight: 600; line-height: 1.3; color: var(--text-muted);
+}
+.surface-address-availability[hidden] { display: none; }
+.surface-address-availability-dot {
+	flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-soft);
+}
+.surface-address-availability.is-available { color: color-mix(in srgb, var(--ok) 65%, var(--text)); }
+.surface-address-availability.is-available .surface-address-availability-dot {
+	background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft);
+}
+.surface-address-availability.is-unavailable { color: color-mix(in srgb, var(--danger) 75%, var(--text)); }
+.surface-address-availability.is-unavailable .surface-address-availability-dot {
+	background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft);
+}
+.surface-address-availability.is-invalid { color: color-mix(in srgb, var(--danger) 75%, var(--text)); font-weight: 500; }
+.surface-address-availability.is-invalid .surface-address-availability-dot { display: none; }
+.surface-address-availability.is-checking .surface-address-availability-dot {
+	animation: surface-address-pulse 1.1s ease-in-out infinite;
+}
+@keyframes surface-address-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+	.surface-address-availability.is-checking .surface-address-availability-dot { animation: none; }
+}
 .surface-address-end { display: flex; justify-content: flex-end; }
 .surface-address-pill {
 	height: 32px; padding: 0 15px; border: 0; border-radius: 999px; background: var(--primary); color: var(--on-primary);
 	font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: default;
-	transition: background-color var(--motion-fast) ease;
+	transition: background-color var(--motion-fast) ease, opacity var(--motion-fast) ease;
 }
-.surface-address-pill:hover { background: var(--primary-hover); }
+.surface-address-pill:hover:not(:disabled) { background: var(--primary-hover); }
+.surface-address-pill:disabled { opacity: 0.4; }
 .surface-address-records { display: grid; min-width: 0; font: 11.5px/1.35 var(--font-mono); }
 .surface-address-record {
 	display: grid; grid-template-columns: 40px minmax(0, 1fr) 24px; grid-template-areas: "type host copy" "type value copy";
@@ -242,7 +293,7 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-address-copy .icon + .icon, .surface-address-copy.is-copied .icon:first-child { display: none; }
 .surface-address-copy.is-copied .icon + .icon { display: block; color: var(--ok); }
 @media (forced-colors: active) {
-	.surface-address-dot { forced-color-adjust: none; }
+	.surface-address-dot, .surface-address-availability-dot { forced-color-adjust: none; }
 	.surface-address-sheet :is(button, a, input):focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
 	.surface-address-go, .surface-address-pill { border: 1px solid ButtonText; }
 }

@@ -1,5 +1,6 @@
 import { CloudRpcError } from "../../cloud/client.ts";
 import {
+	cleanSiteSlugInput,
 	type CompanySiteHostingState,
 	domainDnsSetup,
 	isApexHostname,
@@ -7,7 +8,9 @@ import {
 	type SiteCustomDomain,
 	type SiteDnsRecord,
 	siteDnsRecords,
+	type UpdatedSiteSlug,
 	validateCustomDomainInput,
+	validateSiteSlugInput,
 	type WebSiteHosting,
 } from "../../cloud/site-hosting.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
@@ -27,11 +30,13 @@ export interface SurfaceAddressSetup {
 	readonly signal: AbortSignal;
 	readonly beforePublic?: () => Promise<boolean>;
 	readonly publicChanged?: (isPublic: boolean) => void;
+	readonly slugChanged?: (updated: UpdatedSiteSlug) => void;
 }
 
 export type AddressMark = "unknown" | "private" | "live";
 
 interface Known {
+	slug: string;
 	isPublic: boolean;
 	domains: SiteCustomDomain[];
 	readonly hosting: CompanySiteHostingState;
@@ -39,13 +44,24 @@ interface Known {
 
 type Page =
 	| { readonly kind: "main" }
+	| { readonly kind: "edit" }
 	| { readonly kind: "add"; readonly from?: string }
 	| { readonly kind: "domain"; readonly hostname: string };
 
 type Shown =
 	| { readonly kind: "main" }
+	| { readonly kind: "edit" }
 	| { readonly kind: "add"; readonly from?: string }
 	| { readonly kind: "domain"; readonly domain: SiteCustomDomain };
+
+type SlugCheckState =
+	| { readonly kind: "idle" }
+	| { readonly kind: "checking"; readonly slug: string }
+	| { readonly kind: "available"; readonly slug: string }
+	| { readonly kind: "unavailable"; readonly slug: string }
+	| { readonly kind: "too_short"; readonly slug: string }
+	| { readonly kind: "invalid"; readonly slug: string }
+	| { readonly kind: "error"; readonly slug: string };
 
 interface Row {
 	readonly key: string;
@@ -59,6 +75,7 @@ interface Row {
 
 export const ADDRESS_POLL_MS = 15_000;
 export const ADDRESS_RECHECK_GAP_MS = 60_000;
+export const ADDRESS_SLUG_CHECK_MS = 300;
 const ADDRESS_DOMAIN_LIMIT = 5;
 const COPIED_MS = 1600;
 const MAIN = { kind: "main" } as const;
@@ -73,6 +90,9 @@ const REFUSALS: Readonly<Record<string, string>> = {
 	DOMAIN_INVALID: phrase("That does not look like a domain."),
 	DOMAIN_NOT_VERIFIED: phrase("The domain does not point here yet."),
 	SITE_TAKEN_DOWN: phrase("Qorpera took this site down, so this cannot change now."),
+	SITE_SLUG_INVALID: phrase("Use 3–48 lowercase letters, numbers, and single hyphens."),
+	SITE_SLUG_TAKEN: phrase("That address is already taken."),
+	SITE_KIND_UNSUPPORTED: phrase("This address cannot be changed here."),
 };
 const MANAGERS_ONLY = phrase("Only founders and admins can change this.");
 const NOT_GONE_LIVE = phrase("The site did not go live. Try again.");
@@ -144,8 +164,18 @@ export class SurfaceAddress {
 		spellcheck: "false",
 		"data-key": "field",
 	});
+	readonly #slugField = h("input", {
+		type: "text",
+		class: "surface-address-slug-input",
+		maxlength: "48",
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+		"data-key": "slug-field",
+	});
 	#target: SurfaceSiteHosting | undefined;
 	#liveUrl = "";
+	#syncedLiveUrl = "";
 	#known: Known | null | undefined;
 	#failed = false;
 	#problem: string | undefined;
@@ -153,6 +183,11 @@ export class SurfaceAddress {
 	#page: Page = MAIN;
 	#armed = false;
 	#going = false;
+	#savingSlug = false;
+	#slugCheck: SlugCheckState = { kind: "idle" };
+	#slugTimer: ReturnType<typeof setTimeout> | undefined;
+	#slugCheckAbort: AbortController | undefined;
+	#slugCheckSeq = 0;
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#reads = 0;
 	#writing = 0;
@@ -167,6 +202,8 @@ export class SurfaceAddress {
 		this.#setup = setup;
 		this.#field.setAttribute("aria-label", t("Your own domain"));
 		this.#field.placeholder = t("yourdomain.com");
+		this.#slugField.setAttribute("aria-label", t("Site address"));
+		this.#slugField.addEventListener("input", () => this.#onSlugInput());
 		setup.container.append(this.#sheet);
 		setup.signal.addEventListener("abort", () => this.close(), { once: true });
 	}
@@ -176,7 +213,7 @@ export class SurfaceAddress {
 	}
 
 	get isWriting(): boolean {
-		return this.#writing > 0 || this.#going;
+		return this.#writing > 0 || this.#going || this.#savingSlug;
 	}
 
 	get readFailed(): boolean {
@@ -197,9 +234,15 @@ export class SurfaceAddress {
 			this.#failed = false;
 			this.#problem = undefined;
 			this.#field.value = "";
+			this.#slugField.value = "";
+			this.#savingSlug = false;
+			this.#liveUrl = url;
+			this.#syncedLiveUrl = url;
 			if (next) void this.#read();
+		} else if (url !== this.#syncedLiveUrl) {
+			this.#syncedLiveUrl = url;
+			this.#liveUrl = url;
 		}
-		this.#liveUrl = url;
 		if (this.#open && this.#paintKey() !== this.#painted) this.#paint();
 		return url ? JSON.stringify([this.mark(), this.name(), this.#open]) : "";
 	}
@@ -300,6 +343,7 @@ export class SurfaceAddress {
 		this.#closeListeners = undefined;
 		if (this.#timer !== undefined) clearTimeout(this.#timer);
 		this.#timer = undefined;
+		this.#cancelSlugCheck();
 		this.#disarm(false);
 		this.#sheet.hidden = true;
 		this.#sheet.replaceChildren();
@@ -328,7 +372,9 @@ export class SurfaceAddress {
 		if (state) {
 			const entry = state.sites.get(target.siteId);
 			this.#failed = false;
-			this.#known = entry ? { isPublic: entry.isPublic, domains: [...entry.domains], hosting: state } : null;
+			this.#known = entry
+				? { slug: entry.slug, isPublic: entry.isPublic, domains: [...entry.domains], hosting: state }
+				: null;
 		} else {
 			this.#failed = true;
 		}
@@ -506,6 +552,7 @@ export class SurfaceAddress {
 	#go(page: Page): void {
 		const inside = this.#sheet.contains(document.activeElement);
 		const from = this.#page;
+		if (from.kind === "edit" && page.kind !== "edit") this.#cancelSlugCheck();
 		this.#problem = undefined;
 		this.#disarm(false);
 		this.#page = page;
@@ -522,12 +569,271 @@ export class SurfaceAddress {
 					? this.#sheet.querySelector<HTMLElement>(`[data-key="domain:${from.hostname}"]`)
 					: from.kind === "add"
 						? this.#sheet.querySelector<HTMLElement>('[data-key="add"]')
-						: null;
+						: from.kind === "edit"
+							? this.#sheet.querySelector<HTMLElement>('[data-key="edit-slug"]')
+							: null;
 		const target =
 			page.kind === "add" && this.#field.isConnected
 				? this.#field
-				: (back ?? this.#sheet.querySelector<HTMLElement>(".surface-address-back"));
+				: page.kind === "edit" && this.#slugField.isConnected
+					? this.#slugField
+					: (back ?? this.#sheet.querySelector<HTMLElement>(".surface-address-back"));
 		(target ?? this.#sheet).focus();
+	}
+
+	#nativeSuffix(): string {
+		const host = hostOf(this.#liveUrl);
+		if (NATIVE_SITE_HOST.test(host)) return host.slice(host.indexOf("."));
+		const domain = this.#known?.hosting.hostsDomain;
+		return domain ? `.${domain}` : "";
+	}
+
+	#currentSlug(): string {
+		const match = NATIVE_SITE_HOST.exec(hostOf(this.#liveUrl));
+		return match?.[1] ?? this.#known?.slug ?? "";
+	}
+
+	#canEditSlug(): boolean {
+		return Boolean(this.#known && this.#setup.canManage() && !this.#working() && this.#nativeSuffix());
+	}
+
+	#openEdit(): void {
+		if (!this.#canEditSlug()) return;
+		this.#cancelSlugCheck();
+		this.#slugField.value = this.#currentSlug();
+		this.#go({ kind: "edit" });
+		if (this.#slugField.isConnected) {
+			this.#slugField.focus();
+			this.#slugField.select();
+		}
+	}
+
+	#cancelSlugCheck(): void {
+		if (this.#slugTimer !== undefined) clearTimeout(this.#slugTimer);
+		this.#slugTimer = undefined;
+		this.#slugCheckAbort?.abort();
+		this.#slugCheckAbort = undefined;
+		this.#slugCheckSeq++;
+		this.#slugCheck = { kind: "idle" };
+	}
+
+	#onSlugInput(): void {
+		if (this.#problem !== undefined) {
+			this.#problem = undefined;
+			this.#sheet.querySelector(".surface-address-problem")?.remove();
+			this.#painted = this.#paintKey();
+		}
+		this.#cancelSlugCheck();
+		const cleaned = cleanSiteSlugInput(this.#slugField.value);
+		const current = this.#currentSlug();
+		if (!cleaned || cleaned === current) {
+			this.#syncSlugUi();
+			return;
+		}
+		const seq = this.#slugCheckSeq;
+		this.#syncSlugUi();
+		this.#slugTimer = setTimeout(() => {
+			this.#slugTimer = undefined;
+			if (seq !== this.#slugCheckSeq || !this.#open || this.#page.kind !== "edit") return;
+			this.#runSlugCheck(cleaned, seq);
+		}, ADDRESS_SLUG_CHECK_MS);
+	}
+
+	#runSlugCheck(cleaned: string, seq: number): void {
+		const problem = validateSiteSlugInput(cleaned);
+		if (problem === "reserved") {
+			this.#slugCheck = { kind: "unavailable", slug: cleaned };
+			this.#syncSlugUi();
+			return;
+		}
+		if (problem === "too_short" || problem === "invalid") {
+			this.#slugCheck = { kind: problem, slug: cleaned };
+			this.#syncSlugUi();
+			return;
+		}
+		const target = this.#target;
+		if (!target || this.#setup.signal.aborted) return;
+		const abort = new AbortController();
+		this.#slugCheckAbort = abort;
+		this.#slugCheck = { kind: "checking", slug: cleaned };
+		this.#syncSlugUi();
+		const signal = AbortSignal.any([this.#setup.signal, abort.signal]);
+		void target.client
+			.checkSlug(target.siteId, cleaned, signal)
+			.then(
+				(result) => {
+					if (
+						this.#setup.signal.aborted ||
+						abort.signal.aborted ||
+						target !== this.#target ||
+						seq !== this.#slugCheckSeq ||
+						!this.#open ||
+						this.#page.kind !== "edit"
+					)
+						return;
+					if (cleanSiteSlugInput(this.#slugField.value) !== cleaned) return;
+					if (result.reason === "current") this.#slugCheck = { kind: "idle" };
+					else if (result.available) this.#slugCheck = { kind: "available", slug: cleaned };
+					else if (result.reason === "invalid") this.#slugCheck = { kind: "invalid", slug: cleaned };
+					else this.#slugCheck = { kind: "unavailable", slug: cleaned };
+					this.#syncSlugUi();
+				},
+				(error: unknown) => {
+					if (
+						this.#setup.signal.aborted ||
+						abort.signal.aborted ||
+						target !== this.#target ||
+						seq !== this.#slugCheckSeq ||
+						!this.#open ||
+						this.#page.kind !== "edit"
+					)
+						return;
+					if (cleanSiteSlugInput(this.#slugField.value) !== cleaned) return;
+					if (error instanceof CloudRpcError && error.message.trim() === "SITE_TAKEN_DOWN") {
+						this.#slugCheck = { kind: "idle" };
+						this.#problem = addressRefusal(error, phrase("The address could not be changed. Try again."));
+						this.#paint();
+						return;
+					}
+					this.#slugCheck = { kind: "error", slug: cleaned };
+					this.#syncSlugUi();
+				},
+			)
+			.finally(() => {
+				if (this.#slugCheckAbort === abort) this.#slugCheckAbort = undefined;
+			});
+	}
+
+	#saveSlug(): void {
+		if (this.#savingSlug || !this.#target || !this.#known || !this.#setup.canManage()) return;
+		const cleaned = cleanSiteSlugInput(this.#slugField.value);
+		const current = this.#currentSlug();
+		if (!cleaned || cleaned === current) {
+			this.#slugField.focus();
+			return;
+		}
+		const problem = validateSiteSlugInput(cleaned);
+		if (problem !== undefined) {
+			this.#cancelSlugCheck();
+			this.#slugCheck = { kind: problem === "reserved" ? "unavailable" : problem, slug: cleaned };
+			this.#syncSlugUi();
+			this.#slugField.focus();
+			return;
+		}
+		if (this.#slugCheck.kind !== "available" || this.#slugCheck.slug !== cleaned) {
+			if (this.#slugTimer !== undefined) {
+				clearTimeout(this.#slugTimer);
+				this.#slugTimer = undefined;
+				this.#runSlugCheck(cleaned, this.#slugCheckSeq);
+			}
+			this.#slugField.focus();
+			return;
+		}
+		const target = this.#target;
+		const inside = this.#sheet.contains(document.activeElement);
+		this.#savingSlug = true;
+		this.#writing++;
+		this.#problem = undefined;
+		this.#syncSlugUi();
+		this.#setup.changed();
+		void target.client
+			.setSlug(target.siteId, cleaned, this.#setup.signal)
+			.then(
+				(updated) => {
+					this.#savingSlug = false;
+					this.#writing--;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					if (this.#known) this.#known.slug = updated.slug;
+					this.#liveUrl = updated.url;
+					this.#cancelSlugCheck();
+					this.#page = MAIN;
+					this.#setup.slugChanged?.(updated);
+					this.#changed();
+					if (inside && this.#open) this.#land({ kind: "edit" });
+					if (this.#writing === 0) void this.#read();
+				},
+				(error: unknown) => {
+					this.#savingSlug = false;
+					this.#writing--;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					if (
+						error instanceof CloudRpcError &&
+						(error.message.trim() === "SITE_SLUG_TAKEN" || error.code === "23505")
+					) {
+						this.#slugCheck = { kind: "unavailable", slug: cleaned };
+						this.#problem = undefined;
+						this.#syncSlugUi();
+					} else {
+						this.#problem = addressRefusal(error, phrase("The address could not be changed. Try again."));
+						this.#paint();
+					}
+					if (this.#open && this.#slugField.isConnected) this.#slugField.focus();
+					this.#setup.changed();
+				},
+			);
+	}
+
+	#slugCanSave(): boolean {
+		if (this.#savingSlug) return false;
+		const cleaned = cleanSiteSlugInput(this.#slugField.value);
+		return (
+			Boolean(cleaned) &&
+			cleaned !== this.#currentSlug() &&
+			this.#slugCheck.kind === "available" &&
+			this.#slugCheck.slug === cleaned
+		);
+	}
+
+	#availabilityElement(): HTMLElement {
+		const check = this.#slugCheck;
+		let tone = "";
+		let label = "";
+		if (check.kind === "checking") {
+			tone = "is-checking";
+			label = t("Checking…");
+		} else if (check.kind === "available") {
+			tone = "is-available";
+			label = t("Available");
+		} else if (check.kind === "unavailable") {
+			tone = "is-unavailable";
+			label = t("Unavailable");
+		} else if (check.kind === "too_short") {
+			tone = "is-invalid";
+			label = t("At least 3 characters.");
+		} else if (check.kind === "invalid") {
+			tone = "is-invalid";
+			label = t("Use lowercase letters, numbers, and single hyphens.");
+		} else if (check.kind === "error") {
+			tone = "is-invalid";
+			label = t("Could not check availability.");
+		}
+		return h(
+			"span",
+			{
+				class: ["surface-address-availability", tone].filter(Boolean).join(" "),
+				role: "status",
+				"aria-live": "polite",
+				hidden: !label,
+			},
+			h("span", { class: "surface-address-availability-dot", "aria-hidden": "true" }),
+			h("span", { class: "surface-address-availability-text" }, label),
+		);
+	}
+
+	#syncSlugUi(): void {
+		if (!this.#open || this.#page.kind !== "edit") return;
+		const status = this.#sheet.querySelector(".surface-address-availability");
+		if (status) status.replaceWith(this.#availabilityElement());
+		const save = this.#sheet.querySelector<HTMLButtonElement>('[data-key="save-slug"]');
+		if (save) {
+			save.disabled = !this.#slugCanSave();
+			save.textContent = this.#savingSlug ? t("Saving…") : t("Save");
+		}
+		const box = this.#sheet.querySelector(".surface-address-slug-box");
+		if (box) {
+			box.classList.toggle("is-available", this.#slugCheck.kind === "available");
+			box.classList.toggle("is-unavailable", this.#slugCheck.kind === "unavailable");
+		}
 	}
 
 	#addDomain(): void {
@@ -627,6 +933,7 @@ export class SurfaceAddress {
 		const page = this.#page;
 		const known = this.#known;
 		if (!known) return MAIN;
+		if (page.kind === "edit") return this.#canEditSlug() ? page : MAIN;
 		if (page.kind === "add")
 			return this.#setup.canManage() && known.hosting.domainsEnabled && known.domains.length < ADDRESS_DOMAIN_LIMIT
 				? page
@@ -654,7 +961,9 @@ export class SurfaceAddress {
 				: known === null
 					? "none"
 					: [
+							known.slug,
 							known.isPublic,
+							known.hosting.hostsDomain,
 							known.hosting.publicEnabled,
 							known.hosting.domainsEnabled,
 							known.hosting.edgeIpv4,
@@ -681,6 +990,10 @@ export class SurfaceAddress {
 		const first = this.#sheet.hidden;
 		this.#painted = key;
 		const shown = this.#shown();
+		if (shown.kind !== "edit" && this.#page.kind === "edit") {
+			this.#page = MAIN;
+			this.#cancelSlugCheck();
+		}
 		const name = pageName(shown);
 		const turned = this.#paintedPage !== "" && this.#paintedPage !== name;
 		const forward = turned && shown.kind !== "main";
@@ -694,13 +1007,15 @@ export class SurfaceAddress {
 					.join(" "),
 				"data-page": name,
 			},
-			...(shown.kind === "add"
-				? this.#addPage(shown.from)
-				: shown.kind === "domain"
-					? verified(shown.domain)
-						? this.#managePage(shown.domain)
-						: this.#handPage(shown.domain)
-					: this.#mainPage()),
+			...(shown.kind === "edit"
+				? this.#editPage()
+				: shown.kind === "add"
+					? this.#addPage(shown.from)
+					: shown.kind === "domain"
+						? verified(shown.domain)
+							? this.#managePage(shown.domain)
+							: this.#handPage(shown.domain)
+						: this.#mainPage()),
 		);
 		replace(this.#sheet, page);
 		this.#sheet.hidden = false;
@@ -743,6 +1058,25 @@ export class SurfaceAddress {
 			cut > 0 ? name.slice(0, cut) : name,
 			cut > 0 ? h("span", null, name.slice(cut)) : null,
 		);
+		const nameRow = this.#canEditSlug()
+			? h(
+					"div",
+					{ class: "surface-address-name-row" },
+					shownName,
+					h(
+						"button",
+						{
+							type: "button",
+							class: "surface-address-edit",
+							"aria-label": t("Edit address"),
+							title: t("Edit address"),
+							"data-key": "edit-slug",
+							onclick: () => this.#openEdit(),
+						},
+						icon("edit"),
+					),
+				)
+			: shownName;
 		const under =
 			known === undefined
 				? this.#failed
@@ -757,7 +1091,7 @@ export class SurfaceAddress {
 							: known.hosting.publicEnabled
 								? this.#goButton()
 								: this.#quietLine(t(REFUSALS.PUBLIC_SITES_DISABLED!));
-		const head = h("div", { class: "surface-address-head" }, shownName, under, this.#problemLine());
+		const head = h("div", { class: "surface-address-head" }, nameRow, under, this.#problemLine());
 		if (!known) return [head];
 		const domains = known.domains.map((domain) => this.#domainRow(domain, manage));
 		if (domains.length === 0 && manage)
@@ -862,6 +1196,56 @@ export class SurfaceAddress {
 			),
 			h("h2", { class: "surface-address-title" }, title),
 		);
+	}
+
+	#editPage(): (HTMLElement | null)[] {
+		const suffix = this.#nativeSuffix();
+		const boxClass = [
+			"surface-address-slug-box",
+			this.#slugCheck.kind === "available" && "is-available",
+			this.#slugCheck.kind === "unavailable" && "is-unavailable",
+		]
+			.filter(Boolean)
+			.join(" ");
+		return [
+			this.#top(t("Edit address"), MAIN),
+			h(
+				"form",
+				{
+					class: "surface-address-body",
+					autocomplete: "off",
+					onsubmit: (event: SubmitEvent) => {
+						event.preventDefault();
+						this.#saveSlug();
+					},
+				},
+				h(
+					"div",
+					{
+						class: boxClass,
+						onclick: () => this.#slugField.focus(),
+					},
+					this.#slugField,
+					h("span", { class: "surface-address-slug-suffix", "aria-hidden": "true" }, suffix),
+				),
+				h(
+					"div",
+					{ class: "surface-address-slug-foot" },
+					this.#availabilityElement(),
+					h(
+						"button",
+						{
+							type: "submit",
+							class: "surface-address-pill",
+							"data-key": "save-slug",
+							disabled: !this.#slugCanSave(),
+						},
+						this.#savingSlug ? t("Saving…") : t("Save"),
+					),
+				),
+				this.#problemLine(),
+			),
+		];
 	}
 
 	#addPage(from: string | undefined): HTMLElement[] {

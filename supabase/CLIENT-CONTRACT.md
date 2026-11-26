@@ -2192,6 +2192,13 @@ makes the interface's website not public in the same transaction, when the websi
 - An app link (kind `app`) is left as it is: its auth mode decides who reaches it.
 - The migration settled once every public website whose interfaces are all deleted, the same way.
 
+#### Changing a website's own subdomain (20260930914000_company_site_slug_edit)
+
+Owners and admins of a website (kind `files`) may check and change its `.qorpera.site` / `.qorpera.com` subdomain (slug) while keeping the base domain locked:
+
+- `qorpera_check_company_site_slug(p_site_id uuid, p_slug text)`: authenticated owners and admins only (42501 otherwise; 22023 `SITE_KIND_UNSUPPORTED` for app links). Trims and lower-cases `p_slug`, returning `{schema: "qorpera.company-site-slug-check/v1", siteId, slug, available, reason}` where `reason` is `"current"`, `"available"`, `"taken"`, `"reserved"`, or `"invalid"`. Abandoned sites (`qorpera_site_abandoned`) do not block availability; no holder identity is ever returned.
+- `qorpera_set_company_site_slug(p_site_id uuid, p_slug text)`: authenticated owners and admins only (42501 otherwise or on `SITE_TAKEN_DOWN`; 22023 on `SITE_SLUG_INVALID` or `SITE_KIND_UNSUPPORTED`; 23505 on `SITE_SLUG_TAKEN`). Locks linked `qorpera_code_repositories` before `qorpera_company_sites`, reclaims an abandoned holder if needed, updates `slug` and `updated_at`, clears stale `qorpera_company_site_member_passes`, `qorpera_company_site_tickets` and `qorpera_company_site_sessions`, bumps `index_version` on linked code repositories, and returns `{schema: "qorpera.company-site-slug/v1", siteId, slug, url}`. Existing `qorpera_web_notify_sites` immediately notifies `qorpera-web-router`, and the deferred constraint trigger `qorpera_live_hint_site_slug` broadcasts a `surfaces` live hint whenever `slug` changes.
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its

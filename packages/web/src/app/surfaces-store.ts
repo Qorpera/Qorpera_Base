@@ -6040,6 +6040,17 @@ export class SurfacesStore {
 		return true;
 	}
 
+	noteSiteSlug(surfaceId: string, slug: string, url: string): void {
+		const current = this.state.surfaces.find((item) => item.id === surfaceId);
+		if (!current) return;
+		if (current.siteSlug !== slug || current.liveUrl !== url) {
+			this.#putSurface({ ...current, siteSlug: slug, liveUrl: url });
+		}
+		if (this.state.source === "cloud" && this.state.workspaces[surfaceId] && !isLocalSurfaceId(surfaceId)) {
+			void this.refreshWorkspace(surfaceId, 0, { background: false });
+		}
+	}
+
 	#putSurface(surface: SurfaceSummary): void {
 		this.#surfacesMutationEpoch += 1;
 		this.#reconcilePendingPublish(surface);
@@ -6201,7 +6212,9 @@ function surfaceCountsChanged(prev: SurfaceSummary | undefined, next: SurfaceSum
 		prev.activeSessionCount !== next.activeSessionCount ||
 		prev.runningSessionCount !== next.runningSessionCount ||
 		prev.pendingChangeCount !== next.pendingChangeCount ||
-		prev.needsAttentionCount !== next.needsAttentionCount
+		prev.needsAttentionCount !== next.needsAttentionCount ||
+		prev.siteSlug !== next.siteSlug ||
+		prev.liveUrl !== next.liveUrl
 	);
 }
 

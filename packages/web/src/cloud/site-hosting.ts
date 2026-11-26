@@ -1,4 +1,5 @@
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { CODE_SITE_RESERVED_NAMES } from "@qorpera/contracts";
 import type { Cloud } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
@@ -68,9 +69,27 @@ export interface SiteDnsRecord {
 	readonly value: string;
 }
 
+export type SiteSlugAvailabilityReason = "available" | "current" | "taken" | "reserved" | "invalid";
+export type SiteSlugValidationProblem = "too_short" | "invalid" | "reserved";
+
+export interface SiteSlugAvailability {
+	readonly siteId: string;
+	readonly slug: string;
+	readonly available: boolean;
+	readonly reason: SiteSlugAvailabilityReason;
+}
+
+export interface UpdatedSiteSlug {
+	readonly siteId: string;
+	readonly slug: string;
+	readonly url: string;
+}
+
 export interface WebSiteHosting {
 	read(signal?: AbortSignal): Promise<CompanySiteHostingState>;
 	setPublic(siteId: string, isPublic: boolean, signal?: AbortSignal): Promise<boolean>;
+	checkSlug(siteId: string, slug: string, signal?: AbortSignal): Promise<SiteSlugAvailability>;
+	setSlug(siteId: string, slug: string, signal?: AbortSignal): Promise<UpdatedSiteSlug>;
 	addDomain(siteId: string, hostname: string, isApex: boolean, signal?: AbortSignal): Promise<AddedSiteDomain>;
 	removeDomain(domainId: string, signal?: AbortSignal): Promise<boolean>;
 	setPrimaryDomain(domainId: string, signal?: AbortSignal): Promise<string>;
@@ -79,9 +98,18 @@ export interface WebSiteHosting {
 
 const HOSTING_TIMEOUT_MS = 10_000;
 const DOMAIN_STATUSES = new Set<CustomDomainStatus>(["pending_dns", "dns_verified", "tls_active", "moved", "failed"]);
+const SLUG_AVAILABILITY_REASONS = new Set<SiteSlugAvailabilityReason>([
+	"available",
+	"current",
+	"taken",
+	"reserved",
+	"invalid",
+]);
 const DEPLOYMENT_KINDS = new Set<SiteDeploymentKind>(["static", "server", "hybrid"]);
 const STORAGE_MODES = new Set<SiteStorageMode>(["db", "blob"]);
 const FQDN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const SITE_SLUG_SHAPE = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+const SITE_SLUG_RESERVED = new Set(CODE_SITE_RESERVED_NAMES.split(" "));
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -146,6 +174,23 @@ export function domainDnsSetup(state: CompanySiteHostingState, domain: SiteCusto
 export function isApexHostname(hostname: string): boolean {
 	const cleaned = hostname.trim().toLowerCase().replace(/\.$/, "");
 	return cleaned.split(".").length === 2;
+}
+
+export function cleanSiteSlugInput(slug: string): string {
+	return slug.trim().toLowerCase();
+}
+
+export function validateSiteSlugInput(slug: string): SiteSlugValidationProblem | undefined {
+	const cleaned = cleanSiteSlugInput(slug);
+	if (/[^a-z0-9-]/.test(cleaned) || cleaned.includes("--") || cleaned.startsWith("-") || cleaned.endsWith("-")) {
+		return "invalid";
+	}
+	if (cleaned.length < 3) return "too_short";
+	if (cleaned.length > 48 || !SITE_SLUG_SHAPE.test(cleaned)) return "invalid";
+	if (cleaned.endsWith("-preview") || cleaned.includes("qorpera") || SITE_SLUG_RESERVED.has(cleaned)) {
+		return "reserved";
+	}
+	return undefined;
 }
 
 export function validateCustomDomainInput(hostname: string): string | undefined {
@@ -257,6 +302,55 @@ export function parseAddedSiteDomain(value: unknown): AddedSiteDomain {
 	};
 }
 
+export function parseSiteSlugAvailability(value: unknown, siteId: string): SiteSlugAvailability {
+	const input = asRecord(value);
+	if (
+		!input ||
+		input.schema !== "qorpera.company-site-slug-check/v1" ||
+		input.siteId !== siteId ||
+		typeof input.slug !== "string" ||
+		typeof input.available !== "boolean" ||
+		typeof input.reason !== "string" ||
+		!SLUG_AVAILABILITY_REASONS.has(input.reason as SiteSlugAvailabilityReason)
+	) {
+		throw new Error("Invalid site address check response.");
+	}
+	return {
+		siteId: input.siteId,
+		slug: input.slug,
+		available: input.available,
+		reason: input.reason as SiteSlugAvailabilityReason,
+	};
+}
+
+export function parseUpdatedSiteSlug(value: unknown, siteId: string): UpdatedSiteSlug {
+	const input = asRecord(value);
+	if (
+		!input ||
+		input.schema !== "qorpera.company-site-slug/v1" ||
+		input.siteId !== siteId ||
+		typeof input.slug !== "string" ||
+		validateSiteSlugInput(input.slug) !== undefined ||
+		typeof input.url !== "string"
+	) {
+		throw new Error("Invalid site address response.");
+	}
+	let parsedUrl: URL;
+	try {
+		parsedUrl = new URL(input.url);
+	} catch {
+		throw new Error("Invalid site address response.");
+	}
+	if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+		throw new Error("Invalid site address response.");
+	}
+	return {
+		siteId: input.siteId,
+		slug: input.slug,
+		url: input.url,
+	};
+}
+
 export function createWebSiteHosting(cloud: Cloud, company: { profileId: string }): WebSiteHosting {
 	if (!UUID_PATTERN.test(company.profileId)) throw new Error("Invalid company for site hosting.");
 	return {
@@ -288,6 +382,31 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 				throw new Error("Invalid visibility response.");
 			}
 			return raw.isPublic;
+		},
+		async checkSlug(siteId, slug, signal) {
+			signal?.throwIfAborted();
+			if (!UUID_PATTERN.test(siteId)) throw new Error("Invalid site.");
+			const cleaned = cleanSiteSlugInput(slug);
+			const raw = await withCloudDeadline(
+				(deadline) =>
+					cloud.rpc("qorpera_check_company_site_slug", { p_site_id: siteId, p_slug: cleaned }, deadline),
+				HOSTING_TIMEOUT_MS,
+				signal,
+			);
+			return parseSiteSlugAvailability(raw, siteId);
+		},
+		async setSlug(siteId, slug, signal) {
+			signal?.throwIfAborted();
+			if (!UUID_PATTERN.test(siteId)) throw new Error("Invalid site.");
+			const cleaned = cleanSiteSlugInput(slug);
+			if (validateSiteSlugInput(cleaned) !== undefined) throw new Error("Invalid site address.");
+			const raw = await withCloudDeadline(
+				(deadline) =>
+					cloud.rpc("qorpera_set_company_site_slug", { p_site_id: siteId, p_slug: cleaned }, deadline),
+				HOSTING_TIMEOUT_MS,
+				signal,
+			);
+			return parseUpdatedSiteSlug(raw, siteId);
 		},
 		async addDomain(siteId, hostname, isApex, signal) {
 			signal?.throwIfAborted();

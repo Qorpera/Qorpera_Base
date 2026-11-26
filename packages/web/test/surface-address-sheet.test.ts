@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	ADDRESS_POLL_MS,
 	ADDRESS_RECHECK_GAP_MS,
+	ADDRESS_SLUG_CHECK_MS,
 	type AddressMark,
 	SurfaceAddress,
 	type SurfaceAddressSetup,
@@ -25,7 +26,7 @@ afterEach(() => {
 function mount(
 	world: Partial<HostingWorld> = {},
 	manage = true,
-	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged"> = {},
+	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged" | "slugChanged"> = {},
 	liveUrl = LIVE_URL,
 ) {
 	const container = h("div", { class: "surface-canvas" });
@@ -84,13 +85,18 @@ const records = () =>
 const refusal = (message: string, code = "42501") => new CloudRpcError("rpc", { message, code });
 const changing = () =>
 	sheet().querySelectorAll(
-		".surface-address-go, .surface-address-input, [data-key='add'], [data-key='remove'], [data-key='not-live']",
+		".surface-address-go, .surface-address-input, .surface-address-slug-input, [data-key='edit-slug'], [data-key='add'], [data-key='remove'], [data-key='not-live']",
 	).length;
+const editButton = () => sheet().querySelector<HTMLButtonElement>("[data-key='edit-slug']");
+const slugField = () => sheet().querySelector<HTMLInputElement>(".surface-address-slug-input");
+const slugSuffix = () => sheet().querySelector<HTMLElement>(".surface-address-slug-suffix")?.textContent;
+const availability = () => sheet().querySelector<HTMLElement>(".surface-address-availability");
+const saveSlugButton = () => sheet().querySelector<HTMLButtonElement>("[data-key='save-slug']");
 
 async function opened(
 	world: Partial<HostingWorld> = {},
 	manage = true,
-	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged"> = {},
+	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged" | "slugChanged"> = {},
 	liveUrl = LIVE_URL,
 ) {
 	const mounted = mount(world, manage, hooks, liveUrl);
@@ -694,5 +700,207 @@ describe("the address card's focus", () => {
 		address.open();
 		expect(field()).toBeNull();
 		expect(go()?.textContent).toBe("Go live");
+	});
+});
+
+describe("editing the platform subdomain", () => {
+	it("shows the locked suffix, checks availability with available/unavailable indicators, and saves", async () => {
+		vi.useFakeTimers();
+		const slugChanged = vi.fn();
+		const { client, address } = mount(
+			{
+				entry: { slug: "thetaband-website", isPublic: true, domains: [] },
+				hostsDomain: "qorpera.site",
+				takenSlugs: ["taken-site"],
+			},
+			true,
+			{ slugChanged },
+			"https://thetaband-website.qorpera.site/",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		address.open();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(editButton()).not.toBeNull();
+		editButton()!.click();
+		expect(title()).toBe("Edit address");
+		expect(slugField()?.value).toBe("thetaband-website");
+		expect(slugSuffix()).toBe(".qorpera.site");
+		expect(document.activeElement).toBe(slugField());
+		expect(saveSlugButton()?.disabled).toBe(true);
+		expect(availability()?.hidden).toBe(true);
+
+		slugField()!.value = "taken-site";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(client.checkSlug).toHaveBeenCalledWith(HOSTED_SITE, "taken-site", expect.any(AbortSignal));
+		expect(availability()?.hidden).toBe(false);
+		expect(availability()?.classList.contains("is-unavailable")).toBe(true);
+		expect(availability()?.textContent).toBe("Unavailable");
+		expect(saveSlugButton()?.disabled).toBe(true);
+
+		slugField()!.value = "shop";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(client.checkSlug).toHaveBeenCalledTimes(1);
+		expect(availability()?.classList.contains("is-unavailable")).toBe(true);
+		expect(availability()?.textContent).toBe("Unavailable");
+		expect(saveSlugButton()?.disabled).toBe(true);
+
+		slugField()!.value = "ab";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(availability()?.classList.contains("is-invalid")).toBe(true);
+		expect(availability()?.textContent).toBe("At least 3 characters.");
+		expect(saveSlugButton()?.disabled).toBe(true);
+
+		slugField()!.value = "bad--name";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(availability()?.classList.contains("is-invalid")).toBe(true);
+		expect(availability()?.textContent).toBe("Use lowercase letters, numbers, and single hyphens.");
+
+		slugField()!.value = "ThetaBand";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(client.checkSlug).toHaveBeenLastCalledWith(HOSTED_SITE, "thetaband", expect.any(AbortSignal));
+		expect(availability()?.classList.contains("is-available")).toBe(true);
+		expect(availability()?.textContent).toBe("Available");
+		expect(saveSlugButton()?.disabled).toBe(false);
+
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(client.setSlug).toHaveBeenCalledWith(HOSTED_SITE, "thetaband", expect.any(AbortSignal));
+		expect(slugChanged).toHaveBeenCalledWith({
+			siteId: HOSTED_SITE,
+			slug: "thetaband",
+			url: "https://thetaband.qorpera.site/",
+		});
+		expect(title()).toBeUndefined();
+		expect(name()).toBe("thetaband.qorpera.site");
+		expect(bar().textContent).toBe("thetaband.qorpera.site");
+		expect((row("Open the site") as HTMLAnchorElement).href).toBe("https://thetaband.qorpera.site/");
+		expect(document.activeElement).toBe(editButton());
+	});
+
+	it("shows Checking while an availability request is in flight and discards stale responses", async () => {
+		vi.useFakeTimers();
+		let resolveFirst: (value: {
+			siteId: string;
+			slug: string;
+			available: boolean;
+			reason: "available" | "taken";
+		}) => void = () => undefined;
+		let resolveSecond: (value: {
+			siteId: string;
+			slug: string;
+			available: boolean;
+			reason: "available" | "taken";
+		}) => void = () => undefined;
+		const { client, address } = mount(
+			{ entry: { slug: "thetaband", isPublic: false, domains: [] }, hostsDomain: "qorpera.site" },
+			true,
+			{},
+			"https://thetaband.qorpera.site/",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		address.open();
+		await vi.advanceTimersByTimeAsync(0);
+		editButton()!.click();
+
+		client.checkSlug
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveFirst = resolve;
+					}),
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveSecond = resolve;
+					}),
+			);
+
+		slugField()!.value = "first-pick";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(availability()?.classList.contains("is-checking")).toBe(true);
+		expect(availability()?.textContent).toBe("Checking…");
+		expect(saveSlugButton()?.disabled).toBe(true);
+
+		slugField()!.value = "second-pick";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		resolveFirst({ siteId: HOSTED_SITE, slug: "first-pick", available: true, reason: "available" });
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(availability()?.textContent).toBe("Checking…");
+		expect(saveSlugButton()?.disabled).toBe(true);
+
+		resolveSecond({ siteId: HOSTED_SITE, slug: "second-pick", available: false, reason: "taken" });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(availability()?.classList.contains("is-unavailable")).toBe(true);
+		expect(availability()?.textContent).toBe("Unavailable");
+		expect(saveSlugButton()?.disabled).toBe(true);
+	});
+
+	it("marks Unavailable on a save race and shows plain refusal lines on other errors", async () => {
+		vi.useFakeTimers();
+		const { client, address } = mount(
+			{ entry: { slug: "thetaband", isPublic: true, domains: [] }, hostsDomain: "qorpera.site" },
+			true,
+			{},
+			"https://thetaband.qorpera.site/",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		address.open();
+		await vi.advanceTimersByTimeAsync(0);
+		editButton()!.click();
+
+		slugField()!.value = "raced-name";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		expect(saveSlugButton()?.disabled).toBe(false);
+
+		client.setSlug.mockRejectedValueOnce(refusal("SITE_SLUG_TAKEN", "23505"));
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(title()).toBe("Edit address");
+		expect(slugField()?.value).toBe("raced-name");
+		expect(availability()?.classList.contains("is-unavailable")).toBe(true);
+		expect(availability()?.textContent).toBe("Unavailable");
+		expect(saveSlugButton()?.disabled).toBe(true);
+
+		slugField()!.value = "other-name";
+		slugField()!.dispatchEvent(new Event("input", { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ADDRESS_SLUG_CHECK_MS);
+		client.setSlug.mockRejectedValueOnce(refusal("SITE_TAKEN_DOWN", "42501"));
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(problem()).toBe("Qorpera took this site down, so this cannot change now.");
+	});
+
+	it("hides the edit control when a verified custom domain is active or when the member cannot manage sites", async () => {
+		const primary = siteDomain("www.thetaband.dk", "tls_active", { isPrimary: true });
+		await opened({ entry: { isPublic: true, domains: [primary] } });
+		expect(editButton()).toBeNull();
+		document.body.replaceChildren();
+
+		await opened({ entry: { isPublic: true, domains: [] } }, false);
+		expect(editButton()).toBeNull();
+	});
+
+	it("returns focus to the edit button when going back", async () => {
+		await opened();
+		editButton()!.click();
+		expect(title()).toBe("Edit address");
+		back();
+		expect(title()).toBeUndefined();
+		expect(document.activeElement).toBe(editButton());
 	});
 });
