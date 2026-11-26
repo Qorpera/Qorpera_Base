@@ -261,7 +261,6 @@ export function claudeBoxArguments(
  * private to this account: the driver mounts it at /slot/config and never opens what is in it. */
 export type ClaudeBoxLogin = { readonly token: string } | { readonly folder: string };
 
-/** Maximum UTF-8 byte length of `--append-system-prompt-file` passed into the Claude Code box. */
 export const CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES = 65_536;
 
 /** The box's environment (bwrap sets it after clearing its own). */
@@ -1274,7 +1273,6 @@ export interface ClaudeCodeBoxOptions {
 	endSession?: (sessionId: string, reason: "ended" | "stopped") => Promise<void>;
 	/** What the model is asked; Claude Code reads it on stdin. */
 	prompt: string;
-	/** A short note appended to Claude Code's own system prompt (at most 64 KiB), read-only in the box. */
 	systemNote?: string;
 	model?: string;
 	effort?: string;
