@@ -26,7 +26,9 @@ export function prepareTitle(block: SurfaceTitleBlock, ctx: SurfaceBlockContext)
 						lineText
 							? h(
 									"p",
-									{ class: `studio-product-line${ownLine ? "" : " is-brief"}${ownLine && line.changed ? " is-changed" : ""}` },
+									{
+										class: `studio-product-line${ownLine ? "" : " is-brief"}${ownLine && line.changed ? " is-changed" : ""}`,
+									},
 									lineText,
 								)
 							: h("p", { class: "studio-product-line is-empty" }, t("One line about what it is")),
