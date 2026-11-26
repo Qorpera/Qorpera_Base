@@ -170,4 +170,39 @@ describe("the Company File's hint channel", () => {
 		expect(removeAllChannels).not.toHaveBeenCalled();
 		expect(disconnect).not.toHaveBeenCalled();
 	});
+
+	it("waits for an in-flight folder-hint channel removal before opening a replacement channel on the same topic", async () => {
+		const { files, supabase } = company();
+		const pendingRemoval = deferred<string>();
+		supabase.removeChannel.mockImplementationOnce(() => {
+			realtime.order.push("remove-start");
+			return pendingRemoval.promise.then((status) => {
+				realtime.order.push("remove-done");
+				return status;
+			});
+		});
+		const first = files.folderHints(() => {});
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(1);
+
+		const closing = first.close();
+		await settle();
+		expect(realtime.order).toContain("remove-start");
+
+		const second = files.folderHints(() => {});
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(1);
+
+		pendingRemoval.resolve("ok");
+		await closing;
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(2);
+		const doneIndex = realtime.order.indexOf("remove-done");
+		const secondChannelIndex = realtime.order.findIndex(
+			(step, index) => index > doneIndex && step.startsWith("channel "),
+		);
+		expect(doneIndex).toBeGreaterThan(-1);
+		expect(secondChannelIndex).toBeGreaterThan(doneIndex);
+		await second.close();
+	});
 });

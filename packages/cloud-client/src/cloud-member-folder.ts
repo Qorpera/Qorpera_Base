@@ -1536,8 +1536,29 @@ export function parseCloudMemberFolderHint(value: unknown): number | null {
 	return (hint.seq as number) >= 1 ? (hint.seq as number) : null;
 }
 
+type FolderHintClient = Pick<SupabaseClient, "channel" | "removeChannel"> & {
+	readonly getChannels?: SupabaseClient["getChannels"];
+};
+
+const pendingHintRemovals = new WeakMap<object, Map<string, Promise<unknown>>>();
+
+function removeHintChannel(client: FolderHintClient, topic: string, channel: RealtimeChannel): Promise<unknown> {
+	let byTopic = pendingHintRemovals.get(client);
+	if (!byTopic) {
+		byTopic = new Map();
+		pendingHintRemovals.set(client, byTopic);
+	}
+	const previous = byTopic.get(topic);
+	const current = withCloudDeadline(() => client.removeChannel(channel), 2000).catch(() => "error");
+	const tracked = (previous ? Promise.allSettled([previous, current]) : current).finally(() => {
+		if (byTopic.get(topic) === tracked) byTopic.delete(topic);
+	});
+	byTopic.set(topic, tracked);
+	return current;
+}
+
 export class CloudMemberFolderHints {
-	readonly #client: Pick<SupabaseClient, "channel" | "removeChannel">;
+	readonly #client: FolderHintClient;
 	readonly #topic: string;
 	readonly #signal: AbortSignal;
 	readonly #onHint: (seq: number) => void;
@@ -1545,6 +1566,7 @@ export class CloudMemberFolderHints {
 	#channel: RealtimeChannel | undefined;
 	readonly #removing = new Set<RealtimeChannel>();
 	#retry: ReturnType<typeof setTimeout> | undefined;
+	#joining = false;
 	#closed = false;
 	readonly #onAbort = (): void => {
 		void this.close();
@@ -1552,7 +1574,7 @@ export class CloudMemberFolderHints {
 
 	constructor(options: {
 		environmentId: string;
-		client: Pick<SupabaseClient, "channel" | "removeChannel">;
+		client: FolderHintClient;
 		signal: AbortSignal;
 		onHint(seq: number): void;
 		onState?(connected: boolean): void;
@@ -1570,7 +1592,43 @@ export class CloudMemberFolderHints {
 		this.#join();
 	}
 
+	#heldChannels(): RealtimeChannel[] {
+		return (this.#client.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${this.#topic}`);
+	}
+
 	#join(): void {
+		if (this.#closed || this.#channel || this.#joining) return;
+		const pending = pendingHintRemovals.get(this.#client)?.get(this.#topic);
+		const held = this.#heldChannels();
+		if (!pending && held.length === 0) {
+			this.#openChannel();
+			return;
+		}
+		this.#joining = true;
+		void this.#joinAfterCleanup();
+	}
+
+	async #joinAfterCleanup(): Promise<void> {
+		try {
+			while (!this.#closed) {
+				const pending = pendingHintRemovals.get(this.#client)?.get(this.#topic);
+				if (pending) {
+					await pending;
+					continue;
+				}
+				const held = this.#heldChannels();
+				if (held.length === 0) break;
+				await Promise.all(held.map((each) => removeHintChannel(this.#client, this.#topic, each)));
+				break;
+			}
+		} finally {
+			this.#joining = false;
+		}
+		if (this.#closed || this.#channel) return;
+		this.#openChannel();
+	}
+
+	#openChannel(): void {
 		if (this.#closed || this.#channel) return;
 		const channel = this.#client.channel(this.#topic, { config: { private: true } });
 		this.#channel = channel;
@@ -1593,7 +1651,7 @@ export class CloudMemberFolderHints {
 	// WHY: Remove the dead channel before rejoining so Supabase does not hand back the same unsubscribed channel instance.
 	async #rejoin(old: RealtimeChannel): Promise<void> {
 		this.#removing.add(old);
-		const removed = await withCloudDeadline(() => this.#client.removeChannel(old), 2000).catch(() => "error");
+		const removed = await removeHintChannel(this.#client, this.#topic, old);
 		if (removed === "ok") this.#removing.delete(old);
 		if (this.#closed) return;
 		// WHY: Jitter rejoin timers across [0.75x, 1.0x] to prevent synchronized reconnect storms across tabs.
@@ -1618,11 +1676,7 @@ export class CloudMemberFolderHints {
 		}
 		this.#removing.clear();
 		if (toRemove.length > 0) {
-			await Promise.all(
-				toRemove.map((channel) =>
-					withCloudDeadline(() => this.#client.removeChannel(channel), 2000).catch(() => undefined),
-				),
-			);
+			await Promise.all(toRemove.map((channel) => removeHintChannel(this.#client, this.#topic, channel)));
 		}
 	}
 }

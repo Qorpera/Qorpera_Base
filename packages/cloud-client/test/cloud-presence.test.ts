@@ -554,4 +554,39 @@ describe("shared browser presence", () => {
 		}
 		expect(f.unregister).toHaveBeenCalledTimes(1);
 	});
+
+	it("waits for an in-flight stop() channel removal before opening a replacement channel on the same profile", async () => {
+		const f = fixture();
+		const pendingRemoval = deferred<string>();
+		const order: string[] = [];
+		f.channel.mockImplementation(() => {
+			const value = new Channel();
+			f.channels.push(value);
+			order.push(`channel-${f.channels.length}`);
+			return value as unknown as RealtimeChannel;
+		});
+		f.remove.mockImplementationOnce(() => {
+			order.push("remove-start");
+			return pendingRemoval.promise.then((status) => {
+				order.push("remove-done");
+				return status;
+			});
+		});
+
+		const first = f.join();
+		await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+		const stopping = first.stop();
+		await vi.waitFor(() => expect(order).toContain("remove-start"));
+
+		const second = f.join();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(f.channels).toHaveLength(1);
+
+		pendingRemoval.resolve("ok");
+		await stopping;
+		await vi.waitFor(() => expect(f.channels).toHaveLength(2));
+		expect(order.indexOf("remove-done")).toBeGreaterThan(-1);
+		expect(order.indexOf("channel-2")).toBeGreaterThan(order.indexOf("remove-done"));
+		await second.stop();
+	});
 });

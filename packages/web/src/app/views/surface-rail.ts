@@ -19,7 +19,7 @@ import {
 	sectionNameOk,
 } from "../../cloud/surface-rail-layout.ts";
 import { type MenuEntry, menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
-import { confirmDialog, h, icon } from "../../ui/dom.ts";
+import { confirmDialog, h, icon, linkHref, setLinkHref } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
@@ -239,7 +239,7 @@ function syncSurfaceRow(
 	site: SiteAnswer,
 ): void {
 	const href = surfaceHash(profileId, surface.slug);
-	if (entry.el.getAttribute("href") !== href) entry.el.setAttribute("href", href);
+	if (linkHref(entry.el) !== href) setLinkHref(entry.el, href);
 	if (entry.el.title !== surface.title) entry.el.title = surface.title;
 	if (entry.el.dataset.surfaceSlug !== surface.slug) entry.el.dataset.surfaceSlug = surface.slug;
 	if (entry.el.dataset.surfaceKind !== look.kind) entry.el.dataset.surfaceKind = look.kind;

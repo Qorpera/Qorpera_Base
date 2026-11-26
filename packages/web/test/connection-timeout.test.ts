@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	AUTH_LOCK_TIMEOUT_MS,
 	type Cloud,
 	CloudRpcError,
 	connectionLost,
@@ -116,8 +117,16 @@ describe("a cloud that never answers", () => {
 
 	it("aborts a database response streaming mid-body when the caller signal aborts", async () => {
 		let canceled = false;
+		let streamingStarted!: () => void;
+		const streaming = new Promise<void>((resolve) => {
+			streamingStarted = resolve;
+		});
 		vi.stubGlobal("fetch", () => {
 			const body = new ReadableStream<Uint8Array>({
+				pull() {
+					streamingStarted();
+					return new Promise(() => {});
+				},
 				cancel() {
 					canceled = true;
 				},
@@ -132,8 +141,7 @@ describe("a cloud that never answers", () => {
 		clouds.push(cloud);
 		const stop = new AbortController();
 		const pending = cloud.rpc("qorpera_list_hosted_profiles", {}, stop.signal);
-		await Promise.resolve();
-		await Promise.resolve();
+		await streaming;
 		stop.abort(new DOMException("Cancelled", "AbortError"));
 		await expect(pending).rejects.toBeInstanceOf(CloudRpcError);
 		expect(canceled).toBe(true);
@@ -212,5 +220,33 @@ describe("a cloud that never answers", () => {
 		expect(settled).toBe(false);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(settled).toBe(true);
+	});
+
+	it("rejects cloud.rpc promptly when caller signal aborts while auth getSession is stalled", async () => {
+		const { cloud, asked } = silentCloud();
+		vi.spyOn(cloud.supabase.auth, "getSession").mockImplementation(() => new Promise(() => {}));
+		const stop = new AbortController();
+		const pending = cloud.rpc("qorpera_list_hosted_profiles", {}, stop.signal);
+		await Promise.resolve();
+		stop.abort(new DOMException("Company parked", "AbortError"));
+		const error = await pending.catch((err: unknown) => err);
+		expect(error).toBeInstanceOf(CloudRpcError);
+		expect(connectionLost(error)).toBe(false);
+		expect(asked).toEqual([]);
+	});
+
+	it("bounds cross-tab auth lock acquisition and classifies lock acquire timeouts as connectionLost", () => {
+		expect(AUTH_LOCK_TIMEOUT_MS).toBeGreaterThan(DATABASE_ANSWER_MS);
+		const lockTimeout = Object.assign(new Error("lock timed out"), { isAcquireTimeout: true });
+		expect(connectionLost(lockTimeout)).toBe(true);
+		const wrapped = new CloudRpcError(
+			"qorpera_list_hosted_profiles",
+			{
+				message:
+					'Error: Acquiring an exclusive Navigator LockManager lock "lock:qorpera-web-auth/v1" timed out waiting 25000ms',
+			},
+			0,
+		);
+		expect(connectionLost(wrapped)).toBe(true);
 	});
 });

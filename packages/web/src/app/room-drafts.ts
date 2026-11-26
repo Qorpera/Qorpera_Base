@@ -355,6 +355,7 @@ export class RoomDraftRoom {
 	#subscription: RoomDraftSubscription | undefined;
 	#closing: Promise<void> | undefined;
 	#refs = 0;
+	#paused = false;
 	#linger: ReturnType<typeof setTimeout> | undefined;
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#listing = 0;
@@ -384,7 +385,7 @@ export class RoomDraftRoom {
 		this.#refs += 1;
 		clearTimeout(this.#linger);
 		this.#linger = undefined;
-		void this.#open();
+		if (!this.#paused) void this.#open();
 		let released = false;
 		return () => {
 			if (released) return;
@@ -392,6 +393,18 @@ export class RoomDraftRoom {
 			this.#refs -= 1;
 			if (this.#refs === 0) this.#linger = setTimeout(() => this.#close(), LINGER_MS);
 		};
+	}
+
+	pause(): void {
+		if (this.#paused) return;
+		this.#paused = true;
+		this.#close();
+	}
+
+	resume(): void {
+		if (!this.#paused || this.#signal.aborted) return;
+		this.#paused = false;
+		if (this.#refs > 0) void this.#open();
 	}
 
 	/** The room shares drafts with this member now. A refused room is asked again after a while. */
@@ -427,12 +440,12 @@ export class RoomDraftRoom {
 	}
 
 	async refresh(): Promise<void> {
-		if (this.#signal.aborted || this.store.get().unavailable) return;
+		if (this.#paused || this.#signal.aborted || this.store.get().unavailable) return;
 		const listing = ++this.#listing;
 		const asked = this.#changes;
 		try {
 			const drafts = await this.#api.listRoomDrafts(this.roomId);
-			if (this.#signal.aborted || listing !== this.#listing) return;
+			if (this.#paused || this.#signal.aborted || listing !== this.#listing) return;
 			for (const draft of drafts) this.apply(draft, "listing");
 			// Drafts the listing no longer carries (sent, abandoned, their owner left) leave the room,
 			// unless they changed after the listing was asked for (a first write racing it).
@@ -441,7 +454,7 @@ export class RoomDraftRoom {
 				listed.has(draft.ownerUserId) || (this.#touched.get(draft.ownerUserId) ?? 0) > asked;
 			if (!this.store.get().drafts.every(keep)) this.store.set((state) => ({ drafts: state.drafts.filter(keep) }));
 		} catch (error) {
-			if (this.#signal.aborted) return;
+			if (this.#paused || this.#signal.aborted) return;
 			if (error instanceof CloudRpcError && (error.missing || error.denied)) {
 				this.#retryAt = error.missing ? Number.POSITIVE_INFINITY : Date.now() + REFUSED_RETRY_MS;
 				this.store.set({ unavailable: true });
@@ -452,15 +465,15 @@ export class RoomDraftRoom {
 	}
 
 	async #open(): Promise<void> {
-		if (this.#subscription || this.#signal.aborted || this.store.get().unavailable) return;
+		if (this.#paused || this.#subscription || this.#signal.aborted || this.store.get().unavailable) return;
 		// Supabase hands out one channel per topic: wait for a closing one to be gone.
 		await this.#closing;
-		if (this.#subscription || this.#signal.aborted || this.#refs === 0) return;
+		if (this.#paused || this.#subscription || this.#signal.aborted || this.#refs === 0) return;
 		this.#subscription = this.#api.subscribeRoomDrafts(
 			this.roomId,
 			(draft) => this.apply(draft, "live"),
 			(phase) => {
-				if (this.#signal.aborted) return;
+				if (this.#paused || this.#signal.aborted) return;
 				const was = this.store.get().phase;
 				this.store.set({ phase });
 				// Changes made before the topic joined are read once it has.
@@ -474,7 +487,7 @@ export class RoomDraftRoom {
 
 	#schedulePoll(): void {
 		clearTimeout(this.#poll);
-		if (!this.#subscription || this.#signal.aborted) return;
+		if (this.#paused || !this.#subscription || this.#signal.aborted) return;
 		this.#poll = setTimeout(
 			() => {
 				if (typeof document === "undefined" || !document.hidden) void this.refresh();
@@ -535,12 +548,25 @@ export class RoomDrafts {
 	/** Views that say what became of the member's own draft: the cloud would not take it, or a quote gave way. */
 	readonly #ownNotes = new Map<string, Set<(note: OwnDraftNote) => void>>();
 	#missing = false;
+	#paused = false;
 
 	constructor(api: CloudApi, userId: string, signal: AbortSignal, hooks: RoomDraftsHooks) {
 		this.#api = api;
 		this.#userId = userId;
 		this.#signal = signal;
 		this.#hooks = hooks;
+	}
+
+	pause(): void {
+		if (this.#paused) return;
+		this.#paused = true;
+		for (const room of this.#rooms.values()) room.pause();
+	}
+
+	resume(): void {
+		if (!this.#paused || this.#signal.aborted) return;
+		this.#paused = false;
+		for (const room of this.#rooms.values()) room.resume();
 	}
 
 	get userId(): string {
@@ -557,6 +583,7 @@ export class RoomDrafts {
 			room = new RoomDraftRoom(this.#api, roomId, this.#signal, () => {
 				this.#missing = true;
 			});
+			if (this.#paused) room.pause();
 			this.#rooms.set(roomId, room);
 			const own = room;
 			// The member's own draft follows the cloud's, even before they type here.

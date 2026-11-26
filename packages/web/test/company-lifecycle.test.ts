@@ -7,6 +7,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { OpenQuestions } from "../src/app/open-questions.ts";
+import { Reconnect } from "../src/app/reconnect.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { DecisionDock } from "../src/app/views/decision-dock.ts";
 import { QuestionDock, type QuestionDockHost } from "../src/app/views/question-dock.ts";
@@ -1028,7 +1029,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
 		first.resolve([event(1)]);
 		await settle();
-		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 1, 500, controller.signal);
+		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 1, 500, controller.readSignal);
 		second.resolve([event(2)]);
 		await Promise.all([load, reload]);
 		expect(controller.conversation(session.sessionId).get().projection.lastSequence).toBe(2);
@@ -1048,7 +1049,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(state.pending).toHaveLength(101);
 		expect(state.projection.items).toHaveLength(101);
 		expect(state.complete).toBe(true);
-		expect(api.listSessionInputs).toHaveBeenNthCalledWith(2, session.sessionId, 100, 100, controller.signal);
+		expect(api.listSessionInputs).toHaveBeenNthCalledWith(2, session.sessionId, 100, 100, controller.readSignal);
 	});
 
 	it("reads the history, the waiting inputs and the coding sessions side by side and draws once", async () => {
@@ -1076,7 +1077,7 @@ describe("conversation lifecycle regressions", () => {
 		firstPage.resolve(history.slice(0, 500));
 		await settle();
 		// The next page follows the first; nothing is drawn halfway through the history.
-		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 500, 500, controller.signal);
+		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 500, 500, controller.readSignal);
 		expect(drawn).toEqual([]);
 		lastPage.resolve(history.slice(500));
 		await load;
@@ -1099,7 +1100,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(store.get().events).toHaveLength(500);
 		expect(store.get().projection.lastSequence).toBe(500);
 		await controller.loadConversation(session.sessionId);
-		expect(api.readSessionEvents).toHaveBeenLastCalledWith(session.sessionId, 500, 500, controller.signal);
+		expect(api.readSessionEvents).toHaveBeenLastCalledWith(session.sessionId, 500, 500, controller.readSignal);
 		expect(store.get()).toMatchObject({ complete: true, error: undefined });
 		expect(store.get().events).toHaveLength(501);
 	});
@@ -1913,7 +1914,7 @@ describe("agent execution state", () => {
 
 		expect(signals).toHaveLength(14);
 		for (const signal of signals) {
-			expect(signal).toBe(controller.signal);
+			expect(signal).toBeInstanceOf(AbortSignal);
 			expect(signal?.aborted).toBe(false);
 		}
 		controller.stop();
@@ -1921,6 +1922,112 @@ describe("agent execution state", () => {
 		for (const signal of signals) expect(signal?.aborted).toBe(true);
 		// WHY: Aborting loadConversation via stop() must not write an AbortError back into the cleared store.
 		expect(controller.conversation(session.sessionId, false).get().error).toBeUndefined();
+	});
+
+	it("aborts in-flight conversation and refresh reads on suspend() without error, then reloads cleanly on resume()", async () => {
+		const { api, controller } = company();
+		controller.store.set({
+			team,
+			staff: [staff],
+			sessions: [{ ...session, staffAgentId: staff.id }],
+			loading: false,
+		});
+		let capturedSignal: AbortSignal | undefined;
+		vi.mocked(api.readSessionEventsTail).mockImplementationOnce((_id, _before, _limit, signal) => {
+			capturedSignal = signal;
+			return new Promise((_resolve, reject) => {
+				signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+			});
+		});
+		const store = controller.conversation(session.sessionId, false);
+		const firstLoad = controller.loadConversation(session.sessionId);
+		await settle();
+		expect(capturedSignal?.aborted).toBe(false);
+		const firstSignal = controller.readSignal;
+
+		controller.suspend();
+		await firstLoad;
+		expect(capturedSignal?.aborted).toBe(true);
+		expect(firstSignal.aborted).toBe(true);
+		expect(controller.signal.aborted).toBe(false);
+		expect(store.get().error).toBeUndefined();
+		expect(controller.store.get().connectionLost).toBeUndefined();
+
+		vi.mocked(api.readSessionEventsTail).mockResolvedValueOnce([event(1, "Loaded after resume")]);
+		controller.resume();
+		expect(controller.readSignal.aborted).toBe(false);
+		expect(controller.readSignal).not.toBe(firstSignal);
+		controller.setOpenSession(session.sessionId);
+		await vi.waitFor(() => {
+			expect(store.get().complete).toBe(true);
+			expect(store.get().events).toHaveLength(1);
+		});
+	});
+
+	it("pauses lingering shared-draft subscriptions on suspend() and resumes watched rooms on resume()", async () => {
+		const { api, controller } = company();
+		const roomId = id(910);
+		const sharedSession = {
+			...session,
+			staffAgentId: staff.id,
+			executionScope: { roomId, agentThread: true },
+		};
+		controller.store.set({
+			team: {
+				...team,
+				members: [
+					...team.members,
+					{
+						userId: id(911),
+						email: "teammate@example.invalid",
+						displayName: "Teammate",
+						role: "admin",
+						joinedAt: "2026-09-01T00:00:00Z",
+					},
+				],
+			},
+			staff: [staff],
+			sessions: [sharedSession],
+			loading: false,
+		});
+		const stopDraftSub = vi.fn(async () => {});
+		vi.spyOn(api, "listRoomDrafts").mockResolvedValue([]);
+		const subscribeDrafts = vi.spyOn(api, "subscribeRoomDrafts").mockImplementation((_room, _onDraft, onPhase) => {
+			onPhase("connected");
+			return { stop: stopDraftSub };
+		});
+		const release = controller.roomDrafts.watch(sharedSession.sessionId, {
+			caret: () => 0,
+			busy: () => false,
+		});
+		await settle();
+		expect(subscribeDrafts).toHaveBeenCalledTimes(1);
+		expect(stopDraftSub).toHaveBeenCalledTimes(0);
+
+		controller.suspend();
+		await settle();
+		expect(stopDraftSub).toHaveBeenCalledTimes(1);
+
+		controller.resume();
+		await settle();
+		expect(subscribeDrafts).toHaveBeenCalledTimes(2);
+		release?.();
+	});
+
+	it("records Reconnect.lost() while paused and schedules recovery upon resume()", async () => {
+		vi.useFakeTimers();
+		const stop = new AbortController();
+		const attempt = vi.fn(async () => true);
+		const reconnect = new Reconnect(attempt, stop.signal);
+		reconnect.pause();
+		reconnect.lost();
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(attempt).not.toHaveBeenCalled();
+
+		reconnect.resume();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(attempt).toHaveBeenCalledTimes(1);
+		stop.abort();
 	});
 
 	it("forwards controller.signal on sidebar reset app-layout reload and group-chat image capability check", async () => {

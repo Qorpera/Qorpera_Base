@@ -1698,6 +1698,7 @@ export class CompanyData implements CompanyLiveSource {
 	#call: AbortController | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#scheduled = false;
+	#paused = false;
 	#failures = 0;
 	#started = Number.NEGATIVE_INFINITY;
 
@@ -1718,10 +1719,22 @@ export class CompanyData implements CompanyLiveSource {
 			"visibilitychange",
 			() => {
 				if (document.visibilityState === "hidden") this.#halt();
-				else this.#again();
+				else if (!this.#paused) this.#again();
 			},
 			{ signal },
 		);
+	}
+
+	pause(): void {
+		if (this.#paused) return;
+		this.#paused = true;
+		this.#halt();
+	}
+
+	resume(): void {
+		if (!this.#paused || this.#signal.aborted) return;
+		this.#paused = false;
+		if (document.visibilityState !== "hidden") this.#again();
 	}
 
 	/** The questions the held call carries now (each once, however many pages watch it). */
@@ -1867,7 +1880,13 @@ export class CompanyData implements CompanyLiveSource {
 	}
 
 	#run(): void {
-		if (this.#signal.aborted || document.visibilityState === "hidden" || this.#call || this.#timer !== undefined)
+		if (
+			this.#paused ||
+			this.#signal.aborted ||
+			document.visibilityState === "hidden" ||
+			this.#call ||
+			this.#timer !== undefined
+		)
 			return;
 		const held = [...this.#entries.values()].filter((entry) => entry.answer !== undefined);
 		if (held.length === 0) return;
@@ -1974,6 +1993,7 @@ export class CompanyNumbers implements CompanyLiveSource {
 	readonly #entries = new Map<string, NumbersEntry>();
 	readonly #pages = new Map<AbortSignal, Map<number, NumbersWatcher>>();
 	#next = 0;
+	#paused = false;
 
 	constructor(client: CompanyNumbersClient, signal: AbortSignal, current: () => void = () => {}) {
 		this.#client = client;
@@ -1991,10 +2011,26 @@ export class CompanyNumbers implements CompanyLiveSource {
 		document.addEventListener(
 			"visibilitychange",
 			() => {
+				if (this.#paused) return;
 				for (const entry of this.#entries.values()) this.#schedule(entry);
 			},
 			{ signal },
 		);
+	}
+
+	pause(): void {
+		if (this.#paused) return;
+		this.#paused = true;
+		for (const entry of this.#entries.values()) {
+			clearTimeout(entry.timer);
+			entry.timer = undefined;
+		}
+	}
+
+	resume(): void {
+		if (!this.#paused || this.#signal.aborted) return;
+		this.#paused = false;
+		for (const entry of this.#entries.values()) this.#schedule(entry);
 	}
 
 	/** The questions watched now (each once, however many pages watch it). */
@@ -2113,6 +2149,7 @@ export class CompanyNumbers implements CompanyLiveSource {
 		clearTimeout(entry.timer);
 		entry.timer = undefined;
 		if (
+			this.#paused ||
 			this.#signal.aborted ||
 			document.visibilityState === "hidden" ||
 			entry.answer === undefined ||
@@ -2130,7 +2167,7 @@ export class CompanyNumbers implements CompanyLiveSource {
 	}
 
 	async #ask(entry: NumbersEntry): Promise<void> {
-		if (this.#entries.get(entry.key) !== entry || document.visibilityState === "hidden") return;
+		if (this.#paused || this.#entries.get(entry.key) !== entry || document.visibilityState === "hidden") return;
 		entry.asking = true;
 		let fresh: CloudMemberDataAnswer | undefined;
 		try {
