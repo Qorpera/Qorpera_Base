@@ -619,6 +619,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			hosts: codeHostJobs,
 			readTree: readSurfaceSiteTree,
 			report: logCodeRecord,
+			...(nativeEdge
+				? { nativeEdge: { routerInternalUrl: nativeEdge.routerInternalUrl, controlToken: nativeEdge.controlToken } }
+				: {}),
 		})
 		: undefined;
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
@@ -706,6 +709,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		...(commandSecrets ? { commandSecrets } : {}),
 		...(snapshotBuilder ? { snapshotBuilder } : {}),
 		...(standbyPool ? { standbyPool } : {}),
+		...(nativeEdge
+			? { nativeEdge: { routerInternalUrl: nativeEdge.routerInternalUrl, controlToken: nativeEdge.controlToken } }
+			: {}),
 		...(codeHostJobs && nativeEdge?.appHostInternalUrl && nativeEdge?.appHostControlToken
 			? {
 					autoRedeploy: createNativeEdgeAutoRedeploy({

@@ -132,7 +132,7 @@ begin
 	end loop;
 	perform pg_temp.p_same((select string_agg(column_name, ',' order by ordinal_position) from information_schema.columns
 		where table_schema = 'public' and table_name = 'qorpera_company_site_member_passes'),
-		'pass_sha256,site_id,user_id,host,created_at,expires_at', 'the passes'' columns: never the pass itself');
+		'pass_sha256,site_id,user_id,host,created_at,expires_at,version_id', 'the passes'' columns: never the pass itself');
 	perform pg_temp.p_same((select string_agg(p.proname || ':' || p.prosecdef || ':' || array_to_string(p.proconfig, ','), ' '
 			order by p.proname) from pg_proc as p where p.oid in ('public.qorpera_site_member_pass(uuid)'::regprocedure,
 			'public.qorpera_site_member_pass_redeem(text,text)'::regprocedure)),

@@ -43,6 +43,16 @@ import {
 	type CompleteSurfacePublishInput,
 	parseClaimedSurfaceJobs,
 } from "./orchestrator.ts";
+import {
+	type BlobUploadFetch,
+	checkMissingBlobsOnEdge,
+	computeCanonicalSiteManifest,
+	isNativeServableSitePath,
+	nativeSiteTreeProblem,
+	putBlobToEdge,
+	type SiteManifestPayload,
+	uploadSiteBlobsToEdge,
+} from "./site-blob-upload.ts";
 import { type PeerOpenSessionInput, syncPeerSurfaceSessions } from "./surface-change-dispatcher.ts";
 import {
 	createSurfaceExecutionHandlers,
@@ -53,6 +63,7 @@ import {
 } from "./surface-execution-bridge.ts";
 import {
 	previewSiteProblemDetail,
+	type SurfacePreviewBuiltManifest,
 	type SurfacePreviewPlan,
 	type SurfacePreviewRecipe,
 } from "./surface-preview-runner.ts";
@@ -75,6 +86,7 @@ export const SURFACE_CODE_HOST_RPCS = [
 	"qorpera_surface_site_version_list",
 	"qorpera_surface_site_version_put",
 	"qorpera_surface_site_version_finish",
+	"qorpera_surface_site_deployment_register",
 	"qorpera_surface_shared_product_folder_roots",
 	"qorpera_surface_request_build",
 ] as const;
@@ -85,12 +97,19 @@ export interface SurfaceCodeHostControl {
 	call(method: SurfaceCodeHostRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
+export interface SurfaceNativeEdgeOptions {
+	readonly routerInternalUrl: string;
+	readonly controlToken: string;
+	readonly fetchImpl?: BlobUploadFetch;
+}
+
 export interface SurfaceCodeHostWorkerOptions {
 	readonly control: SurfaceCodeHostControl;
 	readonly hosts: Pick<CodeHostJobs, "run">;
 	readonly readTree?: CodeSiteTreeRead;
 	readonly readBuiltTree?: CodeSiteTreeRead;
 	readonly readPlan?: SurfacePreviewPlanRead;
+	readonly nativeEdge?: SurfaceNativeEdgeOptions;
 	readonly batchLimit?: number;
 	readonly companyConcurrency?: number;
 	readonly uploadConcurrency?: number;
@@ -107,14 +126,26 @@ export type SurfacePreviewPlanRead = (
 ) => Promise<SurfacePreviewPlan>;
 
 type SurfaceBuildAnswer =
-	| { readonly state: "built"; readonly buildId: string; readonly builtTreeSha: string }
+	| {
+			readonly state: "built";
+			readonly buildId: string;
+			readonly builtTreeSha: string | null;
+			readonly native?: SurfacePreviewBuiltManifest;
+	  }
 	| { readonly state: "waiting" | "failed" };
 
-type ReadSite = {
-	readonly treeSha: string;
-	readonly files: readonly CodeSiteTreeFile[];
-	readonly sharedAssets: Readonly<Record<string, string>>;
-};
+type ReadSite =
+	| {
+			readonly kind: "files";
+			readonly treeSha: string;
+			readonly files: readonly CodeSiteTreeFile[];
+			readonly sharedAssets: Readonly<Record<string, string>>;
+	  }
+	| {
+			readonly kind: "native_manifest";
+			readonly treeSha: string;
+			readonly native: SurfacePreviewBuiltManifest;
+	  };
 
 export interface SurfaceCodeHostPassResult {
 	readonly previews: number;
@@ -130,6 +161,7 @@ const PUT_BATCH_MAX_PARTS = 100;
 const DEFAULT_UPLOAD_CONCURRENCY = 6;
 const DEFAULT_COMPANY_CONCURRENCY = 4;
 const MAX_SHARED_ASSET_READ_BYTES = 32 * 1024;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const ZERO_SHA = "0".repeat(40);
 const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 1_000, 2_500, 5_000, 15_000, 30_000] as const;
@@ -148,8 +180,13 @@ function errorTextWithCause(error: unknown): string {
 	return parts.join(" ");
 }
 
-function surfaceFailureDetail(error: unknown, builtFolder: string | null, fallback: string): string {
-	if (error instanceof CodeSiteTreeInvalid) return previewSiteProblemDetail(error.problem, builtFolder);
+function surfaceFailureDetail(
+	error: unknown,
+	builtFolder: string | null,
+	fallback: string,
+	options?: { readonly native?: boolean },
+): string {
+	if (error instanceof CodeSiteTreeInvalid) return previewSiteProblemDetail(error.problem, builtFolder, options);
 	return error instanceof Error ? error.message.slice(0, 1000) : fallback;
 }
 
@@ -599,6 +636,173 @@ async function uploadPreparedSiteTree(
 	return { versionId, siteId, siteSlug };
 }
 
+function parseBuiltManifest(answer: Record<string, unknown>): SurfacePreviewBuiltManifest | undefined {
+	if (typeof answer.manifestSha256 !== "string" || !SHA256_HEX.test(answer.manifestSha256)) return undefined;
+	const rawManifest = answer.manifestJson;
+	if (!rawManifest || typeof rawManifest !== "object" || Array.isArray(rawManifest)) return undefined;
+	const manifestObj = rawManifest as Record<string, unknown>;
+	if (!manifestObj.files || typeof manifestObj.files !== "object" || Array.isArray(manifestObj.files))
+		return undefined;
+	if (
+		typeof answer.fileCount !== "number" ||
+		!Number.isSafeInteger(answer.fileCount) ||
+		answer.fileCount < 1 ||
+		typeof answer.totalBytes !== "number" ||
+		!Number.isSafeInteger(answer.totalBytes) ||
+		answer.totalBytes < 0
+	) {
+		return undefined;
+	}
+	return {
+		manifestSha256: answer.manifestSha256,
+		manifest: rawManifest as SiteManifestPayload,
+		fileCount: answer.fileCount,
+		totalBytes: answer.totalBytes,
+		hasCredentialInputs: answer.hasCredentialInputs === true,
+	};
+}
+
+function mergeNativeTreeWithSharedAssets(
+	baseFiles: readonly CodeSiteTreeFile[],
+	sharedAssets: Readonly<Record<string, string>> | undefined,
+): CodeSiteTreeFile[] {
+	const byPath = new Map<string, CodeSiteTreeFile>();
+	for (const file of baseFiles) {
+		byPath.set(file.path, file);
+	}
+	if (sharedAssets) {
+		for (const [rawPath, text] of Object.entries(sharedAssets)) {
+			const cleanPath = rawPath.replace(/^\/+/, "");
+			if (!isNativeServableSitePath(cleanPath)) continue;
+			const content = new TextEncoder().encode(text);
+			byPath.set(cleanPath, {
+				path: cleanPath,
+				bytes: content.byteLength,
+				sha256: sha256Hex(content),
+				content,
+			});
+		}
+	}
+	const files = [...byPath.values()].sort((a, b) =>
+		Buffer.compare(Buffer.from(a.path, "utf8"), Buffer.from(b.path, "utf8")),
+	);
+	const problem = nativeSiteTreeProblem(files);
+	if (problem) throw new CodeSiteTreeInvalid(problem);
+	return files;
+}
+
+async function overlaySharedAssetsOnNativeManifest(
+	native: SurfacePreviewBuiltManifest,
+	sharedAssets: Readonly<Record<string, string>>,
+	nativeEdge: SurfaceNativeEdgeOptions,
+	signal: AbortSignal,
+): Promise<SurfacePreviewBuiltManifest> {
+	const entries = Object.entries(sharedAssets);
+	if (entries.length === 0) return native;
+	const byPath = new Map<string, { readonly path: string; readonly bytes: number; readonly sha256: string }>();
+	for (const [path, entry] of Object.entries(native.manifest.files)) {
+		byPath.set(path, { path, bytes: entry.bytes, sha256: entry.sha256 });
+	}
+	const newBlobs = new Map<string, Uint8Array>();
+	let changed = false;
+	for (const [rawPath, text] of entries) {
+		const cleanPath = rawPath.replace(/^\/+/, "");
+		if (!isNativeServableSitePath(cleanPath)) continue;
+		const content = new TextEncoder().encode(text);
+		const sha256 = sha256Hex(content);
+		const existing = byPath.get(cleanPath);
+		if (existing && existing.sha256 === sha256 && existing.bytes === content.byteLength) continue;
+		byPath.set(cleanPath, { path: cleanPath, bytes: content.byteLength, sha256 });
+		newBlobs.set(sha256, content);
+		changed = true;
+	}
+	if (!changed) return native;
+	const merged = [...byPath.values()];
+	const problem = nativeSiteTreeProblem(merged);
+	if (problem) throw new CodeSiteTreeInvalid(problem);
+	const missing = await checkMissingBlobsOnEdge({
+		routerInternalUrl: nativeEdge.routerInternalUrl,
+		controlToken: nativeEdge.controlToken,
+		hashes: [...newBlobs.keys()],
+		fetchImpl: nativeEdge.fetchImpl,
+		signal,
+	});
+	for (const sha256 of missing) {
+		const content = newBlobs.get(sha256);
+		if (!content) continue;
+		await putBlobToEdge({
+			routerInternalUrl: nativeEdge.routerInternalUrl,
+			controlToken: nativeEdge.controlToken,
+			sha256,
+			content,
+			fetchImpl: nativeEdge.fetchImpl,
+			signal,
+		});
+	}
+	const recomputed = computeCanonicalSiteManifest(merged, {
+		redirects: native.manifest.redirects,
+		headers: native.manifest.headers,
+		spaFallback: native.manifest.spa_fallback,
+		notFoundPage: native.manifest.not_found_page,
+	});
+	return {
+		manifestSha256: recomputed.manifestSha256,
+		manifest: recomputed.manifest,
+		fileCount: merged.length,
+		totalBytes: recomputed.totalBytes,
+		hasCredentialInputs: native.hasCredentialInputs,
+	};
+}
+
+async function registerSurfaceNativeDeployment(
+	control: SurfaceCodeHostControl,
+	input: {
+		readonly surfaceId: string;
+		readonly treeSha: string;
+		readonly mainSha: string;
+		readonly title: string | null;
+		readonly promoteLive: boolean;
+		readonly native: SurfacePreviewBuiltManifest;
+	},
+	signal: AbortSignal,
+): Promise<{ readonly versionId: string; readonly siteId: string; readonly siteSlug: string }> {
+	const raw = (await control.call(
+		"qorpera_surface_site_deployment_register",
+		{
+			p_surface_id: input.surfaceId,
+			p_tree_sha: input.treeSha,
+			p_main_sha: input.mainSha,
+			p_manifest_sha256: input.native.manifestSha256,
+			p_manifest_json: input.native.manifest,
+			p_file_count: input.native.fileCount,
+			p_total_bytes: input.native.totalBytes,
+			p_title: input.title,
+			p_promote_live: input.promoteLive,
+			p_has_credential_inputs: input.native.hasCredentialInputs,
+		},
+		signal,
+	)) as {
+		state?: unknown;
+		code?: unknown;
+		versionId?: unknown;
+		siteId?: unknown;
+		siteSlug?: unknown;
+	} | null;
+	if (!raw || typeof raw !== "object") {
+		throw new Error("Surface native site deployment register returned an invalid answer");
+	}
+	if (raw.state === "refused") {
+		throw new Error(`Surface site upload refused: ${String(raw.code ?? "UNKNOWN")}`);
+	}
+	const versionId = typeof raw.versionId === "string" && isUuid(raw.versionId) ? raw.versionId : null;
+	const siteId = typeof raw.siteId === "string" && isUuid(raw.siteId) ? raw.siteId : null;
+	const siteSlug = typeof raw.siteSlug === "string" ? raw.siteSlug : "";
+	if (!versionId || !siteId) {
+		throw new Error("Surface native site deployment register did not return versionId and siteId");
+	}
+	return { versionId, siteId, siteSlug };
+}
+
 function createControlPlaneBridge(control: SurfaceCodeHostControl): SurfaceExecutionControlPlane {
 	return {
 		async completeSurfacePreview(input: CompleteSurfacePreviewInput, signal?: AbortSignal) {
@@ -682,6 +886,7 @@ export class SurfaceCodeHostWorker {
 	readonly #readTree: CodeSiteTreeRead;
 	readonly #readBuiltTree: CodeSiteTreeRead;
 	readonly #readPlan: SurfacePreviewPlanRead;
+	readonly #nativeEdge: SurfaceNativeEdgeOptions | undefined;
 	readonly #useCombinedPlanAndTree: boolean;
 	readonly #previewBuildPlans = new Map<
 		string,
@@ -712,6 +917,7 @@ export class SurfaceCodeHostWorker {
 		this.#readTree = options.readTree ?? readSurfaceSiteTree;
 		this.#readBuiltTree = options.readBuiltTree ?? readCodeSiteTree;
 		this.#readPlan = options.readPlan ?? readSurfacePreviewPlan;
+		this.#nativeEdge = options.nativeEdge;
 		this.#useCombinedPlanAndTree = options.readTree === undefined && options.readPlan === undefined;
 		this.#batchLimit = Math.min(Math.max(1, options.batchLimit ?? 8), 64);
 		this.#companyConcurrency = Math.min(Math.max(1, options.companyConcurrency ?? DEFAULT_COMPANY_CONCURRENCY), 16);
@@ -1289,8 +1495,19 @@ export class SurfaceCodeHostWorker {
 		const buildId = typeof answer.buildId === "string" && isUuid(answer.buildId) ? answer.buildId : null;
 		if (answer.state === "failed") return { state: "failed" };
 		if (buildId === null) throw new Error("Surface build request returned an invalid answer");
-		if (answer.state === "built" && typeof answer.builtTreeSha === "string" && GIT_SHA.test(answer.builtTreeSha))
-			return { state: "built", buildId, builtTreeSha: answer.builtTreeSha };
+		if (answer.state === "built") {
+			const builtTreeSha =
+				typeof answer.builtTreeSha === "string" && GIT_SHA.test(answer.builtTreeSha) ? answer.builtTreeSha : null;
+			const native = parseBuiltManifest(answer);
+			if (builtTreeSha !== null || native !== undefined) {
+				return {
+					state: "built",
+					buildId,
+					builtTreeSha,
+					...(native !== undefined ? { native } : {}),
+				};
+			}
+		}
 		if (answer.state === "waiting") return { state: "waiting" };
 		throw new Error("Surface build request returned an invalid answer");
 	}
@@ -1315,6 +1532,7 @@ export class SurfaceCodeHostWorker {
 					throw error;
 				}
 				return {
+					kind: "files",
 					treeSha: builtTreeSha,
 					files,
 					sharedAssets: await readSharedIdentityAssets(job, job.signal, productFolderRoots),
@@ -1344,6 +1562,38 @@ export class SurfaceCodeHostWorker {
 		for (let ask = 0; ask < 2; ask += 1) {
 			const answer = await this.#requestBuild({ ...input, staleBuiltTree: stale }, signal);
 			if (answer.state !== "built") return "parked";
+			if (answer.native && this.#nativeEdge) {
+				const hashes = Object.values(answer.native.manifest.files).map((entry) => entry.sha256);
+				const missing = await checkMissingBlobsOnEdge({
+					routerInternalUrl: this.#nativeEdge.routerInternalUrl,
+					controlToken: this.#nativeEdge.controlToken,
+					hashes,
+					fetchImpl: this.#nativeEdge.fetchImpl,
+					signal,
+				});
+				if (missing.size > 0) {
+					stale = answer.native.manifestSha256;
+					continue;
+				}
+				const sharedRun = await this.#runYieldable(
+					input.profileId,
+					input.environmentId,
+					signal,
+					async (job) => await readSharedIdentityAssets(job, job.signal, input.productFolderRoots),
+					{ readOnly: true },
+				);
+				if (sharedRun.yielded) return "yielded";
+				const native = await overlaySharedAssetsOnNativeManifest(
+					answer.native,
+					sharedRun.value,
+					this.#nativeEdge,
+					signal,
+				);
+				return { kind: "native_manifest", treeSha: input.treeSha, native };
+			}
+			if (answer.builtTreeSha === null) {
+				throw new Error("The built site requires native edge storage");
+			}
 			const read = await this.#readBuiltSite(
 				input,
 				input.repository,
@@ -1356,6 +1606,78 @@ export class SurfaceCodeHostWorker {
 			stale = answer.builtTreeSha;
 		}
 		throw new Error("The built site is not in the repository");
+	}
+
+	async #uploadSite(
+		input: {
+			readonly surfaceId: string;
+			readonly mainSha: string;
+			readonly title: string | null;
+			readonly promoteLive: boolean;
+			readonly site: ReadSite;
+		},
+		signal: AbortSignal,
+	): Promise<{ readonly versionId: string; readonly siteId: string; readonly siteSlug: string }> {
+		if (this.#nativeEdge) {
+			if (input.site.kind === "native_manifest") {
+				return await registerSurfaceNativeDeployment(
+					this.#control,
+					{
+						surfaceId: input.surfaceId,
+						treeSha: input.site.treeSha,
+						mainSha: input.mainSha,
+						title: input.title,
+						promoteLive: input.promoteLive,
+						native: input.site.native,
+					},
+					signal,
+				);
+			}
+			const mergedFiles = mergeNativeTreeWithSharedAssets(input.site.files, input.site.sharedAssets);
+			const uploaded = await uploadSiteBlobsToEdge({
+				routerInternalUrl: this.#nativeEdge.routerInternalUrl,
+				controlToken: this.#nativeEdge.controlToken,
+				files: mergedFiles,
+				concurrency: this.#uploadConcurrency,
+				fetchImpl: this.#nativeEdge.fetchImpl,
+				signal,
+			});
+			return await registerSurfaceNativeDeployment(
+				this.#control,
+				{
+					surfaceId: input.surfaceId,
+					treeSha: input.site.treeSha,
+					mainSha: input.mainSha,
+					title: input.title,
+					promoteLive: input.promoteLive,
+					native: {
+						manifestSha256: uploaded.manifestSha256,
+						manifest: uploaded.manifest,
+						fileCount: uploaded.fileCount,
+						totalBytes: uploaded.totalBytes,
+						hasCredentialInputs: uploaded.hasCredentialInputs,
+					},
+				},
+				signal,
+			);
+		}
+		if (input.site.kind === "native_manifest") {
+			throw new Error("Native site manifest cannot be uploaded without nativeEdge");
+		}
+		return await uploadPreparedSiteTree(
+			this.#control,
+			{
+				surfaceId: input.surfaceId,
+				mainSha: input.mainSha,
+				treeSha: input.site.treeSha,
+				title: input.title,
+				promoteLive: input.promoteLive,
+				files: input.site.files,
+				sharedAssets: input.site.sharedAssets,
+				uploadConcurrency: this.#uploadConcurrency,
+			},
+			signal,
+		);
 	}
 
 	async #runPreview(preview: ClaimedSurfacePreviewJob, signal: AbortSignal): Promise<boolean> {
@@ -1535,7 +1857,9 @@ export class SurfaceCodeHostWorker {
 				prepared = ran.value;
 			} catch (error) {
 				if (signal.aborted) throw error;
-				return await fail(surfaceFailureDetail(error, null, "Surface preview build failed"));
+				return await fail(
+					surfaceFailureDetail(error, null, "Surface preview build failed", { native: Boolean(this.#nativeEdge) }),
+				);
 			}
 		}
 
@@ -1578,7 +1902,11 @@ export class SurfaceCodeHostWorker {
 			} catch (error) {
 				if (planCacheKey) this.#previewBuildPlans.delete(planCacheKey);
 				if (signal.aborted) throw error;
-				return await fail(surfaceFailureDetail(error, prepared.recipe.folder, "Surface preview build failed"));
+				return await fail(
+					surfaceFailureDetail(error, prepared.recipe.folder, "Surface preview build failed", {
+						native: Boolean(this.#nativeEdge),
+					}),
+				);
 			}
 			if (built === "parked") {
 				this.#setCachedPreviewPlan(planCacheKey, {
@@ -1592,21 +1920,22 @@ export class SurfaceCodeHostWorker {
 			if (planCacheKey) this.#previewBuildPlans.delete(planCacheKey);
 			site = built;
 		} else {
-			site = { treeSha: prepared.compositeTreeSha, files: prepared.files, sharedAssets: prepared.sharedAssets };
+			site = {
+				kind: "files",
+				treeSha: prepared.compositeTreeSha,
+				files: prepared.files,
+				sharedAssets: prepared.sharedAssets,
+			};
 		}
 
 		try {
-			const uploaded = await uploadPreparedSiteTree(
-				this.#control,
+			const uploaded = await this.#uploadSite(
 				{
 					surfaceId: preview.surfaceId,
 					mainSha: prepared.compositeCommitSha,
-					treeSha: site.treeSha,
 					title: `Preview ${preview.shortHostId}`,
 					promoteLive: false,
-					files: site.files,
-					sharedAssets: site.sharedAssets,
-					uploadConcurrency: this.#uploadConcurrency,
+					site,
 				},
 				signal,
 			);
@@ -1630,6 +1959,7 @@ export class SurfaceCodeHostWorker {
 					error,
 					prepared.status === "build" ? prepared.recipe.folder : null,
 					"Surface preview upload failed",
+					{ native: Boolean(this.#nativeEdge) },
 				),
 			);
 		}
@@ -1852,7 +2182,9 @@ export class SurfaceCodeHostWorker {
 			prepared = ran.value;
 		} catch (error) {
 			if (signal.aborted) throw error;
-			return await failPublish(surfaceFailureDetail(error, null, "Surface publish read failed"));
+			return await failPublish(
+				surfaceFailureDetail(error, null, "Surface publish read failed", { native: Boolean(this.#nativeEdge) }),
+			);
 		}
 		if (prepared.status === "invalid") return await failPublish(prepared.detail);
 
@@ -1879,28 +2211,31 @@ export class SurfaceCodeHostWorker {
 			} catch (error) {
 				if (signal.aborted) throw error;
 				return await failPublish(
-					surfaceFailureDetail(error, prepared.recipe.folder, "Surface publish build failed"),
+					surfaceFailureDetail(error, prepared.recipe.folder, "Surface publish build failed", {
+						native: Boolean(this.#nativeEdge),
+					}),
 				);
 			}
 			if (built === "parked") return true;
 			if (built === "yielded") return false;
 			site = built;
 		} else {
-			site = { treeSha: prepared.treeSha, files: prepared.files, sharedAssets: prepared.sharedAssets };
+			site = {
+				kind: "files",
+				treeSha: prepared.treeSha,
+				files: prepared.files,
+				sharedAssets: prepared.sharedAssets,
+			};
 		}
 
 		try {
-			await uploadPreparedSiteTree(
-				this.#control,
+			await this.#uploadSite(
 				{
 					surfaceId: pub.surfaceId,
 					mainSha: prepared.headSha,
-					treeSha: site.treeSha,
 					title: null,
 					promoteLive: true,
-					files: site.files,
-					sharedAssets: site.sharedAssets,
-					uploadConcurrency: this.#uploadConcurrency,
+					site,
 				},
 				signal,
 			);
@@ -1921,6 +2256,7 @@ export class SurfaceCodeHostWorker {
 					error,
 					prepared.status === "build" ? prepared.recipe.folder : null,
 					"Surface publish upload failed",
+					{ native: Boolean(this.#nativeEdge) },
 				),
 			);
 		}

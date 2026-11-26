@@ -251,7 +251,7 @@ do $$
 declare v_host text; v_pattern text := public.qorpera_site_host_pattern('qorpera.com'); v jsonb; v_slug text; v_scope text;
 	v_verdict text;
 begin
-	perform pg_temp.base_assert(v_pattern ='^([a-z0-9]+(?:-[a-z0-9]+)*)(--next|--p[a-z0-9]{8})?\.qorpera\.com$', 'the one regex: ' || v_pattern);
+	perform pg_temp.base_assert(v_pattern ='^([a-z0-9]+(?:-[a-z0-9]+)*)(--next|--p[0-7])?\.qorpera\.com$', 'the one regex: ' || v_pattern);
 	-- The first draft's regex took --next into the slug (greedy): why the parse is by label.
 	perform pg_temp.base_assert(substring('shop--next.qorpera.com' from '^([a-z0-9][a-z0-9-]{1,46}[a-z0-9])(--next)?\.qorpera\.com$')
 		= 'shop--next', 'the greedy regex');

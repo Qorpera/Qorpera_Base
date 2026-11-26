@@ -2314,6 +2314,55 @@ describe("the coding executor over a preview builder's turn", () => {
 			p_error_detail: null,
 		});
 		expect(w.host.endTurn).toHaveBeenCalled();
+
+		const nativeBuild = {
+			...build,
+			surfaceTitle: "Marketing site",
+			productFolderRoots: ["products/band"],
+		};
+		const nativeWorld = builderWorld({ state: "build", build: nativeBuild });
+		const manifestSha256 = "f".repeat(64);
+		const manifest = {
+			files: {
+				"index.html": {
+					sha256: "e".repeat(64),
+					bytes: 12,
+					content_type: "text/html; charset=utf-8",
+					immutable: false,
+				},
+			},
+			redirects: [],
+			headers: [],
+			spa_fallback: null,
+			not_found_page: null,
+		};
+		nativeWorld.w.host.buildPreview = vi.fn(async () => ({
+			outcome: "built" as const,
+			builtTreeSha: null,
+			native: { manifestSha256, manifest, fileCount: 1, totalBytes: 12, hasCredentialInputs: false },
+		}));
+		const nativeExecutor = new CloudCodingExecutor({
+			control: nativeWorld.control,
+			host: nativeWorld.w.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+		});
+		expect(await nativeExecutor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(vi.mocked(nativeWorld.w.host.buildPreview).mock.calls[0]?.[1]).toEqual(nativeBuild);
+		const nativeDone = nativeWorld.w.world.calls.find(
+			(call) => call.method === "qorpera_complete_surface_preview_build",
+		);
+		expect(nativeDone?.args).toMatchObject({
+			p_build_id: nativeBuild.buildId,
+			p_outcome: "built",
+			p_built_tree_sha: null,
+			p_manifest_sha256: manifestSha256,
+			p_manifest_json: manifest,
+			p_file_count: 1,
+			p_total_bytes: 12,
+			p_has_credential_inputs: false,
+			p_error_detail: null,
+		});
 	});
 
 	it("reports a failed build with its detail, waits when the company has two builds running, and ends a turn with nothing to build", async () => {

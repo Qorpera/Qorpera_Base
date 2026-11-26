@@ -761,6 +761,21 @@ describe("the site door", () => {
 		expect(submitted).toEqual([{ action: pass().action, target: "qorpera-site", fields: { pass: pass().pass } }]);
 	});
 
+	it("accepts reusable preview slot hosts (--p0..--p7) on qorpera.site and qorpera.com", () => {
+		for (const [slot, domain] of [
+			[0, "qorpera.site"],
+			[3, "qorpera.site"],
+			[7, "qorpera.com"],
+		] as const) {
+			const slotDoor = runDoor();
+			const slotAction = `https://wristband-shop--p${slot}.${domain}/__qorpera/member`;
+			slotDoor.say({ type: SITE_DOOR_PASS, action: slotAction, pass: pass().pass, path: "/" });
+			expect(slotDoor.submitted).toEqual([
+				{ action: slotAction, target: "qorpera-site", fields: { pass: pass().pass, path: "/" } },
+			]);
+		}
+	});
+
 	it("accepts isolated preview hosts (--p<8>) and relays Point-to-Change messages only after a pass", () => {
 		const { parent, say, submitted, site } = runDoor();
 		const previewOrigin = "https://wristband-shop--p12ab34cd.qorpera.com";
@@ -770,6 +785,9 @@ describe("the site door", () => {
 
 		for (const badAction of [
 			"https://wristband-shop--next.qorpera.com/__qorpera/member",
+			"https://wristband-shop--p8.qorpera.site/__qorpera/member",
+			"https://wristband-shop--p9.qorpera.com/__qorpera/member",
+			"https://wristband-shop--p00.qorpera.site/__qorpera/member",
 			"https://wristband-shop--p1234567.qorpera.com/__qorpera/member",
 			"https://wristband-shop--p123456789.qorpera.com/__qorpera/member",
 			"https://wristband-shop--P12ab34cd.qorpera.com/__qorpera/member",

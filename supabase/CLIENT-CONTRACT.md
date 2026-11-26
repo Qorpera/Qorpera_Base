@@ -1889,14 +1889,13 @@ Yes is the asked member's own `qorpera_publish_surface`, with their own authorit
 starts (a job's publish when it starts), when nothing is left to publish, and when the asked member leaves the
 company or becomes a viewer (the asker leaving closes it too). Each change sends the `surfaces` hint.
 
-### A website interface's address and preview hosts (20260930878000_surface_site_address_and_preview_hosts)
+### A website interface's address and preview hosts (20260930878000_surface_site_address_and_preview_hosts; updated by 20260930916000)
 
 A surface's summary `liveUrl` is its site's link as the site list gives it (`qorpera_site_url`): while hosts are on
 `https://<slug>.<hosts_domain>/`, while they are off `https://sites.qorpera.com/<slug>/`; null for a surface with no
-site. Preview frames (`doorActionUrl` of `qorpera_get_surface_workspace`, `qorpera_set_preview_selection` and
-`qorpera_mint_surface_preview_pass`) stay on `https://<slug>--p<8chars>.qorpera.com/__qorpera/member` whatever
-`hosts_domain` is, and site-serve redeems and serves them there; who gets a pass, its 60 seconds, one use and the
-12-hour preview session are unchanged.
+site. Before `20260930916000`, preview frames stayed on `https://<slug>--p<8chars>.qorpera.com/__qorpera/member` served
+by `site-serve` with 60-second passes; see `20260930916000_surface_native_edge_previews` below for the current preview
+host and pass contract.
 
 ### A failed build goes back to its session (20260930889000_surface_preview_build_failure_to_session)
 
@@ -1914,6 +1913,28 @@ A surface's summary carries `publishBeingFixed`: true while `publishStatus` is `
 landed last has a fix turn waiting or running for the failed publish build; false otherwise. A server without this
 migration sends none of the three fields; a client treats a missing field as null or false. The rows behind
 them change with the `surfaces` hint.
+
+### Native edge surface previews and slot hosts (20260930916000_surface_native_edge_previews)
+
+Surface previews are served directly by `qorpera-web-router` from content-addressed blobs on bounded reusable slot hosts
+instead of per-preview `--p<8chars>` hosts on `site-serve`:
+
+- `qorpera_site_preview_domain()` follows `qorpera_site_settings.hosts_domain` (default `qorpera.site`).
+- `doorActionUrl` in `qorpera_get_surface_workspace`, `qorpera_set_preview_selection`, and
+  `qorpera_mint_surface_preview_pass` targets `https://<slug>--p<slot>.<hosts_domain>/__qorpera/member` with `<slot>`
+  in `0..7`. Primary frames use slot `0` (`--p0`); compare frames use slots `1..3` (`--p1..--p3`) derived from the
+  session's 1-based position in `qorpera_member_surface_state.compare_session_ids`.
+- Preview member passes live for 120 seconds (single-use) and bind `(site_id, host, version_id)`. Redeeming a preview
+  pass at `POST /__qorpera/member` sets an HttpOnly, Secure, SameSite=None, Partitioned `__Host-qorpera_site` cookie
+  signed with `preview:<slot>` scope and pinned to that exact `version_id` for 12 hours; preview hosts never fall back
+  to the live deployment.
+- Version isolation is enforced per slot per browser (`--p0` vs `--p1..--p3` in Compare mode). Because `--p0` is reused
+  across primary previews of a site, opening two separate browser tabs on different primary previews of the same surface
+  shares `--p0`'s partitioned cookie by design in exchange for bounded reusable TLS slots and instant preview switching.
+- `qorpera-web-router` injects and serves `/__qorpera/inspector.js` on preview slot hosts after authorization, enforces
+  `Content-Security-Policy: frame-ancestors 'self' <web_origins>`, blocks service-worker script registration with 404,
+  and sends `private, max-age=31536000, immutable` only on non-HTML assets whose basename carries a mixed alphanumeric
+  content hash (unhashed assets such as `assets/hero.png` receive `private, no-cache, no-transform` with `ETag`).
 
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 

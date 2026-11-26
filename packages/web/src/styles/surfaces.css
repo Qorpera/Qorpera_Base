@@ -712,11 +712,17 @@ a.surface-address-row:hover { text-decoration: none; }
 }
 .surface-preview-pill {
 	position: absolute; z-index: 5; top: 12px; right: 14px; display: inline-flex; align-items: center; gap: 7px; height: 28px;
+	max-width: calc(100% - 28px);
 	padding: 0 11px; border: 1px solid var(--surface-glass-edge); border-radius: 999px; background: var(--surface-glass-strong);
 	box-shadow: var(--surface-glass-shadow); backdrop-filter: var(--surface-glass-blur); color: var(--text-muted);
 	font-size: 12px; font-weight: 600; pointer-events: none;
 }
+.surface-preview-pill > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .surface-preview-pill[hidden] { display: none; }
+.surface-page:not(.has-drawer):not(.is-panels-hidden):has(> .surface-panel-toggle:not([hidden])) .surface-frames:not(.is-compare) .surface-preview-pill {
+	right: 66px;
+	max-width: calc(100% - 80px);
+}
 .surface-frames.is-compare {
 	display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 96px;
 	background: color-mix(in srgb, var(--text) 3%, var(--bg)); overflow: hidden;
