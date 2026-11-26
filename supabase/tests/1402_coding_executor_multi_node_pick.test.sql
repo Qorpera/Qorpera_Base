@@ -56,7 +56,6 @@ declare
 	v_p1_sha text := pg_temp.t1402_sha('prov1');
 	v_p2_sha text := pg_temp.t1402_sha('prov2');
 	v_digest text := repeat('7', 64);
-	v_digest_new text := repeat('8', 64);
 	v_w1 constant uuid := '14020000-0000-4000-8000-000000000201';
 	v_w2 constant uuid := '14020000-0000-4000-8000-000000000202';
 	v_w3 constant uuid := '14020000-0000-4000-8000-000000000203';
@@ -77,6 +76,7 @@ declare
 	v_plan_rehome jsonb;
 	v_plan_f1 jsonb;
 	v_plan_f2 jsonb;
+	v_plan_f3 jsonb;
 	v_m1 uuid;
 	v_m2 uuid;
 	v_m4 uuid;
@@ -84,8 +84,11 @@ begin
 	perform pg_temp.t1402_ok(
 		not has_function_privilege('anon', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)', 'execute')
 		and not has_function_privilege('authenticated', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)', 'execute')
-		and not has_function_privilege('service_role', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)', 'execute'),
-		'qorpera_coding_machine_node_has_room stays revoked from API roles'
+		and not has_function_privilege('service_role', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)', 'execute')
+		and not has_function_privilege('anon', 'public.qorpera_coding_session_requires_node_headroom(public.qorpera_coding_sessions,public.qorpera_runtime_workers)', 'execute')
+		and not has_function_privilege('authenticated', 'public.qorpera_coding_session_requires_node_headroom(public.qorpera_coding_sessions,public.qorpera_runtime_workers)', 'execute')
+		and not has_function_privilege('service_role', 'public.qorpera_coding_session_requires_node_headroom(public.qorpera_coding_sessions,public.qorpera_runtime_workers)', 'execute'),
+		'internal helpers stay revoked from API roles'
 	);
 
 	set local session_replication_role = replica;
@@ -157,31 +160,29 @@ begin
 		format('second repo-a session reuses awake non-full VM on node 1: got %s', public.qorpera_coding_executor_pick(v_w3))
 	);
 
-	perform pg_temp.t1402_make_session(v_w_f3, 'repo-a', 'queued', null);
-	set local session_replication_role = replica;
-	update public.qorpera_coding_sessions set claim_after = clock_timestamp() - interval '1 second' where worker_id = v_w_f3;
-	insert into public.qorpera_coding_session_events(worker_id, sequence, kind, actor, body)
-	values (v_w_f3, 1, 'step', 'executor', '{"text":"Waiting for a coding machine","reason":"NODE_CAPACITY_EXHAUSTED"}');
-	set local session_replication_role = origin;
-	perform pg_temp.t1402_ok(
-		public.qorpera_coding_executor_pick(v_w_f3) = 'exec-1402-2',
-		format('deferred NODE_CAPACITY_EXHAUSTED retry overflows off full awake old-digest node 1 to node 2: got %s',
-			public.qorpera_coding_executor_pick(v_w_f3))
-	);
-
 	begin
+		perform pg_temp.t1402_make_session(v_w_f3, 'repo-a', 'queued', null);
 		set local session_replication_role = replica;
-		insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner,
-			machine_id_sha256, binding, staff_agent_id, repository, setup_digest, number)
-		values (extensions.gen_random_uuid(), 'member', '14020000-0000-4000-8000-000000000010', v_env,
-			'14020000-0000-4000-8000-000000000001', 'exec-1402-2', v_n2_sha,
-			jsonb_build_object('cpus', 4, 'memoryBytes', 8589934592), '14020000-0000-4000-8000-000000000030',
-			'surfaces/repo-a', v_digest_new, 2);
+		update public.qorpera_coding_sessions set claim_after = clock_timestamp() - interval '1 second' where worker_id = v_w_f3;
+		insert into public.qorpera_coding_session_events(worker_id, sequence, kind, actor, body)
+		values (v_w_f3, 1, 'step', 'executor', '{"text":"Waiting for a coding machine","reason":"NODE_CAPACITY_EXHAUSTED"}');
 		set local session_replication_role = origin;
 		perform pg_temp.t1402_ok(
-			public.qorpera_coding_executor_pick(v_w3) = 'exec-1402-2',
-			format('when >1 setup_digest is live for repo-a, fresh pick skips full node 1 and picks node 2: got %s',
-				public.qorpera_coding_executor_pick(v_w3))
+			public.qorpera_coding_executor_pick(v_w_f3) = 'exec-1402-2',
+			format('deferred NODE_CAPACITY_EXHAUSTED retry overflows off full awake node 1 to node 2: got %s',
+				public.qorpera_coding_executor_pick(v_w_f3))
+		);
+		set local session_replication_role = replica;
+		update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = 'exec-1402-2',
+			lease_token = extensions.gen_random_uuid(), lease_until = clock_timestamp() + interval '5 minutes', started_at = clock_timestamp()
+		where worker_id = v_w_f3;
+		set local session_replication_role = origin;
+		v_plan_f3 := public.qorpera_plan_coding_machine(
+			v_w_f3, (select lease_token from public.qorpera_coding_sessions where worker_id = v_w_f3), v_n2_sha, v_digest
+		);
+		perform pg_temp.t1402_ok(
+			v_plan_f3 ->> 'state' = 'planned' and (v_plan_f3 ->> 'machineId')::uuid is distinct from v_m1,
+			format('plan agrees with pick on NODE_CAPACITY_EXHAUSTED retry and allocates on node 2 instead of NODE_NOT_PREFERRED: %s', v_plan_f3)
 		);
 		raise exception using errcode = 'QT140';
 	exception when sqlstate 'QT140' then null;
