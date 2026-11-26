@@ -83,14 +83,11 @@ const AUTO_PUBLISH_OFF_QUIET_TRIES = 3;
 interface PhoneModelSpec {
 	readonly id: string;
 	readonly label: string;
-	readonly shortLabel: string;
-	/** The menu's submenu that lists it (a generation); none for a top-level row. */
 	readonly group?: string;
 	readonly width: number;
 	readonly height: number;
 	readonly radius: number;
 	readonly cutout: "island" | "notch" | "punch" | "none";
-	/** Width of the notch, for the phones that have one. */
 	readonly notch?: number;
 	readonly status: number;
 }
@@ -110,10 +107,9 @@ const WIDE_NOTCH = { notch: 210 } as const;
 function iphone(group: string, name: string, shape: PhoneShape, extra: Partial<PhoneShape> = {}): PhoneModelSpec {
 	const label = `iPhone ${name}`;
 	const id = label.toLowerCase().replace(/\s+/g, "-");
-	return { id, label, shortLabel: label, group, ...shape, ...extra };
+	return { id, label, group, ...shape, ...extra };
 }
 
-/* WHY: Sizes are each phone's CSS viewport in points; iPhones from 12 up, grouped by generation in the menu. */
 const PHONE_MODELS: readonly PhoneModelSpec[] = [
 	iphone("iPhone 18", "18 Pro", ISLAND_6_3),
 	iphone("iPhone 18", "18 Pro Max", ISLAND_6_9),
@@ -146,7 +142,6 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 	{
 		id: "iphone-se",
 		label: "iPhone SE",
-		shortLabel: "iPhone SE",
 		width: 375,
 		height: 667,
 		radius: 26,
@@ -156,7 +151,6 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 	{
 		id: "pixel-9",
 		label: "Pixel 9",
-		shortLabel: "Pixel 9",
 		width: 412,
 		height: 915,
 		radius: 36,
@@ -165,7 +159,7 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 	},
 ];
 
-/* WHY: Jonas 26 Nov: the phone reads best a little larger than life, so its resting size is 110 % of the real one. */
+/* WHY: Jonas 26 Nov: the phone reads best a little larger than life, so it rests at 110 % of its real size. */
 const PHONE_RESTING_SCALE = 1.1;
 const DEFAULT_PHONE_MODEL = PHONE_MODELS.find((model) => model.id === "iphone-16") ?? PHONE_MODELS[0]!;
 
@@ -1238,7 +1232,9 @@ export class SurfaceView {
 						{
 							kind: "submenu",
 							label: group,
-							...(group === current.group ? { icon: "check" } : {}),
+							...(group === current.group
+								? { icon: "check", ariaLabel: t("{group}, current: {name}", { group, name: current.label }) }
+								: {}),
 							items: PHONE_MODELS.filter((model) => model.group === group).map(row),
 						},
 					]

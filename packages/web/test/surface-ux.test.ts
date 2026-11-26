@@ -36,6 +36,7 @@ import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
+import { uiScale } from "../src/ui/scale.ts";
 import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
 	CHANGES,
@@ -1566,7 +1567,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(view.el.querySelector(".surface-bar .surface-phone-pick")?.textContent).toBe("iPhone 16");
 
 		openPicker();
-		document.querySelector<HTMLButtonElement>('.context-menu [aria-haspopup="menu"]:nth-child(3)')!.click();
+		const current = document.querySelector<HTMLButtonElement>('.context-menu [aria-haspopup="menu"]:nth-child(3)')!;
+		expect(current.getAttribute("aria-label")).toBe("iPhone 16, current: iPhone 16");
+		expect(document.querySelectorAll('.context-menu [aria-haspopup="menu"][aria-label]')).toHaveLength(1);
+		current.click();
 		expect(rowText(document.querySelector<HTMLElement>(".context-submenu")!)).toEqual([
 			"iPhone 16393 × 852",
 			"iPhone 16 Plus430 × 932",
@@ -1731,6 +1735,34 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.dataset.phoneZoomed).toBeUndefined();
 		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeCloseTo(baseScale, 3);
 		expect(localStorage.length).toBe(0);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("rests the phone at 110 % of its real size when there is room and fits it below that when there is not", async () => {
+		stubFigureMotion();
+		localStorage.clear();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		const rect = vi.spyOn(viewport, "getBoundingClientRect");
+		const scaleAt = (width: number, height: number) => {
+			rect.mockReturnValue(new DOMRect(0, 0, width, height));
+			view.update();
+			return Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));
+		};
+
+		const ui = uiScale();
+		expect(scaleAt(1440, 1300 * ui)).toBeCloseTo(1.1, 3);
+		expect(scaleAt(1440, 1000 * ui)).toBeCloseTo((1000 * ui - Math.ceil(188 * ui)) / (852 + 32), 3);
 
 		view.dispose();
 		store.dispose();
