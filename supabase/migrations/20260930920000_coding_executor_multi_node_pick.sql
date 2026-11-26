@@ -1,7 +1,7 @@
 set local lock_timeout = '3s';
 
 do $$ begin
-	if to_regprocedure('public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines)') is not null then
+	if to_regprocedure('public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)') is not null then
 		raise exception 'Multi-node coding executor pick (20260930920000) is already applied'; end if;
 	if to_regprocedure('public.qorpera_coding_executor_pick(uuid)') is null
 		or to_regprocedure('public.qorpera_plan_coding_machine(uuid,uuid,text,text)') is null
@@ -23,14 +23,27 @@ begin
 	execute v_definition;
 end $$;
 
--- WHY: An awake machine already holds its node reservation, whereas waking a sleeping machine requires
--- free CPU and memory headroom on an enabled, ready node; checking this avoids trapping sessions on a full node.
-create function public.qorpera_coding_machine_node_has_room(p_machine public.qorpera_coding_machines)
+-- WHY: Shared reuse gate for pick and plan: requires an enabled executor serving the harness plus a live ready node,
+-- and additionally requires free CPU/RAM headroom when waking a sleeping VM or when p_require_headroom is set.
+create function public.qorpera_coding_machine_node_has_room(
+	p_machine public.qorpera_coding_machines,
+	p_harness text,
+	p_require_headroom boolean default false
+)
 returns boolean language plpgsql stable security definer set search_path = '' as $$
 declare
 	v_demand public.qorpera_runtime_node_demands%rowtype;
 begin
 	if p_machine.id is null or p_machine.removed_at is not null then
+		return false;
+	end if;
+	if not exists (
+		select 1 from public.qorpera_coding_executors ce
+		where ce.environment_id = p_machine.environment_id
+			and ce.owner = p_machine.owner
+			and ce.enabled
+			and p_harness = any(ce.harnesses)
+	) then
 		return false;
 	end if;
 	select * into v_demand
@@ -39,16 +52,34 @@ begin
 	if not found then
 		return not exists (
 			select 1 from public.qorpera_runtime_nodes node
-			where node.machine_id_sha256 = p_machine.machine_id_sha256 and not node.enabled
+			where node.machine_id_sha256 = p_machine.machine_id_sha256
+				and (
+					not node.enabled
+					or not exists (
+						select 1 from public.qorpera_runtime_node_observations observation
+						where observation.node_id = node.id
+							and observation.observed_at > clock_timestamp() - interval '60 seconds'
+							and observation.observed_at <= clock_timestamp() + interval '2 seconds'
+							and observation.observation ->> 'state' = 'ready'
+							and public.qorpera_runtime_node_inventory_ready(node.id, observation.observation_id, node.version)
+					)
+				)
 		);
 	end if;
 	if v_demand.released_at is not null or v_demand.reserved_at is null then
 		return false;
 	end if;
-	if v_demand.suspended_at is null then
+	if v_demand.suspended_at is null and not coalesce(p_require_headroom, false) then
 		return exists (
-			select 1 from public.qorpera_runtime_nodes node
-			where node.id = v_demand.node_id and node.enabled
+			select 1
+			from public.qorpera_runtime_nodes node
+			join public.qorpera_runtime_node_observations observation on observation.node_id = node.id
+			where node.id = v_demand.node_id
+				and node.enabled
+				and observation.observed_at > clock_timestamp() - interval '60 seconds'
+				and observation.observed_at <= clock_timestamp() + interval '2 seconds'
+				and observation.observation ->> 'state' = 'ready'
+				and public.qorpera_runtime_node_inventory_ready(node.id, observation.observation_id, node.version)
 		);
 	end if;
 	return exists (
@@ -81,6 +112,7 @@ declare
 	v_session public.qorpera_coding_sessions%rowtype;
 	v_owner text;
 	v_repository text;
+	v_require_headroom boolean := false;
 begin
 	select * into v_worker from public.qorpera_runtime_workers where id = p_worker_id;
 	select * into v_session from public.qorpera_coding_sessions where worker_id = p_worker_id;
@@ -113,9 +145,7 @@ begin
 				or (
 					machine.retire_requested_at is null
 					and machine.removing_at is null
-					and ce.enabled
-					and v_session.harness = any(ce.harnesses)
-					and public.qorpera_coding_machine_node_has_room(machine)
+					and public.qorpera_coding_machine_node_has_room(machine, v_session.harness, false)
 					and (
 						not (machine.binding ? 'cpus' and machine.binding ? 'memoryBytes')
 						or not public.qorpera_coding_machine_full(
@@ -128,25 +158,50 @@ begin
 		limit 1;
 		if v_owner is not null then return v_owner; end if;
 	end if;
-	-- WHY: Scope machine affinity to the same repository and agent (plus legacy null-repository rows) and skip
-	-- full, retiring, or sleeping-on-full-node machines so other repos and overflow VMs spread across the fleet.
+	-- WHY: Pick cannot see setup_digest; if a prior attempt was deferred for NODE_CAPACITY_EXHAUSTED or multiple
+	-- setup digests are live for this repo, require node headroom so a full old-digest node does not trap retries.
+	v_require_headroom := (
+		v_session.claim_after is not null
+		and (
+			select event.body ->> 'reason'
+			from public.qorpera_coding_session_events event
+			where event.worker_id = v_worker.id
+				and event.sequence = v_worker.sequence
+				and event.kind = 'step'
+				and event.actor = 'executor'
+				and event.body ? 'reason'
+			order by event.id desc
+			limit 1
+		) = 'NODE_CAPACITY_EXHAUSTED'
+	) or (
+		select count(distinct machine.setup_digest) > 1
+		from public.qorpera_coding_machines machine
+		where machine.environment_id = v_worker.environment_id
+			and machine.profile_id = v_worker.profile_id
+			and machine.member_user_id = v_worker.owner_user_id
+			and machine.staff_agent_id is not distinct from v_worker.staff_agent_id
+			and machine.repository = v_repository
+			and machine.kind = 'member'
+			and machine.removed_at is null
+			and machine.retire_requested_at is null
+			and machine.removing_at is null
+	);
+	-- WHY: Scope affinity to repo+agent (allowing null stub fields only for replica-inserted test fixtures; production
+	-- machines always populate both) and skip full, retiring, disabled-executor, or unavailable-node machines.
 	select machine.owner into v_owner
 	from public.qorpera_coding_machines machine
 	join public.qorpera_coding_executors ce
 		on ce.environment_id = machine.environment_id and ce.owner = machine.owner
-		and ce.enabled and v_session.harness = any(ce.harnesses)
 	where machine.environment_id = v_worker.environment_id
 		and machine.profile_id = v_worker.profile_id
 		and machine.member_user_id = v_worker.owner_user_id
+		and (machine.staff_agent_id is null or machine.staff_agent_id = v_worker.staff_agent_id)
+		and (machine.repository is null or machine.repository = v_repository)
 		and machine.kind = 'member'
 		and machine.removed_at is null
 		and machine.retire_requested_at is null
 		and machine.removing_at is null
-		and (
-			machine.repository is null
-			or (machine.repository = v_repository and machine.staff_agent_id is not distinct from v_worker.staff_agent_id)
-		)
-		and public.qorpera_coding_machine_node_has_room(machine)
+		and public.qorpera_coding_machine_node_has_room(machine, v_session.harness, v_require_headroom)
 		and (
 			not (machine.binding ? 'cpus' and machine.binding ? 'memoryBytes')
 			or not public.qorpera_coding_machine_full(
@@ -156,6 +211,7 @@ begin
 		)
 	order by
 		(machine.repository is null),
+		(machine.staff_agent_id is null),
 		exists (
 			select 1 from public.qorpera_runtime_node_demands d
 			where d.allocation_id = machine.id and d.suspended_at is not null
@@ -217,9 +273,9 @@ $old$			-- WHY: Only retirement or structural fullness (never a transient full_u
 					coalesce(v_candidate_executor.session_cpu_millis, v_executor.session_cpu_millis),
 					coalesce(v_candidate_executor.session_memory_bytes, v_executor.session_memory_bytes),
 					coalesce(v_candidate_executor.max_attached_sessions, v_executor.max_attached_sessions), false) then$old$,
-$new$			-- WHY: Only retirement, structural fullness, or an un-wakeable remote node re-homes an already-homed detached session.
+$new$			-- WHY: Only retirement, structural fullness, or an unavailable/un-wakeable remote executor/node re-homes an already-homed detached session.
 			if v_machine.retire_requested_at is not null or v_machine.removing_at is not null
-				or not public.qorpera_coding_machine_node_has_room(v_machine)
+				or not public.qorpera_coding_machine_node_has_room(v_machine, v_session.harness, false)
 				or public.qorpera_coding_machine_full(v_machine, v_worker.id,
 					coalesce(v_candidate_executor.session_cpu_millis, v_executor.session_cpu_millis),
 					coalesce(v_candidate_executor.session_memory_bytes, v_executor.session_memory_bytes),
@@ -229,7 +285,7 @@ $old$				if public.qorpera_coding_machine_full(v_candidate, v_worker.id,
 					coalesce(v_candidate_executor.session_memory_bytes, v_executor.session_memory_bytes),
 					coalesce(v_candidate_executor.max_attached_sessions, v_executor.max_attached_sessions), true) then
 					continue; end if;$old$,
-$new$				if not public.qorpera_coding_machine_node_has_room(v_candidate)
+$new$				if not public.qorpera_coding_machine_node_has_room(v_candidate, v_session.harness, false)
 					or public.qorpera_coding_machine_full(v_candidate, v_worker.id,
 						coalesce(v_candidate_executor.session_cpu_millis, v_executor.session_cpu_millis),
 						coalesce(v_candidate_executor.session_memory_bytes, v_executor.session_memory_bytes),
@@ -240,7 +296,7 @@ $new$				if not public.qorpera_coding_machine_node_has_room(v_candidate)
 drop function pg_temp.cmnp_patch(regprocedure, text[]);
 
 revoke all on function
-	public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines),
+	public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines, text, boolean),
 	public.qorpera_coding_executor_pick(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
@@ -260,15 +316,15 @@ begin
 			raise exception '20260930920000: patched function has an API owner: %', v_owner;
 		end if;
 		execute format(
-			'grant execute on function public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines) to %I',
+			'grant execute on function public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines, text, boolean) to %I',
 			v_owner
 		);
 	end loop;
 end $$;
 
-comment on function public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines) is
-	'20260930920000: internal helper checking whether an awake or sleeping coding machine can run or wake on its node.';
+comment on function public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines, text, boolean) is
+	'20260930920000: internal helper checking executor eligibility, live ready observation, and wake/allocation headroom for a coding machine.';
 comment on function public.qorpera_coding_executor_pick(uuid) is
-	'20260930920000: picks a coding executor using per-session volume affinity, per-repository non-full machine reuse with node headroom checks, and fleet capacity ranking.';
+	'20260930920000: picks a coding executor using per-session volume affinity, per-repository non-full machine reuse with live-node/headroom checks, and fleet capacity ranking.';
 comment on function public.qorpera_plan_coding_machine(uuid, uuid, text, text) is
-	'20260930828000 (step 5k) / 20260930837000 / 20260930854000 (step 5h) / 20260930920000: plans sessions with active-only capacity accounting, cross-node overflow off full/un-wakeable nodes, detached re-homing, ready snapshot selection, and background snapshot build triggering.';
+	'20260930828000 (step 5k) / 20260930837000 / 20260930854000 (step 5h) / 20260930920000: plans sessions with active-only capacity accounting, cross-node overflow off full/unavailable nodes, detached re-homing, ready snapshot selection, and background snapshot build triggering.';

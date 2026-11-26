@@ -56,23 +56,35 @@ declare
 	v_p1_sha text := pg_temp.t1402_sha('prov1');
 	v_p2_sha text := pg_temp.t1402_sha('prov2');
 	v_digest text := repeat('7', 64);
+	v_digest_new text := repeat('8', 64);
 	v_w1 constant uuid := '14020000-0000-4000-8000-000000000201';
 	v_w2 constant uuid := '14020000-0000-4000-8000-000000000202';
 	v_w3 constant uuid := '14020000-0000-4000-8000-000000000203';
 	v_w4 constant uuid := '14020000-0000-4000-8000-000000000204';
 	v_w5 constant uuid := '14020000-0000-4000-8000-000000000205';
 	v_w_fill constant uuid := '14020000-0000-4000-8000-000000000209';
+	v_w_rehome constant uuid := '14020000-0000-4000-8000-000000000210';
+	v_w_att constant uuid := '14020000-0000-4000-8000-000000000211';
+	v_w_coal_lead constant uuid := '14020000-0000-4000-8000-000000000212';
+	v_w_coal_same constant uuid := '14020000-0000-4000-8000-000000000213';
+	v_w_coal_diff constant uuid := '14020000-0000-4000-8000-000000000214';
+	v_w_f1 constant uuid := '14020000-0000-4000-8000-000000000215';
+	v_w_f2 constant uuid := '14020000-0000-4000-8000-000000000216';
+	v_w_f3 constant uuid := '14020000-0000-4000-8000-000000000217';
 	v_plan1 jsonb;
 	v_plan2 jsonb;
 	v_plan4 jsonb;
+	v_plan_rehome jsonb;
+	v_plan_f1 jsonb;
+	v_plan_f2 jsonb;
 	v_m1 uuid;
 	v_m2 uuid;
 	v_m4 uuid;
 begin
 	perform pg_temp.t1402_ok(
-		not has_function_privilege('anon', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines)', 'execute')
-		and not has_function_privilege('authenticated', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines)', 'execute')
-		and not has_function_privilege('service_role', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines)', 'execute'),
+		not has_function_privilege('anon', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)', 'execute')
+		and not has_function_privilege('authenticated', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)', 'execute')
+		and not has_function_privilege('service_role', 'public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)', 'execute'),
 		'qorpera_coding_machine_node_has_room stays revoked from API roles'
 	);
 
@@ -81,10 +93,10 @@ begin
 		headroom_cpu_millis, headroom_memory_bytes, cpu_allocation_ratio, standard_cpu_millis, standard_memory_bytes, enabled)
 	values
 		(v_n1, v_n1_sha, 'node-1402-1', 1, 8000, 34359738368, 4000, 8589934592, 1, 4000, 8589934592, true),
-		(v_n2, v_n2_sha, 'node-1402-2', 1, 12000, 34359738368, 4000, 8589934592, 1, 4000, 8589934592, true);
+		(v_n2, v_n2_sha, 'node-1402-2', 1, 16000, 51539607552, 4000, 8589934592, 1, 4000, 8589934592, true);
 	insert into public.qorpera_runtime_node_observations(node_id, observation_id, observed_at, observation) values
 		(v_n1, '14020000-0000-4000-8000-000000000111', clock_timestamp(), '{"state":"ready","cpuMillis":8000,"memoryBytes":34359738368}'),
-		(v_n2, '14020000-0000-4000-8000-000000000112', clock_timestamp(), '{"state":"ready","cpuMillis":12000,"memoryBytes":34359738368}');
+		(v_n2, '14020000-0000-4000-8000-000000000112', clock_timestamp(), '{"state":"ready","cpuMillis":16000,"memoryBytes":51539607552}');
 	insert into public.qorpera_runtime_node_inventory_policies(node_id, policy, policy_sha256) values
 		(v_n1, '{}', repeat('a', 64)),
 		(v_n2, '{}', repeat('a', 64));
@@ -105,6 +117,19 @@ begin
 				'imageFingerprint', repeat('f', 64), 'bootstrapSha256', repeat('e', 64), 'storagePool', 'qorpera-vm',
 				'network', 'qagent0', 'cpus', 4, 'memoryBytes', 8589934592, 'rootDiskBytes', 68719476736),
 			'{"rootPath":"/srv/coding-2"}');
+	set local session_replication_role = origin;
+
+	perform pg_temp.t1402_make_session(v_w_coal_lead, 'repo-coal', 'preparing', 'exec-1402-1');
+	perform pg_temp.t1402_make_session(v_w_coal_same, 'repo-coal', 'queued', null);
+	perform pg_temp.t1402_make_session(v_w_coal_diff, 'repo-other', 'queued', null);
+	perform pg_temp.t1402_ok(
+		public.qorpera_coding_executor_pick(v_w_coal_same) = 'exec-1402-1'
+		and public.qorpera_coding_executor_pick(v_w_coal_diff) = 'exec-1402-2',
+		'in-flight preparing turn without vm_allocation_id coalesces same repo only, not another repo'
+	);
+	set local session_replication_role = replica;
+	update public.qorpera_coding_sessions set phase = 'completed', lease_owner = null, lease_token = null, lease_until = null
+	where worker_id = v_w_coal_lead;
 	set local session_replication_role = origin;
 
 	perform pg_temp.t1402_make_session(v_w1, 'repo-a', 'preparing', 'exec-1402-1');
@@ -131,6 +156,110 @@ begin
 		public.qorpera_coding_executor_pick(v_w3) = 'exec-1402-1',
 		format('second repo-a session reuses awake non-full VM on node 1: got %s', public.qorpera_coding_executor_pick(v_w3))
 	);
+
+	perform pg_temp.t1402_make_session(v_w_f3, 'repo-a', 'queued', null);
+	set local session_replication_role = replica;
+	update public.qorpera_coding_sessions set claim_after = clock_timestamp() - interval '1 second' where worker_id = v_w_f3;
+	insert into public.qorpera_coding_session_events(worker_id, sequence, kind, actor, body)
+	values (v_w_f3, 1, 'step', 'executor', '{"text":"Waiting for a coding machine","reason":"NODE_CAPACITY_EXHAUSTED"}');
+	set local session_replication_role = origin;
+	perform pg_temp.t1402_ok(
+		public.qorpera_coding_executor_pick(v_w_f3) = 'exec-1402-2',
+		format('deferred NODE_CAPACITY_EXHAUSTED retry overflows off full awake old-digest node 1 to node 2: got %s',
+			public.qorpera_coding_executor_pick(v_w_f3))
+	);
+
+	begin
+		set local session_replication_role = replica;
+		insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner,
+			machine_id_sha256, binding, staff_agent_id, repository, setup_digest, number)
+		values (extensions.gen_random_uuid(), 'member', '14020000-0000-4000-8000-000000000010', v_env,
+			'14020000-0000-4000-8000-000000000001', 'exec-1402-2', v_n2_sha,
+			jsonb_build_object('cpus', 4, 'memoryBytes', 8589934592), '14020000-0000-4000-8000-000000000030',
+			'surfaces/repo-a', v_digest_new, 2);
+		set local session_replication_role = origin;
+		perform pg_temp.t1402_ok(
+			public.qorpera_coding_executor_pick(v_w3) = 'exec-1402-2',
+			format('when >1 setup_digest is live for repo-a, fresh pick skips full node 1 and picks node 2: got %s',
+				public.qorpera_coding_executor_pick(v_w3))
+		);
+		raise exception using errcode = 'QT140';
+	exception when sqlstate 'QT140' then null;
+	end;
+
+	begin
+		update public.qorpera_coding_executors set enabled = false where environment_id = v_env and owner = 'exec-1402-1';
+		perform pg_temp.t1402_make_session(v_w_f1, 'repo-a', 'queued', null);
+		perform pg_temp.t1402_ok(
+			public.qorpera_coding_executor_pick(v_w_f1) = 'exec-1402-2',
+			format('disabled executor on node 1 causes pick to overflow to node 2: got %s', public.qorpera_coding_executor_pick(v_w_f1))
+		);
+		set local session_replication_role = replica;
+		update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = 'exec-1402-2',
+			lease_token = extensions.gen_random_uuid(), lease_until = clock_timestamp() + interval '5 minutes', started_at = clock_timestamp()
+		where worker_id = v_w_f1;
+		set local session_replication_role = origin;
+		v_plan_f1 := public.qorpera_plan_coding_machine(
+			v_w_f1, (select lease_token from public.qorpera_coding_sessions where worker_id = v_w_f1), v_n2_sha, v_digest
+		);
+		perform pg_temp.t1402_ok(
+			v_plan_f1 ->> 'state' = 'planned',
+			format('disabled executor on node 1 lets node 2 plan instead of NODE_NOT_PREFERRED: %s', v_plan_f1)
+		);
+		raise exception using errcode = 'QT140';
+	exception when sqlstate 'QT140' then null;
+	end;
+
+	begin
+		set local session_replication_role = replica;
+		update public.qorpera_runtime_node_observations set observed_at = clock_timestamp() - interval '5 minutes' where node_id = v_n1;
+		set local session_replication_role = origin;
+		perform pg_temp.t1402_make_session(v_w_f2, 'repo-a', 'queued', null);
+		perform pg_temp.t1402_ok(
+			public.qorpera_coding_executor_pick(v_w_f2) = 'exec-1402-2',
+			format('stale observation on awake node 1 causes pick to overflow to node 2: got %s', public.qorpera_coding_executor_pick(v_w_f2))
+		);
+		set local session_replication_role = replica;
+		update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = 'exec-1402-2',
+			lease_token = extensions.gen_random_uuid(), lease_until = clock_timestamp() + interval '5 minutes', started_at = clock_timestamp()
+		where worker_id = v_w_f2;
+		set local session_replication_role = origin;
+		v_plan_f2 := public.qorpera_plan_coding_machine(
+			v_w_f2, (select lease_token from public.qorpera_coding_sessions where worker_id = v_w_f2), v_n2_sha, v_digest
+		);
+		perform pg_temp.t1402_ok(
+			v_plan_f2 ->> 'state' = 'planned',
+			format('stale observation on awake node 1 lets node 2 plan instead of NODE_NOT_PREFERRED: %s', v_plan_f2)
+		);
+		raise exception using errcode = 'QT140';
+	exception when sqlstate 'QT140' then null;
+	end;
+
+	begin
+		perform pg_temp.t1402_make_session(v_w_att, 'repo-a', 'queued', null);
+		set local session_replication_role = replica;
+		update public.qorpera_coding_machines set retire_requested_at = clock_timestamp() where id = v_m1;
+		update public.qorpera_coding_sessions set vm_allocation_id = v_m1, attached_machine_id = v_m1,
+			attachment_token = extensions.gen_random_uuid(), attachment_turn = 1,
+			attached_at = clock_timestamp(), attachment_until = clock_timestamp() + interval '5 minutes'
+		where worker_id = v_w_att;
+		set local session_replication_role = origin;
+		perform pg_temp.t1402_ok(
+			public.qorpera_coding_executor_pick(v_w_att) = 'exec-1402-1',
+			'actively attached session stays pinned to its retiring vm_allocation_id owner'
+		);
+		set local session_replication_role = replica;
+		update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null,
+			attachment_turn = null, attached_at = null, attachment_until = null
+		where worker_id = v_w_att;
+		set local session_replication_role = origin;
+		perform pg_temp.t1402_ok(
+			public.qorpera_coding_executor_pick(v_w_att) = 'exec-1402-2',
+			'detached session with retiring vm_allocation_id overflows to node 2'
+		);
+		raise exception using errcode = 'QT140';
+	exception when sqlstate 'QT140' then null;
+	end;
 
 	set local session_replication_role = replica;
 	update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = 'exec-1402-2',
@@ -190,6 +319,36 @@ begin
 		v_plan4 ->> 'state' = 'planned' and v_m4 is distinct from v_m1
 		and (select owner = 'exec-1402-2' and number = 2 from public.qorpera_coding_machines where id = v_m4),
 		format('plan allocates repo-a overflow VM #2 on node 2 instead of NODE_NOT_PREFERRED: %s', v_plan4)
+	);
+
+	perform pg_temp.t1402_make_session(v_w_rehome, 'repo-a', 'queued', null);
+	set local session_replication_role = replica;
+	update public.qorpera_coding_sessions set vm_allocation_id = v_m1 where worker_id = v_w_rehome;
+	set local session_replication_role = origin;
+	perform pg_temp.t1402_ok(
+		public.qorpera_coding_executor_pick(v_w_rehome) = 'exec-1402-2',
+		format('detached session homed on sleeping remote VM on full node 1 picks node 2: got %s',
+			public.qorpera_coding_executor_pick(v_w_rehome))
+	);
+	set local session_replication_role = replica;
+	update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = 'exec-1402-2',
+		lease_token = extensions.gen_random_uuid(), lease_until = clock_timestamp() + interval '5 minutes', started_at = clock_timestamp()
+	where worker_id = v_w_rehome;
+	set local session_replication_role = origin;
+	v_plan_rehome := public.qorpera_plan_coding_machine(
+		v_w_rehome, (select lease_token from public.qorpera_coding_sessions where worker_id = v_w_rehome), v_n2_sha, v_digest
+	);
+	perform pg_temp.t1402_ok(
+		v_plan_rehome ->> 'state' = 'planned'
+		and (v_plan_rehome ->> 'machineId')::uuid = v_m4
+		and exists (
+			select 1 from public.qorpera_coding_session_events event
+			where event.worker_id = v_w_rehome and event.kind = 'step' and event.actor = 'executor'
+				and event.body ->> 'reason' = 'MACHINE_NEW_DISK'
+				and (event.body ->> 'rehomedFrom')::uuid = v_m1
+				and (event.body ->> 'rehomedTo')::uuid = v_m4
+		),
+		format('plan re-homes detached session off un-wakeable sleeping VM #1 onto VM #2 with MACHINE_NEW_DISK: %s', v_plan_rehome)
 	);
 
 	perform pg_temp.t1402_ok(
