@@ -45,7 +45,7 @@ describe("Interface figures in messages", () => {
 			{ ...surfaces[0]!, runningSessionCount: 2 },
 			{ ...surfaces[1]!, runningSessionCount: 0 },
 		];
-		await store.load();
+		await store.refreshSurfaces();
 		decorateSurfaceFigures(prose, store);
 		expect(state("website")).toBe("working");
 		expect(state("strategy")).toBe("rest");
