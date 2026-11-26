@@ -3088,6 +3088,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 														mode: "surface_worker",
 														writableRoots: turnReq.writableRoots,
 														stagedRoots: turnReq.stagedRoots,
+														savesQuestions: turnReq.savesQuestions === true,
 													},
 												}),
 												...notebooks.tools(
@@ -3109,13 +3110,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											}),
 										]
 									: [];
-								const dataTools = this.#companyData
-									? cloudDataTools({
-											folder: folderClient,
-											door: this.#companyData,
-											apply: false,
-										}).filter((tool) => readOnlyDataNames.has(tool.name))
-									: [];
+								const dataTools = cloudDataTools({
+									folder: folderClient,
+									door: this.#companyData,
+									apply: false,
+								}).filter((tool) => readOnlyDataNames.has(tool.name));
 								return [...turnReq.tools, ...folderTools, ...searchTools, ...dataTools];
 							},
 						}),

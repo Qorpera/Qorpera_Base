@@ -167,6 +167,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_record_native_context_view", "standard"],
 	["qorpera_record_provider_usage_signal", "standard"],
 	["qorpera_record_runtime_observation_batch", "standard"],
+	["qorpera_run_company_numbers", "standard"],
 	["qorpera_run_data_pass", "standard"],
 	["qorpera_run_data_pass_approved", "standard"],
 	["qorpera_self_approve_organization_proposal", "standard"],

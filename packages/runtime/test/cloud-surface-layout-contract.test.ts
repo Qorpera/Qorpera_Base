@@ -4,6 +4,8 @@ import {
 	describeSurfaceBlocks,
 	type JsonValue,
 	type StudioPatchOp,
+	SURFACE_ASK_FORMAT,
+	SURFACE_COLORS_FORMAT,
 	SURFACE_REPORT_FORMAT,
 	starterSurfaceLayout,
 } from "@qorpera/contracts";
@@ -74,6 +76,15 @@ const STRATEGY: Interface = {
 	surfaceIsGlobal: false,
 	surfaceArchetype: "studio",
 	folderRoot: "surfaces/strategy",
+};
+const ANALYTICS: Interface = {
+	surfaceSlug: "numbers",
+	surfaceTitle: "Numbers",
+	surfaceKind: "dashboard",
+	surfaceIcon: "chart",
+	surfaceIsGlobal: false,
+	surfaceArchetype: "studio",
+	folderRoot: "surfaces/numbers",
 };
 const CUSTOM: Interface = {
 	surfaceSlug: "field-notes",
@@ -153,6 +164,7 @@ describe("the page contract a Studio session is told", () => {
 		const cases = [
 			[PRODUCT, "product"],
 			[IDENTITY, "identity"],
+			[ANALYTICS, "analytics"],
 			[CUSTOM, "custom"],
 		] as const;
 		for (const [surface, starter] of cases) {
@@ -170,6 +182,10 @@ describe("the page contract a Studio session is told", () => {
 		expect(await instructionsFor(PRODUCT)).toContain('A stage_3d model file (default object.json) is {"model"');
 		expect(await instructionsFor(IDENTITY)).toContain("The company look is /identity/tokens.json");
 		expect(await instructionsFor(CUSTOM)).not.toContain("A stage_3d model file");
+		const analytics = await instructionsFor(ANALYTICS);
+		expect(analytics).toContain(SURFACE_ASK_FORMAT);
+		expect(analytics).toContain(SURFACE_COLORS_FORMAT);
+		expect(await instructionsFor(CUSTOM)).not.toContain(SURFACE_ASK_FORMAT);
 	});
 
 	it("shows an interface its own layout.json, and says when that file does not read", async () => {
@@ -251,6 +267,8 @@ describe("the skill a Studio session works by", () => {
 			[PRODUCT, "product-studio"],
 			[IDENTITY, "identity-studio"],
 			[STRATEGY, "strategy-studio"],
+			[ANALYTICS, "analytics-studio"],
+			[{ ...CUSTOM, surfaceSlug: "analytics" }, "analytics-studio"],
 			[CUSTOM, "custom-surface"],
 		] as const;
 		for (const [surface, name] of cases) {
@@ -273,7 +291,7 @@ describe("the skill a Studio session works by", () => {
 			surfaceKind: "product",
 		});
 		expect(unknown).toContain(
-			"## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: product-studio for a product, identity-studio for the company's Identity, strategy-studio for Strategy, custom-surface for any other page.",
+			"## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: product-studio for a product, identity-studio for the company's Identity, strategy-studio for Strategy, analytics-studio for Analytics, custom-surface for any other page.",
 		);
 		expect(unknown).not.toContain("## Skill: ");
 	});

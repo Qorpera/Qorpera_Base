@@ -13,7 +13,11 @@ import { type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-too
 import { recordStudioChatGptVoiceClips, type StudioChatGptVoiceMachine } from "./cloud-studio-voice-recorder.ts";
 import { createStageSurfaceArtifactTool } from "./cloud-surface-artifact-tool.ts";
 import { createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
-import { createInspectSurfaceTool, type StudioInspectBinaryMeta } from "./cloud-surface-inspect-tool.ts";
+import {
+	createInspectSurfaceTool,
+	type StudioInspectBinaryMeta,
+	studioInspectAsker,
+} from "./cloud-surface-inspect-tool.ts";
 import { createComposeSurfaceLayoutTool } from "./cloud-surface-layout-tool.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import { createStudioPictureTool } from "./cloud-surface-picture-tool.ts";
@@ -522,6 +526,11 @@ export async function prepareSurfaceCodingWorkspace(options: {
 					? [
 							createInspectSurfaceTool({
 								machine: codingMachine,
+								...(folder
+									? {
+											ask: studioInspectAsker(cloudDataTools({ folder, door: companyData, apply: false })),
+										}
+									: {}),
 								loadSnapshot: async (reqSignal) => {
 									const files: Record<string, string> = { ...(contents?.files ?? {}) };
 									const knownBinaries: Record<string, StudioInspectBinaryMeta> = {};
@@ -631,7 +640,13 @@ export async function prepareSurfaceCodingWorkspace(options: {
 						folder,
 						operations,
 						identity,
-						surfaceFilePolicy: { mode: "surface_worker", writableRoots, stagedRoots },
+						surfaceFilePolicy: {
+							mode: "surface_worker",
+							writableRoots,
+							stagedRoots,
+							savesQuestions:
+								!isInternalReconciliation && view.page === "layout" && view.starter === "analytics",
+						},
 						...(turnReadOverlay ? { previewOverlay: turnReadOverlay } : {}),
 					}).filter((tool) => STUDIO_FOLDER_TOOLS.has(tool.name))
 				: [];
@@ -639,12 +654,11 @@ export async function prepareSurfaceCodingWorkspace(options: {
 				folder && folderSearch
 					? [cloudFolderSearchTool({ search: folderSearch, folder, runId: identity.runId })]
 					: [];
-			const dataTools =
-				folder && companyData
-					? cloudDataTools({ folder, door: companyData, apply: false }).filter((tool) =>
-							READ_ONLY_DATA_TOOLS.has(tool.name),
-						)
-					: [];
+			const dataTools = folder
+				? cloudDataTools({ folder, door: companyData, apply: false }).filter((tool) =>
+						READ_ONLY_DATA_TOOLS.has(tool.name),
+					)
+				: [];
 			const skillTools = surfaceSession.readSkillTools ? surfaceSession.readSkillTools(operations, identity) : [];
 			return [
 				stagePatchTool,
