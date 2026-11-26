@@ -2799,7 +2799,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		let discoveredSetup: ParsedCodingSetup | null = null;
 		if (
 			!isSurfaceWorkspace &&
-			!claim.previewBuilder &&
 			folder?.repositories?.readSetup &&
 			typeof claim.baseSha === "string" &&
 			/^[0-9a-f]{40}$/.test(claim.baseSha)
@@ -2832,9 +2831,18 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const storage = lxdCodingSessionStorage(machine, this.#placement, claim.workerId);
 		const journal = lxdCodingMachineJournalPlan(machine, this.#placement);
 		if (folder) {
-			const workspace = await this.#prepareFolder(folder, claim, turn, machine, storage, journal, signal);
+			const { workspace, setup: folderSetup } = await this.#prepareFolder(
+				folder,
+				claim,
+				turn,
+				machine,
+				storage,
+				journal,
+				discoveredSetup,
+				signal,
+			);
 			try {
-				await this.#afterFolderAttach(folder, claim, planned, journal, discoveredSetup, signal);
+				await this.#afterFolderAttach(folder, claim, planned, journal, folderSetup ?? discoveredSetup, signal);
 			} catch (error) {
 				if (this.#prepared.get(claim.workerId)?.claim.leaseToken === claim.leaseToken) {
 					this.#prepared.delete(claim.workerId);
@@ -2989,8 +2997,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		machine: Readonly<LxdCodingMachineBinding>,
 		storage: Readonly<CloudCodingStorageBinding>,
 		journal: CodingMachineJournalPlan,
+		discoveredSetup: ParsedCodingSetup | null,
 		signal: AbortSignal,
-	): Promise<CodingWorkspace> {
+	): Promise<{ workspace: CodingWorkspace; setup: ParsedCodingSetup | null }> {
 		const scope = codingTurnScope(claim.workerId, machine.machineId, claim.sequence);
 		if (scope.requestId !== turn.turnId) throw new Error("CODING_HOST_TURN_ID_DIFFERS");
 		const initialReceipt = await this.#run(claim, machine, storage, signal, true);
@@ -3017,21 +3026,76 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		let started: { bootId: string; uid: number; starts: number };
 		let baseSha: string | null;
 		let cwd: string;
-		if (isSurfaceWorkspace || claim.previewBuilder) {
+		let resolvedSetup: ParsedCodingSetup | null = discoveredSetup;
+		if (isSurfaceWorkspace) {
 			started = await startPromise;
 			baseSha = null;
 			cwd = CODING_FOLDER_COMPANY_ROOT;
 		} else {
 			const gitClaim = requireGitClaim(claim);
-			const repoPromise = (async (): Promise<{ root: string; baseSha: string; cwd: string }> => {
+			const repoPromise = (async (): Promise<{
+				root: string;
+				baseSha: string;
+				cwd: string;
+				preparedWorktree: boolean;
+				setup: ParsedCodingSetup | null;
+			}> => {
 				const { root, baseSha: sha } = await this.#base(gitClaim, turn, authorize, overlapSignal);
+				if (claim.previewBuilder) {
+					let setup = discoveredSetup;
+					if (!setup && folder.repositories?.readSetup && /^[0-9a-f]{40}$/.test(sha)) {
+						setup = await folder.repositories.readSetup(
+							{
+								claim: gitClaim,
+								assertAuthorized: async (checked) => {
+									await this.#run(claim, machine, storage, checked);
+								},
+							},
+							sha,
+							overlapSignal,
+						);
+						if (setup.refused) {
+							const detail = setup.problems
+								.filter((problem) => problem.effect === "refused")
+								.slice(0, 5)
+								.map((problem) => `${problem.at || "/"}: ${problem.message}`)
+								.join("; ");
+							throw new CodingWorkspaceFailed(
+								"CODING_SETUP_REFUSED",
+								`Repository environment setup file (${setup.file ?? "environment.json"}) is invalid: ${detail || "refused"}`,
+							);
+						}
+					}
+					const needsWorktree = Boolean(
+						setup &&
+							setup.file !== null &&
+							(setup.setupSpec.install.length > 0 ||
+								setup.setupSpec.start.length > 0 ||
+								setup.setupSpec.terminals.length > 0 ||
+								setup.setupSpec.repositoryDependencies.length > 0),
+					);
+					if (!needsWorktree) {
+						return { root, baseSha: sha, cwd: CODING_FOLDER_COMPANY_ROOT, preparedWorktree: false, setup };
+					}
+					const { cwd: repoCwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
+						this.#repositorySession(gitClaim, machine, storage, initialUid, sha, root),
+						overlapSignal,
+					);
+					return { root, baseSha: sha, cwd: repoCwd, preparedWorktree: true, setup };
+				}
 				const { cwd: repoCwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
 					this.#repositorySession(gitClaim, machine, storage, initialUid, sha, root),
 					overlapSignal,
 				);
-				return { root, baseSha: sha, cwd: repoCwd };
+				return { root, baseSha: sha, cwd: repoCwd, preparedWorktree: true, setup: discoveredSetup };
 			})();
-			let repo: { root: string; baseSha: string; cwd: string };
+			let repo: {
+				root: string;
+				baseSha: string;
+				cwd: string;
+				preparedWorktree: boolean;
+				setup: ParsedCodingSetup | null;
+			};
 			try {
 				[started, repo] = await Promise.all([
 					startPromise.catch((error: unknown) => {
@@ -3049,7 +3113,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			baseSha = repo.baseSha;
 			cwd = repo.cwd;
-			if (folder.repositories && !claim.worktreeCreatedAt) {
+			resolvedSetup = repo.setup;
+			if (repo.preparedWorktree && folder.repositories && !claim.worktreeCreatedAt) {
 				await this.#call(
 					"qorpera_record_coding_worktree_created",
 					{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
@@ -3092,7 +3157,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			folder: { uid: started.uid, cwd, packageCaches },
 		};
 		this.#prepared.set(claim.workerId, ready);
-		return { vmId: machine.machineId, baseSha };
+		return { workspace: { vmId: machine.machineId, baseSha }, setup: resolvedSetup };
 	}
 	#startFolder(
 		folder: FolderOptions,
@@ -3404,8 +3469,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const nativeEdge = this.#options.nativeEdge;
 		const execPipeClient = this.#options.client.execInstancePipe;
 		const useNativeEdge = Boolean(nativeEdge && this.#options.folder && execPipeClient);
-		const warmKey = useNativeEdge ? previewWorkspaceKey(codeAreaPath(gitClaim.repository), build.recipe.cwd) : null;
-		const leadingInstall = useNativeEdge ? parseLeadingPackageInstall(build.recipe.run) : null;
+		const useWarmWorkspace = useNativeEdge && build.recipe.folder !== "." && build.recipe.folder !== build.recipe.cwd;
+		const warmKey = useWarmWorkspace
+			? previewWorkspaceKey(codeAreaPath(gitClaim.repository), build.recipe.cwd)
+			: null;
+		const leadingInstall = useWarmWorkspace ? parseLeadingPackageInstall(build.recipe.run) : null;
 		const run = await this.#runChecks(
 			gitClaim,
 			{
@@ -3440,7 +3508,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 			signal,
 		);
-		if (!useNativeEdge || !nativeEdge || !execPipeClient || warmKey === null) {
+		if (!useNativeEdge || !nativeEdge || !execPipeClient) {
 			return previewBuildOutcome(run, build.recipe);
 		}
 		if (run.state !== "passed") {
@@ -3455,7 +3523,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (runName === null) {
 			return previewBuildOutcome(run, build.recipe);
 		}
-		const srcDir = `${previewWorkspaceDir(uid, warmKey)}/src`;
+		const srcDir =
+			warmKey !== null
+				? `${previewWorkspaceDir(uid, warmKey)}/src`
+				: `/home/qorpera-${uid}/.qorpera-checks/${runName}/src`;
 		const outputDir = build.recipe.folder === "." ? srcDir : `${srcDir}/${build.recipe.folder}`;
 		const worker32 = claim.workerId.replaceAll("-", "").toLowerCase();
 		const companyMountDir = `${CODING_GUEST.folder}/mounts/${worker32}`;
@@ -3477,34 +3548,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			signal,
 		});
 	}
-	/** One run of a repository's checks on a clean copy of `commit` in the turn's session's machine (own code storage,
-	 * step 3; STEP3-CHECKS-PLAN.md 6.2 to 6.4). Each command (the copy, then each check in the file's order) is one of the
-	 * session's own commands, through the folder command transport its model's commands take: as the session's user, with
-	 * its environment and secrets, its output masked and kept in its custody only once the machine's reads are released.
-	 * Its authority is the host's own part of a command's (the turn still prepared, a fresh run authority, no machine
-	 * marked for a new disk), never the model's: the turn has handed in, and the model's commands are refused. Each
-	 * command gets `CI=true`, `QORPERA_CHECKS=1` and the machine's package caches when its agent made them, as every
-	 * session command does (packageCacheEnvironment; own code storage, step 6). The copy holds exactly the candidate's tracked files
-	 * and installs run fresh in it. Packages may come from this machine's cache; npm checks each against the lockfile's
-	 * integrity, other tools check less. No build output is carried. The run works in a folder of its own,
-	 * `~/.qorpera-checks/<its turn's sequence>-<its attempt>` (codeChecksRunName), and its copy removes the earlier runs'
-	 * folders; a command of a run that is not the newest does nothing (CODE_CHECKS_NEWER_RUN). The copy makes that folder
-	 * first (the fence) and ends what earlier runs left running in theirs; after it, before the first check, every command
-	 * of an earlier run the host did not see end for certain is cancelled and read once more (#checksLookAgain; review
-	 * rounds 5 and 6, F1).
-	 * The first check that fails ends the run. It never throws for a check's or the machine's sake: what could not run,
-	 * or ran past the run's wall budget, is `not_run` with why, a running command stopped first (#stopChecksCommand). A
-	 * command whose stop could not be confirmed (its cancels rejected, or still `running`) holds every later run of the
-	 * session's checks: each is `not_run` (`machine`, CODE_CHECKS_EARLIER_RUN_NOT_STOPPED) until a cancel and a read
-	 * before it see it end, and touches no folder (#checksMayRun; release review r1, F1). The turn's abort stops the
-	 * running command with time of its own and is thrown on.
-	 *
-	 * When `site` is a recipe and every check passed, the run takes the site the checks left (own code storage, step 4;
-	 * #takeSite): its collect and, when needed, its drop are two more commands of the run, under every rule above, and
-	 * the run's wall budget gains 240 s for them. A site the code made wrong is `site_refused`; a run that passed says
-	 * what became of its site (null without a recipe). Its `ms` is the checks' own, the site's time aside. `rootLinks`
-	 * true lets the site's links from `/` through (step 5: the collect's QORPERA_SITE_ROOT_LINKS is `allowed`); else they
-	 * are refused as before (`refused`, always set, so no value of the session's of that name reaches the collect). */
 	async #runChecks(
 		claim: GitCodingSessionClaim,
 		input: {
@@ -7667,7 +7710,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		discovered: ParsedCodingSetup | null,
 		signal: AbortSignal,
 	): Promise<void> {
-		if (isSurfaceWorkspaceClaim(claim) || claim.previewBuilder) {
+		if (isSurfaceWorkspaceClaim(claim)) {
 			this.#sessionSetups.delete(claim.workerId);
 			return;
 		}

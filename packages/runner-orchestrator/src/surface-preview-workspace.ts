@@ -236,9 +236,70 @@ function validateInstallFlags(
 	return true;
 }
 
+function hasUnsafeTopLevelRemainder(command: string): boolean {
+	let inSingle = false;
+	let inDouble = false;
+	let escaped = false;
+	let parenDepth = 0;
+	for (let i = 0; i < command.length; i += 1) {
+		const ch = command[i]!;
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (inSingle) {
+			if (ch === "'") inSingle = false;
+			continue;
+		}
+		if (inDouble) {
+			if (ch === "\\") {
+				escaped = true;
+			} else if (ch === '"') {
+				inDouble = false;
+			}
+			continue;
+		}
+		if (ch === "\\") {
+			escaped = true;
+			continue;
+		}
+		if (ch === "'") {
+			inSingle = true;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			continue;
+		}
+		if (ch === "(") {
+			parenDepth += 1;
+			continue;
+		}
+		if (ch === ")") {
+			if (parenDepth === 0) return true;
+			parenDepth -= 1;
+			continue;
+		}
+		if (parenDepth !== 0) continue;
+		if (ch === "\n" || ch === "\r" || ch === ";") return true;
+		if (ch === "|" && command[i + 1] === "|") return true;
+		if (ch === "&") {
+			if (command[i + 1] === "&") {
+				i += 1;
+				continue;
+			}
+			const prev = i > 0 ? command[i - 1] : "";
+			const next = i + 1 < command.length ? command[i + 1] : "";
+			if (prev !== ">" && next !== ">" && prev !== "<" && next !== "<") return true;
+		}
+	}
+	return inSingle || inDouble || escaped || parenDepth !== 0;
+}
+
 export function parseLeadingPackageInstall(run: string): ParsedLeadingPackageInstall | null {
 	const split = splitAtFirstTopLevelAnd(run);
 	if (!split) return null;
+	if (hasUnsafeTopLevelRemainder(split.right)) return null;
 	const tokens = tokenizeSimpleShellCommand(split.left);
 	if (!tokens || tokens.length === 0) return null;
 	const bin = tokens[0]!;
@@ -512,18 +573,47 @@ if to_write:
 	if proc.wait()!=0:
 		sys.exit(4)
 if out_folder and out_folder!="." and safe_rel(out_folder):
-	out_prefix=out_folder+"/"
-	has_tracked_output=any(p==out_folder or p.startswith(out_prefix) for p in new_entries.keys())
-	if not has_tracked_output:
-		cur=src_dir
-		ok=True
-		for part in out_folder.split("/"):
-			cur=os.path.join(cur,part)
-			if os.path.islink(cur):
-				ok=False
-				break
-		if ok and os.path.isdir(cur):
-			shutil.rmtree(cur,ignore_errors=True)
+	cur=src_dir
+	ok=True
+	for part in out_folder.split("/"):
+		cur=os.path.join(cur,part)
+		if os.path.islink(cur):
+			ok=False
+			break
+	if ok and os.path.isdir(cur):
+		for dirpath,dirnames,filenames in os.walk(cur,topdown=False,followlinks=False):
+			rel_dir=os.path.relpath(dirpath,src_dir).replace(os.sep,"/")
+			for fn in filenames:
+				if rel_dir+"/"+fn not in new_entries:
+					fp=os.path.join(dirpath,fn)
+					try:
+						os.unlink(fp)
+					except PermissionError:
+						try:
+							os.chmod(dirpath,0o755)
+							os.unlink(fp)
+						except OSError:
+							pass
+					except OSError:
+						pass
+			for dn in dirnames:
+				dp=os.path.join(dirpath,dn)
+				rel_dn=rel_dir+"/"+dn
+				if os.path.islink(dp):
+					if rel_dn not in new_entries:
+						try:
+							os.unlink(dp)
+						except OSError:
+							pass
+				elif rel_dn not in new_entries:
+					try:
+						os.rmdir(dp)
+					except OSError:
+						pass
+		try:
+			os.rmdir(cur)
+		except OSError:
+			pass
 tmp_tracked=tracked_path+".tmp"
 with open(tmp_tracked,"w",encoding="utf-8") as f:
 	json.dump({"version":1,"files":next_files},f,separators=(",",":"))

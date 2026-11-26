@@ -35,15 +35,25 @@ declare
 	v_env_a uuid;
 	v_surface uuid;
 	v_folder_surface uuid;
+	v_no_site_surface uuid;
+	v_no_head_surface uuid;
 	v_s1 uuid;
 	v_s2 uuid;
 	v_s_folder uuid;
+	v_s_internal uuid;
+	v_s_no_site uuid;
+	v_s_no_head uuid;
+	v_exp_id uuid;
+	v_var_a uuid;
 	v_c1 uuid;
 	v_c2 uuid;
 	v_opt1 uuid;
 	v_opt2 uuid;
 	v_preview public.qorpera_surface_previews%rowtype;
 	v_preview_after public.qorpera_surface_previews%rowtype;
+	v_preview_multi public.qorpera_surface_previews%rowtype;
+	v_preview_exp public.qorpera_surface_previews%rowtype;
+	v_previews_before integer;
 	v_claimed jsonb;
 	v_lease uuid;
 	v_req jsonb;
@@ -205,6 +215,103 @@ begin
 			where surface_id = v_surface and v_opt2 = any(selected_change_ids)
 		),
 		'staging a second option in an option group does not expire or overwrite option 1 speculative preview'
+	);
+
+	update public.qorpera_surface_sessions set updated_at = clock_timestamp() + interval '5 minutes' where id = v_s2;
+	select * into strict v_preview_multi from public.qorpera_surface_previews where id = v_preview.id;
+	update public.qorpera_surface_previews
+	set status = 'ready', site_version_id = v_preview_after.site_version_id, expires_at = clock_timestamp() + interval '1 hour'
+	where id = v_preview_multi.id;
+
+	perform pg_temp.sspp_as(v_owner);
+	set local role authenticated;
+	v_sel := public.qorpera_set_preview_selection(v_surface, array[v_opt1, v_c1], null, '{}'::uuid[], '/');
+	reset role;
+	perform pg_temp.sspp_assert(
+		(v_sel #>> '{primary,previewId}')::uuid = v_preview_multi.id
+		and v_sel #>> '{primary,status}' = 'ready'
+		and v_sel #> '{primary,toggledChangeIds}' = jsonb_build_array(v_c1, v_opt1),
+		'multi-session selection in reverse updated_at order normalizes canonically and hits ready speculative preview'
+	);
+
+	perform pg_temp.sspp_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_start_surface_session(
+		v_surface, 'Explore header styles', 'Header exploration', 'member', null, null, 2, 'Header', array['Minimal', 'Bold']
+	);
+	reset role;
+	select id into strict v_exp_id from public.qorpera_surface_explorations where surface_id = v_surface order by created_at desc limit 1;
+	select id into strict v_var_a from public.qorpera_surface_sessions where exploration_id = v_exp_id and exploration_variant_label = 'Minimal';
+	perform public.qorpera_record_surface_change(
+		v_var_a, 'Minimal header', 'Minimal header', 'git_range',
+		repeat('1', 40), repeat('6', 40), '{}'::uuid[], array['src/header.tsx'], null, null, false
+	);
+	select * into strict v_preview_exp
+	from public.qorpera_surface_previews
+	where surface_id = v_surface and exploration_session_id = v_var_a and status = 'composing' and expires_at > clock_timestamp();
+	perform pg_temp.sspp_assert(
+		v_preview_exp.selected_change_ids = array[v_c1, v_opt1]
+		and v_preview_exp.requested_by_user_id = v_owner,
+		'recording a change on an exploration session enqueues a speculative preview for that exploration session'
+	);
+
+	perform pg_temp.sspp_as(v_owner);
+	set local role authenticated;
+	v_s_internal := (public.qorpera_start_surface_session(v_surface, 'Internal sync', 'Internal') ->> 'id')::uuid;
+	v_no_site_surface := (public.qorpera_create_surface(
+		v_company, 'No Site', 'no-site', 'live_build', 'website', 'globe', '#0a84ff', null, null, false
+	) ->> 'id')::uuid;
+	v_no_head_surface := (public.qorpera_create_surface(
+		v_company, 'No Head', 'no-head', 'live_build', 'website', 'globe', '#0a84ff', null, null, false
+	) ->> 'id')::uuid;
+	v_s_no_site := (public.qorpera_start_surface_session(v_no_site_surface, 'No site edit', 'Edit') ->> 'id')::uuid;
+	v_s_no_head := (public.qorpera_start_surface_session(v_no_head_surface, 'No head edit', 'Edit') ->> 'id')::uuid;
+	reset role;
+
+	update public.qorpera_surface_sessions set is_internal = true where id = v_s_internal;
+	update public.qorpera_surfaces set site_id = null, live_head_sha = repeat('1', 40) where id = v_no_site_surface;
+	update public.qorpera_surfaces set live_head_sha = null where id = v_no_head_surface;
+
+	select count(*)::int into v_previews_before from public.qorpera_surface_previews where surface_id = v_surface;
+	perform public.qorpera_record_surface_change(
+		v_s_internal, 'Internal change', 'Internal change', 'git_range',
+		repeat('1', 40), repeat('7', 40), '{}'::uuid[], array['src/internal.ts'], null, null, false
+	);
+	perform pg_temp.sspp_assert(
+		(select count(*)::int from public.qorpera_surface_previews where surface_id = v_surface) = v_previews_before,
+		'internal session skips speculative preview enqueue'
+	);
+
+	perform public.qorpera_record_surface_change(
+		v_s_no_site, 'No site change', 'No site', 'git_range',
+		repeat('1', 40), repeat('8', 40), '{}'::uuid[], array['src/a.ts'], null, null, false
+	);
+	perform public.qorpera_record_surface_change(
+		v_s_no_head, 'No head change', 'No head', 'git_range',
+		repeat('1', 40), repeat('9', 40), '{}'::uuid[], array['src/b.ts'], null, null, false
+	);
+	perform pg_temp.sspp_assert(
+		not exists (select 1 from public.qorpera_surface_previews where surface_id in (v_no_site_surface, v_no_head_surface)),
+		'surfaces without site_id or live_head_sha skip speculative preview enqueue'
+	);
+
+	update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 second';
+	insert into public.qorpera_computer_hour_usage(profile_id, metered_at, run_seconds, standard_seconds)
+	values (v_company, clock_timestamp(), 100000000, 100000000);
+	update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+	perform public.qorpera_computer_hour_zero_sweep(clock_timestamp());
+	update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp() - interval '1 second';
+	perform pg_temp.sspp_assert(public.qorpera_company_coding_at_zero(v_company, clock_timestamp()), 'company is at zero hours');
+
+	select count(*)::int into v_previews_before from public.qorpera_surface_previews where surface_id = v_surface;
+	v_c2 := (public.qorpera_record_surface_change(
+		v_s1, 'Zero hour change', 'Zero hour change', 'git_range',
+		repeat('3', 40), repeat('b', 40), '{}'::uuid[], array['src/zero.ts'], null, null, false
+	) ->> 'changeId')::uuid;
+	perform pg_temp.sspp_assert(
+		v_c2 is not null
+		and (select count(*)::int from public.qorpera_surface_previews where surface_id = v_surface) = v_previews_before,
+		'company at zero computer hours skips speculative preview enqueue'
 	);
 end $$;
 

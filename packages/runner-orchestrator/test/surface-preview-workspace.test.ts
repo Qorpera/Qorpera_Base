@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -98,6 +98,11 @@ describe("parseLeadingPackageInstall", () => {
 			installCommand: "bun install --frozen-lockfile",
 			buildCommand: "bun run build",
 		});
+		expect(parseLeadingPackageInstall("npm ci && npm run build 2>&1 | cat")).toEqual({
+			manager: "npm",
+			installCommand: "npm ci",
+			buildCommand: "npm run build 2>&1 | cat",
+		});
 	});
 
 	it("returns null for non-install commands, package additions, env prefixes, or shell metacharacters", () => {
@@ -108,6 +113,10 @@ describe("parseLeadingPackageInstall", () => {
 		expect(parseLeadingPackageInstall("npm ci; npm run build")).toBeNull();
 		expect(parseLeadingPackageInstall("npm ci &&")).toBeNull();
 		expect(parseLeadingPackageInstall("cd web && npm ci && npm run build")).toBeNull();
+		expect(parseLeadingPackageInstall("npm ci && npm run build || true")).toBeNull();
+		expect(parseLeadingPackageInstall("npm ci && npm run build; cp a b")).toBeNull();
+		expect(parseLeadingPackageInstall("npm ci && npm run build &")).toBeNull();
+		expect(parseLeadingPackageInstall("npm ci && npm run build\necho done")).toBeNull();
 	});
 
 	it("derives deterministic workspace keys and paths", () => {
@@ -191,6 +200,70 @@ describe("PREVIEW_WORKSPACE_SYNC", () => {
 		expect(readFileSync(join(srcDir, ".vite/deps.json"), "utf8")).toBe("{}");
 		expect(() => statSync(join(srcDir, "dist"))).toThrow();
 		expect(runGit(srcDir, ["rev-parse", "HEAD"])).toBe(c2);
+	});
+
+	it("removes untracked stale build artifacts inside an output folder that also contains tracked files", () => {
+		const root = makeTempDir("qorpera-pws-mixed-");
+		const work = join(root, "work");
+		const bare = join(root, "repo.git");
+		const checksRoot = join(root, "checks");
+		const wsRoot = join(root, "workspaces");
+		mkdirSync(join(work, "public/static"), { recursive: true });
+		runGit(work, ["init", "-b", "main"]);
+		runGit(work, ["init", "--bare", bare]);
+		writeFileSync(join(work, "public/favicon.ico"), "ico-v1");
+		writeFileSync(join(work, "public/static/logo.svg"), "<svg/>");
+		writeFileSync(join(work, "src.txt"), "v1\n");
+		runGit(work, ["add", "."]);
+		runGit(work, ["commit", "-m", "v1"]);
+		const c1 = runGit(work, ["rev-parse", "HEAD"]);
+		runGit(work, ["push", bare, "HEAD:refs/heads/main"]);
+
+		const wsKey = previewWorkspaceKey("code/surfaces/mixed", ".");
+		expect(
+			runBash(PREVIEW_WORKSPACE_SYNC, root, {
+				QORPERA_CHECKS_ROOT: checksRoot,
+				QORPERA_CHECKS_NAME: "0000000001-0001",
+				QORPERA_CHECKS_REPOSITORY: bare,
+				QORPERA_CHECKS_COMMIT: c1,
+				QORPERA_PREVIEW_WORKSPACES_ROOT: wsRoot,
+				QORPERA_PREVIEW_WORKSPACE_KEY: wsKey,
+				QORPERA_PREVIEW_OUTPUT_FOLDER: "public",
+			}).status,
+		).toBe(0);
+
+		const srcDir = join(wsRoot, wsKey, "src");
+		const faviconMtimeBefore = statSync(join(srcDir, "public/favicon.ico")).mtimeMs;
+		mkdirSync(join(srcDir, "public/build"), { recursive: true });
+		writeFileSync(join(srcDir, "public/build/pricing-draft.html"), "<h1>Unapproved draft</h1>");
+		writeFileSync(join(srcDir, "public/stale-chunk.js"), "old");
+		symlinkSync("/etc/hosts", join(srcDir, "public/bad-link"));
+
+		writeFileSync(join(work, "src.txt"), "v2\n");
+		runGit(work, ["add", "."]);
+		runGit(work, ["commit", "-m", "v2"]);
+		const c2 = runGit(work, ["rev-parse", "HEAD"]);
+		runGit(work, ["push", bare, "HEAD:refs/heads/main"]);
+
+		expect(
+			runBash(PREVIEW_WORKSPACE_SYNC, root, {
+				QORPERA_CHECKS_ROOT: checksRoot,
+				QORPERA_CHECKS_NAME: "0000000002-0001",
+				QORPERA_CHECKS_REPOSITORY: bare,
+				QORPERA_CHECKS_COMMIT: c2,
+				QORPERA_PREVIEW_WORKSPACES_ROOT: wsRoot,
+				QORPERA_PREVIEW_WORKSPACE_KEY: wsKey,
+				QORPERA_PREVIEW_OUTPUT_FOLDER: "public",
+			}).status,
+		).toBe(0);
+
+		expect(readFileSync(join(srcDir, "public/favicon.ico"), "utf8")).toBe("ico-v1");
+		expect(statSync(join(srcDir, "public/favicon.ico")).mtimeMs).toBe(faviconMtimeBefore);
+		expect(readFileSync(join(srcDir, "public/static/logo.svg"), "utf8")).toBe("<svg/>");
+		expect(() => statSync(join(srcDir, "public/build/pricing-draft.html"))).toThrow();
+		expect(() => statSync(join(srcDir, "public/build"))).toThrow();
+		expect(() => statSync(join(srcDir, "public/stale-chunk.js"))).toThrow();
+		expect(() => statSync(join(srcDir, "public/bad-link"))).toThrow();
 	});
 });
 

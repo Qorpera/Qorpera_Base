@@ -4,6 +4,7 @@ do $$ begin
 	if to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_upsert_preview(public.qorpera_surfaces,text,uuid[],uuid)') is null
 		or to_regprocedure('public.qorpera_surface_preview_build_settle(uuid)') is null
+		or to_regprocedure('public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)') is null
 		or to_regprocedure('public.qorpera_company_coding_at_zero(uuid,timestamptz)') is null
 		or to_regprocedure('public.qorpera_company_deleting(uuid)') is null then
 		raise exception '20260930919000 requires 20260930901000 and 20260930916000 first';
@@ -192,6 +193,39 @@ $new$	update public.qorpera_surface_sessions
 		'seq', v_change.seq,
 		'session', public.qorpera_surface_session_json(v_session)
 	);$new$
+	]
+);
+
+select pg_temp.sspp_patch(
+	'public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)'::regprocedure,
+	array[
+$old$	if cardinality(v_toggled) > 0 then
+		select coalesce(array_agg(dedup.cid order by dedup.first_ord), '{}'::uuid[])
+		into v_toggled
+		from (
+			select u.cid, min(u.ord) as first_ord
+			from unnest(v_toggled) with ordinality as u(cid, ord)
+			join public.qorpera_surface_changes ch
+				on ch.id = u.cid
+				and ch.surface_id = p_surface_id
+				and ch.profile_id = v_surface.profile_id
+				and ch.status in ('staged', 'conflicted')
+			group by u.cid
+		) dedup;
+	end if;$old$,
+$new$	if cardinality(v_toggled) > 0 then
+		select coalesce(array_agg(dedup.cid order by dedup.created_at asc, dedup.seq asc, dedup.cid asc), '{}'::uuid[])
+		into v_toggled
+		from (
+			select distinct ch.id as cid, ch.created_at, ch.seq
+			from unnest(v_toggled) as u(cid)
+			join public.qorpera_surface_changes ch
+				on ch.id = u.cid
+				and ch.surface_id = p_surface_id
+				and ch.profile_id = v_surface.profile_id
+				and ch.status in ('staged', 'conflicted')
+		) dedup;
+	end if;$new$
 	]
 );
 
