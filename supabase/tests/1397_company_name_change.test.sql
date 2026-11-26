@@ -162,6 +162,10 @@ declare
 	v_rename_1 public.qorpera_company_renames%rowtype;
 	v_rename_2 public.qorpera_company_renames%rowtype;
 	v_rename_3 public.qorpera_company_renames%rowtype;
+	v_rename_4 public.qorpera_company_renames%rowtype;
+	v_run_actor jsonb;
+	v_lobby_env uuid;
+	v_non_v2_id uuid;
 	v_step jsonb;
 	v_mat jsonb;
 	v_wake public.qorpera_wake_occurrences%rowtype;
@@ -486,7 +490,7 @@ begin
 	v_gw_sync := public.qorpera_good_will_billing(
 		v_good_will_key,
 		'name_synced',
-		jsonb_build_object('profileId', v_profile, 'renameId', v_rename_3.id)
+		jsonb_build_object('profileId', v_profile, 'renameId', v_rename_3.id, 'companyName', 'Solstice Roasters', 'livemode', false)
 	);
 	perform pg_temp.cnc_assert((v_gw_sync ->> 'synced')::boolean, 'name_synced must mark pending rename synced');
 
@@ -554,9 +558,169 @@ begin
 	v_sched := public.qorpera_schedule_company_rename_jobs();
 	perform pg_temp.cnc_assert(
 		(v_sched ->> 'scheduled')::boolean
-			and (select schedule from cron.job where jobname = 'qorpera-company-rename-wakes') = '10 seconds'
+			and (select schedule from cron.job where jobname = 'qorpera-company-rename-wakes') = '* * * * *'
 			and (select schedule from cron.job where jobname = 'qorpera-company-rename-audits') = '*/5 * * * *',
 		'pg_cron schedule mismatch: ' || v_sched::text
+	);
+
+	perform pg_temp.cnc_commit_vision(v_env, v_owner_actor, 'cnc-rename-unnamed', 'No name yet');
+	select * into strict v_rename_4
+	from public.qorpera_company_renames
+	where profile_id = v_profile and wake_state = 'pending';
+	perform pg_temp.cnc_assert(
+		v_rename_4.new_name = 'No name yet' and v_rename_4.stripe_sync_state = 'none',
+		'No name yet must not queue pending Stripe sync: ' || to_jsonb(v_rename_4)::text
+	);
+
+	perform pg_temp.cnc_commit_vision(v_env, v_owner_actor, 'cnc-rename-beta', 'Solstice Beta');
+	perform pg_temp.cnc_commit_vision(v_env, v_owner_actor, 'cnc-rename-gamma', 'Solstice Gamma');
+	select * into strict v_rename_4
+	from public.qorpera_company_renames
+	where id = v_rename_4.id;
+	v_gw_sync := public.qorpera_good_will_billing(
+		v_good_will_key,
+		'name_synced',
+		jsonb_build_object('profileId', v_profile, 'renameId', v_rename_4.id, 'companyName', 'Solstice Beta', 'livemode', false)
+	);
+	perform pg_temp.cnc_assert(
+		not (v_gw_sync ->> 'synced')::boolean
+			and (select stripe_sync_state from public.qorpera_company_renames where id = v_rename_4.id) = 'pending',
+		'stale coalesced name_synced must not clear newer name: ' || v_gw_sync::text
+	);
+	v_gw_sync := public.qorpera_good_will_billing(
+		v_good_will_key,
+		'name_synced',
+		jsonb_build_object('profileId', v_profile, 'renameId', v_rename_4.id, 'companyName', 'Solstice Gamma', 'livemode', false)
+	);
+	perform pg_temp.cnc_assert(
+		(v_gw_sync ->> 'synced')::boolean
+			and (select stripe_sync_state from public.qorpera_company_renames where id = v_rename_4.id) = 'synced',
+		'matching name_synced must mark coalesced rename synced: ' || v_gw_sync::text
+	);
+
+	update public.qorpera_company_renames
+	set created_at = clock_timestamp() - interval '25 hours'
+	where id = v_rename_4.id;
+	v_step := public.qorpera_company_rename_wake_step(v_env, 16);
+	select * into strict v_rename_4 from public.qorpera_company_renames where id = v_rename_4.id;
+	perform pg_temp.cnc_assert(
+		(v_step ->> 'skipped')::integer = 1
+			and v_rename_4.wake_state = 'skipped'
+			and v_rename_4.wake_problem = 'expired',
+		'stale pending rename older than 24h must expire: ' || v_step::text || ' ' || to_jsonb(v_rename_4)::text
+	);
+
+	perform pg_temp.cnc_commit_vision(v_env, v_owner_actor, 'cnc-rename-temp', 'Solstice Temp');
+	select * into strict v_rename_4
+	from public.qorpera_company_renames
+	where profile_id = v_profile and wake_state = 'pending';
+	v_gw_sync := public.qorpera_good_will_billing(
+		v_good_will_key,
+		'name_synced',
+		jsonb_build_object('profileId', v_profile, 'renameId', v_rename_4.id, 'companyName', 'Solstice Temp', 'livemode', false)
+	);
+	perform pg_temp.cnc_assert((v_gw_sync ->> 'synced')::boolean, 'temp rename must sync to Stripe');
+	perform pg_temp.cnc_commit_vision(v_env, v_owner_actor, 'cnc-rename-temp-revert', 'Solstice Gamma');
+	select * into strict v_rename_4 from public.qorpera_company_renames where id = v_rename_4.id;
+	perform pg_temp.cnc_assert(
+		v_rename_4.wake_state = 'skipped'
+			and v_rename_4.wake_problem = 'reverted'
+			and v_rename_4.stripe_sync_state = 'pending'
+			and v_rename_4.stripe_synced_at is null,
+		'reverting after Stripe sync must re-queue pending Stripe sync: ' || to_jsonb(v_rename_4)::text
+	);
+	v_gw_sync := public.qorpera_good_will_billing(
+		v_good_will_key,
+		'name_synced',
+		jsonb_build_object('profileId', v_profile, 'renameId', v_rename_4.id, 'companyName', 'Solstice Temp', 'livemode', false)
+	);
+	perform pg_temp.cnc_assert(not (v_gw_sync ->> 'synced')::boolean, 'stale name must not clear reverted Stripe sync');
+	v_gw_sync := public.qorpera_good_will_billing(
+		v_good_will_key,
+		'name_synced',
+		jsonb_build_object('profileId', v_profile, 'renameId', v_rename_4.id, 'companyName', 'Solstice Gamma', 'livemode', false)
+	);
+	perform pg_temp.cnc_assert(
+		(v_gw_sync ->> 'synced')::boolean
+			and (select stripe_sync_state from public.qorpera_company_renames where id = v_rename_4.id) = 'synced',
+		'reverted old_name must clear reverted Stripe sync: ' || v_gw_sync::text
+	);
+
+	perform pg_temp.cnc_commit_vision(v_env, v_owner_actor, 'cnc-rename-paused', 'Solstice Paused');
+	insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason)
+	values (v_profile, v_owner, 'cnc pause test');
+	select * into strict v_rename_4
+	from public.qorpera_company_renames
+	where profile_id = v_profile and wake_state = 'pending';
+	select e.id into strict v_lobby_env from public.qorpera_company_environments e where e.profile_id = v_lobby_id;
+	insert into public.qorpera_company_renames(
+		profile_id, environment_id, old_name, new_name, created_at, updated_at
+	)
+	values (
+		v_lobby_id, v_lobby_env, 'Initial Name', 'Renamed Lobby',
+		clock_timestamp() + interval '1 second', clock_timestamp() + interval '1 second'
+	)
+	returning id into v_non_v2_id;
+	v_step := public.qorpera_company_rename_wake_step(null, 1);
+	select * into strict v_rename_4 from public.qorpera_company_renames where id = v_rename_4.id;
+	perform pg_temp.cnc_assert(
+		(v_step ->> 'busy')::integer = 1
+			and v_rename_4.wake_state = 'pending'
+			and v_rename_4.wake_attempts = 1
+			and v_rename_4.wake_last_attempt_at is not null
+			and v_rename_4.wake_problem = 'paused',
+		'paused company must record backoff attempt: ' || v_step::text || ' ' || to_jsonb(v_rename_4)::text
+	);
+	v_step := public.qorpera_company_rename_wake_step(null, 1);
+	perform pg_temp.cnc_assert(
+		(v_step ->> 'skipped')::integer = 1
+			and (select wake_state from public.qorpera_company_renames where id = v_non_v2_id) = 'skipped'
+			and (select wake_problem from public.qorpera_company_renames where id = v_non_v2_id) = 'no_cofounder',
+		'backed-off paused company must not starve next environment: ' || v_step::text
+	);
+	delete from public.qorpera_company_execution_pauses where profile_id = v_profile;
+	update public.qorpera_company_renames
+	set wake_state = 'skipped', wake_problem = 'test_done'
+	where id = v_rename_4.id;
+
+	perform set_config('session_replication_role', 'replica', true);
+	update public.qorpera_runner_jobs
+	set status = 'leased', result = null, finished_at = null,
+		lease_token_sha256 = repeat('3', 64), lease_expires_at = clock_timestamp() + interval '5 minutes'
+	where id = v_run.job_id;
+	update public.qorpera_execution_sponsor_versions
+	set allow_autonomous = false
+	where binding_id in (select id from public.qorpera_execution_sponsor_bindings where profile_id = v_profile);
+	update public.qorpera_provider_connection_versions
+	set allow_autonomous = false
+	where connection_id in (select id from public.qorpera_provider_connections where profile_id = v_profile);
+	perform set_config('session_replication_role', 'origin', true);
+
+	v_run_actor := jsonb_build_object(
+		'kind', 'run',
+		'runId', v_binding ->> 'runId',
+		'jobId', v_binding ->> 'jobId',
+		'runnerId', v_binding ->> 'runnerId',
+		'assignmentId', v_binding ->> 'assignmentId'
+	);
+	perform pg_temp.cnc_commit_vision(v_env, v_run_actor, 'cnc-rename-agent-1', 'Solstice Agent');
+	select * into strict v_rename_4
+	from public.qorpera_company_renames
+	where profile_id = v_profile and wake_state = 'pending';
+	perform pg_temp.cnc_assert(
+		v_rename_4.actor_kind = 'staff_agent'
+			and v_rename_4.actor_id = v_cofounder
+			and v_rename_4.renamed_by_user_id is null,
+		'agent-authored rename must not inherit requester as renamed_by_user_id: ' || to_jsonb(v_rename_4)::text
+	);
+	v_step := public.qorpera_company_rename_wake_step(v_env, 16);
+	select * into strict v_rename_4 from public.qorpera_company_renames where id = v_rename_4.id;
+	perform pg_temp.cnc_assert(
+		(v_step ->> 'unpaid')::integer = 1
+			and (v_step ->> 'woken')::integer = 0
+			and v_rename_4.wake_state = 'unpaid'
+			and v_rename_4.wake_problem = 'no_payer',
+		'agent-authored rename must not bypass allow_autonomous: ' || v_step::text || ' ' || to_jsonb(v_rename_4)::text
 	);
 end $$;
 

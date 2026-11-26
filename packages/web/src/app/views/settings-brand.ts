@@ -2,10 +2,8 @@ import type { CloudMemberFolderUnit } from "@qorpera/cloud-client/cloud-member-f
 import { osPath, writeVisionFile } from "@qorpera/cloud-client/company-state-files";
 import { describeError } from "../../cloud/client.ts";
 import {
-	invalid,
 	parseStateFile,
-	readStateFile,
-	unsaved,
+	rewriteStateFile,
 	WebCompanyFolderRejectedError,
 	type WebMemberFolder,
 	withProblems,
@@ -363,79 +361,84 @@ export class CompanyBrandView {
 
 	async #commitRename(name: string, failure: string, signal: AbortSignal): Promise<void> {
 		const folder = this.#options.folder();
-		let includeOptional = true;
-		for (let attempt = 0; ; attempt++) {
-			const vision = await readStateFile(folder, VISION_PATH, signal);
-			signal.throwIfAborted();
-			if (!vision) throw new Error(t("The company's vision could not be read."));
-			const nextVision = renamedVision(vision.text, name);
-			const parsedVision = parseStateFile(VISION_PATH, nextVision);
-			if (!parsedVision.ok) throw invalid(failure, parsedVision.problems);
-			const currentVision = parseStateFile(VISION_PATH, vision.text);
-			const oldName =
-				currentVision.ok && currentVision.file.kind === "vision"
-					? currentVision.file.name
-					: (this.#savedName ?? this.#options.name());
-			const units: CloudMemberFolderUnit[] = [
-				{ op: "write", path: VISION_PATH, text: nextVision, expectedVersion: vision.entry.version },
-			];
-			if (includeOptional) {
-				const [companyJson, tokensJson, briefMd] = await Promise.all([
-					readOptionalText(folder, IDENTITY_COMPANY_JSON_PATH, signal),
-					readOptionalText(folder, IDENTITY_TOKENS_JSON_PATH, signal),
-					readOptionalText(folder, IDENTITY_BRIEF_PATH, signal),
-				]);
-				signal.throwIfAborted();
-				const nextCompany = companyJson ? renamedCanonicalJson(companyJson.text, "name", name) : null;
-				if (companyJson && nextCompany !== null) {
-					units.push({
-						op: "write",
-						path: IDENTITY_COMPANY_JSON_PATH,
-						text: nextCompany,
-						expectedVersion: companyJson.version,
-					});
+		let oldName = this.#savedName ?? this.#options.name();
+		await rewriteStateFile(
+			folder,
+			{
+				locate: async () => VISION_PATH,
+				rewrite: (text) => {
+					const currentVision = parseStateFile(VISION_PATH, text);
+					if (currentVision.ok && currentVision.file.kind === "vision") oldName = currentVision.file.name;
+					return renamedVision(text, name);
+				},
+				key: () => `web:company-rename:${crypto.randomUUID()}`,
+				gone: t("The company's vision could not be read."),
+				failure,
+			},
+			signal,
+			() => signal.throwIfAborted(),
+		);
+		await this.#syncCanonicalIdentityFiles(folder, oldName, name, signal);
+	}
+
+	async #syncCanonicalIdentityFiles(
+		folder: WebMemberFolder,
+		oldName: string,
+		name: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		type CanonicalPath =
+			| typeof IDENTITY_COMPANY_JSON_PATH
+			| typeof IDENTITY_TOKENS_JSON_PATH
+			| typeof IDENTITY_BRIEF_PATH;
+		let pending: CanonicalPath[] = [IDENTITY_COMPANY_JSON_PATH, IDENTITY_TOKENS_JSON_PATH, IDENTITY_BRIEF_PATH];
+		for (let attempt = 0; attempt <= RENAME_RETRIES && pending.length > 0; attempt++) {
+			if (signal.aborted) return;
+			let reads: ({ version: string; text: string } | null)[];
+			try {
+				reads = await Promise.all(pending.map((path) => readOptionalText(folder, path, signal)));
+			} catch {
+				return;
+			}
+			if (signal.aborted) return;
+			const units: CloudMemberFolderUnit[] = [];
+			const unitPaths: CanonicalPath[] = [];
+			for (let i = 0; i < pending.length; i++) {
+				const path = pending[i]!;
+				const current = reads[i];
+				if (!current) continue;
+				let nextText: string | null;
+				switch (path) {
+					case IDENTITY_COMPANY_JSON_PATH:
+						nextText = renamedCanonicalJson(current.text, "name", name);
+						break;
+					case IDENTITY_TOKENS_JSON_PATH:
+						nextText = renamedCanonicalJson(current.text, "brand", name);
+						break;
+					case IDENTITY_BRIEF_PATH:
+						nextText = renamedIdentityBrief(current.text, oldName, name);
+						break;
 				}
-				const nextTokens = tokensJson ? renamedCanonicalJson(tokensJson.text, "brand", name) : null;
-				if (tokensJson && nextTokens !== null) {
-					units.push({
-						op: "write",
-						path: IDENTITY_TOKENS_JSON_PATH,
-						text: nextTokens,
-						expectedVersion: tokensJson.version,
-					});
-				}
-				const nextBrief = briefMd ? renamedIdentityBrief(briefMd.text, oldName, name) : null;
-				if (briefMd && nextBrief !== null) {
-					units.push({
-						op: "write",
-						path: IDENTITY_BRIEF_PATH,
-						text: nextBrief,
-						expectedVersion: briefMd.version,
-					});
+				if (nextText === null) continue;
+				units.push({ op: "write", path, text: nextText, expectedVersion: current.version });
+				unitPaths.push(path);
+			}
+			if (units.length === 0) return;
+			let answer: Awaited<ReturnType<WebMemberFolder["commit"]>>;
+			try {
+				answer = await folder.commit(`web:company-rename-identity:${crypto.randomUUID()}`, units, signal);
+			} catch {
+				return;
+			}
+			if (signal.aborted) return;
+			const retry: CanonicalPath[] = [];
+			for (let i = 0; i < unitPaths.length; i++) {
+				const result = answer.units[i];
+				if (result?.outcome === "conflict" && result.reason === "version_changed") {
+					retry.push(unitPaths[i]!);
 				}
 			}
-			const answer = await folder.commit(`web:company-rename:${crypto.randomUUID()}`, units, signal);
-			signal.throwIfAborted();
-			const visionResult = answer.units[0];
-			if (!visionResult) throw new Error("The company folder answered no change");
-			if (visionResult.outcome === "saved") return;
-			if (
-				visionResult.outcome === "conflict" &&
-				visionResult.reason === "version_changed" &&
-				attempt < RENAME_RETRIES
-			) {
-				continue;
-			}
-			if (
-				includeOptional &&
-				units.length > 1 &&
-				visionResult.outcome !== "denied" &&
-				visionResult.problems.length === 0
-			) {
-				includeOptional = false;
-				continue;
-			}
-			throw unsaved(visionResult, failure);
+			pending = retry;
 		}
 	}
 

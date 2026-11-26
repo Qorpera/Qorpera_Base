@@ -560,7 +560,7 @@ describe("a company's hints by push", () => {
 		const following = subscription.followSidebar(sidebar);
 		fire("sidebar");
 		expect(sidebar).toHaveBeenCalledTimes(1);
-		expect(changes).toHaveLength(8);
+		expect(changes).toHaveLength(9);
 		expect(following.live()).toBe(true);
 		// No channel of its own while the company's topic carries them.
 		expect(made).toHaveLength(1);

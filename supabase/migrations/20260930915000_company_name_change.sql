@@ -333,7 +333,9 @@ declare
 	v_now timestamptz := clock_timestamp();
 	v_commit public.qorpera_folder_commits%rowtype;
 	v_renamed_by uuid;
-	v_has_stripe boolean;
+	v_needs_stripe boolean;
+	v_open_renames integer;
+	v_locked_renames integer;
 	v_pending public.qorpera_company_renames%rowtype;
 begin
 	select f.profile_id, i.name, i.commit_id
@@ -362,12 +364,31 @@ begin
 		return jsonb_build_object('result', 'dirty', 'problem', 'busy');
 	end if;
 	select p.name into v_old_name from public.qorpera_profiles p where p.id = v_profile;
+	if v_old_name is not distinct from v_name then
+		update public.qorpera_company_environments
+		set name = v_name
+		where id = p_environment_id and name is distinct from v_name;
+		return jsonb_build_object('result', 'done');
+	end if;
+	select count(*)::integer into v_open_renames
+	from public.qorpera_company_renames r
+	where r.profile_id = v_profile and (r.wake_state = 'pending' or r.audit_state = 'pending');
+	if v_open_renames > 0 then
+		select count(*)::integer into v_locked_renames
+		from (
+			select r.id
+			from public.qorpera_company_renames r
+			where r.profile_id = v_profile and (r.wake_state = 'pending' or r.audit_state = 'pending')
+			order by r.id
+			for update skip locked
+		) locked;
+		if v_locked_renames < v_open_renames then
+			return jsonb_build_object('result', 'dirty', 'problem', 'busy');
+		end if;
+	end if;
 	update public.qorpera_company_environments
 	set name = v_name
 	where id = p_environment_id and name is distinct from v_name;
-	if v_old_name is not distinct from v_name then
-		return jsonb_build_object('result', 'done');
-	end if;
 	update public.qorpera_profiles
 	set name = v_name, name_changed_at = v_now
 	where id = v_profile and name is distinct from v_name;
@@ -378,23 +399,30 @@ begin
 	end if;
 	v_renamed_by := case
 		when v_commit.actor_kind = 'member' then v_commit.actor_id
-		when v_commit.requester_kind = 'member' then v_commit.requester_id
 	end;
-	v_has_stripe := exists (
-		select 1 from public.qorpera_good_will_customers c where c.profile_id = v_profile
+	v_needs_stripe := lower(btrim(v_name)) <> 'no name yet' and exists (
+		select 1 from public.qorpera_good_will_customers c
+		where c.profile_id = v_profile
+			and c.livemode = (not public.qorpera_computer_hour_dry_run(v_now))
 	);
 	select * into v_pending
 	from public.qorpera_company_renames r
 	where r.profile_id = v_profile and r.wake_state = 'pending'
 	order by r.created_at desc, r.id desc
-	limit 1
-	for update;
+	limit 1;
 	if v_pending.id is not null and v_pending.old_name = v_name then
 		update public.qorpera_company_renames
 		set wake_state = 'skipped',
 			wake_problem = 'reverted',
 			audit_state = case when audit_state = 'pending' then 'superseded' else audit_state end,
-			stripe_sync_state = case when stripe_sync_state = 'pending' then 'none' else stripe_sync_state end,
+			stripe_sync_state = case
+				when stripe_sync_state = 'synced' and v_needs_stripe then 'pending'
+				else 'none'
+			end,
+			stripe_synced_at = case
+				when stripe_sync_state = 'synced' and v_needs_stripe then null
+				else stripe_synced_at
+			end,
 			updated_at = v_now
 		where id = v_pending.id;
 	elsif v_pending.id is not null then
@@ -405,9 +433,10 @@ begin
 			actor_kind = v_commit.actor_kind,
 			actor_id = v_commit.actor_id,
 			renamed_by_user_id = v_renamed_by,
-			stripe_sync_state = case when v_has_stripe then 'pending' else 'none' end,
+			stripe_sync_state = case when v_needs_stripe then 'pending' else 'none' end,
 			stripe_synced_at = null,
 			audit_due_at = v_now + interval '30 minutes',
+			created_at = v_now,
 			updated_at = v_now
 		where id = v_pending.id;
 	else
@@ -422,7 +451,7 @@ begin
 		values (
 			v_profile, p_environment_id, v_old_name, v_name, v_commit_id, v_commit.seq,
 			v_commit.actor_kind, v_commit.actor_id, v_renamed_by,
-			case when v_has_stripe then 'pending' else 'none' end,
+			case when v_needs_stripe then 'pending' else 'none' end,
 			v_now + interval '30 minutes', v_now, v_now
 		);
 	end if;
@@ -452,7 +481,11 @@ select pg_temp.cnc_patch(
 		end if;
 		select payer.payer_user_id, payer.binding_id, payer.version, payer.member_initiated
 		into v_cnc_payer
-		from public.qorpera_company_rename_sponsor(new.profile_id, v_cnc_rename.renamed_by_user_id, new.staff_agent_id) as payer;
+		from public.qorpera_company_rename_sponsor(
+			new.profile_id,
+			case when v_cnc_rename.actor_kind = 'member' then v_cnc_rename.renamed_by_user_id end,
+			new.staff_agent_id
+		) as payer;
 		if v_cnc_payer.binding_id is null or v_cnc_payer.payer_user_id is null then
 			raise exception 'No model account can pay for this work' using errcode = '42501';
 		end if;
@@ -555,6 +588,7 @@ select pg_temp.cnc_patch(
 							and exists (
 								select 1 from public.qorpera_company_renames r
 								where r.id = v_wake.source_id and r.profile_id = v_wake.profile_id
+									and r.actor_kind = 'member'
 									and r.renamed_by_user_id is not null
 									and r.renamed_by_user_id = v_wake.requested_by_user_id
 							))
@@ -572,6 +606,7 @@ select pg_temp.cnc_patch(
 		join public.qorpera_company_renames r on r.id = w.source_id and r.profile_id = w.profile_id
 		where w.id = p_run.source_id and (w.run_id is null or w.run_id = p_run.id) and w.wake_kind = 'agent'
 			and w.source_kind = 'company-rename' and w.profile_id = p_run.profile_id
+			and r.actor_kind = 'member'
 			and r.renamed_by_user_id is not null
 			and r.renamed_by_user_id = p_run.requested_by_user_id
 			and w.requested_by_user_id = p_run.requested_by_user_id
@@ -600,6 +635,7 @@ declare
 	v_skipped integer := 0;
 	v_unpaid integer := 0;
 	v_busy integer := 0;
+	v_expired integer := 0;
 	v_now timestamptz := clock_timestamp();
 begin
 	if nullif(auth.role(), '') is not null and auth.role() is distinct from 'service_role' then
@@ -615,66 +651,119 @@ begin
 		);
 	end if;
 
+	update public.qorpera_company_renames r
+	set wake_state = 'skipped',
+		wake_problem = 'expired',
+		updated_at = v_now
+	where r.wake_state = 'pending'
+		and r.created_at < v_now - interval '24 hours'
+		and (p_environment_id is null or r.environment_id = p_environment_id);
+	get diagnostics v_expired = row_count;
+	v_skipped := v_skipped + v_expired;
+
 	for v_env in
-		select distinct r.environment_id
+		select r.environment_id
 		from public.qorpera_company_renames r
 		where r.wake_state = 'pending'
 			and (p_environment_id is null or r.environment_id = p_environment_id)
 			and (r.wake_last_attempt_at is null or r.wake_last_attempt_at <= v_now - interval '15 seconds')
-		order by r.environment_id
+		group by r.environment_id
+		order by min(coalesce(r.wake_last_attempt_at, '-infinity'::timestamptz)) asc, min(r.created_at) asc, r.environment_id asc
 		limit p_limit
 	loop
-		select f.profile_id into v_profile
-		from public.qorpera_company_files f
-		where f.environment_id = v_env and f.core = 'folder-v2';
-		if v_profile is null or public.qorpera_company_deleting(v_profile) or public.qorpera_company_execution_paused(v_profile) then
-			continue;
-		end if;
+		v_rename := null;
 		select * into v_rename
 		from public.qorpera_company_renames r
-		where r.environment_id = v_env and r.profile_id = v_profile and r.wake_state = 'pending'
+		where r.environment_id = v_env and r.wake_state = 'pending'
 			and (r.wake_last_attempt_at is null or r.wake_last_attempt_at <= v_now - interval '15 seconds')
 		order by r.created_at asc, r.id asc
 		limit 1;
 		if v_rename.id is null then
 			continue;
 		end if;
-		select c.staff_agent_id into v_cofounder
-		from public.qorpera_company_cofounders c
-		where c.profile_id = v_profile;
-		if v_cofounder is null then
-			update public.qorpera_company_renames
-			set wake_state = 'skipped', wake_problem = 'no_cofounder',
-				wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
-				updated_at = clock_timestamp()
-			where id = v_rename.id and wake_state = 'pending';
-			v_skipped := v_skipped + 1;
-			continue;
-		end if;
-		select payer.payer_user_id, payer.binding_id, payer.version, payer.member_initiated
-		into v_payer
-		from public.qorpera_company_rename_sponsor(v_profile, v_rename.renamed_by_user_id, v_cofounder) as payer;
-		if v_payer.binding_id is null or v_payer.payer_user_id is null then
-			update public.qorpera_company_renames
-			set wake_state = 'unpaid', wake_problem = 'no_payer',
-				wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
-				updated_at = clock_timestamp()
-			where id = v_rename.id and wake_state = 'pending';
-			v_unpaid := v_unpaid + 1;
-			continue;
-		end if;
-		v_session := public.qorpera_folder_wake_public_session(v_profile, v_env, v_cofounder, v_payer.payer_user_id);
-		v_targets := jsonb_build_array(
-			jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
-				'key', v_profile::text || ':' || v_payer.payer_user_id::text, 'mode', 'keyshare'),
-			jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
-				'key', v_profile::text || ':' || v_cofounder::text, 'mode', 'keyshare'),
-			jsonb_build_object('rank', 3, 'tbl', 'qorpera_staff_execution_authorities',
-				'key', v_profile::text || ':' || v_cofounder::text, 'mode', 'keyshare')
-		);
 		begin
+			select f.profile_id into v_profile
+			from public.qorpera_company_files f
+			where f.environment_id = v_env and f.profile_id = v_rename.profile_id and f.core = 'folder-v2';
+			if v_profile is null then
+				update public.qorpera_company_renames
+				set wake_state = 'skipped', wake_problem = 'not_folder_v2',
+					wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+					updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				v_skipped := v_skipped + 1;
+				continue;
+			end if;
+			if public.qorpera_company_deleting(v_profile) then
+				update public.qorpera_company_renames
+				set wake_state = 'skipped', wake_problem = 'deleting',
+					wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+					updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				v_skipped := v_skipped + 1;
+				continue;
+			end if;
+			if public.qorpera_company_execution_paused(v_profile) then
+				update public.qorpera_company_renames
+				set wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+					wake_problem = 'paused', updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				v_busy := v_busy + 1;
+				continue;
+			end if;
+			select c.staff_agent_id into v_cofounder
+			from public.qorpera_company_cofounders c
+			where c.profile_id = v_profile;
+			if v_cofounder is null then
+				update public.qorpera_company_renames
+				set wake_state = 'skipped', wake_problem = 'no_cofounder',
+					wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+					updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				v_skipped := v_skipped + 1;
+				continue;
+			end if;
+			select payer.payer_user_id, payer.binding_id, payer.version, payer.member_initiated
+			into v_payer
+			from public.qorpera_company_rename_sponsor(
+				v_profile,
+				case when v_rename.actor_kind = 'member' then v_rename.renamed_by_user_id end,
+				v_cofounder
+			) as payer;
+			if v_payer.binding_id is null or v_payer.payer_user_id is null then
+				update public.qorpera_company_renames
+				set wake_state = 'unpaid', wake_problem = 'no_payer',
+					wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+					updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				v_unpaid := v_unpaid + 1;
+				continue;
+			end if;
+			v_session := public.qorpera_folder_wake_public_session(v_profile, v_env, v_cofounder, v_payer.payer_user_id);
+			v_targets := jsonb_build_array(
+				jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
+					'key', v_profile::text || ':' || v_payer.payer_user_id::text, 'mode', 'keyshare'),
+				jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
+					'key', v_profile::text || ':' || v_cofounder::text, 'mode', 'keyshare'),
+				jsonb_build_object('rank', 3, 'tbl', 'qorpera_staff_execution_authorities',
+					'key', v_profile::text || ':' || v_cofounder::text, 'mode', 'keyshare')
+			);
 			perform public.qorpera_folder_company_enter(v_env, v_profile, v_targets, false);
-			if public.qorpera_company_deleting(v_profile) or public.qorpera_company_execution_paused(v_profile) then
+			if public.qorpera_company_deleting(v_profile) then
+				update public.qorpera_company_renames
+				set wake_state = 'skipped', wake_problem = 'deleting',
+					wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+					updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				v_skipped := v_skipped + 1;
+				continue;
+			end if;
+			if public.qorpera_company_execution_paused(v_profile) then
+				update public.qorpera_company_renames
+				set wake_attempts = wake_attempts + 1, wake_last_attempt_at = clock_timestamp(),
+					wake_problem = 'paused', updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				v_busy := v_busy + 1;
 				continue;
 			end if;
 			if v_session is not null then
@@ -692,7 +781,11 @@ begin
 			end if;
 			select payer.payer_user_id, payer.binding_id, payer.version, payer.member_initiated
 			into v_recheck
-			from public.qorpera_company_rename_sponsor(v_profile, v_rename.renamed_by_user_id, v_cofounder) as payer;
+			from public.qorpera_company_rename_sponsor(
+				v_profile,
+				case when v_rename.actor_kind = 'member' then v_rename.renamed_by_user_id end,
+				v_cofounder
+			) as payer;
 			if v_recheck.binding_id is null or v_recheck.payer_user_id is null then
 				update public.qorpera_company_renames
 				set wake_state = 'unpaid', wake_problem = 'no_payer',
@@ -737,6 +830,13 @@ begin
 			end if;
 		exception
 			when lock_not_available then
+				begin
+					update public.qorpera_company_renames
+					set wake_last_attempt_at = clock_timestamp(), updated_at = clock_timestamp()
+					where id = v_rename.id and wake_state = 'pending';
+				exception when lock_not_available then
+					null;
+				end;
 				v_busy := v_busy + 1;
 			when insufficient_privilege then
 				update public.qorpera_company_renames
@@ -746,6 +846,19 @@ begin
 					updated_at = clock_timestamp()
 				where id = v_rename.id and wake_state = 'pending';
 				v_unpaid := v_unpaid + 1;
+			when others then
+				update public.qorpera_company_renames
+				set wake_attempts = wake_attempts + 1,
+					wake_last_attempt_at = clock_timestamp(),
+					wake_state = case when wake_attempts + 1 >= 5 then 'skipped' else wake_state end,
+					wake_problem = coalesce(nullif(left(sqlstate || ':' || sqlerrm, 64), ''), 'error'),
+					updated_at = clock_timestamp()
+				where id = v_rename.id and wake_state = 'pending';
+				if v_rename.wake_attempts + 1 >= 5 then
+					v_skipped := v_skipped + 1;
+				else
+					v_busy := v_busy + 1;
+				end if;
 		end;
 	end loop;
 
@@ -1080,7 +1193,7 @@ begin
 		return jsonb_build_object('schema', 'qorpera.company-rename-schedule/v1', 'scheduled', false);
 	end if;
 	begin
-		v_wake_job := cron.schedule('qorpera-company-rename-wakes', '10 seconds', 'select public.qorpera_company_rename_wake_step()');
+		v_wake_job := cron.schedule('qorpera-company-rename-wakes', '* * * * *', 'select public.qorpera_company_rename_wake_step()');
 		v_audit_job := cron.schedule('qorpera-company-rename-audits', '*/5 * * * *', 'select public.qorpera_company_rename_audit_step()');
 	exception when others then
 		raise warning 'Company rename jobs were not scheduled (%): % may not use pg_cron', sqlerrm, current_user;
@@ -1108,15 +1221,18 @@ select pg_temp.cnc_patch(
 			'companyName', (select p.name from public.qorpera_profiles as p where p.id = v_profile),
 			'customerId', (select customer.stripe_customer_id from public.qorpera_good_will_customers as customer
 				where customer.profile_id = v_profile and customer.livemode = v_livemode),
-			'nameSyncRenameId', (select r.id from public.qorpera_company_renames as r
+			'nameSyncRenameId', case when v_livemode = (not public.qorpera_computer_hour_dry_run(clock_timestamp())) then (
+				select r.id from public.qorpera_company_renames as r
 				where r.profile_id = v_profile and r.stripe_sync_state = 'pending'
-				order by r.created_at desc, r.id desc limit 1));$new$,
+				order by r.created_at desc, r.id desc limit 1
+			) end);$new$,
 		$old$				and (v_livemode or public.qorpera_computer_billing_tester(payer.user_id))), '[]'::jsonb));$old$,
 		$new$				and (v_livemode or public.qorpera_computer_billing_tester(payer.user_id))), '[]'::jsonb),
-			'nameSyncs', coalesce((select jsonb_agg(jsonb_build_object(
-				'renameId', pending.id, 'profileId', pending.profile_id,
-				'customerId', customer.stripe_customer_id, 'companyName', profile.name)
-				order by pending.created_at asc, pending.id asc)
+			'nameSyncs', case when v_livemode = (not public.qorpera_computer_hour_dry_run(clock_timestamp())) then coalesce((
+				select jsonb_agg(jsonb_build_object(
+					'renameId', pending.id, 'profileId', pending.profile_id,
+					'customerId', customer.stripe_customer_id, 'companyName', profile.name)
+					order by pending.created_at asc, pending.id asc)
 				from (
 					select distinct on (r.profile_id) r.id, r.profile_id, r.created_at
 					from public.qorpera_company_renames r
@@ -1127,13 +1243,16 @@ select pg_temp.cnc_patch(
 					on customer.profile_id = pending.profile_id and customer.livemode = v_livemode
 				join public.qorpera_profiles profile on profile.id = pending.profile_id
 				where lower(btrim(profile.name)) <> 'no name yet'
-				limit 20), '[]'::jsonb));$new$,
+				limit 20), '[]'::jsonb) else '[]'::jsonb end);$new$,
 		$old$		return jsonb_build_object('outcome', 'applied', 'profileId', v_row.profile_id, 'status', v_row.status);
 	end if;
 	raise exception 'Billing: unknown good will method' using errcode = '22023';$old$,
 		$new$		return jsonb_build_object('outcome', 'applied', 'profileId', v_row.profile_id, 'status', v_row.status);
 
 	elsif p_method = 'name_sync_due' then
+		if v_livemode <> (not public.qorpera_computer_hour_dry_run(clock_timestamp())) then
+			return jsonb_build_object('customers', '[]'::jsonb);
+		end if;
 		return jsonb_build_object('customers', coalesce((
 			select jsonb_agg(
 				jsonb_build_object(
@@ -1158,6 +1277,9 @@ select pg_temp.cnc_patch(
 		), '[]'::jsonb));
 
 	elsif p_method = 'name_synced' then
+		if v_livemode <> (not public.qorpera_computer_hour_dry_run(clock_timestamp())) then
+			return jsonb_build_object('synced', false);
+		end if;
 		v_profile := (p_args ->> 'profileId')::uuid;
 		update public.qorpera_company_renames r
 		set stripe_sync_state = 'synced',
@@ -1165,13 +1287,27 @@ select pg_temp.cnc_patch(
 			updated_at = clock_timestamp()
 		where r.profile_id = v_profile
 			and r.stripe_sync_state = 'pending'
-			and (p_args ->> 'renameId' is null
-				or r.id = (p_args ->> 'renameId')::uuid
-				or r.created_at <= (
-					select target.created_at
+			and exists (
+				select 1 from public.qorpera_good_will_customers c
+				where c.profile_id = v_profile and c.livemode = v_livemode
+			)
+			and (
+				(p_args ->> 'renameId' is null
+					and (p_args ->> 'companyName' is null
+						or case when r.wake_problem = 'reverted' then r.old_name else r.new_name end = p_args ->> 'companyName'))
+				or (r.id = (p_args ->> 'renameId')::uuid
+					and (p_args ->> 'companyName' is null
+						or case when r.wake_problem = 'reverted' then r.old_name else r.new_name end = p_args ->> 'companyName'))
+				or (r.id <> (p_args ->> 'renameId')::uuid and exists (
+					select 1
 					from public.qorpera_company_renames target
 					where target.id = (p_args ->> 'renameId')::uuid
-				));
+						and target.profile_id = v_profile
+						and r.created_at <= target.created_at
+						and (p_args ->> 'companyName' is null
+							or case when target.wake_problem = 'reverted' then target.old_name else target.new_name end = p_args ->> 'companyName')
+				))
+			);
 		get diagnostics v_rows = row_count;
 		return jsonb_build_object('synced', v_rows > 0);
 	end if;
@@ -1185,11 +1321,32 @@ select pg_temp.cnc_patch(
 		$old$	if exists (select 1 from public.qorpera_good_will_months as m
 			join public.qorpera_good_will_payers as payer on payer.profile_id = m.profile_id
 			where m.status = 'closed' and m.invoice_url is null)$old$,
-		$new$	if (exists (select 1 from public.qorpera_good_will_months as m
+		$new$	update public.qorpera_company_renames as r
+	set stripe_sync_state = 'none', updated_at = clock_timestamp()
+	where r.stripe_sync_state = 'pending'
+		and (
+			not exists (
+				select 1 from public.qorpera_good_will_customers as c
+				where c.profile_id = r.profile_id
+					and c.livemode = (not public.qorpera_computer_hour_dry_run(clock_timestamp()))
+			)
+			or exists (
+				select 1 from public.qorpera_profiles as p
+				where p.id = r.profile_id and lower(btrim(p.name)) = 'no name yet'
+			)
+		);
+	if (exists (select 1 from public.qorpera_good_will_months as m
 				join public.qorpera_good_will_payers as payer on payer.profile_id = m.profile_id
 				where m.status = 'closed' and m.invoice_url is null)
-			or exists (select 1 from public.qorpera_company_renames as r
-				where r.stripe_sync_state = 'pending'))$new$
+			or exists (
+				select 1 from public.qorpera_company_renames as r
+				join public.qorpera_good_will_customers as c
+					on c.profile_id = r.profile_id
+					and c.livemode = (not public.qorpera_computer_hour_dry_run(clock_timestamp()))
+				join public.qorpera_profiles as p on p.id = r.profile_id
+				where r.stripe_sync_state = 'pending'
+					and lower(btrim(p.name)) <> 'no name yet'
+			))$new$
 	]
 );
 

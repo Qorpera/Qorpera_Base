@@ -571,7 +571,7 @@ export async function serveMemberFolderCommit(
 						wakeController.signal,
 					);
 				} catch {
-					/* WHY: Best-effort kick; the 10-second pg_cron schedule drains any rename wake that misses this window. */
+					/* WHY: Best-effort kick; the 1-minute pg_cron schedule drains any rename wake that misses this window. */
 				} finally {
 					clearTimeout(wakeTimer);
 					signal.removeEventListener("abort", onAbort);

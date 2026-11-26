@@ -50,6 +50,12 @@ function usableCompanyName(value: unknown): string | undefined {
 	return name && name.toLowerCase() !== "no name yet" ? name : undefined;
 }
 
+async function stripeNameSyncKey(renameId: string, name: string, livemode: boolean): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(name));
+	const hash = Array.from(new Uint8Array(digest).subarray(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join("");
+	return `qorpera-good-will-name-${renameId}-${livemode ? "live" : "test"}-${hash}`;
+}
+
 function object(value: unknown): Json | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Json) : undefined;
 }
@@ -77,11 +83,12 @@ async function companyCustomer(
 			await deps.stripe.post(
 				`/v1/customers/${encodeURIComponent(known)}`,
 				{ name },
-				`qorpera-good-will-name-${nameSyncRenameId}-${deps.livemode ? "live" : "test"}`,
+				await stripeNameSyncKey(nameSyncRenameId, name, deps.livemode),
 			);
 			await deps.goodWill.call("name_synced", {
 				profileId,
 				renameId: nameSyncRenameId,
+				companyName: name,
 				livemode: deps.livemode,
 			});
 		}
@@ -186,9 +193,14 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 			await deps.stripe.post(
 				`/v1/customers/${encodeURIComponent(customerId)}`,
 				{ name },
-				`qorpera-good-will-name-${renameId}-${deps.livemode ? "live" : "test"}`,
+				await stripeNameSyncKey(renameId, name, deps.livemode),
 			);
-			await deps.goodWill.call("name_synced", { profileId, renameId, livemode: deps.livemode });
+			await deps.goodWill.call("name_synced", {
+				profileId,
+				renameId,
+				companyName: name,
+				livemode: deps.livemode,
+			});
 		} catch (error) {
 			problems.push(`name-sync ${profileId}: ${error instanceof Error ? error.message : String(error)}`);
 		}
