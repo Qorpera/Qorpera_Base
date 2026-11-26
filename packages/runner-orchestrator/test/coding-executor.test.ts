@@ -23,6 +23,7 @@ import {
 	CodingWorkspaceFailed,
 	landConflict,
 	landRefusal,
+	PUBLICATION_FOLDER_REFUSED,
 	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
 	parseCodingSubmission,
@@ -907,6 +908,32 @@ describe("the coding executor over a session turn", () => {
 		);
 		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
+	it("reports a non-retryable folder refusal instead of PUBLICATION_UNFINISHED on UNSAVED_REFUSED", async () => {
+		const w = world();
+		const report = vi.fn();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new Error("CODING_FOLDER_BOUNDARY_HELD:UNSAVED_REFUSED"));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done-refused",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toBe(PUBLICATION_FOLDER_REFUSED);
+		expect(report).toHaveBeenCalledWith(
+			"publish",
+			expect.objectContaining({ message: "CODING_FOLDER_BOUNDARY_HELD:UNSAVED_REFUSED" }),
+		);
 	});
 
 	it("a question blocks the session with its choices and leaves it standing by", async () => {

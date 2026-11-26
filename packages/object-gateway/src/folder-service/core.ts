@@ -369,6 +369,7 @@ export type ViewRenewal =
 			readonly machineId: string | null;
 			readonly companyId: string;
 			readonly codingMachineId: string | null;
+			readonly workerId?: string | null;
 	  }
 	| {
 			readonly state: "closed";
@@ -393,7 +394,8 @@ export function parseViewRenewal(value: unknown): ViewRenewal {
 		uuidOrNull(answer.machineId) &&
 		typeof answer.companyId === "string" &&
 		isUuid(answer.companyId) &&
-		uuidOrNull(answer.codingMachineId)
+		uuidOrNull(answer.codingMachineId) &&
+		(answer.workerId === undefined || uuidOrNull(answer.workerId))
 	)
 		return {
 			state: "open",
@@ -402,6 +404,7 @@ export function parseViewRenewal(value: unknown): ViewRenewal {
 			machineId: answer.machineId,
 			companyId: answer.companyId,
 			codingMachineId: answer.codingMachineId,
+			...(answer.workerId !== undefined ? { workerId: answer.workerId } : {}),
 		};
 	if (answer.state === "closed" && typeof answer.reason === "string" && CLOSED_REASONS.has(answer.reason))
 		return { state: "closed", reason: answer.reason as Extract<ViewRenewal, { state: "closed" }>["reason"] };

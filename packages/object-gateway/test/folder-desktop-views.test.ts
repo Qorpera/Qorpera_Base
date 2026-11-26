@@ -103,10 +103,18 @@ describe("company machines' desktops", () => {
 			codingMachineId: null,
 		});
 		expect(parseViewRenewal({ ...open, kind: "run_box", machineId: null })).toMatchObject({ machineId: null });
-		// A coding session's names its coding machine (F3 5a).
 		expect(
-			parseViewRenewal({ ...open, kind: "coding_session", machineId: ALLOCATION, codingMachineId: ALLOCATION }),
-		).toMatchObject({ codingMachineId: ALLOCATION });
+			parseViewRenewal({
+				...open,
+				kind: "coding_session",
+				machineId: ALLOCATION,
+				codingMachineId: ALLOCATION,
+				workerId: ALLOCATION,
+			}),
+		).toMatchObject({ codingMachineId: ALLOCATION, workerId: ALLOCATION });
+		expect(parseViewRenewal({ ...open, kind: "run_box", machineId: null, workerId: null })).toMatchObject({
+			workerId: null,
+		});
 		for (const bad of [
 			{},
 			{ kind: "run_box" },
@@ -117,6 +125,7 @@ describe("company machines' desktops", () => {
 			{ kind: "run_box", machineId: null, companyId: PROFILE.toUpperCase() },
 			{ kind: "run_box", machineId: null, codingMachineId: undefined },
 			{ kind: "coding_session", machineId: null, codingMachineId: "machine-1" },
+			{ kind: "coding_session", machineId: null, workerId: "worker-1" },
 		])
 			expect(() => parseViewRenewal({ ...open, ...bad })).toThrow();
 		// A closed answer is as it was, and may say the service that served the view did not stop cleanly (F3 5a).
