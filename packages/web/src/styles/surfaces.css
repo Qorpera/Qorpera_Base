@@ -508,9 +508,9 @@ a.surface-address-row:hover { text-decoration: none; }
 }
 .surface-viewport[data-device="mobile"] { overflow: hidden; background: var(--bg); }
 .surface-viewport[data-device="mobile"]:not(.is-compare-mobile) > .surface-viewport-body {
-	display: grid; padding: 76px 28px 124px; overflow: auto;
+	display: grid; padding: 64px 28px 116px; overflow: auto;
 }
-.surface-viewport[data-device="mobile"][data-phone-stacked]:not(.is-compare-mobile) > .surface-viewport-body { padding-top: 112px; }
+.surface-viewport[data-device="mobile"][data-phone-stacked]:not(.is-compare-mobile) > .surface-viewport-body { padding-top: 100px; }
 .surface-viewport[data-device="mobile"].is-compare-mobile > .surface-viewport-body { padding: 0; overflow: hidden; }
 .surface-phone-corner {
 	grid-row: 1; display: flex; align-items: center; min-width: 0; height: 30px; pointer-events: auto;
@@ -604,6 +604,24 @@ a.surface-address-row:hover { text-decoration: none; }
 [data-phone-cutout="punch"] .surface-phone-status { padding: 2px 22px 0 28px; font-size: 14px; font-weight: 500; }
 [data-phone-cutout="punch"] .surface-phone-status::after { top: 12px; width: 14px; height: 14px; margin-left: -7px; }
 [data-phone-cutout="punch"] .surface-phone-signal { width: 60px; height: 11px; }
+[data-phone-cutout="notch"] .surface-phone-status { padding: 2px 18px 0 34px; font-size: 16px; }
+[data-phone-cutout="notch"] .surface-phone-status::after {
+	top: 0; width: var(--phone-notch, 162px); height: 32px; margin-left: calc(var(--phone-notch, 162px) / -2);
+	border-radius: 0 0 22px 22px;
+}
+/* WHY: A notch meets the screen's top edge with small inward curves, drawn here as two cut corners on its shoulders. */
+[data-phone-cutout="notch"] .surface-phone-status::before {
+	content: ""; position: absolute; z-index: 1; top: 0; left: 50%; height: 8px;
+	width: calc(var(--phone-notch, 162px) + 14px); margin-left: calc(var(--phone-notch, 162px) / -2 - 7px);
+	background:
+		radial-gradient(circle at 0 100%, transparent 7.5px, #060607 8px) left top / 8px 8px no-repeat,
+		radial-gradient(circle at 100% 100%, transparent 7.5px, #060607 8px) right top / 8px 8px no-repeat;
+}
+[data-phone-cutout="notch"] .surface-phone-signal { width: 60px; height: 11px; }
+[data-phone-cutout="notch"] .surface-phone-button.is-action { --at: 118px; --len: 26px; }
+[data-phone-cutout="notch"] .surface-phone-button.is-volume-up { --at: 190px; --len: 58px; }
+[data-phone-cutout="notch"] .surface-phone-button.is-volume-down { --at: 264px; --len: 58px; }
+[data-phone-cutout="notch"] .surface-phone-button.is-side { --at: 214px; --len: 96px; }
 [data-phone-cutout="none"] .surface-phone-status { padding: 0 8px; font-size: 12px; }
 [data-phone-cutout="none"] .surface-phone-status::after { content: none; }
 [data-phone-cutout="none"] .surface-phone-signal { width: 52px; height: 10px; }

@@ -84,34 +84,65 @@ interface PhoneModelSpec {
 	readonly id: string;
 	readonly label: string;
 	readonly shortLabel: string;
+	/** The menu's submenu that lists it (a generation); none for a top-level row. */
+	readonly group?: string;
 	readonly width: number;
 	readonly height: number;
 	readonly radius: number;
-	readonly cutout: "island" | "punch" | "none";
+	readonly cutout: "island" | "notch" | "punch" | "none";
+	/** Width of the notch, for the phones that have one. */
+	readonly notch?: number;
 	readonly status: number;
 }
 
+type PhoneShape = Pick<PhoneModelSpec, "width" | "height" | "radius" | "cutout" | "notch" | "status">;
+
+const ISLAND_6_1: PhoneShape = { width: 393, height: 852, radius: 50, cutout: "island", status: 54 };
+const ISLAND_6_3: PhoneShape = { width: 402, height: 874, radius: 52, cutout: "island", status: 54 };
+const ISLAND_6_5: PhoneShape = { width: 420, height: 912, radius: 53, cutout: "island", status: 54 };
+const ISLAND_6_7: PhoneShape = { width: 430, height: 932, radius: 54, cutout: "island", status: 54 };
+const ISLAND_6_9: PhoneShape = { width: 440, height: 956, radius: 54, cutout: "island", status: 54 };
+const NOTCH_6_1: PhoneShape = { width: 390, height: 844, radius: 47, cutout: "notch", notch: 162, status: 47 };
+const NOTCH_6_7: PhoneShape = { width: 428, height: 926, radius: 53, cutout: "notch", notch: 162, status: 47 };
+const NOTCH_MINI: PhoneShape = { width: 375, height: 812, radius: 44, cutout: "notch", notch: 172, status: 50 };
+const WIDE_NOTCH = { notch: 210 } as const;
+
+function iphone(group: string, name: string, shape: PhoneShape, extra: Partial<PhoneShape> = {}): PhoneModelSpec {
+	const label = `iPhone ${name}`;
+	const id = label.toLowerCase().replace(/\s+/g, "-");
+	return { id, label, shortLabel: label, group, ...shape, ...extra };
+}
+
+/* WHY: Sizes are each phone's CSS viewport in points; iPhones from 12 up, grouped by generation in the menu. */
 const PHONE_MODELS: readonly PhoneModelSpec[] = [
-	{
-		id: "iphone-16",
-		label: "iPhone 16",
-		shortLabel: "iPhone 16",
-		width: 393,
-		height: 852,
-		radius: 50,
-		cutout: "island",
-		status: 54,
-	},
-	{
-		id: "iphone-16-pro-max",
-		label: "iPhone 16 Pro Max",
-		shortLabel: "16 Pro Max",
-		width: 440,
-		height: 956,
-		radius: 54,
-		cutout: "island",
-		status: 54,
-	},
+	iphone("iPhone 18", "18 Pro", ISLAND_6_3),
+	iphone("iPhone 18", "18 Pro Max", ISLAND_6_9),
+	iphone("iPhone 17", "17", ISLAND_6_3),
+	iphone("iPhone 17", "Air", ISLAND_6_5),
+	iphone("iPhone 17", "17 Pro", ISLAND_6_3),
+	iphone("iPhone 17", "17 Pro Max", ISLAND_6_9),
+	iphone("iPhone 17", "17e", NOTCH_6_1),
+	iphone("iPhone 16", "16", ISLAND_6_1),
+	iphone("iPhone 16", "16 Plus", ISLAND_6_7),
+	iphone("iPhone 16", "16 Pro", ISLAND_6_3),
+	iphone("iPhone 16", "16 Pro Max", ISLAND_6_9),
+	iphone("iPhone 16", "16e", NOTCH_6_1),
+	iphone("iPhone 15", "15", ISLAND_6_1),
+	iphone("iPhone 15", "15 Plus", ISLAND_6_7),
+	iphone("iPhone 15", "15 Pro", ISLAND_6_1),
+	iphone("iPhone 15", "15 Pro Max", ISLAND_6_7),
+	iphone("iPhone 14", "14", NOTCH_6_1),
+	iphone("iPhone 14", "14 Plus", NOTCH_6_7),
+	iphone("iPhone 14", "14 Pro", ISLAND_6_1),
+	iphone("iPhone 14", "14 Pro Max", ISLAND_6_7),
+	iphone("iPhone 13", "13 mini", NOTCH_MINI),
+	iphone("iPhone 13", "13", NOTCH_6_1),
+	iphone("iPhone 13", "13 Pro", NOTCH_6_1),
+	iphone("iPhone 13", "13 Pro Max", NOTCH_6_7),
+	iphone("iPhone 12", "12 mini", NOTCH_MINI, { notch: 200 }),
+	iphone("iPhone 12", "12", NOTCH_6_1, WIDE_NOTCH),
+	iphone("iPhone 12", "12 Pro", NOTCH_6_1, WIDE_NOTCH),
+	iphone("iPhone 12", "12 Pro Max", NOTCH_6_7, WIDE_NOTCH),
 	{
 		id: "iphone-se",
 		label: "iPhone SE",
@@ -134,6 +165,10 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 	},
 ];
 
+/* WHY: Jonas 26 Nov: the phone reads best a little larger than life, so its resting size is 110 % of the real one. */
+const PHONE_RESTING_SCALE = 1.1;
+const DEFAULT_PHONE_MODEL = PHONE_MODELS.find((model) => model.id === "iphone-16") ?? PHONE_MODELS[0]!;
+
 const PHONE_BODY_EDGE = 16;
 
 function phoneStatusIcons(): SVGSVGElement {
@@ -150,7 +185,7 @@ function phoneStatusIcons(): SVGSVGElement {
 }
 
 function phoneModelById(id: string | null | undefined): PhoneModelSpec {
-	return PHONE_MODELS.find((model) => model.id === id) ?? PHONE_MODELS[0]!;
+	return PHONE_MODELS.find((model) => model.id === id) ?? DEFAULT_PHONE_MODEL;
 }
 
 function hostOf(url: string | null): string {
@@ -343,7 +378,7 @@ export class SurfaceView {
 	#panelsHidden = false;
 	#peekTimer: ReturnType<typeof setTimeout> | undefined;
 	readonly #thumbAt = new Map<string, readonly [number, number]>();
-	#phoneModelId = PHONE_MODELS[0]!.id;
+	#phoneModelId = DEFAULT_PHONE_MODEL.id;
 	#phoneBarShown = "";
 	#lastPhoneZoom = DEFAULT_SURFACE_ZOOM;
 	#sitePublic = true;
@@ -1095,6 +1130,7 @@ export class SurfaceView {
 			this.#viewport.style.removeProperty("--phone-h");
 			this.#viewport.style.removeProperty("--phone-r");
 			this.#viewport.style.removeProperty("--phone-status");
+			this.#viewport.style.removeProperty("--phone-notch");
 			this.#viewport.style.removeProperty("--phone-scale");
 			this.#viewportBody.scrollLeft = 0;
 			this.#viewportBody.scrollTop = 0;
@@ -1109,11 +1145,11 @@ export class SurfaceView {
 		const rect = this.#viewport.getBoundingClientRect();
 		const ui = uiScale();
 		const padX = Math.ceil(64 * ui);
-		const padY = Math.ceil((stacked ? 244 : 208) * ui);
+		const padY = Math.ceil((stacked ? 224 : 188) * ui);
 		const body = PHONE_BODY_EDGE * 2;
 		const availW = rect.width > 0 ? Math.max(220, rect.width - padX) : model.width + body;
 		const availH = rect.height > 0 ? Math.max(260, rect.height - padY) : model.height + body;
-		const fitScale = Math.min(1, availW / (model.width + body), availH / (model.height + body));
+		const fitScale = Math.min(PHONE_RESTING_SCALE, availW / (model.width + body), availH / (model.height + body));
 		const phoneZoom = clampSurfaceZoom(this.#host.store.state.phoneZoom);
 		const scale = fitScale * phoneZoom;
 		const wasOverflowX = this.#viewportBody.scrollWidth > this.#viewportBody.clientWidth + 1;
@@ -1124,6 +1160,8 @@ export class SurfaceView {
 		this.#viewport.style.setProperty("--phone-h", `${model.height}px`);
 		this.#viewport.style.setProperty("--phone-r", `${model.radius}px`);
 		this.#viewport.style.setProperty("--phone-status", `${model.status}px`);
+		if (model.notch) this.#viewport.style.setProperty("--phone-notch", `${model.notch}px`);
+		else this.#viewport.style.removeProperty("--phone-notch");
 		this.#viewport.style.setProperty("--phone-scale", scale.toFixed(4));
 		if (phoneZoom !== this.#lastPhoneZoom) {
 			this.#lastPhoneZoom = phoneZoom;
@@ -1183,6 +1221,29 @@ export class SurfaceView {
 		if (stacked) this.#viewport.dataset.phoneStacked = "true";
 		else delete this.#viewport.dataset.phoneStacked;
 		return changed;
+	}
+
+	#phoneModelMenu(): MenuEntry[] {
+		const row = (model: PhoneModelSpec): MenuEntry => ({
+			label: model.label,
+			hint: `${model.width} × ${model.height}`,
+			checked: model.id === this.#phoneModelId,
+			select: () => this.#setPhoneModel(model.id),
+		});
+		const current = phoneModelById(this.#phoneModelId);
+		const groups = [...new Set(PHONE_MODELS.map((model) => model.group))];
+		return groups.flatMap((group): MenuEntry[] =>
+			group
+				? [
+						{
+							kind: "submenu",
+							label: group,
+							...(group === current.group ? { icon: "check" } : {}),
+							items: PHONE_MODELS.filter((model) => model.group === group).map(row),
+						},
+					]
+				: PHONE_MODELS.filter((model) => !model.group).map(row),
+		);
 	}
 
 	#setPhoneModel(id: string): void {
@@ -2293,12 +2354,7 @@ export class SurfaceView {
 					y: box.bottom + 6,
 					opener: target,
 					findOpener: () => this.el.querySelector<HTMLElement>('[data-act="phone-models"]'),
-					items: PHONE_MODELS.map((model) => ({
-						label: model.label,
-						hint: `${model.width} × ${model.height}`,
-						checked: model.id === this.#phoneModelId,
-						select: () => this.#setPhoneModel(model.id),
-					})),
+					items: this.#phoneModelMenu(),
 				});
 				return;
 			}
