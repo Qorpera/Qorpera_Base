@@ -19,6 +19,7 @@ test("design pixels become rem except local --px scopes; hairlines, SVG strokes 
 		".d { transition: opacity 120ms; color: #12a4px; width: 100%; margin: +12px 12PX; }",
 		".computer-panel .bar { font-size: 14px; border: 1px solid; }",
 		".picture-crop-view { --px: 1px; width: 288px; }",
+		"[data-phone-cutout=\"punch\"] .surface-phone-status { height: 54px; } .surface-phone-sizer { margin: 12px; }",
 		"@property --rail-width { syntax: \"*\"; inherits: false; initial-value: 456px; }",
 	].join("\n");
 	assert.equal(
@@ -32,6 +33,7 @@ test("design pixels become rem except local --px scopes; hairlines, SVG strokes 
 			".d { transition: opacity 120ms; color: #12a4px; width: 100%; margin: +1.2rem 1.2rem; }",
 			".computer-panel .bar { font-size: calc(14 * var(--px)); border: 1px solid; }",
 			".picture-crop-view { --px: 1px; width: calc(288 * var(--px)); }",
+			"[data-phone-cutout=\"punch\"] .surface-phone-status { height: calc(54 * var(--px)); } .surface-phone-sizer { margin: 1.2rem; }",
 			"@property --rail-width { syntax: \"*\"; inherits: false; initial-value: 456px; }",
 		].join("\n"),
 	);
